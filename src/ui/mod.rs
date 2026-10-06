@@ -1,0 +1,8 @@
+pub mod branches_popup;
+pub mod commit_view;
+pub mod common;
+pub mod dialogs;
+pub mod diff_view;
+pub mod graph_paint;
+pub mod log_view;
+pub mod workspace;

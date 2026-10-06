@@ -1,0 +1,16 @@
+[package]
+name = "gitglass"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "A desktop Git client that recreates the Android Studio / IntelliJ Git experience"
+
+[dependencies]
+gpui-kit = "0.7.1"
+anyhow = "1"
+chrono = "0.4"
+
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 2
