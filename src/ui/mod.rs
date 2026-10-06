@@ -5,4 +5,5 @@ pub mod dialogs;
 pub mod diff_view;
 pub mod graph_paint;
 pub mod log_view;
+pub mod stash_view;
 pub mod workspace;

@@ -9,8 +9,15 @@ description = "A desktop Git client that recreates the Android Studio / IntelliJ
 gpui-kit = "0.7.1"
 anyhow = "1"
 chrono = "0.4"
+similar = { version = "2", features = ["inline", "unicode"] }
 
 [profile.dev]
 opt-level = 1
 [profile.dev.package."*"]
 opt-level = 2
+
+# gpui embeds DirectX shaders precompiled with the Windows SDK's fxc.exe in
+# release builds. The vendored copy compiles the embedded HLSL at startup
+# instead, so Windows release builds cross-compile from Linux and macOS.
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

@@ -21,6 +21,7 @@ fn main() {
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         ui::log_view::init(cx);
+        ui::workspace::init(cx);
         let dark = std::env::var("GITGLASS_THEME").map(|t| t != "light").unwrap_or(true);
         theme::apply(dark, cx);
 

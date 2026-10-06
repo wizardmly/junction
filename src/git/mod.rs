@@ -2,8 +2,10 @@
 //! `git` executable and parses its machine-readable output.
 
 mod command;
+pub mod diff;
 pub mod graph;
 pub mod log;
+pub mod ops;
 pub mod refs;
 pub mod status;
 

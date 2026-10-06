@@ -48,6 +48,11 @@ pub struct Palette {
     pub diff_inserted: Hsla,
     pub diff_deleted: Hsla,
     pub diff_header: Hsla,
+    pub diff_modified: Hsla,
+    /// Changed words inside inserted / deleted / modified lines.
+    pub diff_inserted_word: Hsla,
+    pub diff_deleted_word: Hsla,
+    pub diff_modified_word: Hsla,
 }
 
 impl Global for Palette {}
@@ -91,6 +96,10 @@ impl Palette {
             diff_inserted: hex_alpha(0x549159, 0.25),
             diff_deleted: hex_alpha(0x9c4e4e, 0.30),
             diff_header: hex_alpha(0x3574f0, 0.18),
+            diff_modified: hex_alpha(0x43698d, 0.40),
+            diff_inserted_word: hex_alpha(0x5fad65, 0.50),
+            diff_deleted_word: hex_alpha(0xb85c5c, 0.55),
+            diff_modified_word: hex_alpha(0x4f84c4, 0.60),
         }
     }
 
@@ -132,6 +141,10 @@ impl Palette {
             diff_inserted: hex_alpha(0x67c27a, 0.25),
             diff_deleted: hex_alpha(0xf27c7c, 0.25),
             diff_header: hex_alpha(0x3574f0, 0.12),
+            diff_modified: hex_alpha(0x9fc2ea, 0.40),
+            diff_inserted_word: hex_alpha(0x4fb062, 0.45),
+            diff_deleted_word: hex_alpha(0xe46a6a, 0.45),
+            diff_modified_word: hex_alpha(0x5b95dc, 0.45),
         }
     }
 
@@ -160,7 +173,10 @@ pub fn apply(dark: bool, cx: &mut App) {
         theme.font_size = px(13.);
         theme.radius = px(4.);
         theme.shadow = true;
-        theme.background = p.window;
+        // Component surfaces (dialogs, menus) stay opaque so text behind them
+        // doesn't show through; the glass comes from our own panels.
+        theme.background = if p.dark { hex(0x2b2d30) } else { hex(0xf7f8fa) };
+        theme.overlay = if p.dark { hex_alpha(0x000000, 0.35) } else { hex_alpha(0x000000, 0.15) };
         theme.foreground = p.text;
         theme.border = if p.dark { hex(0x393b40) } else { hex(0xdfe1e5) };
         theme.muted_foreground = p.text_secondary;

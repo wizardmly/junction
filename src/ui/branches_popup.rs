@@ -100,6 +100,21 @@ fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, current: Optio
         Rc::new(move |window, cx| dialogs::new_branch(new_model.clone(), new_from.clone(), window, cx)),
     ));
     if !is_current {
+        // Shows the commits this branch has that the current one doesn't.
+        let compare_model = model.clone();
+        let range = format!("{current_name}..{name}");
+        actions.push(action(
+            format!("Compare with '{current_name}'"),
+            true,
+            Rc::new(move |_, cx| {
+                let range = range.clone();
+                compare_model.update(cx, |model, cx| {
+                    let mut filter = model.filter().clone();
+                    filter.branches = vec![range];
+                    model.set_filter(filter, cx);
+                });
+            }),
+        ));
         actions.push(action(
             format!("Checkout and Rebase onto '{current_name}'"),
             reference.kind == RefKind::LocalBranch,
@@ -152,6 +167,13 @@ fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, current: Optio
                 vec!["push".into(), "-u".into(), "origin".into(), name.clone()]
             };
             actions.push(action("Push…", true, git_op(model, "Push", push_args, format!("Pushed {name}"))));
+            let rename_model = model.clone();
+            let rename_name = name.clone();
+            actions.push(action(
+                "Rename…",
+                true,
+                Rc::new(move |window, cx| dialogs::rename_branch(rename_model.clone(), rename_name.clone(), window, cx)),
+            ));
             actions.push(action(
                 "Delete",
                 !is_current,

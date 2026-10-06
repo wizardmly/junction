@@ -57,7 +57,8 @@ gpui_kit::assets::icon_assets!(
         ChevronDown,
         ChevronRight,
         ChevronUp,
-        Circle
+        Circle,
+        FoldVertical
     ]
 );
 

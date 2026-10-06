@@ -16,7 +16,7 @@
 | VCS 操作弹窗 | `Alt+\``（macOS `Ctrl+V`）快速操作列表 | M3 | ⬜ |
 | 通知气泡 | 操作结果、错误、可点击的动作（View、Undo、Show details） | M2 | 🟡（结果与错误） |
 | 主题 | 亮/暗、跟随系统、Int UI 配色、紧凑模式 | M1 | 🟡 |
-| 快捷键 | 与 IntelliJ 默认 keymap 一致（`Ctrl+K` 提交、`Ctrl+Shift+K` 推送、`Ctrl+T` 更新…） | M2 | ⬜ |
+| 快捷键 | 与 IntelliJ 默认 keymap 一致（`Ctrl+K` 提交、`Ctrl+Shift+K` 推送、`Ctrl+T` 更新…） | M2 | 🟡（Ctrl+K、Ctrl+Shift+K、Ctrl+T、Ctrl+Shift+\`、Alt+9、F7/Shift+F7） |
 
 ## 2. Git 工具窗口 › Log
 
@@ -64,7 +64,7 @@
 |---|---|---|
 | 变更文件树：按目录分组、按模块分组、扁平列表；文件状态颜色（新增绿、修改蓝、删除灰、重命名） | M1 | 🟡 |
 | 详情：完整提交信息、hash、作者/提交者、日期、包含该提交的分支、标签 | M1 | 🟡 |
-| 双击文件打开 Diff；Diff 预览（编辑器区或面板内） | M2 | 🟡（统一视图） |
+| 双击文件打开 Diff；Diff 预览（编辑器区或面板内） | M2 | ✅ |
 | 多选提交时显示合并后的变更 | M3 | ⬜ |
 | 签名信息（GPG 验证） | M4 | ⬜ |
 | 提交信息里的 issue 链接 / URL 可点击 | M3 | ⬜ |
@@ -107,7 +107,7 @@
 | 提交选项：作者、Sign-off、GPG 签名、运行 Git hooks、清理 | M3 | ⬜ |
 | 提交前检查：Reformat、Optimize imports、Analyze code、Check TODO（IDE 特有，客户端只保留 hooks） | — | — |
 | 工具栏：Refresh、Rollback、Show Diff、Shelve、Stash、Update | M2 | 🟡（Refresh、Rollback、Show Diff） |
-| Diff 预览（选中文件即预览） | M2 | 🟡（统一视图） |
+| Diff 预览（选中文件即预览） | M2 | ✅ |
 | Rollback Changes 对话框（删除本地副本选项） | M2 | ⬜ |
 | 添加到 VCS / 添加到 .gitignore | M2 | ⬜ |
 | 提交完成通知 + Undo | M2 | 🟡（通知） |
@@ -115,8 +115,8 @@
 ### 3.1 Shelf / Stash
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| Stash Changes 对话框（消息、Keep index） | M2 | ⬜ |
-| Stashes 列表：查看内容、Apply、Pop、Drop、Clear、Unstash as branch、Reinstate index | M2 | ⬜ |
+| Stash Changes 对话框（消息、Keep index） | M2 | ✅（含 Include untracked） |
+| Stashes 列表：查看内容、Apply、Pop、Drop、Clear、Unstash as branch、Reinstate index | M2 | 🟡（查看、Apply、Pop、Drop） |
 | Shelf（IntelliJ 特有补丁货架）：Shelve、Unshelve、Shelve silently、Recently deleted | M4 | ⬜ |
 
 ## 4. 分支弹窗（标题栏 VCS 组件 / `Ctrl+Shift+\``）
@@ -127,7 +127,7 @@
 | 搜索框（直接输入过滤） | M1 | ✅ |
 | Recent、Local、Remote、Tags 分组；收藏星标 | M1 | 🟡 |
 | 当前分支标记、跟踪分支、ahead/behind 箭头 | M2 | ✅ |
-| 分支子菜单：Checkout、New Branch from…、Checkout and Rebase onto Current、Compare with Current、Show Diff with Working Tree、Rebase Current onto Selected、Merge into Current、Pull into Current Using Rebase / Merge、Update、Push…、Rename…、Edit Tracking Branch、Delete | M2 | 🟡（缺 Compare、Show Diff、Rename、Edit Tracking） |
+| 分支子菜单：Checkout、New Branch from…、Checkout and Rebase onto Current、Compare with Current、Show Diff with Working Tree、Rebase Current onto Selected、Merge into Current、Pull into Current Using Rebase / Merge、Update、Push…、Rename…、Edit Tracking Branch、Delete | M2 | 🟡（缺 Show Diff、Edit Tracking） |
 | 进行中的操作：Continue / Abort / Skip（rebase、merge、cherry-pick、revert） | M3 | ⬜ |
 | 多仓库：同步分支控制开关 | M5 | ⬜ |
 
@@ -136,10 +136,10 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | Fetch（全部 remote） | M2 | ✅ |
-| Update Project（`Ctrl+T`）对话框：Merge / Rebase；Using Stash / Shelve | M2 | ⬜ |
+| Update Project（`Ctrl+T`）对话框：Merge / Rebase；Using Stash / Shelve | M2 | 🟡（Merge / Rebase，自动 stash） |
 | 更新结果：Updated files 树、被更新的提交 Log 标签页 | M3 | ⬜ |
 | Pull 对话框：remote、分支、选项（--rebase、--ff-only、--no-ff、--squash、--no-commit） | M2 | ⬜ |
-| Push 对话框：每个仓库待推送的提交列表 + 变更树、目标分支可编辑（新分支标记）、Force push（--force-with-lease）、Push tags（All / Current branch）、Run hooks、Set upstream | M2 | ⬜ |
+| Push 对话框：每个仓库待推送的提交列表 + 变更树、目标分支可编辑（新分支标记）、Force push（--force-with-lease）、Push tags（All / Current branch）、Run hooks、Set upstream | M2 | 🟡（无变更树） |
 | 推送被拒：提示 Merge / Rebase 后重推，"自动更新"选项 | M3 | ⬜ |
 | 受保护分支禁止 force push | M3 | ⬜ |
 | Manage Remotes 对话框：添加/编辑/删除 | M2 | ⬜ |
@@ -150,10 +150,10 @@
 
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 双栏 Side-by-side / 统一 Unified 视图 | M2 | ⬜ |
-| 忽略空白：不忽略 / 行首尾 / 全部 / 仅空行 | M2 | ⬜ |
-| 高亮：按词 / 按行 / 按字符 / 不高亮 | M2 | ⬜ |
-| 折叠未改动片段、同步滚动、上/下一处差异、跳到下一个文件 | M2 | ⬜ |
+| 双栏 Side-by-side / 统一 Unified 视图 | M2 | ✅ |
+| 忽略空白：不忽略 / 行首尾 / 全部 / 仅空行 | M2 | 🟡（无“仅空行”） |
+| 高亮：按词 / 按行 / 按字符 / 不高亮 | M2 | 🟡（无“按字符”） |
+| 折叠未改动片段、同步滚动、上/下一处差异、跳到下一个文件 | M2 | 🟡（缺跳到下一个文件） |
 | 右侧可编辑（工作区文件）、单个 chunk 回滚 / 应用 | M3 | ⬜ |
 | 语法高亮（tree-sitter，与编辑器一致） | M2 | ⬜ |
 | 二进制 / 图片对比 | M4 | ⬜ |

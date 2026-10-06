@@ -1,0 +1,212 @@
+//! Queries behind the Push, Update and Stash dialogs.
+
+use anyhow::Result;
+
+use super::log::{FileChange, parse_log, parse_name_status};
+use super::{Commit, Repository};
+
+/// What "Push" would send for the current branch.
+#[derive(Clone, Debug, Default)]
+pub struct PushPreview {
+    pub branch: Option<String>,
+    pub remotes: Vec<String>,
+    pub remote: String,
+    /// Remote branch name the push targets.
+    pub target: String,
+    /// True when the remote branch does not exist yet ("New" in IntelliJ).
+    pub new_branch: bool,
+    pub commits: Vec<Commit>,
+}
+
+const FORMAT: &str = "--format=\u{1e}%H\u{1f}%P\u{1f}%an\u{1f}%ae\u{1f}%at\u{1f}%s";
+
+pub fn remotes(repository: &Repository) -> Vec<String> {
+    repository
+        .run(["remote"])
+        .map(|o| o.lines().map(str::to_owned).filter(|l| !l.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+pub fn push_preview(repository: &Repository) -> Result<PushPreview> {
+    let branch = repository
+        .run(["symbolic-ref", "-q", "--short", "HEAD"])
+        .ok()
+        .map(|b| b.trim().to_owned())
+        .filter(|b| !b.is_empty());
+    let remotes = remotes(repository);
+    let upstream = repository
+        .run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+        .ok()
+        .map(|u| u.trim().to_owned())
+        .filter(|u| !u.is_empty());
+
+    let (remote, target) = match &upstream {
+        Some(upstream) => {
+            let (remote, target) = upstream.split_once('/').unwrap_or(("origin", upstream.as_str()));
+            (remote.to_owned(), target.to_owned())
+        }
+        None => (
+            remotes.iter().find(|r| *r == "origin").or(remotes.first()).cloned().unwrap_or_else(|| "origin".into()),
+            branch.clone().unwrap_or_default(),
+        ),
+    };
+    let remote_ref = format!("refs/remotes/{remote}/{target}");
+    let new_branch = repository.run(["rev-parse", "--verify", "-q", &remote_ref]).is_err();
+    let commits = if new_branch {
+        // Everything not already on some remote.
+        parse_log(&repository.run(["log", FORMAT, "HEAD", "--not", "--remotes"])?)
+    } else {
+        parse_log(&repository.run(["log", FORMAT, &format!("{remote_ref}..HEAD")])?)
+    };
+    Ok(PushPreview { branch, remotes, remote, target, new_branch, commits })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PushTags {
+    None,
+    All,
+    CurrentBranch,
+}
+
+#[derive(Clone, Debug)]
+pub struct PushRequest {
+    pub remote: String,
+    pub branch: String,
+    pub target: String,
+    pub force_with_lease: bool,
+    pub tags: PushTags,
+    pub set_upstream: bool,
+    pub run_hooks: bool,
+}
+
+pub fn push(repository: &Repository, request: &PushRequest) -> Result<String> {
+    let mut args = vec!["push".to_owned(), "--porcelain".into()];
+    if request.force_with_lease {
+        args.push("--force-with-lease".into());
+    }
+    if request.set_upstream {
+        args.push("--set-upstream".into());
+    }
+    if !request.run_hooks {
+        args.push("--no-verify".into());
+    }
+    match request.tags {
+        PushTags::None => {}
+        PushTags::All => args.push("--tags".into()),
+        PushTags::CurrentBranch => args.push("--follow-tags".into()),
+    }
+    args.push(request.remote.clone());
+    args.push(format!("{}:refs/heads/{}", request.branch, request.target));
+    repository.run(&args)?;
+    Ok(format!("Pushed {} to {}/{}", request.branch, request.remote, request.target))
+}
+
+/// One entry of `git stash list`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stash {
+    /// `stash@{0}`.
+    pub name: String,
+    pub hash: String,
+    pub message: String,
+    pub time: i64,
+    pub branch: Option<String>,
+}
+
+pub fn stash_list(repository: &Repository) -> Result<Vec<Stash>> {
+    let output = repository.run(["stash", "list", "--format=%gd\u{1f}%H\u{1f}%gs\u{1f}%ct"])?;
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\u{1f}');
+            let name = fields.next()?.to_owned();
+            let hash = fields.next()?.to_owned();
+            let subject = fields.next()?.to_owned();
+            let time = fields.next()?.parse().unwrap_or(0);
+            // "WIP on main: abc123 msg" / "On main: message"
+            let branch = subject
+                .strip_prefix("WIP on ")
+                .or_else(|| subject.strip_prefix("On "))
+                .and_then(|rest| rest.split(':').next())
+                .map(str::to_owned);
+            let message = subject.split_once(": ").map_or(subject.clone(), |(_, m)| m.to_owned());
+            Some(Stash { name, hash, message, time, branch })
+        })
+        .collect())
+}
+
+pub fn stash_files(repository: &Repository, stash: &str) -> Result<Vec<FileChange>> {
+    let mut changes = parse_name_status(&repository.run(["stash", "show", "--name-status", "-z", "-M", stash])?);
+    // Untracked files saved with `-u` live in the stash's third parent.
+    if let Ok(output) = repository.run(["show", "--name-status", "-z", "--format=", &format!("{stash}^3")]) {
+        changes.extend(parse_name_status(&output));
+    }
+    Ok(changes)
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StashRequest {
+    pub message: String,
+    pub keep_index: bool,
+    pub include_untracked: bool,
+}
+
+pub fn stash_save(repository: &Repository, request: &StashRequest) -> Result<String> {
+    let mut args = vec!["stash".to_owned(), "push".into()];
+    if request.keep_index {
+        args.push("--keep-index".into());
+    }
+    if request.include_untracked {
+        args.push("--include-untracked".into());
+    }
+    if !request.message.trim().is_empty() {
+        args.push("-m".into());
+        args.push(request.message.trim().to_owned());
+    }
+    repository.run(&args)?;
+    Ok("Local changes stashed".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::GitConsole;
+    use std::process::Command;
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let status = Command::new("git").arg("-C").arg(dir).args(args).env("GIT_AUTHOR_NAME", "T").env("GIT_AUTHOR_EMAIL", "t@x").env("GIT_COMMITTER_NAME", "T").env("GIT_COMMITTER_EMAIL", "t@x").output().unwrap();
+        assert!(status.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&status.stderr));
+    }
+
+    fn temp_repo(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("gitglass-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a.txt"), "1\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-qm", "first"]);
+        dir
+    }
+
+    #[test]
+    fn stash_round_trip_and_push_preview() {
+        let dir = temp_repo("stash");
+        let repo = Repository::discover(&dir, GitConsole::default()).unwrap();
+        std::fs::write(dir.join("a.txt"), "2\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "n\n").unwrap();
+        stash_save(&repo, &StashRequest { message: "wip work".into(), keep_index: false, include_untracked: true }).unwrap();
+        let stashes = stash_list(&repo).unwrap();
+        assert_eq!(stashes.len(), 1);
+        assert_eq!(stashes[0].message, "wip work");
+        assert_eq!(stashes[0].branch.as_deref(), Some("main"));
+        let files: Vec<_> = stash_files(&repo, "stash@{0}").unwrap().into_iter().map(|f| f.path).collect();
+        assert!(files.contains(&"a.txt".to_owned()) && files.contains(&"new.txt".to_owned()), "{files:?}");
+
+        // No remote: every commit is "new" and would be pushed.
+        let preview = push_preview(&repo).unwrap();
+        assert!(preview.new_branch);
+        assert_eq!(preview.commits.len(), 1);
+        assert_eq!(preview.target, "main");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -16,8 +16,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::{
-    AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, KeyBinding,
+    ParentElement as _, PathPromptOptions, Render, actions, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
     prelude::FluentBuilder as _, px,
 };
 
@@ -26,8 +26,34 @@ use crate::theme::{self, ActivePalette as _};
 use crate::ui::branches_popup::{self, BranchesPopup};
 use crate::ui::commit_view::{CommitEvent, CommitView};
 use crate::ui::common::tool_button;
-use crate::ui::diff_view::DiffView;
+use crate::ui::diff_view::{DiffView, NextDifference, PreviousDifference};
+use crate::ui::dialogs;
 use crate::ui::log_view::{LogEvent, LogView};
+use crate::ui::stash_view::{StashEvent, StashView};
+
+actions!(workspace, [CommitChanges, PushChanges, UpdateProject, ShowBranches, ToggleGitWindow, Refresh, StashChanges]);
+
+const CONTEXT: &str = "Workspace";
+
+/// IntelliJ's default keymap for the VCS actions.
+pub fn init(cx: &mut gpui_kit::App) {
+    cx.bind_keys([
+        KeyBinding::new("secondary-k", CommitChanges, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-k", PushChanges, Some(CONTEXT)),
+        KeyBinding::new("secondary-t", UpdateProject, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-`", ShowBranches, Some(CONTEXT)),
+        KeyBinding::new("alt-9", ToggleGitWindow, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-y", Refresh, Some(CONTEXT)),
+        KeyBinding::new("f7", NextDifference, Some(CONTEXT)),
+        KeyBinding::new("shift-f7", PreviousDifference, Some(CONTEXT)),
+    ]);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeftTab {
+    Commit,
+    Stash,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BottomTab {
@@ -39,11 +65,15 @@ pub struct Workspace {
     model: Entity<RepoModel>,
     log: Entity<LogView>,
     commit: Entity<CommitView>,
+    stash: Entity<StashView>,
     diff: Entity<DiffView>,
     branches_popup: Entity<BranchesPopup>,
     show_commit: bool,
     show_git: bool,
+    left_tab: LeftTab,
     bottom_tab: BottomTab,
+    branches_open: bool,
+    focus: gpui_kit::FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -52,13 +82,18 @@ impl Workspace {
         let log = cx.new(|cx| LogView::new(model.clone(), window, cx));
         let commit = cx.new(|cx| CommitView::new(model.clone(), window, cx));
         let diff = cx.new(|_| DiffView::new());
+        let stash = cx.new(|cx| StashView::new(model.clone(), cx));
         let branches_popup = cx.new(|cx| BranchesPopup::new(model.clone(), window, cx));
         let subscriptions = vec![
             cx.subscribe(&log, |this, _, event: &LogEvent, cx| match event {
                 LogEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
             }),
-            cx.subscribe(&commit, |this, _, event: &CommitEvent, cx| match event {
+            cx.subscribe_in(&commit, window, |this, _, event: &CommitEvent, window, cx| match event {
                 CommitEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
+                CommitEvent::OpenPush => dialogs::push(this.model.clone(), window, cx),
+            }),
+            cx.subscribe(&stash, |this, _, event: &StashEvent, cx| match event {
+                StashEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
             }),
             cx.subscribe_in(&model, window, |_, _, event, window, cx| {
                 if let RepoEvent::Notify { title, message, error } = event {
@@ -76,10 +111,14 @@ impl Workspace {
             model,
             log,
             commit,
+            stash,
             diff,
             branches_popup,
             show_commit: true,
             show_git: true,
+            left_tab: LeftTab::Commit,
+            branches_open: false,
+            focus: cx.focus_handle(),
             bottom_tab: BottomTab::Log,
             _subscriptions: subscriptions,
         }
@@ -189,6 +228,17 @@ impl Workspace {
                 .child(
                     Popover::new("branches-popover")
                         .anchor(gpui_kit::Anchor::TopLeft)
+                        .open(self.branches_open)
+                        .on_open_change({
+                            let entity = entity.clone();
+                            move |open, _, cx| {
+                                let open = *open;
+                                entity.update(cx, |this, cx| {
+                                    this.branches_open = open;
+                                    cx.notify();
+                                })
+                            }
+                        })
                         .trigger(
                             Button::new("vcs-widget")
                                 .ghost()
@@ -203,10 +253,8 @@ impl Workspace {
                 .when_some(busy, |el, busy| {
                     el.child(div().text_xs().text_color(palette.text_secondary).child(format!("{busy}…")))
                 })
-                .child(tool_button("tb-update", IconName::ArrowDownToLine, "Update Project…  Ctrl+T").on_click(op(
-                    "Update Project",
-                    &["pull", "--rebase", "--autostash"],
-                    "All files are up to date",
+                .child(tool_button("tb-update", IconName::ArrowDownToLine, "Update Project…  Ctrl+T").on_click(cx.listener(
+                    |this, _, window, cx| dialogs::update_project(this.model.clone(), window, cx),
                 )))
                 .child(tool_button("tb-commit", IconName::Check, "Commit…  Ctrl+K").on_click(cx.listener(
                     |this, _, _, cx| {
@@ -214,10 +262,8 @@ impl Workspace {
                         cx.notify();
                     },
                 )))
-                .child(tool_button("tb-push", IconName::ArrowUpFromLine, "Push…  Ctrl+Shift+K").on_click(op(
-                    "Push",
-                    &["push"],
-                    "Pushed",
+                .child(tool_button("tb-push", IconName::ArrowUpFromLine, "Push…  Ctrl+Shift+K").on_click(cx.listener(
+                    |this, _, window, cx| dialogs::push(this.model.clone(), window, cx),
                 )))
                 .child(tool_button("tb-fetch", IconName::CloudDownload, "Fetch").on_click(op(
                     "Fetch",
@@ -258,6 +304,85 @@ impl Workspace {
                     cx.notify();
                 },
             )))
+    }
+
+    fn render_left(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let current = self.left_tab;
+        let tab = |id: &'static str, label: &'static str, value: LeftTab| {
+            div()
+                .id(id)
+                .px_2()
+                .h_full()
+                .flex()
+                .items_center()
+                .text_sm()
+                .cursor_pointer()
+                .when(value == current, |el| el.border_b_2().border_color(palette.accent).text_color(palette.text))
+                .when(value != current, |el| el.text_color(palette.text_secondary))
+                .child(label)
+        };
+        v_flex()
+            .size_full()
+            .bg(palette.panel)
+            .child(
+                h_flex()
+                    .h(px(30.))
+                    .px_2()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(tab("left-commit", "Commit", LeftTab::Commit).on_click(cx.listener(|this, _, _, cx| {
+                        this.left_tab = LeftTab::Commit;
+                        cx.notify();
+                    })))
+                    .child(tab("left-stash", "Stash", LeftTab::Stash).on_click(cx.listener(|this, _, _, cx| {
+                        this.left_tab = LeftTab::Stash;
+                        cx.notify();
+                    })))
+                    .child(div().flex_1())
+                    .child(tool_button("commit-hide", IconName::Minus, "Hide").on_click(cx.listener(|this, _, _, cx| {
+                        this.show_commit = false;
+                        cx.notify();
+                    }))),
+            )
+            .child(div().flex_1().min_h_0().map(|el| match current {
+                LeftTab::Commit => el.child(self.commit.clone()),
+                LeftTab::Stash => el.child(self.stash.clone()),
+            }))
+    }
+
+    fn on_commit(&mut self, _: &CommitChanges, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_commit = true;
+        self.left_tab = LeftTab::Commit;
+        self.commit.update(cx, |commit, cx| commit.focus_message(window, cx));
+        cx.notify();
+    }
+
+    fn on_push(&mut self, _: &PushChanges, window: &mut Window, cx: &mut Context<Self>) {
+        dialogs::push(self.model.clone(), window, cx);
+    }
+
+    fn on_update(&mut self, _: &UpdateProject, window: &mut Window, cx: &mut Context<Self>) {
+        dialogs::update_project(self.model.clone(), window, cx);
+    }
+
+    fn on_show_branches(&mut self, _: &ShowBranches, _: &mut Window, cx: &mut Context<Self>) {
+        self.branches_open = true;
+        cx.notify();
+    }
+
+    fn on_toggle_git(&mut self, _: &ToggleGitWindow, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_git = !self.show_git;
+        cx.notify();
+    }
+
+    fn on_refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
+        self.model.update(cx, |model, cx| model.reload(cx));
+    }
+
+    fn on_stash(&mut self, _: &StashChanges, window: &mut Window, cx: &mut Context<Self>) {
+        dialogs::stash(self.model.clone(), window, cx);
     }
 
     fn render_bottom(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -374,7 +499,7 @@ impl Render for Workspace {
                     .size(px(340.))
                     .size_range(px(220.)..px(700.))
                     .visible(self.show_commit && has_repo)
-                    .child(div().size_full().bg(palette.panel).child(self.commit.clone())),
+                    .child(self.render_left(cx)),
             )
             .child(resizable_panel().child(editor));
 
@@ -389,6 +514,18 @@ impl Render for Workspace {
             );
 
         v_flex()
+            .id("workspace")
+            .key_context(CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(Self::on_commit))
+            .on_action(cx.listener(Self::on_push))
+            .on_action(cx.listener(Self::on_update))
+            .on_action(cx.listener(Self::on_show_branches))
+            .on_action(cx.listener(Self::on_toggle_git))
+            .on_action(cx.listener(Self::on_refresh))
+            .on_action(cx.listener(Self::on_stash))
+            .on_action(cx.listener(|this, _: &NextDifference, _, cx| this.diff.update(cx, |d, cx| d.next_difference(cx))))
+            .on_action(cx.listener(|this, _: &PreviousDifference, _, cx| this.diff.update(cx, |d, cx| d.previous_difference(cx))))
             .size_full()
             .bg(palette.window)
             .text_color(palette.text)

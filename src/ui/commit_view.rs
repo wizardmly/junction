@@ -28,6 +28,8 @@ use crate::ui::diff_view::DiffSource;
 
 pub enum CommitEvent {
     OpenDiff(DiffSource),
+    /// "Commit and Push…" committed; show the Push dialog next.
+    OpenPush,
 }
 
 impl EventEmitter<CommitEvent> for CommitView {}
@@ -48,6 +50,7 @@ pub struct CommitView {
     kinds: HashMap<String, StatusKind>,
     counts: HashMap<SharedString, usize>,
     amend: bool,
+    push_after_commit: bool,
     last_selection: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
@@ -57,10 +60,14 @@ impl CommitView {
         let tree = cx.new(|cx| TreeState::new(cx));
         let message = cx.new(|cx| TextareaState::new(window, cx).rows(5).placeholder("Commit Message"));
         let subscriptions = vec![
-            cx.subscribe(&model, |this, _, event, cx| {
-                if matches!(event, RepoEvent::Reloaded) {
-                    this.rebuild(cx);
+            cx.subscribe(&model, |this, _, event, cx| match event {
+                RepoEvent::Reloaded => this.rebuild(cx),
+                RepoEvent::Notify { title, error, .. } if title == "Commit" => {
+                    if std::mem::take(&mut this.push_after_commit) && !error {
+                        cx.emit(CommitEvent::OpenPush);
+                    }
                 }
+                _ => {}
             }),
             cx.subscribe(&message, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -86,6 +93,7 @@ impl CommitView {
             kinds: HashMap::new(),
             counts: HashMap::new(),
             amend: false,
+            push_after_commit: false,
             last_selection: None,
             _subscriptions: subscriptions,
         };
@@ -184,6 +192,10 @@ impl CommitView {
         cx.notify();
     }
 
+    pub fn focus_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.message.update(cx, |state, cx| state.focus(window, cx));
+    }
+
     fn commit(&mut self, push: bool, window: &mut Window, cx: &mut Context<Self>) {
         let message = self.message.read(cx).value().trim().to_owned();
         if message.is_empty() {
@@ -195,21 +207,11 @@ impl CommitView {
             paths.iter().filter(|p| self.kinds.get(*p) == Some(&StatusKind::Unversioned)).cloned().collect();
         let request = CommitRequest { message, amend: self.amend, paths, unversioned, sign_off: false };
         let count = request.paths.len();
-        let branch = self.model.read(cx).refs().current_branch.clone();
+        self.push_after_commit = push;
         self.model.update(cx, |model, cx| {
-            model.run_operation(if push { "Commit and Push" } else { "Commit" }, move |repo| {
+            model.run_operation("Commit", move |repo| {
                 let hash = status::commit(repo, &request)?;
-                let mut summary = format!("{count} file{} committed: {}", if count == 1 { "" } else { "s" }, &hash[..8]);
-                if push {
-                    let has_upstream = repo.run(["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
-                    match (&branch, has_upstream) {
-                        (_, true) => repo.run(["push"])?,
-                        (Some(branch), false) => repo.run(["push", "-u", "origin", branch])?,
-                        (None, false) => anyhow::bail!("cannot push a detached HEAD"),
-                    };
-                    summary.push_str(", pushed");
-                }
-                Ok(summary)
+                Ok(format!("{count} file{} committed: {}", if count == 1 { "" } else { "s" }, &hash[..8]))
             }, cx)
         });
         self.amend = false;

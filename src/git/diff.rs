@@ -1,0 +1,302 @@
+//! Line diff for the diff viewer, computed from both file versions so the
+//! side-by-side view can align lines and highlight changed words, as
+//! IntelliJ's diff viewer does.
+
+use std::ops::Range;
+
+use anyhow::Result;
+use similar::{ChangeTag, DiffOp, TextDiff};
+
+use super::Repository;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IgnoreWhitespace {
+    #[default]
+    None,
+    /// Ignore whitespace at line starts and ends.
+    Trim,
+    /// Ignore all whitespace.
+    All,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HighlightMode {
+    Words,
+    Lines,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffOptions {
+    pub ignore_whitespace: IgnoreWhitespace,
+    pub highlight: HighlightMode,
+    /// Fold unchanged runs, keeping this many context lines around changes.
+    pub context: Option<usize>,
+}
+
+impl Default for DiffOptions {
+    fn default() -> Self {
+        Self { ignore_whitespace: IgnoreWhitespace::None, highlight: HighlightMode::Words, context: Some(4) }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowKind {
+    Equal,
+    Deleted,
+    Inserted,
+    Modified,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Side {
+    /// 1-based line number.
+    pub line: usize,
+    pub text: String,
+    /// Byte ranges of changed words, for word highlighting.
+    pub changed: Vec<Range<usize>>,
+}
+
+/// One row of the side-by-side view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffRow {
+    Line { kind: RowKind, left: Option<Side>, right: Option<Side>, change: Option<usize> },
+    /// A folded run of unchanged lines; `rows` are shown when expanded.
+    Fold { id: usize, rows: Vec<DiffRow> },
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FileDiff {
+    pub rows: Vec<DiffRow>,
+    /// Number of change blocks, for "Next Difference".
+    pub changes: usize,
+    pub binary: bool,
+    pub inserted: usize,
+    pub deleted: usize,
+}
+
+fn normalize(line: &str, mode: IgnoreWhitespace) -> String {
+    match mode {
+        IgnoreWhitespace::None => line.to_owned(),
+        IgnoreWhitespace::Trim => line.trim().to_owned(),
+        IgnoreWhitespace::All => line.chars().filter(|c| !c.is_whitespace()).collect(),
+    }
+}
+
+pub fn compute(old: &str, new: &str, options: DiffOptions) -> FileDiff {
+    if old.contains('\0') || new.contains('\0') {
+        return FileDiff { binary: true, ..Default::default() };
+    }
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let old_keys: Vec<String> = old_lines.iter().map(|l| normalize(l, options.ignore_whitespace)).collect();
+    let new_keys: Vec<String> = new_lines.iter().map(|l| normalize(l, options.ignore_whitespace)).collect();
+    let old_refs: Vec<&str> = old_keys.iter().map(String::as_str).collect();
+    let new_refs: Vec<&str> = new_keys.iter().map(String::as_str).collect();
+    let ops = similar::capture_diff_slices(similar::Algorithm::Patience, &old_refs, &new_refs);
+
+    let side = |lines: &[&str], ix: usize| Side { line: ix + 1, text: lines[ix].to_owned(), changed: Vec::new() };
+    let mut rows = Vec::new();
+    let mut changes = 0;
+    let (mut inserted, mut deleted) = (0, 0);
+
+    for op in ops {
+        match op {
+            DiffOp::Equal { old_index, new_index, len } => {
+                for k in 0..len {
+                    rows.push(DiffRow::Line {
+                        kind: RowKind::Equal,
+                        left: Some(side(&old_lines, old_index + k)),
+                        right: Some(side(&new_lines, new_index + k)),
+                        change: None,
+                    });
+                }
+            }
+            DiffOp::Delete { old_index, old_len, .. } => {
+                deleted += old_len;
+                for k in 0..old_len {
+                    rows.push(DiffRow::Line { kind: RowKind::Deleted, left: Some(side(&old_lines, old_index + k)), right: None, change: Some(changes) });
+                }
+                changes += 1;
+            }
+            DiffOp::Insert { new_index, new_len, .. } => {
+                inserted += new_len;
+                for k in 0..new_len {
+                    rows.push(DiffRow::Line { kind: RowKind::Inserted, left: None, right: Some(side(&new_lines, new_index + k)), change: Some(changes) });
+                }
+                changes += 1;
+            }
+            DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+                deleted += old_len;
+                inserted += new_len;
+                for k in 0..old_len.max(new_len) {
+                    let mut left = (k < old_len).then(|| side(&old_lines, old_index + k));
+                    let mut right = (k < new_len).then(|| side(&new_lines, new_index + k));
+                    let kind = match (&left, &right) {
+                        (Some(_), Some(_)) => RowKind::Modified,
+                        (Some(_), None) => RowKind::Deleted,
+                        _ => RowKind::Inserted,
+                    };
+                    if let (Some(l), Some(r), HighlightMode::Words) = (&mut left, &mut right, options.highlight) {
+                        let (lc, rc) = word_changes(&l.text, &r.text);
+                        l.changed = lc;
+                        r.changed = rc;
+                    }
+                    rows.push(DiffRow::Line { kind, left, right, change: Some(changes) });
+                }
+                changes += 1;
+            }
+        }
+    }
+
+    if let Some(context) = options.context {
+        rows = fold(rows, context);
+    }
+    FileDiff { rows, changes, binary: false, inserted, deleted }
+}
+
+/// Byte ranges that differ between two lines, word by word.
+fn word_changes(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+    let diff = TextDiff::configure().algorithm(similar::Algorithm::Patience).diff_unicode_words(old, new);
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    let (mut lpos, mut rpos) = (0, 0);
+    for change in diff.iter_all_changes() {
+        let len = change.value().len();
+        match change.tag() {
+            ChangeTag::Equal => {
+                lpos += len;
+                rpos += len;
+            }
+            ChangeTag::Delete => {
+                push_range(&mut left, lpos..lpos + len);
+                lpos += len;
+            }
+            ChangeTag::Insert => {
+                push_range(&mut right, rpos..rpos + len);
+                rpos += len;
+            }
+        }
+    }
+    (left, right)
+}
+
+fn push_range(ranges: &mut Vec<Range<usize>>, range: Range<usize>) {
+    match ranges.last_mut() {
+        Some(last) if last.end == range.start => last.end = range.end,
+        _ => ranges.push(range),
+    }
+}
+
+/// Folds runs of equal rows longer than `2 * context + 1`.
+fn fold(rows: Vec<DiffRow>, context: usize) -> Vec<DiffRow> {
+    let is_equal = |row: &DiffRow| matches!(row, DiffRow::Line { kind: RowKind::Equal, .. });
+    let mut out = Vec::new();
+    let mut run: Vec<DiffRow> = Vec::new();
+    let mut fold_id = 0;
+    let total = rows.len();
+    let mut flush = |run: &mut Vec<DiffRow>, out: &mut Vec<DiffRow>, at_start: bool, at_end: bool| {
+        let keep_head = if at_start { 0 } else { context };
+        let keep_tail = if at_end { 0 } else { context };
+        if run.len() > keep_head + keep_tail + 1 {
+            let tail = run.split_off(run.len() - keep_tail);
+            let middle = run.split_off(keep_head);
+            out.append(run);
+            out.push(DiffRow::Fold { id: fold_id, rows: middle });
+            fold_id += 1;
+            out.extend(tail);
+        } else {
+            out.append(run);
+        }
+    };
+    let mut seen_change = false;
+    for (ix, row) in rows.into_iter().enumerate() {
+        if is_equal(&row) {
+            run.push(row);
+            if ix + 1 == total {
+                flush(&mut run, &mut out, !seen_change, true);
+            }
+        } else {
+            flush(&mut run, &mut out, !seen_change, false);
+            seen_change = true;
+            out.push(row);
+        }
+    }
+    out
+}
+
+/// Which two versions of a file to compare.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Revisions {
+    /// A file as changed by a commit, against the commit's first parent.
+    Commit { hash: String, path: String, old_path: Option<String> },
+    /// The working tree file against HEAD.
+    WorkingTree { path: String },
+}
+
+/// Loads both versions; a missing side (added/deleted file) is empty.
+pub fn load_versions(repository: &Repository, revisions: &Revisions) -> Result<(String, String, String, String)> {
+    let show = |spec: String| repository.run(["show", &spec]).unwrap_or_default();
+    Ok(match revisions {
+        Revisions::Commit { hash, path, old_path } => {
+            let old_path = old_path.as_ref().unwrap_or(path);
+            let has_parent = repository.run(["rev-parse", "--verify", "-q", &format!("{hash}^")]).is_ok();
+            let old = if has_parent { show(format!("{hash}^:{old_path}")) } else { String::new() };
+            let new = show(format!("{hash}:{path}"));
+            let short = &hash[..hash.len().min(8)];
+            (old, new, format!("{}^", short), short.to_owned())
+        }
+        Revisions::WorkingTree { path } => {
+            let old = show(format!("HEAD:{path}"));
+            let new = std::fs::read(repository.root().join(path))
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default();
+            (old, new, "HEAD".into(), "Your version".into())
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds(diff: &FileDiff) -> Vec<RowKind> {
+        diff.rows
+            .iter()
+            .filter_map(|r| match r {
+                DiffRow::Line { kind, .. } => Some(*kind),
+                DiffRow::Fold { .. } => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pairs_replacements_and_marks_words() {
+        let diff = compute("a\nlet x = 1;\nc\n", "a\nlet x = 2;\nc\nd\n", DiffOptions { context: None, ..Default::default() });
+        assert_eq!(kinds(&diff), vec![RowKind::Equal, RowKind::Modified, RowKind::Equal, RowKind::Inserted]);
+        assert_eq!(diff.changes, 2);
+        let DiffRow::Line { left: Some(l), right: Some(r), .. } = &diff.rows[1] else { panic!() };
+        assert_eq!(&l.text[l.changed[0].clone()], "1");
+        assert_eq!(&r.text[r.changed[0].clone()], "2");
+    }
+
+    #[test]
+    fn ignores_whitespace_when_asked() {
+        let options = DiffOptions { ignore_whitespace: IgnoreWhitespace::All, context: None, ..Default::default() };
+        let diff = compute("fn  main() {}\n", "fn main(){}\n", options);
+        assert_eq!(diff.changes, 0);
+    }
+
+    #[test]
+    fn folds_long_unchanged_runs() {
+        let old: String = (0..30).map(|i| format!("line {i}\n")).collect();
+        let new = old.replace("line 15\n", "changed\n");
+        let diff = compute(&old, &new, DiffOptions { context: Some(3), ..Default::default() });
+        let folds: Vec<usize> = diff
+            .rows
+            .iter()
+            .filter_map(|r| if let DiffRow::Fold { rows, .. } = r { Some(rows.len()) } else { None })
+            .collect();
+        // 15 equal lines before (12 folded, 3 kept) and 14 after (11 folded, 3 kept).
+        assert_eq!(folds, vec![12, 11]);
+    }
+}
