@@ -6,5 +6,6 @@ pub mod diff_view;
 pub mod graph_paint;
 pub mod log_view;
 pub mod merge_view;
+pub mod rebase_dialog;
 pub mod stash_view;
 pub mod workspace;

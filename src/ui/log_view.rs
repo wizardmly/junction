@@ -30,6 +30,7 @@ use crate::theme::ActivePalette as _;
 use crate::ui::common::{self, DIR_PREFIX, FILE_PREFIX, ROW_HEIGHT, tool_button};
 use crate::ui::diff_view::DiffSource;
 use crate::ui::dialogs;
+use crate::ui::rebase_dialog;
 use crate::ui::graph_paint::graph_canvas;
 
 actions!(git_log, [SelectPrevious, SelectNext, SelectFirst, SelectLast, CopyRevision, GoToHash]);
@@ -1061,6 +1062,26 @@ fn commit_menu(
         vec!["reset".into(), "--soft".into(), "HEAD~1".into()],
         "Commit undone; changes kept in the working tree".into(),
     )))
+    .item(PopupMenuItem::new("Edit Commit Message…").disabled(multi).on_click({
+        let model = model.clone();
+        let hash = hash.clone();
+        move |_, window, cx| rebase_dialog::reword(model.clone(), hash.clone(), window, cx)
+    }))
+    .item(PopupMenuItem::new(if multi { "Drop Commits" } else { "Drop Commit" }).on_click({
+        let model = model.clone();
+        let picks = picks.clone();
+        move |_, window, cx| rebase_dialog::drop_commits(model.clone(), picks.clone(), window, cx)
+    }))
+    .item(PopupMenuItem::new("Squash Commits…").disabled(!multi).on_click({
+        let model = model.clone();
+        let picks = picks.clone();
+        move |_, window, cx| rebase_dialog::squash(model.clone(), picks.clone(), window, cx)
+    }))
+    .item(PopupMenuItem::new("Interactively Rebase from Here…").disabled(multi).on_click({
+        let model = model.clone();
+        let hash = hash.clone();
+        move |_, window, cx| rebase_dialog::open(model.clone(), hash.clone(), window, cx)
+    }))
     .separator()
     .item(PopupMenuItem::new("New Branch…").disabled(multi).on_click({
         let model = model.clone();

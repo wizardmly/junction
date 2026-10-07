@@ -18,7 +18,7 @@ pub struct PushPreview {
     pub commits: Vec<Commit>,
 }
 
-const FORMAT: &str = "--format=\u{1e}%H\u{1f}%P\u{1f}%an\u{1f}%ae\u{1f}%at\u{1f}%s";
+pub(crate) const LOG_FORMAT: &str = "--format=\u{1e}%H\u{1f}%P\u{1f}%an\u{1f}%ae\u{1f}%at\u{1f}%s";
 
 pub fn remotes(repository: &Repository) -> Vec<String> {
     repository
@@ -54,9 +54,9 @@ pub fn push_preview(repository: &Repository) -> Result<PushPreview> {
     let new_branch = repository.run(["rev-parse", "--verify", "-q", &remote_ref]).is_err();
     let commits = if new_branch {
         // Everything not already on some remote.
-        parse_log(&repository.run(["log", FORMAT, "HEAD", "--not", "--remotes"])?)
+        parse_log(&repository.run(["log", LOG_FORMAT, "HEAD", "--not", "--remotes"])?)
     } else {
-        parse_log(&repository.run(["log", FORMAT, &format!("{remote_ref}..HEAD")])?)
+        parse_log(&repository.run(["log", LOG_FORMAT, &format!("{remote_ref}..HEAD")])?)
     };
     Ok(PushPreview { branch, remotes, remote, target, new_branch, commits })
 }

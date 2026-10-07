@@ -21,6 +21,10 @@ use crate::model::RepoModel;
 use crate::ui::workspace::Workspace;
 
 fn main() {
+    // Started by git as the interactive-rebase sequence editor.
+    if git::rebase::handle_sequence_editor() {
+        return;
+    }
     if let Some(prompt) = askpass::requested_prompt() {
         askpass::run(prompt);
         return;

@@ -109,6 +109,23 @@ impl Repository {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        self.run_full(args, input, &[])
+    }
+
+    /// Runs git with extra environment variables (e.g. a sequence editor).
+    pub fn run_with_env<I, S>(&self, args: I, env: &[(&str, &str)]) -> Result<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.run_full(args, None, env)
+    }
+
+    fn run_full<I, S>(&self, args: I, input: Option<&str>, env: &[(&str, &str)]) -> Result<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         let args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_owned()).collect();
         let started = Instant::now();
         let mut child = git_command(&self.executable)
@@ -120,6 +137,7 @@ impl Repository {
             .env("GIT_TERMINAL_PROMPT", "0")
             // Never block on an editor (rebase/cherry-pick --continue, merge commits).
             .env("GIT_EDITOR", "true")
+            .envs(env.iter().copied())
             .env("LC_ALL", "C")
             .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
