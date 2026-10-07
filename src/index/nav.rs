@@ -243,7 +243,7 @@ pub fn usages(index: &ProjectIndex, root: &Path, word: &str, lang: Option<Lang>)
         }
     }
 
-    let output = std::process::Command::new(crate::git::executable())
+    let output = crate::git::git_process()
         .args(["grep", "-n", "--column", "-w", "-I", "-F", "--untracked", "--exclude-standard", "-e", word])
         .current_dir(root)
         .output();

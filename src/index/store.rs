@@ -50,7 +50,7 @@ fn stat(path: &Path) -> Option<(u64, u64)> {
 
 /// Files git would show: tracked plus untracked, minus ignored.
 pub fn list_files(root: &Path) -> Vec<String> {
-    let output = std::process::Command::new(crate::git::executable())
+    let output = crate::git::git_process()
         .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
         .current_dir(root)
         .output();
@@ -85,7 +85,7 @@ pub fn index_file(root: &Path, rel: &str) -> Option<FileEntry> {
 
 impl ProjectIndex {
     fn cache_path(root: &Path) -> Option<PathBuf> {
-        let output = std::process::Command::new(crate::git::executable())
+        let output = crate::git::git_process()
             .args(["rev-parse", "--absolute-git-dir"])
             .current_dir(root)
             .output()

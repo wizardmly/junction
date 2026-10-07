@@ -74,6 +74,12 @@ pub fn executable_version(path: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+/// A process of the configured git that doesn't flash a console window
+/// on Windows.
+pub fn git_process() -> Command {
+    git_command(&executable())
+}
+
 /// A git process that, on Windows, doesn't flash a console window.
 fn git_command(executable: &Path) -> Command {
     #[cfg_attr(not(windows), allow(unused_mut))]

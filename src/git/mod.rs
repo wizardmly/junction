@@ -21,7 +21,7 @@ pub mod worktree;
 pub mod status;
 pub mod submodule;
 
-pub use command::{GitConsole, Repository, executable, executable_version, run_in, set_executable, set_use_credential_helper};
+pub use command::{GitConsole, Repository, executable, executable_version, git_process, run_in, set_executable, set_use_credential_helper};
 pub use graph::GraphLayout;
 pub use log::{Commit, CommitDetails, FileChangeKind, LogFilter};
 pub use refs::{RefKind, RefName, RepositoryRefs};
