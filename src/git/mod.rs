@@ -14,6 +14,7 @@ pub mod ops;
 pub mod patch;
 pub mod rebase;
 pub mod refs;
+pub mod remotes;
 pub mod status;
 
 pub use command::{GitConsole, Repository, run_in};

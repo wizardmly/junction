@@ -37,6 +37,7 @@ use crate::git::RepositoryState;
 use crate::git::merge::{self, Conflict, OperationStep};
 use crate::ui::log_view::{LogEvent, LogView};
 use crate::ui::clone_dialog;
+use crate::ui::remote_dialogs;
 use crate::ui::file_editor::{FileEditor, FileEditorEvent};
 use crate::ui::patch_dialogs;
 use crate::ui::shelf_view::{ShelfEvent, ShelfView};
@@ -686,6 +687,15 @@ impl Workspace {
                                     move |_, window, cx| dialogs::rebase(entity.read(cx).model.clone(), window, cx)
                                 }))
                                 .separator()
+                                .item(PopupMenuItem::new("Pull…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| remote_dialogs::pull(entity.read(cx).model.clone(), window, cx)
+                                }))
+                                .item(PopupMenuItem::new("Manage Remotes…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| remote_dialogs::manage_remotes(entity.read(cx).model.clone(), window, cx)
+                                }))
+                                .separator()
                                 .item(PopupMenuItem::new("Create Patch…").on_click({
                                     let entity = entity.clone();
                                     move |_, window, cx| {
@@ -953,6 +963,7 @@ impl Workspace {
             Some(("Commit…", "Ctrl+K", op(|this, window, cx| this.on_commit(&CommitChanges, window, cx)))),
             Some(("Push…", "Ctrl+Shift+K", op(|this, window, cx| dialogs::push(this.model.clone(), window, cx)))),
             Some(("Update Project…", "Ctrl+T", op(|this, window, cx| dialogs::update_project(this.model.clone(), window, cx)))),
+            Some(("Pull…", "", op(|this, window, cx| remote_dialogs::pull(this.model.clone(), window, cx)))),
             Some(("Fetch", "", op(|this, _, cx| {
                 this.model.update(cx, |m, cx| m.run_operation("Fetch", |repo| {
                     repo.run(["fetch", "--all", "--prune"])?;
@@ -968,6 +979,7 @@ impl Workspace {
             Some(("New Tag…", "", op(|this, window, cx| dialogs::new_tag(this.model.clone(), "HEAD".into(), window, cx)))),
             Some(("Merge…", "", op(|this, window, cx| dialogs::merge(this.model.clone(), window, cx)))),
             Some(("Rebase…", "", op(|this, window, cx| dialogs::rebase(this.model.clone(), window, cx)))),
+            Some(("Manage Remotes…", "", op(|this, window, cx| remote_dialogs::manage_remotes(this.model.clone(), window, cx)))),
             Some(("Reset HEAD…", "", op(|this, window, cx| dialogs::reset_to(this.model.clone(), "HEAD".into(), window, cx)))),
             None,
             Some(("Stash Changes…", "", op(|this, window, cx| dialogs::stash(this.model.clone(), window, cx)))),
