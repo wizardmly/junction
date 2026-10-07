@@ -156,7 +156,7 @@
 | 折叠未改动片段、同步滚动、上/下一处差异、跳到下一个文件 | M2 | 🟡（缺跳到下一个文件） |
 | 右侧可编辑（工作区文件）、单个 chunk 回滚 / 应用 | M3 | 🟡（chunk Rollback / Stage / Unstage；右侧直接编辑未做） |
 | 语法高亮（tree-sitter，与编辑器一致） | M2 | ⬜ |
-| 二进制 / 图片对比 | M4 | ⬜ |
+| 二进制 / 图片对比 | M4 | ✅（并排显示两侧图片（PNG/JPEG/GIF/BMP/WebP/ICO），下方显示尺寸、格式、文件大小；非图片显示大小；新增/删除提示） |
 | 冲突对话框：文件列表，Accept Yours / Accept Theirs / Merge… | M3 | ✅ |
 | 三方合并工具：左（Yours）中（Result）右（Theirs）、魔棒应用非冲突改动、逐块接受、Resolve simple conflicts | M3 | ✅ |
 | Compare with Branch… / Compare with Revision… / Compare two commits | M3 | ✅ |
@@ -198,7 +198,7 @@
 | 推送被拒时自动更新、Force push 受保护分支列表 | M3 | ✅ |
 | GPG 签名配置 | M4 | ✅（Commit Options → Configure…：列出 secret key，写入仓库 commit.gpgSign / user.signingKey） |
 | 使用 credential helper | M2 | ⬜ |
-| 定期检查新的远程提交（incoming） | M4 | ⬜ |
+| 定期检查新的远程提交（incoming） | M4 | ✅（设置 › Update branch info：每 N 分钟（默认 10）后台静默 fetch；分支弹窗、Log 分支树、标题栏分支组件显示 ↓incoming ↑outgoing） |
 | Directory mappings（多根） | M5 | ⬜ |
 | Commit 设置：非模态提交、清理提交信息、右边距、首行长度 | M3 | ✅（首行长度计数，超限变红） |
 | Log 设置：日期格式、显示/隐藏列 | M2 | ⬜ |

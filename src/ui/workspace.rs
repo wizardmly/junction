@@ -626,6 +626,14 @@ impl Workspace {
         let model = self.model.read(cx);
         let project = model.repository().map(|r| r.name()).unwrap_or_else(|| "No Project".into());
         let branch = branches_popup::branch_widget_label(model);
+        // Incoming / outgoing commits of the current branch, next to its name.
+        let track = model
+            .refs()
+            .current_branch
+            .as_ref()
+            .and_then(|name| model.refs().find(&format!("refs/heads/{name}")))
+            .map(|r| (r.behind, r.ahead))
+            .filter(|&(behind, ahead)| behind > 0 || ahead > 0);
         let busy = model.busy().map(str::to_owned);
         let entity = cx.entity();
         let popup = self.branches_popup.clone();
@@ -783,6 +791,15 @@ impl Workspace {
                                 .small()
                                 .icon(Icon::new(IconName::GitBranch).small())
                                 .label(branch)
+                                .when_some(track, |el, (behind, ahead)| {
+                                    el.child(
+                                        h_flex()
+                                            .gap_1()
+                                            .text_xs()
+                                            .when(behind > 0, |el| el.child(div().text_color(palette.link).child(format!("↓{behind}"))))
+                                            .when(ahead > 0, |el| el.child(div().text_color(palette.status_added).child(format!("↑{ahead}")))),
+                                    )
+                                })
                                 .child(Icon::new(IconName::ChevronDown).xsmall()),
                         )
                         .child(popup),

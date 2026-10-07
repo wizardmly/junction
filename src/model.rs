@@ -74,6 +74,7 @@ pub struct RepoModel {
     error: Option<String>,
     _reload_task: Option<Task<()>>,
     _details_task: Option<Task<()>>,
+    _fetch_task: Option<Task<()>>,
 }
 
 impl EventEmitter<RepoEvent> for RepoModel {}
@@ -110,7 +111,9 @@ impl RepoModel {
             error: None,
             _reload_task: None,
             _details_task: None,
+            _fetch_task: None,
         };
+        this.start_background_fetch(cx);
         if let Some(path) = path {
             this.open(path, cx);
         }
@@ -409,6 +412,42 @@ impl RepoModel {
                 }
             })
             .ok();
+        }));
+    }
+
+    /// IntelliJ's "Update branch info": a quiet `git fetch` every few minutes
+    /// so incoming commits show up as ↓N in the branches popup and the Log.
+    /// Failures (offline, credentials) stay silent, as in IntelliJ.
+    fn start_background_fetch(&mut self, cx: &mut Context<Self>) {
+        self._fetch_task = Some(cx.spawn(async move |this, cx| {
+            let mut last_fetch = std::time::Instant::now();
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_secs(30)).await;
+                let Ok(repository) = this.update(cx, |this, cx| {
+                    let minutes = crate::settings::Settings::get(cx).fetch_interval_minutes;
+                    let due = minutes > 0 && last_fetch.elapsed().as_secs() >= minutes as u64 * 60;
+                    // Never race a user-started operation.
+                    (due && this.busy.is_none()).then(|| this.repository.clone()).flatten()
+                }) else {
+                    break;
+                };
+                let Some(repository) = repository else { continue };
+                last_fetch = std::time::Instant::now();
+                let changed = cx
+                    .background_spawn(async move {
+                        let remotes = repository.run(["remote"]).unwrap_or_default();
+                        if remotes.trim().is_empty() {
+                            return false;
+                        }
+                        let before = repository.run(["for-each-ref", "refs/remotes"]).unwrap_or_default();
+                        let _ = repository.run(["fetch", "--all", "--prune", "--quiet"]);
+                        repository.run(["for-each-ref", "refs/remotes"]).unwrap_or_default() != before
+                    })
+                    .await;
+                if changed {
+                    this.update(cx, |this, cx| this.reload(cx)).ok();
+                }
+            }
         }));
     }
 

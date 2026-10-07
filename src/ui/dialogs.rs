@@ -540,9 +540,11 @@ pub fn settings(window: &mut Window, cx: &mut App) {
     let initial = Settings::get(cx).clone();
     let protected = cx.new(|cx| InputState::new(window, cx).default_value(initial.protected_branches.clone()));
     let margin = cx.new(|cx| InputState::new(window, cx).default_value(initial.commit_subject_limit.to_string()));
+    let fetch_interval = cx.new(|cx| InputState::new(window, cx).default_value(initial.fetch_interval_minutes.max(1).to_string()));
     window.open_dialog(cx, move |dialog, _, cx| {
         let palette = cx.palette().clone();
         let current = draft.borrow().clone();
+        let fetch_draft = draft.clone();
         let section = |title: &'static str| {
             div().pt_1().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).text_color(palette.text).child(title)
         };
@@ -556,7 +558,7 @@ pub fn settings(window: &mut Window, cx: &mut App) {
         let theme_draft = draft.clone();
         let update_draft = draft.clone();
         let ok_draft = draft.clone();
-        let (ok_protected, ok_margin) = (protected.clone(), margin.clone());
+        let (ok_protected, ok_margin, ok_fetch) = (protected.clone(), margin.clone(), fetch_interval.clone());
         dialog
             .title("Settings")
             .w(px(520.))
@@ -607,6 +609,20 @@ pub fn settings(window: &mut Window, cx: &mut App) {
                             .child("Protected branches:")
                             .child(div().flex_1().child(Input::new(&protected).small())),
                     )
+                    .child(
+                        gpui_kit::component::h_flex()
+                            .gap_2()
+                            .text_sm()
+                            .child(Checkbox::new("settings-fetch").label("Update branch info: fetch every").checked(current.fetch_interval_minutes > 0).on_change(
+                                move |v, window, _| {
+                                    // The minutes come from the input on OK; 1 marks "on".
+                                    fetch_draft.borrow_mut().fetch_interval_minutes = *v as u32;
+                                    window.refresh();
+                                },
+                            ))
+                            .child(div().w(px(50.)).child(Input::new(&fetch_interval).small().disabled(current.fetch_interval_minutes == 0)))
+                            .child("minutes"),
+                    )
                     .child(check(
                         "settings-crlf",
                         "Warn if CRLF line separators are about to be committed",
@@ -634,6 +650,9 @@ pub fn settings(window: &mut Window, cx: &mut App) {
                 next.protected_branches = ok_protected.read(cx).value().trim().to_owned();
                 if let Ok(limit) = ok_margin.read(cx).value().trim().parse::<usize>() {
                     next.commit_subject_limit = limit.clamp(20, 200);
+                }
+                if next.fetch_interval_minutes > 0 {
+                    next.fetch_interval_minutes = ok_fetch.read(cx).value().trim().parse::<u32>().unwrap_or(10).clamp(1, 1440);
                 }
                 if next.dark != Settings::get(cx).dark {
                     crate::theme::apply(next.dark, cx);

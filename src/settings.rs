@@ -33,6 +33,9 @@ pub struct Settings {
     pub sign_off: bool,
     pub run_hooks: bool,
     pub cleanup_message: bool,
+    /// "Update branch info": fetch every N minutes so the branches popup and
+    /// the Log show incoming commits; 0 turns it off.
+    pub fetch_interval_minutes: u32,
 }
 
 impl Default for Settings {
@@ -49,6 +52,7 @@ impl Default for Settings {
             sign_off: false,
             run_hooks: true,
             cleanup_message: false,
+            fetch_interval_minutes: 10,
         }
     }
 }
@@ -160,6 +164,11 @@ impl Settings {
                 "sign_off" => settings.sign_off = flag,
                 "run_hooks" => settings.run_hooks = flag,
                 "cleanup_message" => settings.cleanup_message = flag,
+                "fetch_interval_minutes" => {
+                    if let Ok(n) = value.parse() {
+                        settings.fetch_interval_minutes = n;
+                    }
+                }
                 "commit_subject_limit" => {
                     if let Ok(n) = value.parse() {
                         settings.commit_subject_limit = n;
@@ -174,7 +183,7 @@ impl Settings {
     pub fn serialize(&self) -> String {
         format!(
             "theme={}\nstaging_area={}\nupdate_method={}\nauto_update_on_push_rejected={}\nwarn_crlf={}\ncommit_subject_limit={}\n\
-             warn_detached_head={}\nprotected_branches={}\nsign_off={}\nrun_hooks={}\ncleanup_message={}\n",
+             warn_detached_head={}\nprotected_branches={}\nsign_off={}\nrun_hooks={}\ncleanup_message={}\nfetch_interval_minutes={}\n",
             if self.dark { "dark" } else { "light" },
             self.staging_area,
             match self.update_method {
@@ -189,6 +198,7 @@ impl Settings {
             self.sign_off,
             self.run_hooks,
             self.cleanup_message,
+            self.fetch_interval_minutes,
         )
     }
 
