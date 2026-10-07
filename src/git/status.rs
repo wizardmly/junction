@@ -371,3 +371,12 @@ pub fn append_ignore(file: &std::path::Path, paths: &[String]) -> Result<()> {
     std::fs::write(file, text)?;
     Ok(())
 }
+
+/// Ignored files for the Commit window's "Ignored Files" node; ignored
+/// folders are listed once (`target/`), not file by file.
+pub fn ignored(repository: &Repository) -> Vec<String> {
+    repository
+        .run(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])
+        .map(|out| out.split('\0').filter(|p| !p.is_empty()).map(|p| p.trim_end_matches('/').to_owned()).collect())
+        .unwrap_or_default()
+}

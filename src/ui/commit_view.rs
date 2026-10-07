@@ -81,6 +81,7 @@ const UNVERSIONED_SCOPE: &str = "u:";
 const STAGED_SCOPE: &str = "s:";
 const UNSTAGED_SCOPE: &str = "w:";
 const CONFLICTS_SCOPE: &str = "m:";
+const IGNORED_SCOPE: &str = "i:";
 
 pub struct CommitView {
     model: Entity<RepoModel>,
@@ -88,6 +89,8 @@ pub struct CommitView {
     message: Entity<TextareaState>,
     groups: Vec<Group>,
     staging: bool,
+    /// Expand All / Collapse All: how the next rebuild lays out the tree.
+    expand_all: bool,
     included: HashSet<String>,
     /// Every path we have seen, so new changes start included and
     /// unchecked ones stay unchecked across refreshes.
@@ -160,6 +163,7 @@ impl CommitView {
             message,
             groups: Vec::new(),
             staging: false,
+            expand_all: true,
             included: HashSet::new(),
             known: HashSet::new(),
             kinds: HashMap::new(),
@@ -257,7 +261,13 @@ impl CommitView {
         if !conflicts_group.files.is_empty() {
             groups.insert(0, conflicts_group);
         }
+        if Settings::get(cx).commit_show_ignored {
+            let ignored = self.model.read(cx).repository().map(crate::git::status::ignored).unwrap_or_default();
+            groups.push(Group::new("grp:ignored", IGNORED_SCOPE, "Ignored Files", ignored.into_iter().map(|p| (p, StatusKind::Unversioned)).collect()));
+        }
         self.groups = groups;
+        let by_directory = Settings::get(cx).commit_group_by_directory;
+        let expand = self.expand_all;
         let items: Vec<TreeItem> = self
             .groups
             .iter()
@@ -265,9 +275,15 @@ impl CommitView {
             .enumerate()
             .filter(|(_, group)| !group.files.is_empty() || group.changelist.is_some() || group.id == "grp:staged")
             .map(|(_, group)| {
+                let paths = group.files.iter().map(|(p, _)| p.clone());
                 TreeItem::new(group.id.clone(), group.label.clone())
-                    .expanded(true)
-                    .children(common::file_tree(group.files.iter().map(|(p, _)| p.clone()), &group.scope))
+                    // Ignored Files starts collapsed, as it can be long.
+                    .expanded(expand && group.id != "grp:ignored")
+                    .children(if by_directory {
+                        common::file_tree_with(paths, &group.scope, expand)
+                    } else {
+                        common::flat_file_list(paths, &group.scope)
+                    })
             })
             .collect();
         self.counts.clear();
@@ -787,6 +803,7 @@ impl Render for CommitView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let staging = self.staging;
+        let by_directory = Settings::get(cx).commit_group_by_directory;
         let included = self.included.clone();
         let counts = self.counts.clone();
         let entity = cx.entity();
@@ -849,6 +866,47 @@ impl Render for CommitView {
                         tool_button("commit-shelve", IconName::Layers, "Shelve Changes…")
                             .on_click(cx.listener(|this, _, window, cx| this.shelve(window, cx))),
                     )
+                    .child(
+                        tool_button("commit-stash", IconName::Archive, "Stash Changes…")
+                            .on_click(cx.listener(|this, _, window, cx| crate::ui::dialogs::stash(this.model.clone(), window, cx))),
+                    )
+                    .child(
+                        tool_button("commit-update", IconName::ArrowDownToLine, "Update Project…  Ctrl+T")
+                            .on_click(cx.listener(|this, _, window, cx| crate::ui::dialogs::update_project(this.model.clone(), window, cx))),
+                    )
+                    .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
+                    .child(
+                        Button::new("commit-view-options")
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(IconName::Eye))
+                            .tooltip("View Options")
+                            .dropdown_menu({
+                                let entity = cx.entity();
+                                let (by_dir, show_ignored) = (by_directory, Settings::get(cx).commit_show_ignored);
+                                move |menu, _, _| {
+                                    let (e1, e2) = (entity.clone(), entity.clone());
+                                    menu.label("Group By")
+                                        .item(PopupMenuItem::new("Directory").checked(by_dir).on_click(move |_, _, cx| {
+                                            Settings::update(cx, |s| s.commit_group_by_directory = !by_dir);
+                                            e1.update(cx, |this, cx| this.rebuild(cx));
+                                        }))
+                                        .separator()
+                                        .item(PopupMenuItem::new("Show Ignored Files").checked(show_ignored).on_click(move |_, _, cx| {
+                                            Settings::update(cx, |s| s.commit_show_ignored = !show_ignored);
+                                            e2.update(cx, |this, cx| this.rebuild(cx));
+                                        }))
+                                }
+                            }),
+                    )
+                    .child(tool_button("commit-expand", IconName::ChevronsUpDown, "Expand All").on_click(cx.listener(|this, _, _, cx| {
+                        this.expand_all = true;
+                        this.rebuild(cx);
+                    })))
+                    .child(tool_button("commit-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(|this, _, _, cx| {
+                        this.expand_all = false;
+                        this.rebuild(cx);
+                    })))
                     .when(staging, |el| {
                         el.child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
                             .child(
@@ -900,7 +958,13 @@ impl Render for CommitView {
                                 } else {
                                     Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black())
                                 })
-                                .when(!staging && !id.starts_with(CONFLICTS_SCOPE) && id.as_ref() != "grp:conflicts", |el| {
+                                .when(
+                                    !staging
+                                        && !id.starts_with(CONFLICTS_SCOPE)
+                                        && id.as_ref() != "grp:conflicts"
+                                        && !id.starts_with(IGNORED_SCOPE)
+                                        && id.as_ref() != "grp:ignored",
+                                    |el| {
                                     el.child(
                                         Checkbox::new(SharedString::from(format!("check-{id}")))
                                             .checked(checked)
@@ -909,7 +973,8 @@ impl Render for CommitView {
                                                 toggle_entity.update(cx, |this, cx| this.toggle(&id, *value, cx));
                                             }),
                                     )
-                                })
+                                    },
+                                )
                                 .when(!is_group, |el| {
                                     el.child(
                                         Icon::new(match &file {
@@ -926,6 +991,9 @@ impl Render for CommitView {
                                         .when(is_active, |el| el.font_weight(gpui_kit::FontWeight::BOLD))
                                         .child(item.label.clone()),
                                 )
+                                .when_some(file.as_ref().filter(|_| !by_directory).and_then(|f| f.rsplit_once('/')).map(|(dir, _)| dir.to_owned()), |el, dir| {
+                                    el.child(div().text_xs().text_color(palette.text_secondary).child(dir))
+                                })
                                 .when(file.as_ref().is_some_and(|f| partial_paths.contains(f)), |el| {
                                     el.child(div().text_xs().text_color(palette.text_secondary).child("partially included"))
                                 })
@@ -954,6 +1022,9 @@ impl Render for CommitView {
                                     )
                                 })
                                 .context_menu(move |menu, _, cx| {
+                                    if menu_id.starts_with(IGNORED_SCOPE) {
+                                        return menu;
+                                    }
                                     if let Some(list) = group_list.clone() {
                                         return changelist_menu(menu, &menu_entity, list);
                                     }

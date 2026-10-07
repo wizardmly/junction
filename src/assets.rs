@@ -59,7 +59,11 @@ gpui_kit::assets::icon_assets!(
         ChevronUp,
         Circle,
         FoldVertical,
-        Hash
+        Hash,
+        Settings2,
+        ChevronsDownUp,
+        ChevronsUpDown,
+        StarOff
     ]
 );
 

@@ -14,7 +14,7 @@
 | 左/右/下 工具窗口条 | Commit、Git（Log/Console）、可拖拽、可隐藏、记住尺寸 | M1 | 🟡 |
 | 状态栏 | 分支、行分隔符、后台任务进度、通知 | M1 | 🟡 |
 | VCS 操作弹窗 | `Alt+\``（macOS `Ctrl+V`）快速操作列表 | M3 | ✅（数字键快选未做） |
-| 通知气泡 | 操作结果、错误、可点击的动作（View、Undo、Show details） | M2 | 🟡（View Commit、Show Details、Update Project；无 Undo） |
+| 通知气泡 | 操作结果、错误、可点击的动作（View、Undo、Show details） | M2 | ✅（View Commit、Show Details、Update Project、提交后 Undo） |
 | 主题 | 亮/暗、跟随系统、Int UI 配色、紧凑模式 | M1 | 🟡 |
 | 快捷键 | 与 IntelliJ 默认 keymap 一致（`Ctrl+K` 提交、`Ctrl+Shift+K` 推送、`Ctrl+T` 更新…） | M2 | 🟡（Ctrl+K、Ctrl+Shift+K、Ctrl+T、Ctrl+Shift+\`、Alt+9、F7/Shift+F7） |
 
@@ -95,9 +95,9 @@
 
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 变更树：Changes（changelist）、Unversioned Files、Ignored Files | M1 | 🟡 |
+| 变更树：Changes（changelist）、Unversioned Files、Ignored Files | M1 | ✅（Changes、Unversioned Files、Ignored Files 可在 View Options 显示） |
 | 复选框选择要提交的文件；全选 | M1 | 🟡 |
-| 分组：目录 / 模块 / 仓库；展开全部/折叠全部 | M2 | ⬜ |
+| 分组：目录 / 模块 / 仓库；展开全部/折叠全部 | M2 | 🟡（按目录 / 扁平；展开全部、折叠全部；模块、仓库分组随 M5） |
 | 多个 Changelist：新建、移动文件到、设为活动 | M4 | ✅（New / Edit / Delete / Set Active；Move to Another Changelist；活动列表粗体，新改动进入活动列表） |
 | Staging 模式（启用暂存区）：Staged / Unstaged 两棵树，Stage/Unstage 按钮 | M2 | ✅ |
 | 部分提交：按 chunk / 按行勾选（diff 中的复选框） | M4 | ✅（changelist 模式：diff 中每个 chunk 有复选框，提交时用临时 index 只提交勾选的 chunk；暂存区模式按 chunk Stage / Unstage） |
@@ -106,11 +106,11 @@
 | Commit / Commit and Push… | M1 | 🟡 |
 | 提交选项：作者、Sign-off、GPG 签名、运行 Git hooks、清理 | M3 | ✅ |
 | 提交前检查：Reformat、Optimize imports、Analyze code、Check TODO（IDE 特有，客户端只保留 hooks） | — | — |
-| 工具栏：Refresh、Rollback、Show Diff、Shelve、Stash、Update | M2 | 🟡（Refresh、Rollback、Show Diff、Shelve） |
+| 工具栏：Refresh、Rollback、Show Diff、Shelve、Stash、Update | M2 | ✅ |
 | Diff 预览（选中文件即预览） | M2 | ✅ |
 | Rollback Changes 对话框（删除本地副本选项） | M2 | ✅（列出要回滚的文件（可取消勾选）、修改/新增/删除计数、“Delete local copies of added files”；暂存模式下未暂存的从 index 回滚；文件右键 Rollback…） |
 | 添加到 VCS / 添加到 .gitignore | M2 | ✅（未版本化文件右键：Add to VCS、Add to .gitignore、Add to .git/info/exclude） |
-| 提交完成通知 + Undo | M2 | 🟡（通知） |
+| 提交完成通知 + Undo | M2 | ✅（Undo：soft reset 并恢复提交信息） |
 
 ### 3.1 Shelf / Stash
 | 功能 | 阶段 | 状态 |

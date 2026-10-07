@@ -376,6 +376,23 @@ impl RepoModel {
         cx.emit(RepoEvent::OpenLogTab { title, filter });
     }
 
+    /// Undo Commit: `reset --soft` to the parent of `hash` if it is still
+    /// HEAD, putting its message back into the commit message editor.
+    pub fn undo_commit(&mut self, hash: String, cx: &mut Context<Self>) {
+        let Some(repository) = self.repository.clone() else { return };
+        let head = repository.run(["rev-parse", "HEAD"]).unwrap_or_default();
+        if head.trim() != hash {
+            self.notify("Undo Commit", "The commit is no longer HEAD; use Reset or Revert from the Log", true, cx);
+            return;
+        }
+        let message = repository.run(["log", "-1", "--format=%B", &hash]).unwrap_or_default();
+        self.prefill_commit_message(message.trim_end().to_owned(), cx);
+        self.run_operation("Undo Commit", |repo| {
+            repo.run(["reset", "--soft", "HEAD~1"])?;
+            Ok("Commit undone; changes kept".into())
+        }, cx);
+    }
+
     pub fn prefill_commit_message(&mut self, message: String, cx: &mut Context<Self>) {
         cx.emit(RepoEvent::PrefillCommitMessage(message));
     }

@@ -224,6 +224,27 @@ impl Workspace {
                         })
                         .autohide(true);
                     } else if title == "Commit" {
+                        // The balloon's "Undo" link undoes exactly this commit.
+                        let committed = this.model.read(cx).repository().and_then(|r| r.run(["rev-parse", "HEAD"]).ok()).map(|h| h.trim().to_owned());
+                        let undo_entity = entity.clone();
+                        notification = notification.content(move |_, _, cx| {
+                            let palette = cx.palette().clone();
+                            let (entity, hash) = (undo_entity.clone(), committed.clone());
+                            v_flex()
+                                .child(
+                                    div()
+                                        .id("notify-undo")
+                                        .text_sm()
+                                        .text_color(palette.link)
+                                        .cursor_pointer()
+                                        .child("Undo")
+                                        .on_click(move |_, _, cx| {
+                                            let Some(hash) = hash.clone() else { return };
+                                            entity.update(cx, |this, cx| this.model.update(cx, |m, cx| m.undo_commit(hash, cx)));
+                                        }),
+                                )
+                                .into_any_element()
+                        });
                         notification = notification.action(move |_, _, _| {
                             let entity = entity.clone();
                             Button::new("notify-view").label("View Commit").small().outline().on_click(move |_, _, cx| {

@@ -105,6 +105,19 @@ pub fn file_tree(paths: impl IntoIterator<Item = String>, scope: &str) -> Vec<Tr
     file_tree_with(paths, scope, true)
 }
 
+/// Files without directory nodes (Group By › Directory off).
+pub fn flat_file_list(paths: impl IntoIterator<Item = String>, scope: &str) -> Vec<TreeItem> {
+    let mut paths: Vec<String> = paths.into_iter().collect();
+    paths.sort_by(|a, b| a.rsplit('/').next().cmp(&b.rsplit('/').next()).then(a.cmp(b)));
+    paths
+        .into_iter()
+        .map(|path| {
+            let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+            TreeItem::new(format!("{scope}{FILE_PREFIX}{path}"), name)
+        })
+        .collect()
+}
+
 /// `file_tree` with directories collapsed (whole-repository trees).
 pub fn file_tree_with(paths: impl IntoIterator<Item = String>, scope: &str, expanded: bool) -> Vec<TreeItem> {
     let mut root = DirNode::default();

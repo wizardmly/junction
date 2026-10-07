@@ -42,6 +42,9 @@ pub struct Settings {
     pub use_credential_helper: bool,
     /// The Log's View Options, remembered between sessions.
     pub log: LogSettings,
+    /// Commit tool window › View Options.
+    pub commit_group_by_directory: bool,
+    pub commit_show_ignored: bool,
 }
 
 /// The Log's View Options: columns, references, highlighting and sorting.
@@ -118,6 +121,8 @@ impl Default for Settings {
             git_executable: String::new(),
             use_credential_helper: true,
             log: LogSettings::default(),
+            commit_group_by_directory: true,
+            commit_show_ignored: false,
         }
     }
 }
@@ -234,6 +239,8 @@ impl Settings {
                         *field = flag;
                     }
                 }
+                "commit_group_by_directory" => settings.commit_group_by_directory = flag,
+                "commit_show_ignored" => settings.commit_show_ignored = flag,
                 "git_executable" => settings.git_executable = value.to_owned(),
                 "use_credential_helper" => settings.use_credential_helper = flag,
                 "fetch_interval_minutes" => {
@@ -277,6 +284,10 @@ impl Settings {
             self.use_credential_helper,
         );
         text.push_str(&log_lines);
+        text.push_str(&format!(
+            "commit_group_by_directory={}\ncommit_show_ignored={}\n",
+            self.commit_group_by_directory, self.commit_show_ignored
+        ));
         text
     }
 
