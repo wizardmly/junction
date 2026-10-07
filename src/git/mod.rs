@@ -3,6 +3,7 @@
 
 mod command;
 pub mod blame;
+pub mod blob;
 pub mod changelists;
 pub mod diff;
 pub mod gpg;

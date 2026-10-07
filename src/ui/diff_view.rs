@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, h_flex,
@@ -17,11 +18,12 @@ use gpui_kit::assets::IconName;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, HighlightStyle, Hsla, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, ScrollStrategy, StatefulInteractiveElement as _, Styled as _,
-    StyledText, Task, UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder as _, px,
+    Image, ImageFormat, ObjectFit, StyledImage as _, StyledText, Task, img, UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder as _, px,
     uniform_list,
 };
 
 use crate::git::Repository;
+use crate::git::blob::{self, ImageInfo, ImageKind};
 use crate::git::diff::{self, DiffOptions, DiffRow, FileDiff, HighlightMode, HunkAction, IgnoreWhitespace, Revisions, RowKind, Side};
 use crate::theme::{ActivePalette as _, Palette};
 use crate::ui::common::{self, tool_button};
@@ -87,6 +89,41 @@ struct Loaded {
     new: String,
     old_title: String,
     new_title: String,
+    /// Binary files: each side's image or size, shown instead of lines.
+    binary: Option<[Option<BinaryPane>; 2]>,
+}
+
+/// One side of IntelliJ's binary / image diff.
+struct BinaryPane {
+    size: usize,
+    image: Option<(Arc<Image>, ImageInfo)>,
+}
+
+impl BinaryPane {
+    fn new(bytes: Vec<u8>) -> Self {
+        let info = blob::image_info(&bytes);
+        let size = bytes.len();
+        let image = info.map(|info| {
+            let format = match info.kind {
+                ImageKind::Png => ImageFormat::Png,
+                ImageKind::Jpeg => ImageFormat::Jpeg,
+                ImageKind::Gif => ImageFormat::Gif,
+                ImageKind::Bmp => ImageFormat::Bmp,
+                ImageKind::Webp => ImageFormat::Webp,
+                ImageKind::Ico => ImageFormat::Ico,
+            };
+            (Arc::new(Image::from_bytes(format, bytes)), info)
+        });
+        Self { size, image }
+    }
+
+    /// "64x32 PNG 1.2 kB", the image viewer's status line.
+    fn describe(&self) -> String {
+        match &self.image {
+            Some((_, info)) => format!("{}x{} {} {}", info.width, info.height, info.kind.name(), blob::format_size(self.size)),
+            None => blob::format_size(self.size),
+        }
+    }
 }
 
 /// The diff changed a file (a gutter Revert / Stage / Unstage).
@@ -144,7 +181,11 @@ impl DiffView {
                 .background_spawn(async move {
                     let (old, new, old_title, new_title) = diff::load_versions(&repository, &source.revisions())?;
                     let file_diff = diff::compute(&old, &new, options);
-                    anyhow::Ok((Loaded { old, new, old_title, new_title }, file_diff))
+                    let binary = file_diff.binary.then(|| {
+                        let sides = blob::load(&repository, &source.revisions());
+                        [sides.old.map(BinaryPane::new), sides.new.map(BinaryPane::new)]
+                    });
+                    anyhow::Ok((Loaded { old, new, old_title, new_title, binary }, file_diff))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -579,7 +620,12 @@ impl Render for DiffView {
         let titles = self.loaded.as_ref().map(|l| (l.old_title.clone(), l.new_title.clone()));
 
         let banner = match &self.loaded {
-            Some(_) if self.diff.binary => Some("Binary files differ".to_owned()),
+            Some(loaded) if self.diff.binary => Some(match &loaded.binary {
+                Some([Some(_), Some(_)]) if loaded.old == loaded.new => "Contents are identical".to_owned(),
+                Some([None, Some(_)]) => "File was added".to_owned(),
+                Some([Some(_), None]) => "File was deleted".to_owned(),
+                _ => "Binary files differ".to_owned(),
+            }),
             Some(loaded) if self.diff.changes == 0 && loaded.old != loaded.new => {
                 Some("Contents have differences only in whitespaces".to_owned())
             }
@@ -741,9 +787,59 @@ impl Render for DiffView {
                 )
             })
             .when_some(self.error.clone(), |el, error| el.child(div().p_3().text_color(palette.status_conflict).child(error)))
-            .child(list)
+            .map(|el| match self.loaded.as_ref().and_then(|l| l.binary.as_ref()) {
+                Some(panes) => el.child(render_binary(panes, &palette)),
+                None => el.child(list),
+            })
             .into_any_element()
     }
+}
+
+/// IntelliJ's binary diff: both sides next to each other, images on a
+/// checkerboard at their real size (scaled down to fit), each with its
+/// dimensions, format and file size underneath.
+fn render_binary(panes: &[Option<BinaryPane>; 2], palette: &Palette) -> impl IntoElement {
+    let pane = |pane: &Option<BinaryPane>| {
+        let body = match pane {
+            None => div().text_color(palette.text_secondary).child("No file").into_any_element(),
+            Some(BinaryPane { image: Some((image, _)), .. }) => div()
+                .p_2()
+                .max_w_full()
+                .max_h_full()
+                .flex()
+                .border_1()
+                .border_color(palette.border)
+                // The transparency backdrop.
+                .bg(gpui_kit::hsla(0., 0., 0.5, 0.15))
+                .child(img(image.clone()).object_fit(ObjectFit::ScaleDown).max_w_full().max_h_full())
+                .into_any_element(),
+            Some(_) => div().text_color(palette.text_secondary).child("Binary content").into_any_element(),
+        };
+        v_flex()
+            .flex_1()
+            .h_full()
+            .min_w_0()
+            .child(div().flex_1().min_h_0().p_4().flex().items_center().justify_center().overflow_hidden().child(body))
+            .child(
+                div()
+                    .h(px(24.))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .text_xs()
+                    .text_color(palette.text_secondary)
+                    .border_t_1()
+                    .border_color(palette.border)
+                    .children(pane.as_ref().map(BinaryPane::describe)),
+            )
+    };
+    h_flex()
+        .flex_1()
+        .w_full()
+        .min_h_0()
+        .child(pane(&panes[0]))
+        .child(div().w(px(1.)).h_full().bg(palette.border))
+        .child(pane(&panes[1]))
 }
 
 #[cfg(test)]

@@ -133,6 +133,15 @@ impl Repository {
         run_in(&self.executable, &self.root, &self.console, args, input, env)
     }
 
+    /// Runs git and returns raw stdout.
+    pub fn run_bytes<I, S>(&self, args: I) -> Result<Vec<u8>>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        run_in_bytes(&self.executable, &self.root, &self.console, args, None, &[])
+    }
+
     pub fn state(&self) -> RepositoryState {
         let exists = |name: &str| self.git_dir.join(name).exists();
         if exists("rebase-merge") || exists("rebase-apply") {
@@ -168,6 +177,15 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
+    run_in_bytes(executable, cwd, console, args, input, env).map(|stdout| String::from_utf8_lossy(&stdout).into_owned())
+}
+
+/// [`run_in`] for binary output, e.g. `cat-file blob` of an image.
+pub fn run_in_bytes<I, S>(executable: &Path, cwd: &Path, console: &GitConsole, args: I, input: Option<&str>, env: &[(&str, &str)]) -> Result<Vec<u8>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_owned()).collect();
     let started = Instant::now();
     let mut child = git_command(executable)
@@ -190,15 +208,15 @@ where
         child.stdin.take().unwrap().write_all(input.as_bytes())?;
     }
     let output = child.wait_with_output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stdout = output.stdout;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let success = output.status.success();
 
     // The console shows what a user would have typed, not our -c overrides.
     let command_line = format!("git {}", args.iter().map(|arg| quote(arg)).collect::<Vec<_>>().join(" "));
     let mut console_output = String::new();
-    if !stdout.is_empty() && stdout.len() < 4096 && !stdout.contains('\0') {
-        console_output.push_str(&stdout);
+    if !stdout.is_empty() && stdout.len() < 4096 && !stdout.contains(&0) {
+        console_output.push_str(&String::from_utf8_lossy(&stdout));
     }
     console_output.push_str(&stderr);
     console.push(ConsoleEntry {
