@@ -99,6 +99,10 @@ impl Workspace {
             }),
             cx.subscribe_in(&model, window, |_, _, event, window, cx| {
                 if let RepoEvent::Notify { title, message, error } = event {
+                    // Quiet operations (Stage / Unstage) report only failures.
+                    if message.is_empty() && !*error {
+                        return;
+                    }
                     let notification = if *error {
                         Notification::error(message.clone()).title(title.clone())
                     } else {

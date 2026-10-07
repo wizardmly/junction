@@ -171,12 +171,18 @@ impl RepoModel {
             let result = cx
                 .background_spawn(async move {
                     let refs = RepositoryRefs::load(&repository)?;
-                    let commits = git::log::load_log(&repository, &filter)?;
+                    // The first page shows quickly; the rest follows below.
+                    let commits = git::log::load_log(&repository, &filter, Some(git::log::FIRST_PAGE))?;
                     let graph = GraphLayout::build(&commits);
                     let status = WorkingTreeStatus::load(&repository)?;
-                    anyhow::Ok(Snapshot { refs, commits, graph, status, state: repository.state() })
+                    let complete = commits.len() < git::log::FIRST_PAGE;
+                    anyhow::Ok((Snapshot { refs, commits, graph, status, state: repository.state() }, complete, repository, filter))
                 })
                 .await;
+            let (result, rest) = match result {
+                Ok((snapshot, complete, repository, filter)) => (Ok(snapshot), (!complete).then_some((repository, filter))),
+                Err(error) => (Err(error), None),
+            };
             this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
@@ -204,6 +210,24 @@ impl RepoModel {
                 }
                 cx.emit(RepoEvent::Reloaded);
                 cx.notify();
+            })
+            .ok();
+
+            let Some((repository, filter)) = rest else { return };
+            let full = cx
+                .background_spawn(async move {
+                    let commits = git::log::load_log(&repository, &filter, None)?;
+                    let graph = GraphLayout::build(&commits);
+                    anyhow::Ok((commits, graph))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Ok((commits, graph)) = full {
+                    this.commits = Arc::new(commits);
+                    this.graph = Arc::new(graph);
+                    cx.emit(RepoEvent::Reloaded);
+                    cx.notify();
+                }
             })
             .ok();
         }));

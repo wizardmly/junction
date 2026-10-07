@@ -18,6 +18,12 @@ use crate::model::RepoModel;
 use crate::settings::{Settings, UpdateMethod};
 use crate::theme::ActivePalette as _;
 
+/// Focuses a dialog's input once the dialog is open (opening it moves focus).
+pub fn focus_input(input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
+    let input = input.clone();
+    window.defer(cx, move |window, cx| input.update(cx, |state, cx| state.focus(window, cx)));
+}
+
 fn footer(ok_label: &'static str) -> DialogFooter {
     DialogFooter::new()
         .gap_2()
@@ -30,6 +36,7 @@ pub fn new_branch(model: Entity<RepoModel>, start_point: String, window: &mut Wi
     let name = cx.new(|cx| InputState::new(window, cx).placeholder("Branch name"));
     let checkout = Rc::new(Cell::new(true));
     let short_start = start_point[..start_point.len().min(10)].to_owned();
+    let focus_target = name.clone();
     window.open_dialog(cx, move |dialog, _, cx| {
         let secondary = cx.palette().text_secondary;
         let checkout_value = checkout.get();
@@ -73,12 +80,14 @@ pub fn new_branch(model: Entity<RepoModel>, start_point: String, window: &mut Wi
             })
             .footer(footer("Create"))
     });
+    focus_input(&focus_target, window, cx);
 }
 
 /// Git › New Tag.
 pub fn new_tag(model: Entity<RepoModel>, target: String, window: &mut Window, cx: &mut App) {
     let name = cx.new(|cx| InputState::new(window, cx).placeholder("Tag name"));
     let message = cx.new(|cx| InputState::new(window, cx).placeholder("Message (optional, creates an annotated tag)"));
+    let focus_target = name.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         let name_for_ok = name.clone();
         let message_for_ok = message.clone();
@@ -109,6 +118,7 @@ pub fn new_tag(model: Entity<RepoModel>, target: String, window: &mut Window, cx
             })
             .footer(footer("Create Tag"))
     });
+    focus_input(&focus_target, window, cx);
 }
 
 const RESET_MODES: [(&str, &str, &str); 4] = [
@@ -437,6 +447,7 @@ pub fn stash(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
     let keep_index = Rc::new(Cell::new(false));
     let untracked = Rc::new(Cell::new(false));
     let branch = model.read(cx).refs().current_branch.clone().unwrap_or_else(|| "HEAD".into());
+    let focus_target = message.clone();
     window.open_dialog(cx, move |dialog, _, cx| {
         let secondary = cx.palette().text_secondary;
         let keep_cell = keep_index.clone();
@@ -477,11 +488,13 @@ pub fn stash(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
             })
             .footer(footer("Create Stash"))
     });
+    focus_input(&focus_target, window, cx);
 }
 
 /// Rename Branch dialog.
 pub fn rename_branch(model: Entity<RepoModel>, branch: String, window: &mut Window, cx: &mut App) {
     let name = cx.new(|cx| InputState::new(window, cx).default_value(branch.clone()));
+    let focus_target = name.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         let (name_ok, model, old) = (name.clone(), model.clone(), branch.clone());
         dialog
@@ -504,6 +517,7 @@ pub fn rename_branch(model: Entity<RepoModel>, branch: String, window: &mut Wind
             })
             .footer(footer("Rename"))
     });
+    focus_input(&focus_target, window, cx);
 }
 
 /// Settings › Version Control › Git, plus Appearance. Changes apply on OK.

@@ -39,7 +39,10 @@ pub struct LogFilter {
 const FIELD: char = '\u{1f}';
 const RECORD: char = '\u{1e}';
 
-pub fn load_log(repository: &Repository, filter: &LogFilter) -> Result<Vec<Commit>> {
+/// How many commits the Log shows before the rest is loaded in the background.
+pub const FIRST_PAGE: usize = 1000;
+
+pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize>) -> Result<Vec<Commit>> {
     let mut args: Vec<String> = vec![
         "log".into(),
         // IntelliJ's default is IntelliSort; topological order keeps branches
@@ -61,6 +64,9 @@ pub fn load_log(repository: &Repository, filter: &LogFilter) -> Result<Vec<Commi
     }
     let text = filter.text.trim();
     let hash_search = !text.is_empty() && text.len() >= 4 && text.chars().all(|c| c.is_ascii_hexdigit());
+    if let Some(limit) = limit.filter(|_| !hash_search) {
+        args.push(format!("--max-count={limit}"));
+    }
     if !text.is_empty() && !hash_search {
         args.push(format!("--grep={text}"));
         if !filter.regex {

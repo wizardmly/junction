@@ -1,11 +1,11 @@
 //! Git tool window › Log tab: branches panel, filter bar, commit table with
 //! graph, and the changes + details pane for the selected commit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use gpui_kit::component::{
-    Selectable as _,
+    Selectable as _, WindowExt as _,
     ActiveTheme as _, Icon, Sizable as _, h_flex, h_resizable,
     button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState},
@@ -32,7 +32,7 @@ use crate::ui::diff_view::DiffSource;
 use crate::ui::dialogs;
 use crate::ui::graph_paint::graph_canvas;
 
-actions!(git_log, [SelectPrevious, SelectNext, SelectFirst, SelectLast, CopyRevision]);
+actions!(git_log, [SelectPrevious, SelectNext, SelectFirst, SelectLast, CopyRevision, GoToHash]);
 
 const CONTEXT: &str = "GitLog";
 
@@ -43,6 +43,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("home", SelectFirst, Some(CONTEXT)),
         KeyBinding::new("end", SelectLast, Some(CONTEXT)),
         KeyBinding::new("secondary-c", CopyRevision, Some(CONTEXT)),
+        KeyBinding::new("secondary-f", GoToHash, Some(CONTEXT)),
     ]);
 }
 
@@ -68,6 +69,11 @@ pub struct LogView {
     show_branches: bool,
     show_details: bool,
     show_hash: bool,
+    /// Commits selected besides the model's selected (lead) commit, by
+    /// Ctrl/Cmd-click or Shift-click.
+    extra_selection: HashSet<String>,
+    /// Where a Shift-click range starts.
+    anchor: Option<usize>,
     _search_debounce: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -80,6 +86,8 @@ impl LogView {
         let subscriptions = vec![
             cx.subscribe(&model, |this, _, event, cx| match event {
                 RepoEvent::Reloaded => {
+                    let commits = this.model.read(cx).commits().clone();
+                    this.extra_selection.retain(|h| commits.iter().any(|c| &c.hash == h));
                     this.rebuild_branches(cx);
                     cx.notify();
                 }
@@ -137,6 +145,8 @@ impl LogView {
             show_branches: true,
             show_details: true,
             show_hash: false,
+            extra_selection: HashSet::new(),
+            anchor: None,
             _search_debounce: None,
             _subscriptions: subscriptions,
         };
@@ -223,7 +233,118 @@ impl LogView {
         Some(DiffSource::Commit { hash, path: path.to_owned(), old_path })
     }
 
+    /// Mouse selection: plain click selects one commit, Ctrl/Cmd-click
+    /// toggles, Shift-click selects the range from the last plain click.
+    fn click_row(&mut self, ix: usize, toggle: bool, range: bool, cx: &mut Context<Self>) {
+        let model = self.model.read(cx);
+        let commits = model.commits().clone();
+        let lead = model.selected_hash().map(str::to_owned);
+        let Some(hash) = commits.get(ix).map(|c| c.hash.clone()) else { return };
+        if range {
+            let anchor = self.anchor.or(model.selected_index()).unwrap_or(ix);
+            let (from, to) = (anchor.min(ix), anchor.max(ix));
+            self.extra_selection = commits[from..=to].iter().map(|c| c.hash.clone()).filter(|h| *h != hash).collect();
+        } else if toggle {
+            if lead.as_deref() == Some(hash.as_str()) {
+                // Deselect the lead: another selected commit takes its place.
+                if let Some(next) = self.extra_selection.iter().next().cloned() {
+                    self.extra_selection.remove(&next);
+                    self.model.update(cx, |m, cx| m.select_hash(Some(next), cx));
+                }
+                cx.notify();
+                return;
+            }
+            if !self.extra_selection.remove(&hash) {
+                self.extra_selection.extend(lead);
+            } else {
+                cx.notify();
+                return;
+            }
+            self.anchor = Some(ix);
+        } else {
+            self.extra_selection.clear();
+            self.anchor = Some(ix);
+        }
+        self.model.update(cx, |m, cx| m.select_index(ix, cx));
+        cx.notify();
+    }
+
+    /// Selected commits, oldest first (the order cherry-pick applies them).
+    fn selected_commits(&self, cx: &App) -> Vec<Commit> {
+        let model = self.model.read(cx);
+        let lead = model.selected_hash();
+        model
+            .commits()
+            .iter()
+            .rev()
+            .filter(|c| Some(c.hash.as_str()) == lead || self.extra_selection.contains(&c.hash))
+            .cloned()
+            .collect()
+    }
+
+    /// Go to Hash / Branch / Tag (`Ctrl+F` in the Log).
+    fn on_go_to_hash(&mut self, _: &GoToHash, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Hash, branch or tag"));
+        let entity = cx.entity();
+        window.open_dialog(cx, {
+            let input = input.clone();
+            move |dialog, _, _| {
+            let input_ok = input.clone();
+            let entity = entity.clone();
+            dialog
+                .title("Go to Hash/Branch/Tag")
+                .w(px(420.))
+                .child(Input::new(&input))
+                .footer(
+                    gpui_kit::component::dialog::DialogFooter::new()
+                        .gap_2()
+                        .child(gpui_kit::component::dialog::DialogClose::new().child(Button::new("goto-cancel").label("Cancel").outline()))
+                        .child(gpui_kit::component::dialog::DialogAction::new().child(Button::new("goto-ok").label("Go").primary())),
+                )
+                .on_ok(move |_, window, cx| {
+                    let text = input_ok.read(cx).value().trim().to_owned();
+                    entity.update(cx, |this, cx| this.go_to(&text, window, cx));
+                    true
+                })
+            }
+        });
+        dialogs::focus_input(&input, window, cx);
+    }
+
+    fn go_to(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if text.is_empty() {
+            return;
+        }
+        let model = self.model.read(cx);
+        let needle = text.to_ascii_lowercase();
+        let target = model
+            .refs()
+            .find(text)
+            .map(|r| r.target.clone())
+            .or_else(|| {
+                model.refs().refs.iter().find(|r| r.name == text).map(|r| r.target.clone())
+            })
+            .or_else(|| model.commits().iter().find(|c| c.hash.starts_with(&needle)).map(|c| c.hash.clone()))
+            .or_else(|| {
+                model.repository().and_then(|repo| {
+                    repo.run(["rev-parse", "--verify", "-q", &format!("{text}^{{commit}}")]).ok().map(|h| h.trim().to_owned())
+                })
+            });
+        match target.filter(|hash| model.commits().iter().any(|c| &c.hash == hash)) {
+            Some(hash) => {
+                self.extra_selection.clear();
+                self.model.update(cx, |m, cx| m.select_hash(Some(hash), cx));
+                window.focus(&self.focus, cx);
+            }
+            None => window.push_notification(
+                gpui_kit::component::notification::Notification::warning(format!("'{text}' is not in the log")),
+                cx,
+            ),
+        }
+    }
+
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        self.extra_selection.clear();
         let model = self.model.read(cx);
         let count = model.commits().len();
         if count == 0 {
@@ -252,8 +373,10 @@ impl LogView {
     }
 
     fn on_copy_revision(&mut self, _: &CopyRevision, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(hash) = self.model.read(cx).selected_hash() {
-            cx.write_to_clipboard(ClipboardItem::new_string(hash.to_owned()));
+        // Newest first, like IntelliJ's Copy Revision Number with several selected.
+        let hashes: Vec<String> = self.selected_commits(cx).into_iter().rev().map(|c| c.hash).collect();
+        if !hashes.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(hashes.join("\n")));
         }
     }
 
@@ -444,6 +567,7 @@ impl LogView {
         let graph = model.graph().clone();
         let refs = model.refs().clone();
         let selected = model.selected_index();
+        let extra = self.extra_selection.clone();
         let me = model.user_email().map(str::to_owned);
         let show_hash = self.show_hash;
         let entity = cx.entity();
@@ -452,7 +576,7 @@ impl LogView {
             .filter_map(|ix| {
                 let commit = commits.get(ix)?;
                 let row = graph.rows.get(ix).cloned().unwrap_or_default();
-                let is_selected = selected == Some(ix);
+                let is_selected = selected == Some(ix) || extra.contains(&commit.hash);
                 let is_head = refs.head_commit.as_deref() == Some(commit.hash.as_str());
                 let mine = me.as_deref().is_some_and(|me| me == commit.author_email);
                 let labels = refs.for_commit(&commit.hash);
@@ -497,10 +621,11 @@ impl LogView {
                         .when(!is_selected, |el| el.hover(|s| s.bg(palette.hover)))
                         .on_mouse_down(gpui_kit::MouseButton::Left, {
                             let entity = entity.clone();
-                            move |_, window, cx| {
+                            move |event: &gpui_kit::MouseDownEvent, window, cx| {
+                                let (toggle, range) = (event.modifiers.secondary(), event.modifiers.shift);
                                 entity.update(cx, |this, cx| {
                                     window.focus(&this.focus, cx);
-                                    this.model.update(cx, |model, cx| model.select_index(ix, cx));
+                                    this.click_row(ix, toggle, range, cx);
                                 });
                             }
                         })
@@ -510,7 +635,13 @@ impl LogView {
                             move |_, _, cx| {
                                 let hash = hash.clone();
                                 entity.update(cx, |this, cx| {
-                                    this.model.update(cx, |model, cx| model.select_hash(Some(hash), cx));
+                                    // Right-clicking inside a multi-selection keeps it.
+                                    let in_selection = this.extra_selection.contains(&hash)
+                                        || this.model.read(cx).selected_hash() == Some(hash.as_str());
+                                    if !in_selection {
+                                        this.extra_selection.clear();
+                                        this.model.update(cx, |model, cx| model.select_hash(Some(hash), cx));
+                                    }
                                 });
                             }
                         })
@@ -688,6 +819,9 @@ impl LogView {
                     .text_sm()
                     .text_color(palette.text_secondary)
                     .child(match &details {
+                        _ if !self.extra_selection.is_empty() => {
+                            format!("{} commits selected · changes of the selected commit", self.extra_selection.len() + 1)
+                        }
                         Some(d) => format!("{} {} changed", d.changes.len(), if d.changes.len() == 1 { "file" } else { "files" }),
                         None => "No commit selected".into(),
                     }),
@@ -874,6 +1008,8 @@ fn commit_menu(
     cx: &mut App,
 ) -> gpui_kit::component::menu::PopupMenu {
     let model = entity.read(cx).model.clone();
+    let selected = entity.read(cx).selected_commits(cx);
+    let multi = selected.len() > 1;
     let head = model.read(cx).refs().head_commit.clone();
     let is_head = head.as_deref() == Some(commit.hash.as_str());
     let hash = commit.hash.clone();
@@ -893,50 +1029,51 @@ fn commit_menu(
         }
     };
 
-    menu.item(PopupMenuItem::new("Copy Revision Number").on_click({
-        let hash = hash.clone();
-        move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(hash.clone()))
+    let picks: Vec<String> = selected.iter().map(|c| c.hash.clone()).collect();
+    let copy_text = picks.iter().rev().cloned().collect::<Vec<_>>().join("\n");
+    let mut cherry_pick = vec!["cherry-pick".to_owned()];
+    cherry_pick.extend(picks.iter().cloned());
+    let picked = if multi { format!("Cherry-picked {} commits", picks.len()) } else { format!("Cherry-picked {short}") };
+    menu.item(PopupMenuItem::new("Copy Revision Number").on_click(move |_, _, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()))
     }))
     .separator()
-    .item(PopupMenuItem::new("Cherry-Pick").disabled(is_head).on_click(op(
-        "Cherry-Pick",
-        vec!["cherry-pick".into(), hash.clone()],
-        format!("Cherry-picked {short}"),
-    )))
-    .item(PopupMenuItem::new("Checkout Revision").on_click(op(
+    .item(PopupMenuItem::new("Cherry-Pick").disabled(is_head && !multi).on_click(op("Cherry-Pick", cherry_pick, picked)))
+    .item(PopupMenuItem::new("Checkout Revision").disabled(multi).on_click(op(
         "Checkout",
         vec!["checkout".into(), "--detach".into(), hash.clone()],
         format!("Checked out {short}"),
     )))
     .separator()
-    .item(PopupMenuItem::new("Reset Current Branch to Here…").on_click({
+    .item(PopupMenuItem::new("Reset Current Branch to Here…").disabled(multi).on_click({
         let model = model.clone();
         let hash = hash.clone();
         move |_, window, cx| dialogs::reset_to(model.clone(), hash.clone(), window, cx)
     }))
-    .item(PopupMenuItem::new("Revert Commit").on_click(op(
+    .item(PopupMenuItem::new(if multi { "Revert Commits" } else { "Revert Commit" }).on_click(op(
         "Revert",
-        vec!["revert".into(), "--no-edit".into(), hash.clone()],
-        format!("Reverted {short}"),
+        // Newest first, so each revert applies cleanly on top of the last.
+        ["revert".to_owned(), "--no-edit".to_owned()].into_iter().chain(picks.iter().rev().cloned()).collect(),
+        if multi { format!("Reverted {} commits", picks.len()) } else { format!("Reverted {short}") },
     )))
-    .item(PopupMenuItem::new("Undo Commit…").disabled(!is_head).on_click(op(
+    .item(PopupMenuItem::new("Undo Commit…").disabled(!is_head || multi).on_click(op(
         "Undo Commit",
         vec!["reset".into(), "--soft".into(), "HEAD~1".into()],
         "Commit undone; changes kept in the working tree".into(),
     )))
     .separator()
-    .item(PopupMenuItem::new("New Branch…").on_click({
+    .item(PopupMenuItem::new("New Branch…").disabled(multi).on_click({
         let model = model.clone();
         let hash = hash.clone();
         move |_, window, cx| dialogs::new_branch(model.clone(), hash.clone(), window, cx)
     }))
-    .item(PopupMenuItem::new("New Tag…").on_click({
+    .item(PopupMenuItem::new("New Tag…").disabled(multi).on_click({
         let model = model.clone();
         let hash = hash.clone();
         move |_, window, cx| dialogs::new_tag(model.clone(), hash.clone(), window, cx)
     }))
     .separator()
-    .item(PopupMenuItem::new("Go to Parent Commit").disabled(commit.parents.is_empty()).on_click({
+    .item(PopupMenuItem::new("Go to Parent Commit").disabled(commit.parents.is_empty() || multi).on_click({
         let model = model.clone();
         let parent = commit.parents.first().cloned();
         move |_, _, cx| model.update(cx, |m, cx| m.select_hash(parent.clone(), cx))
@@ -968,6 +1105,7 @@ impl Render for LogView {
                     .on_action(cx.listener(Self::on_select_first))
                     .on_action(cx.listener(Self::on_select_last))
                     .on_action(cx.listener(Self::on_copy_revision))
+                    .on_action(cx.listener(Self::on_go_to_hash))
                     .flex_1()
                     .min_h_0()
                     .relative()
