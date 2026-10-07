@@ -231,6 +231,10 @@ pub enum Revisions {
     Commit { hash: String, path: String, old_path: Option<String> },
     /// The working tree file against HEAD.
     WorkingTree { path: String },
+    /// Staged changes: HEAD against the index.
+    Staged { path: String },
+    /// Unstaged changes: the index against the working tree.
+    Unstaged { path: String },
 }
 
 /// Loads both versions; a missing side (added/deleted file) is empty.
@@ -246,13 +250,19 @@ pub fn load_versions(repository: &Repository, revisions: &Revisions) -> Result<(
             (old, new, format!("{}^", short), short.to_owned())
         }
         Revisions::WorkingTree { path } => {
-            let old = show(format!("HEAD:{path}"));
-            let new = std::fs::read(repository.root().join(path))
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                .unwrap_or_default();
-            (old, new, "HEAD".into(), "Your version".into())
+            (show(format!("HEAD:{path}")), read_work_tree(repository, path), "HEAD".into(), "Your version".into())
+        }
+        Revisions::Staged { path } => {
+            (show(format!("HEAD:{path}")), show(format!(":{path}")), "HEAD".into(), "Staged".into())
+        }
+        Revisions::Unstaged { path } => {
+            (show(format!(":{path}")), read_work_tree(repository, path), "Staged".into(), "Your version".into())
         }
     })
+}
+
+fn read_work_tree(repository: &Repository, path: &str) -> String {
+    std::fs::read(repository.root().join(path)).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -101,6 +101,31 @@ pub fn push(repository: &Repository, request: &PushRequest) -> Result<String> {
     Ok(format!("Pushed {} to {}/{}", request.branch, request.remote, request.target))
 }
 
+/// Whether a push failed because the remote has commits we don't
+/// (IntelliJ's "Push Rejected" case), as opposed to auth or network errors.
+pub fn is_rejected(error: &anyhow::Error) -> bool {
+    let text = error.to_string();
+    text.contains("[rejected]") || text.contains("Updates were rejected") || text.contains("non-fast-forward")
+}
+
+/// Push, and if rejected, update the branch (merge or rebase, stashing
+/// local changes) and push once more: "Auto-update if push was rejected".
+pub fn push_with_auto_update(repository: &Repository, request: &PushRequest, rebase: bool) -> Result<String> {
+    match push(repository, request) {
+        Err(error) if is_rejected(&error) && !request.force_with_lease => {
+            repository.run([
+                "pull",
+                if rebase { "--rebase" } else { "--no-rebase" },
+                "--autostash",
+                &request.remote,
+                &request.target,
+            ])?;
+            push(repository, request).map(|message| format!("{message} (after updating from {})", request.remote))
+        }
+        result => result,
+    }
+}
+
 /// One entry of `git stash list`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stash {
@@ -208,5 +233,46 @@ mod tests {
         assert_eq!(preview.commits.len(), 1);
         assert_eq!(preview.target, "main");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejected_push_updates_and_retries() {
+        let origin = temp_repo("origin-src");
+        let bare = origin.with_extension("git");
+        let _ = std::fs::remove_dir_all(&bare);
+        git(&origin, &["clone", "-q", "--bare", ".", bare.to_str().unwrap()]);
+        let clone = |name: &str| {
+            let dir = std::env::temp_dir().join(format!("gitglass-test-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            git(&origin, &["clone", "-q", bare.to_str().unwrap(), dir.to_str().unwrap()]);
+            git(&dir, &["config", "user.name", "T"]);
+            git(&dir, &["config", "user.email", "t@x"]);
+            dir
+        };
+        let (mine, theirs) = (clone("mine"), clone("theirs"));
+        std::fs::write(theirs.join("b.txt"), "b\n").unwrap();
+        git(&theirs, &["add", "."]);
+        git(&theirs, &["commit", "-qm", "theirs"]);
+        git(&theirs, &["push", "-q"]);
+        std::fs::write(mine.join("c.txt"), "c\n").unwrap();
+        git(&mine, &["add", "."]);
+        git(&mine, &["commit", "-qm", "mine"]);
+
+        let repo = Repository::discover(&mine, GitConsole::default()).unwrap();
+        let request = PushRequest {
+            remote: "origin".into(),
+            branch: "main".into(),
+            target: "main".into(),
+            force_with_lease: false,
+            set_upstream: false,
+            tags: PushTags::None,
+            run_hooks: true,
+        };
+        assert!(is_rejected(&push(&repo, &request).unwrap_err()));
+        push_with_auto_update(&repo, &request, true).unwrap();
+        assert!(mine.join("b.txt").exists());
+        for dir in [origin, bare, mine, theirs] {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }

@@ -38,12 +38,18 @@ pub enum DiffSource {
     Commit { hash: String, path: String, old_path: Option<String> },
     /// A file in the working tree against HEAD.
     WorkingTree { path: String, unversioned: bool },
+    /// Staging-area mode: staged (HEAD vs index) or unstaged (index vs work tree).
+    Staged { path: String },
+    Unstaged { path: String },
 }
 
 impl DiffSource {
     fn path(&self) -> &str {
         match self {
-            DiffSource::Commit { path, .. } | DiffSource::WorkingTree { path, .. } => path,
+            DiffSource::Commit { path, .. }
+            | DiffSource::WorkingTree { path, .. }
+            | DiffSource::Staged { path }
+            | DiffSource::Unstaged { path } => path,
         }
     }
 
@@ -51,6 +57,8 @@ impl DiffSource {
         match self.clone() {
             DiffSource::Commit { hash, path, old_path } => Revisions::Commit { hash, path, old_path },
             DiffSource::WorkingTree { path, .. } => Revisions::WorkingTree { path },
+            DiffSource::Staged { path } => Revisions::Staged { path },
+            DiffSource::Unstaged { path } => Revisions::Unstaged { path },
         }
     }
 }

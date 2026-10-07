@@ -42,6 +42,57 @@ impl WorkingTreeStatus {
     pub fn unversioned(&self) -> impl Iterator<Item = &StatusEntry> {
         self.entries.iter().filter(|e| e.kind == StatusKind::Unversioned)
     }
+
+    /// Changes in the index (the Staged tree in staging-area mode).
+    pub fn staged(&self) -> Vec<(String, StatusKind)> {
+        self.entries
+            .iter()
+            .filter(|e| e.kind != StatusKind::Unversioned && e.index != ' ')
+            .map(|e| (e.path.clone(), if e.kind == StatusKind::Conflicted { e.kind } else { kind_of(e.index) }))
+            .filter(|(_, kind)| *kind != StatusKind::Conflicted)
+            .collect()
+    }
+
+    /// Work tree changes not yet staged, conflicts included (the Unstaged tree).
+    pub fn unstaged(&self) -> Vec<(String, StatusKind)> {
+        self.entries
+            .iter()
+            .filter(|e| e.kind != StatusKind::Unversioned)
+            .filter(|e| e.kind == StatusKind::Conflicted || e.work_tree != ' ')
+            .map(|e| (e.path.clone(), if e.kind == StatusKind::Conflicted { e.kind } else { kind_of(e.work_tree) }))
+            .collect()
+    }
+}
+
+fn kind_of(code: char) -> StatusKind {
+    match code {
+        'A' => StatusKind::Added,
+        'D' => StatusKind::Deleted,
+        'R' | 'C' => StatusKind::Renamed,
+        'U' => StatusKind::Conflicted,
+        _ => StatusKind::Modified,
+    }
+}
+
+/// `git add` for the given paths (Stage in staging-area mode).
+pub fn stage(repository: &Repository, paths: &[String]) -> Result<()> {
+    let mut args = vec!["add".to_owned(), "-A".to_owned(), "--".to_owned()];
+    args.extend(paths.iter().cloned());
+    repository.run(&args)?;
+    Ok(())
+}
+
+/// Removes the given paths from the index, keeping work tree changes.
+pub fn unstage(repository: &Repository, paths: &[String]) -> Result<()> {
+    let has_head = repository.run(["rev-parse", "--verify", "-q", "HEAD"]).is_ok();
+    let mut args: Vec<String> = if has_head {
+        vec!["restore".into(), "--staged".into(), "--".into()]
+    } else {
+        vec!["rm".into(), "--cached".into(), "-r".into(), "-q".into(), "--".into()]
+    };
+    args.extend(paths.iter().cloned());
+    repository.run(&args)?;
+    Ok(())
 }
 
 pub(crate) fn parse_porcelain(output: &str) -> Vec<StatusEntry> {
@@ -81,6 +132,8 @@ pub struct CommitRequest {
     /// Unversioned files among `paths` are added first.
     pub unversioned: Vec<String>,
     pub sign_off: bool,
+    /// Staging-area mode: commit what is in the index, ignoring `paths`.
+    pub staged_only: bool,
 }
 
 pub fn commit(repository: &Repository, request: &CommitRequest) -> Result<String> {
@@ -96,7 +149,9 @@ pub fn commit(repository: &Repository, request: &CommitRequest) -> Result<String
     if request.sign_off {
         args.push("--signoff".into());
     }
-    if request.paths.is_empty() {
+    if request.staged_only {
+        // Commit the index as it is.
+    } else if request.paths.is_empty() {
         // Amending only the message.
         args.push("--only".into());
     } else {
@@ -140,6 +195,18 @@ pub fn create_branch(repository: &Repository, name: &str, start_point: &str, che
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_staged_and_unstaged() {
+        let status = WorkingTreeStatus { entries: parse_porcelain("MM a.rs\0A  b.rs\0 D c.rs\0UU d.rs\0?? e.rs\0") };
+        let staged: Vec<_> = status.staged().into_iter().map(|(p, _)| p).collect();
+        let unstaged: Vec<_> = status.unstaged().into_iter().map(|(p, k)| (p, k)).collect();
+        assert_eq!(staged, vec!["a.rs", "b.rs"]);
+        assert_eq!(
+            unstaged,
+            vec![("a.rs".into(), StatusKind::Modified), ("c.rs".into(), StatusKind::Deleted), ("d.rs".into(), StatusKind::Conflicted)]
+        );
+    }
 
     #[test]
     fn parses_porcelain_v1() {

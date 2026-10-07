@@ -4,6 +4,7 @@
 mod assets;
 mod git;
 mod model;
+mod settings;
 mod theme;
 mod ui;
 
@@ -22,7 +23,9 @@ fn main() {
         gpui_kit::init(cx);
         ui::log_view::init(cx);
         ui::workspace::init(cx);
-        let dark = std::env::var("GITGLASS_THEME").map(|t| t != "light").unwrap_or(true);
+        let settings = settings::Settings::load();
+        let dark = std::env::var("GITGLASS_THEME").map(|t| t != "light").unwrap_or(settings.dark);
+        cx.set_global(settings);
         theme::apply(dark, cx);
 
         let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);

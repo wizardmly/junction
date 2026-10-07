@@ -27,11 +27,12 @@ use crate::ui::branches_popup::{self, BranchesPopup};
 use crate::ui::commit_view::{CommitEvent, CommitView};
 use crate::ui::common::tool_button;
 use crate::ui::diff_view::{DiffView, NextDifference, PreviousDifference};
+use crate::settings::Settings;
 use crate::ui::dialogs;
 use crate::ui::log_view::{LogEvent, LogView};
 use crate::ui::stash_view::{StashEvent, StashView};
 
-actions!(workspace, [CommitChanges, PushChanges, UpdateProject, ShowBranches, ToggleGitWindow, Refresh, StashChanges]);
+actions!(workspace, [CommitChanges, PushChanges, UpdateProject, ShowBranches, ToggleGitWindow, Refresh, StashChanges, OpenSettings]);
 
 const CONTEXT: &str = "Workspace";
 
@@ -44,6 +45,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-shift-`", ShowBranches, Some(CONTEXT)),
         KeyBinding::new("alt-9", ToggleGitWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-y", Refresh, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-s", OpenSettings, Some(CONTEXT)),
         KeyBinding::new("f7", NextDifference, Some(CONTEXT)),
         KeyBinding::new("shift-f7", PreviousDifference, Some(CONTEXT)),
     ]);
@@ -186,13 +188,16 @@ impl Workspace {
                                 menu.item(PopupMenuItem::new("Open Repository…").on_click(move |_, window, cx| {
                                     open.update(cx, |this, cx| this.open_repository(window, cx))
                                 }))
+                                .item(PopupMenuItem::new("Settings…").on_click(|_, window, cx| dialogs::settings(window, cx)))
                                 .separator()
                                 .item(PopupMenuItem::new("Light Theme").checked(!dark).on_click(|_, window, cx| {
                                     theme::apply(false, cx);
+                                    Settings::update(cx, |s| s.dark = false);
                                     window.refresh();
                                 }))
                                 .item(PopupMenuItem::new("Dark Theme").checked(dark).on_click(|_, window, cx| {
                                     theme::apply(true, cx);
+                                    Settings::update(cx, |s| s.dark = true);
                                     window.refresh();
                                 }))
                                 .separator()
@@ -524,6 +529,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_git))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_stash))
+            .on_action(cx.listener(|_, _: &OpenSettings, window, cx| dialogs::settings(window, cx)))
             .on_action(cx.listener(|this, _: &NextDifference, _, cx| this.diff.update(cx, |d, cx| d.next_difference(cx))))
             .on_action(cx.listener(|this, _: &PreviousDifference, _, cx| this.diff.update(cx, |d, cx| d.previous_difference(cx))))
             .size_full()

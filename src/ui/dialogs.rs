@@ -15,6 +15,7 @@ use gpui_kit::component::{
 use gpui_kit::{App, AppContext as _, Entity, ParentElement as _, Styled as _, Window, div, px};
 
 use crate::model::RepoModel;
+use crate::settings::{Settings, UpdateMethod};
 use crate::theme::ActivePalette as _;
 
 fn footer(ok_label: &'static str) -> DialogFooter {
@@ -347,8 +348,22 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                     set_upstream: !has_upstream,
                     run_hooks: o.hooks,
                 };
+                let settings = Settings::get(cx);
+                let auto_update = settings.auto_update_on_push_rejected;
+                let rebase = settings.update_method == UpdateMethod::Rebase;
                 ok_model.update(cx, |model, cx| {
-                    model.run_operation(if request.force_with_lease { "Force Push" } else { "Push" }, move |repo| ops::push(repo, &request), cx)
+                    model.run_operation(if request.force_with_lease { "Force Push" } else { "Push" }, move |repo| {
+                        if auto_update {
+                            return ops::push_with_auto_update(repo, &request, rebase);
+                        }
+                        ops::push(repo, &request).map_err(|error| {
+                            if ops::is_rejected(&error) {
+                                anyhow::anyhow!("Push rejected: the remote has commits that aren't in {}. Update Project (Ctrl+T), then push again.", request.branch)
+                            } else {
+                                error
+                            }
+                        })
+                    }, cx)
                 });
                 true
             })
@@ -358,7 +373,8 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
 
 /// Update Project (`Ctrl+T`): fetch, then merge or rebase, stashing local changes.
 pub fn update_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
-    let rebase = Rc::new(Cell::new(false));
+    // IntelliJ remembers the last update method chosen here.
+    let rebase = Rc::new(Cell::new(Settings::get(cx).update_method == UpdateMethod::Rebase));
     window.open_dialog(cx, move |dialog, _, cx| {
         let secondary = cx.palette().text_secondary;
         let selected = if rebase.get() { 1 } else { 0 };
@@ -385,6 +401,10 @@ pub fn update_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut Ap
             )
             .on_ok(move |_, _, cx| {
                 let rebase = rebase_ok.get();
+                let method = if rebase { UpdateMethod::Rebase } else { UpdateMethod::Merge };
+                if Settings::get(cx).update_method != method {
+                    Settings::update(cx, |s| s.update_method = method);
+                }
                 model.update(cx, |model, cx| {
                     model.run_operation("Update Project", move |repo| {
                         repo.run(["fetch", "--all", "--prune"])?;
@@ -483,5 +503,80 @@ pub fn rename_branch(model: Entity<RepoModel>, branch: String, window: &mut Wind
                 true
             })
             .footer(footer("Rename"))
+    });
+}
+
+/// Settings › Version Control › Git, plus Appearance. Changes apply on OK.
+pub fn settings(window: &mut Window, cx: &mut App) {
+    let draft = Rc::new(std::cell::RefCell::new(Settings::get(cx).clone()));
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let palette = cx.palette().clone();
+        let current = draft.borrow().clone();
+        let section = |title: &'static str| {
+            div().pt_1().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).text_color(palette.text).child(title)
+        };
+        let check = |id: &'static str, label: &'static str, value: bool, set: fn(&mut Settings, bool)| {
+            let draft = draft.clone();
+            Checkbox::new(id).label(label).checked(value).on_change(move |v, window, _| {
+                set(&mut draft.borrow_mut(), *v);
+                window.refresh();
+            })
+        };
+        let theme_draft = draft.clone();
+        let update_draft = draft.clone();
+        let ok_draft = draft.clone();
+        dialog
+            .title("Settings")
+            .w(px(520.))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(section("Appearance"))
+                    .child(
+                        RadioGroup::horizontal("settings-theme")
+                            .children(["Dark", "Light"])
+                            .selected_index(Some(if current.dark { 0 } else { 1 }))
+                            .on_change(move |ix, window, _| {
+                                theme_draft.borrow_mut().dark = *ix == 0;
+                                window.refresh();
+                            }),
+                    )
+                    .child(section("Version Control › Git"))
+                    .child(check("settings-staging", "Enable staging area", current.staging_area, |s, v| s.staging_area = v))
+                    .child(
+                        div()
+                            .pl_6()
+                            .text_xs()
+                            .text_color(palette.text_secondary)
+                            .child("Show Staged and Unstaged changes in the Commit tool window instead of changelists"),
+                    )
+                    .child(check(
+                        "settings-auto-update",
+                        "Auto-update if push of the current branch was rejected",
+                        current.auto_update_on_push_rejected,
+                        |s, v| s.auto_update_on_push_rejected = v,
+                    ))
+                    .child(div().pt_1().text_sm().text_color(palette.text_secondary).child("Update method"))
+                    .child(
+                        RadioGroup::horizontal("settings-update-method")
+                            .children(["Merge", "Rebase"])
+                            .selected_index(Some(if current.update_method == UpdateMethod::Rebase { 1 } else { 0 }))
+                            .on_change(move |ix, window, _| {
+                                update_draft.borrow_mut().update_method =
+                                    if *ix == 1 { UpdateMethod::Rebase } else { UpdateMethod::Merge };
+                                window.refresh();
+                            }),
+                    ),
+            )
+            .footer(footer("OK"))
+            .on_ok(move |_, window, cx| {
+                let next = ok_draft.borrow().clone();
+                if next.dark != Settings::get(cx).dark {
+                    crate::theme::apply(next.dark, cx);
+                }
+                Settings::update(cx, |s| *s = next);
+                window.refresh();
+                true
+            })
     });
 }
