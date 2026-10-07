@@ -13,7 +13,7 @@ use gpui_kit::component::{
     radio::RadioGroup,
     v_flex,
 };
-use gpui_kit::{App, AppContext as _, Entity, ParentElement as _, SharedString, Styled as _, Window, div, px};
+use gpui_kit::{App, AppContext as _, Entity, IntoElement as _, ParentElement as _, SharedString, Styled as _, Window, div, px};
 
 use crate::model::RepoModel;
 use crate::settings::{Settings, UpdateMethod};
@@ -1051,4 +1051,64 @@ pub fn compare_file_with(model: Entity<RepoModel>, path: String, open_diff: Open
             .footer(footer("Compare"))
     });
     focus_input(&focus_target, window, cx);
+}
+
+/// Configure GPG Key: sign commits with one of the user's secret keys (repository config).
+pub fn configure_gpg(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
+    let Some(repository) = model.read(cx).repository().cloned() else { return };
+    let keys = crate::git::gpg::secret_keys(&repository);
+    let (sign, current) = crate::git::gpg::signing_config(&repository);
+    let sign = Rc::new(Cell::new(sign));
+    let selected = Rc::new(Cell::new(keys.iter().position(|k| current.ends_with(&k.id) || k.id.ends_with(&current)).unwrap_or(0)));
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let secondary = cx.palette().text_secondary;
+        let (sign_set, sign_ok) = (sign.clone(), sign.clone());
+        let (key_set, key_ok) = (selected.clone(), selected.clone());
+        let keys_ok = keys.clone();
+        let repository = repository.clone();
+        let model = model.clone();
+        let body = v_flex()
+            .gap_3()
+            .child(Checkbox::new("gpg-sign").label("Sign commits with GPG key").checked(sign.get()).on_change(
+                move |value, window, _| {
+                    sign_set.set(*value);
+                    window.refresh();
+                },
+            ))
+            .child(if keys.is_empty() {
+                div()
+                    .text_sm()
+                    .text_color(secondary)
+                    .child("No secret keys found. Install GnuPG and create a key with gpg --full-generate-key.")
+                    .into_any_element()
+            } else {
+                RadioGroup::new("gpg-key")
+                    .children(keys.iter().map(|k| format!("{}  {}", k.id, k.user)))
+                    .selected_index(Some(selected.get()))
+                    .disabled(!sign.get())
+                    .on_change(move |ix, window, _| {
+                        key_set.set(*ix);
+                        window.refresh();
+                    })
+                    .into_any_element()
+            })
+            .child(div().text_xs().text_color(secondary).child("Saved to this repository's config (commit.gpgSign, user.signingKey)."));
+        dialog
+            .title("Configure GPG Key")
+            .w(px(520.))
+            .child(body)
+            .on_ok(move |_, _, cx| {
+                let sign = sign_ok.get();
+                let key = keys_ok.get(key_ok.get()).map(|k| k.id.clone()).unwrap_or_default();
+                let result = crate::git::gpg::set_signing_config(&repository, sign, &key);
+                let (title, message, error) = match result {
+                    Ok(()) if sign => ("GPG", format!("Commits will be signed with {key}"), false),
+                    Ok(()) => ("GPG", "Commit signing turned off".to_owned(), false),
+                    Err(error) => ("GPG", error.to_string(), true),
+                };
+                model.update(cx, |m, cx| m.notify(title, message, error, cx));
+                true
+            })
+            .footer(footer("OK"))
+    });
 }

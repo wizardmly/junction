@@ -66,7 +66,7 @@
 | 详情：完整提交信息、hash、作者/提交者、日期、包含该提交的分支、标签 | M1 | 🟡 |
 | 双击文件打开 Diff；Diff 预览（编辑器区或面板内） | M2 | ✅ |
 | 多选提交时显示合并后的变更 | M3 | ✅ |
-| 签名信息（GPG 验证） | M4 | ⬜ |
+| 签名信息（GPG 验证） | M4 | ✅（详情面板显示 Verified / Bad / 无法校验 与签名者、key；GPG 与 SSH 签名） |
 | 提交信息里的 issue 链接 / URL 可点击 | M3 | ✅（URL 和提交哈希） |
 
 ### 2.5 提交右键菜单
@@ -196,7 +196,7 @@
 | 提交前警告 CRLF、警告 detached HEAD、大文件 | M3 | ✅（CRLF 支持 Fix and Commit） |
 | Update method（Merge / Rebase）、Clean working tree using（Stash / Shelve） | M2 | 🟡（Merge / Rebase，用 Stash） |
 | 推送被拒时自动更新、Force push 受保护分支列表 | M3 | ✅ |
-| GPG 签名配置 | M4 | ⬜ |
+| GPG 签名配置 | M4 | ✅（Commit Options → Configure…：列出 secret key，写入仓库 commit.gpgSign / user.signingKey） |
 | 使用 credential helper | M2 | ⬜ |
 | 定期检查新的远程提交（incoming） | M4 | ⬜ |
 | Directory mappings（多根） | M5 | ⬜ |

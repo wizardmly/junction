@@ -1094,6 +1094,23 @@ impl LogView {
                                 common::format_full_date(d.committer_time)
                             )))
                         })
+                        .when_some(d.signature.clone(), |el, signature| {
+                            let color = if signature.is_good() {
+                                palette.status_added
+                            } else if signature.status == 'B' {
+                                palette.status_conflict
+                            } else {
+                                palette.text_secondary
+                            };
+                            el.child(
+                                h_flex()
+                                    .gap_1()
+                                    .text_color(color)
+                                    .items_start()
+                                    .child(Icon::new(if signature.is_good() { IconName::CircleCheck } else { IconName::TriangleAlert }).small())
+                                    .child(div().flex_1().min_w_0().whitespace_normal().child(signature.describe())),
+                            )
+                        })
                         .when(!labels.is_empty(), |el| {
                             let mut row = h_flex().gap_1().flex_wrap();
                             for label in labels {

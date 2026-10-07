@@ -5,6 +5,7 @@ mod command;
 pub mod blame;
 pub mod changelists;
 pub mod diff;
+pub mod gpg;
 pub mod graph;
 pub mod log;
 pub mod merge;

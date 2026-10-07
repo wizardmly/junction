@@ -167,6 +167,55 @@ pub struct CommitDetails {
     pub changes: Vec<FileChange>,
     /// Branches that contain this commit ("In 3 branches: main, …").
     pub containing_branches: Vec<String>,
+    pub signature: Option<Signature>,
+}
+
+/// A commit's GPG / SSH signature, as git verifies it (`%G?`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Signature {
+    pub status: char,
+    pub signer: String,
+    pub key: String,
+}
+
+impl Signature {
+    pub fn is_good(&self) -> bool {
+        self.status == 'G' || self.status == 'U'
+    }
+
+    /// The details pane wording, after IntelliJ's signature tooltip.
+    pub fn describe(&self) -> String {
+        let who = if self.signer.is_empty() { String::new() } else { format!(" by {}", self.signer) };
+        let key = if self.key.is_empty() { String::new() } else { format!(" (key {})", self.key) };
+        match self.status {
+            'G' => format!("Verified signature{who}{key}"),
+            'U' => format!("Good signature with unknown validity{who}{key}"),
+            'X' => format!("Good signature, expired{who}{key}"),
+            'Y' => format!("Good signature made by an expired key{who}{key}"),
+            'R' => format!("Good signature made by a revoked key{who}{key}"),
+            'B' => format!("Bad signature{who}{key}"),
+            'E' => format!("Signed, but the signature can't be checked (missing key, gpg, or SSH allowed signers){key}"),
+            _ => "Signed".to_owned(),
+        }
+    }
+}
+
+/// Verifies a commit's signature, only when it has one (verification runs gpg).
+fn load_signature(repository: &Repository, hash: &str) -> Option<Signature> {
+    let raw = repository.run(["cat-file", "commit", hash]).ok()?;
+    let header = raw.split("\n\n").next().unwrap_or_default();
+    if !header.lines().any(|l| l.starts_with("gpgsig")) {
+        return None;
+    }
+    let output = repository
+        .run(["-c", "log.showSignature=false", "show", "-s", &format!("--format=%G?{FIELD}%GS{FIELD}%GK"), hash])
+        .unwrap_or_else(|_| "E".into());
+    let mut fields = output.trim_end().splitn(3, FIELD);
+    Some(Signature {
+        status: fields.next().and_then(|f| f.chars().next()).unwrap_or('E'),
+        signer: fields.next().unwrap_or_default().to_owned(),
+        key: fields.next().unwrap_or_default().to_owned(),
+    })
 }
 
 pub fn load_details(repository: &Repository, hash: &str) -> Result<CommitDetails> {
@@ -202,6 +251,7 @@ pub fn load_details(repository: &Repository, hash: &str) -> Result<CommitDetails
         .run(["branch", "-a", "--contains", &hash, "--format=%(refname:short)"])
         .map(|output| output.lines().filter(|l| !l.ends_with("/HEAD")).map(str::to_owned).collect())
         .unwrap_or_default();
+    let signature = load_signature(repository, &hash);
 
     Ok(CommitDetails {
         hash,
@@ -213,6 +263,7 @@ pub fn load_details(repository: &Repository, hash: &str) -> Result<CommitDetails
         committer_time,
         message,
         changes,
+        signature,
         containing_branches,
     })
 }

@@ -674,12 +674,23 @@ impl CommitView {
                     .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Git"))
                     .child(h_flex().gap_2().child(div().w(px(50.)).child("Author:")).child(div().flex_1().child(Input::new(&author).small())))
                     .child(toggle("opt-signoff", "Sign-off commit", settings.sign_off, |s, v| s.sign_off = v))
-                    .child(Checkbox::new("opt-gpg").label("Sign commit with GPG").checked(gpg).on_change(move |v, _, cx| {
-                        gpg_entity.update(cx, |this, cx| {
-                            this.gpg_sign = Some(*v);
-                            cx.notify();
-                        })
-                    }))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(Checkbox::new("opt-gpg").label("Sign commit with GPG").checked(gpg).on_change({
+                                let gpg_entity = gpg_entity.clone();
+                                move |v, _, cx| {
+                                    gpg_entity.update(cx, |this, cx| {
+                                        this.gpg_sign = Some(*v);
+                                        cx.notify();
+                                    })
+                                }
+                            }))
+                            .child(Button::new("opt-gpg-configure").link().small().label("Configure…").on_click(move |_, window, cx| {
+                                let model = gpg_entity.read(cx).model.clone();
+                                crate::ui::dialogs::configure_gpg(model, window, cx)
+                            })),
+                    )
                     .child(div().pt_1().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Before Commit"))
                     .child(toggle("opt-hooks", "Run Git hooks", settings.run_hooks, |s, v| s.run_hooks = v))
                     .child(toggle("opt-cleanup", "Clean up commit message", settings.cleanup_message, |s, v| s.cleanup_message = v))
