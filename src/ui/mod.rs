@@ -5,6 +5,7 @@ pub mod commit_view;
 pub mod common;
 pub mod dialogs;
 pub mod diff_view;
+pub mod file_editor;
 pub mod graph_paint;
 pub mod log_view;
 pub mod merge_view;

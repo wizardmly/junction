@@ -34,6 +34,8 @@ pub struct LogFilter {
     /// Passed to `--since`, e.g. `7 days ago`.
     pub since: Option<String>,
     pub paths: Vec<String>,
+    /// History for Selection: 1-based inclusive line range in the single path (`git log -L`).
+    pub lines: Option<(usize, usize)>,
 }
 
 const FIELD: char = '\u{1f}';
@@ -85,12 +87,21 @@ pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize
     {
         return Ok(Vec::new());
     }
-    // File History follows renames, like IntelliJ's.
-    if filter.paths.len() == 1 {
-        args.push("--follow".into());
+    match (filter.lines, filter.paths.as_slice()) {
+        // History for Selection: commits that touched these lines (`-s` drops the patches).
+        (Some((start, end)), [path]) => {
+            args.push(format!("-L{start},{end}:{path}"));
+            args.push("-s".into());
+        }
+        _ => {
+            // File History follows renames, like IntelliJ's.
+            if filter.paths.len() == 1 {
+                args.push("--follow".into());
+            }
+            args.push("--".into());
+            args.extend(filter.paths.iter().cloned());
+        }
     }
-    args.push("--".into());
-    args.extend(filter.paths.iter().cloned());
 
     let output = repository.run(&args)?;
     let mut commits = parse_log(&output);

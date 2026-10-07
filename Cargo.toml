@@ -6,7 +6,14 @@ license = "Apache-2.0"
 description = "A desktop Git client that recreates the Android Studio / IntelliJ Git experience"
 
 [dependencies]
-gpui-kit = "0.7.1"
+# Syntax highlighting for the file editor: the languages GitGlass indexes,
+# plus common config / build file formats.
+gpui-kit = { version = "0.7.1", features = [
+    "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-go", "tree-sitter-java", "tree-sitter-kotlin",
+    "tree-sitter-rust", "tree-sitter-swift", "tree-sitter-javascript", "tree-sitter-typescript",
+    "tree-sitter-python", "tree-sitter-toml", "tree-sitter-yaml", "tree-sitter-markdown",
+    "tree-sitter-bash", "tree-sitter-cmake", "tree-sitter-make", "tree-sitter-proto",
+] }
 anyhow = "1"
 chrono = "0.4"
 similar = { version = "2", features = ["inline", "unicode"] }

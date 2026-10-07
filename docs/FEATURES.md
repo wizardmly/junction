@@ -167,10 +167,10 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | 文件历史（Show History）：Log 标签页 + 该文件的 diff | M3 | ✅（Log 按路径过滤，--follow 跟踪重命名，History Up to Here） |
-| 选中内容历史（Show History for Selection） | M4 | ⬜ |
+| 选中内容历史（Show History for Selection） | M4 | ✅（文件编辑器右键 Git → Show History for Selection，用 git log -L 打开 Log 标签页） |
 | Annotate with Git Blame：作者/日期/提交，按时间着色，悬浮详情，Annotate previous revision | M3 | ✅ |
-| 文件查看器里的变更标记（gutter）：点击看 diff、回滚 hunk、stage hunk | M4 | ⬜ |
-| Show Current Revision | M4 | ⬜ |
+| 文件查看器里的变更标记（gutter）：点击看 diff、回滚 hunk、stage hunk | M4 | 🟡（文件编辑器：tree-sitter 语法高亮，新增/修改行底色、删除处细框；Rollback Lines（Ctrl+Alt+Z）；点击标记弹出 diff 未做） |
+| Show Current Revision | M4 | ✅（编辑器右键 Git → Show Current Revision，在 Log 中选中最后修改该文件的提交） |
 
 ## 8. 交互式 Rebase 及其他操作
 

@@ -37,6 +37,7 @@ use crate::git::RepositoryState;
 use crate::git::merge::{self, Conflict, OperationStep};
 use crate::ui::log_view::{LogEvent, LogView};
 use crate::ui::clone_dialog;
+use crate::ui::file_editor::{FileEditor, FileEditorEvent};
 use crate::ui::patch_dialogs;
 use crate::ui::shelf_view::{ShelfEvent, ShelfView};
 use crate::ui::stash_view::{StashEvent, StashView};
@@ -100,6 +101,7 @@ pub struct Workspace {
     active_log: usize,
     /// Annotate with Git Blame, shown instead of the diff until closed.
     blame: Option<(Entity<BlameView>, Subscription)>,
+    editor: Option<(Entity<FileEditor>, Subscription)>,
     show_commit: bool,
     show_git: bool,
     left_tab: LeftTab,
@@ -118,9 +120,10 @@ impl Workspace {
         let shelf = cx.new(|cx| ShelfView::new(model.clone(), cx));
         let branches_popup = cx.new(|cx| BranchesPopup::new(model.clone(), window, cx));
         let subscriptions = vec![
-            cx.subscribe(&log, |this, _, event: &LogEvent, cx| match event {
+            cx.subscribe_in(&log, window, |this, _, event: &LogEvent, window, cx| match event {
                 LogEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
                 LogEvent::Annotate { path, revision } => this.annotate(path.clone(), revision.clone(), cx),
+                LogEvent::OpenFile { path, revision } => this.open_file(path.clone(), revision.clone(), window, cx),
             }),
             cx.subscribe_in(&commit, window, |this, _, event: &CommitEvent, window, cx| match event {
                 CommitEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
@@ -128,6 +131,7 @@ impl Workspace {
                 CommitEvent::OpenMerge(conflict) => this.open_merge(conflict.clone(), window, cx),
                 CommitEvent::Annotate(path) => this.annotate(path.clone(), None, cx),
                 CommitEvent::ShowHistory(path) => this.show_history(path.clone(), cx),
+                CommitEvent::EditSource(path) => this.open_file(path.clone(), None, window, cx),
                 CommitEvent::CompareWith(path) => {
                     let workspace = cx.entity();
                     dialogs::compare_file_with(
@@ -259,6 +263,7 @@ impl Workspace {
             log_tabs: vec![LogTab { title: "Log".into(), filter: Default::default(), selected: None }],
             active_log: 0,
             blame: None,
+            editor: None,
             show_commit: true,
             show_git: true,
             left_tab: LeftTab::Commit,
@@ -390,6 +395,49 @@ impl Workspace {
     }
 
     /// Show History: a Log tab for one file, following renames, as IntelliJ's "History: name" tab.
+    /// Opens a file in the editor: the working tree (`None`) or a revision, read-only.
+    pub fn open_file(&mut self, path: String, revision: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        self.blame = None;
+        let same = self.editor.as_ref().is_some_and(|(e, _)| e.read(cx).path() == path && e.read(cx).revision() == revision.as_deref());
+        if !same {
+            let view = cx.new(|cx| FileEditor::new(repository, path, revision, window, cx));
+            let subscription = cx.subscribe(&view, Self::on_file_editor_event);
+            self.editor = Some((view, subscription));
+        }
+        cx.notify();
+    }
+
+    fn on_file_editor_event(&mut self, _: Entity<FileEditor>, event: &FileEditorEvent, cx: &mut Context<Self>) {
+        match event {
+            FileEditorEvent::Closed => {
+                self.editor = None;
+                cx.notify();
+            }
+            FileEditorEvent::Annotate { path, revision } => self.annotate(path.clone(), revision.clone(), cx),
+            FileEditorEvent::ShowHistory(path) => self.show_history(path.clone(), cx),
+            FileEditorEvent::SelectionHistory { path, lines } => {
+                let name = path.rsplit('/').next().unwrap_or(path);
+                let filter = crate::git::LogFilter {
+                    paths: vec![path.clone()],
+                    lines: Some(*lines),
+                    branches: vec!["HEAD".into()],
+                    ..Default::default()
+                };
+                self.open_log_tab(format!("History for Selection: {name}:{}-{}", lines.0, lines.1), filter, cx);
+            }
+            FileEditorEvent::SelectCommit(hash) => {
+                self.show_git = true;
+                self.bottom_tab = BottomTab::Log;
+                let hash = hash.clone();
+                self.model.update(cx, |m, cx| m.select_hash(Some(hash), cx));
+                cx.notify();
+            }
+            FileEditorEvent::OpenDiff(source) => self.open_diff(source.clone(), cx),
+            FileEditorEvent::FilesChanged => self.model.update(cx, |m, cx| m.reload(cx)),
+        }
+    }
+
     pub fn show_history(&mut self, path: String, cx: &mut Context<Self>) {
         let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
         let filter = crate::git::LogFilter { paths: vec![path], ..Default::default() };
@@ -451,8 +499,9 @@ impl Workspace {
 
     fn open_diff(&mut self, source: crate::ui::diff_view::DiffSource, cx: &mut Context<Self>) {
         let Some(repository) = self.model.read(cx).repository().cloned() else { return };
-        // A diff replaces the annotations in the editor area.
+        // A diff replaces the annotations and the file editor in the editor area.
         self.blame = None;
+        self.editor = None;
         self.diff.update(cx, |diff, cx| diff.show(repository, source, cx));
     }
 
@@ -1097,11 +1146,12 @@ impl Render for Workspace {
                 el.child(div().p_2().text_sm().text_color(palette.status_conflict).child(error))
             })
             .children(self.render_operation_banner(cx))
-            .child(div().flex_1().min_h_0().map(|el| match (&self.merge, &self.blame) {
+            .child(div().flex_1().min_h_0().map(|el| match (&self.merge, &self.blame, &self.editor) {
                 _ if !has_repo => el.child(self.render_welcome(cx)),
-                (Some((merge, _)), _) => el.child(merge.clone()),
-                (None, Some((blame, _))) => el.child(blame.clone()),
-                (None, None) => el.child(self.diff.clone()),
+                (Some((merge, _)), _, _) => el.child(merge.clone()),
+                (None, Some((blame, _)), _) => el.child(blame.clone()),
+                (None, None, Some((editor, _))) => el.child(editor.clone()),
+                (None, None, None) => el.child(self.diff.clone()),
             }));
 
         let top = h_resizable("top-split")

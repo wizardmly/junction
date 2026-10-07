@@ -52,6 +52,8 @@ pub enum LogEvent {
     OpenDiff(DiffSource),
     /// Annotate with Git Blame: a path at a revision (`None` for the work tree).
     Annotate { path: String, revision: Option<String> },
+    /// Open Repository Version (`revision`) or Edit Source (`None`).
+    OpenFile { path: String, revision: Option<String> },
 }
 
 impl EventEmitter<LogEvent> for LogView {}
@@ -1227,6 +1229,20 @@ fn change_menu(
                 cx.emit(LogEvent::OpenDiff(source));
             }
         })
+    }))
+    .item(PopupMenuItem::new("Open Repository Version").on_click({
+        let (entity, path, hash) = (entity.clone(), path.clone(), hash.clone());
+        move |_, _, cx| {
+            let (path, revision) = (path.clone(), Some(hash.clone()));
+            entity.update(cx, |_, cx| cx.emit(LogEvent::OpenFile { path, revision }))
+        }
+    }))
+    .item(PopupMenuItem::new("Edit Source").on_click({
+        let (entity, path) = (entity.clone(), path.clone());
+        move |_, _, cx| {
+            let path = path.clone();
+            entity.update(cx, |_, cx| cx.emit(LogEvent::OpenFile { path, revision: None }))
+        }
     }))
     .item(PopupMenuItem::new("Annotate Revision").on_click(move |_, _, cx| {
         e_blame.update(cx, |_, cx| cx.emit(LogEvent::Annotate { path: p_blame.clone(), revision: Some(h_blame.clone()) }))

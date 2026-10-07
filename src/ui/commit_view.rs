@@ -46,6 +46,8 @@ pub enum CommitEvent {
     ShowHistory(String),
     /// "Compare with Branch / Revision…" for a file.
     CompareWith(String),
+    /// Edit Source (F4).
+    EditSource(String),
 }
 
 impl EventEmitter<CommitEvent> for CommitView {}
@@ -962,7 +964,12 @@ impl Render for CommitView {
                                     let (e_diff, e_blame, e_history) = (menu_entity.clone(), menu_entity.clone(), menu_entity.clone());
                                     let (i_diff, p_blame, p_history, p_copy) = (menu_id.clone(), path.clone(), path.clone(), path.clone());
                                     let (e_compare, p_compare) = (menu_entity.clone(), path.clone());
-                                    menu.item(PopupMenuItem::new("Show Diff").on_click(move |_, _, cx| {
+                                    let (e_edit, p_edit) = (menu_entity.clone(), path.clone());
+                                    let deleted = menu_kind == Some(StatusKind::Deleted);
+                                    menu.item(PopupMenuItem::new("Edit Source").disabled(deleted).on_click(move |_, _, cx| {
+                                        e_edit.update(cx, |_, cx| cx.emit(CommitEvent::EditSource(p_edit.clone())))
+                                    }))
+                                    .item(PopupMenuItem::new("Show Diff").on_click(move |_, _, cx| {
                                         e_diff.update(cx, |this, cx| {
                                             if let Some(source) = this.diff_source(&i_diff) {
                                                 cx.emit(CommitEvent::OpenDiff(source));
