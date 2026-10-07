@@ -10,6 +10,7 @@ use gpui_kit::component::{
     Icon, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
+    menu::{ContextMenuExt as _, PopupMenuItem},
     input::{InputEvent, Textarea, TextareaState},
     list::ListItem,
     tree::{TreeItem, TreeState, tree},
@@ -36,6 +37,9 @@ pub enum CommitEvent {
     OpenPush,
     /// A conflicted file was picked: open the merge tool.
     OpenMerge(Conflict),
+    /// Annotate the work tree version of a file.
+    Annotate(String),
+    ShowHistory(String),
 }
 
 impl EventEmitter<CommitEvent> for CommitView {}
@@ -427,6 +431,8 @@ impl Render for CommitView {
                         let stage_entity = entity.clone();
                         let stage_id = id.clone();
                         let n = counts.get(&id).copied().unwrap_or(0);
+                        let (menu_entity, menu_id, menu_file) = (entity.clone(), id.clone(), file.clone());
+                        let menu_kind = kinds.get(id.as_ref()).copied();
                         ListItem::new(ix).py_0().px_1().h(px(ROW_HEIGHT)).child(
                             h_flex()
                                 .w_full()
@@ -485,6 +491,30 @@ impl Render for CommitView {
                                             }),
                                         ),
                                     )
+                                })
+                                .context_menu(move |menu, _, _| {
+                                    let Some(path) = menu_file.clone() else { return menu };
+                                    let tracked = menu_kind != Some(StatusKind::Unversioned) && menu_kind != Some(StatusKind::Added);
+                                    let (e_diff, e_blame, e_history) = (menu_entity.clone(), menu_entity.clone(), menu_entity.clone());
+                                    let (i_diff, p_blame, p_history, p_copy) = (menu_id.clone(), path.clone(), path.clone(), path.clone());
+                                    menu.item(PopupMenuItem::new("Show Diff").on_click(move |_, _, cx| {
+                                        e_diff.update(cx, |this, cx| {
+                                            if let Some(source) = this.diff_source(&i_diff) {
+                                                cx.emit(CommitEvent::OpenDiff(source));
+                                            }
+                                        })
+                                    }))
+                                    .separator()
+                                    .item(PopupMenuItem::new("Annotate with Git Blame").disabled(!tracked).on_click(move |_, _, cx| {
+                                        e_blame.update(cx, |_, cx| cx.emit(CommitEvent::Annotate(p_blame.clone())))
+                                    }))
+                                    .item(PopupMenuItem::new("Show History").disabled(!tracked).on_click(move |_, _, cx| {
+                                        e_history.update(cx, |_, cx| cx.emit(CommitEvent::ShowHistory(p_history.clone())))
+                                    }))
+                                    .separator()
+                                    .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {
+                                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(p_copy.clone()))
+                                    }))
                                 }),
                         )
                     })

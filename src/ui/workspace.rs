@@ -25,6 +25,7 @@ use gpui_kit::{
 
 use crate::model::{RepoEvent, RepoModel};
 use crate::theme::{self, ActivePalette as _};
+use crate::ui::blame_view::{BlameEvent, BlameView};
 use crate::ui::branches_popup::{self, BranchesPopup};
 use crate::ui::commit_view::{CommitEvent, CommitView};
 use crate::ui::common::tool_button;
@@ -77,6 +78,8 @@ pub struct Workspace {
     branches_popup: Entity<BranchesPopup>,
     /// The merge tool, shown in the editor area instead of the diff.
     merge: Option<(Entity<MergeView>, Subscription)>,
+    /// Annotate with Git Blame, shown instead of the diff until closed.
+    blame: Option<(Entity<BlameView>, Subscription)>,
     show_commit: bool,
     show_git: bool,
     left_tab: LeftTab,
@@ -96,11 +99,14 @@ impl Workspace {
         let subscriptions = vec![
             cx.subscribe(&log, |this, _, event: &LogEvent, cx| match event {
                 LogEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
+                LogEvent::Annotate { path, revision } => this.annotate(path.clone(), revision.clone(), cx),
             }),
             cx.subscribe_in(&commit, window, |this, _, event: &CommitEvent, window, cx| match event {
                 CommitEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
                 CommitEvent::OpenPush => dialogs::push(this.model.clone(), window, cx),
                 CommitEvent::OpenMerge(conflict) => this.open_merge(conflict.clone(), window, cx),
+                CommitEvent::Annotate(path) => this.annotate(path.clone(), None, cx),
+                CommitEvent::ShowHistory(path) => this.show_history(path.clone(), cx),
             }),
             cx.subscribe(&stash, |this, _, event: &StashEvent, cx| match event {
                 StashEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
@@ -168,6 +174,7 @@ impl Workspace {
             diff,
             branches_popup,
             merge: None,
+            blame: None,
             show_commit: true,
             show_git: true,
             left_tab: LeftTab::Commit,
@@ -273,8 +280,45 @@ impl Workspace {
         )
     }
 
+    pub fn annotate(&mut self, path: String, revision: Option<String>, cx: &mut Context<Self>) {
+        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        if self.blame.as_ref().is_some_and(|(b, _)| b.read(cx).path() == path && b.read(cx).revision() == revision.as_deref()) {
+            return;
+        }
+        let model = self.model.clone();
+        let view = cx.new(|cx| BlameView::new(model, repository, path, revision, cx));
+        let subscription = cx.subscribe(&view, |this, _, event: &BlameEvent, cx| match event {
+            BlameEvent::SelectCommit(hash) => {
+                this.show_git = true;
+                this.bottom_tab = BottomTab::Log;
+                let hash = hash.clone();
+                this.model.update(cx, |m, cx| m.select_hash(Some(hash), cx));
+                cx.notify();
+            }
+            BlameEvent::ShowDiff(source) => this.open_diff(source.clone(), cx),
+            BlameEvent::Closed => {
+                this.blame = None;
+                cx.notify();
+            }
+        });
+        self.blame = Some((view, subscription));
+        cx.notify();
+    }
+
+    /// Show History: the Log filtered to one file, following renames.
+    pub fn show_history(&mut self, path: String, cx: &mut Context<Self>) {
+        self.show_git = true;
+        self.bottom_tab = BottomTab::Log;
+        let mut filter = self.model.read(cx).filter().clone();
+        filter.paths = vec![path];
+        self.model.update(cx, |m, cx| m.set_filter(filter, cx));
+        cx.notify();
+    }
+
     fn open_diff(&mut self, source: crate::ui::diff_view::DiffSource, cx: &mut Context<Self>) {
         let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        // A diff replaces the annotations in the editor area.
+        self.blame = None;
         self.diff.update(cx, |diff, cx| diff.show(repository, source, cx));
     }
 
@@ -654,9 +698,10 @@ impl Render for Workspace {
                 el.child(div().p_2().text_sm().text_color(palette.status_conflict).child(error))
             })
             .children(self.render_operation_banner(cx))
-            .child(div().flex_1().min_h_0().map(|el| match &self.merge {
-                Some((merge, _)) => el.child(merge.clone()),
-                None => el.child(self.diff.clone()),
+            .child(div().flex_1().min_h_0().map(|el| match (&self.merge, &self.blame) {
+                (Some((merge, _)), _) => el.child(merge.clone()),
+                (None, Some((blame, _))) => el.child(blame.clone()),
+                (None, None) => el.child(self.diff.clone()),
             }));
 
         let top = h_resizable("top-split")

@@ -1,3 +1,4 @@
+pub mod blame_view;
 pub mod branches_popup;
 pub mod commit_view;
 pub mod common;

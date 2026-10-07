@@ -50,6 +50,8 @@ pub fn init(cx: &mut App) {
 
 pub enum LogEvent {
     OpenDiff(DiffSource),
+    /// Annotate with Git Blame: a path at a revision (`None` for the work tree).
+    Annotate { path: String, revision: Option<String> },
 }
 
 impl EventEmitter<LogEvent> for LogView {}
@@ -513,6 +515,22 @@ impl LogView {
                     menu
                 }
             }))
+            .when(!filter.paths.is_empty(), |el| {
+                let label = match filter.paths.as_slice() {
+                    [one] => format!("Path: {one}"),
+                    many => format!("Paths: {}", many.len()),
+                };
+                el.child(
+                    Button::new("filter-path")
+                        .ghost()
+                        .xsmall()
+                        .selected(true)
+                        .label(label)
+                        .icon(Icon::new(IconName::Close).xsmall())
+                        .tooltip("Clear the path filter")
+                        .on_click(cx.listener(|this, _, _, cx| this.update_filter(cx, |f| f.paths.clear()))),
+                )
+            })
             .child(div().flex_1())
             .when(model.is_loading(), |el| {
                 el.child(div().text_xs().text_color(palette.text_secondary).child("Loading…"))
@@ -838,10 +856,12 @@ impl LogView {
                         let color = kind.as_ref().map_or(palette.text, |(k, _)| common::change_color(*k, &palette));
                         let entity = entity.clone();
                         let open_path = path.clone();
+                        let (menu_entity, menu_path) = (entity.clone(), path.clone());
                         ListItem::new(ix)
                             .py_0()
                             .px_1()
                             .h(px(ROW_HEIGHT))
+
                             .on_click(move |event, _, cx| {
                                 if event.click_count() == 2 {
                                     if let Some(path) = open_path.clone() {
@@ -855,6 +875,7 @@ impl LogView {
                             })
                             .child(
                                 h_flex()
+                                    .w_full()
                                     .gap_1()
                                     .pl(px(entry.depth() as f32 * 14.))
                                     .text_sm()
@@ -885,6 +906,10 @@ impl LogView {
                                                 .text_color(palette.text_secondary)
                                                 .child(format!("{n} {}", if n == 1 { "file" } else { "files" })),
                                         )
+                                    })
+                                    .context_menu(move |menu, _, cx| match &menu_path {
+                                        Some(path) => change_menu(menu, &menu_entity, path, cx),
+                                        None => menu,
                                     }),
                             )
                     })
@@ -999,6 +1024,72 @@ fn ref_label(reference: &RefName, current_branch: Option<&str>, palette: &crate:
         .text_xs()
         .child(Icon::new(icon).xsmall().text_color(color))
         .child(div().text_color(color).child(reference.name.clone()))
+}
+
+/// Right-click on a file in the commit details, after IntelliJ's.
+fn change_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    entity: &Entity<LogView>,
+    path: &str,
+    cx: &mut App,
+) -> gpui_kit::component::menu::PopupMenu {
+    let model = entity.read(cx).model.clone();
+    let Some(hash) = model.read(cx).selected_hash().map(str::to_owned) else { return menu };
+    let short = hash[..hash.len().min(8)].to_owned();
+    let path = path.to_owned();
+    let (e_diff, e_blame, e_history, e_here) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
+    let (p_diff, p_blame, p_history, p_here, p_copy) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
+    let (h_blame, h_here) = (hash.clone(), hash.clone());
+    let (m_get, m_revert) = (model.clone(), model.clone());
+    let (p_get, h_get, p_revert, h_revert) = (path.clone(), hash.clone(), path.clone(), hash.clone());
+    menu.item(PopupMenuItem::new("Show Diff").on_click(move |_, _, cx| {
+        e_diff.update(cx, |this, cx| {
+            if let Some(source) = this.diff_source_for(&format!("{FILE_PREFIX}{p_diff}"), cx) {
+                cx.emit(LogEvent::OpenDiff(source));
+            }
+        })
+    }))
+    .item(PopupMenuItem::new("Annotate Revision").on_click(move |_, _, cx| {
+        e_blame.update(cx, |_, cx| cx.emit(LogEvent::Annotate { path: p_blame.clone(), revision: Some(h_blame.clone()) }))
+    }))
+    .separator()
+    .item(PopupMenuItem::new("Show History").on_click(move |_, _, cx| {
+        let path = p_history.clone();
+        e_history.update(cx, |this, cx| this.update_filter(cx, |f| f.paths = vec![path]))
+    }))
+    .item(PopupMenuItem::new("History Up to Here").on_click(move |_, _, cx| {
+        let (path, hash) = (p_here.clone(), h_here.clone());
+        e_here.update(cx, |this, cx| {
+            this.update_filter(cx, |f| {
+                f.paths = vec![path];
+                f.branches = vec![hash];
+            })
+        })
+    }))
+    .separator()
+    .item(PopupMenuItem::new(format!("Get from Revision {short}")).on_click(move |_, _, cx| {
+        let (path, hash) = (p_get.clone(), h_get.clone());
+        m_get.update(cx, |model, cx| {
+            model.run_operation("Get from Revision", move |repo| {
+                repo.run(["checkout", hash.as_str(), "--", path.as_str()])?;
+                Ok(format!("{path} restored from {}", &hash[..hash.len().min(8)]))
+            }, cx)
+        })
+    }))
+    .item(PopupMenuItem::new("Revert Selected Changes").on_click(move |_, _, cx| {
+        let (path, hash) = (p_revert.clone(), h_revert.clone());
+        m_revert.update(cx, |model, cx| {
+            model.run_operation("Revert Changes", move |repo| {
+                let patch = repo.run(["show", "--format=", "--binary", hash.as_str(), "--", path.as_str()])?;
+                repo.run_with_input(["apply", "-R", "--3way", "-"], Some(&patch))?;
+                Ok(format!("Changes to {path} reverted in the working tree"))
+            }, cx)
+        })
+    }))
+    .separator()
+    .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(p_copy.clone()))
+    }))
 }
 
 fn commit_menu(

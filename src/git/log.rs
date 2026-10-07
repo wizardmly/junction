@@ -83,6 +83,10 @@ pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize
     {
         return Ok(Vec::new());
     }
+    // File History follows renames, like IntelliJ's.
+    if filter.paths.len() == 1 {
+        args.push("--follow".into());
+    }
     args.push("--".into());
     args.extend(filter.paths.iter().cloned());
 
