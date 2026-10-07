@@ -1,5 +1,6 @@
 pub mod blame_view;
 pub mod branches_popup;
+pub mod clone_dialog;
 pub mod commit_view;
 pub mod common;
 pub mod dialogs;

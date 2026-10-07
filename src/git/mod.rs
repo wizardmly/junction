@@ -13,7 +13,7 @@ pub mod rebase;
 pub mod refs;
 pub mod status;
 
-pub use command::{GitConsole, Repository};
+pub use command::{GitConsole, Repository, run_in};
 pub use graph::GraphLayout;
 pub use log::{Commit, CommitDetails, FileChangeKind, LogFilter};
 pub use refs::{RefKind, RefName, RepositoryRefs};

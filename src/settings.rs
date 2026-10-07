@@ -97,6 +97,33 @@ pub fn remember_message(message: &str) {
     let _ = std::fs::write(dir.join("commit-messages.txt"), history.join(HISTORY_SEPARATOR));
 }
 
+/// Recently opened repositories, newest first (the Welcome screen and project widget).
+pub fn recent_projects() -> Vec<PathBuf> {
+    let Some(path) = config_dir().map(|d| d.join("recent-projects.txt")) else { return Vec::new() };
+    std::fs::read_to_string(path)
+        .map(|text| text.lines().filter(|l| !l.trim().is_empty()).map(PathBuf::from).collect())
+        .unwrap_or_default()
+}
+
+pub fn remember_project(path: &std::path::Path) {
+    let Some(dir) = config_dir() else { return };
+    let mut recent = recent_projects();
+    recent.retain(|p| p != path);
+    recent.insert(0, path.to_path_buf());
+    recent.truncate(HISTORY_LIMIT);
+    let text: Vec<String> = recent.iter().map(|p| p.display().to_string()).collect();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("recent-projects.txt"), text.join("\n"));
+}
+
+pub fn forget_project(path: &std::path::Path) {
+    let Some(dir) = config_dir() else { return };
+    let mut recent = recent_projects();
+    recent.retain(|p| p != path);
+    let text: Vec<String> = recent.iter().map(|p| p.display().to_string()).collect();
+    let _ = std::fs::write(dir.join("recent-projects.txt"), text.join("\n"));
+}
+
 impl Settings {
     pub fn is_protected(&self, branch: &str) -> bool {
         self.protected_branches.split(',').map(str::trim).any(|p| !p.is_empty() && (p == branch || glob(p, branch)))

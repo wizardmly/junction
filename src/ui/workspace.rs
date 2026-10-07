@@ -9,7 +9,7 @@ use gpui_kit::component::{
     Selectable as _,
     ActiveTheme as _, Icon, Sizable as _, TitleBar, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     notification::Notification,
     popover::Popover,
     resizable_panel,
@@ -36,6 +36,7 @@ use crate::ui::merge_view::{MergeEvent, MergeView};
 use crate::git::RepositoryState;
 use crate::git::merge::{self, Conflict, OperationStep};
 use crate::ui::log_view::{LogEvent, LogView};
+use crate::ui::clone_dialog;
 use crate::ui::patch_dialogs;
 use crate::ui::shelf_view::{ShelfEvent, ShelfView};
 use crate::ui::stash_view::{StashEvent, StashView};
@@ -473,6 +474,104 @@ impl Workspace {
         .detach();
     }
 
+    /// The Welcome screen shown when no repository is open.
+    fn render_welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let recent = crate::settings::recent_projects();
+        let error = self.model.read(cx).error().map(str::to_owned);
+        let action = |id: &'static str, icon: IconName, label: &'static str| {
+            Button::new(id).small().icon(Icon::new(icon)).label(label)
+        };
+        let mut list = v_flex().gap_px();
+        for (ix, path) in recent.iter().enumerate() {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let open = path.clone();
+            let forget = path.clone();
+            let model = self.model.clone();
+            list = list.child(
+                h_flex()
+                    .id(("recent", ix))
+                    .px_2()
+                    .py_1()
+                    .gap_2()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(palette.hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let open = open.clone();
+                        this.model.update(cx, |m, cx| m.open(open, cx))
+                    }))
+                    .context_menu(move |menu, _, _| {
+                        let forget = forget.clone();
+                        let model = model.clone();
+                        menu.item(PopupMenuItem::new("Remove from Recent Projects").on_click(move |_, window, cx| {
+                            crate::settings::forget_project(&forget);
+                            model.update(cx, |_, cx| cx.notify());
+                            window.refresh();
+                        }))
+                    })
+                    .child(
+                        div()
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .bg(palette.graph[ix % palette.graph.len()])
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(gpui_kit::white())
+                            .child(name.chars().take(2).collect::<String>().to_uppercase()),
+                    )
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(name))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.text_secondary)
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(path.display().to_string()),
+                            ),
+                    ),
+            );
+        }
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_4()
+            .child(div().text_xl().font_weight(FontWeight::BOLD).child("Welcome to GitGlass"))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(action("welcome-open", IconName::FolderOpen, "Open").on_click(cx.listener(
+                        |this, _, window, cx| this.open_repository(window, cx),
+                    )))
+                    .child(action("welcome-clone", IconName::ArrowDownToLine, "Get from VCS").on_click(cx.listener(
+                        |this, _, window, cx| clone_dialog::clone(this.model.clone(), window, cx),
+                    )))
+                    .child(action("welcome-init", IconName::Plus, "New Repository").on_click(cx.listener(
+                        |this, _, _, cx| clone_dialog::init(this.model.clone(), cx),
+                    ))),
+            )
+            .when_some(error, |el, error| {
+                el.child(div().max_w(px(560.)).text_xs().text_color(palette.text_secondary).child(error))
+            })
+            .when(!recent.is_empty(), |el| {
+                el.child(
+                    v_flex()
+                        .w(px(460.))
+                        .gap_1()
+                        .child(div().text_xs().text_color(palette.text_secondary).child("Recent Projects"))
+                        .child(list),
+                )
+            })
+    }
+
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let model = self.model.read(cx);
@@ -511,6 +610,14 @@ impl Workspace {
                                 let open = entity.clone();
                                 menu.item(PopupMenuItem::new("Open Repository…").on_click(move |_, window, cx| {
                                     open.update(cx, |this, cx| this.open_repository(window, cx))
+                                }))
+                                .item(PopupMenuItem::new("Get from Version Control…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| clone_dialog::clone(entity.read(cx).model.clone(), window, cx)
+                                }))
+                                .item(PopupMenuItem::new("Create Git Repository…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, _, cx| clone_dialog::init(entity.read(cx).model.clone(), cx)
                                 }))
                                 .separator()
                                 .item(PopupMenuItem::new("Merge…").on_click({
@@ -578,7 +685,34 @@ impl Workspace {
                                 .child(div().font_weight(FontWeight::SEMIBOLD).child(project))
                                 .child(Icon::new(IconName::ChevronDown).xsmall()),
                         )
-                        .on_click(cx.listener(|this, _, window, cx| this.open_repository(window, cx))),
+                        .dropdown_menu({
+                            let entity = entity.clone();
+                            move |menu, _, cx| {
+                                let current = entity.read(cx).model.read(cx).repository().map(|r| r.root().to_path_buf());
+                                let mut menu = menu.label("Recent Projects");
+                                for path in crate::settings::recent_projects().into_iter().take(10) {
+                                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                    let entity = entity.clone();
+                                    let is_current = current.as_deref() == Some(path.as_path());
+                                    menu = menu.item(PopupMenuItem::new(name).checked(is_current).on_click(move |_, _, cx| {
+                                        let path = path.clone();
+                                        let model = entity.read(cx).model.clone();
+                                        model.update(cx, |m, cx| m.open(path, cx));
+                                    }));
+                                }
+                                let (open, clone, init) = (entity.clone(), entity.clone(), entity.clone());
+                                menu.separator()
+                                    .item(PopupMenuItem::new("Open…").on_click(move |_, window, cx| {
+                                        open.update(cx, |this, cx| this.open_repository(window, cx))
+                                    }))
+                                    .item(PopupMenuItem::new("Get from Version Control…").on_click(move |_, window, cx| {
+                                        clone_dialog::clone(clone.read(cx).model.clone(), window, cx)
+                                    }))
+                                    .item(PopupMenuItem::new("Create Git Repository…").on_click(move |_, _, cx| {
+                                        clone_dialog::init(init.read(cx).model.clone(), cx)
+                                    }))
+                            }
+                        }),
                 )
                 .child(
                     Popover::new("branches-popover")
@@ -959,11 +1093,12 @@ impl Render for Workspace {
         let editor = v_flex()
             .size_full()
             .bg(palette.panel)
-            .when_some(error, |el, error| {
+            .when_some(error.filter(|_| has_repo), |el, error| {
                 el.child(div().p_2().text_sm().text_color(palette.status_conflict).child(error))
             })
             .children(self.render_operation_banner(cx))
             .child(div().flex_1().min_h_0().map(|el| match (&self.merge, &self.blame) {
+                _ if !has_repo => el.child(self.render_welcome(cx)),
                 (Some((merge, _)), _) => el.child(merge.clone()),
                 (None, Some((blame, _))) => el.child(blame.clone()),
                 (None, None) => el.child(self.diff.clone()),

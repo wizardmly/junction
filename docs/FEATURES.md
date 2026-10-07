@@ -9,7 +9,7 @@
 |---|---|---|---|
 | 玻璃窗口 | macOS vibrancy / Windows Mica-Acrylic / Linux 半透明（KDE 模糊） | M1 | 🟡 |
 | 自定义标题栏 | 主菜单（汉堡按钮）、项目名组件、VCS 分支组件、右侧工具按钮 | M1 | 🟡 |
-| 项目组件 | 最近项目列表、打开、克隆、新建仓库 | M1/M4 | 🟡 |
+| 项目组件 | 最近项目列表、打开、克隆、新建仓库 | M1/M4 | ✅（欢迎页 + 项目组件下拉：最近项目、Open、Get from VCS、Create Git Repository） |
 | VCS 分支组件 | 当前分支名、进行中的操作（Rebasing/Merging/Cherry-picking）、点击弹出分支弹窗 | M1 | 🟡 |
 | 左/右/下 工具窗口条 | Commit、Git（Log/Console）、可拖拽、可隐藏、记住尺寸 | M1 | 🟡 |
 | 状态栏 | 分支、行分隔符、后台任务进度、通知 | M1 | 🟡 |
@@ -144,7 +144,7 @@
 | 受保护分支禁止 force push | M3 | ✅ |
 | Manage Remotes 对话框：添加/编辑/删除 | M2 | ⬜ |
 | 凭据：HTTPS 密码/Token 对话框、SSH passphrase、使用 credential helper | M2 | ✅（已配置的 credential helper 优先） |
-| Clone 对话框：URL、目录、GitHub/GitLab 账号仓库列表 | M4 | ⬜ |
+| Clone 对话框：URL、目录、GitHub/GitLab 账号仓库列表 | M4 | 🟡（URL + 目录自动填充 + Test；GitHub/GitLab 账号仓库列表随 M6） |
 
 ## 6. Diff 与 Merge
 

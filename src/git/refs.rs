@@ -126,6 +126,10 @@ fn parse_for_each_ref(output: &str) -> Vec<RefName> {
             let object = fields.next()?;
             let peeled = fields.next()?;
             let full_name = fields.next()?.to_owned();
+            // `origin/HEAD` is a pointer to the default branch, not a branch (IntelliJ hides it).
+            if full_name.starts_with("refs/remotes/") && full_name.ends_with("/HEAD") {
+                return None;
+            }
             let name = fields.next()?.to_owned();
             let upstream = fields.next().filter(|u| !u.is_empty()).map(str::to_owned);
             let track = fields.next().unwrap_or_default();

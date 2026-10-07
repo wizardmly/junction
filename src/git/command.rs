@@ -130,50 +130,7 @@ impl Repository {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_owned()).collect();
-        let started = Instant::now();
-        let mut child = git_command(&self.executable)
-            .current_dir(&self.root)
-            .envs(crate::askpass::git_env())
-            // Stable, parseable output regardless of the user's config.
-            .args(["-c", "core.quotepath=false", "-c", "color.ui=false", "-c", "log.showSignature=false"])
-            .args(&args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            // Never block on an editor (rebase/cherry-pick --continue, merge commits).
-            .env("GIT_EDITOR", "true")
-            .envs(env.iter().copied())
-            .env("LC_ALL", "C")
-            .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("failed to run git")?;
-        if let Some(input) = input {
-            child.stdin.take().unwrap().write_all(input.as_bytes())?;
-        }
-        let output = child.wait_with_output()?;
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        let success = output.status.success();
-
-        // The console shows what a user would have typed, not our -c overrides.
-        let command_line = format!("git {}", args.iter().map(|arg| quote(arg)).collect::<Vec<_>>().join(" "));
-        let mut console_output = String::new();
-        if !stdout.is_empty() && stdout.len() < 4096 && !stdout.contains('\0') {
-            console_output.push_str(&stdout);
-        }
-        console_output.push_str(&stderr);
-        self.console.push(ConsoleEntry {
-            command_line: command_line.clone(),
-            output: console_output.trim_end().to_owned(),
-            success,
-            duration: started.elapsed(),
-        });
-
-        if !success {
-            bail!("{command_line} failed: {}", stderr.trim());
-        }
-        Ok(stdout)
+        run_in(&self.executable, &self.root, &self.console, args, input, env)
     }
 
     pub fn state(&self) -> RepositoryState {
@@ -201,6 +158,60 @@ impl Repository {
         };
         (get("user.name"), get("user.email"))
     }
+}
+
+
+/// Runs git in `cwd` (a repository, or the parent folder for `clone` / `init`),
+/// recording it in the console.
+pub fn run_in<I, S>(executable: &Path, cwd: &Path, console: &GitConsole, args: I, input: Option<&str>, env: &[(&str, &str)]) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_owned()).collect();
+    let started = Instant::now();
+    let mut child = git_command(executable)
+        .current_dir(cwd)
+        .envs(crate::askpass::git_env())
+        // Stable, parseable output regardless of the user's config.
+        .args(["-c", "core.quotepath=false", "-c", "color.ui=false", "-c", "log.showSignature=false"])
+        .args(&args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        // Never block on an editor (rebase/cherry-pick --continue, merge commits).
+        .env("GIT_EDITOR", "true")
+        .envs(env.iter().copied())
+        .env("LC_ALL", "C")
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to run git")?;
+    if let Some(input) = input {
+        child.stdin.take().unwrap().write_all(input.as_bytes())?;
+    }
+    let output = child.wait_with_output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let success = output.status.success();
+
+    // The console shows what a user would have typed, not our -c overrides.
+    let command_line = format!("git {}", args.iter().map(|arg| quote(arg)).collect::<Vec<_>>().join(" "));
+    let mut console_output = String::new();
+    if !stdout.is_empty() && stdout.len() < 4096 && !stdout.contains('\0') {
+        console_output.push_str(&stdout);
+    }
+    console_output.push_str(&stderr);
+    console.push(ConsoleEntry {
+        command_line: command_line.clone(),
+        output: console_output.trim_end().to_owned(),
+        success,
+        duration: started.elapsed(),
+    });
+
+    if !success {
+        bail!("{command_line} failed: {}", stderr.trim());
+    }
+    Ok(stdout)
 }
 
 fn quote(arg: &str) -> String {

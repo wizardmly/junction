@@ -97,6 +97,7 @@ impl RepoModel {
     pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match Repository::discover(&path, self.console.clone()) {
             Ok(repository) => {
+                crate::settings::remember_project(repository.root());
                 self.user_email = repository.current_user().1;
                 self.repository = Some(repository);
                 self.error = None;
@@ -108,6 +109,46 @@ impl RepoModel {
                 self.error = Some(error.to_string());
                 cx.notify();
             }
+        }
+    }
+
+    /// Get from Version Control: `git clone` into `dir`, then open it.
+    pub fn clone_repository(&mut self, url: String, dir: PathBuf, cx: &mut Context<Self>) {
+        self.busy = Some(format!("Cloning {url}"));
+        cx.notify();
+        let console = self.console.clone();
+        cx.spawn(async move |this, cx| {
+            let target = dir.clone();
+            let result = cx
+                .background_spawn(async move {
+                    let parent = target.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+                    std::fs::create_dir_all(&parent)?;
+                    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    git::run_in(std::path::Path::new("git"), &parent, &console, ["clone", "--progress", url.as_str(), name.as_str()], None, &[])
+                        .map(|_| url)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.busy = None;
+                match result {
+                    Ok(url) => {
+                        cx.emit(RepoEvent::Notify { title: "Clone".into(), message: format!("Cloned {url}"), error: false });
+                        this.open(dir, cx);
+                    }
+                    Err(error) => cx.emit(RepoEvent::Notify { title: "Clone failed".into(), message: error.to_string(), error: true }),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Create Git Repository: `git init` in `dir`, then open it.
+    pub fn init_repository(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        match git::run_in(std::path::Path::new("git"), &dir, &self.console, ["init"], None, &[]) {
+            Ok(_) => self.open(dir, cx),
+            Err(error) => cx.emit(RepoEvent::Notify { title: "Create Git Repository failed".into(), message: error.to_string(), error: true }),
         }
     }
 
