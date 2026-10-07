@@ -31,9 +31,10 @@ use crate::ui::diff_panes::{BlockColors, Connector, DIVIDER_WIDTH, LINE_HEIGHT, 
 use crate::ui::text_panes::{BUTTON_WIDTH, GUTTER_WIDTH, PaneContent, PaneLayout, RowLook, RowTarget, STRIPE_WIDTH, TextPanes, expand_tabs, pane_area};
 
 pub(crate) mod edit;
+mod files;
 mod menu;
 
-actions!(diff_view, [NextDifference, PreviousDifference, JumpToSource]);
+actions!(diff_view, [NextDifference, PreviousDifference, JumpToSource, CompareNextFile, ComparePreviousFile]);
 
 /// What to compare.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,6 +171,14 @@ pub struct DiffView {
     panes: TextPanes,
     save_task: Option<Task<()>>,
     _task: Option<Task<()>>,
+    /// The files of the shown change set, for Compare Previous / Next File.
+    files: Vec<DiffSource>,
+    files_key: String,
+    _files_task: Option<Task<()>>,
+    /// F7 stopped at the end of the file.
+    edge: Option<files::Edge>,
+    /// The file being loaded opens at its last change (Shift+F7 into it).
+    arrive_at_end: bool,
 }
 
 impl DiffView {
@@ -192,6 +201,11 @@ impl DiffView {
             panes: TextPanes::new(2, cx),
             save_task: None,
             _task: None,
+            files: Vec::new(),
+            files_key: String::new(),
+            _files_task: None,
+            edge: None,
+            arrive_at_end: false,
         }
     }
 
@@ -202,6 +216,8 @@ impl DiffView {
         self.flush_save();
         self.repository = Some(repository.clone());
         self.source = Some(source.clone());
+        self.edge = None;
+        self.load_files(&repository, &source, cx);
         self.panes.set_texts(vec![String::new(), String::new()], "plaintext");
         self.review = None;
         self.loaded = None;
@@ -230,7 +246,9 @@ impl DiffView {
                         this.loaded = Some(loaded);
                         this.panes.editable = this.editable().then_some(1);
                         this.set_diff(file_diff);
-                        this.go_to_change(0);
+                        let last = this.diff.changes.saturating_sub(1);
+                        let first = if std::mem::take(&mut this.arrive_at_end) { last } else { 0 };
+                        this.go_to_change(first);
                     }
                     Err(error) => this.error = Some(error.to_string()),
                 }
@@ -488,15 +506,21 @@ impl DiffView {
 
     pub fn next_difference(&mut self, cx: &mut Context<Self>) {
         if self.has_next() {
+            self.edge = None;
             self.go_to_change(self.current.map_or(0, |c| c + 1));
             cx.notify();
+        } else {
+            self.past_end(files::Edge::Next, cx);
         }
     }
 
     pub fn previous_difference(&mut self, cx: &mut Context<Self>) {
         if let Some(c) = self.current.filter(|c| *c > 0) {
+            self.edge = None;
             self.go_to_change(c - 1);
             cx.notify();
+        } else {
+            self.past_end(files::Edge::Previous, cx);
         }
     }
 
@@ -551,12 +575,12 @@ impl DiffView {
             .bg(palette.toolbar)
             .child(
                 tool_button("diff-prev", IconName::ChevronUp, "Previous Difference (Shift+F7)")
-                    .disabled(!self.has_previous())
+                    .disabled(!self.has_previous() && self.neighbor(false).is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.previous_difference(cx))),
             )
             .child(
                 tool_button("diff-next", IconName::ChevronDown, "Next Difference (F7)")
-                    .disabled(!self.has_next())
+                    .disabled(!self.has_next() && self.neighbor(true).is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.next_difference(cx))),
             )
             .child(
@@ -564,6 +588,34 @@ impl DiffView {
                     .disabled(self.jump_target().is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.jump_to_source(cx))),
             )
+            .child(separator())
+            .child(
+                tool_button("diff-prev-file", IconName::ArrowLeft, "Compare Previous File (Alt+Left)")
+                    .disabled(self.neighbor(false).is_none())
+                    .on_click(cx.listener(|this, _, _, cx| this.compare_previous_file(cx))),
+            )
+            .child(
+                tool_button("diff-next-file", IconName::ArrowRight, "Compare Next File (Alt+Right)")
+                    .disabled(self.neighbor(true).is_none())
+                    .on_click(cx.listener(|this, _, _, cx| this.compare_next_file(cx))),
+            )
+            .when_some(self.file_position().filter(|(_, n)| *n > 1), |el, (ix, n)| {
+                let files = self.files.clone();
+                let entity = entity.clone();
+                el.child(Button::new("diff-files").ghost().xsmall().icon(IconName::List).label(format!("{} of {n}", ix + 1)).tooltip("Go to Changed File").dropdown_menu(
+                    move |mut menu, _, _| {
+                        for (i, file) in files.iter().enumerate() {
+                            let (entity, file) = (entity.clone(), file.clone());
+                            menu = menu.item(
+                                PopupMenuItem::new(file.path().to_owned())
+                                    .checked(i == ix)
+                                    .on_click(move |_, _, cx| entity.update(cx, |this, cx| this.open_file(file.clone(), false, cx))),
+                            );
+                        }
+                        menu
+                    },
+                ))
+            })
             .child(separator())
             .child(Button::new("diff-viewer").ghost().xsmall().label(viewer_label).dropdown_menu({
                 let entity = entity.clone();
@@ -650,6 +702,12 @@ impl DiffView {
                         .child(div().text_color(palette.status_added).child(format!("+{}", self.diff.inserted)))
                         .child(div().text_color(palette.status_deleted).child(format!("−{}", self.diff.deleted))),
                 )
+            })
+            .when_some(self.edge, |el, edge| {
+                el.child(div().text_xs().mr_2().text_color(palette.link).child(match edge {
+                    files::Edge::Next => "Press F7 again to go to the next file",
+                    files::Edge::Previous => "Press Shift+F7 again to go to the previous file",
+                }))
             })
             .child(div().text_xs().text_color(palette.text_secondary).child(summary))
     }

@@ -29,7 +29,7 @@ use crate::ui::blame_view::{BlameEvent, BlameView};
 use crate::ui::branches_popup::{self, BranchesPopup};
 use crate::ui::commit_view::{CommitEvent, CommitView};
 use crate::ui::common::tool_button;
-use crate::ui::diff_view::{DiffView, JumpToSource, NextDifference, PreviousDifference};
+use crate::ui::diff_view::{CompareNextFile, ComparePreviousFile, DiffView, JumpToSource, NextDifference, PreviousDifference};
 use crate::settings::Settings;
 use crate::ui::dialogs;
 use crate::ui::merge_view::{MergeEvent, MergeView};
@@ -86,6 +86,8 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("alt-`", VcsOperations, Some(CONTEXT)),
         KeyBinding::new("f7", NextDifference, Some(CONTEXT)),
         KeyBinding::new("f4", JumpToSource, Some(CONTEXT)),
+        KeyBinding::new("alt-right", CompareNextFile, Some(CONTEXT)),
+        KeyBinding::new("alt-left", ComparePreviousFile, Some(CONTEXT)),
         KeyBinding::new("secondary-v", crate::ui::text_panes::Paste, Some(crate::ui::text_panes::PANE_CONTEXT)),
         KeyBinding::new("shift-insert", crate::ui::text_panes::Paste, Some(crate::ui::text_panes::PANE_CONTEXT)),
         KeyBinding::new("shift-f7", PreviousDifference, Some(CONTEXT)),
@@ -1663,6 +1665,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &NextDifference, _, cx| this.diff.update(cx, |d, cx| d.next_difference(cx))))
             .on_action(cx.listener(|this, _: &PreviousDifference, _, cx| this.diff.update(cx, |d, cx| d.previous_difference(cx))))
             .on_action(cx.listener(|this, _: &JumpToSource, _, cx| this.diff.update(cx, |d, cx| d.jump_to_source(cx))))
+            .on_action(cx.listener(|this, _: &CompareNextFile, _, cx| this.diff.update(cx, |d, cx| d.compare_next_file(cx))))
+            .on_action(cx.listener(|this, _: &ComparePreviousFile, _, cx| this.diff.update(cx, |d, cx| d.compare_previous_file(cx))))
             .size_full()
             .bg(palette.window)
             .text_color(palette.text)
