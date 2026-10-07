@@ -38,7 +38,7 @@ use crate::git::merge::{self, Conflict, OperationStep};
 use crate::ui::log_view::{LogEvent, LogView};
 use crate::ui::stash_view::{StashEvent, StashView};
 
-actions!(workspace, [CommitChanges, PushChanges, UpdateProject, ShowBranches, ToggleGitWindow, Refresh, StashChanges, OpenSettings]);
+actions!(workspace, [CommitChanges, PushChanges, UpdateProject, ShowBranches, ToggleGitWindow, Refresh, StashChanges, OpenSettings, VcsOperations]);
 
 const CONTEXT: &str = "Workspace";
 
@@ -52,6 +52,11 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("alt-9", ToggleGitWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-y", Refresh, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-s", OpenSettings, Some(CONTEXT)),
+        // VCS Operations popup: Alt+` (Ctrl+V on macOS).
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("ctrl-v", VcsOperations, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("alt-`", VcsOperations, Some(CONTEXT)),
         KeyBinding::new("f7", NextDifference, Some(CONTEXT)),
         KeyBinding::new("shift-f7", PreviousDifference, Some(CONTEXT)),
     ]);
@@ -612,6 +617,82 @@ impl Workspace {
         dialogs::stash(self.model.clone(), window, cx);
     }
 
+    /// IntelliJ's VCS Operations quick list, numbered like the original.
+    fn on_vcs_operations(&mut self, _: &VcsOperations, window: &mut Window, cx: &mut Context<Self>) {
+        type Run = Rc<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
+        let op = |f: fn(&mut Workspace, &mut Window, &mut Context<Workspace>)| -> Run { Rc::new(f) };
+        let items: Vec<Option<(&'static str, &'static str, Run)>> = vec![
+            Some(("Commit…", "Ctrl+K", op(|this, window, cx| this.on_commit(&CommitChanges, window, cx)))),
+            Some(("Push…", "Ctrl+Shift+K", op(|this, window, cx| dialogs::push(this.model.clone(), window, cx)))),
+            Some(("Update Project…", "Ctrl+T", op(|this, window, cx| dialogs::update_project(this.model.clone(), window, cx)))),
+            Some(("Fetch", "", op(|this, _, cx| {
+                this.model.update(cx, |m, cx| m.run_operation("Fetch", |repo| {
+                    repo.run(["fetch", "--all", "--prune"])?;
+                    Ok("Fetched all remotes".into())
+                }, cx))
+            }))),
+            None,
+            Some(("Branches…", "Ctrl+Shift+`", op(|this, _, cx| {
+                this.branches_open = true;
+                cx.notify();
+            }))),
+            Some(("New Branch…", "", op(|this, window, cx| dialogs::new_branch(this.model.clone(), "HEAD".into(), window, cx)))),
+            Some(("New Tag…", "", op(|this, window, cx| dialogs::new_tag(this.model.clone(), "HEAD".into(), window, cx)))),
+            Some(("Merge…", "", op(|this, window, cx| dialogs::merge(this.model.clone(), window, cx)))),
+            Some(("Rebase…", "", op(|this, window, cx| dialogs::rebase(this.model.clone(), window, cx)))),
+            Some(("Reset HEAD…", "", op(|this, window, cx| dialogs::reset_to(this.model.clone(), "HEAD".into(), window, cx)))),
+            None,
+            Some(("Stash Changes…", "", op(|this, window, cx| dialogs::stash(this.model.clone(), window, cx)))),
+            Some(("Unstash Changes…", "", op(|this, _, cx| {
+                this.show_commit = true;
+                this.left_tab = LeftTab::Stash;
+                cx.notify();
+            }))),
+            None,
+            Some(("Show Git Log", "Alt+9", op(|this, _, cx| {
+                this.show_git = true;
+                this.bottom_tab = BottomTab::Log;
+                cx.notify();
+            }))),
+            Some(("Settings…", "Ctrl+Alt+S", op(|_, window, cx| dialogs::settings(window, cx)))),
+        ];
+        let workspace = cx.entity();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let palette = cx.palette().clone();
+            let mut list = v_flex().gap_px();
+            let mut number = 0;
+            for (ix, item) in items.iter().enumerate() {
+                let Some((label, shortcut, run)) = item else {
+                    list = list.child(div().my_1().h(px(1.)).bg(palette.border));
+                    continue;
+                };
+                number += 1;
+                let run = run.clone();
+                let workspace = workspace.clone();
+                list = list.child(
+                    h_flex()
+                        .id(("vcs-op", ix))
+                        .h(px(26.))
+                        .px_2()
+                        .gap_2()
+                        .rounded(px(4.))
+                        .text_sm()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(palette.hover))
+                        .on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let run = run.clone();
+                            workspace.update(cx, |this, cx| run(this, window, cx));
+                        })
+                        .child(div().w(px(16.)).text_color(palette.text_secondary).child(if number < 10 { number.to_string() } else { String::new() }))
+                        .child(div().flex_1().child(*label))
+                        .child(div().text_xs().text_color(palette.text_secondary).child(*shortcut)),
+                );
+            }
+            dialog.title("VCS Operations").w(px(340.)).child(list)
+        });
+    }
+
     fn render_bottom(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let tab = |id: &'static str, _label: &'static str, value: BottomTab, current: BottomTab| {
@@ -756,6 +837,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_git))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_stash))
+            .on_action(cx.listener(Self::on_vcs_operations))
             .on_action(cx.listener(|_, _: &OpenSettings, window, cx| dialogs::settings(window, cx)))
             .on_action(cx.listener(|this, _: &NextDifference, _, cx| this.diff.update(cx, |d, cx| d.next_difference(cx))))
             .on_action(cx.listener(|this, _: &PreviousDifference, _, cx| this.diff.update(cx, |d, cx| d.previous_difference(cx))))

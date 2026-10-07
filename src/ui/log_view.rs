@@ -961,6 +961,7 @@ impl LogView {
                 ),
             );
 
+        let entity_for_links = cx.entity();
         let info = div()
             .id("commit-details")
             .size_full()
@@ -972,7 +973,7 @@ impl LogView {
                 el.child(
                     v_flex()
                         .gap_2()
-                        .child(div().whitespace_normal().child(d.message.clone()))
+                        .child(div().whitespace_normal().child(message_text(&d.message, &entity_for_links, &palette)))
                         .child(
                             h_flex()
                                 .gap_1()
@@ -1018,6 +1019,26 @@ impl LogView {
             .child(resizable_panel().child(changes))
             .child(resizable_panel().size(px(220.)).child(info))
     }
+}
+
+/// The commit message with URLs and commit hashes clickable, as in IntelliJ.
+fn message_text(message: &str, entity: &Entity<LogView>, palette: &crate::theme::Palette) -> gpui_kit::InteractiveText {
+    let links = common::find_links(message);
+    let style = gpui_kit::HighlightStyle {
+        color: Some(palette.link),
+        underline: Some(gpui_kit::UnderlineStyle { thickness: px(1.), color: Some(palette.link), wavy: false }),
+        ..Default::default()
+    };
+    let text = gpui_kit::StyledText::new(message.to_owned()).with_highlights(links.iter().map(|(range, _)| (range.clone(), style)));
+    let ranges = links.iter().map(|(range, _)| range.clone()).collect();
+    let entity = entity.clone();
+    gpui_kit::InteractiveText::new("commit-message", text).on_click(ranges, move |ix, window, cx| match &links[ix].1 {
+        common::Link::Url(url) => cx.open_url(url),
+        common::Link::Commit(hash) => {
+            let hash = hash.clone();
+            entity.update(cx, |this, cx| this.go_to(&hash, window, cx));
+        }
+    })
 }
 
 /// Groups branches by their `/`-separated path into folders.

@@ -161,3 +161,56 @@ mod tests {
         assert_eq!(items[1].id.as_ref(), "f:README.md");
     }
 }
+
+/// A clickable part of a commit message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Link {
+    Url(String),
+    /// A hash-like word; IntelliJ links it to the commit when one matches.
+    Commit(String),
+}
+
+/// URLs and hash-like words in a commit message, with their byte ranges.
+pub fn find_links(text: &str) -> Vec<(std::ops::Range<usize>, Link)> {
+    let mut links = Vec::new();
+    let bytes = text.as_bytes();
+    let mut ix = 0;
+    while ix < text.len() {
+        let rest = &text[ix..];
+        if rest.starts_with("https://") || rest.starts_with("http://") {
+            let len = rest.find(|c: char| c.is_whitespace() || "<>\"'`".contains(c)).unwrap_or(rest.len());
+            // Trailing punctuation belongs to the sentence, not the URL.
+            let url = rest[..len].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']']);
+            links.push((ix..ix + url.len(), Link::Url(url.to_owned())));
+            ix += len.max(1);
+            continue;
+        }
+        let at_word_start = ix == 0 || !bytes[ix - 1].is_ascii_alphanumeric();
+        if at_word_start && bytes[ix].is_ascii_hexdigit() {
+            let len = rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len());
+            let word = &rest[..len];
+            if (7..=40).contains(&len) && word.bytes().all(|b| b.is_ascii_hexdigit()) && word.bytes().any(|b| b.is_ascii_digit()) {
+                links.push((ix..ix + len, Link::Commit(word.to_ascii_lowercase())));
+            }
+            ix += len.max(1);
+            continue;
+        }
+        ix += rest.chars().next().map_or(1, char::len_utf8);
+    }
+    links
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    #[test]
+    fn finds_urls_and_hashes() {
+        let text = "Revert 1a2b3c4d (see https://example.com/issues/12). Café deadbeef";
+        let links = find_links(text);
+        assert_eq!(links.len(), 2);
+        assert_eq!(&text[links[0].0.clone()], "1a2b3c4d");
+        assert_eq!(links[1].1, Link::Url("https://example.com/issues/12".into()));
+        assert_eq!(&text[links[1].0.clone()], "https://example.com/issues/12");
+    }
+}
