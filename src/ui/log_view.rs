@@ -87,6 +87,10 @@ pub struct LogView {
     recent_branch_filters: Vec<Vec<String>>,
     recent_user_filters: Vec<String>,
     recent_path_filters: Vec<Vec<String>>,
+    /// Branches panel › Expand All / Collapse All, until the next toggle.
+    branch_tree_expanded: Option<bool>,
+    /// Branches panel › Show My Branches: only refs whose tip I authored.
+    my_branches: bool,
     /// Commits selected besides the model's selected (lead) commit, by
     /// Ctrl/Cmd-click or Shift-click.
     extra_selection: HashSet<String>,
@@ -175,6 +179,8 @@ impl LogView {
             recent_branch_filters: Vec::new(),
             recent_user_filters: Vec::new(),
             recent_path_filters: Vec::new(),
+            branch_tree_expanded: None,
+            my_branches: false,
             extra_selection: HashSet::new(),
             anchor: None,
             _search_debounce: None,
@@ -259,6 +265,20 @@ impl LogView {
         });
     }
 
+    /// Runs the branch popup's action (matched by label) on the branch
+    /// selected in the Branches panel, so the toolbar and menus agree.
+    fn run_selected_branch_action(&mut self, matches: fn(&str) -> bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.branches.read(cx).selected_item().map(|i| i.id.to_string()) else { return };
+        let Some(full) = id.strip_prefix(BRANCH_PREFIX) else { return };
+        let refs = self.model.read(cx).refs().clone();
+        let Some(reference) = refs.find(full).cloned() else { return };
+        let remotes = crate::ui::branches_popup::remote_names(&refs);
+        let actions = crate::ui::branches_popup::branch_actions(&self.model, &reference, refs.current_branch.as_deref(), &remotes);
+        if let Some(action) = actions.into_iter().find(|a| a.enabled && matches(&a.label)) {
+            (action.run)(window, cx);
+        }
+    }
+
     fn rebuild_branches(&mut self, cx: &mut Context<Self>) {
         let mut refs = self.model.read(cx).refs().clone();
         // Speed search: keep matching refs only, with every folder open.
@@ -266,6 +286,21 @@ impl LogView {
         let searching = !query.is_empty();
         if searching {
             refs.refs.retain(|r| r.name.to_lowercase().contains(&query));
+        }
+        if self.my_branches {
+            let model = self.model.read(cx);
+            let me = model.user_email().map(str::to_lowercase);
+            let tips = model
+                .repository()
+                .and_then(|repo| repo.run(["for-each-ref", "--format=%(refname)%09%(authoremail)", "refs/heads", "refs/remotes"]).ok())
+                .unwrap_or_default();
+            let mine: HashSet<String> = tips
+                .lines()
+                .filter_map(|line| line.split_once('\t'))
+                .filter(|(_, email)| me.as_deref().is_some_and(|me| email.trim_matches(['<', '>']).to_lowercase() == me))
+                .map(|(name, _)| name.to_owned())
+                .collect();
+            refs.refs.retain(|r| r.kind == RefKind::Tag || mine.contains(&r.full_name));
         }
         // Favorites first within each group, as IntelliJ pins them.
         refs.refs.sort_by_key(|r| (r.kind, !refs.favorites.contains(&r.full_name)));
@@ -302,8 +337,10 @@ impl LogView {
                 ),
             );
         }
-        if searching {
+        if searching || self.branch_tree_expanded == Some(true) {
             items = items.into_iter().map(expand_all).collect();
+        } else if self.branch_tree_expanded == Some(false) {
+            items = items.into_iter().map(collapse_all).collect();
         }
         self.branches.update(cx, |tree, cx| tree.set_items(items, cx));
     }
@@ -1178,6 +1215,36 @@ impl LogView {
                             });
                         },
                     )))
+                    .child(tool_button("branches-update", IconName::ArrowDownToLine, "Update Selected").on_click(cx.listener(
+                        |this, _, window, cx| this.run_selected_branch_action(|label| label == "Update", window, cx),
+                    )))
+                    .child(tool_button("branches-delete", IconName::Delete, "Delete").on_click(cx.listener(
+                        |this, _, window, cx| this.run_selected_branch_action(|label| label == "Delete", window, cx),
+                    )))
+                    .child(tool_button("branches-compare", IconName::GitCompare, "Compare with Current").on_click(cx.listener(
+                        |this, _, window, cx| this.run_selected_branch_action(|label| label.starts_with("Compare with"), window, cx),
+                    )))
+                    .child(
+                        tool_button("branches-mine", IconName::User, "Show My Branches")
+                            .selected(self.my_branches)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.my_branches = !this.my_branches;
+                                this.rebuild_branches(cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(tool_button("branches-expand", IconName::ChevronsUpDown, "Expand All").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.branch_tree_expanded = Some(true);
+                            this.rebuild_branches(cx);
+                        },
+                    )))
+                    .child(tool_button("branches-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.branch_tree_expanded = Some(false);
+                            this.rebuild_branches(cx);
+                        },
+                    )))
                     .child(tool_button("branches-filter", IconName::ListFilter, "Filter Log by Selected Branch").on_click(
                         cx.listener(|this, _, _, cx| {
                             let selected = this.branches.read(cx).selected_item().map(|i| i.id.clone());
@@ -1188,7 +1255,14 @@ impl LogView {
                             this.update_filter(cx, |f| f.branches = name.into_iter().collect());
                         }),
                     ))
-                    .child(div().flex_1().ml_1().child(Input::new(&self.branch_search).xsmall().cleanable(true))),
+            )
+            .child(
+                div()
+                    .px_1()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(Input::new(&self.branch_search).xsmall().cleanable(true)),
             )
             .child(
                 div().flex_1().min_h_0().child(
@@ -1503,6 +1577,14 @@ fn branch_menu(
             })
         },
     ))
+}
+
+fn collapse_all(mut item: TreeItem) -> TreeItem {
+    if item.children.is_empty() {
+        return item;
+    }
+    item.children = std::mem::take(&mut item.children).into_iter().map(collapse_all).collect();
+    item.expanded(false)
 }
 
 fn expand_all(mut item: TreeItem) -> TreeItem {

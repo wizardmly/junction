@@ -29,7 +29,7 @@
 | 分支搜索（直接输入） | M1 | ✅（Log 分支面板顶部搜索框，过滤并展开所有匹配；分支弹窗打开即聚焦搜索） |
 | 单击定位到分支顶端、双击按分支过滤 Log | M1 | ✅ |
 | ahead/behind 指示（↑↓ 箭头） | M2 | ✅ |
-| 工具栏：New Branch、Update Selected、Delete、Compare with Current、Show My Branches、Fetch、展开/折叠 | M2 | 🟡（New Branch、Fetch、按分支过滤、Compare with Current 在分支弹窗） |
+| 工具栏：New Branch、Update Selected、Delete、Compare with Current、Show My Branches、Fetch、展开/折叠 | M2 | ✅（New Branch、Fetch、Update Selected、Delete、Compare with Current、Show My Branches、展开/折叠、按分支过滤） |
 | 多仓库根时按仓库分组 | M5 | ⬜ |
 | 右键菜单：与分支弹窗动作一致（见 §4） | M2 | ✅（与分支弹窗相同的动作 + Add to / Remove from Favorites） |
 
