@@ -23,6 +23,7 @@ use gpui_kit::{
 
 use crate::git::status::{self, CommitRequest};
 use crate::git::StatusKind;
+use crate::git::merge::{self, Conflict};
 use crate::model::{RepoEvent, RepoModel};
 use crate::settings::Settings;
 use crate::theme::ActivePalette as _;
@@ -33,6 +34,8 @@ pub enum CommitEvent {
     OpenDiff(DiffSource),
     /// "Commit and Push…" committed; show the Push dialog next.
     OpenPush,
+    /// A conflicted file was picked: open the merge tool.
+    OpenMerge(Conflict),
 }
 
 impl EventEmitter<CommitEvent> for CommitView {}
@@ -96,7 +99,13 @@ impl CommitView {
                 let selected = tree.read(cx).selected_item().map(|i| i.id.clone());
                 if selected != this.last_selection {
                     this.last_selection = selected.clone();
-                    if let Some(source) = selected.and_then(|id| this.diff_source(&id)) {
+                    let path = selected.as_deref().and_then(Self::path_of).map(|(_, p)| p.to_owned());
+                    let conflict = path.and_then(|path| {
+                        merge::conflicts(this.model.read(cx).status()).into_iter().find(|c| c.path == path)
+                    });
+                    if let Some(conflict) = conflict.filter(|c| c.kind.can_merge()) {
+                        cx.emit(CommitEvent::OpenMerge(conflict));
+                    } else if let Some(source) = selected.and_then(|id| this.diff_source(&id)) {
                         cx.emit(CommitEvent::OpenDiff(source));
                     }
                 }

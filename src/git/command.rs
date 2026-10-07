@@ -118,6 +118,8 @@ impl Repository {
             .args(["-c", "core.quotepath=false", "-c", "color.ui=false", "-c", "log.showSignature=false"])
             .args(&args)
             .env("GIT_TERMINAL_PROMPT", "0")
+            // Never block on an editor (rebase/cherry-pick --continue, merge commits).
+            .env("GIT_EDITOR", "true")
             .env("LC_ALL", "C")
             .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())

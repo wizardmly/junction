@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui_kit::component::{
+    Disableable as _,
     Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
@@ -12,7 +13,7 @@ use gpui_kit::component::{
     radio::RadioGroup,
     v_flex,
 };
-use gpui_kit::{App, AppContext as _, Entity, ParentElement as _, Styled as _, Window, div, px};
+use gpui_kit::{App, AppContext as _, Entity, ParentElement as _, SharedString, Styled as _, Window, div, px};
 
 use crate::model::RepoModel;
 use crate::settings::{Settings, UpdateMethod};
@@ -592,5 +593,121 @@ pub fn settings(window: &mut Window, cx: &mut App) {
                 window.refresh();
                 true
             })
+    });
+}
+
+/// Opens the merge tool for a conflict (handed in by the workspace).
+pub type OpenMerge = Rc<dyn Fn(crate::git::merge::Conflict, &mut Window, &mut App)>;
+
+/// IntelliJ's Conflicts dialog: conflicted files with what each side did,
+/// and Accept Yours / Accept Theirs / Merge…. It stays open, refreshing as
+/// files are resolved, until the user closes it.
+pub fn conflicts(model: Entity<RepoModel>, open_merge: OpenMerge, window: &mut Window, cx: &mut App) {
+    use crate::git::merge;
+    use gpui_kit::component::h_flex;
+    use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _};
+
+    let selected = Rc::new(Cell::new(0usize));
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let palette = cx.palette().clone();
+        let state = model.read(cx).state();
+        let (ours_title, theirs_title) = merge::side_titles(state);
+        let conflicts = merge::conflicts(model.read(cx).status());
+        let current = selected.get().min(conflicts.len().saturating_sub(1));
+        let chosen = conflicts.get(current).cloned();
+
+        let mut list = v_flex().border_1().border_color(palette.border).rounded_md().h(px(220.)).overflow_hidden().child(
+            h_flex()
+                .px_2()
+                .h(px(24.))
+                .text_xs()
+                .text_color(palette.text_secondary)
+                .border_b_1()
+                .border_color(palette.border)
+                .child(div().flex_1().child("Name"))
+                .child(div().w(px(90.)).child("Yours"))
+                .child(div().w(px(90.)).child("Theirs")),
+        );
+        for (ix, conflict) in conflicts.iter().enumerate() {
+            let (yours, theirs) = conflict.kind.sides();
+            let select = selected.clone();
+            let open = open_merge.clone();
+            let merge_conflict = conflict.clone();
+            list = list.child(
+                h_flex()
+                    .id(SharedString::from(format!("conflict-{ix}")))
+                    .px_2()
+                    .h(px(24.))
+                    .text_sm()
+                    .when(ix == current, |el| el.bg(palette.selection))
+                    .on_click(move |event, window, cx| {
+                        select.set(ix);
+                        // Double-click opens the merge tool, as in IntelliJ.
+                        if event.click_count() >= 2 && merge_conflict.kind.can_merge() {
+                            window.close_dialog(cx);
+                            open(merge_conflict.clone(), window, cx);
+                        }
+                        window.refresh();
+                    })
+                    .child(div().flex_1().text_color(palette.status_conflict).child(conflict.path.clone()))
+                    .child(div().w(px(90.)).text_color(palette.text_secondary).child(yours))
+                    .child(div().w(px(90.)).text_color(palette.text_secondary).child(theirs)),
+            );
+        }
+        if conflicts.is_empty() {
+            list = list.child(div().p_3().text_sm().text_color(palette.text_secondary).child("All conflicts have been resolved"));
+        }
+
+        let accept = |ours: bool| {
+            let model = model.clone();
+            let chosen = chosen.clone();
+            move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
+                let Some(conflict) = chosen.clone() else { return };
+                model.update(cx, |m, cx| {
+                    m.run_operation(if ours { "Accept Yours" } else { "Accept Theirs" }, move |repo| {
+                        merge::accept(repo, &conflict, ours)?;
+                        Ok(String::new())
+                    }, cx)
+                });
+            }
+        };
+        let open = open_merge.clone();
+        let merge_target = chosen.clone();
+        dialog
+            .title("Conflicts")
+            .w(px(620.))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().text_color(palette.text_secondary).child(format!("Left: {ours_title}  ·  Right: {theirs_title}")))
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .items_start()
+                            .child(div().flex_1().child(list))
+                            .child(
+                                v_flex()
+                                    .w(px(130.))
+                                    .gap_2()
+                                    .child(Button::new("conflict-yours").outline().small().w_full().label("Accept Yours").disabled(chosen.is_none()).on_click(accept(true)))
+                                    .child(Button::new("conflict-theirs").outline().small().w_full().label("Accept Theirs").disabled(chosen.is_none()).on_click(accept(false)))
+                                    .child(
+                                        Button::new("conflict-merge")
+                                            .primary()
+                                            .small()
+                                            .w_full()
+                                            .label("Merge…")
+                                            .disabled(!chosen.as_ref().is_some_and(|c| c.kind.can_merge()))
+                                            .on_click(move |_, window, cx| {
+                                                if let Some(conflict) = merge_target.clone() {
+                                                    window.close_dialog(cx);
+                                                    open(conflict, window, cx);
+                                                }
+                                            }),
+                                    ),
+                            ),
+                    ),
+            )
+            .footer(DialogFooter::new().child(DialogClose::new().child(Button::new("conflicts-close").label("Close").outline())))
     });
 }

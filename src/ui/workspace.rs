@@ -3,7 +3,9 @@
 //! editor area (diff), the bottom Git tool window (Log / Console), and the
 //! status bar.
 
+use std::rc::Rc;
 use gpui_kit::component::{
+    Disableable as _,
     Selectable as _,
     ActiveTheme as _, Icon, Sizable as _, TitleBar, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -29,6 +31,9 @@ use crate::ui::common::tool_button;
 use crate::ui::diff_view::{DiffView, NextDifference, PreviousDifference};
 use crate::settings::Settings;
 use crate::ui::dialogs;
+use crate::ui::merge_view::{MergeEvent, MergeView};
+use crate::git::RepositoryState;
+use crate::git::merge::{self, Conflict, OperationStep};
 use crate::ui::log_view::{LogEvent, LogView};
 use crate::ui::stash_view::{StashEvent, StashView};
 
@@ -70,6 +75,8 @@ pub struct Workspace {
     stash: Entity<StashView>,
     diff: Entity<DiffView>,
     branches_popup: Entity<BranchesPopup>,
+    /// The merge tool, shown in the editor area instead of the diff.
+    merge: Option<(Entity<MergeView>, Subscription)>,
     show_commit: bool,
     show_git: bool,
     left_tab: LeftTab,
@@ -93,6 +100,7 @@ impl Workspace {
             cx.subscribe_in(&commit, window, |this, _, event: &CommitEvent, window, cx| match event {
                 CommitEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
                 CommitEvent::OpenPush => dialogs::push(this.model.clone(), window, cx),
+                CommitEvent::OpenMerge(conflict) => this.open_merge(conflict.clone(), window, cx),
             }),
             cx.subscribe(&stash, |this, _, event: &StashEvent, cx| match event {
                 StashEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
@@ -159,6 +167,7 @@ impl Workspace {
             stash,
             diff,
             branches_popup,
+            merge: None,
             show_commit: true,
             show_git: true,
             left_tab: LeftTab::Commit,
@@ -167,6 +176,101 @@ impl Workspace {
             bottom_tab: BottomTab::Log,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn show_conflicts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = cx.entity();
+        dialogs::conflicts(
+            self.model.clone(),
+            Rc::new(move |conflict, window, cx| workspace.update(cx, |this, cx| this.open_merge(conflict, window, cx))),
+            window,
+            cx,
+        );
+    }
+
+    pub fn open_merge(&mut self, conflict: Conflict, window: &mut Window, cx: &mut Context<Self>) {
+        if !conflict.kind.can_merge() {
+            return;
+        }
+        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        if self.merge.as_ref().is_some_and(|(m, _)| m.read(cx).path() == conflict.path) {
+            return;
+        }
+        let model = self.model.clone();
+        let view = cx.new(|cx| MergeView::new(model, repository, conflict, cx));
+        let subscription = cx.subscribe_in(&view, window, |this, _, event: &MergeEvent, window, cx| match event {
+            MergeEvent::Closed(applied) => {
+                this.merge = None;
+                // Back to the Conflicts dialog while other files still conflict.
+                let others = merge::conflicts(this.model.read(cx).status()).len() > 1;
+                if *applied && others {
+                    this.show_conflicts(window, cx);
+                }
+                cx.notify();
+            }
+        });
+        self.merge = Some((view, subscription));
+        cx.notify();
+    }
+
+    /// "Rebasing main · 2 conflicts · Resolve… Continue Skip Abort", above the editor.
+    fn render_operation_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let model = self.model.read(cx);
+        let state = model.state();
+        if state == RepositoryState::Normal {
+            return None;
+        }
+        let palette = cx.palette().clone();
+        let conflicts = merge::conflicts(model.status());
+        let label = match state {
+            RepositoryState::Rebasing => "Rebase in progress",
+            RepositoryState::Merging => "Merge in progress",
+            RepositoryState::CherryPicking => "Cherry-pick in progress",
+            RepositoryState::Reverting => "Revert in progress",
+            RepositoryState::Normal => "",
+        };
+        let step = |step: OperationStep| {
+            let model = self.model.clone();
+            move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
+                model.update(cx, |m, cx| m.run_operation("Git", move |repo| merge::step(repo, state, step), cx));
+            }
+        };
+        let entity = cx.entity();
+        Some(
+            h_flex()
+                .h(px(34.))
+                .px_3()
+                .gap_2()
+                .text_sm()
+                .bg(if conflicts.is_empty() { palette.diff_header } else { palette.diff_deleted })
+                .border_b_1()
+                .border_color(palette.border)
+                .child(Icon::new(IconName::GitMergeConflict).small())
+                .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(label))
+                .child(div().text_color(palette.text_secondary).child(match conflicts.len() {
+                    0 => "All conflicts resolved".to_owned(),
+                    1 => "1 file with conflicts".to_owned(),
+                    n => format!("{n} files with conflicts"),
+                }))
+                .child(div().flex_1())
+                .when(!conflicts.is_empty(), |el| {
+                    el.child(Button::new("op-resolve").small().primary().label("Resolve…").on_click(move |_, window, cx| {
+                        entity.update(cx, |this, cx| this.show_conflicts(window, cx))
+                    }))
+                })
+                .child(
+                    Button::new("op-continue")
+                        .small()
+                        .outline()
+                        .label("Continue")
+                        .disabled(!conflicts.is_empty())
+                        .on_click(step(OperationStep::Continue)),
+                )
+                .when(state != RepositoryState::Merging, |el| {
+                    el.child(Button::new("op-skip").small().outline().label("Skip").on_click(step(OperationStep::Skip)))
+                })
+                .child(Button::new("op-abort").small().outline().label("Abort").on_click(step(OperationStep::Abort))),
+        )
     }
 
     fn open_diff(&mut self, source: crate::ui::diff_view::DiffSource, cx: &mut Context<Self>) {
@@ -539,7 +643,11 @@ impl Render for Workspace {
             .when_some(error, |el, error| {
                 el.child(div().p_2().text_sm().text_color(palette.status_conflict).child(error))
             })
-            .child(div().flex_1().min_h_0().child(self.diff.clone()));
+            .children(self.render_operation_banner(cx))
+            .child(div().flex_1().min_h_0().map(|el| match &self.merge {
+                Some((merge, _)) => el.child(merge.clone()),
+                None => el.child(self.diff.clone()),
+            }));
 
         let top = h_resizable("top-split")
             .child(
