@@ -83,6 +83,10 @@ pub struct LogView {
     /// Commits reachable from HEAD among the loaded ones, for the Current
     /// Branch / Not Merged highlighters; keyed by the commit list and HEAD.
     head_reachable: Option<(usize, Option<String>, Rc<HashSet<String>>)>,
+    /// Recently used Branch / User / Paths filters, newest first (filter history).
+    recent_branch_filters: Vec<Vec<String>>,
+    recent_user_filters: Vec<String>,
+    recent_path_filters: Vec<Vec<String>>,
     /// Commits selected besides the model's selected (lead) commit, by
     /// Ctrl/Cmd-click or Shift-click.
     extra_selection: HashSet<String>,
@@ -168,6 +172,9 @@ impl LogView {
             show_branches: true,
             show_details: true,
             head_reachable: None,
+            recent_branch_filters: Vec::new(),
+            recent_user_filters: Vec::new(),
+            recent_path_filters: Vec::new(),
             extra_selection: HashSet::new(),
             anchor: None,
             _search_debounce: None,
@@ -194,7 +201,62 @@ impl LogView {
     fn update_filter(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut LogFilter)) {
         let mut filter = self.model.read(cx).filter().clone();
         edit(&mut filter);
+        // Filter history: each filter remembers its last few values.
+        fn remember<T: PartialEq + Clone>(list: &mut Vec<T>, value: &T) {
+            list.retain(|v| v != value);
+            list.insert(0, value.clone());
+            list.truncate(5);
+        }
+        if filter.branches.len() > 1 || filter.branches.first().is_some_and(|b| b != "HEAD") {
+            remember(&mut self.recent_branch_filters, &filter.branches);
+        }
+        if let Some(author) = &filter.author {
+            remember(&mut self.recent_user_filters, author);
+        }
+        if !filter.paths.is_empty() && filter.lines.is_none() {
+            remember(&mut self.recent_path_filters, &filter.paths);
+        }
         self.model.update(cx, |model, cx| model.set_filter(filter, cx));
+    }
+
+    /// Branch › Select…: several branches at once.
+    fn select_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let refs = self.model.read(cx).refs().clone();
+        let names: Vec<String> = refs.local_branches().chain(refs.remote_branches()).chain(refs.tags()).map(|r| r.name.clone()).collect();
+        let checked: Rc<std::cell::RefCell<HashSet<String>>> =
+            Rc::new(std::cell::RefCell::new(self.model.read(cx).filter().branches.iter().cloned().collect()));
+        let entity = cx.entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let mut list = v_flex().gap_1().max_h(px(360.)).overflow_y_scrollbar().id("select-branches");
+            for (ix, name) in names.iter().enumerate() {
+                let (state, name_c) = (checked.clone(), name.clone());
+                list = list.child(
+                    gpui_kit::component::checkbox::Checkbox::new(SharedString::from(format!("sel-branch-{ix}")))
+                        .label(name.clone())
+                        .checked(checked.borrow().contains(name))
+                        .on_change(move |v, window, _| {
+                            if *v {
+                                state.borrow_mut().insert(name_c.clone());
+                            } else {
+                                state.borrow_mut().remove(&name_c);
+                            }
+                            window.refresh();
+                        }),
+                );
+            }
+            let (checked, entity, names) = (checked.clone(), entity.clone(), names.clone());
+            dialog
+                .title("Select Branches")
+                .w(px(380.))
+                .child(list)
+                .footer(dialogs::footer("OK"))
+                .on_ok(move |_, _, cx| {
+                    let chosen = checked.borrow();
+                    let branches: Vec<String> = names.iter().filter(|n| chosen.contains(*n)).cloned().collect();
+                    entity.update(cx, |this, cx| this.update_filter(cx, |f| f.branches = branches));
+                    true
+                })
+        });
     }
 
     fn rebuild_branches(&mut self, cx: &mut Context<Self>) {
@@ -589,6 +651,7 @@ impl LogView {
                 let entity = entity.clone();
                 let refs = refs.clone();
                 let selected = filter.branches.clone();
+                let recent_branches = self.recent_branch_filters.clone();
                 move |mut menu, _, _| {
                     let set = |entity: &Entity<LogView>, branches: Vec<String>| {
                         let entity = entity.clone();
@@ -598,9 +661,22 @@ impl LogView {
                         }
                     };
                     menu = menu.item(PopupMenuItem::new("All").checked(selected.is_empty()).on_click(set(&entity, vec![])));
-                    if let Some(current) = &refs.current_branch {
-                        menu = menu.item(PopupMenuItem::new("HEAD").on_click(set(&entity, vec!["HEAD".into()])));
-                        let _ = current;
+                    if refs.current_branch.is_some() || refs.head_commit.is_some() {
+                        menu = menu.item(PopupMenuItem::new("HEAD").checked(selected == ["HEAD"]).on_click(set(&entity, vec!["HEAD".into()])));
+                    }
+                    let favorites: Vec<String> = refs.refs.iter().filter(|r| refs.favorites.contains(&r.full_name)).map(|r| r.name.clone()).collect();
+                    if !favorites.is_empty() {
+                        menu = menu.item(PopupMenuItem::new("Favorites").checked(selected == favorites).on_click(set(&entity, favorites.clone())));
+                    }
+                    let select_entity = entity.clone();
+                    menu = menu.item(PopupMenuItem::new("Select…").on_click(move |_, window, cx| {
+                        select_entity.update(cx, |this, cx| this.select_branches(window, cx))
+                    }));
+                    if !recent_branches.is_empty() {
+                        menu = menu.separator().label("Recent");
+                        for recent in &recent_branches {
+                            menu = menu.item(PopupMenuItem::new(recent.join(", ")).checked(&selected == recent).on_click(set(&entity, recent.clone())));
+                        }
                     }
                     menu = menu.separator().label("Local");
                     for branch in refs.local_branches() {
@@ -626,6 +702,7 @@ impl LogView {
             .child(filter_button("filter-user", user_label, filter.author.is_some()).dropdown_menu({
                 let entity = entity.clone();
                 let current = filter.author.clone();
+                let recent_users = self.recent_user_filters.clone();
                 move |mut menu, _, _| {
                     let set = |author: Option<String>| {
                         let entity = entity.clone();
@@ -641,6 +718,17 @@ impl LogView {
                                 .checked(current.as_deref() == Some(email.as_str()))
                                 .on_click(set(Some(email.clone()))),
                         );
+                    }
+                    let recent_users: Vec<&String> = recent_users.iter().filter(|u| Some(*u) != user_email.as_ref()).collect();
+                    if !recent_users.is_empty() {
+                        menu = menu.separator().label("Recent");
+                        for author in recent_users {
+                            menu = menu.item(
+                                PopupMenuItem::new(author.clone())
+                                    .checked(current.as_ref() == Some(author))
+                                    .on_click(set(Some(author.clone()))),
+                            );
+                        }
                     }
                     menu = menu.separator();
                     for author in &authors {
@@ -688,6 +776,7 @@ impl LogView {
                 };
                 let entity = entity.clone();
                 let current = filter.paths.clone();
+                let recent_paths = self.recent_path_filters.clone();
                 filter_button("filter-path", label, !filter.paths.is_empty()).dropdown_menu(move |mut menu, _, _| {
                     let clear = entity.clone();
                     menu = menu.item(PopupMenuItem::new("All").checked(current.is_empty()).on_click(move |_, _, cx| {
@@ -697,10 +786,14 @@ impl LogView {
                     menu = menu.item(PopupMenuItem::new("Select Folders…").on_click(move |_, _, cx| {
                         pick.update(cx, |this, cx| this.select_paths(cx))
                     }));
-                    if !current.is_empty() {
-                        menu = menu.separator();
-                        for path in &current {
-                            menu = menu.item(PopupMenuItem::new(path.clone()).checked(true));
+                    if !recent_paths.is_empty() {
+                        menu = menu.separator().label("Recent");
+                        for paths in &recent_paths {
+                            let (entity, paths_c) = (entity.clone(), paths.clone());
+                            menu = menu.item(PopupMenuItem::new(paths.join(", ")).checked(&current == paths).on_click(move |_, _, cx| {
+                                let paths = paths_c.clone();
+                                entity.update(cx, |this, cx| this.update_filter(cx, |f| f.paths = paths))
+                            }));
                         }
                     }
                     menu
