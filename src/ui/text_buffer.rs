@@ -51,6 +51,17 @@ impl Buffer {
         self.starts.partition_point(|s| *s <= offset).saturating_sub(1)
     }
 
+    /// The bytes of whole lines, line breaks included (the last line may
+    /// have none).
+    pub fn lines_span(&self, lines: Range<usize>) -> Range<usize> {
+        let at = |line: usize| if line < self.line_count() { self.starts[line] } else { self.text.len() };
+        at(lines.start)..at(lines.end)
+    }
+
+    pub fn lines_text(&self, lines: Range<usize>) -> &str {
+        &self.text[self.lines_span(lines)]
+    }
+
     /// The line break the file mostly uses.
     pub fn newline(&self) -> &'static str {
         if self.text.contains("\r\n") { "\r\n" } else { "\n" }
@@ -204,27 +215,35 @@ pub enum EditKind {
 }
 
 #[derive(Clone, Debug)]
-struct Snapshot {
+struct Snapshot<T> {
     text: String,
     selection: Selection,
+    extra: T,
 }
 
-/// Undo and redo as whole-text snapshots: diff panes hold one file, and a
+/// Undo and redo as whole-text snapshots: a pane holds one file, and a
 /// snapshot keeps every edit (typing, revert, paste) on one simple path.
-#[derive(Default)]
-pub struct History {
-    undo: Vec<Snapshot>,
-    redo: Vec<Snapshot>,
+/// `T` is the owner's own state that must undo along with the text (the
+/// merge tool's change states).
+pub struct History<T = ()> {
+    undo: Vec<Snapshot<T>>,
+    redo: Vec<Snapshot<T>>,
     last: Option<EditKind>,
 }
 
-impl History {
+impl<T> Default for History<T> {
+    fn default() -> Self {
+        History { undo: Vec::new(), redo: Vec::new(), last: None }
+    }
+}
+
+impl<T: Clone> History<T> {
     /// Records the state before an edit; typing runs coalesce.
-    pub fn record(&mut self, buffer: &Buffer, selection: Selection, kind: EditKind) {
+    pub fn record(&mut self, buffer: &Buffer, selection: Selection, extra: &T, kind: EditKind) {
         if kind != EditKind::Other && self.last == Some(kind) {
             return;
         }
-        self.undo.push(Snapshot { text: buffer.text().to_owned(), selection });
+        self.undo.push(Snapshot { text: buffer.text().to_owned(), selection, extra: extra.clone() });
         if self.undo.len() > 500 {
             self.undo.remove(0);
         }
@@ -237,20 +256,22 @@ impl History {
         self.last = None;
     }
 
-    pub fn undo(&mut self, buffer: &mut Buffer, selection: &mut Selection) -> bool {
+    pub fn undo(&mut self, buffer: &mut Buffer, selection: &mut Selection, extra: &mut T) -> bool {
         let Some(snapshot) = self.undo.pop() else { return false };
-        self.redo.push(Snapshot { text: buffer.text().to_owned(), selection: *selection });
+        self.redo.push(Snapshot { text: buffer.text().to_owned(), selection: *selection, extra: extra.clone() });
         buffer.set_text(snapshot.text);
         *selection = snapshot.selection;
+        *extra = snapshot.extra;
         self.last = None;
         true
     }
 
-    pub fn redo(&mut self, buffer: &mut Buffer, selection: &mut Selection) -> bool {
+    pub fn redo(&mut self, buffer: &mut Buffer, selection: &mut Selection, extra: &mut T) -> bool {
         let Some(snapshot) = self.redo.pop() else { return false };
-        self.undo.push(Snapshot { text: buffer.text().to_owned(), selection: *selection });
+        self.undo.push(Snapshot { text: buffer.text().to_owned(), selection: *selection, extra: extra.clone() });
         buffer.set_text(snapshot.text);
         *selection = snapshot.selection;
+        *extra = snapshot.extra;
         self.last = None;
         true
     }
@@ -293,14 +314,14 @@ mod tests {
         let mut sel = Selection::caret(1);
         let mut h = History::default();
         for ch in ["b", "c"] {
-            h.record(&b, sel, EditKind::Typing);
+            h.record(&b, sel, &(), EditKind::Typing);
             b.replace(sel.head..sel.head, ch);
             sel = Selection::caret(sel.head + 1);
         }
         assert_eq!(b.text(), "abc");
-        assert!(h.undo(&mut b, &mut sel));
+        assert!(h.undo(&mut b, &mut sel, &mut ()));
         assert_eq!((b.text(), sel.head), ("a", 1));
-        assert!(h.redo(&mut b, &mut sel));
+        assert!(h.redo(&mut b, &mut sel, &mut ()));
         assert_eq!(b.text(), "abc");
     }
 

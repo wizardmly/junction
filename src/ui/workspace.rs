@@ -86,8 +86,8 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("alt-`", VcsOperations, Some(CONTEXT)),
         KeyBinding::new("f7", NextDifference, Some(CONTEXT)),
         KeyBinding::new("f4", JumpToSource, Some(CONTEXT)),
-        KeyBinding::new("secondary-v", crate::ui::diff_view::Paste, Some(crate::ui::diff_view::PANE_CONTEXT)),
-        KeyBinding::new("shift-insert", crate::ui::diff_view::Paste, Some(crate::ui::diff_view::PANE_CONTEXT)),
+        KeyBinding::new("secondary-v", crate::ui::text_panes::Paste, Some(crate::ui::text_panes::PANE_CONTEXT)),
+        KeyBinding::new("shift-insert", crate::ui::text_panes::Paste, Some(crate::ui::text_panes::PANE_CONTEXT)),
         KeyBinding::new("shift-f7", PreviousDifference, Some(CONTEXT)),
         // Navigation, IntelliJ's default keymap.
         KeyBinding::new("secondary-shift-n", GotoFile, Some(CONTEXT)),

@@ -8,6 +8,7 @@ pub mod dialogs;
 pub mod diff_panes;
 pub mod diff_view;
 pub mod text_buffer;
+pub mod text_panes;
 pub mod file_editor;
 pub mod graph_paint;
 pub mod log_view;

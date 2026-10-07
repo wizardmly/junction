@@ -1,0 +1,1334 @@
+//! The editor panes IntelliJ's diff and merge viewers are made of: each pane
+//! shows one text (rows may be collapsed into folds), with its gutter on the
+//! side that faces the divider, syntax colors, a caret and selection, and,
+//! for the one editable pane, typing, IME, undo and the clipboard. Panes
+//! scroll together through the change blocks that link them.
+//!
+//! A view owns a [`TextPanes`] and implements [`PaneHost`]; the generic
+//! glue here turns events into caret moves and edits, and tells the host
+//! when the editable text changed.
+
+use std::cell::{Cell, RefCell};
+use std::ops::Range;
+use std::rc::Rc;
+use std::time::Duration;
+
+use gpui_kit::component::{ActiveTheme as _, h_flex};
+use gpui_kit::{
+    AnyElement, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler, FocusHandle, HighlightStyle, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ParentElement as _, Pixels, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText,
+    TextRun, UTF16Selection, Window, actions, canvas, div, fill, font, point, prelude::FluentBuilder as _, px, size,
+};
+
+use crate::theme::Palette;
+use crate::ui::common;
+use crate::ui::diff_panes::{LINE_HEIGHT, Segment, map_row};
+use crate::ui::text_buffer::{Buffer, EditKind, History, Selection};
+
+actions!(text_panes, [Paste]);
+
+/// The key context of the panes.
+pub const PANE_CONTEXT: &str = "TextPanes";
+pub const FONT_SIZE: f32 = 12.5;
+/// Text starts this far right of its cell's left edge.
+pub const TEXT_PADDING: f32 = 8.;
+pub const GUTTER_WIDTH: f32 = 44.;
+/// One gutter button column.
+pub const BUTTON_WIDTH: f32 = 20.;
+pub const STRIPE_WIDTH: f32 = 12.;
+/// The gutter's change marker, against the divider.
+const MARKER_WIDTH: f32 = 3.;
+const TAB_WIDTH: usize = 4;
+/// Approximate advance of the monospace font, for horizontal scroll bounds.
+const CHAR_WIDTH: f32 = 7.6;
+
+/// What a pane row shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowTarget {
+    /// A buffer line (0-based).
+    Line(usize),
+    /// A collapsed run of lines.
+    Fold { id: usize, count: usize },
+}
+
+/// Where a buffer line is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineRow {
+    Row(usize),
+    /// Inside a collapsed fragment: (fold id, its row).
+    Fold(usize, usize),
+}
+
+/// How one row is painted, as the host decides.
+#[derive(Default)]
+pub struct RowLook {
+    pub background: Option<Hsla>,
+    /// Changed words, as byte ranges of the line.
+    pub words: Vec<(Range<usize>, Hsla)>,
+    /// The gutter marker (shown when line highlighting is off).
+    pub marker: Option<Hsla>,
+    /// Replaces the plain line number (a review diff's comment button).
+    pub number: Option<AnyElement>,
+}
+
+/// A pane's gutter: on the right of the text (`mirrored`, the left pane of
+/// a diff) or on its left. The button column (`>>`, `<<`, checkboxes) sits
+/// against the divider, the line numbers between it and the text.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PaneLayout {
+    pub mirrored: bool,
+    pub buttons: f32,
+}
+
+impl PaneLayout {
+    /// The pane-local x where text begins (before horizontal scrolling).
+    pub fn text_left(&self) -> f32 {
+        if self.mirrored { TEXT_PADDING } else { MARKER_WIDTH + GUTTER_WIDTH + self.buttons + TEXT_PADDING }
+    }
+
+    /// The pane-local x of the button column, from the pane's left (normal)
+    /// or right (mirrored) edge: right at the divider.
+    pub fn buttons_offset(&self) -> f32 {
+        MARKER_WIDTH
+    }
+}
+
+/// A line-level edit of the editable buffer: the lines `first..=old_last`
+/// became `first..=new_last`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineEdit {
+    pub first: usize,
+    pub old_last: usize,
+    pub new_last: usize,
+}
+
+pub struct TextPanes<T = ()> {
+    pub buffers: Vec<Buffer>,
+    /// The pane that edits, if any.
+    pub editable: Option<usize>,
+    /// The pane with the caret, and its selection.
+    pub caret: Option<(usize, Selection)>,
+    /// The display column Up / Down keep to.
+    goal: Option<usize>,
+    selecting: bool,
+    pub history: History<T>,
+    /// The host's state that undoes with the text.
+    pub extra: T,
+    marked: Option<Range<usize>>,
+    pub focus: FocusHandle,
+    highlighters: Vec<Option<gpui_kit::component::highlighter::SyntaxHighlighter>>,
+    rows: Vec<Vec<RowTarget>>,
+    line_rows: Vec<Vec<LineRow>>,
+    pub layouts: Vec<PaneLayout>,
+    /// Each pane's scroll position (x, y) in pixels.
+    pub scroll: Vec<(f32, f32)>,
+    /// Pairs of panes that scroll together, through their change blocks.
+    pub links: Vec<(usize, usize, Vec<Segment>)>,
+    /// Synchronize Scrolling.
+    pub sync: bool,
+    pub view_height: Rc<Cell<f32>>,
+    bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
+    stripe_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
+    stripe_drag: Option<usize>,
+    max_cols: Vec<usize>,
+    /// Ctrl is held (diff `>>` appends, merge arrows append).
+    pub ctrl_held: bool,
+    /// Rows to bring to a third of the height once the panes are measured.
+    pending: Option<Vec<(usize, usize)>>,
+    /// Edits since the host last took them.
+    pub line_edits: Vec<LineEdit>,
+    /// The last change came from undo / redo (the host's state was restored).
+    pub restored: bool,
+}
+
+/// What an event did, for the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Ignored,
+    Moved,
+    Edited,
+    OpenFold(usize),
+}
+
+impl<T: Clone + Default> TextPanes<T> {
+    pub fn new(panes: usize, cx: &mut App) -> Self {
+        TextPanes {
+            buffers: vec![Buffer::default(); panes],
+            editable: None,
+            caret: None,
+            goal: None,
+            selecting: false,
+            history: History::default(),
+            extra: T::default(),
+            marked: None,
+            focus: cx.focus_handle(),
+            highlighters: (0..panes).map(|_| None).collect(),
+            rows: vec![Vec::new(); panes],
+            line_rows: vec![Vec::new(); panes],
+            layouts: vec![PaneLayout::default(); panes],
+            scroll: vec![(0., 0.); panes],
+            links: Vec::new(),
+            sync: true,
+            view_height: Rc::new(Cell::new(0.)),
+            bounds: Rc::new(RefCell::new(vec![Bounds::default(); panes])),
+            stripe_bounds: Rc::new(RefCell::new(vec![Bounds::default(); panes])),
+            stripe_drag: None,
+            max_cols: vec![0; panes],
+            ctrl_held: false,
+            pending: None,
+            line_edits: Vec::new(),
+            restored: false,
+        }
+    }
+
+    /// New texts: forgets the caret, undo and highlighting.
+    pub fn set_texts(&mut self, texts: Vec<String>, language: &str) {
+        self.buffers = texts.into_iter().map(Buffer::new).collect();
+        self.caret = None;
+        self.marked = None;
+        self.history.clear();
+        self.line_edits.clear();
+        for pane in 0..self.buffers.len() {
+            self.highlight(pane, language);
+        }
+    }
+
+    /// Re-parses one pane for syntax colors.
+    pub fn highlight(&mut self, pane: usize, language: &str) {
+        let mut highlighter = gpui_kit::component::highlighter::SyntaxHighlighter::new(language);
+        highlighter.update(None, &gpui_kit::component::Rope::from_str(self.buffers[pane].text()), Some(Duration::from_millis(200)));
+        self.highlighters[pane] = Some(highlighter);
+    }
+
+    pub fn line_row(&self, pane: usize, line: usize) -> Option<LineRow> {
+        self.line_rows[pane].get(line).copied()
+    }
+
+    /// The host's rows for a pane (after a re-diff or a fold change).
+    pub fn set_rows(&mut self, pane: usize, rows: Vec<RowTarget>) {
+        let mut map = Vec::new();
+        for (ix, row) in rows.iter().enumerate() {
+            match *row {
+                RowTarget::Line(line) => {
+                    map.resize(line, LineRow::Row(ix));
+                    map.push(LineRow::Row(ix));
+                }
+                RowTarget::Fold { id, count } => map.extend(std::iter::repeat_n(LineRow::Fold(id, ix), count)),
+            }
+        }
+        self.line_rows[pane] = map;
+        self.rows[pane] = rows;
+        let b = &self.buffers[pane];
+        self.max_cols[pane] =
+            (0..b.line_count()).map(|l| b.line(l).chars().map(|c| if c == '\t' { TAB_WIDTH } else { 1 }).sum()).max().unwrap_or(0);
+        let max = self.max_scroll_y(pane);
+        self.scroll[pane].1 = self.scroll[pane].1.min(max);
+    }
+
+    /// The pane rows every buffer line gets, with nothing folded.
+    pub fn plain_rows(&self, pane: usize) -> Vec<RowTarget> {
+        (0..self.buffers[pane].line_count()).map(RowTarget::Line).collect()
+    }
+
+    // Scrolling.
+
+    /// Lets the last line scroll up to the middle of the pane.
+    pub fn max_scroll_y(&self, pane: usize) -> f32 {
+        (self.rows[pane].len() as f32 * LINE_HEIGHT - self.view_height.get() / 2.).max(0.)
+    }
+
+    /// Scrolls one pane; with Synchronize Scrolling the linked panes follow
+    /// so that the rows at the middle stay paired.
+    pub fn scroll_to(&mut self, pane: usize, x: f32, y: f32) {
+        let max_x = (self.max_cols.iter().copied().max().unwrap_or(0) as f32 * CHAR_WIDTH - 40.).max(0.);
+        let x = x.clamp(0., max_x);
+        let y = y.clamp(0., self.max_scroll_y(pane));
+        self.scroll[pane] = (x, y);
+        if !self.sync {
+            return;
+        }
+        let half = self.view_height.get() / 2.;
+        let mut done = vec![false; self.scroll.len()];
+        done[pane] = true;
+        let mut queue = vec![pane];
+        while let Some(from) = queue.pop() {
+            let row = (self.scroll[from].1 + half) / LINE_HEIGHT;
+            for (a, b, segments) in &self.links {
+                let (to, from_left) = if *a == from { (*b, true) } else if *b == from { (*a, false) } else { continue };
+                if done[to] {
+                    continue;
+                }
+                let mapped = map_row(segments, from_left, row);
+                let y = (mapped * LINE_HEIGHT - half).clamp(0., self.max_scroll_y(to));
+                self.scroll[to] = (x, y);
+                done[to] = true;
+                queue.push(to);
+            }
+        }
+    }
+
+    /// Puts rows a third of the way down their panes (Next Difference),
+    /// once the panes have a height.
+    pub fn show_rows(&mut self, targets: Vec<(usize, usize)>) {
+        let height = self.view_height.get();
+        if height <= 0. {
+            self.pending = Some(targets);
+            return;
+        }
+        for (pane, row) in targets {
+            self.scroll[pane].1 = (row as f32 * LINE_HEIGHT - height / 3.).clamp(0., self.max_scroll_y(pane));
+        }
+    }
+
+    /// Call at the start of the host's render.
+    pub fn before_render(&mut self) {
+        if self.view_height.get() > 0. {
+            if let Some(targets) = self.pending.take() {
+                self.show_rows(targets);
+            }
+        }
+    }
+
+    fn on_wheel(&mut self, pane: usize, event: &ScrollWheelEvent) {
+        let delta = event.delta.pixel_delta(px(LINE_HEIGHT));
+        let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
+        let (x, y) = self.scroll[pane];
+        if event.modifiers.shift && dx == 0. {
+            self.scroll_to(pane, x - dy, y);
+        } else {
+            self.scroll_to(pane, x - dx, y - dy);
+        }
+    }
+
+    /// The error stripe spans the whole pane content plus half a view.
+    fn stripe_total(&self, pane: usize, height: f32) -> f32 {
+        (self.rows[pane].len() as f32 * LINE_HEIGHT + self.view_height.get() / 2.).max(height).max(1.)
+    }
+
+    fn stripe_seek(&mut self, pane: usize, y: Pixels) {
+        let bounds = self.stripe_bounds.borrow()[pane];
+        let h = f32::from(bounds.size.height);
+        if h <= 0. {
+            return;
+        }
+        let t = (f32::from(y - bounds.origin.y) / h).clamp(0., 1.);
+        let total = self.stripe_total(pane, h);
+        let x = self.scroll[pane].0;
+        self.scroll_to(pane, x, t * total - self.view_height.get() / 2.);
+    }
+
+    // Hit testing and shaping.
+
+    /// The x of a byte offset within its line's text.
+    pub fn x_for(&self, pane: usize, offset: usize, window: &Window, cx: &App) -> f32 {
+        let buffer = &self.buffers[pane];
+        let line = buffer.line_of(offset);
+        let text = buffer.line(line);
+        let (display, _) = expand_tabs(text, &[]);
+        let at = display_offset(text, offset - buffer.line_range(line).start);
+        f32::from(shape(&display, window, cx).x_for_index(at))
+    }
+
+    /// Where a point lands: the pane, and a buffer offset (or a fold).
+    fn hit(&self, position: gpui_kit::Point<Pixels>, window: &Window, cx: &App) -> Option<(usize, Result<usize, usize>)> {
+        let bounds = self.bounds.borrow().clone();
+        let pane = (0..bounds.len()).find(|p| bounds[*p].contains(&position)).or_else(|| self.caret.map(|c| c.0))?;
+        let b = bounds[pane];
+        let (scroll_x, scroll_y) = self.scroll[pane];
+        let rows = &self.rows[pane];
+        let y = f32::from(position.y - b.origin.y) + scroll_y;
+        let row = ((y / LINE_HEIGHT).floor().max(0.) as usize).min(rows.len().checked_sub(1)?);
+        let line = match rows[row] {
+            RowTarget::Fold { id, .. } => return Some((pane, Err(id))),
+            RowTarget::Line(line) => line,
+        };
+        let buffer = &self.buffers[pane];
+        let text = buffer.line(line);
+        let (display, _) = expand_tabs(text, &[]);
+        let x = f32::from(position.x - b.origin.x) - self.layouts[pane].text_left() + scroll_x;
+        let index = shape(&display, window, cx).closest_index_for_x(px(x.max(0.)));
+        Some((pane, Ok(buffer.line_range(line).start + byte_offset(text, index))))
+    }
+
+    fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut App) -> Outcome {
+        window.focus(&self.focus, cx);
+        let Some((pane, target)) = self.hit(event.position, window, cx) else { return Outcome::Ignored };
+        let offset = match target {
+            Err(fold) => return Outcome::OpenFold(fold),
+            Ok(offset) => offset,
+        };
+        let buffer = &self.buffers[pane];
+        let selection = match event.click_count {
+            2 => {
+                let word = buffer.word_at(offset);
+                Selection { anchor: word.start, head: word.end }
+            }
+            n if n >= 3 => {
+                let line = buffer.line_of(offset);
+                let end = if line + 1 < buffer.line_count() { buffer.line_range(line + 1).start } else { buffer.line_range(line).end };
+                Selection { anchor: buffer.line_range(line).start, head: end }
+            }
+            _ => match self.caret {
+                Some((p, sel)) if p == pane && event.modifiers.shift => Selection { anchor: sel.anchor, head: offset },
+                _ => Selection::caret(offset),
+            },
+        };
+        self.history.break_run();
+        self.caret = Some((pane, selection));
+        self.goal = None;
+        self.selecting = true;
+        Outcome::Moved
+    }
+
+    fn mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut App) -> Outcome {
+        if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
+            self.selecting = false;
+            return Outcome::Ignored;
+        }
+        let Some((pane, sel)) = self.caret else { return Outcome::Ignored };
+        // Dragging past an edge scrolls.
+        let b = self.bounds.borrow()[pane];
+        let (x, y) = self.scroll[pane];
+        if event.position.y < b.origin.y {
+            self.scroll_to(pane, x, y - LINE_HEIGHT);
+        } else if event.position.y > b.origin.y + b.size.height {
+            self.scroll_to(pane, x, y + LINE_HEIGHT);
+        }
+        let position = point(
+            event.position.x.clamp(b.origin.x, b.origin.x + b.size.width),
+            event.position.y.clamp(b.origin.y, b.origin.y + b.size.height - px(1.)),
+        );
+        match self.hit(position, window, cx) {
+            Some((p, Ok(offset))) if p == pane && offset != sel.head => {
+                self.caret = Some((pane, Selection { anchor: sel.anchor, head: offset }));
+                Outcome::Moved
+            }
+            _ => Outcome::Ignored,
+        }
+    }
+
+    // Keyboard.
+
+    fn caret_editable(&self) -> bool {
+        self.caret.is_some() && self.caret.map(|c| c.0) == self.editable
+    }
+
+    fn set_head(&mut self, head: usize, select: bool, keep_goal: bool) -> Outcome {
+        let Some((pane, sel)) = self.caret else { return Outcome::Ignored };
+        let sel = if select { Selection { anchor: sel.anchor, head } } else { Selection::caret(head) };
+        if !keep_goal {
+            self.goal = None;
+        }
+        self.history.break_run();
+        self.caret = Some((pane, sel));
+        Outcome::Moved
+    }
+
+    /// Up / Down / Page keys: whole lines, keeping the starting column.
+    fn vertical(&mut self, lines: isize, select: bool) -> Outcome {
+        let Some((pane, sel)) = self.caret else { return Outcome::Ignored };
+        let buffer = &self.buffers[pane];
+        let line = buffer.line_of(sel.head);
+        let goal = self.goal.unwrap_or_else(|| display_offset(buffer.line(line), sel.head - buffer.line_range(line).start));
+        let target = (line as isize + lines).clamp(0, buffer.line_count() as isize - 1) as usize;
+        let offset = buffer.line_range(target).start + byte_offset(buffer.line(target), goal);
+        self.goal = Some(goal);
+        self.set_head(offset, select, true)
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, cx: &mut App) -> Outcome {
+        let Some((pane, sel)) = self.caret else { return Outcome::Ignored };
+        let keystroke = &event.keystroke;
+        let m = keystroke.modifiers;
+        let (ctrl, shift) = (m.secondary(), m.shift);
+        if m.alt {
+            return Outcome::Ignored;
+        }
+        let page = ((self.view_height.get() / LINE_HEIGHT) as isize - 1).max(1);
+        let b = &self.buffers[pane];
+        match (keystroke.key.as_str(), ctrl) {
+            ("left", false) => {
+                let head = if !shift && !sel.is_empty() { sel.range().start } else { b.prev_char(sel.head) };
+                self.set_head(head, shift, false)
+            }
+            ("right", false) => {
+                let head = if !shift && !sel.is_empty() { sel.range().end } else { b.next_char(sel.head) };
+                self.set_head(head, shift, false)
+            }
+            ("left", true) => self.set_head(b.prev_word(sel.head), shift, false),
+            ("right", true) => self.set_head(b.next_word(sel.head), shift, false),
+            ("up", false) => self.vertical(-1, shift),
+            ("down", false) => self.vertical(1, shift),
+            ("pageup", _) => self.vertical(-page, shift),
+            ("pagedown", _) => self.vertical(page, shift),
+            // Smart Home: the first non-blank, then the line start.
+            ("home", false) => {
+                let line = b.line_of(sel.head);
+                let start = b.line_range(line).start;
+                let text_start = start + b.indent(line).len();
+                self.set_head(if sel.head == text_start { start } else { text_start }, shift, false)
+            }
+            ("end", false) => self.set_head(b.line_range(b.line_of(sel.head)).end, shift, false),
+            ("home", true) => self.set_head(0, shift, false),
+            ("end", true) => self.set_head(b.text().len(), shift, false),
+            ("a", true) => {
+                self.caret = Some((pane, Selection { anchor: 0, head: b.text().len() }));
+                Outcome::Moved
+            }
+            ("c", true) | ("insert", true) => {
+                self.copy(false, cx);
+                Outcome::Moved
+            }
+            ("x", true) => self.copy(true, cx),
+            ("z", true) if shift => self.redo(),
+            ("z", true) => self.undo(),
+            ("escape", false) if !sel.is_empty() => self.set_head(sel.head, false, false),
+            _ if !self.caret_editable() => Outcome::Ignored,
+            ("backspace", _) => self.delete(false, ctrl),
+            ("delete", _) => self.delete(true, ctrl),
+            ("enter", false) => self.newline(),
+            ("tab", false) if shift => self.unindent(),
+            ("tab", false) => {
+                let unit = self.indent_unit();
+                self.insert(unit, EditKind::Typing)
+            }
+            ("d", true) => self.duplicate_line(),
+            ("y", true) => self.delete_line(),
+            _ => Outcome::Ignored,
+        }
+    }
+
+    fn indent_unit(&self) -> &'static str {
+        let Some(pane) = self.editable else { return "    " };
+        let b = &self.buffers[pane];
+        if (0..b.line_count()).any(|l| b.indent(l).starts_with('\t')) { "\t" } else { "    " }
+    }
+
+    /// Copies the selection, or the whole line when nothing is selected
+    /// (IntelliJ); with `cut`, removes it too.
+    fn copy(&mut self, cut: bool, cx: &mut App) -> Outcome {
+        let Some((pane, sel)) = self.caret else { return Outcome::Ignored };
+        let b = &self.buffers[pane];
+        let range = if sel.is_empty() {
+            let line = b.line_of(sel.head);
+            let end = if line + 1 < b.line_count() { b.line_range(line + 1).start } else { b.text().len() };
+            b.line_range(line).start..end
+        } else {
+            sel.range()
+        };
+        let mut text = b.text()[range.clone()].to_owned();
+        if sel.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        if cut && self.caret_editable() {
+            self.edit(range, "", EditKind::Other, None);
+            return Outcome::Edited;
+        }
+        Outcome::Moved
+    }
+
+    fn paste(&mut self, cx: &mut App) -> Outcome {
+        let Some(pane) = self.editable.filter(|_| self.caret_editable()) else { return Outcome::Ignored };
+        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else { return Outcome::Ignored };
+        let text = text.replace("\r\n", "\n").replace('\n', self.buffers[pane].newline());
+        self.insert(&text, EditKind::Other)
+    }
+
+    fn undo(&mut self) -> Outcome {
+        let Some(pane) = self.editable.filter(|_| self.caret_editable()) else { return Outcome::Ignored };
+        let mut sel = self.caret.map(|c| c.1).unwrap_or_default();
+        if !self.history.undo(&mut self.buffers[pane], &mut sel, &mut self.extra) {
+            return Outcome::Ignored;
+        }
+        self.caret = Some((pane, sel));
+        self.restored = true;
+        self.line_edits.clear();
+        Outcome::Edited
+    }
+
+    fn redo(&mut self) -> Outcome {
+        let Some(pane) = self.editable.filter(|_| self.caret_editable()) else { return Outcome::Ignored };
+        let mut sel = self.caret.map(|c| c.1).unwrap_or_default();
+        if !self.history.redo(&mut self.buffers[pane], &mut sel, &mut self.extra) {
+            return Outcome::Ignored;
+        }
+        self.caret = Some((pane, sel));
+        self.restored = true;
+        self.line_edits.clear();
+        Outcome::Edited
+    }
+
+    /// Replaces a range of the editable buffer, recording undo (with the
+    /// host's state as it was before). The caret lands after the new text
+    /// unless `caret` says where; it stays in its pane if that isn't the
+    /// editable one.
+    pub fn edit(&mut self, range: Range<usize>, text: &str, kind: EditKind, caret: Option<usize>) {
+        let Some(pane) = self.editable else { return };
+        let sel = self.caret.filter(|c| c.0 == pane).map(|c| c.1).unwrap_or_default();
+        self.history.record(&self.buffers[pane], sel, &self.extra, kind);
+        let b = &mut self.buffers[pane];
+        let (first, old_last) = (b.line_of(range.start), b.line_of(range.end));
+        b.replace(range.clone(), text);
+        let new_last = b.line_of(range.start + text.len());
+        self.line_edits.push(LineEdit { first, old_last, new_last });
+        self.restored = false;
+        if self.caret.is_none_or(|c| c.0 == pane) || caret.is_none() {
+            self.caret = Some((pane, Selection::caret(caret.unwrap_or(range.start + text.len()))));
+            self.goal = None;
+        }
+    }
+
+    /// Records the host's state for undo before a change that edits no text
+    /// (merge: ignoring a side).
+    pub fn record_extra(&mut self) {
+        let Some(pane) = self.editable else { return };
+        let sel = self.caret.filter(|c| c.0 == pane).map(|c| c.1).unwrap_or_default();
+        self.history.record(&self.buffers[pane], sel, &self.extra, EditKind::Other);
+    }
+
+    fn insert(&mut self, text: &str, kind: EditKind) -> Outcome {
+        let Some((_, sel)) = self.caret else { return Outcome::Ignored };
+        let kind = if sel.is_empty() { kind } else { EditKind::Other };
+        self.edit(sel.range(), text, kind, None);
+        Outcome::Edited
+    }
+
+    fn delete(&mut self, forward: bool, word: bool) -> Outcome {
+        let Some((pane, sel)) = self.caret else { return Outcome::Ignored };
+        let b = &self.buffers[pane];
+        let range = if !sel.is_empty() {
+            sel.range()
+        } else if forward {
+            sel.head..if word { b.next_word(sel.head) } else { b.next_char(sel.head) }
+        } else {
+            (if word { b.prev_word(sel.head) } else { b.prev_char(sel.head) })..sel.head
+        };
+        if range.is_empty() {
+            return Outcome::Ignored;
+        }
+        // A "\r\n" goes as one.
+        let text = b.text();
+        let range = if text[range.clone()] == *"\r" {
+            range.start..b.next_char(range.start).max(range.end + 1).min(text.len())
+        } else if text[range.clone()] == *"\n" && range.start > 0 && text.as_bytes()[range.start - 1] == b'\r' {
+            range.start - 1..range.end
+        } else {
+            range
+        };
+        self.edit(range, "", EditKind::Deleting, None);
+        Outcome::Edited
+    }
+
+    /// Enter: a line break keeping the current line's indentation.
+    fn newline(&mut self) -> Outcome {
+        let Some((pane, sel)) = self.caret else { return Outcome::Ignored };
+        let b = &self.buffers[pane];
+        let line = b.line_of(sel.range().start);
+        let indent = b.indent(line);
+        let indent = &indent[..indent.len().min(sel.range().start - b.line_range(line).start)];
+        let text = format!("{}{}", b.newline(), indent);
+        self.insert(&text, EditKind::Other)
+    }
+
+    /// Shift+Tab: one indent level less on the selected lines.
+    fn unindent(&mut self) -> Outcome {
+        let Some((pane, sel)) = self.caret else { return Outcome::Ignored };
+        let unit = self.indent_unit();
+        let b = &self.buffers[pane];
+        let (first, last) = (b.line_of(sel.range().start), b.line_of(sel.range().end));
+        let span = b.line_range(first).start..b.line_range(last).end;
+        let mut text = String::new();
+        for line in first..=last {
+            let l = b.line(line);
+            let removed = if l.starts_with(unit) {
+                unit.len()
+            } else if l.starts_with('\t') {
+                1
+            } else {
+                (l.len() - l.trim_start_matches(' ').len()).min(unit.len())
+            };
+            text.push_str(&l[removed..]);
+            if line < last {
+                text.push_str(&b.text()[b.line_range(line).end..b.line_range(line + 1).start]);
+            }
+        }
+        let caret = span.start + text.len();
+        self.edit(span, &text, EditKind::Other, Some(caret));
+        Outcome::Edited
+    }
+
+    /// Ctrl+D: duplicates the caret's line below it.
+    fn duplicate_line(&mut self) -> Outcome {
+        let Some((pane, sel)) = self.caret else { return Outcome::Ignored };
+        let b = &self.buffers[pane];
+        let line = b.line_of(sel.head);
+        let range = b.line_range(line);
+        let text = format!("{}{}", b.newline(), b.line(line));
+        let caret = range.end + b.newline().len() + (sel.head - range.start);
+        self.edit(range.end..range.end, &text, EditKind::Other, Some(caret));
+        Outcome::Edited
+    }
+
+    /// Ctrl+Y: deletes the caret's line.
+    fn delete_line(&mut self) -> Outcome {
+        let Some((pane, sel)) = self.caret else { return Outcome::Ignored };
+        let b = &self.buffers[pane];
+        let line = b.line_of(sel.head);
+        let start = b.line_range(line).start;
+        let range = if line + 1 < b.line_count() {
+            start..b.line_range(line + 1).start
+        } else if line > 0 {
+            b.line_range(line - 1).end..b.text().len()
+        } else {
+            0..b.text().len()
+        };
+        let caret = range.start;
+        self.edit(range, "", EditKind::Other, Some(caret));
+        Outcome::Edited
+    }
+
+    /// Scrolls so that the caret shows; a fold hiding it is reported.
+    fn reveal_caret(&mut self, window: &Window, cx: &App) -> Option<usize> {
+        let (pane, sel) = self.caret?;
+        let line = self.buffers[pane].line_of(sel.head);
+        let row = match self.line_row(pane, line)? {
+            LineRow::Fold(id, _) => return Some(id),
+            LineRow::Row(row) => row,
+        };
+        let (mut x, mut y) = self.scroll[pane];
+        let height = self.view_height.get();
+        let top = row as f32 * LINE_HEIGHT;
+        if top < y {
+            y = top;
+        } else if height > 0. && top + LINE_HEIGHT > y + height {
+            y = top + LINE_HEIGHT - height;
+        }
+        let width = f32::from(self.bounds.borrow()[pane].size.width) - self.layouts[pane].text_left();
+        let caret_x = self.x_for(pane, sel.head, window, cx);
+        if caret_x < x {
+            x = (caret_x - 40.).max(0.);
+        } else if width > 0. && caret_x > x + width - 20. {
+            x = caret_x - width + 60.;
+        }
+        self.scroll_to(pane, x, y);
+        None
+    }
+
+    // Text input (IME), on the editable pane.
+
+    fn editable_buffer(&self) -> Option<&Buffer> {
+        self.editable.map(|p| &self.buffers[p])
+    }
+
+    pub fn text_for_range(&self, range: Range<usize>, adjusted: &mut Option<Range<usize>>) -> Option<String> {
+        let b = self.editable_buffer()?;
+        let (start, end) = (b.utf16_to_offset(range.start), b.utf16_to_offset(range.end));
+        *adjusted = Some(b.offset_to_utf16(start)..b.offset_to_utf16(end));
+        Some(b.text()[start..end].to_owned())
+    }
+
+    pub fn selected_text_range(&self) -> Option<UTF16Selection> {
+        let (pane, sel) = self.caret?;
+        let b = &self.buffers[pane];
+        let range = sel.range();
+        Some(UTF16Selection { range: b.offset_to_utf16(range.start)..b.offset_to_utf16(range.end), reversed: sel.head < sel.anchor })
+    }
+
+    pub fn marked_text_range(&self) -> Option<Range<usize>> {
+        let b = self.editable_buffer()?;
+        self.marked.as_ref().map(|r| b.offset_to_utf16(r.start)..b.offset_to_utf16(r.end))
+    }
+
+    pub fn unmark_text(&mut self) {
+        self.marked = None;
+    }
+
+    fn input_range(&self, range: Option<Range<usize>>) -> Option<Range<usize>> {
+        let b = self.editable_buffer()?;
+        Some(
+            range
+                .map(|r| b.utf16_to_offset(r.start)..b.utf16_to_offset(r.end))
+                .or(self.marked.clone())
+                .unwrap_or_else(|| self.caret.map(|c| c.1.range()).unwrap_or(0..0)),
+        )
+    }
+
+    pub fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str) -> Outcome {
+        if !self.caret_editable() {
+            return Outcome::Ignored;
+        }
+        let Some(range) = self.input_range(range) else { return Outcome::Ignored };
+        self.marked = None;
+        let kind = if range.is_empty() && !text.chars().any(char::is_whitespace) { EditKind::Typing } else { EditKind::Other };
+        self.edit(range, text, kind, None);
+        Outcome::Edited
+    }
+
+    pub fn replace_and_mark_text_in_range(&mut self, range: Option<Range<usize>>, text: &str, selected: Option<Range<usize>>) -> Outcome {
+        if !self.caret_editable() {
+            return Outcome::Ignored;
+        }
+        let Some(range) = self.input_range(range) else { return Outcome::Ignored };
+        self.edit(range.clone(), text, EditKind::Typing, None);
+        self.marked = (!text.is_empty()).then(|| range.start..range.start + text.len());
+        if let (Some(selected), Some(pane)) = (selected, self.editable) {
+            // `selected` counts UTF-16 units of the new text.
+            let to_byte = |units: usize| {
+                let mut n = 0;
+                for (i, c) in text.char_indices() {
+                    if n >= units {
+                        return i;
+                    }
+                    n += c.len_utf16();
+                }
+                text.len()
+            };
+            self.caret = Some((pane, Selection { anchor: range.start + to_byte(selected.start), head: range.start + to_byte(selected.end) }));
+        }
+        Outcome::Edited
+    }
+
+    pub fn bounds_for_range(&self, range: Range<usize>, window: &Window, cx: &App) -> Option<Bounds<Pixels>> {
+        let pane = self.editable?;
+        let offset = self.buffers[pane].utf16_to_offset(range.start);
+        let line = self.buffers[pane].line_of(offset);
+        let LineRow::Row(row) = self.line_row(pane, line)? else { return None };
+        let b = self.bounds.borrow()[pane];
+        let (sx, sy) = self.scroll[pane];
+        let x = b.origin.x + px(self.layouts[pane].text_left() + self.x_for(pane, offset, window, cx) - sx);
+        let y = b.origin.y + px(row as f32 * LINE_HEIGHT - sy);
+        Some(Bounds::new(point(x, y), size(px(2.), px(LINE_HEIGHT))))
+    }
+
+    pub fn character_index_for_point(&self, position: gpui_kit::Point<Pixels>, window: &Window, cx: &App) -> Option<usize> {
+        match self.hit(position, window, cx)? {
+            (pane, Ok(offset)) if Some(pane) == self.editable => Some(self.buffers[pane].offset_to_utf16(offset)),
+            _ => None,
+        }
+    }
+}
+
+/// A view built from text panes.
+pub trait PaneHost: Sized + gpui_kit::EntityInputHandler + 'static {
+    type Extra: Clone + Default + 'static;
+    fn panes(&mut self) -> &mut TextPanes<Self::Extra>;
+    fn text_panes(&self) -> &TextPanes<Self::Extra>;
+    /// The editable text changed: re-diff, re-highlight, save, ….
+    fn edited(&mut self, window: &mut Window, cx: &mut Context<Self>);
+    /// A collapsed fragment was clicked, or the caret went into one.
+    fn open_fold(&mut self, _id: usize, _cx: &mut Context<Self>) {}
+}
+
+/// Applies an event's outcome: tells the host about edits and folds, and
+/// keeps the caret in view.
+pub fn settle<V: PaneHost>(view: &mut V, outcome: Outcome, reveal: bool, window: &mut Window, cx: &mut Context<V>) {
+    match outcome {
+        Outcome::Ignored => return,
+        Outcome::OpenFold(id) => view.open_fold(id, cx),
+        Outcome::Edited => view.edited(window, cx),
+        Outcome::Moved => {}
+    }
+    if reveal {
+        // Opening the caret's fold changes the rows; then scroll again.
+        for _ in 0..2 {
+            match view.panes().reveal_caret(window, cx) {
+                Some(fold) => view.open_fold(fold, cx),
+                None => break,
+            }
+        }
+    }
+    cx.notify();
+}
+
+/// The panes' container: focus, keys, Paste and the Ctrl state.
+pub fn pane_area<V: PaneHost>(id: &'static str, focus: &FocusHandle, cx: &mut Context<V>) -> gpui_kit::Stateful<gpui_kit::Div> {
+    h_flex()
+        .id(id)
+        .key_context(PANE_CONTEXT)
+        .track_focus(focus)
+        .on_key_down(cx.listener(|view: &mut V, e: &KeyDownEvent, window, cx| {
+            let outcome = view.panes().key_down(e, cx);
+            if outcome != Outcome::Ignored {
+                cx.stop_propagation();
+            }
+            settle(view, outcome, true, window, cx);
+        }))
+        .on_action(cx.listener(|view: &mut V, _: &Paste, window, cx| {
+            let outcome = view.panes().paste(cx);
+            settle(view, outcome, true, window, cx);
+        }))
+        .on_modifiers_changed(cx.listener(|view: &mut V, e: &ModifiersChangedEvent, _, cx| {
+            let panes = view.panes();
+            if panes.ctrl_held != e.modifiers.secondary() {
+                panes.ctrl_held = e.modifiers.secondary();
+                cx.notify();
+            }
+        }))
+        .flex_1()
+        .min_h_0()
+        .w_full()
+}
+
+/// What the host gives a pane to paint.
+pub struct PaneContent {
+    /// Looks for the visible rows, from `visible_rows(pane).start`.
+    pub looks: Vec<RowLook>,
+    /// Gutter buttons, insertion lines and the like, positioned by the host.
+    pub overlays: Vec<AnyElement>,
+}
+
+impl<T: Clone + Default + 'static> TextPanes<T> {
+    /// The rows a pane paints.
+    pub fn visible_rows(&self, pane: usize) -> Range<usize> {
+        let height = self.view_height.get();
+        let visible = if height > 0. { height } else { 1600. };
+        let rows = self.rows[pane].len();
+        let scroll_y = self.scroll[pane].1;
+        let first = ((scroll_y / LINE_HEIGHT).floor() as usize).min(rows);
+        let last = (((scroll_y + visible) / LINE_HEIGHT).ceil() as usize + 1).min(rows);
+        first..last
+    }
+
+    /// A row's top, relative to its pane.
+    pub fn row_top(&self, pane: usize, row: usize) -> f32 {
+        row as f32 * LINE_HEIGHT - self.scroll[pane].1
+    }
+
+    /// Paints one pane: rows with syntax colors, selection and the caret.
+    pub fn render_pane<V: PaneHost<Extra = T>>(
+        &self,
+        pane: usize,
+        content: PaneContent,
+        palette: &Palette,
+        window: &mut Window,
+        cx: &mut Context<V>,
+    ) -> AnyElement {
+        let entity = cx.entity();
+        let focused = self.focus.is_focused(window);
+        let layout = self.layouts[pane];
+        let (scroll_x, _) = self.scroll[pane];
+        let theme = cx.theme().highlight_theme.clone();
+        let selection_color = cx.theme().selection;
+        let selection = self.caret.filter(|c| c.0 == pane && !c.1.is_empty()).map(|c| c.1.range());
+        let buffer = &self.buffers[pane];
+        let mut children: Vec<AnyElement> = Vec::new();
+
+        // Measures the pane; takes text input while it has the caret; lets a
+        // drag selection follow the mouse anywhere in the window.
+        {
+            let bounds_cell = self.bounds.clone();
+            let measured = self.view_height.clone();
+            let notify = entity.clone();
+            let input = (focused && self.caret.is_some_and(|c| c.0 == pane)).then(|| (self.focus.clone(), entity.clone()));
+            let selecting = (pane == 0 && self.selecting).then(|| entity.clone());
+            children.push(
+                canvas(
+                    move |bounds, _, cx| {
+                        bounds_cell.borrow_mut()[pane] = bounds;
+                        let h = f32::from(bounds.size.height);
+                        if pane == 0 && (measured.get() - h).abs() > 0.5 {
+                            measured.set(h);
+                            // Paint again with the rows the new height shows.
+                            cx.defer(move |cx| notify.update(cx, |_, cx| cx.notify()));
+                        }
+                    },
+                    move |bounds, _, window, cx| {
+                        if let Some((focus, entity)) = input {
+                            window.handle_input(&focus, ElementInputHandler::new(bounds, entity), cx);
+                        }
+                        if let Some(entity) = selecting {
+                            window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    entity.update(cx, |view, cx| {
+                                        let outcome = view.panes().mouse_move(e, window, cx);
+                                        settle(view, outcome, false, window, cx);
+                                    });
+                                }
+                            });
+                        }
+                    },
+                )
+                .absolute()
+                .size_full()
+                .into_any_element(),
+            );
+        }
+
+        let highlighter = self.highlighters[pane].as_ref();
+        let range = self.visible_rows(pane);
+        for (ix, look) in range.clone().zip(content.looks) {
+            let top = self.row_top(pane, ix);
+            let row = div().absolute().left_0().right_0().top(px(top)).h(px(LINE_HEIGHT));
+            match self.rows[pane][ix] {
+                RowTarget::Fold { id, count } => {
+                    children.push(
+                        row.id(("pane-fold", pane * 10_000_000 + ix))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .bg(palette.diff_header)
+                            .text_color(palette.text_secondary)
+                            .cursor_pointer()
+                            .hover(|st| st.text_color(palette.text))
+                            .map(|el| if layout.mirrored { el.pl_2() } else { el.pl(px(layout.text_left() - TEXT_PADDING + 4.)) })
+                            .on_click(cx.listener(move |view: &mut V, _, window, cx| settle(view, Outcome::OpenFold(id), false, window, cx)))
+                            .child(common::icon(gpui_kit::assets::IconName::ChevronRight))
+                            .child(format!("{count} unchanged lines"))
+                            .into_any_element(),
+                    );
+                }
+                RowTarget::Line(line) => {
+                    let line_range = buffer.line_range(line);
+                    let text = buffer.line(line);
+                    let syntax: Vec<(Range<usize>, HighlightStyle)> = highlighter
+                        .map(|h| {
+                            h.styles(&line_range, &*theme)
+                                .into_iter()
+                                .filter(|(_, st)| *st != HighlightStyle::default())
+                                .map(|(r, st)| (r.start - line_range.start..r.end - line_range.start, st))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let mut backgrounds = look.words;
+                    if let Some(sel) = &selection {
+                        let (a, b) = (sel.start.max(line_range.start), sel.end.min(line_range.end));
+                        if a < b {
+                            backgrounds.push((a - line_range.start..b - line_range.start, selection_color));
+                        }
+                    }
+                    let text_el = pane_text(text, &syntax, &backgrounds, scroll_x, palette);
+                    let number = look.number.unwrap_or_else(|| {
+                        div()
+                            .w(px(GUTTER_WIDTH))
+                            .h_full()
+                            .flex_shrink_0()
+                            .text_right()
+                            .map(|el| if layout.mirrored { el.pr_2() } else { el.pr_1() })
+                            .text_color(palette.text_disabled)
+                            .child((line + 1).to_string())
+                            .into_any_element()
+                    });
+                    let marker = div().w(px(MARKER_WIDTH)).h_full().flex_shrink_0().when_some(look.marker, |el, c| el.bg(c));
+                    let spacer = div().w(px(layout.buttons)).flex_shrink_0();
+                    children.push(
+                        row.flex()
+                            .when_some(look.background, |el, bg| el.bg(bg))
+                            .map(|el| {
+                                if layout.mirrored {
+                                    el.child(text_el).child(number).child(spacer).child(marker)
+                                } else {
+                                    el.child(marker).child(spacer).child(number).child(text_el)
+                                }
+                            })
+                            .into_any_element(),
+                    );
+                }
+            }
+        }
+        children.extend(content.overlays);
+
+        if let Some((_, sel)) = self.caret.filter(|c| c.0 == pane && focused) {
+            let line = buffer.line_of(sel.head);
+            if let Some(LineRow::Row(row)) = self.line_row(pane, line) {
+                let x = layout.text_left() + self.x_for(pane, sel.head, window, cx) - scroll_x;
+                let left_edge = layout.text_left() - TEXT_PADDING;
+                if x >= left_edge {
+                    children.push(
+                        div().absolute().top(px(self.row_top(pane, row))).left(px(x)).w(px(2.)).h(px(LINE_HEIGHT)).bg(palette.text).into_any_element(),
+                    );
+                }
+            }
+        }
+
+        div()
+            .id(("text-pane", pane))
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_hidden()
+            .font_family(cx.theme().mono_font_family.clone())
+            .text_size(px(FONT_SIZE))
+            .cursor(gpui_kit::CursorStyle::IBeam)
+            .on_scroll_wheel(cx.listener(move |view: &mut V, e: &ScrollWheelEvent, _, cx| {
+                view.panes().on_wheel(pane, e);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view: &mut V, e: &MouseDownEvent, window, cx| {
+                    let outcome = view.panes().mouse_down(e, window, cx);
+                    settle(view, outcome, false, window, cx);
+                }),
+            )
+            .on_mouse_up(MouseButton::Left, cx.listener(|view: &mut V, _, _, _| view.panes().selecting = false))
+            .children(children)
+            .into_any_element()
+    }
+
+    /// Error stripe: each mark's place in the whole pane, the visible part
+    /// as a thumb; click or drag to scroll there.
+    pub fn render_stripe<V: PaneHost<Extra = T>>(&self, pane: usize, marks: Vec<(Range<usize>, Hsla)>, thumb: Hsla, cx: &mut Context<V>) -> AnyElement {
+        let content = self.rows[pane].len() as f32 * LINE_HEIGHT;
+        let view = self.view_height.get();
+        let scroll = self.scroll[pane].1;
+        let cell = self.stripe_bounds.clone();
+        div()
+            .id(("pane-stripe", pane))
+            .w(px(STRIPE_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view: &mut V, e: &MouseDownEvent, _, cx| {
+                    let panes = view.panes();
+                    panes.stripe_drag = Some(pane);
+                    panes.stripe_seek(pane, e.position.y);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(move |view: &mut V, e: &MouseMoveEvent, _, cx| {
+                let panes = view.panes();
+                if panes.stripe_drag == Some(pane) && e.pressed_button == Some(MouseButton::Left) {
+                    panes.stripe_seek(pane, e.position.y);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|view: &mut V, _, _, _| view.panes().stripe_drag = None))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|view: &mut V, _, _, _| view.panes().stripe_drag = None))
+            .child(
+                canvas(
+                    move |bounds, _, _| cell.borrow_mut()[pane] = bounds,
+                    move |bounds, _, window, _| {
+                        let h = f32::from(bounds.size.height);
+                        let total = (content + view / 2.).max(h).max(1.);
+                        let scale = h / total;
+                        let x = bounds.origin.x + px(2.);
+                        let w = bounds.size.width - px(4.);
+                        for (rows, color) in &marks {
+                            let top = bounds.origin.y + px(rows.start as f32 * LINE_HEIGHT * scale);
+                            let height = px((rows.len() as f32 * LINE_HEIGHT * scale).max(2.));
+                            window.paint_quad(fill(Bounds::new(point(x, top), size(w, height)), *color));
+                        }
+                        if view > 0. && view < total {
+                            let top = bounds.origin.y + px(scroll * scale);
+                            window.paint_quad(fill(Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, px(view * scale))), thumb));
+                        }
+                    },
+                )
+                .size_full(),
+            )
+            .into_any_element()
+    }
+}
+
+/// Implements gpui's text input for a [`PaneHost`] by forwarding to its panes.
+#[macro_export]
+macro_rules! impl_pane_input {
+    ($view:ty) => {
+        impl gpui_kit::EntityInputHandler for $view {
+            fn text_for_range(
+                &mut self,
+                range: std::ops::Range<usize>,
+                adjusted: &mut Option<std::ops::Range<usize>>,
+                _: &mut gpui_kit::Window,
+                _: &mut gpui_kit::Context<Self>,
+            ) -> Option<String> {
+                use $crate::ui::text_panes::PaneHost as _;
+                self.panes().text_for_range(range, adjusted)
+            }
+
+            fn selected_text_range(&mut self, _: bool, _: &mut gpui_kit::Window, _: &mut gpui_kit::Context<Self>) -> Option<gpui_kit::UTF16Selection> {
+                use $crate::ui::text_panes::PaneHost as _;
+                self.panes().selected_text_range()
+            }
+
+            fn marked_text_range(&self, _: &mut gpui_kit::Window, _: &mut gpui_kit::Context<Self>) -> Option<std::ops::Range<usize>> {
+                use $crate::ui::text_panes::PaneHost as _;
+                self.text_panes().marked_text_range()
+            }
+
+            fn unmark_text(&mut self, _: &mut gpui_kit::Window, _: &mut gpui_kit::Context<Self>) {
+                use $crate::ui::text_panes::PaneHost as _;
+                self.panes().unmark_text();
+            }
+
+            fn replace_text_in_range(&mut self, range: Option<std::ops::Range<usize>>, text: &str, window: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<Self>) {
+                use $crate::ui::text_panes::PaneHost as _;
+                let outcome = self.panes().replace_text_in_range(range, text);
+                $crate::ui::text_panes::settle(self, outcome, true, window, cx);
+            }
+
+            fn replace_and_mark_text_in_range(
+                &mut self,
+                range: Option<std::ops::Range<usize>>,
+                text: &str,
+                selected: Option<std::ops::Range<usize>>,
+                window: &mut gpui_kit::Window,
+                cx: &mut gpui_kit::Context<Self>,
+            ) {
+                use $crate::ui::text_panes::PaneHost as _;
+                let outcome = self.panes().replace_and_mark_text_in_range(range, text, selected);
+                $crate::ui::text_panes::settle(self, outcome, true, window, cx);
+            }
+
+            fn bounds_for_range(
+                &mut self,
+                range: std::ops::Range<usize>,
+                _: gpui_kit::Bounds<gpui_kit::Pixels>,
+                window: &mut gpui_kit::Window,
+                cx: &mut gpui_kit::Context<Self>,
+            ) -> Option<gpui_kit::Bounds<gpui_kit::Pixels>> {
+                use $crate::ui::text_panes::PaneHost as _;
+                self.text_panes().bounds_for_range(range, window, cx)
+            }
+
+            fn character_index_for_point(
+                &mut self,
+                position: gpui_kit::Point<gpui_kit::Pixels>,
+                window: &mut gpui_kit::Window,
+                cx: &mut gpui_kit::Context<Self>,
+            ) -> Option<usize> {
+                use $crate::ui::text_panes::PaneHost as _;
+                self.text_panes().character_index_for_point(position, window, cx)
+            }
+        }
+    };
+}
+
+/// Expands tabs to spaces, moving ranges along with the text.
+pub fn expand_tabs(text: &str, ranges: &[Range<usize>]) -> (String, Vec<Range<usize>>) {
+    if !text.contains('\t') {
+        return (text.to_owned(), ranges.to_vec());
+    }
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut map = Vec::with_capacity(text.len() + 1);
+    let mut column = 0;
+    for ch in text.chars() {
+        for _ in 0..ch.len_utf8() {
+            map.push(out.len());
+        }
+        if ch == '\t' {
+            let spaces = TAB_WIDTH - column % TAB_WIDTH;
+            out.extend(std::iter::repeat_n(' ', spaces));
+            column += spaces;
+        } else {
+            out.push(ch);
+            column += 1;
+        }
+    }
+    map.push(out.len());
+    let ranges = ranges.iter().map(|r| map[r.start.min(text.len())]..map[r.end.min(text.len())]).collect();
+    (out, ranges)
+}
+
+/// Byte offset in a line to its offset in the tab-expanded display text.
+pub fn display_offset(text: &str, byte: usize) -> usize {
+    expand_tabs(text, &[0..byte]).1[0].end
+}
+
+/// The reverse: a display offset (from hit testing) back to a byte offset.
+fn byte_offset(text: &str, display: usize) -> usize {
+    let mut best = 0;
+    for (i, _) in text.char_indices().chain(std::iter::once((text.len(), ' '))) {
+        if display_offset(text, i) <= display {
+            best = i;
+        } else {
+            break;
+        }
+    }
+    best
+}
+
+fn shape(text: &str, window: &Window, cx: &App) -> gpui_kit::ShapedLine {
+    let run = TextRun {
+        len: text.len(),
+        font: font(cx.theme().mono_font_family.clone()),
+        color: gpui_kit::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window.text_system().shape_line(SharedString::from(text.to_owned()), px(FONT_SIZE), &[run], None)
+}
+
+/// Lays background ranges (later ones win) over syntax styles, giving the
+/// sorted, non-overlapping runs StyledText needs.
+pub fn merge_styles(syntax: &[(Range<usize>, HighlightStyle)], backgrounds: &[(Range<usize>, Hsla)], len: usize) -> Vec<(Range<usize>, HighlightStyle)> {
+    let mut cuts: Vec<usize> = vec![0, len];
+    for r in syntax.iter().map(|(r, _)| r).chain(backgrounds.iter().map(|(r, _)| r)) {
+        cuts.extend([r.start.min(len), r.end.min(len)]);
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut out: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    for pair in cuts.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let mut style = syntax.iter().rev().find(|(r, _)| r.start <= a && b <= r.end).map(|(_, s)| *s).unwrap_or_default();
+        if let Some((_, bg)) = backgrounds.iter().rev().find(|(r, _)| r.start <= a && b <= r.end) {
+            style.background_color = Some(*bg);
+        }
+        if style == HighlightStyle::default() {
+            continue;
+        }
+        match out.last_mut() {
+            Some((r, last)) if r.end == a && *last == style => r.end = b,
+            _ => out.push((a..b, style)),
+        }
+    }
+    out
+}
+
+/// A line's text, scrolled horizontally, with syntax colors and backgrounds.
+fn pane_text(text: &str, syntax: &[(Range<usize>, HighlightStyle)], backgrounds: &[(Range<usize>, Hsla)], scroll_x: f32, palette: &Palette) -> impl IntoElement {
+    let all: Vec<Range<usize>> = syntax.iter().map(|(r, _)| r.clone()).chain(backgrounds.iter().map(|(r, _)| r.clone())).collect();
+    let (display, mapped) = expand_tabs(text, &all);
+    let syntax: Vec<_> = mapped[..syntax.len()].iter().cloned().zip(syntax.iter().map(|(_, st)| *st)).collect();
+    let backgrounds: Vec<_> = mapped[syntax.len()..].iter().cloned().zip(backgrounds.iter().map(|(_, c)| *c)).filter(|(r, _)| !r.is_empty()).collect();
+    let highlights = merge_styles(&syntax, &backgrounds, display.len());
+    div().flex_1().min_w_0().h_full().overflow_hidden().child(
+        div()
+            .relative()
+            .left(px(-scroll_x))
+            .pl(px(TEXT_PADDING))
+            .whitespace_nowrap()
+            .text_color(palette.text)
+            .child(StyledText::new(display).with_highlights(highlights)),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tabs_expand_with_ranges() {
+        let (text, ranges) = expand_tabs("\tab\tc", &[1..3, 4..5]);
+        assert_eq!(text, "    ab  c");
+        assert_eq!(&text[ranges[0].clone()], "ab");
+        assert_eq!(&text[ranges[1].clone()], "c");
+    }
+
+    #[test]
+    fn display_and_byte_offsets_round_trip() {
+        let text = "\tab\tc";
+        assert_eq!(display_offset(text, 1), 4);
+        assert_eq!(byte_offset(text, 4), 1);
+        assert_eq!(byte_offset(text, 5), 2);
+        // Inside a tab's spaces: snaps to before the tab.
+        assert_eq!(byte_offset(text, 2), 0);
+    }
+
+    #[test]
+    fn backgrounds_split_syntax_runs() {
+        let red = HighlightStyle { color: Some(gpui_kit::red()), ..Default::default() };
+        let out = merge_styles(&[(0..6, red)], &[(2..4, gpui_kit::blue())], 8);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1].0, 2..4);
+        assert_eq!(out[1].1.background_color, Some(gpui_kit::blue()));
+        assert_eq!(out[2].0, 4..6);
+    }
+}

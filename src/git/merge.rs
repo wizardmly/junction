@@ -223,13 +223,9 @@ pub fn chunks(base: &[&str], ours: &[&str], theirs: &[&str]) -> Vec<MergeChunk> 
 /// What the merge result takes for a change chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resolution {
-    /// Not decided yet: the result shows the base text.
-    Unresolved,
     Ours,
     Theirs,
-    OursThenTheirs,
-    TheirsThenOurs,
-    /// Both sides' changes ignored: keep the base.
+    /// Both sides' changes left out: keep the base.
     Base,
 }
 
@@ -246,17 +242,9 @@ pub fn result_lines<'a>(
         match chunk {
             MergeChunk::Equal { base: range } => out.extend_from_slice(&base[range.clone()]),
             MergeChunk::Change { base: b, ours: o, theirs: t, .. } => match resolution {
-                Resolution::Unresolved | Resolution::Base => out.extend_from_slice(&base[b.clone()]),
+                Resolution::Base => out.extend_from_slice(&base[b.clone()]),
                 Resolution::Ours => out.extend_from_slice(&ours[o.clone()]),
                 Resolution::Theirs => out.extend_from_slice(&theirs[t.clone()]),
-                Resolution::OursThenTheirs => {
-                    out.extend_from_slice(&ours[o.clone()]);
-                    out.extend_from_slice(&theirs[t.clone()]);
-                }
-                Resolution::TheirsThenOurs => {
-                    out.extend_from_slice(&theirs[t.clone()]);
-                    out.extend_from_slice(&ours[o.clone()]);
-                }
             },
         }
     }
@@ -270,6 +258,40 @@ pub fn automatic(chunk: &MergeChunk) -> Option<Resolution> {
         MergeChunk::Change { conflict: false, theirs_changed: true, .. } => Some(Resolution::Theirs),
         _ => None,
     }
+}
+
+/// Splits text into words, runs of spaces, line breaks and single symbols,
+/// so that concatenating the tokens gives the text back.
+fn tokens(text: &str) -> Vec<&str> {
+    let class = |c: char| if c.is_alphanumeric() || c == '_' { 0 } else if c == '\n' { 1 } else if c.is_whitespace() { 2 } else { 3 };
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut previous: Option<u8> = None;
+    for (i, c) in text.char_indices() {
+        let k = class(c);
+        // Line breaks and symbols are tokens of their own.
+        if previous.is_some_and(|p| p != k || k == 1 || k == 3) {
+            out.push(&text[start..i]);
+            start = i;
+        }
+        previous = Some(k);
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
+/// IntelliJ's "Resolve simple conflicts" (the magic wand): a conflict whose
+/// two sides changed different words of the base merges word by word.
+pub fn resolve_simple(base: &str, ours: &str, theirs: &str) -> Option<String> {
+    let (b, o, t) = (tokens(base), tokens(ours), tokens(theirs));
+    let chunks = chunks(&b, &o, &t);
+    if chunks.iter().any(|c| matches!(c, MergeChunk::Change { conflict: true, .. })) {
+        return None;
+    }
+    let resolutions: Vec<Resolution> = chunks.iter().map(|c| automatic(c).unwrap_or(Resolution::Base)).collect();
+    Some(result_lines(&chunks, &resolutions, &b, &o, &t).concat())
 }
 
 /// Continue / Skip / Abort for the operation in progress.
@@ -315,6 +337,15 @@ pub fn step(repository: &Repository, state: RepositoryState, step: OperationStep
 mod tests {
     use super::*;
 
+    #[test]
+    fn simple_conflicts_merge_by_words() {
+        let base = "let a = f(x, y);\n";
+        let ours = "let a = g(x, y);\n";
+        let theirs = "let a = f(x, z);\n";
+        assert_eq!(resolve_simple(base, ours, theirs).as_deref(), Some("let a = g(x, z);\n"));
+        assert_eq!(resolve_simple(base, "let a = g(x, y);\n", "let a = h(x, y);\n"), None);
+    }
+
     fn lines(s: &str) -> Vec<&str> {
         s.lines().collect()
     }
@@ -338,7 +369,7 @@ mod tests {
         assert_eq!(changes, vec![(0..2, true, true, true), (3..4, false, false, true), (5..5, false, true, false)]);
 
         let auto: Vec<Resolution> =
-            chunks.iter().map(|c| automatic(c).unwrap_or(Resolution::Unresolved)).collect();
+            chunks.iter().map(|c| automatic(c).unwrap_or(Resolution::Base)).collect();
         let result = result_lines(&chunks, &auto, &base, &ours, &theirs);
         assert_eq!(result, vec!["a", "b", "c", "D2", "e", "f"]);
     }
@@ -359,11 +390,11 @@ mod tests {
         let chunks = chunks(&base, &ours, &theirs);
         let pick = |r: Resolution| {
             let rs: Vec<Resolution> =
-                chunks.iter().map(|c| if matches!(c, MergeChunk::Change { .. }) { r } else { Resolution::Unresolved }).collect();
+                chunks.iter().map(|c| if matches!(c, MergeChunk::Change { .. }) { r } else { Resolution::Base }).collect();
             result_lines(&chunks, &rs, &base, &ours, &theirs).join(",")
         };
         assert_eq!(pick(Resolution::Ours), "1,ours,3");
-        assert_eq!(pick(Resolution::TheirsThenOurs), "1,theirs,ours,3");
-        assert_eq!(pick(Resolution::Unresolved), "1,2,3");
+        assert_eq!(pick(Resolution::Theirs), "1,theirs,3");
+        assert_eq!(pick(Resolution::Base), "1,2,3");
     }
 }
