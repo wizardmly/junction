@@ -17,3 +17,4 @@ pub mod revision_browser;
 pub mod shelf_view;
 pub mod stash_view;
 pub mod workspace;
+pub mod worktree_view;

@@ -15,6 +15,7 @@ pub mod patch;
 pub mod rebase;
 pub mod refs;
 pub mod remotes;
+pub mod worktree;
 pub mod status;
 
 pub use command::{GitConsole, Repository, executable, executable_version, run_in, set_executable, set_use_credential_helper};

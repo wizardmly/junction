@@ -44,25 +44,30 @@ fn main() {
         cx.set_global(model::ExcludedHunks::default());
         theme::apply(dark, cx);
 
-        let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(800.), px(500.))),
-            // Glass: Mica on Windows 11, vibrancy-style blur elsewhere.
-            window_background: if cfg!(target_os = "windows") {
-                WindowBackgroundAppearance::MicaBackdrop
-            } else {
-                WindowBackgroundAppearance::Blurred
-            },
-            app_id: Some("gitglass".into()),
-            ..TitleBar::window_options()
-        };
-
-        gpui_kit::open_window(options, cx, move |window, cx| {
-            let model = cx.new(|cx| RepoModel::new(path.clone(), cx));
-            cx.new(|cx| Workspace::new(model, window, cx))
-        })
-        .expect("failed to open window");
+        open_project_window(path.clone(), cx);
         cx.activate(true);
     });
+}
+
+/// Opens a project window, as File › Open does in IntelliJ (also used for
+/// worktrees and submodules opened in a new window).
+pub fn open_project_window(path: Option<PathBuf>, cx: &mut gpui_kit::App) {
+    let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_min_size: Some(size(px(800.), px(500.))),
+        // Glass: Mica on Windows 11, vibrancy-style blur elsewhere.
+        window_background: if cfg!(target_os = "windows") {
+            WindowBackgroundAppearance::MicaBackdrop
+        } else {
+            WindowBackgroundAppearance::Blurred
+        },
+        app_id: Some("gitglass".into()),
+        ..TitleBar::window_options()
+    };
+    gpui_kit::open_window(options, cx, move |window, cx| {
+        let model = cx.new(|cx| RepoModel::new(path.clone(), cx));
+        cx.new(|cx| Workspace::new(model, window, cx))
+    })
+    .expect("failed to open window");
 }

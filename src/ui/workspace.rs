@@ -77,6 +77,7 @@ enum LeftTab {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BottomTab {
     Log,
+    Worktrees,
     Console,
 }
 
@@ -95,6 +96,7 @@ pub struct Workspace {
     shelf: Entity<ShelfView>,
     diff: Entity<DiffView>,
     branches_popup: Entity<BranchesPopup>,
+    worktrees: Entity<crate::ui::worktree_view::WorktreeView>,
     /// The merge tool, shown in the editor area instead of the diff.
     merge: Option<(Entity<MergeView>, Subscription)>,
     /// Git tool window Log tabs; the first is the main "Log".
@@ -120,6 +122,7 @@ impl Workspace {
         let stash = cx.new(|cx| StashView::new(model.clone(), cx));
         let shelf = cx.new(|cx| ShelfView::new(model.clone(), cx));
         let branches_popup = cx.new(|cx| BranchesPopup::new(model.clone(), window, cx));
+        let worktrees = cx.new(|cx| crate::ui::worktree_view::WorktreeView::new(model.clone(), cx));
         let weak = cx.entity().downgrade();
         branches_popup.update(cx, |popup, _| {
             popup.on_commit = Some(Rc::new(move |window, cx| {
@@ -306,6 +309,7 @@ impl Workspace {
             shelf,
             diff,
             branches_popup,
+            worktrees,
             merge: None,
             log_tabs: vec![LogTab { title: "Log".into(), filter: Default::default(), selected: None }],
             active_log: 0,
@@ -741,6 +745,10 @@ impl Workspace {
                                     let entity = entity.clone();
                                     move |_, window, cx| remote_dialogs::manage_remotes(entity.read(cx).model.clone(), window, cx)
                                 }))
+                                .item(PopupMenuItem::new("New Worktree…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| crate::ui::worktree_view::new_worktree(entity.read(cx).model.clone(), window, cx)
+                                }))
                                 .separator()
                                 .item(PopupMenuItem::new("Create Patch…").on_click({
                                     let entity = entity.clone();
@@ -1036,6 +1044,7 @@ impl Workspace {
             Some(("Merge…", "", op(|this, window, cx| dialogs::merge(this.model.clone(), window, cx)))),
             Some(("Rebase…", "", op(|this, window, cx| dialogs::rebase(this.model.clone(), window, cx)))),
             Some(("Manage Remotes…", "", op(|this, window, cx| remote_dialogs::manage_remotes(this.model.clone(), window, cx)))),
+            Some(("New Worktree…", "", op(|this, window, cx| crate::ui::worktree_view::new_worktree(this.model.clone(), window, cx)))),
             Some(("Reset HEAD…", "", op(|this, window, cx| dialogs::reset_to(this.model.clone(), "HEAD".into(), window, cx)))),
             None,
             Some(("Stash Changes…", "", op(|this, window, cx| dialogs::stash(this.model.clone(), window, cx)))),
@@ -1154,6 +1163,12 @@ impl Workspace {
                         let title = format!("Log {}", this.log_tabs.len() + 1);
                         this.open_log_tab(title, Default::default(), cx);
                     })))
+                    .child(tab("tab-worktrees", "Worktrees", BottomTab::Worktrees, current).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.bottom_tab = BottomTab::Worktrees;
+                            cx.notify();
+                        },
+                    )).child("Worktrees"))
                     .child(tab("tab-console", "Console", BottomTab::Console, current).on_click(cx.listener(
                         |this, _, _, cx| {
                             this.bottom_tab = BottomTab::Console;
@@ -1168,6 +1183,7 @@ impl Workspace {
             )
             .child(div().flex_1().min_h_0().map(|el| match current {
                 BottomTab::Log => el.child(self.log.clone()),
+                BottomTab::Worktrees => el.child(self.worktrees.clone()),
                 BottomTab::Console => el.child(self.render_console(cx)),
             }))
     }
