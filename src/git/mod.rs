@@ -15,6 +15,7 @@ pub mod patch;
 pub mod rebase;
 pub mod refs;
 pub mod remotes;
+pub mod roots;
 pub mod worktree;
 pub mod status;
 pub mod submodule;

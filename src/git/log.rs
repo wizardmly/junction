@@ -269,8 +269,15 @@ pub fn load_details(repository: &Repository, hash: &str) -> Result<CommitDetails
     let changes = parse_name_status(&repository.run(&diff_args)?);
 
     let containing_branches = repository
-        .run(["branch", "-a", "--contains", &hash, "--format=%(refname:short)"])
-        .map(|output| output.lines().filter(|l| !l.ends_with("/HEAD")).map(str::to_owned).collect())
+        .run(["branch", "-a", "--contains", &hash, "--format=%(refname)"])
+        .map(|output| {
+            // Full names, so "(HEAD detached at …)" and origin/HEAD (short: "origin") drop out.
+            output
+                .lines()
+                .filter(|l| l.starts_with("refs/") && !l.ends_with("/HEAD"))
+                .map(|l| l.strip_prefix("refs/heads/").or_else(|| l.strip_prefix("refs/remotes/")).unwrap_or(l).to_owned())
+                .collect()
+        })
         .unwrap_or_default();
     let signature = load_signature(repository, &hash);
 

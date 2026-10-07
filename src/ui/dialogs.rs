@@ -72,9 +72,16 @@ pub fn new_branch(model: Entity<RepoModel>, start_point: String, window: &mut Wi
                 let start = start.clone();
                 let checkout = checkout_ok.get();
                 model.update(cx, |model, cx| {
+                    // Synchronous branch control: the new branch is created in every root,
+                    // each from its own HEAD.
+                    let others = if Settings::get(cx).sync_branches { model.other_roots() } else { Vec::new() };
                     model.run_operation("New Branch", move |repo| {
                         crate::git::status::create_branch(repo, &branch, &start, checkout)?;
-                        Ok(if checkout { format!("Checked out new branch {branch}") } else { format!("Created branch {branch}") })
+                        let synced = crate::ui::branches_popup::sync_to_roots(repo, &others, |other| {
+                            crate::git::status::create_branch(other, &branch, "HEAD", checkout).is_ok()
+                        });
+                        let base = if checkout { format!("Checked out new branch {branch}") } else { format!("Created branch {branch}") };
+                        Ok(if synced > 0 { format!("{base} in {} repositories", synced + 1) } else { base })
                     }, cx)
                 });
                 true
@@ -500,7 +507,30 @@ pub fn update_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut Ap
                 }
                 let clean = if shelve { crate::git::ops::CleanWith::Shelve } else { crate::git::ops::CleanWith::Stash };
                 model.update(cx, |model, cx| {
-                    model.run_operation("Update Project", move |repo| crate::git::ops::update_project(repo, rebase, clean), cx)
+                    // Multi-root projects update every root, as IntelliJ does.
+                    let roots: Vec<std::path::PathBuf> = model.roots().iter().map(|r| r.path.clone()).collect();
+                    let project = model.project_root().map(std::path::Path::to_path_buf);
+                    model.run_operation("Update Project", move |repo| {
+                        if roots.len() < 2 {
+                            return crate::git::ops::update_project(repo, rebase, clean);
+                        }
+                        let project = project.unwrap_or_else(|| repo.root().to_path_buf());
+                        let mut lines = Vec::new();
+                        let mut failed = Vec::new();
+                        for root in &roots {
+                            let label = crate::git::roots::label(&project, root);
+                            let result = repo.nested(&root.to_string_lossy()).and_then(|r| crate::git::ops::update_project(&r, rebase, clean));
+                            match result {
+                                Ok(message) => lines.push(format!("{label}: {}", message.split('\u{1f}').next().unwrap_or_default())),
+                                Err(error) => failed.push(format!("{label}: {error}")),
+                            }
+                        }
+                        if !failed.is_empty() && lines.is_empty() {
+                            anyhow::bail!("{}", failed.join("\n"));
+                        }
+                        lines.extend(failed.into_iter().map(|f| format!("{f} (failed)")));
+                        Ok(lines.join("\n"))
+                    }, cx)
                 });
                 true
             })

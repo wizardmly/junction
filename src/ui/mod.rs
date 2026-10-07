@@ -8,6 +8,7 @@ pub mod diff_view;
 pub mod file_editor;
 pub mod graph_paint;
 pub mod log_view;
+pub mod mappings_dialog;
 pub mod merge_view;
 pub mod patch_dialogs;
 pub mod rebase_dialog;

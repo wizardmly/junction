@@ -1,7 +1,7 @@
 //! Repository state shared by every view, loaded off the UI thread.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -71,6 +71,9 @@ pub struct RepoModel {
     user_email: Option<String>,
     /// Paths of submodules (gitlinks), drawn with a repository icon.
     submodule_paths: HashSet<String>,
+    /// The project's own repository; other roots are switched to in place.
+    project_root: Option<PathBuf>,
+    roots: Vec<RootInfo>,
     loading: bool,
     busy: Option<String>,
     error: Option<String>,
@@ -81,7 +84,15 @@ pub struct RepoModel {
 
 impl EventEmitter<RepoEvent> for RepoModel {}
 
+/// One VCS root of the project and the branch checked out there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootInfo {
+    pub path: PathBuf,
+    pub branch: Option<String>,
+}
+
 struct Snapshot {
+    roots: Vec<RootInfo>,
     refs: RepositoryRefs,
     commits: Vec<Commit>,
     graph: GraphLayout,
@@ -110,6 +121,8 @@ impl RepoModel {
             details: None,
             user_email: None,
             submodule_paths: HashSet::new(),
+            project_root: None,
+            roots: Vec::new(),
             loading: false,
             busy: None,
             error: None,
@@ -128,6 +141,8 @@ impl RepoModel {
         match Repository::discover(&path, self.console.clone()) {
             Ok(repository) => {
                 crate::settings::remember_project(repository.root());
+                self.project_root = Some(repository.root().to_path_buf());
+                self.roots.clear();
                 self.user_email = repository.current_user().1;
                 self.repository = Some(repository);
                 self.error = None;
@@ -140,6 +155,56 @@ impl RepoModel {
                 cx.notify();
             }
         }
+    }
+
+    /// Makes another root of the project the active one: the Log, Commit
+    /// window and branch widget then show that repository.
+    pub fn switch_root(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.repository.as_ref().is_some_and(|r| r.root() == path) {
+            return;
+        }
+        match Repository::discover(&path, self.console.clone()) {
+            Ok(repository) => {
+                self.user_email = repository.current_user().1;
+                self.repository = Some(repository);
+                self.selected = None;
+                self.details = None;
+                self.reload(cx);
+            }
+            Err(error) => cx.emit(RepoEvent::Notify { title: "Switch Repository".into(), message: error.to_string(), error: true }),
+        }
+    }
+
+    pub fn project_root(&self) -> Option<&Path> {
+        self.project_root.as_deref()
+    }
+
+    /// The project's roots (the project repository first); a single entry
+    /// unless it has nested repositories or mapped directories.
+    pub fn roots(&self) -> &[RootInfo] {
+        &self.roots
+    }
+
+    /// Directory Mappings changed: scan for roots again.
+    pub fn rescan_roots(&mut self, cx: &mut Context<Self>) {
+        self.roots.clear();
+        self.reload(cx);
+    }
+
+    /// Roots other than the active one, for synchronous branch control.
+    pub fn other_roots(&self) -> Vec<PathBuf> {
+        let active = self.repository.as_ref().map(|r| r.root().to_path_buf());
+        self.roots.iter().map(|r| r.path.clone()).filter(|p| Some(p) != active.as_ref()).collect()
+    }
+
+    /// The label of the active root ("app", "libs/core").
+    pub fn active_root_label(&self) -> Option<String> {
+        let (project, repo) = (self.project_root.as_ref()?, self.repository.as_ref()?);
+        Some(git::roots::label(project, repo.root()))
+    }
+
+    pub fn is_multi_root(&self) -> bool {
+        self.roots.len() > 1
     }
 
     /// Get from Version Control: `git clone` into `dir`, then open it.
@@ -259,6 +324,11 @@ impl RepoModel {
         let Some(repository) = self.repository.clone() else { return };
         let mut filter = self.filter.clone();
         filter.date_order = crate::settings::Settings::get(cx).log.sort_by_date;
+        let project_root = self.project_root.clone();
+        let console = self.console.clone();
+        // Roots are scanned once per project (and after Directory Mappings
+        // change); each reload only refreshes their branches.
+        let known_roots: Vec<PathBuf> = self.roots.iter().map(|r| r.path.clone()).collect();
         self.loading = true;
         cx.notify();
         self._reload_task = Some(cx.spawn(async move |this, cx| {
@@ -275,7 +345,26 @@ impl RepoModel {
                     } else {
                         HashSet::new()
                     };
-                    anyhow::Ok((Snapshot { refs, commits, graph, status, state: repository.state(), submodules }, complete, repository, filter))
+                    let paths = if known_roots.is_empty() {
+                        project_root
+                            .as_ref()
+                            .and_then(|p| Repository::discover(p, console.clone()).ok())
+                            .map(|project| git::roots::detect(&project))
+                            .unwrap_or_else(|| vec![repository.root().to_path_buf()])
+                    } else {
+                        known_roots
+                    };
+                    let roots = paths
+                        .into_iter()
+                        .map(|path| {
+                            let branch = git::run_in(&git::executable(), &path, &GitConsole::default(), ["symbolic-ref", "--short", "-q", "HEAD"], None, &[])
+                                .ok()
+                                .map(|b| b.trim().to_owned())
+                                .filter(|b| !b.is_empty());
+                            RootInfo { path, branch }
+                        })
+                        .collect();
+                    anyhow::Ok((Snapshot { roots, refs, commits, graph, status, state: repository.state(), submodules }, complete, repository, filter))
                 })
                 .await;
             let (result, rest) = match result {
@@ -291,6 +380,7 @@ impl RepoModel {
                         this.status = snapshot.status;
                         this.state = snapshot.state;
                         this.submodule_paths = snapshot.submodules;
+                        this.roots = snapshot.roots;
                         this.error = None;
                         // Keep the selection if the commit is still listed, else
                         // select HEAD the way the Log does on first open.

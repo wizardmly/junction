@@ -30,7 +30,7 @@
 | 单击定位到分支顶端、双击按分支过滤 Log | M1 | ✅ |
 | ahead/behind 指示（↑↓ 箭头） | M2 | ✅ |
 | 工具栏：New Branch、Update Selected、Delete、Compare with Current、Show My Branches、Fetch、展开/折叠 | M2 | ✅（New Branch、Fetch、Update Selected、Delete、Compare with Current、Show My Branches、展开/折叠、按分支过滤） |
-| 多仓库根时按仓库分组 | M5 | ⬜ |
+| 多仓库根时按仓库分组 | M5 | 🟡（分支弹窗 Repositories 区列出所有根及其分支，点选切换；Log 分支面板显示当前根） |
 | 右键菜单：与分支弹窗动作一致（见 §4） | M2 | ✅（与分支弹窗相同的动作 + Add to / Remove from Favorites） |
 
 ### 2.2 提交列表（中间）
@@ -129,7 +129,7 @@
 | 当前分支标记、跟踪分支、ahead/behind 箭头 | M2 | ✅ |
 | 分支子菜单：Checkout、New Branch from…、Checkout and Rebase onto Current、Compare with Current、Show Diff with Working Tree、Rebase Current onto Selected、Merge into Current、Pull into Current Using Rebase / Merge、Update、Push…、Rename…、Edit Tracking Branch、Delete | M2 | ✅ |
 | 进行中的操作：Continue / Abort / Skip（rebase、merge、cherry-pick、revert） | M3 | ✅ |
-| 多仓库：同步分支控制开关 | M5 | ⬜ |
+| 多仓库：同步分支控制开关 | M5 | ✅（Execute branch operations on all roots：Checkout、New Branch 同步到所有根，设置会记住） |
 
 ## 5. 远程操作
 
@@ -199,7 +199,7 @@
 | GPG 签名配置 | M4 | ✅（Commit Options → Configure…：列出 secret key，写入仓库 commit.gpgSign / user.signingKey） |
 | 使用 credential helper | M2 | ✅（“Use credential helper”，默认开；关闭后只用 GitGlass 的凭据提示（askpass）） |
 | 定期检查新的远程提交（incoming） | M4 | ✅（设置 › Update branch info：每 N 分钟（默认 10）后台静默 fetch；分支弹窗、Log 分支树、标题栏分支组件显示 ↓incoming ↑outgoing） |
-| Directory mappings（多根） | M5 | ⬜ |
+| Directory mappings（多根） | M5 | ✅（自动检测嵌套仓库和已初始化子模块；Directory Mappings 对话框可 Add Root / Remove / Restore；Update Project 更新所有根） |
 | Commit 设置：非模态提交、清理提交信息、右边距、首行长度 | M3 | ✅（首行长度计数，超限变红） |
 | Log 设置：日期格式、显示/隐藏列 | M2 | ✅（View Options 的列、日期格式、引用、高亮、排序都保存在设置文件中） |
 

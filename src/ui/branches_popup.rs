@@ -70,6 +70,15 @@ fn git_op(model: &Entity<RepoModel>, title: &'static str, args: Vec<String>, don
     })
 }
 
+/// Runs `op` in each other root; returns how many succeeded.
+pub(crate) fn sync_to_roots(repo: &crate::git::Repository, roots: &[std::path::PathBuf], op: impl Fn(&crate::git::Repository) -> bool) -> usize {
+    roots
+        .iter()
+        .filter_map(|root| repo.nested(&root.to_string_lossy()).ok())
+        .filter(|other| op(other))
+        .count()
+}
+
 fn action(label: impl Into<String>, enabled: bool, run: Run) -> BranchAction {
     BranchAction { label: label.into(), enabled, run }
 }
@@ -88,10 +97,18 @@ pub(crate) fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, cur
         !is_current,
         Rc::new(move |_, cx| {
             let reference = checkout_ref.clone();
+            // Synchronous branch control: the same branch in every root that has it.
+            let others = if crate::settings::Settings::get(cx).sync_branches { checkout_model.read(cx).other_roots() } else { Vec::new() };
             checkout_model.update(cx, |model, cx| {
                 model.run_operation("Checkout", move |repo| {
                     status::checkout(repo, &reference)?;
-                    Ok(format!("Checked out {}", reference.name))
+                    let synced = sync_to_roots(repo, &others, |other| {
+                        other.run(["rev-parse", "--verify", "-q", &reference.full_name]).is_ok() && status::checkout(other, &reference).is_ok()
+                    });
+                    Ok(match synced {
+                        0 => format!("Checked out {}", reference.name),
+                        n => format!("Checked out {} in {} repositories", reference.name, n + 1),
+                    })
                 }, cx)
             });
         }),
@@ -329,6 +346,46 @@ impl Render for BranchesPopup {
                     let model = self.model.clone();
                     Rc::new(move |window, cx| dialogs::checkout_revision(model.clone(), window, cx))
                 }));
+            // Multi-root projects: pick the repository whose branches are listed
+            // (and that branch operations target), plus synchronous control.
+            if model.is_multi_root() {
+                let project = model.project_root().map(std::path::Path::to_path_buf).unwrap_or_default();
+                let active = model.repository().map(|r| r.root().to_path_buf());
+                list = list.child(
+                    div().px_2().pt_2().pb_0p5().text_xs().text_color(palette.text_secondary).child("Repositories"),
+                );
+                for (ix, root) in model.roots().iter().enumerate() {
+                    let is_active = active.as_ref() == Some(&root.path);
+                    let path = root.path.clone();
+                    let switch_model = self.model.clone();
+                    list = list.child(
+                        row(SharedString::from(format!("bp-root-{ix}")), &palette)
+                            .child(Icon::new(IconName::FolderGit2).small().text_color(palette.text_secondary))
+                            .child(div().when(is_active, |el| el.font_weight(gpui_kit::FontWeight::SEMIBOLD)).child(crate::git::roots::label(&project, &root.path)))
+                            .child(div().flex_1())
+                            .child(
+                                h_flex()
+                                    .gap_0p5()
+                                    .text_xs()
+                                    .text_color(palette.text_secondary)
+                                    .child(Icon::new(IconName::GitBranch).xsmall())
+                                    .child(root.branch.clone().unwrap_or_else(|| "detached".into())),
+                            )
+                            .when(is_active, |el| el.child(Icon::new(IconName::Check).xsmall().text_color(palette.accent)))
+                            .on_click(move |_, _, cx| {
+                                let path = path.clone();
+                                switch_model.update(cx, |m, cx| m.switch_root(path, cx));
+                            }),
+                    );
+                }
+                let sync = crate::settings::Settings::get(cx).sync_branches;
+                list = list.child(
+                    row("bp-sync", &palette)
+                        .child(Icon::new(if sync { IconName::Check } else { IconName::Circle }).xsmall().text_color(if sync { palette.accent } else { gpui_kit::transparent_black() }))
+                        .child(div().text_color(palette.text_secondary).child("Execute branch operations on all roots"))
+                        .on_click(move |_, _, cx| crate::settings::Settings::update(cx, |s| s.sync_branches = !s.sync_branches)),
+                );
+            }
         }
 
         let favorites = refs.favorites.clone();
@@ -477,6 +534,11 @@ pub fn branch_widget_label(model: &RepoModel) -> String {
         .clone()
         .or_else(|| refs.head_commit.as_ref().map(|h| h[..8.min(h.len())].to_owned()))
         .unwrap_or_else(|| "No branch".into());
+    // Several roots: say which repository the branch belongs to.
+    let branch = match model.active_root_label().filter(|_| model.is_multi_root()) {
+        Some(root) => format!("{root}: {branch}"),
+        None => branch,
+    };
     match model.state() {
         Normal => branch,
         Merging => format!("Merging {branch}"),

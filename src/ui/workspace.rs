@@ -679,7 +679,13 @@ impl Workspace {
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let model = self.model.read(cx);
-        let project = model.repository().map(|r| r.name()).unwrap_or_else(|| "No Project".into());
+        // The project keeps its name while another of its roots is active.
+        let project = model
+            .project_root()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .or_else(|| model.repository().map(|r| r.name()))
+            .unwrap_or_else(|| "No Project".into());
         let branch = branches_popup::branch_widget_label(model);
         // Incoming / outgoing commits of the current branch, next to its name.
         let track = model
@@ -752,6 +758,10 @@ impl Workspace {
                                 .item(PopupMenuItem::new("New Worktree…").on_click({
                                     let entity = entity.clone();
                                     move |_, window, cx| crate::ui::worktree_view::new_worktree(entity.read(cx).model.clone(), window, cx)
+                                }))
+                                .item(PopupMenuItem::new("Directory Mappings…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| crate::ui::mappings_dialog::directory_mappings(entity.read(cx).model.clone(), window, cx)
                                 }))
                                 .item(PopupMenuItem::new("Update Submodules").on_click({
                                     let entity = entity.clone();
