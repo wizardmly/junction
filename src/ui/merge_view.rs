@@ -568,6 +568,9 @@ impl MergeView {
                 if rows.contains(&row) {
                     let look = &mut looks[row - rows.start];
                     look.background = Some(colors.fill);
+                    look.gutter = Some(colors.fill);
+                    look.top = (k == 0).then_some(colors.border);
+                    look.bottom = (k + 1 == range.len()).then_some(colors.border);
                     look.words = words.get(k).map(|w| w.iter().map(|r| (r.clone(), word)).collect()).unwrap_or_default();
                 }
             }

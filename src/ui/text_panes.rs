@@ -73,6 +73,12 @@ pub struct RowLook {
     pub marker: Option<Hsla>,
     /// Replaces the plain line number (a review diff's comment button).
     pub number: Option<AnyElement>,
+    /// The block's color across the whole row, gutter included, under the
+    /// text's own `background`.
+    pub gutter: Option<Hsla>,
+    /// The block's edge lines above and below the row (its first / last).
+    pub top: Option<Hsla>,
+    pub bottom: Option<Hsla>,
 }
 
 /// A pane's gutter: on the right of the text (`mirrored`, the left pane of
@@ -1140,6 +1146,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
         }
         let unit = if self.indent_unit() == "\t" { TAB_WIDTH } else { self.indent_unit().len() };
         let mut guides: Vec<AnyElement> = Vec::new();
+        let mut edges: Vec<AnyElement> = Vec::new();
         for (ix, look) in range.clone().zip(content.looks) {
             let top = self.row_top(pane, ix);
             let row = div().absolute().left_0().right_0().top(px(top)).h(px(LINE_HEIGHT));
@@ -1209,8 +1216,15 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                     let spacer = div().w(px(layout.buttons)).flex_shrink_0();
                     // The change color covers the text only, not the gutter.
                     let text_el = div().flex_1().min_w_0().h_full().flex().when_some(look.background, |el, bg| el.bg(bg)).child(text_el);
+                    for (edge, at_top) in [(look.top, true), (look.bottom, false)] {
+                        if let Some(color) = edge {
+                            let y = if at_top { top } else { top + LINE_HEIGHT - 1. };
+                            edges.push(div().absolute().left_0().right_0().top(px(y)).h(px(1.)).bg(color).into_any_element());
+                        }
+                    }
                     children.push(
                         row.flex()
+                            .when_some(look.gutter, |el, bg| el.bg(bg))
                             .map(|el| {
                                 if layout.mirrored {
                                     el.child(text_el).child(spacer).child(number).child(marker)
@@ -1224,6 +1238,19 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
             }
         }
         children.extend(guides);
+        children.extend(edges);
+        // The line between the text and the gutter.
+        let gutter = layout.gutter_width();
+        children.push(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .w(px(1.))
+                .bg(palette.border)
+                .map(|el| if layout.mirrored { el.right(px(gutter)) } else { el.left(px(gutter)) })
+                .into_any_element(),
+        );
         children.extend(content.overlays);
 
         // The horizontal scrollbar under the text, when lines are wider.

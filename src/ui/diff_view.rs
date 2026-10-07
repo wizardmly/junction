@@ -817,7 +817,13 @@ impl DiffView {
                     let number = review.as_ref().map(|r| review_number(r, path.clone(), ix, side.line, palette, cx));
                     let background = background.map(|c| c.opacity(faint));
                     let words = words.into_iter().map(|(r, c)| (r, c.opacity(faint))).collect();
-                    RowLook { background, words, marker, number }
+                    // The block's color and edges run across the gutter to the divider.
+                    let block = kind.filter(|_| highlight != HighlightMode::None);
+                    let gutter = block.map(|k| line_color(k, palette).opacity(faint));
+                    let same = |r: Option<&PaneRow>| matches!(r, Some(PaneRow::Line { change: c, .. }) if c == change);
+                    let top = block.filter(|_| ix == 0 || !same(rows.get(ix - 1))).map(|k| border_color(k, palette));
+                    let bottom = block.filter(|_| !same(rows.get(ix + 1))).map(|k| border_color(k, palette));
+                    RowLook { background, words, marker, number, gutter, top, bottom }
                 }
             })
             .collect()
