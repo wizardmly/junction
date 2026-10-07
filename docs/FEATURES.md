@@ -116,7 +116,7 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | Stash Changes 对话框（消息、Keep index） | M2 | ✅（含 Include untracked） |
-| Stashes 列表：查看内容、Apply、Pop、Drop、Clear、Unstash as branch、Reinstate index | M2 | 🟡（查看、Apply、Pop、Drop） |
+| Stashes 列表：查看内容、Apply、Pop、Drop、Clear、Unstash as branch、Reinstate index | M2 | ✅（查看、Apply、Pop、Unstash As…（Pop、Reinstate index、As new branch）、Drop（确认）、Clear（确认）） |
 | Shelf（IntelliJ 特有补丁货架）：Shelve、Unshelve、Shelve silently、Recently deleted | M4 | ✅（Shelf 标签页；Unshelve、Unshelve and Keep、Rename、Delete、Restore、Import Patches；补丁文件 + refs/gitglass 保存） |
 
 ## 4. 分支弹窗（标题栏 VCS 组件 / `Ctrl+Shift+\``）

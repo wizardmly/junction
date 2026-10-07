@@ -116,6 +116,46 @@ impl StashView {
         cx.notify();
     }
 
+    fn drop_stash(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stash) = self.selected.and_then(|ix| self.stashes.get(ix)).cloned() else { return };
+        let entity = cx.entity();
+        dialogs::confirm(
+            "Drop Stash",
+            format!("Do you want to remove {}?\n{}", stash.name, stash.message),
+            "Drop",
+            move |cx| entity.update(cx, |this, cx| this.stash_op("Drop Stash", "drop", cx)),
+            window,
+            cx,
+        );
+    }
+
+    fn clear(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.stashes.is_empty() {
+            return;
+        }
+        let model = self.model.clone();
+        dialogs::confirm(
+            "Clear Stashes",
+            format!("Do you want to remove all {} stashes? This can't be undone.", self.stashes.len()),
+            "Clear",
+            move |cx| {
+                model.update(cx, |m, cx| {
+                    m.run_operation("Clear Stashes", |repo| {
+                        repo.run(["stash", "clear"])?;
+                        Ok("All stashes removed".into())
+                    }, cx)
+                })
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn unstash_as(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stash) = self.selected.and_then(|ix| self.stashes.get(ix)).cloned() else { return };
+        dialogs::unstash_as(self.model.clone(), stash.name, stash.message, window, cx);
+    }
+
     fn stash_op(&self, title: &'static str, verb: &'static str, cx: &mut Context<Self>) {
         let Some(stash) = self.selected.and_then(|ix| self.stashes.get(ix)).cloned() else { return };
         self.model.update(cx, |model, cx| {
@@ -149,6 +189,7 @@ impl Render for StashView {
                     .on_click(cx.listener(move |this, _, _, cx| this.select(Some(ix), cx)))
                     .context_menu(move |menu, _, _| {
                         let (a, p, d) = (menu_entity.clone(), menu_entity.clone(), menu_entity.clone());
+                        let (u, c) = (menu_entity.clone(), menu_entity.clone());
                         menu.item(PopupMenuItem::new("Apply").on_click(move |_, _, cx| {
                             a.update(cx, |this, cx| {
                                 this.selected = Some(ix);
@@ -161,13 +202,20 @@ impl Render for StashView {
                                 this.stash_op("Pop Stash", "pop", cx)
                             })
                         }))
-                        .separator()
-                        .item(PopupMenuItem::new("Drop").on_click(move |_, _, cx| {
-                            d.update(cx, |this, cx| {
+                        .item(PopupMenuItem::new("Unstash As…").on_click(move |_, window, cx| {
+                            u.update(cx, |this, cx| {
                                 this.selected = Some(ix);
-                                this.stash_op("Drop Stash", "drop", cx)
+                                this.unstash_as(window, cx)
                             })
                         }))
+                        .separator()
+                        .item(PopupMenuItem::new("Drop…").on_click(move |_, window, cx| {
+                            d.update(cx, |this, cx| {
+                                this.selected = Some(ix);
+                                this.drop_stash(window, cx)
+                            })
+                        }))
+                        .item(PopupMenuItem::new("Clear…").on_click(move |_, window, cx| c.update(cx, |this, cx| this.clear(window, cx))))
                     })
                     .child(Icon::new(IconName::Archive).small().text_color(palette.text_secondary))
                     .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(stash.message.clone()))
@@ -223,8 +271,14 @@ impl Render for StashView {
                     .child(tool_button("stash-pop", IconName::ArrowUpFromLine, "Pop").disabled(!has_selection).on_click(
                         cx.listener(|this, _, _, cx| this.stash_op("Pop Stash", "pop", cx)),
                     ))
-                    .child(tool_button("stash-drop", IconName::X, "Drop").disabled(!has_selection).on_click(
-                        cx.listener(|this, _, _, cx| this.stash_op("Drop Stash", "drop", cx)),
+                    .child(tool_button("stash-unstash-as", IconName::GitBranch, "Unstash As…").disabled(!has_selection).on_click(
+                        cx.listener(|this, _, window, cx| this.unstash_as(window, cx)),
+                    ))
+                    .child(tool_button("stash-drop", IconName::X, "Drop…").disabled(!has_selection).on_click(
+                        cx.listener(|this, _, window, cx| this.drop_stash(window, cx)),
+                    ))
+                    .child(tool_button("stash-clear", IconName::Delete, "Clear…").disabled(self.stashes.is_empty()).on_click(
+                        cx.listener(|this, _, window, cx| this.clear(window, cx)),
                     ))
                     .child(tool_button("stash-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(
                         |this, _, _, cx| this.reload(cx),
