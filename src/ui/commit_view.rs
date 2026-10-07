@@ -29,7 +29,7 @@ use crate::git::changelists::{self, Changelists};
 use crate::git::status::{self, CommitRequest};
 use crate::git::StatusKind;
 use crate::git::merge::{self, Conflict};
-use crate::model::{RepoEvent, RepoModel};
+use crate::model::{ExcludedHunks, RepoEvent, RepoModel};
 use crate::settings::Settings;
 use crate::theme::ActivePalette as _;
 use crate::ui::common::{self, FILE_PREFIX, ROW_HEIGHT, tool_button};
@@ -125,6 +125,7 @@ impl CommitView {
                 }
                 _ => {}
             }),
+            cx.observe_global::<ExcludedHunks>(|_, cx| cx.notify()),
             cx.observe_global::<Settings>(|this, cx| {
                 if Settings::get(cx).staging_area != this.staging {
                     this.rebuild(cx);
@@ -581,7 +582,10 @@ impl CommitView {
             gpg_sign,
             run_hooks: settings.run_hooks,
             cleanup: settings.cleanup_message,
+            excluded_hunks: if staged_only { Default::default() } else { ExcludedHunks::get(cx).clone() },
         };
+        let committed = request.paths.clone();
+        ExcludedHunks::update(cx, |map| map.retain(|path, _| !committed.contains(path)));
         crate::settings::remember_message(&message);
         self.push_after_commit = push;
         self.model.update(cx, |model, cx| {
@@ -781,6 +785,8 @@ impl Render for CommitView {
             self.groups.iter().filter_map(|g| g.changelist.clone().map(|c| (g.id.clone(), c))).collect();
         let list_names: Vec<String> = self.changelists.lists.iter().map(|l| l.name.clone()).collect();
         let active_list = self.changelists.active.clone();
+        let partial_paths: HashSet<String> =
+            if staging { HashSet::new() } else { ExcludedHunks::get(cx).keys().cloned().collect() };
 
         let tree_palette = palette.clone();
         v_flex()
@@ -889,6 +895,9 @@ impl Render for CommitView {
                                         .when(is_active, |el| el.font_weight(gpui_kit::FontWeight::BOLD))
                                         .child(item.label.clone()),
                                 )
+                                .when(file.as_ref().is_some_and(|f| partial_paths.contains(f)), |el| {
+                                    el.child(div().text_xs().text_color(palette.text_secondary).child("partially included"))
+                                })
                                 .when(file.is_none(), |el| {
                                     el.child(
                                         div()

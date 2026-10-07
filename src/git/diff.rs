@@ -194,6 +194,40 @@ pub fn splice_hunk(old: &str, new: &str, hunk: &Hunk, to_new: bool) -> String {
     out
 }
 
+/// Identifies a change block by its content, so a partial-commit choice
+/// survives reloads that shift line numbers.
+pub fn hunk_signature(old: &str, new: &str, hunk: &Hunk) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    old_lines.get(hunk.old.clone()).hash(&mut hasher);
+    0xffu8.hash(&mut hasher);
+    new_lines.get(hunk.new.clone()).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The change blocks partial commits work with (no whitespace ignoring).
+pub fn commit_hunks(old: &str, new: &str) -> Vec<Hunk> {
+    compute(old, new, DiffOptions { ignore_whitespace: IgnoreWhitespace::None, highlight: HighlightMode::None, context: None }).hunks
+}
+
+/// Partial commit: `old` with every change block of `new` applied except the
+/// excluded ones. `None` when nothing is excluded.
+pub fn partial_content(old: &str, new: &str, excluded: &std::collections::HashSet<u64>) -> Option<String> {
+    let hunks = commit_hunks(old, new);
+    let keep: Vec<&Hunk> = hunks.iter().filter(|h| !excluded.contains(&hunk_signature(old, new, h))).collect();
+    if keep.len() == hunks.len() {
+        return None;
+    }
+    // Bottom-up, so earlier line ranges stay valid.
+    let mut content = old.to_owned();
+    for hunk in keep.into_iter().rev() {
+        content = splice_hunk(&content, new, hunk, true);
+    }
+    Some(content)
+}
+
 /// What a diff gutter arrow does with one change block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HunkAction {
@@ -391,6 +425,17 @@ mod tests {
                 DiffRow::Fold { .. } => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn commits_only_included_hunks() {
+        let old = "a\nb\nc\nd\ne\nf\ng\nh\n";
+        let new = "A\nb\nc\nd\ne\nf\ng\nH\n";
+        let hunks = commit_hunks(old, new);
+        assert_eq!(hunks.len(), 2);
+        let excluded: std::collections::HashSet<u64> = [hunk_signature(old, new, &hunks[1])].into();
+        assert_eq!(partial_content(old, new, &excluded).unwrap(), "A\nb\nc\nd\ne\nf\ng\nh\n");
+        assert_eq!(partial_content(old, new, &Default::default()), None);
     }
 
     #[test]

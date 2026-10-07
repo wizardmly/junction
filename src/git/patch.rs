@@ -13,18 +13,18 @@ use super::log::{FileChange, parse_name_status};
 pub const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// A throwaway index, so building trees never touches the user's staging area.
-struct TempIndex {
+pub(crate) struct TempIndex {
     path: PathBuf,
 }
 
 impl TempIndex {
-    fn new(repository: &Repository) -> Self {
+    pub(crate) fn new(repository: &Repository) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         Self { path: repository.git_dir().join(format!("gitglass-index-{}-{n}", std::process::id())) }
     }
 
-    fn env(&self) -> [(&str, &str); 1] {
+    pub(crate) fn env(&self) -> [(&str, &str); 1] {
         [("GIT_INDEX_FILE", self.path.to_str().unwrap_or_default())]
     }
 }

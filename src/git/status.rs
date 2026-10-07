@@ -139,6 +139,8 @@ pub struct CommitRequest {
     pub gpg_sign: bool,
     pub run_hooks: bool,
     pub cleanup: bool,
+    /// Partial commits: change blocks left out, per file (see `diff::partial_content`).
+    pub excluded_hunks: std::collections::HashMap<String, std::collections::HashSet<u64>>,
 }
 
 pub fn commit(repository: &Repository, request: &CommitRequest) -> Result<String> {
@@ -174,6 +176,36 @@ pub fn commit(repository: &Repository, request: &CommitRequest) -> Result<String
     if request.cleanup {
         args.push("--cleanup=strip".into());
     }
+    // Partial commits: build the commit in a temporary index from HEAD, the
+    // fully included files, and the chosen change blocks of the others.
+    let partial = if request.staged_only || merging { Vec::new() } else { partial_files(repository, request)? };
+    if !partial.is_empty() {
+        let index = super::patch::TempIndex::new(repository);
+        let env = index.env();
+        repository.run_with_env(["read-tree", "HEAD"], &env)?;
+        let full: Vec<String> = request.paths.iter().filter(|p| !partial.iter().any(|(q, _)| q == *p)).cloned().collect();
+        if !full.is_empty() {
+            let mut add = vec!["add".to_owned(), "-A".to_owned(), "--".to_owned()];
+            add.extend(full);
+            repository.run_with_env(&add, &env)?;
+        }
+        for (path, content) in &partial {
+            let hash = repository.run_with_input(["hash-object", "-w", "--stdin", &format!("--path={path}")], Some(content))?;
+            let mode = repository
+                .run(["ls-tree", "HEAD", "--", path])
+                .ok()
+                .and_then(|line| line.split_whitespace().next().map(str::to_owned))
+                .unwrap_or_else(|| "100644".into());
+            repository.run_with_env(["update-index", "--add", "--cacheinfo", &format!("{mode},{},{path}", hash.trim())], &env)?;
+        }
+        repository.run_full(&args, Some(&request.message), &env)?;
+        // Bring the real index in line with the new HEAD for the committed files.
+        let mut reset = vec!["reset".to_owned(), "-q".to_owned(), "--".to_owned()];
+        reset.extend(request.paths.iter().cloned());
+        repository.run(&reset)?;
+        let hash = repository.run(["rev-parse", "HEAD"])?;
+        return Ok(hash.trim().to_owned());
+    }
     if request.staged_only || merging {
         // Commit the index as it is.
     } else if request.paths.is_empty() {
@@ -187,6 +219,20 @@ pub fn commit(repository: &Repository, request: &CommitRequest) -> Result<String
     repository.run_with_input(&args, Some(&request.message))?;
     let hash = repository.run(["rev-parse", "HEAD"])?;
     Ok(hash.trim().to_owned())
+}
+
+/// Files with excluded change blocks, and the content to commit for each.
+fn partial_files(repository: &Repository, request: &CommitRequest) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for path in &request.paths {
+        let Some(excluded) = request.excluded_hunks.get(path).filter(|e| !e.is_empty()) else { continue };
+        let old = repository.run(["show", &format!("HEAD:{path}")]).unwrap_or_default();
+        let Ok(new) = std::fs::read_to_string(repository.root().join(path)) else { continue };
+        if let Some(content) = super::diff::partial_content(&old, &new, excluded) {
+            out.push((path.clone(), content));
+        }
+    }
+    Ok(out)
 }
 
 /// Files among `paths` whose working tree content has CRLF line separators

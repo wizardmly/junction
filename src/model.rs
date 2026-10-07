@@ -12,6 +12,29 @@ use crate::git::{
     RepositoryState, WorkingTreeStatus,
 };
 
+/// Partial commits: change blocks unchecked in the diff viewer, per file,
+/// shared by the diff viewer (which edits them) and the Commit tool window.
+#[derive(Clone, Debug, Default)]
+pub struct ExcludedHunks(pub HashMap<String, HashSet<u64>>);
+
+impl gpui_kit::Global for ExcludedHunks {}
+
+impl ExcludedHunks {
+    pub fn get(cx: &gpui_kit::App) -> &HashMap<String, HashSet<u64>> {
+        cx.try_global::<Self>().map(|e| &e.0).unwrap_or_else(|| {
+            static EMPTY: std::sync::OnceLock<HashMap<String, HashSet<u64>>> = std::sync::OnceLock::new();
+            EMPTY.get_or_init(HashMap::new)
+        })
+    }
+
+    pub fn update(cx: &mut gpui_kit::App, f: impl FnOnce(&mut HashMap<String, HashSet<u64>>)) {
+        let mut value = cx.try_global::<Self>().cloned().unwrap_or_default();
+        f(&mut value.0);
+        value.0.retain(|_, set| !set.is_empty());
+        cx.set_global(value);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum RepoEvent {
     /// Refs, log, or status changed.

@@ -125,7 +125,7 @@ impl Repository {
         self.run_full(args, None, env)
     }
 
-    fn run_full<I, S>(&self, args: I, input: Option<&str>, env: &[(&str, &str)]) -> Result<String>
+    pub(crate) fn run_full<I, S>(&self, args: I, input: Option<&str>, env: &[(&str, &str)]) -> Result<String>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,

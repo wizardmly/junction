@@ -39,6 +39,7 @@ fn main() {
         let settings = settings::Settings::load();
         let dark = std::env::var("GITGLASS_THEME").map(|t| t != "light").unwrap_or(settings.dark);
         cx.set_global(settings);
+        cx.set_global(model::ExcludedHunks::default());
         theme::apply(dark, cx);
 
         let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);

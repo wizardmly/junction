@@ -9,12 +9,13 @@ use std::rc::Rc;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, HighlightStyle, Hsla, InteractiveElement as _, IntoElement,
+    AnyElement, App, AppContext as _, Context, HighlightStyle, Hsla, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, ScrollStrategy, StatefulInteractiveElement as _, Styled as _,
     StyledText, Task, UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder as _, px,
     uniform_list,
@@ -190,6 +191,38 @@ impl DiffView {
                 cx.notify();
             }
         }
+    }
+
+    /// Partial commit checkboxes: working-tree diffs in changelist mode, whitespace not ignored.
+    fn partial_path(&self, cx: &App) -> Option<String> {
+        match &self.source {
+            Some(DiffSource::WorkingTree { path, unversioned: false })
+                if !crate::settings::Settings::get(cx).staging_area
+                    && self.options.ignore_whitespace == diff::IgnoreWhitespace::None
+                    && !self.diff.binary =>
+            {
+                Some(path.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn signature(&self, change: usize) -> Option<u64> {
+        let loaded = self.loaded.as_ref()?;
+        Some(diff::hunk_signature(&loaded.old, &loaded.new, self.diff.hunks.get(change)?))
+    }
+
+    fn toggle_hunk(&mut self, change: usize, include: bool, cx: &mut Context<Self>) {
+        let (Some(path), Some(signature)) = (self.partial_path(cx), self.signature(change)) else { return };
+        crate::model::ExcludedHunks::update(cx, |map| {
+            let set = map.entry(path).or_default();
+            if include {
+                set.remove(&signature);
+            } else {
+                set.insert(signature);
+            }
+        });
+        cx.notify();
     }
 
     fn set_diff(&mut self, file_diff: FileDiff) {
@@ -512,7 +545,18 @@ impl Render for DiffView {
         let rows = self.rows.clone();
         let count = rows.len();
         let actions = Rc::new(self.hunk_actions());
-        let has_actions = !actions.is_empty();
+        let partial = self.partial_path(cx);
+        // Per change: whether it goes into the next commit (partial commits).
+        let included: Rc<Vec<bool>> = Rc::new(match &partial {
+            Some(path) => {
+                let excluded = crate::model::ExcludedHunks::get(cx).get(path).cloned().unwrap_or_default();
+                (0..self.diff.hunks.len()).map(|c| self.signature(c).is_none_or(|s| !excluded.contains(&s))).collect()
+            }
+            None => Vec::new(),
+        });
+        let has_partial = partial.is_some();
+        let has_actions = !actions.is_empty() || has_partial;
+        let button_count = actions.len() + has_partial as usize;
         // The first row of each change carries its gutter buttons.
         let starts: Rc<HashSet<usize>> = Rc::new(
             rows.iter()
@@ -550,11 +594,20 @@ impl Render for DiffView {
                 let palette = cx.palette().clone();
                 // Gutter buttons for a change's first row.
                 let hunk_buttons = |ix: usize, change: Option<usize>, cx: &mut Context<DiffView>| {
-                    let mut el = h_flex().w(px(if has_actions { 18. * actions.len() as f32 } else { 1. })).h_full().flex_shrink_0().justify_center();
+                    let mut el = h_flex().w(px(if has_actions { 18. * button_count as f32 } else { 1. })).h_full().flex_shrink_0().justify_center().items_center();
                     if !has_actions {
                         return el.bg(palette.border);
                     }
                     if let (Some(change), true) = (change, starts.contains(&ix)) {
+                        if has_partial {
+                            let checked = included.get(change).copied().unwrap_or(true);
+                            el = el.child(
+                                Checkbox::new(gpui_kit::ElementId::NamedInteger("hunk-include".into(), ix as u64))
+                                    .checked(checked)
+                                    .tooltip("Include in commit")
+                                    .on_change(cx.listener(move |this, value: &bool, _, cx| this.toggle_hunk(change, *value, cx))),
+                            );
+                        }
                         for (action, icon, tooltip) in actions.iter().copied() {
                             el = el.child(
                                 tool_button(gpui_kit::ElementId::NamedInteger(format!("hunk-{tooltip}").into(), ix as u64), icon, tooltip)
