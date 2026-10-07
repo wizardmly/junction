@@ -390,3 +390,63 @@ pub fn manage_remotes(model: Entity<RepoModel>, window: &mut Window, cx: &mut Ap
         )
     });
 }
+
+/// Branch › Edit Tracking Branch…: pick the remote branch a local branch tracks.
+/// An empty value removes the tracking information.
+pub fn edit_tracking_branch(model: Entity<RepoModel>, branch: String, upstream: Option<String>, window: &mut Window, cx: &mut App) {
+    let remote_branches: Vec<String> = model.read(cx).refs().remote_branches().map(|r| r.name.clone()).collect();
+    let input = cx.new(|cx| {
+        InputState::new(window, cx).placeholder("No tracking branch").default_value(upstream.clone().unwrap_or_default())
+    });
+    let focus_target = input.clone();
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let secondary = cx.palette().text_secondary;
+        let (ok_input, menu_input, model, branch_ok) = (input.clone(), input.clone(), model.clone(), branch.clone());
+        let branches = remote_branches.clone();
+        let previous = upstream.clone();
+        dialog
+            .title(format!("Edit Tracking Branch of '{branch}'"))
+            .w(px(440.))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().text_color(secondary).child("Remote branch"))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().flex_1().child(Input::new(&input)))
+                            .child(Button::new("tracking-branches").outline().icon(IconName::ChevronDown).dropdown_menu(move |mut menu, _, _| {
+                                for name in &branches {
+                                    let input = menu_input.clone();
+                                    let name = name.clone();
+                                    menu = menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, window, cx| {
+                                        input.update(cx, |s, cx| s.set_value(name.clone(), window, cx))
+                                    }));
+                                }
+                                menu
+                            })),
+                    ),
+            )
+            .on_ok(move |_, _, cx| {
+                let target = ok_input.read(cx).value().trim().to_owned();
+                if Some(target.as_str()) == previous.as_deref() || (target.is_empty() && previous.is_none()) {
+                    return true;
+                }
+                let branch = branch_ok.clone();
+                model.update(cx, |model, cx| {
+                    model.run_operation("Edit Tracking Branch", move |repo| {
+                        if target.is_empty() {
+                            repo.run(["branch", "--unset-upstream", &branch])?;
+                            Ok(format!("{branch} no longer tracks a remote branch"))
+                        } else {
+                            repo.run(["branch", &format!("--set-upstream-to={target}"), &branch])?;
+                            Ok(format!("{branch} now tracks {target}"))
+                        }
+                    }, cx)
+                });
+                true
+            })
+            .footer(footer("OK"))
+    });
+    focus_input(&focus_target, window, cx);
+}

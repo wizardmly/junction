@@ -120,6 +120,12 @@ impl Workspace {
         let stash = cx.new(|cx| StashView::new(model.clone(), cx));
         let shelf = cx.new(|cx| ShelfView::new(model.clone(), cx));
         let branches_popup = cx.new(|cx| BranchesPopup::new(model.clone(), window, cx));
+        let weak = cx.entity().downgrade();
+        branches_popup.update(cx, |popup, _| {
+            popup.on_commit = Some(Rc::new(move |window, cx| {
+                weak.update(cx, |this, cx| this.on_commit(&CommitChanges, window, cx)).ok();
+            }));
+        });
         let subscriptions = vec![
             cx.subscribe_in(&log, window, |this, _, event: &LogEvent, window, cx| match event {
                 LogEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
@@ -211,6 +217,25 @@ impl Workspace {
                             })
                         });
                     } else if let Some(range) = updated_range {
+                        // "View Files": the Updated Files tree for the pulled range.
+                        let files_entity = entity.clone();
+                        let files_range = range.clone();
+                        notification = notification.content(move |_, _, cx| {
+                            let palette = cx.palette().clone();
+                            let (entity, range) = (files_entity.clone(), files_range.clone());
+                            div()
+                                .id("notify-view-files")
+                                .text_sm()
+                                .text_color(palette.link)
+                                .cursor_pointer()
+                                .child("View Files")
+                                .on_click(move |_, _, cx| {
+                                    let Some((old, new)) = range.split_once("..") else { return };
+                                    let (old, new) = (old.to_owned(), new.to_owned());
+                                    entity.update(cx, |this, cx| this.model.update(cx, |m, cx| m.compare(old, Some(new), cx)));
+                                })
+                                .into_any_element()
+                        });
                         notification = notification.action(move |_, _, _| {
                             let entity = entity.clone();
                             let range = range.clone();

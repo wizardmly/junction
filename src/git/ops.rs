@@ -126,6 +126,66 @@ pub fn push_with_auto_update(repository: &Repository, request: &PushRequest, reb
     }
 }
 
+/// How Update Project keeps local changes out of the way while pulling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CleanWith {
+    #[default]
+    Stash,
+    Shelve,
+}
+
+/// Update Project: fetch, then merge or rebase the tracked branch, saving
+/// local changes with stash or a shelf and restoring them afterwards.
+/// The message carries the updated range after a unit separator.
+pub fn update_project(repository: &Repository, rebase: bool, clean: CleanWith) -> Result<String> {
+    repository.run(["fetch", "--all", "--prune"])?;
+    if repository.run(["rev-parse", "--abbrev-ref", "@{upstream}"]).is_err() {
+        anyhow::bail!("the current branch has no tracked branch");
+    }
+    let mode = if rebase { "--rebase" } else { "--no-rebase" };
+    let before = repository.run(["rev-parse", "HEAD"])?.trim().to_owned();
+    let mut restore_note = String::new();
+    match clean {
+        CleanWith::Stash => {
+            repository.run(["pull", mode, "--autostash"])?;
+        }
+        CleanWith::Shelve => {
+            let changed = repository.run(["diff", "--name-only", "-z", "HEAD"])?;
+            let paths: Vec<String> = changed.split('\0').filter(|p| !p.is_empty()).map(str::to_owned).collect();
+            let shelf = if paths.is_empty() {
+                None
+            } else {
+                let name = format!("Uncommitted changes before Update at {}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
+                Some(super::patch::shelve(repository, &paths, &name, false)?)
+            };
+            let pulled = repository.run(["pull", mode]);
+            if let Some(shelf) = &shelf {
+                match super::patch::unshelve(repository, shelf, None, false) {
+                    Ok(super::patch::ApplyOutcome::Conflicts) => {
+                        restore_note = format!("; local changes restored from shelf \"{}\" with conflicts", shelf.name)
+                    }
+                    Ok(_) => {}
+                    Err(error) => restore_note = format!("; local changes kept in shelf \"{}\": {error}", shelf.name),
+                }
+            }
+            pulled?;
+        }
+    }
+    let after = repository.run(["rev-parse", "HEAD"])?.trim().to_owned();
+    if before == after {
+        return Ok(format!("All files are up to date{restore_note}"));
+    }
+    let range = format!("{before}..{after}");
+    let count = repository.run(["rev-list", "--count", &range]).unwrap_or_default();
+    let count = count.trim();
+    let files = repository.run(["diff", "--name-only", &range]).map(|o| o.lines().count()).unwrap_or(0);
+    Ok(format!(
+        "{files} file{} updated in {count} commit{}{restore_note}\u{1f}{range}",
+        if files == 1 { "" } else { "s" },
+        if count == "1" { "" } else { "s" }
+    ))
+}
+
 /// One entry of `git stash list`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stash {
@@ -211,6 +271,30 @@ mod tests {
         git(&dir, &["add", "."]);
         git(&dir, &["commit", "-qm", "first"]);
         dir
+    }
+
+    #[test]
+    fn update_project_with_shelve_restores_local_changes() {
+        let origin = temp_repo("update-origin");
+        let local = origin.with_file_name(format!("gitglass-test-update-local-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&local);
+        git(&origin, &["clone", "-q", origin.to_str().unwrap(), local.to_str().unwrap()]);
+        git(&local, &["config", "user.name", "T"]);
+        git(&local, &["config", "user.email", "t@x"]);
+        std::fs::write(origin.join("b.txt"), "b\n").unwrap();
+        git(&origin, &["add", "."]);
+        git(&origin, &["commit", "-qm", "second"]);
+        std::fs::write(local.join("a.txt"), "local\n").unwrap();
+
+        let repo = Repository::discover(&local, GitConsole::default()).unwrap();
+        let message = update_project(&repo, false, CleanWith::Shelve).unwrap();
+        assert!(message.starts_with("1 file updated in 1 commit\u{1f}"), "{message}");
+        assert_eq!(std::fs::read_to_string(local.join("a.txt")).unwrap(), "local\n");
+        assert!(local.join("b.txt").exists());
+        let shelves = crate::git::patch::shelves(&repo);
+        assert_eq!(shelves.len(), 1);
+        assert!(shelves[0].deleted && shelves[0].name.starts_with("Uncommitted changes before Update"));
+        assert!(repo.run(["stash", "list"]).unwrap().is_empty());
     }
 
     #[test]

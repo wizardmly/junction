@@ -1002,6 +1002,18 @@ impl LogView {
                     .child(graph_canvas(row, &palette, is_head));
                 let shown = if log.compact_refs { 1 } else { 4 };
                 let mut ref_labels = h_flex().flex_shrink_0();
+                // A detached HEAD gets its own label, as in IntelliJ.
+                if is_head && refs.current_branch.is_none() {
+                    ref_labels = ref_labels.child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .gap_0p5()
+                            .mr_1p5()
+                            .text_xs()
+                            .child(Icon::new(IconName::GitBranch).xsmall().text_color(palette.ref_head))
+                            .child(div().text_color(palette.ref_head).child("HEAD")),
+                    );
+                }
                 for label in labels.iter().take(shown) {
                     ref_labels = ref_labels.child(ref_label(label, refs.current_branch.as_deref(), &palette));
                 }

@@ -123,11 +123,11 @@
 
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 顶部动作：Update Project、Commit、Push、New Branch、Checkout Tag or Revision | M1 | 🟡 |
+| 顶部动作：Update Project、Commit、Push、New Branch、Checkout Tag or Revision | M1 | ✅（Update Project…、Commit…、Push…、New Branch…、Checkout Tag or Revision…） |
 | 搜索框（直接输入过滤） | M1 | ✅ |
 | Recent、Local、Remote、Tags 分组；收藏星标 | M1 | ✅（Recent（reflog 最近签出）、Local、Remote、Tags 可折叠分组，Tags 默认折叠；收藏星标） |
 | 当前分支标记、跟踪分支、ahead/behind 箭头 | M2 | ✅ |
-| 分支子菜单：Checkout、New Branch from…、Checkout and Rebase onto Current、Compare with Current、Show Diff with Working Tree、Rebase Current onto Selected、Merge into Current、Pull into Current Using Rebase / Merge、Update、Push…、Rename…、Edit Tracking Branch、Delete | M2 | 🟡（缺 Edit Tracking Branch） |
+| 分支子菜单：Checkout、New Branch from…、Checkout and Rebase onto Current、Compare with Current、Show Diff with Working Tree、Rebase Current onto Selected、Merge into Current、Pull into Current Using Rebase / Merge、Update、Push…、Rename…、Edit Tracking Branch、Delete | M2 | ✅ |
 | 进行中的操作：Continue / Abort / Skip（rebase、merge、cherry-pick、revert） | M3 | ✅ |
 | 多仓库：同步分支控制开关 | M5 | ⬜ |
 
@@ -136,8 +136,8 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | Fetch（全部 remote） | M2 | ✅ |
-| Update Project（`Ctrl+T`）对话框：Merge / Rebase；Using Stash / Shelve | M2 | 🟡（Merge / Rebase，自动 stash） |
-| 更新结果：Updated files 树、被更新的提交 Log 标签页 | M3 | 🟡（通知里的文件数/提交数 + View Commits 过滤 Log） |
+| Update Project（`Ctrl+T`）对话框：Merge / Rebase；Using Stash / Shelve | M2 | ✅（Merge / Rebase；Using Stash / Shelve，选择会记住） |
+| 更新结果：Updated files 树、被更新的提交 Log 标签页 | M3 | ✅（通知：文件数 / 提交数；View Files 打开更新文件树，View Commits 打开 Update Info 日志标签页） |
 | Pull 对话框：remote、分支、选项（--rebase、--ff-only、--no-ff、--squash、--no-commit） | M2 | ✅（Pull to <分支>：remote 下拉、分支输入+远程分支列表、--rebase/--ff-only/--no-ff/--squash/--no-commit/--no-verify，互斥项置灰，预览命令） |
 | Push 对话框：每个仓库待推送的提交列表 + 变更树、目标分支可编辑（新分支标记）、Force push（--force-with-lease）、Push tags（All / Current branch）、Run hooks、Set upstream | M2 | 🟡（无变更树） |
 | 推送被拒：提示 Merge / Rebase 后重推，"自动更新"选项 | M3 | ✅ |
@@ -194,7 +194,7 @@
 | Git 可执行文件路径 + Test 按钮 | M2 | ✅（设置里填写路径，留空为 PATH 中的 git；Test 显示 git 版本或错误） |
 | 启用暂存区 | M2 | ✅ |
 | 提交前警告 CRLF、警告 detached HEAD、大文件 | M3 | ✅（CRLF 支持 Fix and Commit） |
-| Update method（Merge / Rebase）、Clean working tree using（Stash / Shelve） | M2 | 🟡（Merge / Rebase，用 Stash） |
+| Update method（Merge / Rebase）、Clean working tree using（Stash / Shelve） | M2 | ✅ |
 | 推送被拒时自动更新、Force push 受保护分支列表 | M3 | ✅ |
 | GPG 签名配置 | M4 | ✅（Commit Options → Configure…：列出 secret key，写入仓库 commit.gpgSign / user.signingKey） |
 | 使用 credential helper | M2 | ✅（“Use credential helper”，默认开；关闭后只用 GitGlass 的凭据提示（askpass）） |

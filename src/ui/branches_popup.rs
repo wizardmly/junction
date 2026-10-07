@@ -36,6 +36,8 @@ pub struct BranchesPopup {
     expanded: Option<String>,
     /// Collapsed group headers; Tags starts collapsed, as in IntelliJ.
     collapsed: std::collections::HashSet<&'static str>,
+    /// Commit… focuses the Commit tool window, which the workspace owns.
+    pub on_commit: Option<Run>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -50,7 +52,7 @@ impl BranchesPopup {
             }),
             cx.observe(&model, |_, _, cx| cx.notify()),
         ];
-        Self { model, search, expanded: None, collapsed: ["Tags"].into_iter().collect(), _subscriptions: subscriptions }
+        Self { model, search, expanded: None, collapsed: ["Tags"].into_iter().collect(), on_commit: None, _subscriptions: subscriptions }
     }
 }
 
@@ -185,6 +187,15 @@ pub(crate) fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, cur
                 true,
                 Rc::new(move |window, cx| dialogs::rename_branch(rename_model.clone(), rename_name.clone(), window, cx)),
             ));
+            let tracking_model = model.clone();
+            let (tracking_name, tracking_upstream) = (name.clone(), reference.upstream.clone());
+            actions.push(action(
+                "Edit Tracking Branch…",
+                true,
+                Rc::new(move |window, cx| {
+                    crate::ui::remote_dialogs::edit_tracking_branch(tracking_model.clone(), tracking_name.clone(), tracking_upstream.clone(), window, cx)
+                }),
+            ));
             actions.push(action(
                 "Delete",
                 !is_current,
@@ -299,19 +310,25 @@ impl Render for BranchesPopup {
             let new_model = self.model.clone();
             let new_head = head.clone();
             list = list
-                .child(top_action(
-                    "bp-update",
-                    IconName::ArrowDownToLine,
-                    "Update Project…",
-                    git_op(&self.model, "Update Project", vec!["pull".into(), "--rebase".into(), "--autostash".into()], "Project updated".into()),
-                ))
-                .child(top_action("bp-push", IconName::ArrowUpFromLine, "Push…", git_op(&self.model, "Push", vec!["push".into()], "Pushed".into())))
+                .child(top_action("bp-update", IconName::ArrowDownToLine, "Update Project…", {
+                    let model = self.model.clone();
+                    Rc::new(move |window, cx| dialogs::update_project(model.clone(), window, cx))
+                }))
+                .when_some(self.on_commit.clone(), |list, run| list.child(top_action("bp-commit", IconName::Check, "Commit…", run)))
+                .child(top_action("bp-push", IconName::ArrowUpFromLine, "Push…", {
+                    let model = self.model.clone();
+                    Rc::new(move |window, cx| dialogs::push(model.clone(), window, cx))
+                }))
                 .child(top_action(
                     "bp-new",
                     IconName::Plus,
                     "New Branch…",
                     Rc::new(move |window, cx| dialogs::new_branch(new_model.clone(), new_head.clone(), window, cx)),
-                ));
+                ))
+                .child(top_action("bp-checkout-rev", IconName::Tag, "Checkout Tag or Revision…", {
+                    let model = self.model.clone();
+                    Rc::new(move |window, cx| dialogs::checkout_revision(model.clone(), window, cx))
+                }));
         }
 
         let favorites = refs.favorites.clone();

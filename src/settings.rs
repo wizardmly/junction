@@ -19,6 +19,8 @@ pub struct Settings {
     /// Unstaged trees instead of changelists with checkboxes.
     pub staging_area: bool,
     pub update_method: UpdateMethod,
+    /// "Clean working tree using": stash (default) or shelve.
+    pub update_shelve: bool,
     /// "Auto-update if push of the current branch was rejected".
     pub auto_update_on_push_rejected: bool,
     /// "Warn if CRLF line separators are about to be committed".
@@ -109,6 +111,7 @@ impl Default for Settings {
             dark: true,
             staging_area: false,
             update_method: UpdateMethod::Merge,
+            update_shelve: false,
             auto_update_on_push_rejected: false,
             warn_crlf: true,
             commit_subject_limit: 72,
@@ -241,6 +244,7 @@ impl Settings {
                 }
                 "commit_group_by_directory" => settings.commit_group_by_directory = flag,
                 "commit_show_ignored" => settings.commit_show_ignored = flag,
+                "update_clean" => settings.update_shelve = value == "shelve",
                 "git_executable" => settings.git_executable = value.to_owned(),
                 "use_credential_helper" => settings.use_credential_helper = flag,
                 "fetch_interval_minutes" => {
@@ -285,8 +289,10 @@ impl Settings {
         );
         text.push_str(&log_lines);
         text.push_str(&format!(
-            "commit_group_by_directory={}\ncommit_show_ignored={}\n",
-            self.commit_group_by_directory, self.commit_show_ignored
+            "commit_group_by_directory={}\ncommit_show_ignored={}\nupdate_clean={}\n",
+            self.commit_group_by_directory,
+            self.commit_show_ignored,
+            if self.update_shelve { "shelve" } else { "stash" }
         ));
         text
     }

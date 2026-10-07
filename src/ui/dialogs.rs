@@ -389,19 +389,20 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
     });
 }
 
-/// Update Project (`Ctrl+T`): fetch, then merge or rebase, stashing local changes.
+/// Update Project (`Ctrl+T`): fetch, then merge or rebase, cleaning the
+/// working tree with stash or shelve. Both choices are remembered.
 pub fn update_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
-    // IntelliJ remembers the last update method chosen here.
-    let rebase = Rc::new(Cell::new(Settings::get(cx).update_method == UpdateMethod::Rebase));
+    let settings = Settings::get(cx);
+    let rebase = Rc::new(Cell::new(settings.update_method == UpdateMethod::Rebase));
+    let shelve = Rc::new(Cell::new(settings.update_shelve));
     window.open_dialog(cx, move |dialog, _, cx| {
         let secondary = cx.palette().text_secondary;
-        let selected = if rebase.get() { 1 } else { 0 };
-        let rebase_cell = rebase.clone();
-        let rebase_ok = rebase.clone();
+        let (rebase_cell, rebase_ok) = (rebase.clone(), rebase.clone());
+        let (shelve_cell, shelve_ok) = (shelve.clone(), shelve.clone());
         let model = model.clone();
         dialog
             .title("Update Project")
-            .w(px(420.))
+            .w(px(440.))
             .child(
                 v_flex()
                     .gap_3()
@@ -409,44 +410,37 @@ pub fn update_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut Ap
                     .child(
                         RadioGroup::new("update-type")
                             .children(["Merge incoming changes into the current branch", "Rebase the current branch on top of incoming changes"])
-                            .selected_index(Some(selected))
+                            .selected_index(Some(if rebase.get() { 1 } else { 0 }))
                             .on_change(move |ix, window, _| {
                                 rebase_cell.set(*ix == 1);
                                 window.refresh();
                             }),
                     )
-                    .child(div().text_sm().text_color(secondary).child("Local changes are stashed before updating and restored afterwards.")),
+                    .child(div().text_sm().text_color(secondary).child("Clean working tree before update"))
+                    .child(
+                        RadioGroup::new("update-clean")
+                            .children(["Using Stash", "Using Shelve"])
+                            .selected_index(Some(if shelve.get() { 1 } else { 0 }))
+                            .on_change(move |ix, window, _| {
+                                shelve_cell.set(*ix == 1);
+                                window.refresh();
+                            }),
+                    ),
             )
             .on_ok(move |_, _, cx| {
                 let rebase = rebase_ok.get();
+                let shelve = shelve_ok.get();
                 let method = if rebase { UpdateMethod::Rebase } else { UpdateMethod::Merge };
-                if Settings::get(cx).update_method != method {
-                    Settings::update(cx, |s| s.update_method = method);
+                let settings = Settings::get(cx);
+                if settings.update_method != method || settings.update_shelve != shelve {
+                    Settings::update(cx, |s| {
+                        s.update_method = method;
+                        s.update_shelve = shelve;
+                    });
                 }
+                let clean = if shelve { crate::git::ops::CleanWith::Shelve } else { crate::git::ops::CleanWith::Stash };
                 model.update(cx, |model, cx| {
-                    model.run_operation("Update Project", move |repo| {
-                        repo.run(["fetch", "--all", "--prune"])?;
-                        let has_upstream = repo.run(["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
-                        if !has_upstream {
-                            anyhow::bail!("the current branch has no tracked branch");
-                        }
-                        let before = repo.run(["rev-parse", "HEAD"])?;
-                        repo.run(["pull", if rebase { "--rebase" } else { "--no-rebase" }, "--autostash"])?;
-                        let after = repo.run(["rev-parse", "HEAD"])?;
-                        if before == after {
-                            return Ok("All files are up to date".into());
-                        }
-                        let range = format!("{}..{}", before.trim(), after.trim());
-                        let count = repo.run(["rev-list", "--count", &range]).unwrap_or_default();
-                        let files = repo.run(["diff", "--name-only", &range]).map(|o| o.lines().count()).unwrap_or(0);
-                        // The range rides along (after a unit separator) for the "View Commits" action.
-                        Ok(format!(
-                            "{files} file{} updated in {} commit{}\u{1f}{range}",
-                            if files == 1 { "" } else { "s" },
-                            count.trim(),
-                            if count.trim() == "1" { "" } else { "s" }
-                        ))
-                    }, cx)
+                    model.run_operation("Update Project", move |repo| crate::git::ops::update_project(repo, rebase, clean), cx)
                 });
                 true
             })
@@ -530,6 +524,36 @@ pub fn rename_branch(model: Entity<RepoModel>, branch: String, window: &mut Wind
                 true
             })
             .footer(footer("Rename"))
+    });
+    focus_input(&focus_target, window, cx);
+}
+
+/// Checkout Tag or Revision…: detaches HEAD at a tag, branch or hash.
+pub fn checkout_revision(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder("Tag, branch or commit hash"));
+    let focus_target = input.clone();
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (ok_input, model) = (input.clone(), model.clone());
+        dialog
+            .title("Checkout Tag or Revision")
+            .w(px(400.))
+            .child(Input::new(&input))
+            .on_ok(move |_, _, cx| {
+                let revision = ok_input.read(cx).value().trim().to_owned();
+                if revision.is_empty() {
+                    return false;
+                }
+                model.update(cx, |model, cx| {
+                    model.run_operation("Checkout", move |repo| {
+                        let commit = repo.run(["rev-parse", "--verify", "--quiet", &format!("{revision}^{{commit}}")])
+                            .map_err(|_| anyhow::anyhow!("Unknown revision: {revision}"))?;
+                        repo.run(["checkout", "--detach", commit.trim()])?;
+                        Ok(format!("Checked out {revision}"))
+                    }, cx)
+                });
+                true
+            })
+            .footer(footer("Checkout"))
     });
     focus_input(&focus_target, window, cx);
 }
@@ -629,6 +653,19 @@ pub fn settings(window: &mut Window, cx: &mut App) {
                                 update_draft.borrow_mut().update_method =
                                     if *ix == 1 { UpdateMethod::Rebase } else { UpdateMethod::Merge };
                                 window.refresh();
+                            }),
+                    )
+                    .child(div().pt_1().text_sm().text_color(palette.text_secondary).child("Clean working tree using"))
+                    .child(
+                        RadioGroup::horizontal("settings-update-clean")
+                            .children(["Stash", "Shelve"])
+                            .selected_index(Some(if current.update_shelve { 1 } else { 0 }))
+                            .on_change({
+                                let draft = draft.clone();
+                                move |ix, window, _| {
+                                    draft.borrow_mut().update_shelve = *ix == 1;
+                                    window.refresh();
+                                }
                             }),
                     )
                     .child(
