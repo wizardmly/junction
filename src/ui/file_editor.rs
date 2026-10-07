@@ -26,7 +26,7 @@ use crate::ui::diff_view::DiffSource;
 
 actions!(
     file_editor,
-    [SaveFile, ShowSelectionHistory, AnnotateFile, ShowFileHistory, ShowCurrentRevision, RollbackLines, ShowFileDiff, OpenOnHosting]
+    [SaveFile, ShowSelectionHistory, AnnotateFile, ShowFileHistory, ShowCurrentRevision, RollbackLines, ShowFileDiff, OpenOnHosting, CreateGist]
 );
 
 const CONTEXT: &str = "FileEditor";
@@ -46,6 +46,7 @@ pub enum FileEditorEvent {
     SelectCommit(String),
     OpenDiff(DiffSource),
     FilesChanged,
+    CreateGist { name: String, content: String },
 }
 
 impl EventEmitter<FileEditorEvent> for FileEditor {}
@@ -237,6 +238,15 @@ impl FileEditor {
         cx.open_url(&web.file_url(&revision, &self.path, Some(self.selected_lines(cx))));
     }
 
+    /// Create Gist: the selection, or the whole file when nothing is selected.
+    fn create_gist(&mut self, _: &CreateGist, _: &mut Window, cx: &mut Context<Self>) {
+        let text = self.text(cx);
+        let range: Range<usize> = self.state.read(cx).selected_range();
+        let content = if range.is_empty() { text } else { text.get(range).unwrap_or_default().to_owned() };
+        let name = self.path.rsplit('/').next().unwrap_or(&self.path).to_owned();
+        cx.emit(FileEditorEvent::CreateGist { name, content });
+    }
+
     fn rollback_lines(&mut self, _: &RollbackLines, window: &mut Window, cx: &mut Context<Self>) {
         if self.revision.is_some() {
             return;
@@ -312,6 +322,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::rollback_lines))
             .on_action(cx.listener(Self::open_on_hosting))
+            .on_action(cx.listener(Self::create_gist))
             .on_action(cx.listener(Self::show_selection_history))
             .on_action(cx.listener(Self::annotate))
             .on_action(cx.listener(Self::show_history))
@@ -372,7 +383,8 @@ impl Render for FileEditor {
                                 .menu("Show Diff", Box::new(ShowFileDiff))
                                 .menu_with_disabled("Rollback Lines", read_only, Box::new(RollbackLines))
                                 .separator()
-                                .menu("Open on GitHub / GitLab", Box::new(OpenOnHosting));
+                                .menu("Open on GitHub / GitLab", Box::new(OpenOnHosting))
+                                .menu("Create Gist…", Box::new(CreateGist));
                             menu.submenu("Git", git)
                         }),
                 ),

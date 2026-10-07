@@ -476,14 +476,17 @@ impl Workspace {
         let same = self.editor.as_ref().is_some_and(|(e, _)| e.read(cx).path() == path && e.read(cx).revision() == revision.as_deref());
         if !same {
             let view = cx.new(|cx| FileEditor::new(repository, path, revision, window, cx));
-            let subscription = cx.subscribe(&view, Self::on_file_editor_event);
+            let subscription = cx.subscribe_in(&view, window, Self::on_file_editor_event);
             self.editor = Some((view, subscription));
         }
         cx.notify();
     }
 
-    fn on_file_editor_event(&mut self, _: Entity<FileEditor>, event: &FileEditorEvent, cx: &mut Context<Self>) {
+    fn on_file_editor_event(&mut self, _: &Entity<FileEditor>, event: &FileEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
+            FileEditorEvent::CreateGist { name, content } => {
+                crate::ui::github_dialogs::create_gist(self.model.clone(), vec![(name.clone(), content.clone())], window, cx)
+            }
             FileEditorEvent::Closed => {
                 self.editor = None;
                 cx.notify();
@@ -778,6 +781,10 @@ impl Workspace {
                                 .item(PopupMenuItem::new("New Worktree…").on_click({
                                     let entity = entity.clone();
                                     move |_, window, cx| crate::ui::worktree_view::new_worktree(entity.read(cx).model.clone(), window, cx)
+                                }))
+                                .item(PopupMenuItem::new("Share Project on GitHub…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| crate::ui::github_dialogs::share_project(entity.read(cx).model.clone(), window, cx)
                                 }))
                                 .item(PopupMenuItem::new("GitHub Accounts…").on_click({
                                     let entity = entity.clone();

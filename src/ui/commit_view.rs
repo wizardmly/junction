@@ -1139,6 +1139,21 @@ impl Render for CommitView {
                                             crate::ui::patch_dialogs::copy_patch(model, source, cx)
                                         }
                                     }))
+                                    .item(PopupMenuItem::new("Create Gist…").on_click({
+                                        let (entity, path) = (menu_entity.clone(), path.clone());
+                                        move |_, window, cx| {
+                                            let (model, paths) = entity.read_with(cx, |this, _| (this.model.clone(), this.action_paths(Some(&path))));
+                                            let Some(root) = model.read(cx).repository().map(|r| r.root().to_path_buf()) else { return };
+                                            let files: Vec<(String, String)> = paths
+                                                .iter()
+                                                .filter_map(|p| {
+                                                    let content = std::fs::read_to_string(root.join(p)).ok()?;
+                                                    Some((p.rsplit('/').next().unwrap_or(p).to_owned(), content))
+                                                })
+                                                .collect();
+                                            crate::ui::github_dialogs::create_gist(model, files, window, cx)
+                                        }
+                                    }))
                                     .separator()
                                     .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {
                                         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(p_copy.clone()))

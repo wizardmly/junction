@@ -416,6 +416,17 @@ impl Render for PullRequestsView {
                                 menu
                             }),
                     )
+                    .child(tool_button("pr-create", IconName::Plus, "Create Pull Request").on_click(cx.listener(|this, _, window, cx| {
+                        let Some(target) = this.target.clone() else { return };
+                        let entity = cx.entity();
+                        crate::ui::github_dialogs::create_pull_request(
+                            this.model.clone(),
+                            target,
+                            Rc::new(move |cx: &mut App| entity.update(cx, |this, cx| this.refresh(cx))),
+                            window,
+                            cx,
+                        );
+                    })))
                     .child(tool_button("pr-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(|this, _, _, cx| this.refresh(cx)))),
             )
             .when(self.loading, |el| el.child(div().px_2().py_1().text_xs().text_color(palette.text_secondary).child("Loading…")))
