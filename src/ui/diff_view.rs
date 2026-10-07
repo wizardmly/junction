@@ -689,6 +689,10 @@ impl DiffView {
             .child(Button::new("diff-gear").ghost().xsmall().icon(IconName::Settings).tooltip("Settings").dropdown_menu(
                 move |menu, window, cx| crate::ui::text_panes::gear_menu(menu, mode == ViewerMode::SideBySide, window, cx),
             ))
+            .child(
+                tool_button("diff-help", IconName::CircleQuestionMark, "Help")
+                    .on_click(|_, _, cx| cx.open_url("https://www.jetbrains.com/help/idea/differences-viewer.html")),
+            )
             .child(separator())
             .child(common::icon(common::file_icon(source.path())).text_color(palette.text_secondary))
             .child(div().ml_1().text_sm().overflow_hidden().whitespace_nowrap().text_ellipsis().child(source.path().to_owned()))

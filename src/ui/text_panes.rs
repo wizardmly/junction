@@ -220,6 +220,15 @@ impl<T: Clone + Default> TextPanes<T> {
         self.line_rows[pane].get(line).copied()
     }
 
+    /// The row a line is on (a folded line: its fold's row; past the end:
+    /// the row count).
+    pub fn row_of(&self, pane: usize, line: usize) -> usize {
+        match self.line_row(pane, line) {
+            Some(LineRow::Row(row) | LineRow::Fold(_, row)) => row,
+            None => self.rows[pane].len(),
+        }
+    }
+
     /// The host's rows for a pane (after a re-diff or a fold change).
     pub fn set_rows(&mut self, pane: usize, rows: Vec<RowTarget>) {
         let mut map = Vec::new();

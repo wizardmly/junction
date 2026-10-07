@@ -20,6 +20,7 @@ use gpui_kit::{
 };
 
 use crate::git::Repository;
+use crate::git::diff;
 use crate::git::merge::{self, Conflict, MergeChunk};
 use crate::model::RepoModel;
 use crate::theme::{ActivePalette as _, Palette};
@@ -27,7 +28,7 @@ use crate::ui::common::{self, tool_button};
 use crate::ui::diff_panes::{BlockColors, Connector, DIVIDER_WIDTH, LINE_HEIGHT, Segment, paint_divider};
 use crate::ui::diff_view::edit::replacement;
 use crate::ui::text_buffer::EditKind;
-use crate::ui::text_panes::{BUTTON_WIDTH, PaneContent, PaneHost, PaneLayout, RowLook, STRIPE_WIDTH, TextPanes, pane_area};
+use crate::ui::text_panes::{BUTTON_WIDTH, PaneContent, PaneHost, PaneLayout, RowLook, RowTarget, STRIPE_WIDTH, TextPanes, pane_area};
 
 pub enum MergeEvent {
     /// The tool closed; `true` when the result was applied.
@@ -83,6 +84,11 @@ struct Change {
     conflict: bool,
     /// The magic wand's word-by-word result, for a simple conflict.
     simple: Option<String>,
+    /// Changed words per line of each side against the base, and of the
+    /// base against either side.
+    words_ours: Vec<Vec<Range<usize>>>,
+    words_theirs: Vec<Vec<Range<usize>>>,
+    words_base: Vec<Vec<Range<usize>>>,
 }
 
 impl Change {
@@ -137,6 +143,10 @@ pub struct MergeView {
     error: Option<String>,
     /// The change Next / Previous went to last.
     current: Option<usize>,
+    /// Collapse Unchanged Fragments, and the fragments opened since.
+    collapse: bool,
+    expanded: std::collections::HashSet<usize>,
+    context_lines: usize,
     _load: Option<Task<()>>,
 }
 
@@ -145,7 +155,19 @@ impl MergeView {
         let titles = merge::side_titles(model.read(cx).state());
         let mut panes = TextPanes::new(3, cx);
         panes.editable = Some(RESULT);
-        let mut this = Self { model, conflict: conflict.clone(), titles, changes: Vec::new(), panes, error: None, current: None, _load: None };
+        let mut this = Self {
+            model,
+            conflict: conflict.clone(),
+            titles,
+            changes: Vec::new(),
+            panes,
+            error: None,
+            current: None,
+            collapse: false,
+            expanded: Default::default(),
+            context_lines: crate::settings::Settings::get(cx).diff.context_lines,
+            _load: None,
+        };
         this._load = Some(cx.spawn(async move |this, cx| {
             let path = conflict.path.clone();
             let versions = cx.background_spawn(async move { merge::load_versions(&repository, &path) }).await;
@@ -177,7 +199,18 @@ impl MergeView {
         self.changes = chunks
             .iter()
             .filter_map(|c| match c {
-                MergeChunk::Change { base, ours, theirs, ours_changed, theirs_changed, conflict } => Some(Change {
+                MergeChunk::Change { base, ours, theirs, ours_changed, theirs_changed, conflict } => Some({
+                    let (base_o, words_ours) = diff::line_fragments(&br[base.clone()], &or[ours.clone()]);
+                    let (base_t, words_theirs) = diff::line_fragments(&br[base.clone()], &tr[theirs.clone()]);
+                    let words_base = base_o.into_iter().zip(base_t).map(|(mut a, b)| {
+                        a.extend(b);
+                        a.sort_by_key(|r| r.start);
+                        a
+                    }).collect();
+                    Change {
+                    words_ours: if *ours_changed { words_ours } else { Vec::new() },
+                    words_theirs: if *theirs_changed { words_theirs } else { Vec::new() },
+                    words_base,
                     base: base.clone(),
                     ours: ours.clone(),
                     theirs: theirs.clone(),
@@ -187,6 +220,7 @@ impl MergeView {
                     simple: conflict
                         .then(|| merge::resolve_simple(&join(&br[base.clone()]), &join(&or[ours.clone()]), &join(&tr[theirs.clone()])))
                         .flatten(),
+                    }
                 }),
                 MergeChunk::Equal { .. } => None,
             })
@@ -215,11 +249,59 @@ impl MergeView {
 
     /// After the result or the change states changed: rows, scroll links.
     fn refresh(&mut self) {
+        let folds = self.folds();
         for pane in 0..3 {
-            let rows = self.panes.plain_rows(pane);
+            let mut rows = Vec::new();
+            let mut line = 0;
+            for (id, lines) in &folds {
+                let lines = &lines[pane];
+                rows.extend((line..lines.start).map(RowTarget::Line));
+                rows.push(RowTarget::Fold { id: *id, count: lines.len() });
+                line = lines.end;
+            }
+            rows.extend((line..self.panes.buffers[pane].line_count()).map(RowTarget::Line));
             self.panes.set_rows(pane, rows);
         }
         self.panes.links = vec![(OURS, RESULT, self.segments(OURS)), (RESULT, THEIRS, self.segments(THEIRS))];
+    }
+
+    /// Collapse Unchanged Fragments: the unchanged stretches between
+    /// changes (the same lines on all three panes), less their context
+    /// lines, unless opened. Stretch `k` comes before change `k`.
+    fn folds(&self) -> Vec<(usize, [Range<usize>; 3])> {
+        if !self.collapse {
+            return Vec::new();
+        }
+        let context = self.context_lines;
+        let mut out = Vec::new();
+        let mut starts = [0; 3];
+        let ends = |ix: usize| -> [usize; 3] {
+            match (self.changes.get(ix), self.states().get(ix)) {
+                (Some(c), Some(s)) => [c.ours.start, s.result.start, c.theirs.start],
+                _ => [0, 1, 2].map(|p| self.panes.buffers[p].line_count()),
+            }
+        };
+        for k in 0..=self.changes.len() {
+            let end = ends(k);
+            let len = end[0].saturating_sub(starts[0]);
+            if (0..3).all(|p| end[p].saturating_sub(starts[p]) == len) {
+                let head = if k == 0 { 0 } else { context };
+                let tail = if k == self.changes.len() { 0 } else { context };
+                if len > head + tail + 1 && !self.expanded.contains(&k) {
+                    out.push((k, [0, 1, 2].map(|p| starts[p] + head..end[p] - tail)));
+                }
+            }
+            if let (Some(c), Some(s)) = (self.changes.get(k), self.states().get(k)) {
+                starts = [c.ours.end, s.result.end, c.theirs.end];
+            }
+        }
+        out
+    }
+
+    /// The rows a line range takes on a pane (changes are never folded).
+    fn rows(&self, pane: usize, lines: Range<usize>) -> Range<usize> {
+        let start = self.panes.row_of(pane, lines.start);
+        start..start + lines.len()
     }
 
     /// The blocks pairing a side's lines with the result's, for scrolling
@@ -228,13 +310,14 @@ impl MergeView {
         let mut out = Vec::new();
         let (mut s, mut r) = (0, 0);
         for (change, state) in self.changes.iter().zip(self.states()) {
-            let range = change.range(side);
-            out.push(Segment { left: s..range.start, right: r..state.result.start, change: None, kind: crate::git::diff::RowKind::Equal });
-            out.push(Segment { left: range.clone(), right: state.result.clone(), change: Some(0), kind: crate::git::diff::RowKind::Modified });
+            let range = self.rows(side, change.range(side));
+            let result = self.rows(RESULT, state.result.clone());
+            out.push(Segment { left: s..range.start, right: r..result.start, change: None, kind: crate::git::diff::RowKind::Equal });
+            out.push(Segment { left: range.clone(), right: result.clone(), change: Some(0), kind: crate::git::diff::RowKind::Modified });
             s = range.end;
-            r = state.result.end;
+            r = result.end;
         }
-        let (side_end, result_end) = (self.panes.buffers[side].line_count(), self.panes.buffers[RESULT].line_count());
+        let (side_end, result_end) = (self.panes.row_of(side, usize::MAX), self.panes.row_of(RESULT, usize::MAX));
         out.push(Segment { left: s..side_end.max(s), right: r..result_end.max(r), change: None, kind: crate::git::diff::RowKind::Equal });
         // Each side lists its pairs left to right as (side, result).
         if side == THEIRS {
@@ -359,7 +442,8 @@ impl MergeView {
         let Some(change) = self.changes.get(ix) else { return };
         let result = self.states()[ix].result.start;
         self.current = Some(ix);
-        self.panes.show_rows(vec![(OURS, change.ours.start), (RESULT, result), (THEIRS, change.theirs.start)]);
+        let rows = vec![(OURS, self.panes.row_of(OURS, change.ours.start)), (RESULT, self.panes.row_of(RESULT, result)), (THEIRS, self.panes.row_of(THEIRS, change.theirs.start))];
+        self.panes.show_rows(rows);
     }
 
     /// Next / Previous unresolved change, wrapping around.
@@ -466,8 +550,26 @@ impl MergeView {
                 }
             };
             let Some(colors) = kind.colors(palette) else { continue };
-            for row in range.start.max(rows.start)..range.end.min(rows.end) {
-                looks[row - rows.start].background = Some(colors.fill);
+            let word = match kind {
+                Kind::Conflict => palette.diff_conflict_word,
+                Kind::Inserted => palette.diff_inserted_word,
+                Kind::Deleted => palette.diff_deleted_word,
+                _ => palette.diff_modified_word,
+            };
+            // The result shows the base's changed words while it still is the base.
+            let words = match pane {
+                OURS => &change.words_ours,
+                THEIRS => &change.words_theirs,
+                _ if state.ours != SideState::Applied && state.theirs != SideState::Applied && range.len() == change.base.len() => &change.words_base,
+                _ => &Vec::new(),
+            };
+            let first = self.panes.row_of(pane, range.start);
+            for (k, row) in (first..first + range.len()).enumerate() {
+                if rows.contains(&row) {
+                    let look = &mut looks[row - rows.start];
+                    look.background = Some(colors.fill);
+                    look.words = words.get(k).map(|w| w.iter().map(|r| (r.clone(), word)).collect()).unwrap_or_default();
+                }
             }
         }
         looks
@@ -488,7 +590,7 @@ impl MergeView {
                 _ if state.side(ours) == SideState::Pending => (change.range(pane), change.kind(ours)),
                 _ => continue,
             };
-            let y = self.panes.row_top(pane, range.start);
+            let y = self.panes.row_top(pane, self.panes.row_of(pane, range.start));
             if y < -LINE_HEIGHT * (range.len() as f32 + 1.) || y > height {
                 continue;
             }
@@ -553,7 +655,8 @@ impl MergeView {
             .filter(|(_, s)| s.side(ours) == SideState::Pending)
             .filter_map(|(c, s)| {
                 let colors = c.kind(ours).colors(palette)?;
-                let (left, right) = if ours { (c.ours.clone(), s.result.clone()) } else { (s.result.clone(), c.theirs.clone()) };
+                let (side, result) = (self.rows(if ours { OURS } else { THEIRS }, c.range(if ours { OURS } else { THEIRS })), self.rows(RESULT, s.result.clone()));
+                let (left, right) = if ours { (side, result) } else { (result, side) };
                 Some(Connector { left, right, colors })
             })
             .collect();
@@ -576,7 +679,7 @@ impl MergeView {
             .iter()
             .zip(self.states())
             .filter(|(_, s)| s.side(ours) == SideState::Pending)
-            .filter_map(|(c, _)| Some((c.range(pane), c.kind(ours).colors(palette)?.border)))
+            .filter_map(|(c, _)| Some((self.rows(pane, c.range(pane)), c.kind(ours).colors(palette)?.border)))
             .collect()
     }
 }
@@ -616,6 +719,12 @@ impl PaneHost for MergeView {
         self.panes.highlight(RESULT, language);
         self.refresh();
     }
+
+    fn open_fold(&mut self, id: usize, cx: &mut Context<Self>) {
+        self.expanded.insert(id);
+        self.refresh();
+        cx.notify();
+    }
 }
 
 crate::impl_pane_input!(MergeView);
@@ -624,6 +733,11 @@ impl Render for MergeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.panes.before_render();
         self.panes.apply_settings(cx);
+        let context = crate::settings::Settings::get(cx).diff.context_lines;
+        if context != self.context_lines {
+            self.context_lines = context;
+            self.refresh();
+        }
         let palette = cx.palette().clone();
         let (changes, conflicts) = self.counts();
         let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
@@ -679,6 +793,14 @@ impl Render for MergeView {
                     .on_click(cx.listener(|this, _, _, cx| this.resolve_all_simple(cx))),
             )
             .child(separator())
+            .child(tool_button("merge-collapse", IconName::FoldVertical, "Collapse Unchanged Fragments").selected(self.collapse).on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.collapse = !this.collapse;
+                    this.expanded.clear();
+                    this.refresh();
+                    cx.notify();
+                },
+            )))
             .child(tool_button("merge-sync", IconName::Link2, "Synchronize Scrolling").selected(self.panes.sync).on_click(cx.listener(|this, _, _, cx| {
                 this.panes.sync = !this.panes.sync;
                 cx.notify();
@@ -692,6 +814,10 @@ impl Render for MergeView {
                     .tooltip("Settings")
                     .dropdown_menu(|menu, window, cx| crate::ui::text_panes::gear_menu(menu, false, window, cx))
             })
+            .child(
+                tool_button("merge-help", IconName::CircleQuestionMark, "Help")
+                    .on_click(|_, _, cx| cx.open_url("https://www.jetbrains.com/help/idea/resolve-conflicts.html")),
+            )
             .child(separator())
             .child(common::icon(common::file_icon(&self.conflict.path)).text_color(palette.text_secondary))
             .child(div().ml_1().text_sm().child(format!("Merge Revisions for {}", self.conflict.path)))
@@ -800,6 +926,9 @@ mod tests {
             theirs_changed: false,
             conflict,
             simple: None,
+            words_ours: Vec::new(),
+            words_theirs: Vec::new(),
+            words_base: Vec::new(),
         };
         assert_eq!(change(2..2, 2..4, false).kind(true), Kind::Inserted);
         assert_eq!(change(2..4, 2..2, false).kind(true), Kind::Deleted);

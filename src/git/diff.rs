@@ -375,6 +375,20 @@ fn write_index(repository: &Repository, path: &str, content: &str, filter: bool)
     Ok(())
 }
 
+/// Changed words of a block's lines on each side, compared as one text
+/// (the merge tool's highlighting of each side against the base).
+pub fn line_fragments(old: &[&str], new: &[&str]) -> (Vec<Vec<Range<usize>>>, Vec<Vec<Range<usize>>>) {
+    let sides = |lines: &[&str]| -> Vec<Side> {
+        lines.iter().enumerate().map(|(i, l)| Side { line: i + 1, text: (*l).to_owned(), changed: Vec::new(), kinds: Vec::new(), whole: None }).collect()
+    };
+    let (mut lefts, mut rights) = (sides(old), sides(new));
+    if !lefts.is_empty() && !rights.is_empty() {
+        block_fragments(&mut lefts, &mut rights, false);
+    }
+    let take = |sides: Vec<Side>| sides.into_iter().map(|s| s.changed).collect();
+    (take(lefts), take(rights))
+}
+
 /// Inner fragments of a modified block, IntelliJ's "Highlight words":
 /// the block's lines are compared word by word as one text, so a line
 /// inserted in the middle of a block shows as inserted, and each changed

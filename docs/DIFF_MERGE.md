@@ -30,8 +30,8 @@
 | 2.4 | 部分提交：每个变更在**右编辑器 gutter** 的变更首行显示复选框（包含进本次提交） | ✅ |
 | 2.5 | 右栏标题的复选框控制全部变更；工具栏右侧显示「7 differences, 0 included」 | ✅ |
 | 2.6 | 暂存区模式：Stage / Unstage / Rollback 的箭头同样在 gutter 里 | ✅ |
-| 2.7 | 编辑器右键菜单：Revert Selected Changes、Include/Exclude Lines into Commit、Compare with Clipboard 等 | ❌ |
-| 2.8 | 行级部分提交：可以只包含一个变更里的部分行（右键 Include Lines into Commit） | ❌ |
+| 2.7 | 编辑器右键菜单：Revert Selected Changes、Include/Exclude Lines into Commit、Compare with Clipboard 等 | ✅ 缺 Compare with Clipboard |
+| 2.8 | 行级部分提交：可以只包含一个变更里的部分行（右键 Include Lines into Commit） | ✅ 排除的行变淡 |
 
 ## 3. 可编辑
 
@@ -45,16 +45,16 @@
 
 | # | AS 的表现 | 现状 |
 |---|---|---|
-| 4.1 | ↑ Previous Difference（Shift+F7）、↓ Next Difference（F7）；到末尾再按会提示跳到下一个文件 | ✅ / ❌ 跨文件 |
+| 4.1 | ↑ Previous Difference（Shift+F7）、↓ Next Difference（F7）；到末尾再按会提示跳到下一个文件 | ✅ |
 | 4.2 | ✎ Jump to Source（F4） | ✅ |
-| 4.3 | ← / → Compare Previous / Next File（Alt+←/→）；文件列表按钮（选择要对比的文件） | ❌ |
+| 4.3 | ← / → Compare Previous / Next File（Alt+←/→）；文件列表按钮（选择要对比的文件） | ✅ |
 | 4.4 | 查看器下拉：Side-by-side viewer / Unified viewer | ✅ |
-| 4.5 | 空白下拉：Do not ignore / Trim whitespaces / Ignore whitespaces / Ignore whitespaces and empty lines | 🟡 缺最后一项 |
-| 4.6 | 高亮下拉：Highlight words / Highlight lines / Highlight split changes / Highlight characters / Do not highlight | 🟡 缺两项 |
+| 4.5 | 空白下拉：Do not ignore / Trim whitespaces / Ignore whitespaces / Ignore whitespaces and empty lines | ✅ |
+| 4.6 | 高亮下拉：Highlight words / Highlight lines / Highlight split changes / Highlight characters / Do not highlight | ✅ |
 | 4.7 | 折叠未修改片段开关 | ✅ |
 | 4.8 | 同步滚动开关 | ✅ |
-| 4.9 | 齿轮菜单：上下文行数、显示行号、显示空白字符、显示缩进线、软换行、对齐变更（Align changes）、在编辑器标签页打开等 | ❌ |
-| 4.10 | ? 帮助 | ❌ |
+| 4.9 | 齿轮菜单：上下文行数、显示行号、显示空白字符、显示缩进线、软换行、对齐变更（Align changes）、在编辑器标签页打开等 | 🟡 缺软换行、在编辑器标签页打开；Merge 不支持对齐 |
+| 4.10 | ? 帮助 | ✅ |
 | 4.11 | 右侧统计：`N differences`，部分提交时为 `N differences, M included` | ✅ |
 
 ## 5. 单栏 diff（Unified）
@@ -75,7 +75,7 @@
 | 6.4 | 冲突用红色；只有一方改动的块按类型着色；已解决的块变淡或消失 | ✅ |
 | 6.5 | 冲突两边都应用时，第二个箭头变成 Append（追加在第一个后面） | ✅ |
 | 6.6 | 结果栏 gutter 显示魔棒，可自动解决简单冲突；工具栏有「Resolve simple conflicts」 | ✅ |
-| 6.7 | 工具栏：↑↓ 跳到上一个/下一个变更，Apply All Non-Conflicting Changes（左 / 全部 / 右三个按钮），空白、高亮、折叠、同步滚动、齿轮、帮助，右侧显示「N changes, M conflicts」 | ✅ |
+| 6.7 | 工具栏：↑↓ 跳到上一个/下一个变更，Apply All Non-Conflicting Changes（左 / 全部 / 右三个按钮），空白、高亮、折叠、同步滚动、齿轮、帮助，右侧显示「N changes, M conflicts」 | 🟡 缺空白、高亮下拉 |
 | 6.8 | 底部按钮：Accept Left、Accept Right、Cancel、Apply；还有冲突未解决时点 Apply 会提示确认 | ✅ |
 | 6.9 | 结果栏可自由编辑，编辑后重新计算各块状态 | ✅ |
 | 6.10 | 可以切换显示 Base（三栏变成和 Base 对比） | ❌ |
@@ -95,4 +95,4 @@ AS 的做法是「几个独立编辑器 + 中间画连接块 + 同步滚动」�
 1. ✅ **双栏 diff 结构**：两栏独立、gutter 镜像、分隔条连接块、同步滚动、`>>` 和复选框放进 gutter、标题条、error stripe、完整工具栏和统计。
 2. ✅ **可编辑**：`DiffPane` 支持编辑，右栏工作区文件可直接改，实时重算并保存；语法高亮。
 3. ✅ **三栏 Merge**：用同一套部件重写，`>> × <<`、冲突配色、魔棒、Apply Non-Conflicting 三个按钮、结果栏直接编辑。
-4. **补齐细节**：Ctrl 切 Append、行级部分提交、右键菜单、齿轮菜单各项、空白/高亮的其余选项、跨文件导航、单栏可编辑。
+4. 🟡 **补齐细节**：✅ Ctrl 切 Append、行级部分提交、右键菜单、齿轮菜单（行号、空白字符、缩进线、上下文行数、对齐变更）、空白/高亮的其余选项、跨文件导航、Merge 折叠和字级高亮。还没做：软换行、单栏可编辑、左栏可编辑时的 `<<`、Merge 切换 Base、Compare with Clipboard。
