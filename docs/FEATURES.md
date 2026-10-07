@@ -98,7 +98,7 @@
 | 变更树：Changes（changelist）、Unversioned Files、Ignored Files | M1 | 🟡 |
 | 复选框选择要提交的文件；全选 | M1 | 🟡 |
 | 分组：目录 / 模块 / 仓库；展开全部/折叠全部 | M2 | ⬜ |
-| 多个 Changelist：新建、移动文件到、设为活动 | M4 | ⬜ |
+| 多个 Changelist：新建、移动文件到、设为活动 | M4 | ✅（New / Edit / Delete / Set Active；Move to Another Changelist；活动列表粗体，新改动进入活动列表） |
 | Staging 模式（启用暂存区）：Staged / Unstaged 两棵树，Stage/Unstage 按钮 | M2 | ✅ |
 | 部分提交：按 chunk / 按行勾选（diff 中的复选框） | M4 | 🟡（暂存区模式下按 chunk Stage / Unstage；changelist 模式的复选框未做） |
 | 提交信息编辑器：拼写检查、右边距线、首行长度提示、提交信息历史（`Ctrl+M`） | M1/M3 | 🟡（缺拼写检查、右边距线） |

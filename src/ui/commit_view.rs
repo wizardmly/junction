@@ -25,6 +25,7 @@ use gpui_kit::{
     Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
+use crate::git::changelists::{self, Changelists};
 use crate::git::status::{self, CommitRequest};
 use crate::git::StatusKind;
 use crate::git::merge::{self, Conflict};
@@ -60,13 +61,20 @@ pub fn init(cx: &mut gpui_kit::App) {
 
 /// A top-level node of the changes tree. Node ids are `<scope><f:|d:><path>`.
 struct Group {
-    id: &'static str,
-    scope: &'static str,
-    label: &'static str,
+    id: String,
+    scope: String,
+    label: String,
     files: Vec<(String, StatusKind)>,
+    /// The changelist this group shows (changelist mode only).
+    changelist: Option<String>,
 }
 
-const CHANGES_SCOPE: &str = "c:";
+impl Group {
+    fn new(id: &str, scope: &str, label: &str, files: Vec<(String, StatusKind)>) -> Self {
+        Self { id: id.into(), scope: scope.into(), label: label.into(), files, changelist: None }
+    }
+}
+
 const UNVERSIONED_SCOPE: &str = "u:";
 const STAGED_SCOPE: &str = "s:";
 const UNSTAGED_SCOPE: &str = "w:";
@@ -90,6 +98,8 @@ pub struct CommitView {
     /// Commit Options popover: "Author" override and "GPG-sign" (defaults to `commit.gpgSign`).
     author: Entity<InputState>,
     gpg_sign: Option<bool>,
+    changelists: Changelists,
+    changelists_root: Option<std::path::PathBuf>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -156,6 +166,8 @@ impl CommitView {
             last_selection: None,
             author,
             gpg_sign: None,
+            changelists: Changelists::default(),
+            changelists_root: None,
             _subscriptions: subscriptions,
         };
         this.rebuild(cx);
@@ -164,9 +176,12 @@ impl CommitView {
 
     /// The scope and file path of a file node.
     fn path_of(id: &str) -> Option<(&str, &str)> {
-        [CHANGES_SCOPE, UNVERSIONED_SCOPE, STAGED_SCOPE, UNSTAGED_SCOPE, CONFLICTS_SCOPE].into_iter().find_map(|scope| {
-            id.strip_prefix(scope)?.strip_prefix(FILE_PREFIX).map(|path| (scope, path))
-        })
+        let end = id.find(':')? + 1;
+        let (scope, rest) = id.split_at(end);
+        if scope == "grp:" {
+            return None;
+        }
+        rest.strip_prefix(FILE_PREFIX).map(|path| (scope, path))
     }
 
     fn diff_source(&self, id: &str) -> Option<DiffSource> {
@@ -201,23 +216,40 @@ impl CommitView {
         let not_conflicted = |files: Vec<(String, StatusKind)>| -> Vec<(String, StatusKind)> {
             files.into_iter().filter(|(_, k)| *k != StatusKind::Conflicted).collect()
         };
-        let conflicts_group = Group { id: "grp:conflicts", scope: CONFLICTS_SCOPE, label: "Merge Conflicts", files: conflicted };
+        let conflicts_group = Group::new("grp:conflicts", CONFLICTS_SCOPE, "Merge Conflicts", conflicted);
         let mut groups = if self.staging {
             vec![
-                Group { id: "grp:staged", scope: STAGED_SCOPE, label: "Staged", files: status.staged() },
-                Group { id: "grp:unstaged", scope: UNSTAGED_SCOPE, label: "Unstaged", files: not_conflicted(status.unstaged()) },
-                Group { id: "grp:unversioned", scope: UNVERSIONED_SCOPE, label: "Unversioned Files", files: unversioned },
+                Group::new("grp:staged", STAGED_SCOPE, "Staged", status.staged()),
+                Group::new("grp:unstaged", UNSTAGED_SCOPE, "Unstaged", not_conflicted(status.unstaged())),
+                Group::new("grp:unversioned", UNVERSIONED_SCOPE, "Unversioned Files", unversioned),
             ]
         } else {
-            vec![
-                Group {
-                    id: "grp:changes",
-                    scope: CHANGES_SCOPE,
-                    label: "Changes",
-                    files: not_conflicted(status.changes().map(|e| (e.path.clone(), e.kind)).collect()),
-                },
-                Group { id: "grp:unversioned", scope: UNVERSIONED_SCOPE, label: "Unversioned Files", files: unversioned },
-            ]
+            // One group per changelist, the active one's new changes landing in it.
+            let changes = not_conflicted(status.changes().map(|e| (e.path.clone(), e.kind)).collect());
+            let root = self.model.read(cx).repository().map(|r| r.root().to_path_buf());
+            if root != self.changelists_root {
+                self.changelists = self.model.read(cx).repository().map(Changelists::load).unwrap_or_default();
+                self.changelists_root = root;
+            }
+            let changed: Vec<String> = changes.iter().map(|(p, _)| p.clone()).collect();
+            if self.changelists.sync(&changed) {
+                self.save_changelists(cx);
+            }
+            let mut groups: Vec<Group> = self
+                .changelists
+                .lists
+                .iter()
+                .enumerate()
+                .map(|(ix, list)| Group {
+                    id: format!("grp:cl{ix}"),
+                    scope: format!("c{ix}:"),
+                    label: list.name.clone(),
+                    files: changes.iter().filter(|(p, _)| self.changelists.list_of(p) == list.name).cloned().collect(),
+                    changelist: Some(list.name.clone()),
+                })
+                .collect();
+            groups.push(Group::new("grp:unversioned", UNVERSIONED_SCOPE, "Unversioned Files", unversioned));
+            groups
         };
         if !conflicts_group.files.is_empty() {
             groups.insert(0, conflicts_group);
@@ -228,11 +260,11 @@ impl CommitView {
             .iter()
             // The first group always shows, as IntelliJ's default changelist does.
             .enumerate()
-            .filter(|(_, group)| !group.files.is_empty() || matches!(group.id, "grp:changes" | "grp:staged"))
+            .filter(|(_, group)| !group.files.is_empty() || group.changelist.is_some() || group.id == "grp:staged")
             .map(|(_, group)| {
-                TreeItem::new(group.id, group.label)
+                TreeItem::new(group.id.clone(), group.label.clone())
                     .expanded(true)
-                    .children(common::file_tree(group.files.iter().map(|(p, _)| p.clone()), group.scope))
+                    .children(common::file_tree(group.files.iter().map(|(p, _)| p.clone()), &group.scope))
             })
             .collect();
         self.counts.clear();
@@ -242,7 +274,7 @@ impl CommitView {
     }
 
     fn group_of(&self, id: &str) -> Option<&Group> {
-        self.groups.iter().find(|g| g.id == id || id.starts_with(g.scope))
+        self.groups.iter().find(|g| g.id == id || id.starts_with(g.scope.as_str()))
     }
 
     /// Paths under a tree node (a file, a directory, or a whole group).
@@ -279,12 +311,107 @@ impl CommitView {
         crate::ui::patch_dialogs::create_patch(self.model.clone(), source, window, cx);
     }
 
+    fn save_changelists(&self, cx: &Context<Self>) {
+        if let Some(repository) = self.model.read(cx).repository() {
+            self.changelists.save(repository);
+        }
+    }
+
+    fn update_changelists(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Changelists)) {
+        f(&mut self.changelists);
+        self.save_changelists(cx);
+        self.rebuild(cx);
+    }
+
+    /// Move to Another Changelist (F6) for the clicked file.
+    fn move_to_changelist(&mut self, path: &str, target: &str, cx: &mut Context<Self>) {
+        let paths = vec![path.to_owned()];
+        self.update_changelists(cx, |lists| lists.move_files(&paths, target));
+    }
+
+    /// New Changelist… (optionally moving `path` into it), or Edit Changelist… when `edit` names one.
+    fn changelist_dialog(&mut self, edit: Option<String>, move_path: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let (name, comment) = match &edit {
+            Some(list) => (list.clone(), self.changelists.comment(list).to_owned()),
+            None => (String::new(), String::new()),
+        };
+        let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name").default_value(name));
+        let comment_input =
+            cx.new(|cx| TextareaState::new(window, cx).rows(3).placeholder("Comment (used as the commit message)").default_value(comment));
+        let active = std::rc::Rc::new(std::cell::Cell::new(edit.is_none()));
+        let renaming_default = edit.as_deref() == Some(changelists::DEFAULT_NAME);
+        let entity = cx.entity();
+        let focus = name_input.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (name_input, comment_input) = (name_input.clone(), comment_input.clone());
+            let (active_set, active_ok) = (active.clone(), active.clone());
+            let entity = entity.clone();
+            let edit = edit.clone();
+            let move_path = move_path.clone();
+            let creating = edit.is_none();
+            dialog
+                .title(if creating { "New Changelist" } else { "Edit Changelist" })
+                .w(px(440.))
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(Input::new(&name_input).disabled(renaming_default))
+                        .child(Textarea::new(&comment_input))
+                        .when(creating, |el| {
+                            el.child(Checkbox::new("cl-active").label("Set active").checked(active.get()).on_change(
+                                move |value, window, _| {
+                                    active_set.set(*value);
+                                    window.refresh();
+                                },
+                            ))
+                        }),
+                )
+                .on_ok(move |_, _, cx| {
+                    let name = name_input.read(cx).value().trim().to_owned();
+                    let comment = comment_input.read(cx).value().trim().to_owned();
+                    let make_active = active_ok.get();
+                    let edit = edit.clone();
+                    let move_path = move_path.clone();
+                    entity.update(cx, |this, cx| {
+                        let ok = match &edit {
+                            Some(old) => this.changelists.rename(old, &name, &comment),
+                            None => this.changelists.add(&name, &comment, make_active),
+                        };
+                        if !ok {
+                            return false;
+                        }
+                        if let Some(path) = move_path {
+                            this.changelists.move_files(&[path], &name);
+                        }
+                        this.save_changelists(cx);
+                        this.rebuild(cx);
+                        true
+                    })
+                })
+                .footer(crate::ui::dialogs::footer(if creating { "Create" } else { "OK" }))
+        });
+        crate::ui::dialogs::focus_input(&focus, window, cx);
+    }
+
+    fn new_changelist(&mut self, move_path: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.changelist_dialog(None, move_path, window, cx);
+    }
+
+    fn set_active_changelist(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        // IntelliJ puts the changelist's comment in an empty commit message.
+        let comment = self.changelists.comment(&name).to_owned();
+        if !comment.is_empty() && self.message.read(cx).value().trim().is_empty() {
+            self.message.update(cx, |state, cx| state.set_value(comment, window, cx));
+        }
+        self.update_changelists(cx, |lists| lists.active = name);
+    }
+
     fn paths_under(&self, id: &str) -> Vec<String> {
         if let Some((_, path)) = Self::path_of(id) {
             return vec![path.to_owned()];
         }
         let Some(group) = self.group_of(id) else { return Vec::new() };
-        let dir = id.strip_prefix(group.scope).and_then(|r| r.strip_prefix(common::DIR_PREFIX));
+        let dir = id.strip_prefix(group.scope.as_str()).and_then(|r| r.strip_prefix(common::DIR_PREFIX));
         group
             .files
             .iter()
@@ -313,7 +440,7 @@ impl CommitView {
 
     fn stage_selected(&mut self, unstage: bool, cx: &mut Context<Self>) {
         let target = match self.last_selection.clone() {
-            Some(id) if (self.group_of(&id).map(|g| g.scope) == Some(STAGED_SCOPE)) == unstage => id.to_string(),
+            Some(id) if (self.group_of(&id).map(|g| g.scope.as_str()) == Some(STAGED_SCOPE)) == unstage => id.to_string(),
             // Nothing suitable selected: act on the whole group, like "Stage All".
             _ => if unstage { "grp:staged" } else { "grp:unstaged" }.to_owned(),
         };
@@ -563,11 +690,11 @@ impl CommitView {
     fn rollback(&mut self, cx: &mut Context<Self>) {
         let (paths, from_index) = if self.staging {
             let Some(id) = self.last_selection.clone() else { return };
-            let scope = self.group_of(&id).map(|g| g.scope);
-            if scope == Some(UNVERSIONED_SCOPE) {
+            let scope = self.group_of(&id).map(|g| g.scope.clone());
+            if scope.as_deref() == Some(UNVERSIONED_SCOPE) {
                 return;
             }
-            (self.paths_under(&id), scope == Some(UNSTAGED_SCOPE))
+            (self.paths_under(&id), scope.as_deref() == Some(UNSTAGED_SCOPE))
         } else {
             let paths = self
                 .included
@@ -593,6 +720,32 @@ impl CommitView {
             }, cx)
         });
     }
+}
+
+/// The context menu of a changelist node.
+fn changelist_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    entity: &Entity<CommitView>,
+    list: String,
+) -> gpui_kit::component::menu::PopupMenu {
+    let is_default = list == changelists::DEFAULT_NAME;
+    let (new, active, edit, delete) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
+    let (active_list, edit_list, delete_list) = (list.clone(), list.clone(), list.clone());
+    menu.item(PopupMenuItem::new("New Changelist…").on_click(move |_, window, cx| {
+        new.update(cx, |this, cx| this.new_changelist(None, window, cx))
+    }))
+    .item(PopupMenuItem::new("Set Active Changelist").on_click(move |_, window, cx| {
+        let name = active_list.clone();
+        active.update(cx, |this, cx| this.set_active_changelist(name, window, cx))
+    }))
+    .item(PopupMenuItem::new("Edit Changelist…").on_click(move |_, window, cx| {
+        let name = edit_list.clone();
+        edit.update(cx, |this, cx| this.changelist_dialog(Some(name), None, window, cx))
+    }))
+    .item(PopupMenuItem::new("Delete Changelist").disabled(is_default).on_click(move |_, _, cx| {
+        let name = delete_list.clone();
+        delete.update(cx, |this, cx| this.update_changelists(cx, |lists| lists.remove(&name)))
+    }))
 }
 
 impl Render for CommitView {
@@ -623,7 +776,11 @@ impl Render for CommitView {
             .iter()
             .flat_map(|g| g.files.iter().map(move |(p, k)| (format!("{}{}{}", g.scope, FILE_PREFIX, p), *k)))
             .collect();
-        let group_ids: Vec<&'static str> = self.groups.iter().map(|g| g.id).collect();
+        let group_ids: Vec<String> = self.groups.iter().map(|g| g.id.clone()).collect();
+        let changelist_of: HashMap<String, String> =
+            self.groups.iter().filter_map(|g| g.changelist.clone().map(|c| (g.id.clone(), c))).collect();
+        let list_names: Vec<String> = self.changelists.lists.iter().map(|l| l.name.clone()).collect();
+        let active_list = self.changelists.active.clone();
 
         let tree_palette = palette.clone();
         v_flex()
@@ -679,7 +836,10 @@ impl Render for CommitView {
                             None => paths_by_node.get(&id).is_some_and(|paths| !paths.is_empty() && paths.iter().all(|p| included.contains(p))),
                         };
                         let color = kinds.get(id.as_ref()).map_or(palette.text, |k| common::status_color(*k, palette));
-                        let is_group = group_ids.contains(&id.as_ref());
+                        let is_group = group_ids.iter().any(|g| g.as_str() == id.as_ref());
+                        let group_list = changelist_of.get(id.as_ref()).cloned();
+                        let is_active = group_list.as_deref() == Some(active_list.as_str()) && list_names.len() > 1;
+                        let move_targets: Vec<String> = list_names.clone();
                         let in_staged = id.starts_with(STAGED_SCOPE) || id.as_ref() == "grp:staged";
                         let in_conflicts = id.starts_with(CONFLICTS_SCOPE) || id.as_ref() == "grp:conflicts";
                         let toggle_entity = entity.clone();
@@ -723,7 +883,12 @@ impl Render for CommitView {
                                         .text_color(palette.text_secondary),
                                     )
                                 })
-                                .child(div().text_color(color).child(item.label.clone()))
+                                .child(
+                                    div()
+                                        .text_color(color)
+                                        .when(is_active, |el| el.font_weight(gpui_kit::FontWeight::BOLD))
+                                        .child(item.label.clone()),
+                                )
                                 .when(file.is_none(), |el| {
                                     el.child(
                                         div()
@@ -748,8 +913,31 @@ impl Render for CommitView {
                                         ),
                                     )
                                 })
-                                .context_menu(move |menu, _, _| {
+                                .context_menu(move |menu, _, cx| {
+                                    if let Some(list) = group_list.clone() {
+                                        return changelist_menu(menu, &menu_entity, list);
+                                    }
                                     let Some(path) = menu_file.clone() else { return menu };
+                                    let in_changelist = menu_id.starts_with('c');
+                                    let menu = if in_changelist && !staging {
+                                        let mut menu = menu;
+                                        let current = menu_entity.read(cx).changelists.list_of(&path).to_owned();
+                                        for target in move_targets.iter().filter(|t| **t != current) {
+                                            let (entity, path, target) = (menu_entity.clone(), path.clone(), target.clone());
+                                            menu = menu.item(PopupMenuItem::new(format!("Move to \u{201c}{target}\u{201d}")).on_click(move |_, _, cx| {
+                                                let (path, target) = (path.clone(), target.clone());
+                                                entity.update(cx, |this, cx| this.move_to_changelist(&path, &target, cx))
+                                            }));
+                                        }
+                                        let (entity, path) = (menu_entity.clone(), path.clone());
+                                        menu.item(PopupMenuItem::new("Move to New Changelist…").on_click(move |_, window, cx| {
+                                            let path = path.clone();
+                                            entity.update(cx, |this, cx| this.new_changelist(Some(path), window, cx))
+                                        }))
+                                        .separator()
+                                    } else {
+                                        menu
+                                    };
                                     let tracked = menu_kind != Some(StatusKind::Unversioned) && menu_kind != Some(StatusKind::Added);
                                     let (e_diff, e_blame, e_history) = (menu_entity.clone(), menu_entity.clone(), menu_entity.clone());
                                     let (i_diff, p_blame, p_history, p_copy) = (menu_id.clone(), path.clone(), path.clone(), path.clone());
