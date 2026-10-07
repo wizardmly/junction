@@ -181,7 +181,7 @@ pub fn reset_to(model: Entity<RepoModel>, target: String, window: &mut Window, c
 pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
     use crate::git::ops::{self, PushRequest, PushTags};
     use gpui_kit::component::{ActiveTheme as _, h_flex, scroll::ScrollableElement as _};
-    use gpui_kit::{InteractiveElement as _, prelude::FluentBuilder as _};
+    use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _};
     use std::cell::RefCell;
 
     let Some(repository) = model.read(cx).repository().cloned() else { return };
@@ -206,9 +206,27 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
         tags: Option<usize>,
         hooks: bool,
         remote: usize,
+        /// The commit whose files the change tree shows; all commits when `None`.
+        selected: Option<usize>,
     }
     let remote_ix = preview.remotes.iter().position(|r| *r == preview.remote).unwrap_or(0);
-    let options = Rc::new(RefCell::new(Options { force: false, tags: None, hooks: true, remote: remote_ix }));
+    let options = Rc::new(RefCell::new(Options { force: false, tags: None, hooks: true, remote: remote_ix, selected: None }));
+    // The right-hand change tree: each commit's files, and their union.
+    let commit_files: Vec<Vec<crate::git::log::FileChange>> = preview
+        .commits
+        .iter()
+        .map(|c| crate::git::log::load_details(&repository, &c.hash).map(|d| d.changes).unwrap_or_default())
+        .collect();
+    let all_files: Vec<crate::git::log::FileChange> = {
+        let mut seen = std::collections::BTreeMap::new();
+        // Oldest first, so the newest change to a path wins.
+        for files in commit_files.iter().rev() {
+            for file in files {
+                seen.insert(file.path.clone(), file.clone());
+            }
+        }
+        seen.into_values().collect()
+    };
     let repo_name = repository.name();
 
     window.open_dialog(cx, move |dialog, _, cx| {
@@ -217,12 +235,24 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
         let current = *options.borrow();
         let remote = preview.remotes.get(current.remote).cloned().unwrap_or_else(|| preview.remote.clone());
         let mut commits = v_flex().gap_px();
-        for commit in &preview.commits {
+        for (ix, commit) in preview.commits.iter().enumerate() {
+            let is_selected = current.selected == Some(ix);
+            let select_options = options.clone();
             commits = commits.child(
                 h_flex()
+                    .id(("push-commit", ix))
                     .h(px(22.))
+                    .px_1()
                     .gap_2()
+                    .rounded(px(3.))
                     .text_sm()
+                    .cursor_pointer()
+                    .when(is_selected, |el| el.bg(palette.selection))
+                    .on_click(move |_, window, _| {
+                        let mut o = select_options.borrow_mut();
+                        o.selected = if o.selected == Some(ix) { None } else { Some(ix) };
+                        window.refresh();
+                    })
                     .child(div().font_family(mono.clone()).text_color(palette.text_secondary).child(commit.short_hash().to_owned()))
                     .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(commit.subject.clone()))
                     .child(div().text_color(palette.text_secondary).child(commit.author_name.clone())),
@@ -230,6 +260,28 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
         }
         if preview.commits.is_empty() {
             commits = commits.child(div().text_sm().text_color(palette.text_secondary).child("Nothing to push"));
+        }
+        let shown_files = current.selected.and_then(|ix| commit_files.get(ix)).unwrap_or(&all_files);
+        let mut files = v_flex()
+            .gap_px()
+            .child(div().pb_1().text_xs().text_color(palette.text_secondary).child(format!(
+                "{} file{} changed",
+                shown_files.len(),
+                if shown_files.len() == 1 { "" } else { "s" }
+            )));
+        for file in shown_files {
+            let (dir, name) = file.path.rsplit_once('/').map_or(("", file.path.as_str()), |(d, n)| (d, n));
+            files = files.child(
+                h_flex()
+                    .h(px(22.))
+                    .gap_1p5()
+                    .text_sm()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::File).xsmall().text_color(palette.text_secondary))
+                    .child(div().text_color(crate::ui::common::change_color(file.kind, &palette)).child(name.to_owned()))
+                    .child(div().text_xs().text_color(palette.text_secondary).text_ellipsis().child(dir.to_owned())),
+            );
         }
 
         let set = |options: &Rc<RefCell<Options>>, edit: fn(&mut Options, bool)| {
@@ -255,7 +307,7 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
 
         dialog
             .title(format!("Push Commits to {repo_name}"))
-            .w(px(620.))
+            .w(px(760.))
             .child(
                 v_flex()
                     .gap_3()
@@ -293,15 +345,23 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                             }),
                     )
                     .child(
-                        div()
-                            .id("push-commits")
-                            .h(px(220.))
-                            .p_2()
+                        h_flex()
+                            .h(px(240.))
                             .rounded(px(4.))
                             .border_1()
                             .border_color(palette.border)
-                            .overflow_y_scrollbar()
-                            .child(commits),
+                            .child(div().id("push-commits").flex_1().h_full().p_1().overflow_y_scrollbar().child(commits))
+                            .child(
+                                div()
+                                    .id("push-files")
+                                    .w(px(260.))
+                                    .h_full()
+                                    .p_2()
+                                    .border_l_1()
+                                    .border_color(palette.border)
+                                    .overflow_y_scrollbar()
+                                    .child(files),
+                            ),
                     )
                     .child(
                         h_flex()
