@@ -52,6 +52,7 @@ const CHANGES_SCOPE: &str = "c:";
 const UNVERSIONED_SCOPE: &str = "u:";
 const STAGED_SCOPE: &str = "s:";
 const UNSTAGED_SCOPE: &str = "w:";
+const CONFLICTS_SCOPE: &str = "m:";
 
 pub struct CommitView {
     model: Entity<RepoModel>,
@@ -132,7 +133,7 @@ impl CommitView {
 
     /// The scope and file path of a file node.
     fn path_of(id: &str) -> Option<(&str, &str)> {
-        [CHANGES_SCOPE, UNVERSIONED_SCOPE, STAGED_SCOPE, UNSTAGED_SCOPE].into_iter().find_map(|scope| {
+        [CHANGES_SCOPE, UNVERSIONED_SCOPE, STAGED_SCOPE, UNSTAGED_SCOPE, CONFLICTS_SCOPE].into_iter().find_map(|scope| {
             id.strip_prefix(scope)?.strip_prefix(FILE_PREFIX).map(|path| (scope, path))
         })
     }
@@ -163,10 +164,17 @@ impl CommitView {
         self.included.retain(|path| self.kinds.contains_key(path));
 
         let unversioned: Vec<(String, StatusKind)> = status.unversioned().map(|e| (e.path.clone(), e.kind)).collect();
-        self.groups = if self.staging {
+        // Conflicted files get their own "Merge Conflicts" node, as in IntelliJ.
+        let conflicted: Vec<(String, StatusKind)> =
+            status.entries.iter().filter(|e| e.kind == StatusKind::Conflicted).map(|e| (e.path.clone(), e.kind)).collect();
+        let not_conflicted = |files: Vec<(String, StatusKind)>| -> Vec<(String, StatusKind)> {
+            files.into_iter().filter(|(_, k)| *k != StatusKind::Conflicted).collect()
+        };
+        let conflicts_group = Group { id: "grp:conflicts", scope: CONFLICTS_SCOPE, label: "Merge Conflicts", files: conflicted };
+        let mut groups = if self.staging {
             vec![
                 Group { id: "grp:staged", scope: STAGED_SCOPE, label: "Staged", files: status.staged() },
-                Group { id: "grp:unstaged", scope: UNSTAGED_SCOPE, label: "Unstaged", files: status.unstaged() },
+                Group { id: "grp:unstaged", scope: UNSTAGED_SCOPE, label: "Unstaged", files: not_conflicted(status.unstaged()) },
                 Group { id: "grp:unversioned", scope: UNVERSIONED_SCOPE, label: "Unversioned Files", files: unversioned },
             ]
         } else {
@@ -175,17 +183,21 @@ impl CommitView {
                     id: "grp:changes",
                     scope: CHANGES_SCOPE,
                     label: "Changes",
-                    files: status.changes().map(|e| (e.path.clone(), e.kind)).collect(),
+                    files: not_conflicted(status.changes().map(|e| (e.path.clone(), e.kind)).collect()),
                 },
                 Group { id: "grp:unversioned", scope: UNVERSIONED_SCOPE, label: "Unversioned Files", files: unversioned },
             ]
         };
+        if !conflicts_group.files.is_empty() {
+            groups.insert(0, conflicts_group);
+        }
+        self.groups = groups;
         let items: Vec<TreeItem> = self
             .groups
             .iter()
             // The first group always shows, as IntelliJ's default changelist does.
             .enumerate()
-            .filter(|(ix, group)| *ix == 0 || !group.files.is_empty())
+            .filter(|(_, group)| !group.files.is_empty() || matches!(group.id, "grp:changes" | "grp:staged"))
             .map(|(_, group)| {
                 TreeItem::new(group.id, group.label)
                     .expanded(true)
@@ -409,6 +421,7 @@ impl Render for CommitView {
                         let color = kinds.get(id.as_ref()).map_or(palette.text, |k| common::status_color(*k, palette));
                         let is_group = group_ids.contains(&id.as_ref());
                         let in_staged = id.starts_with(STAGED_SCOPE) || id.as_ref() == "grp:staged";
+                        let in_conflicts = id.starts_with(CONFLICTS_SCOPE) || id.as_ref() == "grp:conflicts";
                         let toggle_entity = entity.clone();
                         let toggle_id = id.clone();
                         let stage_entity = entity.clone();
@@ -428,7 +441,7 @@ impl Render for CommitView {
                                 } else {
                                     Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black())
                                 })
-                                .when(!staging, |el| {
+                                .when(!staging && !id.starts_with(CONFLICTS_SCOPE) && id.as_ref() != "grp:conflicts", |el| {
                                     el.child(
                                         Checkbox::new(SharedString::from(format!("check-{id}")))
                                             .checked(checked)
@@ -458,7 +471,7 @@ impl Render for CommitView {
                                     )
                                 })
                                 // Staging mode: a +/- button appears on hover, as in IntelliJ.
-                                .when(staging && n > 0 || staging && file.is_some(), |el| {
+                                .when(staging && (n > 0 || file.is_some()) && !in_conflicts, |el| {
                                     el.child(div().flex_1()).child(
                                         div().opacity(0.).group_hover("commit-row", |s| s.opacity(1.)).child(
                                             tool_button(

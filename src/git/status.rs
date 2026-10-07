@@ -142,6 +142,14 @@ pub fn commit(repository: &Repository, request: &CommitRequest) -> Result<String
         args.extend(request.unversioned.iter().cloned());
         repository.run(&args)?;
     }
+    // A merge can't be committed partially: stage the chosen files, then
+    // commit the whole index, as IntelliJ does while merging.
+    let merging = repository.state() == super::RepositoryState::Merging;
+    if merging && !request.staged_only && !request.paths.is_empty() {
+        let mut args = vec!["add".to_owned(), "-A".to_owned(), "--".to_owned()];
+        args.extend(request.paths.iter().cloned());
+        repository.run(&args)?;
+    }
     let mut args = vec!["commit".to_owned(), "-F".to_owned(), "-".to_owned()];
     if request.amend {
         args.push("--amend".into());
@@ -149,7 +157,7 @@ pub fn commit(repository: &Repository, request: &CommitRequest) -> Result<String
     if request.sign_off {
         args.push("--signoff".into());
     }
-    if request.staged_only {
+    if request.staged_only || merging {
         // Commit the index as it is.
     } else if request.paths.is_empty() {
         // Amending only the message.
