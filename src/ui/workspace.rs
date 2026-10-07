@@ -112,6 +112,16 @@ impl Workspace {
                 CommitEvent::OpenMerge(conflict) => this.open_merge(conflict.clone(), window, cx),
                 CommitEvent::Annotate(path) => this.annotate(path.clone(), None, cx),
                 CommitEvent::ShowHistory(path) => this.show_history(path.clone(), cx),
+                CommitEvent::CompareWith(path) => {
+                    let workspace = cx.entity();
+                    dialogs::compare_file_with(
+                        this.model.clone(),
+                        path.clone(),
+                        Rc::new(move |source, _, cx| workspace.update(cx, |this, cx| this.open_diff(source, cx))),
+                        window,
+                        cx,
+                    );
+                }
             }),
             cx.subscribe(&stash, |this, _, event: &StashEvent, cx| match event {
                 StashEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),

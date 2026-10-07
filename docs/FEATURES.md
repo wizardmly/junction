@@ -13,7 +13,7 @@
 | VCS 分支组件 | 当前分支名、进行中的操作（Rebasing/Merging/Cherry-picking）、点击弹出分支弹窗 | M1 | 🟡 |
 | 左/右/下 工具窗口条 | Commit、Git（Log/Console）、可拖拽、可隐藏、记住尺寸 | M1 | 🟡 |
 | 状态栏 | 分支、行分隔符、后台任务进度、通知 | M1 | 🟡 |
-| VCS 操作弹窗 | `Alt+\``（macOS `Ctrl+V`）快速操作列表 | M3 | ⬜ |
+| VCS 操作弹窗 | `Alt+\``（macOS `Ctrl+V`）快速操作列表 | M3 | ✅（数字键快选未做） |
 | 通知气泡 | 操作结果、错误、可点击的动作（View、Undo、Show details） | M2 | 🟡（View Commit、Show Details、Update Project；无 Undo） |
 | 主题 | 亮/暗、跟随系统、Int UI 配色、紧凑模式 | M1 | 🟡 |
 | 快捷键 | 与 IntelliJ 默认 keymap 一致（`Ctrl+K` 提交、`Ctrl+Shift+K` 推送、`Ctrl+T` 更新…） | M2 | 🟡（Ctrl+K、Ctrl+Shift+K、Ctrl+T、Ctrl+Shift+\`、Alt+9、F7/Shift+F7） |
@@ -65,9 +65,9 @@
 | 变更文件树：按目录分组、按模块分组、扁平列表；文件状态颜色（新增绿、修改蓝、删除灰、重命名） | M1 | 🟡 |
 | 详情：完整提交信息、hash、作者/提交者、日期、包含该提交的分支、标签 | M1 | 🟡 |
 | 双击文件打开 Diff；Diff 预览（编辑器区或面板内） | M2 | ✅ |
-| 多选提交时显示合并后的变更 | M3 | ⬜ |
+| 多选提交时显示合并后的变更 | M3 | ✅ |
 | 签名信息（GPG 验证） | M4 | ⬜ |
-| 提交信息里的 issue 链接 / URL 可点击 | M3 | ⬜ |
+| 提交信息里的 issue 链接 / URL 可点击 | M3 | ✅（URL 和提交哈希） |
 
 ### 2.5 提交右键菜单
 | 动作 | 阶段 | 状态 |
@@ -101,10 +101,10 @@
 | 多个 Changelist：新建、移动文件到、设为活动 | M4 | ⬜ |
 | Staging 模式（启用暂存区）：Staged / Unstaged 两棵树，Stage/Unstage 按钮 | M2 | ✅ |
 | 部分提交：按 chunk / 按行勾选（diff 中的复选框） | M4 | ⬜ |
-| 提交信息编辑器：拼写检查、右边距线、首行长度提示、提交信息历史（`Ctrl+M`） | M1/M3 | 🟡 |
+| 提交信息编辑器：拼写检查、右边距线、首行长度提示、提交信息历史（`Ctrl+M`） | M1/M3 | 🟡（缺拼写检查、右边距线） |
 | Amend 复选框（自动载入上次提交信息） | M1 | ✅ |
 | Commit / Commit and Push… | M1 | 🟡 |
-| 提交选项：作者、Sign-off、GPG 签名、运行 Git hooks、清理 | M3 | ⬜ |
+| 提交选项：作者、Sign-off、GPG 签名、运行 Git hooks、清理 | M3 | ✅ |
 | 提交前检查：Reformat、Optimize imports、Analyze code、Check TODO（IDE 特有，客户端只保留 hooks） | — | — |
 | 工具栏：Refresh、Rollback、Show Diff、Shelve、Stash、Update | M2 | 🟡（Refresh、Rollback、Show Diff） |
 | Diff 预览（选中文件即预览） | M2 | ✅ |
@@ -137,11 +137,11 @@
 |---|---|---|
 | Fetch（全部 remote） | M2 | ✅ |
 | Update Project（`Ctrl+T`）对话框：Merge / Rebase；Using Stash / Shelve | M2 | 🟡（Merge / Rebase，自动 stash） |
-| 更新结果：Updated files 树、被更新的提交 Log 标签页 | M3 | ⬜ |
+| 更新结果：Updated files 树、被更新的提交 Log 标签页 | M3 | 🟡（通知里的文件数/提交数 + View Commits 过滤 Log） |
 | Pull 对话框：remote、分支、选项（--rebase、--ff-only、--no-ff、--squash、--no-commit） | M2 | ⬜ |
 | Push 对话框：每个仓库待推送的提交列表 + 变更树、目标分支可编辑（新分支标记）、Force push（--force-with-lease）、Push tags（All / Current branch）、Run hooks、Set upstream | M2 | 🟡（无变更树） |
 | 推送被拒：提示 Merge / Rebase 后重推，"自动更新"选项 | M3 | ✅ |
-| 受保护分支禁止 force push | M3 | ⬜ |
+| 受保护分支禁止 force push | M3 | ✅ |
 | Manage Remotes 对话框：添加/编辑/删除 | M2 | ⬜ |
 | 凭据：HTTPS 密码/Token 对话框、SSH passphrase、使用 credential helper | M2 | ✅（已配置的 credential helper 优先） |
 | Clone 对话框：URL、目录、GitHub/GitLab 账号仓库列表 | M4 | ⬜ |
@@ -159,7 +159,7 @@
 | 二进制 / 图片对比 | M4 | ⬜ |
 | 冲突对话框：文件列表，Accept Yours / Accept Theirs / Merge… | M3 | ✅ |
 | 三方合并工具：左（Yours）中（Result）右（Theirs）、魔棒应用非冲突改动、逐块接受、Resolve simple conflicts | M3 | ✅ |
-| Compare with Branch… / Compare with Revision… / Compare two commits | M3 | 🟡（Compare with Current、Compare with Local、Compare Versions（两个提交）；缺 Compare with Revision… 输入框） |
+| Compare with Branch… / Compare with Revision… / Compare two commits | M3 | ✅ |
 | 分支比较视图（两个分支的提交差异 + 文件差异） | M3 | ✅（current..branch 提交列表 + Swap Branches + Show Files） |
 
 ## 7. 文件级功能
@@ -193,14 +193,14 @@
 |---|---|---|
 | Git 可执行文件路径 + Test 按钮 | M2 | ⬜ |
 | 启用暂存区 | M2 | ✅ |
-| 提交前警告 CRLF、警告 detached HEAD、大文件 | M3 | ⬜ |
+| 提交前警告 CRLF、警告 detached HEAD、大文件 | M3 | ✅（CRLF 支持 Fix and Commit） |
 | Update method（Merge / Rebase）、Clean working tree using（Stash / Shelve） | M2 | 🟡（Merge / Rebase，用 Stash） |
-| 推送被拒时自动更新、Force push 受保护分支列表 | M3 | 🟡（自动更新） |
+| 推送被拒时自动更新、Force push 受保护分支列表 | M3 | ✅ |
 | GPG 签名配置 | M4 | ⬜ |
 | 使用 credential helper | M2 | ⬜ |
 | 定期检查新的远程提交（incoming） | M4 | ⬜ |
 | Directory mappings（多根） | M5 | ⬜ |
-| Commit 设置：非模态提交、清理提交信息、右边距、首行长度 | M3 | ⬜ |
+| Commit 设置：非模态提交、清理提交信息、右边距、首行长度 | M3 | ✅（首行长度计数，超限变红） |
 | Log 设置：日期格式、显示/隐藏列 | M2 | ⬜ |
 
 ## 10. 托管平台集成（Android Studio 自带的 GitHub/GitLab 插件）

@@ -43,6 +43,8 @@ pub enum CommitEvent {
     /// Annotate the work tree version of a file.
     Annotate(String),
     ShowHistory(String),
+    /// "Compare with Branch / Revision…" for a file.
+    CompareWith(String),
 }
 
 impl EventEmitter<CommitEvent> for CommitView {}
@@ -714,6 +716,7 @@ impl Render for CommitView {
                                     let tracked = menu_kind != Some(StatusKind::Unversioned) && menu_kind != Some(StatusKind::Added);
                                     let (e_diff, e_blame, e_history) = (menu_entity.clone(), menu_entity.clone(), menu_entity.clone());
                                     let (i_diff, p_blame, p_history, p_copy) = (menu_id.clone(), path.clone(), path.clone(), path.clone());
+                                    let (e_compare, p_compare) = (menu_entity.clone(), path.clone());
                                     menu.item(PopupMenuItem::new("Show Diff").on_click(move |_, _, cx| {
                                         e_diff.update(cx, |this, cx| {
                                             if let Some(source) = this.diff_source(&i_diff) {
@@ -727,6 +730,9 @@ impl Render for CommitView {
                                     }))
                                     .item(PopupMenuItem::new("Show History").disabled(!tracked).on_click(move |_, _, cx| {
                                         e_history.update(cx, |_, cx| cx.emit(CommitEvent::ShowHistory(p_history.clone())))
+                                    }))
+                                    .item(PopupMenuItem::new("Compare with Branch or Revision…").disabled(!tracked).on_click(move |_, _, cx| {
+                                        e_compare.update(cx, |_, cx| cx.emit(CommitEvent::CompareWith(p_compare.clone())))
                                     }))
                                     .separator()
                                     .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {

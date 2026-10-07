@@ -1023,3 +1023,32 @@ pub fn compare_files(model: Entity<RepoModel>, old: String, new: Option<String>,
             )
     });
 }
+
+/// "Compare with Branch…" / "Compare with Revision…" for one file: pick a
+/// branch, tag or revision, then diff that version against the working tree.
+pub fn compare_file_with(model: Entity<RepoModel>, path: String, open_diff: OpenDiff, window: &mut Window, cx: &mut App) {
+    let revision = cx.new(|cx| InputState::new(window, cx).placeholder("Branch, tag or revision"));
+    let focus_target = revision.clone();
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let (revision_ok, path_ok, open) = (revision.clone(), path.clone(), open_diff.clone());
+        let repository = model.read(cx).repository().cloned();
+        dialog
+            .title(format!("Compare {path} with…"))
+            .w(px(460.))
+            .child(branch_picker("compare-file-branches", &revision, &model, cx))
+            .on_ok(move |_, window, cx| {
+                let revision = revision_ok.read(cx).value().trim().to_owned();
+                let valid = repository.as_ref().is_some_and(|repo| {
+                    repo.run(["rev-parse", "--verify", "-q", &format!("{revision}^{{commit}}")]).is_ok()
+                });
+                if revision.is_empty() || !valid {
+                    return false;
+                }
+                let source = crate::ui::diff_view::DiffSource::Between { old: revision, new: None, path: path_ok.clone(), old_path: None };
+                open(source, window, cx);
+                true
+            })
+            .footer(footer("Compare"))
+    });
+    focus_input(&focus_target, window, cx);
+}
