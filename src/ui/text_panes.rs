@@ -50,6 +50,9 @@ pub enum RowTarget {
     Line(usize),
     /// A collapsed run of lines.
     Fold { id: usize, count: usize },
+    /// Empty space that keeps a change block level with the other pane's
+    /// ("Align Changes").
+    Filler,
 }
 
 /// Where a buffer line is shown.
@@ -79,12 +82,18 @@ pub struct RowLook {
 pub struct PaneLayout {
     pub mirrored: bool,
     pub buttons: f32,
+    /// Gear menu › Show Line Numbers turned off.
+    pub hide_numbers: bool,
 }
 
 impl PaneLayout {
+    pub fn numbers_width(&self) -> f32 {
+        if self.hide_numbers { 0. } else { GUTTER_WIDTH }
+    }
+
     /// The pane-local x where text begins (before horizontal scrolling).
     pub fn text_left(&self) -> f32 {
-        if self.mirrored { TEXT_PADDING } else { MARKER_WIDTH + GUTTER_WIDTH + self.buttons + TEXT_PADDING }
+        if self.mirrored { TEXT_PADDING } else { MARKER_WIDTH + self.numbers_width() + self.buttons + TEXT_PADDING }
     }
 
     /// The pane-local x of the button column, from the pane's left (normal)
@@ -140,6 +149,10 @@ pub struct TextPanes<T = ()> {
     pub line_edits: Vec<LineEdit>,
     /// The last change came from undo / redo (the host's state was restored).
     pub restored: bool,
+    /// Gear menu › Show Whitespaces.
+    pub show_whitespace: bool,
+    /// Gear menu › Show Indent Guides.
+    pub indent_guides: bool,
 }
 
 /// What an event did, for the host.
@@ -179,6 +192,8 @@ impl<T: Clone + Default> TextPanes<T> {
             pending: None,
             line_edits: Vec::new(),
             restored: false,
+            show_whitespace: false,
+            indent_guides: true,
         }
     }
 
@@ -215,6 +230,7 @@ impl<T: Clone + Default> TextPanes<T> {
                     map.push(LineRow::Row(ix));
                 }
                 RowTarget::Fold { id, count } => map.extend(std::iter::repeat_n(LineRow::Fold(id, ix), count)),
+                RowTarget::Filler => {}
             }
         }
         self.line_rows[pane] = map;
@@ -342,6 +358,11 @@ impl<T: Clone + Default> TextPanes<T> {
         let line = match rows[row] {
             RowTarget::Fold { id, .. } => return Some((pane, Err(id))),
             RowTarget::Line(line) => line,
+            // Filler belongs to the line above it (or below, at the top).
+            RowTarget::Filler => {
+                let line = |r: &RowTarget| if let RowTarget::Line(l) = r { Some(*l) } else { None };
+                rows[..row].iter().rev().find_map(line).or_else(|| rows[row..].iter().find_map(line))?
+            }
         };
         let buffer = &self.buffers[pane];
         let text = buffer.line(line);
@@ -958,6 +979,9 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
 
         let highlighter = self.highlighters[pane].as_ref();
         let range = self.visible_rows(pane);
+        let char_width = if self.indent_guides { f32::from(shape("        ", window, cx).width) / 8. } else { 0. };
+        let unit = if self.indent_unit() == "\t" { TAB_WIDTH } else { self.indent_unit().len() };
+        let mut guides: Vec<AnyElement> = Vec::new();
         for (ix, look) in range.clone().zip(content.looks) {
             let top = self.row_top(pane, ix);
             let row = div().absolute().left_0().right_0().top(px(top)).h(px(LINE_HEIGHT));
@@ -979,6 +1003,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                             .into_any_element(),
                     );
                 }
+                RowTarget::Filler => {}
                 RowTarget::Line(line) => {
                     let line_range = buffer.line_range(line);
                     let text = buffer.line(line);
@@ -998,16 +1023,28 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                             backgrounds.push((a - line_range.start..b - line_range.start, selection_color));
                         }
                     }
-                    let text_el = pane_text(text, &syntax, &backgrounds, scroll_x, palette);
+                    let text_el = pane_text(text, &syntax, &backgrounds, scroll_x, self.show_whitespace, palette);
+                    if self.indent_guides {
+                        let text_left = layout.text_left() - scroll_x;
+                        let indent = guide_indent(buffer, line);
+                        let mut column = unit;
+                        while column < indent {
+                            let x = text_left + column as f32 * char_width;
+                            if x >= layout.text_left() - TEXT_PADDING {
+                                guides.push(div().absolute().top(px(top)).h(px(LINE_HEIGHT)).left(px(x)).w(px(1.)).bg(palette.border).into_any_element());
+                            }
+                            column += unit;
+                        }
+                    }
                     let number = look.number.unwrap_or_else(|| {
                         div()
-                            .w(px(GUTTER_WIDTH))
+                            .w(px(layout.numbers_width()))
                             .h_full()
                             .flex_shrink_0()
                             .text_right()
                             .map(|el| if layout.mirrored { el.pr_2() } else { el.pr_1() })
                             .text_color(palette.text_disabled)
-                            .child((line + 1).to_string())
+                            .when(!layout.hide_numbers, |el| el.child((line + 1).to_string()))
                             .into_any_element()
                     });
                     let marker = div().w(px(MARKER_WIDTH)).h_full().flex_shrink_0().when_some(look.marker, |el, c| el.bg(c));
@@ -1027,6 +1064,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                 }
             }
         }
+        children.extend(guides);
         children.extend(content.overlays);
 
         if let Some((_, sel)) = self.caret.filter(|c| c.0 == pane && focused) {
@@ -1199,22 +1237,96 @@ macro_rules! impl_pane_input {
     };
 }
 
+impl<T> TextPanes<T> {
+    /// Takes the gear menu's view settings (line numbers, whitespace,
+    /// indent guides).
+    pub fn apply_settings(&mut self, cx: &App) {
+        let settings = &crate::settings::Settings::get(cx).diff;
+        self.show_whitespace = settings.show_whitespaces;
+        self.indent_guides = settings.show_indent_guides;
+        for layout in &mut self.layouts {
+            layout.hide_numbers = !settings.show_line_numbers;
+        }
+    }
+}
+
+/// The diff and merge viewers' gear menu. `align` offers Align Changes
+/// (side-by-side only).
+pub fn gear_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    align: bool,
+    window: &mut Window,
+    cx: &mut Context<gpui_kit::component::menu::PopupMenu>,
+) -> gpui_kit::component::menu::PopupMenu {
+    use crate::settings::{DiffSettings, Settings};
+    use gpui_kit::component::menu::PopupMenuItem;
+    let settings = Settings::get(cx).diff.clone();
+    let toggle = |label: &'static str, on: bool, set: fn(&mut DiffSettings, bool)| {
+        PopupMenuItem::new(label).checked(on).on_click(move |_, _, cx| Settings::update(cx, |s| set(&mut s.diff, !on)))
+    };
+    let context = settings.context_lines;
+    let mut menu = menu
+        .submenu("Context Lines", window, cx, move |mut menu, _, _| {
+            for n in [1, 2, 3, 4, 5, 8, 10, 15] {
+                menu = menu.item(
+                    PopupMenuItem::new(if n == 1 { "1 line".to_owned() } else { format!("{n} lines") })
+                        .checked(context == n)
+                        .on_click(move |_, _, cx| Settings::update(cx, |s| s.diff.context_lines = n)),
+                );
+            }
+            menu
+        })
+        .separator()
+        .item(toggle("Show Line Numbers", settings.show_line_numbers, |s, v| s.show_line_numbers = v))
+        .item(toggle("Show Whitespaces", settings.show_whitespaces, |s, v| s.show_whitespaces = v))
+        .item(toggle("Show Indent Guides", settings.show_indent_guides, |s, v| s.show_indent_guides = v));
+    if align {
+        menu = menu.separator().item(toggle("Align Changes", settings.align_changes, |s, v| s.align_changes = v));
+    }
+    menu
+}
+
 /// Expands tabs to spaces, moving ranges along with the text.
 pub fn expand_tabs(text: &str, ranges: &[Range<usize>]) -> (String, Vec<Range<usize>>) {
-    if !text.contains('\t') {
-        return (text.to_owned(), ranges.to_vec());
+    let (out, ranges, _) = display_text(text, ranges, false);
+    (out, ranges)
+}
+
+/// The text as painted: tabs expanded and, with `whitespace`, spaces shown
+/// as `·` and tabs as `→`. Returns the moved ranges and where the
+/// whitespace marks are.
+fn display_text(text: &str, ranges: &[Range<usize>], whitespace: bool) -> (String, Vec<Range<usize>>, Vec<Range<usize>>) {
+    if !text.contains('\t') && !(whitespace && text.contains(' ')) {
+        return (text.to_owned(), ranges.to_vec(), Vec::new());
     }
     let mut out = String::with_capacity(text.len() + 16);
     let mut map = Vec::with_capacity(text.len() + 1);
+    let mut marks: Vec<Range<usize>> = Vec::new();
     let mut column = 0;
+    let mut mark = |out: &mut String, s: &str| {
+        let start = out.len();
+        out.push_str(s);
+        match marks.last_mut() {
+            Some(last) if last.end == start => last.end = out.len(),
+            _ => marks.push(start..out.len()),
+        }
+    };
     for ch in text.chars() {
         for _ in 0..ch.len_utf8() {
             map.push(out.len());
         }
         if ch == '\t' {
             let spaces = TAB_WIDTH - column % TAB_WIDTH;
-            out.extend(std::iter::repeat_n(' ', spaces));
+            if whitespace {
+                mark(&mut out, "→");
+                out.extend(std::iter::repeat_n(' ', spaces - 1));
+            } else {
+                out.extend(std::iter::repeat_n(' ', spaces));
+            }
             column += spaces;
+        } else if ch == ' ' && whitespace {
+            mark(&mut out, "·");
+            column += 1;
         } else {
             out.push(ch);
             column += 1;
@@ -1222,7 +1334,22 @@ pub fn expand_tabs(text: &str, ranges: &[Range<usize>]) -> (String, Vec<Range<us
     }
     map.push(out.len());
     let ranges = ranges.iter().map(|r| map[r.start.min(text.len())]..map[r.end.min(text.len())]).collect();
-    (out, ranges)
+    (out, ranges, marks)
+}
+
+/// The indent (in columns) indent guides go up to: a blank line takes the
+/// smaller of its neighbors', so guides run through it.
+fn guide_indent(buffer: &Buffer, line: usize) -> usize {
+    let columns = |l: usize| {
+        let text = buffer.line(l);
+        (!text.trim().is_empty()).then(|| display_offset(text, buffer.indent(l).len()))
+    };
+    if let Some(c) = columns(line) {
+        return c;
+    }
+    let up = (line.saturating_sub(100)..line).rev().find_map(columns);
+    let down = (line + 1..(line + 100).min(buffer.line_count())).find_map(columns);
+    up.unwrap_or(0).min(down.unwrap_or(0))
 }
 
 /// Byte offset in a line to its offset in the tab-expanded display text.
@@ -1283,11 +1410,25 @@ pub fn merge_styles(syntax: &[(Range<usize>, HighlightStyle)], backgrounds: &[(R
 }
 
 /// A line's text, scrolled horizontally, with syntax colors and backgrounds.
-fn pane_text(text: &str, syntax: &[(Range<usize>, HighlightStyle)], backgrounds: &[(Range<usize>, Hsla)], scroll_x: f32, palette: &Palette) -> impl IntoElement {
+fn pane_text(
+    text: &str,
+    syntax: &[(Range<usize>, HighlightStyle)],
+    backgrounds: &[(Range<usize>, Hsla)],
+    scroll_x: f32,
+    whitespace: bool,
+    palette: &Palette,
+) -> impl IntoElement {
     let all: Vec<Range<usize>> = syntax.iter().map(|(r, _)| r.clone()).chain(backgrounds.iter().map(|(r, _)| r.clone())).collect();
-    let (display, mapped) = expand_tabs(text, &all);
-    let syntax: Vec<_> = mapped[..syntax.len()].iter().cloned().zip(syntax.iter().map(|(_, st)| *st)).collect();
-    let backgrounds: Vec<_> = mapped[syntax.len()..].iter().cloned().zip(backgrounds.iter().map(|(_, c)| *c)).filter(|(r, _)| !r.is_empty()).collect();
+    let (display, mapped, marks) = display_text(text, &all, whitespace);
+    let faint = HighlightStyle { color: Some(palette.text_disabled), ..Default::default() };
+    let n = syntax.len();
+    let syntax: Vec<_> = mapped[..n]
+        .iter()
+        .cloned()
+        .zip(syntax.iter().map(|(_, st)| *st))
+        .chain(marks.into_iter().map(|r| (r, faint)))
+        .collect();
+    let backgrounds: Vec<_> = mapped[n..].iter().cloned().zip(backgrounds.iter().map(|(_, c)| *c)).filter(|(r, _)| !r.is_empty()).collect();
     let highlights = merge_styles(&syntax, &backgrounds, display.len());
     div().flex_1().min_w_0().h_full().overflow_hidden().child(
         div()

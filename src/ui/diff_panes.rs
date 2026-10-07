@@ -27,6 +27,8 @@ pub enum PaneRow {
     },
     /// A collapsed run of unchanged lines (on both panes at once).
     Fold { id: usize, count: usize },
+    /// Space that keeps a block level with the other pane (Align Changes).
+    Filler,
 }
 
 /// Rows of two panes that belong together: an unchanged stretch (same
@@ -61,15 +63,18 @@ impl TwoSide {
                 DiffRow::Fold { id, rows } if expanded.contains(id) => self.push_rows(rows, expanded),
                 DiffRow::Fold { id, rows } => {
                     self.close_block();
-                    self.push_equal();
+                    self.push_equal(true, true);
                     self.left.push(PaneRow::Fold { id: *id, count: rows.len() });
                     self.right.push(PaneRow::Fold { id: *id, count: rows.len() });
                 }
                 DiffRow::Line { change: None, left, right, .. } => {
+                    // One side only: a blank line the whitespace option ignores.
                     self.close_block();
-                    self.push_equal();
-                    if let (Some(l), Some(r)) = (left, right) {
+                    self.push_equal(left.is_some(), right.is_some());
+                    if let Some(l) = left {
                         self.left.push(PaneRow::Line { side: l.clone(), kind: None, change: None, first: false });
+                    }
+                    if let Some(r) = right {
                         self.right.push(PaneRow::Line { side: r.clone(), kind: None, change: None, first: false });
                     }
                 }
@@ -96,15 +101,16 @@ impl TwoSide {
         }
     }
 
-    /// One more row of an unchanged stretch.
-    fn push_equal(&mut self) {
+    /// One more row of an unchanged stretch, on either pane or both.
+    fn push_equal(&mut self, left: bool, right: bool) {
         let (l, r) = (self.left.len(), self.right.len());
+        let (dl, dr) = (left as usize, right as usize);
         match self.segments.last_mut() {
             Some(seg) if seg.change.is_none() => {
-                seg.left.end += 1;
-                seg.right.end += 1;
+                seg.left.end += dl;
+                seg.right.end += dr;
             }
-            _ => self.segments.push(Segment { left: l..l + 1, right: r..r + 1, change: None, kind: RowKind::Equal }),
+            _ => self.segments.push(Segment { left: l..l + dl, right: r..r + dr, change: None, kind: RowKind::Equal }),
         }
     }
 
@@ -130,6 +136,31 @@ impl TwoSide {
                 *k = Some(kind);
             }
         }
+    }
+
+    /// Align Changes: pads the shorter side of every block with filler
+    /// rows, so paired rows sit level and the divider bands are straight.
+    pub fn align(&mut self) {
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        let mut segments = Vec::with_capacity(self.segments.len());
+        for seg in &self.segments {
+            let n = seg.left.len().max(seg.right.len());
+            let (l, r) = (left.len(), right.len());
+            left.extend(self.left[seg.left.clone()].iter().cloned());
+            right.extend(self.right[seg.right.clone()].iter().cloned());
+            left.resize(l + n, PaneRow::Filler);
+            right.resize(r + n, PaneRow::Filler);
+            segments.push(Segment { left: l..l + n, right: r..r + n, ..seg.clone() });
+        }
+        // Rows after the last segment (none today) keep their place.
+        left.extend(self.left.drain(self.segments.last().map_or(0, |s| s.left.end)..));
+        right.extend(self.right.drain(self.segments.last().map_or(0, |s| s.right.end)..));
+        (self.left, self.right, self.segments) = (left, right, segments);
+    }
+
+    /// Whether a pane's rows hold no line (an empty side, maybe padded).
+    pub fn no_lines(rows: &[PaneRow]) -> bool {
+        rows.iter().all(|r| matches!(r, PaneRow::Filler))
     }
 
     pub fn change_segment(&self, change: usize) -> Option<&Segment> {

@@ -200,9 +200,9 @@ impl MergeView {
         let language = crate::ui::file_editor::language_for(&self.conflict.path);
         self.panes.set_texts(vec![v.ours, v.base, v.theirs], language);
         self.panes.layouts = vec![
-            PaneLayout { mirrored: true, buttons: BUTTON_WIDTH * 2. + 2. },
-            PaneLayout { mirrored: false, buttons: BUTTON_WIDTH + 2. },
-            PaneLayout { mirrored: false, buttons: BUTTON_WIDTH * 2. + 2. },
+            PaneLayout { mirrored: true, buttons: BUTTON_WIDTH * 2. + 2., ..Default::default() },
+            PaneLayout { mirrored: false, buttons: BUTTON_WIDTH + 2., ..Default::default() },
+            PaneLayout { mirrored: false, buttons: BUTTON_WIDTH * 2. + 2., ..Default::default() },
         ];
         self.refresh();
         self.go_to_unresolved(true);
@@ -622,6 +622,7 @@ crate::impl_pane_input!(MergeView);
 impl Render for MergeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.panes.before_render();
+        self.panes.apply_settings(cx);
         let palette = cx.palette().clone();
         let (changes, conflicts) = self.counts();
         let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
@@ -681,6 +682,15 @@ impl Render for MergeView {
                 this.panes.sync = !this.panes.sync;
                 cx.notify();
             })))
+            .child({
+                use gpui_kit::component::menu::DropdownMenu as _;
+                gpui_kit::component::button::Button::new("merge-gear")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Settings)
+                    .tooltip("Settings")
+                    .dropdown_menu(|menu, window, cx| crate::ui::text_panes::gear_menu(menu, false, window, cx))
+            })
             .child(separator())
             .child(common::icon(common::file_icon(&self.conflict.path)).text_color(palette.text_secondary))
             .child(div().ml_1().text_sm().child(format!("Merge Revisions for {}", self.conflict.path)))

@@ -46,6 +46,8 @@ pub struct Settings {
     pub use_credential_helper: bool,
     /// The Log's View Options, remembered between sessions.
     pub log: LogSettings,
+    /// The diff and merge viewers' gear menu.
+    pub diff: DiffSettings,
     /// Commit tool window › View Options.
     pub commit_group_by_directory: bool,
     pub commit_show_ignored: bool,
@@ -94,6 +96,35 @@ impl Default for LogSettings {
     }
 }
 
+/// The diff and merge viewers' gear menu, shared by both as in IntelliJ.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiffSettings {
+    pub show_line_numbers: bool,
+    pub show_whitespaces: bool,
+    pub show_indent_guides: bool,
+    /// Side-by-side: pad change blocks so both sides stay level.
+    pub align_changes: bool,
+    /// Lines kept around changes when unchanged fragments are collapsed.
+    pub context_lines: usize,
+}
+
+impl Default for DiffSettings {
+    fn default() -> Self {
+        Self { show_line_numbers: true, show_whitespaces: false, show_indent_guides: true, align_changes: false, context_lines: 4 }
+    }
+}
+
+impl DiffSettings {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 4] {
+        [
+            ("diff_show_line_numbers", &mut self.show_line_numbers),
+            ("diff_show_whitespaces", &mut self.show_whitespaces),
+            ("diff_show_indent_guides", &mut self.show_indent_guides),
+            ("diff_align_changes", &mut self.align_changes),
+        ]
+    }
+}
+
 impl LogSettings {
     fn fields(&mut self) -> [(&'static str, &mut bool); 11] {
         [
@@ -134,6 +165,7 @@ impl Default for Settings {
             git_executable: String::new(),
             use_credential_helper: true,
             log: LogSettings::default(),
+            diff: DiffSettings::default(),
             commit_group_by_directory: true,
             commit_show_ignored: false,
         }
@@ -252,6 +284,16 @@ impl Settings {
                         *field = flag;
                     }
                 }
+                "diff_context_lines" => {
+                    if let Ok(n) = value.parse() {
+                        settings.diff.context_lines = n;
+                    }
+                }
+                key if key.starts_with("diff_") => {
+                    if let Some((_, field)) = settings.diff.fields().into_iter().find(|(k, _)| *k == key) {
+                        *field = flag;
+                    }
+                }
                 "commit_group_by_directory" => settings.commit_group_by_directory = flag,
                 "commit_show_ignored" => settings.commit_show_ignored = flag,
                 "update_clean" => settings.update_shelve = value == "shelve",
@@ -305,6 +347,11 @@ impl Settings {
             self.use_credential_helper,
         );
         text.push_str(&log_lines);
+        let mut diff = self.diff.clone();
+        for (k, v) in diff.fields() {
+            text.push_str(&format!("{k}={v}\n"));
+        }
+        text.push_str(&format!("diff_context_lines={}\n", self.diff.context_lines));
         text.push_str(&format!(
             "commit_group_by_directory={}\ncommit_show_ignored={}\nupdate_clean={}\nsync_branches={}\n",
             self.commit_group_by_directory,
@@ -361,6 +408,10 @@ mod tests {
     fn round_trips() {
         let settings = Settings { dark: false, staging_area: true, update_method: UpdateMethod::Rebase, ..Default::default() };
         assert_eq!(Settings::parse(&settings.serialize()), settings);
+        let mut diff = Settings::default();
+        diff.diff.show_whitespaces = true;
+        diff.diff.context_lines = 8;
+        assert_eq!(Settings::parse(&diff.serialize()), diff);
         let custom = Settings { protected_branches: "release/*, main".into(), sign_off: true, run_hooks: false, ..Default::default() };
         assert_eq!(Settings::parse(&custom.serialize()), custom);
     }

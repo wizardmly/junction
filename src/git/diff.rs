@@ -17,13 +17,25 @@ pub enum IgnoreWhitespace {
     Trim,
     /// Ignore all whitespace.
     All,
+    /// Ignore all whitespace, and lines that are blank.
+    AllAndEmptyLines,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HighlightMode {
     Words,
     Lines,
+    /// Words, with a modified block split into a change per line pair.
+    Split,
+    Characters,
     None,
+}
+
+impl HighlightMode {
+    /// Whether changed ranges inside lines are highlighted.
+    pub fn inner(self) -> bool {
+        matches!(self, HighlightMode::Words | HighlightMode::Split | HighlightMode::Characters)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,8 +106,67 @@ fn normalize(line: &str, mode: IgnoreWhitespace) -> String {
     match mode {
         IgnoreWhitespace::None => line.to_owned(),
         IgnoreWhitespace::Trim => line.trim().to_owned(),
-        IgnoreWhitespace::All => line.chars().filter(|c| !c.is_whitespace()).collect(),
+        IgnoreWhitespace::All | IgnoreWhitespace::AllAndEmptyLines => line.chars().filter(|c| !c.is_whitespace()).collect(),
     }
+}
+
+/// A step of the line diff, in whole-file line numbers.
+enum Step {
+    Equal { old: usize, new: usize, len: usize },
+    /// Lines that differ only in what is ignored (blank lines): shown
+    /// unhighlighted and not counted as a change.
+    Ignored { old: Range<usize>, new: Range<usize> },
+    Change { old: Range<usize>, new: Range<usize> },
+}
+
+fn steps(old_keys: &[String], new_keys: &[String], skip_blank: bool) -> Vec<Step> {
+    let change = |old: Range<usize>, new: Range<usize>| Step::Change { old, new };
+    if !skip_blank {
+        let old: Vec<&str> = old_keys.iter().map(String::as_str).collect();
+        let new: Vec<&str> = new_keys.iter().map(String::as_str).collect();
+        return similar::capture_diff_slices(similar::Algorithm::Patience, &old, &new)
+            .into_iter()
+            .map(|op| match op {
+                DiffOp::Equal { old_index, new_index, len } => Step::Equal { old: old_index, new: new_index, len },
+                DiffOp::Delete { old_index, old_len, new_index } => change(old_index..old_index + old_len, new_index..new_index),
+                DiffOp::Insert { old_index, new_index, new_len } => change(old_index..old_index, new_index..new_index + new_len),
+                DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+                    change(old_index..old_index + old_len, new_index..new_index + new_len)
+                }
+            })
+            .collect();
+    }
+    // Diff only the non-blank lines, then put the blank ones back as ignored.
+    let filled = |keys: &[String]| -> Vec<usize> { (0..keys.len()).filter(|i| !keys[*i].is_empty()).collect() };
+    let (old_ix, new_ix) = (filled(old_keys), filled(new_keys));
+    let old: Vec<&str> = old_ix.iter().map(|i| old_keys[*i].as_str()).collect();
+    let new: Vec<&str> = new_ix.iter().map(|i| new_keys[*i].as_str()).collect();
+    let mut out = Vec::new();
+    let (mut oi, mut ni) = (0, 0);
+    let ignored = |out: &mut Vec<Step>, old: Range<usize>, new: Range<usize>| {
+        if !old.is_empty() || !new.is_empty() {
+            out.push(Step::Ignored { old, new });
+        }
+    };
+    for op in similar::capture_diff_slices(similar::Algorithm::Patience, &old, &new) {
+        let (o, n) = (op.old_range(), op.new_range());
+        if let DiffOp::Equal { .. } = op {
+            for k in 0..o.len() {
+                let (a, b) = (old_ix[o.start + k], new_ix[n.start + k]);
+                ignored(&mut out, oi..a, ni..b);
+                out.push(Step::Equal { old: a, new: b, len: 1 });
+                (oi, ni) = (a + 1, b + 1);
+            }
+            continue;
+        }
+        let span = |ix: &[usize], r: Range<usize>, at: usize| if r.is_empty() { at..at } else { ix[r.start]..ix[r.end - 1] + 1 };
+        let (os, ns) = (span(&old_ix, o, oi), span(&new_ix, n, ni));
+        ignored(&mut out, oi..os.start, ni..ns.start);
+        (oi, ni) = (os.end, ns.end);
+        out.push(Step::Change { old: os, new: ns });
+    }
+    ignored(&mut out, oi..old_keys.len(), ni..new_keys.len());
+    out
 }
 
 pub fn compute(old: &str, new: &str, options: DiffOptions) -> FileDiff {
@@ -106,9 +177,7 @@ pub fn compute(old: &str, new: &str, options: DiffOptions) -> FileDiff {
     let new_lines: Vec<&str> = new.lines().collect();
     let old_keys: Vec<String> = old_lines.iter().map(|l| normalize(l, options.ignore_whitespace)).collect();
     let new_keys: Vec<String> = new_lines.iter().map(|l| normalize(l, options.ignore_whitespace)).collect();
-    let old_refs: Vec<&str> = old_keys.iter().map(String::as_str).collect();
-    let new_refs: Vec<&str> = new_keys.iter().map(String::as_str).collect();
-    let ops = similar::capture_diff_slices(similar::Algorithm::Patience, &old_refs, &new_refs);
+    let skip_blank = options.ignore_whitespace == IgnoreWhitespace::AllAndEmptyLines;
 
     let side = |lines: &[&str], ix: usize| Side { line: ix + 1, text: lines[ix].to_owned(), changed: Vec::new(), kinds: Vec::new(), whole: None };
     let mut rows = Vec::new();
@@ -116,54 +185,53 @@ pub fn compute(old: &str, new: &str, options: DiffOptions) -> FileDiff {
     let mut hunks = Vec::new();
     let (mut inserted, mut deleted) = (0, 0);
 
-    for op in ops {
-        match op {
-            DiffOp::Equal { old_index, new_index, len } => {
+    for step in steps(&old_keys, &new_keys, skip_blank) {
+        match step {
+            Step::Equal { old, new, len } => {
                 for k in 0..len {
                     rows.push(DiffRow::Line {
                         kind: RowKind::Equal,
-                        left: Some(side(&old_lines, old_index + k)),
-                        right: Some(side(&new_lines, new_index + k)),
+                        left: Some(side(&old_lines, old + k)),
+                        right: Some(side(&new_lines, new + k)),
                         change: None,
                     });
                 }
             }
-            DiffOp::Delete { old_index, old_len, new_index } => {
-                hunks.push(Hunk { old: old_index..old_index + old_len, new: new_index..new_index });
-                deleted += old_len;
-                for k in 0..old_len {
-                    rows.push(DiffRow::Line { kind: RowKind::Deleted, left: Some(side(&old_lines, old_index + k)), right: None, change: Some(changes) });
+            Step::Ignored { old, new } => {
+                for k in 0..old.len().max(new.len()) {
+                    let left = (k < old.len()).then(|| side(&old_lines, old.start + k));
+                    let right = (k < new.len()).then(|| side(&new_lines, new.start + k));
+                    rows.push(DiffRow::Line { kind: RowKind::Equal, left, right, change: None });
                 }
-                changes += 1;
             }
-            DiffOp::Insert { old_index, new_index, new_len } => {
-                hunks.push(Hunk { old: old_index..old_index, new: new_index..new_index + new_len });
-                inserted += new_len;
-                for k in 0..new_len {
-                    rows.push(DiffRow::Line { kind: RowKind::Inserted, left: None, right: Some(side(&new_lines, new_index + k)), change: Some(changes) });
+            Step::Change { old, new } => {
+                // "Highlight split changes": a block of line pairs becomes a change per pair.
+                let pieces: Vec<(Range<usize>, Range<usize>)> = if options.highlight == HighlightMode::Split && old.len() == new.len() && old.len() > 1 {
+                    (0..old.len()).map(|k| (old.start + k..old.start + k + 1, new.start + k..new.start + k + 1)).collect()
+                } else {
+                    vec![(old, new)]
+                };
+                for (old, new) in pieces {
+                    hunks.push(Hunk { old: old.clone(), new: new.clone() });
+                    deleted += old.len();
+                    inserted += new.len();
+                    let mut lefts: Vec<Side> = old.clone().map(|i| side(&old_lines, i)).collect();
+                    let mut rights: Vec<Side> = new.clone().map(|i| side(&new_lines, i)).collect();
+                    if !lefts.is_empty() && !rights.is_empty() && options.highlight.inner() {
+                        block_fragments(&mut lefts, &mut rights, options.highlight == HighlightMode::Characters);
+                    }
+                    let (mut lefts, mut rights) = (lefts.into_iter(), rights.into_iter());
+                    for _ in 0..old.len().max(new.len()) {
+                        let (left, right) = (lefts.next(), rights.next());
+                        let kind = match (&left, &right) {
+                            (Some(_), Some(_)) => RowKind::Modified,
+                            (Some(_), None) => RowKind::Deleted,
+                            _ => RowKind::Inserted,
+                        };
+                        rows.push(DiffRow::Line { kind, left, right, change: Some(changes) });
+                    }
+                    changes += 1;
                 }
-                changes += 1;
-            }
-            DiffOp::Replace { old_index, old_len, new_index, new_len } => {
-                hunks.push(Hunk { old: old_index..old_index + old_len, new: new_index..new_index + new_len });
-                deleted += old_len;
-                inserted += new_len;
-                let mut lefts: Vec<Side> = (0..old_len).map(|k| side(&old_lines, old_index + k)).collect();
-                let mut rights: Vec<Side> = (0..new_len).map(|k| side(&new_lines, new_index + k)).collect();
-                if options.highlight == HighlightMode::Words {
-                    block_fragments(&mut lefts, &mut rights);
-                }
-                let (mut lefts, mut rights) = (lefts.into_iter(), rights.into_iter());
-                for _ in 0..old_len.max(new_len) {
-                    let (left, right) = (lefts.next(), rights.next());
-                    let kind = match (&left, &right) {
-                        (Some(_), Some(_)) => RowKind::Modified,
-                        (Some(_), None) => RowKind::Deleted,
-                        _ => RowKind::Inserted,
-                    };
-                    rows.push(DiffRow::Line { kind, left, right, change: Some(changes) });
-                }
-                changes += 1;
             }
         }
     }
@@ -287,10 +355,12 @@ fn write_index(repository: &Repository, path: &str, content: &str, filter: bool)
 /// the block's lines are compared word by word as one text, so a line
 /// inserted in the middle of a block shows as inserted, and each changed
 /// range gets a kind. Fragments are split back onto the lines they cover.
-fn block_fragments(lefts: &mut [Side], rights: &mut [Side]) {
+fn block_fragments(lefts: &mut [Side], rights: &mut [Side], chars: bool) {
     let join = |sides: &[Side]| sides.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
     let (old, new) = (join(lefts), join(rights));
-    let diff = TextDiff::configure().algorithm(similar::Algorithm::Patience).diff_unicode_words(&old, &new);
+    let mut config = TextDiff::configure();
+    config.algorithm(similar::Algorithm::Patience);
+    let diff = if chars { config.diff_chars(&old, &new) } else { config.diff_unicode_words(&old, &new) };
     // Runs of deletions / insertions between equal words; a run with both is
     // a modification of those words.
     let (mut lpos, mut rpos) = (0, 0);
@@ -493,6 +563,35 @@ mod tests {
                 DiffRow::Fold { .. } => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn ignores_empty_lines() {
+        let old = "a\nb\n\nc\n";
+        let new = "a\n\n b\nc\nd\n";
+        let options = DiffOptions { ignore_whitespace: IgnoreWhitespace::AllAndEmptyLines, context: None, ..Default::default() };
+        let diff = compute(old, new, options);
+        assert_eq!(diff.hunks, vec![Hunk { old: 4..4, new: 4..5 }]);
+        // Every line of both files is still shown.
+        let (mut left, mut right) = (0, 0);
+        for row in &diff.rows {
+            if let DiffRow::Line { left: l, right: r, .. } = row {
+                left += l.is_some() as usize;
+                right += r.is_some() as usize;
+            }
+        }
+        assert_eq!((left, right), (4, 5));
+    }
+
+    #[test]
+    fn splits_line_pairs() {
+        let options = DiffOptions { highlight: HighlightMode::Split, context: None, ..Default::default() };
+        let diff = compute("a1\nb1\nc\n", "a2\nb2\nc\n", options);
+        assert_eq!(diff.changes, 2);
+        let options = DiffOptions { highlight: HighlightMode::Characters, context: None, ..Default::default() };
+        let diff = compute("value\n", "valve\n", options);
+        let DiffRow::Line { right: Some(side), .. } = &diff.rows[0] else { panic!() };
+        assert_eq!(side.changed, vec![3..4]);
     }
 
     #[test]

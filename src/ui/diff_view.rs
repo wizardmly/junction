@@ -153,6 +153,8 @@ pub struct DiffView {
     loaded: Option<Loaded>,
     diff: FileDiff,
     options: DiffOptions,
+    /// The rows were built with Align Changes on.
+    aligned: bool,
     mode: ViewerMode,
     expanded: HashSet<usize>,
     rows: Rc<Vec<Display>>,
@@ -177,6 +179,7 @@ impl DiffView {
             loaded: None,
             diff: FileDiff::default(),
             options: DiffOptions::default(),
+            aligned: false,
             mode: ViewerMode::SideBySide,
             expanded: HashSet::new(),
             rows: Rc::new(Vec::new()),
@@ -322,6 +325,23 @@ impl DiffView {
         self.rebuild_rows();
     }
 
+    /// Follows the gear menu: context lines and Align Changes.
+    fn take_settings(&mut self, cx: &App) {
+        let settings = &crate::settings::Settings::get(cx).diff;
+        let context = self.options.context.map(|_| settings.context_lines);
+        if context != self.options.context {
+            self.options.context = context;
+            if let Some(loaded) = &self.loaded {
+                let file_diff = diff::compute(&loaded.old, &loaded.new, self.options);
+                self.set_diff(file_diff);
+            }
+        }
+        if settings.align_changes != self.aligned {
+            self.aligned = settings.align_changes;
+            self.rebuild_rows();
+        }
+    }
+
     fn recompute(&mut self, cx: &mut Context<Self>) {
         if let Some(loaded) = &self.loaded {
             let file_diff = diff::compute(&loaded.old, &loaded.new, self.options);
@@ -335,6 +355,9 @@ impl DiffView {
         flatten(&self.diff.rows, &self.expanded, self.mode, &mut out);
         self.rows = Rc::new(out);
         let mut two = TwoSide::build(&self.diff.rows, &self.expanded);
+        if self.aligned {
+            two.align();
+        }
         // The empty line after a final line break is a line of its own, as in an editor.
         let mut added = [false; 2];
         for pane in 0..2 {
@@ -356,6 +379,7 @@ impl DiffView {
                 .map(|row| match row {
                     PaneRow::Line { side, .. } => RowTarget::Line(side.line - 1),
                     PaneRow::Fold { id, count } => RowTarget::Fold { id: *id, count: *count },
+                    PaneRow::Filler => RowTarget::Filler,
                 })
                 .collect()
         };
@@ -433,7 +457,7 @@ impl DiffView {
             .iter()
             .find_map(|r| match r {
                 PaneRow::Line { side, .. } => Some(side.line.saturating_sub(1)),
-                PaneRow::Fold { .. } => None,
+                PaneRow::Fold { .. } | PaneRow::Filler => None,
             })
             .unwrap_or(0);
         Some(crate::index::nav::Target { path, line: line as u32, col: 0, name: String::new(), label: String::new(), container: None })
@@ -481,10 +505,13 @@ impl DiffView {
             IgnoreWhitespace::None => "Do not ignore",
             IgnoreWhitespace::Trim => "Trim whitespaces",
             IgnoreWhitespace::All => "Ignore whitespaces",
+            IgnoreWhitespace::AllAndEmptyLines => "Ignore whitespaces and empty lines",
         };
         let highlight_label = match options.highlight {
             HighlightMode::Words => "Highlight words",
             HighlightMode::Lines => "Highlight lines",
+            HighlightMode::Split => "Highlight split changes",
+            HighlightMode::Characters => "Highlight characters",
             HighlightMode::None => "Do not highlight",
         };
         let separator = || div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border);
@@ -552,6 +579,7 @@ impl DiffView {
                         ("Do not ignore", IgnoreWhitespace::None),
                         ("Trim whitespaces", IgnoreWhitespace::Trim),
                         ("Ignore whitespaces", IgnoreWhitespace::All),
+                        ("Ignore whitespaces and empty lines", IgnoreWhitespace::AllAndEmptyLines),
                     ] {
                         let entity = entity.clone();
                         menu = menu.item(PopupMenuItem::new(label).checked(options.ignore_whitespace == value).on_click(
@@ -567,6 +595,8 @@ impl DiffView {
                     for (label, value) in [
                         ("Highlight words", HighlightMode::Words),
                         ("Highlight lines", HighlightMode::Lines),
+                        ("Highlight split changes", HighlightMode::Split),
+                        ("Highlight characters", HighlightMode::Characters),
                         ("Do not highlight", HighlightMode::None),
                     ] {
                         let entity = entity.clone();
@@ -581,7 +611,8 @@ impl DiffView {
                 tool_button("diff-collapse", IconName::FoldVertical, "Collapse Unchanged Fragments")
                     .selected(options.context.is_some())
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.update_options(cx, |o| o.context = if o.context.is_some() { None } else { Some(4) })
+                        let lines = crate::settings::Settings::get(cx).diff.context_lines;
+                        this.update_options(cx, |o| o.context = if o.context.is_some() { None } else { Some(lines) })
                     })),
             )
             .when(mode == ViewerMode::SideBySide, |el| {
@@ -594,6 +625,9 @@ impl DiffView {
                         })),
                 )
             })
+            .child(Button::new("diff-gear").ghost().xsmall().icon(IconName::Settings).tooltip("Settings").dropdown_menu(
+                move |menu, window, cx| crate::ui::text_panes::gear_menu(menu, mode == ViewerMode::SideBySide, window, cx),
+            ))
             .child(separator())
             .child(common::icon(common::file_icon(source.path())).text_color(palette.text_secondary))
             .child(div().ml_1().text_sm().overflow_hidden().whitespace_nowrap().text_ellipsis().child(source.path().to_owned()))
@@ -689,14 +723,14 @@ impl DiffView {
         self.panes
             .visible_rows(pane)
             .map(|ix| match &rows[ix] {
-                PaneRow::Fold { .. } => RowLook::default(),
+                PaneRow::Fold { .. } | PaneRow::Filler => RowLook::default(),
                 PaneRow::Line { side, kind, .. } => {
                     let background = match (highlight, kind) {
                         (HighlightMode::None, _) | (_, None) => None,
-                        (HighlightMode::Words, Some(k)) => Some(side.whole.map_or(line_color(*k, palette), |w| word_color(w, palette))),
+                        (h, Some(k)) if h.inner() => Some(side.whole.map_or(line_color(*k, palette), |w| word_color(w, palette))),
                         (_, Some(k)) => Some(line_color(*k, palette)),
                     };
-                    let words = if highlight == HighlightMode::Words && side.whole.is_none() {
+                    let words = if highlight.inner() && side.whole.is_none() {
                         side.changed
                             .iter()
                             .enumerate()
@@ -724,7 +758,13 @@ impl DiffView {
         let two = self.two.clone();
         let actions_width = if actions.is_empty() { 0. } else { BUTTON_WIDTH * actions.len() as f32 + 2. };
         let check_width = if partial { BUTTON_WIDTH + 2. } else { 0. };
-        self.panes.layouts = vec![PaneLayout { mirrored: true, buttons: actions_width }, PaneLayout { mirrored: false, buttons: check_width }];
+        self.panes.layouts = vec![
+            PaneLayout { mirrored: true, buttons: actions_width, ..Default::default() },
+            PaneLayout { mirrored: false, buttons: check_width, ..Default::default() },
+        ];
+        self.panes.apply_settings(cx);
+        // A review's line numbers are its comment buttons.
+        self.panes.layouts[1].hide_numbers &= self.review.is_none();
         let height = self.panes.view_height.get();
         let visible = if height > 0. { height } else { 1600. };
         let append = self.panes.ctrl_held && self.editable();
@@ -742,7 +782,9 @@ impl DiffView {
                 if y + range.len() as f32 * LINE_HEIGHT < -LINE_HEIGHT || y > visible + LINE_HEIGHT {
                     continue;
                 }
-                if range.is_empty() {
+                let rows = if pane == 0 { &two.left[range.clone()] } else { &two.right[range.clone()] };
+                let empty = TwoSide::no_lines(rows);
+                if empty {
                     overlays.push(div().absolute().left_0().right_0().top(px(y)).h(px(1.)).bg(border_color(seg.kind, &palette)).into_any_element());
                 }
                 let button_top = if range.is_empty() { y - LINE_HEIGHT / 2. } else { y };
@@ -959,6 +1001,7 @@ impl Render for DiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         self.panes.before_render();
+        self.take_settings(cx);
         let Some(source) = self.source.clone() else {
             return v_flex()
                 .size_full()
