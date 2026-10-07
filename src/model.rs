@@ -1,5 +1,6 @@
 //! Repository state shared by every view, loaded off the UI thread.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -33,6 +34,12 @@ pub struct RepoModel {
     refs: RepositoryRefs,
     commits: Arc<Vec<Commit>>,
     graph: Arc<GraphLayout>,
+    /// The log as loaded, before Collapse Linear Branches folds it.
+    all_commits: Arc<Vec<Commit>>,
+    all_graph: Arc<GraphLayout>,
+    collapse_linear: bool,
+    expanded_runs: HashSet<String>,
+    hidden: HashMap<String, usize>,
     status: WorkingTreeStatus,
     state: RepositoryState,
     filter: LogFilter,
@@ -64,6 +71,11 @@ impl RepoModel {
             refs: RepositoryRefs::default(),
             commits: Arc::default(),
             graph: Arc::default(),
+            all_commits: Arc::default(),
+            all_graph: Arc::default(),
+            collapse_linear: false,
+            expanded_runs: HashSet::new(),
+            hidden: HashMap::new(),
             status: WorkingTreeStatus::default(),
             state: RepositoryState::Normal,
             filter: LogFilter::default(),
@@ -194,8 +206,7 @@ impl RepoModel {
                 match result {
                     Ok(snapshot) => {
                         this.refs = snapshot.refs;
-                        this.commits = Arc::new(snapshot.commits);
-                        this.graph = Arc::new(snapshot.graph);
+                        this.set_log(snapshot.commits, snapshot.graph);
                         this.status = snapshot.status;
                         this.state = snapshot.state;
                         this.error = None;
@@ -229,14 +240,58 @@ impl RepoModel {
                 .await;
             this.update(cx, |this, cx| {
                 if let Ok((commits, graph)) = full {
-                    this.commits = Arc::new(commits);
-                    this.graph = Arc::new(graph);
+                    this.set_log(commits, graph);
                     cx.emit(RepoEvent::Reloaded);
                     cx.notify();
                 }
             })
             .ok();
         }));
+    }
+
+    fn set_log(&mut self, commits: Vec<Commit>, graph: GraphLayout) {
+        self.all_commits = Arc::new(commits);
+        self.all_graph = Arc::new(graph);
+        self.apply_collapse();
+    }
+
+    fn apply_collapse(&mut self) {
+        if !self.collapse_linear {
+            self.commits = self.all_commits.clone();
+            self.graph = self.all_graph.clone();
+            self.hidden.clear();
+            return;
+        }
+        let refs = &self.refs;
+        let (commits, hidden) =
+            git::log::collapse_linear(&self.all_commits, |h| !refs.for_commit(h).is_empty(), &self.expanded_runs);
+        self.graph = Arc::new(GraphLayout::build(&commits));
+        self.commits = Arc::new(commits);
+        self.hidden = hidden;
+    }
+
+    pub fn collapse_linear(&self) -> bool {
+        self.collapse_linear
+    }
+
+    /// How many commits are folded below `hash`, if any.
+    pub fn hidden_below(&self, hash: &str) -> Option<usize> {
+        self.hidden.get(hash).copied()
+    }
+
+    pub fn set_collapse_linear(&mut self, collapse: bool, cx: &mut Context<Self>) {
+        self.collapse_linear = collapse;
+        self.expanded_runs.clear();
+        self.apply_collapse();
+        cx.emit(RepoEvent::Reloaded);
+        cx.notify();
+    }
+
+    pub fn expand_run(&mut self, hash: String, cx: &mut Context<Self>) {
+        self.expanded_runs.insert(hash);
+        self.apply_collapse();
+        cx.emit(RepoEvent::Reloaded);
+        cx.notify();
     }
 
     pub fn select_index(&mut self, ix: usize, cx: &mut Context<Self>) {

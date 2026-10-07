@@ -18,7 +18,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    AnyElement, App, StatefulInteractiveElement as _, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, ScrollStrategy,
     SharedString, Styled as _, Subscription, Task, UniformListScrollHandle,
     Window, actions, div, prelude::FluentBuilder as _, px, uniform_list,
@@ -667,9 +667,20 @@ impl LogView {
                     .dropdown_menu({
                         let entity = entity.clone();
                         let show_hash = self.show_hash;
+                        let collapse = self.model.read(cx).collapse_linear();
                         move |menu, _, _| {
                             let entity = entity.clone();
-                            menu.label("Show Columns").item(PopupMenuItem::new("Hash").checked(show_hash).on_click(
+                            let collapse_entity = entity.clone();
+                            menu.item(PopupMenuItem::new("Collapse Linear Branches").checked(collapse).on_click(
+                                move |_, _, cx| {
+                                    collapse_entity.update(cx, |this, cx| {
+                                        this.model.update(cx, |model, cx| model.set_collapse_linear(!collapse, cx));
+                                    })
+                                },
+                            ))
+                            .separator()
+                            .label("Show Columns")
+                            .item(PopupMenuItem::new("Hash").checked(show_hash).on_click(
                                 move |_, _, cx| {
                                     entity.update(cx, |this, cx| {
                                         this.show_hash = !this.show_hash;
@@ -729,6 +740,28 @@ impl LogView {
                         .when(mine, |el| el.font_weight(FontWeight::SEMIBOLD))
                         .child(commit.subject.clone()),
                 );
+                if let Some(count) = model.hidden_below(&commit.hash) {
+                    let run = commit.hash.clone();
+                    let model_entity = self.model.clone();
+                    subject = subject.child(
+                        div()
+                            .id(SharedString::from(format!("expand-{}", commit.hash)))
+                            .ml_2()
+                            .px_1()
+                            .rounded_sm()
+                            .text_xs()
+                            .text_color(palette.text_secondary)
+                            .bg(palette.text_secondary.opacity(0.12))
+                            .hover(|el| el.bg(palette.text_secondary.opacity(0.25)))
+                            .cursor_pointer()
+                            .child(format!("⋯ {count} commits"))
+                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                model_entity.update(cx, |model, cx| model.expand_run(run.clone(), cx));
+                            }),
+                    );
+                }
 
                 let hash = commit.hash.clone();
                 let menu_commit = commit.clone();

@@ -259,3 +259,108 @@ mod tests {
         assert_eq!(changes[1].path, "new.rs");
     }
 }
+
+/// IntelliJ's "Collapse Linear Branches": runs of commits with one parent
+/// and one child (and no refs) are hidden, and the commit above each run
+/// points straight past it. Returns the visible commits and, per commit
+/// whose edges skip a run, how many commits it hides. Commits in `expanded`
+/// keep their runs.
+pub fn collapse_linear(
+    commits: &[Commit],
+    has_refs: impl Fn(&str) -> bool,
+    expanded: &std::collections::HashSet<String>,
+) -> (Vec<Commit>, std::collections::HashMap<String, usize>) {
+    use std::collections::{HashMap, HashSet};
+    let index: HashMap<&str, usize> = commits.iter().enumerate().map(|(ix, c)| (c.hash.as_str(), ix)).collect();
+    let mut children: HashMap<&str, usize> = HashMap::new();
+    for commit in commits {
+        for parent in &commit.parents {
+            *children.entry(parent.as_str()).or_default() += 1;
+        }
+    }
+    let interior = |ix: usize| {
+        let c = &commits[ix];
+        c.parents.len() == 1
+            && children.get(c.hash.as_str()) == Some(&1)
+            && !has_refs(&c.hash)
+            && index.contains_key(c.parents[0].as_str())
+    };
+    let mut hidden_set: HashSet<usize> = HashSet::new();
+    let mut hidden_count: HashMap<String, usize> = HashMap::new();
+    let mut rewritten: HashMap<usize, Vec<String>> = HashMap::new();
+    for (ix, commit) in commits.iter().enumerate() {
+        if interior(ix) || expanded.contains(&commit.hash) {
+            continue;
+        }
+        let mut parents = commit.parents.clone();
+        for parent in parents.iter_mut() {
+            let mut chain = Vec::new();
+            let mut cursor = index.get(parent.as_str()).copied();
+            while let Some(p) = cursor.filter(|&p| interior(p)) {
+                chain.push(p);
+                cursor = index.get(commits[p].parents[0].as_str()).copied();
+            }
+            // A single commit isn't worth a fold.
+            if chain.len() >= 2 {
+                if let Some(end) = cursor {
+                    *parent = commits[end].hash.clone();
+                    *hidden_count.entry(commit.hash.clone()).or_default() += chain.len();
+                    hidden_set.extend(chain);
+                }
+            }
+        }
+        if parents != commit.parents {
+            rewritten.insert(ix, parents);
+        }
+    }
+    let visible = commits
+        .iter()
+        .enumerate()
+        .filter(|(ix, _)| !hidden_set.contains(ix))
+        .map(|(ix, c)| match rewritten.get(&ix) {
+            Some(parents) => Commit { parents: parents.clone(), ..c.clone() },
+            None => c.clone(),
+        })
+        .collect();
+    (visible, hidden_count)
+}
+
+#[cfg(test)]
+mod collapse_tests {
+    use super::*;
+
+    fn commit(hash: &str, parents: &[&str]) -> Commit {
+        Commit {
+            hash: hash.into(),
+            parents: parents.iter().map(|p| p.to_string()).collect(),
+            author_name: String::new(),
+            author_email: String::new(),
+            author_time: 0,
+            subject: hash.into(),
+        }
+    }
+
+    #[test]
+    fn collapses_runs_between_branch_points() {
+        // m merges b into a; a1..a3 is a linear run under a; b has one commit.
+        let commits = vec![
+            commit("m", &["a", "b"]),
+            commit("a", &["a1"]),
+            commit("b", &["base"]),
+            commit("a1", &["a2"]),
+            commit("a2", &["a3"]),
+            commit("a3", &["base"]),
+            commit("base", &[]),
+        ];
+        let refs = |h: &str| h == "m";
+        let (visible, hidden) = collapse_linear(&commits, refs, &Default::default());
+        let hashes: Vec<&str> = visible.iter().map(|c| c.hash.as_str()).collect();
+        // m's first parent run a..a3 (4 commits) folds, b (1 commit) stays.
+        assert_eq!(hashes, vec!["m", "b", "base"]);
+        assert_eq!(visible[0].parents, vec!["base".to_string(), "b".to_string()]);
+        assert_eq!(hidden.get("m"), Some(&4));
+        let expanded: std::collections::HashSet<String> = ["m".to_string()].into();
+        let (all, _) = collapse_linear(&commits, refs, &expanded);
+        assert_eq!(all.len(), commits.len());
+    }
+}
