@@ -19,6 +19,10 @@ pub enum RepoEvent {
     DetailsLoaded,
     /// An operation finished; shown as a balloon notification.
     Notify { title: String, message: String, error: bool },
+    /// Show the files that differ between two revisions (the working tree when `new` is `None`).
+    Compare { old: String, new: Option<String> },
+    /// Fixup… / Squash Into…: put a message in the commit box.
+    PrefillCommitMessage(String),
 }
 
 pub struct RepoModel {
@@ -236,6 +240,14 @@ impl RepoModel {
     pub fn select_index(&mut self, ix: usize, cx: &mut Context<Self>) {
         let hash = self.commits.get(ix).map(|c| c.hash.clone());
         self.select_hash(hash, cx);
+    }
+
+    pub fn prefill_commit_message(&mut self, message: String, cx: &mut Context<Self>) {
+        cx.emit(RepoEvent::PrefillCommitMessage(message));
+    }
+
+    pub fn compare(&mut self, old: String, new: Option<String>, cx: &mut Context<Self>) {
+        cx.emit(RepoEvent::Compare { old, new });
     }
 
     pub fn select_hash(&mut self, hash: Option<String>, cx: &mut Context<Self>) {

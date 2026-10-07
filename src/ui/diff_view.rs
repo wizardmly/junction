@@ -41,6 +41,8 @@ pub enum DiffSource {
     /// Staging-area mode: staged (HEAD vs index) or unstaged (index vs work tree).
     Staged { path: String },
     Unstaged { path: String },
+    /// Two revisions, or a revision against the working tree (`new: None`).
+    Between { old: String, new: Option<String>, path: String, old_path: Option<String> },
 }
 
 impl DiffSource {
@@ -49,7 +51,8 @@ impl DiffSource {
             DiffSource::Commit { path, .. }
             | DiffSource::WorkingTree { path, .. }
             | DiffSource::Staged { path }
-            | DiffSource::Unstaged { path } => path,
+            | DiffSource::Unstaged { path }
+            | DiffSource::Between { path, .. } => path,
         }
     }
 
@@ -59,6 +62,7 @@ impl DiffSource {
             DiffSource::WorkingTree { path, .. } => Revisions::WorkingTree { path },
             DiffSource::Staged { path } => Revisions::Staged { path },
             DiffSource::Unstaged { path } => Revisions::Unstaged { path },
+            DiffSource::Between { old, new, path, old_path } => Revisions::Between { old, new, path, old_path },
         }
     }
 }

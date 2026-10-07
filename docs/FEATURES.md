@@ -29,7 +29,7 @@
 | 分支搜索（直接输入） | M1 | ⬜ |
 | 单击定位到分支顶端、双击按分支过滤 Log | M1 | ✅ |
 | ahead/behind 指示（↑↓ 箭头） | M2 | ✅ |
-| 工具栏：New Branch、Update Selected、Delete、Compare with Current、Show My Branches、Fetch、展开/折叠 | M2 | 🟡（New Branch、Fetch、按分支过滤） |
+| 工具栏：New Branch、Update Selected、Delete、Compare with Current、Show My Branches、Fetch、展开/折叠 | M2 | 🟡（New Branch、Fetch、按分支过滤、Compare with Current 在分支弹窗） |
 | 多仓库根时按仓库分组 | M5 | ⬜ |
 | 右键菜单：与分支弹窗动作一致（见 §4） | M2 | ⬜ |
 
@@ -74,19 +74,19 @@
 |---|---|---|
 | Copy Revision Number（含 `Ctrl+C`） | M1 | ✅ |
 | Create Patch… | M4 | ⬜ |
-| Cherry-Pick | M3 | 🟡（无冲突处理） |
+| Cherry-Pick | M3 | ✅（冲突走进行中操作横幅） |
 | Checkout Revision | M2 | ✅ |
 | Show Repository at Revision | M4 | ⬜ |
-| Compare with Local | M3 | ⬜ |
+| Compare with Local | M3 | ✅ |
 | Reset Current Branch to Here…（Soft / Mixed / Hard / Keep） | M2 | ✅ |
-| Revert Commit | M3 | 🟡（无冲突处理） |
+| Revert Commit | M3 | ✅（冲突走进行中操作横幅） |
 | Undo Commit（最新的未推送提交） | M2 | ✅ |
-| Edit Commit Message…（reword） | M3 | ⬜ |
-| Fixup… / Squash Into… | M3 | ⬜ |
-| Drop Commits | M3 | ⬜ |
-| Squash Commits…（多选） | M3 | ⬜ |
-| Interactively Rebase from Here… | M3 | ⬜ |
-| Push All up to Here… | M3 | ⬜ |
+| Edit Commit Message…（reword） | M3 | ✅ |
+| Fixup… / Squash Into… | M3 | ✅（预填 fixup!/squash! 提交信息，交互式 Rebase 自动归位） |
+| Drop Commits | M3 | ✅ |
+| Squash Commits…（多选） | M3 | ✅ |
+| Interactively Rebase from Here… | M3 | ✅ |
+| Push All up to Here… | M3 | ✅ |
 | New Branch… / New Tag… | M2 | ✅ |
 | Go to Child Commit / Go to Parent Commit | M2 | 🟡（Parent） |
 | Open on GitHub/GitLab | M5 | ⬜ |
@@ -127,8 +127,8 @@
 | 搜索框（直接输入过滤） | M1 | ✅ |
 | Recent、Local、Remote、Tags 分组；收藏星标 | M1 | 🟡 |
 | 当前分支标记、跟踪分支、ahead/behind 箭头 | M2 | ✅ |
-| 分支子菜单：Checkout、New Branch from…、Checkout and Rebase onto Current、Compare with Current、Show Diff with Working Tree、Rebase Current onto Selected、Merge into Current、Pull into Current Using Rebase / Merge、Update、Push…、Rename…、Edit Tracking Branch、Delete | M2 | 🟡（缺 Show Diff、Edit Tracking） |
-| 进行中的操作：Continue / Abort / Skip（rebase、merge、cherry-pick、revert） | M3 | ⬜ |
+| 分支子菜单：Checkout、New Branch from…、Checkout and Rebase onto Current、Compare with Current、Show Diff with Working Tree、Rebase Current onto Selected、Merge into Current、Pull into Current Using Rebase / Merge、Update、Push…、Rename…、Edit Tracking Branch、Delete | M2 | 🟡（缺 Edit Tracking Branch） |
+| 进行中的操作：Continue / Abort / Skip（rebase、merge、cherry-pick、revert） | M3 | ✅ |
 | 多仓库：同步分支控制开关 | M5 | ⬜ |
 
 ## 5. 远程操作
@@ -157,18 +157,18 @@
 | 右侧可编辑（工作区文件）、单个 chunk 回滚 / 应用 | M3 | ⬜ |
 | 语法高亮（tree-sitter，与编辑器一致） | M2 | ⬜ |
 | 二进制 / 图片对比 | M4 | ⬜ |
-| 冲突对话框：文件列表，Accept Yours / Accept Theirs / Merge… | M3 | ⬜ |
-| 三方合并工具：左（Yours）中（Result）右（Theirs）、魔棒应用非冲突改动、逐块接受、Resolve simple conflicts | M3 | ⬜ |
-| Compare with Branch… / Compare with Revision… / Compare two commits | M3 | ⬜ |
-| 分支比较视图（两个分支的提交差异 + 文件差异） | M3 | ⬜ |
+| 冲突对话框：文件列表，Accept Yours / Accept Theirs / Merge… | M3 | ✅ |
+| 三方合并工具：左（Yours）中（Result）右（Theirs）、魔棒应用非冲突改动、逐块接受、Resolve simple conflicts | M3 | ✅ |
+| Compare with Branch… / Compare with Revision… / Compare two commits | M3 | 🟡（Compare with Current、Compare with Local、Compare Versions（两个提交）；缺 Compare with Revision… 输入框） |
+| 分支比较视图（两个分支的提交差异 + 文件差异） | M3 | ✅（current..branch 提交列表 + Swap Branches + Show Files） |
 
 ## 7. 文件级功能
 
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 文件历史（Show History）：Log 标签页 + 该文件的 diff | M3 | ⬜ |
+| 文件历史（Show History）：Log 标签页 + 该文件的 diff | M3 | ✅（Log 按路径过滤，--follow 跟踪重命名，History Up to Here） |
 | 选中内容历史（Show History for Selection） | M4 | ⬜ |
-| Annotate with Git Blame：作者/日期/提交，按时间着色，悬浮详情，Annotate previous revision | M3 | ⬜ |
+| Annotate with Git Blame：作者/日期/提交，按时间着色，悬浮详情，Annotate previous revision | M3 | ✅ |
 | 文件查看器里的变更标记（gutter）：点击看 diff、回滚 hunk、stage hunk | M4 | ⬜ |
 | Show Current Revision | M4 | ⬜ |
 
@@ -176,10 +176,10 @@
 
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 交互式 Rebase 对话框：pick / reword / edit / squash / fixup / drop，拖拽排序，右侧提交详情，Unite（合并多行） | M3 | ⬜ |
-| Rebase 对话框（git rebase 全部选项：--onto、--interactive、--rebase-merges、--keep-empty…） | M3 | ⬜ |
-| Merge 对话框（--no-ff、--ff-only、--squash、-m、--no-commit、--allow-unrelated-histories） | M3 | ⬜ |
-| Cherry-pick（多选）、冲突处理 | M3 | ⬜ |
+| 交互式 Rebase 对话框：pick / reword / edit / squash / fixup / drop，拖拽排序，右侧提交详情，Unite（合并多行） | M3 | 🟡（缺拖拽排序和 Unite，用上移/下移按钮） |
+| Rebase 对话框（git rebase 全部选项：--onto、--interactive、--rebase-merges、--keep-empty…） | M3 | ✅ |
+| Merge 对话框（--no-ff、--ff-only、--squash、-m、--no-commit、--allow-unrelated-histories） | M3 | ✅ |
+| Cherry-pick（多选）、冲突处理 | M3 | ✅ |
 | Reset HEAD 对话框 | M2 | ✅ |
 | Tag：新建（轻量/附注、指定提交）、删除、推送 | M2 | 🟡（新建） |
 | 补丁：Create Patch / Apply Patch（含预览） | M4 | ⬜ |

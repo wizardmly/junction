@@ -101,7 +101,7 @@ impl LogView {
                     }
                     cx.notify();
                 }
-                RepoEvent::Notify { .. } => {}
+                RepoEvent::Notify { .. } | RepoEvent::Compare { .. } | RepoEvent::PrefillCommitMessage(_) => {}
             }),
             cx.subscribe_in(&search, window, |this, _, event, _, cx| match event {
                 InputEvent::Change => {
@@ -381,6 +381,50 @@ impl LogView {
         if !hashes.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(hashes.join("\n")));
         }
+    }
+
+    /// Compare with Current shows `current..branch`; this says what the list
+    /// means and offers Swap Branches, as IntelliJ's compare tab does.
+    fn render_compare_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let filter = self.model.read(cx).filter().clone();
+        let [range] = filter.branches.as_slice() else { return None };
+        if range.contains("...") {
+            return None;
+        }
+        let (base, branch) = range.split_once("..")?;
+        let (base, branch) = (base.to_owned(), branch.to_owned());
+        let palette = cx.palette().clone();
+        let count = self.model.read(cx).commits().len();
+        let swapped = format!("{branch}..{base}");
+        let (diff_base, diff_branch) = (base.clone(), branch.clone());
+        Some(
+            h_flex()
+                .h(px(28.))
+                .px_2()
+                .gap_2()
+                .text_sm()
+                .bg(palette.diff_header)
+                .border_b_1()
+                .border_color(palette.border)
+                .child(Icon::new(IconName::GitCompare).small().text_color(palette.text_secondary))
+                .child(div().child(match count {
+                    0 => format!("'{branch}' has no commits that '{base}' doesn't have"),
+                    n => format!("{n} commit{} in '{branch}' that {} not in '{base}'", if n == 1 { "" } else { "s" }, if n == 1 { "is" } else { "are" }),
+                }))
+                .child(div().flex_1())
+                .child(Button::new("compare-swap").xsmall().ghost().label("Swap Branches").on_click(cx.listener(move |this, _, _, cx| {
+                    let swapped = swapped.clone();
+                    this.update_filter(cx, |f| f.branches = vec![swapped]);
+                })))
+                .child(Button::new("compare-files").xsmall().ghost().label("Show Files").on_click(cx.listener(move |this, _, _, cx| {
+                    let (old, new) = (diff_base.clone(), diff_branch.clone());
+                    this.model.update(cx, |m, cx| m.compare(old, Some(new), cx));
+                })))
+                .child(
+                    tool_button("compare-close", IconName::Close, "Close Comparison")
+                        .on_click(cx.listener(|this, _, _, cx| this.update_filter(cx, |f| f.branches.clear()))),
+                ),
+        )
     }
 
     fn render_filter_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1126,9 +1170,33 @@ fn commit_menu(
     let mut cherry_pick = vec!["cherry-pick".to_owned()];
     cherry_pick.extend(picks.iter().cloned());
     let picked = if multi { format!("Cherry-picked {} commits", picks.len()) } else { format!("Cherry-picked {short}") };
+    // Push All up to Here: the current branch's upstream, when the commit is on it.
+    let push_target = {
+        let refs = model.read(cx).refs();
+        let current = refs.current_branch.clone();
+        let upstream = refs.local_branches().find(|r| Some(&r.name) == current.as_ref()).and_then(|r| r.upstream.clone());
+        let repository = model.read(cx).repository().cloned();
+        upstream
+            .filter(|_| repository.is_some_and(|repo| crate::git::rebase::is_on_current_branch(&repo, &commit.hash)))
+            .and_then(|u| u.split_once('/').map(|(r, b)| (r.to_owned(), b.to_owned())))
+    };
+    let compare_model = model.clone();
+    let compare = if selected.len() == 2 { Some((selected[0].hash.clone(), selected[1].hash.clone())) } else { None };
+    let local_model = model.clone();
+    let local_hash = hash.clone();
     menu.item(PopupMenuItem::new("Copy Revision Number").on_click(move |_, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()))
     }))
+    .item(PopupMenuItem::new("Compare with Local").disabled(multi).on_click(move |_, _, cx| {
+        let hash = local_hash.clone();
+        local_model.update(cx, |m, cx| m.compare(hash, None, cx))
+    }))
+    .when_some(compare, |menu, (old, new)| {
+        menu.item(PopupMenuItem::new("Compare Versions").on_click(move |_, _, cx| {
+            let (old, new) = (old.clone(), new.clone());
+            compare_model.update(cx, |m, cx| m.compare(old, Some(new), cx))
+        }))
+    })
     .separator()
     .item(PopupMenuItem::new("Cherry-Pick").disabled(is_head && !multi).on_click(op("Cherry-Pick", cherry_pick, picked)))
     .item(PopupMenuItem::new("Checkout Revision").disabled(multi).on_click(op(
@@ -1168,10 +1236,37 @@ fn commit_menu(
         let picks = picks.clone();
         move |_, window, cx| rebase_dialog::squash(model.clone(), picks.clone(), window, cx)
     }))
+    .item(PopupMenuItem::new("Fixup…").disabled(multi).on_click({
+        let model = model.clone();
+        let message = format!("fixup! {}", commit.subject);
+        move |_, _, cx| model.update(cx, |m, cx| m.prefill_commit_message(message.clone(), cx))
+    }))
+    .item(PopupMenuItem::new("Squash Into…").disabled(multi).on_click({
+        let model = model.clone();
+        let message = format!("squash! {}", commit.subject);
+        move |_, _, cx| model.update(cx, |m, cx| m.prefill_commit_message(message.clone(), cx))
+    }))
     .item(PopupMenuItem::new("Interactively Rebase from Here…").disabled(multi).on_click({
         let model = model.clone();
         let hash = hash.clone();
         move |_, window, cx| rebase_dialog::open(model.clone(), hash.clone(), window, cx)
+    }))
+    .separator()
+    .item(PopupMenuItem::new("Push All up to Here…").disabled(multi || push_target.is_none()).on_click({
+        let model = model.clone();
+        let hash = hash.clone();
+        let short = short.clone();
+        move |_, _, cx| {
+            let Some((remote, branch)) = push_target.clone() else { return };
+            let hash = hash.clone();
+            let short = short.clone();
+            model.update(cx, |model, cx| {
+                model.run_operation("Push", move |repo| {
+                    repo.run(["push", remote.as_str(), &format!("{hash}:refs/heads/{branch}")])?;
+                    Ok(format!("Pushed commits up to {short} to {remote}/{branch}"))
+                }, cx)
+            });
+        }
     }))
     .separator()
     .item(PopupMenuItem::new("New Branch…").disabled(multi).on_click({
@@ -1207,6 +1302,7 @@ impl Render for LogView {
         let table = v_flex()
             .size_full()
             .child(self.render_filter_bar(cx))
+            .children(self.render_compare_banner(cx))
             .child(
                 div()
                     .id("log-table")

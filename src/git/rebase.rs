@@ -57,6 +57,32 @@ pub fn commits_since(repository: &Repository, base: &str) -> Result<Vec<Commit>>
     Ok(parse_log(&output))
 }
 
+/// Plans the rebase like `--autosquash`: each `fixup! <subject>` / `squash! <subject>`
+/// commit moves after the commit it names, as Fixup / Squash. Oldest first.
+pub fn autosquash(commits: Vec<Commit>) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = Vec::with_capacity(commits.len());
+    for commit in commits {
+        let target = [("fixup! ", Action::Fixup), ("squash! ", Action::Squash)]
+            .into_iter()
+            .find_map(|(prefix, action)| commit.subject.strip_prefix(prefix).map(|s| (s.to_owned(), action)));
+        let anchor = target.as_ref().and_then(|(subject, _)| {
+            entries.iter().position(|e| e.commit.subject == *subject || e.commit.hash.starts_with(subject.as_str()))
+        });
+        match (target, anchor) {
+            (Some((_, action)), Some(anchor)) => {
+                // After the target and any fixups already attached to it.
+                let mut at = anchor + 1;
+                while at < entries.len() && matches!(entries[at].action, Action::Fixup | Action::Squash) {
+                    at += 1;
+                }
+                entries.insert(at, Entry { commit, action, message: None });
+            }
+            _ => entries.push(Entry { commit, action: Action::Pick, message: None }),
+        }
+    }
+    entries
+}
+
 /// Whether `hash` is on the current branch, so history from it can be rewritten.
 pub fn is_on_current_branch(repository: &Repository, hash: &str) -> bool {
     repository.run(["merge-base", "--is-ancestor", hash, "HEAD"]).is_ok()
@@ -173,6 +199,16 @@ mod tests {
                 "pick d4 four",
                 "exec git commit --amend --no-verify --allow-empty -q",
             ]
+        );
+    }
+
+    #[test]
+    fn autosquash_moves_fixups_after_their_target() {
+        let commits = vec![commit("a", "one"), commit("b", "two"), commit("c", "fixup! one"), commit("d", "squash! one")];
+        let plan: Vec<(String, Action)> = autosquash(commits).into_iter().map(|e| (e.commit.hash, e.action)).collect();
+        assert_eq!(
+            plan,
+            vec![("a".into(), Action::Pick), ("c".into(), Action::Fixup), ("d".into(), Action::Squash), ("b".into(), Action::Pick)]
         );
     }
 

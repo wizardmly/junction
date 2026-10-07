@@ -111,7 +111,23 @@ impl Workspace {
             cx.subscribe(&stash, |this, _, event: &StashEvent, cx| match event {
                 StashEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
             }),
-            cx.subscribe_in(&model, window, |_, _, event, window, cx| {
+            cx.subscribe_in(&model, window, |this, _, event, window, cx| {
+                if let RepoEvent::PrefillCommitMessage(_) = event {
+                    this.show_commit = true;
+                    this.left_tab = LeftTab::Commit;
+                    cx.notify();
+                }
+                if let RepoEvent::Compare { old, new } = event {
+                    let workspace = cx.entity();
+                    dialogs::compare_files(
+                        this.model.clone(),
+                        old.clone(),
+                        new.clone(),
+                        Rc::new(move |source, _, cx| workspace.update(cx, |this, cx| this.open_diff(source, cx))),
+                        window,
+                        cx,
+                    );
+                }
                 if let RepoEvent::Notify { title, message, error } = event {
                     // Quiet operations (Stage / Unstage) report only failures.
                     if message.is_empty() && !*error {
@@ -165,6 +181,11 @@ impl Workspace {
                 }
             }),
             cx.observe(&model, |_, _, cx| cx.notify()),
+            // Running an action from the branches popup closes it.
+            cx.subscribe(&branches_popup, |this, _, _: &gpui_kit::DismissEvent, cx| {
+                this.branches_open = false;
+                cx.notify();
+            }),
         ];
         Self {
             model,

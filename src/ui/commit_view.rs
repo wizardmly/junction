@@ -81,8 +81,15 @@ impl CommitView {
         let tree = cx.new(|cx| TreeState::new(cx));
         let message = cx.new(|cx| TextareaState::new(window, cx).rows(5).placeholder("Commit Message"));
         let subscriptions = vec![
-            cx.subscribe(&model, |this, _, event, cx| match event {
+            cx.subscribe_in(&model, window, |this, _, event, window, cx| match event {
                 RepoEvent::Reloaded => this.rebuild(cx),
+                RepoEvent::PrefillCommitMessage(message) => {
+                    let message = format!("{message}\n\n");
+                    this.message.update(cx, |state, cx| {
+                        state.set_value(message, window, cx);
+                        state.focus(window, cx);
+                    });
+                }
                 RepoEvent::Notify { title, error, .. } if title == "Commit" => {
                     if std::mem::take(&mut this.push_after_commit) && !error {
                         cx.emit(CommitEvent::OpenPush);

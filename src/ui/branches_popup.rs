@@ -115,6 +115,16 @@ fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, current: Optio
                 });
             }),
         ));
+        let diff_model = model.clone();
+        let diff_name = name.clone();
+        actions.push(action(
+            "Show Diff with Working Tree",
+            true,
+            Rc::new(move |_, cx| {
+                let name = diff_name.clone();
+                diff_model.update(cx, |model, cx| model.compare(name, None, cx));
+            }),
+        ));
         actions.push(action(
             format!("Checkout and Rebase onto '{current_name}'"),
             reference.kind == RefKind::LocalBranch,
@@ -198,6 +208,8 @@ fn row(id: impl Into<SharedString>, palette: &Palette) -> gpui_kit::Stateful<gpu
         .hover(move |s| s.bg(hover))
 }
 
+impl gpui_kit::EventEmitter<gpui_kit::DismissEvent> for BranchesPopup {}
+
 impl Render for BranchesPopup {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
@@ -213,7 +225,13 @@ impl Render for BranchesPopup {
             row(id, &palette)
                 .child(Icon::new(icon).small().text_color(palette.text_secondary))
                 .child(label)
-                .on_click(move |_, window, cx| run(window, cx))
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, window, cx| {
+                        entity.update(cx, |_, cx| cx.emit(gpui_kit::DismissEvent));
+                        run(window, cx)
+                    }
+                })
         };
 
         let section = |title: &'static str| {
@@ -289,6 +307,7 @@ impl Render for BranchesPopup {
                                     el.on_click(move |_, window, cx| {
                                         close_entity.update(cx, |this, cx| {
                                             this.expanded = None;
+                                            cx.emit(gpui_kit::DismissEvent);
                                             cx.notify();
                                         });
                                         run(window, cx)

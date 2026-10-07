@@ -236,7 +236,8 @@ pub fn open_onto(model: Entity<RepoModel>, base: String, window: &mut Window, cx
         Ok(_) => return notify("Nothing to rebase".into(), window, cx),
         Err(error) => return notify(error.to_string(), window, cx),
     };
-    let entries: Vec<Entry> = commits.into_iter().rev().map(|commit| Entry { commit, action: Action::Pick, message: None }).collect();
+    // fixup! / squash! commits start out attached to their targets, as with --autosquash.
+    let entries: Vec<Entry> = rebase::autosquash(commits).into_iter().rev().collect();
     let count = entries.len();
     let editor = cx.new(|cx| RebaseEditor::new(repository, entries, window, cx));
     let branch = model.read(cx).refs().current_branch.clone().unwrap_or_else(|| "HEAD".into());

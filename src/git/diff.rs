@@ -235,6 +235,8 @@ pub enum Revisions {
     Staged { path: String },
     /// Unstaged changes: the index against the working tree.
     Unstaged { path: String },
+    /// Any two revisions, or a revision against the working tree (`new: None`).
+    Between { old: String, new: Option<String>, path: String, old_path: Option<String> },
 }
 
 /// Loads both versions; a missing side (added/deleted file) is empty.
@@ -258,7 +260,31 @@ pub fn load_versions(repository: &Repository, revisions: &Revisions) -> Result<(
         Revisions::Unstaged { path } => {
             (show(format!(":{path}")), read_work_tree(repository, path), "Staged".into(), "Your version".into())
         }
+        Revisions::Between { old, new, path, old_path } => {
+            let old_text = show(format!("{old}:{}", old_path.as_ref().unwrap_or(path)));
+            let (new_text, new_title) = match new {
+                Some(new) => (show(format!("{new}:{path}")), revision_title(new)),
+                None => (read_work_tree(repository, path), "Your version".to_owned()),
+            };
+            (old_text, new_text, revision_title(old), new_title)
+        }
     })
+}
+
+/// A hash is shortened; branch names stay as they are.
+fn revision_title(revision: &str) -> String {
+    if revision.len() == 40 && revision.bytes().all(|b| b.is_ascii_hexdigit()) { revision[..8].to_owned() } else { revision.to_owned() }
+}
+
+/// Files that differ between `old` and `new` (the working tree when `None`),
+/// for Compare with Local and Show Diff with Working Tree.
+pub fn changed_files(repository: &Repository, old: &str, new: Option<&str>) -> Result<Vec<super::log::FileChange>> {
+    let mut args = vec!["diff", "--name-status", "-z", "-M", old];
+    if let Some(new) = new {
+        args.push(new);
+    }
+    args.push("--");
+    Ok(super::log::parse_name_status(&repository.run(&args)?))
 }
 
 fn read_work_tree(repository: &Repository, path: &str) -> String {
