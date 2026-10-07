@@ -156,6 +156,21 @@ impl Lang {
     }
 
     /// Default language server commands, tried in order until one is on PATH.
+    /// Files that mark the root of a project a language server should open.
+    pub fn project_markers(self) -> &'static [&'static str] {
+        match self {
+            Lang::C | Lang::Cpp | Lang::ObjC => &["compile_commands.json", "compile_flags.txt"],
+            Lang::Rust => &["Cargo.toml"],
+            Lang::Go => &["go.mod"],
+            Lang::Java | Lang::Kotlin => &["settings.gradle", "settings.gradle.kts", "pom.xml"],
+            Lang::Swift => &["Package.swift"],
+            Lang::Dart => &["pubspec.yaml"],
+            Lang::V => &["v.mod"],
+            Lang::JavaScript | Lang::TypeScript | Lang::Tsx => &["tsconfig.json", "jsconfig.json", "package.json"],
+            Lang::Python => &["pyproject.toml", "setup.py", "setup.cfg"],
+        }
+    }
+
     pub fn default_servers(self) -> &'static [&'static str] {
         match self {
             Lang::C | Lang::Cpp => &["clangd"],

@@ -49,6 +49,11 @@ pub struct Settings {
     /// Commit tool window › View Options.
     pub commit_group_by_directory: bool,
     pub commit_show_ignored: bool,
+    /// Languages & Frameworks: ask language servers first for navigation.
+    pub use_language_servers: bool,
+    /// Per-language server command overrides (`rust` → `rust-analyzer`);
+    /// "off" disables that language's server.
+    pub language_servers: std::collections::BTreeMap<String, String>,
 }
 
 /// The Log's View Options: columns, references, highlighting and sorting.
@@ -115,6 +120,8 @@ impl Default for Settings {
             update_method: UpdateMethod::Merge,
             update_shelve: false,
             sync_branches: true,
+            use_language_servers: true,
+            language_servers: Default::default(),
             auto_update_on_push_rejected: false,
             warn_crlf: true,
             commit_subject_limit: 72,
@@ -249,6 +256,12 @@ impl Settings {
                 "commit_show_ignored" => settings.commit_show_ignored = flag,
                 "update_clean" => settings.update_shelve = value == "shelve",
                 "sync_branches" => settings.sync_branches = flag,
+                "use_language_servers" => settings.use_language_servers = flag,
+                key if key.starts_with("lsp_") => {
+                    if !value.is_empty() {
+                        settings.language_servers.insert(key["lsp_".len()..].to_owned(), value.to_owned());
+                    }
+                }
                 "git_executable" => settings.git_executable = value.to_owned(),
                 "use_credential_helper" => settings.use_credential_helper = flag,
                 "fetch_interval_minutes" => {
@@ -299,6 +312,10 @@ impl Settings {
             if self.update_shelve { "shelve" } else { "stash" },
             self.sync_branches
         ));
+        text.push_str(&format!("use_language_servers={}\n", self.use_language_servers));
+        for (lang, command) in &self.language_servers {
+            text.push_str(&format!("lsp_{lang}={command}\n"));
+        }
         text
     }
 
@@ -323,6 +340,7 @@ impl Settings {
     pub fn apply_git(&self) {
         crate::git::set_executable(&self.git_executable);
         crate::git::set_use_credential_helper(self.use_credential_helper);
+        crate::index::lsp::configure(self.use_language_servers, self.language_servers.clone());
     }
 
     pub fn update(cx: &mut App, f: impl FnOnce(&mut Self)) {

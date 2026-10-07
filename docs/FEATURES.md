@@ -211,6 +211,23 @@
 | Pull Requests 工具窗口：列表、详情、diff 评论、审批、合并 | M6 | ✅（列表 + Open/Closed/All + 搜索；详情：描述、标签、文件，本地 diff（fetch refs/pull/N/head）；Timeline：评论、审查、行评论展示，发评论；Approve / Request Changes；Merge / Squash / Rebase；Checkout；Create Pull Request；PR diff 点新侧行号加行评论，已有评论行号带标记、悬停显示。GitLab MR 未做） |
 | Share Project on GitHub、Create Gist | M6 | ✅（Share：建仓库、加 remote、无提交时初始提交、push -u；Gist：编辑器选区/整文件或 Commit 面板文件，Secret / 打开浏览器 / 复制 URL） |
 
+## 11. 代码索引与跳转（M7）
+
+内置索引（tree-sitter）始终可用，语言服务器（LSP）装了就叠加使用。跨语言桥接由自有索引解析。
+
+| 功能 | 阶段 | 状态 |
+|---|---|---|
+| 符号索引：Kotlin、Java、C、C++、Objective-C、Rust、Swift、Dart、Go、V、JavaScript、TypeScript、Python | M7 | ✅（tree-sitter 解析；git ls-files 列表；按大小与修改时间增量更新，多线程；缓存在 .git/gitglass/index.json；保存文件立即重建该文件；状态栏显示进度与“N files, M symbols indexed”） |
+| 跨语言桥接 | M7 | ✅（JNI：Java/Kotlin `native` ↔ C/C++ `Java_包_类_方法`（含 _1 等转义）与 RegisterNatives；Dart FFI `lookupFunction`/`@Native` ↔ C/Rust `extern "C"`/`#[no_mangle]`；Rust `extern "C"` 声明 ↔ C 实现；Swift `@_cdecl`/`@objc` ↔ ObjC/C；Go `//export` 与 cgo `C.name`、V `C.name` ↔ C；C 头文件原型 → 跨 ABI 的实现） |
+| Go to Declaration（Ctrl+B / Ctrl+点击 / F12） | M7 | ✅（顺序：桥接 → LSP → 索引；多个目标弹出选择列表；Ctrl 悬停下划线） |
+| Quick Documentation（悬停） | M7 | ✅（LSP hover，否则显示声明行与位置） |
+| Find Usages（Alt+F7） | M7 | ✅（Find 工具窗口，按类别 › 文件 › 行分组；索引 + git grep，LSP references 标记“verified”；桥接两侧都列出） |
+| Go to File / Class / Symbol（Ctrl+Shift+N / Ctrl+N / Ctrl+Alt+Shift+N） | M7 | ✅（模糊匹配，驼峰首字母） |
+| Navigate Back / Forward（Ctrl+Alt+← / →） | M7 | ✅ |
+| Project 工具窗口（Alt+1）、Select in Project View（Alt+F1） | M7 | ✅（单子目录链折叠显示；Collapse All） |
+| 语言服务器 | M7 | ✅（clangd、rust-analyzer、gopls、jdtls、kotlin-lsp、sourcekit-lsp、dart、v-analyzer、typescript-language-server、pyright/pylsp；按最近的 Cargo.toml / go.mod / pubspec.yaml / settings.gradle 等子项目分别启动；打开文件即预热；服务器忙时 0.6 秒内退回索引结果） |
+| 设置 › Languages & Frameworks | M7 | ✅（总开关；每种语言可填自定义命令或 off，显示 Installed / Not found / Index only） |
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。
@@ -219,3 +236,4 @@
 - **M4 进阶**：部分提交、多 changelist、Shelf、补丁、Clone、GPG。
 - **M5 多仓库**：多根、Worktree、Submodule。
 - **M6 托管平台**：GitHub/GitLab Pull Requests。
+- **M7 代码索引**：多语言符号索引、跨语言桥接、LSP、Go to Declaration / Find Usages / Go to Symbol。

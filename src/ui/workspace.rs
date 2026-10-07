@@ -42,8 +42,30 @@ use crate::ui::file_editor::{FileEditor, FileEditorEvent};
 use crate::ui::patch_dialogs;
 use crate::ui::shelf_view::{ShelfEvent, ShelfView};
 use crate::ui::stash_view::{StashEvent, StashView};
+use crate::index::service::{CodeIndex, IndexEvent};
 
-actions!(workspace, [CommitChanges, PushChanges, UpdateProject, ShowBranches, ToggleGitWindow, Refresh, StashChanges, OpenSettings, VcsOperations]);
+actions!(
+    workspace,
+    [
+        CommitChanges,
+        PushChanges,
+        UpdateProject,
+        ShowBranches,
+        ToggleGitWindow,
+        Refresh,
+        StashChanges,
+        OpenSettings,
+        VcsOperations,
+        GotoFile,
+        GotoClass,
+        GotoSymbol,
+        NavigateBack,
+        NavigateForward,
+        ToggleProjectWindow,
+        ToggleFindWindow,
+        SelectInProject
+    ]
+);
 
 const CONTEXT: &str = "Workspace";
 
@@ -64,6 +86,15 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("alt-`", VcsOperations, Some(CONTEXT)),
         KeyBinding::new("f7", NextDifference, Some(CONTEXT)),
         KeyBinding::new("shift-f7", PreviousDifference, Some(CONTEXT)),
+        // Navigation, IntelliJ's default keymap.
+        KeyBinding::new("secondary-shift-n", GotoFile, Some(CONTEXT)),
+        KeyBinding::new("secondary-n", GotoClass, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-shift-n", GotoSymbol, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-left", NavigateBack, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-right", NavigateForward, Some(CONTEXT)),
+        KeyBinding::new("alt-1", ToggleProjectWindow, Some(CONTEXT)),
+        KeyBinding::new("alt-3", ToggleFindWindow, Some(CONTEXT)),
+        KeyBinding::new("alt-f1", SelectInProject, Some(CONTEXT)),
     ]);
 }
 
@@ -79,6 +110,8 @@ enum BottomTab {
     Log,
     Worktrees,
     Submodules,
+    /// Find Usages results.
+    Find,
     Console,
 }
 
@@ -99,6 +132,14 @@ pub struct Workspace {
     branches_popup: Entity<BranchesPopup>,
     worktrees: Entity<crate::ui::worktree_view::WorktreeView>,
     submodules: Entity<crate::ui::submodule_view::SubmoduleView>,
+    /// The code index, and the tool windows built on it.
+    code_index: Entity<CodeIndex>,
+    usages: Entity<crate::ui::navigate::UsagesView>,
+    project: Entity<crate::ui::navigate::ProjectView>,
+    show_project: bool,
+    /// Navigate › Back / Forward: (path, line, column).
+    nav_back: Vec<(String, u32, u32)>,
+    nav_forward: Vec<(String, u32, u32)>,
     /// The Pull Requests tool window, sharing the left side with Commit.
     prs: Entity<crate::ui::pull_requests::PullRequestsView>,
     show_prs: bool,
@@ -132,6 +173,9 @@ impl Workspace {
         let worktrees = cx.new(|cx| crate::ui::worktree_view::WorktreeView::new(model.clone(), cx));
         let submodules = cx.new(|cx| crate::ui::submodule_view::SubmoduleView::new(model.clone(), cx));
         let prs = cx.new(|cx| crate::ui::pull_requests::PullRequestsView::new(model.clone(), window, cx));
+        let code_index = cx.new(CodeIndex::new);
+        let usages = cx.new(|_| crate::ui::navigate::UsagesView::new());
+        let project = cx.new(|cx| crate::ui::navigate::ProjectView::new(code_index.clone(), cx));
         let weak = cx.entity().downgrade();
         branches_popup.update(cx, |popup, _| {
             popup.on_commit = Some(Rc::new(move |window, cx| {
@@ -175,6 +219,13 @@ impl Workspace {
                     cx.notify();
                 }
             }),
+            cx.subscribe_in(&usages, window, |this, _, event: &crate::ui::navigate::OpenTarget, window, cx| {
+                this.go_to_target(event.0.clone(), window, cx)
+            }),
+            cx.subscribe_in(&project, window, |this, _, event: &crate::ui::navigate::OpenTarget, window, cx| {
+                this.go_to_target(event.0.clone(), window, cx)
+            }),
+            cx.subscribe(&code_index, |_, _, _: &IndexEvent, cx| cx.notify()),
             cx.subscribe(&stash, |this, _, event: &StashEvent, cx| match event {
                 StashEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
             }),
@@ -182,6 +233,17 @@ impl Workspace {
                 ShelfEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
             }),
             cx.subscribe_in(&model, window, |this, _, event, window, cx| {
+                if let RepoEvent::Reloaded = event {
+                    // Index the opened project; re-index what changed on disk.
+                    let root = this.model.read(cx).project_root().map(|p| p.to_path_buf());
+                    this.code_index.update(cx, |index, cx| {
+                        if index.root() != root.as_deref() {
+                            index.set_root(root, cx);
+                        } else {
+                            index.refresh(cx);
+                        }
+                    });
+                }
                 if let RepoEvent::OpenLogTab { title, filter } = event {
                     this.open_log_tab(title.clone(), filter.clone(), cx);
                 }
@@ -339,6 +401,12 @@ impl Workspace {
             worktrees,
             submodules,
             prs,
+            code_index,
+            usages,
+            project,
+            show_project: false,
+            nav_back: Vec::new(),
+            nav_forward: Vec::new(),
             show_prs: false,
             timeline: None,
             merge: None,
@@ -486,6 +554,8 @@ impl Workspace {
         if !same {
             let view = cx.new(|cx| FileEditor::new(repository, path, revision, window, cx));
             let subscription = cx.subscribe_in(&view, window, Self::on_file_editor_event);
+            let index = self.code_index.clone();
+            view.update(cx, |editor, cx| editor.attach_index(index, cx));
             self.editor = Some((view, subscription));
         }
         cx.notify();
@@ -493,6 +563,19 @@ impl Workspace {
 
     fn on_file_editor_event(&mut self, _: &Entity<FileEditor>, event: &FileEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
+            FileEditorEvent::Navigate(targets) => self.navigate(targets.clone(), window, cx),
+            FileEditorEvent::FindUsages { text, offset } => {
+                let Some(path) = self.editor.as_ref().map(|(e, _)| e.read(cx).path().to_owned()) else { return };
+                let (index, text, offset) = (self.code_index.clone(), text.clone(), *offset);
+                self.usages.update(cx, |view, cx| view.search(&index, path, text, offset, cx));
+                self.show_git = true;
+                self.bottom_tab = BottomTab::Find;
+                cx.notify();
+            }
+            FileEditorEvent::Saved(path) => {
+                let path = path.clone();
+                self.code_index.update(cx, |index, cx| index.refresh_file(&path, cx));
+            }
             FileEditorEvent::CreateGist { name, content } => {
                 crate::ui::github_dialogs::create_gist(self.model.clone(), vec![(name.clone(), content.clone())], window, cx)
             }
@@ -579,6 +662,117 @@ impl Workspace {
             self.model.update(cx, |m, cx| m.set_filter(filter, cx));
         } else if ix < self.active_log {
             self.active_log -= 1;
+        }
+        cx.notify();
+    }
+
+    /// Go to Declaration's result: one target opens, several ask.
+    fn navigate(&mut self, targets: Vec<crate::index::nav::Target>, window: &mut Window, cx: &mut Context<Self>) {
+        match targets.len() {
+            0 => self.model.update(cx, |m, cx| m.notify("Go to Declaration", "Cannot find declaration to go to", false, cx)),
+            1 => self.go_to_target(targets.into_iter().next().unwrap(), window, cx),
+            _ => {
+                let workspace = cx.entity().downgrade();
+                crate::ui::navigate::choose_target(
+                    targets,
+                    Rc::new(move |target, window, cx| {
+                        workspace.update(cx, |this, cx| this.go_to_target(target, window, cx)).ok();
+                    }),
+                    window,
+                    cx,
+                );
+            }
+        }
+    }
+
+    /// Opens a file at a position, remembering where we were for Back.
+    fn go_to_target(&mut self, target: crate::index::nav::Target, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(here) = self.current_position(cx) {
+            if self.nav_back.last() != Some(&here) {
+                self.nav_back.push(here);
+            }
+        }
+        self.nav_forward.clear();
+        self.open_at(target.path, target.line, target.col, window, cx);
+    }
+
+    fn current_position(&self, cx: &gpui_kit::App) -> Option<(String, u32, u32)> {
+        let (editor, _) = self.editor.as_ref()?;
+        let editor = editor.read(cx);
+        if editor.revision().is_some() {
+            return None;
+        }
+        let (line, col) = editor.cursor(cx);
+        Some((editor.path().to_owned(), line, col))
+    }
+
+    fn open_at(&mut self, path: String, line: u32, col: u32, window: &mut Window, cx: &mut Context<Self>) {
+        self.merge = None;
+        self.timeline = None;
+        self.open_file(path, None, window, cx);
+        if let Some((editor, _)) = &self.editor {
+            editor.update(cx, |editor, cx| editor.go_to(line, col, window, cx));
+        }
+    }
+
+    fn navigate_back(&mut self, _: &NavigateBack, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((path, line, col)) = self.nav_back.pop() else { return };
+        if let Some(here) = self.current_position(cx) {
+            self.nav_forward.push(here);
+        }
+        self.open_at(path, line, col, window, cx);
+    }
+
+    fn navigate_forward(&mut self, _: &NavigateForward, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((path, line, col)) = self.nav_forward.pop() else { return };
+        if let Some(here) = self.current_position(cx) {
+            self.nav_back.push(here);
+        }
+        self.open_at(path, line, col, window, cx);
+    }
+
+    fn open_goto(&mut self, kind: crate::ui::navigate::GotoKind, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.read(cx).repository().is_none() {
+            return;
+        }
+        let workspace = cx.entity().downgrade();
+        crate::ui::navigate::goto(
+            kind,
+            self.code_index.clone(),
+            Rc::new(move |target, window, cx| {
+                workspace.update(cx, |this, cx| this.go_to_target(target, window, cx)).ok();
+            }),
+            window,
+            cx,
+        );
+    }
+
+    fn toggle_project(&mut self, _: &ToggleProjectWindow, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_project = !self.show_project;
+        if self.show_project {
+            self.show_commit = false;
+            self.show_prs = false;
+        }
+        cx.notify();
+    }
+
+    /// Select In › Project View: shows the current editor's file in the tree.
+    fn select_in_project(&mut self, _: &SelectInProject, _: &mut Window, cx: &mut Context<Self>) {
+        let Some((editor, _)) = &self.editor else { return };
+        let path = editor.read(cx).path().to_owned();
+        self.show_project = true;
+        self.show_commit = false;
+        self.show_prs = false;
+        self.project.update(cx, |project, cx| project.reveal(&path, cx));
+        cx.notify();
+    }
+
+    fn toggle_find(&mut self, _: &ToggleFindWindow, _: &mut Window, cx: &mut Context<Self>) {
+        if self.show_git && self.bottom_tab == BottomTab::Find {
+            self.show_git = false;
+        } else {
+            self.show_git = true;
+            self.bottom_tab = BottomTab::Find;
         }
         cx.notify();
     }
@@ -988,10 +1182,14 @@ impl Workspace {
             .border_r_1()
             .border_color(palette.border)
             .bg(palette.toolbar)
-            .child(stripe_button("stripe-commit", IconName::GitCommitVertical, "Commit", self.show_commit && !self.show_prs).on_click(
+            .child(stripe_button("stripe-project", IconName::FolderTree, "Project (Alt+1)", self.show_project).on_click(
+                cx.listener(|this, _, window, cx| this.toggle_project(&ToggleProjectWindow, window, cx)),
+            ))
+            .child(stripe_button("stripe-commit", IconName::GitCommitVertical, "Commit", self.show_commit && !self.show_prs && !self.show_project).on_click(
                 cx.listener(|this, _, _, cx| {
-                    this.show_commit = this.show_prs || !this.show_commit;
+                    this.show_commit = this.show_prs || this.show_project || !this.show_commit;
                     this.show_prs = false;
+                    this.show_project = false;
                     cx.notify();
                 }),
             ))
@@ -1000,6 +1198,7 @@ impl Workspace {
                     this.show_prs = !this.show_prs;
                     if this.show_prs {
                         this.show_commit = false;
+                        this.show_project = false;
                         this.prs.update(cx, |prs, cx| prs.refresh(cx));
                     }
                     cx.notify();
@@ -1266,6 +1465,12 @@ impl Workspace {
                             },
                         )).child("Submodules"))
                     })
+                    .child(tab("tab-find", "Find", BottomTab::Find, current).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.bottom_tab = BottomTab::Find;
+                            cx.notify();
+                        },
+                    )).child("Find"))
                     .child(tab("tab-console", "Console", BottomTab::Console, current).on_click(cx.listener(
                         |this, _, _, cx| {
                             this.bottom_tab = BottomTab::Console;
@@ -1282,6 +1487,7 @@ impl Workspace {
                 BottomTab::Log => el.child(self.log.clone()),
                 BottomTab::Worktrees => el.child(self.worktrees.clone()),
                 BottomTab::Submodules => el.child(self.submodules.clone()),
+                BottomTab::Find => el.child(self.usages.clone()),
                 BottomTab::Console => el.child(self.render_console(cx)),
             }))
     }
@@ -1326,6 +1532,7 @@ impl Workspace {
             .child(project)
             .child(div().flex_1())
             .when(model.is_loading(), |el| el.child("Refreshing VCS history…"))
+            .child(self.code_index.read(cx).summary())
             .child(format!("{changes} changed"))
             .child(h_flex().gap_1().child(Icon::new(IconName::GitBranch).xsmall()).child(branch))
             .child("UTF-8")
@@ -1359,8 +1566,16 @@ impl Render for Workspace {
                 resizable_panel()
                     .size(px(340.))
                     .size_range(px(220.)..px(700.))
-                    .visible((self.show_commit || self.show_prs) && has_repo)
-                    .map(|panel| if self.show_prs { panel.child(self.prs.clone()) } else { panel.child(self.render_left(cx)) }),
+                    .visible((self.show_commit || self.show_prs || self.show_project) && has_repo)
+                    .map(|panel| {
+                        if self.show_project {
+                            panel.child(self.project.clone())
+                        } else if self.show_prs {
+                            panel.child(self.prs.clone())
+                        } else {
+                            panel.child(self.render_left(cx))
+                        }
+                    }),
             )
             .child(resizable_panel().child(editor));
 
@@ -1386,6 +1601,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_stash))
             .on_action(cx.listener(Self::on_vcs_operations))
+            .on_action(cx.listener(|this, _: &GotoFile, window, cx| this.open_goto(crate::ui::navigate::GotoKind::File, window, cx)))
+            .on_action(cx.listener(|this, _: &GotoClass, window, cx| this.open_goto(crate::ui::navigate::GotoKind::Class, window, cx)))
+            .on_action(cx.listener(|this, _: &GotoSymbol, window, cx| this.open_goto(crate::ui::navigate::GotoKind::Symbol, window, cx)))
+            .on_action(cx.listener(Self::navigate_back))
+            .on_action(cx.listener(Self::navigate_forward))
+            .on_action(cx.listener(Self::toggle_project))
+            .on_action(cx.listener(Self::select_in_project))
+            .on_action(cx.listener(Self::toggle_find))
             .on_action(cx.listener(|_, _: &OpenSettings, window, cx| dialogs::settings(window, cx)))
             .on_action(cx.listener(|this, _: &NextDifference, _, cx| this.diff.update(cx, |d, cx| d.next_difference(cx))))
             .on_action(cx.listener(|this, _: &PreviousDifference, _, cx| this.diff.update(cx, |d, cx| d.previous_difference(cx))))

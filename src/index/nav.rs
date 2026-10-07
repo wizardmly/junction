@@ -68,13 +68,12 @@ fn symbol_target(path: &str, lang: Lang, s: &super::symbols::Symbol) -> Target {
     }
 }
 
-/// Go to Declaration for the identifier at `offset` in `path`.
-pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, offset: usize) -> Vec<Target> {
+/// The other side of a bridge site at `offset` (JNI, C ABI, FFI, Swift /
+/// Objective-C), or nothing when the identifier there isn't one.
+pub fn bridge_definitions(index: &ProjectIndex, path: &str, text: &str, offset: usize) -> Vec<Target> {
     let Some((word, range)) = word_at(text, offset) else { return Vec::new() };
     let (line, col) = position(text, range.start);
     let entry = index.files.get(path);
-
-    // 1. A bridge site: jump to the other side.
     if let Some(entry) = entry {
         let sites: Vec<_> = entry.bridges.iter().filter(|b| b.line == line && b.col == col && b.name == word).collect();
         let mut out = Vec::new();
@@ -104,9 +103,21 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
                 });
             }
         }
-        if !out.is_empty() {
-            return dedup(out);
-        }
+        return dedup(out);
+    }
+    Vec::new()
+
+}
+
+/// Go to Declaration for the identifier at `offset` in `path`.
+pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, offset: usize) -> Vec<Target> {
+    let Some((word, range)) = word_at(text, offset) else { return Vec::new() };
+    let (line, col) = position(text, range.start);
+
+    // 1. A bridge site: jump to the other side.
+    let bridged = bridge_definitions(index, path, text, offset);
+    if !bridged.is_empty() {
+        return bridged;
     }
 
     // 2. Symbols with this name in the languages this one can see.
@@ -138,6 +149,21 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
     // source); a C definition with a counterpart elsewhere goes there.
     if candidates.is_empty() && on_definition {
         return Vec::new();
+    }
+    // Only prototypes here: the implementation may live across the C ABI
+    // (Rust #[no_mangle], Swift @_cdecl, Go //export…).
+    if !candidates.is_empty() {
+        let all_decls = index.symbols_named(&word).filter(|(_, e, _)| family.contains(&e.lang)).all(|(_, _, s)| s.decl);
+        if all_decls {
+            let exports: Vec<Target> = index
+                .bridges_keyed(&format!("c:{word}"))
+                .filter(|(_, _, b)| b.role == Role::Export)
+                .map(|(p, e, b)| Target { path: p.to_owned(), line: b.line, col: b.col, name: b.name.clone(), label: format!("{} · {}", b.label(), e.lang.name()), container: None })
+                .collect();
+            if !exports.is_empty() {
+                return dedup(exports);
+            }
+        }
     }
     if !candidates.is_empty() {
         candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.path.cmp(&b.1.path)).then(a.1.line.cmp(&b.1.line)));
@@ -378,6 +404,9 @@ mod tests {
         // C implementation → Java native declaration.
         let t = definitions(&index, "app/src/main/cpp/native.c", Lang::C, c, at(c, "Java_com"));
         assert_eq!((t[0].path.as_str(), t[0].line), ("app/src/main/java/com/ex/Native.java", 2));
+        // A C call whose only C match is a prototype → the Rust implementation.
+        let t = definitions(&index, "app/src/main/cpp/native.c", Lang::C, c, at(c, "rust_add(a"));
+        assert_eq!((t[0].path.as_str(), t[0].line), ("rust/src/lib.rs", 1));
         // C prototype → Rust #[no_mangle] function.
         let t = definitions(&index, "app/src/main/cpp/native.c", Lang::C, c, at(c, "rust_add(int"));
         assert_eq!((t[0].path.as_str(), t[0].line), ("rust/src/lib.rs", 1));

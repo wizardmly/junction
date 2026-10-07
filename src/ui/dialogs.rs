@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gpui_kit::component::{
     Disableable as _,
-    Sizable as _, WindowExt as _,
+    Selectable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     dialog::{DialogAction, DialogClose, DialogFooter},
@@ -656,6 +656,24 @@ pub fn settings(window: &mut Window, cx: &mut App) {
     let margin = cx.new(|cx| InputState::new(window, cx).default_value(initial.commit_subject_limit.to_string()));
     let fetch_interval = cx.new(|cx| InputState::new(window, cx).default_value(initial.fetch_interval_minutes.max(1).to_string()));
     let git_path = cx.new(|cx| InputState::new(window, cx).placeholder("Auto-detected: git").default_value(initial.git_executable.clone()));
+    // Settings › Languages & Frameworks: one server command per language,
+    // with what would run when left empty.
+    let servers: Vec<(crate::index::lang::Lang, Entity<InputState>, Option<String>)> = crate::index::lang::Lang::ALL
+        .into_iter()
+        .filter(|l| *l != crate::index::lang::Lang::Tsx)
+        .map(|lang| {
+            let detected = crate::index::lsp::detected(lang);
+            let placeholder = match &detected {
+                Some(command) => format!("Auto: {command}"),
+                None => format!("Not found: {}", lang.default_servers().join(" / ")),
+            };
+            let value = initial.language_servers.get(lang.key()).cloned().unwrap_or_default();
+            (lang, cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).default_value(value)), detected)
+        })
+        .collect();
+    let servers = Rc::new(servers);
+    // The page shown, from the list on the left.
+    let page: Rc<Cell<usize>> = Rc::default();
     // The Test button's result line.
     let git_test: Rc<std::cell::RefCell<Option<Result<String, String>>>> = Rc::default();
     window.open_dialog(cx, move |dialog, _, cx| {
@@ -678,11 +696,34 @@ pub fn settings(window: &mut Window, cx: &mut App) {
         let (ok_protected, ok_margin, ok_fetch, ok_git_path) = (protected.clone(), margin.clone(), fetch_interval.clone(), git_path.clone());
         let (test_path, test_result) = (git_path.clone(), git_test.clone());
         let test_line = git_test.borrow().clone();
-        dialog
-            .title("Settings")
-            .w(px(520.))
-            .child(
-                v_flex()
+        let ok_servers = servers.clone();
+        let server_rows = servers.iter().map(|(lang, input, detected)| {
+            let status = match (input.read(cx).value().trim(), detected) {
+                ("off", _) => ("Off", palette.text_secondary),
+                (custom, _) if !custom.is_empty() => {
+                    let found = custom.split_whitespace().next().and_then(crate::index::lsp::find_program).is_some();
+                    if found { ("Custom", palette.status_added) } else { ("Not found", palette.status_conflict) }
+                }
+                (_, Some(_)) => ("Installed", palette.status_added),
+                (_, None) => ("Index only", palette.text_secondary),
+            };
+            gpui_kit::component::h_flex()
+                .gap_2()
+                .text_sm()
+                .child(div().w(px(90.)).child(lang.name()))
+                .child(div().flex_1().child(Input::new(input).small().disabled(!current.use_language_servers)))
+                .child(div().w(px(70.)).text_xs().text_color(status.1).child(status.0))
+        });
+        let page_index = page.get();
+        let nav = |ix: usize, label: &'static str| {
+            let page = page.clone();
+            Button::new(("settings-page", ix)).small().ghost().w_full().justify_start().selected(page_index == ix).label(label).on_click(move |_, window, _| {
+                page.set(ix);
+                window.refresh();
+            })
+        };
+        let navigation = v_flex().w(px(170.)).gap_1().child(nav(0, "Version Control")).child(nav(1, "Languages & Frameworks"));
+        let general = v_flex()
                     .gap_2()
                     .child(section("Appearance"))
                     .child(
@@ -799,13 +840,43 @@ pub fn settings(window: &mut Window, cx: &mut App) {
                             .text_sm()
                             .child("Subject line length limit:")
                             .child(div().w(px(70.)).child(Input::new(&margin).small())),
-                    ),
+                    );
+        let languages = v_flex()
+                    .gap_2()
+                    .child(section("Languages & Frameworks › Code Navigation"))
+                    .child(check(
+                        "settings-lsp",
+                        "Use language servers for Go to Declaration, Quick Documentation and Find Usages",
+                        current.use_language_servers,
+                        |s, v| s.use_language_servers = v,
+                    ))
+                    .child(div().pl_6().text_xs().text_color(palette.text_secondary).child(
+                        "The built-in index always answers, and resolves calls across JNI, Dart FFI, extern \"C\" and Swift/Objective-C bridges. \
+                         Leave a command empty to use the detected server, or type off to disable one.",
+                    ))
+                    .children(server_rows);
+        dialog
+            .title("Settings")
+            .w(px(780.))
+            .child(
+                gpui_kit::component::h_flex()
+                    .items_start()
+                    .gap_4()
+                    .child(navigation)
+                    .child(div().flex_1().min_w_0().child(if page_index == 0 { general.into_any_element() } else { languages.into_any_element() })),
             )
             .footer(footer("OK"))
             .on_ok(move |_, window, cx| {
                 let mut next = ok_draft.borrow().clone();
                 next.protected_branches = ok_protected.read(cx).value().trim().to_owned();
                 next.git_executable = ok_git_path.read(cx).value().trim().to_owned();
+                next.language_servers = ok_servers
+                    .iter()
+                    .filter_map(|(lang, input, _)| {
+                        let command = input.read(cx).value().trim().to_owned();
+                        (!command.is_empty()).then(|| (lang.key().to_owned(), command))
+                    })
+                    .collect();
                 if let Ok(limit) = ok_margin.read(cx).value().trim().parse::<usize>() {
                     next.commit_subject_limit = limit.clamp(20, 200);
                 }

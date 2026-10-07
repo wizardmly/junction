@@ -27,7 +27,7 @@ pub struct FileEntry {
     pub bridges: Vec<BridgeItem>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct ProjectIndex {
     version: u32,
     #[serde(skip)]

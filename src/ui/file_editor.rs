@@ -4,11 +4,16 @@
 //! actions: Show History for Selection, Annotate, Show Current Revision,
 //! Rollback Lines.
 
+use std::cell::RefCell;
 use std::ops::Range;
+use std::rc::Rc;
 
 use gpui_kit::component::{
     h_flex,
-    input::{Copy, Cut, Editor, EditorState, InputEvent, Paste, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, SelectAll},
+    input::{
+        Copy, Cut, DefinitionProvider, Editor, EditorState, HoverProvider, InputEvent, Paste, RangeDecoration, RangeDecorationCollection,
+        RangeDecorationStyle, Rope, SelectAll, ShowDocumentHandler,
+    },
     native_menu::NativeMenu,
     v_flex,
 };
@@ -19,6 +24,8 @@ use gpui_kit::{
 };
 
 use crate::git::Repository;
+use crate::index::nav::{self, Target};
+use crate::index::service::CodeIndex;
 use crate::git::diff::{self, Hunk};
 use crate::theme::ActivePalette as _;
 use crate::ui::common::{self, tool_button};
@@ -26,7 +33,19 @@ use crate::ui::diff_view::DiffSource;
 
 actions!(
     file_editor,
-    [SaveFile, ShowSelectionHistory, AnnotateFile, ShowFileHistory, ShowCurrentRevision, RollbackLines, ShowFileDiff, OpenOnHosting, CreateGist]
+    [
+        SaveFile,
+        ShowSelectionHistory,
+        AnnotateFile,
+        ShowFileHistory,
+        ShowCurrentRevision,
+        RollbackLines,
+        ShowFileDiff,
+        OpenOnHosting,
+        CreateGist,
+        GotoDeclaration,
+        FindUsages
+    ]
 );
 
 const CONTEXT: &str = "FileEditor";
@@ -35,6 +54,9 @@ pub fn init(cx: &mut gpui_kit::App) {
     cx.bind_keys([
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" }, SaveFile, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-z", RollbackLines, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-b" } else { "ctrl-b" }, GotoDeclaration, Some(CONTEXT)),
+        KeyBinding::new("f12", GotoDeclaration, Some(CONTEXT)),
+        KeyBinding::new("alt-f7", FindUsages, Some(CONTEXT)),
     ]);
 }
 
@@ -47,6 +69,12 @@ pub enum FileEditorEvent {
     OpenDiff(DiffSource),
     FilesChanged,
     CreateGist { name: String, content: String },
+    /// Go to Declaration found these (one jumps, several ask).
+    Navigate(Vec<crate::index::nav::Target>),
+    /// Find Usages of the identifier at a byte offset of this text.
+    FindUsages { text: String, offset: usize },
+    /// Saved: re-index this file.
+    Saved(String),
 }
 
 impl EventEmitter<FileEditorEvent> for FileEditor {}
@@ -90,7 +118,59 @@ pub struct FileEditor {
     hunks: Vec<Hunk>,
     markers: Option<RangeDecorationCollection>,
     error: Option<String>,
+    code_index: Option<Entity<CodeIndex>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Ctrl+click / Ctrl+hover and Quick Documentation through the code index.
+struct IndexProvider {
+    index: Entity<CodeIndex>,
+    path: String,
+    /// All targets of the last lookup: the editor follows only the first,
+    /// the show-document hook hands the whole list on.
+    last: Rc<RefCell<Vec<Target>>>,
+}
+
+fn lsp_position(line: u32, col: u32) -> lsp_types::Position {
+    lsp_types::Position { line, character: col }
+}
+
+impl DefinitionProvider for IndexProvider {
+    fn definitions(&self, text: &Rope, offset: usize, _: &mut Window, cx: &mut gpui_kit::App) -> gpui_kit::Task<anyhow::Result<Vec<lsp_types::LocationLink>>> {
+        let text = text.to_string();
+        let origin = nav::word_at(&text, offset).map(|(_, r)| {
+            let (sl, sc) = nav::position(&text, r.start);
+            let (el, ec) = nav::position(&text, r.end);
+            lsp_types::Range { start: lsp_position(sl, sc), end: lsp_position(el, ec) }
+        });
+        let root = self.index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
+        let task = self.index.read(cx).definitions(self.path.clone(), text, offset, cx);
+        let last = self.last.clone();
+        cx.spawn(async move |_| {
+            let targets = task.await;
+            *last.borrow_mut() = targets.clone();
+            Ok(targets
+                .iter()
+                .filter_map(|t| {
+                    let uri = crate::index::lsp::path_to_uri(&root.join(&t.path)).parse::<lsp_types::Uri>().ok()?;
+                    let range = lsp_types::Range { start: lsp_position(t.line, t.col), end: lsp_position(t.line, t.col) };
+                    Some(lsp_types::LocationLink { origin_selection_range: origin, target_uri: uri, target_range: range, target_selection_range: range })
+                })
+                .collect())
+        })
+    }
+}
+
+impl HoverProvider for IndexProvider {
+    fn hover(&self, text: &Rope, offset: usize, _: &mut Window, cx: &mut gpui_kit::App) -> gpui_kit::Task<anyhow::Result<Option<lsp_types::Hover>>> {
+        let task = self.index.read(cx).hover(self.path.clone(), text.to_string(), offset, cx);
+        cx.spawn(async move |_| {
+            Ok(task.await.map(|value| lsp_types::Hover {
+                contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent { kind: lsp_types::MarkupKind::Markdown, value }),
+                range: None,
+            }))
+        })
+    }
 }
 
 fn line_start(text: &str, line: usize) -> usize {
@@ -141,6 +221,7 @@ impl FileEditor {
             hunks: Vec::new(),
             markers: None,
             error,
+            code_index: None,
             _subscriptions: subscriptions,
         };
         this.update_markers(cx);
@@ -149,6 +230,60 @@ impl FileEditor {
 
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// Navigation through the project's code index: Ctrl+click, hover,
+    /// Go to Declaration and Find Usages.
+    pub fn attach_index(&mut self, index: Entity<CodeIndex>, cx: &mut Context<Self>) {
+        let last: Rc<RefCell<Vec<Target>>> = Rc::default();
+        let provider = Rc::new(IndexProvider { index: index.clone(), path: self.path.clone(), last: last.clone() });
+        let editor = cx.entity().downgrade();
+        let show: ShowDocumentHandler = Rc::new(move |_, _, cx| {
+            let targets = last.borrow().clone();
+            editor.update(cx, |_, cx| cx.emit(FileEditorEvent::Navigate(targets))).ok();
+            true
+        });
+        self.state.update(cx, |state, cx| {
+            let lsp = state.lsp_mut();
+            lsp.definition_provider = Some(provider.clone());
+            lsp.hover_provider = Some(provider);
+            lsp.show_document = Some(show);
+            cx.notify();
+        });
+        if self.revision.is_none() {
+            let text = self.state.read(cx).value().to_string();
+            index.read(cx).warm_up(&self.path, text, cx);
+        }
+        self.code_index = Some(index);
+    }
+
+    /// Moves the cursor to a 0-based line and UTF-16 column, scrolled into view.
+    pub fn go_to(&mut self, line: u32, col: u32, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.set_cursor_position(lsp_position(line, col), window, cx));
+    }
+
+    /// (line, UTF-16 column) of the cursor, for navigation history.
+    pub fn cursor(&self, cx: &gpui_kit::App) -> (u32, u32) {
+        let p = self.state.read(cx).cursor_position();
+        (p.line, p.character)
+    }
+
+    fn goto_declaration(&mut self, _: &GotoDeclaration, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.code_index.clone() else { return };
+        let text = self.text(cx);
+        let offset = self.state.read(cx).cursor();
+        let task = index.read(cx).definitions(self.path.clone(), text, offset, cx);
+        cx.spawn(async move |this, cx| {
+            let targets = task.await;
+            this.update(cx, |_, cx| cx.emit(FileEditorEvent::Navigate(targets))).ok();
+        })
+        .detach();
+    }
+
+    fn find_usages(&mut self, _: &FindUsages, _: &mut Window, cx: &mut Context<Self>) {
+        let text = self.text(cx);
+        let offset = self.state.read(cx).cursor();
+        cx.emit(FileEditorEvent::FindUsages { text, offset });
     }
 
     pub fn revision(&self) -> Option<&str> {
@@ -217,6 +352,7 @@ impl FileEditor {
             Ok(()) => {
                 self.saved = text;
                 cx.emit(FileEditorEvent::FilesChanged);
+                cx.emit(FileEditorEvent::Saved(self.path.clone()));
             }
             Err(error) => self.error = Some(error.to_string()),
         }
@@ -323,6 +459,8 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::rollback_lines))
             .on_action(cx.listener(Self::open_on_hosting))
             .on_action(cx.listener(Self::create_gist))
+            .on_action(cx.listener(Self::goto_declaration))
+            .on_action(cx.listener(Self::find_usages))
             .on_action(cx.listener(Self::show_selection_history))
             .on_action(cx.listener(Self::annotate))
             .on_action(cx.listener(Self::show_history))
@@ -374,6 +512,10 @@ impl Render for FileEditor {
                                 .menu_with_disabled("Cut", read_only, Box::new(Cut))
                                 .menu_with_disabled("Paste", read_only, Box::new(Paste))
                                 .menu("Select All", Box::new(SelectAll))
+                                .separator()
+                                .menu("Go to Declaration", Box::new(GotoDeclaration))
+                                .menu("Find Usages", Box::new(FindUsages))
+                                .menu("Select in Project View", Box::new(crate::ui::workspace::SelectInProject))
                                 .separator();
                             let git = NativeMenu::new()
                                 .menu("Show History for Selection", Box::new(ShowSelectionHistory))
