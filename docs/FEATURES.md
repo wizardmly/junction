@@ -76,7 +76,7 @@
 | Create Patch… | M4 | ✅（多选时合并为一个补丁；保存到文件或剪贴板，可反向） |
 | Cherry-Pick | M3 | ✅（冲突走进行中操作横幅） |
 | Checkout Revision | M2 | ✅ |
-| Show Repository at Revision | M4 | ⬜ |
+| Show Repository at Revision | M4 | ✅（提交右键 → 显示该版本的文件树，双击打开只读编辑器） |
 | Compare with Local | M3 | ✅ |
 | Reset Current Branch to Here…（Soft / Mixed / Hard / Keep） | M2 | ✅ |
 | Revert Commit | M3 | ✅（冲突走进行中操作横幅） |

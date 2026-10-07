@@ -88,6 +88,11 @@ struct DirNode {
 /// child directories into one node ("src/main/kotlin") like IntelliJ does.
 /// File items get the id `f:<path>`; directories `d:<path>`.
 pub fn file_tree(paths: impl IntoIterator<Item = String>, scope: &str) -> Vec<TreeItem> {
+    file_tree_with(paths, scope, true)
+}
+
+/// `file_tree` with directories collapsed (whole-repository trees).
+pub fn file_tree_with(paths: impl IntoIterator<Item = String>, scope: &str, expanded: bool) -> Vec<TreeItem> {
     let mut root = DirNode::default();
     for path in paths {
         let mut node = &mut root;
@@ -98,10 +103,10 @@ pub fn file_tree(paths: impl IntoIterator<Item = String>, scope: &str) -> Vec<Tr
         }
         node.files.push(path);
     }
-    build_items(&root, "", scope)
+    build_items(&root, "", scope, expanded)
 }
 
-fn build_items(node: &DirNode, prefix: &str, scope: &str) -> Vec<TreeItem> {
+fn build_items(node: &DirNode, prefix: &str, scope: &str, expanded: bool) -> Vec<TreeItem> {
     let mut items = Vec::new();
     for (name, child) in &node.dirs {
         let mut label = name.clone();
@@ -115,8 +120,8 @@ fn build_items(node: &DirNode, prefix: &str, scope: &str) -> Vec<TreeItem> {
         }
         items.push(
             TreeItem::new(format!("{scope}{DIR_PREFIX}{path}"), label)
-                .expanded(true)
-                .children(build_items(child, &path, scope)),
+                .expanded(expanded)
+                .children(build_items(child, &path, scope, expanded)),
         );
     }
     for file in &node.files {

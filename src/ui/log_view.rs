@@ -1343,6 +1343,16 @@ fn commit_menu(
             compare_model.update(cx, |m, cx| m.compare(old, Some(new), cx))
         }))
     })
+    .item(PopupMenuItem::new("Show Repository at Revision").disabled(multi).on_click({
+        let (model, hash, entity) = (model.clone(), hash.clone(), entity.clone());
+        move |_, window, cx| {
+            let entity = entity.clone();
+            let open_file: crate::ui::revision_browser::OpenFile = std::rc::Rc::new(move |revision, path, _, cx| {
+                entity.update(cx, |_, cx| cx.emit(LogEvent::OpenFile { path, revision: Some(revision) }))
+            });
+            crate::ui::revision_browser::open(model.clone(), hash.clone(), open_file, window, cx)
+        }
+    }))
     .item(PopupMenuItem::new("Create Patch…").on_click({
         let model = model.clone();
         let oldest = picks.first().cloned().unwrap_or_default();
