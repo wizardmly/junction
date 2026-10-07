@@ -7,6 +7,7 @@
 
 use std::ops::Range;
 
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::{
     Disableable as _, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -736,7 +737,11 @@ impl Render for MergeView {
             .child(center)
             .child(self.divider(THEIRS, &palette))
             .child(right)
-            .child(self.panes.render_stripe(THEIRS, self.stripe_marks(THEIRS, &palette), thumb, cx));
+            .child(self.panes.render_stripe(THEIRS, self.stripe_marks(THEIRS, &palette), thumb, cx))
+            .context_menu({
+                let entity = cx.entity();
+                move |menu, _, cx| crate::ui::text_panes::edit_menu(menu, &entity, cx)
+            });
 
         v_flex()
             .size_full()

@@ -11,7 +11,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
 use gpui_kit::assets::IconName;
@@ -31,6 +31,7 @@ use crate::ui::diff_panes::{BlockColors, Connector, DIVIDER_WIDTH, LINE_HEIGHT, 
 use crate::ui::text_panes::{BUTTON_WIDTH, GUTTER_WIDTH, PaneContent, PaneLayout, RowLook, RowTarget, STRIPE_WIDTH, TextPanes, expand_tabs, pane_area};
 
 pub(crate) mod edit;
+mod menu;
 
 actions!(diff_view, [NextDifference, PreviousDifference, JumpToSource]);
 
@@ -292,6 +293,7 @@ impl DiffView {
             Some(DiffSource::WorkingTree { path, unversioned: false })
                 if !crate::settings::Settings::get(cx).staging_area
                     && self.options.ignore_whitespace == diff::IgnoreWhitespace::None
+                    && self.options.highlight != HighlightMode::Split
                     && !self.diff.binary =>
             {
                 Some(path.clone())
@@ -307,8 +309,15 @@ impl DiffView {
 
     fn toggle_hunk(&mut self, change: usize, include: bool, cx: &mut Context<Self>) {
         let (Some(path), Some(signature)) = (self.partial_path(cx), self.signature(change)) else { return };
+        let hunk = self.diff.hunks[change].clone();
         crate::model::ExcludedHunks::update(cx, |map| {
             let set = map.entry(path).or_default();
+            for k in 0..hunk.old.len() {
+                set.remove(&diff::line_id(signature, false, k));
+            }
+            for k in 0..hunk.new.len() {
+                set.remove(&diff::line_id(signature, true, k));
+            }
             if include {
                 set.remove(&signature);
             } else {
@@ -703,13 +712,7 @@ fn review_number(review: &Review, path: Rc<str>, ix: usize, line: usize, palette
 impl DiffView {
     /// Per change: whether it goes into the next commit (partial commits).
     fn included(&self, cx: &App) -> Vec<bool> {
-        match self.partial_path(cx) {
-            Some(path) => {
-                let excluded = crate::model::ExcludedHunks::get(cx).get(&path).cloned().unwrap_or_default();
-                (0..self.diff.hunks.len()).map(|c| self.signature(c).is_none_or(|s| !excluded.contains(&s))).collect()
-            }
-            None => Vec::new(),
-        }
+        self.exclusions(cx).iter().map(|(old, new)| old.iter().chain(new).any(|out| !*out) || old.len() + new.len() == 0).collect()
     }
 
     /// How each visible row of a pane looks: its block's color (or the
@@ -720,11 +723,19 @@ impl DiffView {
         let highlight = self.options.highlight;
         let review = self.review.clone().filter(|_| pane == 1);
         let path: Rc<str> = self.source.as_ref().map(|s| s.path()).unwrap_or_default().into();
+        let exclusions = self.exclusions(cx);
+        // A line left out of the commit is painted faint.
+        let excluded = |change: Option<usize>, line: usize| -> bool {
+            let Some((c, hunk)) = change.and_then(|c| Some((c, self.diff.hunks.get(c)?))) else { return false };
+            let (range, lines) = if pane == 0 { (&hunk.old, exclusions.get(c).map(|e| &e.0)) } else { (&hunk.new, exclusions.get(c).map(|e| &e.1)) };
+            lines.and_then(|l| l.get(line.wrapping_sub(range.start))).copied().unwrap_or(false)
+        };
         self.panes
             .visible_rows(pane)
             .map(|ix| match &rows[ix] {
                 PaneRow::Fold { .. } | PaneRow::Filler => RowLook::default(),
-                PaneRow::Line { side, kind, .. } => {
+                PaneRow::Line { side, kind, change, .. } => {
+                    let faint = if excluded(*change, side.line - 1) { 0.35 } else { 1. };
                     let background = match (highlight, kind) {
                         (HighlightMode::None, _) | (_, None) => None,
                         (h, Some(k)) if h.inner() => Some(side.whole.map_or(line_color(*k, palette), |w| word_color(w, palette))),
@@ -742,6 +753,8 @@ impl DiffView {
                     };
                     let marker = kind.filter(|_| highlight == HighlightMode::None).map(|k| border_color(k, palette));
                     let number = review.as_ref().map(|r| review_number(r, path.clone(), ix, side.line, palette, cx));
+                    let background = background.map(|c| c.opacity(faint));
+                    let words = words.into_iter().map(|(r, c)| (r, c.opacity(faint))).collect();
                     RowLook { background, words, marker, number }
                 }
             })
@@ -866,12 +879,14 @@ impl DiffView {
         let (left_marks, right_marks) = (marks(0), marks(1));
         let mut panes = panes.into_iter();
         let (left, right) = (panes.next().unwrap(), panes.next().unwrap());
+        let entity = cx.entity();
         pane_area("diff-two-side", &self.panes.focus, cx)
             .child(self.panes.render_stripe(0, left_marks, thumb, cx))
             .child(left)
             .child(divider)
             .child(right)
             .child(self.panes.render_stripe(1, right_marks, thumb, cx))
+            .context_menu(move |menu, _, cx| DiffView::context_menu(&entity, menu, cx))
             .into_any_element()
     }
 

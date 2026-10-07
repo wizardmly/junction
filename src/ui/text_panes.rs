@@ -372,6 +372,42 @@ impl<T: Clone + Default> TextPanes<T> {
         Some((pane, Ok(buffer.line_range(line).start + byte_offset(text, index))))
     }
 
+    /// Right click: the caret moves there unless it lands in the selection,
+    /// so the context menu acts on what was clicked.
+    fn right_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut App) -> Outcome {
+        window.focus(&self.focus, cx);
+        let Some((pane, Ok(offset))) = self.hit(event.position, window, cx) else { return Outcome::Ignored };
+        if let Some((p, sel)) = self.caret {
+            if p == pane && !sel.is_empty() && sel.range().contains(&offset) {
+                return Outcome::Ignored;
+            }
+        }
+        self.history.break_run();
+        self.caret = Some((pane, Selection::caret(offset)));
+        self.goal = None;
+        Outcome::Moved
+    }
+
+    /// The caret pane's selected lines (the caret's line when nothing is
+    /// selected; a selection ending at a line start leaves that line out).
+    pub fn selected_lines(&self) -> Option<(usize, Range<usize>)> {
+        let (pane, sel) = self.caret?;
+        let buffer = &self.buffers[pane];
+        let range = sel.range();
+        let first = buffer.line_of(range.start);
+        let mut last = buffer.line_of(range.end);
+        if !sel.is_empty() && last > first && buffer.line_range(last).start == range.end {
+            last -= 1;
+        }
+        Some((pane, first..last + 1))
+    }
+
+    fn select_all(&mut self) -> Outcome {
+        let pane = self.caret.map(|c| c.0).or(self.editable).unwrap_or(0);
+        self.caret = Some((pane, Selection { anchor: 0, head: self.buffers[pane].text().len() }));
+        Outcome::Moved
+    }
+
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut App) -> Outcome {
         window.focus(&self.focus, cx);
         let Some((pane, target)) = self.hit(event.position, window, cx) else { return Outcome::Ignored };
@@ -493,10 +529,7 @@ impl<T: Clone + Default> TextPanes<T> {
             ("end", false) => self.set_head(b.line_range(b.line_of(sel.head)).end, shift, false),
             ("home", true) => self.set_head(0, shift, false),
             ("end", true) => self.set_head(b.text().len(), shift, false),
-            ("a", true) => {
-                self.caret = Some((pane, Selection { anchor: 0, head: b.text().len() }));
-                Outcome::Moved
-            }
+            ("a", true) => self.select_all(),
             ("c", true) | ("insert", true) => {
                 self.copy(false, cx);
                 Outcome::Moved
@@ -1103,6 +1136,13 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                 }),
             )
             .on_mouse_up(MouseButton::Left, cx.listener(|view: &mut V, _, _, _| view.panes().selecting = false))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|view: &mut V, e: &MouseDownEvent, window, cx| {
+                    let outcome = view.panes().right_down(e, window, cx);
+                    settle(view, outcome, false, window, cx);
+                }),
+            )
             .children(children)
             .into_any_element()
     }
@@ -1248,6 +1288,27 @@ impl<T> TextPanes<T> {
             layout.hide_numbers = !settings.show_line_numbers;
         }
     }
+}
+
+/// The editor part of a pane's context menu: Cut, Copy, Paste, Select All.
+pub fn edit_menu<V: PaneHost>(menu: gpui_kit::component::menu::PopupMenu, entity: &gpui_kit::Entity<V>, cx: &App) -> gpui_kit::component::menu::PopupMenu {
+    use gpui_kit::component::menu::PopupMenuItem;
+    let panes = entity.read(cx).text_panes();
+    let selected = panes.caret.is_some_and(|c| !c.1.is_empty());
+    let editable = panes.caret_editable();
+    let run = |f: fn(&mut TextPanes<V::Extra>, &mut App) -> Outcome| {
+        let entity = entity.clone();
+        move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+            entity.update(cx, |view, cx| {
+                let outcome = f(view.panes(), cx);
+                settle(view, outcome, false, window, cx);
+            })
+        }
+    };
+    menu.item(PopupMenuItem::new("Cut").disabled(!(selected && editable)).on_click(run(|p, cx| p.copy(true, cx))))
+        .item(PopupMenuItem::new("Copy").disabled(!selected).on_click(run(|p, cx| p.copy(false, cx))))
+        .item(PopupMenuItem::new("Paste").disabled(!editable).on_click(run(|p, cx| p.paste(cx))))
+        .item(PopupMenuItem::new("Select All").on_click(run(|p, _| p.select_all())))
 }
 
 /// The diff and merge viewers' gear menu. `align` offers Align Changes

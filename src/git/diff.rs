@@ -246,17 +246,16 @@ pub fn compute(old: &str, new: &str, options: DiffOptions) -> FileDiff {
 /// line's own terminator. `to_new` takes the new side's lines into `old`;
 /// otherwise the old side's lines go back into `new`.
 pub fn splice_hunk(old: &str, new: &str, hunk: &Hunk, to_new: bool) -> String {
-    let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
-    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
-    let (base, base_range, source, source_range) = if to_new {
-        (&old_lines, hunk.old.clone(), &new_lines, hunk.new.clone())
-    } else {
-        (&new_lines, hunk.new.clone(), &old_lines, hunk.old.clone())
-    };
-    let pieces = base[..base_range.start.min(base.len())]
-        .iter()
-        .chain(source[source_range.start.min(source.len())..source_range.end.min(source.len())].iter())
-        .chain(base[base_range.end.min(base.len())..].iter());
+    let (base, base_range, source, source_range) = if to_new { (old, hunk.old.clone(), new, hunk.new.clone()) } else { (new, hunk.new.clone(), old, hunk.old.clone()) };
+    let source: Vec<&str> = source.split_inclusive('\n').collect();
+    splice_lines(base, base_range, &source[source_range.start.min(source.len())..source_range.end.min(source.len())])
+}
+
+/// `base` with the lines in `range` replaced by `lines` (each with its own
+/// terminator, the last one maybe without).
+fn splice_lines(base: &str, range: Range<usize>, lines: &[&str]) -> String {
+    let base: Vec<&str> = base.split_inclusive('\n').collect();
+    let pieces = base[..range.start.min(base.len())].iter().chain(lines.iter()).chain(base[range.end.min(base.len())..].iter());
     let mut out = String::new();
     for piece in pieces {
         // A last line without a newline that is no longer last gets one.
@@ -286,20 +285,45 @@ pub fn commit_hunks(old: &str, new: &str) -> Vec<Hunk> {
     compute(old, new, DiffOptions { ignore_whitespace: IgnoreWhitespace::None, highlight: HighlightMode::None, context: None }).hunks
 }
 
+/// Identifies one line of a change block left out of a commit ("Exclude
+/// Lines from Commit"): the block's signature, its side and its offset.
+pub fn line_id(signature: u64, new_side: bool, offset: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (signature, new_side, offset).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Which lines of a block are left out of the commit, per side. A block
+/// excluded as a whole has every line excluded.
+pub fn excluded_lines(signature: u64, hunk: &Hunk, excluded: &std::collections::HashSet<u64>) -> (Vec<bool>, Vec<bool>) {
+    let all = excluded.contains(&signature);
+    let side = |new_side: bool, len: usize| (0..len).map(|k| all || excluded.contains(&line_id(signature, new_side, k))).collect();
+    (side(false, hunk.old.len()), side(true, hunk.new.len()))
+}
+
 /// Partial commit: `old` with every change block of `new` applied except the
-/// excluded ones. `None` when nothing is excluded.
+/// excluded ones; a block with some lines excluded keeps the deletions and
+/// leaves out the insertions those lines are. `None` when nothing is excluded.
 pub fn partial_content(old: &str, new: &str, excluded: &std::collections::HashSet<u64>) -> Option<String> {
-    let hunks = commit_hunks(old, new);
-    let keep: Vec<&Hunk> = hunks.iter().filter(|h| !excluded.contains(&hunk_signature(old, new, h))).collect();
-    if keep.len() == hunks.len() {
-        return None;
-    }
+    let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
+    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
+    let mut partial = false;
     // Bottom-up, so earlier line ranges stay valid.
     let mut content = old.to_owned();
-    for hunk in keep.into_iter().rev() {
-        content = splice_hunk(&content, new, hunk, true);
+    for hunk in commit_hunks(old, new).iter().rev() {
+        let (old_out, new_out) = excluded_lines(hunk_signature(old, new, hunk), hunk, excluded);
+        if !old_out.contains(&true) && !new_out.contains(&true) {
+            content = splice_hunk(&content, new, hunk, true);
+            continue;
+        }
+        partial = true;
+        let kept = hunk.old.clone().zip(&old_out).filter(|(_, out)| **out).map(|(i, _)| old_lines[i]);
+        let added = hunk.new.clone().zip(&new_out).filter(|(_, out)| !**out).map(|(i, _)| new_lines[i]);
+        let lines: Vec<&str> = kept.chain(added).collect();
+        content = splice_lines(&content, hunk.old.clone(), &lines);
     }
-    Some(content)
+    partial.then_some(content)
 }
 
 /// What a diff gutter arrow does with one change block.
@@ -603,6 +627,18 @@ mod tests {
         let excluded: std::collections::HashSet<u64> = [hunk_signature(old, new, &hunks[1])].into();
         assert_eq!(partial_content(old, new, &excluded).unwrap(), "A\nb\nc\nd\ne\nf\ng\nh\n");
         assert_eq!(partial_content(old, new, &Default::default()), None);
+    }
+
+    #[test]
+    fn commits_only_included_lines() {
+        let old = "a\nb\nc\n";
+        let new = "a\nB\nX\nc\n";
+        let hunk = commit_hunks(old, new).remove(0);
+        let signature = hunk_signature(old, new, &hunk);
+        // Keep the deletion of "b" out, and the inserted "X".
+        let excluded: std::collections::HashSet<u64> = [line_id(signature, false, 0), line_id(signature, true, 1)].into();
+        assert_eq!(partial_content(old, new, &excluded).unwrap(), "a\nb\nB\nc\n");
+        assert_eq!(excluded_lines(signature, &hunk, &excluded), (vec![true], vec![false, true]));
     }
 
     #[test]
