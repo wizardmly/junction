@@ -222,6 +222,15 @@ pub fn open(model: Entity<RepoModel>, hash: String, window: &mut Window, cx: &mu
         return notify("The commit isn't on the current branch".into(), window, cx);
     }
     let base = rebase::base_of(&repository, &hash);
+    open_onto(model, base, window, cx);
+}
+
+/// Interactive rebase of the current branch onto `base` (a commit or branch).
+pub fn open_onto(model: Entity<RepoModel>, base: String, window: &mut Window, cx: &mut App) {
+    let Some(repository) = model.read(cx).repository().cloned() else { return };
+    let notify = |message: String, window: &mut Window, cx: &mut App| {
+        window.push_notification(gpui_kit::component::notification::Notification::warning(message), cx);
+    };
     let commits = match rebase::commits_since(&repository, &base) {
         Ok(commits) if !commits.is_empty() => commits,
         Ok(_) => return notify("Nothing to rebase".into(), window, cx),

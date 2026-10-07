@@ -335,6 +335,16 @@ impl Workspace {
                                 menu.item(PopupMenuItem::new("Open Repository…").on_click(move |_, window, cx| {
                                     open.update(cx, |this, cx| this.open_repository(window, cx))
                                 }))
+                                .separator()
+                                .item(PopupMenuItem::new("Merge…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| dialogs::merge(entity.read(cx).model.clone(), window, cx)
+                                }))
+                                .item(PopupMenuItem::new("Rebase…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| dialogs::rebase(entity.read(cx).model.clone(), window, cx)
+                                }))
+                                .separator()
                                 .item(PopupMenuItem::new("Settings…").on_click(|_, window, cx| dialogs::settings(window, cx)))
                                 .separator()
                                 .item(PopupMenuItem::new("Light Theme").checked(!dark).on_click(|_, window, cx| {

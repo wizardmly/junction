@@ -711,3 +711,169 @@ pub fn conflicts(model: Entity<RepoModel>, open_merge: OpenMerge, window: &mut W
             .footer(DialogFooter::new().child(DialogClose::new().child(Button::new("conflicts-close").label("Close").outline())))
     });
 }
+
+/// A branch name input with a dropdown of local and remote branches.
+fn branch_picker(id: &'static str, input: &Entity<InputState>, model: &Entity<RepoModel>, cx: &App) -> impl gpui_kit::IntoElement {
+    use gpui_kit::component::{h_flex, menu::{DropdownMenu as _, PopupMenuItem}};
+    let refs = model.read(cx).refs().clone();
+    let current = refs.current_branch.clone();
+    let input_for_menu = input.clone();
+    h_flex()
+        .gap_1()
+        .child(div().flex_1().child(Input::new(input)))
+        .child(Button::new(id).outline().small().label("Branches").dropdown_menu(move |mut menu, _, _| {
+            for reference in refs.local_branches().chain(refs.remote_branches()) {
+                if Some(&reference.name) == current.as_ref() {
+                    continue;
+                }
+                let name = reference.name.clone();
+                let input = input_for_menu.clone();
+                menu = menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, window, cx| {
+                    input.update(cx, |state, cx| state.set_value(name.clone(), window, cx));
+                }));
+            }
+            menu
+        }))
+}
+
+/// Git › Merge…: the branch to merge into the current one, and git's merge options.
+pub fn merge(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
+    let branch = cx.new(|cx| InputState::new(window, cx).placeholder("Branch to merge"));
+    let message = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message (optional)"));
+    // --no-ff, --ff-only, --squash, --no-commit, --no-verify, --allow-unrelated-histories
+    let flags = Rc::new(std::cell::RefCell::new([false; 6]));
+    let current = model.read(cx).refs().current_branch.clone().unwrap_or_else(|| "HEAD".into());
+    let focus_target = branch.clone();
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let secondary = cx.palette().text_secondary;
+        let set = flags.borrow().clone();
+        let options = ["--no-ff", "--ff-only", "--squash", "--no-commit", "--no-verify", "--allow-unrelated-histories"];
+        let mut grid = v_flex().gap_1();
+        for (ix, option) in options.iter().enumerate() {
+            let flags = flags.clone();
+            grid = grid.child(Checkbox::new(SharedString::from(format!("merge-opt-{ix}"))).label(*option).checked(set[ix]).on_change(
+                move |v, window, _| {
+                    let mut f = flags.borrow_mut();
+                    f[ix] = *v;
+                    // --ff-only excludes --no-ff and --squash, as IntelliJ greys them out.
+                    if ix == 1 && *v {
+                        f[0] = false;
+                        f[2] = false;
+                    }
+                    if (ix == 0 || ix == 2) && *v {
+                        f[1] = false;
+                    }
+                    window.refresh();
+                },
+            ));
+        }
+        let (branch_ok, message_ok, flags_ok, model_ok) = (branch.clone(), message.clone(), flags.clone(), model.clone());
+        dialog
+            .title(format!("Merge into {current}"))
+            .w(px(480.))
+            .child(
+                v_flex()
+                    .gap_3()
+                    .child(branch_picker("merge-branches", &branch, &model, cx))
+                    .child(div().text_sm().text_color(secondary).child("Options"))
+                    .child(grid)
+                    .child(Input::new(&message)),
+            )
+            .footer(footer("Merge"))
+            .on_ok(move |_, _, cx| {
+                let target = branch_ok.read(cx).value().trim().to_owned();
+                if target.is_empty() {
+                    return false;
+                }
+                let message = message_ok.read(cx).value().trim().to_owned();
+                let set = flags_ok.borrow().clone();
+                // Like IntelliJ's smart merge: local changes are stashed and restored.
+                let mut args = vec!["merge".to_owned(), "--autostash".to_owned()];
+                args.extend(options.iter().zip(set).filter(|(_, on)| *on).map(|(o, _)| o.to_string()));
+                if !message.is_empty() {
+                    args.push("-m".into());
+                    args.push(message);
+                }
+                args.push(target.clone());
+                model_ok.update(cx, |m, cx| {
+                    m.run_operation("Merge", move |repo| {
+                        repo.run(&args)?;
+                        Ok(format!("Merged {target}"))
+                    }, cx)
+                });
+                true
+            })
+    });
+    focus_input(&focus_target, window, cx);
+}
+
+/// Git › Rebase…: onto a branch, with --onto / --interactive / --rebase-merges.
+pub fn rebase(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
+    let onto = cx.new(|cx| InputState::new(window, cx).placeholder("Branch or commit to rebase onto"));
+    let upstream = cx.new(|cx| InputState::new(window, cx).placeholder("Upstream (for --onto: commits after it are moved)"));
+    // --interactive, --rebase-merges, --onto, --keep-empty, --autostash
+    let flags = Rc::new(std::cell::RefCell::new([false, false, false, false, true]));
+    let current = model.read(cx).refs().current_branch.clone().unwrap_or_else(|| "HEAD".into());
+    let focus_target = onto.clone();
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let set = flags.borrow().clone();
+        let labels = ["--interactive", "--rebase-merges", "--onto", "--keep-empty", "--autostash"];
+        let mut grid = v_flex().gap_1();
+        for (ix, label) in labels.iter().enumerate() {
+            let flags = flags.clone();
+            grid = grid.child(Checkbox::new(SharedString::from(format!("rebase-opt-{ix}"))).label(*label).checked(set[ix]).on_change(
+                move |v, window, _| {
+                    flags.borrow_mut()[ix] = *v;
+                    window.refresh();
+                },
+            ));
+        }
+        let (onto_ok, upstream_ok, flags_ok, model_ok) = (onto.clone(), upstream.clone(), flags.clone(), model.clone());
+        dialog
+            .title(format!("Rebase {current}"))
+            .w(px(480.))
+            .child(
+                v_flex()
+                    .gap_3()
+                    .child(branch_picker("rebase-branches", &onto, &model, cx))
+                    .child(grid)
+                    .children(set[2].then(|| Input::new(&upstream))),
+            )
+            .footer(footer("Rebase"))
+            .on_ok(move |_, window, cx| {
+                let target = onto_ok.read(cx).value().trim().to_owned();
+                if target.is_empty() {
+                    return false;
+                }
+                let set = flags_ok.borrow().clone();
+                if set[0] && !set[2] {
+                    // Interactive: our own editor instead of git's todo file.
+                    crate::ui::rebase_dialog::open_onto(model_ok.clone(), target, window, cx);
+                    return true;
+                }
+                let mut args = vec!["rebase".to_owned()];
+                for (ix, flag) in ["", "--rebase-merges", "", "--keep-empty", "--autostash"].iter().enumerate() {
+                    if set[ix] && !flag.is_empty() {
+                        args.push(flag.to_string());
+                    }
+                }
+                if set[2] {
+                    let upstream = upstream_ok.read(cx).value().trim().to_owned();
+                    if upstream.is_empty() {
+                        return false;
+                    }
+                    args.extend(["--onto".to_owned(), target.clone(), upstream]);
+                } else {
+                    args.push(target.clone());
+                }
+                model_ok.update(cx, |m, cx| {
+                    m.run_operation("Rebase", move |repo| {
+                        repo.run(&args)?;
+                        Ok(format!("Rebased onto {target}"))
+                    }, cx)
+                });
+                true
+            })
+    });
+    focus_input(&focus_target, window, cx);
+}

@@ -178,7 +178,22 @@ pub fn last_commit_message(repository: &Repository) -> Option<String> {
 }
 
 /// Checks out a local branch, or creates a tracking branch for a remote one.
+/// If local changes are in the way, does IntelliJ's "Smart Checkout": stash,
+/// check out, and restore the changes.
 pub fn checkout(repository: &Repository, reference: &super::RefName) -> Result<()> {
+    match checkout_plain(repository, reference) {
+        Err(error) if error.to_string().contains("would be overwritten by checkout") => {
+            repository.run(["stash", "push", "--include-untracked", "-m", "GitGlass smart checkout"])?;
+            let result = checkout_plain(repository, reference);
+            // Restore even if the checkout failed; a conflict leaves the stash for the Stash tab.
+            repository.run(["stash", "pop"])?;
+            result
+        }
+        result => result,
+    }
+}
+
+fn checkout_plain(repository: &Repository, reference: &super::RefName) -> Result<()> {
     match reference.kind {
         super::RefKind::RemoteBranch => {
             let local = reference.branch_without_remote();
