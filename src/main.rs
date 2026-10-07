@@ -1,6 +1,10 @@
 //! GitGlass: a desktop Git client recreating the Android Studio / IntelliJ
 //! Git experience with a translucent "glass" window.
 
+// A GUI app on Windows: no console window in release builds.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod askpass;
 mod assets;
 mod git;
 mod model;
@@ -17,6 +21,10 @@ use crate::model::RepoModel;
 use crate::ui::workspace::Workspace;
 
 fn main() {
+    if let Some(prompt) = askpass::requested_prompt() {
+        askpass::run(prompt);
+        return;
+    }
     let path = std::env::args().nth(1).map(PathBuf::from).or_else(|| std::env::current_dir().ok());
 
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {

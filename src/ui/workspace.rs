@@ -103,11 +103,50 @@ impl Workspace {
                     if message.is_empty() && !*error {
                         return;
                     }
-                    let notification = if *error {
-                        Notification::error(message.clone()).title(title.clone())
+                    let entity = cx.entity();
+                    let mut notification = if *error {
+                        // A short summary; the full output is in the Console tab.
+                        let detail = message.split_once(" failed: ").map_or(message.as_str(), |(_, rest)| rest);
+                        let summary: Vec<&str> = detail.lines().filter(|l| !l.trim().is_empty()).take(2).collect();
+                        Notification::error(summary.join("\n")).title(title.clone())
                     } else {
                         Notification::success(message.clone()).title(title.clone())
                     };
+                    // IntelliJ's balloon actions: the obvious next step.
+                    if message.starts_with("Push rejected") {
+                        notification = notification.action(move |_, _, _| {
+                            let entity = entity.clone();
+                            Button::new("notify-update").label("Update Project…").small().primary().on_click(move |_, window, cx| {
+                                let model = entity.read(cx).model.clone();
+                                dialogs::update_project(model, window, cx);
+                            })
+                        });
+                    } else if *error {
+                        notification = notification.action(move |_, _, _| {
+                            let entity = entity.clone();
+                            Button::new("notify-details").label("Show Details").small().outline().on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.show_git = true;
+                                    this.bottom_tab = BottomTab::Console;
+                                    cx.notify();
+                                })
+                            })
+                        });
+                    } else if title == "Commit" {
+                        notification = notification.action(move |_, _, _| {
+                            let entity = entity.clone();
+                            Button::new("notify-view").label("View Commit").small().outline().on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.show_git = true;
+                                    this.bottom_tab = BottomTab::Log;
+                                    let head = this.model.read(cx).refs().head_commit.clone();
+                                    this.model.update(cx, |m, cx| m.select_hash(head, cx));
+                                    cx.notify();
+                                })
+                            })
+                        })
+                        .autohide(true);
+                    }
                     window.push_notification(notification, cx);
                 }
             }),

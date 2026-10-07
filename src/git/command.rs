@@ -46,11 +46,24 @@ pub struct Repository {
     console: GitConsole,
 }
 
+/// A git process that, on Windows, doesn't flash a console window.
+fn git_command(executable: &Path) -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut command = Command::new(executable);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 impl Repository {
     /// Finds the repository containing `path`.
     pub fn discover(path: &Path, console: GitConsole) -> Result<Self> {
         let executable = PathBuf::from("git");
-        let output = Command::new(&executable)
+        let output = git_command(&executable)
             .arg("-C")
             .arg(path)
             .args(["rev-parse", "--show-toplevel", "--absolute-git-dir"])
@@ -98,8 +111,9 @@ impl Repository {
     {
         let args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_owned()).collect();
         let started = Instant::now();
-        let mut child = Command::new(&self.executable)
+        let mut child = git_command(&self.executable)
             .current_dir(&self.root)
+            .envs(crate::askpass::git_env())
             // Stable, parseable output regardless of the user's config.
             .args(["-c", "core.quotepath=false", "-c", "color.ui=false", "-c", "log.showSignature=false"])
             .args(&args)
