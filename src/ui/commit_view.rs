@@ -800,7 +800,7 @@ fn changelist_menu(
 }
 
 impl Render for CommitView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let staging = self.staging;
         let by_directory = Settings::get(cx).commit_group_by_directory;
@@ -1199,7 +1199,25 @@ impl Render for CommitView {
                                     }),
                             ),
                     )
-                    .child(Textarea::new(&self.message).h(px(110.)))
+                    .child({
+                        // The commit message uses the editor font with a right margin
+                        // line at the subject limit, as IntelliJ's commit editor does.
+                        let mono = gpui_kit::component::ActiveTheme::theme(&**cx).mono_font_family.clone();
+                        let font_size = gpui_kit::rems(0.875).to_pixels(window.rem_size());
+                        let font = gpui_kit::font(mono.clone());
+                        let advance = window
+                            .text_system()
+                            .advance(window.text_system().resolve_font(&font), font_size, 'm')
+                            .map(|size| size.width)
+                            .unwrap_or(px(7.));
+                        let margin = px(12.) + advance * Settings::get(cx).commit_subject_limit as f32;
+                        div()
+                            .relative()
+                            .overflow_hidden()
+                            .font_family(mono)
+                            .child(Textarea::new(&self.message).h(px(110.)))
+                            .child(div().absolute().top(px(4.)).bottom(px(4.)).left(margin).w(px(1.)).bg(palette.border))
+                    })
                     .child(
                         h_flex()
                             .gap_2()

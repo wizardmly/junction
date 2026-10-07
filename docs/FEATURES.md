@@ -101,7 +101,7 @@
 | 多个 Changelist：新建、移动文件到、设为活动 | M4 | ✅（New / Edit / Delete / Set Active；Move to Another Changelist；活动列表粗体，新改动进入活动列表） |
 | Staging 模式（启用暂存区）：Staged / Unstaged 两棵树，Stage/Unstage 按钮 | M2 | ✅ |
 | 部分提交：按 chunk / 按行勾选（diff 中的复选框） | M4 | ✅（changelist 模式：diff 中每个 chunk 有复选框，提交时用临时 index 只提交勾选的 chunk；暂存区模式按 chunk Stage / Unstage） |
-| 提交信息编辑器：拼写检查、右边距线、首行长度提示、提交信息历史（`Ctrl+M`） | M1/M3 | 🟡（缺拼写检查、右边距线） |
+| 提交信息编辑器：拼写检查、右边距线、首行长度提示、提交信息历史（`Ctrl+M`） | M1/M3 | 🟡（等宽字体、右边距线、首行长度提示、Ctrl+M 历史；缺拼写检查） |
 | Amend 复选框（自动载入上次提交信息） | M1 | ✅ |
 | Commit / Commit and Push… | M1 | 🟡 |
 | 提交选项：作者、Sign-off、GPG 签名、运行 Git hooks、清理 | M3 | ✅ |
