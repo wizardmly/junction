@@ -39,6 +39,20 @@ pub fn format_date(unix_seconds: i64) -> String {
     }
 }
 
+/// "Just now", "5 minutes ago", "3 hours ago", "2 days ago", then the date
+/// (View Options › relative dates).
+pub fn format_relative_date(unix_seconds: i64) -> String {
+    let elapsed = Local::now().timestamp() - unix_seconds;
+    let plural = |n: i64, unit: &str| format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" });
+    match elapsed {
+        ..60 => "Just now".into(),
+        60..3600 => plural(elapsed / 60, "minute"),
+        3600..86_400 => plural(elapsed / 3600, "hour"),
+        86_400..604_800 => plural(elapsed / 86_400, "day"),
+        _ => format_date(unix_seconds),
+    }
+}
+
 pub fn format_full_date(unix_seconds: i64) -> String {
     Local
         .timestamp_opt(unix_seconds, 0)

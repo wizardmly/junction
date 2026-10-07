@@ -2,6 +2,8 @@
 //! graph, and the changes + details pane for the selected commit.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::{
@@ -25,6 +27,7 @@ use gpui_kit::{
 };
 
 use crate::git::{Commit, FileChangeKind, LogFilter, RefKind, RefName};
+use crate::settings::Settings;
 use crate::model::{RepoEvent, RepoModel};
 use crate::theme::ActivePalette as _;
 use crate::ui::common::{self, DIR_PREFIX, FILE_PREFIX, ROW_HEIGHT, tool_button};
@@ -77,7 +80,9 @@ pub struct LogView {
     last_branch_selection: Option<SharedString>,
     show_branches: bool,
     show_details: bool,
-    show_hash: bool,
+    /// Commits reachable from HEAD among the loaded ones, for the Current
+    /// Branch / Not Merged highlighters; keyed by the commit list and HEAD.
+    head_reachable: Option<(usize, Option<String>, Rc<HashSet<String>>)>,
     /// Commits selected besides the model's selected (lead) commit, by
     /// Ctrl/Cmd-click or Shift-click.
     extra_selection: HashSet<String>,
@@ -162,7 +167,7 @@ impl LogView {
             last_branch_selection: None,
             show_branches: true,
             show_details: true,
-            show_hash: false,
+            head_reachable: None,
             extra_selection: HashSet::new(),
             anchor: None,
             _search_debounce: None,
@@ -527,7 +532,12 @@ impl LogView {
             many => format!("Branch: {} selected", many.len()),
         };
         let user_label = filter.author.as_ref().map_or("User".to_owned(), |a| format!("User: {a}"));
-        let date_label = filter.since.as_ref().map_or("Date".to_owned(), |s| format!("Date: since {s}"));
+        let date_label = match (&filter.since, &filter.until) {
+            (Some(since), Some(until)) => format!("Date: {since} – {until}"),
+            (Some(since), None) => format!("Date: since {since}"),
+            (None, Some(until)) => format!("Date: until {until}"),
+            (None, None) => "Date".to_owned(),
+        };
         let entity = cx.entity();
 
         let filter_button = |id: &'static str, label: String, active: bool| {
@@ -546,11 +556,33 @@ impl LogView {
             .border_b_1()
             .border_color(palette.border)
             .child(
-                div().w(px(220.)).child(
+                div().w(px(260.)).child(
                     Input::new(&self.search)
                         .xsmall()
                         .cleanable(true)
-                        .prefix(Icon::new(IconName::Search).xsmall().text_color(palette.text_secondary)),
+                        .prefix(Icon::new(IconName::Search).xsmall().text_color(palette.text_secondary))
+                        .suffix(
+                            h_flex()
+                                .gap_0p5()
+                                .child(
+                                    Button::new("search-case")
+                                        .ghost()
+                                        .xsmall()
+                                        .label("Cc")
+                                        .tooltip("Match Case")
+                                        .selected(filter.match_case)
+                                        .on_click(cx.listener(|this, _, _, cx| this.update_filter(cx, |f| f.match_case = !f.match_case))),
+                                )
+                                .child(
+                                    Button::new("search-regex")
+                                        .ghost()
+                                        .xsmall()
+                                        .label(".*")
+                                        .tooltip("Regex")
+                                        .selected(filter.regex)
+                                        .on_click(cx.listener(|this, _, _, cx| this.update_filter(cx, |f| f.regex = !f.regex))),
+                                ),
+                        ),
                 ),
             )
             .child(filter_button("filter-branch", branch_label, !filter.branches.is_empty()).dropdown_menu({
@@ -621,7 +653,7 @@ impl LogView {
                     menu.max_h(px(420.))
                 }
             }))
-            .child(filter_button("filter-date", date_label, filter.since.is_some()).dropdown_menu({
+            .child(filter_button("filter-date", date_label, filter.since.is_some() || filter.until.is_some()).dropdown_menu({
                 let entity = entity.clone();
                 let current = filter.since.clone();
                 move |mut menu, _, _| {
@@ -636,27 +668,43 @@ impl LogView {
                         let since = since.map(str::to_owned);
                         menu = menu.item(PopupMenuItem::new(label).checked(current == since).on_click(move |_, _, cx| {
                             let since = since.clone();
-                            entity.update(cx, |this, cx| this.update_filter(cx, |f| f.since = since));
+                            entity.update(cx, |this, cx| this.update_filter(cx, |f| {
+                                f.since = since;
+                                f.until = None;
+                            }));
                         }));
                     }
-                    menu
+                    let entity = entity.clone();
+                    menu.separator().item(PopupMenuItem::new("Select…").on_click(move |_, window, cx| {
+                        entity.update(cx, |this, cx| this.select_date_range(window, cx))
+                    }))
                 }
             }))
-            .when(!filter.paths.is_empty(), |el| {
+            .child({
                 let label = match filter.paths.as_slice() {
+                    [] => "Paths".to_owned(),
                     [one] => format!("Path: {one}"),
                     many => format!("Paths: {}", many.len()),
                 };
-                el.child(
-                    Button::new("filter-path")
-                        .ghost()
-                        .xsmall()
-                        .selected(true)
-                        .label(label)
-                        .icon(Icon::new(IconName::Close).xsmall())
-                        .tooltip("Clear the path filter")
-                        .on_click(cx.listener(|this, _, _, cx| this.update_filter(cx, |f| f.paths.clear()))),
-                )
+                let entity = entity.clone();
+                let current = filter.paths.clone();
+                filter_button("filter-path", label, !filter.paths.is_empty()).dropdown_menu(move |mut menu, _, _| {
+                    let clear = entity.clone();
+                    menu = menu.item(PopupMenuItem::new("All").checked(current.is_empty()).on_click(move |_, _, cx| {
+                        clear.update(cx, |this, cx| this.update_filter(cx, |f| f.paths.clear()))
+                    }));
+                    let pick = entity.clone();
+                    menu = menu.item(PopupMenuItem::new("Select Folders…").on_click(move |_, _, cx| {
+                        pick.update(cx, |this, cx| this.select_paths(cx))
+                    }));
+                    if !current.is_empty() {
+                        menu = menu.separator();
+                        for path in &current {
+                            menu = menu.item(PopupMenuItem::new(path.clone()).checked(true));
+                        }
+                    }
+                    menu
+                })
             })
             .child(div().flex_1())
             .when(model.is_loading(), |el| {
@@ -689,11 +737,23 @@ impl LogView {
                     .tooltip("View Options")
                     .dropdown_menu({
                         let entity = entity.clone();
-                        let show_hash = self.show_hash;
+                        let log = Settings::get(cx).log.clone();
                         let collapse = self.model.read(cx).collapse_linear();
                         move |menu, _, _| {
-                            let entity = entity.clone();
                             let collapse_entity = entity.clone();
+                            // Each toggle flips one View Options flag and reloads when it changes the order.
+                            let toggle = |label: &'static str, on: bool, set: fn(&mut crate::settings::LogSettings, bool), reload: bool| {
+                                let entity = entity.clone();
+                                PopupMenuItem::new(label).checked(on).on_click(move |_, _, cx| {
+                                    Settings::update(cx, |s| set(&mut s.log, !on));
+                                    entity.update(cx, |this, cx| {
+                                        if reload {
+                                            this.model.update(cx, |model, cx| model.reload(cx));
+                                        }
+                                        cx.notify();
+                                    });
+                                })
+                            };
                             menu.item(PopupMenuItem::new("Collapse Linear Branches").checked(collapse).on_click(
                                 move |_, _, cx| {
                                     collapse_entity.update(cx, |this, cx| {
@@ -702,18 +762,112 @@ impl LogView {
                                 },
                             ))
                             .separator()
+                            .label("Sort")
+                            .item(toggle("IntelliSort", !log.sort_by_date, |l, _| l.sort_by_date = false, true))
+                            .item(toggle("By Date", log.sort_by_date, |l, _| l.sort_by_date = true, true))
+                            .separator()
+                            .label("Highlight")
+                            .item(toggle("My Commits", log.highlight_mine, |l, v| l.highlight_mine = v, false))
+                            .item(toggle("Merge Commits", log.highlight_merges, |l, v| l.highlight_merges = v, false))
+                            .item(toggle("Current Branch", log.highlight_current_branch, |l, v| l.highlight_current_branch = v, false))
+                            .item(toggle("Not Merged into Current Branch", log.highlight_not_merged, |l, v| l.highlight_not_merged = v, false))
+                            .separator()
+                            .label("References")
+                            .item(toggle("Compact References View", log.compact_refs, |l, v| l.compact_refs = v, false))
+                            .item(toggle("Show References on the Left", log.refs_on_left, |l, v| l.refs_on_left = v, false))
+                            .separator()
                             .label("Show Columns")
-                            .item(PopupMenuItem::new("Hash").checked(show_hash).on_click(
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.show_hash = !this.show_hash;
-                                        cx.notify();
-                                    })
-                                },
-                            ))
+                            .item(toggle("Author", log.show_author, |l, v| l.show_author = v, false))
+                            .item(toggle("Date", log.show_date, |l, v| l.show_date = v, false))
+                            .item(toggle("Hash", log.show_hash, |l, v| l.show_hash = v, false))
+                            .separator()
+                            .item(toggle("Relative Dates", log.relative_dates, |l, v| l.relative_dates = v, false))
                         }
                     }),
             )
+    }
+
+    /// Paths › Select Folders…: folders or files to limit the Log to.
+    fn select_paths(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.model.read(cx).repository().map(|r| r.root().to_path_buf()) else { return };
+        let receiver = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: true,
+            prompt: Some("Filter by Paths".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else { return };
+            let relative: Vec<String> = paths
+                .iter()
+                .filter_map(|p| p.strip_prefix(&root).ok())
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .map(|p| if p.is_empty() { ".".to_owned() } else { p })
+                .collect();
+            if relative.is_empty() {
+                return;
+            }
+            this.update(cx, |this, cx| this.update_filter(cx, |f| f.paths = relative)).ok();
+        })
+        .detach();
+    }
+
+    /// Date › Select…: a from / to range (`--since` / `--until`).
+    fn select_date_range(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let filter = self.model.read(cx).filter().clone();
+        let from = cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DD").default_value(filter.since.clone().unwrap_or_default()));
+        let to = cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DD").default_value(filter.until.clone().unwrap_or_default()));
+        let entity = cx.entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (from_ok, to_ok, entity) = (from.clone(), to.clone(), entity.clone());
+            dialog
+                .title("Select Period")
+                .w(px(360.))
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(h_flex().gap_2().child(div().w(px(40.)).text_sm().child("From:")).child(div().flex_1().child(Input::new(&from).small())))
+                        .child(h_flex().gap_2().child(div().w(px(40.)).text_sm().child("To:")).child(div().flex_1().child(Input::new(&to).small()))),
+                )
+                .footer(dialogs::footer("OK"))
+                .on_ok(move |_, _, cx| {
+                    let value = |input: &Entity<InputState>, cx: &App| {
+                        let v = input.read(cx).value().trim().to_owned();
+                        (!v.is_empty()).then_some(v)
+                    };
+                    let (since, until) = (value(&from_ok, cx), value(&to_ok, cx));
+                    entity.update(cx, |this, cx| this.update_filter(cx, |f| {
+                        f.since = since;
+                        f.until = until;
+                    }));
+                    true
+                })
+        });
+    }
+
+    /// Hashes reachable from HEAD within the loaded log (cached per load).
+    fn head_reachable(&mut self, cx: &App) -> Rc<HashSet<String>> {
+        let model = self.model.read(cx);
+        let commits = model.commits().clone();
+        let head = model.refs().head_commit.clone();
+        let key = Arc::as_ptr(&commits) as usize;
+        if let Some((k, h, set)) = &self.head_reachable {
+            if *k == key && *h == head {
+                return set.clone();
+            }
+        }
+        let parents: HashMap<&str, &Vec<String>> = commits.iter().map(|c| (c.hash.as_str(), &c.parents)).collect();
+        let mut reachable = HashSet::new();
+        let mut stack: Vec<String> = head.iter().cloned().collect();
+        while let Some(hash) = stack.pop() {
+            if let Some(ps) = parents.get(hash.as_str()) {
+                stack.extend(ps.iter().filter(|p| !reachable.contains(*p)).cloned());
+            }
+            reachable.insert(hash);
+        }
+        let set = Rc::new(reachable);
+        self.head_reachable = Some((key, head, set.clone()));
+        set
     }
 
     fn render_rows(&mut self, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -726,8 +880,11 @@ impl LogView {
         let selected = model.selected_index();
         let extra = self.extra_selection.clone();
         let me = model.user_email().map(str::to_owned);
-        let show_hash = self.show_hash;
+        let log = Settings::get(cx).log.clone();
+        let show_hash = log.show_hash;
         let entity = cx.entity();
+        let reachable = if log.highlight_current_branch || log.highlight_not_merged { Some(self.head_reachable(cx)) } else { None };
+        let model = self.model.read(cx);
 
         range
             .filter_map(|ix| {
@@ -735,9 +892,14 @@ impl LogView {
                 let row = graph.rows.get(ix).cloned().unwrap_or_default();
                 let is_selected = selected == Some(ix) || extra.contains(&commit.hash);
                 let is_head = refs.head_commit.as_deref() == Some(commit.hash.as_str());
-                let mine = me.as_deref().is_some_and(|me| me == commit.author_email);
+                let mine = log.highlight_mine && me.as_deref().is_some_and(|me| me == commit.author_email);
                 let labels = refs.for_commit(&commit.hash);
-                let text_color = if is_selected && focused && !palette.dark { palette.text } else { palette.text };
+                let is_merge = commit.parents.len() > 1;
+                let on_head = reachable.as_ref().map(|r| r.contains(&commit.hash));
+                // Merge commits and commits not merged into HEAD are greyed, as IntelliJ's highlighters do.
+                let dim = (log.highlight_merges && is_merge) || (log.highlight_not_merged && on_head == Some(false));
+                let text_color = if dim { palette.text_secondary } else { palette.text };
+                let branch_tint = log.highlight_current_branch && on_head == Some(true);
 
                 let mut subject = h_flex()
                     .flex_1()
@@ -745,13 +907,19 @@ impl LogView {
                     .h_full()
                     .overflow_hidden()
                     .child(graph_canvas(row, &palette, is_head));
-                for label in labels.iter().take(4) {
-                    subject = subject.child(ref_label(label, refs.current_branch.as_deref(), &palette));
+                let shown = if log.compact_refs { 1 } else { 4 };
+                let mut ref_labels = h_flex().flex_shrink_0();
+                for label in labels.iter().take(shown) {
+                    ref_labels = ref_labels.child(ref_label(label, refs.current_branch.as_deref(), &palette));
                 }
-                if labels.len() > 4 {
-                    subject = subject.child(
-                        div().mr_1().text_xs().text_color(palette.text_secondary).child(format!("+{}", labels.len() - 4)),
+                if labels.len() > shown {
+                    ref_labels = ref_labels.child(
+                        div().mr_1().text_xs().text_color(palette.text_secondary).child(format!("+{}", labels.len() - shown)),
                     );
+                }
+                if log.refs_on_left {
+                    subject = subject.child(ref_labels);
+                    ref_labels = h_flex();
                 }
                 subject = subject.child(
                     div()
@@ -763,6 +931,9 @@ impl LogView {
                         .when(mine, |el| el.font_weight(FontWeight::SEMIBOLD))
                         .child(commit.subject.clone()),
                 );
+                if !log.refs_on_left && !labels.is_empty() {
+                    subject = subject.child(div().flex_1()).child(ref_labels);
+                }
                 if let Some(count) = model.hidden_below(&commit.hash) {
                     let run = commit.hash.clone();
                     let model_entity = self.model.clone();
@@ -797,6 +968,7 @@ impl LogView {
                         .pr_2()
                         .text_sm()
                         .when(is_selected, |el| el.bg(if focused { palette.selection } else { palette.selection_inactive }))
+                        .when(!is_selected && branch_tint, |el| el.bg(palette.accent.opacity(0.08)))
                         .when(!is_selected, |el| el.hover(|s| s.bg(palette.hover)))
                         .on_mouse_down(gpui_kit::MouseButton::Left, {
                             let entity = entity.clone();
@@ -826,27 +998,35 @@ impl LogView {
                         })
                         .context_menu(move |menu, window, cx| commit_menu(menu, &menu_entity, &menu_commit, window, cx))
                         .child(subject)
-                        .child(
-                            div()
-                                .w(px(150.))
-                                .flex_shrink_0()
-                                .pl_2()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .text_color(palette.text_secondary)
-                                .when(mine, |el| el.font_weight(FontWeight::SEMIBOLD))
-                                .child(commit.author_name.clone()),
-                        )
-                        .child(
-                            div()
-                                .w(px(140.))
-                                .flex_shrink_0()
-                                .pl_2()
-                                .whitespace_nowrap()
-                                .text_color(palette.text_secondary)
-                                .child(common::format_date(commit.author_time)),
-                        )
+                        .when(log.show_author, |el| {
+                            el.child(
+                                div()
+                                    .w(px(150.))
+                                    .flex_shrink_0()
+                                    .pl_2()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(palette.text_secondary)
+                                    .when(mine, |el| el.font_weight(FontWeight::SEMIBOLD))
+                                    .child(commit.author_name.clone()),
+                            )
+                        })
+                        .when(log.show_date, |el| {
+                            el.child(
+                                div()
+                                    .w(px(140.))
+                                    .flex_shrink_0()
+                                    .pl_2()
+                                    .whitespace_nowrap()
+                                    .text_color(palette.text_secondary)
+                                    .child(if log.relative_dates {
+                                        common::format_relative_date(commit.author_time)
+                                    } else {
+                                        common::format_date(commit.author_time)
+                                    }),
+                            )
+                        })
                         .when(show_hash, |el| {
                             el.child(
                                 div()
@@ -1367,6 +1547,8 @@ fn commit_menu(
     let is_head = head.as_deref() == Some(commit.hash.as_str());
     let hash = commit.hash.clone();
     let short = commit.short_hash().to_owned();
+    // The newest loaded commit that has this one as a parent.
+    let child = model.read(cx).commits().iter().find(|c| c.parents.contains(&commit.hash)).map(|c| c.hash.clone());
 
     let op = |title: &'static str, args: Vec<String>, done: String| {
         let model = model.clone();
@@ -1519,6 +1701,10 @@ fn commit_menu(
         move |_, window, cx| dialogs::new_tag(model.clone(), hash.clone(), window, cx)
     }))
     .separator()
+    .item(PopupMenuItem::new("Go to Child Commit").disabled(child.is_none() || multi).on_click({
+        let model = model.clone();
+        move |_, _, cx| model.update(cx, |m, cx| m.select_hash(child.clone(), cx))
+    }))
     .item(PopupMenuItem::new("Go to Parent Commit").disabled(commit.parents.is_empty() || multi).on_click({
         let model = model.clone();
         let parent = commit.parents.first().cloned();

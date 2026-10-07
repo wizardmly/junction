@@ -249,7 +249,8 @@ impl RepoModel {
     /// Reloads refs, the log, and working tree status in the background.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let Some(repository) = self.repository.clone() else { return };
-        let filter = self.filter.clone();
+        let mut filter = self.filter.clone();
+        filter.date_order = crate::settings::Settings::get(cx).log.sort_by_date;
         self.loading = true;
         cx.notify();
         self._reload_task = Some(cx.spawn(async move |this, cx| {

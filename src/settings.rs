@@ -40,6 +40,64 @@ pub struct Settings {
     pub git_executable: String,
     /// "Use credential helper".
     pub use_credential_helper: bool,
+    /// The Log's View Options, remembered between sessions.
+    pub log: LogSettings,
+}
+
+/// The Log's View Options: columns, references, highlighting and sorting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogSettings {
+    pub show_author: bool,
+    pub show_date: bool,
+    pub show_hash: bool,
+    /// "5 minutes ago" instead of "Today 10:15".
+    pub relative_dates: bool,
+    /// One reference label per row plus a count.
+    pub compact_refs: bool,
+    /// Reference labels before the subject (else after it, right-aligned).
+    pub refs_on_left: bool,
+    pub highlight_mine: bool,
+    pub highlight_merges: bool,
+    pub highlight_current_branch: bool,
+    pub highlight_not_merged: bool,
+    /// `--date-order` instead of IntelliSort's topological order.
+    pub sort_by_date: bool,
+}
+
+impl Default for LogSettings {
+    fn default() -> Self {
+        Self {
+            show_author: true,
+            show_date: true,
+            show_hash: false,
+            relative_dates: false,
+            compact_refs: false,
+            refs_on_left: true,
+            highlight_mine: true,
+            highlight_merges: true,
+            highlight_current_branch: false,
+            highlight_not_merged: false,
+            sort_by_date: false,
+        }
+    }
+}
+
+impl LogSettings {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 11] {
+        [
+            ("log_show_author", &mut self.show_author),
+            ("log_show_date", &mut self.show_date),
+            ("log_show_hash", &mut self.show_hash),
+            ("log_relative_dates", &mut self.relative_dates),
+            ("log_compact_refs", &mut self.compact_refs),
+            ("log_refs_on_left", &mut self.refs_on_left),
+            ("log_highlight_mine", &mut self.highlight_mine),
+            ("log_highlight_merges", &mut self.highlight_merges),
+            ("log_highlight_current_branch", &mut self.highlight_current_branch),
+            ("log_highlight_not_merged", &mut self.highlight_not_merged),
+            ("log_sort_by_date", &mut self.sort_by_date),
+        ]
+    }
 }
 
 impl Default for Settings {
@@ -59,6 +117,7 @@ impl Default for Settings {
             fetch_interval_minutes: 10,
             git_executable: String::new(),
             use_credential_helper: true,
+            log: LogSettings::default(),
         }
     }
 }
@@ -170,6 +229,11 @@ impl Settings {
                 "sign_off" => settings.sign_off = flag,
                 "run_hooks" => settings.run_hooks = flag,
                 "cleanup_message" => settings.cleanup_message = flag,
+                key if key.starts_with("log_") => {
+                    if let Some((_, field)) = settings.log.fields().into_iter().find(|(k, _)| *k == key) {
+                        *field = flag;
+                    }
+                }
                 "git_executable" => settings.git_executable = value.to_owned(),
                 "use_credential_helper" => settings.use_credential_helper = flag,
                 "fetch_interval_minutes" => {
@@ -189,7 +253,9 @@ impl Settings {
     }
 
     pub fn serialize(&self) -> String {
-        format!(
+        let mut log = self.log.clone();
+        let log_lines: String = log.fields().into_iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+        let mut text = format!(
             "theme={}\nstaging_area={}\nupdate_method={}\nauto_update_on_push_rejected={}\nwarn_crlf={}\ncommit_subject_limit={}\n\
              warn_detached_head={}\nprotected_branches={}\nsign_off={}\nrun_hooks={}\ncleanup_message={}\nfetch_interval_minutes={}\ngit_executable={}\nuse_credential_helper={}\n",
             if self.dark { "dark" } else { "light" },
@@ -209,7 +275,9 @@ impl Settings {
             self.fetch_interval_minutes,
             self.git_executable,
             self.use_credential_helper,
-        )
+        );
+        text.push_str(&log_lines);
+        text
     }
 
     pub fn load() -> Self {

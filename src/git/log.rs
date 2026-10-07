@@ -33,9 +33,13 @@ pub struct LogFilter {
     pub author: Option<String>,
     /// Passed to `--since`, e.g. `7 days ago`.
     pub since: Option<String>,
+    /// Passed to `--until` (a custom date range's end).
+    pub until: Option<String>,
     pub paths: Vec<String>,
     /// History for Selection: 1-based inclusive line range in the single path (`git log -L`).
     pub lines: Option<(usize, usize)>,
+    /// View Options › Sort by date (`--date-order`); set from the settings.
+    pub date_order: bool,
 }
 
 const FIELD: char = '\u{1f}';
@@ -49,7 +53,7 @@ pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize
         "log".into(),
         // IntelliJ's default is IntelliSort; topological order keeps branches
         // contiguous in the graph the same way.
-        "--topo-order".into(),
+        if filter.date_order { "--date-order" } else { "--topo-order" }.into(),
         "--no-color".into(),
         format!("--format={RECORD}%H{FIELD}%P{FIELD}%an{FIELD}%ae{FIELD}%at{FIELD}%s"),
     ];
@@ -65,6 +69,9 @@ pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize
     }
     if let Some(since) = &filter.since {
         args.push(format!("--since={since}"));
+    }
+    if let Some(until) = &filter.until {
+        args.push(format!("--until={until}"));
     }
     let text = filter.text.trim();
     let hash_search = !text.is_empty() && text.len() >= 4 && text.chars().all(|c| c.is_ascii_hexdigit());
@@ -95,8 +102,11 @@ pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize
         }
         _ => {
             // File History follows renames, like IntelliJ's.
-            if filter.paths.len() == 1 {
-                args.push("--follow".into());
+            // (`--follow` only works for a single file, not a folder.)
+            if let [path] = filter.paths.as_slice() {
+                if !repository.root().join(path).is_dir() {
+                    args.push("--follow".into());
+                }
             }
             args.push("--".into());
             args.extend(filter.paths.iter().cloned());

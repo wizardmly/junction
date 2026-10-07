@@ -37,26 +37,26 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | 提交图（彩色泳道、合并线、长边折叠为箭头） | M1 | ✅ |
-| 列：Subject（含分支/标签标签）、Author、Date、Hash；列可显示/隐藏、可拖宽 | M1 | 🟡 |
-| 引用标签：本地分支、远程分支、标签、HEAD；左/右侧显示；紧凑引用视图 | M1 | 🟡 |
+| 列：Subject（含分支/标签标签）、Author、Date、Hash；列可显示/隐藏、可拖宽 | M1 | 🟡（View Options › Show Columns：Author / Date / Hash 显示隐藏并记住；拖宽未做） |
+| 引用标签：本地分支、远程分支、标签、HEAD；左/右侧显示；紧凑引用视图 | M1 | ✅（本地/远程/标签/HEAD 标签；View Options：Compact References View、Show References on the Left） |
 | 虚拟滚动，几十万提交流畅 | M1 | ✅ |
 | 分段加载（先加载最近的，滚动时加载更多） | M2 | ✅（先 1000 条，其余后台加载） |
 | 多选（Shift/Ctrl） | M2 | ✅（多选后可 Cherry-Pick / Revert / 复制哈希） |
-| 高亮：我的提交（粗体）、合并提交（灰色）、当前分支提交、未合并到当前分支的提交 | M2 | ⬜ |
-| IntelliSort / 按拓扑 / 按日期排序 | M2 | ⬜ |
+| 高亮：我的提交（粗体）、合并提交（灰色）、当前分支提交、未合并到当前分支的提交 | M2 | ✅（View Options › Highlight：My Commits（粗体）、Merge Commits（灰色）、Current Branch（底色）、Not Merged into Current Branch（灰色）） |
+| IntelliSort / 按拓扑 / 按日期排序 | M2 | ✅（View Options › Sort：IntelliSort（拓扑序）/ By Date（--date-order）） |
 | 折叠/展开线性分支、显示长边 | M3 | ✅（View Options → Collapse Linear Branches，“⋯ N commits”点击展开） |
-| 日期格式：相对时间 / 绝对时间 | M1 | 🟡 |
+| 日期格式：相对时间 / 绝对时间 | M1 | ✅（View Options › Relative Dates：“5 minutes ago”；否则 Today/Yesterday/日期） |
 | `Ctrl+F` 跳转到 hash / 分支 / 标签 | M2 | ✅ |
 | 多个 Log 标签页（从分支打开新标签） | M3 | ✅ |
 
 ### 2.3 过滤栏
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 文本/哈希搜索，选项：正则、区分大小写 | M1 | 🟡 |
+| 文本/哈希搜索，选项：正则、区分大小写 | M1 | ✅（搜索框内 Cc（区分大小写）、.*（正则）开关；hash 前缀也能搜） |
 | Branch 过滤（多选、收藏） | M1 | 🟡 |
 | User 过滤（me、作者列表） | M2 | ✅ |
-| Date 过滤（最近 24h/7 天/自定义） | M2 | 🟡（无自定义） |
-| Paths 过滤（结构过滤：选择目录/文件） | M2 | ⬜ |
+| Date 过滤（最近 24h/7 天/自定义） | M2 | ✅（最近 24h / 7 天 / 30 天 / 1 年；Select… 自定义 From / To） |
+| Paths 过滤（结构过滤：选择目录/文件） | M2 | ✅（Paths 下拉：All、Select Folders…（文件或目录，可多选）；文件夹不加 --follow） |
 | 过滤历史记录 | M3 | ⬜ |
 
 ### 2.4 提交详情 + 变更树（右侧）
@@ -88,7 +88,7 @@
 | Interactively Rebase from Here… | M3 | ✅ |
 | Push All up to Here… | M3 | ✅ |
 | New Branch… / New Tag… | M2 | ✅ |
-| Go to Child Commit / Go to Parent Commit | M2 | 🟡（Parent） |
+| Go to Child Commit / Go to Parent Commit | M2 | ✅（提交右键 Go to Child Commit / Go to Parent Commit） |
 | Open on GitHub/GitLab | M5 | ⬜ |
 
 ## 3. Commit 工具窗口（非模态提交）
@@ -201,7 +201,7 @@
 | 定期检查新的远程提交（incoming） | M4 | ✅（设置 › Update branch info：每 N 分钟（默认 10）后台静默 fetch；分支弹窗、Log 分支树、标题栏分支组件显示 ↓incoming ↑outgoing） |
 | Directory mappings（多根） | M5 | ⬜ |
 | Commit 设置：非模态提交、清理提交信息、右边距、首行长度 | M3 | ✅（首行长度计数，超限变红） |
-| Log 设置：日期格式、显示/隐藏列 | M2 | ⬜ |
+| Log 设置：日期格式、显示/隐藏列 | M2 | ✅（View Options 的列、日期格式、引用、高亮、排序都保存在设置文件中） |
 
 ## 10. 托管平台集成（Android Studio 自带的 GitHub/GitLab 插件）
 
