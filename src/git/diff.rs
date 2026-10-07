@@ -65,9 +65,18 @@ pub enum DiffRow {
     Fold { id: usize, rows: Vec<DiffRow> },
 }
 
+/// The line ranges (0-based) of one change block on each side.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Hunk {
+    pub old: Range<usize>,
+    pub new: Range<usize>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FileDiff {
     pub rows: Vec<DiffRow>,
+    /// Indexed by change number.
+    pub hunks: Vec<Hunk>,
     /// Number of change blocks, for "Next Difference".
     pub changes: usize,
     pub binary: bool,
@@ -98,6 +107,7 @@ pub fn compute(old: &str, new: &str, options: DiffOptions) -> FileDiff {
     let side = |lines: &[&str], ix: usize| Side { line: ix + 1, text: lines[ix].to_owned(), changed: Vec::new() };
     let mut rows = Vec::new();
     let mut changes = 0;
+    let mut hunks = Vec::new();
     let (mut inserted, mut deleted) = (0, 0);
 
     for op in ops {
@@ -112,14 +122,16 @@ pub fn compute(old: &str, new: &str, options: DiffOptions) -> FileDiff {
                     });
                 }
             }
-            DiffOp::Delete { old_index, old_len, .. } => {
+            DiffOp::Delete { old_index, old_len, new_index } => {
+                hunks.push(Hunk { old: old_index..old_index + old_len, new: new_index..new_index });
                 deleted += old_len;
                 for k in 0..old_len {
                     rows.push(DiffRow::Line { kind: RowKind::Deleted, left: Some(side(&old_lines, old_index + k)), right: None, change: Some(changes) });
                 }
                 changes += 1;
             }
-            DiffOp::Insert { new_index, new_len, .. } => {
+            DiffOp::Insert { old_index, new_index, new_len } => {
+                hunks.push(Hunk { old: old_index..old_index, new: new_index..new_index + new_len });
                 inserted += new_len;
                 for k in 0..new_len {
                     rows.push(DiffRow::Line { kind: RowKind::Inserted, left: None, right: Some(side(&new_lines, new_index + k)), change: Some(changes) });
@@ -127,6 +139,7 @@ pub fn compute(old: &str, new: &str, options: DiffOptions) -> FileDiff {
                 changes += 1;
             }
             DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+                hunks.push(Hunk { old: old_index..old_index + old_len, new: new_index..new_index + new_len });
                 deleted += old_len;
                 inserted += new_len;
                 for k in 0..old_len.max(new_len) {
@@ -152,7 +165,82 @@ pub fn compute(old: &str, new: &str, options: DiffOptions) -> FileDiff {
     if let Some(context) = options.context {
         rows = fold(rows, context);
     }
-    FileDiff { rows, changes, binary: false, inserted, deleted }
+    FileDiff { rows, hunks, changes, binary: false, inserted, deleted }
+}
+
+/// `base` with one hunk's lines replaced by the other side's, keeping each
+/// line's own terminator. `to_new` takes the new side's lines into `old`;
+/// otherwise the old side's lines go back into `new`.
+pub fn splice_hunk(old: &str, new: &str, hunk: &Hunk, to_new: bool) -> String {
+    let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
+    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
+    let (base, base_range, source, source_range) = if to_new {
+        (&old_lines, hunk.old.clone(), &new_lines, hunk.new.clone())
+    } else {
+        (&new_lines, hunk.new.clone(), &old_lines, hunk.old.clone())
+    };
+    let pieces = base[..base_range.start.min(base.len())]
+        .iter()
+        .chain(source[source_range.start.min(source.len())..source_range.end.min(source.len())].iter())
+        .chain(base[base_range.end.min(base.len())..].iter());
+    let mut out = String::new();
+    for piece in pieces {
+        // A last line without a newline that is no longer last gets one.
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(piece);
+    }
+    out
+}
+
+/// What a diff gutter arrow does with one change block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HunkAction {
+    /// Rollback the change in the working tree.
+    Revert,
+    /// Move the change into the index (staging area).
+    Stage,
+    /// Take the change back out of the index.
+    Unstage,
+}
+
+/// Applies a gutter action. `old` / `new` are the versions the diff showed.
+pub fn apply_hunk(repository: &Repository, revisions: &Revisions, old: &str, new: &str, hunk: &Hunk, action: HunkAction) -> Result<()> {
+    let path = match revisions {
+        Revisions::WorkingTree { path } | Revisions::Unstaged { path } | Revisions::Staged { path } => path,
+        _ => anyhow::bail!("changes in history can't be edited"),
+    };
+    match (action, revisions) {
+        (HunkAction::Revert, Revisions::WorkingTree { .. } | Revisions::Unstaged { .. }) => {
+            let content = splice_hunk(old, new, hunk, false);
+            std::fs::write(repository.root().join(path), content)?;
+        }
+        (HunkAction::Stage, Revisions::Unstaged { .. }) => write_index(repository, path, &splice_hunk(old, new, hunk, true), true)?,
+        (HunkAction::Unstage, Revisions::Staged { .. }) => write_index(repository, path, &splice_hunk(old, new, hunk, false), false)?,
+        _ => anyhow::bail!("this action doesn't apply to this diff"),
+    }
+    Ok(())
+}
+
+/// Replaces a file's staged content. `filter` runs git's clean filters
+/// (line endings), as for work tree content.
+fn write_index(repository: &Repository, path: &str, content: &str, filter: bool) -> Result<()> {
+    let mut args = vec!["hash-object", "-w", "--stdin"];
+    let path_arg = format!("--path={path}");
+    if filter {
+        args.push(&path_arg);
+    } else {
+        args.push("--no-filters");
+    }
+    let hash = repository.run_with_input(&args, Some(content))?;
+    let mode = repository
+        .run(["ls-files", "-s", "--", path])
+        .ok()
+        .and_then(|line| line.split_whitespace().next().map(str::to_owned))
+        .unwrap_or_else(|| "100644".into());
+    repository.run(["update-index", "--add", "--cacheinfo", &format!("{mode},{},{path}", hash.trim())])?;
+    Ok(())
 }
 
 /// Byte ranges that differ between two lines, word by word.
@@ -303,6 +391,19 @@ mod tests {
                 DiffRow::Fold { .. } => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn splices_hunks_both_ways() {
+        let old = "a\nb\nc\n";
+        let new = "a\nB\nB2\nc\nd";
+        let diff = compute(old, new, DiffOptions { context: None, ..Default::default() });
+        assert_eq!(diff.hunks.len(), 2);
+        // Revert the first change in the new version.
+        assert_eq!(splice_hunk(old, new, &diff.hunks[0], false), "a\nb\nc\nd");
+        // Take only the second change into the old version.
+        assert_eq!(splice_hunk(old, new, &diff.hunks[1], true), "a\nb\nc\nd");
+        assert_eq!(splice_hunk(old, new, &diff.hunks[0], true), "a\nB\nB2\nc\n");
     }
 
     #[test]

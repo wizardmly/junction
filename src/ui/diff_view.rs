@@ -21,7 +21,7 @@ use gpui_kit::{
 };
 
 use crate::git::Repository;
-use crate::git::diff::{self, DiffOptions, DiffRow, FileDiff, HighlightMode, IgnoreWhitespace, Revisions, RowKind, Side};
+use crate::git::diff::{self, DiffOptions, DiffRow, FileDiff, HighlightMode, HunkAction, IgnoreWhitespace, Revisions, RowKind, Side};
 use crate::theme::{ActivePalette as _, Palette};
 use crate::ui::common::{self, tool_button};
 
@@ -88,7 +88,13 @@ struct Loaded {
     new_title: String,
 }
 
+/// The diff changed a file (a gutter Revert / Stage / Unstage).
+pub struct FilesChanged;
+
+impl gpui_kit::EventEmitter<FilesChanged> for DiffView {}
+
 pub struct DiffView {
+    repository: Option<Repository>,
     source: Option<DiffSource>,
     loaded: Option<Loaded>,
     diff: FileDiff,
@@ -105,6 +111,7 @@ pub struct DiffView {
 impl DiffView {
     pub fn new() -> Self {
         Self {
+            repository: None,
             source: None,
             loaded: None,
             diff: FileDiff::default(),
@@ -123,6 +130,7 @@ impl DiffView {
         if self.source.as_ref() == Some(&source) {
             return;
         }
+        self.repository = Some(repository.clone());
         self.source = Some(source.clone());
         self.loaded = None;
         self.diff = FileDiff::default();
@@ -151,6 +159,37 @@ impl DiffView {
             })
             .ok();
         }));
+    }
+
+    /// The gutter actions IntelliJ offers for this kind of diff.
+    fn hunk_actions(&self) -> Vec<(HunkAction, IconName, &'static str)> {
+        match &self.source {
+            Some(DiffSource::WorkingTree { unversioned: false, .. }) => vec![(HunkAction::Revert, IconName::Undo2, "Rollback")],
+            Some(DiffSource::Unstaged { .. }) => {
+                vec![(HunkAction::Stage, IconName::Plus, "Stage"), (HunkAction::Revert, IconName::Undo2, "Rollback")]
+            }
+            Some(DiffSource::Staged { .. }) => vec![(HunkAction::Unstage, IconName::Minus, "Unstage")],
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_hunk(&mut self, change: usize, action: HunkAction, cx: &mut Context<Self>) {
+        let (Some(repository), Some(source), Some(loaded)) = (self.repository.clone(), self.source.clone(), self.loaded.as_ref()) else {
+            return;
+        };
+        let Some(hunk) = self.diff.hunks.get(change) else { return };
+        match diff::apply_hunk(&repository, &source.revisions(), &loaded.old, &loaded.new, hunk, action) {
+            Ok(()) => {
+                // Reload this diff and let the workspace refresh the status.
+                self.source = None;
+                self.show(repository, source, cx);
+                cx.emit(FilesChanged);
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+            }
+        }
     }
 
     fn set_diff(&mut self, file_diff: FileDiff) {
@@ -472,6 +511,24 @@ impl Render for DiffView {
         let mono = cx.theme().mono_font_family.clone();
         let rows = self.rows.clone();
         let count = rows.len();
+        let actions = Rc::new(self.hunk_actions());
+        let has_actions = !actions.is_empty();
+        // The first row of each change carries its gutter buttons.
+        let starts: Rc<HashSet<usize>> = Rc::new(
+            rows.iter()
+                .enumerate()
+                .filter_map(|(ix, row)| match row {
+                    Display::Line { change: Some(c), .. } => {
+                        let previous = ix.checked_sub(1).and_then(|p| match &rows[p] {
+                            Display::Line { change, .. } => *change,
+                            Display::Fold { .. } => None,
+                        });
+                        (previous != Some(*c)).then_some(ix)
+                    }
+                    _ => None,
+                })
+                .collect(),
+        );
         let mode = self.mode;
         let highlight = self.options.highlight;
         let current = self.current;
@@ -491,6 +548,22 @@ impl Render for DiffView {
             count,
             cx.processor(move |_, range: Range<usize>, _, cx| {
                 let palette = cx.palette().clone();
+                // Gutter buttons for a change's first row.
+                let hunk_buttons = |ix: usize, change: Option<usize>, cx: &mut Context<DiffView>| {
+                    let mut el = h_flex().w(px(if has_actions { 18. * actions.len() as f32 } else { 1. })).h_full().flex_shrink_0().justify_center();
+                    if !has_actions {
+                        return el.bg(palette.border);
+                    }
+                    if let (Some(change), true) = (change, starts.contains(&ix)) {
+                        for (action, icon, tooltip) in actions.iter().copied() {
+                            el = el.child(
+                                tool_button(gpui_kit::ElementId::NamedInteger(format!("hunk-{tooltip}").into(), ix as u64), icon, tooltip)
+                                    .on_click(cx.listener(move |this, _, _, cx| this.apply_hunk(change, action, cx))),
+                            );
+                        }
+                    }
+                    el
+                };
                 range
                     .map(|ix| match &rows[ix] {
                         Display::Fold { id, count } => {
@@ -540,6 +613,7 @@ impl Render for DiffView {
                                     .h(px(LINE_HEIGHT))
                                     .w_full()
                                     .when_some(bg, |el, bg| el.bg(bg))
+                                    .when(has_actions, |el| el.child(hunk_buttons(ix, *change, cx)))
                                     .child(marker(word))
                                     .child(gutter(left.as_ref().map(|s| s.line), &palette))
                                     .child(gutter(right.as_ref().map(|s| s.line), &palette))
@@ -568,7 +642,7 @@ impl Render for DiffView {
                                     .h(px(LINE_HEIGHT))
                                     .w_full()
                                     .child(cell(left.as_ref(), true))
-                                    .child(div().w(px(1.)).h_full().flex_shrink_0().bg(palette.border))
+                                    .child(hunk_buttons(ix, *change, cx))
                                     .child(cell(right.as_ref(), false))
                                     .into_any_element()
                             }

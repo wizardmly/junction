@@ -219,6 +219,10 @@ impl Workspace {
                 }
             }),
             cx.observe(&model, |_, _, cx| cx.notify()),
+            // A gutter Rollback / Stage / Unstage in the diff changed files.
+            cx.subscribe(&diff, |this, _, _: &crate::ui::diff_view::FilesChanged, cx| {
+                this.model.update(cx, |m, cx| m.reload(cx));
+            }),
             // Running an action from the branches popup closes it.
             cx.subscribe(&branches_popup, |this, _, _: &gpui_kit::DismissEvent, cx| {
                 this.branches_open = false;
