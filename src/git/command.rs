@@ -119,6 +119,11 @@ impl Repository {
         &self.git_dir
     }
 
+    /// A repository nested in this one (a submodule), sharing the console.
+    pub fn nested(&self, path: &str) -> Result<Repository> {
+        Repository::discover(&self.root.join(path), self.console.clone())
+    }
+
     pub fn name(&self) -> String {
         self.root
             .file_name()

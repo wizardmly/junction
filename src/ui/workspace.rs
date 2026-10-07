@@ -78,6 +78,7 @@ enum LeftTab {
 enum BottomTab {
     Log,
     Worktrees,
+    Submodules,
     Console,
 }
 
@@ -97,6 +98,7 @@ pub struct Workspace {
     diff: Entity<DiffView>,
     branches_popup: Entity<BranchesPopup>,
     worktrees: Entity<crate::ui::worktree_view::WorktreeView>,
+    submodules: Entity<crate::ui::submodule_view::SubmoduleView>,
     /// The merge tool, shown in the editor area instead of the diff.
     merge: Option<(Entity<MergeView>, Subscription)>,
     /// Git tool window Log tabs; the first is the main "Log".
@@ -123,6 +125,7 @@ impl Workspace {
         let shelf = cx.new(|cx| ShelfView::new(model.clone(), cx));
         let branches_popup = cx.new(|cx| BranchesPopup::new(model.clone(), window, cx));
         let worktrees = cx.new(|cx| crate::ui::worktree_view::WorktreeView::new(model.clone(), cx));
+        let submodules = cx.new(|cx| crate::ui::submodule_view::SubmoduleView::new(model.clone(), cx));
         let weak = cx.entity().downgrade();
         branches_popup.update(cx, |popup, _| {
             popup.on_commit = Some(Rc::new(move |window, cx| {
@@ -310,6 +313,7 @@ impl Workspace {
             diff,
             branches_popup,
             worktrees,
+            submodules,
             merge: None,
             log_tabs: vec![LogTab { title: "Log".into(), filter: Default::default(), selected: None }],
             active_log: 0,
@@ -749,6 +753,18 @@ impl Workspace {
                                     let entity = entity.clone();
                                     move |_, window, cx| crate::ui::worktree_view::new_worktree(entity.read(cx).model.clone(), window, cx)
                                 }))
+                                .item(PopupMenuItem::new("Update Submodules").on_click({
+                                    let entity = entity.clone();
+                                    move |_, _, cx| {
+                                        let model = entity.read(cx).model.clone();
+                                        model.update(cx, |m, cx| {
+                                            m.run_operation("Update Submodules", |repo| {
+                                                crate::git::submodule::update(repo, &[])?;
+                                                Ok("Submodules updated".into())
+                                            }, cx)
+                                        })
+                                    }
+                                }))
                                 .separator()
                                 .item(PopupMenuItem::new("Create Patch…").on_click({
                                     let entity = entity.clone();
@@ -1123,6 +1139,7 @@ impl Workspace {
                 .when(value != current, |el| el.text_color(palette.text_secondary))
         };
         let current = self.bottom_tab;
+        let has_submodules = self.model.read(cx).repository().is_some_and(|r| r.root().join(".gitmodules").exists());
         v_flex()
             .size_full()
             .bg(palette.panel)
@@ -1169,6 +1186,14 @@ impl Workspace {
                             cx.notify();
                         },
                     )).child("Worktrees"))
+                    .when(has_submodules, |el| {
+                        el.child(tab("tab-submodules", "Submodules", BottomTab::Submodules, current).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.bottom_tab = BottomTab::Submodules;
+                                cx.notify();
+                            },
+                        )).child("Submodules"))
+                    })
                     .child(tab("tab-console", "Console", BottomTab::Console, current).on_click(cx.listener(
                         |this, _, _, cx| {
                             this.bottom_tab = BottomTab::Console;
@@ -1184,6 +1209,7 @@ impl Workspace {
             .child(div().flex_1().min_h_0().map(|el| match current {
                 BottomTab::Log => el.child(self.log.clone()),
                 BottomTab::Worktrees => el.child(self.worktrees.clone()),
+                BottomTab::Submodules => el.child(self.submodules.clone()),
                 BottomTab::Console => el.child(self.render_console(cx)),
             }))
     }

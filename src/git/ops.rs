@@ -176,6 +176,18 @@ pub fn update_project(repository: &Repository, rebase: bool, clean: CleanWith) -
         return Ok(format!("All files are up to date{restore_note}"));
     }
     let range = format!("{before}..{after}");
+    // Submodules whose recorded commit the update moved follow along,
+    // as `git pull --recurse-submodules` would.
+    if repository.root().join(".gitmodules").exists() {
+        let changed: Vec<String> = repository.run(["diff", "--name-only", &range]).unwrap_or_default().lines().map(str::to_owned).collect();
+        let moved: Vec<String> = super::submodule::gitlink_paths(repository).into_iter().filter(|p| changed.contains(p)).collect();
+        if !moved.is_empty() {
+            match super::submodule::update(repository, &moved) {
+                Ok(()) => restore_note.push_str(&format!("; {} submodule{} updated", moved.len(), if moved.len() == 1 { "" } else { "s" })),
+                Err(error) => restore_note.push_str(&format!("; submodules not updated: {error}")),
+            }
+        }
+    }
     let count = repository.run(["rev-list", "--count", &range]).unwrap_or_default();
     let count = count.trim();
     let files = repository.run(["diff", "--name-only", &range]).map(|o| o.lines().count()).unwrap_or(0);

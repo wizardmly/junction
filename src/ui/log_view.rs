@@ -1347,6 +1347,7 @@ impl LogView {
     }
 
     fn render_details(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let submodules = self.model.read(cx).submodule_paths().clone();
         let palette = cx.palette().clone();
         let model = self.model.read(cx);
         let details = model.details().cloned();
@@ -1418,6 +1419,7 @@ impl LogView {
                                     })
                                     .child(
                                         Icon::new(match &path {
+                                            Some(p) if submodules.contains(p.as_str()) => IconName::FolderGit2,
                                             Some(p) => common::file_icon(p),
                                             None => IconName::Folder,
                                         })

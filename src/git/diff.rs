@@ -363,7 +363,18 @@ pub enum Revisions {
 
 /// Loads both versions; a missing side (added/deleted file) is empty.
 pub fn load_versions(repository: &Repository, revisions: &Revisions) -> Result<(String, String, String, String)> {
-    let show = |spec: String| repository.run(["show", &spec]).unwrap_or_default();
+    // A submodule's recorded commit isn't an object here; git diff shows it
+    // as "Subproject commit <sha>", and so do we.
+    let show = |spec: String| {
+        repository.run(["show", &spec]).unwrap_or_else(|_| {
+            repository
+                .run(["rev-parse", "--verify", "-q", &spec])
+                .ok()
+                .filter(|sha| repository.run(["cat-file", "-e", sha.trim()]).is_err())
+                .map(|sha| format!("Subproject commit {}\n", sha.trim()))
+                .unwrap_or_default()
+        })
+    };
     Ok(match revisions {
         Revisions::Commit { hash, path, old_path } => {
             let old_path = old_path.as_ref().unwrap_or(path);
@@ -410,6 +421,11 @@ pub fn changed_files(repository: &Repository, old: &str, new: Option<&str>) -> R
 }
 
 fn read_work_tree(repository: &Repository, path: &str) -> String {
+    if repository.root().join(path).join(".git").exists() {
+        if let Some(text) = super::submodule::work_tree_text(repository, path) {
+            return text;
+        }
+    }
     std::fs::read(repository.root().join(path)).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default()
 }
 

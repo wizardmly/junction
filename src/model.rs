@@ -69,6 +69,8 @@ pub struct RepoModel {
     selected: Option<String>,
     details: Option<CommitDetails>,
     user_email: Option<String>,
+    /// Paths of submodules (gitlinks), drawn with a repository icon.
+    submodule_paths: HashSet<String>,
     loading: bool,
     busy: Option<String>,
     error: Option<String>,
@@ -85,6 +87,7 @@ struct Snapshot {
     graph: GraphLayout,
     status: WorkingTreeStatus,
     state: RepositoryState,
+    submodules: HashSet<String>,
 }
 
 impl RepoModel {
@@ -106,6 +109,7 @@ impl RepoModel {
             selected: None,
             details: None,
             user_email: None,
+            submodule_paths: HashSet::new(),
             loading: false,
             busy: None,
             error: None,
@@ -223,6 +227,10 @@ impl RepoModel {
         self.commits.iter().position(|c| c.hash == hash)
     }
 
+    pub fn submodule_paths(&self) -> &HashSet<String> {
+        &self.submodule_paths
+    }
+
     pub fn user_email(&self) -> Option<&str> {
         self.user_email.as_deref()
     }
@@ -262,7 +270,12 @@ impl RepoModel {
                     let graph = GraphLayout::build(&commits);
                     let status = WorkingTreeStatus::load(&repository)?;
                     let complete = commits.len() < git::log::FIRST_PAGE;
-                    anyhow::Ok((Snapshot { refs, commits, graph, status, state: repository.state() }, complete, repository, filter))
+                    let submodules = if repository.root().join(".gitmodules").exists() {
+                        git::submodule::gitlink_paths(&repository).into_iter().collect()
+                    } else {
+                        HashSet::new()
+                    };
+                    anyhow::Ok((Snapshot { refs, commits, graph, status, state: repository.state(), submodules }, complete, repository, filter))
                 })
                 .await;
             let (result, rest) = match result {
@@ -277,6 +290,7 @@ impl RepoModel {
                         this.set_log(snapshot.commits, snapshot.graph);
                         this.status = snapshot.status;
                         this.state = snapshot.state;
+                        this.submodule_paths = snapshot.submodules;
                         this.error = None;
                         // Keep the selection if the commit is still listed, else
                         // select HEAD the way the Log does on first open.

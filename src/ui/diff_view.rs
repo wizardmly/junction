@@ -205,6 +205,11 @@ impl DiffView {
 
     /// The gutter actions IntelliJ offers for this kind of diff.
     fn hunk_actions(&self) -> Vec<(HunkAction, IconName, &'static str)> {
+        // A submodule pointer has no lines to roll back or stage piecewise.
+        let submodule = |text: &str| text.starts_with("Subproject commit ");
+        if self.loaded.as_ref().is_some_and(|l| submodule(&l.old) || submodule(&l.new)) {
+            return Vec::new();
+        }
         match &self.source {
             Some(DiffSource::WorkingTree { unversioned: false, .. }) => vec![(HunkAction::Revert, IconName::Undo2, "Rollback")],
             Some(DiffSource::Unstaged { .. }) => {

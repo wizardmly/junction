@@ -801,6 +801,7 @@ fn changelist_menu(
 
 impl Render for CommitView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let submodules = self.model.read(cx).submodule_paths().clone();
         let palette = cx.palette().clone();
         let staging = self.staging;
         let by_directory = Settings::get(cx).commit_group_by_directory;
@@ -978,6 +979,7 @@ impl Render for CommitView {
                                 .when(!is_group, |el| {
                                     el.child(
                                         Icon::new(match &file {
+                                            Some(p) if submodules.contains(p.as_str()) => IconName::FolderGit2,
                                             Some(p) => common::file_icon(p),
                                             None => IconName::Folder,
                                         })
