@@ -646,7 +646,7 @@ impl MergeView {
 
     /// A divider between a side and the result: each pending change of that
     /// side, joined to its lines in the result.
-    fn divider(&self, side: usize, palette: &Palette) -> impl IntoElement {
+    fn divider(&self, side: usize, palette: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let ours = side == OURS;
         let connectors: Vec<Connector> = self
             .changes
@@ -662,7 +662,7 @@ impl MergeView {
             .collect();
         let (l, r) = if ours { (OURS, RESULT) } else { (RESULT, THEIRS) };
         let scroll = (self.panes.scroll[l].1, self.panes.scroll[r].1);
-        div().w(px(DIVIDER_WIDTH)).h_full().flex_shrink_0().child(
+        self.panes.divider_area(if ours { OURS } else { RESULT }, cx).child(
             canvas(
                 |_, _, _| {},
                 move |bounds, _, window, _| {
@@ -824,9 +824,14 @@ impl Render for MergeView {
             .child(div().flex_1())
             .child(div().text_xs().text_color(palette.text_secondary).child(summary));
 
-        let title = |text: &str, lock: bool| {
+        let title = |text: &str, lock: bool, pane: usize| {
+            let weight = self.panes.weight(pane);
             h_flex()
-                .flex_1()
+                .flex_basis(px(0.))
+                .map(move |mut el| {
+                    el.style().flex_grow = Some(weight);
+                    el
+                })
                 .min_w_0()
                 .px(px(6.))
                 .gap_1p5()
@@ -840,11 +845,11 @@ impl Render for MergeView {
             .border_b_1()
             .border_color(palette.border)
             .child(div().w(px(STRIPE_WIDTH)))
-            .child(title(self.titles.0, true))
+            .child(title(self.titles.0, true, OURS))
             .child(div().w(px(DIVIDER_WIDTH)))
-            .child(title("Result", false))
+            .child(title("Result", false, RESULT))
             .child(div().w(px(DIVIDER_WIDTH)))
-            .child(title(self.titles.1, true))
+            .child(title(self.titles.1, true, THEIRS))
             .child(div().w(px(STRIPE_WIDTH)));
 
         let mut panes = Vec::new();
@@ -859,9 +864,9 @@ impl Render for MergeView {
         let body = pane_area("merge-panes", &self.panes.focus, cx)
             .child(self.panes.render_stripe(OURS, self.stripe_marks(OURS, &palette), thumb, cx))
             .child(left)
-            .child(self.divider(OURS, &palette))
+            .child(self.divider(OURS, &palette, cx))
             .child(center)
-            .child(self.divider(THEIRS, &palette))
+            .child(self.divider(THEIRS, &palette, cx))
             .child(right)
             .child(self.panes.render_stripe(THEIRS, self.stripe_marks(THEIRS, &palette), thumb, cx))
             .context_menu({

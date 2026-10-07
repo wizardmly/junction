@@ -91,15 +91,21 @@ impl PaneLayout {
         if self.hide_numbers { 0. } else { GUTTER_WIDTH }
     }
 
+    /// Marker, line numbers and buttons.
+    pub fn gutter_width(&self) -> f32 {
+        MARKER_WIDTH + self.numbers_width() + self.buttons
+    }
+
     /// The pane-local x where text begins (before horizontal scrolling).
     pub fn text_left(&self) -> f32 {
-        if self.mirrored { TEXT_PADDING } else { MARKER_WIDTH + self.numbers_width() + self.buttons + TEXT_PADDING }
+        if self.mirrored { TEXT_PADDING } else { self.gutter_width() + TEXT_PADDING }
     }
 
     /// The pane-local x of the button column, from the pane's left (normal)
-    /// or right (mirrored) edge: right at the divider.
+    /// or right (mirrored) edge. As in IntelliJ, the line numbers sit
+    /// against the divider and the buttons between them and the text.
     pub fn buttons_offset(&self) -> f32 {
-        MARKER_WIDTH
+        MARKER_WIDTH + self.numbers_width()
     }
 }
 
@@ -153,7 +159,24 @@ pub struct TextPanes<T = ()> {
     pub show_whitespace: bool,
     /// Gear menu › Show Indent Guides.
     pub indent_guides: bool,
+    /// Each pane's share of the width (the dividers are draggable).
+    weights: Vec<f32>,
+    drag: Option<Drag>,
+    /// The font's advance, measured when painting.
+    char_width: Rc<Cell<f32>>,
 }
+
+/// A mouse drag the panes follow anywhere in the window.
+#[derive(Clone, Debug)]
+enum Drag {
+    /// The divider after pane `left`, resizing it and the next pane.
+    Divider { left: usize, start_x: f32, widths: Vec<f32> },
+    /// A pane's horizontal scrollbar thumb.
+    HScroll { pane: usize, start_x: f32, start_scroll: f32 },
+}
+
+/// Height of the horizontal scrollbar at the bottom of a pane.
+const HSCROLL_HEIGHT: f32 = 10.;
 
 /// What an event did, for the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +217,9 @@ impl<T: Clone + Default> TextPanes<T> {
             restored: false,
             show_whitespace: false,
             indent_guides: true,
+            weights: vec![1.; panes],
+            drag: None,
+            char_width: Rc::new(Cell::new(CHAR_WIDTH)),
         }
     }
 
@@ -265,9 +291,20 @@ impl<T: Clone + Default> TextPanes<T> {
 
     /// Scrolls one pane; with Synchronize Scrolling the linked panes follow
     /// so that the rows at the middle stay paired.
+    /// How wide a pane's text is, and how wide its view of it.
+    fn text_extent(&self, pane: usize) -> (f32, f32) {
+        let content = self.max_cols[pane] as f32 * self.char_width.get() + 2. * TEXT_PADDING;
+        let view = f32::from(self.bounds.borrow()[pane].size.width) - self.layouts[pane].gutter_width();
+        (content, view.max(0.))
+    }
+
+    fn max_scroll_x(&self, pane: usize) -> f32 {
+        let (content, view) = self.text_extent(pane);
+        if view <= 0. { 0. } else { (content - view).max(0.) }
+    }
+
     pub fn scroll_to(&mut self, pane: usize, x: f32, y: f32) {
-        let max_x = (self.max_cols.iter().copied().max().unwrap_or(0) as f32 * CHAR_WIDTH - 40.).max(0.);
-        let x = x.clamp(0., max_x);
+        let x = x.clamp(0., self.max_scroll_x(pane));
         let y = y.clamp(0., self.max_scroll_y(pane));
         self.scroll[pane] = (x, y);
         if !self.sync {
@@ -286,7 +323,7 @@ impl<T: Clone + Default> TextPanes<T> {
                 }
                 let mapped = map_row(segments, from_left, row);
                 let y = (mapped * LINE_HEIGHT - half).clamp(0., self.max_scroll_y(to));
-                self.scroll[to] = (x, y);
+                self.scroll[to] = (x.min(self.max_scroll_x(to)), y);
                 done[to] = true;
                 queue.push(to);
             }
@@ -313,6 +350,61 @@ impl<T: Clone + Default> TextPanes<T> {
                 self.show_rows(targets);
             }
         }
+    }
+
+    fn drag_move(&mut self, event: &MouseMoveEvent) -> bool {
+        let Some(drag) = self.drag.clone() else { return false };
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.drag = None;
+            return true;
+        }
+        let x = f32::from(event.position.x);
+        match drag {
+            Drag::Divider { left, start_x, widths } => {
+                let pair = widths[left] + widths[left + 1];
+                let new_left = (widths[left] + x - start_x).clamp(80., (pair - 80.).max(80.));
+                self.weights = widths;
+                self.weights[left] = new_left;
+                self.weights[left + 1] = pair - new_left;
+            }
+            Drag::HScroll { pane, start_x, start_scroll } => {
+                let (content, view) = self.text_extent(pane);
+                let thumb = (view * view / content).max(30.);
+                let per_px = (content - view) / (view - thumb).max(1.);
+                let y = self.scroll[pane].1;
+                self.scroll_to(pane, start_scroll + (x - start_x) * per_px, y);
+            }
+        }
+        true
+    }
+
+    /// A pane's share of the width, for headers that line up with it.
+    pub fn weight(&self, pane: usize) -> f32 {
+        self.weights.get(pane).copied().unwrap_or(1.)
+    }
+
+    /// Starts dragging the divider after pane `left`.
+    fn start_divider(&mut self, left: usize, x: f32) {
+        let widths: Vec<f32> = self.bounds.borrow().iter().map(|b| f32::from(b.size.width).max(1.)).collect();
+        self.drag = Some(Drag::Divider { left, start_x: x, widths });
+    }
+
+    /// The divider after pane `left`: drag it to resize the two panes.
+    pub fn divider_area<V: PaneHost<Extra = T>>(&self, left: usize, cx: &mut Context<V>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        div()
+            .id(("pane-divider", left))
+            .w(px(crate::ui::diff_panes::DIVIDER_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .cursor(gpui_kit::CursorStyle::ResizeLeftRight)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view: &mut V, e: &MouseDownEvent, _, cx| {
+                    view.panes().start_divider(left, f32::from(e.position.x));
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
     }
 
     fn on_wheel(&mut self, pane: usize, event: &ScrollWheelEvent) {
@@ -768,7 +860,7 @@ impl<T: Clone + Default> TextPanes<T> {
         } else if height > 0. && top + LINE_HEIGHT > y + height {
             y = top + LINE_HEIGHT - height;
         }
-        let width = f32::from(self.bounds.borrow()[pane].size.width) - self.layouts[pane].text_left();
+        let width = self.text_extent(pane).1 - TEXT_PADDING;
         let caret_x = self.x_for(pane, sel.head, window, cx);
         if caret_x < x {
             x = (caret_x - 40.).max(0.);
@@ -986,6 +1078,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
             let notify = entity.clone();
             let input = (focused && self.caret.is_some_and(|c| c.0 == pane)).then(|| (self.focus.clone(), entity.clone()));
             let selecting = (pane == 0 && self.selecting).then(|| entity.clone());
+            let dragging = (pane == 0 && self.drag.is_some()).then(|| entity.clone());
             children.push(
                 canvas(
                     move |bounds, _, cx| {
@@ -1000,6 +1093,26 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                     move |bounds, _, window, cx| {
                         if let Some((focus, entity)) = input {
                             window.handle_input(&focus, ElementInputHandler::new(bounds, entity), cx);
+                        }
+                        if let Some(entity) = dragging {
+                            let up = entity.clone();
+                            window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    entity.update(cx, |view, cx| {
+                                        if view.panes().drag_move(e) {
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            });
+                            window.on_mouse_event(move |_: &gpui_kit::MouseUpEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    up.update(cx, |view, cx| {
+                                        view.panes().drag = None;
+                                        cx.notify();
+                                    });
+                                }
+                            });
                         }
                         if let Some(entity) = selecting {
                             window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
@@ -1021,7 +1134,10 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
 
         let highlighter = self.highlighters[pane].as_ref();
         let range = self.visible_rows(pane);
-        let char_width = if self.indent_guides { f32::from(shape("        ", window, cx).width) / 8. } else { 0. };
+        let char_width = f32::from(shape("        ", window, cx).width) / 8.;
+        if char_width > 0. {
+            self.char_width.set(char_width);
+        }
         let unit = if self.indent_unit() == "\t" { TAB_WIDTH } else { self.indent_unit().len() };
         let mut guides: Vec<AnyElement> = Vec::new();
         for (ix, look) in range.clone().zip(content.looks) {
@@ -1091,14 +1207,15 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                     });
                     let marker = div().w(px(MARKER_WIDTH)).h_full().flex_shrink_0().when_some(look.marker, |el, c| el.bg(c));
                     let spacer = div().w(px(layout.buttons)).flex_shrink_0();
+                    // The change color covers the text only, not the gutter.
+                    let text_el = div().flex_1().min_w_0().h_full().flex().when_some(look.background, |el, bg| el.bg(bg)).child(text_el);
                     children.push(
                         row.flex()
-                            .when_some(look.background, |el, bg| el.bg(bg))
                             .map(|el| {
                                 if layout.mirrored {
-                                    el.child(text_el).child(number).child(spacer).child(marker)
+                                    el.child(text_el).child(spacer).child(number).child(marker)
                                 } else {
-                                    el.child(marker).child(spacer).child(number).child(text_el)
+                                    el.child(marker).child(number).child(spacer).child(text_el)
                                 }
                             })
                             .into_any_element(),
@@ -1108,6 +1225,42 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
         }
         children.extend(guides);
         children.extend(content.overlays);
+
+        // The horizontal scrollbar under the text, when lines are wider.
+        let (text_w, view_w) = self.text_extent(pane);
+        if view_w > 0. && text_w > view_w + 1. {
+            let thumb = (view_w * view_w / text_w).max(30.);
+            let at = scroll_x / (text_w - view_w) * (view_w - thumb);
+            let track_left = if layout.mirrored { 0. } else { layout.gutter_width() };
+            let thumb_color = palette.text_disabled.opacity(0.45);
+            children.push(
+                div()
+                    .id(("pane-hscroll", pane))
+                    .absolute()
+                    .bottom_0()
+                    .left(px(track_left))
+                    .w(px(view_w))
+                    .h(px(HSCROLL_HEIGHT))
+                    .cursor_default()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view: &mut V, e: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            let panes = view.panes();
+                            let origin = f32::from(panes.bounds.borrow()[pane].origin.x) + track_left;
+                            let x = f32::from(e.position.x) - origin;
+                            let (sx, sy) = panes.scroll[pane];
+                            // On the track: page towards the click; on the thumb: drag.
+                            let target = if x < at { sx - view_w } else if x > at + thumb { sx + view_w } else { sx };
+                            panes.scroll_to(pane, target, sy);
+                            panes.drag = Some(Drag::HScroll { pane, start_x: f32::from(e.position.x), start_scroll: panes.scroll[pane].0 });
+                            cx.notify();
+                        }),
+                    )
+                    .child(div().absolute().top(px(2.)).left(px(at)).w(px(thumb)).h(px(HSCROLL_HEIGHT - 4.)).rounded_full().bg(thumb_color))
+                    .into_any_element(),
+            );
+        }
 
         if let Some((_, sel)) = self.caret.filter(|c| c.0 == pane && focused) {
             let line = buffer.line_of(sel.head);
@@ -1122,10 +1275,16 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
             }
         }
 
+        let weight = self.weights.get(pane).copied().unwrap_or(1.);
         div()
             .id(("text-pane", pane))
             .relative()
-            .flex_1()
+            .flex_basis(px(0.))
+            .flex_shrink(1.)
+            .map(|mut el| {
+                el.style().flex_grow = Some(weight);
+                el
+            })
             .min_w_0()
             .h_full()
             .overflow_hidden()

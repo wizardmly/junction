@@ -919,7 +919,7 @@ impl DiffView {
         let scroll = (self.panes.scroll[0].1, self.panes.scroll[1].1);
         let folds = fold_links(&two);
         let fold_color = palette.border;
-        let divider = div().w(px(DIVIDER_WIDTH)).h_full().flex_shrink_0().child(
+        let divider = self.panes.divider_area(0, cx).child(
             canvas(
                 |_, _, _| {},
                 move |bounds, _, window, _| {
@@ -966,11 +966,16 @@ impl DiffView {
             .text_xs()
             .border_b_1()
             .border_color(palette.border)
+            .child(div().w(px(STRIPE_WIDTH)).flex_shrink_0())
             .child(
                 h_flex()
-                    .flex_1()
+                    .flex_basis(px(0.))
+                    .map(|mut el| {
+                        el.style().flex_grow = Some(self.panes.weight(0));
+                        el
+                    })
                     .min_w_0()
-                    .pl(px(STRIPE_WIDTH + 6.))
+                    .pl(px(6.))
                     .gap_1p5()
                     .child(common::icon(IconName::Lock).text_color(palette.text_secondary))
                     .child(div().flex_shrink_0().child(old_title))
@@ -979,7 +984,11 @@ impl DiffView {
             .child(div().w(px(DIVIDER_WIDTH)).flex_shrink_0())
             .child(
                 h_flex()
-                    .flex_1()
+                    .flex_basis(px(0.))
+                    .map(|mut el| {
+                        el.style().flex_grow = Some(self.panes.weight(1));
+                        el
+                    })
                     .min_w_0()
                     .pl(px(6.))
                     .gap_1p5()
@@ -993,6 +1002,7 @@ impl DiffView {
                     })
                     .child(new_title),
             )
+            .child(div().w(px(STRIPE_WIDTH)).flex_shrink_0())
     }
 }
 
