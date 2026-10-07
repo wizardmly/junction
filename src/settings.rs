@@ -36,6 +36,10 @@ pub struct Settings {
     /// "Update branch info": fetch every N minutes so the branches popup and
     /// the Log show incoming commits; 0 turns it off.
     pub fetch_interval_minutes: u32,
+    /// "Path to Git executable"; empty means `git` on PATH.
+    pub git_executable: String,
+    /// "Use credential helper".
+    pub use_credential_helper: bool,
 }
 
 impl Default for Settings {
@@ -53,6 +57,8 @@ impl Default for Settings {
             run_hooks: true,
             cleanup_message: false,
             fetch_interval_minutes: 10,
+            git_executable: String::new(),
+            use_credential_helper: true,
         }
     }
 }
@@ -164,6 +170,8 @@ impl Settings {
                 "sign_off" => settings.sign_off = flag,
                 "run_hooks" => settings.run_hooks = flag,
                 "cleanup_message" => settings.cleanup_message = flag,
+                "git_executable" => settings.git_executable = value.to_owned(),
+                "use_credential_helper" => settings.use_credential_helper = flag,
                 "fetch_interval_minutes" => {
                     if let Ok(n) = value.parse() {
                         settings.fetch_interval_minutes = n;
@@ -183,7 +191,7 @@ impl Settings {
     pub fn serialize(&self) -> String {
         format!(
             "theme={}\nstaging_area={}\nupdate_method={}\nauto_update_on_push_rejected={}\nwarn_crlf={}\ncommit_subject_limit={}\n\
-             warn_detached_head={}\nprotected_branches={}\nsign_off={}\nrun_hooks={}\ncleanup_message={}\nfetch_interval_minutes={}\n",
+             warn_detached_head={}\nprotected_branches={}\nsign_off={}\nrun_hooks={}\ncleanup_message={}\nfetch_interval_minutes={}\ngit_executable={}\nuse_credential_helper={}\n",
             if self.dark { "dark" } else { "light" },
             self.staging_area,
             match self.update_method {
@@ -199,6 +207,8 @@ impl Settings {
             self.run_hooks,
             self.cleanup_message,
             self.fetch_interval_minutes,
+            self.git_executable,
+            self.use_credential_helper,
         )
     }
 
@@ -219,10 +229,17 @@ impl Settings {
     }
 
     /// Changes settings, saves them, and re-renders every window.
+    /// Hands the Git settings to the command runner.
+    pub fn apply_git(&self) {
+        crate::git::set_executable(&self.git_executable);
+        crate::git::set_use_credential_helper(self.use_credential_helper);
+    }
+
     pub fn update(cx: &mut App, f: impl FnOnce(&mut Self)) {
         let mut settings = cx.global::<Self>().clone();
         f(&mut settings);
         settings.save();
+        settings.apply_git();
         cx.set_global(settings);
         cx.refresh_windows();
     }

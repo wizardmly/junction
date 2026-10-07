@@ -100,7 +100,7 @@ impl CloneView {
             let result = cx
                 .background_spawn(async move {
                     let console = crate::git::GitConsole::default();
-                    crate::git::run_in(Path::new("git"), &std::env::temp_dir(), &console, ["ls-remote", "--heads", url.as_str()], None, &[])
+                    crate::git::run_in(&crate::git::executable(), &std::env::temp_dir(), &console, ["ls-remote", "--heads", url.as_str()], None, &[])
                 })
                 .await;
             this.update(cx, |this, cx| {

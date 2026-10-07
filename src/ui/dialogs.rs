@@ -541,6 +541,9 @@ pub fn settings(window: &mut Window, cx: &mut App) {
     let protected = cx.new(|cx| InputState::new(window, cx).default_value(initial.protected_branches.clone()));
     let margin = cx.new(|cx| InputState::new(window, cx).default_value(initial.commit_subject_limit.to_string()));
     let fetch_interval = cx.new(|cx| InputState::new(window, cx).default_value(initial.fetch_interval_minutes.max(1).to_string()));
+    let git_path = cx.new(|cx| InputState::new(window, cx).placeholder("Auto-detected: git").default_value(initial.git_executable.clone()));
+    // The Test button's result line.
+    let git_test: Rc<std::cell::RefCell<Option<Result<String, String>>>> = Rc::default();
     window.open_dialog(cx, move |dialog, _, cx| {
         let palette = cx.palette().clone();
         let current = draft.borrow().clone();
@@ -558,7 +561,9 @@ pub fn settings(window: &mut Window, cx: &mut App) {
         let theme_draft = draft.clone();
         let update_draft = draft.clone();
         let ok_draft = draft.clone();
-        let (ok_protected, ok_margin, ok_fetch) = (protected.clone(), margin.clone(), fetch_interval.clone());
+        let (ok_protected, ok_margin, ok_fetch, ok_git_path) = (protected.clone(), margin.clone(), fetch_interval.clone(), git_path.clone());
+        let (test_path, test_result) = (git_path.clone(), git_test.clone());
+        let test_line = git_test.borrow().clone();
         dialog
             .title("Settings")
             .w(px(520.))
@@ -576,6 +581,31 @@ pub fn settings(window: &mut Window, cx: &mut App) {
                             }),
                     )
                     .child(section("Version Control › Git"))
+                    .child(
+                        gpui_kit::component::h_flex()
+                            .gap_2()
+                            .text_sm()
+                            .child("Path to Git executable:")
+                            .child(div().flex_1().child(Input::new(&git_path).small()))
+                            .child(Button::new("settings-git-test").small().label("Test").on_click(move |_, window, cx| {
+                                let path = test_path.read(cx).value().to_string();
+                                *test_result.borrow_mut() = Some(crate::git::executable_version(&path).map_err(|e| e.to_string()));
+                                window.refresh();
+                            })),
+                    )
+                    .children(test_line.map(|result| {
+                        let (text, color) = match result {
+                            Ok(version) => (version, palette.status_added),
+                            Err(error) => (error, palette.status_conflict),
+                        };
+                        div().pl_6().text_xs().text_color(color).child(text)
+                    }))
+                    .child(check(
+                        "settings-credential-helper",
+                        "Use credential helper",
+                        current.use_credential_helper,
+                        |s, v| s.use_credential_helper = v,
+                    ))
                     .child(check("settings-staging", "Enable staging area", current.staging_area, |s, v| s.staging_area = v))
                     .child(
                         div()
@@ -648,6 +678,7 @@ pub fn settings(window: &mut Window, cx: &mut App) {
             .on_ok(move |_, window, cx| {
                 let mut next = ok_draft.borrow().clone();
                 next.protected_branches = ok_protected.read(cx).value().trim().to_owned();
+                next.git_executable = ok_git_path.read(cx).value().trim().to_owned();
                 if let Ok(limit) = ok_margin.read(cx).value().trim().parse::<usize>() {
                     next.commit_subject_limit = limit.clamp(20, 200);
                 }

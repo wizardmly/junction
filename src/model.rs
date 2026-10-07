@@ -150,7 +150,7 @@ impl RepoModel {
                     let parent = target.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
                     std::fs::create_dir_all(&parent)?;
                     let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    git::run_in(std::path::Path::new("git"), &parent, &console, ["clone", "--progress", url.as_str(), name.as_str()], None, &[])
+                    git::run_in(&git::executable(), &parent, &console, ["clone", "--progress", url.as_str(), name.as_str()], None, &[])
                         .map(|_| url)
                 })
                 .await;
@@ -172,7 +172,7 @@ impl RepoModel {
 
     /// Create Git Repository: `git init` in `dir`, then open it.
     pub fn init_repository(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
-        match git::run_in(std::path::Path::new("git"), &dir, &self.console, ["init"], None, &[]) {
+        match git::run_in(&git::executable(), &dir, &self.console, ["init"], None, &[]) {
             Ok(_) => self.open(dir, cx),
             Err(error) => cx.emit(RepoEvent::Notify { title: "Create Git Repository failed".into(), message: error.to_string(), error: true }),
         }

@@ -38,6 +38,7 @@ fn main() {
         ui::commit_view::init(cx);
         ui::file_editor::init(cx);
         let settings = settings::Settings::load();
+        settings.apply_git();
         let dark = std::env::var("GITGLASS_THEME").map(|t| t != "light").unwrap_or(settings.dark);
         cx.set_global(settings);
         cx.set_global(model::ExcludedHunks::default());

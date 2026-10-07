@@ -46,6 +46,34 @@ pub struct Repository {
     console: GitConsole,
 }
 
+/// Settings › Git: path to the git executable ("git" = found on PATH) and
+/// "Use credential helper". Both apply to every command run afterwards.
+static EXECUTABLE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+static NO_CREDENTIAL_HELPER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_executable(path: &str) {
+    let path = path.trim();
+    *EXECUTABLE.write().unwrap() = (!path.is_empty()).then(|| PathBuf::from(path));
+}
+
+pub fn executable() -> PathBuf {
+    EXECUTABLE.read().unwrap().clone().unwrap_or_else(|| PathBuf::from("git"))
+}
+
+pub fn set_use_credential_helper(enabled: bool) {
+    NO_CREDENTIAL_HELPER.store(!enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The Test button: `git --version` with `path` (empty = PATH lookup).
+pub fn executable_version(path: &str) -> Result<String> {
+    let path = if path.trim().is_empty() { PathBuf::from("git") } else { PathBuf::from(path.trim()) };
+    let output = git_command(&path).arg("--version").output().with_context(|| format!("cannot run {}", path.display()))?;
+    if !output.status.success() {
+        bail!("{} --version failed", path.display());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 /// A git process that, on Windows, doesn't flash a console window.
 fn git_command(executable: &Path) -> Command {
     #[cfg_attr(not(windows), allow(unused_mut))]
@@ -62,7 +90,7 @@ fn git_command(executable: &Path) -> Command {
 impl Repository {
     /// Finds the repository containing `path`.
     pub fn discover(path: &Path, console: GitConsole) -> Result<Self> {
-        let executable = PathBuf::from("git");
+        let executable = executable();
         let output = git_command(&executable)
             .arg("-C")
             .arg(path)
@@ -193,6 +221,8 @@ where
         .envs(crate::askpass::git_env())
         // Stable, parseable output regardless of the user's config.
         .args(["-c", "core.quotepath=false", "-c", "color.ui=false", "-c", "log.showSignature=false"])
+        // With the credential helper off, credentials come from our askpass prompt only.
+        .args(if NO_CREDENTIAL_HELPER.load(std::sync::atomic::Ordering::Relaxed) { &["-c", "credential.helper="][..] } else { &[][..] })
         .args(&args)
         .env("GIT_TERMINAL_PROMPT", "0")
         // Never block on an editor (rebase/cherry-pick --continue, merge commits).

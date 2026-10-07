@@ -191,13 +191,13 @@
 
 | 设置项 | 阶段 | 状态 |
 |---|---|---|
-| Git 可执行文件路径 + Test 按钮 | M2 | ⬜ |
+| Git 可执行文件路径 + Test 按钮 | M2 | ✅（设置里填写路径，留空为 PATH 中的 git；Test 显示 git 版本或错误） |
 | 启用暂存区 | M2 | ✅ |
 | 提交前警告 CRLF、警告 detached HEAD、大文件 | M3 | ✅（CRLF 支持 Fix and Commit） |
 | Update method（Merge / Rebase）、Clean working tree using（Stash / Shelve） | M2 | 🟡（Merge / Rebase，用 Stash） |
 | 推送被拒时自动更新、Force push 受保护分支列表 | M3 | ✅ |
 | GPG 签名配置 | M4 | ✅（Commit Options → Configure…：列出 secret key，写入仓库 commit.gpgSign / user.signingKey） |
-| 使用 credential helper | M2 | ⬜ |
+| 使用 credential helper | M2 | ✅（“Use credential helper”，默认开；关闭后只用 GitGlass 的凭据提示（askpass）） |
 | 定期检查新的远程提交（incoming） | M4 | ✅（设置 › Update branch info：每 N 分钟（默认 10）后台静默 fetch；分支弹窗、Log 分支树、标题栏分支组件显示 ↓incoming ↑outgoing） |
 | Directory mappings（多根） | M5 | ⬜ |
 | Commit 设置：非模态提交、清理提交信息、右边距、首行长度 | M3 | ✅（首行长度计数，超限变红） |

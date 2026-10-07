@@ -17,7 +17,7 @@ pub mod refs;
 pub mod remotes;
 pub mod status;
 
-pub use command::{GitConsole, Repository, run_in};
+pub use command::{GitConsole, Repository, executable, executable_version, run_in, set_executable, set_use_credential_helper};
 pub use graph::GraphLayout;
 pub use log::{Commit, CommitDetails, FileChangeKind, LogFilter};
 pub use refs::{RefKind, RefName, RepositoryRefs};
