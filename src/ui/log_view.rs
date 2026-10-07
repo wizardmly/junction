@@ -440,11 +440,14 @@ impl LogView {
             return None;
         }
         let (base, branch) = range.split_once("..")?;
-        let (base, branch) = (base.to_owned(), branch.to_owned());
+        let is_hash = |r: &str| r.len() == 40 && r.bytes().all(|b| b.is_ascii_hexdigit());
+        let updated = is_hash(base) && is_hash(branch);
+        let (diff_base, diff_branch) = (base.to_owned(), branch.to_owned());
+        let shorten = |r: &str| if is_hash(r) { r[..8].to_owned() } else { r.to_owned() };
+        let (base, branch) = (shorten(base), shorten(branch));
         let palette = cx.palette().clone();
         let count = self.model.read(cx).commits().len();
-        let swapped = format!("{branch}..{base}");
-        let (diff_base, diff_branch) = (base.clone(), branch.clone());
+        let swapped = format!("{diff_branch}..{diff_base}");
         Some(
             h_flex()
                 .h(px(28.))
@@ -456,14 +459,16 @@ impl LogView {
                 .border_color(palette.border)
                 .child(Icon::new(IconName::GitCompare).small().text_color(palette.text_secondary))
                 .child(div().child(match count {
+                    // Update Project's "View Commits".
+                    n if updated => format!("{n} commit{} received by Update Project ({base}..{branch})", if n == 1 { "" } else { "s" }),
                     0 => format!("'{branch}' has no commits that '{base}' doesn't have"),
                     n => format!("{n} commit{} in '{branch}' that {} not in '{base}'", if n == 1 { "" } else { "s" }, if n == 1 { "is" } else { "are" }),
                 }))
                 .child(div().flex_1())
-                .child(Button::new("compare-swap").xsmall().ghost().label("Swap Branches").on_click(cx.listener(move |this, _, _, cx| {
+                .when(!updated, |el| el.child(Button::new("compare-swap").xsmall().ghost().label("Swap Branches").on_click(cx.listener(move |this, _, _, cx| {
                     let swapped = swapped.clone();
                     this.update_filter(cx, |f| f.branches = vec![swapped]);
-                })))
+                }))))
                 .child(Button::new("compare-files").xsmall().ghost().label("Show Files").on_click(cx.listener(move |this, _, _, cx| {
                     let (old, new) = (diff_base.clone(), diff_branch.clone());
                     this.model.update(cx, |m, cx| m.compare(old, Some(new), cx));

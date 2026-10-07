@@ -138,6 +138,12 @@ impl Workspace {
                     if message.is_empty() && !*error {
                         return;
                     }
+                    // Update Project: "N files updated in M commits" with View Commits.
+                    let (message, updated_range) = match message.split_once('\u{1f}') {
+                        Some((text, range)) => (text.to_owned(), Some(range.to_owned())),
+                        None => (message.clone(), None),
+                    };
+                    let message = &message;
                     let entity = cx.entity();
                     let mut notification = if *error {
                         // A short summary; the full output is in the Console tab.
@@ -167,6 +173,23 @@ impl Workspace {
                                 })
                             })
                         });
+                    } else if let Some(range) = updated_range {
+                        notification = notification.action(move |_, _, _| {
+                            let entity = entity.clone();
+                            let range = range.clone();
+                            Button::new("notify-view-commits").label("View Commits").small().outline().on_click(move |_, _, cx| {
+                                let range = range.clone();
+                                entity.update(cx, |this, cx| {
+                                    this.show_git = true;
+                                    this.bottom_tab = BottomTab::Log;
+                                    let mut filter = this.model.read(cx).filter().clone();
+                                    filter.branches = vec![range];
+                                    this.model.update(cx, |m, cx| m.set_filter(filter, cx));
+                                    cx.notify();
+                                })
+                            })
+                        })
+                        .autohide(true);
                     } else if title == "Commit" {
                         notification = notification.action(move |_, _, _| {
                             let entity = entity.clone();

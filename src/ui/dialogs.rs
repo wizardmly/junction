@@ -436,10 +436,16 @@ pub fn update_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut Ap
                         if before == after {
                             return Ok("All files are up to date".into());
                         }
-                        let count = repo
-                            .run(["rev-list", "--count", &format!("{}..{}", before.trim(), after.trim())])
-                            .unwrap_or_default();
-                        Ok(format!("{} commits pulled", count.trim()))
+                        let range = format!("{}..{}", before.trim(), after.trim());
+                        let count = repo.run(["rev-list", "--count", &range]).unwrap_or_default();
+                        let files = repo.run(["diff", "--name-only", &range]).map(|o| o.lines().count()).unwrap_or(0);
+                        // The range rides along (after a unit separator) for the "View Commits" action.
+                        Ok(format!(
+                            "{files} file{} updated in {} commit{}\u{1f}{range}",
+                            if files == 1 { "" } else { "s" },
+                            count.trim(),
+                            if count.trim() == "1" { "" } else { "s" }
+                        ))
                     }, cx)
                 });
                 true
