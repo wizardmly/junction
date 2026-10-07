@@ -66,6 +66,8 @@ pub struct LogView {
     branches: Entity<TreeState>,
     changes: Entity<TreeState>,
     change_kinds: HashMap<String, (FileChangeKind, Option<String>)>,
+    /// Multi-selection: per file, the revisions its merged change spans.
+    combined: Option<HashMap<String, (String, String)>>,
     change_counts: HashMap<SharedString, usize>,
     last_change_selection: Option<SharedString>,
     last_branch_selection: Option<SharedString>,
@@ -142,6 +144,7 @@ impl LogView {
             branches,
             changes,
             change_kinds: HashMap::new(),
+            combined: None,
             change_counts: HashMap::new(),
             last_change_selection: None,
             last_branch_selection: None,
@@ -211,14 +214,49 @@ impl LogView {
     fn rebuild_changes(&mut self, cx: &mut Context<Self>) {
         let details = self.model.read(cx).details().cloned();
         self.change_kinds.clear();
-        let items = match &details {
-            Some(details) => {
+        self.combined = None;
+        // Several commits selected: IntelliJ shows their changes merged. Each
+        // file compares its state before the oldest selected commit that
+        // touched it with its state after the newest one.
+        let selected = if self.extra_selection.is_empty() { Vec::new() } else { self.selected_commits(cx) };
+        let combined = match self.model.read(cx).repository() {
+            Some(repo) if selected.len() > 1 => {
+                let mut merged: Vec<crate::git::log::FileChange> = Vec::new();
+                let mut ranges: HashMap<String, (String, String)> = HashMap::new();
+                for commit in &selected {
+                    let parent = format!("{}^", commit.hash);
+                    let old = if commit.parents.is_empty() { EMPTY_TREE.to_owned() } else { parent };
+                    let Ok(changes) = crate::git::diff::changed_files(repo, &old, Some(&commit.hash)) else { continue };
+                    for change in changes {
+                        match ranges.get_mut(&change.path) {
+                            Some(range) => range.1 = commit.hash.clone(),
+                            None => {
+                                ranges.insert(change.path.clone(), (old.clone(), commit.hash.clone()));
+                                merged.push(change);
+                            }
+                        }
+                    }
+                }
+                merged.sort_by(|a, b| a.path.cmp(&b.path));
+                Some((ranges, merged))
+            }
+            _ => None,
+        };
+        let items = match (&combined, &details) {
+            (Some((ranges, changes)), _) => {
+                for change in changes {
+                    self.change_kinds.insert(change.path.clone(), (change.kind, change.old_path.clone()));
+                }
+                self.combined = Some(ranges.clone());
+                common::file_tree(changes.iter().map(|c| c.path.clone()), "")
+            }
+            (None, Some(details)) => {
                 for change in &details.changes {
                     self.change_kinds.insert(change.path.clone(), (change.kind, change.old_path.clone()));
                 }
                 common::file_tree(details.changes.iter().map(|c| c.path.clone()), "")
             }
-            None => Vec::new(),
+            (None, None) => Vec::new(),
         };
         self.change_counts.clear();
         common::count_files(&items, &mut self.change_counts);
@@ -231,14 +269,24 @@ impl LogView {
 
     fn diff_source_for(&self, id: &str, cx: &App) -> Option<DiffSource> {
         let path = id.strip_prefix(FILE_PREFIX)?;
-        let hash = self.model.read(cx).selected_hash()?.to_owned();
         let old_path = self.change_kinds.get(path).and_then(|(_, old)| old.clone());
+        if let Some(ranges) = &self.combined {
+            let (old, new) = ranges.get(path)?.clone();
+            return Some(DiffSource::Between { old, new: Some(new), path: path.to_owned(), old_path });
+        }
+        let hash = self.model.read(cx).selected_hash()?.to_owned();
         Some(DiffSource::Commit { hash, path: path.to_owned(), old_path })
     }
 
     /// Mouse selection: plain click selects one commit, Ctrl/Cmd-click
     /// toggles, Shift-click selects the range from the last plain click.
     fn click_row(&mut self, ix: usize, toggle: bool, range: bool, cx: &mut Context<Self>) {
+        self.update_selection(ix, toggle, range, cx);
+        // The details pane shows the selection's combined changes.
+        self.rebuild_changes(cx);
+    }
+
+    fn update_selection(&mut self, ix: usize, toggle: bool, range: bool, cx: &mut Context<Self>) {
         let model = self.model.read(cx);
         let commits = model.commits().clone();
         let lead = model.selected_hash().map(str::to_owned);
@@ -882,8 +930,9 @@ impl LogView {
                     .text_sm()
                     .text_color(palette.text_secondary)
                     .child(match &details {
-                        _ if !self.extra_selection.is_empty() => {
-                            format!("{} commits selected · changes of the selected commit", self.extra_selection.len() + 1)
+                        _ if self.combined.is_some() => {
+                            let n = self.combined.as_ref().map_or(0, |c| c.len());
+                            format!("{} commits selected · {n} {} changed", self.extra_selection.len() + 1, if n == 1 { "file" } else { "files" })
                         }
                         Some(d) => format!("{} {} changed", d.changes.len(), if d.changes.len() == 1 { "file" } else { "files" }),
                         None => "No commit selected".into(),
@@ -1020,6 +1069,9 @@ impl LogView {
             .child(resizable_panel().size(px(220.)).child(info))
     }
 }
+
+/// Git's empty tree, the "parent" of a root commit.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// The commit message with URLs and commit hashes clickable, as in IntelliJ.
 fn message_text(message: &str, entity: &Entity<LogView>, palette: &crate::theme::Palette) -> gpui_kit::InteractiveText {
