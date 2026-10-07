@@ -1,3 +1,4 @@
+pub mod accounts_dialog;
 pub mod blame_view;
 pub mod branches_popup;
 pub mod clone_dialog;
@@ -11,6 +12,7 @@ pub mod log_view;
 pub mod mappings_dialog;
 pub mod merge_view;
 pub mod patch_dialogs;
+pub mod pull_requests;
 pub mod rebase_dialog;
 pub mod rollback_dialog;
 pub mod remote_dialogs;

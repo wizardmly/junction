@@ -1,0 +1,683 @@
+//! The Pull Requests tool window (GitHub): the repository's PRs with state
+//! and search filters; a PR's details with its files, Checkout, review and
+//! merge actions; the conversation timeline opens in the editor area.
+
+use std::rc::Rc;
+
+use gpui_kit::assets::IconName;
+use gpui_kit::component::{
+    Icon, Sizable as _, WindowExt as _, h_flex,
+    button::{Button, ButtonVariants as _},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    menu::{DropdownMenu as _, PopupMenuItem},
+    scroll::ScrollableElement as _,
+    text::TextView,
+    v_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
+    px,
+};
+
+use crate::hosting::account::{self, Account};
+use crate::hosting::github::{self, Client, Comment, MergeMethod, PrFile, PullRequest, ReviewEvent};
+use crate::model::{RepoEvent, RepoModel};
+use crate::theme::ActivePalette as _;
+use crate::ui::common::{ROW_HEIGHT, tool_button};
+use crate::ui::diff_view::DiffSource;
+
+/// Where the PRs come from: an account and `owner/repo` on its server.
+#[derive(Clone)]
+pub struct PrTarget {
+    pub account: Account,
+    pub repo: String,
+    pub remote: String,
+}
+
+pub enum PrEvent {
+    OpenDiff(DiffSource),
+    OpenTimeline(PrTarget, PullRequest),
+}
+
+impl EventEmitter<PrEvent> for PullRequestsView {}
+
+struct Details {
+    pr: PullRequest,
+    files: Vec<PrFile>,
+    /// The fork point the files are compared from, once fetched.
+    base: Option<String>,
+    loading: bool,
+}
+
+pub struct PullRequestsView {
+    model: Entity<RepoModel>,
+    target: Option<PrTarget>,
+    /// Why there is no target: no GitHub remote, or no account for it.
+    problem: Option<String>,
+    state: &'static str,
+    search: Entity<InputState>,
+    prs: Vec<PullRequest>,
+    loading: bool,
+    error: Option<String>,
+    selected: Option<usize>,
+    details: Option<Details>,
+    _load: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// The account and repository for the active repository's GitHub remote.
+fn resolve(model: &RepoModel) -> Result<PrTarget, String> {
+    let web = model.web_repo().ok_or("This repository has no GitHub remote")?;
+    if web.host != crate::git::hosting::Host::GitHub && !account::load().iter().any(|a| web.base.contains(&a.server)) {
+        return Err(format!("Pull requests are shown for GitHub remotes ({} is not one)", web.base));
+    }
+    let host = web.base.trim_start_matches("https://").split('/').next().unwrap_or_default().to_owned();
+    let account = account::for_host(&host).ok_or_else(|| format!("Log in to {host} to see pull requests"))?;
+    let repo = github::repo_path(&web.base).ok_or("Cannot tell the repository from the remote URL")?;
+    let remote = model
+        .repository()
+        .and_then(|r| r.run(["remote"]).ok())
+        .and_then(|list| {
+            let names: Vec<String> = list.lines().map(str::to_owned).collect();
+            names.iter().find(|n| *n == "origin").or(names.first()).cloned()
+        })
+        .unwrap_or_else(|| "origin".into());
+    Ok(PrTarget { account, repo, remote })
+}
+
+impl PullRequestsView {
+    pub fn new(model: Entity<RepoModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search pull requests"));
+        let subscriptions = vec![
+            cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+            // A new repository (or remote) may mean another target.
+            cx.subscribe(&model, |this, model, event, cx| {
+                if matches!(event, RepoEvent::Reloaded) {
+                    let target = resolve(model.read(cx));
+                    let changed = match (&target, &this.target) {
+                        (Ok(new), Some(old)) => new.repo != old.repo || new.account != old.account,
+                        (Ok(_), None) => true,
+                        (Err(problem), _) => this.problem.as_ref() != Some(problem),
+                    };
+                    if changed {
+                        this.refresh(cx);
+                    }
+                }
+            }),
+        ];
+        let mut this = Self {
+            model,
+            target: None,
+            problem: None,
+            state: "open",
+            search,
+            prs: Vec::new(),
+            loading: false,
+            error: None,
+            selected: None,
+            details: None,
+            _load: None,
+            _subscriptions: subscriptions,
+        };
+        this.refresh(cx);
+        this
+    }
+
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        match resolve(self.model.read(cx)) {
+            Ok(target) => {
+                self.problem = None;
+                self.target = Some(target.clone());
+                self.loading = true;
+                self.error = None;
+                let state = self.state;
+                let open_number = self.details.as_ref().map(|d| d.pr.number);
+                self._load = Some(cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_spawn(async move {
+                            let client = Client::new(&target.account);
+                            let prs = client.pulls(&target.repo, state)?;
+                            // The open details may have changed state (merged, closed) and left this filter.
+                            let open = open_number.and_then(|n| client.pull(&target.repo, n).ok());
+                            anyhow::Ok((prs, open))
+                        })
+                        .await;
+                    this.update(cx, |this, cx| {
+                        this.loading = false;
+                        match result {
+                            Ok((prs, open)) => {
+                                this.prs = prs;
+                                if let Some(pr) = open {
+                                    this.selected = this.prs.iter().position(|p| p.number == pr.number);
+                                    if let Some(details) = this.details.as_mut().filter(|d| d.pr.number == pr.number) {
+                                        details.pr = pr;
+                                    }
+                                }
+                            }
+                            Err(error) => this.error = Some(error.to_string()),
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+            }
+            Err(problem) => {
+                self.target = None;
+                self.prs.clear();
+                self.problem = Some(problem);
+            }
+        }
+        cx.notify();
+    }
+
+    fn visible(&self, cx: &App) -> Vec<(usize, &PullRequest)> {
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        self.prs
+            .iter()
+            .enumerate()
+            .filter(|(_, pr)| {
+                query.is_empty()
+                    || pr.title.to_lowercase().contains(&query)
+                    || pr.user.login.to_lowercase().contains(&query)
+                    || format!("#{}", pr.number).contains(&query)
+                    || pr.labels.iter().any(|l| l.name.to_lowercase().contains(&query))
+            })
+            .collect()
+    }
+
+    fn open(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let (Some(pr), Some(target)) = (self.prs.get(ix).cloned(), self.target.clone()) else { return };
+        let repository = self.model.read(cx).repository().cloned();
+        self.selected = Some(ix);
+        self.details = Some(Details { pr: pr.clone(), files: Vec::new(), base: None, loading: true });
+        self._load = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let files = Client::new(&target.account).pull_files(&target.repo, pr.number)?;
+                    // The PR's commits, so its files can be diffed locally.
+                    let base = repository.and_then(|repo| {
+                        repo.run(["fetch", "--quiet", &target.remote, &format!("+refs/pull/{}/head:refs/remotes/{}/pr/{}", pr.number, target.remote, pr.number)]).ok();
+                        repo.run(["merge-base", &pr.base.sha, &pr.head.sha]).ok().map(|s| s.trim().to_owned())
+                    });
+                    anyhow::Ok((files, base))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some(details) = this.details.as_mut() {
+                    details.loading = false;
+                    match result {
+                        Ok((files, base)) => {
+                            details.files = files;
+                            details.base = base;
+                        }
+                        Err(error) => this.error = Some(error.to_string()),
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn open_file(&mut self, file: &PrFile, cx: &mut Context<Self>) {
+        let Some(details) = &self.details else { return };
+        let old = details.base.clone().unwrap_or_else(|| details.pr.base.sha.clone());
+        cx.emit(PrEvent::OpenDiff(DiffSource::Between {
+            old,
+            new: Some(details.pr.head.sha.clone()),
+            path: file.filename.clone(),
+            old_path: file.previous_filename.clone(),
+        }));
+    }
+
+    fn api_op(&self, title: &'static str, op: impl FnOnce(&Client, &str, u64) -> anyhow::Result<String> + Send + 'static, cx: &mut Context<Self>) {
+        let (Some(target), Some(details)) = (self.target.clone(), self.details.as_ref()) else { return };
+        let number = details.pr.number;
+        let model = self.model.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { op(&Client::new(&target.account), &target.repo, number) }).await;
+            let (message, error) = match result {
+                Ok(message) => (message, false),
+                Err(error) => (error.to_string(), true),
+            };
+            model.update(cx, |_, cx| cx.emit(RepoEvent::Notify { title: title.into(), message, error }));
+            this.update(cx, |this, cx| this.refresh(cx)).ok();
+        })
+        .detach();
+    }
+
+    fn checkout(&self, cx: &mut Context<Self>) {
+        let (Some(target), Some(details)) = (self.target.clone(), self.details.as_ref()) else { return };
+        let pr = details.pr.clone();
+        self.model.update(cx, |m, cx| {
+            m.run_operation("Checkout Pull Request", move |repo| {
+                let branch = pr.head.name.clone();
+                let exists = repo.run(["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")]).is_ok();
+                if exists {
+                    repo.run(["checkout", &branch])?;
+                    repo.run(["merge", "--ff-only", &pr.head.sha]).ok();
+                } else {
+                    repo.run(["fetch", &target.remote, &format!("pull/{}/head:{branch}", pr.number)])?;
+                    repo.run(["checkout", &branch])?;
+                }
+                Ok(format!("Checked out #{} as {branch}", pr.number))
+            }, cx)
+        });
+    }
+
+    fn request_changes(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let entity = cx.entity();
+        review_dialog("Request Changes", "Request Changes", window, cx, move |body, cx| {
+            entity.update(cx, |this, cx| {
+                this.api_op("Request Changes", move |c, repo, n| {
+                    c.submit_review(repo, n, ReviewEvent::RequestChanges, &body)?;
+                    Ok(format!("Requested changes on #{n}"))
+                }, cx)
+            })
+        });
+    }
+}
+
+/// A dialog with a text area, for review bodies and comments.
+pub fn review_dialog(title: &'static str, ok: &'static str, window: &mut Window, cx: &mut App, on_ok: impl Fn(String, &mut App) + 'static) {
+    let text = cx.new(|cx| TextareaState::new(window, cx).rows(6).placeholder("Leave a comment"));
+    let on_ok = Rc::new(on_ok);
+    let focus = text.clone();
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (text_ok, on_ok) = (text.clone(), on_ok.clone());
+        dialog
+            .title(title)
+            .w(px(520.))
+            .child(Textarea::new(&text))
+            .on_ok(move |_, _, cx| {
+                let body = text_ok.read(cx).value().trim().to_owned();
+                if body.is_empty() {
+                    return false;
+                }
+                on_ok(body, cx);
+                true
+            })
+            .footer(crate::ui::dialogs::footer(ok))
+    });
+    window.defer(cx, move |window, cx| focus.update(cx, |s, cx| s.focus(window, cx)));
+}
+
+fn state_color(status: &str, palette: &crate::theme::Palette) -> gpui_kit::Hsla {
+    match status {
+        "Open" => palette.status_added,
+        "Merged" => palette.ref_remote,
+        "Draft" => palette.text_secondary,
+        _ => palette.status_deleted,
+    }
+}
+
+impl Render for PullRequestsView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        if let Some(problem) = self.problem.clone() {
+            let entity = cx.entity();
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_3()
+                .p_4()
+                .child(Icon::new(IconName::GitPullRequest).large().text_color(palette.text_secondary))
+                .child(div().text_sm().text_color(palette.text_secondary).text_center().child(problem.clone()))
+                .when(problem.starts_with("Log in"), |el| {
+                    el.child(Button::new("pr-login").small().primary().label("Log In…").on_click(move |_, window, cx| {
+                        let entity = entity.clone();
+                        crate::ui::accounts_dialog::accounts(
+                            Some(Rc::new(move |cx: &mut App| entity.update(cx, |this, cx| this.refresh(cx)))),
+                            window,
+                            cx,
+                        )
+                    }))
+                })
+                .into_any_element();
+        }
+        if let Some(details) = &self.details {
+            return self.render_details(details, &palette, cx).into_any_element();
+        }
+
+        let mut rows = v_flex();
+        for (ix, pr) in self.visible(cx) {
+            let status = pr.status();
+            rows = rows.child(
+                v_flex()
+                    .id(SharedString::from(format!("pr-{}", pr.number)))
+                    .px_2()
+                    .py_1()
+                    .gap_0p5()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(palette.hover))
+                    .on_click(cx.listener(move |this, _, _, cx| this.open(ix, cx)))
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .text_sm()
+                            .child(Icon::new(IconName::GitPullRequest).small().text_color(state_color(status, &palette)))
+                            .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(gpui_kit::FontWeight::MEDIUM).child(pr.title.clone()))
+                            .children(pr.labels.iter().take(2).map(|l| {
+                                div().px_1().rounded(px(3.)).border_1().border_color(palette.border).text_xs().text_color(palette.text_secondary).child(l.name.clone())
+                            })),
+                    )
+                    .child(
+                        div()
+                            .pl(px(20.))
+                            .text_xs()
+                            .text_color(palette.text_secondary)
+                            .child(format!("#{} · {} · {} · {}", pr.number, status, pr.user.login, pr.updated_at.get(..10).unwrap_or_default())),
+                    ),
+            );
+        }
+        if !self.loading && self.prs.is_empty() && self.error.is_none() {
+            rows = rows.child(div().p_3().text_sm().text_color(palette.text_secondary).child("No pull requests"));
+        }
+        let state = self.state;
+        let entity = cx.entity();
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .h(px(32.))
+                    .px_1()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(div().flex_1().child(Input::new(&self.search).xsmall().cleanable(true)))
+                    .child(
+                        Button::new("pr-state")
+                            .ghost()
+                            .xsmall()
+                            .label(match state {
+                                "open" => "Open",
+                                "closed" => "Closed",
+                                _ => "All",
+                            })
+                            .dropdown_menu(move |mut menu, _, _| {
+                                for (value, label) in [("open", "Open"), ("closed", "Closed"), ("all", "All")] {
+                                    let entity = entity.clone();
+                                    menu = menu.item(PopupMenuItem::new(label).checked(state == value).on_click(move |_, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.state = value;
+                                            this.refresh(cx)
+                                        })
+                                    }));
+                                }
+                                menu
+                            }),
+                    )
+                    .child(tool_button("pr-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(|this, _, _, cx| this.refresh(cx)))),
+            )
+            .when(self.loading, |el| el.child(div().px_2().py_1().text_xs().text_color(palette.text_secondary).child("Loading…")))
+            .when_some(self.error.clone(), |el, e| el.child(div().px_2().py_1().text_sm().text_color(palette.status_deleted).child(e)))
+            .child(div().id("pr-list").flex_1().min_h_0().overflow_y_scrollbar().child(rows))
+            .into_any_element()
+    }
+}
+
+impl PullRequestsView {
+    fn render_details(&self, details: &Details, palette: &crate::theme::Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let pr = &details.pr;
+        let status = pr.status();
+        let open = pr.state == "open";
+        let web_url = pr.html_url.clone();
+        let entity = cx.entity();
+        let mut files = v_flex();
+        for (ix, file) in details.files.iter().enumerate() {
+            let file_for_click = file.clone();
+            let (dir, name) = file.filename.rsplit_once('/').map_or(("", file.filename.as_str()), |(d, n)| (d, n));
+            let color = match file.status.as_str() {
+                "added" => palette.status_added,
+                "removed" => palette.status_deleted,
+                "renamed" => palette.status_renamed,
+                _ => palette.status_modified,
+            };
+            files = files.child(
+                h_flex()
+                    .id(("pr-file", ix))
+                    .h(px(ROW_HEIGHT))
+                    .px_2()
+                    .gap_1p5()
+                    .text_sm()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(palette.hover))
+                    .on_click(cx.listener(move |this, _, _, cx| this.open_file(&file_for_click, cx)))
+                    .child(Icon::new(crate::ui::common::file_icon(&file.filename)).small().text_color(palette.text_secondary))
+                    .child(div().text_color(color).child(name.to_owned()))
+                    .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().text_xs().text_color(palette.text_secondary).child(dir.to_owned()))
+                    .child(div().text_xs().text_color(palette.status_added).child(format!("+{}", file.additions)))
+                    .child(div().text_xs().text_color(palette.status_deleted).child(format!("−{}", file.deletions))),
+            );
+        }
+        if details.loading {
+            files = files.child(div().p_2().text_xs().text_color(palette.text_secondary).child("Loading files…"));
+        }
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .h(px(32.))
+                    .px_1()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(tool_button("pr-back", IconName::ChevronLeft, "Back to List").on_click(cx.listener(|this, _, _, cx| {
+                        this.details = None;
+                        cx.notify();
+                    })))
+                    .child(div().flex_1().text_sm().text_color(palette.text_secondary).child(format!("#{}", pr.number)))
+                    .child(tool_button("pr-web", IconName::Globe, "Open on GitHub").on_click(move |_, _, cx| cx.open_url(&web_url))),
+            )
+            .child(
+                div().id("pr-details").flex_1().min_h_0().overflow_y_scrollbar().child(
+                    v_flex()
+                        .p_2()
+                        .gap_2()
+                        .child(div().text_base().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(pr.title.clone()))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .text_xs()
+                                .child(div().px_1().rounded(px(3.)).bg(state_color(status, palette)).text_color(gpui_kit::white()).child(status))
+                                .child(div().text_color(palette.text_secondary).child(format!("{} wants to merge {} into {}", pr.user.login, pr.head.name, pr.base.name))),
+                        )
+                        .when_some(pr.body.clone().filter(|b| !b.trim().is_empty()), |el, body| {
+                            el.child(div().text_sm().child(TextView::markdown(SharedString::from(format!("pr-body-{}", pr.number)), body)))
+                        })
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .flex_wrap()
+                                .child(Button::new("pr-timeline").xsmall().outline().icon(IconName::MessageSquare).label("Timeline").on_click(cx.listener(|this, _, _, cx| {
+                                    if let (Some(target), Some(details)) = (this.target.clone(), this.details.as_ref()) {
+                                        cx.emit(PrEvent::OpenTimeline(target, details.pr.clone()));
+                                    }
+                                })))
+                                .child(Button::new("pr-checkout").xsmall().outline().icon(IconName::GitBranch).label("Checkout").on_click(cx.listener(|this, _, _, cx| this.checkout(cx))))
+                                .when(open, |el| {
+                                    el.child(Button::new("pr-approve").xsmall().outline().icon(IconName::Check).label("Approve").on_click(cx.listener(|this, _, _, cx| {
+                                        this.api_op("Approve", |c, repo, n| {
+                                            c.submit_review(repo, n, ReviewEvent::Approve, "")?;
+                                            Ok(format!("Approved #{n}"))
+                                        }, cx)
+                                    })))
+                                    .child(Button::new("pr-changes").xsmall().outline().label("Request Changes").on_click(cx.listener(|this, _, window, cx| this.request_changes(window, cx))))
+                                    .child(Button::new("pr-merge").xsmall().primary().label("Merge").dropdown_menu(move |menu, _, _| {
+                                        let item = |label: &'static str, method: MergeMethod| {
+                                            let entity = entity.clone();
+                                            PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    this.api_op("Merge Pull Request", move |c, repo, n| {
+                                                        c.merge(repo, n, method)?;
+                                                        Ok(format!("Merged #{n}"))
+                                                    }, cx)
+                                                })
+                                            })
+                                        };
+                                        menu.item(item("Create a Merge Commit", MergeMethod::Merge))
+                                            .item(item("Squash and Merge", MergeMethod::Squash))
+                                            .item(item("Rebase and Merge", MergeMethod::Rebase))
+                                    }))
+                                }),
+                        )
+                        .child(div().pt_1().text_xs().text_color(palette.text_secondary).child(format!("{} files changed", details.files.len())))
+                        .child(div().rounded(px(4.)).border_1().border_color(palette.border).child(files)),
+                ),
+            )
+    }
+}
+
+/// The conversation of a PR in the editor area: description, comments,
+/// reviews and line comments, with a box to add a comment.
+pub struct PrTimelineView {
+    target: PrTarget,
+    pr: PullRequest,
+    comments: Vec<Comment>,
+    input: Entity<TextareaState>,
+    loading: bool,
+    error: Option<String>,
+    _load: Option<Task<()>>,
+}
+
+impl PrTimelineView {
+    pub fn new(target: PrTarget, pr: PullRequest, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let input = cx.new(|cx| TextareaState::new(window, cx).rows(3).placeholder("Leave a comment"));
+        let mut this = Self { target, pr, comments: Vec::new(), input, loading: true, error: None, _load: None };
+        this.reload(cx);
+        this
+    }
+
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        let (target, number) = (self.target.clone(), self.pr.number);
+        self.loading = true;
+        self._load = Some(cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { Client::new(&target.account).timeline(&target.repo, number) }).await;
+            this.update(cx, |this, cx| {
+                this.loading = false;
+                match result {
+                    Ok(comments) => this.comments = comments,
+                    Err(error) => this.error = Some(error.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn post(&mut self, event: Option<ReviewEvent>, window: &mut Window, cx: &mut Context<Self>) {
+        let body = self.input.read(cx).value().trim().to_owned();
+        if body.is_empty() && event != Some(ReviewEvent::Approve) {
+            return;
+        }
+        self.input.update(cx, |s, cx| s.set_value("", window, cx));
+        let (target, number) = (self.target.clone(), self.pr.number);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let client = Client::new(&target.account);
+                    match event {
+                        Some(event) => client.submit_review(&target.repo, number, event, &body),
+                        None => client.add_comment(&target.repo, number, &body),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Err(error) = result {
+                    this.error = Some(error.to_string());
+                }
+                this.reload(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+impl Render for PrTimelineView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let mut items = v_flex().gap_3();
+        let entry = |id: String, author: &str, time: &str, badge: Option<(&str, gpui_kit::Hsla)>, context: Option<String>, body: &str| {
+            v_flex()
+                .gap_1()
+                .p_2()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(palette.border)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(author.to_owned()))
+                        .when_some(badge, |el, (label, color)| el.child(div().px_1().rounded(px(3.)).bg(color).text_xs().text_color(gpui_kit::white()).child(label.to_owned())))
+                        .when_some(context, |el, c| el.child(div().text_xs().text_color(palette.link).child(c)))
+                        .child(div().flex_1())
+                        .child(div().text_xs().text_color(palette.text_secondary).child(time.get(..16).unwrap_or(time).replace('T', " "))),
+                )
+                .when(!body.trim().is_empty(), |el| el.child(div().text_sm().child(TextView::markdown(SharedString::from(id), body.to_owned()))))
+        };
+        items = items.child(entry(format!("tl-body-{}", self.pr.number), &self.pr.user.login, &self.pr.created_at, Some(("opened", palette.status_added)), None, self.pr.body.as_deref().unwrap_or("No description provided.")));
+        for c in &self.comments {
+            let badge = match c.state.as_deref() {
+                Some("APPROVED") => Some(("approved", palette.status_added)),
+                Some("CHANGES_REQUESTED") => Some(("requested changes", palette.status_deleted)),
+                Some("COMMENTED") => Some(("reviewed", palette.text_secondary)),
+                Some("DISMISSED") => Some(("dismissed", palette.text_secondary)),
+                _ => None,
+            };
+            let context = c.path.as_ref().map(|p| match c.line {
+                Some(line) => format!("{p}:{line}"),
+                None => p.clone(),
+            });
+            if badge.is_some() && c.body.as_deref().unwrap_or_default().trim().is_empty() && context.is_none() {
+                items = items.child(entry(format!("tl-{}", c.id), &c.user.login, c.time(), badge, None, ""));
+            } else {
+                items = items.child(entry(format!("tl-{}", c.id), &c.user.login, c.time(), badge, context, c.body.as_deref().unwrap_or_default()));
+            }
+        }
+        let open = self.pr.state == "open";
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .h(px(36.))
+                    .px_3()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(Icon::new(IconName::GitPullRequest).small().text_color(state_color(self.pr.status(), &palette)))
+                    .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(format!("{} #{}", self.pr.title, self.pr.number)))
+                    .child(tool_button("tl-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(|this, _, _, cx| this.reload(cx)))),
+            )
+            .when(self.loading, |el| el.child(div().px_3().py_1().text_xs().text_color(palette.text_secondary).child("Loading…")))
+            .when_some(self.error.clone(), |el, e| el.child(div().px_3().py_1().text_sm().text_color(palette.status_deleted).child(e)))
+            .child(div().id("timeline").flex_1().min_h_0().overflow_y_scrollbar().child(div().p_3().child(items)))
+            .child(
+                v_flex()
+                    .p_3()
+                    .gap_2()
+                    .border_t_1()
+                    .border_color(palette.border)
+                    .child(Textarea::new(&self.input))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(Button::new("tl-comment").small().primary().label("Comment").on_click(cx.listener(|this, _, window, cx| this.post(None, window, cx))))
+                            .when(open, |el| {
+                                el.child(Button::new("tl-approve").small().outline().label("Approve").on_click(cx.listener(|this, _, window, cx| this.post(Some(ReviewEvent::Approve), window, cx))))
+                                    .child(Button::new("tl-changes").small().outline().label("Request Changes").on_click(cx.listener(|this, _, window, cx| this.post(Some(ReviewEvent::RequestChanges), window, cx))))
+                            }),
+                    ),
+            )
+    }
+}

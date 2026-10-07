@@ -7,6 +7,7 @@
 mod askpass;
 mod assets;
 mod git;
+mod hosting;
 mod model;
 mod settings;
 mod theme;

@@ -99,6 +99,11 @@ pub struct Workspace {
     branches_popup: Entity<BranchesPopup>,
     worktrees: Entity<crate::ui::worktree_view::WorktreeView>,
     submodules: Entity<crate::ui::submodule_view::SubmoduleView>,
+    /// The Pull Requests tool window, sharing the left side with Commit.
+    prs: Entity<crate::ui::pull_requests::PullRequestsView>,
+    show_prs: bool,
+    /// A pull request's timeline, shown in the editor area until closed.
+    timeline: Option<Entity<crate::ui::pull_requests::PrTimelineView>>,
     /// The merge tool, shown in the editor area instead of the diff.
     merge: Option<(Entity<MergeView>, Subscription)>,
     /// Git tool window Log tabs; the first is the main "Log".
@@ -126,6 +131,7 @@ impl Workspace {
         let branches_popup = cx.new(|cx| BranchesPopup::new(model.clone(), window, cx));
         let worktrees = cx.new(|cx| crate::ui::worktree_view::WorktreeView::new(model.clone(), cx));
         let submodules = cx.new(|cx| crate::ui::submodule_view::SubmoduleView::new(model.clone(), cx));
+        let prs = cx.new(|cx| crate::ui::pull_requests::PullRequestsView::new(model.clone(), window, cx));
         let weak = cx.entity().downgrade();
         branches_popup.update(cx, |popup, _| {
             popup.on_commit = Some(Rc::new(move |window, cx| {
@@ -156,6 +162,14 @@ impl Workspace {
                     );
                 }
             }),
+            cx.subscribe_in(&prs, window, |this, _, event: &crate::ui::pull_requests::PrEvent, window, cx| match event {
+                crate::ui::pull_requests::PrEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
+                crate::ui::pull_requests::PrEvent::OpenTimeline(target, pr) => {
+                    let (target, pr) = (target.clone(), pr.clone());
+                    this.timeline = Some(cx.new(|cx| crate::ui::pull_requests::PrTimelineView::new(target, pr, window, cx)));
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&stash, |this, _, event: &StashEvent, cx| match event {
                 StashEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
             }),
@@ -168,6 +182,7 @@ impl Workspace {
                 }
                 if let RepoEvent::PrefillCommitMessage(_) = event {
                     this.show_commit = true;
+                    this.show_prs = false;
                     this.left_tab = LeftTab::Commit;
                     cx.notify();
                 }
@@ -314,6 +329,9 @@ impl Workspace {
             branches_popup,
             worktrees,
             submodules,
+            prs,
+            show_prs: false,
+            timeline: None,
             merge: None,
             log_tabs: vec![LogTab { title: "Log".into(), filter: Default::default(), selected: None }],
             active_log: 0,
@@ -454,6 +472,7 @@ impl Workspace {
     pub fn open_file(&mut self, path: String, revision: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(repository) = self.model.read(cx).repository().cloned() else { return };
         self.blame = None;
+        self.timeline = None;
         let same = self.editor.as_ref().is_some_and(|(e, _)| e.read(cx).path() == path && e.read(cx).revision() == revision.as_deref());
         if !same {
             let view = cx.new(|cx| FileEditor::new(repository, path, revision, window, cx));
@@ -557,6 +576,7 @@ impl Workspace {
         // A diff replaces the annotations and the file editor in the editor area.
         self.blame = None;
         self.editor = None;
+        self.timeline = None;
         self.diff.update(cx, |diff, cx| diff.show(repository, source, cx));
     }
 
@@ -759,6 +779,17 @@ impl Workspace {
                                     let entity = entity.clone();
                                     move |_, window, cx| crate::ui::worktree_view::new_worktree(entity.read(cx).model.clone(), window, cx)
                                 }))
+                                .item(PopupMenuItem::new("GitHub Accounts…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| {
+                                        let prs = entity.read(cx).prs.clone();
+                                        crate::ui::accounts_dialog::accounts(
+                                            Some(std::rc::Rc::new(move |cx: &mut gpui_kit::App| prs.update(cx, |prs, cx| prs.refresh(cx)))),
+                                            window,
+                                            cx,
+                                        )
+                                    }
+                                }))
                                 .item(PopupMenuItem::new("Directory Mappings…").on_click({
                                     let entity = entity.clone();
                                     move |_, window, cx| crate::ui::mappings_dialog::directory_mappings(entity.read(cx).model.clone(), window, cx)
@@ -908,6 +939,7 @@ impl Workspace {
                 .child(tool_button("tb-commit", IconName::Check, "Commit…  Ctrl+K").on_click(cx.listener(
                     |this, _, _, cx| {
                         this.show_commit = true;
+                        this.show_prs = false;
                         cx.notify();
                     },
                 )))
@@ -940,9 +972,20 @@ impl Workspace {
             .border_r_1()
             .border_color(palette.border)
             .bg(palette.toolbar)
-            .child(stripe_button("stripe-commit", IconName::GitCommitVertical, "Commit", self.show_commit).on_click(
+            .child(stripe_button("stripe-commit", IconName::GitCommitVertical, "Commit", self.show_commit && !self.show_prs).on_click(
                 cx.listener(|this, _, _, cx| {
-                    this.show_commit = !this.show_commit;
+                    this.show_commit = this.show_prs || !this.show_commit;
+                    this.show_prs = false;
+                    cx.notify();
+                }),
+            ))
+            .child(stripe_button("stripe-prs", IconName::GitPullRequest, "Pull Requests", self.show_prs).on_click(
+                cx.listener(|this, _, _, cx| {
+                    this.show_prs = !this.show_prs;
+                    if this.show_prs {
+                        this.show_commit = false;
+                        this.prs.update(cx, |prs, cx| prs.refresh(cx));
+                    }
                     cx.notify();
                 }),
             ))
@@ -1008,6 +1051,7 @@ impl Workspace {
 
     fn on_commit(&mut self, _: &CommitChanges, window: &mut Window, cx: &mut Context<Self>) {
         self.show_commit = true;
+        self.show_prs = false;
         self.left_tab = LeftTab::Commit;
         self.commit.update(cx, |commit, cx| commit.focus_message(window, cx));
         cx.notify();
@@ -1076,12 +1120,14 @@ impl Workspace {
             Some(("Stash Changes…", "", op(|this, window, cx| dialogs::stash(this.model.clone(), window, cx)))),
             Some(("Unstash Changes…", "", op(|this, _, cx| {
                 this.show_commit = true;
+                this.show_prs = false;
                 this.left_tab = LeftTab::Stash;
                 cx.notify();
             }))),
             Some(("Shelve Changes…", "", op(|this, window, cx| this.commit.update(cx, |c, cx| c.shelve(window, cx))))),
             Some(("Unshelve Changes…", "", op(|this, _, cx| {
                 this.show_commit = true;
+                this.show_prs = false;
                 this.left_tab = LeftTab::Shelf;
                 cx.notify();
             }))),
@@ -1285,6 +1331,7 @@ impl Render for Workspace {
             .children(self.render_operation_banner(cx))
             .child(div().flex_1().min_h_0().map(|el| match (&self.merge, &self.blame, &self.editor) {
                 _ if !has_repo => el.child(self.render_welcome(cx)),
+                _ if self.timeline.is_some() => el.child(self.timeline.clone().unwrap()),
                 (Some((merge, _)), _, _) => el.child(merge.clone()),
                 (None, Some((blame, _)), _) => el.child(blame.clone()),
                 (None, None, Some((editor, _))) => el.child(editor.clone()),
@@ -1296,8 +1343,8 @@ impl Render for Workspace {
                 resizable_panel()
                     .size(px(340.))
                     .size_range(px(220.)..px(700.))
-                    .visible(self.show_commit && has_repo)
-                    .child(self.render_left(cx)),
+                    .visible((self.show_commit || self.show_prs) && has_repo)
+                    .map(|panel| if self.show_prs { panel.child(self.prs.clone()) } else { panel.child(self.render_left(cx)) }),
             )
             .child(resizable_panel().child(editor));
 

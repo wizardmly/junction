@@ -63,7 +63,10 @@ gpui_kit::assets::icon_assets!(
         Settings2,
         ChevronsDownUp,
         ChevronsUpDown,
-        StarOff
+        StarOff,
+        MessageSquare,
+        Globe,
+        ChevronLeft
     ]
 );
 
