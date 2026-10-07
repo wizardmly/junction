@@ -28,9 +28,16 @@ use crate::git::blob::{self, ImageInfo, ImageKind};
 use crate::git::diff::{self, DiffOptions, DiffRow, FileDiff, HighlightMode, HunkAction, IgnoreWhitespace, Revisions, RowKind, Side};
 use crate::theme::{ActivePalette as _, Palette};
 use crate::ui::common::{self, tool_button};
+use crate::ui::text_buffer::{Buffer, History, Selection};
+use edit::LineRow;
 use crate::ui::diff_panes::{BlockColors, Connector, DIVIDER_WIDTH, PaneRow, TwoSide, fold_links, map_row, paint_divider};
 
-actions!(diff_view, [NextDifference, PreviousDifference, JumpToSource]);
+mod edit;
+
+actions!(diff_view, [NextDifference, PreviousDifference, JumpToSource, Paste]);
+
+/// The key context of the side-by-side panes.
+pub const PANE_CONTEXT: &str = "DiffPane";
 
 use crate::ui::diff_panes::LINE_HEIGHT;
 const GUTTER_WIDTH: f32 = 44.;
@@ -182,11 +189,30 @@ pub struct DiffView {
     pending_change: Option<usize>,
     /// Each pane's longest line, in columns, bounding horizontal scroll.
     max_cols: [usize; 2],
+    /// The panes' texts; the right one is edited in place.
+    buffers: [Buffer; 2],
+    /// The pane with the caret, and its selection.
+    caret: Option<(usize, Selection)>,
+    /// The display column Up / Down keep to.
+    goal: Option<usize>,
+    /// A mouse drag is selecting.
+    selecting: bool,
+    history: History,
+    /// IME composition in progress.
+    marked: Option<Range<usize>>,
+    focus: gpui_kit::FocusHandle,
+    highlighters: [Option<gpui_kit::component::highlighter::SyntaxHighlighter>; 2],
+    /// Buffer line to pane row, per pane.
+    line_rows: [Vec<LineRow>; 2],
+    pane_bounds: Rc<Cell<[Bounds<Pixels>; 2]>>,
+    /// Ctrl held: `>>` appends instead of replacing.
+    ctrl_held: bool,
+    save_task: Option<Task<()>>,
     _task: Option<Task<()>>,
 }
 
 impl DiffView {
-    pub fn new() -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             repository: None,
             source: None,
@@ -208,6 +234,18 @@ impl DiffView {
             stripe_drag: None,
             pending_change: None,
             max_cols: [0; 2],
+            buffers: Default::default(),
+            caret: None,
+            goal: None,
+            selecting: false,
+            history: History::default(),
+            marked: None,
+            focus: cx.focus_handle(),
+            highlighters: [None, None],
+            line_rows: Default::default(),
+            pane_bounds: Rc::new(Cell::new([Bounds::default(); 2])),
+            ctrl_held: false,
+            save_task: None,
             _task: None,
         }
     }
@@ -216,8 +254,11 @@ impl DiffView {
         if self.source.as_ref() == Some(&source) {
             return;
         }
+        self.flush_save();
         self.repository = Some(repository.clone());
         self.source = Some(source.clone());
+        self.buffers = Default::default();
+        self.highlighters = [None, None];
         self.review = None;
         self.loaded = None;
         self.diff = FileDiff::default();
@@ -240,7 +281,12 @@ impl DiffView {
             this.update(cx, |this, cx| {
                 match result {
                     Ok((loaded, file_diff)) => {
+                        this.buffers = [Buffer::new(loaded.old.clone()), Buffer::new(loaded.new.clone())];
+                        this.caret = None;
+                        this.history.clear();
                         this.loaded = Some(loaded);
+                        this.highlight(0, cx);
+                        this.highlight(1, cx);
                         this.set_diff(file_diff);
                         this.go_to_change(0);
                     }
@@ -275,7 +321,12 @@ impl DiffView {
         }
     }
 
-    fn apply_hunk(&mut self, change: usize, action: HunkAction, cx: &mut Context<Self>) {
+    fn apply_hunk(&mut self, change: usize, action: HunkAction, window: &mut Window, cx: &mut Context<Self>) {
+        if action == HunkAction::Revert && self.editable() && self.mode == ViewerMode::SideBySide {
+            let append = self.ctrl_held;
+            self.revert_change(change, append, window, cx);
+            return;
+        }
         let (Some(repository), Some(source), Some(loaded)) = (self.repository.clone(), self.source.clone(), self.loaded.as_ref()) else {
             return;
         };
@@ -345,7 +396,25 @@ impl DiffView {
         let mut out = Vec::new();
         flatten(&self.diff.rows, &self.expanded, self.mode, &mut out);
         self.rows = Rc::new(out);
-        self.two = Rc::new(TwoSide::build(&self.diff.rows, &self.expanded));
+        let mut two = TwoSide::build(&self.diff.rows, &self.expanded);
+        // The empty line after a final line break is a line of its own, as in an editor.
+        let mut added = [false; 2];
+        for pane in 0..2 {
+            let buffer = &self.buffers[pane];
+            let lines = buffer.text().lines().count();
+            if buffer.line_count() > lines && self.loaded.is_some() {
+                let side = Side { line: lines + 1, text: String::new(), changed: Vec::new(), kinds: Vec::new(), whole: None };
+                let row = PaneRow::Line { side, kind: None, change: None, first: false };
+                if pane == 0 { two.left.push(row) } else { two.right.push(row) }
+                added[pane] = true;
+            }
+        }
+        if added == [true, true] {
+            let (l, r) = (two.left.len() - 1, two.right.len() - 1);
+            two.segments.push(crate::ui::diff_panes::Segment { left: l..l + 1, right: r..r + 1, change: None, kind: RowKind::Equal });
+        }
+        self.line_rows = [edit::line_rows(&two.left), edit::line_rows(&two.right)];
+        self.two = Rc::new(two);
         for pane in 0..2 {
             self.max_cols[pane] = self
                 .pane_rows(pane)
@@ -684,6 +753,7 @@ struct RowStyle {
     check_width: f32,
     review: Option<Rc<Review>>,
     review_path: Rc<str>,
+    selection: Hsla,
 }
 
 fn line_color(kind: RowKind, p: &Palette) -> Hsla {
@@ -711,28 +781,69 @@ fn border_color(kind: RowKind, p: &Palette) -> Hsla {
     }
 }
 
-/// A line's text, scrolled horizontally, with its changed words marked
-/// in their fragment's color.
-fn pane_text(side: &Side, words: bool, s: &RowStyle) -> impl IntoElement {
-    let (text, ranges) = expand_tabs(&side.text, &side.changed);
-    let highlights: Vec<_> = if words {
-        ranges
-            .into_iter()
-            .enumerate()
-            .filter(|(_, r)| !r.is_empty())
-            .map(|(i, r)| {
-                let kind = side.kinds.get(i).copied().unwrap_or(RowKind::Modified);
-                (r, HighlightStyle { background_color: Some(word_color(kind, &s.palette)), ..Default::default() })
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+/// Per line: syntax colors and the selected part, as byte ranges of the line.
+#[derive(Default)]
+struct LineExtras {
+    syntax: Vec<(Range<usize>, HighlightStyle)>,
+    selection: Option<Range<usize>>,
+}
+
+/// Lays background ranges (later ones win) over syntax styles, giving the
+/// sorted, non-overlapping runs StyledText needs.
+fn merge_styles(syntax: &[(Range<usize>, HighlightStyle)], backgrounds: &[(Range<usize>, Hsla)], len: usize) -> Vec<(Range<usize>, HighlightStyle)> {
+    let mut cuts: Vec<usize> = vec![0, len];
+    for (r, _) in syntax {
+        cuts.extend([r.start.min(len), r.end.min(len)]);
+    }
+    for (r, _) in backgrounds {
+        cuts.extend([r.start.min(len), r.end.min(len)]);
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut out: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    for pair in cuts.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let mut style = syntax.iter().rev().find(|(r, _)| r.start <= a && b <= r.end).map(|(_, s)| *s).unwrap_or_default();
+        if let Some((_, bg)) = backgrounds.iter().rev().find(|(r, _)| r.start <= a && b <= r.end) {
+            style.background_color = Some(*bg);
+        }
+        if style == HighlightStyle::default() {
+            continue;
+        }
+        match out.last_mut() {
+            Some((r, last)) if r.end == a && *last == style => r.end = b,
+            _ => out.push((a..b, style)),
+        }
+    }
+    out
+}
+
+/// A line's text, scrolled horizontally: syntax colors, changed words in
+/// their fragment's color, and the selection.
+fn pane_text(side: &Side, words: bool, extras: &LineExtras, s: &RowStyle) -> impl IntoElement {
+    // Map every range through tab expansion in one go.
+    let mut all: Vec<Range<usize>> = extras.syntax.iter().map(|(r, _)| r.clone()).collect();
+    let syntax_len = all.len();
+    if words {
+        all.extend(side.changed.iter().cloned());
+    }
+    let words_end = all.len();
+    all.extend(extras.selection.iter().cloned());
+    let (text, mapped) = expand_tabs(&side.text, &all);
+    let syntax: Vec<_> = mapped[..syntax_len].iter().cloned().zip(extras.syntax.iter().map(|(_, st)| *st)).collect();
+    let mut backgrounds: Vec<(Range<usize>, Hsla)> = mapped[syntax_len..words_end]
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.is_empty())
+        .map(|(i, r)| (r.clone(), word_color(side.kinds.get(i).copied().unwrap_or(RowKind::Modified), &s.palette)))
+        .collect();
+    backgrounds.extend(mapped[words_end..].iter().map(|r| (r.clone(), s.selection)));
+    let highlights = merge_styles(&syntax, &backgrounds, text.len());
     div().flex_1().min_w_0().h_full().overflow_hidden().child(
         div()
             .relative()
             .left(px(-s.scroll_x))
-            .pl_2()
+            .pl(px(edit::TEXT_PADDING))
             .whitespace_nowrap()
             .text_color(s.palette.text)
             .child(StyledText::new(text).with_highlights(highlights)),
@@ -781,7 +892,7 @@ fn pane_number(pane: usize, ix: usize, line: usize, s: &RowStyle, cx: &mut Conte
 
 /// One row of a pane, placed `top` pixels below the pane's top. The left
 /// pane is mirrored: text, then its gutter against the divider.
-fn pane_row(pane: usize, ix: usize, row: &PaneRow, top: f32, s: &RowStyle, cx: &mut Context<DiffView>) -> AnyElement {
+fn pane_row(pane: usize, ix: usize, row: &PaneRow, top: f32, extras: &LineExtras, s: &RowStyle, cx: &mut Context<DiffView>) -> AnyElement {
     let p = &s.palette;
     let base = div().absolute().left_0().right_0().top(px(top)).h(px(LINE_HEIGHT));
     match row {
@@ -814,7 +925,7 @@ fn pane_row(pane: usize, ix: usize, row: &PaneRow, top: f32, s: &RowStyle, cx: &
                 .h_full()
                 .flex_shrink_0()
                 .when_some(kind.filter(|_| s.highlight == HighlightMode::None), |el, k| el.bg(border_color(k, p)));
-            let text = pane_text(side, words, s);
+            let text = pane_text(side, words, extras, s);
             let number = pane_number(pane, ix, side.line, s, cx);
             base.flex()
                 .when_some(background, |el, bg| el.bg(bg))
@@ -910,7 +1021,7 @@ impl DiffView {
 
     /// IntelliJ's side-by-side viewer: two panes with only their own lines,
     /// gutters against the divider that connects their change blocks.
-    fn render_two_side(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_two_side(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let palette = cx.palette().clone();
         let mono = cx.theme().mono_font_family.clone();
         let actions = self.hunk_actions();
@@ -920,6 +1031,9 @@ impl DiffView {
         let height = self.view_height.get();
         let actions_width = if actions.is_empty() { 0. } else { BUTTON_WIDTH * actions.len() as f32 + 2. };
         let check_width = if partial { BUTTON_WIDTH + 2. } else { 0. };
+        let focused = self.focus.is_focused(window);
+        let theme = cx.theme().highlight_theme.clone();
+        let entity = cx.entity();
 
         let mut panes = Vec::new();
         for pane in 0..2 {
@@ -933,31 +1047,89 @@ impl DiffView {
                 check_width,
                 review: self.review.clone(),
                 review_path: self.source.as_ref().map(|s| s.path()).unwrap_or_default().into(),
+                selection: cx.theme().selection,
             };
+            let selection = self.caret.filter(|c| c.0 == pane && !c.1.is_empty()).map(|c| c.1.range());
             // Until measured, paint as much as a tall window shows.
             let visible = if height > 0. { height } else { 1600. };
             let first = ((scroll_y / LINE_HEIGHT).floor() as usize).min(rows.len());
             let last = (((scroll_y + visible) / LINE_HEIGHT).ceil() as usize + 1).min(rows.len());
             let mut children: Vec<AnyElement> = Vec::new();
-            if pane == 0 {
+            {
+                // Measures the pane, and takes text input while it has the caret.
                 let measured = self.view_height.clone();
+                let bounds_cell = self.pane_bounds.clone();
+                let input = (focused && self.caret.is_some_and(|c| c.0 == pane)).then(|| (self.focus.clone(), entity.clone()));
+                let selecting = (pane == 0 && self.selecting).then(|| entity.clone());
                 children.push(
                     canvas(
                         move |bounds, window, _| {
+                            let mut all = bounds_cell.get();
+                            all[pane] = bounds;
+                            bounds_cell.set(all);
                             let h = f32::from(bounds.size.height);
-                            if (measured.get() - h).abs() > 0.5 {
+                            if pane == 0 && (measured.get() - h).abs() > 0.5 {
                                 measured.set(h);
                                 window.refresh();
                             }
                         },
-                        |_, _, _, _| {},
+                        move |bounds, _, window, cx| {
+                            if let Some((focus, entity)) = input {
+                                window.handle_input(&focus, gpui_kit::ElementInputHandler::new(bounds, entity), cx);
+                            }
+                            // A drag selection follows the mouse anywhere in the window.
+                            if let Some(entity) = selecting {
+                                window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
+                                    if phase == gpui_kit::DispatchPhase::Bubble {
+                                        entity.update(cx, |this, cx| this.on_pane_mouse_move(e, window, cx));
+                                    }
+                                });
+                            }
+                        },
                     )
                     .absolute()
                     .size_full()
                     .into_any_element(),
                 );
             }
-            children.extend((first..last).map(|ix| pane_row(pane, ix, &rows[ix], ix as f32 * LINE_HEIGHT - scroll_y, &style, cx)));
+            let highlighter = self.highlighters[pane].as_ref();
+            let buffer = &self.buffers[pane];
+            for ix in first..last {
+                let mut extras = LineExtras::default();
+                if let PaneRow::Line { side, .. } = &rows[ix] {
+                    let range = buffer.line_range(side.line - 1);
+                    if buffer.text().get(range.clone()) == Some(side.text.as_str()) {
+                        if let Some(h) = highlighter {
+                            extras.syntax = h
+                                .styles(&range, &*theme)
+                                .into_iter()
+                                .filter(|(_, st)| *st != HighlightStyle::default())
+                                .map(|(r, st)| (r.start - range.start..r.end - range.start, st))
+                                .collect();
+                        }
+                        if let Some(sel) = &selection {
+                            let (a, b) = (sel.start.max(range.start), sel.end.min(range.end));
+                            if a < b || (sel.start <= range.start && sel.end > range.end) {
+                                extras.selection = Some(a.min(b) - range.start..b - range.start);
+                            }
+                        }
+                    }
+                }
+                let row = pane_row(pane, ix, &rows[ix], ix as f32 * LINE_HEIGHT - scroll_y, &extras, &style, cx);
+                children.push(row);
+            }
+            // The caret.
+            if let Some((_, sel)) = self.caret.filter(|c| c.0 == pane && focused) {
+                let line = self.buffers[pane].line_of(sel.head);
+                if let Some(LineRow::Row(row)) = self.line_rows[pane].get(line).copied() {
+                    let x = self.text_left(pane, cx) + self.x_for(pane, sel.head, window, cx) - scroll_x;
+                    let y = row as f32 * LINE_HEIGHT - scroll_y;
+                    let left_edge = if pane == 0 { 0. } else { self.text_left(pane, cx) - edit::TEXT_PADDING };
+                    if x >= left_edge {
+                        children.push(div().absolute().top(px(y)).left(px(x)).w(px(2.)).h(px(LINE_HEIGHT)).bg(palette.text).into_any_element());
+                    }
+                }
+            }
 
             // Per change: the insertion line on an empty side, and the gutter buttons.
             for seg in two.segments.iter() {
@@ -979,14 +1151,24 @@ impl DiffView {
                         .right(px(GUTTER_WIDTH + 3.))
                         .w(px(actions_width))
                         .h(px(LINE_HEIGHT))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .justify_center()
                         .items_center();
                     for (action, icon, tooltip) in actions.iter().copied() {
-                        let icon = if action == HunkAction::Revert { IconName::ChevronsRight } else { icon };
-                        let tooltip = if action == HunkAction::Revert { "Revert" } else { tooltip };
+                        let append = self.ctrl_held && self.editable();
+                        let icon = match action {
+                            HunkAction::Revert if append => IconName::ArrowRightToLine,
+                            HunkAction::Revert => IconName::ChevronsRight,
+                            _ => icon,
+                        };
+                        let tooltip = match action {
+                            HunkAction::Revert if append => "Append",
+                            HunkAction::Revert => "Revert",
+                            _ => tooltip,
+                        };
                         el = el.child(
                             tool_button(gpui_kit::ElementId::NamedInteger(format!("pane-{tooltip}").into(), change as u64), icon, tooltip)
-                                .on_click(cx.listener(move |this, _, _, cx| this.apply_hunk(change, action, cx))),
+                                .on_click(cx.listener(move |this, _, window, cx| this.apply_hunk(change, action, window, cx))),
                         );
                     }
                     children.push(el.into_any_element());
@@ -1000,6 +1182,7 @@ impl DiffView {
                             .left(px(GUTTER_WIDTH + 3.))
                             .w(px(check_width))
                             .h(px(LINE_HEIGHT))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .justify_center()
                             .items_center()
                             .child(
@@ -1021,8 +1204,11 @@ impl DiffView {
                     .h_full()
                     .overflow_hidden()
                     .font_family(mono.clone())
-                    .text_size(px(12.5))
+                    .text_size(px(edit::FONT_SIZE))
+                    .cursor(gpui_kit::CursorStyle::IBeam)
                     .on_scroll_wheel(cx.listener(move |this, e: &ScrollWheelEvent, _, cx| this.on_pane_wheel(pane, e, cx)))
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, window, cx| this.on_pane_mouse_down(e, window, cx)))
+                    .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.selecting = false))
                     .children(children),
             );
         }
@@ -1055,6 +1241,17 @@ impl DiffView {
         let mut panes = panes.into_iter();
         let (left, right) = (panes.next().unwrap(), panes.next().unwrap());
         h_flex()
+            .id("diff-two-side")
+            .key_context(PANE_CONTEXT)
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| this.on_key_down(e, window, cx)))
+            .on_action(cx.listener(|this, _: &Paste, window, cx| this.paste(window, cx)))
+            .on_modifiers_changed(cx.listener(|this, e: &gpui_kit::ModifiersChangedEvent, _, cx| {
+                if this.ctrl_held != e.modifiers.secondary() {
+                    this.ctrl_held = e.modifiers.secondary();
+                    cx.notify();
+                }
+            }))
             .flex_1()
             .min_h_0()
             .w_full()
@@ -1215,7 +1412,7 @@ fn side_colors(kind: RowKind, is_left: bool, unified: bool, palette: &Palette) -
 }
 
 impl Render for DiffView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         if self.view_height.get() > 0. {
             if let Some(change) = self.pending_change.take() {
@@ -1311,7 +1508,7 @@ impl Render for DiffView {
                         for (action, icon, tooltip) in actions.iter().copied() {
                             el = el.child(
                                 tool_button(gpui_kit::ElementId::NamedInteger(format!("hunk-{tooltip}").into(), ix as u64), icon, tooltip)
-                                    .on_click(cx.listener(move |this, _, _, cx| this.apply_hunk(change, action, cx))),
+                                    .on_click(cx.listener(move |this, _, window, cx| this.apply_hunk(change, action, window, cx))),
                             );
                         }
                     }
@@ -1466,7 +1663,7 @@ impl Render for DiffView {
             .when_some(self.error.clone(), |el, error| el.child(div().p_3().text_color(palette.status_conflict).child(error)))
             .map(|el| match self.loaded.as_ref().and_then(|l| l.binary.as_ref()) {
                 Some(panes) => el.child(render_binary(panes, &palette)),
-                None if two_side => el.child(self.render_two_side(cx)),
+                None if two_side => el.child(self.render_two_side(window, cx)),
                 None => el.child(list),
             })
             .into_any_element()

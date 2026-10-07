@@ -154,8 +154,8 @@
 | 忽略空白：不忽略 / 行首尾 / 全部 / 仅空行 | M2 | 🟡（无“仅空行”） |
 | 高亮：按词 / 按行 / 按字符 / 不高亮 | M2 | 🟡（无“按字符”） |
 | 折叠未改动片段、同步滚动、上/下一处差异、Jump to Source (F4)、跳到下一个文件 | M2 | 🟡（缺跳到下一个文件） |
-| 右侧可编辑（工作区文件）、单个 chunk 回滚 / 应用 | M3 | 🟡（chunk Rollback / Stage / Unstage；右侧直接编辑未做） |
-| 语法高亮（tree-sitter，与编辑器一致） | M2 | ⬜ |
+| 右侧可编辑（工作区文件）、单个 chunk 回滚 / 应用 | M3 | ✅（双栏右侧直接编辑：光标、选择、拖选、双击选词、Smart Home、Ctrl+D/Y、Tab/Shift+Tab、输入法、撤销重做、复制粘贴，改完实时重算并自动保存；`>>` 在缓冲区里回滚可撤销，按住 Ctrl 变 Append；暂存区模式 chunk Stage / Unstage；单栏编辑未做） |
+| 语法高亮（tree-sitter，与编辑器一致） | M2 | 🟡（双栏两侧都有；单栏未做） |
 | 二进制 / 图片对比 | M4 | ✅（并排显示两侧图片（PNG/JPEG/GIF/BMP/WebP/ICO），下方显示尺寸、格式、文件大小；非图片显示大小；新增/删除提示） |
 | 冲突对话框：文件列表，Accept Yours / Accept Theirs / Merge… | M3 | ✅ |
 | 三方合并工具：左（Yours）中（Result）右（Theirs）、魔棒应用非冲突改动、逐块接受、Resolve simple conflicts | M3 | ✅ |

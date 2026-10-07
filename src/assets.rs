@@ -69,6 +69,7 @@ gpui_kit::assets::icon_assets!(
         ChevronLeft,
         ChevronsRight,
         ChevronsLeft,
+        ArrowRightToLine,
         Lock,
         CircleQuestionMark,
         Pencil,

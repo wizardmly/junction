@@ -86,6 +86,8 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("alt-`", VcsOperations, Some(CONTEXT)),
         KeyBinding::new("f7", NextDifference, Some(CONTEXT)),
         KeyBinding::new("f4", JumpToSource, Some(CONTEXT)),
+        KeyBinding::new("secondary-v", crate::ui::diff_view::Paste, Some(crate::ui::diff_view::PANE_CONTEXT)),
+        KeyBinding::new("shift-insert", crate::ui::diff_view::Paste, Some(crate::ui::diff_view::PANE_CONTEXT)),
         KeyBinding::new("shift-f7", PreviousDifference, Some(CONTEXT)),
         // Navigation, IntelliJ's default keymap.
         KeyBinding::new("secondary-shift-n", GotoFile, Some(CONTEXT)),
@@ -167,7 +169,7 @@ impl Workspace {
     pub fn new(model: Entity<RepoModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let log = cx.new(|cx| LogView::new(model.clone(), window, cx));
         let commit = cx.new(|cx| CommitView::new(model.clone(), window, cx));
-        let diff = cx.new(|_| DiffView::new());
+        let diff = cx.new(DiffView::new);
         let stash = cx.new(|cx| StashView::new(model.clone(), cx));
         let shelf = cx.new(|cx| ShelfView::new(model.clone(), cx));
         let branches_popup = cx.new(|cx| BranchesPopup::new(model.clone(), window, cx));
