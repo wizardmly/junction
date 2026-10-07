@@ -79,6 +79,8 @@ pub struct RepoModel {
     loading: bool,
     busy: Option<String>,
     error: Option<String>,
+    open_problem: Option<OpenProblem>,
+    failed_path: Option<PathBuf>,
     _reload_task: Option<Task<()>>,
     _details_task: Option<Task<()>>,
     _fetch_task: Option<Task<()>>,
@@ -91,6 +93,14 @@ impl EventEmitter<RepoEvent> for RepoModel {}
 pub struct RootInfo {
     pub path: PathBuf,
     pub branch: Option<String>,
+}
+
+/// A failed open the user can fix from the Welcome screen.
+#[derive(Clone, Debug)]
+pub enum OpenProblem {
+    GitMissing,
+    /// The repository root git refused (`safe.directory`).
+    Unsafe(PathBuf),
 }
 
 struct Snapshot {
@@ -130,6 +140,8 @@ impl RepoModel {
             loading: false,
             busy: None,
             error: None,
+            open_problem: None,
+            failed_path: None,
             _reload_task: None,
             _details_task: None,
             _fetch_task: None,
@@ -144,6 +156,8 @@ impl RepoModel {
     pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match Repository::discover(&path, self.console.clone()) {
             Ok(repository) => {
+                self.open_problem = None;
+                self.failed_path = None;
                 crate::settings::remember_project(repository.root());
                 self.project_root = Some(repository.root().to_path_buf());
                 self.roots.clear();
@@ -155,9 +169,29 @@ impl RepoModel {
                 self.reload(cx);
             }
             Err(error) => {
+                self.open_problem = match error.downcast_ref::<git::OpenError>() {
+                    Some(git::OpenError::GitMissing(_)) => Some(OpenProblem::GitMissing),
+                    Some(git::OpenError::Unsafe(root)) => Some(OpenProblem::Unsafe(root.clone())),
+                    None => None,
+                };
+                self.failed_path = Some(path);
                 self.error = Some(error.to_string());
                 cx.notify();
             }
+        }
+    }
+
+    /// What the Welcome screen can offer for the last failed open.
+    pub fn open_problem(&self) -> Option<&OpenProblem> {
+        self.open_problem.as_ref()
+    }
+
+    /// Opens the folder that failed last time again (after installing git
+    /// or trusting the directory).
+    pub fn retry_open(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.failed_path.clone() {
+            git::redetect_executable();
+            self.open(path, cx);
         }
     }
 

@@ -655,7 +655,10 @@ pub fn settings(window: &mut Window, cx: &mut App) {
     let protected = cx.new(|cx| InputState::new(window, cx).default_value(initial.protected_branches.clone()));
     let margin = cx.new(|cx| InputState::new(window, cx).default_value(initial.commit_subject_limit.to_string()));
     let fetch_interval = cx.new(|cx| InputState::new(window, cx).default_value(initial.fetch_interval_minutes.max(1).to_string()));
-    let git_path = cx.new(|cx| InputState::new(window, cx).placeholder("Auto-detected: git").default_value(initial.git_executable.clone()));
+    let git_path = cx.new(|cx| InputState::new(window, cx).placeholder(match crate::git::detected_executable() {
+        Some(git) => format!("Auto-detected: {}", git.display()),
+        None => "Git not found: install Git or enter its path".to_owned(),
+    }).default_value(initial.git_executable.clone()));
     // Settings › Languages & Frameworks: one server command per language,
     // with what would run when left empty.
     let servers: Vec<(crate::index::lang::Lang, Entity<InputState>, Option<String>)> = crate::index::lang::Lang::ALL

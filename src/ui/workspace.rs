@@ -23,7 +23,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 
-use crate::model::{RepoEvent, RepoModel};
+use crate::model::{OpenProblem, RepoEvent, RepoModel};
 use crate::theme::{self, ActivePalette as _};
 use crate::ui::blame_view::{BlameEvent, BlameView};
 use crate::ui::branches_popup::{self, BranchesPopup};
@@ -889,7 +889,51 @@ impl Workspace {
                     ))),
             )
             .when_some(error, |el, error| {
-                el.child(div().max_w(px(560.)).text_xs().text_color(palette.text_secondary).child(error))
+                let problem = self.model.read(cx).open_problem().cloned();
+                let (title, hint) = match &problem {
+                    Some(OpenProblem::GitMissing) => (
+                        "Git is not installed",
+                        "GitGlass runs the git command-line tool. Install Git for Windows (or point Settings › Git to an existing git.exe), then retry.",
+                    ),
+                    Some(OpenProblem::Unsafe(_)) => (
+                        "The folder is owned by another user",
+                        "Git only opens repositories you own unless you trust them. Trusting adds the folder to safe.directory in your global git config.",
+                    ),
+                    None => ("Cannot open the folder", ""),
+                };
+                let mut buttons = h_flex().gap_2();
+                match problem {
+                    Some(OpenProblem::GitMissing) => {
+                        buttons = buttons
+                            .child(Button::new("welcome-get-git").small().primary().label("Download Git").on_click(|_, _, cx| {
+                                cx.open_url(if cfg!(windows) { "https://git-scm.com/download/win" } else { "https://git-scm.com/downloads" })
+                            }))
+                            .child(Button::new("welcome-git-settings").small().label("Set Path to Git…").on_click(|_, window, cx| dialogs::settings(window, cx)))
+                            .child(Button::new("welcome-retry").small().label("Retry").on_click(cx.listener(|this, _, _, cx| this.model.update(cx, |m, cx| m.retry_open(cx)))));
+                    }
+                    Some(OpenProblem::Unsafe(root)) => {
+                        buttons = buttons.child(Button::new("welcome-trust").small().primary().label("Trust Directory and Open").on_click(cx.listener(
+                            move |this, _, window, cx| match crate::git::trust_directory(&root) {
+                                Ok(()) => this.model.update(cx, |m, cx| m.retry_open(cx)),
+                                Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
+                            },
+                        )));
+                    }
+                    None => {}
+                }
+                el.child(
+                    v_flex()
+                        .max_w(px(560.))
+                        .p_3()
+                        .gap_2()
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(palette.status_conflict)
+                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(palette.status_conflict).child(title))
+                        .child(div().text_xs().text_color(palette.text_secondary).child(error))
+                        .when(!hint.is_empty(), |el| el.child(div().text_xs().child(hint)))
+                        .child(buttons),
+                )
             })
             .when(!recent.is_empty(), |el| {
                 el.child(

@@ -56,8 +56,129 @@ pub fn set_executable(path: &str) {
     *EXECUTABLE.write().unwrap() = (!path.is_empty()).then(|| PathBuf::from(path));
 }
 
+/// The git to run: the one set in Settings, else `git` on PATH, else a
+/// git found in a usual install location (Git for Windows, Scoop, GitHub
+/// Desktop, Visual Studio, Homebrew, …).
 pub fn executable() -> PathBuf {
-    EXECUTABLE.read().unwrap().clone().unwrap_or_else(|| PathBuf::from("git"))
+    if let Some(path) = EXECUTABLE.read().unwrap().clone() {
+        return path;
+    }
+    detected_executable().unwrap_or_else(|| PathBuf::from("git"))
+}
+
+static DETECTED: std::sync::RwLock<Option<Option<PathBuf>>> = std::sync::RwLock::new(None);
+
+/// The git an empty "Path to Git executable" uses, if one is installed.
+pub fn detected_executable() -> Option<PathBuf> {
+    if let Some(found) = DETECTED.read().unwrap().clone() {
+        return found;
+    }
+    let found = detect_executable();
+    *DETECTED.write().unwrap() = Some(found.clone());
+    found
+}
+
+/// Looks for git again (after the user installed it). PATH comes from the
+/// environment this process started with, so the install locations matter.
+pub fn redetect_executable() {
+    *DETECTED.write().unwrap() = None;
+}
+
+fn detect_executable() -> Option<PathBuf> {
+    let name = if cfg!(windows) { "git.exe" } else { "git" };
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    install_locations().into_iter().find(|p| p.is_file())
+}
+
+fn install_locations() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let env = |key: &str| std::env::var_os(key).map(PathBuf::from);
+    if cfg!(windows) {
+        let mut roots: Vec<PathBuf> = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"].iter().filter_map(|k| env(k)).collect();
+        for drive in ['C', 'D', 'E', 'F'] {
+            roots.push(PathBuf::from(format!("{drive}:\\Program Files")));
+            out.push(PathBuf::from(format!("{drive}:\\Git\\cmd\\git.exe")));
+        }
+        for root in &roots {
+            out.push(root.join("Git").join("cmd").join("git.exe"));
+        }
+        if let Some(local) = env("LOCALAPPDATA") {
+            out.push(local.join("Programs").join("Git").join("cmd").join("git.exe"));
+            // GitHub Desktop bundles a git per version: app-3.4.1\resources\app\git.
+            if let Ok(dirs) = std::fs::read_dir(local.join("GitHubDesktop")) {
+                let mut versions: Vec<PathBuf> = dirs.flatten().map(|d| d.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("app-"))).collect();
+                versions.sort();
+                for v in versions.into_iter().rev() {
+                    out.push(v.join("resources").join("app").join("git").join("cmd").join("git.exe"));
+                }
+            }
+        }
+        if let Some(home) = env("USERPROFILE") {
+            out.push(home.join("scoop").join("apps").join("git").join("current").join("cmd").join("git.exe"));
+        }
+        // Visual Studio's Team Explorer git.
+        for root in &roots {
+            let Ok(years) = std::fs::read_dir(root.join("Microsoft Visual Studio")) else { continue };
+            for year in years.flatten() {
+                let Ok(editions) = std::fs::read_dir(year.path()) else { continue };
+                for edition in editions.flatten() {
+                    out.push(edition.path().join(r"Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\cmd\git.exe"));
+                }
+            }
+        }
+    } else {
+        for dir in ["/usr/bin", "/usr/local/bin", "/opt/homebrew/bin", "/opt/local/bin"] {
+            out.push(Path::new(dir).join("git"));
+        }
+    }
+    out
+}
+
+/// Why a folder couldn't be opened, when it is something the user can fix.
+#[derive(Debug)]
+pub enum OpenError {
+    /// git isn't installed (or not where Settings says).
+    GitMissing(PathBuf),
+    /// git refuses a repository owned by another user (`safe.directory`).
+    Unsafe(PathBuf),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::GitMissing(git) => write!(f, "Git is not installed, or cannot be run from {}.", git.display()),
+            OpenError::Unsafe(path) => write!(f, "Git refuses to open {} because the folder is owned by another user.", path.display()),
+        }
+    }
+}
+
+impl std::error::Error for OpenError {}
+
+/// Adds a folder to git's global `safe.directory` list, as IntelliJ's
+/// "Trust directory" does.
+pub fn trust_directory(path: &Path) -> Result<()> {
+    let value = path.to_string_lossy().replace('\\', "/");
+    let output = git_command(&executable()).args(["config", "--global", "--add", "safe.directory", &value]).output()?;
+    if !output.status.success() {
+        bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+    }
+    Ok(())
+}
+
+/// Windows folder pickers can hand back `\\?\` paths, which git rejects.
+fn plain_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC") => PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
 }
 
 pub fn set_use_credential_helper(enabled: bool) {
@@ -66,7 +187,7 @@ pub fn set_use_credential_helper(enabled: bool) {
 
 /// The Test button: `git --version` with `path` (empty = PATH lookup).
 pub fn executable_version(path: &str) -> Result<String> {
-    let path = if path.trim().is_empty() { PathBuf::from("git") } else { PathBuf::from(path.trim()) };
+    let path = if path.trim().is_empty() { detected_executable().unwrap_or_else(|| PathBuf::from("git")) } else { PathBuf::from(path.trim()) };
     let output = git_command(&path).arg("--version").output().with_context(|| format!("cannot run {}", path.display()))?;
     if !output.status.success() {
         bail!("{} --version failed", path.display());
@@ -97,13 +218,18 @@ impl Repository {
     /// Finds the repository containing `path`.
     pub fn discover(path: &Path, console: GitConsole) -> Result<Self> {
         let executable = executable();
-        let output = git_command(&executable)
-            .arg("-C")
-            .arg(path)
-            .args(["rev-parse", "--show-toplevel", "--absolute-git-dir"])
-            .output()
-            .context("failed to run git; is it installed and on PATH?")?;
+        let path = &plain_path(path);
+        let output = match git_command(&executable).arg("-C").arg(path).args(["rev-parse", "--show-toplevel", "--absolute-git-dir"]).output() {
+            Ok(output) => output,
+            Err(_) => return Err(OpenError::GitMissing(executable).into()),
+        };
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("dubious ownership") || stderr.contains("safe.directory") {
+                // git names the repository root in its message: 'D:/x' is owned by …
+                let root = stderr.split('\'').nth(1).map(PathBuf::from).unwrap_or_else(|| path.to_path_buf());
+                return Err(OpenError::Unsafe(root).into());
+            }
             bail!(
                 "{} is not inside a git repository: {}",
                 path.display(),
