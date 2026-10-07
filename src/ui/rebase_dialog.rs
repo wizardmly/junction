@@ -22,12 +22,37 @@ use crate::model::RepoModel;
 use crate::theme::ActivePalette as _;
 use crate::ui::common::tool_button;
 
+/// A row being dragged to a new position.
+#[derive(Clone)]
+struct DraggedRow {
+    ix: usize,
+    subject: SharedString,
+}
+
+impl Render for DraggedRow {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(4.))
+            .bg(palette.selection)
+            .border_1()
+            .border_color(palette.accent)
+            .text_sm()
+            .text_color(palette.text)
+            .child(self.subject.clone())
+    }
+}
+
 pub struct RebaseEditor {
     repository: Repository,
     /// Newest first, as displayed.
     entries: Vec<Entry>,
     original: Vec<Entry>,
     selected: usize,
+    /// Rows added with Ctrl/Cmd-click, for Unite.
+    extra: std::collections::BTreeSet<usize>,
     message: Entity<TextareaState>,
     _subscription: Subscription,
 }
@@ -45,7 +70,15 @@ impl RebaseEditor {
                 }
             }
         });
-        let mut this = Self { repository, original: entries.clone(), entries, selected: 0, message, _subscription: subscription };
+        let mut this = Self {
+            repository,
+            original: entries.clone(),
+            entries,
+            selected: 0,
+            extra: Default::default(),
+            message,
+            _subscription: subscription,
+        };
         this.load_message(window, cx);
         this
     }
@@ -57,6 +90,7 @@ impl RebaseEditor {
     }
 
     fn select(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.extra.clear();
         self.selected = ix.min(self.entries.len().saturating_sub(1));
         self.load_message(window, cx);
         cx.notify();
@@ -81,6 +115,59 @@ impl RebaseEditor {
                 self.entries[self.selected].message = Some(joined);
             }
         }
+        self.load_message(window, cx);
+        cx.notify();
+    }
+
+    fn toggle_extra(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix != self.selected && !self.extra.remove(&ix) {
+            self.extra.insert(ix);
+        }
+        cx.notify();
+    }
+
+    /// Drag and drop: moves row `from` to where row `to` is.
+    fn move_row(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        if from == to || from >= self.entries.len() || to >= self.entries.len() {
+            return;
+        }
+        let entry = self.entries.remove(from);
+        self.entries.insert(to, entry);
+        self.extra.clear();
+        self.selected = to;
+        cx.notify();
+    }
+
+    /// IntelliJ's Unite: the selected commits become one, squashed into the
+    /// oldest of them, which keeps its place.
+    fn unite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut rows: Vec<usize> = self.extra.iter().copied().chain([self.selected]).collect();
+        rows.sort_unstable();
+        rows.dedup();
+        let Some(&target) = rows.last() else { return };
+        if rows.len() < 2 {
+            return;
+        }
+        // Newest first: the oldest is the last row. Pull the others down next to it,
+        // keeping their relative order, then squash them.
+        let mut moved: Vec<Entry> = rows[..rows.len() - 1].iter().map(|&ix| self.entries[ix].clone()).collect();
+        for &ix in rows[..rows.len() - 1].iter().rev() {
+            self.entries.remove(ix);
+        }
+        let target = target - (rows.len() - 1);
+        for entry in &mut moved {
+            entry.action = Action::Squash;
+            entry.message = None;
+        }
+        let count = moved.len();
+        for (offset, entry) in moved.into_iter().enumerate() {
+            self.entries.insert(target + offset, entry);
+        }
+        if matches!(self.entries[target + count].action, Action::Drop | Action::Squash | Action::Fixup) {
+            self.entries[target + count].action = Action::Pick;
+        }
+        self.extra.clear();
+        self.selected = target;
         self.load_message(window, cx);
         cx.notify();
     }
@@ -130,8 +217,11 @@ impl Render for RebaseEditor {
             Action::Drop => palette.status_deleted,
         };
         let mut rows = v_flex();
+        let extra = self.extra.clone();
         for (ix, entry) in self.entries.iter().enumerate() {
             let dropped = entry.action == Action::Drop;
+            let accent = palette.accent;
+            let dragged = DraggedRow { ix, subject: entry.commit.subject.clone().into() };
             rows = rows.child(
                 h_flex()
                     .id(SharedString::from(format!("rebase-row-{ix}")))
@@ -139,8 +229,18 @@ impl Render for RebaseEditor {
                     .px_2()
                     .gap_2()
                     .text_sm()
-                    .when(ix == selected, |el| el.bg(palette.selection))
-                    .on_click(cx.listener(move |this, _, window, cx| this.select(ix, window, cx)))
+                    .when(ix == selected || extra.contains(&ix), |el| el.bg(palette.selection))
+                    // Drag a row to reorder, as in IntelliJ's dialog.
+                    .on_drag(dragged, |row, _, _, cx| cx.new(|_| row.clone()))
+                    .drag_over::<DraggedRow>(move |style, _, _, _| style.border_t_2().border_color(accent))
+                    .on_drop(cx.listener(move |this, row: &DraggedRow, _, cx| this.move_row(row.ix, ix, cx)))
+                    .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                        if event.modifiers().secondary() {
+                            this.toggle_extra(ix, cx)
+                        } else {
+                            this.select(ix, window, cx)
+                        }
+                    }))
                     .child(div().w(px(56.)).text_color(action_color(entry.action)).child(entry.action.label()))
                     .child(div().w(px(64.)).text_color(palette.text_secondary).child(entry.commit.short_hash().to_owned()))
                     .child(
@@ -190,6 +290,15 @@ impl Render for RebaseEditor {
                     .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
                     .child(tool_button("rb-up", IconName::ChevronUp, "Move Up").on_click(cx.listener(|this, _, _, cx| this.move_selected(true, cx))))
                     .child(tool_button("rb-down", IconName::ChevronDown, "Move Down").on_click(cx.listener(|this, _, _, cx| this.move_selected(false, cx))))
+                    .child(
+                        Button::new("rb-unite")
+                            .ghost()
+                            .xsmall()
+                            .label("Unite")
+                            .tooltip("Squash the selected commits into one (Ctrl/Cmd-click to select several)")
+                            .disabled(self.extra.is_empty())
+                            .on_click(cx.listener(|this, _, window, cx| this.unite(window, cx))),
+                    )
                     .child(div().flex_1())
                     .child(Button::new("rb-reset").ghost().xsmall().label("Reset").on_click(cx.listener(|this, _, window, cx| this.reset(window, cx)))),
             )

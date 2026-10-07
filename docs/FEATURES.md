@@ -176,7 +176,7 @@
 
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 交互式 Rebase 对话框：pick / reword / edit / squash / fixup / drop，拖拽排序，右侧提交详情，Unite（合并多行） | M3 | 🟡（缺拖拽排序和 Unite，用上移/下移按钮） |
+| 交互式 Rebase 对话框：pick / reword / edit / squash / fixup / drop，拖拽排序，右侧提交详情，Unite（合并多行） | M3 | ✅（拖拽排序、Ctrl/Cmd 多选后 Unite） |
 | Rebase 对话框（git rebase 全部选项：--onto、--interactive、--rebase-merges、--keep-empty…） | M3 | ✅ |
 | Merge 对话框（--no-ff、--ff-only、--squash、-m、--no-commit、--allow-unrelated-histories） | M3 | ✅ |
 | Cherry-pick（多选）、冲突处理 | M3 | ✅ |
