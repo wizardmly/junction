@@ -103,7 +103,7 @@ impl LogView {
                     }
                     cx.notify();
                 }
-                RepoEvent::Notify { .. } | RepoEvent::Compare { .. } | RepoEvent::PrefillCommitMessage(_) => {}
+                RepoEvent::Notify { .. } | RepoEvent::Compare { .. } | RepoEvent::PrefillCommitMessage(_) | RepoEvent::OpenLogTab { .. } => {}
             }),
             cx.subscribe_in(&search, window, |this, _, event, _, cx| match event {
                 InputEvent::Change => {
@@ -165,6 +165,13 @@ impl LogView {
         let mut filter = self.model.read(cx).filter().clone();
         filter.text = text;
         self.model.update(cx, |model, cx| model.set_filter(filter, cx));
+    }
+
+    /// File History in its own Log tab, optionally starting from a commit.
+    fn open_history_tab(&mut self, path: String, from: Option<String>, cx: &mut Context<Self>) {
+        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        let filter = LogFilter { paths: vec![path], branches: from.into_iter().collect(), ..Default::default() };
+        self.model.update(cx, |m, cx| m.open_log_tab(format!("History: {name}"), filter, cx));
     }
 
     fn update_filter(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut LogFilter)) {
@@ -1177,16 +1184,11 @@ fn change_menu(
     .separator()
     .item(PopupMenuItem::new("Show History").on_click(move |_, _, cx| {
         let path = p_history.clone();
-        e_history.update(cx, |this, cx| this.update_filter(cx, |f| f.paths = vec![path]))
+        e_history.update(cx, |this, cx| this.open_history_tab(path, None, cx))
     }))
     .item(PopupMenuItem::new("History Up to Here").on_click(move |_, _, cx| {
         let (path, hash) = (p_here.clone(), h_here.clone());
-        e_here.update(cx, |this, cx| {
-            this.update_filter(cx, |f| {
-                f.paths = vec![path];
-                f.branches = vec![hash];
-            })
-        })
+        e_here.update(cx, |this, cx| this.open_history_tab(path, Some(hash), cx))
     }))
     .separator()
     .item(PopupMenuItem::new(format!("Get from Revision {short}")).on_click(move |_, _, cx| {

@@ -21,6 +21,8 @@ pub enum RepoEvent {
     Notify { title: String, message: String, error: bool },
     /// Show the files that differ between two revisions (the working tree when `new` is `None`).
     Compare { old: String, new: Option<String> },
+    /// Open another Log tab (File History, Compare with Current, …).
+    OpenLogTab { title: String, filter: LogFilter },
     /// Fixup… / Squash Into…: put a message in the commit box.
     PrefillCommitMessage(String),
 }
@@ -240,6 +242,10 @@ impl RepoModel {
     pub fn select_index(&mut self, ix: usize, cx: &mut Context<Self>) {
         let hash = self.commits.get(ix).map(|c| c.hash.clone());
         self.select_hash(hash, cx);
+    }
+
+    pub fn open_log_tab(&mut self, title: String, filter: LogFilter, cx: &mut Context<Self>) {
+        cx.emit(RepoEvent::OpenLogTab { title, filter });
     }
 
     pub fn prefill_commit_message(&mut self, message: String, cx: &mut Context<Self>) {

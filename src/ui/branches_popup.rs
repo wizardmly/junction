@@ -109,9 +109,8 @@ fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, current: Optio
             Rc::new(move |_, cx| {
                 let range = range.clone();
                 compare_model.update(cx, |model, cx| {
-                    let mut filter = model.filter().clone();
-                    filter.branches = vec![range];
-                    model.set_filter(filter, cx);
+                    let filter = crate::git::LogFilter { branches: vec![range.clone()], ..Default::default() };
+                    model.open_log_tab(range, filter, cx);
                 });
             }),
         ));

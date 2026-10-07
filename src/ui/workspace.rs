@@ -74,6 +74,13 @@ enum BottomTab {
     Console,
 }
 
+struct LogTab {
+    title: String,
+    filter: crate::git::LogFilter,
+    /// Each tab keeps its own selected commit.
+    selected: Option<String>,
+}
+
 pub struct Workspace {
     model: Entity<RepoModel>,
     log: Entity<LogView>,
@@ -83,6 +90,9 @@ pub struct Workspace {
     branches_popup: Entity<BranchesPopup>,
     /// The merge tool, shown in the editor area instead of the diff.
     merge: Option<(Entity<MergeView>, Subscription)>,
+    /// Git tool window Log tabs; the first is the main "Log".
+    log_tabs: Vec<LogTab>,
+    active_log: usize,
     /// Annotate with Git Blame, shown instead of the diff until closed.
     blame: Option<(Entity<BlameView>, Subscription)>,
     show_commit: bool,
@@ -127,6 +137,9 @@ impl Workspace {
                 StashEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
             }),
             cx.subscribe_in(&model, window, |this, _, event, window, cx| {
+                if let RepoEvent::OpenLogTab { title, filter } = event {
+                    this.open_log_tab(title.clone(), filter.clone(), cx);
+                }
                 if let RepoEvent::PrefillCommitMessage(_) = event {
                     this.show_commit = true;
                     this.left_tab = LeftTab::Commit;
@@ -190,12 +203,8 @@ impl Workspace {
                             Button::new("notify-view-commits").label("View Commits").small().outline().on_click(move |_, _, cx| {
                                 let range = range.clone();
                                 entity.update(cx, |this, cx| {
-                                    this.show_git = true;
-                                    this.bottom_tab = BottomTab::Log;
-                                    let mut filter = this.model.read(cx).filter().clone();
-                                    filter.branches = vec![range];
-                                    this.model.update(cx, |m, cx| m.set_filter(filter, cx));
-                                    cx.notify();
+                                    let filter = crate::git::LogFilter { branches: vec![range], ..Default::default() };
+                                    this.open_log_tab("Update Info".into(), filter, cx);
                                 })
                             })
                         })
@@ -237,6 +246,8 @@ impl Workspace {
             diff,
             branches_popup,
             merge: None,
+            log_tabs: vec![LogTab { title: "Log".into(), filter: Default::default(), selected: None }],
+            active_log: 0,
             blame: None,
             show_commit: true,
             show_git: true,
@@ -368,13 +379,63 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Show History: the Log filtered to one file, following renames.
+    /// Show History: a Log tab for one file, following renames, as IntelliJ's "History: name" tab.
     pub fn show_history(&mut self, path: String, cx: &mut Context<Self>) {
+        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        let filter = crate::git::LogFilter { paths: vec![path], ..Default::default() };
+        self.open_log_tab(format!("History: {name}"), filter, cx);
+    }
+
+    /// Opens another Log tab with its own filters. Tabs share the repository;
+    /// switching tabs swaps the Log's filters.
+    pub fn open_log_tab(&mut self, title: String, filter: crate::git::LogFilter, cx: &mut Context<Self>) {
+        self.save_log_tab(cx);
+        self.log_tabs.push(LogTab { title, filter: filter.clone(), selected: None });
+        self.active_log = self.log_tabs.len() - 1;
         self.show_git = true;
         self.bottom_tab = BottomTab::Log;
-        let mut filter = self.model.read(cx).filter().clone();
-        filter.paths = vec![path];
         self.model.update(cx, |m, cx| m.set_filter(filter, cx));
+        cx.notify();
+    }
+
+    fn save_log_tab(&mut self, cx: &mut Context<Self>) {
+        let current = self.model.read(cx).filter().clone();
+        let selected = self.model.read(cx).selected_hash().map(str::to_owned);
+        if let Some(tab) = self.log_tabs.get_mut(self.active_log) {
+            tab.filter = current;
+            tab.selected = selected;
+        }
+    }
+
+    fn switch_log_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.bottom_tab == BottomTab::Log && ix == self.active_log {
+            return;
+        }
+        self.save_log_tab(cx);
+        self.active_log = ix.min(self.log_tabs.len() - 1);
+        self.bottom_tab = BottomTab::Log;
+        let filter = self.log_tabs[self.active_log].filter.clone();
+        let selected = self.log_tabs[self.active_log].selected.clone();
+        self.model.update(cx, |m, cx| {
+            m.set_filter(filter, cx);
+            m.select_hash(selected, cx);
+        });
+        cx.notify();
+    }
+
+    fn close_log_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix == 0 || ix >= self.log_tabs.len() {
+            return;
+        }
+        let was_active = ix == self.active_log;
+        self.log_tabs.remove(ix);
+        if was_active {
+            self.active_log = 0;
+            let filter = self.log_tabs[0].filter.clone();
+            self.model.update(cx, |m, cx| m.set_filter(filter, cx));
+        } else if ix < self.active_log {
+            self.active_log -= 1;
+        }
         cx.notify();
     }
 
@@ -756,10 +817,35 @@ impl Workspace {
                     .border_b_1()
                     .border_color(palette.border)
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Git"))
-                    .child(tab("tab-log", "Log", BottomTab::Log, current).on_click(cx.listener(|this, _, _, cx| {
-                        this.bottom_tab = BottomTab::Log;
-                        cx.notify();
-                    })).child("Log"))
+                    .children(self.log_tabs.iter().enumerate().map(|(ix, log_tab)| {
+                        let active = current == BottomTab::Log && ix == self.active_log;
+                        div()
+                            .id(("tab-log", ix))
+                            .px_2()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_sm()
+                            .cursor_pointer()
+                            .when(active, |el| el.border_b_2().border_color(palette.accent).text_color(palette.text))
+                            .when(!active, |el| el.text_color(palette.text_secondary))
+                            .on_click(cx.listener(move |this, _, _, cx| this.switch_log_tab(ix, cx)))
+                            .child(log_tab.title.clone())
+                            .when(ix > 0, |el| {
+                                el.child(
+                                    tool_button(("tab-log-close", ix), IconName::X, "Close Tab")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.close_log_tab(ix, cx)
+                                        })),
+                                )
+                            })
+                    }))
+                    .child(tool_button("tab-log-new", IconName::Plus, "New Log Tab").on_click(cx.listener(|this, _, _, cx| {
+                        let title = format!("Log {}", this.log_tabs.len() + 1);
+                        this.open_log_tab(title, Default::default(), cx);
+                    })))
                     .child(tab("tab-console", "Console", BottomTab::Console, current).on_click(cx.listener(
                         |this, _, _, cx| {
                             this.bottom_tab = BottomTab::Console;
