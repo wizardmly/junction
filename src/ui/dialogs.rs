@@ -250,6 +250,8 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
         let ok_remotes = preview.remotes.clone();
         let ok_default_remote = preview.remote.clone();
         let has_upstream = !preview.new_branch;
+        // Settings › Git › Protected branches: no force push to them.
+        let protected = Settings::get(cx).is_protected(target.read(cx).value().trim());
 
         dialog
             .title(format!("Push Commits to {repo_name}"))
@@ -335,8 +337,12 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                                 Checkbox::new("push-force")
                                     .label("Force push (--force-with-lease)")
                                     .checked(current.force)
+                                    .disabled(protected)
                                     .on_change(set(&options, |o, v| o.force = v)),
-                            ),
+                            )
+                            .when(protected, |el| {
+                                el.child(div().text_xs().text_color(palette.text_secondary).child("Force push is disabled: protected branch"))
+                            }),
                     ),
             )
             .on_ok(move |_, _, cx| {
@@ -346,11 +352,12 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                     return false;
                 }
                 let remote = ok_remotes.get(o.remote).cloned().unwrap_or_else(|| ok_default_remote.clone());
+                let force = o.force && !Settings::get(cx).is_protected(&target);
                 let request = PushRequest {
                     remote,
                     branch: ok_branch.clone(),
                     target,
-                    force_with_lease: o.force,
+                    force_with_lease: force,
                     tags: match o.tags {
                         None => PushTags::None,
                         Some(0) => PushTags::All,
@@ -378,7 +385,7 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                 });
                 true
             })
-            .footer(footer(if current.force { "Force Push" } else { "Push" }))
+            .footer(footer(if current.force && !protected { "Force Push" } else { "Push" }))
     });
 }
 
@@ -524,6 +531,9 @@ pub fn rename_branch(model: Entity<RepoModel>, branch: String, window: &mut Wind
 /// Settings › Version Control › Git, plus Appearance. Changes apply on OK.
 pub fn settings(window: &mut Window, cx: &mut App) {
     let draft = Rc::new(std::cell::RefCell::new(Settings::get(cx).clone()));
+    let initial = Settings::get(cx).clone();
+    let protected = cx.new(|cx| InputState::new(window, cx).default_value(initial.protected_branches.clone()));
+    let margin = cx.new(|cx| InputState::new(window, cx).default_value(initial.commit_subject_limit.to_string()));
     window.open_dialog(cx, move |dialog, _, cx| {
         let palette = cx.palette().clone();
         let current = draft.borrow().clone();
@@ -540,6 +550,7 @@ pub fn settings(window: &mut Window, cx: &mut App) {
         let theme_draft = draft.clone();
         let update_draft = draft.clone();
         let ok_draft = draft.clone();
+        let (ok_protected, ok_margin) = (protected.clone(), margin.clone());
         dialog
             .title("Settings")
             .w(px(520.))
@@ -581,11 +592,43 @@ pub fn settings(window: &mut Window, cx: &mut App) {
                                     if *ix == 1 { UpdateMethod::Rebase } else { UpdateMethod::Merge };
                                 window.refresh();
                             }),
+                    )
+                    .child(
+                        gpui_kit::component::h_flex()
+                            .gap_2()
+                            .pt_1()
+                            .text_sm()
+                            .child("Protected branches:")
+                            .child(div().flex_1().child(Input::new(&protected).small())),
+                    )
+                    .child(check(
+                        "settings-crlf",
+                        "Warn if CRLF line separators are about to be committed",
+                        current.warn_crlf,
+                        |s, v| s.warn_crlf = v,
+                    ))
+                    .child(check(
+                        "settings-detached",
+                        "Warn when committing in detached HEAD or during rebase",
+                        current.warn_detached_head,
+                        |s, v| s.warn_detached_head = v,
+                    ))
+                    .child(section("Version Control › Commit"))
+                    .child(
+                        gpui_kit::component::h_flex()
+                            .gap_2()
+                            .text_sm()
+                            .child("Subject line length limit:")
+                            .child(div().w(px(70.)).child(Input::new(&margin).small())),
                     ),
             )
             .footer(footer("OK"))
             .on_ok(move |_, window, cx| {
-                let next = ok_draft.borrow().clone();
+                let mut next = ok_draft.borrow().clone();
+                next.protected_branches = ok_protected.read(cx).value().trim().to_owned();
+                if let Ok(limit) = ok_margin.read(cx).value().trim().parse::<usize>() {
+                    next.commit_subject_limit = limit.clamp(20, 200);
+                }
                 if next.dark != Settings::get(cx).dark {
                     crate::theme::apply(next.dark, cx);
                 }

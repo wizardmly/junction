@@ -25,6 +25,14 @@ pub struct Settings {
     pub warn_crlf: bool,
     /// Commit message right margin, also used for the first-line hint.
     pub commit_subject_limit: usize,
+    /// "Warn when committing in detached HEAD or during rebase".
+    pub warn_detached_head: bool,
+    /// "Protected branches": force push is refused for these (comma-separated).
+    pub protected_branches: String,
+    /// Commit options remembered between commits.
+    pub sign_off: bool,
+    pub run_hooks: bool,
+    pub cleanup_message: bool,
 }
 
 impl Default for Settings {
@@ -36,13 +44,18 @@ impl Default for Settings {
             auto_update_on_push_rejected: false,
             warn_crlf: true,
             commit_subject_limit: 72,
+            warn_detached_head: true,
+            protected_branches: "master, main".into(),
+            sign_off: false,
+            run_hooks: true,
+            cleanup_message: false,
         }
     }
 }
 
 impl Global for Settings {}
 
-fn config_path() -> Option<PathBuf> {
+pub fn config_dir() -> Option<PathBuf> {
     let dir = if cfg!(target_os = "windows") {
         std::env::var_os("APPDATA").map(PathBuf::from)
     } else if cfg!(target_os = "macos") {
@@ -52,7 +65,52 @@ fn config_path() -> Option<PathBuf> {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
     }?;
-    Some(dir.join("GitGlass").join("settings.conf"))
+    Some(dir.join("GitGlass"))
+}
+
+fn config_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("settings.conf"))
+}
+
+const HISTORY_SEPARATOR: &str = "\n\u{1e}\n";
+const HISTORY_LIMIT: usize = 20;
+
+/// Recent commit messages, newest first (Commit Message History, Ctrl+M).
+pub fn message_history() -> Vec<String> {
+    let Some(path) = config_dir().map(|d| d.join("commit-messages.txt")) else { return Vec::new() };
+    std::fs::read_to_string(path)
+        .map(|text| text.split(HISTORY_SEPARATOR).filter(|m| !m.trim().is_empty()).map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+pub fn remember_message(message: &str) {
+    let Some(dir) = config_dir() else { return };
+    let message = message.trim();
+    if message.is_empty() {
+        return;
+    }
+    let mut history = message_history();
+    history.retain(|m| m != message);
+    history.insert(0, message.to_owned());
+    history.truncate(HISTORY_LIMIT);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("commit-messages.txt"), history.join(HISTORY_SEPARATOR));
+}
+
+impl Settings {
+    pub fn is_protected(&self, branch: &str) -> bool {
+        self.protected_branches.split(',').map(str::trim).any(|p| !p.is_empty() && (p == branch || glob(p, branch)))
+    }
+}
+
+/// `*` wildcards, as IntelliJ's protected-branch patterns allow.
+fn glob(pattern: &str, text: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == text,
+        Some((prefix, rest)) => {
+            text.starts_with(prefix) && (0..=text.len() - prefix.len()).any(|i| glob(rest, &text[prefix.len() + i..]))
+        }
+    }
 }
 
 impl Settings {
@@ -70,6 +128,11 @@ impl Settings {
                 }
                 "auto_update_on_push_rejected" => settings.auto_update_on_push_rejected = flag,
                 "warn_crlf" => settings.warn_crlf = flag,
+                "warn_detached_head" => settings.warn_detached_head = flag,
+                "protected_branches" => settings.protected_branches = value.to_owned(),
+                "sign_off" => settings.sign_off = flag,
+                "run_hooks" => settings.run_hooks = flag,
+                "cleanup_message" => settings.cleanup_message = flag,
                 "commit_subject_limit" => {
                     if let Ok(n) = value.parse() {
                         settings.commit_subject_limit = n;
@@ -83,7 +146,8 @@ impl Settings {
 
     pub fn serialize(&self) -> String {
         format!(
-            "theme={}\nstaging_area={}\nupdate_method={}\nauto_update_on_push_rejected={}\nwarn_crlf={}\ncommit_subject_limit={}\n",
+            "theme={}\nstaging_area={}\nupdate_method={}\nauto_update_on_push_rejected={}\nwarn_crlf={}\ncommit_subject_limit={}\n\
+             warn_detached_head={}\nprotected_branches={}\nsign_off={}\nrun_hooks={}\ncleanup_message={}\n",
             if self.dark { "dark" } else { "light" },
             self.staging_area,
             match self.update_method {
@@ -93,6 +157,11 @@ impl Settings {
             self.auto_update_on_push_rejected,
             self.warn_crlf,
             self.commit_subject_limit,
+            self.warn_detached_head,
+            self.protected_branches,
+            self.sign_off,
+            self.run_hooks,
+            self.cleanup_message,
         )
     }
 
@@ -130,5 +199,15 @@ mod tests {
     fn round_trips() {
         let settings = Settings { dark: false, staging_area: true, update_method: UpdateMethod::Rebase, ..Default::default() };
         assert_eq!(Settings::parse(&settings.serialize()), settings);
+        let custom = Settings { protected_branches: "release/*, main".into(), sign_off: true, run_hooks: false, ..Default::default() };
+        assert_eq!(Settings::parse(&custom.serialize()), custom);
+    }
+
+    #[test]
+    fn protected_branch_patterns() {
+        let settings = Settings { protected_branches: "main, release/*".into(), ..Default::default() };
+        assert!(settings.is_protected("main"));
+        assert!(settings.is_protected("release/1.2"));
+        assert!(!settings.is_protected("feature/x"));
     }
 }

@@ -134,6 +134,11 @@ pub struct CommitRequest {
     pub sign_off: bool,
     /// Staging-area mode: commit what is in the index, ignoring `paths`.
     pub staged_only: bool,
+    /// Commit options: "Author", "GPG-sign", "Run Git hooks", "Clean up commit message".
+    pub author: Option<String>,
+    pub gpg_sign: bool,
+    pub run_hooks: bool,
+    pub cleanup: bool,
 }
 
 pub fn commit(repository: &Repository, request: &CommitRequest) -> Result<String> {
@@ -157,6 +162,18 @@ pub fn commit(repository: &Repository, request: &CommitRequest) -> Result<String
     if request.sign_off {
         args.push("--signoff".into());
     }
+    if let Some(author) = request.author.as_ref().filter(|a| !a.trim().is_empty()) {
+        args.push(format!("--author={}", author.trim()));
+    }
+    if request.gpg_sign {
+        args.push("--gpg-sign".into());
+    }
+    if !request.run_hooks {
+        args.push("--no-verify".into());
+    }
+    if request.cleanup {
+        args.push("--cleanup=strip".into());
+    }
     if request.staged_only || merging {
         // Commit the index as it is.
     } else if request.paths.is_empty() {
@@ -170,6 +187,44 @@ pub fn commit(repository: &Repository, request: &CommitRequest) -> Result<String
     repository.run_with_input(&args, Some(&request.message))?;
     let hash = repository.run(["rev-parse", "HEAD"])?;
     Ok(hash.trim().to_owned())
+}
+
+/// Files among `paths` whose working tree content has CRLF line separators
+/// that git would commit as they are (no `core.autocrlf`).
+pub fn crlf_files(repository: &Repository, paths: &[String]) -> Vec<String> {
+    let autocrlf = repository.run(["config", "--get", "core.autocrlf"]).map(|v| v.trim().to_owned()).unwrap_or_default();
+    if autocrlf == "true" || autocrlf == "input" {
+        return Vec::new();
+    }
+    paths
+        .iter()
+        .filter(|path| {
+            let full = repository.root().join(path);
+            match std::fs::metadata(&full) {
+                Ok(meta) if meta.is_file() && meta.len() < 4 * 1024 * 1024 => std::fs::read(&full)
+                    .map(|bytes| !bytes.contains(&0) && bytes.windows(2).any(|w| w == b"\r\n"))
+                    .unwrap_or(false),
+                _ => false,
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+/// Files among `paths` larger than `limit` bytes (hosting services reject them).
+pub fn large_files(repository: &Repository, paths: &[String], limit: u64) -> Vec<(String, u64)> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            let size = std::fs::metadata(repository.root().join(path)).ok()?.len();
+            (size > limit).then(|| (path.clone(), size))
+        })
+        .collect()
+}
+
+/// Whether commits are signed by default (`commit.gpgSign`).
+pub fn gpg_sign_default(repository: &Repository) -> bool {
+    repository.run(["config", "--bool", "--get", "commit.gpgsign"]).is_ok_and(|v| v.trim() == "true")
 }
 
 /// The message of HEAD, loaded into the editor when "Amend" is checked.

@@ -11,7 +11,10 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     menu::{ContextMenuExt as _, PopupMenuItem},
-    input::{InputEvent, Textarea, TextareaState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    popover::Popover,
+    menu::DropdownMenu as _,
+    WindowExt as _,
     list::ListItem,
     tree::{TreeItem, TreeState, tree},
     v_flex,
@@ -73,6 +76,9 @@ pub struct CommitView {
     amend: bool,
     push_after_commit: bool,
     last_selection: Option<SharedString>,
+    /// Commit Options popover: "Author" override and "GPG-sign" (defaults to `commit.gpgSign`).
+    author: Entity<InputState>,
+    gpg_sign: Option<bool>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -80,6 +86,7 @@ impl CommitView {
     pub fn new(model: Entity<RepoModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let tree = cx.new(|cx| TreeState::new(cx));
         let message = cx.new(|cx| TextareaState::new(window, cx).rows(5).placeholder("Commit Message"));
+        let author = cx.new(|cx| InputState::new(window, cx).placeholder("Name <email>"));
         let subscriptions = vec![
             cx.subscribe_in(&model, window, |this, _, event, window, cx| match event {
                 RepoEvent::Reloaded => this.rebuild(cx),
@@ -136,6 +143,8 @@ impl CommitView {
             amend: false,
             push_after_commit: false,
             last_selection: None,
+            author,
+            gpg_sign: None,
             _subscriptions: subscriptions,
         };
         this.rebuild(cx);
@@ -292,22 +301,117 @@ impl CommitView {
         self.message.update(cx, |state, cx| state.focus(window, cx));
     }
 
+    /// Commit, after IntelliJ's pre-commit checks: detached HEAD, CRLF line
+    /// separators, and files too large for hosting services.
     fn commit(&mut self, push: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.message.read(cx).value().trim().is_empty() {
+            return;
+        }
+        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        let settings = Settings::get(cx).clone();
+        let paths = self.commit_paths(cx);
+        let mut warnings: Vec<String> = Vec::new();
+        if settings.warn_detached_head && self.model.read(cx).refs().current_branch.is_none() {
+            warnings.push(match self.model.read(cx).state() {
+                crate::git::RepositoryState::Rebasing => "A rebase is in progress. The commit will be part of the rebased history.".into(),
+                _ => "HEAD is detached: the commit won't belong to any branch and may be lost after checkout.".into(),
+            });
+        }
+        let crlf = if settings.warn_crlf { status::crlf_files(&repository, &paths) } else { Vec::new() };
+        if !crlf.is_empty() {
+            warnings.push(format!(
+                "{} file{} with CRLF line separators will be committed as is: {}",
+                crlf.len(),
+                if crlf.len() == 1 { "" } else { "s" },
+                crlf.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+        for (path, size) in status::large_files(&repository, &paths, 50 * 1024 * 1024) {
+            warnings.push(format!("{path} is {} MB; most Git hosts reject files over 50 MB.", size / (1024 * 1024)));
+        }
+        if warnings.is_empty() {
+            return self.do_commit(push, window, cx);
+        }
+        let entity = cx.entity();
+        let has_crlf = !crlf.is_empty();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let palette = cx.palette().clone();
+            let (commit_entity, fix_entity) = (entity.clone(), entity.clone());
+            let mut footer = gpui_kit::component::dialog::DialogFooter::new()
+                .gap_2()
+                .child(gpui_kit::component::dialog::DialogClose::new().child(Button::new("warn-cancel").label("Cancel").outline()));
+            if has_crlf {
+                footer = footer.child(gpui_kit::component::dialog::DialogClose::new().child(
+                    Button::new("warn-fix").label("Fix and Commit").outline().on_click(move |_, window, cx| {
+                        fix_entity.update(cx, |this, cx| {
+                            if let Some(repo) = this.model.read(cx).repository() {
+                                // Like IntelliJ: let git convert line separators on commit.
+                                let value = if cfg!(windows) { "true" } else { "input" };
+                                let _ = repo.run(["config", "core.autocrlf", value]);
+                            }
+                            this.do_commit(push, window, cx)
+                        })
+                    }),
+                ));
+            }
+            footer = footer.child(gpui_kit::component::dialog::DialogClose::new().child(
+                Button::new("warn-commit").label("Commit Anyway").primary().on_click(move |_, window, cx| {
+                    commit_entity.update(cx, |this, cx| this.do_commit(push, window, cx))
+                }),
+            ));
+            dialog
+                .title("Commit")
+                .w(px(520.))
+                .child(v_flex().gap_2().children(warnings.iter().map(|w| {
+                    h_flex()
+                        .gap_2()
+                        .items_start()
+                        .text_sm()
+                        .child(Icon::new(IconName::TriangleAlert).small().text_color(palette.status_conflict))
+                        .child(div().flex_1().child(w.clone()))
+                })))
+                .footer(footer)
+        });
+    }
+
+    /// The files a commit would include.
+    fn commit_paths(&self, cx: &Context<Self>) -> Vec<String> {
+        if self.staging {
+            let _ = cx;
+            self.groups.iter().find(|g| g.scope == STAGED_SCOPE).map(|g| g.files.iter().map(|(p, _)| p.clone()).collect()).unwrap_or_default()
+        } else {
+            let mut paths: Vec<String> = self.included.iter().cloned().collect();
+            paths.sort();
+            paths
+        }
+    }
+
+    fn do_commit(&mut self, push: bool, window: &mut Window, cx: &mut Context<Self>) {
         let message = self.message.read(cx).value().trim().to_owned();
         if message.is_empty() {
             return;
         }
         let staged_only = self.staging;
-        let mut paths: Vec<String> = if staged_only { Vec::new() } else { self.included.iter().cloned().collect() };
-        paths.sort();
+        let paths: Vec<String> = if staged_only { Vec::new() } else { self.commit_paths(cx) };
         let unversioned: Vec<String> =
             paths.iter().filter(|p| self.kinds.get(*p) == Some(&StatusKind::Unversioned)).cloned().collect();
-        let count = if staged_only {
-            self.groups.iter().find(|g| g.scope == STAGED_SCOPE).map_or(0, |g| g.files.len())
-        } else {
-            paths.len()
+        let count = if staged_only { self.commit_paths(cx).len() } else { paths.len() };
+        let settings = Settings::get(cx).clone();
+        let author = self.author.read(cx).value().trim().to_owned();
+        let gpg_sign = self.gpg_default(cx);
+        let request = CommitRequest {
+            message: message.clone(),
+            amend: self.amend,
+            paths,
+            unversioned,
+            sign_off: settings.sign_off,
+            staged_only,
+            author: (!author.is_empty()).then_some(author),
+            gpg_sign,
+            run_hooks: settings.run_hooks,
+            cleanup: settings.cleanup_message,
         };
-        let request = CommitRequest { message, amend: self.amend, paths, unversioned, sign_off: false, staged_only };
+        crate::settings::remember_message(&message);
         self.push_after_commit = push;
         self.model.update(cx, |model, cx| {
             model.run_operation("Commit", move |repo| {
@@ -316,8 +420,56 @@ impl CommitView {
             }, cx)
         });
         self.amend = false;
+        // IntelliJ keeps the author override only for one commit.
+        self.author.update(cx, |state, cx| state.set_value("", window, cx));
         self.message.update(cx, |state, cx| state.set_value("", window, cx));
         cx.notify();
+    }
+
+    fn gpg_default(&self, cx: &gpui_kit::App) -> bool {
+        self.gpg_sign.unwrap_or_else(|| self.model.read(cx).repository().is_some_and(status::gpg_sign_default))
+    }
+
+    /// The gear next to Commit: IntelliJ's Commit Options.
+    fn render_options(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let author = self.author.clone();
+        Popover::new("commit-options")
+            .anchor(gpui_kit::Anchor::BottomLeft)
+            .trigger(
+                Button::new("commit-options-button")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(IconName::Settings))
+                    .tooltip("Commit Options"),
+            )
+            .content(move |_, _, cx| {
+                let palette = cx.palette().clone();
+                let settings = Settings::get(cx).clone();
+                let gpg = entity.read(cx).gpg_default(cx);
+                let gpg_entity = entity.clone();
+                let toggle = |id: &'static str, label: &'static str, value: bool, set: fn(&mut Settings, bool)| {
+                    Checkbox::new(id).label(label).checked(value).on_change(move |v, _, cx| Settings::update(cx, |s| set(s, *v)))
+                };
+                v_flex()
+                    .w(px(300.))
+                    .gap_2()
+                    .p_1()
+                    .text_sm()
+                    .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Git"))
+                    .child(h_flex().gap_2().child(div().w(px(50.)).child("Author:")).child(div().flex_1().child(Input::new(&author).small())))
+                    .child(toggle("opt-signoff", "Sign-off commit", settings.sign_off, |s, v| s.sign_off = v))
+                    .child(Checkbox::new("opt-gpg").label("Sign commit with GPG").checked(gpg).on_change(move |v, _, cx| {
+                        gpg_entity.update(cx, |this, cx| {
+                            this.gpg_sign = Some(*v);
+                            cx.notify();
+                        })
+                    }))
+                    .child(div().pt_1().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Before Commit"))
+                    .child(toggle("opt-hooks", "Run Git hooks", settings.run_hooks, |s, v| s.run_hooks = v))
+                    .child(toggle("opt-cleanup", "Clean up commit message", settings.cleanup_message, |s, v| s.cleanup_message = v))
+                    .child(div().text_xs().text_color(palette.text_secondary).child("Removes # comment lines and surrounding whitespace"))
+            })
     }
 }
 
@@ -370,6 +522,13 @@ impl Render for CommitView {
         let has_changes = if staging { staged_count > 0 } else { !self.included.is_empty() };
         let can_commit = !self.message.read(cx).value().trim().is_empty() && (has_changes || self.amend);
         let busy = self.model.read(cx).busy().is_some();
+        let history_entity = cx.entity();
+        // First-line length against Settings › Commit › subject limit.
+        let subject_hint = {
+            let text = self.message.read(cx).value();
+            let len = text.lines().next().unwrap_or_default().chars().count();
+            (len > 0).then_some((len, Settings::get(cx).commit_subject_limit))
+        };
 
         // Per node: the paths under it (for group/dir checkboxes), its color,
         // and whether it is a group or belongs to the Staged tree.
@@ -535,12 +694,50 @@ impl Render for CommitView {
                     .p_2()
                     .gap_2()
                     .child(
-                        h_flex().gap_3().child(
-                            Checkbox::new("amend")
-                                .label("Amend")
-                                .checked(self.amend)
-                                .on_change(cx.listener(|this, value, window, cx| this.set_amend(*value, window, cx))),
-                        ),
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                Checkbox::new("amend")
+                                    .label("Amend")
+                                    .checked(self.amend)
+                                    .on_change(cx.listener(|this, value, window, cx| this.set_amend(*value, window, cx))),
+                            )
+                            .child(div().flex_1())
+                            .when_some(subject_hint, |el, (len, limit)| {
+                                el.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(if len > limit { palette.status_conflict } else { palette.text_secondary })
+                                        .child(format!("{len}/{limit}")),
+                                )
+                            })
+                            .child(
+                                Button::new("commit-history")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(IconName::Clock))
+                                    .tooltip("Commit Message History")
+                                    .dropdown_menu({
+                                        let entity = history_entity.clone();
+                                        move |mut menu, _, _| {
+                                            let history = crate::settings::message_history();
+                                            if history.is_empty() {
+                                                return menu.item(PopupMenuItem::new("No recent commit messages").disabled(true));
+                                            }
+                                            for message in history {
+                                                let subject: String = message.lines().next().unwrap_or_default().chars().take(70).collect();
+                                                let entity = entity.clone();
+                                                menu = menu.item(PopupMenuItem::new(subject).on_click(move |_, window, cx| {
+                                                    let message = message.clone();
+                                                    entity.update(cx, |this, cx| {
+                                                        this.message.update(cx, |state, cx| state.set_value(message, window, cx))
+                                                    })
+                                                }));
+                                            }
+                                            menu.max_h(px(360.))
+                                        }
+                                    }),
+                            ),
                     )
                     .child(Textarea::new(&self.message).h(px(110.)))
                     .child(
@@ -561,7 +758,9 @@ impl Render for CommitView {
                                     .label(if self.amend { "Amend Commit and Push…" } else { "Commit and Push…" })
                                     .disabled(!can_commit || busy)
                                     .on_click(cx.listener(|this, _, window, cx| this.commit(true, window, cx))),
-                            ),
+                            )
+                            .child(div().flex_1())
+                            .child(self.render_options(cx)),
                     ),
             )
     }
