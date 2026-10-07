@@ -53,6 +53,14 @@ pub struct Palette {
     pub diff_inserted_word: Hsla,
     pub diff_deleted_word: Hsla,
     pub diff_modified_word: Hsla,
+    /// Edges of change blocks in the diff divider and empty-side markers.
+    pub diff_inserted_border: Hsla,
+    pub diff_deleted_border: Hsla,
+    pub diff_modified_border: Hsla,
+    /// Merge conflicts.
+    pub diff_conflict: Hsla,
+    pub diff_conflict_word: Hsla,
+    pub diff_conflict_border: Hsla,
 }
 
 impl Global for Palette {}
@@ -93,13 +101,20 @@ impl Palette {
                 hex(0xa571e6),
                 hex(0xe55765),
             ],
-            diff_inserted: hex_alpha(0x549159, 0.25),
-            diff_deleted: hex_alpha(0x9c4e4e, 0.30),
+            // IntelliJ's dark diff colors: modified blue, inserted green, deleted gray.
+            diff_inserted: hex_alpha(0x2c4a33, 0.92),
+            diff_deleted: hex_alpha(0x434547, 0.92),
             diff_header: hex_alpha(0x3574f0, 0.18),
-            diff_modified: hex_alpha(0x43698d, 0.40),
-            diff_inserted_word: hex_alpha(0x5fad65, 0.50),
-            diff_deleted_word: hex_alpha(0xb85c5c, 0.55),
-            diff_modified_word: hex_alpha(0x4f84c4, 0.60),
+            diff_modified: hex_alpha(0x2a3b56, 0.92),
+            diff_inserted_word: hex(0x3d6b45),
+            diff_deleted_word: hex(0x5d6063),
+            diff_modified_word: hex(0x3d5a85),
+            diff_inserted_border: hex(0x4f8a59),
+            diff_deleted_border: hex(0x6e7174),
+            diff_modified_border: hex(0x4b6ea3),
+            diff_conflict: hex_alpha(0x5a3434, 0.92),
+            diff_conflict_word: hex(0x7d4545),
+            diff_conflict_border: hex(0x9a5555),
         }
     }
 
@@ -138,13 +153,20 @@ impl Palette {
                 hex(0x8350d6),
                 hex(0xd52020),
             ],
-            diff_inserted: hex_alpha(0x67c27a, 0.25),
-            diff_deleted: hex_alpha(0xf27c7c, 0.25),
+            // IntelliJ's light diff colors: modified blue, inserted green, deleted gray.
+            diff_inserted: hex(0xd2f0d3),
+            diff_deleted: hex(0xe7e7e7),
             diff_header: hex_alpha(0x3574f0, 0.12),
-            diff_modified: hex_alpha(0x9fc2ea, 0.40),
-            diff_inserted_word: hex_alpha(0x4fb062, 0.45),
-            diff_deleted_word: hex_alpha(0xe46a6a, 0.45),
-            diff_modified_word: hex_alpha(0x5b95dc, 0.45),
+            diff_modified: hex(0xe3ecfb),
+            diff_inserted_word: hex(0xade3ad),
+            diff_deleted_word: hex(0xcbcbcb),
+            diff_modified_word: hex(0xc0d4f7),
+            diff_inserted_border: hex(0x8fd18f),
+            diff_deleted_border: hex(0xb8b8b8),
+            diff_modified_border: hex(0x9fbbe8),
+            diff_conflict: hex(0xffdcdc),
+            diff_conflict_word: hex(0xffb3b3),
+            diff_conflict_border: hex(0xeb9a9a),
         }
     }
 

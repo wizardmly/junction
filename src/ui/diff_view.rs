@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -16,10 +17,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, HighlightStyle, Hsla, InteractiveElement as _, IntoElement,
+    AnyElement, App, AppContext as _, Bounds, Context, HighlightStyle, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, ScrollWheelEvent, canvas, Hsla, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, ScrollStrategy, StatefulInteractiveElement as _, Styled as _,
     Image, ImageFormat, ObjectFit, StyledImage as _, StyledText, Task, img, UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder as _, px,
-    uniform_list,
+    uniform_list, fill, point, size,
 };
 
 use crate::git::Repository;
@@ -27,12 +28,18 @@ use crate::git::blob::{self, ImageInfo, ImageKind};
 use crate::git::diff::{self, DiffOptions, DiffRow, FileDiff, HighlightMode, HunkAction, IgnoreWhitespace, Revisions, RowKind, Side};
 use crate::theme::{ActivePalette as _, Palette};
 use crate::ui::common::{self, tool_button};
+use crate::ui::diff_panes::{BlockColors, Connector, DIVIDER_WIDTH, PaneRow, TwoSide, fold_links, map_row, paint_divider};
 
-actions!(diff_view, [NextDifference, PreviousDifference]);
+actions!(diff_view, [NextDifference, PreviousDifference, JumpToSource]);
 
-const LINE_HEIGHT: f32 = 20.;
+use crate::ui::diff_panes::LINE_HEIGHT;
 const GUTTER_WIDTH: f32 = 44.;
 const TAB_WIDTH: usize = 4;
+/// Approximate advance of the 12.5px monospace font, for horizontal scroll bounds.
+const CHAR_WIDTH: f32 = 7.6;
+/// One gutter button column.
+const BUTTON_WIDTH: f32 = 18.;
+const STRIPE_WIDTH: f32 = 12.;
 
 /// What to compare.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,6 +152,7 @@ pub struct CommentLine {
 }
 
 impl gpui_kit::EventEmitter<CommentLine> for DiffView {}
+impl gpui_kit::EventEmitter<crate::ui::navigate::OpenTarget> for DiffView {}
 
 pub struct DiffView {
     repository: Option<Repository>,
@@ -159,6 +167,21 @@ pub struct DiffView {
     error: Option<String>,
     scroll: UniformListScrollHandle,
     review: Option<Rc<Review>>,
+    /// The side-by-side viewer's two panes.
+    two: Rc<TwoSide>,
+    /// Each pane's scroll position (x, y) in pixels.
+    pane_scroll: [(f32, f32); 2],
+    /// Synchronize Scrolling (the toolbar toggle).
+    sync_scroll: bool,
+    /// The panes' visible height, measured while painting.
+    view_height: Rc<Cell<f32>>,
+    /// The error stripes' bounds, for clicks and drags on them.
+    stripe_bounds: Rc<Cell<[Bounds<Pixels>; 2]>>,
+    stripe_drag: Option<usize>,
+    /// A change to scroll to once the panes have been measured.
+    pending_change: Option<usize>,
+    /// Each pane's longest line, in columns, bounding horizontal scroll.
+    max_cols: [usize; 2],
     _task: Option<Task<()>>,
 }
 
@@ -177,6 +200,14 @@ impl DiffView {
             error: None,
             scroll: UniformListScrollHandle::new(),
             review: None,
+            two: Rc::default(),
+            pane_scroll: [(0., 0.); 2],
+            sync_scroll: true,
+            view_height: Rc::new(Cell::new(0.)),
+            stripe_bounds: Rc::new(Cell::new([Bounds::default(); 2])),
+            stripe_drag: None,
+            pending_change: None,
+            max_cols: [0; 2],
             _task: None,
         }
     }
@@ -314,6 +345,21 @@ impl DiffView {
         let mut out = Vec::new();
         flatten(&self.diff.rows, &self.expanded, self.mode, &mut out);
         self.rows = Rc::new(out);
+        self.two = Rc::new(TwoSide::build(&self.diff.rows, &self.expanded));
+        for pane in 0..2 {
+            self.max_cols[pane] = self
+                .pane_rows(pane)
+                .iter()
+                .map(|row| match row {
+                    PaneRow::Line { side, .. } => side.text.chars().map(|c| if c == '\t' { TAB_WIDTH } else { 1 }).sum(),
+                    PaneRow::Fold { .. } => 0,
+                })
+                .max()
+                .unwrap_or(0);
+        }
+        for pane in 0..2 {
+            self.pane_scroll[pane].1 = self.pane_scroll[pane].1.min(self.max_scroll_y(pane));
+        }
     }
 
     fn set_mode(&mut self, mode: ViewerMode, cx: &mut Context<Self>) {
@@ -341,9 +387,122 @@ impl DiffView {
     }
 
     fn go_to_change(&mut self, change: usize) {
+        if self.mode == ViewerMode::SideBySide {
+            let Some(seg) = self.two.change_segment(change).cloned() else { return };
+            self.current = Some(change);
+            let height = self.view_height.get();
+            if height <= 0. {
+                self.pending_change = Some(change);
+                return;
+            }
+            // Both panes put the change's first row a third of the way down.
+            let top = height / 3.;
+            self.pane_scroll[0].1 = (seg.left.start as f32 * LINE_HEIGHT - top).clamp(0., self.max_scroll_y(0));
+            self.pane_scroll[1].1 = (seg.right.start as f32 * LINE_HEIGHT - top).clamp(0., self.max_scroll_y(1));
+            return;
+        }
         if let Some(row) = self.change_row(change) {
             self.current = Some(change);
             self.scroll.scroll_to_item(row, ScrollStrategy::Center);
+        }
+    }
+
+    fn pane_rows(&self, pane: usize) -> &[PaneRow] {
+        if pane == 0 { &self.two.left } else { &self.two.right }
+    }
+
+    /// Lets the last line scroll up to the middle of the pane.
+    fn max_scroll_y(&self, pane: usize) -> f32 {
+        let content = self.pane_rows(pane).len() as f32 * LINE_HEIGHT;
+        (content - self.view_height.get() / 2.).max(0.)
+    }
+
+    /// Scrolls one pane; with Synchronize Scrolling the other follows so
+    /// the rows at the middle of both stay paired.
+    fn scroll_pane_to(&mut self, pane: usize, x: f32, y: f32) {
+        let y = y.clamp(0., self.max_scroll_y(pane));
+        let x = x.clamp(0., (self.max_cols[0].max(self.max_cols[1]) as f32 * CHAR_WIDTH - 40.).max(0.));
+        self.pane_scroll[pane] = (x, y);
+        if self.sync_scroll {
+            let other = 1 - pane;
+            let half = self.view_height.get() / 2.;
+            let row = (y + half) / LINE_HEIGHT;
+            let mapped = map_row(&self.two.segments, pane == 0, row);
+            let other_y = (mapped * LINE_HEIGHT - half).clamp(0., self.max_scroll_y(other));
+            self.pane_scroll[other] = (x, other_y);
+        }
+    }
+
+    fn on_pane_wheel(&mut self, pane: usize, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        let delta = event.delta.pixel_delta(px(LINE_HEIGHT));
+        let (mut dx, dy) = (f32::from(delta.x), f32::from(delta.y));
+        if event.modifiers.shift && dx == 0. {
+            dx = dy;
+            let (x, y) = self.pane_scroll[pane];
+            self.scroll_pane_to(pane, x - dx, y);
+        } else {
+            let (x, y) = self.pane_scroll[pane];
+            self.scroll_pane_to(pane, x - dx, y - dy);
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Error stripe click or drag: centers the pane on that spot.
+    fn stripe_seek(&mut self, pane: usize, y: Pixels, cx: &mut Context<Self>) {
+        let bounds = self.stripe_bounds.get()[pane];
+        let h = f32::from(bounds.size.height);
+        if h <= 0. {
+            return;
+        }
+        let t = ((f32::from(y - bounds.origin.y)) / h).clamp(0., 1.);
+        let view = self.view_height.get();
+        let total = (self.pane_rows(pane).len() as f32 * LINE_HEIGHT + view / 2.).max(h);
+        let x = self.pane_scroll[pane].0;
+        self.scroll_pane_to(pane, x, t * total - view / 2.);
+        cx.notify();
+    }
+
+    fn set_all_included(&mut self, include: bool, cx: &mut Context<Self>) {
+        let Some(path) = self.partial_path(cx) else { return };
+        let signatures: Vec<u64> = (0..self.diff.hunks.len()).filter_map(|c| self.signature(c)).collect();
+        crate::model::ExcludedHunks::update(cx, |map| {
+            let set = map.entry(path).or_default();
+            for s in signatures {
+                if include {
+                    set.remove(&s);
+                } else {
+                    set.insert(s);
+                }
+            }
+        });
+        cx.notify();
+    }
+
+    /// The working-tree line Jump to Source opens: the current change's,
+    /// else the line at the top of the right pane.
+    fn jump_target(&self) -> Option<crate::index::nav::Target> {
+        let path = match self.source.as_ref()? {
+            DiffSource::WorkingTree { path, .. } | DiffSource::Unstaged { path } => path.clone(),
+            _ => return None,
+        };
+        let row = match self.current.and_then(|c| self.two.change_segment(c)) {
+            Some(seg) => seg.right.start,
+            None => (self.pane_scroll[1].1 / LINE_HEIGHT) as usize,
+        };
+        let line = self.two.right[row.min(self.two.right.len().saturating_sub(1))..]
+            .iter()
+            .find_map(|r| match r {
+                PaneRow::Line { side, .. } => Some(side.line.saturating_sub(1)),
+                PaneRow::Fold { .. } => None,
+            })
+            .unwrap_or(0);
+        Some(crate::index::nav::Target { path, line: line as u32, col: 0, name: String::new(), label: String::new(), container: None })
+    }
+
+    pub fn jump_to_source(&mut self, cx: &mut Context<Self>) {
+        if let Some(target) = self.jump_target() {
+            cx.emit(crate::ui::navigate::OpenTarget(target));
         }
     }
 
@@ -395,10 +554,16 @@ impl DiffView {
         } else if self.loaded.is_none() {
             String::new()
         } else {
-            match self.diff.changes {
+            let differences = match self.diff.changes {
                 0 => "No differences".to_owned(),
                 1 => "1 difference".to_owned(),
                 n => format!("{n} differences"),
+            };
+            let included = self.included(cx);
+            if included.is_empty() || self.diff.changes == 0 {
+                differences
+            } else {
+                format!("{differences}, {} included", included.iter().filter(|i| **i).count())
             }
         };
 
@@ -418,6 +583,11 @@ impl DiffView {
                 tool_button("diff-next", IconName::ChevronDown, "Next Difference (F7)")
                     .disabled(!self.has_next())
                     .on_click(cx.listener(|this, _, _, cx| this.next_difference(cx))),
+            )
+            .child(
+                tool_button("diff-jump", IconName::Pencil, "Jump to Source (F4)")
+                    .disabled(self.jump_target().is_none())
+                    .on_click(cx.listener(|this, _, _, cx| this.jump_to_source(cx))),
             )
             .child(separator())
             .child(Button::new("diff-viewer").ghost().xsmall().label(viewer_label).dropdown_menu({
@@ -475,6 +645,16 @@ impl DiffView {
                         this.update_options(cx, |o| o.context = if o.context.is_some() { None } else { Some(4) })
                     })),
             )
+            .when(mode == ViewerMode::SideBySide, |el| {
+                el.child(
+                    tool_button("diff-sync", IconName::Link2, "Synchronize Scrolling")
+                        .selected(self.sync_scroll)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.sync_scroll = !this.sync_scroll;
+                            cx.notify();
+                        })),
+                )
+            })
             .child(separator())
             .child(common::icon(common::file_icon(source.path())).text_color(palette.text_secondary))
             .child(div().ml_1().text_sm().overflow_hidden().whitespace_nowrap().text_ellipsis().child(source.path().to_owned()))
@@ -490,6 +670,443 @@ impl DiffView {
                 )
             })
             .child(div().text_xs().text_color(palette.text_secondary).child(summary))
+    }
+}
+
+/// What a pane row needs to paint itself.
+struct RowStyle {
+    palette: Palette,
+    highlight: HighlightMode,
+    scroll_x: f32,
+    /// The left gutter's button column.
+    actions_width: f32,
+    /// The right gutter's checkbox column.
+    check_width: f32,
+    review: Option<Rc<Review>>,
+    review_path: Rc<str>,
+}
+
+fn line_color(kind: RowKind, p: &Palette) -> Hsla {
+    match kind {
+        RowKind::Modified => p.diff_modified,
+        RowKind::Inserted => p.diff_inserted,
+        RowKind::Deleted => p.diff_deleted,
+        RowKind::Equal => gpui_kit::transparent_black(),
+    }
+}
+
+fn word_color(kind: RowKind, p: &Palette) -> Hsla {
+    match kind {
+        RowKind::Inserted => p.diff_inserted_word,
+        RowKind::Deleted => p.diff_deleted_word,
+        _ => p.diff_modified_word,
+    }
+}
+
+fn border_color(kind: RowKind, p: &Palette) -> Hsla {
+    match kind {
+        RowKind::Inserted => p.diff_inserted_border,
+        RowKind::Deleted => p.diff_deleted_border,
+        _ => p.diff_modified_border,
+    }
+}
+
+/// A line's text, scrolled horizontally, with its changed words marked
+/// in their fragment's color.
+fn pane_text(side: &Side, words: bool, s: &RowStyle) -> impl IntoElement {
+    let (text, ranges) = expand_tabs(&side.text, &side.changed);
+    let highlights: Vec<_> = if words {
+        ranges
+            .into_iter()
+            .enumerate()
+            .filter(|(_, r)| !r.is_empty())
+            .map(|(i, r)| {
+                let kind = side.kinds.get(i).copied().unwrap_or(RowKind::Modified);
+                (r, HighlightStyle { background_color: Some(word_color(kind, &s.palette)), ..Default::default() })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    div().flex_1().min_w_0().h_full().overflow_hidden().child(
+        div()
+            .relative()
+            .left(px(-s.scroll_x))
+            .pl_2()
+            .whitespace_nowrap()
+            .text_color(s.palette.text)
+            .child(StyledText::new(text).with_highlights(highlights)),
+    )
+}
+
+/// A line number; on a review diff's new side it takes comments.
+fn pane_number(pane: usize, ix: usize, line: usize, s: &RowStyle, cx: &mut Context<DiffView>) -> AnyElement {
+    let p = &s.palette;
+    let number = div()
+        .w(px(GUTTER_WIDTH))
+        .h_full()
+        .flex_shrink_0()
+        .text_right()
+        .map(|el| if pane == 0 { el.pr_2() } else { el.pr_1() })
+        .text_color(p.text_disabled);
+    let Some(review) = s.review.as_ref().filter(|_| pane == 1) else {
+        return number.child(line.to_string()).into_any_element();
+    };
+    let notes = review.comments.get(&line).cloned();
+    let path = s.review_path.clone();
+    h_flex()
+        .id(("diff-comment", ix))
+        .w(px(GUTTER_WIDTH))
+        .h_full()
+        .flex_shrink_0()
+        .justify_end()
+        .items_center()
+        .gap_0p5()
+        .pr_1()
+        .cursor_pointer()
+        .text_color(p.text_disabled)
+        .hover(|st| st.bg(p.hover).text_color(p.text))
+        .when(notes.is_some(), |el| el.child(common::icon(IconName::MessageSquare).text_color(p.link)))
+        .child(line.to_string())
+        .tooltip(move |window, cx| {
+            let text = match &notes {
+                Some(notes) => notes.join("\n\n"),
+                None => "Add review comment".to_owned(),
+            };
+            gpui_kit::component::tooltip::Tooltip::new(text).build(window, cx)
+        })
+        .on_click(cx.listener(move |_, _, _, cx| cx.emit(CommentLine { path: path.to_string(), line })))
+        .into_any_element()
+}
+
+/// One row of a pane, placed `top` pixels below the pane's top. The left
+/// pane is mirrored: text, then its gutter against the divider.
+fn pane_row(pane: usize, ix: usize, row: &PaneRow, top: f32, s: &RowStyle, cx: &mut Context<DiffView>) -> AnyElement {
+    let p = &s.palette;
+    let base = div().absolute().left_0().right_0().top(px(top)).h(px(LINE_HEIGHT));
+    match row {
+        PaneRow::Fold { id, count } => {
+            let id = *id;
+            base.id(("pane-fold", pane * 10_000_000 + ix))
+                .flex()
+                .items_center()
+                .gap_1()
+                .bg(p.diff_header)
+                .text_color(p.text_secondary)
+                .cursor_pointer()
+                .hover(|st| st.text_color(p.text))
+                .on_click(cx.listener(move |this, _, _, cx| this.expand_fold(id, cx)))
+                .map(|el| if pane == 0 { el.pl_2() } else { el.pl(px(GUTTER_WIDTH + s.check_width + 4.)) })
+                .child(common::icon(IconName::ChevronRight))
+                .child(format!("{count} unchanged lines"))
+                .into_any_element()
+        }
+        PaneRow::Line { side, kind, .. } => {
+            let background = match (s.highlight, kind) {
+                (HighlightMode::None, _) | (_, None) => None,
+                (HighlightMode::Words, Some(k)) => Some(side.whole.map_or(line_color(*k, p), |w| word_color(w, p))),
+                (_, Some(k)) => Some(line_color(*k, p)),
+            };
+            let words = s.highlight == HighlightMode::Words && side.whole.is_none();
+            // With highlighting off IntelliJ still marks changed lines in the gutter.
+            let marker = div()
+                .w(px(3.))
+                .h_full()
+                .flex_shrink_0()
+                .when_some(kind.filter(|_| s.highlight == HighlightMode::None), |el, k| el.bg(border_color(k, p)));
+            let text = pane_text(side, words, s);
+            let number = pane_number(pane, ix, side.line, s, cx);
+            base.flex()
+                .when_some(background, |el, bg| el.bg(bg))
+                .map(|el| {
+                    if pane == 0 {
+                        el.child(text).child(div().w(px(s.actions_width)).flex_shrink_0()).child(number).child(marker)
+                    } else {
+                        el.child(marker).child(number).child(div().w(px(s.check_width)).flex_shrink_0()).child(text)
+                    }
+                })
+                .into_any_element()
+        }
+    }
+}
+
+impl DiffView {
+    /// Per change: whether it goes into the next commit (partial commits).
+    fn included(&self, cx: &App) -> Vec<bool> {
+        match self.partial_path(cx) {
+            Some(path) => {
+                let excluded = crate::model::ExcludedHunks::get(cx).get(&path).cloned().unwrap_or_default();
+                (0..self.diff.hunks.len()).map(|c| self.signature(c).is_none_or(|s| !excluded.contains(&s))).collect()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Error stripe: every change's place in the whole file, the visible
+    /// part as a thumb; click or drag to scroll there.
+    fn render_stripe(&self, pane: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let content = self.pane_rows(pane).len() as f32 * LINE_HEIGHT;
+        let view = self.view_height.get();
+        let scroll = self.pane_scroll[pane].1;
+        let marks: Vec<(f32, f32, Hsla)> = self
+            .two
+            .segments
+            .iter()
+            .filter(|s| s.change.is_some())
+            .map(|s| {
+                let range = if pane == 0 { s.left.clone() } else { s.right.clone() };
+                (range.start as f32 * LINE_HEIGHT, range.len() as f32 * LINE_HEIGHT, border_color(s.kind, &palette))
+            })
+            .collect();
+        let cell = self.stripe_bounds.clone();
+        let thumb = palette.text_disabled.opacity(0.25);
+        div()
+            .id(("diff-stripe", pane))
+            .w(px(STRIPE_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                    this.stripe_drag = Some(pane);
+                    this.stripe_seek(pane, e.position.y, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
+                if this.stripe_drag == Some(pane) && e.pressed_button == Some(MouseButton::Left) {
+                    this.stripe_seek(pane, e.position.y, cx);
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.stripe_drag = None))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| this.stripe_drag = None))
+            .child(
+                canvas(
+                    move |bounds, _, _| {
+                        let mut all = cell.get();
+                        all[pane] = bounds;
+                        cell.set(all);
+                    },
+                    move |bounds, _, window, _| {
+                        let h = f32::from(bounds.size.height);
+                        let total = (content + view / 2.).max(h).max(1.);
+                        let scale = h / total;
+                        let x = bounds.origin.x + px(2.);
+                        let w = bounds.size.width - px(4.);
+                        for (y, len, color) in &marks {
+                            let top = bounds.origin.y + px(y * scale);
+                            let height = px((len * scale).max(2.));
+                            window.paint_quad(fill(Bounds::new(point(x, top), size(w, height)), *color));
+                        }
+                        if view > 0. && view < total {
+                            let top = bounds.origin.y + px(scroll * scale);
+                            window.paint_quad(fill(Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, px(view * scale))), thumb));
+                        }
+                    },
+                )
+                .size_full(),
+            )
+    }
+
+    /// IntelliJ's side-by-side viewer: two panes with only their own lines,
+    /// gutters against the divider that connects their change blocks.
+    fn render_two_side(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let palette = cx.palette().clone();
+        let mono = cx.theme().mono_font_family.clone();
+        let actions = self.hunk_actions();
+        let partial = self.partial_path(cx).is_some();
+        let included = self.included(cx);
+        let two = self.two.clone();
+        let height = self.view_height.get();
+        let actions_width = if actions.is_empty() { 0. } else { BUTTON_WIDTH * actions.len() as f32 + 2. };
+        let check_width = if partial { BUTTON_WIDTH + 2. } else { 0. };
+
+        let mut panes = Vec::new();
+        for pane in 0..2 {
+            let rows = if pane == 0 { &two.left } else { &two.right };
+            let (scroll_x, scroll_y) = self.pane_scroll[pane];
+            let style = RowStyle {
+                palette: palette.clone(),
+                highlight: self.options.highlight,
+                scroll_x,
+                actions_width,
+                check_width,
+                review: self.review.clone(),
+                review_path: self.source.as_ref().map(|s| s.path()).unwrap_or_default().into(),
+            };
+            // Until measured, paint as much as a tall window shows.
+            let visible = if height > 0. { height } else { 1600. };
+            let first = ((scroll_y / LINE_HEIGHT).floor() as usize).min(rows.len());
+            let last = (((scroll_y + visible) / LINE_HEIGHT).ceil() as usize + 1).min(rows.len());
+            let mut children: Vec<AnyElement> = Vec::new();
+            if pane == 0 {
+                let measured = self.view_height.clone();
+                children.push(
+                    canvas(
+                        move |bounds, window, _| {
+                            let h = f32::from(bounds.size.height);
+                            if (measured.get() - h).abs() > 0.5 {
+                                measured.set(h);
+                                window.refresh();
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full()
+                    .into_any_element(),
+                );
+            }
+            children.extend((first..last).map(|ix| pane_row(pane, ix, &rows[ix], ix as f32 * LINE_HEIGHT - scroll_y, &style, cx)));
+
+            // Per change: the insertion line on an empty side, and the gutter buttons.
+            for seg in two.segments.iter() {
+                let Some(change) = seg.change else { continue };
+                let range = if pane == 0 { seg.left.clone() } else { seg.right.clone() };
+                let y = range.start as f32 * LINE_HEIGHT - scroll_y;
+                if y + range.len() as f32 * LINE_HEIGHT < -LINE_HEIGHT || y > visible + LINE_HEIGHT {
+                    continue;
+                }
+                let color = border_color(seg.kind, &palette);
+                if range.is_empty() {
+                    children.push(div().absolute().left_0().right_0().top(px(y)).h(px(1.)).bg(color).into_any_element());
+                }
+                let button_top = if range.is_empty() { y - LINE_HEIGHT / 2. } else { y };
+                if pane == 0 && !actions.is_empty() {
+                    let mut el = h_flex()
+                        .absolute()
+                        .top(px(button_top))
+                        .right(px(GUTTER_WIDTH + 3.))
+                        .w(px(actions_width))
+                        .h(px(LINE_HEIGHT))
+                        .justify_center()
+                        .items_center();
+                    for (action, icon, tooltip) in actions.iter().copied() {
+                        let icon = if action == HunkAction::Revert { IconName::ChevronsRight } else { icon };
+                        let tooltip = if action == HunkAction::Revert { "Revert" } else { tooltip };
+                        el = el.child(
+                            tool_button(gpui_kit::ElementId::NamedInteger(format!("pane-{tooltip}").into(), change as u64), icon, tooltip)
+                                .on_click(cx.listener(move |this, _, _, cx| this.apply_hunk(change, action, cx))),
+                        );
+                    }
+                    children.push(el.into_any_element());
+                }
+                if pane == 1 && partial {
+                    let checked = included.get(change).copied().unwrap_or(true);
+                    children.push(
+                        h_flex()
+                            .absolute()
+                            .top(px(button_top))
+                            .left(px(GUTTER_WIDTH + 3.))
+                            .w(px(check_width))
+                            .h(px(LINE_HEIGHT))
+                            .justify_center()
+                            .items_center()
+                            .child(
+                                Checkbox::new(gpui_kit::ElementId::NamedInteger("hunk-include".into(), change as u64))
+                                    .checked(checked)
+                                    .tooltip("Include into commit")
+                                    .on_change(cx.listener(move |this, value: &bool, _, cx| this.toggle_hunk(change, *value, cx))),
+                            )
+                            .into_any_element(),
+                    );
+                }
+            }
+            panes.push(
+                div()
+                    .id(("diff-pane", pane))
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .overflow_hidden()
+                    .font_family(mono.clone())
+                    .text_size(px(12.5))
+                    .on_scroll_wheel(cx.listener(move |this, e: &ScrollWheelEvent, _, cx| this.on_pane_wheel(pane, e, cx)))
+                    .children(children),
+            );
+        }
+
+        let connectors: Vec<Connector> = two
+            .segments
+            .iter()
+            .filter(|s| s.change.is_some())
+            .map(|s| Connector {
+                left: s.left.clone(),
+                right: s.right.clone(),
+                colors: BlockColors { fill: line_color(s.kind, &palette), border: border_color(s.kind, &palette) },
+            })
+            .collect();
+        let scroll = (self.pane_scroll[0].1, self.pane_scroll[1].1);
+        let folds = fold_links(&two);
+        let fold_color = palette.border;
+        let divider = div().w(px(DIVIDER_WIDTH)).h_full().flex_shrink_0().child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
+                        paint_divider(bounds, scroll, &connectors, &folds, fold_color, window)
+                    })
+                },
+            )
+            .size_full(),
+        );
+
+        let mut panes = panes.into_iter();
+        let (left, right) = (panes.next().unwrap(), panes.next().unwrap());
+        h_flex()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(self.render_stripe(0, cx))
+            .child(left)
+            .child(divider)
+            .child(right)
+            .child(self.render_stripe(1, cx))
+            .into_any_element()
+    }
+
+    /// The panes' title bars: read-only lock, revision and path on the left;
+    /// the include-all checkbox and revision on the right.
+    fn render_two_side_header(&self, old_title: String, new_title: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let path = self.source.as_ref().map(|s| s.path().to_owned()).unwrap_or_default();
+        let included = self.included(cx);
+        let partial = self.partial_path(cx).is_some() && !included.is_empty();
+        let all = included.iter().all(|i| *i);
+        h_flex()
+            .h(px(26.))
+            .flex_shrink_0()
+            .text_xs()
+            .border_b_1()
+            .border_color(palette.border)
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .pl(px(STRIPE_WIDTH + 6.))
+                    .gap_1p5()
+                    .child(common::icon(IconName::Lock).text_color(palette.text_secondary))
+                    .child(div().flex_shrink_0().child(old_title))
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(palette.text_secondary).child(path)),
+            )
+            .child(div().w(px(DIVIDER_WIDTH)).flex_shrink_0())
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .pl(px(6.))
+                    .gap_1p5()
+                    .when(partial, |el| {
+                        el.child(
+                            Checkbox::new("hunk-include-all")
+                                .checked(all)
+                                .tooltip("Include all changes into commit")
+                                .on_change(cx.listener(|this, value: &bool, _, cx| this.set_all_included(*value, cx))),
+                        )
+                    })
+                    .child(new_title),
+            )
     }
 }
 
@@ -600,6 +1217,11 @@ fn side_colors(kind: RowKind, is_left: bool, unified: bool, palette: &Palette) -
 impl Render for DiffView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
+        if self.view_height.get() > 0. {
+            if let Some(change) = self.pending_change.take() {
+                self.go_to_change(change);
+            }
+        }
         let Some(source) = self.source.clone() else {
             return v_flex()
                 .size_full()
@@ -649,6 +1271,7 @@ impl Render for DiffView {
         let titles = self.loaded.as_ref().map(|l| (l.old_title.clone(), l.new_title.clone()));
         let review = self.review.clone();
         let review_path: Rc<str> = source.path().into();
+        let two_side = mode == ViewerMode::SideBySide && !self.diff.binary;
 
         let banner = match &self.loaded {
             Some(loaded) if self.diff.binary => Some(match &loaded.binary {
@@ -825,20 +1448,8 @@ impl Render for DiffView {
         v_flex()
             .size_full()
             .child(self.render_toolbar(&source, cx))
-            .when(mode == ViewerMode::SideBySide, |el| {
-                el.when_some(titles, |el, (old_title, new_title)| {
-                    el.child(
-                        h_flex()
-                            .h(px(22.))
-                            .text_xs()
-                            .text_color(palette.text_secondary)
-                            .border_b_1()
-                            .border_color(palette.border)
-                            .child(div().flex_1().pl(px(GUTTER_WIDTH + 11.)).child(old_title))
-                            .child(div().w(px(1.)).h_full().bg(palette.border))
-                            .child(div().flex_1().pl(px(GUTTER_WIDTH + 11.)).child(new_title)),
-                    )
-                })
+            .when(two_side, |el| {
+                el.when_some(titles, |el, (old_title, new_title)| el.child(self.render_two_side_header(old_title, new_title, cx)))
             })
             .when_some(banner, |el, banner| {
                 el.child(
@@ -855,6 +1466,7 @@ impl Render for DiffView {
             .when_some(self.error.clone(), |el, error| el.child(div().p_3().text_color(palette.status_conflict).child(error)))
             .map(|el| match self.loaded.as_ref().and_then(|l| l.binary.as_ref()) {
                 Some(panes) => el.child(render_binary(panes, &palette)),
+                None if two_side => el.child(self.render_two_side(cx)),
                 None => el.child(list),
             })
             .into_any_element()

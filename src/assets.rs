@@ -66,7 +66,17 @@ gpui_kit::assets::icon_assets!(
         StarOff,
         MessageSquare,
         Globe,
-        ChevronLeft
+        ChevronLeft,
+        ChevronsRight,
+        ChevronsLeft,
+        Lock,
+        CircleQuestionMark,
+        Pencil,
+        ArrowLeft,
+        ArrowRight,
+        List,
+        WandSparkles,
+        Link2
     ]
 );
 

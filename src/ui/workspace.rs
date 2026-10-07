@@ -29,7 +29,7 @@ use crate::ui::blame_view::{BlameEvent, BlameView};
 use crate::ui::branches_popup::{self, BranchesPopup};
 use crate::ui::commit_view::{CommitEvent, CommitView};
 use crate::ui::common::tool_button;
-use crate::ui::diff_view::{DiffView, NextDifference, PreviousDifference};
+use crate::ui::diff_view::{DiffView, JumpToSource, NextDifference, PreviousDifference};
 use crate::settings::Settings;
 use crate::ui::dialogs;
 use crate::ui::merge_view::{MergeEvent, MergeView};
@@ -85,6 +85,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("alt-`", VcsOperations, Some(CONTEXT)),
         KeyBinding::new("f7", NextDifference, Some(CONTEXT)),
+        KeyBinding::new("f4", JumpToSource, Some(CONTEXT)),
         KeyBinding::new("shift-f7", PreviousDifference, Some(CONTEXT)),
         // Navigation, IntelliJ's default keymap.
         KeyBinding::new("secondary-shift-n", GotoFile, Some(CONTEXT)),
@@ -380,6 +381,9 @@ impl Workspace {
             cx.subscribe_in(&diff, window, |this, _, event: &crate::ui::diff_view::CommentLine, window, cx| {
                 let (path, line) = (event.path.clone(), event.line);
                 this.prs.update(cx, |prs, cx| prs.comment_line(path, line, window, cx));
+            }),
+            cx.subscribe_in(&diff, window, |this, _, event: &crate::ui::navigate::OpenTarget, window, cx| {
+                this.go_to_target(event.0.clone(), window, cx)
             }),
             cx.subscribe(&diff, |this, _, _: &crate::ui::diff_view::FilesChanged, cx| {
                 this.model.update(cx, |m, cx| m.reload(cx));
@@ -1656,6 +1660,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &OpenSettings, window, cx| dialogs::settings(window, cx)))
             .on_action(cx.listener(|this, _: &NextDifference, _, cx| this.diff.update(cx, |d, cx| d.next_difference(cx))))
             .on_action(cx.listener(|this, _: &PreviousDifference, _, cx| this.diff.update(cx, |d, cx| d.previous_difference(cx))))
+            .on_action(cx.listener(|this, _: &JumpToSource, _, cx| this.diff.update(cx, |d, cx| d.jump_to_source(cx))))
             .size_full()
             .bg(palette.window)
             .text_color(palette.text)

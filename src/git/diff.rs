@@ -55,6 +55,12 @@ pub struct Side {
     pub text: String,
     /// Byte ranges of changed words, for word highlighting.
     pub changed: Vec<Range<usize>>,
+    /// What each changed range is: words only on this side are Inserted
+    /// (new side) or Deleted (old side); words replaced are Modified.
+    pub kinds: Vec<RowKind>,
+    /// The whole line is one inner fragment (a line inserted or deleted
+    /// inside a modified block): IntelliJ paints it in that fragment's color.
+    pub whole: Option<RowKind>,
 }
 
 /// One row of the side-by-side view.
@@ -104,7 +110,7 @@ pub fn compute(old: &str, new: &str, options: DiffOptions) -> FileDiff {
     let new_refs: Vec<&str> = new_keys.iter().map(String::as_str).collect();
     let ops = similar::capture_diff_slices(similar::Algorithm::Patience, &old_refs, &new_refs);
 
-    let side = |lines: &[&str], ix: usize| Side { line: ix + 1, text: lines[ix].to_owned(), changed: Vec::new() };
+    let side = |lines: &[&str], ix: usize| Side { line: ix + 1, text: lines[ix].to_owned(), changed: Vec::new(), kinds: Vec::new(), whole: None };
     let mut rows = Vec::new();
     let mut changes = 0;
     let mut hunks = Vec::new();
@@ -142,19 +148,19 @@ pub fn compute(old: &str, new: &str, options: DiffOptions) -> FileDiff {
                 hunks.push(Hunk { old: old_index..old_index + old_len, new: new_index..new_index + new_len });
                 deleted += old_len;
                 inserted += new_len;
-                for k in 0..old_len.max(new_len) {
-                    let mut left = (k < old_len).then(|| side(&old_lines, old_index + k));
-                    let mut right = (k < new_len).then(|| side(&new_lines, new_index + k));
+                let mut lefts: Vec<Side> = (0..old_len).map(|k| side(&old_lines, old_index + k)).collect();
+                let mut rights: Vec<Side> = (0..new_len).map(|k| side(&new_lines, new_index + k)).collect();
+                if options.highlight == HighlightMode::Words {
+                    block_fragments(&mut lefts, &mut rights);
+                }
+                let (mut lefts, mut rights) = (lefts.into_iter(), rights.into_iter());
+                for _ in 0..old_len.max(new_len) {
+                    let (left, right) = (lefts.next(), rights.next());
                     let kind = match (&left, &right) {
                         (Some(_), Some(_)) => RowKind::Modified,
                         (Some(_), None) => RowKind::Deleted,
                         _ => RowKind::Inserted,
                     };
-                    if let (Some(l), Some(r), HighlightMode::Words) = (&mut left, &mut right, options.highlight) {
-                        let (lc, rc) = word_changes(&l.text, &r.text);
-                        l.changed = lc;
-                        r.changed = rc;
-                    }
                     rows.push(DiffRow::Line { kind, left, right, change: Some(changes) });
                 }
                 changes += 1;
@@ -277,35 +283,79 @@ fn write_index(repository: &Repository, path: &str, content: &str, filter: bool)
     Ok(())
 }
 
-/// Byte ranges that differ between two lines, word by word.
-fn word_changes(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
-    let diff = TextDiff::configure().algorithm(similar::Algorithm::Patience).diff_unicode_words(old, new);
-    let (mut left, mut right) = (Vec::new(), Vec::new());
+/// Inner fragments of a modified block, IntelliJ's "Highlight words":
+/// the block's lines are compared word by word as one text, so a line
+/// inserted in the middle of a block shows as inserted, and each changed
+/// range gets a kind. Fragments are split back onto the lines they cover.
+fn block_fragments(lefts: &mut [Side], rights: &mut [Side]) {
+    let join = |sides: &[Side]| sides.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
+    let (old, new) = (join(lefts), join(rights));
+    let diff = TextDiff::configure().algorithm(similar::Algorithm::Patience).diff_unicode_words(&old, &new);
+    // Runs of deletions / insertions between equal words; a run with both is
+    // a modification of those words.
     let (mut lpos, mut rpos) = (0, 0);
+    let mut fragments: Vec<(Range<usize>, Range<usize>)> = Vec::new();
+    let mut run: Option<(Range<usize>, Range<usize>)> = None;
     for change in diff.iter_all_changes() {
         let len = change.value().len();
         match change.tag() {
             ChangeTag::Equal => {
+                fragments.extend(run.take());
                 lpos += len;
                 rpos += len;
             }
             ChangeTag::Delete => {
-                push_range(&mut left, lpos..lpos + len);
+                let r = run.get_or_insert((lpos..lpos, rpos..rpos));
+                r.0.end = lpos + len;
                 lpos += len;
             }
             ChangeTag::Insert => {
-                push_range(&mut right, rpos..rpos + len);
+                let r = run.get_or_insert((lpos..lpos, rpos..rpos));
+                r.1.end = rpos + len;
                 rpos += len;
             }
         }
     }
-    (left, right)
+    fragments.extend(run.take());
+    for (left, right) in fragments {
+        let kind = match (left.is_empty(), right.is_empty()) {
+            (false, false) => RowKind::Modified,
+            (false, true) => RowKind::Deleted,
+            _ => RowKind::Inserted,
+        };
+        spread(lefts, left, kind);
+        spread(rights, right, kind);
+    }
+    for side in lefts.iter_mut().chain(rights.iter_mut()) {
+        // A fragment spanning the whole (non-blank) line colors the line.
+        if let ([range], [kind]) = (side.changed.as_slice(), side.kinds.as_slice()) {
+            if *kind != RowKind::Modified && range.start == 0 && range.end >= side.text.trim_end().len() && !side.text.trim().is_empty() {
+                side.whole = Some(*kind);
+            }
+        }
+    }
 }
 
-fn push_range(ranges: &mut Vec<Range<usize>>, range: Range<usize>) {
-    match ranges.last_mut() {
-        Some(last) if last.end == range.start => last.end = range.end,
-        _ => ranges.push(range),
+/// Adds a fragment of the joined block text to the lines it covers.
+fn spread(sides: &mut [Side], range: Range<usize>, kind: RowKind) {
+    if range.is_empty() {
+        return;
+    }
+    let mut start = 0;
+    for side in sides.iter_mut() {
+        let end = start + side.text.len();
+        let (from, to) = (range.start.max(start), range.end.min(end));
+        if from < to {
+            let local = from - start..to - start;
+            match (side.changed.last_mut(), side.kinds.last()) {
+                (Some(last), Some(k)) if last.end == local.start && *k == kind => last.end = local.end,
+                _ => {
+                    side.changed.push(local);
+                    side.kinds.push(kind);
+                }
+            }
+        }
+        start = end + 1;
     }
 }
 
@@ -385,19 +435,21 @@ pub fn load_versions(repository: &Repository, revisions: &Revisions) -> Result<(
             (old, new, format!("{}^", short), short.to_owned())
         }
         Revisions::WorkingTree { path } => {
-            (show(format!("HEAD:{path}")), read_work_tree(repository, path), "HEAD".into(), "Your version".into())
+            // IntelliJ titles the base with its revision number.
+            let head = repository.run(["rev-parse", "--short=8", "HEAD"]).map(|h| h.trim().to_owned()).unwrap_or_else(|_| "HEAD".into());
+            (show(format!("HEAD:{path}")), read_work_tree(repository, path), head, "Current version".into())
         }
         Revisions::Staged { path } => {
             (show(format!("HEAD:{path}")), show(format!(":{path}")), "HEAD".into(), "Staged".into())
         }
         Revisions::Unstaged { path } => {
-            (show(format!(":{path}")), read_work_tree(repository, path), "Staged".into(), "Your version".into())
+            (show(format!(":{path}")), read_work_tree(repository, path), "Staged".into(), "Current version".into())
         }
         Revisions::Between { old, new, path, old_path } => {
             let old_text = show(format!("{old}:{}", old_path.as_ref().unwrap_or(path)));
             let (new_text, new_title) = match new {
                 Some(new) => (show(format!("{new}:{path}")), revision_title(new)),
-                None => (read_work_tree(repository, path), "Your version".to_owned()),
+                None => (read_work_tree(repository, path), "Current version".to_owned()),
             };
             (old_text, new_text, revision_title(old), new_title)
         }
@@ -475,6 +527,24 @@ mod tests {
         let DiffRow::Line { left: Some(l), right: Some(r), .. } = &diff.rows[1] else { panic!() };
         assert_eq!(&l.text[l.changed[0].clone()], "1");
         assert_eq!(&r.text[r.changed[0].clone()], "2");
+        assert_eq!((l.kinds[0], r.kinds[0]), (RowKind::Modified, RowKind::Modified));
+    }
+
+    #[test]
+    fn line_inserted_inside_a_block_is_whole() {
+        let diff = compute("a\n  x = 1\nz\n", "a\ntry {\n  x = 2\nz\n", DiffOptions { context: None, ..Default::default() });
+        let sides: Vec<&Side> = diff
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                DiffRow::Line { right: Some(s), change: Some(_), .. } => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sides[0].text, "try {");
+        assert_eq!(sides[0].whole, Some(RowKind::Inserted));
+        assert_eq!(sides[1].whole, None);
+        assert_eq!(&sides[1].text[sides[1].changed.last().unwrap().clone()], "2");
     }
 
     #[test]
