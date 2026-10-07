@@ -73,7 +73,7 @@
 | 动作 | 阶段 | 状态 |
 |---|---|---|
 | Copy Revision Number（含 `Ctrl+C`） | M1 | ✅ |
-| Create Patch… | M4 | ⬜ |
+| Create Patch… | M4 | ✅（多选时合并为一个补丁；保存到文件或剪贴板，可反向） |
 | Cherry-Pick | M3 | ✅（冲突走进行中操作横幅） |
 | Checkout Revision | M2 | ✅ |
 | Show Repository at Revision | M4 | ⬜ |
@@ -106,7 +106,7 @@
 | Commit / Commit and Push… | M1 | 🟡 |
 | 提交选项：作者、Sign-off、GPG 签名、运行 Git hooks、清理 | M3 | ✅ |
 | 提交前检查：Reformat、Optimize imports、Analyze code、Check TODO（IDE 特有，客户端只保留 hooks） | — | — |
-| 工具栏：Refresh、Rollback、Show Diff、Shelve、Stash、Update | M2 | 🟡（Refresh、Rollback、Show Diff） |
+| 工具栏：Refresh、Rollback、Show Diff、Shelve、Stash、Update | M2 | 🟡（Refresh、Rollback、Show Diff、Shelve） |
 | Diff 预览（选中文件即预览） | M2 | ✅ |
 | Rollback Changes 对话框（删除本地副本选项） | M2 | ⬜ |
 | 添加到 VCS / 添加到 .gitignore | M2 | ⬜ |
@@ -117,7 +117,7 @@
 |---|---|---|
 | Stash Changes 对话框（消息、Keep index） | M2 | ✅（含 Include untracked） |
 | Stashes 列表：查看内容、Apply、Pop、Drop、Clear、Unstash as branch、Reinstate index | M2 | 🟡（查看、Apply、Pop、Drop） |
-| Shelf（IntelliJ 特有补丁货架）：Shelve、Unshelve、Shelve silently、Recently deleted | M4 | ⬜ |
+| Shelf（IntelliJ 特有补丁货架）：Shelve、Unshelve、Shelve silently、Recently deleted | M4 | ✅（Shelf 标签页；Unshelve、Unshelve and Keep、Rename、Delete、Restore、Import Patches；补丁文件 + refs/gitglass 保存） |
 
 ## 4. 分支弹窗（标题栏 VCS 组件 / `Ctrl+Shift+\``）
 
@@ -182,7 +182,7 @@
 | Cherry-pick（多选）、冲突处理 | M3 | ✅ |
 | Reset HEAD 对话框 | M2 | ✅ |
 | Tag：新建（轻量/附注、指定提交）、删除、推送 | M2 | 🟡（新建） |
-| 补丁：Create Patch / Apply Patch（含预览） | M4 | ⬜ |
+| 补丁：Create Patch / Apply Patch（含预览） | M4 | ✅（本地改动含未跟踪文件；Apply 先直接应用，失败时三方合并；剪贴板） |
 | Worktree：列表、新建、删除、打开 | M5 | ⬜ |
 | Submodule：识别、更新 | M5 | ⬜ |
 | Git 控制台（Console 标签页）：所有执行过的 git 命令及输出 | M1 | 🟡 |

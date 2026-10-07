@@ -52,9 +52,11 @@ pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize
         format!("--format={RECORD}%H{FIELD}%P{FIELD}%an{FIELD}%ae{FIELD}%at{FIELD}%s"),
     ];
     if filter.branches.is_empty() {
-        args.push("--all".into());
-        // Stashes are listed separately, as in IntelliJ.
+        // Stashes and shelves are listed separately, as in IntelliJ.
+        // (`--exclude` only applies to the `--all` after it.)
         args.push("--exclude=refs/stash".into());
+        args.push("--exclude=refs/gitglass/*".into());
+        args.push("--all".into());
     }
     if let Some(author) = &filter.author {
         args.push(format!("--author={author}"));

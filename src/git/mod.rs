@@ -8,6 +8,7 @@ pub mod graph;
 pub mod log;
 pub mod merge;
 pub mod ops;
+pub mod patch;
 pub mod rebase;
 pub mod refs;
 pub mod status;

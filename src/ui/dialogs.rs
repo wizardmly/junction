@@ -25,7 +25,7 @@ pub fn focus_input(input: &Entity<InputState>, window: &mut Window, cx: &mut App
     window.defer(cx, move |window, cx| input.update(cx, |state, cx| state.focus(window, cx)));
 }
 
-fn footer(ok_label: &'static str) -> DialogFooter {
+pub fn footer(ok_label: &'static str) -> DialogFooter {
     DialogFooter::new()
         .gap_2()
         .child(DialogClose::new().child(Button::new("cancel").label("Cancel").outline()))

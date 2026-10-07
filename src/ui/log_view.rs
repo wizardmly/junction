@@ -1310,6 +1310,18 @@ fn commit_menu(
             compare_model.update(cx, |m, cx| m.compare(old, Some(new), cx))
         }))
     })
+    .item(PopupMenuItem::new("Create Patch…").on_click({
+        let model = model.clone();
+        let oldest = picks.first().cloned().unwrap_or_default();
+        let newest = picks.last().cloned().unwrap_or_default();
+        let label = if multi { format!("{}_{}", &oldest[..oldest.len().min(8)], &newest[..newest.len().min(8)]) } else { short.clone() };
+        move |_, window, cx| {
+            let Some(repository) = model.read(cx).repository().cloned() else { return };
+            let old = crate::git::patch::parent_of(&repository, &oldest);
+            let source = crate::ui::patch_dialogs::PatchSource::Commits { old, new: newest.clone(), label: label.clone() };
+            crate::ui::patch_dialogs::create_patch(model.clone(), source, window, cx)
+        }
+    }))
     .separator()
     .item(PopupMenuItem::new("Cherry-Pick").disabled(is_head && !multi).on_click(op("Cherry-Pick", cherry_pick, picked)))
     .item(PopupMenuItem::new("Checkout Revision").disabled(multi).on_click(op(

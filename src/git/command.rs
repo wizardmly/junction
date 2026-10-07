@@ -87,6 +87,10 @@ impl Repository {
         &self.root
     }
 
+    pub fn git_dir(&self) -> &Path {
+        &self.git_dir
+    }
+
     pub fn name(&self) -> String {
         self.root
             .file_name()

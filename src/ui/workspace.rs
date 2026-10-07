@@ -36,6 +36,8 @@ use crate::ui::merge_view::{MergeEvent, MergeView};
 use crate::git::RepositoryState;
 use crate::git::merge::{self, Conflict, OperationStep};
 use crate::ui::log_view::{LogEvent, LogView};
+use crate::ui::patch_dialogs;
+use crate::ui::shelf_view::{ShelfEvent, ShelfView};
 use crate::ui::stash_view::{StashEvent, StashView};
 
 actions!(workspace, [CommitChanges, PushChanges, UpdateProject, ShowBranches, ToggleGitWindow, Refresh, StashChanges, OpenSettings, VcsOperations]);
@@ -66,6 +68,7 @@ pub fn init(cx: &mut gpui_kit::App) {
 enum LeftTab {
     Commit,
     Stash,
+    Shelf,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -86,6 +89,7 @@ pub struct Workspace {
     log: Entity<LogView>,
     commit: Entity<CommitView>,
     stash: Entity<StashView>,
+    shelf: Entity<ShelfView>,
     diff: Entity<DiffView>,
     branches_popup: Entity<BranchesPopup>,
     /// The merge tool, shown in the editor area instead of the diff.
@@ -110,6 +114,7 @@ impl Workspace {
         let commit = cx.new(|cx| CommitView::new(model.clone(), window, cx));
         let diff = cx.new(|_| DiffView::new());
         let stash = cx.new(|cx| StashView::new(model.clone(), cx));
+        let shelf = cx.new(|cx| ShelfView::new(model.clone(), cx));
         let branches_popup = cx.new(|cx| BranchesPopup::new(model.clone(), window, cx));
         let subscriptions = vec![
             cx.subscribe(&log, |this, _, event: &LogEvent, cx| match event {
@@ -135,6 +140,9 @@ impl Workspace {
             }),
             cx.subscribe(&stash, |this, _, event: &StashEvent, cx| match event {
                 StashEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
+            }),
+            cx.subscribe(&shelf, |this, _, event: &ShelfEvent, cx| match event {
+                ShelfEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
             }),
             cx.subscribe_in(&model, window, |this, _, event, window, cx| {
                 if let RepoEvent::OpenLogTab { title, filter } = event {
@@ -243,6 +251,7 @@ impl Workspace {
             log,
             commit,
             stash,
+            shelf,
             diff,
             branches_popup,
             merge: None,
@@ -513,6 +522,22 @@ impl Workspace {
                                     move |_, window, cx| dialogs::rebase(entity.read(cx).model.clone(), window, cx)
                                 }))
                                 .separator()
+                                .item(PopupMenuItem::new("Create Patch…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| {
+                                        let commit = entity.read(cx).commit.clone();
+                                        commit.update(cx, |c, cx| c.create_patch(window, cx))
+                                    }
+                                }))
+                                .item(PopupMenuItem::new("Apply Patch…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| patch_dialogs::apply_patch(entity.read(cx).model.clone(), false, window, cx)
+                                }))
+                                .item(PopupMenuItem::new("Apply Patch from Clipboard…").on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| patch_dialogs::apply_patch(entity.read(cx).model.clone(), true, window, cx)
+                                }))
+                                .separator()
                                 .item(PopupMenuItem::new("Settings…").on_click(|_, window, cx| dialogs::settings(window, cx)))
                                 .separator()
                                 .item(PopupMenuItem::new("Light Theme").checked(!dark).on_click(|_, window, cx| {
@@ -670,6 +695,10 @@ impl Workspace {
                         this.left_tab = LeftTab::Stash;
                         cx.notify();
                     })))
+                    .child(tab("left-shelf", "Shelf", LeftTab::Shelf).on_click(cx.listener(|this, _, _, cx| {
+                        this.left_tab = LeftTab::Shelf;
+                        cx.notify();
+                    })))
                     .child(div().flex_1())
                     .child(tool_button("commit-hide", IconName::Minus, "Hide").on_click(cx.listener(|this, _, _, cx| {
                         this.show_commit = false;
@@ -679,6 +708,7 @@ impl Workspace {
             .child(div().flex_1().min_h_0().map(|el| match current {
                 LeftTab::Commit => el.child(self.commit.clone()),
                 LeftTab::Stash => el.child(self.stash.clone()),
+                LeftTab::Shelf => el.child(self.shelf.clone()),
             }))
     }
 
@@ -746,6 +776,16 @@ impl Workspace {
                 this.left_tab = LeftTab::Stash;
                 cx.notify();
             }))),
+            Some(("Shelve Changes…", "", op(|this, window, cx| this.commit.update(cx, |c, cx| c.shelve(window, cx))))),
+            Some(("Unshelve Changes…", "", op(|this, _, cx| {
+                this.show_commit = true;
+                this.left_tab = LeftTab::Shelf;
+                cx.notify();
+            }))),
+            None,
+            Some(("Create Patch…", "", op(|this, window, cx| this.commit.update(cx, |c, cx| c.create_patch(window, cx))))),
+            Some(("Apply Patch…", "", op(|this, window, cx| patch_dialogs::apply_patch(this.model.clone(), false, window, cx)))),
+            Some(("Apply Patch from Clipboard…", "", op(|this, window, cx| patch_dialogs::apply_patch(this.model.clone(), true, window, cx)))),
             None,
             Some(("Show Git Log", "Alt+9", op(|this, _, cx| {
                 this.show_git = true;

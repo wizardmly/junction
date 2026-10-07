@@ -299,6 +299,11 @@ impl RepoModel {
         self.select_hash(hash, cx);
     }
 
+    /// Shows a balloon notification without running an operation.
+    pub fn notify(&mut self, title: impl Into<String>, message: impl Into<String>, error: bool, cx: &mut Context<Self>) {
+        cx.emit(RepoEvent::Notify { title: title.into(), message: message.into(), error });
+    }
+
     pub fn open_log_tab(&mut self, title: String, filter: LogFilter, cx: &mut Context<Self>) {
         cx.emit(RepoEvent::OpenLogTab { title, filter });
     }

@@ -246,6 +246,39 @@ impl CommitView {
     }
 
     /// Paths under a tree node (a file, a directory, or a whole group).
+    /// Files for Shelve / Create Patch: the checked files (the selected node
+    /// in staging mode), or `file` when it isn't among them.
+    fn action_paths(&self, file: Option<&str>) -> Vec<String> {
+        if let Some(file) = file {
+            if !self.included.contains(file) {
+                return vec![file.to_owned()];
+            }
+        }
+        if self.staging {
+            return self.last_selection.as_deref().map(|id| self.paths_under(id)).unwrap_or_default();
+        }
+        let mut paths: Vec<String> = self.included.iter().cloned().collect();
+        paths.sort();
+        paths
+    }
+
+    pub fn shelve(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.action_paths(None);
+        let name = self.message.read(cx).value().lines().next().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+        let name = name.unwrap_or_else(|| crate::ui::patch_dialogs::default_shelf_name(&paths));
+        crate::ui::patch_dialogs::shelve(self.model.clone(), paths, name, window, cx);
+    }
+
+    pub fn create_patch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.action_paths(None);
+        if paths.is_empty() {
+            self.model.update(cx, |m, cx| m.notify("Create Patch", "Select the files to include", true, cx));
+            return;
+        }
+        let source = crate::ui::patch_dialogs::PatchSource::Local { paths };
+        crate::ui::patch_dialogs::create_patch(self.model.clone(), source, window, cx);
+    }
+
     fn paths_under(&self, id: &str) -> Vec<String> {
         if let Some((_, path)) = Self::path_of(id) {
             return vec![path.to_owned()];
@@ -618,6 +651,10 @@ impl Render for CommitView {
                             }
                         },
                     )))
+                    .child(
+                        tool_button("commit-shelve", IconName::Layers, "Shelve Changes…")
+                            .on_click(cx.listener(|this, _, window, cx| this.shelve(window, cx))),
+                    )
                     .when(staging, |el| {
                         el.child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
                             .child(
@@ -733,6 +770,38 @@ impl Render for CommitView {
                                     }))
                                     .item(PopupMenuItem::new("Compare with Branch or Revision…").disabled(!tracked).on_click(move |_, _, cx| {
                                         e_compare.update(cx, |_, cx| cx.emit(CommitEvent::CompareWith(p_compare.clone())))
+                                    }))
+                                    .separator()
+                                    .item(PopupMenuItem::new("Shelve Changes…").on_click({
+                                        let (entity, path) = (menu_entity.clone(), path.clone());
+                                        move |_, window, cx| {
+                                            let (model, paths) = entity.read_with(cx, |this, _| (this.model.clone(), this.action_paths(Some(&path))));
+                                            let name = crate::ui::patch_dialogs::default_shelf_name(&paths);
+                                            crate::ui::patch_dialogs::shelve(model, paths, name, window, cx)
+                                        }
+                                    }))
+                                    .item(PopupMenuItem::new("Shelve Silently").on_click({
+                                        let (entity, path) = (menu_entity.clone(), path.clone());
+                                        move |_, _, cx| {
+                                            let (model, paths) = entity.read_with(cx, |this, _| (this.model.clone(), this.action_paths(Some(&path))));
+                                            crate::ui::patch_dialogs::shelve_silently(model, paths, cx)
+                                        }
+                                    }))
+                                    .item(PopupMenuItem::new("Create Patch…").on_click({
+                                        let (entity, path) = (menu_entity.clone(), path.clone());
+                                        move |_, window, cx| {
+                                            let (model, paths) = entity.read_with(cx, |this, _| (this.model.clone(), this.action_paths(Some(&path))));
+                                            let source = crate::ui::patch_dialogs::PatchSource::Local { paths };
+                                            crate::ui::patch_dialogs::create_patch(model, source, window, cx)
+                                        }
+                                    }))
+                                    .item(PopupMenuItem::new("Copy as Patch to Clipboard").on_click({
+                                        let (entity, path) = (menu_entity.clone(), path.clone());
+                                        move |_, _, cx| {
+                                            let (model, paths) = entity.read_with(cx, |this, _| (this.model.clone(), this.action_paths(Some(&path))));
+                                            let source = crate::ui::patch_dialogs::PatchSource::Local { paths };
+                                            crate::ui::patch_dialogs::copy_patch(model, source, cx)
+                                        }
                                     }))
                                     .separator()
                                     .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {
