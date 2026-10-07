@@ -208,7 +208,7 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | 账号登录（OAuth / Token） | M6 | 🟡（Token 登录，支持 github.com 与 Enterprise；账号存 accounts.json（权限 600）；OAuth 浏览器登录需注册 OAuth App，未做） |
-| Pull Requests 工具窗口：列表、详情、diff 评论、审批、合并 | M6 | 🟡（列表 + Open/Closed/All + 搜索；详情：描述、标签、文件，本地 diff（fetch refs/pull/N/head）；Timeline：评论、审查、行评论展示，发评论；Approve / Request Changes；Merge / Squash / Rebase；Checkout；Create Pull Request。diff 里直接加行评论未做） |
+| Pull Requests 工具窗口：列表、详情、diff 评论、审批、合并 | M6 | ✅（列表 + Open/Closed/All + 搜索；详情：描述、标签、文件，本地 diff（fetch refs/pull/N/head）；Timeline：评论、审查、行评论展示，发评论；Approve / Request Changes；Merge / Squash / Rebase；Checkout；Create Pull Request；PR diff 点新侧行号加行评论，已有评论行号带标记、悬停显示。GitLab MR 未做） |
 | Share Project on GitHub、Create Gist | M6 | ✅（Share：建仓库、加 remote、无提交时初始提交、push -u；Gist：编辑器选区/整文件或 Commit 面板文件，Secret / 打开浏览器 / 复制 URL） |
 
 ## 阶段

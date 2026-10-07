@@ -164,6 +164,11 @@ impl Workspace {
             }),
             cx.subscribe_in(&prs, window, |this, _, event: &crate::ui::pull_requests::PrEvent, window, cx| match event {
                 crate::ui::pull_requests::PrEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
+                crate::ui::pull_requests::PrEvent::OpenReviewDiff(source, review) => {
+                    this.open_diff(source.clone(), cx);
+                    let review = review.clone();
+                    this.diff.update(cx, |diff, cx| diff.set_review(Some(review), cx));
+                }
                 crate::ui::pull_requests::PrEvent::OpenTimeline(target, pr) => {
                     let (target, pr) = (target.clone(), pr.clone());
                     this.timeline = Some(cx.new(|cx| crate::ui::pull_requests::PrTimelineView::new(target, pr, window, cx)));
@@ -310,6 +315,10 @@ impl Workspace {
             }),
             cx.observe(&model, |_, _, cx| cx.notify()),
             // A gutter Rollback / Stage / Unstage in the diff changed files.
+            cx.subscribe_in(&diff, window, |this, _, event: &crate::ui::diff_view::CommentLine, window, cx| {
+                let (path, line) = (event.path.clone(), event.line);
+                this.prs.update(cx, |prs, cx| prs.comment_line(path, line, window, cx));
+            }),
             cx.subscribe(&diff, |this, _, _: &crate::ui::diff_view::FilesChanged, cx| {
                 this.model.update(cx, |m, cx| m.reload(cx));
             }),

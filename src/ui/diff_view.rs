@@ -2,7 +2,7 @@
 //! viewers, word / line highlighting, whitespace options, collapsed unchanged
 //! fragments, and Previous / Next Difference (Shift+F7 / F7).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -131,6 +131,21 @@ pub struct FilesChanged;
 
 impl gpui_kit::EventEmitter<FilesChanged> for DiffView {}
 
+/// A pull request diff: new-side line numbers take review comments.
+#[derive(Clone, Default)]
+pub struct Review {
+    /// Existing comments per new-side line, as "author: text".
+    pub comments: HashMap<usize, Vec<String>>,
+}
+
+/// A click on a new-side line number of a review diff.
+pub struct CommentLine {
+    pub path: String,
+    pub line: usize,
+}
+
+impl gpui_kit::EventEmitter<CommentLine> for DiffView {}
+
 pub struct DiffView {
     repository: Option<Repository>,
     source: Option<DiffSource>,
@@ -143,6 +158,7 @@ pub struct DiffView {
     current: Option<usize>,
     error: Option<String>,
     scroll: UniformListScrollHandle,
+    review: Option<Rc<Review>>,
     _task: Option<Task<()>>,
 }
 
@@ -160,6 +176,7 @@ impl DiffView {
             current: None,
             error: None,
             scroll: UniformListScrollHandle::new(),
+            review: None,
             _task: None,
         }
     }
@@ -170,6 +187,7 @@ impl DiffView {
         }
         self.repository = Some(repository.clone());
         self.source = Some(source.clone());
+        self.review = None;
         self.loaded = None;
         self.diff = FileDiff::default();
         self.rows = Rc::new(Vec::new());
@@ -201,6 +219,12 @@ impl DiffView {
             })
             .ok();
         }));
+    }
+
+    /// Marks the shown diff as a pull request's, taking line comments.
+    pub fn set_review(&mut self, review: Option<Review>, cx: &mut Context<Self>) {
+        self.review = review.map(Rc::new);
+        cx.notify();
     }
 
     /// The gutter actions IntelliJ offers for this kind of diff.
@@ -623,6 +647,8 @@ impl Render for DiffView {
         let highlight = self.options.highlight;
         let current = self.current;
         let titles = self.loaded.as_ref().map(|l| (l.old_title.clone(), l.new_title.clone()));
+        let review = self.review.clone();
+        let review_path: Rc<str> = source.path().into();
 
         let banner = match &self.loaded {
             Some(loaded) if self.diff.binary => Some(match &loaded.binary {
@@ -667,6 +693,37 @@ impl Render for DiffView {
                         }
                     }
                     el
+                };
+                // A review diff's new-side line number: click to comment, marked when commented.
+                let new_gutter = |ix: usize, line: Option<usize>, cx: &mut Context<DiffView>| -> AnyElement {
+                    let (Some(review), Some(line)) = (review.as_ref(), line) else {
+                        return gutter(line, &palette).into_any_element();
+                    };
+                    let notes = review.comments.get(&line).cloned();
+                    let path = review_path.clone();
+                    h_flex()
+                        .id(("diff-comment", ix))
+                        .w(px(GUTTER_WIDTH))
+                        .h_full()
+                        .flex_shrink_0()
+                        .justify_end()
+                        .items_center()
+                        .gap_0p5()
+                        .pr_2()
+                        .cursor_pointer()
+                        .text_color(palette.text_disabled)
+                        .hover(|s| s.bg(palette.hover).text_color(palette.text))
+                        .when(notes.is_some(), |el| el.child(common::icon(IconName::MessageSquare).text_color(palette.link)))
+                        .child(line.to_string())
+                        .tooltip(move |window, cx| {
+                            let text = match &notes {
+                                Some(notes) => notes.join("\n\n"),
+                                None => "Add review comment".to_owned(),
+                            };
+                            gpui_kit::component::tooltip::Tooltip::new(text).build(window, cx)
+                        })
+                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(CommentLine { path: path.to_string(), line })))
+                        .into_any_element()
                 };
                 range
                     .map(|ix| match &rows[ix] {
@@ -720,13 +777,13 @@ impl Render for DiffView {
                                     .when(has_actions, |el| el.child(hunk_buttons(ix, *change, cx)))
                                     .child(marker(word))
                                     .child(gutter(left.as_ref().map(|s| s.line), &palette))
-                                    .child(gutter(right.as_ref().map(|s| s.line), &palette))
+                                    .child(new_gutter(ix, right.as_ref().map(|s| s.line), cx))
                                     .when_some(side, |el, side| {
                                         el.child(line_text(side, word.unwrap_or(palette.diff_header), fg))
                                     })
                                     .into_any_element()
                             } else {
-                                let cell = |side: Option<&Side>, is_left: bool| {
+                                let cell = |side: Option<&Side>, is_left: bool, cx: &mut Context<DiffView>| {
                                     let (bg, fg, word) = paint(is_left);
                                     let bg = if side.is_some() { bg } else { None };
                                     h_flex()
@@ -736,7 +793,11 @@ impl Render for DiffView {
                                         .overflow_hidden()
                                         .when_some(bg, |el, bg| el.bg(bg))
                                         .child(marker(word.filter(|_| side.is_some())))
-                                        .child(gutter(side.map(|s| s.line), &palette))
+                                        .map(|el| if is_left {
+                                            el.child(gutter(side.map(|s| s.line), &palette))
+                                        } else {
+                                            el.child(new_gutter(ix, side.map(|s| s.line), cx))
+                                        })
                                         .when_some(side, |el, side| {
                                             el.child(line_text(side, word.unwrap_or(palette.diff_header), fg))
                                         })
@@ -745,9 +806,9 @@ impl Render for DiffView {
                                     .id(ix)
                                     .h(px(LINE_HEIGHT))
                                     .w_full()
-                                    .child(cell(left.as_ref(), true))
+                                    .child(cell(left.as_ref(), true, cx))
                                     .child(hunk_buttons(ix, *change, cx))
-                                    .child(cell(right.as_ref(), false))
+                                    .child(cell(right.as_ref(), false, cx))
                                     .into_any_element()
                             }
                         }

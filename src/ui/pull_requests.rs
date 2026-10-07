@@ -37,6 +37,8 @@ pub struct PrTarget {
 
 pub enum PrEvent {
     OpenDiff(DiffSource),
+    /// A PR file's diff, with its review comments; line clicks comment.
+    OpenReviewDiff(DiffSource, crate::ui::diff_view::Review),
     OpenTimeline(PrTarget, PullRequest),
 }
 
@@ -47,6 +49,8 @@ struct Details {
     files: Vec<PrFile>,
     /// The fork point the files are compared from, once fetched.
     base: Option<String>,
+    /// Review comments on lines, for the diff's markers.
+    comments: Vec<Comment>,
     loading: bool,
 }
 
@@ -84,6 +88,27 @@ fn resolve(model: &RepoModel) -> Result<PrTarget, String> {
         })
         .unwrap_or_else(|| "origin".into());
     Ok(PrTarget { account, repo, remote })
+}
+
+/// The review comments on one file, by new-side line.
+fn review_for(comments: &[Comment], path: &str) -> crate::ui::diff_view::Review {
+    let mut review = crate::ui::diff_view::Review::default();
+    for c in comments.iter().filter(|c| c.path.as_deref() == Some(path)) {
+        if let Some(line) = c.line {
+            review.comments.entry(line as usize).or_default().push(format!("{}: {}", c.user.login, c.body.as_deref().unwrap_or_default()));
+        }
+    }
+    review
+}
+
+fn source_of(details: &Details, path: &str) -> DiffSource {
+    let file = details.files.iter().find(|f| f.filename == path);
+    DiffSource::Between {
+        old: details.base.clone().unwrap_or_else(|| details.pr.base.sha.clone()),
+        new: Some(details.pr.head.sha.clone()),
+        path: path.to_owned(),
+        old_path: file.and_then(|f| f.previous_filename.clone()),
+    }
 }
 
 impl PullRequestsView {
@@ -194,26 +219,29 @@ impl PullRequestsView {
         let (Some(pr), Some(target)) = (self.prs.get(ix).cloned(), self.target.clone()) else { return };
         let repository = self.model.read(cx).repository().cloned();
         self.selected = Some(ix);
-        self.details = Some(Details { pr: pr.clone(), files: Vec::new(), base: None, loading: true });
+        self.details = Some(Details { pr: pr.clone(), files: Vec::new(), base: None, comments: Vec::new(), loading: true });
         self._load = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let files = Client::new(&target.account).pull_files(&target.repo, pr.number)?;
+                    let client = Client::new(&target.account);
+                    let files = client.pull_files(&target.repo, pr.number)?;
+                    let comments: Vec<Comment> = client.timeline(&target.repo, pr.number).unwrap_or_default().into_iter().filter(|c| c.path.is_some()).collect();
                     // The PR's commits, so its files can be diffed locally.
                     let base = repository.and_then(|repo| {
                         repo.run(["fetch", "--quiet", &target.remote, &format!("+refs/pull/{}/head:refs/remotes/{}/pr/{}", pr.number, target.remote, pr.number)]).ok();
                         repo.run(["merge-base", &pr.base.sha, &pr.head.sha]).ok().map(|s| s.trim().to_owned())
                     });
-                    anyhow::Ok((files, base))
+                    anyhow::Ok((files, base, comments))
                 })
                 .await;
             this.update(cx, |this, cx| {
                 if let Some(details) = this.details.as_mut() {
                     details.loading = false;
                     match result {
-                        Ok((files, base)) => {
+                        Ok((files, base, comments)) => {
                             details.files = files;
                             details.base = base;
+                            details.comments = comments;
                         }
                         Err(error) => this.error = Some(error.to_string()),
                     }
@@ -228,12 +256,44 @@ impl PullRequestsView {
     fn open_file(&mut self, file: &PrFile, cx: &mut Context<Self>) {
         let Some(details) = &self.details else { return };
         let old = details.base.clone().unwrap_or_else(|| details.pr.base.sha.clone());
-        cx.emit(PrEvent::OpenDiff(DiffSource::Between {
+        let source = DiffSource::Between {
             old,
             new: Some(details.pr.head.sha.clone()),
             path: file.filename.clone(),
             old_path: file.previous_filename.clone(),
-        }));
+        };
+        cx.emit(PrEvent::OpenReviewDiff(source, review_for(&details.comments, &file.filename)));
+    }
+
+    /// A click on a line of the open PR's diff: Add Review Comment.
+    pub fn comment_line(&mut self, path: String, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(target), Some(details)) = (self.target.clone(), self.details.as_ref()) else { return };
+        let (number, commit) = (details.pr.number, details.pr.head.sha.clone());
+        let (entity, model) = (cx.entity(), self.model.clone());
+        review_dialog("Add Review Comment", "Comment", window, cx, move |body, cx| {
+            if body.trim().is_empty() {
+                return;
+            }
+            let (target, commit, path, entity, model) = (target.clone(), commit.clone(), path.clone(), entity.clone(), model.clone());
+            cx.spawn(async move |cx| {
+                let posted_path = path.clone();
+                let result = cx
+                    .background_spawn(async move { Client::new(&target.account).add_line_comment(&target.repo, number, &commit, &posted_path, line as u64, &body) })
+                    .await;
+                cx.update(|cx| match result {
+                    Ok(comment) => entity.update(cx, |this, cx| {
+                        let Some(details) = this.details.as_mut().filter(|d| d.pr.number == number) else { return };
+                        details.comments.push(comment);
+                        let review = review_for(&details.comments, &path);
+                        cx.emit(PrEvent::OpenReviewDiff(source_of(details, &path), review));
+                    }),
+                    Err(error) => model.update(cx, |_, cx| {
+                        cx.emit(RepoEvent::Notify { title: "Add Review Comment failed".into(), message: error.to_string(), error: true })
+                    }),
+                });
+            })
+            .detach();
+        });
     }
 
     fn api_op(&self, title: &'static str, op: impl FnOnce(&Client, &str, u64) -> anyhow::Result<String> + Send + 'static, cx: &mut Context<Self>) {
