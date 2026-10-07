@@ -1656,6 +1656,7 @@ fn change_menu(
 ) -> gpui_kit::component::menu::PopupMenu {
     let model = entity.read(cx).model.clone();
     let Some(hash) = model.read(cx).selected_hash().map(str::to_owned) else { return menu };
+    let web_file = model.read(cx).web_repo().map(|w| (w.host.name(), w.file_url(&hash, path, None)));
     let short = hash[..hash.len().min(8)].to_owned();
     let path = path.to_owned();
     let (e_diff, e_blame, e_history, e_here) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
@@ -1720,6 +1721,9 @@ fn change_menu(
     .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(p_copy.clone()))
     }))
+    .when_some(web_file, |menu, (name, url)| {
+        menu.item(PopupMenuItem::new(format!("Open on {name}")).on_click(move |_, _, cx| cx.open_url(&url)))
+    })
 }
 
 fn commit_menu(
@@ -1738,6 +1742,7 @@ fn commit_menu(
     let short = commit.short_hash().to_owned();
     // The newest loaded commit that has this one as a parent.
     let child = model.read(cx).commits().iter().find(|c| c.parents.contains(&commit.hash)).map(|c| c.hash.clone());
+    let web = model.read(cx).web_repo().cloned();
 
     let op = |title: &'static str, args: Vec<String>, done: String| {
         let model = model.clone();
@@ -1899,6 +1904,10 @@ fn commit_menu(
         let parent = commit.parents.first().cloned();
         move |_, _, cx| model.update(cx, |m, cx| m.select_hash(parent.clone(), cx))
     }))
+    .when_some(web.filter(|_| !multi), |menu, web| {
+        let url = web.commit_url(&hash);
+        menu.separator().item(PopupMenuItem::new(format!("Open on {}", web.host.name())).on_click(move |_, _, cx| cx.open_url(&url)))
+    })
 }
 
 impl Focusable for LogView {

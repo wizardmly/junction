@@ -74,6 +74,8 @@ pub struct RepoModel {
     /// The project's own repository; other roots are switched to in place.
     project_root: Option<PathBuf>,
     roots: Vec<RootInfo>,
+    /// Where "Open on GitHub / GitLab" points, from the tracked remote.
+    web_repo: Option<git::hosting::WebRepo>,
     loading: bool,
     busy: Option<String>,
     error: Option<String>,
@@ -93,6 +95,7 @@ pub struct RootInfo {
 
 struct Snapshot {
     roots: Vec<RootInfo>,
+    web: Option<git::hosting::WebRepo>,
     refs: RepositoryRefs,
     commits: Vec<Commit>,
     graph: GraphLayout,
@@ -123,6 +126,7 @@ impl RepoModel {
             submodule_paths: HashSet::new(),
             project_root: None,
             roots: Vec::new(),
+            web_repo: None,
             loading: false,
             busy: None,
             error: None,
@@ -173,6 +177,10 @@ impl RepoModel {
             }
             Err(error) => cx.emit(RepoEvent::Notify { title: "Switch Repository".into(), message: error.to_string(), error: true }),
         }
+    }
+
+    pub fn web_repo(&self) -> Option<&git::hosting::WebRepo> {
+        self.web_repo.as_ref()
     }
 
     pub fn project_root(&self) -> Option<&Path> {
@@ -364,7 +372,8 @@ impl RepoModel {
                             RootInfo { path, branch }
                         })
                         .collect();
-                    anyhow::Ok((Snapshot { roots, refs, commits, graph, status, state: repository.state(), submodules }, complete, repository, filter))
+                    let web = git::hosting::web_repo(&repository);
+                    anyhow::Ok((Snapshot { roots, web, refs, commits, graph, status, state: repository.state(), submodules }, complete, repository, filter))
                 })
                 .await;
             let (result, rest) = match result {
@@ -381,6 +390,7 @@ impl RepoModel {
                         this.state = snapshot.state;
                         this.submodule_paths = snapshot.submodules;
                         this.roots = snapshot.roots;
+                        this.web_repo = snapshot.web;
                         this.error = None;
                         // Keep the selection if the commit is still listed, else
                         // select HEAD the way the Log does on first open.

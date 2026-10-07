@@ -26,7 +26,7 @@ use crate::ui::diff_view::DiffSource;
 
 actions!(
     file_editor,
-    [SaveFile, ShowSelectionHistory, AnnotateFile, ShowFileHistory, ShowCurrentRevision, RollbackLines, ShowFileDiff]
+    [SaveFile, ShowSelectionHistory, AnnotateFile, ShowFileHistory, ShowCurrentRevision, RollbackLines, ShowFileDiff, OpenOnHosting]
 );
 
 const CONTEXT: &str = "FileEditor";
@@ -222,6 +222,21 @@ impl FileEditor {
         cx.notify();
     }
 
+    /// Git › Open on GitHub: the file at this revision (HEAD's commit for the
+    /// working tree), with the selected lines highlighted.
+    fn open_on_hosting(&mut self, _: &OpenOnHosting, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(web) = crate::git::hosting::web_repo(&self.repository) else {
+            self.error = Some("No GitHub, GitLab or Bitbucket remote found".into());
+            cx.notify();
+            return;
+        };
+        let revision = match &self.revision {
+            Some(revision) => revision.clone(),
+            None => self.repository.run(["rev-parse", "HEAD"]).map(|h| h.trim().to_owned()).unwrap_or_else(|_| "HEAD".into()),
+        };
+        cx.open_url(&web.file_url(&revision, &self.path, Some(self.selected_lines(cx))));
+    }
+
     fn rollback_lines(&mut self, _: &RollbackLines, window: &mut Window, cx: &mut Context<Self>) {
         if self.revision.is_some() {
             return;
@@ -296,6 +311,7 @@ impl Render for FileEditor {
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::rollback_lines))
+            .on_action(cx.listener(Self::open_on_hosting))
             .on_action(cx.listener(Self::show_selection_history))
             .on_action(cx.listener(Self::annotate))
             .on_action(cx.listener(Self::show_history))
@@ -354,7 +370,9 @@ impl Render for FileEditor {
                                 .menu("Show History", Box::new(ShowFileHistory))
                                 .menu("Show Current Revision", Box::new(ShowCurrentRevision))
                                 .menu("Show Diff", Box::new(ShowFileDiff))
-                                .menu_with_disabled("Rollback Lines", read_only, Box::new(RollbackLines));
+                                .menu_with_disabled("Rollback Lines", read_only, Box::new(RollbackLines))
+                                .separator()
+                                .menu("Open on GitHub / GitLab", Box::new(OpenOnHosting));
                             menu.submenu("Git", git)
                         }),
                 ),

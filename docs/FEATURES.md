@@ -89,7 +89,7 @@
 | Push All up to Here… | M3 | ✅ |
 | New Branch… / New Tag… | M2 | ✅ |
 | Go to Child Commit / Go to Parent Commit | M2 | ✅（提交右键 Go to Child Commit / Go to Parent Commit） |
-| Open on GitHub/GitLab | M5 | ⬜ |
+| Open on GitHub/GitLab | M5 | ✅（Log 提交右键、变更文件右键、文件编辑器 Git 菜单（带选中行）；支持 GitHub / GitLab / Bitbucket / Gitea 类主机） |
 
 ## 3. Commit 工具窗口（非模态提交）
 
