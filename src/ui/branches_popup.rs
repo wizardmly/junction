@@ -22,18 +22,20 @@ use crate::model::RepoModel;
 use crate::theme::{ActivePalette as _, Palette};
 use crate::ui::dialogs;
 
-type Run = Rc<dyn Fn(&mut Window, &mut App)>;
+pub(crate) type Run = Rc<dyn Fn(&mut Window, &mut App)>;
 
-struct BranchAction {
-    label: String,
-    enabled: bool,
-    run: Run,
+pub(crate) struct BranchAction {
+    pub label: String,
+    pub enabled: bool,
+    pub run: Run,
 }
 
 pub struct BranchesPopup {
     model: Entity<RepoModel>,
     search: Entity<InputState>,
     expanded: Option<String>,
+    /// Collapsed group headers; Tags starts collapsed, as in IntelliJ.
+    collapsed: std::collections::HashSet<&'static str>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -48,7 +50,7 @@ impl BranchesPopup {
             }),
             cx.observe(&model, |_, _, cx| cx.notify()),
         ];
-        Self { model, search, expanded: None, _subscriptions: subscriptions }
+        Self { model, search, expanded: None, collapsed: ["Tags"].into_iter().collect(), _subscriptions: subscriptions }
     }
 }
 
@@ -71,7 +73,7 @@ fn action(label: impl Into<String>, enabled: bool, run: Run) -> BranchAction {
 }
 
 /// The actions IntelliJ offers for a branch, in its order.
-fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, current: Option<&str>) -> Vec<BranchAction> {
+pub(crate) fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, current: Option<&str>, remotes: &[String]) -> Vec<BranchAction> {
     let name = reference.name.clone();
     let is_current = reference.kind == RefKind::LocalBranch && Some(name.as_str()) == current;
     let current_name = current.unwrap_or("HEAD").to_owned();
@@ -189,7 +191,27 @@ fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, current: Optio
                 git_op(model, "Delete Branch", vec!["branch".into(), "-d".into(), name.clone()], format!("Deleted branch {name}")),
             ));
         }
-        RefKind::Tag => {}
+        RefKind::Tag => {
+            for remote in remotes {
+                actions.push(action(
+                    format!("Push to {remote}"),
+                    true,
+                    git_op(model, "Push Tag", vec!["push".into(), remote.clone(), format!("refs/tags/{name}")], format!("Pushed tag {name} to {remote}")),
+                ));
+            }
+            actions.push(action(
+                "Delete",
+                true,
+                git_op(model, "Delete Tag", vec!["tag".into(), "-d".into(), name.clone()], format!("Deleted tag {name}")),
+            ));
+            for remote in remotes {
+                actions.push(action(
+                    format!("Delete on {remote}"),
+                    true,
+                    git_op(model, "Delete Tag on Remote", vec!["push".into(), remote.clone(), "--delete".into(), format!("refs/tags/{name}")], format!("Deleted tag {name} on {remote}")),
+                ));
+            }
+        }
     }
     actions
 }
@@ -207,6 +229,17 @@ fn row(id: impl Into<SharedString>, palette: &Palette) -> gpui_kit::Stateful<gpu
         .hover(move |s| s.bg(hover))
 }
 
+impl BranchesPopup {
+    pub fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |search, cx| search.focus(window, cx));
+    }
+
+    pub fn reset_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.expanded = None;
+        self.search.update(cx, |search, cx| search.set_value("", window, cx));
+    }
+}
+
 impl gpui_kit::EventEmitter<gpui_kit::DismissEvent> for BranchesPopup {}
 
 impl Render for BranchesPopup {
@@ -216,6 +249,7 @@ impl Render for BranchesPopup {
         let model = self.model.read(cx);
         let refs = model.refs().clone();
         let current = refs.current_branch.clone();
+        let remote_names = remote_names(&refs);
         let head = refs.head_commit.clone().unwrap_or_default();
         let matches = |name: &str| query.is_empty() || name.to_lowercase().contains(&query);
         let entity = cx.entity();
@@ -233,8 +267,31 @@ impl Render for BranchesPopup {
                 })
         };
 
-        let section = |title: &'static str| {
-            div().px_2().pt_2().pb_0p5().text_xs().text_color(palette.text_secondary).child(title)
+        let searching = !query.is_empty();
+        let collapsed = self.collapsed.clone();
+        let section = |title: &'static str, count: usize| {
+            let entity = entity.clone();
+            let is_collapsed = collapsed.contains(title) && !searching;
+            h_flex()
+                .id(SharedString::from(format!("bp-group-{title}")))
+                .px_2()
+                .pt_2()
+                .pb_0p5()
+                .gap_1()
+                .text_xs()
+                .text_color(palette.text_secondary)
+                .cursor_pointer()
+                .child(Icon::new(if is_collapsed { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall())
+                .child(title)
+                .when(is_collapsed, |el| el.child(div().child(format!("({count})"))))
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        if !this.collapsed.remove(title) {
+                            this.collapsed.insert(title);
+                        }
+                        cx.notify();
+                    })
+                })
         };
 
         let mut list = v_flex().gap_px();
@@ -257,11 +314,20 @@ impl Render for BranchesPopup {
                 ));
         }
 
-        let add_group = |list: gpui_kit::Div, title: &'static str, refs_in_group: Vec<RefName>| -> gpui_kit::Div {
+        let favorites = refs.favorites.clone();
+        let add_group = |list: gpui_kit::Div, title: &'static str, mut refs_in_group: Vec<RefName>| -> gpui_kit::Div {
             if refs_in_group.is_empty() {
                 return list;
             }
-            let mut list = list.child(section(title));
+            if title != "Recent" {
+                // Favorites first, the rest keeps its order.
+                refs_in_group.sort_by_key(|r| !favorites.contains(&r.full_name));
+            }
+            let count = refs_in_group.len();
+            let mut list = list.child(section(title, count));
+            if collapsed.contains(title) && !searching {
+                return list;
+            }
             for reference in refs_in_group {
                 let is_current = reference.kind == RefKind::LocalBranch && Some(&reference.name) == current.as_ref();
                 let color: Hsla = match reference.kind {
@@ -270,13 +336,46 @@ impl Render for BranchesPopup {
                     RefKind::Tag => palette.ref_tag,
                     _ => palette.ref_local,
                 };
-                let expanded = self.expanded.as_deref() == Some(reference.full_name.as_str());
-                let toggle_name = reference.full_name.clone();
+                // Keyed by group too: a branch can be listed under Recent and Local.
+                let key = format!("{title}\0{}", reference.full_name);
+                let expanded = self.expanded.as_deref() == Some(key.as_str());
+                let toggle_name = key;
                 let toggle_entity = entity.clone();
+                let is_favorite = favorites.contains(&reference.full_name);
+                let star_model = self.model.clone();
+                let star_name = reference.full_name.clone();
+                let star = div()
+                    .id(SharedString::from(format!("star-{title}-{}", reference.full_name)))
+                    .px_0p5()
+                    .child(
+                        Icon::new(if is_favorite { IconName::StarOff } else { IconName::Star })
+                            .xsmall()
+                            .text_color(palette.text_secondary),
+                    )
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        let name = star_name.clone();
+                        star_model.update(cx, |model, cx| {
+                            if let Some(repo) = model.repository() {
+                                let _ = crate::git::refs::set_favorite(repo, &name, !is_favorite);
+                            }
+                            model.reload(cx);
+                        });
+                    });
                 list = list.child(
-                    row(format!("branch-{}", reference.full_name), &palette)
+                    row(format!("branch-{title}-{}", reference.full_name), &palette)
                         .when(expanded, |el| el.bg(palette.selection))
-                        .child(Icon::new(if reference.kind == RefKind::Tag { IconName::Tag } else { IconName::GitBranch }).small().text_color(color))
+                        .child(
+                            Icon::new(if is_favorite {
+                                IconName::Star
+                            } else if reference.kind == RefKind::Tag {
+                                IconName::Tag
+                            } else {
+                                IconName::GitBranch
+                            })
+                            .small()
+                            .text_color(if is_favorite { palette.ref_head } else { color }),
+                        )
                         .child(div().when(is_current, |el| el.font_weight(FontWeight::SEMIBOLD)).child(reference.name.clone()))
                         .when(reference.behind > 0, |el| el.child(div().text_xs().text_color(palette.link).child(format!("↓{}", reference.behind))))
                         .when(reference.ahead > 0, |el| el.child(div().text_xs().text_color(palette.status_added).child(format!("↑{}", reference.ahead))))
@@ -284,6 +383,7 @@ impl Render for BranchesPopup {
                         .when_some(reference.upstream.clone(), |el, upstream| {
                             el.child(div().text_xs().text_color(palette.text_secondary).child(upstream))
                         })
+                        .child(star)
                         .child(Icon::new(if expanded { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall().text_color(palette.text_secondary))
                         .on_click(move |_, _, cx| {
                             let name = toggle_name.clone();
@@ -294,11 +394,11 @@ impl Render for BranchesPopup {
                         }),
                 );
                 if expanded {
-                    for (ix, branch_action) in branch_actions(&self.model, &reference, current.as_deref()).into_iter().enumerate() {
+                    for (ix, branch_action) in branch_actions(&self.model, &reference, current.as_deref(), &remote_names).into_iter().enumerate() {
                         let run = branch_action.run.clone();
                         let close_entity = entity.clone();
                         list = list.child(
-                            row(format!("branch-action-{}-{ix}", reference.full_name), &palette)
+                            row(format!("branch-action-{title}-{}-{ix}", reference.full_name), &palette)
                                 .pl(px(30.))
                                 .when(!branch_action.enabled, |el| el.text_color(palette.text_disabled).cursor_default())
                                 .child(branch_action.label)
@@ -319,9 +419,18 @@ impl Render for BranchesPopup {
             list
         };
 
+        if !searching {
+            let recent: Vec<RefName> = refs
+                .recent
+                .iter()
+                .filter(|name| Some(*name) != current.as_ref())
+                .filter_map(|name| refs.find(&format!("refs/heads/{name}")).cloned())
+                .collect();
+            list = add_group(list, "Recent", recent);
+        }
         list = add_group(list, "Local", refs.local_branches().filter(|r| matches(&r.name)).cloned().collect());
         list = add_group(list, "Remote", refs.remote_branches().filter(|r| matches(&r.name)).cloned().collect());
-        if !query.is_empty() {
+        {
             list = add_group(list, "Tags", refs.tags().filter(|r| matches(&r.name)).cloned().collect());
         }
 
@@ -331,6 +440,16 @@ impl Render for BranchesPopup {
             .child(Input::new(&self.search).small().prefix(Icon::new(IconName::Search).xsmall()))
             .child(div().id("branches-popup-list").max_h(px(520.)).overflow_y_scrollbar().child(list))
     }
+}
+
+/// Remotes tags push to / delete on, as IntelliJ lists them per remote.
+pub(crate) fn remote_names(refs: &crate::git::RepositoryRefs) -> Vec<String> {
+    let mut names: Vec<String> = refs.remote_branches().filter_map(|r| r.remote().map(str::to_owned)).collect();
+    names.dedup();
+    if names.is_empty() {
+        names.push("origin".into());
+    }
+    names
 }
 
 pub fn branch_widget_label(model: &RepoModel) -> String {

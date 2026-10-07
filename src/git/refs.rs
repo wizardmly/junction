@@ -50,6 +50,10 @@ pub struct RepositoryRefs {
     /// `None` when HEAD is detached.
     pub current_branch: Option<String>,
     pub refs: Vec<RefName>,
+    /// Recently checked-out local branches, newest first (the popup's Recent group).
+    pub recent: Vec<String>,
+    /// Starred refs (full names), listed first in each group.
+    pub favorites: std::collections::HashSet<String>,
     by_commit: HashMap<String, Vec<usize>>,
 }
 
@@ -75,7 +79,11 @@ impl RepositoryRefs {
         ])?;
         let mut refs = parse_for_each_ref(&output);
         refs.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
-        Ok(Self::new(head_commit, current_branch, refs))
+        let reflog = repository.run(["reflog", "-n", "300", "--format=%gs", "HEAD"]).unwrap_or_default();
+        let mut this = Self::new(head_commit, current_branch, refs);
+        this.recent = recent_branches(&reflog, |name| this.find(&format!("refs/heads/{name}")).is_some());
+        this.favorites = load_favorites(repository);
+        Ok(this)
     }
 
     pub fn new(head_commit: Option<String>, current_branch: Option<String>, refs: Vec<RefName>) -> Self {
@@ -83,7 +91,7 @@ impl RepositoryRefs {
         for (ix, reference) in refs.iter().enumerate() {
             by_commit.entry(reference.target.clone()).or_default().push(ix);
         }
-        Self { head_commit, current_branch, refs, by_commit }
+        Self { head_commit, current_branch, refs, recent: Vec::new(), favorites: Default::default(), by_commit }
     }
 
     /// Refs pointing at `hash`, ordered the way IntelliJ labels a row:
@@ -148,6 +156,55 @@ fn parse_for_each_ref(output: &str) -> Vec<RefName> {
         .collect()
 }
 
+fn favorites_path(repository: &Repository) -> std::path::PathBuf {
+    repository.git_dir().join("gitglass").join("favorites")
+}
+
+/// Starred branches and tags. Until the user stars anything, `main` /
+/// `master` and their remote counterparts are favorites, as in IntelliJ.
+pub fn load_favorites(repository: &Repository) -> std::collections::HashSet<String> {
+    match std::fs::read_to_string(favorites_path(repository)) {
+        Ok(text) => text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect(),
+        Err(_) => ["refs/heads/main", "refs/heads/master", "refs/remotes/origin/main", "refs/remotes/origin/master"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    }
+}
+
+pub fn set_favorite(repository: &Repository, full_name: &str, favorite: bool) -> Result<()> {
+    let mut favorites = load_favorites(repository);
+    if favorite {
+        favorites.insert(full_name.to_owned());
+    } else {
+        favorites.remove(full_name);
+    }
+    let mut lines: Vec<&String> = favorites.iter().collect();
+    lines.sort();
+    let path = favorites_path(repository);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, lines.iter().map(|l| format!("{l}\n")).collect::<String>())?;
+    Ok(())
+}
+
+/// Up to five existing branches from "checkout: moving from A to B" reflog
+/// entries, newest first, as IntelliJ's Recent group lists them.
+fn recent_branches(reflog: &str, exists: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut recent: Vec<String> = Vec::new();
+    for line in reflog.lines() {
+        let Some(rest) = line.strip_prefix("checkout: moving from ") else { continue };
+        let Some((from, to)) = rest.split_once(" to ") else { continue };
+        for name in [to, from] {
+            if recent.len() < 5 && exists(name) && !recent.iter().any(|r| r == name) {
+                recent.push(name.to_owned());
+            }
+        }
+    }
+    recent
+}
+
 /// Parses `ahead 2, behind 1` from `%(upstream:track,nobracket)`.
 fn parse_track(track: &str) -> (u32, u32) {
     let mut ahead = 0;
@@ -165,6 +222,12 @@ fn parse_track(track: &str) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_branches_from_reflog() {
+        let reflog = "commit: x\ncheckout: moving from feature to main\ncheckout: moving from main to feature\ncheckout: moving from gone to main\n";
+        assert_eq!(recent_branches(reflog, |n| n != "gone"), ["main", "feature"]);
+    }
 
     #[test]
     fn parses_refs_and_tracking() {

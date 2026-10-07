@@ -787,11 +787,15 @@ impl Workspace {
                         .open(self.branches_open)
                         .on_open_change({
                             let entity = entity.clone();
-                            move |open, _, cx| {
+                            move |open, window, cx| {
                                 let open = *open;
                                 entity.update(cx, |this, cx| {
-                                    this.branches_open = open;
-                                    cx.notify();
+                                    if open {
+                                        this.open_branches(window, cx);
+                                    } else {
+                                        this.branches_open = false;
+                                        cx.notify();
+                                    }
                                 })
                             }
                         })
@@ -937,8 +941,17 @@ impl Workspace {
         dialogs::update_project(self.model.clone(), window, cx);
     }
 
-    fn on_show_branches(&mut self, _: &ShowBranches, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_show_branches(&mut self, _: &ShowBranches, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_branches(window, cx);
+    }
+
+    /// Opens the branches popup with its search field focused, so typing
+    /// filters right away (IntelliJ's speed search).
+    fn open_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.branches_open = true;
+        self.branches_popup.update(cx, |popup, cx| popup.reset_search(window, cx));
+        let popup = self.branches_popup.clone();
+        window.defer(cx, move |window, cx| popup.update(cx, |popup, cx| popup.focus_search(window, cx)));
         cx.notify();
     }
 
@@ -971,10 +984,7 @@ impl Workspace {
                 }, cx))
             }))),
             None,
-            Some(("Branches…", "Ctrl+Shift+`", op(|this, _, cx| {
-                this.branches_open = true;
-                cx.notify();
-            }))),
+            Some(("Branches…", "Ctrl+Shift+`", op(|this, window, cx| this.open_branches(window, cx)))),
             Some(("New Branch…", "", op(|this, window, cx| dialogs::new_branch(this.model.clone(), "HEAD".into(), window, cx)))),
             Some(("New Tag…", "", op(|this, window, cx| dialogs::new_tag(this.model.clone(), "HEAD".into(), window, cx)))),
             Some(("Merge…", "", op(|this, window, cx| dialogs::merge(this.model.clone(), window, cx)))),

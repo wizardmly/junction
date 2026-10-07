@@ -24,14 +24,14 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | 树：HEAD (Current Branch)、Local、Remote（按 remote 分组）、Tags | M1 | ✅ |
-| 收藏分支（星标）、置顶 | M2 | ⬜ |
+| 收藏分支（星标）、置顶 | M2 | ✅（分支弹窗与 Log 分支面板：星标切换，收藏排在组内最前；默认收藏 main/master） |
 | 按 `/` 分组为目录（feature/xxx） | M1 | ✅ |
-| 分支搜索（直接输入） | M1 | ⬜ |
+| 分支搜索（直接输入） | M1 | ✅（Log 分支面板顶部搜索框，过滤并展开所有匹配；分支弹窗打开即聚焦搜索） |
 | 单击定位到分支顶端、双击按分支过滤 Log | M1 | ✅ |
 | ahead/behind 指示（↑↓ 箭头） | M2 | ✅ |
 | 工具栏：New Branch、Update Selected、Delete、Compare with Current、Show My Branches、Fetch、展开/折叠 | M2 | 🟡（New Branch、Fetch、按分支过滤、Compare with Current 在分支弹窗） |
 | 多仓库根时按仓库分组 | M5 | ⬜ |
-| 右键菜单：与分支弹窗动作一致（见 §4） | M2 | ⬜ |
+| 右键菜单：与分支弹窗动作一致（见 §4） | M2 | ✅（与分支弹窗相同的动作 + Add to / Remove from Favorites） |
 
 ### 2.2 提交列表（中间）
 | 功能 | 阶段 | 状态 |
@@ -125,7 +125,7 @@
 |---|---|---|
 | 顶部动作：Update Project、Commit、Push、New Branch、Checkout Tag or Revision | M1 | 🟡 |
 | 搜索框（直接输入过滤） | M1 | ✅ |
-| Recent、Local、Remote、Tags 分组；收藏星标 | M1 | 🟡 |
+| Recent、Local、Remote、Tags 分组；收藏星标 | M1 | ✅（Recent（reflog 最近签出）、Local、Remote、Tags 可折叠分组，Tags 默认折叠；收藏星标） |
 | 当前分支标记、跟踪分支、ahead/behind 箭头 | M2 | ✅ |
 | 分支子菜单：Checkout、New Branch from…、Checkout and Rebase onto Current、Compare with Current、Show Diff with Working Tree、Rebase Current onto Selected、Merge into Current、Pull into Current Using Rebase / Merge、Update、Push…、Rename…、Edit Tracking Branch、Delete | M2 | 🟡（缺 Edit Tracking Branch） |
 | 进行中的操作：Continue / Abort / Skip（rebase、merge、cherry-pick、revert） | M3 | ✅ |
@@ -181,7 +181,7 @@
 | Merge 对话框（--no-ff、--ff-only、--squash、-m、--no-commit、--allow-unrelated-histories） | M3 | ✅ |
 | Cherry-pick（多选）、冲突处理 | M3 | ✅ |
 | Reset HEAD 对话框 | M2 | ✅ |
-| Tag：新建（轻量/附注、指定提交）、删除、推送 | M2 | 🟡（新建） |
+| Tag：新建（轻量/附注、指定提交）、删除、推送 | M2 | ✅（新建；分支弹窗 Tag 子菜单：Push to <remote>、Delete、Delete on <remote>） |
 | 补丁：Create Patch / Apply Patch（含预览） | M4 | ✅（本地改动含未跟踪文件；Apply 先直接应用，失败时三方合并；剪贴板） |
 | Worktree：列表、新建、删除、打开 | M5 | ⬜ |
 | Submodule：识别、更新 | M5 | ⬜ |

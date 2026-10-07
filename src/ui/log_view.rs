@@ -66,6 +66,8 @@ pub struct LogView {
     scroll: UniformListScrollHandle,
     search: Entity<InputState>,
     branches: Entity<TreeState>,
+    /// Speed search over the branches panel.
+    branch_search: Entity<InputState>,
     changes: Entity<TreeState>,
     change_kinds: HashMap<String, (FileChangeKind, Option<String>)>,
     /// Multi-selection: per file, the revisions its merged change spans.
@@ -89,6 +91,7 @@ impl LogView {
     pub fn new(model: Entity<RepoModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Text or hash"));
         let branches = cx.new(|cx| TreeState::new(cx));
+        let branch_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search branches"));
         let changes = cx.new(|cx| TreeState::new(cx));
         let subscriptions = vec![
             cx.subscribe(&model, |this, _, event, cx| match event {
@@ -117,6 +120,12 @@ impl LogView {
                 InputEvent::PressEnter { .. } => this.apply_text_filter(cx),
                 _ => {}
             }),
+            cx.subscribe(&branch_search, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.rebuild_branches(cx);
+                    cx.notify();
+                }
+            }),
             cx.observe(&changes, |this, changes, cx| {
                 let selected = changes.read(cx).selected_item().map(|item| item.id.clone());
                 if selected != this.last_change_selection {
@@ -144,6 +153,7 @@ impl LogView {
             scroll: UniformListScrollHandle::new(),
             search,
             branches,
+            branch_search,
             changes,
             change_kinds: HashMap::new(),
             combined: None,
@@ -183,7 +193,15 @@ impl LogView {
     }
 
     fn rebuild_branches(&mut self, cx: &mut Context<Self>) {
-        let refs = self.model.read(cx).refs().clone();
+        let mut refs = self.model.read(cx).refs().clone();
+        // Speed search: keep matching refs only, with every folder open.
+        let query = self.branch_search.read(cx).value().trim().to_lowercase();
+        let searching = !query.is_empty();
+        if searching {
+            refs.refs.retain(|r| r.name.to_lowercase().contains(&query));
+        }
+        // Favorites first within each group, as IntelliJ pins them.
+        refs.refs.sort_by_key(|r| (r.kind, !refs.favorites.contains(&r.full_name)));
         let mut items = Vec::new();
         if let Some(branch) = &refs.current_branch {
             items.push(TreeItem::new(format!("{BRANCH_PREFIX}refs/heads/{branch}"), "HEAD (Current Branch)"));
@@ -212,10 +230,13 @@ impl LogView {
         let tags: Vec<&RefName> = refs.tags().collect();
         if !tags.is_empty() {
             items.push(
-                TreeItem::new("group:tags", "Tags").children(
+                TreeItem::new("group:tags", "Tags").expanded(searching).children(
                     tags.iter().map(|t| TreeItem::new(format!("{BRANCH_PREFIX}{}", t.full_name), t.name.clone())),
                 ),
             );
+        }
+        if searching {
+            items = items.into_iter().map(expand_all).collect();
         }
         self.branches.update(cx, |tree, cx| tree.set_items(items, cx));
     }
@@ -881,7 +902,8 @@ impl LogView {
                                 .and_then(|full| this.model.read(cx).refs().find(full).map(|r| r.name.clone()));
                             this.update_filter(cx, |f| f.branches = name.into_iter().collect());
                         }),
-                    )),
+                    ))
+                    .child(div().flex_1().ml_1().child(Input::new(&self.branch_search).xsmall().cleanable(true))),
             )
             .child(
                 div().flex_1().min_h_0().child(
@@ -908,6 +930,10 @@ impl LogView {
                             Some(RefKind::Tag) => palette.ref_tag,
                             _ => palette.text_secondary,
                         };
+                        let is_favorite = full_name.as_ref().is_some_and(|f| refs.favorites.contains(f));
+                        let icon_name = if is_favorite && !entry.is_folder() { IconName::Star } else { icon_name };
+                        let menu_reference = reference.clone();
+                        let (menu_entity, menu_refs) = (entity.clone(), refs.clone());
                         let entity = entity.clone();
                         let double_click_name = reference.as_ref().map(|r| r.name.clone());
                         ListItem::new(ix)
@@ -924,6 +950,7 @@ impl LogView {
                             })
                             .child(
                                 h_flex()
+                                    .w_full()
                                     .gap_1()
                                     .pl(px(entry.depth() as f32 * 14.))
                                     .text_sm()
@@ -948,6 +975,10 @@ impl LogView {
                                                     el.child(div().text_color(palette.status_added).child(format!("↑{}", r.ahead)))
                                                 }),
                                         )
+                                    })
+                                    .context_menu(move |menu, _, cx| {
+                                        let Some(reference) = menu_reference.clone() else { return menu };
+                                        branch_menu(menu, &menu_entity, &menu_refs, &reference, cx)
                                     }),
                             )
                     })
@@ -1155,6 +1186,46 @@ fn message_text(message: &str, entity: &Entity<LogView>, palette: &crate::theme:
             entity.update(cx, |this, cx| this.go_to(&hash, window, cx));
         }
     })
+}
+
+/// Right-click on a branch or tag in the branches panel: the branch popup's
+/// actions plus Add to / Remove from Favorites.
+fn branch_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    entity: &Entity<LogView>,
+    refs: &crate::git::RepositoryRefs,
+    reference: &RefName,
+    cx: &mut App,
+) -> gpui_kit::component::menu::PopupMenu {
+    use crate::ui::branches_popup;
+    let model = entity.read(cx).model.clone();
+    let remotes = branches_popup::remote_names(refs);
+    let actions = branches_popup::branch_actions(&model, reference, refs.current_branch.as_deref(), &remotes);
+    let mut menu = menu;
+    for action in actions {
+        let run = action.run.clone();
+        menu = menu.item(PopupMenuItem::new(action.label).disabled(!action.enabled).on_click(move |_, window, cx| run(window, cx)));
+    }
+    let favorite = refs.favorites.contains(&reference.full_name);
+    let full_name = reference.full_name.clone();
+    menu.separator().item(PopupMenuItem::new(if favorite { "Remove from Favorites" } else { "Add to Favorites" }).on_click(
+        move |_, _, cx| {
+            model.update(cx, |model, cx| {
+                if let Some(repo) = model.repository() {
+                    let _ = crate::git::refs::set_favorite(repo, &full_name, !favorite);
+                }
+                model.reload(cx);
+            })
+        },
+    ))
+}
+
+fn expand_all(mut item: TreeItem) -> TreeItem {
+    if item.children.is_empty() {
+        return item;
+    }
+    item.children = std::mem::take(&mut item.children).into_iter().map(expand_all).collect();
+    item.expanded(true)
 }
 
 /// Groups branches by their `/`-separated path into folders.
