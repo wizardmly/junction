@@ -349,3 +349,25 @@ mod tests {
         assert_eq!(entries[2].old_path.as_deref(), Some("old.rs"));
     }
 }
+
+/// Appends `/path` lines to an ignore file, skipping ones already there.
+pub fn append_ignore(file: &std::path::Path, paths: &[String]) -> Result<()> {
+    let existing = std::fs::read_to_string(file).unwrap_or_default();
+    let present: std::collections::HashSet<&str> = existing.lines().map(str::trim).collect();
+    let mut text = existing.clone();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    for path in paths {
+        let line = format!("/{}", path.trim_start_matches('/'));
+        if !present.contains(line.as_str()) {
+            text.push_str(&line);
+            text.push('\n');
+        }
+    }
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(file, text)?;
+    Ok(())
+}

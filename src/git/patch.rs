@@ -137,6 +137,12 @@ pub enum ApplyOutcome {
 
 /// Puts `paths` back to HEAD, deleting files HEAD doesn't have.
 pub fn rollback(repository: &Repository, paths: &[String]) -> Result<()> {
+    rollback_with(repository, paths, true)
+}
+
+/// The Rollback Changes dialog: files HEAD doesn't have are unstaged, and
+/// deleted only with "Delete local copies of added files".
+pub fn rollback_with(repository: &Repository, paths: &[String], delete_added: bool) -> Result<()> {
     let head = head(repository);
     let mut tracked = Vec::new();
     for path in paths {
@@ -148,7 +154,7 @@ pub fn rollback(repository: &Repository, paths: &[String]) -> Result<()> {
         } else {
             repository.run(["rm", "--cached", "-q", "--ignore-unmatch", "--", path])?;
             let file = repository.root().join(path);
-            if file.is_file() {
+            if delete_added && file.is_file() {
                 std::fs::remove_file(&file).with_context(|| format!("failed to delete {path}"))?;
             }
         }

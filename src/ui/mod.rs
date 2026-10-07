@@ -11,6 +11,7 @@ pub mod log_view;
 pub mod merge_view;
 pub mod patch_dialogs;
 pub mod rebase_dialog;
+pub mod rollback_dialog;
 pub mod remote_dialogs;
 pub mod revision_browser;
 pub mod shelf_view;

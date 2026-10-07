@@ -283,6 +283,14 @@ impl CommitView {
     /// Paths under a tree node (a file, a directory, or a whole group).
     /// Files for Shelve / Create Patch: the checked files (the selected node
     /// in staging mode), or `file` when it isn't among them.
+    /// The unversioned files an Add to VCS / Ignore acts on: the checked
+    /// unversioned files when the clicked one is checked, else just it.
+    fn unversioned_action_paths(&self, file: &str) -> Vec<String> {
+        let unversioned = |p: &String| self.kinds.get(p) == Some(&StatusKind::Unversioned);
+        let paths: Vec<String> = self.action_paths(Some(file)).into_iter().filter(unversioned).collect();
+        if paths.is_empty() { vec![file.to_owned()] } else { paths }
+    }
+
     fn action_paths(&self, file: Option<&str>) -> Vec<String> {
         if let Some(file) = file {
             if !self.included.contains(file) {
@@ -702,38 +710,48 @@ impl CommitView {
 }
 
 impl CommitView {
-    /// Rollback: checked files, or in staging mode the selected node
-    /// (unstaged changes are restored from the index, staged ones from HEAD).
-    fn rollback(&mut self, cx: &mut Context<Self>) {
-        let (paths, from_index) = if self.staging {
+    /// Rollback…: checked files (or the clicked one), or in staging mode the
+    /// selected node (unstaged changes come back from the index, staged ones
+    /// from HEAD), confirmed in the Rollback Changes dialog.
+    pub fn rollback(&mut self, file: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::rollback_dialog::{self, RollbackFrom};
+        let (paths, from) = if self.staging && file.is_none() {
             let Some(id) = self.last_selection.clone() else { return };
             let scope = self.group_of(&id).map(|g| g.scope.clone());
             if scope.as_deref() == Some(UNVERSIONED_SCOPE) {
                 return;
             }
-            (self.paths_under(&id), scope.as_deref() == Some(UNSTAGED_SCOPE))
+            let from = if scope.as_deref() == Some(UNSTAGED_SCOPE) { RollbackFrom::Index } else { RollbackFrom::Head };
+            (self.paths_under(&id), from)
         } else {
-            let paths = self
-                .included
-                .iter()
-                .filter(|p| self.kinds.get(*p) != Some(&StatusKind::Unversioned))
-                .cloned()
-                .collect();
-            (paths, false)
+            (self.action_paths(file), RollbackFrom::Head)
         };
-        if paths.is_empty() {
-            return;
-        }
+        let files = paths.into_iter().map(|p| {
+            let kind = self.kinds.get(&p).copied().unwrap_or(StatusKind::Modified);
+            (p, kind)
+        });
+        rollback_dialog::rollback(self.model.clone(), files.collect(), from, window, cx);
+    }
+
+    /// Add to VCS (Ctrl+Alt+A) for unversioned files.
+    fn add_to_vcs(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
         self.model.update(cx, |m, cx| {
-            m.run_operation("Rollback", move |repo| {
-                let mut args: Vec<String> = if from_index {
-                    vec!["restore".into(), "--worktree".into(), "--".into()]
-                } else {
-                    vec!["restore".into(), "--staged".into(), "--worktree".into(), "--source=HEAD".into(), "--".into()]
-                };
+            m.run_operation("Add to VCS", move |repo| {
+                let mut args = vec!["add".to_owned(), "--".into()];
                 args.extend(paths.iter().cloned());
                 repo.run(&args)?;
-                Ok(format!("Rolled back {} file{}", paths.len(), if paths.len() == 1 { "" } else { "s" }))
+                Ok(format!("Added {} file{}", paths.len(), if paths.len() == 1 { "" } else { "s" }))
+            }, cx)
+        });
+    }
+
+    /// Add to .gitignore (the root one) or to .git/info/exclude.
+    fn ignore(&mut self, paths: Vec<String>, exclude: bool, cx: &mut Context<Self>) {
+        self.model.update(cx, |m, cx| {
+            m.run_operation("Ignore", move |repo| {
+                let file = if exclude { repo.git_dir().join("info").join("exclude") } else { repo.root().join(".gitignore") };
+                crate::git::status::append_ignore(&file, &paths)?;
+                Ok(format!("Ignored {} file{}", paths.len(), if paths.len() == 1 { "" } else { "s" }))
             }, cx)
         });
     }
@@ -818,7 +836,7 @@ impl Render for CommitView {
                     )))
                     .child(
                         tool_button("commit-rollback", IconName::Undo2, "Rollback…")
-                            .on_click(cx.listener(|this, _, _, cx| this.rollback(cx))),
+                            .on_click(cx.listener(|this, _, window, cx| this.rollback(None, window, cx))),
                     )
                     .child(tool_button("commit-diff", IconName::FileDiff, "Show Diff").on_click(cx.listener(
                         |this, _, _, cx| {
@@ -966,6 +984,36 @@ impl Render for CommitView {
                                     let (e_compare, p_compare) = (menu_entity.clone(), path.clone());
                                     let (e_edit, p_edit) = (menu_entity.clone(), path.clone());
                                     let deleted = menu_kind == Some(StatusKind::Deleted);
+                                    let unversioned = menu_kind == Some(StatusKind::Unversioned);
+                                    let menu = if unversioned {
+                                        let (e_add, e_ign, e_exc) = (menu_entity.clone(), menu_entity.clone(), menu_entity.clone());
+                                        let (p_add, p_ign, p_exc) = (path.clone(), path.clone(), path.clone());
+                                        menu.item(PopupMenuItem::new("Add to VCS").on_click(move |_, _, cx| {
+                                            e_add.update(cx, |this, cx| {
+                                                let paths = this.unversioned_action_paths(&p_add);
+                                                this.add_to_vcs(paths, cx)
+                                            })
+                                        }))
+                                        .item(PopupMenuItem::new("Add to .gitignore").on_click(move |_, _, cx| {
+                                            e_ign.update(cx, |this, cx| {
+                                                let paths = this.unversioned_action_paths(&p_ign);
+                                                this.ignore(paths, false, cx)
+                                            })
+                                        }))
+                                        .item(PopupMenuItem::new("Add to .git/info/exclude").on_click(move |_, _, cx| {
+                                            e_exc.update(cx, |this, cx| {
+                                                let paths = this.unversioned_action_paths(&p_exc);
+                                                this.ignore(paths, true, cx)
+                                            })
+                                        }))
+                                        .separator()
+                                    } else {
+                                        let (e_rb, p_rb) = (menu_entity.clone(), path.clone());
+                                        menu.item(PopupMenuItem::new("Rollback…").on_click(move |_, window, cx| {
+                                            e_rb.update(cx, |this, cx| this.rollback(Some(&p_rb), window, cx))
+                                        }))
+                                        .separator()
+                                    };
                                     menu.item(PopupMenuItem::new("Edit Source").disabled(deleted).on_click(move |_, _, cx| {
                                         e_edit.update(cx, |_, cx| cx.emit(CommitEvent::EditSource(p_edit.clone())))
                                     }))

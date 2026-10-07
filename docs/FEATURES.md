@@ -108,8 +108,8 @@
 | 提交前检查：Reformat、Optimize imports、Analyze code、Check TODO（IDE 特有，客户端只保留 hooks） | — | — |
 | 工具栏：Refresh、Rollback、Show Diff、Shelve、Stash、Update | M2 | 🟡（Refresh、Rollback、Show Diff、Shelve） |
 | Diff 预览（选中文件即预览） | M2 | ✅ |
-| Rollback Changes 对话框（删除本地副本选项） | M2 | ⬜ |
-| 添加到 VCS / 添加到 .gitignore | M2 | ⬜ |
+| Rollback Changes 对话框（删除本地副本选项） | M2 | ✅（列出要回滚的文件（可取消勾选）、修改/新增/删除计数、“Delete local copies of added files”；暂存模式下未暂存的从 index 回滚；文件右键 Rollback…） |
+| 添加到 VCS / 添加到 .gitignore | M2 | ✅（未版本化文件右键：Add to VCS、Add to .gitignore、Add to .git/info/exclude） |
 | 提交完成通知 + Undo | M2 | 🟡（通知） |
 
 ### 3.1 Shelf / Stash
