@@ -21,7 +21,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::{
-    AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, StatefulInteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
@@ -46,6 +46,15 @@ pub enum CommitEvent {
 }
 
 impl EventEmitter<CommitEvent> for CommitView {}
+
+gpui_kit::actions!(commit_view, [ShowMessageHistory]);
+
+const CONTEXT: &str = "CommitView";
+
+pub fn init(cx: &mut gpui_kit::App) {
+    // Commit Message History: Ctrl+M on every platform, as in IntelliJ.
+    cx.bind_keys([gpui_kit::KeyBinding::new("ctrl-m", ShowMessageHistory, Some(CONTEXT))]);
+}
 
 /// A top-level node of the changes tree. Node ids are `<scope><f:|d:><path>`.
 struct Group {
@@ -426,6 +435,46 @@ impl CommitView {
         cx.notify();
     }
 
+    fn on_message_history(&mut self, _: &ShowMessageHistory, window: &mut Window, cx: &mut Context<Self>) {
+        let history = crate::settings::message_history();
+        let entity = cx.entity();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let palette = cx.palette().clone();
+            let mut list = v_flex().id("message-history").max_h(px(360.)).overflow_y_scroll().gap_px();
+            if history.is_empty() {
+                list = list.child(div().p_2().text_sm().text_color(palette.text_secondary).child("No recent commit messages"));
+            }
+            for (ix, message) in history.iter().enumerate() {
+                let (entity, chosen) = (entity.clone(), message.clone());
+                list = list.child(
+                    v_flex()
+                        .id(("history-message", ix))
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.))
+                        .text_sm()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(palette.hover))
+                        .on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let chosen = chosen.clone();
+                            entity.update(cx, |this, cx| {
+                                this.message.update(cx, |state, cx| {
+                                    state.set_value(chosen, window, cx);
+                                    state.focus(window, cx);
+                                })
+                            });
+                        })
+                        .child(div().child(message.lines().next().unwrap_or_default().to_owned()))
+                        .when(message.lines().count() > 1, |el| {
+                            el.child(div().text_xs().text_color(palette.text_secondary).child(format!("{} more lines", message.lines().count() - 1)))
+                        }),
+                );
+            }
+            dialog.title("Commit Message History").w(px(520.)).child(list)
+        });
+    }
+
     fn gpg_default(&self, cx: &gpui_kit::App) -> bool {
         self.gpg_sign.unwrap_or_else(|| self.model.read(cx).repository().is_some_and(status::gpg_sign_default))
     }
@@ -543,6 +592,8 @@ impl Render for CommitView {
 
         let tree_palette = palette.clone();
         v_flex()
+            .key_context(CONTEXT)
+            .on_action(cx.listener(Self::on_message_history))
             .size_full()
             .child(
                 h_flex()
@@ -716,7 +767,7 @@ impl Render for CommitView {
                                     .ghost()
                                     .xsmall()
                                     .icon(Icon::new(IconName::Clock))
-                                    .tooltip("Commit Message History")
+                                    .tooltip("Commit Message History  Ctrl+M")
                                     .dropdown_menu({
                                         let entity = history_entity.clone();
                                         move |mut menu, _, _| {

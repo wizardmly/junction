@@ -35,6 +35,7 @@ fn main() {
         gpui_kit::init(cx);
         ui::log_view::init(cx);
         ui::workspace::init(cx);
+        ui::commit_view::init(cx);
         let settings = settings::Settings::load();
         let dark = std::env::var("GITGLASS_THEME").map(|t| t != "light").unwrap_or(settings.dark);
         cx.set_global(settings);
