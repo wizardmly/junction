@@ -14,7 +14,7 @@
 | 左/右/下 工具窗口条 | Commit、Git（Log/Console）、可拖拽、可隐藏、记住尺寸 | M1 | 🟡 |
 | 状态栏 | 分支、行分隔符、后台任务进度、通知 | M1 | 🟡 |
 | VCS 操作弹窗 | `Alt+\``（macOS `Ctrl+V`）快速操作列表 | M3 | ⬜ |
-| 通知气泡 | 操作结果、错误、可点击的动作（View、Undo、Show details） | M2 | 🟡（结果与错误） |
+| 通知气泡 | 操作结果、错误、可点击的动作（View、Undo、Show details） | M2 | 🟡（View Commit、Show Details、Update Project；无 Undo） |
 | 主题 | 亮/暗、跟随系统、Int UI 配色、紧凑模式 | M1 | 🟡 |
 | 快捷键 | 与 IntelliJ 默认 keymap 一致（`Ctrl+K` 提交、`Ctrl+Shift+K` 推送、`Ctrl+T` 更新…） | M2 | 🟡（Ctrl+K、Ctrl+Shift+K、Ctrl+T、Ctrl+Shift+\`、Alt+9、F7/Shift+F7） |
 
@@ -40,13 +40,13 @@
 | 列：Subject（含分支/标签标签）、Author、Date、Hash；列可显示/隐藏、可拖宽 | M1 | 🟡 |
 | 引用标签：本地分支、远程分支、标签、HEAD；左/右侧显示；紧凑引用视图 | M1 | 🟡 |
 | 虚拟滚动，几十万提交流畅 | M1 | ✅ |
-| 分段加载（先加载最近的，滚动时加载更多） | M2 | ⬜ |
-| 多选（Shift/Ctrl） | M2 | ⬜ |
+| 分段加载（先加载最近的，滚动时加载更多） | M2 | ✅（先 1000 条，其余后台加载） |
+| 多选（Shift/Ctrl） | M2 | ✅（多选后可 Cherry-Pick / Revert / 复制哈希） |
 | 高亮：我的提交（粗体）、合并提交（灰色）、当前分支提交、未合并到当前分支的提交 | M2 | ⬜ |
 | IntelliSort / 按拓扑 / 按日期排序 | M2 | ⬜ |
 | 折叠/展开线性分支、显示长边 | M3 | ⬜ |
 | 日期格式：相对时间 / 绝对时间 | M1 | 🟡 |
-| `Ctrl+F` 跳转到 hash / 分支 / 标签 | M2 | ⬜ |
+| `Ctrl+F` 跳转到 hash / 分支 / 标签 | M2 | ✅ |
 | 多个 Log 标签页（从分支打开新标签） | M3 | ⬜ |
 
 ### 2.3 过滤栏
@@ -99,7 +99,7 @@
 | 复选框选择要提交的文件；全选 | M1 | 🟡 |
 | 分组：目录 / 模块 / 仓库；展开全部/折叠全部 | M2 | ⬜ |
 | 多个 Changelist：新建、移动文件到、设为活动 | M4 | ⬜ |
-| Staging 模式（启用暂存区）：Staged / Unstaged 两棵树，Stage/Unstage 按钮 | M2 | ⬜ |
+| Staging 模式（启用暂存区）：Staged / Unstaged 两棵树，Stage/Unstage 按钮 | M2 | ✅ |
 | 部分提交：按 chunk / 按行勾选（diff 中的复选框） | M4 | ⬜ |
 | 提交信息编辑器：拼写检查、右边距线、首行长度提示、提交信息历史（`Ctrl+M`） | M1/M3 | 🟡 |
 | Amend 复选框（自动载入上次提交信息） | M1 | ✅ |
@@ -140,10 +140,10 @@
 | 更新结果：Updated files 树、被更新的提交 Log 标签页 | M3 | ⬜ |
 | Pull 对话框：remote、分支、选项（--rebase、--ff-only、--no-ff、--squash、--no-commit） | M2 | ⬜ |
 | Push 对话框：每个仓库待推送的提交列表 + 变更树、目标分支可编辑（新分支标记）、Force push（--force-with-lease）、Push tags（All / Current branch）、Run hooks、Set upstream | M2 | 🟡（无变更树） |
-| 推送被拒：提示 Merge / Rebase 后重推，"自动更新"选项 | M3 | ⬜ |
+| 推送被拒：提示 Merge / Rebase 后重推，"自动更新"选项 | M3 | ✅ |
 | 受保护分支禁止 force push | M3 | ⬜ |
 | Manage Remotes 对话框：添加/编辑/删除 | M2 | ⬜ |
-| 凭据：HTTPS 密码/Token 对话框、SSH passphrase、使用 credential helper | M2 | ⬜ |
+| 凭据：HTTPS 密码/Token 对话框、SSH passphrase、使用 credential helper | M2 | ✅（已配置的 credential helper 优先） |
 | Clone 对话框：URL、目录、GitHub/GitLab 账号仓库列表 | M4 | ⬜ |
 
 ## 6. Diff 与 Merge
@@ -192,10 +192,10 @@
 | 设置项 | 阶段 | 状态 |
 |---|---|---|
 | Git 可执行文件路径 + Test 按钮 | M2 | ⬜ |
-| 启用暂存区 | M2 | ⬜ |
+| 启用暂存区 | M2 | ✅ |
 | 提交前警告 CRLF、警告 detached HEAD、大文件 | M3 | ⬜ |
-| Update method（Merge / Rebase）、Clean working tree using（Stash / Shelve） | M2 | ⬜ |
-| 推送被拒时自动更新、Force push 受保护分支列表 | M3 | ⬜ |
+| Update method（Merge / Rebase）、Clean working tree using（Stash / Shelve） | M2 | 🟡（Merge / Rebase，用 Stash） |
+| 推送被拒时自动更新、Force push 受保护分支列表 | M3 | 🟡（自动更新） |
 | GPG 签名配置 | M4 | ⬜ |
 | 使用 credential helper | M2 | ⬜ |
 | 定期检查新的远程提交（incoming） | M4 | ⬜ |
