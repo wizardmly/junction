@@ -31,6 +31,7 @@ pub fn load(repository: &Repository, revisions: &Revisions) -> BinarySides {
         ),
         Revisions::Files { path, other } => (work_tree(path), std::fs::read(other).ok()),
         Revisions::Texts { old, new, .. } => (Some(old.clone().into_bytes()), Some(new.clone().into_bytes())),
+        Revisions::Clipboard { path, text } => (Some(text.clone().into_bytes()), work_tree(path)),
     };
     BinarySides { old, new }
 }

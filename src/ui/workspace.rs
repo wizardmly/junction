@@ -1324,6 +1324,10 @@ impl Workspace {
                     cx,
                 );
             }
+            FileAction::CompareWithClipboard(path) => {
+                let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+                self.open_diff(DiffSource::Clipboard { path, text }, cx)
+            }
             FileAction::CompareWithFile(path) => {
                 let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Compare With".into()) });
                 cx.spawn(async move |this, cx| {

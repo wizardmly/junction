@@ -185,6 +185,18 @@ pub struct TextPanes<T = ()> {
     drag: Option<Drag>,
     /// The font's advance, measured when painting.
     char_width: Rc<Cell<f32>>,
+    /// Gear menu › Soft-Wrap.
+    pub soft_wrap: bool,
+    /// Where each row's line breaks, as byte offsets in the line (the first
+    /// is 0); empty when soft wrap is off.
+    wraps: Vec<Vec<Vec<usize>>>,
+    /// Each row's top before scrolling (one more entry: the content height).
+    /// Wrapped rows are taller, and level with their paired rows.
+    tops: Vec<Vec<f32>>,
+    /// The columns the wraps were made for.
+    wrap_cols: Vec<usize>,
+    /// The panes changed rows since the heights were paired.
+    layout_dirty: bool,
 }
 
 /// A mouse drag the panes follow anywhere in the window.
@@ -242,6 +254,11 @@ impl<T: Clone + Default> TextPanes<T> {
             weights: vec![1.; panes],
             drag: None,
             char_width: Rc::new(Cell::new(CHAR_WIDTH)),
+            soft_wrap: false,
+            wraps: vec![Vec::new(); panes],
+            tops: vec![vec![0.]; panes],
+            wrap_cols: vec![0; panes],
+            layout_dirty: false,
         }
     }
 
@@ -304,8 +321,153 @@ impl<T: Clone + Default> TextPanes<T> {
             .unwrap_or(0);
         self.max_cols[pane] = own.max(others);
         self.rows[pane] = rows;
+        self.relayout_pane(pane);
+        self.layout_dirty = true;
         let max = self.max_scroll_y(pane);
         self.scroll[pane].1 = self.scroll[pane].1.min(max);
+    }
+
+    // Row heights (soft wrap).
+
+    /// The text columns that fit a pane, for soft wrap.
+    fn fit_cols(&self, pane: usize) -> usize {
+        let width = f32::from(self.bounds.borrow()[pane].size.width) - self.layouts[pane].gutter_width() - 2. * TEXT_PADDING;
+        if !self.soft_wrap || width <= 0. { usize::MAX } else { ((width / self.char_width.get()) as usize).max(8) }
+    }
+
+    /// One pane's wraps and row tops, unpaired.
+    fn relayout_pane(&mut self, pane: usize) {
+        let cols = self.fit_cols(pane);
+        self.wrap_cols[pane] = cols;
+        let rows = &self.rows[pane];
+        let mut tops = Vec::with_capacity(rows.len() + 1);
+        let mut wraps = Vec::new();
+        if cols == usize::MAX {
+            tops.extend((0..=rows.len()).map(|r| r as f32 * LINE_HEIGHT));
+        } else {
+            let mut y = 0.;
+            for row in rows {
+                let text = match *row {
+                    RowTarget::Line(line) => Some(&self.buffers[pane]).filter(|b| line < b.line_count()).map(|b| b.line(line)),
+                    RowTarget::Other { pane: p, line } => self.buffers.get(p).filter(|b| line < b.line_count()).map(|b| b.line(line)),
+                    _ => None,
+                };
+                let starts = text.map_or_else(|| vec![0], |t| wrap_starts(t, cols));
+                tops.push(y);
+                y += starts.len() as f32 * LINE_HEIGHT;
+                wraps.push(starts);
+            }
+            tops.push(y);
+        }
+        self.wraps[pane] = wraps;
+        self.tops[pane] = tops;
+    }
+
+    /// Re-wraps when soft wrap or a pane's width changed, and keeps paired
+    /// rows (the same row of linked panes with as many rows) equally tall.
+    fn relayout(&mut self) {
+        let changed = (0..self.rows.len()).any(|p| self.fit_cols(p) != self.wrap_cols[p]);
+        if !changed && !self.layout_dirty {
+            return;
+        }
+        self.layout_dirty = false;
+        for pane in 0..self.rows.len() {
+            self.relayout_pane(pane);
+        }
+        if !self.soft_wrap {
+            return;
+        }
+        let mut lines: Vec<Vec<usize>> = self.wraps.iter().map(|w| w.iter().map(Vec::len).collect()).collect();
+        for _ in 0..2 {
+            for (a, b, _) in &self.links {
+                let (a, b) = (*a, *b);
+                if a >= lines.len() || b >= lines.len() || lines[a].len() != lines[b].len() {
+                    continue;
+                }
+                for row in 0..lines[a].len() {
+                    let n = lines[a][row].max(lines[b][row]);
+                    lines[a][row] = n;
+                    lines[b][row] = n;
+                }
+            }
+        }
+        for (pane, lines) in lines.into_iter().enumerate() {
+            if lines.is_empty() {
+                continue;
+            }
+            let mut y = 0.;
+            let tops = &mut self.tops[pane];
+            tops.clear();
+            for n in lines {
+                tops.push(y);
+                y += n as f32 * LINE_HEIGHT;
+            }
+            tops.push(y);
+        }
+    }
+
+    /// A row's top before scrolling.
+    pub fn row_y(&self, pane: usize, row: usize) -> f32 {
+        let tops = &self.tops[pane];
+        tops.get(row).or(tops.last()).copied().unwrap_or(0.)
+    }
+
+    /// The height of all of a pane's rows.
+    pub fn content_height(&self, pane: usize) -> f32 {
+        self.tops[pane].last().copied().unwrap_or(0.)
+    }
+
+    /// The row at a content y.
+    pub fn row_at(&self, pane: usize, y: f32) -> usize {
+        let tops = &self.tops[pane];
+        let rows = tops.len().saturating_sub(1);
+        tops.partition_point(|t| *t <= y).saturating_sub(1).min(rows.saturating_sub(1))
+    }
+
+    /// A content y as a fractional row (for pairing scroll positions).
+    fn y_to_row(&self, pane: usize, y: f32) -> f32 {
+        let row = self.row_at(pane, y);
+        let (top, bottom) = (self.row_y(pane, row), self.row_y(pane, row + 1));
+        if bottom <= top { (y / LINE_HEIGHT).max(0.) } else { row as f32 + ((y - top) / (bottom - top)).clamp(0., 1.) }
+    }
+
+    fn row_to_y(&self, pane: usize, row: f32) -> f32 {
+        let whole = row.floor().max(0.) as usize;
+        let (top, bottom) = (self.row_y(pane, whole), self.row_y(pane, whole + 1));
+        top + (row - whole as f32) * (bottom - top).max(0.)
+    }
+
+    /// A row's line breaks.
+    fn row_wraps(&self, pane: usize, row: usize) -> &[usize] {
+        self.wraps[pane].get(row).map_or(&[0][..], Vec::as_slice)
+    }
+
+    /// Which wrapped part of its row an offset (in its line) is on: the
+    /// part's index and its start.
+    fn wrap_part(&self, pane: usize, row: usize, in_line: usize) -> (usize, usize) {
+        let wraps = self.row_wraps(pane, row);
+        let part = wraps.partition_point(|s| *s <= in_line).saturating_sub(1);
+        (part, wraps.get(part).copied().unwrap_or(0))
+    }
+
+    /// Where an offset's caret goes in its pane, before scrolling: x from
+    /// the text start, and the top of its visual line.
+    fn caret_point(&self, pane: usize, offset: usize, window: &Window, cx: &App) -> Option<(f32, f32)> {
+        let buffer = &self.buffers[pane];
+        let line = buffer.line_of(offset);
+        let LineRow::Row(row) = self.line_row(pane, line)? else { return None };
+        let text = buffer.line(line);
+        let in_line = offset - buffer.line_range(line).start;
+        let (part, start) = self.wrap_part(pane, row, in_line);
+        let end = self.row_wraps(pane, row).get(part + 1).copied().unwrap_or(text.len());
+        let piece = &text[start..end.max(start)];
+        let (display, _) = expand_tabs(piece, &[]);
+        let at = display_offset(piece, in_line - start);
+        let mut x = f32::from(shape(&display, window, cx).x_for_index(at));
+        if part > 0 {
+            x += wrap_indent(text, self.wrap_cols[pane]) as f32 * self.char_width.get();
+        }
+        Some((x, self.row_y(pane, row) + part as f32 * LINE_HEIGHT))
     }
 
     /// The pane rows every buffer line gets, with nothing folded.
@@ -317,7 +479,7 @@ impl<T: Clone + Default> TextPanes<T> {
 
     /// Lets the last line scroll up to the middle of the pane.
     pub fn max_scroll_y(&self, pane: usize) -> f32 {
-        (self.rows[pane].len() as f32 * LINE_HEIGHT - self.view_height.get() / 2.).max(0.)
+        (self.content_height(pane) - self.view_height.get() / 2.).max(0.)
     }
 
     /// Scrolls one pane; with Synchronize Scrolling the linked panes follow
@@ -330,6 +492,9 @@ impl<T: Clone + Default> TextPanes<T> {
     }
 
     fn max_scroll_x(&self, pane: usize) -> f32 {
+        if self.soft_wrap {
+            return 0.;
+        }
         let (content, view) = self.text_extent(pane);
         if view <= 0. { 0. } else { (content - view).max(0.) }
     }
@@ -346,14 +511,14 @@ impl<T: Clone + Default> TextPanes<T> {
         done[pane] = true;
         let mut queue = vec![pane];
         while let Some(from) = queue.pop() {
-            let row = (self.scroll[from].1 + half) / LINE_HEIGHT;
+            let row = self.y_to_row(from, self.scroll[from].1 + half);
             for (a, b, segments) in &self.links {
                 let (to, from_left) = if *a == from { (*b, true) } else if *b == from { (*a, false) } else { continue };
                 if done[to] {
                     continue;
                 }
                 let mapped = map_row(segments, from_left, row);
-                let y = (mapped * LINE_HEIGHT - half).clamp(0., self.max_scroll_y(to));
+                let y = (self.row_to_y(to, mapped) - half).clamp(0., self.max_scroll_y(to));
                 self.scroll[to] = (x.min(self.max_scroll_x(to)), y);
                 done[to] = true;
                 queue.push(to);
@@ -370,7 +535,7 @@ impl<T: Clone + Default> TextPanes<T> {
             return;
         }
         for (pane, row) in targets {
-            self.scroll[pane].1 = (row as f32 * LINE_HEIGHT - height / 3.).clamp(0., self.max_scroll_y(pane));
+            self.scroll[pane].1 = (self.row_y(pane, row) - height / 3.).clamp(0., self.max_scroll_y(pane));
         }
     }
 
@@ -383,6 +548,11 @@ impl<T: Clone + Default> TextPanes<T> {
 
     /// Call at the start of the host's render.
     pub fn before_render(&mut self) {
+        self.relayout();
+        for pane in 0..self.scroll.len() {
+            let (x, y) = self.scroll[pane];
+            self.scroll[pane] = (x.min(self.max_scroll_x(pane)), y.min(self.max_scroll_y(pane)));
+        }
         if self.view_height.get() > 0. {
             if let Some(targets) = self.pending.take() {
                 self.show_rows(targets);
@@ -458,7 +628,7 @@ impl<T: Clone + Default> TextPanes<T> {
 
     /// The error stripe spans the whole pane content plus half a view.
     fn stripe_total(&self, pane: usize, height: f32) -> f32 {
-        (self.rows[pane].len() as f32 * LINE_HEIGHT + self.view_height.get() / 2.).max(height).max(1.)
+        (self.content_height(pane) + self.view_height.get() / 2.).max(height).max(1.)
     }
 
     fn stripe_seek(&mut self, pane: usize, y: Pixels) {
@@ -475,16 +645,6 @@ impl<T: Clone + Default> TextPanes<T> {
 
     // Hit testing and shaping.
 
-    /// The x of a byte offset within its line's text.
-    pub fn x_for(&self, pane: usize, offset: usize, window: &Window, cx: &App) -> f32 {
-        let buffer = &self.buffers[pane];
-        let line = buffer.line_of(offset);
-        let text = buffer.line(line);
-        let (display, _) = expand_tabs(text, &[]);
-        let at = display_offset(text, offset - buffer.line_range(line).start);
-        f32::from(shape(&display, window, cx).x_for_index(at))
-    }
-
     /// Where a point lands: the pane, and a buffer offset (or a fold).
     fn hit(&self, position: gpui_kit::Point<Pixels>, window: &Window, cx: &App) -> Option<(usize, Result<usize, usize>)> {
         let bounds = self.bounds.borrow().clone();
@@ -493,7 +653,8 @@ impl<T: Clone + Default> TextPanes<T> {
         let (scroll_x, scroll_y) = self.scroll[pane];
         let rows = &self.rows[pane];
         let y = f32::from(position.y - b.origin.y) + scroll_y;
-        let row = ((y / LINE_HEIGHT).floor().max(0.) as usize).min(rows.len().checked_sub(1)?);
+        rows.len().checked_sub(1)?;
+        let row = self.row_at(pane, y.max(0.));
         let line = match rows[row] {
             RowTarget::Fold { id, .. } => return Some((pane, Err(id))),
             RowTarget::Line(line) => line,
@@ -506,10 +667,26 @@ impl<T: Clone + Default> TextPanes<T> {
         };
         let buffer = &self.buffers[pane];
         let text = buffer.line(line);
-        let (display, _) = expand_tabs(text, &[]);
-        let x = f32::from(position.x - b.origin.x) - self.layouts[pane].text_left() + scroll_x;
+        // On a wrapped line, the visual line under the point.
+        let (start, end, indent) = match self.line_row(pane, line) {
+            Some(LineRow::Row(own)) if self.wraps[pane].get(own).is_some_and(|w| w.len() > 1) => {
+                let wraps = self.row_wraps(pane, own);
+                let part = if own == row { (((y - self.row_y(pane, row)) / LINE_HEIGHT).floor().max(0.) as usize).min(wraps.len() - 1) } else { wraps.len() - 1 };
+                let indent = if part > 0 { wrap_indent(text, self.wrap_cols[pane]) as f32 * self.char_width.get() } else { 0. };
+                (wraps[part], wraps.get(part + 1).copied().unwrap_or(text.len()), indent)
+            }
+            _ => (0, text.len(), 0.),
+        };
+        let piece = &text[start..end];
+        let (display, _) = expand_tabs(piece, &[]);
+        let x = f32::from(position.x - b.origin.x) - self.layouts[pane].text_left() + scroll_x - indent;
         let index = shape(&display, window, cx).closest_index_for_x(px(x.max(0.)));
-        Some((pane, Ok(buffer.line_range(line).start + byte_offset(text, index))))
+        let mut at = byte_offset(piece, index);
+        // The end of a wrapped part is the start of the next one.
+        if at == piece.len() && end < text.len() && at > 0 {
+            at = piece.char_indices().last().map_or(0, |(i, _)| i);
+        }
+        Some((pane, Ok(buffer.line_range(line).start + start + at)))
     }
 
     /// Right click: the caret moves there unless it lands in the selection,
@@ -887,20 +1064,18 @@ impl<T: Clone + Default> TextPanes<T> {
     fn reveal_caret(&mut self, window: &Window, cx: &App) -> Option<usize> {
         let (pane, sel) = self.caret?;
         let line = self.buffers[pane].line_of(sel.head);
-        let row = match self.line_row(pane, line)? {
-            LineRow::Fold(id, _) => return Some(id),
-            LineRow::Row(row) => row,
-        };
+        if let LineRow::Fold(id, _) = self.line_row(pane, line)? {
+            return Some(id);
+        }
+        let (caret_x, top) = self.caret_point(pane, sel.head, window, cx)?;
         let (mut x, mut y) = self.scroll[pane];
         let height = self.view_height.get();
-        let top = row as f32 * LINE_HEIGHT;
         if top < y {
             y = top;
         } else if height > 0. && top + LINE_HEIGHT > y + height {
             y = top + LINE_HEIGHT - height;
         }
         let width = self.text_extent(pane).1 - TEXT_PADDING;
-        let caret_x = self.x_for(pane, sel.head, window, cx);
         if caret_x < x {
             x = (caret_x - 40.).max(0.);
         } else if width > 0. && caret_x > x + width - 20. {
@@ -987,12 +1162,11 @@ impl<T: Clone + Default> TextPanes<T> {
     pub fn bounds_for_range(&self, range: Range<usize>, window: &Window, cx: &App) -> Option<Bounds<Pixels>> {
         let pane = self.editable?;
         let offset = self.buffers[pane].utf16_to_offset(range.start);
-        let line = self.buffers[pane].line_of(offset);
-        let LineRow::Row(row) = self.line_row(pane, line)? else { return None };
+        let (cx_, cy) = self.caret_point(pane, offset, window, cx)?;
         let b = self.bounds.borrow()[pane];
         let (sx, sy) = self.scroll[pane];
-        let x = b.origin.x + px(self.layouts[pane].text_left() + self.x_for(pane, offset, window, cx) - sx);
-        let y = b.origin.y + px(row as f32 * LINE_HEIGHT - sy);
+        let x = b.origin.x + px(self.layouts[pane].text_left() + cx_ - sx);
+        let y = b.origin.y + px(cy - sy);
         Some(Bounds::new(point(x, y), size(px(2.), px(LINE_HEIGHT))))
     }
 
@@ -1080,14 +1254,28 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
         let visible = if height > 0. { height } else { 1600. };
         let rows = self.rows[pane].len();
         let scroll_y = self.scroll[pane].1;
-        let first = ((scroll_y / LINE_HEIGHT).floor() as usize).min(rows);
-        let last = (((scroll_y + visible) / LINE_HEIGHT).ceil() as usize + 1).min(rows);
+        if rows == 0 {
+            return 0..0;
+        }
+        let first = self.row_at(pane, scroll_y);
+        let last = (self.row_at(pane, scroll_y + visible) + 2).min(rows);
         first..last
     }
 
     /// A row's top, relative to its pane.
     pub fn row_top(&self, pane: usize, row: usize) -> f32 {
-        row as f32 * LINE_HEIGHT - self.scroll[pane].1
+        self.row_y(pane, row) - self.scroll[pane].1
+    }
+
+    /// A row's height (taller when wrapped).
+    pub fn row_height(&self, pane: usize, row: usize) -> f32 {
+        (self.row_y(pane, row + 1) - self.row_y(pane, row)).max(LINE_HEIGHT)
+    }
+
+    /// Each row's top before scrolling, and the content height after them,
+    /// for painting connectors between panes.
+    pub fn tops(&self, pane: usize) -> &[f32] {
+        &self.tops[pane]
     }
 
     /// Paints one pane: rows with syntax colors, selection and the caret.
@@ -1106,7 +1294,6 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
         let theme = cx.theme().highlight_theme.clone();
         let selection_color = cx.theme().selection;
         let selection = self.caret.filter(|c| c.0 == pane && !c.1.is_empty()).map(|c| c.1.range());
-        let buffer = &self.buffers[pane];
         let mut children: Vec<AnyElement> = Vec::new();
 
         // Measures the pane; takes text input while it has the caret; lets a
@@ -1117,13 +1304,18 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
             let notify = entity.clone();
             let input = (focused && self.caret.is_some_and(|c| c.0 == pane)).then(|| (self.focus.clone(), entity.clone()));
             let primary = pane == self.primary;
+            let wrapping = self.soft_wrap;
             let selecting = (primary && self.selecting).then(|| entity.clone());
             let dragging = (primary && self.drag.is_some()).then(|| entity.clone());
             children.push(
                 canvas(
                     move |bounds, _, cx| {
-                        bounds_cell.borrow_mut()[pane] = bounds;
+                        let old = std::mem::replace(&mut bounds_cell.borrow_mut()[pane], bounds);
                         let h = f32::from(bounds.size.height);
+                        if wrapping && (old.size.width - bounds.size.width).abs() > px(0.5) {
+                            let notify = notify.clone();
+                            cx.defer(move |cx| notify.update(cx, |_, cx| cx.notify()));
+                        }
                         if primary && (measured.get() - h).abs() > 0.5 {
                             measured.set(h);
                             // Paint again with the rows the new height shows.
@@ -1182,7 +1374,8 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
         let mut edges: Vec<AnyElement> = Vec::new();
         for (ix, look) in range.clone().zip(content.looks) {
             let top = self.row_top(pane, ix);
-            let row = div().absolute().left_0().right_0().top(px(top)).h(px(LINE_HEIGHT));
+            let height = self.row_height(pane, ix);
+            let row = div().absolute().left_0().right_0().top(px(top)).h(px(height));
             match self.rows[pane][ix] {
                 RowTarget::Fold { id, count } => {
                     children.push(
@@ -1228,7 +1421,29 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                             backgrounds.push((a - line_range.start..b - line_range.start, selection_color));
                         }
                     }
-                    let text_el = pane_text(text, &syntax, &backgrounds, scroll_x, self.show_whitespace, palette);
+                    let wraps = self.row_wraps(pane, ix);
+                    let text_el = if wraps.len() > 1 {
+                        // Soft-wrapped: one visual line per part, each with its
+                        // share of the colors.
+                        let clip = |start: usize, end: usize, r: &Range<usize>| r.start.max(start).min(end) - start..r.end.min(end).max(start) - start;
+                        let indent = wrap_indent(text, self.wrap_cols[pane]) as f32 * char_width;
+                        let mut parts = gpui_kit::component::v_flex().flex_1().min_w_0();
+                        for (i, &start) in wraps.iter().enumerate() {
+                            let end = wraps.get(i + 1).copied().unwrap_or(text.len());
+                            let syntax: Vec<_> = syntax.iter().map(|(r, st)| (clip(start, end, r), *st)).filter(|(r, _)| !r.is_empty()).collect();
+                            let backgrounds: Vec<_> = backgrounds.iter().map(|(r, c)| (clip(start, end, r), *c)).filter(|(r, _)| !r.is_empty()).collect();
+                            parts = parts.child(
+                                div()
+                                    .h(px(LINE_HEIGHT))
+                                    .flex()
+                                    .when(i > 0, |el| el.pl(px(indent)))
+                                    .child(pane_text(&text[start..end], &syntax, &backgrounds, 0., self.show_whitespace, palette)),
+                            );
+                        }
+                        parts.into_any_element()
+                    } else {
+                        pane_text(text, &syntax, &backgrounds, scroll_x, self.show_whitespace, palette).into_any_element()
+                    };
                     if self.indent_guides {
                         let text_left = layout.text_left() - scroll_x;
                         let indent = guide_indent(buffer, line);
@@ -1258,7 +1473,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                     let text_el = div().flex_1().min_w_0().h_full().flex().when_some(look.background, |el, bg| el.bg(bg)).child(text_el);
                     for (edge, at_top) in [(look.top, true), (look.bottom, false)] {
                         if let Some(color) = edge {
-                            let y = if at_top { top } else { top + LINE_HEIGHT - 1. };
+                            let y = if at_top { top } else { top + height - 1. };
                             edges.push(div().absolute().left_0().right_0().top(px(y)).h(px(1.)).bg(color).into_any_element());
                         }
                     }
@@ -1295,7 +1510,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
 
         // The horizontal scrollbar under the text, when lines are wider.
         let (text_w, view_w) = self.text_extent(pane);
-        if view_w > 0. && text_w > view_w + 1. {
+        if !self.soft_wrap && view_w > 0. && text_w > view_w + 1. {
             let thumb = (view_w * view_w / text_w).max(30.);
             let at = scroll_x / (text_w - view_w) * (view_w - thumb);
             let track_left = if layout.mirrored { 0. } else { layout.gutter_width() };
@@ -1330,14 +1545,12 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
         }
 
         if let Some((_, sel)) = self.caret.filter(|c| c.0 == pane && focused) {
-            let line = buffer.line_of(sel.head);
-            if let Some(LineRow::Row(row)) = self.line_row(pane, line) {
-                let x = layout.text_left() + self.x_for(pane, sel.head, window, cx) - scroll_x;
+            if let Some((caret_x, caret_y)) = self.caret_point(pane, sel.head, window, cx) {
+                let x = layout.text_left() + caret_x - scroll_x;
                 let left_edge = layout.text_left() - TEXT_PADDING;
                 if x >= left_edge {
-                    children.push(
-                        div().absolute().top(px(self.row_top(pane, row))).left(px(x)).w(px(2.)).h(px(LINE_HEIGHT)).bg(palette.text).into_any_element(),
-                    );
+                    let y = caret_y - self.scroll[pane].1;
+                    children.push(div().absolute().top(px(y)).left(px(x)).w(px(2.)).h(px(LINE_HEIGHT)).bg(palette.text).into_any_element());
                 }
             }
         }
@@ -1385,7 +1598,9 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
     /// Error stripe: each mark's place in the whole pane, the visible part
     /// as a thumb; click or drag to scroll there.
     pub fn render_stripe<V: PaneHost<Extra = T>>(&self, pane: usize, marks: Vec<(Range<usize>, Hsla)>, thumb: Hsla, cx: &mut Context<V>) -> AnyElement {
-        let content = self.rows[pane].len() as f32 * LINE_HEIGHT;
+        let content = self.content_height(pane);
+        let marks: Vec<(f32, f32, Hsla)> =
+            marks.into_iter().map(|(rows, c)| (self.row_y(pane, rows.start), self.row_y(pane, rows.end) - self.row_y(pane, rows.start), c)).collect();
         let view = self.view_height.get();
         let scroll = self.scroll[pane].1;
         let cell = self.stripe_bounds.clone();
@@ -1421,9 +1636,9 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                         let scale = h / total;
                         let x = bounds.origin.x + px(2.);
                         let w = bounds.size.width - px(4.);
-                        for (rows, color) in &marks {
-                            let top = bounds.origin.y + px(rows.start as f32 * LINE_HEIGHT * scale);
-                            let height = px((rows.len() as f32 * LINE_HEIGHT * scale).max(2.));
+                        for (y, h, color) in &marks {
+                            let top = bounds.origin.y + px(y * scale);
+                            let height = px((h * scale).max(2.));
                             window.paint_quad(fill(Bounds::new(point(x, top), size(w, height)), *color));
                         }
                         if view > 0. && view < total {
@@ -1512,16 +1727,21 @@ macro_rules! impl_pane_input {
     };
 }
 
-impl<T> TextPanes<T> {
+impl<T: Clone + Default> TextPanes<T> {
     /// Takes the gear menu's view settings (line numbers, whitespace,
     /// indent guides).
     pub fn apply_settings(&mut self, cx: &App) {
         let settings = &crate::settings::Settings::get(cx).diff;
         self.show_whitespace = settings.show_whitespaces;
         self.indent_guides = settings.show_indent_guides;
+        if self.soft_wrap != settings.soft_wrap {
+            self.soft_wrap = settings.soft_wrap;
+            self.layout_dirty = true;
+        }
         for layout in &mut self.layouts {
             layout.hide_numbers = !settings.show_line_numbers;
         }
+        self.relayout();
     }
 }
 
@@ -1575,7 +1795,8 @@ pub fn gear_menu(
         .separator()
         .item(toggle("Show Line Numbers", settings.show_line_numbers, |s, v| s.show_line_numbers = v))
         .item(toggle("Show Whitespaces", settings.show_whitespaces, |s, v| s.show_whitespaces = v))
-        .item(toggle("Show Indent Guides", settings.show_indent_guides, |s, v| s.show_indent_guides = v));
+        .item(toggle("Show Indent Guides", settings.show_indent_guides, |s, v| s.show_indent_guides = v))
+        .item(toggle("Soft-Wrap", settings.soft_wrap, |s, v| s.soft_wrap = v));
     if align {
         menu = menu.separator().item(toggle("Align Changes", settings.align_changes, |s, v| s.align_changes = v));
     }
@@ -1646,6 +1867,39 @@ fn guide_indent(buffer: &Buffer, line: usize) -> usize {
     let up = (line.saturating_sub(100)..line).rev().find_map(columns);
     let down = (line + 1..(line + 100).min(buffer.line_count())).find_map(columns);
     up.unwrap_or(0).min(down.unwrap_or(0))
+}
+
+/// Where soft wrap breaks a line `cols` columns wide: byte offsets of each
+/// visual line's start (the first is 0). Breaks after a space when the
+/// visual line has one, as IntelliJ does, else mid-word.
+fn wrap_starts(text: &str, cols: usize) -> Vec<usize> {
+    let mut starts = vec![0];
+    let (mut col, mut space, mut limit) = (0, None, cols);
+    for (i, c) in text.char_indices() {
+        let width = if c == '\t' { TAB_WIDTH } else { 1 };
+        if col + width > limit && col > 0 {
+            // The wrapped parts keep the line's indent.
+            limit = cols - wrap_indent(text, cols);
+            let start = *starts.last().unwrap_or(&0);
+            let at = space.filter(|s| *s > start).unwrap_or(i);
+            starts.push(at);
+            col = text[at..i].chars().map(|c| if c == '\t' { TAB_WIDTH } else { 1 }).sum();
+            space = None;
+        }
+        col += width;
+        if c == ' ' || c == '\t' {
+            space = Some(i + c.len_utf8());
+        }
+    }
+    starts
+}
+
+/// The columns a wrapped line's later parts are indented by: the line's own
+/// indent (IntelliJ's "Use original line's indent for wrapped parts"), at
+/// most half the width.
+fn wrap_indent(text: &str, cols: usize) -> usize {
+    let indent = text.len() - text.trim_start_matches([' ', '\t']).len();
+    display_offset(text, indent).min(cols / 2)
 }
 
 /// Byte offset in a line to its offset in the tab-expanded display text.
@@ -1740,6 +1994,19 @@ fn pane_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn soft_wrap_breaks_after_spaces_and_keeps_indent() {
+        let text = "    let value = call(alpha, beta, gamma);";
+        let starts = wrap_starts(text, 20);
+        let parts: Vec<&str> = starts.iter().zip(starts.iter().skip(1).chain([&text.len()])).map(|(a, b)| &text[*a..*b]).collect();
+        assert_eq!(parts, ["    let value = ", "call(alpha, ", "beta, gamma);"]);
+        // Later parts fit the width less the indent.
+        assert!(parts[1..].iter().all(|p| p.len() <= 20 - 4));
+        // A word longer than the width breaks mid-word.
+        assert_eq!(wrap_starts(&"x".repeat(25), 10), [0, 10, 20]);
+        assert_eq!(wrap_starts("short", 10), [0]);
+    }
 
     #[test]
     fn tabs_expand_with_ranges() {

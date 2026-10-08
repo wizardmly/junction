@@ -52,7 +52,8 @@ actions!(
         NextChange,
         PreviousChange,
         OpenFind,
-        OpenReplace
+        OpenReplace,
+        CompareWithClipboard
     ]
 );
 
@@ -809,6 +810,17 @@ impl FileEditor {
         cx.notify();
     }
 
+    /// Compare with Clipboard: the clipboard against the file (saved first),
+    /// which stays editable in the diff.
+    fn compare_with_clipboard(&mut self, _: &CompareWithClipboard, window: &mut Window, cx: &mut Context<Self>) {
+        if self.revision.is_some() {
+            return;
+        }
+        self.save(&SaveFile, window, cx);
+        let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+        cx.emit(FileEditorEvent::OpenDiff(DiffSource::Clipboard { path: self.path.clone(), text }));
+    }
+
     fn show_diff(&mut self, _: &ShowFileDiff, _: &mut Window, cx: &mut Context<Self>) {
         let source = match &self.revision {
             Some(rev) => DiffSource::Commit { hash: rev.clone(), path: self.path.clone(), old_path: None },
@@ -848,6 +860,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::show_history))
             .on_action(cx.listener(Self::show_current_revision))
             .on_action(cx.listener(Self::show_diff))
+            .on_action(cx.listener(Self::compare_with_clipboard))
             .child(
                 h_flex()
                     .h(px(crate::ui::common::header_height()))
@@ -896,6 +909,8 @@ impl Render for FileEditor {
                                 .menu("Go to Declaration", Box::new(GotoDeclaration))
                                 .menu("Find Usages", Box::new(FindUsages))
                                 .menu("Select in Project View", Box::new(crate::ui::workspace::SelectInProject))
+                                .separator()
+                                .menu_with_disabled("Compare with Clipboard", read_only, Box::new(CompareWithClipboard))
                                 .separator();
                             let git = NativeMenu::new()
                                 .menu("Show History for Selection", Box::new(ShowSelectionHistory))

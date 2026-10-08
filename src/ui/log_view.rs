@@ -76,6 +76,8 @@ pub struct LogView {
     /// Multi-selection: per file, the revisions its merged change spans.
     combined: Option<HashMap<String, (String, String)>>,
     change_counts: HashMap<SharedString, usize>,
+    /// Expand All / Collapse All of the changed files.
+    changes_expanded: bool,
     last_change_selection: Option<SharedString>,
     last_branch_selection: Option<SharedString>,
     show_branches: bool,
@@ -175,6 +177,7 @@ impl LogView {
             change_kinds: HashMap::new(),
             combined: None,
             change_counts: HashMap::new(),
+            changes_expanded: true,
             last_change_selection: None,
             last_branch_selection: None,
             show_branches: true,
@@ -382,22 +385,40 @@ impl LogView {
             }
             _ => None,
         };
-        let items = match (&combined, &details) {
+        let paths: Vec<String> = match (&combined, &details) {
             (Some((ranges, changes)), _) => {
                 for change in changes {
                     self.change_kinds.insert(change.path.clone(), (change.kind, change.old_path.clone()));
                 }
                 self.combined = Some(ranges.clone());
-                common::file_tree(changes.iter().map(|c| c.path.clone()), "")
+                changes.iter().map(|c| c.path.clone()).collect()
             }
             (None, Some(details)) => {
                 for change in &details.changes {
                     self.change_kinds.insert(change.path.clone(), (change.kind, change.old_path.clone()));
                 }
-                common::file_tree(details.changes.iter().map(|c| c.path.clone()), "")
+                details.changes.iter().map(|c| c.path.clone()).collect()
             }
             (None, None) => Vec::new(),
         };
+        // View Options › Group By: Directory and / or Module, else a flat list.
+        let settings = crate::settings::Settings::get(cx).log.clone();
+        let root = self.model.read(cx).repository().map(|r| (r.root().to_path_buf(), r.name()));
+        let mut cache = HashMap::new();
+        let modules: HashMap<String, String> = match (&root, settings.changes_by_module) {
+            (Some((root, _)), true) => paths.iter().map(|p| (p.clone(), common::module_of(root, p, &mut cache))).collect(),
+            _ => HashMap::new(),
+        };
+        let module_of = |path: &str| modules.get(path).cloned().unwrap_or_default();
+        let root_name = root.map(|(_, name)| name).unwrap_or_default();
+        let items = common::grouped_file_tree(
+            paths,
+            "",
+            self.changes_expanded,
+            settings.changes_by_directory,
+            settings.changes_by_module.then_some((root_name.as_str(), &module_of as &dyn Fn(&str) -> String)),
+            None,
+        );
         self.change_counts.clear();
         common::count_files(&items, &mut self.change_counts);
         self.last_change_selection = None;
@@ -1452,6 +1473,36 @@ impl LogView {
                         }
                         Some(d) => format!("{} {} changed", d.changes.len(), if d.changes.len() == 1 { "file" } else { "files" }),
                         None => "No commit selected".into(),
+                    })
+                    .child(div().flex_1())
+                    .child(tool_button("log-changes-expand", IconName::ChevronsUpDown, "Expand All").on_click(cx.listener(|this, _, _, cx| {
+                        this.changes_expanded = true;
+                        this.rebuild_changes(cx);
+                        cx.notify();
+                    })))
+                    .child(tool_button("log-changes-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(|this, _, _, cx| {
+                        this.changes_expanded = false;
+                        this.rebuild_changes(cx);
+                        cx.notify();
+                    })))
+                    .child({
+                        let settings = Settings::get(cx).log.clone();
+                        let entity = cx.entity();
+                        Button::new("log-changes-options").ghost().xsmall().icon(IconName::Eye).tooltip("View Options").dropdown_menu(move |menu, _, _| {
+                            let toggle = |label: &'static str, on: bool, set: fn(&mut crate::settings::LogSettings, bool)| {
+                                let entity = entity.clone();
+                                PopupMenuItem::new(label).checked(on).on_click(move |_, _, cx| {
+                                    Settings::update(cx, |s| set(&mut s.log, !on));
+                                    entity.update(cx, |this, cx| {
+                                        this.rebuild_changes(cx);
+                                        cx.notify();
+                                    });
+                                })
+                            };
+                            menu.label("Group By")
+                                .item(toggle("Directory", settings.changes_by_directory, |s, v| s.changes_by_directory = v))
+                                .item(toggle("Module", settings.changes_by_module, |s, v| s.changes_by_module = v))
+                        })
                     }),
             )
             .child(
@@ -1499,6 +1550,7 @@ impl LogView {
                                         Icon::new(match &path {
                                             Some(p) if submodules.contains(p.as_str()) => IconName::FolderGit2,
                                             Some(p) => common::file_icon(p),
+                                            None if id.starts_with(common::MODULE_PREFIX) => IconName::Layers,
                                             None => IconName::Folder,
                                         })
                                         .small()
@@ -1508,7 +1560,7 @@ impl LogView {
                                     .when_some(kind.and_then(|(_, old)| old), |el, old| {
                                         el.child(div().text_xs().text_color(palette.text_secondary).child(format!("from {old}")))
                                     })
-                                    .when(id.contains(DIR_PREFIX), |el| {
+                                    .when(id.contains(DIR_PREFIX) || id.starts_with(common::MODULE_PREFIX), |el| {
                                         let n = counts.get(&item.id).copied().unwrap_or(0);
                                         el.child(
                                             div()

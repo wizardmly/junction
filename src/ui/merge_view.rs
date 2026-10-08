@@ -20,7 +20,7 @@ use gpui_kit::{
 };
 
 use crate::git::Repository;
-use crate::git::diff;
+use crate::git::diff::{self, HighlightMode, IgnoreWhitespace};
 use crate::git::merge::{self, Conflict, MergeChunk};
 use crate::model::RepoModel;
 use crate::theme::{ActivePalette as _, Palette};
@@ -151,6 +151,15 @@ pub struct MergeView {
     collapse: bool,
     expanded: std::collections::HashSet<usize>,
     context_lines: usize,
+    /// The three versions as loaded, to re-compare with other options.
+    versions: Option<merge::MergeVersions>,
+    ignore: IgnoreWhitespace,
+    highlight: HighlightMode,
+    /// Gear › Align Changes: each change as tall on all three panes.
+    align: bool,
+    /// The rows each change takes on each pane (with Align Changes, its
+    /// padding too).
+    blocks: Vec<[Range<usize>; 3]>,
     _load: Option<Task<()>>,
 }
 
@@ -171,6 +180,11 @@ impl MergeView {
             collapse: false,
             expanded: Default::default(),
             context_lines: crate::settings::Settings::get(cx).diff.context_lines,
+            versions: None,
+            ignore: IgnoreWhitespace::None,
+            highlight: HighlightMode::Words,
+            align: crate::settings::Settings::get(cx).diff.align_changes,
+            blocks: Vec::new(),
             _load: None,
         };
         this._load = Some(cx.spawn(async move |this, cx| {
@@ -193,29 +207,26 @@ impl MergeView {
     }
 
     fn load(&mut self, v: merge::MergeVersions) {
+        self.versions = Some(v.clone());
         let lines = |text: &str| text.lines().map(str::to_owned).collect::<Vec<_>>();
         let (b, o, t) = (lines(&v.base), lines(&v.ours), lines(&v.theirs));
         fn refs(l: &[String]) -> Vec<&str> {
             l.iter().map(String::as_str).collect()
         }
         let (br, or, tr) = (refs(&b), refs(&o), refs(&t));
-        let chunks = merge::chunks(&br, &or, &tr);
+        // Lines are compared as the whitespace option has them.
+        let keys = |l: &[&str]| l.iter().map(|l| diff::normalize(l, self.ignore)).collect::<Vec<_>>();
+        let (bk, ok, tk) = (keys(&br), keys(&or), keys(&tr));
+        let chunks = merge::chunks(&refs(&bk), &refs(&ok), &refs(&tk));
         let join = |l: &[&str]| l.iter().map(|s| format!("{s}\n")).collect::<String>();
         self.changes = chunks
             .iter()
             .filter_map(|c| match c {
                 MergeChunk::Change { base, ours, theirs, ours_changed, theirs_changed, conflict } => Some({
-                    let (base_o, words_ours) = diff::line_fragments(&br[base.clone()], &or[ours.clone()]);
-                    let (base_t, words_theirs) = diff::line_fragments(&br[base.clone()], &tr[theirs.clone()]);
-                    let words_base = base_o.into_iter().zip(base_t).map(|(mut a, b)| {
-                        a.extend(b);
-                        a.sort_by_key(|r| r.start);
-                        a
-                    }).collect();
                     Change {
-                    words_ours: if *ours_changed { words_ours } else { Vec::new() },
-                    words_theirs: if *theirs_changed { words_theirs } else { Vec::new() },
-                    words_base,
+                    words_ours: Vec::new(),
+                    words_theirs: Vec::new(),
+                    words_base: Vec::new(),
                     base: base.clone(),
                     ours: ours.clone(),
                     theirs: theirs.clone(),
@@ -230,6 +241,7 @@ impl MergeView {
                 MergeChunk::Equal { .. } => None,
             })
             .collect();
+        self.compute_words();
         // The result starts as the base.
         let state = |changed| if changed { SideState::Pending } else { SideState::Unchanged };
         self.panes.extra = self
@@ -274,6 +286,60 @@ impl MergeView {
         }));
     }
 
+    /// The changed words (or characters) of each change, as the highlight
+    /// option asks.
+    fn compute_words(&mut self) {
+        let Some(v) = &self.versions else { return };
+        let inner = self.highlight.inner();
+        let chars = self.highlight == HighlightMode::Characters;
+        let (b, o, t): (Vec<&str>, Vec<&str>, Vec<&str>) = (v.base.lines().collect(), v.ours.lines().collect(), v.theirs.lines().collect());
+        for c in &mut self.changes {
+            if !inner {
+                (c.words_ours, c.words_theirs, c.words_base) = Default::default();
+                continue;
+            }
+            let (base_o, words_ours) = diff::line_fragments(&b[c.base.clone()], &o[c.ours.clone()], chars);
+            let (base_t, words_theirs) = diff::line_fragments(&b[c.base.clone()], &t[c.theirs.clone()], chars);
+            c.words_base = base_o
+                .into_iter()
+                .zip(base_t)
+                .map(|(mut a, b)| {
+                    a.extend(b);
+                    a.sort_by_key(|r| r.start);
+                    a
+                })
+                .collect();
+            c.words_ours = if c.ours_changed { words_ours } else { Vec::new() };
+            c.words_theirs = if c.theirs_changed { words_theirs } else { Vec::new() };
+        }
+    }
+
+    /// Nothing is resolved or edited yet (the result is still the base), so
+    /// the versions can be compared again.
+    fn untouched(&self) -> bool {
+        self.panes.buffers[RESULT].text() == self.base
+            && self.states().iter().all(|s| !matches!(s.ours, SideState::Applied | SideState::Ignored) && !matches!(s.theirs, SideState::Applied | SideState::Ignored))
+    }
+
+    /// The whitespace option re-compares the versions, before any change
+    /// is taken.
+    fn set_ignore(&mut self, ignore: IgnoreWhitespace, cx: &mut Context<Self>) {
+        if ignore == self.ignore || !self.untouched() {
+            return;
+        }
+        self.ignore = ignore;
+        if let Some(v) = self.versions.clone() {
+            self.load(v);
+        }
+        cx.notify();
+    }
+
+    fn set_highlight(&mut self, highlight: HighlightMode, cx: &mut Context<Self>) {
+        self.highlight = highlight;
+        self.compute_words();
+        cx.notify();
+    }
+
     fn states(&self) -> &[ChangeState] {
         &self.panes.extra
     }
@@ -281,16 +347,40 @@ impl MergeView {
     /// After the result or the change states changed: rows, scroll links.
     fn refresh(&mut self) {
         let folds = self.folds();
+        let ranges: Vec<[Range<usize>; 3]> =
+            self.changes.iter().zip(self.states()).map(|(c, s)| [c.ours.clone(), s.result.clone(), c.theirs.clone()]).collect();
+        self.blocks = vec![[0..0, 0..0, 0..0]; ranges.len()];
         for pane in 0..3 {
+            let line_count = self.panes.buffers[pane].line_count();
             let mut rows = Vec::new();
-            let mut line = 0;
-            for (id, lines) in &folds {
-                let lines = &lines[pane];
-                rows.extend((line..lines.start).map(RowTarget::Line));
-                rows.push(RowTarget::Fold { id: *id, count: lines.len() });
-                line = lines.end;
+            let mut first_row = vec![0; line_count + 1];
+            let (mut line, mut fold, mut change) = (0, 0, 0);
+            loop {
+                // A change's block ends before the line after it: pad it to
+                // the tallest side's height when aligning.
+                while let Some(r) = ranges.get(change).filter(|r| r[pane].end <= line) {
+                    let start = if r[pane].is_empty() { rows.len() } else { first_row[r[pane].start] };
+                    if self.align {
+                        let tallest = r.iter().map(|r| r.len()).max().unwrap_or(0);
+                        rows.extend(std::iter::repeat_n(RowTarget::Filler, tallest - r[pane].len()));
+                    }
+                    self.blocks[change][pane] = start..rows.len();
+                    change += 1;
+                }
+                if line >= line_count {
+                    break;
+                }
+                if let Some((id, lines)) = folds.get(fold).filter(|(_, l)| l[pane].start == line) {
+                    first_row[line] = rows.len();
+                    rows.push(RowTarget::Fold { id: *id, count: lines[pane].len() });
+                    line = lines[pane].end.max(line + 1);
+                    fold += 1;
+                    continue;
+                }
+                first_row[line] = rows.len();
+                rows.push(RowTarget::Line(line));
+                line += 1;
             }
-            rows.extend((line..self.panes.buffers[pane].line_count()).map(RowTarget::Line));
             self.panes.set_rows(pane, rows);
         }
         self.panes.links = vec![(OURS, RESULT, self.segments(OURS)), (RESULT, THEIRS, self.segments(THEIRS))];
@@ -329,10 +419,9 @@ impl MergeView {
         out
     }
 
-    /// The rows a line range takes on a pane (changes are never folded).
-    fn rows(&self, pane: usize, lines: Range<usize>) -> Range<usize> {
-        let start = self.panes.row_of(pane, lines.start);
-        start..start + lines.len()
+    /// The rows a change takes on a pane (changes are never folded).
+    fn block(&self, change: usize, pane: usize) -> Range<usize> {
+        self.blocks.get(change).map_or(0..0, |b| b[pane].clone())
     }
 
     /// The blocks pairing a side's lines with the result's, for scrolling
@@ -340,9 +429,8 @@ impl MergeView {
     fn segments(&self, side: usize) -> Vec<Segment> {
         let mut out = Vec::new();
         let (mut s, mut r) = (0, 0);
-        for (change, state) in self.changes.iter().zip(self.states()) {
-            let range = self.rows(side, change.range(side));
-            let result = self.rows(RESULT, state.result.clone());
+        for ix in 0..self.changes.len() {
+            let (range, result) = (self.block(ix, side), self.block(ix, RESULT));
             out.push(Segment { left: s..range.start, right: r..result.start, change: None, kind: crate::git::diff::RowKind::Equal });
             out.push(Segment { left: range.clone(), right: result.clone(), change: Some(0), kind: crate::git::diff::RowKind::Modified });
             s = range.end;
@@ -598,6 +686,11 @@ impl MergeView {
             for (k, row) in (first..first + range.len()).enumerate() {
                 if rows.contains(&row) {
                     let look = &mut looks[row - rows.start];
+                    // Do not highlight: only the gutter marker.
+                    if self.highlight == HighlightMode::None {
+                        look.marker = Some(colors.border);
+                        continue;
+                    }
                     look.background = Some(colors.fill);
                     look.gutter = Some(colors.fill);
                     look.top = (k == 0).then_some(colors.border);
@@ -624,8 +717,9 @@ impl MergeView {
                 _ if state.side(ours) == SideState::Pending => (change.range(pane), change.kind(ours)),
                 _ => continue,
             };
-            let y = self.panes.row_top(pane, self.panes.row_of(pane, range.start));
-            if y < -LINE_HEIGHT * (range.len() as f32 + 1.) || y > height {
+            let block = self.block(ix, pane);
+            let y = self.panes.row_top(pane, block.start);
+            if self.panes.row_top(pane, block.end) < -LINE_HEIGHT || y > height {
                 continue;
             }
             let Some(colors) = kind.colors(palette) else { continue };
@@ -686,21 +780,23 @@ impl MergeView {
             .changes
             .iter()
             .zip(self.states())
-            .filter(|(_, s)| s.side(ours) == SideState::Pending)
-            .filter_map(|(c, s)| {
+            .enumerate()
+            .filter(|(_, (_, s))| s.side(ours) == SideState::Pending)
+            .filter_map(|(ix, (c, _))| {
                 let colors = c.kind(ours).colors(palette)?;
-                let (side, result) = (self.rows(if ours { OURS } else { THEIRS }, c.range(if ours { OURS } else { THEIRS })), self.rows(RESULT, s.result.clone()));
+                let (side, result) = (self.block(ix, if ours { OURS } else { THEIRS }), self.block(ix, RESULT));
                 let (left, right) = if ours { (side, result) } else { (result, side) };
                 Some(Connector { left, right, colors })
             })
             .collect();
         let (l, r) = if ours { (OURS, RESULT) } else { (RESULT, THEIRS) };
         let scroll = (self.panes.scroll[l].1, self.panes.scroll[r].1);
+        let tops = (self.panes.tops(l).to_vec(), self.panes.tops(r).to_vec());
         self.panes.divider_area(if ours { OURS } else { RESULT }, cx).child(
             canvas(
                 |_, _, _| {},
                 move |bounds, _, window, _| {
-                    window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| paint_divider(bounds, scroll, &connectors, &[], gpui_kit::transparent_black(), window))
+                    window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| paint_divider(bounds, scroll, (&tops.0, &tops.1), &connectors, &[], gpui_kit::transparent_black(), window))
                 },
             )
             .size_full(),
@@ -712,8 +808,9 @@ impl MergeView {
         self.changes
             .iter()
             .zip(self.states())
-            .filter(|(_, s)| s.side(ours) == SideState::Pending)
-            .filter_map(|(c, _)| Some((self.rows(pane, c.range(pane)), c.kind(ours).colors(palette)?.border)))
+            .enumerate()
+            .filter(|(_, (_, s))| s.side(ours) == SideState::Pending)
+            .filter_map(|(ix, (c, _))| Some((self.block(ix, pane), c.kind(ours).colors(palette)?.border)))
             .collect()
     }
 }
@@ -763,13 +860,33 @@ impl PaneHost for MergeView {
 
 crate::impl_pane_input!(MergeView);
 
+fn ignore_label(value: IgnoreWhitespace) -> &'static str {
+    match value {
+        IgnoreWhitespace::None => "Do not ignore",
+        IgnoreWhitespace::Trim => "Trim whitespaces",
+        IgnoreWhitespace::All => "Ignore whitespaces",
+        IgnoreWhitespace::AllAndEmptyLines => "Ignore whitespaces and empty lines",
+    }
+}
+
+fn highlight_label(value: HighlightMode) -> &'static str {
+    match value {
+        HighlightMode::Words => "Highlight words",
+        HighlightMode::Lines => "Highlight lines",
+        HighlightMode::Split => "Highlight split changes",
+        HighlightMode::Characters => "Highlight characters",
+        HighlightMode::None => "Do not highlight",
+    }
+}
+
 impl Render for MergeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.panes.before_render();
         self.panes.apply_settings(cx);
-        let context = crate::settings::Settings::get(cx).diff.context_lines;
-        if context != self.context_lines {
-            self.context_lines = context;
+        let settings = crate::settings::Settings::get(cx).diff.clone();
+        if settings.context_lines != self.context_lines || settings.align_changes != self.align {
+            self.context_lines = settings.context_lines;
+            self.align = settings.align_changes;
             self.refresh();
         }
         let palette = cx.palette().clone();
@@ -827,6 +944,41 @@ impl Render for MergeView {
                     .on_click(cx.listener(|this, _, _, cx| this.resolve_all_simple(cx))),
             )
             .child(separator())
+            .child({
+                use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+                let entity = cx.entity();
+                let (ignore, untouched) = (self.ignore, self.untouched());
+                gpui_kit::component::button::Button::new("merge-whitespace").ghost().xsmall().label(ignore_label(ignore)).dropdown_menu(move |mut menu, _, _| {
+                    for value in [IgnoreWhitespace::None, IgnoreWhitespace::Trim, IgnoreWhitespace::All, IgnoreWhitespace::AllAndEmptyLines] {
+                        let entity = entity.clone();
+                        // Comparing again would lose what was resolved.
+                        menu = menu.item(
+                            PopupMenuItem::new(ignore_label(value))
+                                .checked(ignore == value)
+                                .disabled(!untouched && ignore != value)
+                                .on_click(move |_, _, cx| entity.update(cx, |this, cx| this.set_ignore(value, cx))),
+                        );
+                    }
+                    menu
+                })
+            })
+            .child({
+                use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+                let entity = cx.entity();
+                let highlight = self.highlight;
+                gpui_kit::component::button::Button::new("merge-highlight").ghost().xsmall().label(highlight_label(highlight)).dropdown_menu(move |mut menu, _, _| {
+                    for value in [HighlightMode::Words, HighlightMode::Lines, HighlightMode::Characters, HighlightMode::None] {
+                        let entity = entity.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(highlight_label(value))
+                                .checked(highlight == value)
+                                .on_click(move |_, _, cx| entity.update(cx, |this, cx| this.set_highlight(value, cx))),
+                        );
+                    }
+                    menu
+                })
+            })
+            .child(separator())
             .child(tool_button("merge-collapse", IconName::FoldVertical, "Collapse Unchanged Fragments").selected(self.collapse).on_click(cx.listener(
                 |this, _, _, cx| {
                     this.collapse = !this.collapse;
@@ -868,7 +1020,7 @@ impl Render for MergeView {
                     .xsmall()
                     .icon(IconName::Settings)
                     .tooltip("Settings")
-                    .dropdown_menu(|menu, window, cx| crate::ui::text_panes::gear_menu(menu, false, window, cx))
+                    .dropdown_menu(|menu, window, cx| crate::ui::text_panes::gear_menu(menu, true, window, cx))
             })
             .child(
                 tool_button("merge-help", IconName::CircleQuestionMark, "Help")

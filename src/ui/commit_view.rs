@@ -49,7 +49,7 @@ pub enum CommitEvent {
 
 impl EventEmitter<CommitEvent> for CommitView {}
 
-gpui_kit::actions!(commit_view, [ShowMessageHistory, ShowDiff, RollbackFiles, AddToVcs, DeleteFiles, EditSource, MoveToChangelist]);
+gpui_kit::actions!(commit_view, [ShowMessageHistory, CommitChanges, CommitAndPush, ShowDiff, RollbackFiles, AddToVcs, DeleteFiles, EditSource, MoveToChangelist]);
 
 const CONTEXT: &str = "CommitView";
 /// The changes tree, where IntelliJ's file shortcuts apply (not in the message editor).
@@ -60,6 +60,13 @@ pub fn init(cx: &mut gpui_kit::App) {
     // Commit Message History: Ctrl+M on every platform, as in IntelliJ.
     cx.bind_keys([
         KeyBinding::new("ctrl-m", ShowMessageHistory, Some(CONTEXT)),
+        // Commit (Ctrl+Enter) and Commit and Push… (Ctrl+Alt+K) from anywhere
+        // in the Commit tool window, the message editor included.
+        KeyBinding::new("secondary-enter", CommitChanges, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-k", CommitAndPush, Some(CONTEXT)),
+        // The message editor's own Ctrl+Enter would otherwise win.
+        KeyBinding::new("secondary-enter", CommitChanges, Some("CommitView > Input")),
+        KeyBinding::new("secondary-alt-k", CommitAndPush, Some("CommitView > Input")),
         KeyBinding::new("secondary-d", ShowDiff, Some(TREE_CONTEXT)),
         KeyBinding::new("secondary-alt-z", RollbackFiles, Some(TREE_CONTEXT)),
         KeyBinding::new("secondary-alt-a", AddToVcs, Some(TREE_CONTEXT)),
@@ -655,6 +662,13 @@ impl CommitView {
         cx.notify();
     }
 
+    /// A message, and something to commit (or Amend).
+    fn can_commit(&self, cx: &gpui_kit::App) -> bool {
+        let staged_count = self.groups.iter().find(|g| g.scope == STAGED_SCOPE).map_or(0, |g| g.files.len());
+        let has_changes = if self.staging { staged_count > 0 } else { !self.included.is_empty() };
+        !self.message.read(cx).value().trim().is_empty() && (has_changes || self.amend)
+    }
+
     fn on_message_history(&mut self, _: &ShowMessageHistory, window: &mut Window, cx: &mut Context<Self>) {
         let history = crate::settings::message_history();
         let entity = cx.entity();
@@ -863,9 +877,7 @@ impl Render for CommitView {
         let included = self.included.clone();
         let counts = self.counts.clone();
         let entity = cx.entity();
-        let staged_count = self.groups.iter().find(|g| g.scope == STAGED_SCOPE).map_or(0, |g| g.files.len());
-        let has_changes = if staging { staged_count > 0 } else { !self.included.is_empty() };
-        let can_commit = !self.message.read(cx).value().trim().is_empty() && (has_changes || self.amend);
+        let can_commit = self.can_commit(cx);
         let busy = self.model.read(cx).busy().is_some();
         let history_entity = cx.entity();
         // First-line length against Settings › Commit › subject limit.
@@ -896,6 +908,16 @@ impl Render for CommitView {
         v_flex()
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::on_message_history))
+            .on_action(cx.listener(|this, _: &CommitChanges, window, cx| {
+                if this.can_commit(cx) && this.model.read(cx).busy().is_none() {
+                    this.commit(false, window, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CommitAndPush, window, cx| {
+                if this.can_commit(cx) && this.model.read(cx).busy().is_none() {
+                    this.commit(true, window, cx)
+                }
+            }))
             .size_full()
             .child(
                 h_flex()
@@ -1195,6 +1217,7 @@ impl Render for CommitView {
                                     .small()
                                     .label(if self.amend { "Amend Commit" } else { "Commit" })
                                     .disabled(!can_commit || busy)
+                                    .tooltip(if cfg!(target_os = "macos") { "Commit (⌘⏎)" } else { "Commit (Ctrl+Enter)" })
                                     .on_click(cx.listener(|this, _, window, cx| this.commit(false, window, cx))),
                             )
                             .child(
@@ -1203,6 +1226,7 @@ impl Render for CommitView {
                                     .small()
                                     .label(if self.amend { "Amend Commit and Push…" } else { "Commit and Push…" })
                                     .disabled(!can_commit || busy)
+                                    .tooltip(if cfg!(target_os = "macos") { "Commit and Push (⌥⌘K)" } else { "Commit and Push (Ctrl+Alt+K)" })
                                     .on_click(cx.listener(|this, _, window, cx| this.commit(true, window, cx))),
                             )
                             .child(div().flex_1())

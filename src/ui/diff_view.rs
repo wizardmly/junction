@@ -51,6 +51,9 @@ pub enum DiffSource {
     Files { path: String, other: std::path::PathBuf },
     /// Two texts in memory (the merge tool's Compare … with Base), read-only.
     Texts { path: String, old: String, new: String, old_title: String, new_title: String },
+    /// Compare with Clipboard: the clipboard on the left, the file (editable)
+    /// on the right.
+    Clipboard { path: String, text: String },
 }
 
 impl DiffSource {
@@ -62,7 +65,8 @@ impl DiffSource {
             | DiffSource::Unstaged { path }
             | DiffSource::Between { path, .. }
             | DiffSource::Files { path, .. }
-            | DiffSource::Texts { path, .. } => path,
+            | DiffSource::Texts { path, .. }
+            | DiffSource::Clipboard { path, .. } => path,
         }
     }
 
@@ -75,6 +79,7 @@ impl DiffSource {
             DiffSource::Between { old, new, path, old_path } => Revisions::Between { old, new, path, old_path },
             DiffSource::Files { path, other } => Revisions::Files { path, other },
             DiffSource::Texts { path, old, new, old_title, new_title } => Revisions::Texts { path, old, new, old_title, new_title },
+            DiffSource::Clipboard { path, text } => Revisions::Clipboard { path, text },
         }
     }
 }
@@ -226,6 +231,7 @@ impl DiffView {
             }
             DiffSource::Between { .. } => format!("{name} (Compare)"),
             DiffSource::Texts { old_title, new_title, .. } => format!("{name} ({old_title} vs {new_title})"),
+            DiffSource::Clipboard { .. } => format!("Clipboard vs {name}"),
             _ => format!("{name} (Changes)"),
         })
     }
@@ -277,7 +283,7 @@ impl DiffView {
                         let language = crate::ui::file_editor::language_for(this.source.as_ref().map(|s| s.path()).unwrap_or_default());
                         this.panes.set_texts(vec![loaded.old.clone(), loaded.new.clone()], language);
                         this.loaded = Some(loaded);
-                        this.panes.editable = this.editable().then_some(1);
+                        this.panes.editable = this.edit_pane();
                         this.set_diff(file_diff);
                         let last = this.diff.changes.saturating_sub(1);
                         let first = if std::mem::take(&mut this.arrive_at_end) { last } else { 0 };
@@ -310,6 +316,8 @@ impl DiffView {
                 vec![(HunkAction::Stage, IconName::Plus, "Stage"), (HunkAction::Revert, IconName::Undo2, "Rollback")]
             }
             Some(DiffSource::Staged { .. }) => vec![(HunkAction::Unstage, IconName::Minus, "Unstage")],
+            // Two files (or the clipboard and a file): copy a change across.
+            Some(DiffSource::Files { .. } | DiffSource::Clipboard { .. }) if self.editable() => vec![(HunkAction::Revert, IconName::ChevronsRight, "Replace")],
             _ => Vec::new(),
         }
     }
@@ -523,7 +531,7 @@ impl DiffView {
             _ => return None,
         };
         if self.mode == ViewerMode::Unified {
-            let top = (self.panes.scroll[1].1 / LINE_HEIGHT) as usize;
+            let top = self.panes.row_at(1, self.panes.scroll[1].1);
             let row = self.current.and_then(|c| self.change_row(c)).unwrap_or(top);
             let line = self.rows[row.min(self.rows.len().saturating_sub(1))..]
                 .iter()
@@ -536,7 +544,7 @@ impl DiffView {
         }
         let row = match self.current.and_then(|c| self.two.change_segment(c)) {
             Some(seg) => seg.right.start,
-            None => (self.panes.scroll[1].1 / LINE_HEIGHT) as usize,
+            None => self.panes.row_at(1, self.panes.scroll[1].1),
         };
         let line = self.two.right[row.min(self.two.right.len().saturating_sub(1))..]
             .iter()
@@ -897,9 +905,12 @@ impl DiffView {
         let two = self.two.clone();
         let actions_width = if actions.is_empty() { 0. } else { BUTTON_WIDTH * actions.len() as f32 + 2. };
         let check_width = if partial { BUTTON_WIDTH + 2. } else { 0. };
+        // With the left pane editable the arrows are `<<` on the right gutter.
+        let left_edits = self.edit_pane() == Some(0);
+        let (left_buttons, right_buttons) = if left_edits { (0., actions_width) } else { (actions_width, check_width) };
         self.panes.layouts = vec![
-            PaneLayout { mirrored: true, buttons: actions_width, ..Default::default() },
-            PaneLayout { mirrored: false, buttons: check_width, ..Default::default() },
+            PaneLayout { mirrored: true, buttons: left_buttons, ..Default::default() },
+            PaneLayout { mirrored: false, buttons: right_buttons, ..Default::default() },
         ];
         self.panes.apply_settings(cx);
         self.panes.primary = 0;
@@ -919,7 +930,7 @@ impl DiffView {
                 let Some(change) = seg.change else { continue };
                 let range = if pane == 0 { seg.left.clone() } else { seg.right.clone() };
                 let y = self.panes.row_top(pane, range.start);
-                if y + range.len() as f32 * LINE_HEIGHT < -LINE_HEIGHT || y > visible + LINE_HEIGHT {
+                if self.panes.row_top(pane, range.end) < -LINE_HEIGHT || y > visible + LINE_HEIGHT {
                     continue;
                 }
                 let rows = if pane == 0 { &two.left[range.clone()] } else { &two.right[range.clone()] };
@@ -937,12 +948,14 @@ impl DiffView {
                         .items_center()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 };
-                if pane == 0 && !actions.is_empty() {
-                    let mut el = column().right(px(layout.buttons_offset())).w(px(actions_width));
+                if pane == left_edits as usize && !actions.is_empty() {
+                    let mut el = if left_edits { column().left(px(layout.buttons_offset())) } else { column().right(px(layout.buttons_offset())) }.w(px(actions_width));
                     for (action, icon, tooltip) in actions.iter().copied() {
                         let (icon, tooltip) = match action {
+                            HunkAction::Revert if append && left_edits => (IconName::ArrowLeftToLine, "Append"),
                             HunkAction::Revert if append => (IconName::ArrowRightToLine, "Append"),
-                            HunkAction::Revert => (IconName::ChevronsRight, "Revert"),
+                            HunkAction::Revert if left_edits => (IconName::ChevronsLeft, "Replace"),
+                            HunkAction::Revert => (IconName::ChevronsRight, if tooltip == "Replace" { "Replace" } else { "Revert" }),
                             _ => (icon, tooltip),
                         };
                         el = el.child(
@@ -982,6 +995,7 @@ impl DiffView {
             })
             .collect();
         let scroll = (self.panes.scroll[0].1, self.panes.scroll[1].1);
+        let tops = (self.panes.tops(0).to_vec(), self.panes.tops(1).to_vec());
         let folds = fold_links(&two);
         let fold_color = palette.border;
         let divider = self.panes.divider_area(0, cx).child(
@@ -989,7 +1003,7 @@ impl DiffView {
                 |_, _, _| {},
                 move |bounds, _, window, _| {
                     window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
-                        paint_divider(bounds, scroll, &connectors, &folds, fold_color, window)
+                        paint_divider(bounds, scroll, (&tops.0, &tops.1), &connectors, &folds, fold_color, window)
                     })
                 },
             )
@@ -1091,7 +1105,8 @@ impl DiffView {
     /// old and new line numbers, and the block's buttons in the gutter.
     fn render_unified(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let palette = cx.palette().clone();
-        let actions = self.hunk_actions();
+        // The unified viewer edits only the right side.
+        let actions = if self.edit_pane() == Some(0) { Vec::new() } else { self.hunk_actions() };
         let partial = self.partial_path(cx).is_some();
         let included = self.included(cx);
         let buttons = actions.len() + partial as usize;
@@ -1174,6 +1189,7 @@ impl DiffView {
         let included = self.included(cx);
         let partial = self.partial_path(cx).is_some() && !included.is_empty();
         let all = included.iter().all(|i| *i);
+        let edit_pane = self.edit_pane();
         h_flex()
             .h(px(26.))
             .flex_shrink_0()
@@ -1191,7 +1207,8 @@ impl DiffView {
                     .min_w_0()
                     .pl(px(6.))
                     .gap_1p5()
-                    .child(common::icon(IconName::Lock).text_color(palette.text_secondary))
+                    // A lock marks a read-only side.
+                    .when(edit_pane != Some(0), |el| el.child(common::icon(IconName::Lock).text_color(palette.text_secondary)))
                     .child(div().flex_shrink_0().child(old_title))
                     .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(palette.text_secondary).child(path)),
             )
@@ -1214,6 +1231,7 @@ impl DiffView {
                                 .on_change(cx.listener(|this, value: &bool, _, cx| this.set_all_included(*value, cx))),
                         )
                     })
+                    .when(edit_pane != Some(1), |el| el.child(common::icon(IconName::Lock).text_color(palette.text_secondary)))
                     .child(new_title),
             )
             .child(div().w(px(STRIPE_WIDTH)).flex_shrink_0())

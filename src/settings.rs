@@ -88,6 +88,9 @@ pub struct LogSettings {
     pub highlight_not_merged: bool,
     /// `--date-order` instead of IntelliSort's topological order.
     pub sort_by_date: bool,
+    /// The changed files of the selected commit: Group By › Directory / Module.
+    pub changes_by_directory: bool,
+    pub changes_by_module: bool,
     /// Author, date and hash column widths (dragged at their left edge).
     pub columns: [u32; 3],
 }
@@ -111,6 +114,8 @@ impl Default for LogSettings {
             highlight_not_merged: false,
             columns: LOG_COLUMNS,
             sort_by_date: false,
+            changes_by_directory: true,
+            changes_by_module: false,
         }
     }
 }
@@ -170,19 +175,22 @@ pub struct DiffSettings {
     pub show_indent_guides: bool,
     /// Side-by-side: pad change blocks so both sides stay level.
     pub align_changes: bool,
+    /// Long lines wrap at the pane's edge instead of scrolling sideways.
+    pub soft_wrap: bool,
     /// Lines kept around changes when unchanged fragments are collapsed.
     pub context_lines: usize,
 }
 
 impl Default for DiffSettings {
     fn default() -> Self {
-        Self { show_line_numbers: true, show_whitespaces: false, show_indent_guides: true, align_changes: false, context_lines: 4 }
+        Self { show_line_numbers: true, show_whitespaces: false, show_indent_guides: true, align_changes: false, soft_wrap: false, context_lines: 4 }
     }
 }
 
 impl DiffSettings {
-    fn fields(&mut self) -> [(&'static str, &mut bool); 4] {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 5] {
         [
+            ("diff_soft_wrap", &mut self.soft_wrap),
             ("diff_show_line_numbers", &mut self.show_line_numbers),
             ("diff_show_whitespaces", &mut self.show_whitespaces),
             ("diff_show_indent_guides", &mut self.show_indent_guides),
@@ -192,8 +200,10 @@ impl DiffSettings {
 }
 
 impl LogSettings {
-    fn fields(&mut self) -> [(&'static str, &mut bool); 11] {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 13] {
         [
+            ("log_changes_by_directory", &mut self.changes_by_directory),
+            ("log_changes_by_module", &mut self.changes_by_module),
             ("log_show_author", &mut self.show_author),
             ("log_show_date", &mut self.show_date),
             ("log_show_hash", &mut self.show_hash),

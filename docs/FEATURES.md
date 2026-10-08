@@ -7,16 +7,16 @@
 
 | 功能 | 细节 | 阶段 | 状态 |
 |---|---|---|---|
-| 玻璃窗口 | macOS vibrancy / Windows Mica-Acrylic / Linux 半透明（KDE 模糊） | M1 | 🟡 |
-| 自定义标题栏 | 主菜单（汉堡按钮）、项目名组件、VCS 分支组件、右侧工具按钮 | M1 | 🟡 |
+| 玻璃窗口 | macOS vibrancy / Windows Mica-Acrylic / Linux 半透明（KDE 模糊） | M1 | ✅（Windows 11 用 Mica，macOS 与 Linux 用模糊背景，配色半透明；Linux 是否模糊取决于桌面合成器，如 KDE） |
+| 自定义标题栏 | 主菜单（汉堡按钮）、项目名组件、VCS 分支组件、右侧工具按钮 | M1 | ✅（汉堡主菜单带 File / View / Navigate / Git / Window / Help 子菜单，含 Tool Windows、Appearance、Recent Projects、Keyboard Shortcuts、About；右侧 Update / Commit / Push / History 加 Search Everywhere 与 Settings 按钮，提示里带各平台快捷键） |
 | 项目组件 | 最近项目列表、打开、克隆、新建仓库 | M1/M4 | ✅（欢迎页 + 项目组件下拉：最近项目、Open、Get from VCS、Create Git Repository） |
-| VCS 分支组件 | 当前分支名、进行中的操作（Rebasing/Merging/Cherry-picking）、点击弹出分支弹窗 | M1 | 🟡 |
-| 左/右/下 工具窗口条 | Commit、Git（Log/Console）、可拖拽、可隐藏、记住尺寸 | M1 | 🟡 |
-| 状态栏 | 分支、行分隔符、后台任务进度、通知 | M1 | 🟡 |
-| VCS 操作弹窗 | `Alt+\``（macOS `Ctrl+V`）快速操作列表 | M3 | ✅（数字键快选未做） |
+| VCS 分支组件 | 当前分支名、进行中的操作（Rebasing/Merging/Cherry-picking）、点击弹出分支弹窗 | M1 | ✅（显示 “Merging master” 等；进行中时分支弹窗顶部有 Continue Rebase / Cherry-Pick / Revert、Skip Commit（rebase）、Abort） |
+| 左/右/下 工具窗口条 | Commit、Git（Log/Console）、可拖拽、可隐藏、记住尺寸 | M1 | ✅（Project、Commit、Pull Requests、Changes、Git、Notifications；按钮可拖到左 / 右 / 下或在右键菜单 Move to，Hide；每侧同时开一个；Hide All（Ctrl+Shift+F12）、Hide Active（Shift+Esc）；布局和三侧尺寸写入设置） |
+| 状态栏 | 分支、行分隔符、后台任务进度、通知 | M1 | ✅（面包屑 项目 › 路径、后台任务转圈、索引状态、行:列（点开 Go to Line）、LF/CRLF、UTF-8、缩进、只读锁、当前分支（点开分支弹窗）；通知进右侧 Notifications 工具窗口，未读时铃铛带点） |
+| VCS 操作弹窗 | `Alt+\``（macOS `Ctrl+V`）快速操作列表 | M3 | ✅（数字键 1–9 快选、上下键、回车，显示各平台快捷键） |
 | 通知气泡 | 操作结果、错误、可点击的动作（View、Undo、Show details） | M2 | ✅（View Commit、Show Details、Update Project、提交后 Undo） |
-| 主题 | 亮/暗、跟随系统、Int UI 配色、紧凑模式 | M1 | 🟡 |
-| 快捷键 | 与 IntelliJ 默认 keymap 一致（`Ctrl+K` 提交、`Ctrl+Shift+K` 推送、`Ctrl+T` 更新…） | M2 | 🟡（Ctrl+K、Ctrl+Shift+K、Ctrl+T、Ctrl+Shift+\`、Alt+9、F7/Shift+F7） |
+| 主题 | 亮/暗、跟随系统、Int UI 配色、紧凑模式 | M1 | ✅（Settings › Appearance：Dark / Light / Sync with OS，系统切换时跟着变；Compact mode 行高 20、工具栏 28；也在主菜单 View › Appearance） |
+| 快捷键 | 与 IntelliJ 默认 keymap 一致（`Ctrl+K` 提交、`Ctrl+Shift+K` 推送、`Ctrl+T` 更新…） | M2 | ✅（Windows/Linux 用 IntelliJ 默认 keymap，macOS 用 macOS keymap：Ctrl/⌘+K、Ctrl/⌘+Shift+K、Ctrl/⌘+T、Alt/⌘+1/0/9、Ctrl+Alt+S/⌘,、Ctrl+G/⌘L、Ctrl+Alt+←→/⌘[ ]、Ctrl+Shift+F12、Shift+Esc、Ctrl+Enter / Ctrl+Alt+K 提交、F7、Ctrl+D、F4、Ctrl+Alt+Z 等；菜单显示 mac 符号；Help › Keyboard Shortcuts 列表） |
 
 ## 2. Git 工具窗口 › Log
 
@@ -30,7 +30,7 @@
 | 单击定位到分支顶端、双击按分支过滤 Log | M1 | ✅ |
 | ahead/behind 指示（↑↓ 箭头） | M2 | ✅ |
 | 工具栏：New Branch、Update Selected、Delete、Compare with Current、Show My Branches、Fetch、展开/折叠 | M2 | ✅（New Branch、Fetch、Update Selected、Delete、Compare with Current、Show My Branches、展开/折叠、按分支过滤） |
-| 多仓库根时按仓库分组 | M5 | 🟡（分支弹窗 Repositories 区列出所有根及其分支，点选切换；Log 分支面板显示当前根） |
+| 多仓库根时按仓库分组 | M5 | 🟡（分支弹窗 Repositories 区列出所有根及其分支，点选切换；Commit 树可 Group By Repository。还差：AS 在 Commit 和 Log 里同时列出所有根的改动和提交，这里一次只显示当前根） |
 | 右键菜单：与分支弹窗动作一致（见 §4） | M2 | ✅（与分支弹窗相同的动作 + Add to / Remove from Favorites） |
 
 ### 2.2 提交列表（中间）
@@ -62,7 +62,7 @@
 ### 2.4 提交详情 + 变更树（右侧）
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 变更文件树：按目录分组、按模块分组、扁平列表；文件状态颜色（新增绿、修改蓝、删除灰、重命名） | M1 | 🟡 |
+| 变更文件树：按目录分组、按模块分组、扁平列表；文件状态颜色（新增绿、修改蓝、删除灰、重命名） | M1 | ✅（详情上方工具条：Expand All、Collapse All、View Options › Group By Directory / Module，都关时为扁平列表；状态颜色，重命名显示 from 旧路径） |
 | 详情：完整提交信息、hash、作者/提交者、日期、包含该提交的分支、标签 | M1 | ✅（作者与提交者不同时显示提交者） |
 | 双击文件打开 Diff；Diff 预览（编辑器区或面板内） | M2 | ✅ |
 | 多选提交时显示合并后的变更 | M3 | ✅ |
@@ -96,14 +96,14 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | 变更树：Changes（changelist）、Unversioned Files、Ignored Files | M1 | ✅（Changes、Unversioned Files、Ignored Files 可在 View Options 显示） |
-| 复选框选择要提交的文件；全选 | M1 | 🟡 |
-| 分组：目录 / 模块 / 仓库；展开全部/折叠全部 | M2 | 🟡（按目录 / 扁平；展开全部、折叠全部；模块、仓库分组随 M5） |
+| 复选框选择要提交的文件；全选 | M1 | ✅（文件、目录、changelist 节点都有复选框，节点勾选即全选其下文件） |
+| 分组：目录 / 模块 / 仓库；展开全部/折叠全部 | M2 | ✅（View Options › Group By Repository / Module / Directory，可组合，都关为扁平；模块按 build.gradle、Cargo.toml、CMakeLists.txt 等构建文件识别；展开全部、折叠全部） |
 | 多个 Changelist：新建、移动文件到、设为活动 | M4 | ✅（New / Edit / Delete / Set Active；Move to Another Changelist；活动列表粗体，新改动进入活动列表） |
 | Staging 模式（启用暂存区）：Staged / Unstaged 两棵树，Stage/Unstage 按钮 | M2 | ✅ |
 | 部分提交：按 chunk / 按行勾选（diff 中的复选框） | M4 | ✅（changelist 模式：diff 中每个 chunk 有复选框，提交时用临时 index 只提交勾选的 chunk；暂存区模式按 chunk Stage / Unstage） |
 | 提交信息编辑器：拼写检查、右边距线、首行长度提示、提交信息历史（`Ctrl+M`） | M1/M3 | ✅（等宽字体、右边距线、首行长度提示、Ctrl+M 历史；拼写检查：错词绿色波浪线，`Alt+Enter` 或右键错词弹出 Change to 建议和 Save to dictionary，内置 SCOWL 英文词表加开发常用词，用户词典存在配置目录 dictionary.txt，代码样式的词如 camelCase、路径、反引号内容不检查） |
 | Amend 复选框（自动载入上次提交信息） | M1 | ✅ |
-| Commit / Commit and Push… | M1 | 🟡 |
+| Commit / Commit and Push… | M1 | ✅（Ctrl+Enter 提交，Ctrl+Alt+K 提交并推送（macOS ⌘⏎ / ⌥⌘K），提交成功后弹出 Push 对话框；Amend 时为 Amend Commit / Amend Commit and Push…） |
 | 提交选项：作者、Sign-off、GPG 签名、运行 Git hooks、清理 | M3 | ✅ |
 | 提交前检查：Reformat、Optimize imports、Analyze code、Check TODO（IDE 特有，客户端只保留 hooks） | — | — |
 | 工具栏：Refresh、Rollback、Show Diff、Shelve、Stash、Update | M2 | ✅ |
@@ -185,7 +185,7 @@
 | 补丁：Create Patch / Apply Patch（含预览） | M4 | ✅（本地改动含未跟踪文件；Apply 先直接应用，失败时三方合并；剪贴板） |
 | Worktree：列表、新建、删除、打开 | M5 | ✅（Git 工具窗口 Worktrees 标签页：列表、New Worktree…、Open、Open in New Window、Delete；菜单入口） |
 | Submodule：识别、更新 | M5 | ✅（Submodules 标签页：状态、Update / Update All / Sync、打开或新窗口打开；diff 显示 Subproject commit（含 -dirty）；子模块图标；Update Project 时跟随更新） |
-| Git 控制台（Console 标签页）：所有执行过的 git 命令及输出 | M1 | 🟡 |
+| Git 控制台（Console 标签页）：所有执行过的 git 命令及输出 | M1 | ✅（每条 “时:分:秒.毫秒: [仓库] git …”，下面是输出，错误红色；左侧 Soft-Wrap、Scroll to the End、Clear All） |
 
 ## 9. 设置（Settings › Version Control › Git）
 
@@ -246,10 +246,10 @@
 | Find in Files（Ctrl+Shift+F） | M8 | ✅（浮动弹窗：Cc / W / .* 开关（Alt+C / W / X）；File mask 带常用掩码下拉，支持 `!` 排除；过滤器：Anywhere / In Comments / In String Literals / Except …；In Project / Module（含构建文件的目录）/ Directory（可递归、浏览）/ Scope（Project Files、Production、Test、Open Files、Current File、Recently Viewed、Recently Changed、Local Changes）；结果行高亮命中、右侧文件名和行号，下方只读预览；Enter 打开，Pin 后不关闭；选中文字或光标处单词自动填入；“N matches in M files”） |
 | Replace in Files（Ctrl+Shift+R） | M8 | ✅（替换框；Replace 替换当前行，Replace All 确认后全部替换；正则 `$1` 分组；替换后重建索引、刷新 Commit 列表、重载未修改的编辑器） |
 | Open in Find Window（Ctrl+Enter） | M8 | ✅（Find 工具窗口多标签；Found Occurrences › 目录 › 文件 › 行；Group by Directory、全部展开/折叠、上一处/下一处（Ctrl+Alt+↑/↓）、Exclude（Delete）、Rerun；替换标签有 Replace Selected / Replace All；“Open results in new tab”） |
-| Search Everywhere（双击 Shift） | M8 | 🟡（All / Classes / Files / Symbols / Actions / Text 六个标签，Tab 切换；All 每组最多 6 条带“… more”；`/` 列出标签命令；`File.kt:12:3` 跳到行列；Include non-project items（Files 包含被 git 忽略的文件），再按一次快捷键切换它；预览（Alt+P）；按语言 / 分组过滤；Open in Find Tool Window。双击 Shift 走 gpui 的单独修饰键绑定，Linux 测试环境（Xvfb）收不到修饰键事件，未能实测；Ctrl+N 等入口已实测） |
+| Search Everywhere（双击 Shift） | M8 | ✅（All / Classes / Files / Symbols / Actions / Text 六个标签，Tab 切换；All 每组最多 6 条带“… more”；`/` 列出标签命令；`File.kt:12:3` 跳到行列；Include non-project items（Files 包含被 git 忽略的文件），再按一次快捷键切换它；预览（Alt+P）；按语言 / 分组过滤；Open in Find Tool Window。双击 Shift 已实现，走 gpui 的单独修饰键绑定；Linux 测试环境（Xvfb）收不到单独修饰键事件，所以只实测了 Ctrl+N 等入口） |
 | Find Action（Ctrl+Shift+A） | M8 | ✅（Git、Navigate、Window 三组命令，显示快捷键） |
 | 匹配规则 | M8 | ✅（IntelliJ 式：查询字符按顺序，每个字符要么紧接上一个命中，要么在词首（驼峰、`_`、`.`、`/`、`-` 之后）；子串也算命中但排在后面） |
-| 编辑器内 Find / Replace（Ctrl+F / Ctrl+R），Find Next / Previous（F3 / Shift+F3） | M8 | 🟡（用组件库自带的查找栏：大小写开关、替换、全部替换；F3 无查询时用光标处单词。暂无 W / 正则开关） |
+| 编辑器内 Find / Replace（Ctrl+F / Ctrl+R），Find Next / Previous（F3 / Shift+F3） | M8 | ✅（编辑器上方查找栏：Cc / W / .* 开关（Alt+C / W / X）、命中数 “3/17”、无结果或正则错误时红色、所有命中高亮当前项加框；↑↓、Enter / Shift+Enter、F3 / Shift+F3；Replace 行：Replace、Replace All（正则支持 `$1`）、Exclude；Esc 关闭；F3 无查询时用光标处单词） |
 | Recent Files（Ctrl+E） | M8 | ✅（上一个文件排第一，Enter 即切回；可输入过滤） |
 | File Structure（Ctrl+F12） | M8 | ✅（当前文件的声明，按容器缩进，可过滤） |
 | Go to Line:Column（Ctrl+G） | M8 | ✅（`行[:列]`，记入 Back 历史） |

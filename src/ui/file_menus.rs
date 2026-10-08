@@ -34,6 +34,8 @@ pub enum FileAction {
     CompareWithRevision(String),
     /// Compare With…: another file picked from disk.
     CompareWithFile(String),
+    /// Compare with Clipboard: the clipboard's text against the file.
+    CompareWithClipboard(String),
     /// Commit File(s)…: the Commit tool window with only these included.
     CommitFiles(Vec<String>),
     Branches,
@@ -428,7 +430,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         actions: target.actions.clone(),
     };
     let menu = git_submenu(menu, git, window, cx);
-    let (t_reload, t_compare, t_gist) = (target.clone(), target.clone(), target.clone());
+    let (t_reload, t_compare, t_clip, t_gist) = (target.clone(), target.clone(), target.clone(), target.clone());
     let menu = menu.item(entry("Repair IDE on File", "").disabled(true))
         .item(entry("Reload from Disk", "").icon(Icon::new(IconName::RefreshCw)).on_click(move |_, window, cx| {
             (t_reload.actions)(FileAction::FilesChanged, window, cx)
@@ -436,6 +438,9 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         .separator()
         .item(entry("Compare With…", "Ctrl+D").icon(Icon::new(IconName::GitCompare)).disabled(is_dir).on_click(move |_, window, cx| {
             (t_compare.actions)(FileAction::CompareWithFile(t_compare.path.clone()), window, cx)
+        }))
+        .item(entry("Compare with Clipboard", "").icon(Icon::new(IconName::Clipboard)).disabled(is_dir).on_click(move |_, window, cx| {
+            (t_clip.actions)(FileAction::CompareWithClipboard(t_clip.path.clone()), window, cx)
         }))
         .separator();
     let menu = if is_dir {

@@ -68,6 +68,7 @@ pub fn conflicts(status: &super::WorkingTreeStatus) -> Vec<Conflict> {
 }
 
 /// Base, ours and theirs (index stages 1–3); a missing stage is empty.
+#[derive(Clone)]
 pub struct MergeVersions {
     pub base: String,
     pub ours: String,

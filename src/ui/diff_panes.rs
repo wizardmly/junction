@@ -207,6 +207,7 @@ pub struct Connector {
 pub fn paint_divider(
     bounds: Bounds<Pixels>,
     scroll: (f32, f32),
+    tops: (&[f32], &[f32]),
     connectors: &[Connector],
     folds: &[(usize, usize)],
     fold_color: Hsla,
@@ -215,10 +216,13 @@ pub fn paint_divider(
     let top = f32::from(bounds.origin.y);
     let (x0, x1) = (bounds.origin.x, bounds.origin.x + bounds.size.width);
     let height = f32::from(bounds.size.height);
-    let y = |row: usize, offset: f32| top + row as f32 * LINE_HEIGHT - offset;
+    // Row tops come from the panes: wrapped rows are taller.
+    let y = |tops: &[f32], row: usize, offset: f32| {
+        top + tops.get(row).or(tops.last()).copied().unwrap_or(row as f32 * LINE_HEIGHT) - offset
+    };
     for c in connectors {
-        let (l0, l1) = (y(c.left.start, scroll.0), y(c.left.end, scroll.0));
-        let (r0, r1) = (y(c.right.start, scroll.1), y(c.right.end, scroll.1));
+        let (l0, l1) = (y(tops.0, c.left.start, scroll.0), y(tops.0, c.left.end, scroll.0));
+        let (r0, r1) = (y(tops.1, c.right.start, scroll.1), y(tops.1, c.right.end, scroll.1));
         if l1.max(r1) < top || l0.min(r0) > top + height {
             continue;
         }
@@ -238,7 +242,7 @@ pub fn paint_divider(
     }
     // Collapsed fragments are joined by a line between their middles.
     for (l, r) in folds {
-        let (a, b) = (y(*l, scroll.0) + LINE_HEIGHT / 2., y(*r, scroll.1) + LINE_HEIGHT / 2.);
+        let (a, b) = (y(tops.0, *l, scroll.0) + LINE_HEIGHT / 2., y(tops.1, *r, scroll.1) + LINE_HEIGHT / 2.);
         let mut link = PathBuilder::stroke(px(1.));
         link.move_to(point(x0, px(a)));
         link.line_to(point(x1, px(b)));

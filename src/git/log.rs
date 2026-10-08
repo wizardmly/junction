@@ -215,7 +215,9 @@ impl Signature {
             'Y' => format!("Good signature made by an expired key{who}{key}"),
             'R' => format!("Good signature made by a revoked key{who}{key}"),
             'B' => format!("Bad signature{who}{key}"),
-            'E' => format!("Signed, but the signature can't be checked (missing key, gpg, or SSH allowed signers){key}"),
+            // `N` with a signature present: git couldn't check it (an SSH
+            // signature without gpg.ssh.allowedSignersFile).
+            'E' | 'N' => format!("Signed, but the signature can't be checked (missing key, gpg, or SSH allowed signers){key}"),
             _ => "Signed".to_owned(),
         }
     }

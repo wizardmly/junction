@@ -12,22 +12,35 @@ use crate::ui::text_buffer::{Buffer, EditKind};
 use crate::ui::text_panes::{PaneHost, TextPanes};
 
 impl DiffView {
-    /// The right pane edits when it is the working-tree file and text.
-    pub(super) fn editable(&self) -> bool {
-        let working_tree = matches!(
-            self.source,
-            Some(DiffSource::WorkingTree { .. } | DiffSource::Unstaged { .. } | DiffSource::Between { new: None, .. })
-        );
-        working_tree
-            && !self.diff.binary
-            && self.loaded.as_ref().is_some_and(|l| !l.new.contains('\u{FFFD}') && !l.new.starts_with("Subproject commit "))
+    /// The pane that edits: the working-tree file's, when it is text. That
+    /// is the right pane, except for Compare With… a file, where the project
+    /// file is on the left (and `<<` copies changes into it).
+    pub(super) fn edit_pane(&self) -> Option<usize> {
+        let pane = match self.source {
+            Some(DiffSource::WorkingTree { .. } | DiffSource::Unstaged { .. } | DiffSource::Between { new: None, .. } | DiffSource::Clipboard { .. }) => 1,
+            Some(DiffSource::Files { .. }) => 0,
+            _ => return None,
+        };
+        let loaded = self.loaded.as_ref()?;
+        let text = if pane == 0 { &loaded.old } else { &loaded.new };
+        (!self.diff.binary && !text.contains('\u{FFFD}') && !text.starts_with("Subproject commit ")).then_some(pane)
     }
 
-    /// `>>` on an editable right pane: puts the left lines in place of the
-    /// right ones (or after them, with Ctrl: Append), undoably.
+    pub(super) fn editable(&self) -> bool {
+        self.edit_pane().is_some()
+    }
+
+    /// `>>` on an editable right pane (`<<` on an editable left one): puts
+    /// the other side's lines in place of the editable ones (or after them,
+    /// with Ctrl: Append), undoably.
     pub(super) fn revert_change(&mut self, change: usize, append: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(hunk) = self.diff.hunks.get(change).cloned() else { return };
-        let (text, range) = replacement(&self.panes.buffers[0], hunk.old, &self.panes.buffers[1], hunk.new, append);
+        let Some(pane) = self.edit_pane() else { return };
+        let (text, range) = if pane == 1 {
+            replacement(&self.panes.buffers[0], hunk.old, &self.panes.buffers[1], hunk.new, append)
+        } else {
+            replacement(&self.panes.buffers[1], hunk.new, &self.panes.buffers[0], hunk.old, append)
+        };
         let caret = range.start;
         self.panes.edit(range, &text, EditKind::Other, Some(caret));
         self.edited(window, cx);
@@ -39,8 +52,9 @@ impl DiffView {
         if self.save_task.take().is_none() {
             return;
         }
+        let pane = self.panes.editable.unwrap_or(1);
         if let (Some(repository), Some(source)) = (&self.repository, &self.source) {
-            if let Err(error) = std::fs::write(repository.root().join(source.path()), self.panes.buffers[1].text()) {
+            if let Err(error) = std::fs::write(repository.root().join(source.path()), self.panes.buffers[pane].text()) {
                 eprintln!("cannot save {}: {error}", source.path());
             }
         }
@@ -50,7 +64,7 @@ impl DiffView {
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         let (Some(repository), Some(source)) = (self.repository.clone(), self.source.clone()) else { return };
         let path = repository.root().join(source.path());
-        let text = self.panes.buffers[1].text().to_owned();
+        let text = self.panes.buffers[self.panes.editable.unwrap_or(1)].text().to_owned();
         self.save_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(Duration::from_millis(400)).await;
             let result = cx.background_spawn(async move { std::fs::write(&path, text) }).await;
@@ -106,16 +120,17 @@ impl PaneHost for DiffView {
     /// Re-diffs, re-highlights and saves soon.
     fn edited(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.panes.line_edits.clear();
-        let text = self.panes.buffers[1].text().to_owned();
+        let pane = self.panes.editable.unwrap_or(1);
         if let Some(loaded) = self.loaded.as_mut() {
-            loaded.new = text.clone();
+            let text = self.panes.buffers[pane].text().to_owned();
+            if pane == 0 { loaded.old = text } else { loaded.new = text }
         }
         let current = self.current;
-        self.diff = diff::compute(self.panes.buffers[0].text(), &text, self.options);
+        self.diff = diff::compute(self.panes.buffers[0].text(), self.panes.buffers[1].text(), self.options);
         self.expanded.clear();
         self.current = current.filter(|c| *c < self.diff.changes);
         let language = crate::ui::file_editor::language_for(self.source.as_ref().map(|s| s.path()).unwrap_or_default());
-        self.panes.highlight(1, language);
+        self.panes.highlight(pane, language);
         self.rebuild_rows();
         self.schedule_save(cx);
     }

@@ -25,6 +25,7 @@ fn set_key(source: &DiffSource) -> String {
         DiffSource::Between { old, new, .. } => format!("between {old} {new:?}"),
         DiffSource::Files { path, other } => format!("files {path} {}", other.display()),
         DiffSource::Texts { path, old_title, new_title, .. } => format!("texts {path} {old_title} {new_title}"),
+        DiffSource::Clipboard { path, .. } => format!("clipboard {path}"),
     }
 }
 
@@ -45,7 +46,7 @@ fn list_files(repository: &Repository, source: &DiffSource) -> Vec<DiffSource> {
             Some(new) => name_status(&["diff", "--name-status", "-z", "-M", old, new, "--"]),
             None => name_status(&["diff", "--name-status", "-z", "-M", old, "--"]),
         },
-        DiffSource::Files { .. } | DiffSource::Texts { .. } => return vec![source.clone()],
+        DiffSource::Files { .. } | DiffSource::Texts { .. } | DiffSource::Clipboard { .. } => return vec![source.clone()],
     };
     let mut files: Vec<DiffSource> = changes
         .into_iter()
@@ -55,7 +56,7 @@ fn list_files(repository: &Repository, source: &DiffSource) -> Vec<DiffSource> {
             DiffSource::Staged { .. } => DiffSource::Staged { path: c.path },
             DiffSource::Unstaged { .. } => DiffSource::Unstaged { path: c.path },
             DiffSource::Between { old, new, .. } => DiffSource::Between { old: old.clone(), new: new.clone(), path: c.path, old_path: c.old_path },
-            DiffSource::Files { .. } | DiffSource::Texts { .. } => source.clone(),
+            DiffSource::Files { .. } | DiffSource::Texts { .. } | DiffSource::Clipboard { .. } => source.clone(),
         })
         .collect();
     // An unversioned file opened from the Commit tool window is in the set too.

@@ -102,7 +102,7 @@ pub struct FileDiff {
     pub deleted: usize,
 }
 
-fn normalize(line: &str, mode: IgnoreWhitespace) -> String {
+pub fn normalize(line: &str, mode: IgnoreWhitespace) -> String {
     match mode {
         IgnoreWhitespace::None => line.to_owned(),
         IgnoreWhitespace::Trim => line.trim().to_owned(),
@@ -402,14 +402,15 @@ fn write_index(repository: &Repository, path: &str, content: &str, filter: bool)
 }
 
 /// Changed words of a block's lines on each side, compared as one text
-/// (the merge tool's highlighting of each side against the base).
-pub fn line_fragments(old: &[&str], new: &[&str]) -> (Vec<Vec<Range<usize>>>, Vec<Vec<Range<usize>>>) {
+/// (the merge tool's highlighting of each side against the base), by word
+/// or with `chars` by character.
+pub fn line_fragments(old: &[&str], new: &[&str], chars: bool) -> (Vec<Vec<Range<usize>>>, Vec<Vec<Range<usize>>>) {
     let sides = |lines: &[&str]| -> Vec<Side> {
         lines.iter().enumerate().map(|(i, l)| Side { line: i + 1, text: (*l).to_owned(), changed: Vec::new(), kinds: Vec::new(), whole: None }).collect()
     };
     let (mut lefts, mut rights) = (sides(old), sides(new));
     if !lefts.is_empty() && !rights.is_empty() {
-        block_fragments(&mut lefts, &mut rights, false);
+        block_fragments(&mut lefts, &mut rights, chars);
     }
     let take = |sides: Vec<Side>| sides.into_iter().map(|s| s.changed).collect();
     (take(lefts), take(rights))
@@ -547,6 +548,8 @@ pub enum Revisions {
     Files { path: String, other: std::path::PathBuf },
     /// Two texts given as they are.
     Texts { path: String, old: String, new: String, old_title: String, new_title: String },
+    /// Compare with Clipboard: the clipboard's text against a working tree file.
+    Clipboard { path: String, text: String },
 }
 
 /// Loads both versions; a missing side (added/deleted file) is empty.
@@ -592,6 +595,7 @@ pub fn load_versions(repository: &Repository, revisions: &Revisions) -> Result<(
             (old_text, new_text, revision_title(old), new_title)
         }
         Revisions::Texts { old, new, old_title, new_title, .. } => (old.clone(), new.clone(), old_title.clone(), new_title.clone()),
+        Revisions::Clipboard { path, text } => (text.clone(), read_work_tree(repository, path), "Clipboard".into(), path.clone()),
         Revisions::Files { path, other } => {
             let other_text = std::fs::read(other).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
             (read_work_tree(repository, path), other_text, path.clone(), other.to_string_lossy().into_owned())
