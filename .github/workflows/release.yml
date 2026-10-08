@@ -128,14 +128,14 @@ jobs:
         run: |
           cd out
           sha256sum * > SHA256SUMS.txt
-          gh release delete latest --yes --cleanup-tag || true
-          gh release create latest * \
-            --target "$GITHUB_SHA" \
-            --title "Junction Studio (latest build)" \
-            --notes "Built from ${GITHUB_SHA::7}.
+          cat > ../notes.md <<NOTES
+          Built from ${GITHUB_SHA::7}.
 
-          - Windows: unzip junction-windows-x64.zip and run "Junction Studio/junction.exe".
+          - Windows: unzip junction-windows-x64.zip and run junction.exe in the Junction Studio folder.
           - macOS (Apple silicon and Intel): open the .dmg and drag Junction Studio to Applications, or unzip junction-macos-universal.app.zip to get Junction Studio.app. The app is not notarized: the first time, right-click it and choose Open.
           - Linux: run Junction-x86_64.AppImage (chmod +x first), or unpack junction-linux-x64.tar.gz.
 
-          Checksums are in SHA256SUMS.txt."
+          Checksums are in SHA256SUMS.txt.
+          NOTES
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest * --target "$GITHUB_SHA" --title "Junction Studio (latest build)" --notes-file ../notes.md
