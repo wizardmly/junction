@@ -33,6 +33,8 @@ use crate::ui::text_panes::{BUTTON_WIDTH, PaneContent, PaneHost, PaneLayout, Row
 pub enum MergeEvent {
     /// The tool closed; `true` when the result was applied.
     Closed(bool),
+    /// Compare Contents: two of the versions in the diff viewer.
+    Compare(crate::ui::diff_view::DiffSource),
 }
 
 impl EventEmitter<MergeEvent> for MergeView {}
@@ -138,6 +140,8 @@ pub struct MergeView {
     model: Entity<RepoModel>,
     conflict: Conflict,
     titles: (&'static str, &'static str),
+    /// The common ancestor's text, for Compare Contents.
+    base: String,
     changes: Vec<Change>,
     panes: TextPanes<Vec<ChangeState>>,
     error: Option<String>,
@@ -159,6 +163,7 @@ impl MergeView {
             model,
             conflict: conflict.clone(),
             titles,
+            base: String::new(),
             changes: Vec::new(),
             panes,
             error: None,
@@ -233,6 +238,7 @@ impl MergeView {
             .map(|c| ChangeState { ours: state(c.ours_changed), theirs: state(c.theirs_changed), result: c.base.clone() })
             .collect();
         let language = crate::ui::file_editor::language_for(&self.conflict.path);
+        self.base = v.base.clone();
         self.panes.set_texts(vec![v.ours, v.base, v.theirs], language);
         self.panes.layouts = vec![
             PaneLayout { mirrored: true, buttons: BUTTON_WIDTH * 2. + 2., ..Default::default() },
@@ -241,6 +247,31 @@ impl MergeView {
         ];
         self.refresh();
         self.go_to_unresolved(true);
+    }
+
+    /// Compare Contents: Left / Base / Right / Result against each other,
+    /// as IntelliJ's merge tool offers (the result as it stands now).
+    fn compare(&mut self, old: usize, new: usize, cx: &mut Context<Self>) {
+        // 0 left, 1 base, 2 right, 3 result.
+        let text = |which: usize| match which {
+            0 => self.panes.buffers[OURS].text().to_owned(),
+            1 => self.base.clone(),
+            2 => self.panes.buffers[THEIRS].text().to_owned(),
+            _ => self.result_text(),
+        };
+        let title = |which: usize| match which {
+            0 => self.titles.0.to_owned(),
+            1 => "Base".to_owned(),
+            2 => self.titles.1.to_owned(),
+            _ => "Result".to_owned(),
+        };
+        cx.emit(MergeEvent::Compare(crate::ui::diff_view::DiffSource::Texts {
+            path: self.conflict.path.clone(),
+            old: text(old),
+            new: text(new),
+            old_title: title(old),
+            new_title: title(new),
+        }));
     }
 
     fn states(&self) -> &[ChangeState] {
@@ -808,6 +839,28 @@ impl Render for MergeView {
                 this.panes.sync = !this.panes.sync;
                 cx.notify();
             })))
+            .child({
+                use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+                let entity = cx.entity();
+                gpui_kit::component::button::Button::new("merge-compare")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::FileDiff)
+                    .tooltip("Compare Contents")
+                    .dropdown_menu(move |menu, _, _| {
+                        let item = |label: &'static str, old: usize, new: usize| {
+                            let entity = entity.clone();
+                            PopupMenuItem::new(label).on_click(move |_, _, cx| entity.update(cx, |this, cx| this.compare(old, new, cx)))
+                        };
+                        menu.item(item("Compare Left with Base", 1, 0))
+                            .item(item("Compare Right with Base", 1, 2))
+                            .item(item("Compare Result with Base", 1, 3))
+                            .separator()
+                            .item(item("Compare Left with Right", 0, 2))
+                            .item(item("Compare Left with Result", 0, 3))
+                            .item(item("Compare Right with Result", 2, 3))
+                    })
+            })
             .child({
                 use gpui_kit::component::menu::DropdownMenu as _;
                 gpui_kit::component::button::Button::new("merge-gear")

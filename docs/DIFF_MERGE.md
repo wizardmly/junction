@@ -78,7 +78,7 @@
 | 6.7 | 工具栏：↑↓ 跳到上一个/下一个变更，Apply All Non-Conflicting Changes（左 / 全部 / 右三个按钮），空白、高亮、折叠、同步滚动、齿轮、帮助，右侧显示「N changes, M conflicts」 | 🟡 缺空白、高亮下拉 |
 | 6.8 | 底部按钮：Accept Left、Accept Right、Cancel、Apply；还有冲突未解决时点 Apply 会提示确认 | ✅ |
 | 6.9 | 结果栏可自由编辑，编辑后重新计算各块状态 | ✅ |
-| 6.10 | 可以切换显示 Base（三栏变成和 Base 对比） | ❌ |
+| 6.10 | 和 Base 对比：工具栏 Compare Contents 下拉（Left / Right / Result 与 Base，Left 与 Right，Left / Right 与 Result），在 diff 标签页打开只读对比 | ✅ |
 
 ## 7. 实现方案
 

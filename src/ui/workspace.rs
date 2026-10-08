@@ -540,6 +540,7 @@ impl Workspace {
         let model = self.model.clone();
         let view = cx.new(|cx| MergeView::new(model, repository, conflict, cx));
         let subscription = cx.subscribe_in(&view, window, |this, _, event: &MergeEvent, window, cx| match event {
+            MergeEvent::Compare(source) => this.open_diff(source.clone(), cx),
             MergeEvent::Closed(applied) => {
                 this.merge = None;
                 this.fix_front(cx);

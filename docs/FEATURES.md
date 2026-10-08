@@ -155,10 +155,10 @@
 | 高亮：按词 / 按行 / 按字符 / 不高亮 | M2 | ✅ |
 | 折叠未改动片段、同步滚动、上/下一处差异、Jump to Source (F4)、跳到下一个文件 | M2 | ✅（Alt+← / Alt+→、F7 到末尾进入下一个文件） |
 | 右侧可编辑（工作区文件）、单个 chunk 回滚 / 应用 | M3 | ✅（双栏右侧直接编辑：光标、选择、拖选、双击选词、Smart Home、Ctrl+D/Y、Tab/Shift+Tab、输入法、撤销重做、复制粘贴，改完实时重算并自动保存；`>>` 在缓冲区里回滚可撤销，按住 Ctrl 变 Append；暂存区模式 chunk Stage / Unstage；单栏编辑未做） |
-| 语法高亮（tree-sitter，与编辑器一致） | M2 | 🟡（双栏两侧都有；单栏未做） |
+| 语法高亮（tree-sitter，与编辑器一致） | M2 | ✅（双栏、单栏、Merge 都有） |
 | 二进制 / 图片对比 | M4 | ✅（并排显示两侧图片（PNG/JPEG/GIF/BMP/WebP/ICO），下方显示尺寸、格式、文件大小；非图片显示大小；新增/删除提示） |
 | 冲突对话框：文件列表，Accept Yours / Accept Theirs / Merge… | M3 | ✅ |
-| 三方合并工具：左（Yours）中（Result）右（Theirs）、魔棒应用非冲突改动、逐块接受、Resolve simple conflicts | M3 | ✅（按 AS 重做：三个独立编辑器，结果栏从 base 开始、可直接编辑并可撤销，两条分隔条连接块，`>>` `×` / `<<` `×` 紧贴分隔条，第二侧自动 Append，冲突红色，魔棒逐词合并简单冲突，工具栏 Apply Non-Conflicting（左/全部/右）、Resolve Simple Conflicts、同步滚动；有未解决变更时 Apply 先确认） |
+| 三方合并工具：左（Yours）中（Result）右（Theirs）、魔棒应用非冲突改动、逐块接受、Resolve simple conflicts | M3 | ✅（按 AS 重做：三个独立编辑器，结果栏从 base 开始、可直接编辑并可撤销，两条分隔条连接块，`>>` `×` / `<<` `×` 紧贴分隔条，第二侧自动 Append，冲突红色，魔棒逐词合并简单冲突，工具栏 Apply Non-Conflicting（左/全部/右）、Resolve Simple Conflicts、同步滚动；有未解决变更时 Apply 先确认；Compare Contents 下拉可把 Left / Right / Result 与 Base 或彼此对比） |
 | Compare with Branch… / Compare with Revision… / Compare two commits | M3 | ✅ |
 | 分支比较视图（两个分支的提交差异 + 文件差异） | M3 | ✅（current..branch 提交列表 + Swap Branches + Show Files） |
 

@@ -49,6 +49,8 @@ pub enum DiffSource {
     Between { old: String, new: Option<String>, path: String, old_path: Option<String> },
     /// Compare With…: a file against another file on disk.
     Files { path: String, other: std::path::PathBuf },
+    /// Two texts in memory (the merge tool's Compare … with Base), read-only.
+    Texts { path: String, old: String, new: String, old_title: String, new_title: String },
 }
 
 impl DiffSource {
@@ -59,7 +61,8 @@ impl DiffSource {
             | DiffSource::Staged { path }
             | DiffSource::Unstaged { path }
             | DiffSource::Between { path, .. }
-            | DiffSource::Files { path, .. } => path,
+            | DiffSource::Files { path, .. }
+            | DiffSource::Texts { path, .. } => path,
         }
     }
 
@@ -71,6 +74,7 @@ impl DiffSource {
             DiffSource::Unstaged { path } => Revisions::Unstaged { path },
             DiffSource::Between { old, new, path, old_path } => Revisions::Between { old, new, path, old_path },
             DiffSource::Files { path, other } => Revisions::Files { path, other },
+            DiffSource::Texts { path, old, new, old_title, new_title } => Revisions::Texts { path, old, new, old_title, new_title },
         }
     }
 }
@@ -221,6 +225,7 @@ impl DiffView {
                 format!("{name} vs {}", other.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
             }
             DiffSource::Between { .. } => format!("{name} (Compare)"),
+            DiffSource::Texts { old_title, new_title, .. } => format!("{name} ({old_title} vs {new_title})"),
             _ => format!("{name} (Changes)"),
         })
     }
