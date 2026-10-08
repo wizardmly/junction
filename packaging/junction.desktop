@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Junction
+Name=Junction Studio
 Comment=Git & Code Navigator
 Exec=junction %F
 Icon=junction

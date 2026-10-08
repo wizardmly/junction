@@ -84,6 +84,8 @@ mod tabs;
 use tabs::{EditorTab, Front};
 
 const CONTEXT: &str = "Workspace";
+/// The name people see; the binary, settings folder and repository stay "junction".
+pub const APP_NAME: &str = "Junction Studio";
 /// The editor area while it shows a file: Alt+Left / Right switch tabs there.
 const TABS_CONTEXT: &str = "EditorTabs";
 
@@ -214,6 +216,7 @@ pub struct Workspace {
     tab_clock: u64,
     /// The second tab group after Split Right / Down, and which group is focused.
     split: Option<tabs::SplitGroup>,
+    window_title: String,
     active_group: usize,
     /// Reopen Closed Tab, newest last.
     closed_tabs: Vec<String>,
@@ -503,6 +506,7 @@ impl Workspace {
             front: Front::Diff,
             tab_clock: 0,
             split: None,
+            window_title: String::new(),
             active_group: 0,
             closed_tabs: Vec::new(),
             show_commit: true,
@@ -1422,7 +1426,7 @@ impl Workspace {
             .items_center()
             .justify_center()
             .gap_4()
-            .child(div().text_xl().font_weight(FontWeight::BOLD).child("Welcome to Junction"))
+            .child(div().text_xl().font_weight(FontWeight::BOLD).child(format!("Welcome to {APP_NAME}")))
             .child(
                 h_flex()
                     .gap_2()
@@ -1441,7 +1445,7 @@ impl Workspace {
                 let (title, hint) = match &problem {
                     Some(OpenProblem::GitMissing) => (
                         "Git is not installed",
-                        "Junction runs the git command-line tool. Install Git for Windows (or point Settings › Git to an existing git.exe), then retry.",
+                        "Junction Studio runs the git command-line tool. Install Git for Windows (or point Settings › Git to an existing git.exe), then retry.",
                     ),
                     Some(OpenProblem::Unsafe(_)) => (
                         "The folder is owned by another user",
@@ -2153,7 +2157,16 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // "project – Junction Studio", as Android Studio titles its windows.
+        let title = match self.model.read(cx).repository().and_then(|r| r.root().file_name().map(|n| n.to_string_lossy().into_owned())) {
+            Some(name) => format!("{name} – {APP_NAME}"),
+            None => APP_NAME.to_owned(),
+        };
+        if self.window_title != title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
         let palette = cx.palette().clone();
         let error = self.model.read(cx).error().map(str::to_owned);
         let has_repo = self.model.read(cx).repository().is_some();

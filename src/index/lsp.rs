@@ -292,7 +292,7 @@ impl LspClient {
                 "rootUri": root_uri,
                 "rootPath": root.to_string_lossy(),
                 "workspaceFolders": [{ "uri": root_uri, "name": name }],
-                "clientInfo": { "name": "Junction" },
+                "clientInfo": { "name": "Junction Studio" },
                 "capabilities": {
                     "general": { "positionEncodings": ["utf-16"] },
                     "window": { "workDoneProgress": true },

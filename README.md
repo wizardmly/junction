@@ -1,6 +1,6 @@
-# Junction
+# Junction Studio
 
-Junction — Git & Code Navigator：桌面客户端，一比一复刻 Android Studio / IntelliJ 的 Git 功能，以及跨语言的代码索引和跳转（JNI、Dart FFI、Rust extern C、Swift/ObjC 桥接）。
+Junction Studio — Git & Code Navigator：桌面客户端，一比一复刻 Android Studio / IntelliJ 的 Git 功能，以及跨语言的代码索引和跳转（JNI、Dart FFI、Rust extern C、Swift/ObjC 桥接）。
 技术栈：Rust + [GPUI](https://www.gpui.rs) + [GPUI Kit / gpui-component](https://github.com/longbridge/gpui-kit)。
 Git 操作和 IntelliJ 的 git4idea 一样，直接调用 `git` 命令行。
 

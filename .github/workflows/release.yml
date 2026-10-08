@@ -1,4 +1,4 @@
-# Builds Junction for Windows, Linux and macOS on every push to master and
+# Builds Junction Studio for Windows, Linux and macOS on every push to master and
 # publishes the files as the "latest" release, so the links never change.
 name: Release build
 
@@ -25,9 +25,9 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/Junction | Out-Null
-          Copy-Item target/release/junction.exe dist/Junction/
-          Compress-Archive -Path dist/Junction -DestinationPath junction-windows-x64.zip -Force
+          New-Item -ItemType Directory -Force 'dist/Junction Studio' | Out-Null
+          Copy-Item target/release/junction.exe 'dist/Junction Studio/'
+          Compress-Archive -Path 'dist/Junction Studio' -DestinationPath junction-windows-x64.zip -Force
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -84,9 +84,9 @@ jobs:
         run: |
           cargo build --release --target aarch64-apple-darwin
           cargo build --release --target x86_64-apple-darwin
-      - name: Package Junction.app in a .dmg
+      - name: Package Junction Studio.app in a .dmg
         run: |
-          APP=dist/Junction.app
+          APP="dist/Junction Studio.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           strip -x target/aarch64-apple-darwin/release/junction target/x86_64-apple-darwin/release/junction
           lipo -create -output "$APP/Contents/MacOS/junction" \
@@ -100,12 +100,12 @@ jobs:
           iconutil -c icns icon.iconset -o "$APP/Contents/Resources/junction.icns"
           # Ad-hoc signature: required for Apple silicon to launch the binary at all.
           codesign --force --deep --sign - "$APP"
-          # Junction.app zipped as is: unzipping gives the .app directly.
+          # Junction Studio.app zipped as is: unzipping gives the .app directly.
           ditto -c -k --keepParent "$APP" junction-macos-universal.app.zip
           ln -s /Applications dist/Applications
           # hdiutil guesses the image size from the folder and can come up short; give it room.
           SIZE=$(( $(du -sm dist | cut -f1) + 64 ))
-          hdiutil create -volname Junction -srcfolder dist -ov -format UDZO -size ${SIZE}m junction-macos-universal.dmg
+          hdiutil create -volname 'Junction Studio' -srcfolder dist -ov -format UDZO -size ${SIZE}m junction-macos-universal.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -131,11 +131,11 @@ jobs:
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest * \
             --target "$GITHUB_SHA" \
-            --title "Junction (latest build)" \
+            --title "Junction Studio (latest build)" \
             --notes "Built from ${GITHUB_SHA::7}.
 
-          - Windows: unzip junction-windows-x64.zip and run Junction/junction.exe.
-          - macOS (Apple silicon and Intel): open the .dmg and drag Junction to Applications, or unzip junction-macos-universal.app.zip to get Junction.app. The app is not notarized: the first time, right-click Junction and choose Open.
+          - Windows: unzip junction-windows-x64.zip and run "Junction Studio/junction.exe".
+          - macOS (Apple silicon and Intel): open the .dmg and drag Junction Studio to Applications, or unzip junction-macos-universal.app.zip to get Junction Studio.app. The app is not notarized: the first time, right-click it and choose Open.
           - Linux: run Junction-x86_64.AppImage (chmod +x first), or unpack junction-linux-x64.tar.gz.
 
           Checksums are in SHA256SUMS.txt."

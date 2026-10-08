@@ -2,8 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Junction</string>
-  <key>CFBundleDisplayName</key><string>Junction</string>
+  <key>CFBundleName</key><string>Junction Studio</string>
+  <key>CFBundleDisplayName</key><string>Junction Studio</string>
   <key>CFBundleIdentifier</key><string>io.github.wizardmly.junction</string>
   <key>CFBundleExecutable</key><string>junction</string>
   <key>CFBundleIconFile</key><string>junction</string>
