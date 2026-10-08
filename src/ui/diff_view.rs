@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, h_flex,
+    Disableable as _, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
@@ -16,10 +16,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, HighlightStyle, MouseButton, canvas, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, ScrollStrategy, StatefulInteractiveElement as _, Styled as _,
-    Image, ImageFormat, ObjectFit, StyledImage as _, StyledText, Task, img, UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder as _, px,
-    uniform_list,
+    AnyElement, App, AppContext as _, Context, MouseButton, canvas, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
+    Image, ImageFormat, ObjectFit, StyledImage as _, Task, img, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::git::Repository;
@@ -28,7 +27,7 @@ use crate::git::diff::{self, DiffOptions, DiffRow, FileDiff, HighlightMode, Hunk
 use crate::theme::{ActivePalette as _, Palette};
 use crate::ui::common::{self, tool_button};
 use crate::ui::diff_panes::{BlockColors, Connector, DIVIDER_WIDTH, LINE_HEIGHT, PaneRow, TwoSide, fold_links, paint_divider};
-use crate::ui::text_panes::{BUTTON_WIDTH, GUTTER_WIDTH, PaneContent, PaneLayout, RowLook, RowTarget, STRIPE_WIDTH, TextPanes, expand_tabs, pane_area};
+use crate::ui::text_panes::{BUTTON_WIDTH, GUTTER_WIDTH, PaneContent, PaneLayout, RowLook, RowTarget, STRIPE_WIDTH, TextPanes, pane_area};
 
 pub(crate) mod edit;
 mod files;
@@ -166,7 +165,6 @@ pub struct DiffView {
     rows: Rc<Vec<Display>>,
     current: Option<usize>,
     error: Option<String>,
-    scroll: UniformListScrollHandle,
     review: Option<Rc<Review>>,
     /// The side-by-side viewer's two panes.
     two: Rc<TwoSide>,
@@ -199,7 +197,6 @@ impl DiffView {
             rows: Rc::new(Vec::new()),
             current: None,
             error: None,
-            scroll: UniformListScrollHandle::new(),
             review: None,
             two: Rc::default(),
             panes: TextPanes::new(2, cx),
@@ -313,7 +310,7 @@ impl DiffView {
     }
 
     fn apply_hunk(&mut self, change: usize, action: HunkAction, window: &mut Window, cx: &mut Context<Self>) {
-        if action == HunkAction::Revert && self.editable() && self.mode == ViewerMode::SideBySide {
+        if action == HunkAction::Revert && self.editable() {
             let append = self.panes.ctrl_held;
             self.revert_change(change, append, window, cx);
             return;
@@ -442,8 +439,27 @@ impl DiffView {
                 .collect()
         };
         self.panes.set_rows(0, targets(&two.left));
-        self.panes.set_rows(1, targets(&two.right));
-        self.panes.links = vec![(0, 1, two.segments.clone())];
+        if self.mode == ViewerMode::Unified {
+            // One pane: the new text, each block's deleted lines shown above it.
+            let mut rows: Vec<RowTarget> = self
+                .rows
+                .iter()
+                .map(|row| match row {
+                    Display::Fold { id, count } => RowTarget::Fold { id: *id, count: *count },
+                    Display::Line { right: Some(side), .. } => RowTarget::Line(side.line - 1),
+                    Display::Line { left: Some(side), .. } => RowTarget::Other { pane: 0, line: side.line - 1 },
+                    Display::Line { .. } => RowTarget::Filler,
+                })
+                .collect();
+            if added[1] {
+                rows.push(RowTarget::Line(self.panes.buffers[1].line_count() - 1));
+            }
+            self.panes.set_rows(1, rows);
+            self.panes.links = Vec::new();
+        } else {
+            self.panes.set_rows(1, targets(&two.right));
+            self.panes.links = vec![(0, 1, two.segments.clone())];
+        }
         self.two = Rc::new(two);
     }
 
@@ -461,12 +477,6 @@ impl DiffView {
         self.recompute(cx);
     }
 
-    fn expand_fold(&mut self, id: usize, cx: &mut Context<Self>) {
-        self.expanded.insert(id);
-        self.rebuild_rows();
-        cx.notify();
-    }
-
     fn change_row(&self, change: usize) -> Option<usize> {
         self.rows.iter().position(|row| matches!(row, Display::Line { change: Some(c), .. } if *c == change))
     }
@@ -480,7 +490,7 @@ impl DiffView {
         }
         if let Some(row) = self.change_row(change) {
             self.current = Some(change);
-            self.scroll.scroll_to_item(row, ScrollStrategy::Center);
+            self.panes.show_rows(vec![(1, row)]);
         }
     }
 
@@ -507,6 +517,18 @@ impl DiffView {
             DiffSource::WorkingTree { path, .. } | DiffSource::Unstaged { path } => path.clone(),
             _ => return None,
         };
+        if self.mode == ViewerMode::Unified {
+            let top = (self.panes.scroll[1].1 / LINE_HEIGHT) as usize;
+            let row = self.current.and_then(|c| self.change_row(c)).unwrap_or(top);
+            let line = self.rows[row.min(self.rows.len().saturating_sub(1))..]
+                .iter()
+                .find_map(|r| match r {
+                    Display::Line { right: Some(side), .. } => Some(side.line.saturating_sub(1)),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            return Some(crate::index::nav::Target { path, line: line as u32, col: 0, name: String::new(), label: String::new(), container: None });
+        }
         let row = match self.current.and_then(|c| self.two.change_segment(c)) {
             Some(seg) => seg.right.start,
             None => (self.panes.scroll[1].1 / LINE_HEIGHT) as usize,
@@ -875,6 +897,7 @@ impl DiffView {
             PaneLayout { mirrored: false, buttons: check_width, ..Default::default() },
         ];
         self.panes.apply_settings(cx);
+        self.panes.primary = 0;
         // A review's line numbers are its comment buttons.
         self.panes.layouts[1].hide_numbers &= self.review.is_none();
         let height = self.panes.view_height.get();
@@ -989,6 +1012,155 @@ impl DiffView {
             .into_any_element()
     }
 
+    /// How each visible row of the unified pane looks: deleted lines red,
+    /// inserted green, with changed words, the block's edges and two line
+    /// number columns.
+    fn unified_looks(&self, palette: &Palette, cx: &mut Context<Self>) -> Vec<RowLook> {
+        let rows = self.rows.clone();
+        let highlight = self.options.highlight;
+        let review = self.review.clone();
+        let path: Rc<str> = self.source.as_ref().map(|s| s.path()).unwrap_or_default().into();
+        let exclusions = self.exclusions(cx);
+        let hide = crate::settings::Settings::get(cx).diff.show_line_numbers == false;
+        let cell = |n: Option<usize>| {
+            div()
+                .w(px(GUTTER_WIDTH))
+                .h_full()
+                .flex_shrink_0()
+                .text_right()
+                .pr_1()
+                .text_color(palette.text_disabled)
+                .children(n.map(|n| n.to_string()))
+        };
+        let extra = self.panes.buffers[1].line_count();
+        self.panes
+            .visible_rows(1)
+            .map(|ix| {
+                let Some(Display::Line { kind, left, right, change }) = rows.get(ix) else {
+                    // The empty last line after a final line break.
+                    return RowLook {
+                        number: (ix == rows.len() && !hide).then(|| h_flex().child(cell(None)).child(cell(Some(extra))).into_any_element()),
+                        ..Default::default()
+                    };
+                };
+                let is_left = right.is_none();
+                let side = right.as_ref().or(left.as_ref());
+                let new_number = match (&review, right) {
+                    (Some(r), Some(side)) => review_number(r, path.clone(), ix, side.line, palette, cx),
+                    _ => cell(right.as_ref().map(|s| s.line)).into_any_element(),
+                };
+                let number = (!hide).then(|| h_flex().h_full().child(cell(left.as_ref().map(|s| s.line))).child(new_number).into_any_element());
+                let Some(change) = *change else {
+                    return RowLook { number, ..Default::default() };
+                };
+                let colors = side_colors(*kind, is_left, true, palette);
+                let faint = {
+                    let hunk = self.diff.hunks.get(change);
+                    let lines = exclusions.get(change).map(|e| if is_left { &e.0 } else { &e.1 });
+                    let at = side.zip(hunk).map(|(s, h)| (s.line - 1).wrapping_sub(if is_left { h.old.start } else { h.new.start }));
+                    if lines.zip(at).and_then(|(l, at)| l.get(at)).copied().unwrap_or(false) { 0.35 } else { 1. }
+                };
+                let background = colors.filter(|_| highlight != HighlightMode::None).map(|c| match side.and_then(|s| s.whole) {
+                    Some(_) if highlight.inner() => c.1.opacity(faint),
+                    _ => c.0.opacity(faint),
+                });
+                let words = match (side, colors) {
+                    (Some(side), Some(colors)) if highlight.inner() && side.whole.is_none() => {
+                        side.changed.iter().filter(|r| !r.is_empty()).map(|r| (r.clone(), colors.1.opacity(faint))).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                let marker = colors.filter(|_| highlight == HighlightMode::None).map(|c| c.1);
+                let block = (highlight != HighlightMode::None).then(|| border_color(*kind, palette));
+                let same = |r: Option<&Display>| matches!(r, Some(Display::Line { change: Some(c), .. }) if *c == change);
+                let top = block.filter(|_| ix == 0 || !same(rows.get(ix - 1)));
+                let bottom = block.filter(|_| !same(rows.get(ix + 1)));
+                let gutter = colors.filter(|_| highlight != HighlightMode::None).map(|c| c.0.opacity(faint));
+                RowLook { background, words, marker, number, gutter, top, bottom }
+            })
+            .collect()
+    }
+
+    /// IntelliJ's unified viewer: one editor with the new text (editable for
+    /// the working tree), each block's deleted lines read-only above it,
+    /// old and new line numbers, and the block's buttons in the gutter.
+    fn render_unified(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let palette = cx.palette().clone();
+        let actions = self.hunk_actions();
+        let partial = self.partial_path(cx).is_some();
+        let included = self.included(cx);
+        let buttons = actions.len() + partial as usize;
+        let buttons_width = if buttons == 0 { 0. } else { BUTTON_WIDTH * buttons as f32 + 2. };
+        self.panes.layouts = vec![
+            PaneLayout::default(),
+            PaneLayout { mirrored: false, buttons: buttons_width, double_numbers: true, ..Default::default() },
+        ];
+        self.panes.apply_settings(cx);
+        self.panes.layouts[1].double_numbers = true;
+        self.panes.primary = 1;
+        // The hidden left pane must not catch clicks.
+        self.panes.bounds_reset(0);
+        let looks = self.unified_looks(&palette, cx);
+        let layout = self.panes.layouts[1];
+        let visible = self.panes.visible_rows(1);
+        let rows = self.rows.clone();
+        let mut overlays = Vec::new();
+        for ix in visible {
+            let Some(Display::Line { change: Some(change), .. }) = rows.get(ix) else { continue };
+            let change = *change;
+            let first = ix == 0 || !matches!(rows.get(ix - 1), Some(Display::Line { change: Some(c), .. }) if *c == change);
+            if !first || buttons == 0 {
+                continue;
+            }
+            let mut el = h_flex()
+                .absolute()
+                .top(px(self.panes.row_top(1, ix)))
+                .left(px(layout.buttons_offset()))
+                .w(px(buttons_width))
+                .h(px(LINE_HEIGHT))
+                .justify_center()
+                .items_center()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            if partial {
+                let checked = included.get(change).copied().unwrap_or(true);
+                el = el.child(
+                    Checkbox::new(gpui_kit::ElementId::NamedInteger("unified-include".into(), change as u64))
+                        .checked(checked)
+                        .tooltip("Include into commit")
+                        .on_change(cx.listener(move |this, value: &bool, _, cx| this.toggle_hunk(change, *value, cx))),
+                );
+            }
+            for (action, icon, tooltip) in actions.iter().copied() {
+                let (icon, tooltip) = if action == HunkAction::Revert { (IconName::Close, "Revert") } else { (icon, tooltip) };
+                el = el.child(
+                    tool_button(gpui_kit::ElementId::NamedInteger(format!("unified-{tooltip}").into(), change as u64), icon, tooltip)
+                        .on_click(cx.listener(move |this, _, window, cx| this.apply_hunk(change, action, window, cx))),
+                );
+            }
+            overlays.push(el.into_any_element());
+        }
+        let pane = self.panes.render_pane(1, PaneContent { looks, overlays }, &palette, window, cx);
+        // Error stripe marks: each block's rows.
+        let mut marks: Vec<(Range<usize>, Hsla)> = Vec::new();
+        for (ix, row) in rows.iter().enumerate() {
+            if let Display::Line { change: Some(c), kind, .. } = row {
+                match marks.last_mut() {
+                    Some((range, _)) if range.end == ix && matches!(rows.get(ix - 1), Some(Display::Line { change: Some(p), .. }) if p == c) => {
+                        range.end = ix + 1
+                    }
+                    _ => marks.push((ix..ix + 1, border_color(*kind, &palette))),
+                }
+            }
+        }
+        let thumb = palette.text_disabled.opacity(0.25);
+        let entity = cx.entity();
+        pane_area("diff-unified", &self.panes.focus, cx)
+            .child(pane)
+            .child(self.panes.render_stripe(1, marks, thumb, cx))
+            .context_menu(move |menu, _, cx| DiffView::context_menu(&entity, menu, cx))
+            .into_any_element()
+    }
+
     /// The panes' title bars: read-only lock, revision and path on the left;
     /// the include-all checkbox and revision on the right.
     fn render_two_side_header(&self, old_title: String, new_title: String, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1086,30 +1258,6 @@ fn flatten(rows: &[DiffRow], expanded: &HashSet<usize>, mode: ViewerMode, out: &
     flush(&mut deleted, &mut inserted, out);
 }
 
-fn line_text(side: &Side, word_color: Hsla, text_color: Hsla) -> AnyElement {
-    let (text, ranges) = expand_tabs(&side.text, &side.changed);
-    let highlights = ranges
-        .into_iter()
-        .filter(|r| !r.is_empty())
-        .map(|r| (r, HighlightStyle { background_color: Some(word_color), ..Default::default() }));
-    div()
-        .pl_2()
-        .text_color(text_color)
-        .whitespace_nowrap()
-        .child(StyledText::new(text).with_highlights(highlights))
-        .into_any_element()
-}
-
-fn gutter(number: Option<usize>, palette: &Palette) -> impl IntoElement {
-    div()
-        .w(px(GUTTER_WIDTH))
-        .flex_shrink_0()
-        .text_right()
-        .pr_2()
-        .text_color(palette.text_disabled)
-        .child(number.map(|n| n.to_string()).unwrap_or_default())
-}
-
 /// Line background and word highlight colors for one side of a row.
 fn side_colors(kind: RowKind, is_left: bool, unified: bool, palette: &Palette) -> Option<(Hsla, Hsla)> {
     match kind {
@@ -1137,44 +1285,8 @@ impl Render for DiffView {
                 .child(div().text_sm().child("Double-click a file in the Log or the Commit tool window"))
                 .into_any_element();
         };
-        let mono = cx.theme().mono_font_family.clone();
-        let rows = self.rows.clone();
-        let count = rows.len();
-        let actions = Rc::new(self.hunk_actions());
-        let partial = self.partial_path(cx);
-        // Per change: whether it goes into the next commit (partial commits).
-        let included: Rc<Vec<bool>> = Rc::new(match &partial {
-            Some(path) => {
-                let excluded = crate::model::ExcludedHunks::get(cx).get(path).cloned().unwrap_or_default();
-                (0..self.diff.hunks.len()).map(|c| self.signature(c).is_none_or(|s| !excluded.contains(&s))).collect()
-            }
-            None => Vec::new(),
-        });
-        let has_partial = partial.is_some();
-        let has_actions = !actions.is_empty() || has_partial;
-        let button_count = actions.len() + has_partial as usize;
-        // The first row of each change carries its gutter buttons.
-        let starts: Rc<HashSet<usize>> = Rc::new(
-            rows.iter()
-                .enumerate()
-                .filter_map(|(ix, row)| match row {
-                    Display::Line { change: Some(c), .. } => {
-                        let previous = ix.checked_sub(1).and_then(|p| match &rows[p] {
-                            Display::Line { change, .. } => *change,
-                            Display::Fold { .. } => None,
-                        });
-                        (previous != Some(*c)).then_some(ix)
-                    }
-                    _ => None,
-                })
-                .collect(),
-        );
         let mode = self.mode;
-        let highlight = self.options.highlight;
-        let current = self.current;
         let titles = self.loaded.as_ref().map(|l| (l.old_title.clone(), l.new_title.clone()));
-        let review = self.review.clone();
-        let review_path: Rc<str> = source.path().into();
         let two_side = mode == ViewerMode::SideBySide && !self.diff.binary;
 
         let banner = match &self.loaded {
@@ -1190,164 +1302,6 @@ impl Render for DiffView {
             Some(_) if self.diff.changes == 0 => Some("Contents are identical".to_owned()),
             _ => None,
         };
-
-        let list = uniform_list(
-            "diff-lines",
-            count,
-            cx.processor(move |_, range: Range<usize>, _, cx| {
-                let palette = cx.palette().clone();
-                // Gutter buttons for a change's first row.
-                let hunk_buttons = |ix: usize, change: Option<usize>, cx: &mut Context<DiffView>| {
-                    let mut el = h_flex().w(px(if has_actions { 18. * button_count as f32 } else { 1. })).h_full().flex_shrink_0().justify_center().items_center();
-                    if !has_actions {
-                        return el.bg(palette.border);
-                    }
-                    if let (Some(change), true) = (change, starts.contains(&ix)) {
-                        if has_partial {
-                            let checked = included.get(change).copied().unwrap_or(true);
-                            el = el.child(
-                                Checkbox::new(gpui_kit::ElementId::NamedInteger("hunk-include".into(), ix as u64))
-                                    .checked(checked)
-                                    .tooltip("Include in commit")
-                                    .on_change(cx.listener(move |this, value: &bool, _, cx| this.toggle_hunk(change, *value, cx))),
-                            );
-                        }
-                        for (action, icon, tooltip) in actions.iter().copied() {
-                            el = el.child(
-                                tool_button(gpui_kit::ElementId::NamedInteger(format!("hunk-{tooltip}").into(), ix as u64), icon, tooltip)
-                                    .on_click(cx.listener(move |this, _, window, cx| this.apply_hunk(change, action, window, cx))),
-                            );
-                        }
-                    }
-                    el
-                };
-                // A review diff's new-side line number: click to comment, marked when commented.
-                let new_gutter = |ix: usize, line: Option<usize>, cx: &mut Context<DiffView>| -> AnyElement {
-                    let (Some(review), Some(line)) = (review.as_ref(), line) else {
-                        return gutter(line, &palette).into_any_element();
-                    };
-                    let notes = review.comments.get(&line).cloned();
-                    let path = review_path.clone();
-                    h_flex()
-                        .id(("diff-comment", ix))
-                        .w(px(GUTTER_WIDTH))
-                        .h_full()
-                        .flex_shrink_0()
-                        .justify_end()
-                        .items_center()
-                        .gap_0p5()
-                        .pr_2()
-                        .cursor_pointer()
-                        .text_color(palette.text_disabled)
-                        .hover(|s| s.bg(palette.hover).text_color(palette.text))
-                        .when(notes.is_some(), |el| el.child(common::icon(IconName::MessageSquare).text_color(palette.link)))
-                        .child(line.to_string())
-                        .tooltip(move |window, cx| {
-                            let text = match &notes {
-                                Some(notes) => notes.join("\n\n"),
-                                None => "Add review comment".to_owned(),
-                            };
-                            gpui_kit::component::tooltip::Tooltip::new(text).build(window, cx)
-                        })
-                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(CommentLine { path: path.to_string(), line })))
-                        .into_any_element()
-                };
-                range
-                    .map(|ix| match &rows[ix] {
-                        Display::Fold { id, count } => {
-                            let id = *id;
-                            h_flex()
-                                .id(("diff-fold", id))
-                                .h(px(LINE_HEIGHT))
-                                .w_full()
-                                .gap_1()
-                                .pl(px(GUTTER_WIDTH * if mode == ViewerMode::Unified { 2. } else { 1. } - 14.))
-                                .bg(palette.diff_header)
-                                .text_color(palette.text_secondary)
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(palette.text))
-                                .on_click(cx.listener(move |this, _, _, cx| this.expand_fold(id, cx)))
-                                .child(common::icon(IconName::ChevronRight))
-                                .child(format!("{count} unchanged lines"))
-                                .into_any_element()
-                        }
-                        Display::Line { kind, left, right, change } => {
-                            let kind = *kind;
-                            let is_current = current.is_some() && *change == current;
-                            let unified = mode == ViewerMode::Unified;
-                            let paint = |is_left: bool| {
-                                let colors = side_colors(kind, is_left, unified, &palette);
-                                match highlight {
-                                    HighlightMode::None => (None, palette.text, colors.map(|c| c.1)),
-                                    _ => (colors.map(|c| c.0), palette.text, colors.map(|c| c.1)),
-                                }
-                            };
-                            // IntelliJ marks changed lines with a stripe even when highlighting is off.
-                            let marker = |color: Option<Hsla>| {
-                                div()
-                                    .w(px(3.))
-                                    .h_full()
-                                    .flex_shrink_0()
-                                    .when_some(color.filter(|_| highlight == HighlightMode::None || is_current), |el, c| {
-                                        el.bg(c)
-                                    })
-                            };
-                            if unified {
-                                let is_left = right.is_none();
-                                let (bg, fg, word) = paint(is_left);
-                                let side = left.as_ref().or(right.as_ref());
-                                h_flex()
-                                    .id(ix)
-                                    .h(px(LINE_HEIGHT))
-                                    .w_full()
-                                    .when_some(bg, |el, bg| el.bg(bg))
-                                    .when(has_actions, |el| el.child(hunk_buttons(ix, *change, cx)))
-                                    .child(marker(word))
-                                    .child(gutter(left.as_ref().map(|s| s.line), &palette))
-                                    .child(new_gutter(ix, right.as_ref().map(|s| s.line), cx))
-                                    .when_some(side, |el, side| {
-                                        el.child(line_text(side, word.unwrap_or(palette.diff_header), fg))
-                                    })
-                                    .into_any_element()
-                            } else {
-                                let cell = |side: Option<&Side>, is_left: bool, cx: &mut Context<DiffView>| {
-                                    let (bg, fg, word) = paint(is_left);
-                                    let bg = if side.is_some() { bg } else { None };
-                                    h_flex()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .h_full()
-                                        .overflow_hidden()
-                                        .when_some(bg, |el, bg| el.bg(bg))
-                                        .child(marker(word.filter(|_| side.is_some())))
-                                        .map(|el| if is_left {
-                                            el.child(gutter(side.map(|s| s.line), &palette))
-                                        } else {
-                                            el.child(new_gutter(ix, side.map(|s| s.line), cx))
-                                        })
-                                        .when_some(side, |el, side| {
-                                            el.child(line_text(side, word.unwrap_or(palette.diff_header), fg))
-                                        })
-                                };
-                                h_flex()
-                                    .id(ix)
-                                    .h(px(LINE_HEIGHT))
-                                    .w_full()
-                                    .child(cell(left.as_ref(), true, cx))
-                                    .child(hunk_buttons(ix, *change, cx))
-                                    .child(cell(right.as_ref(), false, cx))
-                                    .into_any_element()
-                            }
-                        }
-                    })
-                    .collect()
-            }),
-        )
-        .track_scroll(&self.scroll)
-        .font_family(mono)
-        .text_size(px(12.5))
-        .flex_1()
-        .w_full();
 
         v_flex()
             .size_full()
@@ -1371,7 +1325,7 @@ impl Render for DiffView {
             .map(|el| match self.loaded.as_ref().and_then(|l| l.binary.as_ref()) {
                 Some(panes) => el.child(render_binary(panes, &palette)),
                 None if two_side => el.child(self.render_two_side(window, cx)),
-                None => el.child(list),
+                None => el.child(self.render_unified(window, cx)),
             })
             .into_any_element()
     }

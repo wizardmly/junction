@@ -53,6 +53,9 @@ pub enum RowTarget {
     /// Empty space that keeps a change block level with the other pane's
     /// ("Align Changes").
     Filler,
+    /// A read-only line of another pane's buffer, shown here: the unified
+    /// viewer's deleted lines above the inserted ones.
+    Other { pane: usize, line: usize },
 }
 
 /// Where a buffer line is shown.
@@ -90,11 +93,20 @@ pub struct PaneLayout {
     pub buttons: f32,
     /// Gear menu › Show Line Numbers turned off.
     pub hide_numbers: bool,
+    /// Two number columns (the unified viewer's old and new line numbers,
+    /// which the host supplies as each row's `number`).
+    pub double_numbers: bool,
 }
 
 impl PaneLayout {
     pub fn numbers_width(&self) -> f32 {
-        if self.hide_numbers { 0. } else { GUTTER_WIDTH }
+        if self.hide_numbers {
+            0.
+        } else if self.double_numbers {
+            2. * GUTTER_WIDTH
+        } else {
+            GUTTER_WIDTH
+        }
     }
 
     /// Marker, line numbers and buttons.
@@ -126,6 +138,9 @@ pub struct LineEdit {
 
 pub struct TextPanes<T = ()> {
     pub buffers: Vec<Buffer>,
+    /// The pane that measures the view and follows drags (the first one
+    /// shown; the unified viewer shows only the new side's).
+    pub primary: usize,
     /// The pane that edits, if any.
     pub editable: Option<usize>,
     /// The pane with the caret, and its selection.
@@ -197,6 +212,7 @@ impl<T: Clone + Default> TextPanes<T> {
     pub fn new(panes: usize, cx: &mut App) -> Self {
         TextPanes {
             buffers: vec![Buffer::default(); panes],
+            primary: 0,
             editable: None,
             caret: None,
             goal: None,
@@ -271,14 +287,23 @@ impl<T: Clone + Default> TextPanes<T> {
                     map.push(LineRow::Row(ix));
                 }
                 RowTarget::Fold { id, count } => map.extend(std::iter::repeat_n(LineRow::Fold(id, ix), count)),
-                RowTarget::Filler => {}
+                RowTarget::Filler | RowTarget::Other { .. } => {}
             }
         }
         self.line_rows[pane] = map;
-        self.rows[pane] = rows;
+        let cols = |text: &str| -> usize { text.chars().map(|c| if c == '\t' { TAB_WIDTH } else { 1 }).sum() };
         let b = &self.buffers[pane];
-        self.max_cols[pane] =
-            (0..b.line_count()).map(|l| b.line(l).chars().map(|c| if c == '\t' { TAB_WIDTH } else { 1 }).sum()).max().unwrap_or(0);
+        let own = (0..b.line_count()).map(|l| cols(b.line(l))).max().unwrap_or(0);
+        let others = rows
+            .iter()
+            .filter_map(|r| match *r {
+                RowTarget::Other { pane: p, line } => self.buffers.get(p).filter(|b| line < b.line_count()).map(|b| cols(b.line(line))),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        self.max_cols[pane] = own.max(others);
+        self.rows[pane] = rows;
         let max = self.max_scroll_y(pane);
         self.scroll[pane].1 = self.scroll[pane].1.min(max);
     }
@@ -346,6 +371,13 @@ impl<T: Clone + Default> TextPanes<T> {
         }
         for (pane, row) in targets {
             self.scroll[pane].1 = (row as f32 * LINE_HEIGHT - height / 3.).clamp(0., self.max_scroll_y(pane));
+        }
+    }
+
+    /// Forgets where a pane was painted, for a pane no longer shown.
+    pub fn bounds_reset(&mut self, pane: usize) {
+        if let Some(b) = self.bounds.borrow_mut().get_mut(pane) {
+            *b = Bounds::default();
         }
     }
 
@@ -465,8 +497,9 @@ impl<T: Clone + Default> TextPanes<T> {
         let line = match rows[row] {
             RowTarget::Fold { id, .. } => return Some((pane, Err(id))),
             RowTarget::Line(line) => line,
-            // Filler belongs to the line above it (or below, at the top).
-            RowTarget::Filler => {
+            // Filler (and another pane's line) belongs to the line above it
+            // (or below, at the top).
+            RowTarget::Filler | RowTarget::Other { .. } => {
                 let line = |r: &RowTarget| if let RowTarget::Line(l) = r { Some(*l) } else { None };
                 rows[..row].iter().rev().find_map(line).or_else(|| rows[row..].iter().find_map(line))?
             }
@@ -1083,14 +1116,15 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
             let measured = self.view_height.clone();
             let notify = entity.clone();
             let input = (focused && self.caret.is_some_and(|c| c.0 == pane)).then(|| (self.focus.clone(), entity.clone()));
-            let selecting = (pane == 0 && self.selecting).then(|| entity.clone());
-            let dragging = (pane == 0 && self.drag.is_some()).then(|| entity.clone());
+            let primary = pane == self.primary;
+            let selecting = (primary && self.selecting).then(|| entity.clone());
+            let dragging = (primary && self.drag.is_some()).then(|| entity.clone());
             children.push(
                 canvas(
                     move |bounds, _, cx| {
                         bounds_cell.borrow_mut()[pane] = bounds;
                         let h = f32::from(bounds.size.height);
-                        if pane == 0 && (measured.get() - h).abs() > 0.5 {
+                        if primary && (measured.get() - h).abs() > 0.5 {
                             measured.set(h);
                             // Paint again with the rows the new height shows.
                             cx.defer(move |cx| notify.update(cx, |_, cx| cx.notify()));
@@ -1138,7 +1172,6 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
             );
         }
 
-        let highlighter = self.highlighters[pane].as_ref();
         let range = self.visible_rows(pane);
         let char_width = f32::from(shape("        ", window, cx).width) / 8.;
         if char_width > 0. {
@@ -1169,7 +1202,14 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                     );
                 }
                 RowTarget::Filler => {}
-                RowTarget::Line(line) => {
+                target @ (RowTarget::Line(_) | RowTarget::Other { .. }) => {
+                    let (source, line, own) = match target {
+                        RowTarget::Other { pane: p, line } if p < self.buffers.len() && line < self.buffers[p].line_count() => (p, line, false),
+                        RowTarget::Line(line) => (pane, line, true),
+                        _ => continue,
+                    };
+                    let buffer = &self.buffers[source];
+                    let highlighter = self.highlighters[source].as_ref();
                     let line_range = buffer.line_range(line);
                     let text = buffer.line(line);
                     let syntax: Vec<(Range<usize>, HighlightStyle)> = highlighter
@@ -1182,7 +1222,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                         })
                         .unwrap_or_default();
                     let mut backgrounds = look.words;
-                    if let Some(sel) = &selection {
+                    if let Some(sel) = selection.as_ref().filter(|_| own) {
                         let (a, b) = (sel.start.max(line_range.start), sel.end.min(line_range.end));
                         if a < b {
                             backgrounds.push((a - line_range.start..b - line_range.start, selection_color));

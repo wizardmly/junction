@@ -150,7 +150,7 @@
 
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 双栏 Side-by-side / 统一 Unified 视图 | M2 | ✅（双栏按 AS 重做：两栏只显示各自的行，gutter 镜像贴着中间分隔条，分隔条画连接块，左 gutter `>>` 回滚、右 gutter 包含复选框，标题条锁图标 + 版本 + 路径，error stripe 可点可拖；逐项对照见 [DIFF_MERGE.md](DIFF_MERGE.md)） |
+| 双栏 Side-by-side / 统一 Unified 视图 | M2 | ✅（双栏按 AS 重做：两栏只显示各自的行，gutter 镜像贴着中间分隔条，分隔条画连接块，左 gutter `>>` 回滚、右 gutter 包含复选框，标题条锁图标 + 版本 + 路径，error stripe 可点可拖；单栏也可编辑、有语法高亮，删除行只读显示在新增行上方，两列行号，gutter 有 Revert × 和包含复选框；逐项对照见 [DIFF_MERGE.md](DIFF_MERGE.md)） |
 | 忽略空白：不忽略 / 行首尾 / 全部 / 全部加空行 | M2 | ✅ |
 | 高亮：按词 / 按行 / 按字符 / 不高亮 | M2 | ✅ |
 | 折叠未改动片段、同步滚动、上/下一处差异、Jump to Source (F4)、跳到下一个文件 | M2 | ✅（Alt+← / Alt+→、F7 到末尾进入下一个文件） |
