@@ -266,7 +266,8 @@
 | 固定标签排在最前并显示图钉；拖动标签调整顺序 | M8 | ✅ |
 | 中键关闭；Ctrl+F4 关闭；Alt+← / Alt+→ 切换（macOS 为 Cmd+Shift+[ / ]） | M8 | ✅ |
 | 分屏：Split Right / Down、Split and Move Right / Down、Open in / Move to Opposite Group、Unsplit；标签可拖到另一组；某组标签关完后自动合并 | M8 | ✅（两组；同一文件在两组各有一份编辑缓冲） |
-| 预览标签、多行标签、双击最大化编辑器 | — | ❌ 未做 |
+| 预览标签（Project 窗口 ⋮ › Behavior › Enable Preview Tab） | M8 | ✅（单击文件在一个斜体标签里预览，下一次预览替换它；编辑、双击文件或双击标签后变成普通标签） |
+| 多行标签、双击最大化编辑器 | — | ❌ 未做 |
 
 ## 阶段
 

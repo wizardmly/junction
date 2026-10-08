@@ -119,6 +119,9 @@ pub struct ProjectSettings {
     pub autoscroll_from_source: bool,
     /// Behavior › Open Files with Single Click.
     pub single_click: bool,
+    /// Behavior › Enable Preview Tab: a single click shows the file in one
+    /// reused, italic tab until it is edited or opened for real.
+    pub preview_tab: bool,
     /// Appearance › Compact Middle Packages.
     pub compact_middle: bool,
     /// Appearance › Show Excluded Files.
@@ -130,15 +133,16 @@ pub struct ProjectSettings {
 
 impl Default for ProjectSettings {
     fn default() -> Self {
-        Self { autoscroll_from_source: false, single_click: false, compact_middle: true, show_excluded: true, folders_on_top: true, sort: ProjectSort::Name }
+        Self { autoscroll_from_source: false, single_click: false, preview_tab: false, compact_middle: true, show_excluded: true, folders_on_top: true, sort: ProjectSort::Name }
     }
 }
 
 impl ProjectSettings {
-    fn fields(&mut self) -> [(&'static str, &mut bool); 5] {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 6] {
         [
             ("project_autoscroll_from_source", &mut self.autoscroll_from_source),
             ("project_single_click", &mut self.single_click),
+            ("project_preview_tab", &mut self.preview_tab),
             ("project_compact_middle", &mut self.compact_middle),
             ("project_show_excluded", &mut self.show_excluded),
             ("project_folders_on_top", &mut self.folders_on_top),

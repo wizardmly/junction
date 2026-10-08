@@ -26,6 +26,8 @@ pub(super) struct EditorTab {
     pub view: Entity<FileEditor>,
     pub _subscription: Subscription,
     pub pinned: bool,
+    /// IntelliJ's preview tab (italic): the next preview replaces it.
+    pub preview: bool,
     /// When the tab was last active, for the tab limit.
     pub used: u64,
 }
@@ -184,11 +186,48 @@ impl Workspace {
     }
 
     /// Opens `path` in a tab, or switches to its tab.
+    /// Enable Preview Tab: shows the file in the preview tab, replacing the
+    /// file previewed before unless it was edited; an open file just activates.
+    pub(super) fn open_preview(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.editors.iter().position(|t| t.view.read(cx).path() == path && t.view.read(cx).revision().is_none()) {
+            self.activate_tab(ix, cx);
+            return;
+        }
+        let old = self.editors.iter().position(|t| t.preview && !t.pinned && !t.view.read(cx).is_dirty(cx));
+        if let Some(old) = old {
+            self.remove_tab(old, cx);
+        }
+        self.open_tab(path.clone(), None, window, cx);
+        let Some(ix) = self.editors.iter().position(|t| t.view.read(cx).path() == path && t.view.read(cx).revision().is_none()) else { return };
+        self.editors[ix].preview = true;
+        // The new preview takes the old one's place.
+        if let Some(old) = old.filter(|old| *old != ix && *old < self.editors.len()) {
+            self.move_tab(ix, old, cx);
+        }
+        if old.is_some() {
+            // Previewing doesn't fill Reopen Closed Tab.
+            self.closed_tabs.pop();
+        }
+        cx.notify();
+    }
+
+    /// A preview tab that was edited or opened for real stays.
+    pub(super) fn keep_tab(&mut self, view: &Entity<FileEditor>, cx: &mut Context<Self>) {
+        if let Some(tab) = self.editors.iter_mut().find(|t| t.view == *view && t.preview) {
+            tab.preview = false;
+            cx.notify();
+        }
+    }
+
     pub(super) fn open_tab(&mut self, path: String, revision: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(repository) = self.model.read(cx).repository().cloned() else { return };
         let existing = self.editors.iter().position(|t| t.view.read(cx).path() == path && t.view.read(cx).revision() == revision.as_deref());
         let ix = match existing {
-            Some(ix) => ix,
+            Some(ix) => {
+                // Opening a previewed file for real (double click) keeps its tab.
+                self.editors[ix].preview = false;
+                ix
+            }
             None => {
                 let view = cx.new(|cx| FileEditor::new(repository, path, revision, window, cx));
                 let subscription = cx.subscribe_in(&view, window, Self::on_file_editor_event);
@@ -203,7 +242,7 @@ impl Workspace {
                 .max(pinned)
                 .min(self.editors.len());
                 let id = view.entity_id();
-                self.editors.insert(at, EditorTab { view, _subscription: subscription, pinned: false, used: 0 });
+                self.editors.insert(at, EditorTab { view, _subscription: subscription, pinned: false, preview: false, used: 0 });
                 if let Front::Editor(active) = &mut self.front {
                     if *active >= at {
                         *active += 1;
@@ -464,6 +503,7 @@ impl Workspace {
                     _ => None,
                 };
                 let pinned = editor_ix.is_some_and(|ix| self.editors[ix].pinned);
+                let preview = editor_ix.is_some_and(|ix| self.editors[ix].preview);
                 let dirty = editor_ix.is_some_and(|ix| self.editors[ix].view.read(cx).is_dirty(cx));
                 let color = path.as_ref().and_then(|p| status.get(p)).map(|k| common::status_color(*k, &palette));
                 let title_s: SharedString = title.clone().into();
@@ -487,7 +527,14 @@ impl Workspace {
                     })
                     .when(!active, |el| el.hover(|el| el.bg(palette.hover)))
                     .child(common::icon(icon).text_color(palette.text_secondary))
-                    .child(div().whitespace_nowrap().when_some(color, |el, c| el.text_color(c)).child(if dirty { format!("{title} •") } else { title.clone() }))
+                    .child(
+                        div()
+                            .whitespace_nowrap()
+                            // Linux's default UI font has no italic face; Inter does.
+                            .when(preview, |el| el.italic().when(cfg!(target_os = "linux"), |el| el.font_family("Inter")))
+                            .when_some(color, |el, c| el.text_color(c))
+                            .child(if dirty { format!("{title} •") } else { title.clone() }),
+                    )
                     .when(pinned, |el| el.child(common::icon(IconName::Pin).text_color(palette.text_secondary)))
                     .child(
                         div()
@@ -507,7 +554,16 @@ impl Workspace {
                     )
                     .on_click({
                         let entity = entity.clone();
-                        move |_, window, cx| grp(&entity, group, cx, |this, cx| this.activate(front, window, cx))
+                        move |event: &gpui_kit::ClickEvent, window, cx| {
+                            let keep = event.click_count() >= 2;
+                            grp(&entity, group, cx, |this, cx| {
+                                // Double-clicking a preview tab keeps it.
+                                if let (true, Some(ix)) = (keep, editor_ix) {
+                                    this.editors[ix].preview = false;
+                                }
+                                this.activate(front, window, cx)
+                            })
+                        }
                     })
                     .on_mouse_down(MouseButton::Middle, {
                         let entity = entity.clone();

@@ -143,6 +143,11 @@ pub struct ProjectView {
 
 impl EventEmitter<OpenTarget> for ProjectView {}
 
+/// Show a file in the editor's preview tab (a single click, Enable Preview Tab).
+pub struct PreviewFile(pub String);
+
+impl EventEmitter<PreviewFile> for ProjectView {}
+
 impl Focusable for ProjectView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -388,6 +393,11 @@ impl ProjectView {
         cx.notify();
     }
 
+    /// A single click with Enable Preview Tab: the workspace shows the file in its preview tab.
+    fn preview(&mut self, path: String, cx: &mut Context<Self>) {
+        cx.emit(PreviewFile(path));
+    }
+
     fn open(&mut self, path: String, cx: &mut Context<Self>) {
         let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
         cx.emit(OpenTarget(Target { path, line: 0, col: 0, name, label: String::new(), container: None }));
@@ -399,7 +409,9 @@ impl ProjectView {
         self.search = None;
         self.selected = Some(row.path.clone());
         match row.kind {
-            RowKind::File if count >= 2 || self.settings.single_click => self.open(row.path, cx),
+            RowKind::File if count >= 2 => self.open(row.path, cx),
+            RowKind::File if self.settings.preview_tab => self.preview(row.path, cx),
+            RowKind::File if self.settings.single_click => self.open(row.path, cx),
             // Folders open on a single click; the second click of a double click is ignored.
             RowKind::Dir | RowKind::Root if count == 1 => self.toggle(&row.path, cx),
             _ => {}
@@ -648,6 +660,7 @@ impl ProjectView {
         menu.submenu("Behavior", window, cx, move |menu, _, _| {
             menu.item(toggle("Always Select Opened File", s1.autoscroll_from_source, |p, v| p.autoscroll_from_source = v))
                 .item(toggle("Open Files with Single Click", s1.single_click, |p, v| p.single_click = v))
+                .item(toggle("Enable Preview Tab", s1.preview_tab, |p, v| p.preview_tab = v))
         })
         .submenu("Appearance", window, cx, move |menu, _, _| {
             menu.item(toggle("Show Excluded Files", s2.show_excluded, |p, v| p.show_excluded = v))

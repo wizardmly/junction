@@ -305,6 +305,11 @@ impl Workspace {
             cx.subscribe_in(&project, window, |this, _, event: &crate::ui::navigate::OpenTarget, window, cx| {
                 this.go_to_target(event.0.clone(), window, cx)
             }),
+            cx.subscribe_in(&project, window, |this, _, event: &crate::ui::project_view::PreviewFile, window, cx| {
+                if this.model.read(cx).repository().is_some() {
+                    this.open_preview(event.0.clone(), window, cx);
+                }
+            }),
             cx.subscribe(&code_index, |_, _, _: &IndexEvent, cx| cx.notify()),
             cx.subscribe(&stash, |this, _, event: &StashEvent, cx| match event {
                 StashEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
@@ -660,8 +665,9 @@ impl Workspace {
         self.open_tab(path, revision, window, cx);
     }
 
-    fn on_file_editor_event(&mut self, _: &Entity<FileEditor>, event: &FileEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_file_editor_event(&mut self, view: &Entity<FileEditor>, event: &FileEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
+            FileEditorEvent::Edited => self.keep_tab(view, cx),
             FileEditorEvent::Navigate(targets) => self.navigate(targets.clone(), window, cx),
             FileEditorEvent::FindUsages { text, offset } => {
                 let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };

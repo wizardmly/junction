@@ -87,6 +87,8 @@ pub enum FileEditorEvent {
     FindUsages { text: String, offset: usize },
     /// Saved: re-index this file.
     Saved(String),
+    /// The text was edited (a preview tab becomes a normal one).
+    Edited,
 }
 
 impl EventEmitter<FileEditorEvent> for FileEditor {}
@@ -226,6 +228,9 @@ impl FileEditor {
                 // IntelliJ closes the change popup on typing.
                 this.popup = None;
                 this.update_markers(cx);
+                if this.is_dirty(cx) {
+                    cx.emit(FileEditorEvent::Edited);
+                }
                 cx.notify();
             }
         })];
