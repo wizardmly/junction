@@ -29,6 +29,7 @@ pub mod rollback_dialog;
 pub mod remote_dialogs;
 pub mod revision_browser;
 pub mod shelf_view;
+pub mod spell_overlay;
 pub mod stash_view;
 pub mod workspace;
 pub mod worktree_view;

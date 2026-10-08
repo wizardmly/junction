@@ -84,6 +84,7 @@ pub struct CommitView {
     model: Entity<RepoModel>,
     tree: Entity<TreeState>,
     message: Entity<TextareaState>,
+    spelling: Entity<crate::ui::spell_overlay::SpellOverlay>,
     groups: Vec<Group>,
     staging: bool,
     /// Expand All / Collapse All: how the next rebuild lays out the tree.
@@ -112,6 +113,7 @@ impl CommitView {
         let tree = cx.new(|cx| TreeState::new(cx));
         let message = cx.new(|cx| TextareaState::new(window, cx).rows(5).placeholder("Commit Message"));
         let author = cx.new(|cx| InputState::new(window, cx).placeholder("Name <email>"));
+        let spelling = cx.new(|cx| crate::ui::spell_overlay::SpellOverlay::new(message.clone(), cx));
         let subscriptions = vec![
             cx.subscribe_in(&model, window, |this, _, event, window, cx| match event {
                 RepoEvent::Reloaded => this.rebuild(cx),
@@ -160,6 +162,7 @@ impl CommitView {
             model,
             tree,
             message,
+            spelling,
             groups: Vec::new(),
             staging: false,
             expand_all: true,
@@ -1057,8 +1060,13 @@ impl Render for CommitView {
                             .relative()
                             .overflow_hidden()
                             .font_family(mono)
+                            .key_context(crate::ui::spell_overlay::EDITOR_CONTEXT)
+                            .on_action(cx.listener(|this, _: &crate::ui::spell_overlay::ShowSpellingFixes, window, cx| {
+                                this.spelling.update(cx, |spelling, cx| spelling.show_at_cursor(window, cx))
+                            }))
                             .child(Textarea::new(&self.message).h(px(110.)))
                             .child(div().absolute().top(px(4.)).bottom(px(4.)).left(margin).w(px(1.)).bg(palette.border))
+                            .child(self.spelling.clone())
                     })
                     .child(
                         h_flex()

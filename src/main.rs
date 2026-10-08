@@ -11,6 +11,7 @@ mod hosting;
 mod index;
 mod model;
 mod settings;
+mod spell;
 mod theme;
 mod ui;
 
@@ -38,6 +39,7 @@ fn main() {
         ui::log_view::init(cx);
         ui::workspace::init(cx);
         ui::commit_view::init(cx);
+        ui::spell_overlay::init(cx);
         ui::file_editor::init(cx);
         let settings = settings::Settings::load();
         settings.apply_git();
