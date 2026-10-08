@@ -48,6 +48,8 @@ pub struct Settings {
     pub log: LogSettings,
     /// The diff and merge viewers' gear menu.
     pub diff: DiffSettings,
+    /// The Project tool window's ⋮ options.
+    pub project: ProjectSettings,
     /// Commit tool window › View Options.
     pub commit_group_by_directory: bool,
     pub commit_show_ignored: bool,
@@ -93,6 +95,49 @@ impl Default for LogSettings {
             highlight_not_merged: false,
             sort_by_date: false,
         }
+    }
+}
+
+/// How the Project tool window orders siblings (⋮ › Sort By).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ProjectSort {
+    #[default]
+    Name,
+    Type,
+    Modified,
+}
+
+/// The Project tool window's ⋮ menu: Behavior, Appearance and Sort By.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectSettings {
+    /// Behavior › Always Select Opened File.
+    pub autoscroll_from_source: bool,
+    /// Behavior › Open Files with Single Click.
+    pub single_click: bool,
+    /// Appearance › Compact Middle Packages.
+    pub compact_middle: bool,
+    /// Appearance › Show Excluded Files.
+    pub show_excluded: bool,
+    /// Sort By › Folders Always on Top.
+    pub folders_on_top: bool,
+    pub sort: ProjectSort,
+}
+
+impl Default for ProjectSettings {
+    fn default() -> Self {
+        Self { autoscroll_from_source: false, single_click: false, compact_middle: true, show_excluded: true, folders_on_top: true, sort: ProjectSort::Name }
+    }
+}
+
+impl ProjectSettings {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 5] {
+        [
+            ("project_autoscroll_from_source", &mut self.autoscroll_from_source),
+            ("project_single_click", &mut self.single_click),
+            ("project_compact_middle", &mut self.compact_middle),
+            ("project_show_excluded", &mut self.show_excluded),
+            ("project_folders_on_top", &mut self.folders_on_top),
+        ]
     }
 }
 
@@ -166,6 +211,7 @@ impl Default for Settings {
             use_credential_helper: true,
             log: LogSettings::default(),
             diff: DiffSettings::default(),
+            project: ProjectSettings::default(),
             commit_group_by_directory: true,
             commit_show_ignored: false,
         }
@@ -300,6 +346,18 @@ impl Settings {
                         *field = flag;
                     }
                 }
+                "project_sort" => {
+                    settings.project.sort = match value {
+                        "type" => ProjectSort::Type,
+                        "modified" => ProjectSort::Modified,
+                        _ => ProjectSort::Name,
+                    }
+                }
+                key if key.starts_with("project_") => {
+                    if let Some((_, field)) = settings.project.fields().into_iter().find(|(k, _)| *k == key) {
+                        *field = flag;
+                    }
+                }
                 "commit_group_by_directory" => settings.commit_group_by_directory = flag,
                 "commit_show_ignored" => settings.commit_show_ignored = flag,
                 "update_clean" => settings.update_shelve = value == "shelve",
@@ -358,6 +416,18 @@ impl Settings {
             text.push_str(&format!("{k}={v}\n"));
         }
         text.push_str(&format!("diff_context_lines={}\n", self.diff.context_lines));
+        let mut project = self.project.clone();
+        for (k, v) in project.fields() {
+            text.push_str(&format!("{k}={v}\n"));
+        }
+        text.push_str(&format!(
+            "project_sort={}\n",
+            match self.project.sort {
+                ProjectSort::Name => "name",
+                ProjectSort::Type => "type",
+                ProjectSort::Modified => "modified",
+            }
+        ));
         text.push_str(&format!(
             "commit_group_by_directory={}\ncommit_show_ignored={}\nupdate_clean={}\nsync_branches={}\n",
             self.commit_group_by_directory,
@@ -417,6 +487,8 @@ mod tests {
         let mut diff = Settings::default();
         diff.diff.show_whitespaces = true;
         diff.diff.context_lines = 8;
+        diff.project.single_click = true;
+        diff.project.sort = ProjectSort::Modified;
         assert_eq!(Settings::parse(&diff.serialize()), diff);
         let custom = Settings { protected_branches: "release/*, main".into(), sign_off: true, run_hooks: false, ..Default::default() };
         assert_eq!(Settings::parse(&custom.serialize()), custom);

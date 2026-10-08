@@ -415,7 +415,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         }))
 }
 
-fn new_entry(target: &ProjectTarget, directory: bool, window: &mut Window, cx: &mut App) {
+pub fn new_entry(target: &ProjectTarget, directory: bool, window: &mut Window, cx: &mut App) {
     let folder = target.folder();
     let (root, actions) = (target.root.clone(), target.actions.clone());
     let title = if directory { "New Directory" } else { "New File" };

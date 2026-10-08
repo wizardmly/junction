@@ -23,6 +23,7 @@ pub mod patch_dialogs;
 pub mod pull_requests;
 pub mod github_dialogs;
 pub mod navigate;
+pub mod project_view;
 pub mod rebase_dialog;
 pub mod rollback_dialog;
 pub mod remote_dialogs;

@@ -224,7 +224,16 @@
 | Find Usages（Alt+F7） | M7 | ✅（Find 工具窗口，按类别 › 文件 › 行分组；索引 + git grep，LSP references 标记“verified”；桥接两侧都列出） |
 | Go to File / Class / Symbol（Ctrl+Shift+N / Ctrl+N / Ctrl+Alt+Shift+N） | M7 | ✅（打开 Search Everywhere 对应标签，见第 12 节） |
 | Navigate Back / Forward（Ctrl+Alt+← / →） | M7 | ✅ |
-| Project 工具窗口（Alt+1）、Select in Project View（Alt+F1） | M7 | ✅（单子目录链折叠显示；Collapse All） |
+| Project 工具窗口（Alt+1）、Select in Project View（Alt+F1） | M7 | ✅ |
+| Project 窗口视图切换：Project（根节点带绝对路径）/ Project Files / Production / Tests / Open Files / Changed Files | M8 | ✅（Open Files 为本次会话打开过的文件，Junction 只有单编辑器没有标签页） |
+| Project 窗口头部：New（File / Directory）、Select Opened File（准星）、Expand All、Collapse All | M8 | ✅ |
+| ⋮ › Behavior：Always Select Opened File、Open Files with Single Click（默认双击打开） | M8 | ✅（设置持久化） |
+| ⋮ › Appearance：Show Excluded Files（Git 忽略的文件橄榄色显示，展开时按需读盘）、Compact Middle Packages | M8 | ✅ |
+| ⋮ › Sort By：Name / Type / Modification Time、Folders Always on Top | M8 | ✅ |
+| Speed Search（Ctrl+F 或直接输入）：高亮匹配、↑↓ 跳到上/下一个匹配、Esc 关闭 | M8 | ✅ |
+| 文件按 VCS 状态着色（修改蓝、新增绿、未跟踪红），含已修改文件的目录也着色 | M8 | ✅ |
+| 键盘导航：↑↓ / ← 收起或回到父目录 / → 展开或进入 / Enter、F4 打开 / Home / End / PgUp / PgDn | M8 | ✅ |
+| ⋮ › Edit Scopes、Group Tabs、View Mode、Move to、Resize、Remove from Sidebar、Help；Android / Packages 视图 | — | ❌ 不适用（IDE 窗口布局与 Android 模块模型，Junction 没有） |
 | 语言服务器 | M7 | ✅（clangd、rust-analyzer、gopls、jdtls、kotlin-lsp、sourcekit-lsp、dart、v-analyzer、typescript-language-server、pyright/pylsp；按最近的 Cargo.toml / go.mod / pubspec.yaml / settings.gradle 等子项目分别启动；打开文件即预热；服务器忙时 0.6 秒内退回索引结果） |
 | 设置 › Languages & Frameworks | M7 | ✅（总开关；每种语言可填自定义命令或 off，显示 Installed / Not found / Index only） |
 

@@ -1,28 +1,23 @@
 //! Code navigation UI: the "Choose Declaration" list, Recent Files and
-//! File Structure pickers, and the Project tool window's file tree.
+//! File Structure pickers.
 
-use std::collections::{BTreeMap, HashSet};
-use std::ops::Range;
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     WindowExt as _, h_flex,
-    menu::ContextMenuExt as _,
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement as _,
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
-    uniform_list,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::index::nav::Target;
-use crate::index::service::{CodeIndex, IndexEvent};
 use crate::theme::ActivePalette as _;
-use crate::ui::common::{self, ROW_HEIGHT, tool_button};
+use crate::ui::common::{self};
 
 /// Something to open: a path and position.
 #[derive(Clone)]
@@ -76,220 +71,6 @@ pub fn choose_target(targets: Vec<Target>, on_pick: Rc<dyn Fn(Target, &mut Windo
         dialog.title("Choose Declaration").w(px(640.)).child(div().id("choose-list").max_h(px(420.)).overflow_y_scrollbar().child(list))
     });
 }
-
-/// The Project tool window: the repository's files as a tree.
-pub struct ProjectView {
-    index: Entity<CodeIndex>,
-    expanded: HashSet<String>,
-    selected: Option<String>,
-    /// Flattened visible rows: (depth, name, path, is_dir).
-    rows: Rc<Vec<(usize, String, String, bool)>>,
-    files: Rc<Vec<String>>,
-    /// The right-click menu's repository and workspace actions, once set.
-    menu: Option<(Entity<crate::model::RepoModel>, crate::ui::file_menus::FileActions)>,
-    clipboard: crate::ui::file_menus::FileClipboard,
-    _subscription: Subscription,
-}
-
-impl EventEmitter<OpenTarget> for ProjectView {}
-
-#[derive(Default)]
-struct Dir {
-    dirs: BTreeMap<String, Dir>,
-    files: Vec<String>,
-}
-
-impl ProjectView {
-    pub fn new(index: Entity<CodeIndex>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.subscribe(&index, |this, _, _: &IndexEvent, cx| this.reload(cx));
-        let mut this = Self { index, expanded: HashSet::new(), selected: None, rows: Rc::default(), files: Rc::default(), menu: None, clipboard: Rc::default(), _subscription: subscription };
-        this.reload(cx);
-        this
-    }
-
-    pub fn set_menu(&mut self, model: Entity<crate::model::RepoModel>, actions: crate::ui::file_menus::FileActions) {
-        self.menu = Some((model, actions));
-    }
-
-    fn reload(&mut self, cx: &mut Context<Self>) {
-        let files = self.index.read(cx).index.read().map(|i| i.all_files.clone()).unwrap_or_default();
-        if *self.files == files {
-            return;
-        }
-        self.files = Rc::new(files);
-        self.flatten();
-        cx.notify();
-    }
-
-    fn flatten(&mut self) {
-        let mut root = Dir::default();
-        for path in self.files.iter() {
-            let mut dir = &mut root;
-            let mut parts: Vec<&str> = path.split('/').collect();
-            let file = parts.pop().unwrap_or_default();
-            for part in parts {
-                dir = dir.dirs.entry(part.to_owned()).or_default();
-            }
-            dir.files.push(file.to_owned());
-        }
-        let mut rows = Vec::new();
-        fn walk(dir: &Dir, prefix: &str, depth: usize, expanded: &HashSet<String>, rows: &mut Vec<(usize, String, String, bool)>) {
-            for (name, sub) in &dir.dirs {
-                // Single-child directory chains collapse into one row ("src/main/java").
-                let (mut label, mut path, mut node) = (name.clone(), format!("{prefix}{name}"), sub);
-                while node.files.is_empty() && node.dirs.len() == 1 {
-                    let (n, s) = node.dirs.iter().next().unwrap();
-                    label = format!("{label}/{n}");
-                    path = format!("{path}/{n}");
-                    node = s;
-                }
-                rows.push((depth, label, path.clone(), true));
-                if expanded.contains(&path) {
-                    walk(node, &format!("{path}/"), depth + 1, expanded, rows);
-                }
-            }
-            for f in &dir.files {
-                rows.push((depth, f.clone(), format!("{prefix}{f}"), false));
-            }
-        }
-        walk(&root, "", 0, &self.expanded, &mut rows);
-        self.rows = Rc::new(rows);
-    }
-
-    fn click(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some((_, _, path, is_dir)) = self.rows.get(ix).cloned() else { return };
-        self.selected = Some(path.clone());
-        if is_dir {
-            if !self.expanded.remove(&path) {
-                self.expanded.insert(path);
-            }
-            self.flatten();
-        } else {
-            let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
-            cx.emit(OpenTarget(Target { path, line: 0, col: 0, name, label: String::new(), container: None }));
-        }
-        cx.notify();
-    }
-
-    /// Select In › Project View: reveal a file.
-    pub fn reveal(&mut self, path: &str, cx: &mut Context<Self>) {
-        let mut prefix = String::new();
-        for part in path.split('/').collect::<Vec<_>>().split_last().map(|(_, dirs)| dirs.to_vec()).unwrap_or_default() {
-            prefix = if prefix.is_empty() { part.to_owned() } else { format!("{prefix}/{part}") };
-            self.expanded.insert(prefix.clone());
-        }
-        self.selected = Some(path.to_owned());
-        self.flatten();
-        cx.notify();
-    }
-
-    fn collapse_all(&mut self, cx: &mut Context<Self>) {
-        self.expanded.clear();
-        self.flatten();
-        cx.notify();
-    }
-}
-
-impl Render for ProjectView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let palette = cx.palette().clone();
-        let rows = self.rows.clone();
-        let selected = self.selected.clone();
-        let expanded = self.expanded.clone();
-        let root_name: SharedString = self
-            .index
-            .read(cx)
-            .root()
-            .and_then(|r| r.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
-            .into();
-        let menu = self.menu.clone();
-        let clipboard = self.clipboard.clone();
-        let all_files = self.files.clone();
-        let root = self.index.read(cx).root().map(|r| r.to_path_buf());
-        let list = uniform_list(
-            "project-files",
-            rows.len(),
-            cx.processor(move |_, range: Range<usize>, _, cx| {
-                let palette = cx.palette().clone();
-                range
-                    .map(|ix| {
-                        let (depth, name, path, is_dir) = &rows[ix];
-                        let open = expanded.contains(path);
-                        h_flex()
-                            .id(ix)
-                            .h(px(ROW_HEIGHT))
-                            .pl(px(8. + *depth as f32 * 16.))
-                            .gap_1()
-                            .text_sm()
-                            .cursor_pointer()
-                            .when(selected.as_deref() == Some(path.as_str()), |el| el.bg(palette.selection))
-                            .hover(|el| el.bg(palette.hover))
-                            .child(div().w(px(14.)).when(*is_dir, |el| {
-                                el.child(common::icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }).text_color(palette.text_secondary))
-                            }))
-                            .child(
-                                common::icon(if *is_dir {
-                                    if open { IconName::FolderOpen } else { IconName::FolderClosed }
-                                } else {
-                                    common::file_icon(path)
-                                })
-                                .text_color(palette.text_secondary),
-                            )
-                            .child(div().whitespace_nowrap().child(name.clone()))
-                            .on_click(cx.listener(move |this, _, _, cx| this.click(ix, cx)))
-                            .on_mouse_down(gpui_kit::MouseButton::Right, {
-                                let path = path.clone();
-                                cx.listener(move |this, _, _, cx| {
-                                    this.selected = Some(path.clone());
-                                    cx.notify();
-                                })
-                            })
-                            .context_menu({
-                                let (menu, clipboard, all_files, root) = (menu.clone(), clipboard.clone(), all_files.clone(), root.clone());
-                                let (path, is_dir) = (path.clone(), *is_dir);
-                                move |m, window, cx| {
-                                    let (Some((model, actions)), Some(root)) = (menu.clone(), root.clone()) else { return m };
-                                    let prefix = format!("{path}/");
-                                    let files = if is_dir { all_files.iter().filter(|f| f.starts_with(&prefix)).cloned().collect() } else { Vec::new() };
-                                    let target = crate::ui::file_menus::ProjectTarget {
-                                        model,
-                                        root,
-                                        path: path.clone(),
-                                        is_dir,
-                                        files,
-                                        actions,
-                                        clipboard: clipboard.clone(),
-                                    };
-                                    crate::ui::file_menus::project_menu(m, target, window, cx)
-                                }
-                            })
-                            .into_any_element()
-                    })
-                    .collect()
-            }),
-        )
-        .size_full();
-        v_flex()
-            .size_full()
-            .bg(palette.panel)
-            .child(
-                h_flex()
-                    .h(px(30.))
-                    .px_2()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(palette.border)
-                    .child(div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Project"))
-                    .child(div().text_xs().text_color(palette.text_secondary).child(root_name))
-                    .child(div().flex_1())
-                    .child(tool_button("project-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(|this, _, _, cx| this.collapse_all(cx)))),
-            )
-            .child(div().flex_1().min_h_0().child(list))
-    }
-}
-
 
 /// A filterable list popup: Recent Files (Ctrl+E), File Structure (Ctrl+F12).
 pub struct ListPicker {

@@ -167,7 +167,7 @@ pub struct Workspace {
     recent_files: Vec<String>,
     /// Files saved or replaced this session, newest first.
     recently_changed: Vec<String>,
-    project: Entity<crate::ui::navigate::ProjectView>,
+    project: Entity<crate::ui::project_view::ProjectView>,
     show_project: bool,
     /// Navigate › Back / Forward: (path, line, column).
     nav_back: Vec<(String, u32, u32)>,
@@ -211,7 +211,7 @@ impl Workspace {
         let changes = cx.new(|cx| crate::ui::changes_view::ChangesView::new(model.clone(), cx));
         let code_index = cx.new(CodeIndex::new);
         let find = cx.new(|_| crate::ui::find_view::FindView::new(code_index.clone()));
-        let project = cx.new(|cx| crate::ui::navigate::ProjectView::new(code_index.clone(), cx));
+        let project = cx.new(|cx| crate::ui::project_view::ProjectView::new(code_index.clone(), cx));
         let weak = cx.entity().downgrade();
         branches_popup.update(cx, |popup, _| {
             popup.on_commit = Some(Rc::new(move |window, cx| {
@@ -225,7 +225,7 @@ impl Workspace {
                 weak.update(cx, |this, cx| this.file_action(action, window, cx)).ok();
             })
         };
-        project.update(cx, |p, _| p.set_menu(model.clone(), file_actions.clone()));
+        project.update(cx, |p, cx| p.set_menu(model.clone(), file_actions.clone(), cx));
         commit.update(cx, |c, _| c.set_file_actions(file_actions));
         let subscriptions = vec![
             cx.subscribe_in(&log, window, |this, _, event: &LogEvent, window, cx| match event {
@@ -609,6 +609,8 @@ impl Workspace {
             self.recent_files.retain(|p| *p != path);
             self.recent_files.insert(0, path.clone());
             self.recent_files.truncate(50);
+            let open = self.recent_files.clone();
+            self.project.update(cx, |project, cx| project.file_opened(&path, open, cx));
         }
         let same = self.editor.as_ref().is_some_and(|(e, _)| e.read(cx).path() == path && e.read(cx).revision() == revision.as_deref());
         if !same {
