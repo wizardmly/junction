@@ -1,1 +1,41 @@
-target/
+# Rust build output (also vendor crates built on their own)
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# Release packaging (packaging/build-macos-app.sh and the release workflow)
+/dist/
+/AppDir/
+/out/
+/icon.iconset/
+/appimagetool
+/notes.md
+*.AppImage
+*.dmg
+/junction-*.zip
+/junction-*.tar.gz
+SHA256SUMS.txt
+
+# Editors and IDEs
+.idea/
+*.iml
+.vscode/
+.fleet/
+.zed/
+*.swp
+*.swo
+*~
+
+# Operating system files
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+# Local environment, logs and profiling
+.env
+.env.*
+*.log
+perf.data*
+flamegraph.svg
