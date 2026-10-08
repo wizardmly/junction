@@ -157,7 +157,7 @@ fn parse_for_each_ref(output: &str) -> Vec<RefName> {
 }
 
 fn favorites_path(repository: &Repository) -> std::path::PathBuf {
-    repository.git_dir().join("gitglass").join("favorites")
+    repository.git_dir().join("junction").join("favorites")
 }
 
 /// Starred branches and tags. Until the user stars anything, `main` /

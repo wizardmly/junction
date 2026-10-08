@@ -21,12 +21,12 @@ pub struct Account {
 }
 
 impl Account {
-    /// The REST API root for this account's server. `GITGLASS_GITHUB_API`
+    /// The REST API root for this account's server. `JUNCTION_GITHUB_API`
     /// overrides github.com's (used by tests against a local server).
     pub fn api_base(&self) -> String {
         match self.service {
             Service::GitHub if self.server == "github.com" => {
-                std::env::var("GITGLASS_GITHUB_API").unwrap_or_else(|_| "https://api.github.com".into())
+                std::env::var("JUNCTION_GITHUB_API").unwrap_or_else(|_| "https://api.github.com".into())
             }
             Service::GitHub if self.server.starts_with("http") => format!("{}/api/v3", self.server.trim_end_matches('/')),
             Service::GitHub => format!("https://{}/api/v3", self.server),
@@ -76,7 +76,7 @@ mod tests {
     #[test]
     fn api_roots() {
         let mut a = Account { service: Service::GitHub, server: "github.com".into(), login: "me".into(), token: "t".into() };
-        if std::env::var("GITGLASS_GITHUB_API").is_err() {
+        if std::env::var("JUNCTION_GITHUB_API").is_err() {
             assert_eq!(a.api_base(), "https://api.github.com");
         }
         a.server = "ghe.corp.com".into();

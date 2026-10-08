@@ -1,4 +1,4 @@
-# GitGlass 功能清单：一比一复刻 Android Studio / IntelliJ 的 Git 客户端
+# Junction 功能清单：一比一复刻 Android Studio / IntelliJ 的 Git 客户端
 
 对照基准：Android Studio（基于 IntelliJ Platform，新 UI）里的 Git 功能，也就是 git4idea + VCS Log + Commit 工具窗口 + Diff/Merge 工具。
 状态：✅ 已实现　🟡 部分实现　⬜ 未开始。阶段：M1–M6，见文末。
@@ -117,7 +117,7 @@
 |---|---|---|
 | Stash Changes 对话框（消息、Keep index） | M2 | ✅（含 Include untracked） |
 | Stashes 列表：查看内容、Apply、Pop、Drop、Clear、Unstash as branch、Reinstate index | M2 | ✅（查看、Apply、Pop、Unstash As…（Pop、Reinstate index、As new branch）、Drop（确认）、Clear（确认）） |
-| Shelf（IntelliJ 特有补丁货架）：Shelve、Unshelve、Shelve silently、Recently deleted | M4 | ✅（Shelf 标签页；Unshelve、Unshelve and Keep、Rename、Delete、Restore、Import Patches；补丁文件 + refs/gitglass 保存） |
+| Shelf（IntelliJ 特有补丁货架）：Shelve、Unshelve、Shelve silently、Recently deleted | M4 | ✅（Shelf 标签页；Unshelve、Unshelve and Keep、Rename、Delete、Restore、Import Patches；补丁文件 + refs/junction 保存） |
 
 ## 4. 分支弹窗（标题栏 VCS 组件 / `Ctrl+Shift+\``）
 
@@ -197,7 +197,7 @@
 | Update method（Merge / Rebase）、Clean working tree using（Stash / Shelve） | M2 | ✅ |
 | 推送被拒时自动更新、Force push 受保护分支列表 | M3 | ✅ |
 | GPG 签名配置 | M4 | ✅（Commit Options → Configure…：列出 secret key，写入仓库 commit.gpgSign / user.signingKey） |
-| 使用 credential helper | M2 | ✅（“Use credential helper”，默认开；关闭后只用 GitGlass 的凭据提示（askpass）） |
+| 使用 credential helper | M2 | ✅（“Use credential helper”，默认开；关闭后只用 Junction 的凭据提示（askpass）） |
 | 定期检查新的远程提交（incoming） | M4 | ✅（设置 › Update branch info：每 N 分钟（默认 10）后台静默 fetch；分支弹窗、Log 分支树、标题栏分支组件显示 ↓incoming ↑outgoing） |
 | Directory mappings（多根） | M5 | ✅（自动检测嵌套仓库和已初始化子模块；Directory Mappings 对话框可 Add Root / Remove / Restore；Update Project 更新所有根） |
 | Commit 设置：非模态提交、清理提交信息、右边距、首行长度 | M3 | ✅（首行长度计数，超限变红） |
@@ -217,7 +217,7 @@
 
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 符号索引：Kotlin、Java、C、C++、Objective-C、Rust、Swift、Dart、Go、V、JavaScript、TypeScript、Python | M7 | ✅（tree-sitter 解析；git ls-files 列表；按大小与修改时间增量更新，多线程；缓存在 .git/gitglass/index.json；保存文件立即重建该文件；状态栏显示进度与“N files, M symbols indexed”） |
+| 符号索引：Kotlin、Java、C、C++、Objective-C、Rust、Swift、Dart、Go、V、JavaScript、TypeScript、Python | M7 | ✅（tree-sitter 解析；git ls-files 列表；按大小与修改时间增量更新，多线程；缓存在 .git/junction/index.json；保存文件立即重建该文件；状态栏显示进度与“N files, M symbols indexed”） |
 | 跨语言桥接 | M7 | ✅（JNI：Java/Kotlin `native` ↔ C/C++ `Java_包_类_方法`（含 _1 等转义）与 RegisterNatives；Dart FFI `lookupFunction`/`@Native` ↔ C/Rust `extern "C"`/`#[no_mangle]`；Rust `extern "C"` 声明 ↔ C 实现；Swift `@_cdecl`/`@objc` ↔ ObjC/C；Go `//export` 与 cgo `C.name`、V `C.name` ↔ C；C 头文件原型 → 跨 ABI 的实现） |
 | Go to Declaration（Ctrl+B / Ctrl+点击 / F12） | M7 | ✅（顺序：桥接 → LSP → 索引；多个目标弹出选择列表；Ctrl 悬停下划线） |
 | Quick Documentation（悬停） | M7 | ✅（LSP hover，否则显示声明行与位置） |

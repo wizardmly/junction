@@ -1,12 +1,12 @@
 [package]
-name = "gitglass"
+name = "junction"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "A desktop Git client that recreates the Android Studio / IntelliJ Git experience"
+description = "Junction: Git & Code Navigator, recreating Android Studio's Git tools and code navigation"
 
 [dependencies]
-# Syntax highlighting for the file editor: the languages GitGlass indexes,
+# Syntax highlighting for the file editor: the languages Junction indexes,
 # plus common config / build file formats.
 gpui-kit = { version = "0.7.1", features = [
     "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-go", "tree-sitter-java", "tree-sitter-kotlin",

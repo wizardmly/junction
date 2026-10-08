@@ -1,4 +1,4 @@
-//! GitGlass: a desktop Git client recreating the Android Studio / IntelliJ
+//! Junction: a desktop Git client recreating the Android Studio / IntelliJ
 //! Git experience with a translucent "glass" window.
 
 // A GUI app on Windows: no console window in release builds.
@@ -41,7 +41,7 @@ fn main() {
         ui::file_editor::init(cx);
         let settings = settings::Settings::load();
         settings.apply_git();
-        let dark = std::env::var("GITGLASS_THEME").map(|t| t != "light").unwrap_or(settings.dark);
+        let dark = std::env::var("JUNCTION_THEME").map(|t| t != "light").unwrap_or(settings.dark);
         cx.set_global(settings);
         cx.set_global(model::ExcludedHunks::default());
         theme::apply(dark, cx);
@@ -64,7 +64,7 @@ pub fn open_project_window(path: Option<PathBuf>, cx: &mut gpui_kit::App) {
         } else {
             WindowBackgroundAppearance::Blurred
         },
-        app_id: Some("gitglass".into()),
+        app_id: Some("junction".into()),
         ..TitleBar::window_options()
     };
     gpui_kit::open_window(options, cx, move |window, cx| {

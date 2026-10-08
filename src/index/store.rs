@@ -91,7 +91,7 @@ impl ProjectIndex {
             .output()
             .ok()?;
         let dir = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        (!dir.is_empty()).then(|| PathBuf::from(dir).join("gitglass").join("index.json"))
+        (!dir.is_empty()).then(|| PathBuf::from(dir).join("junction").join("index.json"))
     }
 
     /// The cached index for a project, or an empty one.
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn indexes_incrementally() {
-        let dir = std::env::temp_dir().join(format!("gitglass-index-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("junction-index-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();

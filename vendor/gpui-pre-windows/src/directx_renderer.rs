@@ -1823,7 +1823,7 @@ pub(crate) mod shader_resources {
 
             let mut compile_blob = None;
             let mut error_blob = None;
-            // GitGlass: compile the embedded HLSL at startup (d3dcompiler_47.dll
+            // Junction: compile the embedded HLSL at startup (d3dcompiler_47.dll
             // ships with Windows 10+), so release builds don't need fxc.exe.
             let body = if shader_name == "shaders.hlsl" {
                 include_str!("shaders.hlsl")

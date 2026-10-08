@@ -2118,35 +2118,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
-name = "gitglass"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "gpui-kit",
- "lsp-types",
- "regex",
- "serde",
- "serde_json",
- "similar",
- "tree-sitter",
- "tree-sitter-c",
- "tree-sitter-cpp",
- "tree-sitter-dart",
- "tree-sitter-go",
- "tree-sitter-java",
- "tree-sitter-javascript",
- "tree-sitter-kotlin-sg",
- "tree-sitter-objc",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-swift",
- "tree-sitter-typescript",
- "tree-sitter-vlang",
- "ureq",
-]
-
-[[package]]
 name = "gl_generator"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3557,6 +3528,35 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "junction"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "gpui-kit",
+ "lsp-types",
+ "regex",
+ "serde",
+ "serde_json",
+ "similar",
+ "tree-sitter",
+ "tree-sitter-c",
+ "tree-sitter-cpp",
+ "tree-sitter-dart",
+ "tree-sitter-go",
+ "tree-sitter-java",
+ "tree-sitter-javascript",
+ "tree-sitter-kotlin-sg",
+ "tree-sitter-objc",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-swift",
+ "tree-sitter-typescript",
+ "tree-sitter-vlang",
+ "ureq",
 ]
 
 [[package]]

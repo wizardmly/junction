@@ -275,7 +275,7 @@ mod tests {
     }
 
     fn temp_repo(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("gitglass-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("junction-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         git(&dir, &["init", "-q", "-b", "main"]);
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn update_project_with_shelve_restores_local_changes() {
         let origin = temp_repo("update-origin");
-        let local = origin.with_file_name(format!("gitglass-test-update-local-{}", std::process::id()));
+        let local = origin.with_file_name(format!("junction-test-update-local-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&local);
         git(&origin, &["clone", "-q", origin.to_str().unwrap(), local.to_str().unwrap()]);
         git(&local, &["config", "user.name", "T"]);
@@ -338,7 +338,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&bare);
         git(&origin, &["clone", "-q", "--bare", ".", bare.to_str().unwrap()]);
         let clone = |name: &str| {
-            let dir = std::env::temp_dir().join(format!("gitglass-test-{name}-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("junction-test-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             git(&origin, &["clone", "-q", bare.to_str().unwrap(), dir.to_str().unwrap()]);
             git(&dir, &["config", "user.name", "T"]);

@@ -21,7 +21,7 @@ impl TempIndex {
     pub(crate) fn new(repository: &Repository) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        Self { path: repository.git_dir().join(format!("gitglass-index-{}-{n}", std::process::id())) }
+        Self { path: repository.git_dir().join(format!("junction-index-{}-{n}", std::process::id())) }
     }
 
     pub(crate) fn env(&self) -> [(&str, &str); 1] {
@@ -182,9 +182,9 @@ pub fn rollback_with(repository: &Repository, paths: &[String], delete_added: bo
 
 // ---- Shelf ----
 
-/// One shelved changelist. Kept as `<git dir>/gitglass/shelf/<id>/` with
+/// One shelved changelist. Kept as `<git dir>/junction/shelf/<id>/` with
 /// `shelved.patch` (the IntelliJ-compatible patch) and `info`, plus
-/// `refs/gitglass/shelf/<id>` so the base and shelved trees survive gc.
+/// `refs/junction/shelf/<id>` so the base and shelved trees survive gc.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shelf {
     pub id: String,
@@ -202,7 +202,7 @@ impl Shelf {
 }
 
 fn shelf_dir(repository: &Repository) -> PathBuf {
-    repository.git_dir().join("gitglass").join("shelf")
+    repository.git_dir().join("junction").join("shelf")
 }
 
 fn now() -> i64 {
@@ -288,7 +288,7 @@ pub fn shelve(repository: &Repository, paths: &[String], name: &str, keep: bool)
     std::fs::write(dir.join("shelved.patch"), &patch)?;
     let shelf = Shelf { id: id.clone(), name: name.to_owned(), time, base, commit, deleted: false };
     write_info(&dir, &shelf)?;
-    repository.run(["update-ref", &format!("refs/gitglass/shelf/{id}"), &shelf.commit])?;
+    repository.run(["update-ref", &format!("refs/junction/shelf/{id}"), &shelf.commit])?;
     if !keep {
         rollback(repository, paths)?;
     }
@@ -333,7 +333,7 @@ pub fn delete_shelf(repository: &Repository, shelf: &Shelf) -> Result<()> {
         return set_deleted(repository, shelf, true);
     }
     std::fs::remove_dir_all(shelf_dir(repository).join(&shelf.id))?;
-    repository.run(["update-ref", "-d", &format!("refs/gitglass/shelf/{}", shelf.id)]).ok();
+    repository.run(["update-ref", "-d", &format!("refs/junction/shelf/{}", shelf.id)]).ok();
     Ok(())
 }
 
@@ -394,7 +394,7 @@ mod tests {
                 use std::sync::atomic::{AtomicUsize, Ordering};
                 static N: AtomicUsize = AtomicUsize::new(0);
                 let path = std::env::temp_dir()
-                    .join(format!("gitglass-patch-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+                    .join(format!("junction-patch-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
                 std::fs::create_dir_all(&path).unwrap();
                 Self(path)
             }

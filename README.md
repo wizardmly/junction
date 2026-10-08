@@ -1,6 +1,6 @@
-# GitGlass
+# Junction
 
-一个桌面 Git 客户端，一比一复刻 Android Studio / IntelliJ 的 Git 功能，带玻璃（半透明模糊）窗口。
+Junction — Git & Code Navigator：桌面客户端，一比一复刻 Android Studio / IntelliJ 的 Git 功能，以及跨语言的代码索引和跳转（JNI、Dart FFI、Rust extern C、Swift/ObjC 桥接）。
 技术栈：Rust + [GPUI](https://www.gpui.rs) + [GPUI Kit / gpui-component](https://github.com/longbridge/gpui-kit)。
 Git 操作和 IntelliJ 的 git4idea 一样，直接调用 `git` 命令行。
 
@@ -12,7 +12,7 @@ Git 操作和 IntelliJ 的 git4idea 一样，直接调用 `git` 命令行。
 
 ```sh
 cargo run --release -- /path/to/repo     # 不传路径时打开当前目录
-GITGLASS_THEME=light cargo run           # 亮色主题
+JUNCTION_THEME=light cargo run           # 亮色主题
 ```
 
 - **Windows**：需要 Visual Studio Build Tools（MSVC）。Windows 11 上窗口使用 Mica 背景。

@@ -156,6 +156,7 @@ impl RepoModel {
     pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match Repository::discover(&path, self.console.clone()) {
             Ok(repository) => {
+                git::migrate_legacy_data(&repository);
                 self.open_problem = None;
                 self.failed_path = None;
                 crate::settings::remember_project(repository.root());

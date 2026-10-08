@@ -184,7 +184,13 @@ pub fn config_dir() -> Option<PathBuf> {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
     }?;
-    Some(dir.join("GitGlass"))
+    let current = dir.join("Junction");
+    // The app was called GitGlass before: carry its settings and accounts over once.
+    let legacy = dir.join("GitGlass");
+    if !current.exists() && legacy.is_dir() {
+        let _ = std::fs::rename(&legacy, &current);
+    }
+    Some(current)
 }
 
 fn config_path() -> Option<PathBuf> {

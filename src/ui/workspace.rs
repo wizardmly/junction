@@ -951,7 +951,7 @@ impl Workspace {
             .items_center()
             .justify_center()
             .gap_4()
-            .child(div().text_xl().font_weight(FontWeight::BOLD).child("Welcome to GitGlass"))
+            .child(div().text_xl().font_weight(FontWeight::BOLD).child("Welcome to Junction"))
             .child(
                 h_flex()
                     .gap_2()
@@ -970,7 +970,7 @@ impl Workspace {
                 let (title, hint) = match &problem {
                     Some(OpenProblem::GitMissing) => (
                         "Git is not installed",
-                        "GitGlass runs the git command-line tool. Install Git for Windows (or point Settings › Git to an existing git.exe), then retry.",
+                        "Junction runs the git command-line tool. Install Git for Windows (or point Settings › Git to an existing git.exe), then retry.",
                     ),
                     Some(OpenProblem::Unsafe(_)) => (
                         "The folder is owned by another user",

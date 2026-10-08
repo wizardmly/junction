@@ -12,7 +12,7 @@ use super::Repository;
 const SKIP: [&str; 8] = [".git", "node_modules", "target", "build", ".gradle", ".idea", "Pods", ".dart_tool"];
 const MAX_DEPTH: usize = 3;
 
-/// User edits to the detected roots, kept in `<gitdir>/gitglass/roots` as
+/// User edits to the detected roots, kept in `<gitdir>/junction/roots` as
 /// `+path` (added) and `-path` (removed) lines, paths relative to the project.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Mappings {
@@ -21,7 +21,7 @@ pub struct Mappings {
 }
 
 fn mappings_file(repository: &Repository) -> PathBuf {
-    repository.git_dir().join("gitglass").join("roots")
+    repository.git_dir().join("junction").join("roots")
 }
 
 pub fn load_mappings(repository: &Repository) -> Mappings {
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn scans_nested_repositories_and_applies_mappings() {
-        let dir = std::env::temp_dir().join(format!("gitglass-test-roots-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("junction-test-roots-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         for sub in ["", "libs/a", "libs/b", "node_modules/x", "deep/one/two/three"] {
             let p = dir.join(sub);

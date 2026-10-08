@@ -292,7 +292,7 @@ impl LspClient {
                 "rootUri": root_uri,
                 "rootPath": root.to_string_lossy(),
                 "workspaceFolders": [{ "uri": root_uri, "name": name }],
-                "clientInfo": { "name": "GitGlass" },
+                "clientInfo": { "name": "Junction" },
                 "capabilities": {
                     "general": { "positionEncodings": ["utf-16"] },
                     "window": { "workDoneProgress": true },
@@ -573,7 +573,7 @@ mod tests {
         if find_program("pyright-langserver").is_none() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("gitglass-lsp-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("junction-lsp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let text = "def greet(name):\n    return name\n\ngreet('x')\n";
         let file = dir.join("main.py");

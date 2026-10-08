@@ -284,7 +284,7 @@ pub fn last_commit_message(repository: &Repository) -> Option<String> {
 pub fn checkout(repository: &Repository, reference: &super::RefName) -> Result<()> {
     match checkout_plain(repository, reference) {
         Err(error) if error.to_string().contains("would be overwritten by checkout") => {
-            repository.run(["stash", "push", "--include-untracked", "-m", "GitGlass smart checkout"])?;
+            repository.run(["stash", "push", "--include-untracked", "-m", "Junction smart checkout"])?;
             let result = checkout_plain(repository, reference);
             // Restore even if the checkout failed; a conflict leaves the stash for the Stash tab.
             repository.run(["stash", "pop"])?;

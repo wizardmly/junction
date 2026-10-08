@@ -1,5 +1,5 @@
 //! IntelliJ changelists: named groups of local changes, kept per repository
-//! in `<git dir>/gitglass/changelists`. Git itself knows nothing about them.
+//! in `<git dir>/junction/changelists`. Git itself knows nothing about them.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -34,7 +34,7 @@ impl Default for Changelists {
 }
 
 fn path(repository: &Repository) -> PathBuf {
-    repository.git_dir().join("gitglass").join("changelists")
+    repository.git_dir().join("junction").join("changelists")
 }
 
 fn escape(text: &str) -> String {

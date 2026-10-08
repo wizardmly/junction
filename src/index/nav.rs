@@ -368,7 +368,7 @@ mod tests {
     use super::*;
 
     fn project(files: &[(&str, &str)]) -> (std::path::PathBuf, ProjectIndex) {
-        let dir = std::env::temp_dir().join(format!("gitglass-nav-{}-{}", std::process::id(), files.len()));
+        let dir = std::env::temp_dir().join(format!("junction-nav-{}-{}", std::process::id(), files.len()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).output().unwrap();

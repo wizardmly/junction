@@ -1,4 +1,4 @@
-//! The languages GitGlass indexes: file detection, tree-sitter grammars and
+//! The languages Junction indexes: file detection, tree-sitter grammars and
 //! the language servers tried for each.
 
 use serde::{Deserialize, Serialize};

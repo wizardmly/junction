@@ -9,7 +9,7 @@ use anyhow::{Result, anyhow};
 /// An HTTP agent for `url`: uses HTTPS_PROXY / HTTP_PROXY unless the host
 /// is listed in NO_PROXY (ureq's own env handling ignores NO_PROXY).
 pub(crate) fn agent_for(url: &str) -> ureq::Agent {
-    let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).user_agent("GitGlass");
+    let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).user_agent("Junction");
     let host = url.split_once("://").map_or(url, |(_, r)| r).split(['/', ':']).next().unwrap_or_default();
     let env = |k: &str| std::env::var(k).or_else(|_| std::env::var(k.to_lowercase())).ok().filter(|v| !v.is_empty());
     let bypass = env("NO_PROXY").is_some_and(|list| no_proxy_matches(&list, host));

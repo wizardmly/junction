@@ -1,4 +1,4 @@
-//! Credentials prompt. Git runs GitGlass itself as `GIT_ASKPASS` /
+//! Credentials prompt. Git runs Junction itself as `GIT_ASKPASS` /
 //! `SSH_ASKPASS` with the prompt as the only argument ("Username for
 //! 'https://…':", "Password for …", "Enter passphrase for key …"); we show a
 //! small login window, like IntelliJ's, and print the answer on stdout.
@@ -16,8 +16,8 @@ use gpui_kit::{
 
 use crate::theme::ActivePalette as _;
 
-/// Set in git's environment so a GitGlass started as askpass knows it.
-pub const ENV: &str = "GITGLASS_ASKPASS";
+/// Set in git's environment so a Junction started as askpass knows it.
+pub const ENV: &str = "JUNCTION_ASKPASS";
 
 /// Environment for git commands so credential prompts come to us.
 pub fn git_env() -> Vec<(&'static str, String)> {
@@ -97,7 +97,7 @@ pub fn run(prompt: String) {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             is_resizable: false,
-            app_id: Some("gitglass-askpass".into()),
+            app_id: Some("junction-askpass".into()),
             ..TitleBar::window_options()
         };
         gpui_kit::open_window(options, cx, move |window, cx| {

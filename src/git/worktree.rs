@@ -124,8 +124,8 @@ mod tests {
     fn add_and_remove() {
         use crate::git::GitConsole;
         use std::process::Command;
-        let dir = std::env::temp_dir().join(format!("gitglass-test-worktree-{}", std::process::id()));
-        let other = dir.with_file_name(format!("gitglass-test-worktree-b-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("junction-test-worktree-{}", std::process::id()));
+        let other = dir.with_file_name(format!("junction-test-worktree-b-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other);
         std::fs::create_dir_all(&dir).unwrap();

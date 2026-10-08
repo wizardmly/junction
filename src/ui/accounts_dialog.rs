@@ -114,7 +114,7 @@ impl Render for AccountsView {
             .when(self.adding, |el| {
                 let server = self.server.read(cx).value().trim().to_owned();
                 let host = if server.is_empty() { "github.com".to_owned() } else { server };
-                let token_url = format!("https://{host}/settings/tokens/new?scopes=repo,gist,read:org,workflow&description=GitGlass");
+                let token_url = format!("https://{host}/settings/tokens/new?scopes=repo,gist,read:org,workflow&description=Junction");
                 el.child(
                     v_flex()
                         .gap_2()

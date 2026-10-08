@@ -1,5 +1,5 @@
 //! Interactive rebase driven from our own editor: we write the todo list,
-//! and git runs GitGlass as `GIT_SEQUENCE_EDITOR` to pick it up.
+//! and git runs Junction as `GIT_SEQUENCE_EDITOR` to pick it up.
 
 use std::path::PathBuf;
 
@@ -8,8 +8,8 @@ use anyhow::{Context as _, Result};
 use super::log::{Commit, parse_log};
 use super::Repository;
 
-/// Set when git runs GitGlass as the sequence editor: our todo file's path.
-pub const TODO_ENV: &str = "GITGLASS_REBASE_TODO";
+/// Set when git runs Junction as the sequence editor: our todo file's path.
+pub const TODO_ENV: &str = "JUNCTION_REBASE_TODO";
 
 /// When started as the sequence editor, copies our todo over git's and exits.
 pub fn handle_sequence_editor() -> bool {
@@ -100,7 +100,7 @@ pub fn message_of(repository: &Repository, hash: &str) -> String {
 }
 
 fn temp_file(name: &str, content: &str) -> Result<PathBuf> {
-    let path = std::env::temp_dir().join(format!("gitglass-{}-{name}", std::process::id()));
+    let path = std::env::temp_dir().join(format!("junction-{}-{name}", std::process::id()));
     std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn squashes_drops_and_rewords() {
         use crate::git::GitConsole;
-        let dir = std::env::temp_dir().join(format!("gitglass-test-rebase-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("junction-test-rebase-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let git = |args: &[&str]| {
@@ -239,7 +239,7 @@ mod tests {
             Entry { commit: commits[1].clone(), action: Action::Fixup, message: None },
             Entry { commit: commits[2].clone(), action: Action::Drop, message: None },
         ];
-        run_with_editor(&repo, "HEAD~3", &entries, "cp \"$GITGLASS_REBASE_TODO\"").unwrap();
+        run_with_editor(&repo, "HEAD~3", &entries, "cp \"$JUNCTION_REBASE_TODO\"").unwrap();
         let log = repo.run(["log", "--format=%s"]).unwrap();
         assert_eq!(log.lines().collect::<Vec<_>>(), vec!["one, reworded", "base"]);
         assert!(dir.join("two.txt").exists() && !dir.join("three.txt").exists());
