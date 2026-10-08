@@ -37,7 +37,7 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | 提交图（彩色泳道、合并线、长边折叠为箭头） | M1 | ✅ |
-| 列：Subject（含分支/标签标签）、Author、Date、Hash；列可显示/隐藏、可拖宽 | M1 | 🟡（View Options › Show Columns：Author / Date / Hash 显示隐藏并记住；拖宽未做） |
+| 列：Subject（含分支/标签标签）、Author、Date、Hash；列可显示/隐藏、可拖宽 | M1 | ✅（View Options › Show Columns：Author / Date / Hash 显示隐藏并记住；拖动列的左边缘改宽度，宽度记住） |
 | 引用标签：本地分支、远程分支、标签、HEAD；左/右侧显示；紧凑引用视图 | M1 | ✅（本地/远程/标签/HEAD 标签；View Options：Compact References View、Show References on the Left） |
 | 虚拟滚动，几十万提交流畅 | M1 | ✅ |
 | 分段加载（先加载最近的，滚动时加载更多） | M2 | ✅（先 1000 条，其余后台加载） |

@@ -78,7 +78,11 @@ pub struct LogSettings {
     pub highlight_not_merged: bool,
     /// `--date-order` instead of IntelliSort's topological order.
     pub sort_by_date: bool,
+    /// Author, date and hash column widths (dragged at their left edge).
+    pub columns: [u32; 3],
 }
+
+pub const LOG_COLUMNS: [u32; 3] = [150, 140, 76];
 
 impl Default for LogSettings {
     fn default() -> Self {
@@ -93,6 +97,7 @@ impl Default for LogSettings {
             highlight_merges: true,
             highlight_current_branch: false,
             highlight_not_merged: false,
+            columns: LOG_COLUMNS,
             sort_by_date: false,
         }
     }
@@ -331,6 +336,12 @@ impl Settings {
                 "sign_off" => settings.sign_off = flag,
                 "run_hooks" => settings.run_hooks = flag,
                 "cleanup_message" => settings.cleanup_message = flag,
+                "log_columns" => {
+                    let widths: Vec<u32> = value.split(',').filter_map(|w| w.trim().parse().ok()).collect();
+                    if let [a, d, h] = widths[..] {
+                        settings.log.columns = [a, d, h].map(|w| w.clamp(30, 800));
+                    }
+                }
                 key if key.starts_with("log_") => {
                     if let Some((_, field)) = settings.log.fields().into_iter().find(|(k, _)| *k == key) {
                         *field = flag;
@@ -416,6 +427,8 @@ impl Settings {
             text.push_str(&format!("{k}={v}\n"));
         }
         text.push_str(&format!("diff_context_lines={}\n", self.diff.context_lines));
+        let [a, d, h] = self.log.columns;
+        text.push_str(&format!("log_columns={a},{d},{h}\n"));
         let mut project = self.project.clone();
         for (k, v) in project.fields() {
             text.push_str(&format!("{k}={v}\n"));

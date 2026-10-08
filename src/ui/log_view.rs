@@ -96,6 +96,10 @@ pub struct LogView {
     extra_selection: HashSet<String>,
     /// Where a Shift-click range starts.
     anchor: Option<usize>,
+    /// A column edge being dragged: the column (author, date, hash), where
+    /// the drag started and the width then; the widths while dragging.
+    column_drag: Option<(usize, f32, u32)>,
+    columns: Option<[u32; 3]>,
     _search_debounce: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -183,6 +187,8 @@ impl LogView {
             my_branches: false,
             extra_selection: HashSet::new(),
             anchor: None,
+            column_drag: None,
+            columns: None,
             _search_debounce: None,
             _subscriptions: subscriptions,
         };
@@ -1000,6 +1006,48 @@ impl LogView {
         set
     }
 
+    /// Follows a column edge drag anywhere in the window; the widths are
+    /// saved when the mouse is released.
+    fn column_drag_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        gpui_kit::canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                let moving = entity.clone();
+                window.on_mouse_event(move |e: &gpui_kit::MouseMoveEvent, phase, _, cx| {
+                    if phase != gpui_kit::DispatchPhase::Bubble {
+                        return;
+                    }
+                    moving.update(cx, |this, cx| {
+                        let (Some((column, start, width)), Some(mut widths)) = (this.column_drag, this.columns) else { return };
+                        // The edge is on the column's left: dragging left widens it.
+                        let w = (width as f32 + start - f32::from(e.position.x)).clamp(40., 600.) as u32;
+                        if widths[column] != w {
+                            widths[column] = w;
+                            this.columns = Some(widths);
+                            cx.notify();
+                        }
+                    });
+                });
+                let released = entity.clone();
+                window.on_mouse_event(move |_: &gpui_kit::MouseUpEvent, phase, _, cx| {
+                    if phase != gpui_kit::DispatchPhase::Bubble {
+                        return;
+                    }
+                    released.update(cx, |this, cx| {
+                        this.column_drag = None;
+                        if let Some(widths) = this.columns.take() {
+                            Settings::update(cx, |s| s.log.columns = widths);
+                        }
+                        cx.notify();
+                    });
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
     fn render_rows(&mut self, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let palette = cx.palette().clone();
         let focused = self.focus.contains_focused(window, cx);
@@ -1013,6 +1061,28 @@ impl LogView {
         let log = Settings::get(cx).log.clone();
         let show_hash = log.show_hash;
         let entity = cx.entity();
+        let widths = self.columns.unwrap_or(log.columns).map(|w| px(w as f32));
+        // A column's left edge: drag it to resize the column, as in IntelliJ's log table.
+        let edge = |column: usize, ix: usize, entity: &Entity<Self>| {
+            let entity = entity.clone();
+            div()
+                .id(("log-column-edge", column * 10_000_000 + ix))
+                .absolute()
+                .left_0()
+                .top_0()
+                .bottom_0()
+                .w(px(5.))
+                .cursor(gpui_kit::CursorStyle::ResizeLeftRight)
+                .on_mouse_down(gpui_kit::MouseButton::Left, move |event: &gpui_kit::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    entity.update(cx, |this, cx| {
+                        let widths = this.columns.unwrap_or(Settings::get(cx).log.columns);
+                        this.columns = Some(widths);
+                        this.column_drag = Some((column, f32::from(event.position.x), widths[column]));
+                        cx.notify();
+                    });
+                })
+        };
         let reachable = if log.highlight_current_branch || log.highlight_not_merged { Some(self.head_reachable(cx)) } else { None };
         let model = self.model.read(cx);
 
@@ -1143,9 +1213,11 @@ impl LogView {
                         .when(log.show_author, |el| {
                             el.child(
                                 div()
-                                    .w(px(150.))
+                                    .relative()
+                                    .w(widths[0])
                                     .flex_shrink_0()
                                     .pl_2()
+                                    .child(edge(0, ix, &entity))
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
@@ -1157,9 +1229,12 @@ impl LogView {
                         .when(log.show_date, |el| {
                             el.child(
                                 div()
-                                    .w(px(140.))
+                                    .relative()
+                                    .w(widths[1])
                                     .flex_shrink_0()
                                     .pl_2()
+                                    .child(edge(1, ix, &entity))
+                                    .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_color(palette.text_secondary)
                                     .child(if log.relative_dates {
@@ -1172,9 +1247,12 @@ impl LogView {
                         .when(show_hash, |el| {
                             el.child(
                                 div()
-                                    .w(px(76.))
+                                    .relative()
+                                    .w(widths[2])
                                     .flex_shrink_0()
                                     .pl_2()
+                                    .child(edge(2, ix, &entity))
+                                    .overflow_hidden()
                                     .font_family(cx.theme().mono_font_family.clone())
                                     .text_color(palette.text_secondary)
                                     .child(commit.short_hash().to_owned()),
@@ -1957,6 +2035,7 @@ impl Render for LogView {
                                 .size_full(),
                         )
                         .vertical_scrollbar(&self.scroll)
+                        .when(self.column_drag.is_some(), |el| el.child(self.column_drag_tracker(cx)))
                     }),
             );
 
