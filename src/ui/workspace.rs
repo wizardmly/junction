@@ -71,11 +71,21 @@ actions!(
         FindAction,
         RecentFiles,
         FileStructure,
-        GotoLine
+        GotoLine,
+        CloseTab,
+        NextTab,
+        PreviousTab,
+        ReopenClosedTab
     ]
 );
 
+#[path = "workspace_tabs.rs"]
+mod tabs;
+use tabs::{EditorTab, Front};
+
 const CONTEXT: &str = "Workspace";
+/// The editor area while it shows a file: Alt+Left / Right switch tabs there.
+const TABS_CONTEXT: &str = "EditorTabs";
 
 /// IntelliJ's default keymap for the VCS actions.
 pub fn init(cx: &mut gpui_kit::App) {
@@ -115,6 +125,16 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-f12", FileStructure, Some(CONTEXT)),
         KeyBinding::new("secondary-g", GotoLine, Some(CONTEXT)),
         KeyBinding::new("alt-f1", SelectInProject, Some(CONTEXT)),
+        // Editor tabs: Ctrl+F4 closes; Alt+Left / Alt+Right switch (Cmd+Shift+[ / ] on macOS).
+        KeyBinding::new("secondary-f4", CloseTab, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("alt-left", PreviousTab, Some(TABS_CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("alt-right", NextTab, Some(TABS_CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-[", PreviousTab, Some(TABS_CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-]", NextTab, Some(TABS_CONTEXT)),
     ]);
 }
 
@@ -187,7 +207,13 @@ pub struct Workspace {
     active_log: usize,
     /// Annotate with Git Blame, shown instead of the diff until closed.
     blame: Option<(Entity<BlameView>, Subscription)>,
-    editor: Option<(Entity<FileEditor>, Subscription)>,
+    /// Editor tabs, pinned first.
+    editors: Vec<EditorTab>,
+    /// What the editor area shows: a file tab, or the diff / merge / annotate / PR view.
+    front: Front,
+    tab_clock: u64,
+    /// Reopen Closed Tab, newest last.
+    closed_tabs: Vec<String>,
     show_commit: bool,
     show_git: bool,
     left_tab: LeftTab,
@@ -259,6 +285,7 @@ impl Workspace {
                 crate::ui::pull_requests::PrEvent::OpenTimeline(target, pr) => {
                     let (target, pr) = (target.clone(), pr.clone());
                     this.timeline = Some(cx.new(|cx| crate::ui::pull_requests::PrTimelineView::new(target, pr, window, cx)));
+                    this.front = Front::Timeline;
                     cx.notify();
                 }
             }),
@@ -468,7 +495,10 @@ impl Workspace {
             log_tabs: vec![LogTab { title: "Log".into(), filter: Default::default(), selected: None }],
             active_log: 0,
             blame: None,
-            editor: None,
+            editors: Vec::new(),
+            front: Front::Diff,
+            tab_clock: 0,
+            closed_tabs: Vec::new(),
             show_commit: true,
             show_git: true,
             left_tab: LeftTab::Commit,
@@ -502,6 +532,7 @@ impl Workspace {
         let subscription = cx.subscribe_in(&view, window, |this, _, event: &MergeEvent, window, cx| match event {
             MergeEvent::Closed(applied) => {
                 this.merge = None;
+                this.fix_front(cx);
                 // Back to the Conflicts dialog while other files still conflict.
                 let others = merge::conflicts(this.model.read(cx).status()).len() > 1;
                 if *applied && others {
@@ -511,6 +542,7 @@ impl Workspace {
             }
         });
         self.merge = Some((view, subscription));
+        self.front = Front::Merge;
         cx.notify();
     }
 
@@ -592,42 +624,34 @@ impl Workspace {
             BlameEvent::ShowDiff(source) => this.open_diff(source.clone(), cx),
             BlameEvent::Closed => {
                 this.blame = None;
+                this.fix_front(cx);
                 cx.notify();
             }
         });
         self.blame = Some((view, subscription));
+        self.front = Front::Blame;
         cx.notify();
     }
 
     /// Show History: a Log tab for one file, following renames, as IntelliJ's "History: name" tab.
     /// Opens a file in the editor: the working tree (`None`) or a revision, read-only.
     pub fn open_file(&mut self, path: String, revision: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
-        self.blame = None;
-        self.timeline = None;
+        if self.model.read(cx).repository().is_none() {
+            return;
+        }
         if revision.is_none() {
             self.recent_files.retain(|p| *p != path);
             self.recent_files.insert(0, path.clone());
             self.recent_files.truncate(50);
-            let open = self.recent_files.clone();
-            self.project.update(cx, |project, cx| project.file_opened(&path, open, cx));
         }
-        let same = self.editor.as_ref().is_some_and(|(e, _)| e.read(cx).path() == path && e.read(cx).revision() == revision.as_deref());
-        if !same {
-            let view = cx.new(|cx| FileEditor::new(repository, path, revision, window, cx));
-            let subscription = cx.subscribe_in(&view, window, Self::on_file_editor_event);
-            let index = self.code_index.clone();
-            view.update(cx, |editor, cx| editor.attach_index(index, cx));
-            self.editor = Some((view, subscription));
-        }
-        cx.notify();
+        self.open_tab(path, revision, window, cx);
     }
 
     fn on_file_editor_event(&mut self, _: &Entity<FileEditor>, event: &FileEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             FileEditorEvent::Navigate(targets) => self.navigate(targets.clone(), window, cx),
             FileEditorEvent::FindUsages { text, offset } => {
-                let Some(path) = self.editor.as_ref().map(|(e, _)| e.read(cx).path().to_owned()) else { return };
+                let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
                 let (index, text, offset) = (self.code_index.clone(), text.clone(), *offset);
                 let _ = index;
                 self.find.update(cx, |view, cx| view.find_usages(path, text, offset, cx));
@@ -643,10 +667,6 @@ impl Workspace {
             }
             FileEditorEvent::CreateGist { name, content } => {
                 crate::ui::github_dialogs::create_gist(self.model.clone(), vec![(name.clone(), content.clone())], window, cx)
-            }
-            FileEditorEvent::Closed => {
-                self.editor = None;
-                cx.notify();
             }
             FileEditorEvent::Annotate { path, revision } => self.annotate(path.clone(), revision.clone(), cx),
             FileEditorEvent::ShowHistory(path) => self.show_history(path.clone(), cx),
@@ -762,8 +782,7 @@ impl Workspace {
     }
 
     fn current_position(&self, cx: &gpui_kit::App) -> Option<(String, u32, u32)> {
-        let (editor, _) = self.editor.as_ref()?;
-        let editor = editor.read(cx);
+        let editor = self.editor()?.read(cx);
         if editor.revision().is_some() {
             return None;
         }
@@ -772,10 +791,8 @@ impl Workspace {
     }
 
     fn open_at(&mut self, path: String, line: u32, col: u32, window: &mut Window, cx: &mut Context<Self>) {
-        self.merge = None;
-        self.timeline = None;
         self.open_file(path, None, window, cx);
-        if let Some((editor, _)) = &self.editor {
+        if let Some(editor) = self.editor().cloned() {
             editor.update(cx, |editor, cx| editor.go_to(line, col, window, cx));
         }
     }
@@ -798,13 +815,14 @@ impl Workspace {
 
     /// The Module / Scope tabs' view of the project.
     fn scope_data(&self, cx: &gpui_kit::App) -> crate::ui::find_popup::ScopeData {
-        let current_file = self.editor.as_ref().filter(|(e, _)| e.read(cx).revision().is_none()).map(|(e, _)| e.read(cx).path().to_owned());
+        let current_file = self.editor().filter(|e| e.read(cx).revision().is_none()).map(|e| e.read(cx).path().to_owned());
+        let open_files: Vec<String> = self.editors.iter().filter(|t| t.view.read(cx).revision().is_none()).map(|t| t.view.read(cx).path().to_owned()).collect();
         let local_changes: Vec<String> = self.model.read(cx).status().entries.iter().map(|e| e.path.clone()).collect();
         let mut recently_changed = self.recently_changed.clone();
         recently_changed.extend(local_changes.iter().filter(|p| !self.recently_changed.contains(p)).cloned());
         let modules = self.code_index.read(cx).root().map(|root| modules_of(&crate::index::store::list_files(root))).unwrap_or_default();
         crate::ui::find_popup::ScopeData {
-            open_files: current_file.iter().cloned().collect(),
+            open_files,
             current_file,
             recent_files: self.recent_files.clone(),
             recently_changed,
@@ -838,7 +856,7 @@ impl Workspace {
             });
             self.find_popup = Some((popup, subscription));
         }
-        let text = self.editor.as_ref().and_then(|(e, _)| e.read(cx).search_text(cx));
+        let text = self.editor().and_then(|e| e.read(cx).search_text(cx));
         let data = self.scope_data(cx);
         if let Some((popup, _)) = &self.find_popup {
             popup.update(cx, |p, cx| p.show(replace, text, data, window, cx));
@@ -863,14 +881,29 @@ impl Workspace {
             self.code_index.update(cx, |index, cx| index.refresh_file(&path, cx));
         }
         self.model.update(cx, |m, cx| m.reload(cx));
-        let reload = self.editor.as_ref().map(|(e, _)| e.read(cx)).filter(|e| e.revision().is_none() && paths.iter().any(|p| p == e.path()) && !e.is_dirty(cx)).map(|e| (e.path().to_owned(), e.cursor(cx)));
-        if let Some((path, (line, col))) = reload {
-            self.editor = None;
-            self.open_file(path, None, window, cx);
-            if let Some((editor, _)) = &self.editor {
-                editor.update(cx, |editor, cx| editor.go_to(line, col, window, cx));
-            }
+        // Unmodified tabs of changed files reload from disk.
+        let stale: Vec<usize> = (0..self.editors.len())
+            .filter(|&i| {
+                let e = self.editors[i].view.read(cx);
+                e.revision().is_none() && paths.iter().any(|p| p == e.path()) && !e.is_dirty(cx)
+            })
+            .collect();
+        for ix in stale {
+            let Some(repository) = self.model.read(cx).repository().cloned() else { break };
+            let old = self.editors[ix].view.clone();
+            let (path, (line, col)) = (old.read(cx).path().to_owned(), old.read(cx).cursor(cx));
+            let view = cx.new(|cx| FileEditor::new(repository, path, None, window, cx));
+            let subscription = cx.subscribe_in(&view, window, Self::on_file_editor_event);
+            let index = self.code_index.clone();
+            view.update(cx, |editor, cx| {
+                editor.attach_index(index, cx);
+                editor.go_to(line, col, window, cx);
+            });
+            let tab = &mut self.editors[ix];
+            tab.view = view;
+            tab._subscription = subscription;
         }
+        cx.notify();
     }
 
     fn render_popups(&self, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
@@ -955,6 +988,14 @@ impl Workspace {
             })),
             ("Refresh", "Ctrl+Alt+Y", op(|this, window, cx| this.on_refresh(&Refresh, window, cx))),
             ("VCS Operations Popup…", "Alt+`", op(|this, window, cx| this.on_vcs_operations(&VcsOperations, window, cx))),
+            ("Close Tab", "Ctrl+F4", op(|this, _, cx| this.close_active_tab(cx))),
+            ("Select Next Tab", "Alt+Right", op(|this, window, cx| this.step_tab(1, window, cx))),
+            ("Select Previous Tab", "Alt+Left", op(|this, window, cx| this.step_tab(-1, window, cx))),
+            ("Reopen Closed Tab", "", op(|this, window, cx| this.reopen_closed_tab(window, cx))),
+            ("Close All Tabs", "", op(|this, _, cx| {
+                let all = (0..this.editors.len()).collect();
+                this.close_tabs(all, cx);
+            })),
         ];
         for (name, shortcut, run) in windows {
             add(name, shortcut, "Window", run);
@@ -1004,7 +1045,7 @@ impl Workspace {
             self.search_everywhere = Some((se, subscription));
         }
         self.show_find_popup = false;
-        let text = self.editor.as_ref().and_then(|(e, _)| e.read(cx).selected_text(cx));
+        let text = self.editor().and_then(|e| e.read(cx).selected_text(cx));
         let actions = self.action_entries(cx);
         if let Some((se, _)) = &self.search_everywhere {
             se.update(cx, |se, cx| se.show(tab, text, actions, window, cx));
@@ -1022,7 +1063,7 @@ impl Workspace {
 
     /// Recent Files (Ctrl+E).
     fn recent_files_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let current = self.editor.as_ref().map(|(e, _)| e.read(cx).path().to_owned());
+        let current = self.editor().map(|e| e.read(cx).path().to_owned());
         // IntelliJ preselects the previous file, so Ctrl+E Enter switches back.
         let mut files: Vec<String> = self.recent_files.iter().filter(|p| Some(*p) != current.as_ref()).cloned().collect();
         files.extend(current);
@@ -1055,7 +1096,7 @@ impl Workspace {
 
     /// File Structure (Ctrl+F12): the current file's declarations.
     fn file_structure(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((editor, _)) = &self.editor else { return };
+        let Some(editor) = self.editor() else { return };
         let path = editor.read(cx).path().to_owned();
         let symbols = self.code_index.read(cx).file_symbols(&path);
         let mut indents = Vec::new();
@@ -1077,7 +1118,7 @@ impl Workspace {
 
     /// Go to Line:Column (Ctrl+G).
     fn goto_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((editor, _)) = &self.editor else { return };
+        let Some(editor) = self.editor() else { return };
         let editor = editor.clone();
         let (line, col) = editor.read(cx).cursor(cx);
         let lines = editor.read(cx).line_count(cx);
@@ -1146,7 +1187,7 @@ impl Workspace {
 
     /// Select In › Project View: shows the current editor's file in the tree.
     fn select_in_project(&mut self, _: &SelectInProject, _: &mut Window, cx: &mut Context<Self>) {
-        let Some((editor, _)) = &self.editor else { return };
+        let Some(editor) = self.editor() else { return };
         let path = editor.read(cx).path().to_owned();
         self.show_project = true;
         self.show_commit = false;
@@ -1224,10 +1265,9 @@ impl Workspace {
     fn open_diff(&mut self, source: crate::ui::diff_view::DiffSource, cx: &mut Context<Self>) {
         let Some(repository) = self.model.read(cx).repository().cloned() else { return };
         // A diff replaces the annotations and the file editor in the editor area.
-        self.blame = None;
-        self.editor = None;
-        self.timeline = None;
+        self.front = Front::Diff;
         self.diff.update(cx, |diff, cx| diff.show(repository, source, cx));
+        cx.notify();
     }
 
     fn open_repository(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -2061,14 +2101,25 @@ impl Render for Workspace {
                 el.child(div().p_2().text_sm().text_color(palette.status_conflict).child(error))
             })
             .children(self.render_operation_banner(cx))
-            .child(div().flex_1().min_h_0().map(|el| match (&self.merge, &self.blame, &self.editor) {
-                _ if !has_repo => el.child(self.render_welcome(cx)),
-                _ if self.timeline.is_some() => el.child(self.timeline.clone().unwrap()),
-                (Some((merge, _)), _, _) => el.child(merge.clone()),
-                (None, Some((blame, _)), _) => el.child(blame.clone()),
-                (None, None, Some((editor, _))) => el.child(editor.clone()),
-                (None, None, None) => el.child(self.diff.clone()),
-            }));
+            .children(self.render_tab_bar(cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .when(matches!(self.front, Front::Editor(_)), |el| el.key_context(TABS_CONTEXT))
+                    .map(|el| {
+                        if !has_repo {
+                            return el.child(self.render_welcome(cx));
+                        }
+                        match self.front {
+                            Front::Timeline if self.timeline.is_some() => el.child(self.timeline.clone().unwrap()),
+                            Front::Merge if self.merge.is_some() => el.child(self.merge.as_ref().unwrap().0.clone()),
+                            Front::Blame if self.blame.is_some() => el.child(self.blame.as_ref().unwrap().0.clone()),
+                            Front::Editor(ix) if ix < self.editors.len() => el.child(self.editors[ix].view.clone()),
+                            _ => el.child(self.diff.clone()),
+                        }
+                    }),
+            );
 
         let top = h_resizable("top-split")
             .child(
@@ -2118,6 +2169,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &SearchEverywhere, window, cx| this.open_search_everywhere(SeTab::All, window, cx)))
             .on_action(cx.listener(|this, _: &FindAction, window, cx| this.open_search_everywhere(SeTab::Actions, window, cx)))
             .on_action(cx.listener(|this, _: &RecentFiles, window, cx| this.recent_files_popup(window, cx)))
+            .on_action(cx.listener(|this, _: &CloseTab, _, cx| this.close_active_tab(cx)))
+            .on_action(cx.listener(|this, _: &NextTab, window, cx| this.step_tab(1, window, cx)))
+            .on_action(cx.listener(|this, _: &PreviousTab, window, cx| this.step_tab(-1, window, cx)))
+            .on_action(cx.listener(|this, _: &ReopenClosedTab, window, cx| this.reopen_closed_tab(window, cx)))
             .on_action(cx.listener(|this, _: &FileStructure, window, cx| this.file_structure(window, cx)))
             .on_action(cx.listener(|this, _: &GotoLine, window, cx| this.goto_line(window, cx)))
             .on_action(cx.listener(Self::navigate_back))

@@ -67,7 +67,6 @@ pub fn init(cx: &mut gpui_kit::App) {
 }
 
 pub enum FileEditorEvent {
-    Closed,
     Annotate { path: String, revision: Option<String> },
     ShowHistory(String),
     SelectionHistory { path: String, lines: (usize, usize) },
@@ -342,6 +341,12 @@ impl FileEditor {
         self.state.read(cx).value().to_string()
     }
 
+    /// Focuses the text, as switching to the tab does.
+    pub fn focus(&self, window: &mut Window, cx: &mut gpui_kit::App) {
+        let handle = gpui_kit::Focusable::focus_handle(self.state.read(cx), cx);
+        window.focus(&handle, cx);
+    }
+
     pub fn is_dirty(&self, cx: &gpui_kit::App) -> bool {
         self.revision.is_none() && self.text(cx) != self.saved
     }
@@ -392,6 +397,11 @@ impl FileEditor {
     }
 
     fn save(&mut self, _: &SaveFile, _: &mut Window, cx: &mut Context<Self>) {
+        self.save_now(cx);
+    }
+
+    /// Saves unsaved text, as IntelliJ does when a tab closes.
+    pub fn save_now(&mut self, cx: &mut Context<Self>) {
         if self.revision.is_some() {
             return;
         }
@@ -543,9 +553,6 @@ impl Render for FileEditor {
                     .child(tool_button("editor-diff", IconName::FileDiff, "Show Diff").on_click(cx.listener(
                         |this, _, window, cx| this.show_diff(&ShowFileDiff, window, cx),
                     )))
-                    .child(tool_button("editor-close", IconName::X, "Close").on_click(cx.listener(|_, _, _, cx| {
-                        cx.emit(FileEditorEvent::Closed)
-                    }))),
             )
             .when_some(self.error.clone(), |el, error| {
                 el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(error))

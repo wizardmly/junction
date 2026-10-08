@@ -213,10 +213,20 @@ impl ProjectView {
         self.open_files = open_files;
         if self.mode == ProjectMode::OpenFiles {
             self.rebuild_tree(cx);
-            self.flatten();
+            self.expand_all(cx);
         }
         if self.settings.autoscroll_from_source {
             self.reveal(path, cx);
+        }
+        cx.notify();
+    }
+
+    /// Tabs closed: the Open Files view follows.
+    pub fn set_open_files(&mut self, open_files: Vec<String>, cx: &mut Context<Self>) {
+        self.open_files = open_files;
+        if self.mode == ProjectMode::OpenFiles {
+            self.rebuild_tree(cx);
+            self.expand_all(cx);
         }
         cx.notify();
     }

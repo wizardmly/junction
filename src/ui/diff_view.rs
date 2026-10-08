@@ -213,6 +213,33 @@ impl DiffView {
         }
     }
 
+    /// The editor tab's title: "name (Changes)" for the working tree, "name (abc12345)" for a commit.
+    pub fn title(&self) -> Option<String> {
+        let source = self.source.as_ref()?;
+        let path = source.path();
+        let name = path.rsplit('/').next().unwrap_or(path);
+        Some(match source {
+            DiffSource::Commit { hash, .. } => format!("{name} ({})", &hash[..hash.len().min(8)]),
+            DiffSource::Files { other, .. } => {
+                format!("{name} vs {}", other.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+            }
+            DiffSource::Between { .. } => format!("{name} (Compare)"),
+            _ => format!("{name} (Changes)"),
+        })
+    }
+
+    /// Closing the diff's editor tab.
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.flush_save();
+        self.source = None;
+        self.loaded = None;
+        self.diff = FileDiff::default();
+        self.rows = Rc::new(Vec::new());
+        self.review = None;
+        self._task = None;
+        cx.notify();
+    }
+
     pub fn show(&mut self, repository: Repository, source: DiffSource, cx: &mut Context<Self>) {
         if self.source.as_ref() == Some(&source) {
             return;

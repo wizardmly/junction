@@ -225,7 +225,7 @@
 | Go to File / Class / Symbol（Ctrl+Shift+N / Ctrl+N / Ctrl+Alt+Shift+N） | M7 | ✅（打开 Search Everywhere 对应标签，见第 12 节） |
 | Navigate Back / Forward（Ctrl+Alt+← / →） | M7 | ✅ |
 | Project 工具窗口（Alt+1）、Select in Project View（Alt+F1） | M7 | ✅ |
-| Project 窗口视图切换：Project（根节点带绝对路径）/ Project Files / Production / Tests / Open Files / Changed Files | M8 | ✅（Open Files 为本次会话打开过的文件，Junction 只有单编辑器没有标签页） |
+| Project 窗口视图切换：Project（根节点带绝对路径）/ Project Files / Production / Tests / Open Files / Changed Files | M8 | ✅（Open Files 即当前打开的标签） |
 | Project 窗口头部：New（File / Directory）、Select Opened File（准星）、Expand All、Collapse All | M8 | ✅ |
 | ⋮ › Behavior：Always Select Opened File、Open Files with Single Click（默认双击打开） | M8 | ✅（设置持久化） |
 | ⋮ › Appearance：Show Excluded Files（Git 忽略的文件橄榄色显示，展开时按需读盘）、Compact Middle Packages | M8 | ✅ |
@@ -253,6 +253,19 @@
 | Recent Files（Ctrl+E） | M8 | ✅（上一个文件排第一，Enter 即切回；可输入过滤） |
 | File Structure（Ctrl+F12） | M8 | ✅（当前文件的声明，按容器缩进，可过滤） |
 | Go to Line:Column（Ctrl+G） | M8 | ✅（`行[:列]`，记入 Back 历史） |
+
+## 13. 编辑器标签页（M8）
+
+| 功能 | 阶段 | 状态 |
+|---|---|---|
+| 每个打开的文件一个标签；文件图标、VCS 状态着色、未保存标记 •；同名文件附带目录名 | M8 | ✅ |
+| Diff、Merge、Annotate、Pull Request 视图也作为标签显示，可切换、可关闭 | M8 | ✅ |
+| 新标签开在当前标签右侧；关闭后激活左侧标签；关闭时自动保存 | M8 | ✅ |
+| 标签上限 10 个，超出时关闭最久未用的、未固定且未修改的标签 | M8 | ✅ |
+| 右键：Close / Close Other Tabs / Close Tabs to the Left / Right / Close All Tabs / Close All but Pinned / Pin Tab / Copy Path / Copy Path From Repository Root / Select in Project View / Reopen Closed Tab | M8 | ✅ |
+| 固定标签排在最前并显示图钉；拖动标签调整顺序 | M8 | ✅ |
+| 中键关闭；Ctrl+F4 关闭；Alt+← / Alt+→ 切换（macOS 为 Cmd+Shift+[ / ]） | M8 | ✅ |
+| 分屏（Split Right / Down）、预览标签、多行标签、双击最大化编辑器 | — | ❌ 未做 |
 
 ## 阶段
 
