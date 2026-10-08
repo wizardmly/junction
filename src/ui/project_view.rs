@@ -400,7 +400,8 @@ impl ProjectView {
         self.selected = Some(row.path.clone());
         match row.kind {
             RowKind::File if count >= 2 || self.settings.single_click => self.open(row.path, cx),
-            RowKind::Dir | RowKind::Root if count >= 2 || self.settings.single_click => self.toggle(&row.path, cx),
+            // Folders open on a single click; the second click of a double click is ignored.
+            RowKind::Dir | RowKind::Root if count == 1 => self.toggle(&row.path, cx),
             _ => {}
         }
         cx.notify();

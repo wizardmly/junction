@@ -1,0 +1,134 @@
+# Builds Junction for Windows, Linux and macOS on every push to master and
+# publishes the files as the "latest" release, so the links never change.
+name: Release build
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-build
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/Junction | Out-Null
+          Copy-Item target/release/junction.exe dist/Junction/
+          Compress-Archive -Path dist/Junction -DestinationPath junction-windows-x64.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: junction-windows-x64.zip
+
+  linux:
+    # The oldest supported runner, so the binary runs on older glibc too.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev \
+            libvulkan-dev libfontconfig-dev libfreetype-dev libasound2-dev libssl-dev pkg-config file
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Package tar.gz and AppImage
+        run: |
+          strip target/release/junction
+          mkdir -p dist/junction
+          cp target/release/junction assets/junction.png dist/junction/
+          cp packaging/junction.desktop dist/junction/
+          tar -C dist -czf junction-linux-x64.tar.gz junction
+
+          mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/512x512/apps AppDir/usr/share/applications
+          cp target/release/junction AppDir/usr/bin/
+          cp assets/junction.png AppDir/usr/share/icons/hicolor/512x512/apps/junction.png
+          cp assets/junction.png AppDir/junction.png
+          cp packaging/junction.desktop AppDir/junction.desktop
+          cp packaging/junction.desktop AppDir/usr/share/applications/
+          printf '#!/bin/sh\nexec "$(dirname "$(readlink -f "$0")")/usr/bin/junction" "$@"\n' > AppDir/AppRun
+          chmod +x AppDir/AppRun
+          curl -sSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir Junction-x86_64.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            junction-linux-x64.tar.gz
+            Junction-x86_64.AppImage
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (Apple silicon and Intel)
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+      - name: Package Junction.app in a .dmg
+        run: |
+          APP=dist/Junction.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create -output "$APP/Contents/MacOS/junction" \
+            target/aarch64-apple-darwin/release/junction target/x86_64-apple-darwin/release/junction
+          cp packaging/Info.plist "$APP/Contents/Info.plist"
+          mkdir icon.iconset
+          for s in 16 32 128 256 512; do
+            sips -z $s $s assets/junction.png --out icon.iconset/icon_${s}x${s}.png >/dev/null
+            sips -z $((s*2)) $((s*2)) assets/junction.png --out icon.iconset/icon_${s}x${s}@2x.png >/dev/null
+          done
+          iconutil -c icns icon.iconset -o "$APP/Contents/Resources/junction.icns"
+          # Ad-hoc signature: required for Apple silicon to launch the binary at all.
+          codesign --force --deep --sign - "$APP"
+          ln -s /Applications dist/Applications
+          hdiutil create -volname Junction -srcfolder dist -ov -format UDZO junction-macos-universal.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: junction-macos-universal.dmg
+
+  release:
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Publish the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd out
+          sha256sum * > SHA256SUMS.txt
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest * \
+            --target "$GITHUB_SHA" \
+            --title "Junction (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7}.
+
+          - Windows: unzip junction-windows-x64.zip and run Junction/junction.exe.
+          - macOS (Apple silicon and Intel): open the .dmg and drag Junction to Applications. The app is not notarized: the first time, right-click Junction and choose Open.
+          - Linux: run Junction-x86_64.AppImage (chmod +x first), or unpack junction-linux-x64.tar.gz.
+
+          Checksums are in SHA256SUMS.txt."

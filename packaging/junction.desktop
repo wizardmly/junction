@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Junction
+Comment=Git & Code Navigator
+Exec=junction %F
+Icon=junction
+Categories=Development;RevisionControl;
+Terminal=false
