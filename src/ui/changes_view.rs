@@ -76,7 +76,14 @@ impl EventEmitter<ChangesEvent> for ChangesView {}
 impl ChangesView {
     pub fn new(model: Entity<RepoModel>, cx: &mut Context<Self>) -> Self {
         let tree = cx.new(|cx| TreeState::new(cx));
-        let subscriptions = vec![cx.observe(&tree, |this, tree, cx| {
+        let subscriptions = vec![
+            // Local comparisons follow the working tree: deleted, reverted or edited files.
+            cx.subscribe(&model, |this, _, event: &crate::model::RepoEvent, cx| {
+                if matches!(event, crate::model::RepoEvent::Reloaded) && this.tabs.get(this.active).is_some_and(|t| t.new.is_none()) {
+                    this.load(false, cx);
+                }
+            }),
+            cx.observe(&tree, |this, tree, cx| {
             let selected = tree.read(cx).selected_item().map(|item| item.id.clone());
             if selected != this.last_selection {
                 this.last_selection = selected.clone();
@@ -85,7 +92,8 @@ impl ChangesView {
                     cx.emit(ChangesEvent::OpenDiff(source));
                 }
             }
-        })];
+        }),
+        ];
         Self {
             model,
             tabs: Vec::new(),
@@ -120,18 +128,23 @@ impl ChangesView {
 
     /// Re-reads the active comparison's files (Refresh).
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.load(true, cx);
+    }
+
+    /// Re-reads the files; with `force` off the tree (and its selection)
+    /// is kept when nothing changed.
+    fn load(&mut self, force: bool, cx: &mut Context<Self>) {
         let Some(repository) = self.model.read(cx).repository().cloned() else { return };
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
-        match crate::git::diff::changed_files(&repository, &tab.old, tab.new.as_deref()) {
-            Ok(files) => {
-                tab.files = files;
-                tab.error = None;
-            }
-            Err(error) => {
-                tab.files.clear();
-                tab.error = Some(error.to_string());
-            }
+        let (files, error) = match crate::git::diff::changed_files(&repository, &tab.old, tab.new.as_deref()) {
+            Ok(files) => (files, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
+        if !force && files == tab.files && error == tab.error {
+            return;
         }
+        tab.files = files;
+        tab.error = error;
         self.rebuild(None, cx);
     }
 

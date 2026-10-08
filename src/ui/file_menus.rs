@@ -244,7 +244,10 @@ pub fn delete_files(root: PathBuf, paths: Vec<String>, actions: FileActions, win
             let _ = if full.is_dir() { std::fs::remove_dir_all(&full) } else { std::fs::remove_file(&full) };
         }
         let actions = actions.clone();
-        window_handle.update(cx, |_, window, cx| actions(FileAction::FilesChanged, window, cx)).ok();
+        // The dialog's OK runs while its window is being updated; refresh once that's done.
+        cx.defer(move |cx| {
+            window_handle.update(cx, |_, window, cx| actions(FileAction::FilesChanged, window, cx)).ok();
+        });
     }, window, cx);
 }
 
