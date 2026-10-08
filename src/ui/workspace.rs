@@ -148,6 +148,9 @@ pub struct Workspace {
     /// The Pull Requests tool window, sharing the left side with Commit.
     prs: Entity<crate::ui::pull_requests::PullRequestsView>,
     show_prs: bool,
+    /// The Changes tool window (compare results); its stripe button shows while it has tabs.
+    changes: Entity<crate::ui::changes_view::ChangesView>,
+    show_changes: bool,
     /// A pull request's timeline, shown in the editor area until closed.
     timeline: Option<Entity<crate::ui::pull_requests::PrTimelineView>>,
     /// The merge tool, shown in the editor area instead of the diff.
@@ -178,6 +181,7 @@ impl Workspace {
         let worktrees = cx.new(|cx| crate::ui::worktree_view::WorktreeView::new(model.clone(), cx));
         let submodules = cx.new(|cx| crate::ui::submodule_view::SubmoduleView::new(model.clone(), cx));
         let prs = cx.new(|cx| crate::ui::pull_requests::PullRequestsView::new(model.clone(), window, cx));
+        let changes = cx.new(|cx| crate::ui::changes_view::ChangesView::new(model.clone(), cx));
         let code_index = cx.new(CodeIndex::new);
         let usages = cx.new(|_| crate::ui::navigate::UsagesView::new());
         let project = cx.new(|cx| crate::ui::navigate::ProjectView::new(code_index.clone(), cx));
@@ -192,6 +196,17 @@ impl Workspace {
                 LogEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
                 LogEvent::Annotate { path, revision } => this.annotate(path.clone(), revision.clone(), cx),
                 LogEvent::OpenFile { path, revision } => this.open_file(path.clone(), revision.clone(), window, cx),
+            }),
+            cx.subscribe_in(&changes, window, |this, _, event: &crate::ui::changes_view::ChangesEvent, window, cx| {
+                use crate::ui::changes_view::ChangesEvent;
+                match event {
+                    ChangesEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
+                    ChangesEvent::OpenFile(path) => this.open_file(path.clone(), None, window, cx),
+                    ChangesEvent::Closed | ChangesEvent::Hide => {
+                        this.show_changes = false;
+                        cx.notify();
+                    }
+                }
             }),
             cx.subscribe_in(&commit, window, |this, _, event: &CommitEvent, window, cx| match event {
                 CommitEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
@@ -255,19 +270,17 @@ impl Workspace {
                 if let RepoEvent::PrefillCommitMessage(_) = event {
                     this.show_commit = true;
                     this.show_prs = false;
+                    this.show_changes = false;
                     this.left_tab = LeftTab::Commit;
                     cx.notify();
                 }
                 if let RepoEvent::Compare { old, new } = event {
-                    let workspace = cx.entity();
-                    dialogs::compare_files(
-                        this.model.clone(),
-                        old.clone(),
-                        new.clone(),
-                        Rc::new(move |source, _, cx| workspace.update(cx, |this, cx| this.open_diff(source, cx))),
-                        window,
-                        cx,
-                    );
+                    this.changes.update(cx, |changes, cx| changes.compare(old.clone(), new.clone(), cx));
+                    this.show_commit = false;
+                    this.show_prs = false;
+                    this.show_project = false;
+                    this.show_changes = true;
+                    cx.notify();
                 }
                 if let RepoEvent::Notify { title, message, error } = event {
                     // Quiet operations (Stage / Unstage) report only failures.
@@ -416,6 +429,8 @@ impl Workspace {
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
             show_prs: false,
+            changes,
+            show_changes: false,
             timeline: None,
             merge: None,
             log_tabs: vec![LogTab { title: "Log".into(), filter: Default::default(), selected: None }],
@@ -759,7 +774,9 @@ impl Workspace {
         self.show_project = !self.show_project;
         if self.show_project {
             self.show_commit = false;
+            self.show_changes = false;
             self.show_prs = false;
+            self.show_changes = false;
         }
         cx.notify();
     }
@@ -771,6 +788,7 @@ impl Workspace {
         self.show_project = true;
         self.show_commit = false;
         self.show_prs = false;
+        self.show_changes = false;
         self.project.update(cx, |project, cx| project.reveal(&path, cx));
         cx.notify();
     }
@@ -1202,6 +1220,7 @@ impl Workspace {
                     |this, _, _, cx| {
                         this.show_commit = true;
                         this.show_prs = false;
+                        this.show_changes = false;
                         cx.notify();
                     },
                 )))
@@ -1237,10 +1256,11 @@ impl Workspace {
             .child(stripe_button("stripe-project", IconName::FolderTree, "Project (Alt+1)", self.show_project).on_click(
                 cx.listener(|this, _, window, cx| this.toggle_project(&ToggleProjectWindow, window, cx)),
             ))
-            .child(stripe_button("stripe-commit", IconName::GitCommitVertical, "Commit", self.show_commit && !self.show_prs && !self.show_project).on_click(
+            .child(stripe_button("stripe-commit", IconName::GitCommitVertical, "Commit", self.show_commit && !self.show_prs && !self.show_project && !self.show_changes).on_click(
                 cx.listener(|this, _, _, cx| {
-                    this.show_commit = this.show_prs || this.show_project || !this.show_commit;
+                    this.show_commit = this.show_prs || this.show_project || this.show_changes || !this.show_commit;
                     this.show_prs = false;
+                    this.show_changes = false;
                     this.show_project = false;
                     cx.notify();
                 }),
@@ -1250,12 +1270,24 @@ impl Workspace {
                     this.show_prs = !this.show_prs;
                     if this.show_prs {
                         this.show_commit = false;
+                        this.show_changes = false;
                         this.show_project = false;
                         this.prs.update(cx, |prs, cx| prs.refresh(cx));
                     }
                     cx.notify();
                 }),
             ))
+            .when(!self.changes.read(cx).is_empty(), |el| {
+                el.child(stripe_button("stripe-changes", IconName::FileDiff, "Changes", self.show_changes).on_click(cx.listener(|this, _, _, cx| {
+                    this.show_changes = !this.show_changes;
+                    if this.show_changes {
+                        this.show_commit = false;
+                        this.show_prs = false;
+                        this.show_project = false;
+                    }
+                    cx.notify();
+                })))
+            })
             .child(div().flex_1())
             .child(stripe_button("stripe-git", IconName::GitGraph, "Git", self.show_git).on_click(cx.listener(
                 |this, _, _, cx| {
@@ -1319,6 +1351,7 @@ impl Workspace {
     fn on_commit(&mut self, _: &CommitChanges, window: &mut Window, cx: &mut Context<Self>) {
         self.show_commit = true;
         self.show_prs = false;
+        self.show_changes = false;
         self.left_tab = LeftTab::Commit;
         self.commit.update(cx, |commit, cx| commit.focus_message(window, cx));
         cx.notify();
@@ -1388,6 +1421,7 @@ impl Workspace {
             Some(("Unstash Changes…", "", op(|this, _, cx| {
                 this.show_commit = true;
                 this.show_prs = false;
+                this.show_changes = false;
                 this.left_tab = LeftTab::Stash;
                 cx.notify();
             }))),
@@ -1395,6 +1429,7 @@ impl Workspace {
             Some(("Unshelve Changes…", "", op(|this, _, cx| {
                 this.show_commit = true;
                 this.show_prs = false;
+                this.show_changes = false;
                 this.left_tab = LeftTab::Shelf;
                 cx.notify();
             }))),
@@ -1618,12 +1653,14 @@ impl Render for Workspace {
                 resizable_panel()
                     .size(px(340.))
                     .size_range(px(220.)..px(700.))
-                    .visible((self.show_commit || self.show_prs || self.show_project) && has_repo)
+                    .visible((self.show_commit || self.show_prs || self.show_project || self.show_changes) && has_repo)
                     .map(|panel| {
                         if self.show_project {
                             panel.child(self.project.clone())
                         } else if self.show_prs {
                             panel.child(self.prs.clone())
+                        } else if self.show_changes {
+                            panel.child(self.changes.clone())
                         } else {
                             panel.child(self.render_left(cx))
                         }
