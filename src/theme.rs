@@ -231,7 +231,8 @@ pub fn apply(dark: bool, cx: &mut App) {
         theme.primary = p.accent;
         theme.button_primary = p.accent;
         theme.ring = p.accent;
-        theme.selection = if p.dark { hex(0x214283) } else { hex(0xa6d2ff) };
+        // Translucent: TextView paints the selection over its glyphs.
+        theme.selection = if p.dark { hex_alpha(0x2f65ca, 0.55) } else { hex_alpha(0x2e8bff, 0.4) };
         theme.title_bar = p.toolbar;
         theme.title_bar_border = p.border;
         theme.popover = if p.dark { hex(0x2b2d30) } else { hex(0xffffff) };
