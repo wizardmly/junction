@@ -1792,7 +1792,7 @@ impl Workspace {
                     cx.notify();
                 }),
             ))
-            .child(stripe_button("stripe-prs", IconName::GitPullRequest, "Pull Requests", self.show_prs).on_click(
+            .child(stripe_button("stripe-prs", IconName::GitPullRequest, self.prs.read(cx).title(), self.show_prs).on_click(
                 cx.listener(|this, _, _, cx| {
                     this.show_prs = !this.show_prs;
                     if this.show_prs {

@@ -65,7 +65,6 @@ impl CloneView {
         let repo_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search repositories"));
         let accounts: Vec<_> = crate::hosting::account::load()
             .into_iter()
-            .filter(|a| a.service == crate::hosting::account::Service::GitHub)
             .collect();
         let repos_task = (!accounts.is_empty()).then(|| {
             cx.spawn(async move |this, cx| {

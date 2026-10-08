@@ -135,14 +135,17 @@ pub enum MergeMethod {
     Rebase,
 }
 
+/// A hosting account's API: GitHub's, or GitLab's mapped onto the same
+/// types (see `gitlab.rs`).
 pub struct Client {
-    base: String,
-    token: String,
+    pub(super) base: String,
+    pub(super) token: String,
+    gitlab: bool,
 }
 
 impl Client {
     pub fn new(account: &Account) -> Self {
-        Self { base: account.api_base(), token: account.token.clone() }
+        Self { base: account.api_base(), token: account.token.clone(), gitlab: account.service == super::account::Service::GitLab }
     }
 
     fn get<T: for<'de> Deserialize<'de>>(&self, path: &str) -> ApiResult<T> {
@@ -168,29 +171,47 @@ impl Client {
     }
 
     pub fn user(&self) -> ApiResult<User> {
+        if self.gitlab {
+            return self.gl_user();
+        }
         self.get("/user")
     }
 
     /// The account's repositories, most recently updated first (Clone dialog).
     pub fn repos(&self) -> ApiResult<Vec<Repo>> {
+        if self.gitlab {
+            return self.gl_repos();
+        }
         self.get("/user/repos?per_page=100&sort=updated")
     }
 
     /// `state`: open, closed or all.
     pub fn pulls(&self, repo: &str, state: &str) -> ApiResult<Vec<PullRequest>> {
+        if self.gitlab {
+            return self.gl_pulls(repo, state);
+        }
         self.get(&format!("/repos/{repo}/pulls?state={state}&per_page=100&sort=updated&direction=desc"))
     }
 
     pub fn pull(&self, repo: &str, number: u64) -> ApiResult<PullRequest> {
+        if self.gitlab {
+            return self.gl_pull(repo, number);
+        }
         self.get(&format!("/repos/{repo}/pulls/{number}"))
     }
 
     pub fn pull_files(&self, repo: &str, number: u64) -> ApiResult<Vec<PrFile>> {
+        if self.gitlab {
+            return self.gl_pull_files(repo, number);
+        }
         self.get(&format!("/repos/{repo}/pulls/{number}/files?per_page=100"))
     }
 
     /// Conversation comments, reviews and review comments, oldest first.
     pub fn timeline(&self, repo: &str, number: u64) -> ApiResult<Vec<Comment>> {
+        if self.gitlab {
+            return self.gl_timeline(repo, number);
+        }
         let mut all: Vec<Comment> = self.get(&format!("/repos/{repo}/issues/{number}/comments?per_page=100"))?;
         let reviews: Vec<Comment> = self.get(&format!("/repos/{repo}/pulls/{number}/reviews?per_page=100"))?;
         all.extend(reviews.into_iter().filter(|r| r.state.as_deref() != Some("PENDING")));
@@ -201,11 +222,17 @@ impl Client {
     }
 
     pub fn add_comment(&self, repo: &str, number: u64, body: &str) -> ApiResult<Comment> {
+        if self.gitlab {
+            return self.gl_add_comment(repo, number, body);
+        }
         self.send("POST", &format!("/repos/{repo}/issues/{number}/comments"), json!({ "body": body }))
     }
 
     /// A comment on a line of the PR's diff (right side = the new version).
     pub fn add_line_comment(&self, repo: &str, number: u64, commit: &str, path: &str, line: u64, body: &str) -> ApiResult<Comment> {
+        if self.gitlab {
+            return self.gl_add_line_comment(repo, number, commit, path, line, body);
+        }
         self.send(
             "POST",
             &format!("/repos/{repo}/pulls/{number}/comments"),
@@ -214,10 +241,16 @@ impl Client {
     }
 
     pub fn submit_review(&self, repo: &str, number: u64, event: ReviewEvent, body: &str) -> ApiResult<Comment> {
+        if self.gitlab {
+            return self.gl_submit_review(repo, number, event, body);
+        }
         self.send("POST", &format!("/repos/{repo}/pulls/{number}/reviews"), json!({ "event": event, "body": body }))
     }
 
     pub fn merge(&self, repo: &str, number: u64, method: MergeMethod) -> ApiResult<serde_json::Value> {
+        if self.gitlab {
+            return self.gl_merge(repo, number, method);
+        }
         let method = match method {
             MergeMethod::Merge => "merge",
             MergeMethod::Squash => "squash",
@@ -227,16 +260,25 @@ impl Client {
     }
 
     pub fn create_pull(&self, repo: &str, title: &str, body: &str, head: &str, base: &str, draft: bool) -> ApiResult<PullRequest> {
+        if self.gitlab {
+            return self.gl_create_pull(repo, title, body, head, base, draft);
+        }
         self.send("POST", &format!("/repos/{repo}/pulls"), json!({ "title": title, "body": body, "head": head, "base": base, "draft": draft }))
     }
 
     /// Share Project on GitHub: a new repository for the account.
     pub fn create_repo(&self, name: &str, private: bool, description: &str) -> ApiResult<Repo> {
+        if self.gitlab {
+            return self.gl_create_repo(name, private, description);
+        }
         self.send("POST", "/user/repos", json!({ "name": name, "private": private, "description": description }))
     }
 
     /// Create Gist: returns its web URL.
     pub fn create_gist(&self, description: &str, public: bool, files: &[(String, String)]) -> ApiResult<String> {
+        if self.gitlab {
+            return self.gl_create_gist(description, public, files);
+        }
         let files: serde_json::Map<String, serde_json::Value> =
             files.iter().map(|(name, content)| (name.clone(), json!({ "content": content }))).collect();
         let gist: serde_json::Value = self.send("POST", "/gists", json!({ "description": description, "public": public, "files": files }))?;

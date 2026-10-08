@@ -3,6 +3,7 @@
 
 pub mod account;
 pub mod github;
+pub mod gitlab;
 
 use anyhow::{Result, anyhow};
 

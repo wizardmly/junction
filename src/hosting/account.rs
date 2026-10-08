@@ -38,7 +38,8 @@ impl Account {
     /// Does this account serve a remote on `host`?
     pub fn matches_host(&self, host: &str) -> bool {
         let server = self.server.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
-        server == host
+        // Web URLs made from remotes drop the port (`http://git.corp:8080/g/p.git`).
+        server == host || server.split(':').next() == Some(host)
     }
 }
 
@@ -85,5 +86,7 @@ mod tests {
         a.server = "gitlab.com".into();
         assert_eq!(a.api_base(), "https://gitlab.com/api/v4");
         assert!(a.matches_host("gitlab.com"));
+        a.server = "http://git.corp:8080".into();
+        assert!(a.matches_host("git.corp") && a.matches_host("git.corp:8080") && !a.matches_host("corp"));
     }
 }

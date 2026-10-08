@@ -428,7 +428,10 @@ impl Workspace {
                 let path = self.blame.as_ref().map(|(b, _)| b.read(cx).path().to_owned()).unwrap_or_default();
                 (format!("Annotate: {}", path.rsplit('/').next().unwrap_or(&path)), IconName::UserRound, None)
             }
-            Front::Timeline => ("Pull Request".to_owned(), IconName::GitPullRequest, None),
+            Front::Timeline => {
+                let title = self.timeline.as_ref().map(|t| t.read(cx).title()).unwrap_or_else(|| "Pull Request".to_owned());
+                (title, IconName::GitPullRequest, None)
+            }
         }
     }
 

@@ -1,4 +1,4 @@
-//! Settings › Version Control › GitHub: accounts logged in with a token.
+//! Settings › Version Control › GitHub / GitLab: accounts logged in with a token.
 //! "Log In" checks the token against the API before saving it.
 
 use gpui_kit::assets::IconName;
@@ -19,6 +19,8 @@ use crate::theme::ActivePalette as _;
 
 pub struct AccountsView {
     accounts: Vec<Account>,
+    /// The kind of account being added.
+    service: Service,
     server: Entity<InputState>,
     token: Entity<InputState>,
     adding: bool,
@@ -34,7 +36,18 @@ impl AccountsView {
         let token = cx.new(|cx| InputState::new(window, cx).placeholder("Personal access token").masked(true));
         let accounts = account::load();
         let adding = accounts.is_empty();
-        Self { accounts, server, token, adding, checking: false, error: None, on_change: None }
+        Self { accounts, service: Service::GitHub, server, token, adding, checking: false, error: None, on_change: None }
+    }
+
+    /// GitHub or GitLab: the server field follows unless the user typed one.
+    fn set_service(&mut self, service: Service, window: &mut Window, cx: &mut Context<Self>) {
+        let default = |s: Service| if s == Service::GitHub { "github.com" } else { "gitlab.com" };
+        let current = self.server.read(cx).value().trim().to_owned();
+        if current.is_empty() || current == default(self.service) {
+            self.server.update(cx, |state, cx| state.set_value(default(service), window, cx));
+        }
+        self.service = service;
+        cx.notify();
     }
 
     fn log_in(&mut self, cx: &mut Context<Self>) {
@@ -48,7 +61,7 @@ impl AccountsView {
         self.checking = true;
         self.error = None;
         cx.notify();
-        let mut candidate = Account { service: Service::GitHub, server, login: String::new(), token };
+        let mut candidate = Account { service: self.service, server, login: String::new(), token };
         cx.spawn(async move |this, cx| {
             let probe = candidate.clone();
             let result = cx.background_spawn(async move { github::Client::new(&probe).user() }).await;
@@ -87,6 +100,7 @@ impl Render for AccountsView {
                     .gap_2()
                     .text_sm()
                     .child(Icon::new(IconName::GitPullRequest).small().text_color(palette.text_secondary))
+                    .child(div().w(px(48.)).text_xs().text_color(palette.text_secondary).child(if acc.service == Service::GitLab { "GitLab" } else { "GitHub" }))
                     .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(acc.login.clone()))
                     .child(div().flex_1().text_color(palette.text_secondary).child(acc.server.clone()))
                     .child(Button::new(("account-remove", ix)).xsmall().outline().label("Remove").on_click(cx.listener(move |this, _, _, cx| {
@@ -113,8 +127,21 @@ impl Render for AccountsView {
             })
             .when(self.adding, |el| {
                 let server = self.server.read(cx).value().trim().to_owned();
-                let host = if server.is_empty() { "github.com".to_owned() } else { server };
-                let token_url = format!("https://{host}/settings/tokens/new?scopes=repo,gist,read:org,workflow&description=Junction%20Studio");
+                let gitlab = self.service == Service::GitLab;
+                let host = if !server.is_empty() { server } else if gitlab { "gitlab.com".to_owned() } else { "github.com".to_owned() };
+                let host = host.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_owned();
+                let (token_url, scopes) = if gitlab {
+                    (
+                        format!("https://{host}/-/user_settings/personal_access_tokens?name=Junction%20Studio&scopes=api,read_user,write_repository"),
+                        "Generate token (scopes: api, read_user, write_repository)",
+                    )
+                } else {
+                    (
+                        format!("https://{host}/settings/tokens/new?scopes=repo,gist,read:org,workflow&description=Junction%20Studio"),
+                        "Generate token (scopes: repo, gist, read:org, workflow)",
+                    )
+                };
+                let service = self.service;
                 el.child(
                     v_flex()
                         .gap_2()
@@ -123,6 +150,17 @@ impl Render for AccountsView {
                         .border_1()
                         .border_color(palette.border)
                         .child(div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Log In with Token"))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(div().w(px(60.)).text_sm().text_color(palette.text_secondary).child("Service:"))
+                                .child(Button::new("account-github").xsmall().label("GitHub").map(|b| if service == Service::GitHub { b.primary() } else { b.outline() }).on_click(
+                                    cx.listener(|this, _, window, cx| this.set_service(Service::GitHub, window, cx)),
+                                ))
+                                .child(Button::new("account-gitlab").xsmall().label("GitLab").map(|b| if service == Service::GitLab { b.primary() } else { b.outline() }).on_click(
+                                    cx.listener(|this, _, window, cx| this.set_service(Service::GitLab, window, cx)),
+                                )),
+                        )
                         .child(h_flex().gap_2().child(div().w(px(60.)).text_sm().text_color(palette.text_secondary).child("Server:")).child(div().flex_1().child(Input::new(&self.server).small())))
                         .child(h_flex().gap_2().child(div().w(px(60.)).text_sm().text_color(palette.text_secondary).child("Token:")).child(div().flex_1().child(Input::new(&self.token).small())))
                         .child(
@@ -131,7 +169,7 @@ impl Render for AccountsView {
                                 .text_sm()
                                 .text_color(palette.link)
                                 .cursor_pointer()
-                                .child("Generate token (scopes: repo, gist, read:org, workflow)")
+                                .child(scopes)
                                 .on_click(move |_, _, cx| cx.open_url(&token_url)),
                         )
                         .child(
@@ -165,7 +203,7 @@ pub fn accounts(on_change: Option<std::rc::Rc<dyn Fn(&mut App)>>, window: &mut W
         view
     });
     window.open_dialog(cx, move |dialog, _, _| {
-        dialog.title("GitHub Accounts").w(px(560.)).child(view.clone()).footer(
+        dialog.title("GitHub / GitLab Accounts").w(px(560.)).child(view.clone()).footer(
             gpui_kit::component::dialog::DialogFooter::new()
                 .child(gpui_kit::component::dialog::DialogClose::new().child(Button::new("accounts-close").label("Close").primary())),
         )

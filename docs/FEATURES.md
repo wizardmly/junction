@@ -144,7 +144,7 @@
 | 受保护分支禁止 force push | M3 | ✅ |
 | Manage Remotes 对话框：添加/编辑/删除 | M2 | ✅（Git Remotes：列表、+ 添加 / − 删除 / 编辑（改名 + 改 URL），双击编辑） |
 | 凭据：HTTPS 密码/Token 对话框、SSH passphrase、使用 credential helper | M2 | ✅（已配置的 credential helper 优先） |
-| Clone 对话框：URL、目录、GitHub/GitLab 账号仓库列表 | M4 | ✅（URL + 目录自动填充 + Test；已登录 GitHub 账号的仓库列表可搜索，点选填入 URL；GitLab 待做） |
+| Clone 对话框：URL、目录、GitHub/GitLab 账号仓库列表 | M4 | ✅（URL + 目录自动填充 + Test；已登录 GitHub / GitLab 账号的仓库列表可搜索，点选填入 URL） |
 
 ## 6. Diff 与 Merge
 
@@ -207,8 +207,8 @@
 
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 账号登录（OAuth / Token） | M6 | 🟡（Token 登录，支持 github.com 与 Enterprise；账号存 accounts.json（权限 600）；OAuth 浏览器登录需注册 OAuth App，未做） |
-| Pull Requests 工具窗口：列表、详情、diff 评论、审批、合并 | M6 | ✅（列表 + Open/Closed/All + 搜索；详情：描述、标签、文件，本地 diff（fetch refs/pull/N/head）；Timeline：评论、审查、行评论展示，发评论；Approve / Request Changes；Merge / Squash / Rebase；Checkout；Create Pull Request；PR diff 点新侧行号加行评论，已有评论行号带标记、悬停显示。GitLab MR 未做） |
+| 账号登录（OAuth / Token） | M6 | 🟡（Token 登录，支持 github.com、GitHub Enterprise、gitlab.com 与自建 GitLab（账号对话框选 GitHub / GitLab）；账号存 accounts.json（权限 600）；OAuth 浏览器登录需注册 OAuth App，未做） |
+| Pull Requests 工具窗口：列表、详情、diff 评论、审批、合并 | M6 | ✅（列表 + Open/Closed/All + 搜索；详情：描述、标签、文件，本地 diff（fetch refs/pull/N/head）；Timeline：评论、审查、行评论展示，发评论；Approve / Request Changes；Merge / Squash / Rebase；Checkout；Create Pull Request；PR diff 点新侧行号加行评论，已有评论行号带标记、悬停显示。GitLab 仓库显示为 Merge Requests 工具窗口：MR 列表、详情、文件 diff、Timeline（含系统消息）、评论与行评论（discussion）、Approve、Merge / Squash / Rebase、Checkout（merge-requests/N/head）、Create Merge Request（Draft 前缀），编号显示为 !N） |
 | Share Project on GitHub、Create Gist | M6 | ✅（Share：建仓库、加 remote、无提交时初始提交、push -u；Gist：编辑器选区/整文件或 Commit 面板文件，Secret / 打开浏览器 / 复制 URL） |
 
 ## 11. 代码索引与跳转（M7）

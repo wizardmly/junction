@@ -228,8 +228,12 @@ fn default_message(repo: &Repository, remote: &str, base: &str) -> (String, Stri
 /// The head branch is pushed first.
 pub fn create_pull_request(model: Entity<RepoModel>, target: PrTarget, on_created: Rc<dyn Fn(&mut App)>, window: &mut Window, cx: &mut App) {
     let Some(repo) = model.read(cx).repository().cloned() else { return };
+    // "Create Merge Request" for GitLab.
+    let noun = target.noun();
+    let gitlab = target.gitlab();
+    let action: &'static str = if target.gitlab() { "Create Merge Request" } else { "Create Pull Request" };
     let Some(head) = model.read(cx).refs().current_branch.clone() else {
-        notify(&model, "Create Pull Request", "Check out a branch to create a pull request from".into(), true, cx);
+        notify(&model, action, format!("Check out a branch to create a {} from", noun.to_lowercase()), true, cx);
         return;
     };
     let base_name = default_base(&repo, &target.remote);
@@ -253,7 +257,7 @@ pub fn create_pull_request(model: Entity<RepoModel>, target: PrTarget, on_create
         let (base_ok, title_ok, body_ok, draft_ok, menu_base) = (base.clone(), title.clone(), body.clone(), draft.clone(), base.clone());
         let (model, target, head, on_created, branches) = (model.clone(), target.clone(), head.clone(), on_created.clone(), remote_branches.clone());
         dialog
-            .title("Create Pull Request")
+            .title(action)
             .w(px(560.))
             .child(
                 v_flex()
@@ -274,7 +278,7 @@ pub fn create_pull_request(model: Entity<RepoModel>, target: PrTarget, on_create
                     )
                     .child(h_flex().gap_2().child(label("Title:")).child(div().flex_1().child(Input::new(&title).small())))
                     .child(Textarea::new(&body))
-                    .child(Checkbox::new("cpr-draft").label("Create draft pull request").checked(draft.get()).on_change(move |v, window, _| {
+                    .child(Checkbox::new("cpr-draft").label(format!("Create draft {}", noun.to_lowercase())).checked(draft.get()).on_change(move |v, window, _| {
                         draft_cell.set(*v);
                         window.refresh();
                     })),
@@ -298,17 +302,18 @@ pub fn create_pull_request(model: Entity<RepoModel>, target: PrTarget, on_create
                         .await;
                     cx.update(|cx| match result {
                         Ok(pr) => {
-                            notify(&model, "Create Pull Request", format!("Pull request #{} created: {}", pr.number, pr.html_url), false, cx);
+                            let number = if gitlab { format!("!{}", pr.number) } else { format!("#{}", pr.number) };
+                            notify(&model, action, format!("{noun} {number} created: {}", pr.html_url), false, cx);
                             model.update(cx, |m, cx| m.reload(cx));
                             on_created(cx);
                         }
-                        Err(error) => notify(&model, "Create Pull Request failed", error.to_string(), true, cx),
+                        Err(error) => notify(&model, &format!("{action} failed"), error.to_string(), true, cx),
                     });
                 })
                 .detach();
                 true
             })
-            .footer(footer("Create Pull Request"))
+            .footer(footer(action))
     });
     focus_input(&focus, window, cx);
 }

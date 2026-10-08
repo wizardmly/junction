@@ -1,4 +1,4 @@
-//! The Pull Requests tool window (GitHub): the repository's PRs with state
+//! The Pull Requests tool window (GitHub; Merge Requests for GitLab): the repository's PRs with state
 //! and search filters; a PR's details with its files, Checkout, review and
 //! merge actions; the conversation timeline opens in the editor area.
 
@@ -33,6 +33,26 @@ pub struct PrTarget {
     pub account: Account,
     pub repo: String,
     pub remote: String,
+}
+
+impl PrTarget {
+    pub fn gitlab(&self) -> bool {
+        self.account.service == account::Service::GitLab
+    }
+
+    /// "Pull Request" on GitHub, "Merge Request" on GitLab.
+    pub fn noun(&self) -> &'static str {
+        if self.gitlab() { "Merge Request" } else { "Pull Request" }
+    }
+
+    /// `#7` on GitHub, `!7` on GitLab.
+    pub fn number(&self, n: u64) -> String {
+        if self.gitlab() { format!("!{n}") } else { format!("#{n}") }
+    }
+
+    pub fn service_name(&self) -> &'static str {
+        if self.gitlab() { "GitLab" } else { "GitHub" }
+    }
 }
 
 pub enum PrEvent {
@@ -72,13 +92,21 @@ pub struct PullRequestsView {
 
 /// The account and repository for the active repository's GitHub remote.
 fn resolve(model: &RepoModel) -> Result<PrTarget, String> {
-    let web = model.web_repo().ok_or("This repository has no GitHub remote")?;
-    if web.host != crate::git::hosting::Host::GitHub && !account::load().iter().any(|a| web.base.contains(&a.server)) {
-        return Err(format!("Pull requests are shown for GitHub remotes ({} is not one)", web.base));
-    }
+    use crate::git::hosting::Host;
+    let web = model.web_repo().ok_or("This repository has no GitHub or GitLab remote")?;
     let host = web.base.trim_start_matches("https://").split('/').next().unwrap_or_default().to_owned();
-    let account = account::for_host(&host).ok_or_else(|| format!("Log in to {host} to see pull requests"))?;
-    let repo = github::repo_path(&web.base).ok_or("Cannot tell the repository from the remote URL")?;
+    let account = match account::for_host(&host) {
+        Some(account) => account,
+        None if web.host == Host::GitLab => return Err(format!("Log in to {host} to see merge requests")),
+        None if web.host == Host::GitHub => return Err(format!("Log in to {host} to see pull requests")),
+        // A self-managed server is known by its account.
+        None => return Err(format!("Pull and merge requests are shown for GitHub and GitLab remotes ({} is not one)", web.base)),
+    };
+    let repo = match account.service {
+        account::Service::GitLab => crate::hosting::gitlab::repo_path(&web.base),
+        account::Service::GitHub => github::repo_path(&web.base),
+    }
+    .ok_or("Cannot tell the repository from the remote URL")?;
     let remote = model
         .repository()
         .and_then(|r| r.run(["remote"]).ok())
@@ -113,7 +141,7 @@ fn source_of(details: &Details, path: &str) -> DiffSource {
 
 impl PullRequestsView {
     pub fn new(model: Entity<RepoModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search pull requests"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
         let subscriptions = vec![
             cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -210,6 +238,7 @@ impl PullRequestsView {
                     || pr.title.to_lowercase().contains(&query)
                     || pr.user.login.to_lowercase().contains(&query)
                     || format!("#{}", pr.number).contains(&query)
+                    || format!("!{}", pr.number).contains(&query)
                     || pr.labels.iter().any(|l| l.name.to_lowercase().contains(&query))
             })
             .collect()
@@ -300,10 +329,11 @@ impl PullRequestsView {
         let (Some(target), Some(details)) = (self.target.clone(), self.details.as_ref()) else { return };
         let number = details.pr.number;
         let model = self.model.clone();
+        let label = target.number(number);
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move { op(&Client::new(&target.account), &target.repo, number) }).await;
             let (message, error) = match result {
-                Ok(message) => (message, false),
+                Ok(message) => (message.replace(&format!("#{number}"), &label), false),
                 Err(error) => (error.to_string(), true),
             };
             model.update(cx, |_, cx| cx.emit(RepoEvent::Notify { title: title.into(), message, error }));
@@ -316,17 +346,20 @@ impl PullRequestsView {
         let (Some(target), Some(details)) = (self.target.clone(), self.details.as_ref()) else { return };
         let pr = details.pr.clone();
         self.model.update(cx, |m, cx| {
-            m.run_operation("Checkout Pull Request", move |repo| {
+            let label = target.number(pr.number);
+            m.run_operation(if target.gitlab() { "Checkout Merge Request" } else { "Checkout Pull Request" }, move |repo| {
                 let branch = pr.head.name.clone();
                 let exists = repo.run(["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")]).is_ok();
                 if exists {
                     repo.run(["checkout", &branch])?;
                     repo.run(["merge", "--ff-only", &pr.head.sha]).ok();
                 } else {
-                    repo.run(["fetch", &target.remote, &format!("pull/{}/head:{branch}", pr.number)])?;
+                    // GitLab keeps each merge request's head under merge-requests/.
+                    let head = if target.gitlab() { format!("merge-requests/{}/head", pr.number) } else { format!("pull/{}/head", pr.number) };
+                    repo.run(["fetch", &target.remote, &format!("{head}:{branch}")])?;
                     repo.run(["checkout", &branch])?;
                 }
-                Ok(format!("Checked out #{} as {branch}", pr.number))
+                Ok(format!("Checked out {label} as {branch}"))
             }, cx)
         });
     }
@@ -374,6 +407,17 @@ fn state_color(status: &str, palette: &crate::theme::Palette) -> gpui_kit::Hsla 
         "Merged" => palette.ref_remote,
         "Draft" => palette.text_secondary,
         _ => palette.status_deleted,
+    }
+}
+
+impl PullRequestsView {
+    /// The tool window's name: Merge Requests for a GitLab repository.
+    pub fn title(&self) -> &'static str {
+        if self.target.as_ref().is_some_and(PrTarget::gitlab) { "Merge Requests" } else { "Pull Requests" }
+    }
+
+    fn number(&self, n: u64) -> String {
+        self.target.as_ref().map_or_else(|| format!("#{n}"), |t| t.number(n))
     }
 }
 
@@ -435,12 +479,12 @@ impl Render for PullRequestsView {
                             .pl(px(20.))
                             .text_xs()
                             .text_color(palette.text_secondary)
-                            .child(format!("#{} · {} · {} · {}", pr.number, status, pr.user.login, pr.updated_at.get(..10).unwrap_or_default())),
+                            .child(format!("{} · {} · {} · {}", self.number(pr.number), status, pr.user.login, pr.updated_at.get(..10).unwrap_or_default())),
                     ),
             );
         }
         if !self.loading && self.prs.is_empty() && self.error.is_none() {
-            rows = rows.child(div().p_3().text_sm().text_color(palette.text_secondary).child("No pull requests"));
+            rows = rows.child(div().p_3().text_sm().text_color(palette.text_secondary).child(if self.title() == "Merge Requests" { "No merge requests" } else { "No pull requests" }));
         }
         let state = self.state;
         let entity = cx.entity();
@@ -476,7 +520,7 @@ impl Render for PullRequestsView {
                                 menu
                             }),
                     )
-                    .child(tool_button("pr-create", IconName::Plus, "Create Pull Request").on_click(cx.listener(|this, _, window, cx| {
+                    .child(tool_button("pr-create", IconName::Plus, if self.title() == "Merge Requests" { "Create Merge Request" } else { "Create Pull Request" }).on_click(cx.listener(|this, _, window, cx| {
                         let Some(target) = this.target.clone() else { return };
                         let entity = cx.entity();
                         crate::ui::github_dialogs::create_pull_request(
@@ -546,8 +590,8 @@ impl PullRequestsView {
                         this.details = None;
                         cx.notify();
                     })))
-                    .child(div().flex_1().text_sm().text_color(palette.text_secondary).child(format!("#{}", pr.number)))
-                    .child(tool_button("pr-web", IconName::Globe, "Open on GitHub").on_click(move |_, _, cx| cx.open_url(&web_url))),
+                    .child(div().flex_1().text_sm().text_color(palette.text_secondary).child(self.number(pr.number)))
+                    .child(tool_button("pr-web", IconName::Globe, if self.title() == "Merge Requests" { "Open on GitLab" } else { "Open on GitHub" }).on_click(move |_, _, cx| cx.open_url(&web_url))),
             )
             .child(
                 div().id("pr-details").flex_1().min_h_0().overflow_y_scrollbar().child(
@@ -674,6 +718,13 @@ impl PrTimelineView {
     }
 }
 
+impl PrTimelineView {
+    /// The editor tab's title: "Merge Request !5" / "Pull Request #7".
+    pub fn title(&self) -> String {
+        format!("{} {}", self.target.noun(), self.target.number(self.pr.number))
+    }
+}
+
 impl Render for PrTimelineView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
@@ -727,7 +778,7 @@ impl Render for PrTimelineView {
                     .border_b_1()
                     .border_color(palette.border)
                     .child(Icon::new(IconName::GitPullRequest).small().text_color(state_color(self.pr.status(), &palette)))
-                    .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(format!("{} #{}", self.pr.title, self.pr.number)))
+                    .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(format!("{} {}", self.pr.title, self.target.number(self.pr.number))))
                     .child(tool_button("tl-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(|this, _, _, cx| this.reload(cx)))),
             )
             .when(self.loading, |el| el.child(div().px_3().py_1().text_xs().text_color(palette.text_secondary).child("Loading…")))
