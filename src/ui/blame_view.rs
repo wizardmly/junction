@@ -129,7 +129,7 @@ impl BlameView {
             Some(r) => r.strip_suffix('^').map_or_else(|| short(r).to_owned(), |h| format!("{}^", short(h))),
         };
         h_flex()
-            .h(px(32.))
+            .h(px(crate::ui::common::toolbar_height()))
             .px_2()
             .gap_1()
             .border_b_1()

@@ -32,7 +32,7 @@ use crate::git::merge::{self, Conflict};
 use crate::model::{ExcludedHunks, RepoEvent, RepoModel};
 use crate::settings::Settings;
 use crate::theme::ActivePalette as _;
-use crate::ui::common::{self, FILE_PREFIX, ROW_HEIGHT, tool_button};
+use crate::ui::common::{self, FILE_PREFIX, row_height, tool_button};
 use crate::ui::diff_view::DiffSource;
 
 mod menu;
@@ -49,13 +49,31 @@ pub enum CommitEvent {
 
 impl EventEmitter<CommitEvent> for CommitView {}
 
-gpui_kit::actions!(commit_view, [ShowMessageHistory]);
+gpui_kit::actions!(commit_view, [ShowMessageHistory, ShowDiff, RollbackFiles, AddToVcs, DeleteFiles, EditSource, MoveToChangelist]);
 
 const CONTEXT: &str = "CommitView";
+/// The changes tree, where IntelliJ's file shortcuts apply (not in the message editor).
+const TREE_CONTEXT: &str = "CommitTree";
 
 pub fn init(cx: &mut gpui_kit::App) {
+    use gpui_kit::KeyBinding;
     // Commit Message History: Ctrl+M on every platform, as in IntelliJ.
-    cx.bind_keys([gpui_kit::KeyBinding::new("ctrl-m", ShowMessageHistory, Some(CONTEXT))]);
+    cx.bind_keys([
+        KeyBinding::new("ctrl-m", ShowMessageHistory, Some(CONTEXT)),
+        KeyBinding::new("secondary-d", ShowDiff, Some(TREE_CONTEXT)),
+        KeyBinding::new("secondary-alt-z", RollbackFiles, Some(TREE_CONTEXT)),
+        KeyBinding::new("secondary-alt-a", AddToVcs, Some(TREE_CONTEXT)),
+        KeyBinding::new("delete", DeleteFiles, Some(TREE_CONTEXT)),
+        KeyBinding::new("f4", EditSource, Some(TREE_CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-backspace", DeleteFiles, Some(TREE_CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-down", EditSource, Some(TREE_CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-m", MoveToChangelist, Some(TREE_CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("alt-shift-m", MoveToChangelist, Some(TREE_CONTEXT)),
+    ]);
 }
 
 /// A top-level node of the changes tree. Node ids are `<scope><f:|d:><path>`.
@@ -105,6 +123,8 @@ pub struct CommitView {
     gpg_sign: Option<bool>,
     changelists: Changelists,
     changelists_root: Option<std::path::PathBuf>,
+    /// Group By › Module: each changed file's module folder.
+    modules: HashMap<String, String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -178,6 +198,7 @@ impl CommitView {
             gpg_sign: None,
             changelists: Changelists::default(),
             changelists_root: None,
+            modules: HashMap::new(),
             _subscriptions: subscriptions,
         };
         this.rebuild(cx);
@@ -269,7 +290,21 @@ impl CommitView {
             groups.push(Group::new("grp:ignored", IGNORED_SCOPE, "Ignored Files", ignored.into_iter().map(|p| (p, StatusKind::Unversioned)).collect()));
         }
         self.groups = groups;
-        let by_directory = Settings::get(cx).commit_group_by_directory;
+        let settings = Settings::get(cx);
+        let (by_directory, by_module, by_repository) =
+            (settings.commit_group_by_directory, settings.commit_group_by_module, settings.commit_group_by_repository);
+        let repository = self.model.read(cx).repository().map(|r| (r.root().to_path_buf(), r.name()));
+        self.modules.clear();
+        if let (true, Some((root, _))) = (by_module, &repository) {
+            let mut cache = HashMap::new();
+            for (path, _) in self.groups.iter().flat_map(|g| g.files.iter()) {
+                let module = common::module_of(root, path, &mut cache);
+                self.modules.insert(path.clone(), module);
+            }
+        }
+        let repo_name = repository.map(|(_, name)| name).unwrap_or_default();
+        let modules = self.modules.clone();
+        let module_of = move |path: &str| modules.get(path).cloned().unwrap_or_default();
         let expand = self.expand_all;
         let items: Vec<TreeItem> = self
             .groups
@@ -282,11 +317,14 @@ impl CommitView {
                 TreeItem::new(group.id.clone(), group.label.clone())
                     // Ignored Files starts collapsed, as it can be long.
                     .expanded(expand && group.id != "grp:ignored")
-                    .children(if by_directory {
-                        common::file_tree_with(paths, &group.scope, expand)
-                    } else {
-                        common::flat_file_list(paths, &group.scope)
-                    })
+                    .children(common::grouped_file_tree(
+                        paths.collect(),
+                        &group.scope,
+                        expand,
+                        by_directory,
+                        by_module.then_some((repo_name.as_str(), &module_of as &dyn Fn(&str) -> String)),
+                        by_repository.then_some(repo_name.as_str()),
+                    ))
             })
             .collect();
         self.counts.clear();
@@ -424,7 +462,11 @@ impl CommitView {
             return vec![path.to_owned()];
         }
         let Some(group) = self.group_of(id) else { return Vec::new() };
-        let dir = id.strip_prefix(group.scope.as_str()).and_then(|r| r.strip_prefix(common::DIR_PREFIX));
+        let rest = id.strip_prefix(group.scope.as_str());
+        if let Some(module) = rest.and_then(|r| r.strip_prefix(common::MODULE_PREFIX)) {
+            return group.files.iter().map(|(p, _)| p).filter(|p| self.modules.get(*p).map(String::as_str) == Some(module)).cloned().collect();
+        }
+        let dir = rest.and_then(|r| r.strip_prefix(common::DIR_PREFIX));
         group
             .files
             .iter()
@@ -712,6 +754,56 @@ impl CommitView {
 }
 
 impl CommitView {
+    /// The selected node's file, for the tree's keyboard shortcuts.
+    fn selected_file(&self) -> Option<String> {
+        self.last_selection.as_deref().and_then(Self::path_of).map(|(_, p)| p.to_owned())
+    }
+
+    fn selected_paths(&self) -> Vec<String> {
+        match self.selected_file() {
+            Some(file) => self.action_paths(Some(&file)),
+            None => self.last_selection.as_deref().map(|id| self.paths_under(id)).unwrap_or_default(),
+        }
+    }
+
+    fn on_show_diff(&mut self, _: &ShowDiff, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(source) = self.last_selection.clone().and_then(|id| self.diff_source(&id)) {
+            cx.emit(CommitEvent::OpenDiff(source));
+        }
+    }
+
+    fn on_rollback(&mut self, _: &RollbackFiles, window: &mut Window, cx: &mut Context<Self>) {
+        let file = self.selected_file().filter(|_| !self.staging);
+        self.rollback(file.as_deref(), window, cx);
+    }
+
+    fn on_add_to_vcs(&mut self, _: &AddToVcs, _: &mut Window, cx: &mut Context<Self>) {
+        let paths: Vec<String> = self.selected_paths().into_iter().filter(|p| self.kinds.get(p) == Some(&StatusKind::Unversioned)).collect();
+        if !paths.is_empty() {
+            crate::ui::file_menus::add_to_vcs(&self.model, paths, cx);
+        }
+    }
+
+    fn on_delete(&mut self, _: &DeleteFiles, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self.model.read(cx).repository().map(|r| r.root().to_path_buf());
+        if let Some(root) = root {
+            crate::ui::file_menus::delete_files(root, self.selected_paths(), self.file_actions(), window, cx);
+        }
+    }
+
+    fn on_edit_source(&mut self, _: &EditSource, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.selected_file() {
+            cx.emit(CommitEvent::EditSource(path));
+        }
+    }
+
+    fn on_move_to_changelist(&mut self, _: &MoveToChangelist, window: &mut Window, cx: &mut Context<Self>) {
+        let paths: Vec<String> = self.selected_paths().into_iter().filter(|p| self.kinds.get(p) != Some(&StatusKind::Unversioned)).collect();
+        if !self.staging && !paths.is_empty() {
+            self.move_dialog(paths, window, cx);
+        }
+    }
+
     /// Rollback…: checked files (or the clicked one), or in staging mode the
     /// selected node (unstaged changes come back from the index, staged ones
     /// from HEAD), confirmed in the Rollback Changes dialog.
@@ -807,7 +899,7 @@ impl Render for CommitView {
             .size_full()
             .child(
                 h_flex()
-                    .h(px(32.))
+                    .h(px(crate::ui::common::toolbar_height()))
                     .px_1()
                     .gap_0p5()
                     .border_b_1()
@@ -847,10 +939,24 @@ impl Render for CommitView {
                             .tooltip("View Options")
                             .dropdown_menu({
                                 let entity = cx.entity();
-                                let (by_dir, show_ignored) = (by_directory, Settings::get(cx).commit_show_ignored);
+                                let settings = Settings::get(cx);
+                                let (by_dir, by_module, by_repo, show_ignored) = (
+                                    by_directory,
+                                    settings.commit_group_by_module,
+                                    settings.commit_group_by_repository,
+                                    settings.commit_show_ignored,
+                                );
                                 move |menu, _, _| {
-                                    let (e1, e2) = (entity.clone(), entity.clone());
+                                    let (e1, e2, e3, e4) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
                                     menu.label("Group By")
+                                        .item(PopupMenuItem::new("Repository").checked(by_repo).on_click(move |_, _, cx| {
+                                            Settings::update(cx, |s| s.commit_group_by_repository = !by_repo);
+                                            e3.update(cx, |this, cx| this.rebuild(cx));
+                                        }))
+                                        .item(PopupMenuItem::new("Module").checked(by_module).on_click(move |_, _, cx| {
+                                            Settings::update(cx, |s| s.commit_group_by_module = !by_module);
+                                            e4.update(cx, |this, cx| this.rebuild(cx));
+                                        }))
                                         .item(PopupMenuItem::new("Directory").checked(by_dir).on_click(move |_, _, cx| {
                                             Settings::update(cx, |s| s.commit_group_by_directory = !by_dir);
                                             e1.update(cx, |this, cx| this.rebuild(cx));
@@ -884,7 +990,17 @@ impl Render for CommitView {
                     }),
             )
             .child(
-                div().flex_1().min_h_0().child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .key_context(TREE_CONTEXT)
+                    .on_action(cx.listener(Self::on_show_diff))
+                    .on_action(cx.listener(Self::on_rollback))
+                    .on_action(cx.listener(Self::on_add_to_vcs))
+                    .on_action(cx.listener(Self::on_delete))
+                    .on_action(cx.listener(Self::on_edit_source))
+                    .on_action(cx.listener(Self::on_move_to_changelist))
+                    .child(
                     tree(&self.tree, move |ix, entry, _, _, _| {
                         let palette = &tree_palette;
                         let item = entry.item();
@@ -906,7 +1022,7 @@ impl Render for CommitView {
                         let stage_id = id.clone();
                         let n = counts.get(&id).copied().unwrap_or(0);
                         let (menu_entity, menu_id, menu_file) = (entity.clone(), id.clone(), file.clone());
-                        ListItem::new(ix).py_0().px_1().h(px(ROW_HEIGHT)).child(
+                        ListItem::new(ix).py_0().px_1().h(px(row_height())).child(
                             h_flex()
                                 .w_full()
                                 .gap_1()
@@ -942,6 +1058,8 @@ impl Render for CommitView {
                                         Icon::new(match &file {
                                             Some(p) if submodules.contains(p.as_str()) => IconName::FolderGit2,
                                             Some(p) => common::file_icon(p),
+                                            None if id.split_once(':').is_some_and(|(_, r)| r.starts_with(common::REPO_PREFIX)) => IconName::FolderGit2,
+                                            None if id.split_once(':').is_some_and(|(_, r)| r.starts_with(common::MODULE_PREFIX)) => IconName::Layers,
                                             None => IconName::Folder,
                                         })
                                         .small()

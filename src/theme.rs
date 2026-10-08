@@ -61,6 +61,8 @@ pub struct Palette {
     pub diff_conflict: Hsla,
     pub diff_conflict_word: Hsla,
     pub diff_conflict_border: Hsla,
+    /// Editor Find highlights (IntelliJ's "Search result").
+    pub search_match: Hsla,
 }
 
 impl Global for Palette {}
@@ -115,6 +117,7 @@ impl Palette {
             diff_conflict: hex_alpha(0x5a3434, 0.92),
             diff_conflict_word: hex(0x7d4545),
             diff_conflict_border: hex(0x9a5555),
+            search_match: hex(0x32593d),
         }
     }
 
@@ -167,6 +170,7 @@ impl Palette {
             diff_conflict: hex(0xffdcdc),
             diff_conflict_word: hex(0xffb3b3),
             diff_conflict_border: hex(0xeb9a9a),
+            search_match: hex(0xf2c94c),
         }
     }
 
@@ -187,6 +191,25 @@ impl ActivePalette for App {
 
 /// Installs the palette and aligns the component library's theme with it, so
 /// inputs, menus and popovers match the IntelliJ surfaces around them.
+/// Light or dark from the settings: their own choice, or the system's when
+/// the theme is "Sync with OS".
+pub fn effective_dark(cx: &App) -> bool {
+    let settings = crate::settings::Settings::get(cx);
+    if settings.theme_follows_system {
+        matches!(cx.window_appearance(), gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark)
+    } else {
+        settings.dark
+    }
+}
+
+/// Re-applies the theme after a settings or system appearance change.
+pub fn refresh(cx: &mut App) {
+    let dark = effective_dark(cx);
+    if cx.try_global::<Palette>().is_none_or(|p| p.dark != dark) {
+        apply(dark, cx);
+    }
+}
+
 pub fn apply(dark: bool, cx: &mut App) {
     let palette = if dark { Palette::dark() } else { Palette::light() };
     Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx);

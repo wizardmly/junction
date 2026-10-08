@@ -23,7 +23,7 @@ use crate::git::FileChangeKind;
 use crate::git::patch::{self, ApplyOutcome, Shelf};
 use crate::model::{RepoEvent, RepoModel};
 use crate::theme::ActivePalette as _;
-use crate::ui::common::{self, FILE_PREFIX, ROW_HEIGHT, tool_button};
+use crate::ui::common::{self, FILE_PREFIX, row_height, tool_button};
 use crate::ui::dialogs::{focus_input, footer};
 use crate::ui::diff_view::DiffSource;
 
@@ -241,7 +241,7 @@ impl ShelfView {
         let menu_id = id.clone();
         h_flex()
             .id(SharedString::from(format!("shelf-{id}")))
-            .h(px(ROW_HEIGHT + 4.))
+            .h(px(row_height() + 4.))
             .px_2()
             .gap_2()
             .text_sm()
@@ -314,7 +314,7 @@ impl Render for ShelfView {
             list = list.child(
                 h_flex()
                     .id("shelf-deleted")
-                    .h(px(ROW_HEIGHT + 4.))
+                    .h(px(row_height() + 4.))
                     .px_2()
                     .gap_1()
                     .text_sm()
@@ -342,7 +342,7 @@ impl Render for ShelfView {
             let item = entry.item();
             let path = item.id.strip_prefix(FILE_PREFIX).map(str::to_owned);
             let color = path.as_ref().and_then(|p| kinds.get(p)).map_or(palette.text, |k| common::change_color(*k, palette));
-            ListItem::new(ix).py_0().px_1().h(px(ROW_HEIGHT)).child(
+            ListItem::new(ix).py_0().px_1().h(px(row_height())).child(
                 h_flex()
                     .gap_1()
                     .pl(px(entry.depth() as f32 * 14.))
@@ -363,7 +363,7 @@ impl Render for ShelfView {
             .size_full()
             .child(
                 h_flex()
-                    .h(px(32.))
+                    .h(px(crate::ui::common::toolbar_height()))
                     .px_1()
                     .gap_0p5()
                     .border_b_1()

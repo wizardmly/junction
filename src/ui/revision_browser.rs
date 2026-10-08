@@ -14,7 +14,7 @@ use gpui_kit::{App, AppContext as _, Entity, ParentElement as _, SharedString, S
 
 use crate::model::RepoModel;
 use crate::theme::ActivePalette as _;
-use crate::ui::common::{self, FILE_PREFIX, ROW_HEIGHT};
+use crate::ui::common::{self, FILE_PREFIX, row_height};
 
 pub type OpenFile = Rc<dyn Fn(String, String, &mut Window, &mut App)>;
 
@@ -47,7 +47,7 @@ pub fn open(model: Entity<RepoModel>, revision: String, open_file: OpenFile, win
                 })
                 .child(Icon::new(path.as_deref().map_or(IconName::Folder, common::file_icon)).small())
                 .child(div().child(item.label.clone()));
-            ListItem::new(ix).py_0().px_1().h(px(ROW_HEIGHT)).child(row).on_click(move |event, window, cx| {
+            ListItem::new(ix).py_0().px_1().h(px(row_height())).child(row).on_click(move |event, window, cx| {
                 // Double-click (or Enter-like single click on a file) opens it, as IntelliJ's F4.
                 if let (Some(path), true) = (path.clone(), event.click_count() >= 2) {
                     window.close_dialog(cx);

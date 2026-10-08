@@ -324,6 +324,36 @@ impl Render for BranchesPopup {
 
         let mut list = v_flex().gap_px();
         if query.is_empty() {
+            // An operation in progress: its Continue / Skip / Abort come first, as in IntelliJ.
+            {
+                use crate::git::RepositoryState::*;
+                use crate::git::merge::{self, OperationStep};
+                let state = model.state();
+                let labels = match state {
+                    Rebasing => Some(("Continue Rebase", "Abort Rebase")),
+                    Merging => Some(("", "Abort Merge")),
+                    CherryPicking => Some(("Continue Cherry-Pick", "Abort Cherry-Pick")),
+                    Reverting => Some(("Continue Revert", "Abort Revert")),
+                    Normal => None,
+                };
+                if let Some((continue_label, abort_label)) = labels {
+                    let step = |step: OperationStep| {
+                        let model = self.model.clone();
+                        Rc::new(move |_: &mut Window, cx: &mut gpui_kit::App| {
+                            model.update(cx, |m, cx| m.run_operation("Git", move |repo| merge::step(repo, state, step), cx))
+                        }) as Rc<dyn Fn(&mut Window, &mut gpui_kit::App)>
+                    };
+                    if state != Merging {
+                        list = list.child(top_action("bp-continue", IconName::Play, continue_label, step(OperationStep::Continue)));
+                    }
+                    if state == Rebasing {
+                        list = list.child(top_action("bp-skip", IconName::ArrowRight, "Skip Commit", step(OperationStep::Skip)));
+                    }
+                    list = list
+                        .child(top_action("bp-abort", IconName::X, abort_label, step(OperationStep::Abort)))
+                        .child(div().my_1().h(px(1.)).bg(palette.border));
+                }
+            }
             let new_model = self.model.clone();
             let new_head = head.clone();
             list = list

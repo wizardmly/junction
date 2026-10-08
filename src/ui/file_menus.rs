@@ -54,8 +54,47 @@ pub fn entry(label: impl Into<SharedString>, shortcut: &'static str) -> PopupMen
             .min_w(px(220.))
             .gap_6()
             .child(div().flex_1().child(label.clone()))
-            .when(!shortcut.is_empty(), |el| el.child(div().text_color(palette.text_secondary).child(shortcut)))
+            .when(!shortcut.is_empty(), |el| el.child(div().text_color(palette.text_secondary).child(shortcut_label(shortcut))))
     })
+}
+
+/// A Windows / Linux shortcut as written in the menus ("Ctrl+Alt+Z"), in the
+/// platform's own form: macOS uses IntelliJ's mac keymap symbols (⌥⌘Z).
+pub fn shortcut_label(shortcut: &str) -> String {
+    if !cfg!(target_os = "macos") {
+        return shortcut.to_owned();
+    }
+    // IntelliJ's macOS keymap moves a few shortcuts rather than swapping Ctrl for ⌘.
+    let moved = match shortcut {
+        "Delete" => Some("⌘⌫"),
+        "F4" => Some("⌘↓"),
+        "Alt+Shift+M" => Some("⇧⌘M"),
+        "Ctrl+F4" => Some("⌘W"),
+        "Ctrl+G" => Some("⌘L"),
+        "Ctrl+Alt+Left" => Some("⌘["),
+        "Ctrl+Alt+Right" => Some("⌘]"),
+        "Ctrl+Alt+S" => Some("⌘,"),
+        "Alt+`" => Some("⌃V"),
+        _ => None,
+    };
+    if let Some(moved) = moved {
+        return moved.to_owned();
+    }
+    let mut modifiers = String::new();
+    let mut key = "";
+    for part in shortcut.split('+') {
+        match part {
+            "Ctrl" => modifiers.push('⌘'),
+            "Alt" => modifiers.push('⌥'),
+            "Shift" => modifiers.push('⇧'),
+            "" => key = "+",
+            other => key = other,
+        }
+    }
+    // macOS orders modifiers ⌃⌥⇧⌘.
+    let mut ordered: Vec<char> = modifiers.chars().collect();
+    ordered.sort_by_key(|c| "⌃⌥⇧⌘".chars().position(|m| m == *c));
+    ordered.into_iter().collect::<String>() + key
 }
 
 /// A submenu whose items this client has no counterpart for (Analyze,

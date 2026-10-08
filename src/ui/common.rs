@@ -14,7 +14,31 @@ use gpui_kit::{ElementId, Hsla, SharedString};
 use crate::git::{FileChangeKind, StatusKind};
 use crate::theme::Palette;
 
-pub const ROW_HEIGHT: f32 = 24.;
+static COMPACT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Appearance › Compact mode, set from the settings.
+pub fn set_compact(compact: bool) {
+    COMPACT.store(compact, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn compact() -> bool {
+    COMPACT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Tree and list rows: 24px, 20px in compact mode.
+pub fn row_height() -> f32 {
+    if compact() { 20. } else { 24. }
+}
+
+/// Tool window toolbars.
+pub fn toolbar_height() -> f32 {
+    if compact() { 28. } else { 32. }
+}
+
+/// Tab rows and viewer headers.
+pub fn header_height() -> f32 {
+    if compact() { 26. } else { 30. }
+}
 
 pub fn icon(name: IconName) -> Icon {
     Icon::new(name).small()
@@ -91,6 +115,82 @@ pub fn file_icon(path: &str) -> IconName {
 
 pub const FILE_PREFIX: &str = "f:";
 pub const DIR_PREFIX: &str = "d:";
+/// Group By › Module nodes: `m:<module folder>` ("" is the root module).
+pub const MODULE_PREFIX: &str = "m:";
+/// Group By › Repository nodes.
+pub const REPO_PREFIX: &str = "r:";
+
+/// Build files that make a folder a module, as IntelliJ's modules: Gradle,
+/// Cargo, Go, Dart, Swift, CMake, npm, Maven, V.
+pub const BUILD_FILES: [&str; 12] = [
+    "build.gradle", "build.gradle.kts", "Cargo.toml", "go.mod", "pubspec.yaml", "Package.swift",
+    "CMakeLists.txt", "package.json", "pom.xml", "v.mod", "settings.gradle", "settings.gradle.kts",
+];
+
+/// The module a file belongs to: its nearest folder (inside `root`) holding
+/// a build file, "" for the root module. Folders are looked up once per call site.
+pub fn module_of(root: &std::path::Path, path: &str, cache: &mut std::collections::HashMap<String, bool>) -> String {
+    let mut dir = path.rsplit_once('/').map_or("", |(d, _)| d);
+    while !dir.is_empty() {
+        let is_module = *cache
+            .entry(dir.to_owned())
+            .or_insert_with(|| BUILD_FILES.iter().any(|f| root.join(dir).join(f).is_file()));
+        if is_module {
+            return dir.to_owned();
+        }
+        dir = dir.rsplit_once('/').map_or("", |(d, _)| d);
+    }
+    String::new()
+}
+
+/// The Commit / Changes tree under one group: optionally by repository, then
+/// module, then directory (Group By), as IntelliJ nests them.
+pub fn grouped_file_tree(
+    paths: Vec<String>,
+    scope: &str,
+    expanded: bool,
+    by_directory: bool,
+    modules: Option<(&str, &dyn Fn(&str) -> String)>,
+    repository: Option<&str>,
+) -> Vec<TreeItem> {
+    let leaves = |paths: Vec<String>, prefix: &str| -> Vec<TreeItem> {
+        if by_directory {
+            // Directories below a module start at the module folder.
+            let mut root = DirNode::default();
+            for path in paths {
+                let rel = path.strip_prefix(prefix).map(|r| r.trim_start_matches('/')).unwrap_or(&path).to_owned();
+                let mut node = &mut root;
+                let mut parts: Vec<&str> = rel.split('/').collect();
+                parts.pop();
+                for part in parts {
+                    node = node.dirs.entry(part.to_owned()).or_default();
+                }
+                node.files.push(path);
+            }
+            build_items(&root, prefix, scope, expanded)
+        } else {
+            flat_file_list(paths, scope)
+        }
+    };
+    let by_module = |paths: Vec<String>| -> Vec<TreeItem> {
+        let Some((root_name, module_of)) = modules else { return leaves(paths, "") };
+        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for path in paths {
+            groups.entry(module_of(&path)).or_default().push(path);
+        }
+        groups
+            .into_iter()
+            .map(|(module, files)| {
+                let label = if module.is_empty() { root_name.to_owned() } else { module.rsplit('/').next().unwrap_or(&module).to_owned() };
+                TreeItem::new(format!("{scope}{MODULE_PREFIX}{module}"), label).expanded(expanded).children(leaves(files, &module))
+            })
+            .collect()
+    };
+    match repository {
+        Some(name) => vec![TreeItem::new(format!("{scope}{REPO_PREFIX}{name}"), name.to_owned()).expanded(expanded).children(by_module(paths))],
+        None => by_module(paths),
+    }
+}
 
 #[derive(Default)]
 struct DirNode {

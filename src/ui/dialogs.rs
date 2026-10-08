@@ -731,13 +731,18 @@ pub fn settings(window: &mut Window, cx: &mut App) {
                     .child(section("Appearance"))
                     .child(
                         RadioGroup::horizontal("settings-theme")
-                            .children(["Dark", "Light"])
-                            .selected_index(Some(if current.dark { 0 } else { 1 }))
+                            .children(["Dark", "Light", "Sync with OS"])
+                            .selected_index(Some(if current.theme_follows_system { 2 } else if current.dark { 0 } else { 1 }))
                             .on_change(move |ix, window, _| {
-                                theme_draft.borrow_mut().dark = *ix == 0;
+                                let mut draft = theme_draft.borrow_mut();
+                                draft.theme_follows_system = *ix == 2;
+                                if *ix < 2 {
+                                    draft.dark = *ix == 0;
+                                }
                                 window.refresh();
                             }),
                     )
+                    .child(check("settings-compact", "Compact mode", current.compact, |s, v| s.compact = v))
                     .child(section("Version Control › Git"))
                     .child(
                         gpui_kit::component::h_flex()
@@ -886,10 +891,8 @@ pub fn settings(window: &mut Window, cx: &mut App) {
                 if next.fetch_interval_minutes > 0 {
                     next.fetch_interval_minutes = ok_fetch.read(cx).value().trim().parse::<u32>().unwrap_or(10).clamp(1, 1440);
                 }
-                if next.dark != Settings::get(cx).dark {
-                    crate::theme::apply(next.dark, cx);
-                }
                 Settings::update(cx, |s| *s = next);
+                crate::theme::refresh(cx);
                 window.refresh();
                 true
             })
@@ -1347,4 +1350,84 @@ pub fn unstash_as(model: Entity<RepoModel>, stash: String, message: String, wind
             })
     });
     focus_input(&focus, window, cx);
+}
+
+/// Help › About.
+pub fn about(window: &mut Window, cx: &mut App) {
+    window.open_dialog(cx, |dialog, _, cx| {
+        let palette = cx.palette().clone();
+        dialog.title(format!("About {}", crate::ui::workspace::APP_NAME)).w(px(380.)).child(
+            v_flex()
+                .gap_1()
+                .text_sm()
+                .child(div().text_lg().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(crate::ui::workspace::APP_NAME))
+                .child(div().text_color(palette.text_secondary).child("Git & Code Navigator"))
+                .child(format!("Version {}", env!("CARGO_PKG_VERSION")))
+                .child(div().text_color(palette.text_secondary).child("Spell checking uses the SCOWL word list.")),
+        )
+    });
+}
+
+/// IntelliJ's default keymap as this client implements it:
+/// (group, action, Windows / Linux, macOS).
+pub const KEYMAP: &[(&str, &str, &str, &str)] = &[
+    ("Git", "Commit…", "Ctrl+K", "⌘K"),
+    ("Git", "Push…", "Ctrl+Shift+K", "⇧⌘K"),
+    ("Git", "Update Project…", "Ctrl+T", "⌘T"),
+    ("Git", "Branches…", "Ctrl+Shift+`", "⇧⌘`"),
+    ("Git", "VCS Operations Popup", "Alt+`", "⌃V"),
+    ("Git", "Rollback", "Ctrl+Alt+Z", "⌥⌘Z"),
+    ("Git", "Show Diff", "Ctrl+D", "⌘D"),
+    ("Git", "Add to VCS", "Ctrl+Alt+A", "⌥⌘A"),
+    ("Git", "Move to Another Changelist", "Alt+Shift+M", "⇧⌘M"),
+    ("Git", "Commit Message History", "Ctrl+M", "⌃M"),
+    ("Git", "Refresh", "Ctrl+Alt+Y", "⌥⌘Y"),
+    ("Diff", "Next / Previous Difference", "F7 / Shift+F7", "F7 / ⇧F7"),
+    ("Diff", "Compare Next / Previous File", "Alt+Right / Alt+Left", "⌥→ / ⌥←"),
+    ("Diff", "Jump to Source", "F4", "⌘↓"),
+    ("Editor", "Next / Previous Change", "Ctrl+Alt+Shift+Down / Up", "⌃⌥⇧↓ / ↑"),
+    ("Editor", "Go to Declaration", "Ctrl+B", "⌘B"),
+    ("Editor", "Find Usages", "Alt+F7", "⌥F7"),
+    ("Editor", "Find / Replace", "Ctrl+F / Ctrl+R", "⌘F / ⌘R"),
+    ("Editor", "Find Next / Previous", "F3 / Shift+F3", "⌘G / ⇧⌘G"),
+    ("Editor", "Show Context Actions (spelling)", "Alt+Enter", "⌥↩"),
+    ("Navigate", "Search Everywhere", "Double Shift", "Double ⇧"),
+    ("Navigate", "Find Action", "Ctrl+Shift+A", "⇧⌘A"),
+    ("Navigate", "Class / File / Symbol", "Ctrl+N / Ctrl+Shift+N / Ctrl+Alt+Shift+N", "⌘O / ⇧⌘O / ⌥⌘O"),
+    ("Navigate", "Line/Column", "Ctrl+G", "⌘L"),
+    ("Navigate", "Recent Files", "Ctrl+E", "⌘E"),
+    ("Navigate", "File Structure", "Ctrl+F12", "⌘F12"),
+    ("Navigate", "Back / Forward", "Ctrl+Alt+Left / Right", "⌘[ / ⌘]"),
+    ("Navigate", "Select In Project View", "Alt+F1", "⌥F1"),
+    ("Navigate", "Find / Replace in Files", "Ctrl+Shift+F / Ctrl+Shift+R", "⇧⌘F / ⇧⌘R"),
+    ("Window", "Project / Find / Git / Commit", "Alt+1 / Alt+3 / Alt+9 / Alt+0", "⌘1 / ⌘3 / ⌘9 / ⌘0"),
+    ("Window", "Hide Active Tool Window", "Shift+Escape", "⇧⎋"),
+    ("Window", "Hide All Tool Windows", "Ctrl+Shift+F12", "⇧⌘F12"),
+    ("Window", "Close Tab", "Ctrl+F4", "⌘W"),
+    ("Window", "Select Next / Previous Tab", "Alt+Right / Alt+Left", "⇧⌘] / ⇧⌘["),
+    ("Window", "Settings", "Ctrl+Alt+S", "⌘,"),
+];
+
+/// Help › Keyboard Shortcuts: the table above for this platform.
+pub fn keymap_reference(window: &mut Window, cx: &mut App) {
+    window.open_dialog(cx, |dialog, _, cx| {
+        let palette = cx.palette().clone();
+        use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _};
+        let mut list = v_flex().id("keymap-list").max_h(px(520.)).overflow_y_scroll().gap_px().text_sm();
+        let mut group = "";
+        for (g, action, pc, mac) in KEYMAP {
+            if *g != group {
+                group = g;
+                list = list.child(div().pt_2().pb_0p5().text_xs().font_weight(gpui_kit::FontWeight::SEMIBOLD).text_color(palette.text_secondary).child(*g));
+            }
+            let keys = if cfg!(target_os = "macos") { *mac } else { *pc };
+            list = list.child(
+                gpui_kit::component::h_flex()
+                    .gap_4()
+                    .child(div().flex_1().child(*action))
+                    .child(div().text_color(palette.text_secondary).child(keys)),
+            );
+        }
+        dialog.title("Keyboard Shortcuts").w(px(560.)).child(list)
+    });
 }

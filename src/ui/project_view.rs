@@ -29,7 +29,7 @@ use crate::index::service::{CodeIndex, IndexEvent};
 use crate::model::{RepoEvent, RepoModel};
 use crate::settings::{ProjectSettings, ProjectSort, Settings};
 use crate::theme::ActivePalette as _;
-use crate::ui::common::{self, ROW_HEIGHT, tool_button};
+use crate::ui::common::{self, row_height, tool_button};
 use crate::ui::file_menus::{FileActions, FileClipboard, ProjectTarget};
 use crate::ui::navigate::OpenTarget;
 
@@ -785,7 +785,7 @@ impl Render for ProjectView {
                         h_flex()
                             .id(ix)
                             .w_full()
-                            .h(px(ROW_HEIGHT))
+                            .h(px(row_height()))
                             .pl(px(8. + row.depth as f32 * 16.))
                             .gap_1()
                             .text_sm()
@@ -845,7 +845,7 @@ impl Render for ProjectView {
             .on_key_down(cx.listener(Self::on_key))
             .child(
                 h_flex()
-                    .h(px(30.))
+                    .h(px(crate::ui::common::header_height()))
                     .px_1()
                     .gap_0p5()
                     .flex_shrink_0()

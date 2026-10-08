@@ -24,7 +24,7 @@ use crate::index::nav::{Target, Usage};
 use crate::index::service::CodeIndex;
 use crate::index::text_search::{SearchResult, TextMatch};
 use crate::theme::ActivePalette as _;
-use crate::ui::common::{self, ROW_HEIGHT, tool_button};
+use crate::ui::common::{self, row_height, tool_button};
 use crate::ui::find_popup::{FindRequest, highlighted, target_of};
 use crate::ui::navigate::OpenTarget;
 
@@ -427,7 +427,7 @@ impl FindView {
             );
         }
         h_flex()
-            .h(px(30.))
+            .h(px(crate::ui::common::header_height()))
             .px_2()
             .gap_2()
             .flex_shrink_0()
@@ -443,7 +443,7 @@ impl FindView {
         let text = tab.is_some_and(|t| matches!(t.content, Content::Text { .. }));
         let replace = tab.is_some_and(|t| matches!(&t.content, Content::Text { request, .. } if request.replacement.is_some()));
         h_flex()
-            .h(px(30.))
+            .h(px(crate::ui::common::header_height()))
             .px_1()
             .gap_0p5()
             .flex_shrink_0()
@@ -519,7 +519,7 @@ impl Render for FindView {
                     .map(|ix| {
                         let base = h_flex()
                             .id(ix)
-                            .h(px(ROW_HEIGHT))
+                            .h(px(row_height()))
                             .gap_1()
                             .text_sm()
                             .cursor_pointer()

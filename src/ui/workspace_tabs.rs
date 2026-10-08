@@ -489,7 +489,7 @@ impl Workspace {
         let count = self.editors.len();
         let row = h_flex()
             .id(("editor-tabs", group))
-            .h(px(30.))
+            .h(px(crate::ui::common::header_height()))
             .flex_shrink_0()
             .overflow_x_scroll()
             .border_b_1()

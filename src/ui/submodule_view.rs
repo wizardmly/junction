@@ -12,7 +12,7 @@ use gpui_kit::{
 use crate::git::submodule::{self, Submodule, SubmoduleState};
 use crate::model::{RepoEvent, RepoModel};
 use crate::theme::ActivePalette as _;
-use crate::ui::common::{ROW_HEIGHT, tool_button};
+use crate::ui::common::{row_height, tool_button};
 
 pub struct SubmoduleView {
     model: Entity<RepoModel>,
@@ -106,7 +106,7 @@ impl Render for SubmoduleView {
             rows = rows.child(
                 h_flex()
                     .id(SharedString::from(format!("submodule-{ix}")))
-                    .h(px(ROW_HEIGHT + 4.))
+                    .h(px(row_height() + 4.))
                     .px_2()
                     .gap_2()
                     .text_sm()
@@ -157,7 +157,7 @@ impl Render for SubmoduleView {
             .size_full()
             .child(
                 h_flex()
-                    .h(px(32.))
+                    .h(px(crate::ui::common::toolbar_height()))
                     .px_1()
                     .gap_0p5()
                     .border_b_1()

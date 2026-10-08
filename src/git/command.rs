@@ -2,7 +2,6 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
 
@@ -11,10 +10,13 @@ use super::RepositoryState;
 /// One executed command, as listed in the Git tool window's Console tab.
 #[derive(Clone, Debug)]
 pub struct ConsoleEntry {
+    /// When the command started, shown as IntelliJ's "14:05:02.123:" prefix.
+    pub time: chrono::DateTime<chrono::Local>,
+    /// The repository folder's name, the console's "[root]".
+    pub root: String,
     pub command_line: String,
     pub output: String,
     pub success: bool,
-    pub duration: Duration,
 }
 
 /// Shared record of every git command the application ran.
@@ -26,6 +28,11 @@ pub struct GitConsole {
 impl GitConsole {
     pub fn entries(&self) -> Vec<ConsoleEntry> {
         self.entries.lock().unwrap().clone()
+    }
+
+    /// Clear All in the console's toolbar.
+    pub fn clear(&self) {
+        self.entries.lock().unwrap().clear();
     }
 
     fn push(&self, entry: ConsoleEntry) {
@@ -352,7 +359,7 @@ where
     S: AsRef<str>,
 {
     let args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_owned()).collect();
-    let started = Instant::now();
+    let time = chrono::Local::now();
     let mut child = git_command(executable)
         .current_dir(cwd)
         .envs(crate::askpass::git_env())
@@ -387,10 +394,11 @@ where
     }
     console_output.push_str(&stderr);
     console.push(ConsoleEntry {
+        time,
+        root: cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         command_line: command_line.clone(),
         output: console_output.trim_end().to_owned(),
         success,
-        duration: started.elapsed(),
     });
 
     if !success {

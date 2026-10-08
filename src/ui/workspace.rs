@@ -13,12 +13,11 @@ use gpui_kit::component::{
     notification::Notification,
     popover::Popover,
     resizable_panel,
-    scroll::ScrollableElement as _,
     v_flex, v_resizable, h_resizable,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::{
-    AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, KeyBinding,
+    App, AppContext as _, Context, Entity, FontWeight, SharedString, InteractiveElement as _, IntoElement, KeyBinding,
     ParentElement as _, PathPromptOptions, Render, actions, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
     prelude::FluentBuilder as _, px,
 };
@@ -44,6 +43,7 @@ use crate::ui::shelf_view::{ShelfEvent, ShelfView};
 use crate::ui::stash_view::{StashEvent, StashView};
 use crate::index::service::{CodeIndex, IndexEvent};
 use crate::ui::search_everywhere::SeTab;
+use crate::ui::tool_windows::{DraggedToolWindow, Side, ToolWindow, ToolWindows};
 
 actions!(
     workspace,
@@ -75,7 +75,10 @@ actions!(
         CloseTab,
         NextTab,
         PreviousTab,
-        ReopenClosedTab
+        ReopenClosedTab,
+        ToggleCommitWindow,
+        HideAllToolWindows,
+        HideActiveToolWindow
     ]
 );
 
@@ -96,9 +99,9 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-shift-k", PushChanges, Some(CONTEXT)),
         KeyBinding::new("secondary-t", UpdateProject, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-`", ShowBranches, Some(CONTEXT)),
-        KeyBinding::new("alt-9", ToggleGitWindow, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-9" } else { "alt-9" }, ToggleGitWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-y", Refresh, Some(CONTEXT)),
-        KeyBinding::new("secondary-alt-s", OpenSettings, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-," } else { "ctrl-alt-s" }, OpenSettings, Some(CONTEXT)),
         // VCS Operations popup: Alt+` (Ctrl+V on macOS).
         #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-v", VcsOperations, Some(CONTEXT)),
@@ -115,20 +118,34 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-shift-n", GotoFile, Some(CONTEXT)),
         KeyBinding::new("secondary-n", GotoClass, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-shift-n", GotoSymbol, Some(CONTEXT)),
-        KeyBinding::new("secondary-alt-left", NavigateBack, Some(CONTEXT)),
-        KeyBinding::new("secondary-alt-right", NavigateForward, Some(CONTEXT)),
-        KeyBinding::new("alt-1", ToggleProjectWindow, Some(CONTEXT)),
-        KeyBinding::new("alt-3", ToggleFindWindow, Some(CONTEXT)),
+        // Tool windows and navigation: Alt+digit and Ctrl+Alt+arrows on Windows / Linux,
+        // ⌘digit and ⌘[ / ⌘] in IntelliJ's macOS keymap.
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-alt-left", NavigateBack, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-alt-right", NavigateForward, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-[", NavigateBack, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-]", NavigateForward, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-1" } else { "alt-1" }, ToggleProjectWindow, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-3" } else { "alt-3" }, ToggleFindWindow, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-0" } else { "alt-0" }, ToggleCommitWindow, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-f12", HideAllToolWindows, Some(CONTEXT)),
+        KeyBinding::new("shift-escape", HideActiveToolWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-f", FindInPath, Some(CONTEXT)),
+        // The text field library binds ⇧⌘F to its own replace panel on macOS.
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-f", FindInPath, Some("Input")),
         KeyBinding::new("secondary-shift-r", ReplaceInPath, Some(CONTEXT)),
         KeyBinding::new("shift shift", SearchEverywhere, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-a", FindAction, Some(CONTEXT)),
         KeyBinding::new("secondary-e", RecentFiles, Some(CONTEXT)),
         KeyBinding::new("secondary-f12", FileStructure, Some(CONTEXT)),
-        KeyBinding::new("secondary-g", GotoLine, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-l" } else { "ctrl-g" }, GotoLine, Some(CONTEXT)),
         KeyBinding::new("alt-f1", SelectInProject, Some(CONTEXT)),
         // Editor tabs: Ctrl+F4 closes; Alt+Left / Alt+Right switch (Cmd+Shift+[ / ] on macOS).
-        KeyBinding::new("secondary-f4", CloseTab, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-w" } else { "ctrl-f4" }, CloseTab, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("alt-left", PreviousTab, Some(TABS_CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -190,16 +207,13 @@ pub struct Workspace {
     /// Files saved or replaced this session, newest first.
     recently_changed: Vec<String>,
     project: Entity<crate::ui::project_view::ProjectView>,
-    show_project: bool,
     /// Navigate › Back / Forward: (path, line, column).
     nav_back: Vec<(String, u32, u32)>,
     nav_forward: Vec<(String, u32, u32)>,
     /// The Pull Requests tool window, sharing the left side with Commit.
     prs: Entity<crate::ui::pull_requests::PullRequestsView>,
-    show_prs: bool,
     /// The Changes tool window (compare results); its stripe button shows while it has tabs.
     changes: Entity<crate::ui::changes_view::ChangesView>,
-    show_changes: bool,
     /// A pull request's timeline, shown in the editor area until closed.
     timeline: Option<Entity<crate::ui::pull_requests::PrTimelineView>>,
     /// The merge tool, shown in the editor area instead of the diff.
@@ -220,8 +234,15 @@ pub struct Workspace {
     active_group: usize,
     /// Reopen Closed Tab, newest last.
     closed_tabs: Vec<String>,
-    show_commit: bool,
-    show_git: bool,
+    tools: ToolWindows,
+    notifications: Vec<crate::ui::status_bar::NotificationRecord>,
+    /// Git console toolbar state.
+    console_wrap: bool,
+    console_autoscroll: bool,
+    console_scroll: gpui_kit::ScrollHandle,
+    console_seen: std::cell::Cell<usize>,
+    unread_notifications: usize,
+    caret: Entity<crate::ui::status_bar::CaretStatus>,
     left_tab: LeftTab,
     bottom_tab: BottomTab,
     branches_open: bool,
@@ -270,7 +291,7 @@ impl Workspace {
                 match event {
                     ChangesEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
                     ChangesEvent::Closed | ChangesEvent::Hide => {
-                        this.show_changes = false;
+                        this.tools.hide(ToolWindow::Changes);
                         cx.notify();
                     }
                 }
@@ -333,18 +354,13 @@ impl Workspace {
                     this.open_log_tab(title.clone(), filter.clone(), cx);
                 }
                 if let RepoEvent::PrefillCommitMessage(_) = event {
-                    this.show_commit = true;
-                    this.show_prs = false;
-                    this.show_changes = false;
+                    this.tools.open(ToolWindow::Commit);
                     this.left_tab = LeftTab::Commit;
                     cx.notify();
                 }
                 if let RepoEvent::Compare { old, new } = event {
                     this.changes.update(cx, |changes, cx| changes.compare(old.clone(), new.clone(), cx));
-                    this.show_commit = false;
-                    this.show_prs = false;
-                    this.show_project = false;
-                    this.show_changes = true;
+                    this.tools.open(ToolWindow::Changes);
                     cx.notify();
                 }
                 if let RepoEvent::Notify { title, message, error } = event {
@@ -381,7 +397,7 @@ impl Workspace {
                             let entity = entity.clone();
                             Button::new("notify-details").label("Show Details").small().outline().on_click(move |_, _, cx| {
                                 entity.update(cx, |this, cx| {
-                                    this.show_git = true;
+                                    this.tools.open(ToolWindow::Git);
                                     this.bottom_tab = BottomTab::Console;
                                     cx.notify();
                                 })
@@ -445,7 +461,7 @@ impl Workspace {
                             let entity = entity.clone();
                             Button::new("notify-view").label("View Commit").small().outline().on_click(move |_, _, cx| {
                                 entity.update(cx, |this, cx| {
-                                    this.show_git = true;
+                                    this.tools.open(ToolWindow::Git);
                                     this.bottom_tab = BottomTab::Log;
                                     let head = this.model.read(cx).refs().head_commit.clone();
                                     this.model.update(cx, |m, cx| m.select_hash(head, cx));
@@ -456,6 +472,17 @@ impl Workspace {
                         .autohide(true);
                     }
                     window.push_notification(notification, cx);
+                    // Kept in the Notifications tool window, newest first.
+                    this.notifications.insert(0, crate::ui::status_bar::NotificationRecord {
+                        title: title.clone(),
+                        message: message.clone(),
+                        error: *error,
+                        time: chrono::Local::now(),
+                    });
+                    this.notifications.truncate(200);
+                    if !this.tools.is_open(ToolWindow::Notifications) {
+                        this.unread_notifications += 1;
+                    }
                 }
             }),
             cx.observe(&model, |_, _, cx| cx.notify()),
@@ -469,6 +496,11 @@ impl Workspace {
             }),
             cx.subscribe(&diff, |this, _, _: &crate::ui::diff_view::FilesChanged, cx| {
                 this.model.update(cx, |m, cx| m.reload(cx));
+            }),
+            // Theme "Sync with OS" follows the system's light / dark switch.
+            window.observe_window_appearance(|window, cx| {
+                crate::theme::refresh(cx);
+                window.refresh();
             }),
             // Running an action from the branches popup closes it.
             cx.subscribe(&branches_popup, |this, _, _: &gpui_kit::DismissEvent, cx| {
@@ -496,12 +528,9 @@ impl Workspace {
             recent_files: Vec::new(),
             recently_changed: Vec::new(),
             project,
-            show_project: false,
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
-            show_prs: false,
             changes,
-            show_changes: false,
             timeline: None,
             merge: None,
             log_tabs: vec![LogTab { title: "Log".into(), filter: Default::default(), selected: None }],
@@ -514,8 +543,14 @@ impl Workspace {
             window_title: String::new(),
             active_group: 0,
             closed_tabs: Vec::new(),
-            show_commit: true,
-            show_git: true,
+            tools: ToolWindows::load(cx),
+            notifications: Vec::new(),
+            console_wrap: true,
+            console_autoscroll: true,
+            console_scroll: gpui_kit::ScrollHandle::new(),
+            console_seen: std::cell::Cell::new(0),
+            unread_notifications: 0,
+            caret: cx.new(|_| crate::ui::status_bar::CaretStatus::new()),
             left_tab: LeftTab::Commit,
             branches_open: false,
             focus: cx.focus_handle(),
@@ -632,7 +667,7 @@ impl Workspace {
         let view = cx.new(|cx| BlameView::new(model, repository, path, revision, cx));
         let subscription = cx.subscribe(&view, |this, _, event: &BlameEvent, cx| match event {
             BlameEvent::SelectCommit(hash) => {
-                this.show_git = true;
+                this.tools.open(ToolWindow::Git);
                 this.bottom_tab = BottomTab::Log;
                 let hash = hash.clone();
                 this.model.update(cx, |m, cx| m.select_hash(Some(hash), cx));
@@ -674,7 +709,7 @@ impl Workspace {
                 let (index, text, offset) = (self.code_index.clone(), text.clone(), *offset);
                 let _ = index;
                 self.find.update(cx, |view, cx| view.find_usages(path, text, offset, cx));
-                self.show_git = true;
+                self.tools.open(ToolWindow::Git);
                 self.bottom_tab = BottomTab::Find;
                 cx.notify();
             }
@@ -700,7 +735,7 @@ impl Workspace {
                 self.open_log_tab(format!("History for Selection: {name}:{}-{}", lines.0, lines.1), filter, cx);
             }
             FileEditorEvent::SelectCommit(hash) => {
-                self.show_git = true;
+                self.tools.open(ToolWindow::Git);
                 self.bottom_tab = BottomTab::Log;
                 let hash = hash.clone();
                 self.model.update(cx, |m, cx| m.select_hash(Some(hash), cx));
@@ -723,7 +758,7 @@ impl Workspace {
         self.save_log_tab(cx);
         self.log_tabs.push(LogTab { title, filter: filter.clone(), selected: None });
         self.active_log = self.log_tabs.len() - 1;
-        self.show_git = true;
+        self.tools.open(ToolWindow::Git);
         self.bottom_tab = BottomTab::Log;
         self.model.update(cx, |m, cx| m.set_filter(filter, cx));
         cx.notify();
@@ -866,7 +901,7 @@ impl Workspace {
                     FindEvent::ShowInFindWindow(request) => {
                         let request = request.clone();
                         this.find.update(cx, |view, cx| view.find_text(request, cx));
-                        this.show_git = true;
+                        this.tools.open(ToolWindow::Git);
                         this.bottom_tab = BottomTab::Find;
                         cx.notify();
                     }
@@ -1019,7 +1054,7 @@ impl Workspace {
             let weak = weak.clone();
             out.push(ActionEntry {
                 name: name.to_owned(),
-                shortcut: shortcut.to_owned(),
+                shortcut: crate::ui::file_menus::shortcut_label(shortcut),
                 group: group.to_owned(),
                 run: Rc::new(move |window, cx| {
                     weak.update(cx, |this, cx| run(this, window, cx)).ok();
@@ -1053,10 +1088,7 @@ impl Workspace {
             ("Find", "Alt+3", op(|this, window, cx| this.toggle_find(&ToggleFindWindow, window, cx))),
             ("Git", "Alt+9", op(|this, window, cx| this.on_toggle_git(&ToggleGitWindow, window, cx))),
             ("Commit", "Alt+0", op(|this, _, cx| {
-                this.show_commit = true;
-                this.show_project = false;
-                this.show_prs = false;
-                this.show_changes = false;
+                this.tools.open(ToolWindow::Commit);
                 this.left_tab = LeftTab::Commit;
                 cx.notify();
             })),
@@ -1103,14 +1135,14 @@ impl Workspace {
                     SeEvent::FindWindowText(request) => {
                         let request = request.clone();
                         this.find.update(cx, |view, cx| view.find_text(request, cx));
-                        this.show_git = true;
+                        this.tools.open(ToolWindow::Git);
                         this.bottom_tab = BottomTab::Find;
                         cx.notify();
                     }
                     SeEvent::FindWindowItems(title, items) => {
                         let (title, items) = (title.clone(), items.clone());
                         this.find.update(cx, |view, cx| view.show_items(title, items, cx));
-                        this.show_git = true;
+                        this.tools.open(ToolWindow::Git);
                         this.bottom_tab = BottomTab::Find;
                         cx.notify();
                     }
@@ -1249,33 +1281,23 @@ impl Workspace {
     }
 
     fn toggle_project(&mut self, _: &ToggleProjectWindow, _: &mut Window, cx: &mut Context<Self>) {
-        self.show_project = !self.show_project;
-        if self.show_project {
-            self.show_commit = false;
-            self.show_changes = false;
-            self.show_prs = false;
-            self.show_changes = false;
-        }
-        cx.notify();
+        self.toggle_tool(ToolWindow::Project, cx);
     }
 
     /// Select In › Project View: shows the current editor's file in the tree.
     fn select_in_project(&mut self, _: &SelectInProject, _: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.editor() else { return };
         let path = editor.read(cx).path().to_owned();
-        self.show_project = true;
-        self.show_commit = false;
-        self.show_prs = false;
-        self.show_changes = false;
+        self.tools.open(ToolWindow::Project);
         self.project.update(cx, |project, cx| project.reveal(&path, cx));
         cx.notify();
     }
 
     fn toggle_find(&mut self, _: &ToggleFindWindow, _: &mut Window, cx: &mut Context<Self>) {
-        if self.show_git && self.bottom_tab == BottomTab::Find {
-            self.show_git = false;
+        if self.tools.is_open(ToolWindow::Git) && self.bottom_tab == BottomTab::Find {
+            self.tools.hide(ToolWindow::Git);
         } else {
-            self.show_git = true;
+            self.tools.open(ToolWindow::Git);
             self.bottom_tab = BottomTab::Find;
         }
         cx.notify();
@@ -1312,20 +1334,14 @@ impl Workspace {
                 .detach();
             }
             FileAction::CommitFiles(paths) => {
-                self.show_commit = true;
-                self.show_prs = false;
-                self.show_changes = false;
-                self.show_project = false;
+                self.tools.open(ToolWindow::Commit);
                 self.left_tab = LeftTab::Commit;
                 self.commit.update(cx, |commit, cx| commit.commit_only(paths, window, cx));
                 cx.notify();
             }
             FileAction::Branches => self.open_branches(window, cx),
             FileAction::Unstash => {
-                self.show_commit = true;
-                self.show_prs = false;
-                self.show_changes = false;
-                self.show_project = false;
+                self.tools.open(ToolWindow::Commit);
                 self.left_tab = LeftTab::Stash;
                 cx.notify();
             }
@@ -1550,107 +1566,11 @@ impl Workspace {
                         .ghost()
                         .small()
                         .icon(Icon::new(IconName::Menu))
+                        .tooltip("Main Menu")
                         .dropdown_menu({
                             let entity = entity.clone();
-                            move |menu, _, cx| {
-                                let dark = cx.palette().dark;
-                                let open = entity.clone();
-                                menu.item(PopupMenuItem::new("Open Repository…").on_click(move |_, window, cx| {
-                                    open.update(cx, |this, cx| this.open_repository(window, cx))
-                                }))
-                                .item(PopupMenuItem::new("Get from Version Control…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| clone_dialog::clone(entity.read(cx).model.clone(), window, cx)
-                                }))
-                                .item(PopupMenuItem::new("Create Git Repository…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, _, cx| clone_dialog::init(entity.read(cx).model.clone(), cx)
-                                }))
-                                .separator()
-                                .item(PopupMenuItem::new("Merge…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| dialogs::merge(entity.read(cx).model.clone(), window, cx)
-                                }))
-                                .item(PopupMenuItem::new("Rebase…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| dialogs::rebase(entity.read(cx).model.clone(), window, cx)
-                                }))
-                                .separator()
-                                .item(PopupMenuItem::new("Pull…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| remote_dialogs::pull(entity.read(cx).model.clone(), window, cx)
-                                }))
-                                .item(PopupMenuItem::new("Manage Remotes…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| remote_dialogs::manage_remotes(entity.read(cx).model.clone(), window, cx)
-                                }))
-                                .item(PopupMenuItem::new("New Worktree…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| crate::ui::worktree_view::new_worktree(entity.read(cx).model.clone(), window, cx)
-                                }))
-                                .item(PopupMenuItem::new("Share Project on GitHub…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| crate::ui::github_dialogs::share_project(entity.read(cx).model.clone(), window, cx)
-                                }))
-                                .item(PopupMenuItem::new("GitHub Accounts…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| {
-                                        let prs = entity.read(cx).prs.clone();
-                                        crate::ui::accounts_dialog::accounts(
-                                            Some(std::rc::Rc::new(move |cx: &mut gpui_kit::App| prs.update(cx, |prs, cx| prs.refresh(cx)))),
-                                            window,
-                                            cx,
-                                        )
-                                    }
-                                }))
-                                .item(PopupMenuItem::new("Directory Mappings…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| crate::ui::mappings_dialog::directory_mappings(entity.read(cx).model.clone(), window, cx)
-                                }))
-                                .item(PopupMenuItem::new("Update Submodules").on_click({
-                                    let entity = entity.clone();
-                                    move |_, _, cx| {
-                                        let model = entity.read(cx).model.clone();
-                                        model.update(cx, |m, cx| {
-                                            m.run_operation("Update Submodules", |repo| {
-                                                crate::git::submodule::update(repo, &[])?;
-                                                Ok("Submodules updated".into())
-                                            }, cx)
-                                        })
-                                    }
-                                }))
-                                .separator()
-                                .item(PopupMenuItem::new("Create Patch…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| {
-                                        let commit = entity.read(cx).commit.clone();
-                                        commit.update(cx, |c, cx| c.create_patch(window, cx))
-                                    }
-                                }))
-                                .item(PopupMenuItem::new("Apply Patch…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| patch_dialogs::apply_patch(entity.read(cx).model.clone(), false, window, cx)
-                                }))
-                                .item(PopupMenuItem::new("Apply Patch from Clipboard…").on_click({
-                                    let entity = entity.clone();
-                                    move |_, window, cx| patch_dialogs::apply_patch(entity.read(cx).model.clone(), true, window, cx)
-                                }))
-                                .separator()
-                                .item(PopupMenuItem::new("Settings…").on_click(|_, window, cx| dialogs::settings(window, cx)))
-                                .separator()
-                                .item(PopupMenuItem::new("Light Theme").checked(!dark).on_click(|_, window, cx| {
-                                    theme::apply(false, cx);
-                                    Settings::update(cx, |s| s.dark = false);
-                                    window.refresh();
-                                }))
-                                .item(PopupMenuItem::new("Dark Theme").checked(dark).on_click(|_, window, cx| {
-                                    theme::apply(true, cx);
-                                    Settings::update(cx, |s| s.dark = true);
-                                    window.refresh();
-                                }))
-                                .separator()
-                                .item(PopupMenuItem::new("Exit").on_click(|_, _, cx| cx.quit()))
-                            }
+                            let focus = self.focus.clone();
+                            move |menu, window, cx| main_menu(menu, entity.clone(), focus.clone(), window, cx)
                         }),
                 )
                 .child(
@@ -1746,88 +1666,237 @@ impl Workspace {
                 .when_some(busy, |el, busy| {
                     el.child(div().text_xs().text_color(palette.text_secondary).child(format!("{busy}…")))
                 })
-                .child(tool_button("tb-update", IconName::ArrowDownToLine, "Update Project…  Ctrl+T").on_click(cx.listener(
+                .child(tool_button("tb-update", IconName::ArrowDownToLine, if cfg!(target_os = "macos") { "Update Project…  ⌘T" } else { "Update Project…  Ctrl+T" }).on_click(cx.listener(
                     |this, _, window, cx| dialogs::update_project(this.model.clone(), window, cx),
                 )))
-                .child(tool_button("tb-commit", IconName::Check, "Commit…  Ctrl+K").on_click(cx.listener(
+                .child(tool_button("tb-commit", IconName::Check, if cfg!(target_os = "macos") { "Commit…  ⌘K" } else { "Commit…  Ctrl+K" }).on_click(cx.listener(
                     |this, _, _, cx| {
-                        this.show_commit = true;
-                        this.show_prs = false;
-                        this.show_changes = false;
+                        this.tools.open(ToolWindow::Commit);
                         cx.notify();
                     },
                 )))
-                .child(tool_button("tb-push", IconName::ArrowUpFromLine, "Push…  Ctrl+Shift+K").on_click(cx.listener(
+                .child(tool_button("tb-push", IconName::ArrowUpFromLine, if cfg!(target_os = "macos") { "Push…  ⇧⌘K" } else { "Push…  Ctrl+Shift+K" }).on_click(cx.listener(
                     |this, _, window, cx| dialogs::push(this.model.clone(), window, cx),
                 )))
                 .child(tool_button("tb-fetch", IconName::CloudDownload, "Fetch").on_click(op(
                     "Fetch",
                     &["fetch", "--all", "--prune"],
                     "Fetched all remotes",
-                ))),
+                )))
+                // The new UI's right corner: Search Everywhere and Settings.
+                .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
+                .child(tool_button("tb-search", IconName::Search, "Search Everywhere  Double Shift").on_click(cx.listener(
+                    |this, _, window, cx| this.open_search_everywhere(SeTab::All, window, cx),
+                )))
+                .child(tool_button("tb-settings", IconName::Settings, if cfg!(target_os = "macos") { "Settings…  ⌘," } else { "Settings…  Ctrl+Alt+S" }).on_click(
+                    |_, window, cx| dialogs::settings(window, cx),
+                )),
         )
     }
 
-    fn render_stripe(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Shift+Escape: hides the bottom tool window, then the left, then the right one.
+    fn hide_active_tool_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let side = [Side::Bottom, Side::Left, Side::Right].into_iter().find(|s| self.tools.active(*s).is_some());
+        if let Some(tool) = side.and_then(|s| self.tools.active(s)) {
+            self.tools.hide(tool);
+            window.focus(&self.focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// Opens or hides a tool window from its stripe button or shortcut.
+    fn toggle_tool(&mut self, window: ToolWindow, cx: &mut Context<Self>) {
+        self.tools.toggle(window);
+        if window == ToolWindow::PullRequests && self.tools.is_open(window) {
+            self.prs.update(cx, |prs, cx| prs.refresh(cx));
+        }
+        if window == ToolWindow::Notifications {
+            self.unread_notifications = 0;
+        }
+        cx.notify();
+    }
+
+    fn tool_window_info(&self, window: ToolWindow, cx: &App) -> (IconName, SharedString, &'static str) {
+        match window {
+            ToolWindow::Project => (IconName::FolderTree, "Project".into(), "Alt+1"),
+            ToolWindow::Commit => (IconName::GitCommitVertical, "Commit".into(), "Alt+0"),
+            ToolWindow::PullRequests => (IconName::GitPullRequest, self.prs.read(cx).title().into(), ""),
+            ToolWindow::Changes => (IconName::FileDiff, "Changes".into(), ""),
+            ToolWindow::Git => (IconName::GitGraph, "Git".into(), "Alt+9"),
+            ToolWindow::Notifications => {
+                (if self.unread_notifications > 0 { IconName::BellDot } else { IconName::Bell }, "Notifications".into(), "")
+            }
+        }
+    }
+
+    /// One stripe button: click toggles the window, drag moves it (drop on
+    /// another button to go before it), right-click offers Move To and Hide.
+    fn stripe_button(&self, window: ToolWindow, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
-        let stripe_button = |id: &'static str, icon: IconName, tooltip: &'static str, active: bool| {
-            Button::new(id)
-                .ghost()
-                .icon(Icon::new(icon))
-                .tooltip(tooltip)
-                .when(active, |b| b.selected(true))
+        let (icon, title, shortcut) = self.tool_window_info(window, cx);
+        let tooltip: SharedString = if shortcut.is_empty() {
+            title.clone()
+        } else {
+            format!("{title} ({})", crate::ui::file_menus::shortcut_label(shortcut)).into()
         };
-        v_flex()
-            .w(px(40.))
+        let side = self.tools.side(window);
+        let entity = cx.entity();
+        div()
+            .id(SharedString::from(format!("stripe-{window:?}")))
+            .on_drag(DraggedToolWindow(window, icon), |dragged, _, _, cx| cx.new(|_| *dragged))
+            .drag_over::<DraggedToolWindow>(move |el, _, _, _| el.border_t_2().border_color(palette.accent))
+            .on_drop(cx.listener(move |this, dragged: &DraggedToolWindow, _, cx| {
+                this.tools.move_to(dragged.0, side, Some(window), cx);
+                cx.notify();
+            }))
+            .child(
+                Button::new(SharedString::from(format!("stripe-button-{window:?}")))
+                    .ghost()
+                    .icon(Icon::new(icon))
+                    .tooltip(tooltip)
+                    .when(self.tools.is_open(window), |b| b.selected(true))
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_tool(window, cx))),
+            )
+            .context_menu(move |menu, _, _| {
+                let mut menu = menu.label(title.clone());
+                for target in Side::ALL {
+                    let entity = entity.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(format!("Move to {}", target.label()))
+                            .disabled(target == side)
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.tools.move_to(window, target, None, cx);
+                                    cx.notify();
+                                })
+                            }),
+                    );
+                }
+                let entity = entity.clone();
+                menu.separator().item(PopupMenuItem::new("Hide").on_click(move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.tools.hide(window);
+                        cx.notify();
+                    })
+                }))
+            })
+    }
+
+    /// The left stripe holds the left windows, then the bottom ones at its
+    /// foot, as in the new UI; the right stripe holds the right windows.
+    fn render_stripe(&self, right: bool, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let palette = cx.palette().clone();
+        let visible = |w: &ToolWindow| *w != ToolWindow::Changes || !self.changes.read(cx).is_empty();
+        let top: Vec<ToolWindow> = self.tools.on_side(if right { Side::Right } else { Side::Left }).into_iter().filter(visible).collect();
+        let bottom: Vec<ToolWindow> = if right { Vec::new() } else { self.tools.on_side(Side::Bottom).into_iter().filter(visible).collect() };
+        if right && top.is_empty() && !cx.has_active_drag() {
+            return None;
+        }
+        let compact = Settings::get(cx).compact;
+        let drop_zone = |id: &'static str, side: Side, cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .flex_1()
+                .w_full()
+                .min_h(px(24.))
+                .drag_over::<DraggedToolWindow>(move |el, _, _, _| el.bg(palette.selection))
+                .on_drop(cx.listener(move |this, dragged: &DraggedToolWindow, _, cx| {
+                    this.tools.move_to(dragged.0, side, None, cx);
+                    cx.notify();
+                }))
+        };
+        let mut stripe = v_flex()
+            .w(px(if compact { 32. } else { 40. }))
             .h_full()
             .py_1()
             .gap_1()
             .items_center()
-            .border_r_1()
+            .when(right, |el| el.border_l_1())
+            .when(!right, |el| el.border_r_1())
             .border_color(palette.border)
-            .bg(palette.toolbar)
-            .child(stripe_button("stripe-project", IconName::FolderTree, "Project (Alt+1)", self.show_project).on_click(
-                cx.listener(|this, _, window, cx| this.toggle_project(&ToggleProjectWindow, window, cx)),
-            ))
-            .child(stripe_button("stripe-commit", IconName::GitCommitVertical, "Commit", self.show_commit && !self.show_prs && !self.show_project && !self.show_changes).on_click(
-                cx.listener(|this, _, _, cx| {
-                    this.show_commit = this.show_prs || this.show_project || this.show_changes || !this.show_commit;
-                    this.show_prs = false;
-                    this.show_changes = false;
-                    this.show_project = false;
-                    cx.notify();
-                }),
-            ))
-            .child(stripe_button("stripe-prs", IconName::GitPullRequest, self.prs.read(cx).title(), self.show_prs).on_click(
-                cx.listener(|this, _, _, cx| {
-                    this.show_prs = !this.show_prs;
-                    if this.show_prs {
-                        this.show_commit = false;
-                        this.show_changes = false;
-                        this.show_project = false;
-                        this.prs.update(cx, |prs, cx| prs.refresh(cx));
-                    }
-                    cx.notify();
-                }),
-            ))
-            .when(!self.changes.read(cx).is_empty(), |el| {
-                el.child(stripe_button("stripe-changes", IconName::FileDiff, "Changes", self.show_changes).on_click(cx.listener(|this, _, _, cx| {
-                    this.show_changes = !this.show_changes;
-                    if this.show_changes {
-                        this.show_commit = false;
-                        this.show_prs = false;
-                        this.show_project = false;
-                    }
-                    cx.notify();
-                })))
-            })
-            .child(div().flex_1())
-            .child(stripe_button("stripe-git", IconName::GitGraph, "Git", self.show_git).on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.show_git = !this.show_git;
-                    cx.notify();
-                },
-            )))
+            .bg(palette.toolbar);
+        for window in top {
+            stripe = stripe.child(self.stripe_button(window, cx));
+        }
+        if right {
+            stripe = stripe.child(drop_zone("stripe-drop-right", Side::Right, cx));
+        } else {
+            stripe = stripe
+                .child(drop_zone("stripe-drop-left", Side::Left, cx))
+                .child(div().w(px(20.)).h(px(1.)).bg(palette.border))
+                .child(drop_zone("stripe-drop-bottom", Side::Bottom, cx).flex_none().h(px(24.)));
+            for window in bottom {
+                stripe = stripe.child(self.stripe_button(window, cx));
+            }
+        }
+        Some(stripe)
+    }
+
+    /// The Notifications tool window: every balloon of this session, newest first.
+    fn render_notifications(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let mut list = v_flex().id("notification-list").flex_1().min_h_0().overflow_y_scroll().p_2().gap_2();
+        if self.notifications.is_empty() {
+            list = list.child(div().pt_8().w_full().text_center().text_sm().text_color(palette.text_secondary).child("No notifications"));
+        }
+        for record in &self.notifications {
+            list = list.child(
+                v_flex()
+                    .gap_0p5()
+                    .p_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(palette.border)
+                    .text_sm()
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(Icon::new(if record.error { IconName::CircleX } else { IconName::CircleCheck }).xsmall().text_color(
+                                if record.error { palette.status_conflict } else { palette.status_added },
+                            ))
+                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(record.title.clone()))
+                            .child(div().text_xs().text_color(palette.text_secondary).child(record.time.format("%H:%M").to_string())),
+                    )
+                    .child(div().text_color(palette.text_secondary).child(record.message.lines().take(6).collect::<Vec<_>>().join("\n"))),
+            );
+        }
+        v_flex()
+            .size_full()
+            .bg(palette.panel)
+            .child(
+                h_flex()
+                    .h(px(crate::ui::common::toolbar_height()))
+                    .px_2()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(div().flex_1().text_sm().font_weight(FontWeight::SEMIBOLD).child("Notifications"))
+                    .child(tool_button("notifications-clear", IconName::Delete, "Clear All").on_click(cx.listener(|this, _, _, cx| {
+                        this.notifications.clear();
+                        cx.notify();
+                    })))
+                    .child(tool_button("notifications-hide", IconName::Minus, "Hide").on_click(cx.listener(|this, _, _, cx| {
+                        this.tools.hide(ToolWindow::Notifications);
+                        cx.notify();
+                    }))),
+            )
+            .child(list)
+    }
+
+    /// The content of a tool window, shown in the panel of its side.
+    fn tool_window_content(&self, window: ToolWindow, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        div().size_full().overflow_hidden().child(self.tool_window_view(window, cx)).into_any_element()
+    }
+
+    fn tool_window_view(&self, window: ToolWindow, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        match window {
+            ToolWindow::Project => self.project.clone().into_any_element(),
+            ToolWindow::Commit => self.render_left(cx).into_any_element(),
+            ToolWindow::PullRequests => self.prs.clone().into_any_element(),
+            ToolWindow::Changes => self.changes.clone().into_any_element(),
+            ToolWindow::Git => self.render_bottom(cx).into_any_element(),
+            ToolWindow::Notifications => self.render_notifications(cx).into_any_element(),
+        }
     }
 
     fn render_left(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1851,7 +1920,7 @@ impl Workspace {
             .bg(palette.panel)
             .child(
                 h_flex()
-                    .h(px(30.))
+                    .h(px(crate::ui::common::header_height()))
                     .px_2()
                     .gap_1()
                     .border_b_1()
@@ -1870,7 +1939,7 @@ impl Workspace {
                     })))
                     .child(div().flex_1())
                     .child(tool_button("commit-hide", IconName::Minus, "Hide").on_click(cx.listener(|this, _, _, cx| {
-                        this.show_commit = false;
+                        this.tools.hide(ToolWindow::Commit);
                         cx.notify();
                     }))),
             )
@@ -1882,9 +1951,7 @@ impl Workspace {
     }
 
     fn on_commit(&mut self, _: &CommitChanges, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_commit = true;
-        self.show_prs = false;
-        self.show_changes = false;
+        self.tools.open(ToolWindow::Commit);
         self.left_tab = LeftTab::Commit;
         self.commit.update(cx, |commit, cx| commit.focus_message(window, cx));
         cx.notify();
@@ -1913,7 +1980,7 @@ impl Workspace {
     }
 
     fn on_toggle_git(&mut self, _: &ToggleGitWindow, _: &mut Window, cx: &mut Context<Self>) {
-        self.show_git = !self.show_git;
+        self.tools.toggle(ToolWindow::Git);
         cx.notify();
     }
 
@@ -1951,17 +2018,13 @@ impl Workspace {
             None,
             Some(("Stash Changes…", "", op(|this, window, cx| dialogs::stash(this.model.clone(), window, cx)))),
             Some(("Unstash Changes…", "", op(|this, _, cx| {
-                this.show_commit = true;
-                this.show_prs = false;
-                this.show_changes = false;
+                this.tools.open(ToolWindow::Commit);
                 this.left_tab = LeftTab::Stash;
                 cx.notify();
             }))),
             Some(("Shelve Changes…", "", op(|this, window, cx| this.commit.update(cx, |c, cx| c.shelve(window, cx))))),
             Some(("Unshelve Changes…", "", op(|this, _, cx| {
-                this.show_commit = true;
-                this.show_prs = false;
-                this.show_changes = false;
+                this.tools.open(ToolWindow::Commit);
                 this.left_tab = LeftTab::Shelf;
                 cx.notify();
             }))),
@@ -1971,7 +2034,7 @@ impl Workspace {
             Some(("Apply Patch from Clipboard…", "", op(|this, window, cx| patch_dialogs::apply_patch(this.model.clone(), true, window, cx)))),
             None,
             Some(("Show Git Log", "Alt+9", op(|this, _, cx| {
-                this.show_git = true;
+                this.tools.open(ToolWindow::Git);
                 this.bottom_tab = BottomTab::Log;
                 cx.notify();
             }))),
@@ -1979,22 +2042,55 @@ impl Workspace {
         ]
     }
 
-    /// IntelliJ's VCS Operations quick list, numbered like the original.
+    /// IntelliJ's VCS Operations quick list, numbered like the original:
+    /// 1–9 run an entry at once, ↑ ↓ and Enter pick one.
     fn on_vcs_operations(&mut self, _: &VcsOperations, window: &mut Window, cx: &mut Context<Self>) {
-        let items = Self::vcs_operation_list();
+        let items: Rc<Vec<Option<(&'static str, &'static str, VcsRun)>>> = Rc::new(Self::vcs_operation_list());
+        let runs: Rc<Vec<VcsRun>> = Rc::new(items.iter().flatten().map(|(_, _, run)| run.clone()).collect());
+        let selected = Rc::new(std::cell::Cell::new(0usize));
         let workspace = cx.entity();
+        let focus = cx.focus_handle();
+        let dialog_focus = focus.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
             let palette = cx.palette().clone();
-            let mut list = v_flex().gap_px();
+            let pick = {
+                let (runs, workspace) = (runs.clone(), workspace.clone());
+                Rc::new(move |n: usize, window: &mut Window, cx: &mut gpui_kit::App| {
+                    let Some(run) = runs.get(n).cloned() else { return };
+                    window.close_dialog(cx);
+                    workspace.update(cx, |this, cx| run(this, window, cx));
+                })
+            };
+            let mut list = v_flex()
+                .id("vcs-operations")
+                .track_focus(&dialog_focus)
+                .gap_px()
+                .on_key_down({
+                    let (pick, selected, count) = (pick.clone(), selected.clone(), runs.len());
+                    move |e: &gpui_kit::KeyDownEvent, window, cx| {
+                        let key = e.keystroke.key.as_str();
+                        match key {
+                            "up" => selected.set((selected.get() + count - 1) % count.max(1)),
+                            "down" => selected.set((selected.get() + 1) % count.max(1)),
+                            "enter" => pick(selected.get(), window, cx),
+                            _ => match key.parse::<usize>() {
+                                Ok(n @ 1..=9) if !e.keystroke.modifiers.modified() => pick(n - 1, window, cx),
+                                _ => return,
+                            },
+                        }
+                        cx.stop_propagation();
+                        window.refresh();
+                    }
+                });
             let mut number = 0;
             for (ix, item) in items.iter().enumerate() {
-                let Some((label, shortcut, run)) = item else {
+                let Some((label, shortcut, _)) = item else {
                     list = list.child(div().my_1().h(px(1.)).bg(palette.border));
                     continue;
                 };
+                let n = number;
                 number += 1;
-                let run = run.clone();
-                let workspace = workspace.clone();
+                let pick = pick.clone();
                 list = list.child(
                     h_flex()
                         .id(("vcs-op", ix))
@@ -2004,19 +2100,17 @@ impl Workspace {
                         .rounded(px(4.))
                         .text_sm()
                         .cursor_pointer()
+                        .when(n == selected.get(), |el| el.bg(palette.selection))
                         .hover(|s| s.bg(palette.hover))
-                        .on_click(move |_, window, cx| {
-                            window.close_dialog(cx);
-                            let run = run.clone();
-                            workspace.update(cx, |this, cx| run(this, window, cx));
-                        })
-                        .child(div().w(px(16.)).text_color(palette.text_secondary).child(if number < 10 { number.to_string() } else { String::new() }))
+                        .on_click(move |_, window, cx| pick(n, window, cx))
+                        .child(div().w(px(16.)).text_color(palette.text_secondary).child(if n < 9 { (n + 1).to_string() } else { String::new() }))
                         .child(div().flex_1().child(*label))
-                        .child(div().text_xs().text_color(palette.text_secondary).child(*shortcut)),
+                        .child(div().text_xs().text_color(palette.text_secondary).child(crate::ui::file_menus::shortcut_label(shortcut))),
                 );
             }
             dialog.title("VCS Operations").w(px(340.)).child(list)
         });
+        window.focus(&focus, cx);
     }
 
     fn render_bottom(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2040,7 +2134,7 @@ impl Workspace {
             .bg(palette.panel)
             .child(
                 h_flex()
-                    .h(px(30.))
+                    .h(px(crate::ui::common::header_height()))
                     .px_2()
                     .gap_2()
                     .border_b_1()
@@ -2103,7 +2197,7 @@ impl Workspace {
                     )).child("Console"))
                     .child(div().flex_1())
                     .child(tool_button("git-hide", IconName::Minus, "Hide").on_click(cx.listener(|this, _, _, cx| {
-                        this.show_git = false;
+                        this.tools.hide(ToolWindow::Git);
                         cx.notify();
                     }))),
             )
@@ -2116,36 +2210,111 @@ impl Workspace {
             }))
     }
 
+    /// The Git console, as IntelliJ's: "14:05:02.123: [root] git …" per
+    /// command with its output below, failures in red; a side toolbar with
+    /// Soft-Wrap, Scroll to the End and Clear All.
     fn render_console(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
-        let entries = self.model.read(cx).console().entries();
+        let console = self.model.read(cx).console().clone();
+        let entries = console.entries();
         let mono = cx.theme().mono_font_family.clone();
-        let mut list = v_flex().p_2().gap_1().font_family(mono).text_size(px(12.));
-        for entry in entries.iter().rev().take(300).rev() {
-            list = list.child(
-                v_flex()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(div().text_color(if entry.success { palette.link } else { palette.status_conflict }).child(entry.command_line.clone()))
-                            .child(div().text_color(palette.text_disabled).child(format!("{} ms", entry.duration.as_millis()))),
+        let wrap = self.console_wrap;
+        let mut list = v_flex().p_2().gap_0p5().font_family(mono).text_size(px(12.));
+        for entry in entries.iter().rev().take(500).rev() {
+            let line = format!("{}: [{}] {}", entry.time.format("%H:%M:%S%.3f"), entry.root, entry.command_line);
+            list = list
+                .child(
+                    div()
+                        .text_color(if entry.success { palette.text } else { palette.status_conflict })
+                        .when(!wrap, |el| el.whitespace_nowrap())
+                        .child(line),
+                )
+                .when(!entry.output.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .text_color(if entry.success { palette.text_secondary } else { palette.status_conflict })
+                            .when(wrap, |el| el.whitespace_normal())
+                            .when(!wrap, |el| el.whitespace_nowrap())
+                            .child(entry.output.clone()),
                     )
-                    .when(!entry.output.is_empty(), |el| {
-                        el.child(div().pl_4().text_color(palette.text_secondary).whitespace_normal().child(entry.output.clone()))
-                    }),
-            );
+                });
         }
-        div().id("git-console").size_full().overflow_y_scrollbar().child(list)
+        // Scroll to the End: follow new commands while it is on.
+        if self.console_autoscroll && entries.len() != self.console_seen.get() {
+            self.console_seen.set(entries.len());
+            self.console_scroll.scroll_to_bottom();
+        }
+        let toggle = |id: &'static str, icon: IconName, tip: &'static str, on: bool| {
+            tool_button(id, icon, tip).when(on, |b| b.selected(true))
+        };
+        h_flex()
+            .size_full()
+            .child(
+                v_flex()
+                    .h_full()
+                    .w(px(28.))
+                    .py_1()
+                    .gap_0p5()
+                    .items_center()
+                    .border_r_1()
+                    .border_color(palette.border)
+                    .child(toggle("console-wrap", IconName::TextWrap, "Soft-Wrap", wrap).on_click(cx.listener(|this, _, _, cx| {
+                        this.console_wrap = !this.console_wrap;
+                        cx.notify();
+                    })))
+                    .child(
+                        toggle("console-end", IconName::ArrowDownToLine, "Scroll to the End", self.console_autoscroll).on_click(cx.listener(|this, _, _, cx| {
+                            this.console_autoscroll = !this.console_autoscroll;
+                            if this.console_autoscroll {
+                                this.console_scroll.scroll_to_bottom();
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(tool_button("console-clear", IconName::Delete, "Clear All").on_click(cx.listener(move |this, _, _, cx| {
+                        console.clear();
+                        this.console_seen.set(0);
+                        cx.notify();
+                    }))),
+            )
+            .child(
+                div()
+                    .id("git-console")
+                    .flex_1()
+                    .h_full()
+                    .track_scroll(&self.console_scroll)
+                    .overflow_y_scroll()
+                    .when(!wrap, |el| el.overflow_x_scroll())
+                    .child(list),
+            )
     }
 
+    /// IntelliJ's status bar: the file's path on the left; background task,
+    /// caret, line separator, encoding, indent and the branch on the right.
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let model = self.model.read(cx);
-        let project = model.repository().map(|r| r.root().display().to_string()).unwrap_or_default();
+        let project = model.project_root().or_else(|| model.repository().map(|r| r.root())).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+        let file = self.editor().map(|e| e.read(cx).path().to_owned());
         let branch = branches_popup::branch_widget_label(model);
-        let changes = model.status().entries.len();
+        let task = model.busy().map(|b| format!("{b}…")).or_else(|| model.is_loading().then(|| "Refreshing VCS history…".to_owned()));
+        let index = self.code_index.read(cx).summary();
+        let compact = Settings::get(cx).compact;
+        // Breadcrumbs: project › folders › file.
+        let mut crumbs: Vec<String> = project.into_iter().collect();
+        if let Some(file) = &file {
+            crumbs.extend(file.split('/').map(str::to_owned));
+        }
+        let crumb_count = crumbs.len();
+        let mut path = h_flex().gap_0p5().min_w_0().overflow_hidden();
+        for (ix, crumb) in crumbs.into_iter().enumerate() {
+            if ix > 0 {
+                path = path.child(Icon::new(IconName::ChevronRight).xsmall());
+            }
+            path = path.child(div().when(ix + 1 == crumb_count && file.is_some(), |el| el.text_color(palette.text)).child(crumb));
+        }
         h_flex()
-            .h(px(24.))
+            .h(px(if compact { 20. } else { 24. }))
             .px_3()
             .gap_3()
             .border_t_1()
@@ -2153,13 +2322,28 @@ impl Workspace {
             .bg(palette.toolbar)
             .text_xs()
             .text_color(palette.text_secondary)
-            .child(project)
+            .child(path)
             .child(div().flex_1())
-            .when(model.is_loading(), |el| el.child("Refreshing VCS history…"))
-            .child(self.code_index.read(cx).summary())
-            .child(format!("{changes} changed"))
-            .child(h_flex().gap_1().child(Icon::new(IconName::GitBranch).xsmall()).child(branch))
-            .child("UTF-8")
+            .when_some(task, |el, task| {
+                el.child(
+                    h_flex()
+                        .gap_1()
+                        .child(Icon::new(IconName::LoaderCircle).xsmall().text_color(palette.accent))
+                        .child(task),
+                )
+            })
+            .child(index)
+            .child(self.caret.clone())
+            .child(
+                div()
+                    .id("status-branch")
+                    .px_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(palette.hover))
+                    .child(h_flex().gap_1().child(Icon::new(IconName::GitBranch).xsmall()).child(branch))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_branches(window, cx))),
+            )
     }
 }
 
@@ -2174,6 +2358,8 @@ impl Render for Workspace {
             window.set_window_title(&title);
             self.window_title = title;
         }
+        let active = self.editor().cloned();
+        self.caret.update(cx, |caret, cx| caret.set_editor(active, cx));
         let palette = cx.palette().clone();
         let error = self.model.read(cx).error().map(str::to_owned);
         let has_repo = self.model.read(cx).repository().is_some();
@@ -2187,34 +2373,62 @@ impl Render for Workspace {
             .children(self.render_operation_banner(cx))
             .child(self.render_editor_groups(has_repo, cx));
 
+        // Left and right tool windows beside the editor, the bottom one under
+        // them; sizes are remembered (Settings.tool_window_sizes).
+        let sizes = Settings::get(cx).tool_window_sizes;
+        let panel_of = |side: Side, this: &Self, cx: &mut Context<Self>| {
+            this.tools.active(side).filter(|_| has_repo).filter(|w| *w != ToolWindow::Changes || !this.changes.read(cx).is_empty())
+        };
+        let (left, right, bottom) = (panel_of(Side::Left, self, cx), panel_of(Side::Right, self, cx), panel_of(Side::Bottom, self, cx));
+        let left_content = left.map(|w| self.tool_window_content(w, cx));
+        let right_content = right.map(|w| self.tool_window_content(w, cx));
+        let bottom_content = bottom.map(|w| self.tool_window_content(w, cx));
+        // (settings slot, panel index) pairs a resize may have changed.
+        let remember = |pairs: Vec<(usize, usize)>| {
+            move |state: &Entity<gpui_kit::component::resizable::ResizableState>, _: &mut Window, cx: &mut gpui_kit::App| {
+                for &(slot, panel) in &pairs {
+                    let Some(size) = state.read(cx).sizes().get(panel).copied() else { continue };
+                    let size = f32::from(size).round() as u32;
+                    if size >= 120 && Settings::get(cx).tool_window_sizes[slot] != size {
+                        Settings::update(cx, |s| s.tool_window_sizes[slot] = size);
+                    }
+                }
+            }
+        };
+        let mut sides = Vec::new();
+        if left.is_some() {
+            sides.push((0, 0));
+        }
+        if right.is_some() {
+            sides.push((1, 2));
+        }
         let top = h_resizable("top-split")
+            .on_resize(remember(sides))
             .child(
                 resizable_panel()
-                    .size(px(340.))
-                    .size_range(px(220.)..px(700.))
-                    .visible((self.show_commit || self.show_prs || self.show_project || self.show_changes) && has_repo)
-                    .map(|panel| {
-                        if self.show_project {
-                            panel.child(self.project.clone())
-                        } else if self.show_prs {
-                            panel.child(self.prs.clone())
-                        } else if self.show_changes {
-                            panel.child(self.changes.clone())
-                        } else {
-                            panel.child(self.render_left(cx))
-                        }
-                    }),
+                    .size(px(sizes[0] as f32))
+                    .size_range(px(160.)..px(900.))
+                    .visible(left_content.is_some())
+                    .children(left_content),
             )
-            .child(resizable_panel().child(editor));
+            .child(resizable_panel().child(editor))
+            .child(
+                resizable_panel()
+                    .size(px(sizes[1] as f32))
+                    .size_range(px(160.)..px(900.))
+                    .visible(right_content.is_some())
+                    .children(right_content),
+            );
 
         let main = v_resizable("main-split")
+            .on_resize(remember(if bottom.is_some() { vec![(2, 1)] } else { Vec::new() }))
             .child(resizable_panel().child(top))
             .child(
                 resizable_panel()
-                    .size(px(380.))
+                    .size(px(sizes[2] as f32))
                     .size_range(px(120.)..px(1200.))
-                    .visible(self.show_git && has_repo)
-                    .child(self.render_bottom(cx)),
+                    .visible(bottom_content.is_some())
+                    .children(bottom_content),
             );
 
         v_flex()
@@ -2244,6 +2458,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::navigate_back))
             .on_action(cx.listener(Self::navigate_forward))
             .on_action(cx.listener(Self::toggle_project))
+            .on_action(cx.listener(|this, _: &ToggleCommitWindow, _, cx| this.toggle_tool(ToolWindow::Commit, cx)))
+            .on_action(cx.listener(|this, _: &HideAllToolWindows, _, cx| {
+                this.tools.toggle_all();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &HideActiveToolWindow, window, cx| this.hide_active_tool_window(window, cx)))
             .on_action(cx.listener(Self::select_in_project))
             .on_action(cx.listener(Self::toggle_find))
             .on_action(cx.listener(|this, _: &FindInPath, window, cx| this.open_find_popup(false, window, cx)))
@@ -2263,8 +2483,9 @@ impl Render for Workspace {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(self.render_stripe(cx))
-                    .child(div().flex_1().h_full().child(main)),
+                    .children(self.render_stripe(false, cx))
+                    .child(div().flex_1().h_full().child(main))
+                    .children(self.render_stripe(true, cx)),
             )
             .child(self.render_status_bar(cx))
             .children(self.render_popups(cx))
@@ -2274,10 +2495,7 @@ impl Render for Workspace {
 /// Folders with a build file, as IntelliJ's modules: Gradle, Cargo, Go, Dart,
 /// Swift, CMake, npm, Maven. "" is the project root.
 pub fn modules_of(files: &[String]) -> Vec<String> {
-    const BUILD_FILES: [&str; 12] = [
-        "build.gradle", "build.gradle.kts", "Cargo.toml", "go.mod", "pubspec.yaml", "Package.swift",
-        "CMakeLists.txt", "package.json", "pom.xml", "v.mod", "settings.gradle", "settings.gradle.kts",
-    ];
+    use crate::ui::common::BUILD_FILES;
     let mut modules: Vec<String> = files
         .iter()
         .filter_map(|f| {
@@ -2289,4 +2507,198 @@ pub fn modules_of(files: &[String]) -> Vec<String> {
     modules.sort();
     modules.dedup();
     modules
+}
+
+/// The new UI's main menu (☰), grouped as IntelliJ's menu bar: File, View,
+/// Navigate, Git, Window, Help. Items backed by actions show their shortcut.
+fn main_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    entity: Entity<Workspace>,
+    focus: gpui_kit::FocusHandle,
+    window: &mut Window,
+    cx: &mut Context<gpui_kit::component::menu::PopupMenu>,
+) -> gpui_kit::component::menu::PopupMenu {
+    let on = |entity: &Entity<Workspace>, f: fn(&mut Workspace, &mut Window, &mut Context<Workspace>)| {
+        let entity = entity.clone();
+        move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| entity.update(cx, |this, cx| f(this, window, cx))
+    };
+    let model_op = |entity: &Entity<Workspace>, f: fn(Entity<RepoModel>, &mut Window, &mut App)| {
+        let entity = entity.clone();
+        move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+            let model = entity.read(cx).model.clone();
+            f(model, window, cx)
+        }
+    };
+    let e = entity.clone();
+    let f = focus.clone();
+    let menu = menu.action_context(focus.clone()).submenu("File", window, cx, move |menu, window, cx| {
+        let e2 = e.clone();
+        menu.action_context(f.clone())
+            .item(PopupMenuItem::new("Open…").on_click(on(&e, |this, window, cx| this.open_repository(window, cx))))
+            .item(PopupMenuItem::new("Get from Version Control…").on_click(model_op(&e, clone_dialog::clone)))
+            .item(PopupMenuItem::new("Create Git Repository…").on_click(model_op(&e, |model, _, cx| clone_dialog::init(model, cx))))
+            .submenu("Recent Projects", window, cx, move |mut menu, _, cx| {
+                let current = e2.read(cx).model.read(cx).repository().map(|r| r.root().to_path_buf());
+                let recent = crate::settings::recent_projects();
+                if recent.is_empty() {
+                    return menu.item(PopupMenuItem::new("No recent projects").disabled(true));
+                }
+                for path in recent.into_iter().take(15) {
+                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let entity = e2.clone();
+                    let is_current = current.as_deref() == Some(path.as_path());
+                    menu = menu.item(PopupMenuItem::new(name).checked(is_current).on_click(move |_, _, cx| {
+                        let path = path.clone();
+                        let model = entity.read(cx).model.clone();
+                        model.update(cx, |m, cx| m.open(path, cx));
+                    }));
+                }
+                menu
+            })
+            .separator()
+            .menu("Settings…", Box::new(OpenSettings))
+            .separator()
+            .item(PopupMenuItem::new("Exit").on_click(|_, _, cx| cx.quit()))
+    });
+    let (e, f) = (entity.clone(), focus.clone());
+    let menu = menu.submenu("View", window, cx, move |menu, window, cx| {
+        let f2 = f.clone();
+        let e2 = e.clone();
+        let prs_title = e.read(cx).prs.read(cx).title();
+        menu.action_context(f.clone())
+            .submenu("Tool Windows", window, cx, move |menu, _, _| {
+                let e3 = e2.clone();
+                menu.action_context(f2.clone())
+                    .menu("Project", Box::new(ToggleProjectWindow))
+                    .menu("Commit", Box::new(ToggleCommitWindow))
+                    .menu("Git", Box::new(ToggleGitWindow))
+                    .menu("Find", Box::new(ToggleFindWindow))
+                    .item(PopupMenuItem::new(prs_title).on_click(move |_, _, cx| {
+                        e3.update(cx, |this, cx| this.toggle_tool(ToolWindow::PullRequests, cx))
+                    }))
+            })
+            .menu("Hide All Tool Windows", Box::new(HideAllToolWindows))
+            .separator()
+            .submenu("Appearance", window, cx, |menu, _, cx| {
+                let settings = Settings::get(cx).clone();
+                let theme = |label: &'static str, dark: bool, system: bool, checked: bool| {
+                    PopupMenuItem::new(label).checked(checked).on_click(move |_, window, cx| {
+                        Settings::update(cx, |s| {
+                            s.theme_follows_system = system;
+                            if !system {
+                                s.dark = dark;
+                            }
+                        });
+                        theme::refresh(cx);
+                        window.refresh();
+                    })
+                };
+                menu.label("Theme")
+                    .item(theme("Dark", true, false, !settings.theme_follows_system && settings.dark))
+                    .item(theme("Light", false, false, !settings.theme_follows_system && !settings.dark))
+                    .item(theme("Sync with OS", settings.dark, true, settings.theme_follows_system))
+                    .separator()
+                    .item(PopupMenuItem::new("Compact Mode").checked(settings.compact).on_click(|_, window, cx| {
+                        Settings::update(cx, |s| s.compact = !s.compact);
+                        window.refresh();
+                    }))
+            })
+    });
+    let f = focus.clone();
+    let menu = menu.submenu("Navigate", window, cx, move |menu, _, _| {
+        menu.action_context(f.clone())
+            .menu("Search Everywhere", Box::new(SearchEverywhere))
+            .menu("Find Action…", Box::new(FindAction))
+            .separator()
+            .menu("Class…", Box::new(GotoClass))
+            .menu("File…", Box::new(GotoFile))
+            .menu("Symbol…", Box::new(GotoSymbol))
+            .menu("Line/Column…", Box::new(GotoLine))
+            .separator()
+            .menu("Recent Files", Box::new(RecentFiles))
+            .menu("File Structure", Box::new(FileStructure))
+            .separator()
+            .menu("Back", Box::new(NavigateBack))
+            .menu("Forward", Box::new(NavigateForward))
+            .menu("Select in Project View", Box::new(SelectInProject))
+            .separator()
+            .menu("Find in Files…", Box::new(FindInPath))
+            .menu("Replace in Files…", Box::new(ReplaceInPath))
+    });
+    let (e, f) = (entity.clone(), focus.clone());
+    let menu = menu.submenu("Git", window, cx, move |menu, window, cx| {
+        let e2 = e.clone();
+        let f2 = f.clone();
+        menu.action_context(f.clone())
+            .menu("Commit…", Box::new(CommitChanges))
+            .menu("Push…", Box::new(PushChanges))
+            .menu("Update Project…", Box::new(UpdateProject))
+            .item(PopupMenuItem::new("Pull…").on_click(model_op(&e, remote_dialogs::pull)))
+            .item(PopupMenuItem::new("Fetch").on_click(model_op(&e, |model, _, cx| {
+                model.update(cx, |model, cx| {
+                    model.run_operation("Fetch", |repo| {
+                        repo.run(&["fetch", "--all", "--prune"])?;
+                        Ok("Fetched all remotes".to_owned())
+                    }, cx)
+                })
+            })))
+            .separator()
+            .item(PopupMenuItem::new("Merge…").on_click(model_op(&e, dialogs::merge)))
+            .item(PopupMenuItem::new("Rebase…").on_click(model_op(&e, dialogs::rebase)))
+            .menu("Branches…", Box::new(ShowBranches))
+            .separator()
+            .menu("Stash Changes…", Box::new(StashChanges))
+            .item(PopupMenuItem::new("Unstash Changes…").on_click(on(&e, |this, _, cx| {
+                this.tools.open(ToolWindow::Commit);
+                this.left_tab = LeftTab::Stash;
+                cx.notify();
+            })))
+            .separator()
+            .item(PopupMenuItem::new("Create Patch…").on_click(on(&e, |this, window, cx| {
+                let commit = this.commit.clone();
+                commit.update(cx, |c, cx| c.create_patch(window, cx))
+            })))
+            .item(PopupMenuItem::new("Apply Patch…").on_click(model_op(&e, |model, window, cx| patch_dialogs::apply_patch(model, false, window, cx))))
+            .item(PopupMenuItem::new("Apply Patch from Clipboard…").on_click(model_op(&e, |model, window, cx| patch_dialogs::apply_patch(model, true, window, cx))))
+            .separator()
+            .item(PopupMenuItem::new("Manage Remotes…").on_click(model_op(&e, remote_dialogs::manage_remotes)))
+            .item(PopupMenuItem::new("New Worktree…").on_click(model_op(&e, crate::ui::worktree_view::new_worktree)))
+            .item(PopupMenuItem::new("Update Submodules").on_click(model_op(&e, |model, _, cx| {
+                model.update(cx, |m, cx| {
+                    m.run_operation("Update Submodules", |repo| {
+                        crate::git::submodule::update(repo, &[])?;
+                        Ok("Submodules updated".into())
+                    }, cx)
+                })
+            })))
+            .item(PopupMenuItem::new("Directory Mappings…").on_click(model_op(&e, crate::ui::mappings_dialog::directory_mappings)))
+            .separator()
+            .submenu("GitHub / GitLab", window, cx, move |menu, _, _| {
+                let e3 = e2.clone();
+                menu.item(PopupMenuItem::new("Share Project on GitHub…").on_click(model_op(&e2, crate::ui::github_dialogs::share_project)))
+                    .item(PopupMenuItem::new("Accounts…").on_click(move |_, window, cx| {
+                        let prs = e3.read(cx).prs.clone();
+                        crate::ui::accounts_dialog::accounts(
+                            Some(Rc::new(move |cx: &mut App| prs.update(cx, |prs, cx| prs.refresh(cx)))),
+                            window,
+                            cx,
+                        )
+                    }))
+            })
+            .separator()
+            .item(PopupMenuItem::new("VCS Operations…").action(Box::new(VcsOperations)))
+            .action_context(f2)
+    });
+    let f = focus.clone();
+    let menu = menu.submenu("Window", window, cx, move |menu, _, _| {
+        menu.action_context(f.clone())
+            .menu("Select Next Tab", Box::new(NextTab))
+            .menu("Select Previous Tab", Box::new(PreviousTab))
+            .menu("Close Tab", Box::new(CloseTab))
+            .menu("Reopen Closed Tab", Box::new(ReopenClosedTab))
+    });
+    menu.submenu("Help", window, cx, move |menu, _, _| {
+        menu.item(PopupMenuItem::new("Keyboard Shortcuts").on_click(|_, window, cx| dialogs::keymap_reference(window, cx)))
+            .item(PopupMenuItem::new(format!("About {APP_NAME}")).on_click(|_, window, cx| dialogs::about(window, cx)))
+    })
 }

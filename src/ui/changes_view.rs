@@ -22,7 +22,7 @@ use gpui_kit::{
 use crate::git::FileChangeKind;
 use crate::model::RepoModel;
 use crate::theme::ActivePalette as _;
-use crate::ui::common::{self, DIR_PREFIX, FILE_PREFIX, ROW_HEIGHT, tool_button};
+use crate::ui::common::{self, DIR_PREFIX, FILE_PREFIX, row_height, tool_button};
 use crate::ui::diff_view::DiffSource;
 use crate::ui::file_menus::entry;
 
@@ -351,7 +351,7 @@ impl ChangesView {
         }
         let active = self.active;
         h_flex()
-            .h(px(30.))
+            .h(px(crate::ui::common::header_height()))
             .px_2()
             .gap_1()
             .flex_shrink_0()
@@ -380,7 +380,7 @@ impl ChangesView {
         let local = tab.is_some_and(|t| t.new.is_none());
         let group = self.group_by_directory;
         h_flex()
-            .h(px(30.))
+            .h(px(crate::ui::common::header_height()))
             .px_1()
             .gap_0p5()
             .flex_shrink_0()
@@ -456,7 +456,7 @@ impl Render for ChangesView {
                         ListItem::new(ix)
                             .py_0()
                             .px_1()
-                            .h(px(ROW_HEIGHT))
+                            .h(px(row_height()))
                             .on_click(move |event, _, cx| {
                                 // Double-click (or a second click) opens the file's diff again.
                                 if event.click_count() == 2 {

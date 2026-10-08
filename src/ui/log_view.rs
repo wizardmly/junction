@@ -30,7 +30,7 @@ use crate::git::{Commit, FileChangeKind, LogFilter, RefKind, RefName};
 use crate::settings::Settings;
 use crate::model::{RepoEvent, RepoModel};
 use crate::theme::ActivePalette as _;
-use crate::ui::common::{self, DIR_PREFIX, FILE_PREFIX, ROW_HEIGHT, tool_button};
+use crate::ui::common::{self, DIR_PREFIX, FILE_PREFIX, row_height, tool_button};
 use crate::ui::diff_view::DiffSource;
 use crate::ui::dialogs;
 use crate::ui::rebase_dialog;
@@ -655,7 +655,7 @@ impl LogView {
         };
 
         h_flex()
-            .h(px(32.))
+            .h(px(crate::ui::common::toolbar_height()))
             .px_1()
             .gap_1()
             .border_b_1()
@@ -1175,7 +1175,7 @@ impl LogView {
                 Some(
                     h_flex()
                         .id(SharedString::from(format!("commit-{}", commit.hash)))
-                        .h(px(ROW_HEIGHT))
+                        .h(px(row_height()))
                         .w_full()
                         .pr_2()
                         .text_sm()
@@ -1272,7 +1272,7 @@ impl LogView {
             .size_full()
             .child(
                 h_flex()
-                    .h(px(32.))
+                    .h(px(crate::ui::common::toolbar_height()))
                     .px_1()
                     .gap_0p5()
                     .border_b_1()
@@ -1376,7 +1376,7 @@ impl LogView {
                         ListItem::new(ix)
                             .py_0()
                             .px_1()
-                            .h(px(ROW_HEIGHT))
+                            .h(px(row_height()))
                             .on_click(move |event, _, cx| {
                                 if event.click_count() == 2 {
                                     // Double click filters the log by this branch.
@@ -1439,7 +1439,7 @@ impl LogView {
             .size_full()
             .child(
                 h_flex()
-                    .h(px(32.))
+                    .h(px(crate::ui::common::toolbar_height()))
                     .px_2()
                     .border_b_1()
                     .border_color(palette.border)
@@ -1469,7 +1469,7 @@ impl LogView {
                         ListItem::new(ix)
                             .py_0()
                             .px_1()
-                            .h(px(ROW_HEIGHT))
+                            .h(px(row_height()))
 
                             .on_click(move |event, _, cx| {
                                 if event.click_count() == 2 {

@@ -78,7 +78,8 @@ gpui_kit::assets::icon_assets!(
         List,
         WandSparkles,
         Link2, Scissors, Clipboard, Columns2, TextAlignStart, EllipsisVertical, ArrowLeftRight, Ban,
-        Funnel, Pin, SquareArrowDownLeft, TextSearch, FileSearch, Zap, Keyboard, ListTree, ListOrdered, SquareSplitVertical, SquareFunction, Braces, Variable, ClockArrowUp, Crosshair
+        Funnel, Pin, SquareArrowDownLeft, TextSearch, FileSearch, Zap, Keyboard, ListTree, ListOrdered, SquareSplitVertical, SquareFunction, Braces, Variable, ClockArrowUp, Crosshair,
+        Bell, BellDot, LoaderCircle, Regex, WholeWord, CaseSensitive, TextWrap, Play
     ]
 );
 

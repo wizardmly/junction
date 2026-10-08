@@ -15,6 +15,14 @@ pub enum UpdateMethod {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub dark: bool,
+    /// Appearance › Theme: "Sync with OS" (then `dark` follows the system).
+    pub theme_follows_system: bool,
+    /// Appearance › "Compact mode": smaller toolbars, stripes and rows.
+    pub compact: bool,
+    /// Tool window layout, `name:side` in stripe order (see ui::tool_windows).
+    pub tool_windows: String,
+    /// Left, right and bottom tool window sizes.
+    pub tool_window_sizes: [u32; 3],
     /// "Enable staging area": the Commit tool window shows Staged and
     /// Unstaged trees instead of changelists with checkboxes.
     pub staging_area: bool,
@@ -52,6 +60,8 @@ pub struct Settings {
     pub project: ProjectSettings,
     /// Commit tool window › View Options.
     pub commit_group_by_directory: bool,
+    pub commit_group_by_module: bool,
+    pub commit_group_by_repository: bool,
     pub commit_show_ignored: bool,
     /// Languages & Frameworks: ask language servers first for navigation.
     pub use_language_servers: bool,
@@ -81,6 +91,8 @@ pub struct LogSettings {
     /// Author, date and hash column widths (dragged at their left edge).
     pub columns: [u32; 3],
 }
+
+pub const TOOL_WINDOW_SIZES: [u32; 3] = [340, 340, 380];
 
 pub const LOG_COLUMNS: [u32; 3] = [150, 140, 76];
 
@@ -201,6 +213,10 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             dark: true,
+            theme_follows_system: false,
+            compact: false,
+            tool_windows: String::new(),
+            tool_window_sizes: TOOL_WINDOW_SIZES,
             staging_area: false,
             update_method: UpdateMethod::Merge,
             update_shelve: false,
@@ -222,6 +238,8 @@ impl Default for Settings {
             diff: DiffSettings::default(),
             project: ProjectSettings::default(),
             commit_group_by_directory: true,
+            commit_group_by_module: false,
+            commit_group_by_repository: false,
             commit_show_ignored: false,
         }
     }
@@ -328,7 +346,19 @@ impl Settings {
             let (key, value) = (key.trim(), value.trim());
             let flag = value == "true";
             match key {
-                "theme" => settings.dark = value != "light",
+                "theme" => {
+                    settings.dark = value != "light";
+                    settings.theme_follows_system = value == "system";
+                }
+                "theme_dark" => settings.dark = flag,
+                "compact_mode" => settings.compact = flag,
+                "tool_windows" => settings.tool_windows = value.to_owned(),
+                "tool_window_sizes" => {
+                    let sizes: Vec<u32> = value.split(',').filter_map(|w| w.trim().parse().ok()).collect();
+                    if let [l, r, b] = sizes[..] {
+                        settings.tool_window_sizes = [l, r, b].map(|w| w.clamp(120, 2000));
+                    }
+                }
                 "staging_area" => settings.staging_area = flag,
                 "update_method" => {
                     settings.update_method = if value == "rebase" { UpdateMethod::Rebase } else { UpdateMethod::Merge }
@@ -374,6 +404,8 @@ impl Settings {
                     }
                 }
                 "commit_group_by_directory" => settings.commit_group_by_directory = flag,
+                "commit_group_by_module" => settings.commit_group_by_module = flag,
+                "commit_group_by_repository" => settings.commit_group_by_repository = flag,
                 "commit_show_ignored" => settings.commit_show_ignored = flag,
                 "update_clean" => settings.update_shelve = value == "shelve",
                 "sync_branches" => settings.sync_branches = flag,
@@ -407,7 +439,7 @@ impl Settings {
         let mut text = format!(
             "theme={}\nstaging_area={}\nupdate_method={}\nauto_update_on_push_rejected={}\nwarn_crlf={}\ncommit_subject_limit={}\n\
              warn_detached_head={}\nprotected_branches={}\nsign_off={}\nrun_hooks={}\ncleanup_message={}\nfetch_interval_minutes={}\ngit_executable={}\nuse_credential_helper={}\n",
-            if self.dark { "dark" } else { "light" },
+            if self.theme_follows_system { "system" } else if self.dark { "dark" } else { "light" },
             self.staging_area,
             match self.update_method {
                 UpdateMethod::Merge => "merge",
@@ -453,6 +485,11 @@ impl Settings {
             self.sync_branches
         ));
         text.push_str(&format!("use_language_servers={}\n", self.use_language_servers));
+        let [l, r, b] = self.tool_window_sizes;
+        text.push_str(&format!(
+            "theme_dark={}\ncompact_mode={}\ntool_windows={}\ntool_window_sizes={l},{r},{b}\ncommit_group_by_module={}\ncommit_group_by_repository={}\n",
+            self.dark, self.compact, self.tool_windows, self.commit_group_by_module, self.commit_group_by_repository
+        ));
         for (lang, command) in &self.language_servers {
             text.push_str(&format!("lsp_{lang}={command}\n"));
         }
@@ -488,6 +525,7 @@ impl Settings {
         f(&mut settings);
         settings.save();
         settings.apply_git();
+        crate::ui::common::set_compact(settings.compact);
         cx.set_global(settings);
         cx.refresh_windows();
     }

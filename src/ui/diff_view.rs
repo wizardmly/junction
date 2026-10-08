@@ -625,7 +625,7 @@ impl DiffView {
         };
 
         h_flex()
-            .h(px(30.))
+            .h(px(crate::ui::common::header_height()))
             .px_2()
             .gap_0p5()
             .border_b_1()

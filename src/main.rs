@@ -41,10 +41,12 @@ fn main() {
         ui::commit_view::init(cx);
         ui::spell_overlay::init(cx);
         ui::file_editor::init(cx);
+        ui::find_bar::init(cx);
         let settings = settings::Settings::load();
         settings.apply_git();
-        let dark = std::env::var("JUNCTION_THEME").map(|t| t != "light").unwrap_or(settings.dark);
+        ui::common::set_compact(settings.compact);
         cx.set_global(settings);
+        let dark = std::env::var("JUNCTION_THEME").map(|t| t != "light").unwrap_or_else(|_| theme::effective_dark(cx));
         cx.set_global(model::ExcludedHunks::default());
         theme::apply(dark, cx);
 

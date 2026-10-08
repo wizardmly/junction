@@ -48,7 +48,11 @@ actions!(
         FindUsages,
         FindNext,
         FindPrevious,
-        CloseChangePopup
+        CloseChangePopup,
+        NextChange,
+        PreviousChange,
+        OpenFind,
+        OpenReplace
     ]
 );
 
@@ -61,12 +65,18 @@ const MARKER_GAP: f32 = 4.;
 pub fn init(cx: &mut gpui_kit::App) {
     cx.bind_keys([
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" }, SaveFile, Some(CONTEXT)),
-        KeyBinding::new("ctrl-alt-z", RollbackLines, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-z", RollbackLines, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-b" } else { "ctrl-b" }, GotoDeclaration, Some(CONTEXT)),
-        KeyBinding::new("f12", GotoDeclaration, Some(CONTEXT)),
+        // Next / Previous Change: Ctrl+Alt+Shift+Down / Up (⌃⌥⇧↓ / ↑ on macOS).
+        KeyBinding::new("ctrl-alt-shift-down", NextChange, Some(CONTEXT)),
+        KeyBinding::new("ctrl-alt-shift-up", PreviousChange, Some(CONTEXT)),
         KeyBinding::new("alt-f7", FindUsages, Some(CONTEXT)),
         // IntelliJ: Ctrl+R replaces (Ctrl+F finds, from the editor itself), F3 / Shift+F3 step.
-        KeyBinding::new("secondary-r", gpui_kit::component::input::Replace, Some(CONTEXT)),
+        KeyBinding::new("secondary-f", OpenFind, Some(CONTEXT)),
+        KeyBinding::new("secondary-r", OpenReplace, Some(CONTEXT)),
+        // Over the text field's own Ctrl+F / Ctrl+H panel.
+        KeyBinding::new("secondary-f", OpenFind, Some("FileEditor > Input")),
+        KeyBinding::new("secondary-r", OpenReplace, Some("FileEditor > Input")),
         KeyBinding::new("f3", FindNext, Some(CONTEXT)),
         KeyBinding::new("shift-f3", FindPrevious, Some(CONTEXT)),
         KeyBinding::new("escape", CloseChangePopup, Some(POPUP_CONTEXT)),
@@ -126,6 +136,10 @@ pub struct FileEditor {
     /// `None` for the working tree.
     revision: Option<String>,
     state: Entity<EditorState>,
+    /// Ctrl+F / Ctrl+R.
+    find: Entity<crate::ui::find_bar::FindBar>,
+    /// Line separator and indent, for the status bar.
+    format: TextFormat,
     /// HEAD's version, for change markers.
     base: String,
     saved: String,
@@ -202,7 +216,64 @@ fn line_of(text: &str, offset: usize) -> usize {
     text[..offset.min(text.len())].matches('\n').count()
 }
 
+/// What the status bar shows about a file besides the caret.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextFormat {
+    pub crlf: bool,
+    /// "4 spaces", "2 spaces" or "Tab".
+    pub indent: &'static str,
+}
+
+impl TextFormat {
+    pub fn of(text: &str) -> Self {
+        let crlf = text.find('\n').is_some_and(|ix| ix > 0 && text.as_bytes()[ix - 1] == b'\r');
+        let mut tabs = 0;
+        let mut widths = [0usize; 9];
+        for line in text.lines().take(2000) {
+            if line.starts_with('\t') {
+                tabs += 1;
+            } else {
+                let n = line.len() - line.trim_start_matches(' ').len();
+                if n > 0 && n < line.len() {
+                    // The unit that divides the indent: 2, 4 or 8.
+                    for unit in [8, 4, 2] {
+                        if n % unit == 0 {
+                            widths[unit] += 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let spaces: usize = widths.iter().sum();
+        let indent = if tabs > spaces {
+            "Tab"
+        } else if widths[2] > 0 && widths[2] * 5 >= spaces {
+            "2 spaces"
+        } else if widths[8] > 0 && widths[4] == 0 && widths[2] == 0 {
+            "8 spaces"
+        } else {
+            "4 spaces"
+        };
+        Self { crlf, indent }
+    }
+}
+
 impl FileEditor {
+    /// The status bar's caret position (1-based line and column).
+    pub fn caret(&self, cx: &gpui_kit::App) -> (u32, u32) {
+        let position = self.state.read(cx).cursor_position();
+        (position.line + 1, position.character + 1)
+    }
+
+    pub fn format(&self) -> &TextFormat {
+        &self.format
+    }
+
+    pub fn input(&self) -> &Entity<EditorState> {
+        &self.state
+    }
+
     pub fn new(repository: Repository, path: String, revision: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (content, error) = match &revision {
             Some(rev) => match repository.run(["show", &format!("{rev}:{path}")]) {
@@ -234,12 +305,16 @@ impl FileEditor {
                 cx.notify();
             }
         })];
+        let read_only = revision.is_some();
+        let find = cx.new(|cx| crate::ui::find_bar::FindBar::new(state.clone(), read_only, window, cx));
         let mut this = Self {
+            find,
             repository,
             path,
             revision,
             state,
             base,
+            format: TextFormat::of(&content),
             saved: content,
             hunks: Vec::new(),
             popup: None,
@@ -326,26 +401,27 @@ impl FileEditor {
         crate::index::nav::word_at(&text, state.cursor()).map(|(w, _)| w)
     }
 
-    fn find_next(&mut self, _: &FindNext, _: &mut Window, cx: &mut Context<Self>) {
-        self.step_search(true, cx);
+    fn find_next(&mut self, _: &FindNext, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_search(true, window, cx);
     }
 
-    fn find_previous(&mut self, _: &FindPrevious, _: &mut Window, cx: &mut Context<Self>) {
-        self.step_search(false, cx);
+    fn find_previous(&mut self, _: &FindPrevious, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_search(false, window, cx);
     }
 
     /// F3 / Shift+F3: the next match of the last search, or of the word at the caret.
-    fn step_search(&mut self, forward: bool, cx: &mut Context<Self>) {
-        if self.state.read(cx).search_session().query.is_empty() {
-            let Some(word) = self.search_text(cx) else { return };
-            self.state.update(cx, |s, cx| s.set_search_query(word, true, cx));
+    fn step_search(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find.read(cx).query_text(cx).is_empty() || !self.find.read(cx).open {
+            let word = if self.find.read(cx).query_text(cx).is_empty() { self.search_text(cx) } else { None };
+            self.find.update(cx, |f, cx| f.show(false, word, window, cx));
+            self.focus(window, cx);
         }
-        self.state.update(cx, |s, cx| {
-            let range = if forward { s.next_search_match(cx) } else { s.previous_search_match(cx) };
-            if let Some(range) = range {
-                s.set_selected_range(range, cx);
-            }
-        });
+        self.find.update(cx, |f, cx| f.step(forward, cx));
+    }
+
+    fn open_find(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.state.read(cx).selected_value().to_string();
+        self.find.update(cx, |f, cx| f.show(replace, Some(selected), window, cx));
     }
 
     /// Go to Line:Column (Ctrl+G), 1-based.
@@ -479,6 +555,25 @@ impl FileEditor {
 
     /// Previous / Next Change from the popup: moves the caret there and
     /// shows that block's popup, wrapping around as IntelliJ does.
+    /// Next / Previous Change: the caret goes to the next changed block,
+    /// wrapping around, as IntelliJ's gutter navigation does.
+    fn go_to_change(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.hunks.is_empty() {
+            return;
+        }
+        let line = self.state.read(cx).cursor_position().line as usize;
+        let starts: Vec<usize> = self.hunks.iter().map(|h| h.new.start).collect();
+        let target = if forward {
+            starts.iter().copied().find(|&s| s > line).unwrap_or(starts[0])
+        } else {
+            starts.iter().rev().copied().find(|&s| s < line).unwrap_or(*starts.last().unwrap())
+        };
+        self.state.update(cx, |state, cx| {
+            state.set_cursor_position(gpui_kit::component::input::Position::new(target as u32, 0), window, cx)
+        });
+        cx.notify();
+    }
+
     fn step_popup(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(ix), count) = (self.popup, self.hunks.len()) else { return };
         if count == 0 {
@@ -630,6 +725,7 @@ impl FileEditor {
         let text = self.text(cx);
         match std::fs::write(self.repository.root().join(&self.path), &text) {
             Ok(()) => {
+                self.format = TextFormat::of(&text);
                 self.saved = text;
                 cx.emit(FileEditorEvent::FilesChanged);
                 cx.emit(FileEditorEvent::Saved(self.path.clone()));
@@ -736,12 +832,16 @@ impl Render for FileEditor {
             .size_full()
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(|this, _: &NextChange, window, cx| this.go_to_change(true, window, cx)))
+            .on_action(cx.listener(|this, _: &PreviousChange, window, cx| this.go_to_change(false, window, cx)))
             .on_action(cx.listener(Self::rollback_lines))
             .on_action(cx.listener(Self::open_on_hosting))
             .on_action(cx.listener(Self::create_gist))
             .on_action(cx.listener(Self::goto_declaration))
             .on_action(cx.listener(Self::find_usages))
             .on_action(cx.listener(Self::find_next))
+            .on_action(cx.listener(|this, _: &OpenFind, window, cx| this.open_find(false, window, cx)))
+            .on_action(cx.listener(|this, _: &OpenReplace, window, cx| this.open_find(true, window, cx)))
             .on_action(cx.listener(Self::find_previous))
             .on_action(cx.listener(Self::show_selection_history))
             .on_action(cx.listener(Self::annotate))
@@ -750,7 +850,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::show_diff))
             .child(
                 h_flex()
-                    .h(px(30.))
+                    .h(px(crate::ui::common::header_height()))
                     .px_2()
                     .gap_1()
                     .border_b_1()
@@ -779,6 +879,7 @@ impl Render for FileEditor {
             .when_some(self.error.clone(), |el, error| {
                 el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(error))
             })
+            .child(self.find.clone())
             .child(
                 div().relative().flex_1().min_h_0().child(
                     Editor::new(&self.state)

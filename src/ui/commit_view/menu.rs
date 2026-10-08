@@ -27,7 +27,7 @@ impl CommitView {
         self.file_actions = Some(actions);
     }
 
-    fn file_actions(&self) -> FileActions {
+    pub(super) fn file_actions(&self) -> FileActions {
         self.file_actions.clone().unwrap_or_else(|| Rc::new(|_, _, _| {}))
     }
 
@@ -48,7 +48,7 @@ impl CommitView {
     }
 
     /// Move to Another Changelist…: pick an existing changelist or name a new one.
-    fn move_dialog(&mut self, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn move_dialog(&mut self, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         let current = paths.first().map(|p| self.changelists.list_of(p).to_owned()).unwrap_or_default();
         let targets: Vec<String> = self.changelists.lists.iter().map(|l| l.name.clone()).filter(|n| *n != current).collect();
         let selected = Rc::new(RefCell::new(targets.first().cloned()));

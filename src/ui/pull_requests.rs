@@ -24,7 +24,7 @@ use crate::hosting::account::{self, Account};
 use crate::hosting::github::{self, Client, Comment, MergeMethod, PrFile, PullRequest, ReviewEvent};
 use crate::model::{RepoEvent, RepoModel};
 use crate::theme::ActivePalette as _;
-use crate::ui::common::{ROW_HEIGHT, tool_button};
+use crate::ui::common::{row_height, tool_button};
 use crate::ui::diff_view::DiffSource;
 
 /// Where the PRs come from: an account and `owner/repo` on its server.
@@ -492,7 +492,7 @@ impl Render for PullRequestsView {
             .size_full()
             .child(
                 h_flex()
-                    .h(px(32.))
+                    .h(px(crate::ui::common::toolbar_height()))
                     .px_1()
                     .gap_1()
                     .border_b_1()
@@ -560,7 +560,7 @@ impl PullRequestsView {
             files = files.child(
                 h_flex()
                     .id(("pr-file", ix))
-                    .h(px(ROW_HEIGHT))
+                    .h(px(row_height()))
                     .px_2()
                     .gap_1p5()
                     .text_sm()
@@ -581,7 +581,7 @@ impl PullRequestsView {
             .size_full()
             .child(
                 h_flex()
-                    .h(px(32.))
+                    .h(px(crate::ui::common::toolbar_height()))
                     .px_1()
                     .gap_1()
                     .border_b_1()
