@@ -1,6 +1,5 @@
-//! Code navigation UI: the Find tool window (Find Usages), Go to File /
-//! Class / Symbol popups, the "Choose Declaration" list, and the Project
-//! tool window's file tree.
+//! Code navigation UI: the "Choose Declaration" list, Recent Files and
+//! File Structure pickers, and the Project tool window's file tree.
 
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
@@ -16,11 +15,11 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
     uniform_list,
 };
 
-use crate::index::nav::{Target, Usage};
+use crate::index::nav::Target;
 use crate::index::service::{CodeIndex, IndexEvent};
 use crate::theme::ActivePalette as _;
 use crate::ui::common::{self, ROW_HEIGHT, tool_button};
@@ -28,266 +27,6 @@ use crate::ui::common::{self, ROW_HEIGHT, tool_button};
 /// Something to open: a path and position.
 #[derive(Clone)]
 pub struct OpenTarget(pub Target);
-
-/// The Find tool window: usages grouped by kind and language.
-pub struct UsagesView {
-    title: String,
-    usages: Vec<Usage>,
-    searching: bool,
-    selected: Option<usize>,
-    _task: Option<Task<()>>,
-}
-
-impl EventEmitter<OpenTarget> for UsagesView {}
-
-impl UsagesView {
-    pub fn new() -> Self {
-        Self { title: String::new(), usages: Vec::new(), searching: false, selected: None, _task: None }
-    }
-
-    pub fn search(&mut self, index: &Entity<CodeIndex>, path: String, text: String, offset: usize, cx: &mut Context<Self>) {
-        let task = index.read(cx).usages(path, text, offset, cx);
-        self.searching = true;
-        self.title = "Searching…".into();
-        self.usages.clear();
-        self.selected = None;
-        cx.notify();
-        self._task = Some(cx.spawn(async move |this, cx| {
-            let (word, usages) = task.await;
-            this.update(cx, |this, cx| {
-                this.searching = false;
-                this.title = if word.is_empty() { "Nothing to search for at the caret".into() } else { format!("Usages of {word} — {} results", usages.len()) };
-                this.usages = usages;
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
-    fn open(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(u) = self.usages.get(ix) else { return };
-        self.selected = Some(ix);
-        cx.emit(OpenTarget(Target { path: u.path.clone(), line: u.line, col: u.col, name: String::new(), label: u.group.clone(), container: None }));
-        cx.notify();
-    }
-}
-
-enum UsageRow {
-    Group(String, usize),
-    File(String, usize),
-    Hit(usize),
-}
-
-impl Render for UsagesView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let palette = cx.palette().clone();
-        // Group › file › line, as IntelliJ's usage tree.
-        let mut rows: Vec<UsageRow> = Vec::new();
-        let mut last_group = None;
-        let mut last_file = None;
-        for (i, u) in self.usages.iter().enumerate() {
-            if last_group.as_ref() != Some(&u.group) {
-                let count = self.usages.iter().filter(|x| x.group == u.group).count();
-                rows.push(UsageRow::Group(u.group.clone(), count));
-                last_group = Some(u.group.clone());
-                last_file = None;
-            }
-            if last_file.as_ref() != Some(&u.path) {
-                let count = self.usages.iter().filter(|x| x.group == u.group && x.path == u.path).count();
-                rows.push(UsageRow::File(u.path.clone(), count));
-                last_file = Some(u.path.clone());
-            }
-            rows.push(UsageRow::Hit(i));
-        }
-        let rows = Rc::new(rows);
-        let usages = Rc::new(self.usages.clone());
-        let selected = self.selected;
-        let list = uniform_list(
-            "usages",
-            rows.len(),
-            cx.processor(move |_, range: Range<usize>, _, cx| {
-                let palette = cx.palette().clone();
-                range
-                    .map(|ix| match &rows[ix] {
-                        UsageRow::Group(name, count) => h_flex()
-                            .id(ix)
-                            .h(px(ROW_HEIGHT))
-                            .px_2()
-                            .gap_1()
-                            .text_sm()
-                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .child(common::icon(IconName::ChevronDown).text_color(palette.text_secondary))
-                            .child(name.clone())
-                            .child(div().text_color(palette.text_secondary).child(format!("{count} usages")))
-                            .into_any_element(),
-                        UsageRow::File(path, count) => h_flex()
-                            .id(ix)
-                            .h(px(ROW_HEIGHT))
-                            .pl(px(24.))
-                            .gap_1()
-                            .text_sm()
-                            .child(common::icon(common::file_icon(path)).text_color(palette.text_secondary))
-                            .child(path.rsplit('/').next().unwrap_or(path).to_owned())
-                            .child(div().text_xs().text_color(palette.text_secondary).child(format!("{path} · {count}")))
-                            .into_any_element(),
-                        UsageRow::Hit(i) => {
-                            let u = &usages[*i];
-                            let i = *i;
-                            h_flex()
-                                .id(ix)
-                                .h(px(ROW_HEIGHT))
-                                .pl(px(48.))
-                                .gap_2()
-                                .text_sm()
-                                .cursor_pointer()
-                                .when(selected == Some(i), |el| el.bg(palette.selection))
-                                .hover(|el| el.bg(palette.hover))
-                                .child(div().w(px(40.)).text_right().text_color(palette.text_secondary).child((u.line + 1).to_string()))
-                                .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(u.text.clone()))
-                                .on_click(cx.listener(move |this, _, _, cx| this.open(i, cx)))
-                                .into_any_element()
-                        }
-                    })
-                    .collect()
-            }),
-        )
-        .size_full();
-        v_flex()
-            .size_full()
-            .child(
-                h_flex()
-                    .h(px(28.))
-                    .px_2()
-                    .border_b_1()
-                    .border_color(palette.border)
-                    .text_sm()
-                    .text_color(palette.text_secondary)
-                    .child(self.title.clone()),
-            )
-            .child(div().flex_1().min_h_0().child(list))
-    }
-}
-
-/// What a Go to popup searches.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum GotoKind {
-    File,
-    Class,
-    Symbol,
-}
-
-impl GotoKind {
-    fn title(self) -> &'static str {
-        match self {
-            GotoKind::File => "Go to File",
-            GotoKind::Class => "Go to Class",
-            GotoKind::Symbol => "Go to Symbol",
-        }
-    }
-}
-
-struct GotoItem {
-    title: String,
-    detail: String,
-    icon: IconName,
-    target: Target,
-}
-
-pub struct GotoView {
-    kind: GotoKind,
-    index: Entity<CodeIndex>,
-    input: Entity<InputState>,
-    items: Vec<GotoItem>,
-    selected: usize,
-    on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>,
-    _task: Option<Task<()>>,
-    _subscriptions: Vec<Subscription>,
-}
-
-impl GotoView {
-    fn new(kind: GotoKind, index: Entity<CodeIndex>, on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let placeholder = match kind {
-            GotoKind::File => "File name",
-            GotoKind::Class => "Class name",
-            GotoKind::Symbol => "Symbol name",
-        };
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
-        let subscriptions = vec![cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
-            InputEvent::Change => this.search(cx),
-            InputEvent::PressEnter { .. } => this.pick(this.selected, window, cx),
-            _ => {}
-        })];
-        Self { kind, index, input, items: Vec::new(), selected: 0, on_pick, _task: None, _subscriptions: subscriptions }
-    }
-
-    fn search(&mut self, cx: &mut Context<Self>) {
-        let query = self.input.read(cx).value().to_string();
-        let kind = self.kind;
-        let index = self.index.read(cx);
-        self._task = Some(match kind {
-            GotoKind::File => {
-                let task = index.search_files(query, cx);
-                cx.spawn(async move |this, cx| {
-                    let found = task.await;
-                    this.update(cx, |this, cx| {
-                        this.items = found
-                            .into_iter()
-                            .map(|(path, _)| {
-                                let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
-                                let dir = path.rsplit_once('/').map(|(d, _)| d.to_owned()).unwrap_or_default();
-                                GotoItem {
-                                    title: name.clone(),
-                                    detail: dir,
-                                    icon: common::file_icon(&path),
-                                    target: Target { path, line: 0, col: 0, name, label: String::new(), container: None },
-                                }
-                            })
-                            .collect();
-                        this.selected = 0;
-                        cx.notify();
-                    })
-                    .ok();
-                })
-            }
-            GotoKind::Class | GotoKind::Symbol => {
-                let task = index.search_symbols(query, kind == GotoKind::Class, cx);
-                cx.spawn(async move |this, cx| {
-                    let found = task.await;
-                    this.update(cx, |this, cx| {
-                        this.items = found
-                            .into_iter()
-                            .map(|m| {
-                                let detail = match &m.target.container {
-                                    Some(c) => format!("{c} · {} · {}:{}", m.target.label, m.target.path, m.target.line + 1),
-                                    None => format!("{} · {}:{}", m.target.label, m.target.path, m.target.line + 1),
-                                };
-                                GotoItem { title: m.target.name.clone(), detail, icon: symbol_icon(m.kind), target: m.target }
-                            })
-                            .collect();
-                        this.selected = 0;
-                        cx.notify();
-                    })
-                    .ok();
-                })
-            }
-        });
-    }
-
-    fn pick(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = self.items.get(ix) else { return };
-        let target = item.target.clone();
-        window.close_dialog(cx);
-        (self.on_pick)(target, window, cx);
-    }
-
-    fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.items.is_empty() {
-            return;
-        }
-        self.selected = (self.selected as isize + delta).rem_euclid(self.items.len() as isize) as usize;
-        cx.notify();
-    }
-}
 
 pub fn symbol_icon(kind: crate::index::symbols::SymbolKind) -> IconName {
     use crate::index::symbols::SymbolKind as K;
@@ -300,55 +39,6 @@ pub fn symbol_icon(kind: crate::index::symbols::SymbolKind) -> IconName {
         K::TypeAlias => IconName::Hash,
         K::Macro => IconName::Hash,
     }
-}
-
-impl Render for GotoView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let palette = cx.palette().clone();
-        let mut list = v_flex();
-        for (ix, item) in self.items.iter().enumerate() {
-            list = list.child(
-                h_flex()
-                    .id(("goto", ix))
-                    .h(px(26.))
-                    .px_2()
-                    .gap_2()
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .when(ix == self.selected, |el| el.bg(palette.selection))
-                    .hover(|el| el.bg(palette.hover))
-                    .child(common::icon(item.icon).text_color(palette.text_secondary))
-                    .child(div().text_sm().whitespace_nowrap().child(item.title.clone()))
-                    .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().text_xs().text_color(palette.text_secondary).child(item.detail.clone()))
-                    .on_click(cx.listener(move |this, _, window, cx| this.pick(ix, window, cx))),
-            );
-        }
-        let empty = self.items.is_empty() && !self.input.read(cx).value().trim().is_empty();
-        v_flex()
-            .gap_2()
-            .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| match event.keystroke.key.as_str() {
-                "down" => this.move_selection(1, cx),
-                "up" => this.move_selection(-1, cx),
-                _ => {}
-            }))
-            .child(Input::new(&self.input))
-            .child(
-                div()
-                    .id("goto-list")
-                    .h(px(360.))
-                    .overflow_y_scrollbar()
-                    .when(empty, |el| el.child(div().p_2().text_sm().text_color(palette.text_secondary).child("Nothing found")))
-                    .child(list),
-            )
-    }
-}
-
-/// Go to File (Ctrl+Shift+N), Go to Class (Ctrl+N), Go to Symbol (Ctrl+Alt+Shift+N).
-pub fn goto(kind: GotoKind, index: Entity<CodeIndex>, on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>, window: &mut Window, cx: &mut App) {
-    let view = cx.new(|cx| GotoView::new(kind, index, on_pick, window, cx));
-    let focus = view.read(cx).input.clone();
-    window.open_dialog(cx, move |dialog, _, _| dialog.title(kind.title()).w(px(640.)).child(view.clone()));
-    crate::ui::dialogs::focus_input(&focus, window, cx);
 }
 
 /// "Choose Declaration": several targets for one name.
@@ -600,3 +290,111 @@ impl Render for ProjectView {
     }
 }
 
+
+/// A filterable list popup: Recent Files (Ctrl+E), File Structure (Ctrl+F12).
+pub struct ListPicker {
+    items: Vec<crate::ui::find_view::FoundItem>,
+    shown: Vec<usize>,
+    input: Entity<InputState>,
+    selected: usize,
+    on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>,
+    /// Indent per item (File Structure nesting).
+    indents: Vec<usize>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl ListPicker {
+    fn filter(&mut self, cx: &mut Context<Self>) {
+        let query = self.input.read(cx).value().trim().to_owned();
+        let mut scored: Vec<(usize, i32)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, it)| crate::index::nav::fuzzy_score(&query, &it.title).map(|s| (i, s)))
+            .collect();
+        if !query.is_empty() {
+            scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        }
+        self.shown = scored.into_iter().map(|(i, _)| i).collect();
+        self.selected = 0;
+        cx.notify();
+    }
+
+    fn pick(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = self.shown.get(ix).and_then(|i| self.items.get(*i)) else { return };
+        let target = item.target.clone();
+        window.close_dialog(cx);
+        (self.on_pick)(target, window, cx);
+    }
+}
+
+impl Render for ListPicker {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let mut list = v_flex();
+        for (row, &i) in self.shown.iter().enumerate() {
+            let item = &self.items[i];
+            let indent = if self.input.read(cx).value().is_empty() { self.indents.get(i).copied().unwrap_or(0) } else { 0 };
+            list = list.child(
+                h_flex()
+                    .id(("pick", row))
+                    .h(px(26.))
+                    .pl(px(8. + 16. * indent as f32))
+                    .pr_2()
+                    .gap_2()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .when(row == self.selected, |el| el.bg(palette.selection))
+                    .hover(|el| el.bg(palette.hover))
+                    .child(common::icon(item.icon).text_color(palette.text_secondary))
+                    .child(div().text_sm().whitespace_nowrap().child(item.title.clone()))
+                    .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().text_xs().text_color(palette.text_secondary).child(item.detail.clone()))
+                    .on_click(cx.listener(move |this, _, window, cx| this.pick(row, window, cx))),
+            );
+        }
+        v_flex()
+            .gap_2()
+            .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                let n = this.shown.len().max(1);
+                match event.keystroke.key.as_str() {
+                    "down" => this.selected = (this.selected + 1) % n,
+                    "up" => this.selected = (this.selected + n - 1) % n,
+                    _ => return,
+                }
+                cx.notify();
+            }))
+            .child(Input::new(&self.input))
+            .child(
+                div()
+                    .id("pick-list")
+                    .max_h(px(420.))
+                    .overflow_y_scrollbar()
+                    .when(self.shown.is_empty(), |el| el.child(div().p_2().text_sm().text_color(palette.text_secondary).child("Nothing found")))
+                    .child(list),
+            )
+    }
+}
+
+/// Opens a ListPicker dialog.
+pub fn pick_from_list(
+    title: &'static str,
+    items: Vec<crate::ui::find_view::FoundItem>,
+    indents: Vec<usize>,
+    on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let view = cx.new(|cx| {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Type to filter"));
+        let subscriptions = vec![cx.subscribe_in(&input, window, |this: &mut ListPicker, _, event: &InputEvent, window, cx| match event {
+            InputEvent::Change => this.filter(cx),
+            InputEvent::PressEnter { .. } => this.pick(this.selected, window, cx),
+            _ => {}
+        })];
+        let shown = (0..items.len()).collect();
+        ListPicker { items, shown, input, selected: 0, on_pick, indents, _subscriptions: subscriptions }
+    });
+    let focus = view.read(cx).input.clone();
+    window.open_dialog(cx, move |dialog, _, _| dialog.title(title).w(px(560.)).child(view.clone()));
+    crate::ui::dialogs::focus_input(&focus, window, cx);
+}

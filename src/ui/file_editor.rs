@@ -44,7 +44,9 @@ actions!(
         OpenOnHosting,
         CreateGist,
         GotoDeclaration,
-        FindUsages
+        FindUsages,
+        FindNext,
+        FindPrevious
     ]
 );
 
@@ -57,6 +59,10 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-b" } else { "ctrl-b" }, GotoDeclaration, Some(CONTEXT)),
         KeyBinding::new("f12", GotoDeclaration, Some(CONTEXT)),
         KeyBinding::new("alt-f7", FindUsages, Some(CONTEXT)),
+        // IntelliJ: Ctrl+R replaces (Ctrl+F finds, from the editor itself), F3 / Shift+F3 step.
+        KeyBinding::new("secondary-r", gpui_kit::component::input::Replace, Some(CONTEXT)),
+        KeyBinding::new("f3", FindNext, Some(CONTEXT)),
+        KeyBinding::new("shift-f3", FindPrevious, Some(CONTEXT)),
     ]);
 }
 
@@ -204,7 +210,7 @@ impl FileEditor {
         };
         let language = language_for(&path);
         let initial = content.clone();
-        let state = cx.new(|cx| EditorState::new(window, cx).language(language).line_number(true).default_value(initial));
+        let state = cx.new(|cx| EditorState::new(window, cx).language(language).line_number(true).searchable(true).default_value(initial));
         let subscriptions = vec![cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.update_markers(cx);
@@ -286,6 +292,48 @@ impl FileEditor {
         cx.emit(FileEditorEvent::FindUsages { text, offset });
     }
 
+    pub fn selected_text(&self, cx: &gpui_kit::App) -> Option<String> {
+        Some(self.state.read(cx).selected_value().to_string()).filter(|s| !s.is_empty())
+    }
+
+    /// What Find starts with: the selection, else the word at the caret.
+    pub fn search_text(&self, cx: &gpui_kit::App) -> Option<String> {
+        let state = self.state.read(cx);
+        let selected = state.selected_value().to_string();
+        if !selected.is_empty() {
+            return Some(selected);
+        }
+        let text = state.value().to_string();
+        crate::index::nav::word_at(&text, state.cursor()).map(|(w, _)| w)
+    }
+
+    fn find_next(&mut self, _: &FindNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_search(true, cx);
+    }
+
+    fn find_previous(&mut self, _: &FindPrevious, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_search(false, cx);
+    }
+
+    /// F3 / Shift+F3: the next match of the last search, or of the word at the caret.
+    fn step_search(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.state.read(cx).search_session().query.is_empty() {
+            let Some(word) = self.search_text(cx) else { return };
+            self.state.update(cx, |s, cx| s.set_search_query(word, true, cx));
+        }
+        self.state.update(cx, |s, cx| {
+            let range = if forward { s.next_search_match(cx) } else { s.previous_search_match(cx) };
+            if let Some(range) = range {
+                s.set_selected_range(range, cx);
+            }
+        });
+    }
+
+    /// Go to Line:Column (Ctrl+G), 1-based.
+    pub fn line_count(&self, cx: &gpui_kit::App) -> usize {
+        self.state.read(cx).value().lines().count().max(1)
+    }
+
     pub fn revision(&self) -> Option<&str> {
         self.revision.as_deref()
     }
@@ -294,7 +342,7 @@ impl FileEditor {
         self.state.read(cx).value().to_string()
     }
 
-    fn is_dirty(&self, cx: &gpui_kit::App) -> bool {
+    pub fn is_dirty(&self, cx: &gpui_kit::App) -> bool {
         self.revision.is_none() && self.text(cx) != self.saved
     }
 
@@ -461,6 +509,8 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::create_gist))
             .on_action(cx.listener(Self::goto_declaration))
             .on_action(cx.listener(Self::find_usages))
+            .on_action(cx.listener(Self::find_next))
+            .on_action(cx.listener(Self::find_previous))
             .on_action(cx.listener(Self::show_selection_history))
             .on_action(cx.listener(Self::annotate))
             .on_action(cx.listener(Self::show_history))

@@ -298,9 +298,64 @@ impl CodeIndex {
         cx.background_spawn(async move { nav::search_symbols(&index.read().unwrap(), &query, types_only, 200) })
     }
 
+    pub fn file_symbols(&self, path: &str) -> Vec<nav::SymbolMatch> {
+        self.index.read().map(|index| nav::file_symbols(&index, path)).unwrap_or_default()
+    }
+
     pub fn search_files(&self, query: String, cx: &App) -> Task<Vec<(String, i32)>> {
         let index = self.index.clone();
         cx.background_spawn(async move { nav::search_files(&index.read().unwrap(), &query, 200) })
+    }
+
+    /// Find in Files over `files` (all project files when `None`), in file order.
+    pub fn find_text(
+        &self,
+        query: super::text_search::TextQuery,
+        scope: super::text_search::FileScope,
+        limit: usize,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        cx: &App,
+    ) -> Task<Result<super::text_search::SearchResult, String>> {
+        let root = self.root.clone();
+        cx.background_spawn(async move {
+            let root = root.ok_or_else(String::new)?;
+            let re = super::text_search::compile(&query)?;
+            let files = scope.select(|| super::store::list_files(&root));
+            Ok(super::text_search::search(&root, &files, &query, &re, limit, &cancel))
+        })
+    }
+
+    /// Files git ignores, for "Include non-project items".
+    pub fn ignored_files(&self, cx: &App) -> Task<Vec<String>> {
+        let root = self.root.clone();
+        cx.background_spawn(async move {
+            let Some(root) = root else { return Vec::new() };
+            let Ok(output) = crate::git::git_process()
+                .args(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory"])
+                .current_dir(&root)
+                .output()
+            else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            for p in output.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+                let p = String::from_utf8_lossy(p).into_owned();
+                if let Some(dir) = p.strip_suffix('/') {
+                    // Expand ignored folders, but not huge build trees past a cap.
+                    for entry in walk(&root.join(dir), 20_000) {
+                        if let Ok(rel) = entry.strip_prefix(&root) {
+                            out.push(rel.to_string_lossy().replace('\\', "/"));
+                        }
+                    }
+                } else {
+                    out.push(p);
+                }
+                if out.len() > 50_000 {
+                    break;
+                }
+            }
+            out
+        })
     }
 
     /// For the status bar.
@@ -350,4 +405,24 @@ impl Drop for CodeIndex {
     fn drop(&mut self) {
         self.lsp.shutdown();
     }
+}
+
+fn walk(dir: &Path, cap: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for e in entries.flatten() {
+            let path = e.path();
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(t) if t.is_file() => out.push(path),
+                _ => {}
+            }
+            if out.len() >= cap {
+                return out;
+            }
+        }
+    }
+    out
 }

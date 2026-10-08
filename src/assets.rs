@@ -77,7 +77,8 @@ gpui_kit::assets::icon_assets!(
         ArrowRight,
         List,
         WandSparkles,
-        Link2, Scissors, Clipboard, Columns2, TextAlignStart, EllipsisVertical, ArrowLeftRight, Ban
+        Link2, Scissors, Clipboard, Columns2, TextAlignStart, EllipsisVertical, ArrowLeftRight, Ban,
+        Funnel, Pin, SquareArrowDownLeft, TextSearch, FileSearch, Zap, Keyboard, ListTree, ListOrdered, SquareSplitVertical, SquareFunction, Braces, Variable, ClockArrowUp
     ]
 );
 

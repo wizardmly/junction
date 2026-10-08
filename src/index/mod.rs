@@ -9,3 +9,4 @@ pub mod store;
 pub mod nav;
 pub mod lsp;
 pub mod service;
+pub mod text_search;

@@ -43,6 +43,7 @@ use crate::ui::patch_dialogs;
 use crate::ui::shelf_view::{ShelfEvent, ShelfView};
 use crate::ui::stash_view::{StashEvent, StashView};
 use crate::index::service::{CodeIndex, IndexEvent};
+use crate::ui::search_everywhere::SeTab;
 
 actions!(
     workspace,
@@ -63,7 +64,14 @@ actions!(
         NavigateForward,
         ToggleProjectWindow,
         ToggleFindWindow,
-        SelectInProject
+        SelectInProject,
+        FindInPath,
+        ReplaceInPath,
+        SearchEverywhere,
+        FindAction,
+        RecentFiles,
+        FileStructure,
+        GotoLine
     ]
 );
 
@@ -99,6 +107,13 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-alt-right", NavigateForward, Some(CONTEXT)),
         KeyBinding::new("alt-1", ToggleProjectWindow, Some(CONTEXT)),
         KeyBinding::new("alt-3", ToggleFindWindow, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-f", FindInPath, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-r", ReplaceInPath, Some(CONTEXT)),
+        KeyBinding::new("shift shift", SearchEverywhere, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-a", FindAction, Some(CONTEXT)),
+        KeyBinding::new("secondary-e", RecentFiles, Some(CONTEXT)),
+        KeyBinding::new("secondary-f12", FileStructure, Some(CONTEXT)),
+        KeyBinding::new("secondary-g", GotoLine, Some(CONTEXT)),
         KeyBinding::new("alt-f1", SelectInProject, Some(CONTEXT)),
     ]);
 }
@@ -127,6 +142,8 @@ struct LogTab {
     selected: Option<String>,
 }
 
+type VcsRun = Rc<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
+
 pub struct Workspace {
     model: Entity<RepoModel>,
     log: Entity<LogView>,
@@ -139,7 +156,17 @@ pub struct Workspace {
     submodules: Entity<crate::ui::submodule_view::SubmoduleView>,
     /// The code index, and the tool windows built on it.
     code_index: Entity<CodeIndex>,
-    usages: Entity<crate::ui::navigate::UsagesView>,
+    find: Entity<crate::ui::find_view::FindView>,
+    /// Find / Replace in Files, kept between uses like IntelliJ's.
+    find_popup: Option<(Entity<crate::ui::find_popup::FindPopup>, Subscription)>,
+    show_find_popup: bool,
+    /// Search Everywhere (Shift twice), kept between uses.
+    search_everywhere: Option<(Entity<crate::ui::search_everywhere::SearchEverywhere>, Subscription)>,
+    show_search_everywhere: bool,
+    /// Recently opened files, newest first, for Recent Files and the Scope tab.
+    recent_files: Vec<String>,
+    /// Files saved or replaced this session, newest first.
+    recently_changed: Vec<String>,
     project: Entity<crate::ui::navigate::ProjectView>,
     show_project: bool,
     /// Navigate › Back / Forward: (path, line, column).
@@ -183,7 +210,7 @@ impl Workspace {
         let prs = cx.new(|cx| crate::ui::pull_requests::PullRequestsView::new(model.clone(), window, cx));
         let changes = cx.new(|cx| crate::ui::changes_view::ChangesView::new(model.clone(), cx));
         let code_index = cx.new(CodeIndex::new);
-        let usages = cx.new(|_| crate::ui::navigate::UsagesView::new());
+        let find = cx.new(|_| crate::ui::find_view::FindView::new(code_index.clone()));
         let project = cx.new(|cx| crate::ui::navigate::ProjectView::new(code_index.clone(), cx));
         let weak = cx.entity().downgrade();
         branches_popup.update(cx, |popup, _| {
@@ -235,8 +262,11 @@ impl Workspace {
                     cx.notify();
                 }
             }),
-            cx.subscribe_in(&usages, window, |this, _, event: &crate::ui::navigate::OpenTarget, window, cx| {
+            cx.subscribe_in(&find, window, |this, _, event: &crate::ui::navigate::OpenTarget, window, cx| {
                 this.go_to_target(event.0.clone(), window, cx)
+            }),
+            cx.subscribe_in(&find, window, |this, _, event: &crate::ui::find_view::FindViewEvent, window, cx| match event {
+                crate::ui::find_view::FindViewEvent::FilesChanged(paths) => this.files_changed(paths.clone(), window, cx),
             }),
             cx.subscribe_in(&project, window, |this, _, event: &crate::ui::navigate::OpenTarget, window, cx| {
                 this.go_to_target(event.0.clone(), window, cx)
@@ -419,7 +449,13 @@ impl Workspace {
             submodules,
             prs,
             code_index,
-            usages,
+            find,
+            find_popup: None,
+            show_find_popup: false,
+            search_everywhere: None,
+            show_search_everywhere: false,
+            recent_files: Vec::new(),
+            recently_changed: Vec::new(),
             project,
             show_project: false,
             nav_back: Vec::new(),
@@ -569,6 +605,11 @@ impl Workspace {
         let Some(repository) = self.model.read(cx).repository().cloned() else { return };
         self.blame = None;
         self.timeline = None;
+        if revision.is_none() {
+            self.recent_files.retain(|p| *p != path);
+            self.recent_files.insert(0, path.clone());
+            self.recent_files.truncate(50);
+        }
         let same = self.editor.as_ref().is_some_and(|(e, _)| e.read(cx).path() == path && e.read(cx).revision() == revision.as_deref());
         if !same {
             let view = cx.new(|cx| FileEditor::new(repository, path, revision, window, cx));
@@ -586,13 +627,16 @@ impl Workspace {
             FileEditorEvent::FindUsages { text, offset } => {
                 let Some(path) = self.editor.as_ref().map(|(e, _)| e.read(cx).path().to_owned()) else { return };
                 let (index, text, offset) = (self.code_index.clone(), text.clone(), *offset);
-                self.usages.update(cx, |view, cx| view.search(&index, path, text, offset, cx));
+                let _ = index;
+                self.find.update(cx, |view, cx| view.find_usages(path, text, offset, cx));
                 self.show_git = true;
                 self.bottom_tab = BottomTab::Find;
                 cx.notify();
             }
             FileEditorEvent::Saved(path) => {
                 let path = path.clone();
+                self.recently_changed.retain(|p| *p != path);
+                self.recently_changed.insert(0, path.clone());
                 self.code_index.update(cx, |index, cx| index.refresh_file(&path, cx));
             }
             FileEditorEvent::CreateGist { name, content } => {
@@ -750,20 +794,341 @@ impl Workspace {
         self.open_at(path, line, col, window, cx);
     }
 
-    fn open_goto(&mut self, kind: crate::ui::navigate::GotoKind, window: &mut Window, cx: &mut Context<Self>) {
+    /// The Module / Scope tabs' view of the project.
+    fn scope_data(&self, cx: &gpui_kit::App) -> crate::ui::find_popup::ScopeData {
+        let current_file = self.editor.as_ref().filter(|(e, _)| e.read(cx).revision().is_none()).map(|(e, _)| e.read(cx).path().to_owned());
+        let local_changes: Vec<String> = self.model.read(cx).status().entries.iter().map(|e| e.path.clone()).collect();
+        let mut recently_changed = self.recently_changed.clone();
+        recently_changed.extend(local_changes.iter().filter(|p| !self.recently_changed.contains(p)).cloned());
+        let modules = self.code_index.read(cx).root().map(|root| modules_of(&crate::index::store::list_files(root))).unwrap_or_default();
+        crate::ui::find_popup::ScopeData {
+            open_files: current_file.iter().cloned().collect(),
+            current_file,
+            recent_files: self.recent_files.clone(),
+            recently_changed,
+            local_changes,
+            modules,
+        }
+    }
+
+    /// Find in Files (Ctrl+Shift+F) / Replace in Files (Ctrl+Shift+R).
+    fn open_find_popup(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.model.read(cx).repository().is_none() {
             return;
         }
+        if self.find_popup.is_none() {
+            let index = self.code_index.clone();
+            let popup = cx.new(|cx| crate::ui::find_popup::FindPopup::new(index, window, cx));
+            let subscription = cx.subscribe_in(&popup, window, |this, _, event: &crate::ui::find_popup::FindEvent, window, cx| {
+                use crate::ui::find_popup::FindEvent;
+                match event {
+                    FindEvent::Open(target) => this.go_to_target(target.clone(), window, cx),
+                    FindEvent::Close => this.close_popups(window, cx),
+                    FindEvent::ShowInFindWindow(request) => {
+                        let request = request.clone();
+                        this.find.update(cx, |view, cx| view.find_text(request, cx));
+                        this.show_git = true;
+                        this.bottom_tab = BottomTab::Find;
+                        cx.notify();
+                    }
+                    FindEvent::FilesChanged(paths) => this.files_changed(paths.clone(), window, cx),
+                }
+            });
+            self.find_popup = Some((popup, subscription));
+        }
+        let text = self.editor.as_ref().and_then(|(e, _)| e.read(cx).search_text(cx));
+        let data = self.scope_data(cx);
+        if let Some((popup, _)) = &self.find_popup {
+            popup.update(cx, |p, cx| p.show(replace, text, data, window, cx));
+        }
+        self.show_find_popup = true;
+        cx.notify();
+    }
+
+    fn close_popups(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_find_popup = false;
+        self.show_search_everywhere = false;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Files changed on disk by Replace: re-index, refresh VCS, reload an unmodified editor.
+    fn files_changed(&mut self, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        for path in &paths {
+            self.recently_changed.retain(|p| p != path);
+            self.recently_changed.insert(0, path.clone());
+            let path = path.clone();
+            self.code_index.update(cx, |index, cx| index.refresh_file(&path, cx));
+        }
+        self.model.update(cx, |m, cx| m.reload(cx));
+        let reload = self.editor.as_ref().map(|(e, _)| e.read(cx)).filter(|e| e.revision().is_none() && paths.iter().any(|p| p == e.path()) && !e.is_dirty(cx)).map(|e| (e.path().to_owned(), e.cursor(cx)));
+        if let Some((path, (line, col))) = reload {
+            self.editor = None;
+            self.open_file(path, None, window, cx);
+            if let Some((editor, _)) = &self.editor {
+                editor.update(cx, |editor, cx| editor.go_to(line, col, window, cx));
+            }
+        }
+    }
+
+    fn render_popups(&self, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
+        let mut out = Vec::new();
+        let popup = self.find_popup.as_ref().filter(|_| self.show_find_popup).map(|(p, _)| (p.clone(), p.read(cx).is_pinned()));
+        if let Some((popup, pinned)) = popup {
+            if !pinned {
+                out.push(
+                    div()
+                        .id("popup-backdrop")
+                        .absolute()
+                        .inset_0()
+                        .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(|this, _, window, cx| this.close_popups(window, cx)))
+                        .into_any_element(),
+                );
+            }
+            out.push(div().absolute().top(px(72.)).left_0().right_0().flex().justify_center().child(popup).into_any_element());
+        }
+        if let Some((se, _)) = self.search_everywhere.as_ref().filter(|_| self.show_search_everywhere) {
+            out.push(
+                div()
+                    .id("se-backdrop")
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(|this, _, window, cx| this.close_popups(window, cx)))
+                    .into_any_element(),
+            );
+            out.push(div().absolute().top(px(96.)).left_0().right_0().flex().justify_center().child(se.clone()).into_any_element());
+        }
+        out
+    }
+
+    /// Every command Find Action (Ctrl+Shift+A) and the Actions tab know.
+    fn action_entries(&self, cx: &mut Context<Self>) -> Vec<crate::ui::search_everywhere::ActionEntry> {
+        use crate::ui::search_everywhere::ActionEntry;
+        let weak = cx.entity().downgrade();
+        let mut out = Vec::new();
+        let mut add = |name: &str, shortcut: &str, group: &str, run: VcsRun| {
+            let weak = weak.clone();
+            out.push(ActionEntry {
+                name: name.to_owned(),
+                shortcut: shortcut.to_owned(),
+                group: group.to_owned(),
+                run: Rc::new(move |window, cx| {
+                    weak.update(cx, |this, cx| run(this, window, cx)).ok();
+                }),
+            });
+        };
+        let op = |f: fn(&mut Workspace, &mut Window, &mut Context<Workspace>)| -> VcsRun { Rc::new(f) };
+        for (name, shortcut, run) in Self::vcs_operation_list().into_iter().flatten() {
+            add(name, shortcut, "Git", run);
+        }
+        let navigate: Vec<(&str, &str, VcsRun)> = vec![
+            ("Search Everywhere", "Double Shift", op(|this, window, cx| this.open_search_everywhere(SeTab::All, window, cx))),
+            ("Find in Files…", "Ctrl+Shift+F", op(|this, window, cx| this.open_find_popup(false, window, cx))),
+            ("Replace in Files…", "Ctrl+Shift+R", op(|this, window, cx| this.open_find_popup(true, window, cx))),
+            ("Go to Class…", "Ctrl+N", op(|this, window, cx| this.open_search_everywhere(SeTab::Classes, window, cx))),
+            ("Go to File…", "Ctrl+Shift+N", op(|this, window, cx| this.open_search_everywhere(SeTab::Files, window, cx))),
+            ("Go to Symbol…", "Ctrl+Alt+Shift+N", op(|this, window, cx| this.open_search_everywhere(SeTab::Symbols, window, cx))),
+            ("Go to Text…", "", op(|this, window, cx| this.open_search_everywhere(SeTab::Text, window, cx))),
+            ("Recent Files", "Ctrl+E", op(|this, window, cx| this.recent_files_popup(window, cx))),
+            ("File Structure", "Ctrl+F12", op(|this, window, cx| this.file_structure(window, cx))),
+            ("Go to Line:Column…", "Ctrl+G", op(|this, window, cx| this.goto_line(window, cx))),
+            ("Back", "Ctrl+Alt+Left", op(|this, window, cx| this.navigate_back(&NavigateBack, window, cx))),
+            ("Forward", "Ctrl+Alt+Right", op(|this, window, cx| this.navigate_forward(&NavigateForward, window, cx))),
+            ("Select in Project View", "Alt+F1", op(|this, window, cx| this.select_in_project(&SelectInProject, window, cx))),
+        ];
+        for (name, shortcut, run) in navigate {
+            add(name, shortcut, "Navigate", run);
+        }
+        let windows: Vec<(&str, &str, VcsRun)> = vec![
+            ("Project", "Alt+1", op(|this, window, cx| this.toggle_project(&ToggleProjectWindow, window, cx))),
+            ("Find", "Alt+3", op(|this, window, cx| this.toggle_find(&ToggleFindWindow, window, cx))),
+            ("Git", "Alt+9", op(|this, window, cx| this.on_toggle_git(&ToggleGitWindow, window, cx))),
+            ("Commit", "Alt+0", op(|this, _, cx| {
+                this.show_commit = true;
+                this.show_project = false;
+                this.show_prs = false;
+                this.show_changes = false;
+                this.left_tab = LeftTab::Commit;
+                cx.notify();
+            })),
+            ("Refresh", "Ctrl+Alt+Y", op(|this, window, cx| this.on_refresh(&Refresh, window, cx))),
+            ("VCS Operations Popup…", "Alt+`", op(|this, window, cx| this.on_vcs_operations(&VcsOperations, window, cx))),
+        ];
+        for (name, shortcut, run) in windows {
+            add(name, shortcut, "Window", run);
+        }
+        out
+    }
+
+    /// Search Everywhere on a tab; its own shortcut again toggles non-project items.
+    fn open_search_everywhere(&mut self, tab: SeTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.read(cx).repository().is_none() {
+            return;
+        }
+        if let Some((se, _)) = &self.search_everywhere {
+            if self.show_search_everywhere && se.read(cx).tab() == tab {
+                se.update(cx, |se, cx| se.toggle_non_project(cx));
+                return;
+            }
+        }
+        if self.search_everywhere.is_none() {
+            let index = self.code_index.clone();
+            let se = cx.new(|cx| crate::ui::search_everywhere::SearchEverywhere::new(index, window, cx));
+            let subscription = cx.subscribe_in(&se, window, |this, _, event: &crate::ui::search_everywhere::SeEvent, window, cx| {
+                use crate::ui::search_everywhere::SeEvent;
+                match event {
+                    SeEvent::Open(target) => this.go_to_target(target.clone(), window, cx),
+                    SeEvent::Close => this.close_popups(window, cx),
+                    SeEvent::Run(run) => {
+                        let run = run.clone();
+                        window.defer(cx, move |window, cx| run(window, cx));
+                    }
+                    SeEvent::FindWindowText(request) => {
+                        let request = request.clone();
+                        this.find.update(cx, |view, cx| view.find_text(request, cx));
+                        this.show_git = true;
+                        this.bottom_tab = BottomTab::Find;
+                        cx.notify();
+                    }
+                    SeEvent::FindWindowItems(title, items) => {
+                        let (title, items) = (title.clone(), items.clone());
+                        this.find.update(cx, |view, cx| view.show_items(title, items, cx));
+                        this.show_git = true;
+                        this.bottom_tab = BottomTab::Find;
+                        cx.notify();
+                    }
+                }
+            });
+            self.search_everywhere = Some((se, subscription));
+        }
+        self.show_find_popup = false;
+        let text = self.editor.as_ref().and_then(|(e, _)| e.read(cx).selected_text(cx));
+        let actions = self.action_entries(cx);
+        if let Some((se, _)) = &self.search_everywhere {
+            se.update(cx, |se, cx| se.show(tab, text, actions, window, cx));
+        }
+        self.show_search_everywhere = true;
+        cx.notify();
+    }
+
+    fn picker_callback(&self, cx: &mut Context<Self>) -> Rc<dyn Fn(crate::index::nav::Target, &mut Window, &mut gpui_kit::App)> {
         let workspace = cx.entity().downgrade();
-        crate::ui::navigate::goto(
-            kind,
-            self.code_index.clone(),
-            Rc::new(move |target, window, cx| {
-                workspace.update(cx, |this, cx| this.go_to_target(target, window, cx)).ok();
-            }),
-            window,
-            cx,
-        );
+        Rc::new(move |target, window, cx| {
+            workspace.update(cx, |this, cx| this.go_to_target(target, window, cx)).ok();
+        })
+    }
+
+    /// Recent Files (Ctrl+E).
+    fn recent_files_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.editor.as_ref().map(|(e, _)| e.read(cx).path().to_owned());
+        // IntelliJ preselects the previous file, so Ctrl+E Enter switches back.
+        let mut files: Vec<String> = self.recent_files.iter().filter(|p| Some(*p) != current.as_ref()).cloned().collect();
+        files.extend(current);
+        let items = files
+            .into_iter()
+            .map(|path| {
+                let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+                let dir = path.rsplit_once('/').map(|(d, _)| d.to_owned()).unwrap_or_default();
+                crate::ui::find_view::FoundItem {
+                    title: name.clone(),
+                    detail: dir,
+                    icon: crate::ui::common::file_icon(&path),
+                    target: crate::index::nav::Target { path, line: 0, col: 0, name, label: String::new(), container: None },
+                }
+            })
+            .collect::<Vec<_>>();
+        let n = items.len();
+        let on_pick = self.picker_callback(cx);
+        let recent: Vec<String> = self.recent_files.clone();
+        let workspace = cx.entity().downgrade();
+        // Re-opening a recent file keeps its last caret: open without a position.
+        let open_plain: Rc<dyn Fn(crate::index::nav::Target, &mut Window, &mut gpui_kit::App)> = Rc::new(move |target, window, cx| {
+            let _ = &recent;
+            let path = target.path.clone();
+            workspace.update(cx, |this, cx| this.open_file(path, None, window, cx)).ok();
+        });
+        let _ = on_pick;
+        crate::ui::navigate::pick_from_list("Recent Files", items, vec![0; n], open_plain, window, cx);
+    }
+
+    /// File Structure (Ctrl+F12): the current file's declarations.
+    fn file_structure(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((editor, _)) = &self.editor else { return };
+        let path = editor.read(cx).path().to_owned();
+        let symbols = self.code_index.read(cx).file_symbols(&path);
+        let mut indents = Vec::new();
+        let items = symbols
+            .into_iter()
+            .map(|m| {
+                indents.push(m.target.container.as_deref().map(|c| c.split('.').count()).unwrap_or(0));
+                crate::ui::find_view::FoundItem {
+                    title: m.target.name.clone(),
+                    detail: m.target.label.split(" · ").next().unwrap_or_default().to_owned(),
+                    icon: crate::ui::navigate::symbol_icon(m.kind),
+                    target: m.target,
+                }
+            })
+            .collect();
+        let on_pick = self.picker_callback(cx);
+        crate::ui::navigate::pick_from_list("File Structure", items, indents, on_pick, window, cx);
+    }
+
+    /// Go to Line:Column (Ctrl+G).
+    fn goto_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((editor, _)) = &self.editor else { return };
+        let editor = editor.clone();
+        let (line, col) = editor.read(cx).cursor(cx);
+        let lines = editor.read(cx).line_count(cx);
+        let input = cx.new(|cx| gpui_kit::component::input::InputState::new(window, cx).default_value(format!("{}:{}", line + 1, col + 1)));
+        let workspace = cx.entity().downgrade();
+        let go = {
+            let (input, editor, workspace) = (input.clone(), editor.clone(), workspace.clone());
+            move |window: &mut Window, cx: &mut gpui_kit::App| {
+                let text = input.read(cx).value().to_string();
+                let mut parts = text.split([':', ',']).map(|p| p.trim().parse::<u32>().ok());
+                let Some(Some(line)) = parts.next() else { return };
+                let col = parts.next().flatten().unwrap_or(1);
+                let target_line = line.saturating_sub(1);
+                let (path, here) = { let e = editor.read(cx); (e.path().to_owned(), e.cursor(cx)) };
+                workspace
+                    .update(cx, |this, cx| {
+                        let here = (path.clone(), here.0, here.1);
+                        if this.nav_back.last() != Some(&here) {
+                            this.nav_back.push(here);
+                        }
+                        editor.update(cx, |e, cx| e.go_to(target_line, col.saturating_sub(1), window, cx));
+                    })
+                    .ok();
+            }
+        };
+        let go = Rc::new(go);
+        let sub_go = go.clone();
+        let subscription = cx.subscribe_in(&input, window, move |_, _, event: &gpui_kit::component::input::InputEvent, window, cx| {
+            if let gpui_kit::component::input::InputEvent::PressEnter { .. } = event {
+                sub_go(window, cx);
+                window.close_dialog(cx);
+            }
+        });
+        let input2 = input.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let _ = &subscription;
+            let go = go.clone();
+            dialog
+                .title("Go to Line:Column")
+                .w(px(360.))
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(div().text_sm().child(format!("[Line] [:column]   (1–{lines})")))
+                        .child(gpui_kit::component::input::Input::new(&input2)),
+                )
+                .footer(dialogs::footer("OK"))
+                .on_ok(move |_, window, cx| {
+                    go(window, cx);
+                    true
+                })
+        });
+        crate::ui::dialogs::focus_input(&input, window, cx);
     }
 
     fn toggle_project(&mut self, _: &ToggleProjectWindow, _: &mut Window, cx: &mut Context<Self>) {
@@ -1443,11 +1808,10 @@ impl Workspace {
         dialogs::stash(self.model.clone(), window, cx);
     }
 
-    /// IntelliJ's VCS Operations quick list, numbered like the original.
-    fn on_vcs_operations(&mut self, _: &VcsOperations, window: &mut Window, cx: &mut Context<Self>) {
-        type Run = Rc<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
-        let op = |f: fn(&mut Workspace, &mut Window, &mut Context<Workspace>)| -> Run { Rc::new(f) };
-        let items: Vec<Option<(&'static str, &'static str, Run)>> = vec![
+    /// IntelliJ's VCS Operations quick list, in order; `None` is a separator.
+    fn vcs_operation_list() -> Vec<Option<(&'static str, &'static str, VcsRun)>> {
+        let op = |f: fn(&mut Workspace, &mut Window, &mut Context<Workspace>)| -> VcsRun { Rc::new(f) };
+        vec![
             Some(("Commit…", "Ctrl+K", op(|this, window, cx| this.on_commit(&CommitChanges, window, cx)))),
             Some(("Push…", "Ctrl+Shift+K", op(|this, window, cx| dialogs::push(this.model.clone(), window, cx)))),
             Some(("Update Project…", "Ctrl+T", op(|this, window, cx| dialogs::update_project(this.model.clone(), window, cx)))),
@@ -1495,7 +1859,12 @@ impl Workspace {
                 cx.notify();
             }))),
             Some(("Settings…", "Ctrl+Alt+S", op(|_, window, cx| dialogs::settings(window, cx)))),
-        ];
+        ]
+    }
+
+    /// IntelliJ's VCS Operations quick list, numbered like the original.
+    fn on_vcs_operations(&mut self, _: &VcsOperations, window: &mut Window, cx: &mut Context<Self>) {
+        let items = Self::vcs_operation_list();
         let workspace = cx.entity();
         window.open_dialog(cx, move |dialog, _, cx| {
             let palette = cx.palette().clone();
@@ -1625,7 +1994,7 @@ impl Workspace {
                 BottomTab::Log => el.child(self.log.clone()),
                 BottomTab::Worktrees => el.child(self.worktrees.clone()),
                 BottomTab::Submodules => el.child(self.submodules.clone()),
-                BottomTab::Find => el.child(self.usages.clone()),
+                BottomTab::Find => el.child(self.find.clone()),
                 BottomTab::Console => el.child(self.render_console(cx)),
             }))
     }
@@ -1741,14 +2110,21 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_stash))
             .on_action(cx.listener(Self::on_vcs_operations))
-            .on_action(cx.listener(|this, _: &GotoFile, window, cx| this.open_goto(crate::ui::navigate::GotoKind::File, window, cx)))
-            .on_action(cx.listener(|this, _: &GotoClass, window, cx| this.open_goto(crate::ui::navigate::GotoKind::Class, window, cx)))
-            .on_action(cx.listener(|this, _: &GotoSymbol, window, cx| this.open_goto(crate::ui::navigate::GotoKind::Symbol, window, cx)))
+            .on_action(cx.listener(|this, _: &GotoFile, window, cx| this.open_search_everywhere(SeTab::Files, window, cx)))
+            .on_action(cx.listener(|this, _: &GotoClass, window, cx| this.open_search_everywhere(SeTab::Classes, window, cx)))
+            .on_action(cx.listener(|this, _: &GotoSymbol, window, cx| this.open_search_everywhere(SeTab::Symbols, window, cx)))
+            .on_action(cx.listener(|this, _: &SearchEverywhere, window, cx| this.open_search_everywhere(SeTab::All, window, cx)))
+            .on_action(cx.listener(|this, _: &FindAction, window, cx| this.open_search_everywhere(SeTab::Actions, window, cx)))
+            .on_action(cx.listener(|this, _: &RecentFiles, window, cx| this.recent_files_popup(window, cx)))
+            .on_action(cx.listener(|this, _: &FileStructure, window, cx| this.file_structure(window, cx)))
+            .on_action(cx.listener(|this, _: &GotoLine, window, cx| this.goto_line(window, cx)))
             .on_action(cx.listener(Self::navigate_back))
             .on_action(cx.listener(Self::navigate_forward))
             .on_action(cx.listener(Self::toggle_project))
             .on_action(cx.listener(Self::select_in_project))
             .on_action(cx.listener(Self::toggle_find))
+            .on_action(cx.listener(|this, _: &FindInPath, window, cx| this.open_find_popup(false, window, cx)))
+            .on_action(cx.listener(|this, _: &ReplaceInPath, window, cx| this.open_find_popup(true, window, cx)))
             .on_action(cx.listener(|_, _: &OpenSettings, window, cx| dialogs::settings(window, cx)))
             .on_action(cx.listener(|this, _: &NextDifference, _, cx| this.diff.update(cx, |d, cx| d.next_difference(cx))))
             .on_action(cx.listener(|this, _: &PreviousDifference, _, cx| this.diff.update(cx, |d, cx| d.previous_difference(cx))))
@@ -1768,5 +2144,26 @@ impl Render for Workspace {
                     .child(div().flex_1().h_full().child(main)),
             )
             .child(self.render_status_bar(cx))
+            .children(self.render_popups(cx))
     }
+}
+
+/// Folders with a build file, as IntelliJ's modules: Gradle, Cargo, Go, Dart,
+/// Swift, CMake, npm, Maven. "" is the project root.
+pub fn modules_of(files: &[String]) -> Vec<String> {
+    const BUILD_FILES: [&str; 12] = [
+        "build.gradle", "build.gradle.kts", "Cargo.toml", "go.mod", "pubspec.yaml", "Package.swift",
+        "CMakeLists.txt", "package.json", "pom.xml", "v.mod", "settings.gradle", "settings.gradle.kts",
+    ];
+    let mut modules: Vec<String> = files
+        .iter()
+        .filter_map(|f| {
+            let (dir, name) = f.rsplit_once('/').unwrap_or(("", f));
+            BUILD_FILES.contains(&name).then(|| dir.to_owned())
+        })
+        .collect();
+    modules.push(String::new());
+    modules.sort();
+    modules.dedup();
+    modules
 }

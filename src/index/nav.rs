@@ -288,36 +288,81 @@ pub struct SymbolMatch {
     pub score: i32,
 }
 
-/// IntelliJ-style matching: the query's characters in order, rewarding
-/// word starts (camel humps, after `_`) and a matching prefix. `None` when
-/// the query doesn't match.
+/// IntelliJ-style matching: the query's characters in order, each one
+/// either right after the previous match or at a word start (camel hump,
+/// after `_`, `.`, `/`, `-`, a digit run). A plain substring also matches,
+/// ranked lower. `None` when the query doesn't match.
 pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }
-    let q: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
-    let chars: Vec<char> = candidate.chars().collect();
-    let mut qi = 0;
-    let mut score = 0;
-    let mut last: Option<usize> = None;
-    for (i, &c) in chars.iter().enumerate() {
-        if qi == q.len() {
-            break;
-        }
-        if c.to_lowercase().next() == Some(q[qi]) {
-            let word_start = i == 0 || (c.is_uppercase() && !chars[i - 1].is_uppercase()) || matches!(chars[i - 1], '_' | '/' | '.' | '-');
-            score += if word_start { 10 } else { 1 };
-            if last == Some(i.wrapping_sub(1)) {
-                score += 5;
-            }
-            if i == qi {
-                score += 3;
-            }
-            last = Some(i);
-            qi += 1;
-        }
+    let q: Vec<char> = query.chars().filter(|c| !c.is_whitespace() && *c != '*').flat_map(|c| c.to_lowercase()).collect();
+    if q.is_empty() {
+        return Some(0);
     }
-    (qi == q.len()).then(|| score - (chars.len() as i32 - q.len() as i32).max(0) / 4)
+    let chars: Vec<char> = candidate.chars().collect();
+    let lower: Vec<char> = chars.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+    let starts: Vec<bool> = (0..chars.len())
+        .map(|i| {
+            i == 0
+                || (chars[i].is_uppercase() && !chars[i - 1].is_uppercase())
+                || (chars[i].is_alphanumeric() && !chars[i - 1].is_alphanumeric())
+                || (chars[i].is_ascii_digit() != chars[i - 1].is_ascii_digit() && chars[i].is_alphanumeric())
+        })
+        .collect();
+    // Depth-first over match positions; queries are short.
+    fn walk(q: &[char], qi: usize, lower: &[char], starts: &[bool], from: usize, prev: Option<usize>, budget: &mut u32) -> Option<i32> {
+        if qi == q.len() {
+            return Some(0);
+        }
+        let mut best: Option<i32> = None;
+        for i in from..lower.len() {
+            if *budget == 0 {
+                break;
+            }
+            if lower[i] != q[qi] {
+                continue;
+            }
+            let contiguous = prev == Some(i.wrapping_sub(1));
+            if !contiguous && !starts[i] {
+                continue;
+            }
+            *budget -= 1;
+            let here = if contiguous { 6 } else { 10 } + if i == qi { 3 } else { 0 };
+            if let Some(rest) = walk(q, qi + 1, lower, starts, i + 1, Some(i), budget) {
+                let total = here + rest;
+                if best.is_none_or(|b| total > b) {
+                    best = Some(total);
+                }
+            }
+        }
+        best
+    }
+    let mut budget = 2000;
+    let hump = walk(&q, 0, &lower, &starts, 0, None, &mut budget);
+    let needle: String = q.iter().collect();
+    let hay: String = lower.iter().collect();
+    let substring = hay.find(&needle).map(|_| q.len() as i32 * 4);
+    let score = match (hump, substring) {
+        (Some(h), Some(s)) => h.max(s),
+        (Some(h), None) => h,
+        (None, Some(s)) => s,
+        (None, None) => return None,
+    };
+    let prefix = if hay.starts_with(&needle) { 15 } else { 0 };
+    Some(score + prefix - (chars.len() as i32 - q.len() as i32).max(0) / 4)
+}
+
+#[cfg(test)]
+#[test]
+fn intellij_matching() {
+    assert!(fuzzy_score("search", "NvAPI_SYS_GetDriverAndBranchVersion_t").is_none());
+    assert!(fuzzy_score("dap", "DiffApplier").is_some());
+    assert!(fuzzy_score("fiv", "FileIndexView").is_some());
+    assert!(fuzzy_score("fsv", "find_view.rs").is_none() || fuzzy_score("fv", "find_view.rs").is_some());
+    assert!(fuzzy_score("findv", "find_view.rs").is_some());
+    assert!(fuzzy_score("earch", "research").is_some());
+    assert!(fuzzy_score("Main", "MainActivity").unwrap() > fuzzy_score("Main", "DomainModel").unwrap_or(-100));
 }
 
 /// Go to Symbol (or Go to Class with `types_only`), best first.
@@ -339,6 +384,18 @@ pub fn search_symbols(index: &ProjectIndex, query: &str, types_only: bool, limit
     }
     out.sort_by(|a, b| b.score.cmp(&a.score).then(a.target.name.len().cmp(&b.target.name.len())).then(a.target.path.cmp(&b.target.path)));
     out.truncate(limit);
+    out
+}
+
+/// File Structure (Ctrl+F12): the file's symbols in source order.
+pub fn file_symbols(index: &ProjectIndex, path: &str) -> Vec<SymbolMatch> {
+    let Some(entry) = index.files.get(path) else { return Vec::new() };
+    let mut out: Vec<SymbolMatch> = entry
+        .symbols
+        .iter()
+        .map(|s| SymbolMatch { target: symbol_target(path, entry.lang, s), kind: s.kind, score: 0 })
+        .collect();
+    out.sort_by_key(|m| (m.target.line, m.target.col));
     out
 }
 

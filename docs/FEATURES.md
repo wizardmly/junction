@@ -222,11 +222,28 @@
 | Go to Declaration（Ctrl+B / Ctrl+点击 / F12） | M7 | ✅（顺序：桥接 → LSP → 索引；多个目标弹出选择列表；Ctrl 悬停下划线） |
 | Quick Documentation（悬停） | M7 | ✅（LSP hover，否则显示声明行与位置） |
 | Find Usages（Alt+F7） | M7 | ✅（Find 工具窗口，按类别 › 文件 › 行分组；索引 + git grep，LSP references 标记“verified”；桥接两侧都列出） |
-| Go to File / Class / Symbol（Ctrl+Shift+N / Ctrl+N / Ctrl+Alt+Shift+N） | M7 | ✅（模糊匹配，驼峰首字母） |
+| Go to File / Class / Symbol（Ctrl+Shift+N / Ctrl+N / Ctrl+Alt+Shift+N） | M7 | ✅（打开 Search Everywhere 对应标签，见第 12 节） |
 | Navigate Back / Forward（Ctrl+Alt+← / →） | M7 | ✅ |
 | Project 工具窗口（Alt+1）、Select in Project View（Alt+F1） | M7 | ✅（单子目录链折叠显示；Collapse All） |
 | 语言服务器 | M7 | ✅（clangd、rust-analyzer、gopls、jdtls、kotlin-lsp、sourcekit-lsp、dart、v-analyzer、typescript-language-server、pyright/pylsp；按最近的 Cargo.toml / go.mod / pubspec.yaml / settings.gradle 等子项目分别启动；打开文件即预热；服务器忙时 0.6 秒内退回索引结果） |
 | 设置 › Languages & Frameworks | M7 | ✅（总开关；每种语言可填自定义命令或 off，显示 Installed / Not found / Index only） |
+
+## 12. 搜索（M8）
+
+对齐 Android Studio / IntelliJ 的 Find 系列。
+
+| 功能 | 阶段 | 状态 |
+|---|---|---|
+| Find in Files（Ctrl+Shift+F） | M8 | ✅（浮动弹窗：Cc / W / .* 开关（Alt+C / W / X）；File mask 带常用掩码下拉，支持 `!` 排除；过滤器：Anywhere / In Comments / In String Literals / Except …；In Project / Module（含构建文件的目录）/ Directory（可递归、浏览）/ Scope（Project Files、Production、Test、Open Files、Current File、Recently Viewed、Recently Changed、Local Changes）；结果行高亮命中、右侧文件名和行号，下方只读预览；Enter 打开，Pin 后不关闭；选中文字或光标处单词自动填入；“N matches in M files”） |
+| Replace in Files（Ctrl+Shift+R） | M8 | ✅（替换框；Replace 替换当前行，Replace All 确认后全部替换；正则 `$1` 分组；替换后重建索引、刷新 Commit 列表、重载未修改的编辑器） |
+| Open in Find Window（Ctrl+Enter） | M8 | ✅（Find 工具窗口多标签；Found Occurrences › 目录 › 文件 › 行；Group by Directory、全部展开/折叠、上一处/下一处（Ctrl+Alt+↑/↓）、Exclude（Delete）、Rerun；替换标签有 Replace Selected / Replace All；“Open results in new tab”） |
+| Search Everywhere（双击 Shift） | M8 | 🟡（All / Classes / Files / Symbols / Actions / Text 六个标签，Tab 切换；All 每组最多 6 条带“… more”；`/` 列出标签命令；`File.kt:12:3` 跳到行列；Include non-project items（Files 包含被 git 忽略的文件），再按一次快捷键切换它；预览（Alt+P）；按语言 / 分组过滤；Open in Find Tool Window。双击 Shift 走 gpui 的单独修饰键绑定，Linux 测试环境（Xvfb）收不到修饰键事件，未能实测；Ctrl+N 等入口已实测） |
+| Find Action（Ctrl+Shift+A） | M8 | ✅（Git、Navigate、Window 三组命令，显示快捷键） |
+| 匹配规则 | M8 | ✅（IntelliJ 式：查询字符按顺序，每个字符要么紧接上一个命中，要么在词首（驼峰、`_`、`.`、`/`、`-` 之后）；子串也算命中但排在后面） |
+| 编辑器内 Find / Replace（Ctrl+F / Ctrl+R），Find Next / Previous（F3 / Shift+F3） | M8 | 🟡（用组件库自带的查找栏：大小写开关、替换、全部替换；F3 无查询时用光标处单词。暂无 W / 正则开关） |
+| Recent Files（Ctrl+E） | M8 | ✅（上一个文件排第一，Enter 即切回；可输入过滤） |
+| File Structure（Ctrl+F12） | M8 | ✅（当前文件的声明，按容器缩进，可过滤） |
+| Go to Line:Column（Ctrl+G） | M8 | ✅（`行[:列]`，记入 Back 历史） |
 
 ## 阶段
 
@@ -237,3 +254,4 @@
 - **M5 多仓库**：多根、Worktree、Submodule。
 - **M6 托管平台**：GitHub/GitLab Pull Requests。
 - **M7 代码索引**：多语言符号索引、跨语言桥接、LSP、Go to Declaration / Find Usages / Go to Symbol。
+- **M8 搜索**：Find / Replace in Files、Search Everywhere、Find Action、Recent Files、File Structure、Go to Line。
