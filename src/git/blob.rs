@@ -29,6 +29,7 @@ pub fn load(repository: &Repository, revisions: &Revisions) -> BinarySides {
                 None => work_tree(path),
             },
         ),
+        Revisions::Files { path, other } => (work_tree(path), std::fs::read(other).ok()),
     };
     BinarySides { old, new }
 }

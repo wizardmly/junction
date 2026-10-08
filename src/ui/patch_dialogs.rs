@@ -30,6 +30,8 @@ pub enum PatchSource {
     Commits { old: String, new: String, label: String },
     /// From the Commit tool window: local changes in these files.
     Local { paths: Vec<String> },
+    /// From the Changes tool window: these files between `old` and `new` (the working tree when `None`).
+    Between { old: String, new: Option<String>, paths: Vec<String> },
 }
 
 impl PatchSource {
@@ -37,6 +39,10 @@ impl PatchSource {
         match self {
             PatchSource::Commits { label, .. } => label.clone(),
             PatchSource::Local { .. } => "Local_Changes".into(),
+            PatchSource::Between { old, new, .. } => {
+                let short = |r: &str| r[..r.len().min(8)].to_owned();
+                format!("{}_{}", short(old), new.as_deref().map_or("local".to_owned(), short))
+            }
         }
     }
 }
@@ -45,6 +51,7 @@ fn build(repository: &crate::git::Repository, source: &PatchSource, reverse: boo
     match source {
         PatchSource::Commits { old, new, .. } => patch::between(repository, old, new, reverse),
         PatchSource::Local { paths } => patch::local_changes(repository, paths, reverse),
+        PatchSource::Between { old, new, paths } => patch::files_between(repository, old, new.as_deref(), paths, reverse),
     }
 }
 
@@ -118,6 +125,11 @@ pub fn create_patch(model: Entity<RepoModel>, source: PatchSource, window: &mut 
                     )
                     .child(div().text_xs().text_color(secondary).child(match &source {
                         PatchSource::Commits { .. } => "Unified diff of the selected commits, binary files included.".to_owned(),
+                        PatchSource::Between { paths, .. } => format!(
+                            "Unified diff of {} compared file{}, binary files included.",
+                            paths.len(),
+                            if paths.len() == 1 { "" } else { "s" }
+                        ),
                         PatchSource::Local { paths } => format!(
                             "Unified diff of local changes in {} file{}, unversioned files included.",
                             paths.len(),

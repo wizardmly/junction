@@ -191,17 +191,25 @@ impl Workspace {
                 weak.update(cx, |this, cx| this.on_commit(&CommitChanges, window, cx)).ok();
             }));
         });
+        // Right-click menus in the Project and Commit tool windows act through the workspace.
+        let file_actions: crate::ui::file_menus::FileActions = {
+            let weak = cx.entity().downgrade();
+            Rc::new(move |action, window, cx| {
+                weak.update(cx, |this, cx| this.file_action(action, window, cx)).ok();
+            })
+        };
+        project.update(cx, |p, _| p.set_menu(model.clone(), file_actions.clone()));
+        commit.update(cx, |c, _| c.set_file_actions(file_actions));
         let subscriptions = vec![
             cx.subscribe_in(&log, window, |this, _, event: &LogEvent, window, cx| match event {
                 LogEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
                 LogEvent::Annotate { path, revision } => this.annotate(path.clone(), revision.clone(), cx),
                 LogEvent::OpenFile { path, revision } => this.open_file(path.clone(), revision.clone(), window, cx),
             }),
-            cx.subscribe_in(&changes, window, |this, _, event: &crate::ui::changes_view::ChangesEvent, window, cx| {
+            cx.subscribe_in(&changes, window, |this, _, event: &crate::ui::changes_view::ChangesEvent, _window, cx| {
                 use crate::ui::changes_view::ChangesEvent;
                 match event {
                     ChangesEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
-                    ChangesEvent::OpenFile(path) => this.open_file(path.clone(), None, window, cx),
                     ChangesEvent::Closed | ChangesEvent::Hide => {
                         this.show_changes = false;
                         cx.notify();
@@ -212,19 +220,7 @@ impl Workspace {
                 CommitEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
                 CommitEvent::OpenPush => dialogs::push(this.model.clone(), window, cx),
                 CommitEvent::OpenMerge(conflict) => this.open_merge(conflict.clone(), window, cx),
-                CommitEvent::Annotate(path) => this.annotate(path.clone(), None, cx),
-                CommitEvent::ShowHistory(path) => this.show_history(path.clone(), cx),
                 CommitEvent::EditSource(path) => this.open_file(path.clone(), None, window, cx),
-                CommitEvent::CompareWith(path) => {
-                    let workspace = cx.entity();
-                    dialogs::compare_file_with(
-                        this.model.clone(),
-                        path.clone(),
-                        Rc::new(move |source, _, cx| workspace.update(cx, |this, cx| this.open_diff(source, cx))),
-                        window,
-                        cx,
-                    );
-                }
             }),
             cx.subscribe_in(&prs, window, |this, _, event: &crate::ui::pull_requests::PrEvent, window, cx| match event {
                 crate::ui::pull_requests::PrEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
@@ -801,6 +797,61 @@ impl Workspace {
             self.bottom_tab = BottomTab::Find;
         }
         cx.notify();
+    }
+
+    fn file_action(&mut self, action: crate::ui::file_menus::FileAction, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::diff_view::DiffSource;
+        use crate::ui::file_menus::FileAction;
+        match action {
+            FileAction::ShowDiff(path) => {
+                let unversioned = self.model.read(cx).status().entries.iter().any(|e| e.path == path && e.kind == crate::git::StatusKind::Unversioned);
+                self.open_diff(DiffSource::WorkingTree { path, unversioned }, cx)
+            }
+            FileAction::OpenFile(path) => self.open_file(path, None, window, cx),
+            FileAction::Annotate(path) => self.annotate(path, None, cx),
+            FileAction::ShowHistory(path) => self.show_history(path, cx),
+            FileAction::CompareWithRevision(path) => {
+                let workspace = cx.entity();
+                dialogs::compare_file_with(
+                    self.model.clone(),
+                    path,
+                    Rc::new(move |source, _, cx| workspace.update(cx, |this, cx| this.open_diff(source, cx))),
+                    window,
+                    cx,
+                );
+            }
+            FileAction::CompareWithFile(path) => {
+                let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Compare With".into()) });
+                cx.spawn(async move |this, cx| {
+                    let Ok(Ok(Some(picked))) = paths.await else { return };
+                    let Some(other) = picked.into_iter().next() else { return };
+                    this.update(cx, |this, cx| this.open_diff(DiffSource::Files { path, other }, cx)).ok();
+                })
+                .detach();
+            }
+            FileAction::CommitFiles(paths) => {
+                self.show_commit = true;
+                self.show_prs = false;
+                self.show_changes = false;
+                self.show_project = false;
+                self.left_tab = LeftTab::Commit;
+                self.commit.update(cx, |commit, cx| commit.commit_only(paths, window, cx));
+                cx.notify();
+            }
+            FileAction::Branches => self.open_branches(window, cx),
+            FileAction::Unstash => {
+                self.show_commit = true;
+                self.show_prs = false;
+                self.show_changes = false;
+                self.show_project = false;
+                self.left_tab = LeftTab::Stash;
+                cx.notify();
+            }
+            FileAction::FilesChanged => {
+                self.code_index.update(cx, |index, cx| index.refresh(cx));
+                self.model.update(cx, |m, cx| m.reload(cx));
+            }
+        }
     }
 
     fn open_diff(&mut self, source: crate::ui::diff_view::DiffSource, cx: &mut Context<Self>) {

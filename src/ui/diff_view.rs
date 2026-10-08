@@ -48,6 +48,8 @@ pub enum DiffSource {
     Unstaged { path: String },
     /// Two revisions, or a revision against the working tree (`new: None`).
     Between { old: String, new: Option<String>, path: String, old_path: Option<String> },
+    /// Compare With…: a file against another file on disk.
+    Files { path: String, other: std::path::PathBuf },
 }
 
 impl DiffSource {
@@ -57,7 +59,8 @@ impl DiffSource {
             | DiffSource::WorkingTree { path, .. }
             | DiffSource::Staged { path }
             | DiffSource::Unstaged { path }
-            | DiffSource::Between { path, .. } => path,
+            | DiffSource::Between { path, .. }
+            | DiffSource::Files { path, .. } => path,
         }
     }
 
@@ -68,6 +71,7 @@ impl DiffSource {
             DiffSource::Staged { path } => Revisions::Staged { path },
             DiffSource::Unstaged { path } => Revisions::Unstaged { path },
             DiffSource::Between { old, new, path, old_path } => Revisions::Between { old, new, path, old_path },
+            DiffSource::Files { path, other } => Revisions::Files { path, other },
         }
     }
 }

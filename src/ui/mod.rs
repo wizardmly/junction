@@ -11,6 +11,7 @@ pub mod diff_view;
 pub mod text_buffer;
 pub mod text_panes;
 pub mod file_editor;
+pub mod file_menus;
 pub mod graph_paint;
 pub mod log_view;
 pub mod mappings_dialog;

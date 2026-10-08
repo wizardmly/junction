@@ -77,7 +77,7 @@ gpui_kit::assets::icon_assets!(
         ArrowRight,
         List,
         WandSparkles,
-        Link2
+        Link2, Scissors, Clipboard, Columns2, TextAlignStart, EllipsisVertical, ArrowLeftRight, Ban
     ]
 );
 

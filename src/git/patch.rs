@@ -64,6 +64,19 @@ pub fn between(repository: &Repository, old: &str, new: &str, reverse: bool) -> 
     repository.run(args)
 }
 
+/// Create Patch… from a comparison: `paths` between `old` and `new`, or the working tree.
+pub fn files_between(repository: &Repository, old: &str, new: Option<&str>, paths: &[String], reverse: bool) -> Result<String> {
+    let mut args: Vec<&str> = vec!["diff", "--binary", "--full-index", "--no-color", "--no-ext-diff"];
+    if reverse {
+        args.push("-R");
+    }
+    args.push(old);
+    args.extend(new);
+    args.push("--");
+    args.extend(paths.iter().map(String::as_str));
+    repository.run(args)
+}
+
 /// The tree's parent for "Create Patch" over the oldest of several commits.
 pub fn parent_of(repository: &Repository, commit: &str) -> String {
     repository

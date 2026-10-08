@@ -15,7 +15,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
+    App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
@@ -24,12 +24,12 @@ use crate::model::RepoModel;
 use crate::theme::ActivePalette as _;
 use crate::ui::common::{self, DIR_PREFIX, FILE_PREFIX, ROW_HEIGHT, tool_button};
 use crate::ui::diff_view::DiffSource;
+use crate::ui::file_menus::entry;
 
 const ROOT_ID: &str = "r:";
 
 pub enum ChangesEvent {
     OpenDiff(DiffSource),
-    OpenFile(String),
     /// The last tab was closed: the tool window goes away.
     Closed,
     Hide,
@@ -179,8 +179,12 @@ impl ChangesView {
 
     /// Files under the selected node: one file, a directory's, or all.
     fn selected_files(&self, cx: &App) -> Vec<String> {
-        let Some(tab) = self.tabs.get(self.active) else { return Vec::new() };
         let Some(id) = self.tree.read(cx).selected_item().map(|item| item.id.to_string()) else { return Vec::new() };
+        self.files_of(&id)
+    }
+
+    fn files_of(&self, id: &str) -> Vec<String> {
+        let Some(tab) = self.tabs.get(self.active) else { return Vec::new() };
         if let Some(path) = id.strip_prefix(FILE_PREFIX) {
             return vec![path.to_owned()];
         }
@@ -228,11 +232,15 @@ impl ChangesView {
     /// Get: replaces the selected local files with their version in the
     /// compared revision; files the revision lacks are deleted.
     fn get_from_revision(&mut self, cx: &mut Context<Self>) {
+        let files = self.selected_files(cx);
+        self.get_files(files, cx);
+    }
+
+    fn get_files(&mut self, files: Vec<String>, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(self.active) else { return };
         if tab.new.is_some() {
             return;
         }
-        let files = self.selected_files(cx);
         if files.is_empty() {
             return;
         }
@@ -268,26 +276,34 @@ impl ChangesView {
         .detach();
     }
 
-    fn file_menu(menu: PopupMenu, entity: &Entity<Self>, path: &str, local: bool) -> PopupMenu {
-        let (e_diff, e_source, e_get) = (entity.clone(), entity.clone(), entity.clone());
-        let (p_diff, p_source, p_copy) = (path.to_owned(), path.to_owned(), path.to_owned());
-        menu.item(PopupMenuItem::new("Show Diff").on_click(move |_, _, cx| {
-            e_diff.update(cx, |this, cx| {
-                if let Some(source) = this.diff_source(&format!("{FILE_PREFIX}{p_diff}")) {
-                    cx.emit(ChangesEvent::OpenDiff(source));
-                }
-            })
+    /// The menu of a file or folder node: Show Diff, Show Diff in a New Tab, Create Patch…, Get.
+    fn node_menu(menu: PopupMenu, entity: &Entity<Self>, id: &str, cx: &App) -> PopupMenu {
+        let this = entity.read(cx);
+        let Some(tab) = this.tabs.get(this.active) else { return menu };
+        let files = this.files_of(id);
+        let source = files.first().and_then(|f| this.diff_source(&format!("{FILE_PREFIX}{f}")));
+        let local = tab.new.is_none();
+        let patch = crate::ui::patch_dialogs::PatchSource::Between { old: tab.old.clone(), new: tab.new.clone(), paths: files.clone() };
+        let model = this.model.clone();
+        let (e_diff, e_tab, e_get) = (entity.clone(), entity.clone(), entity.clone());
+        let (s_diff, s_tab) = (source.clone(), source.clone());
+        menu.item(entry("Show Diff", "Ctrl+D").icon(Icon::new(IconName::GitCompare)).disabled(source.is_none()).on_click(move |_, _, cx| {
+            if let Some(source) = s_diff.clone() {
+                e_diff.update(cx, |_, cx| cx.emit(ChangesEvent::OpenDiff(source)))
+            }
         }))
-        .item(PopupMenuItem::new("Jump to Source").on_click(move |_, _, cx| {
-            let path = p_source.clone();
-            e_source.update(cx, |_, cx| cx.emit(ChangesEvent::OpenFile(path)))
+        .item(entry("Show Diff in a New Tab", "").icon(Icon::new(IconName::GitCompare)).disabled(source.is_none()).on_click(move |_, _, cx| {
+            if let Some(source) = s_tab.clone() {
+                e_tab.update(cx, |_, cx| cx.emit(ChangesEvent::OpenDiff(source)))
+            }
         }))
-        .separator()
-        .item(PopupMenuItem::new("Get from Revision").disabled(!local).on_click(move |_, _, cx| {
-            e_get.update(cx, |this, cx| this.get_from_revision(cx))
+        .item(entry("Create Patch…", "").icon(Icon::new(IconName::Plus)).disabled(files.is_empty()).on_click(move |_, window, cx| {
+            crate::ui::patch_dialogs::create_patch(model.clone(), patch.clone(), window, cx)
         }))
-        .separator()
-        .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(p_copy.clone()))))
+        .item(entry("Get", "").icon(Icon::new(IconName::Download)).disabled(!local || files.is_empty()).on_click(move |_, _, cx| {
+            let files = files.clone();
+            e_get.update(cx, |this, cx| this.get_files(files, cx))
+        }))
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -398,7 +414,6 @@ impl Render for ChangesView {
         let entity = cx.entity();
         let kinds = self.kinds.clone();
         let counts = self.counts.clone();
-        let local = self.tabs.get(self.active).is_some_and(|t| t.new.is_none());
         let tab = self.tabs.get(self.active);
         let message = match tab {
             Some(Comparison { error: Some(error), .. }) => Some((error.clone(), palette.status_conflict)),
@@ -423,7 +438,7 @@ impl Render for ChangesView {
                         let color = kind.as_ref().map_or(palette.text, |(k, _)| common::change_color(*k, palette));
                         let is_root = id == ROOT_ID;
                         let (open_entity, open_path) = (entity.clone(), path.clone());
-                        let (menu_entity, menu_path) = (entity.clone(), path.clone());
+                        let (menu_entity, menu_id) = (entity.clone(), id.clone());
                         let n = counts.get(&item.id).copied().unwrap_or(0);
                         ListItem::new(ix)
                             .py_0()
@@ -472,10 +487,7 @@ impl Render for ChangesView {
                                             div().text_xs().text_color(palette.text_secondary).child(format!("{n} {}", if n == 1 { "file" } else { "files" })),
                                         )
                                     })
-                                    .context_menu(move |menu, _, _| match &menu_path {
-                                        Some(path) => Self::file_menu(menu, &menu_entity, path, local),
-                                        None => menu,
-                                    }),
+                                    .context_menu(move |menu, _, cx| Self::node_menu(menu, &menu_entity, &menu_id, cx)),
                             )
                     })
                     .size_full(),

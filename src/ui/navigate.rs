@@ -9,6 +9,7 @@ use std::rc::Rc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     WindowExt as _, h_flex,
+    menu::ContextMenuExt as _,
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement as _,
     v_flex,
@@ -394,6 +395,9 @@ pub struct ProjectView {
     /// Flattened visible rows: (depth, name, path, is_dir).
     rows: Rc<Vec<(usize, String, String, bool)>>,
     files: Rc<Vec<String>>,
+    /// The right-click menu's repository and workspace actions, once set.
+    menu: Option<(Entity<crate::model::RepoModel>, crate::ui::file_menus::FileActions)>,
+    clipboard: crate::ui::file_menus::FileClipboard,
     _subscription: Subscription,
 }
 
@@ -408,9 +412,13 @@ struct Dir {
 impl ProjectView {
     pub fn new(index: Entity<CodeIndex>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.subscribe(&index, |this, _, _: &IndexEvent, cx| this.reload(cx));
-        let mut this = Self { index, expanded: HashSet::new(), selected: None, rows: Rc::default(), files: Rc::default(), _subscription: subscription };
+        let mut this = Self { index, expanded: HashSet::new(), selected: None, rows: Rc::default(), files: Rc::default(), menu: None, clipboard: Rc::default(), _subscription: subscription };
         this.reload(cx);
         this
+    }
+
+    pub fn set_menu(&mut self, model: Entity<crate::model::RepoModel>, actions: crate::ui::file_menus::FileActions) {
+        self.menu = Some((model, actions));
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
@@ -506,6 +514,10 @@ impl Render for ProjectView {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
             .into();
+        let menu = self.menu.clone();
+        let clipboard = self.clipboard.clone();
+        let all_files = self.files.clone();
+        let root = self.index.read(cx).root().map(|r| r.to_path_buf());
         let list = uniform_list(
             "project-files",
             rows.len(),
@@ -537,6 +549,32 @@ impl Render for ProjectView {
                             )
                             .child(div().whitespace_nowrap().child(name.clone()))
                             .on_click(cx.listener(move |this, _, _, cx| this.click(ix, cx)))
+                            .on_mouse_down(gpui_kit::MouseButton::Right, {
+                                let path = path.clone();
+                                cx.listener(move |this, _, _, cx| {
+                                    this.selected = Some(path.clone());
+                                    cx.notify();
+                                })
+                            })
+                            .context_menu({
+                                let (menu, clipboard, all_files, root) = (menu.clone(), clipboard.clone(), all_files.clone(), root.clone());
+                                let (path, is_dir) = (path.clone(), *is_dir);
+                                move |m, window, cx| {
+                                    let (Some((model, actions)), Some(root)) = (menu.clone(), root.clone()) else { return m };
+                                    let prefix = format!("{path}/");
+                                    let files = if is_dir { all_files.iter().filter(|f| f.starts_with(&prefix)).cloned().collect() } else { Vec::new() };
+                                    let target = crate::ui::file_menus::ProjectTarget {
+                                        model,
+                                        root,
+                                        path: path.clone(),
+                                        is_dir,
+                                        files,
+                                        actions,
+                                        clipboard: clipboard.clone(),
+                                    };
+                                    crate::ui::file_menus::project_menu(m, target, window, cx)
+                                }
+                            })
                             .into_any_element()
                     })
                     .collect()

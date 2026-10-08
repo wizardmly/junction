@@ -517,6 +517,8 @@ pub enum Revisions {
     Unstaged { path: String },
     /// Any two revisions, or a revision against the working tree (`new: None`).
     Between { old: String, new: Option<String>, path: String, old_path: Option<String> },
+    /// Compare With…: a working tree file against any other file on disk.
+    Files { path: String, other: std::path::PathBuf },
 }
 
 /// Loads both versions; a missing side (added/deleted file) is empty.
@@ -560,6 +562,10 @@ pub fn load_versions(repository: &Repository, revisions: &Revisions) -> Result<(
                 None => (read_work_tree(repository, path), "Current version".to_owned()),
             };
             (old_text, new_text, revision_title(old), new_title)
+        }
+        Revisions::Files { path, other } => {
+            let other_text = std::fs::read(other).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+            (read_work_tree(repository, path), other_text, path.clone(), other.to_string_lossy().into_owned())
         }
     })
 }

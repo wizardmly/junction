@@ -35,17 +35,14 @@ use crate::theme::ActivePalette as _;
 use crate::ui::common::{self, FILE_PREFIX, ROW_HEIGHT, tool_button};
 use crate::ui::diff_view::DiffSource;
 
+mod menu;
+
 pub enum CommitEvent {
     OpenDiff(DiffSource),
     /// "Commit and Push…" committed; show the Push dialog next.
     OpenPush,
     /// A conflicted file was picked: open the merge tool.
     OpenMerge(Conflict),
-    /// Annotate the work tree version of a file.
-    Annotate(String),
-    ShowHistory(String),
-    /// "Compare with Branch / Revision…" for a file.
-    CompareWith(String),
     /// Edit Source (F4).
     EditSource(String),
 }
@@ -96,6 +93,8 @@ pub struct CommitView {
     /// unchecked ones stay unchecked across refreshes.
     known: HashSet<String>,
     kinds: HashMap<String, StatusKind>,
+    /// The workspace's handler for menu actions (Git submenu, Delete, …).
+    file_actions: Option<crate::ui::file_menus::FileActions>,
     counts: HashMap<SharedString, usize>,
     amend: bool,
     push_after_commit: bool,
@@ -167,6 +166,7 @@ impl CommitView {
             included: HashSet::new(),
             known: HashSet::new(),
             kinds: HashMap::new(),
+            file_actions: None,
             counts: HashMap::new(),
             amend: false,
             push_after_commit: false,
@@ -296,17 +296,6 @@ impl CommitView {
         self.groups.iter().find(|g| g.id == id || id.starts_with(g.scope.as_str()))
     }
 
-    /// Paths under a tree node (a file, a directory, or a whole group).
-    /// Files for Shelve / Create Patch: the checked files (the selected node
-    /// in staging mode), or `file` when it isn't among them.
-    /// The unversioned files an Add to VCS / Ignore acts on: the checked
-    /// unversioned files when the clicked one is checked, else just it.
-    fn unversioned_action_paths(&self, file: &str) -> Vec<String> {
-        let unversioned = |p: &String| self.kinds.get(p) == Some(&StatusKind::Unversioned);
-        let paths: Vec<String> = self.action_paths(Some(file)).into_iter().filter(unversioned).collect();
-        if paths.is_empty() { vec![file.to_owned()] } else { paths }
-    }
-
     fn action_paths(&self, file: Option<&str>) -> Vec<String> {
         if let Some(file) = file {
             if !self.included.contains(file) {
@@ -348,12 +337,6 @@ impl CommitView {
         f(&mut self.changelists);
         self.save_changelists(cx);
         self.rebuild(cx);
-    }
-
-    /// Move to Another Changelist (F6) for the clicked file.
-    fn move_to_changelist(&mut self, path: &str, target: &str, cx: &mut Context<Self>) {
-        let paths = vec![path.to_owned()];
-        self.update_changelists(cx, |lists| lists.move_files(&paths, target));
     }
 
     /// New Changelist… (optionally moving `path` into it), or Edit Changelist… when `edit` names one.
@@ -748,29 +731,6 @@ impl CommitView {
         });
         rollback_dialog::rollback(self.model.clone(), files.collect(), from, window, cx);
     }
-
-    /// Add to VCS (Ctrl+Alt+A) for unversioned files.
-    fn add_to_vcs(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
-        self.model.update(cx, |m, cx| {
-            m.run_operation("Add to VCS", move |repo| {
-                let mut args = vec!["add".to_owned(), "--".into()];
-                args.extend(paths.iter().cloned());
-                repo.run(&args)?;
-                Ok(format!("Added {} file{}", paths.len(), if paths.len() == 1 { "" } else { "s" }))
-            }, cx)
-        });
-    }
-
-    /// Add to .gitignore (the root one) or to .git/info/exclude.
-    fn ignore(&mut self, paths: Vec<String>, exclude: bool, cx: &mut Context<Self>) {
-        self.model.update(cx, |m, cx| {
-            m.run_operation("Ignore", move |repo| {
-                let file = if exclude { repo.git_dir().join("info").join("exclude") } else { repo.root().join(".gitignore") };
-                crate::git::status::append_ignore(&file, &paths)?;
-                Ok(format!("Ignored {} file{}", paths.len(), if paths.len() == 1 { "" } else { "s" }))
-            }, cx)
-        });
-    }
 }
 
 /// The context menu of a changelist node.
@@ -935,7 +895,6 @@ impl Render for CommitView {
                         let is_group = group_ids.iter().any(|g| g.as_str() == id.as_ref());
                         let group_list = changelist_of.get(id.as_ref()).cloned();
                         let is_active = group_list.as_deref() == Some(active_list.as_str()) && list_names.len() > 1;
-                        let move_targets: Vec<String> = list_names.clone();
                         let in_staged = id.starts_with(STAGED_SCOPE) || id.as_ref() == "grp:staged";
                         let in_conflicts = id.starts_with(CONFLICTS_SCOPE) || id.as_ref() == "grp:conflicts";
                         let toggle_entity = entity.clone();
@@ -944,7 +903,6 @@ impl Render for CommitView {
                         let stage_id = id.clone();
                         let n = counts.get(&id).copied().unwrap_or(0);
                         let (menu_entity, menu_id, menu_file) = (entity.clone(), id.clone(), file.clone());
-                        let menu_kind = kinds.get(id.as_ref()).copied();
                         ListItem::new(ix).py_0().px_1().h(px(ROW_HEIGHT)).child(
                             h_flex()
                                 .w_full()
@@ -1023,141 +981,8 @@ impl Render for CommitView {
                                         ),
                                     )
                                 })
-                                .context_menu(move |menu, _, cx| {
-                                    if menu_id.starts_with(IGNORED_SCOPE) {
-                                        return menu;
-                                    }
-                                    if let Some(list) = group_list.clone() {
-                                        return changelist_menu(menu, &menu_entity, list);
-                                    }
-                                    let Some(path) = menu_file.clone() else { return menu };
-                                    let in_changelist = menu_id.starts_with('c');
-                                    let menu = if in_changelist && !staging {
-                                        let mut menu = menu;
-                                        let current = menu_entity.read(cx).changelists.list_of(&path).to_owned();
-                                        for target in move_targets.iter().filter(|t| **t != current) {
-                                            let (entity, path, target) = (menu_entity.clone(), path.clone(), target.clone());
-                                            menu = menu.item(PopupMenuItem::new(format!("Move to \u{201c}{target}\u{201d}")).on_click(move |_, _, cx| {
-                                                let (path, target) = (path.clone(), target.clone());
-                                                entity.update(cx, |this, cx| this.move_to_changelist(&path, &target, cx))
-                                            }));
-                                        }
-                                        let (entity, path) = (menu_entity.clone(), path.clone());
-                                        menu.item(PopupMenuItem::new("Move to New Changelist…").on_click(move |_, window, cx| {
-                                            let path = path.clone();
-                                            entity.update(cx, |this, cx| this.new_changelist(Some(path), window, cx))
-                                        }))
-                                        .separator()
-                                    } else {
-                                        menu
-                                    };
-                                    let tracked = menu_kind != Some(StatusKind::Unversioned) && menu_kind != Some(StatusKind::Added);
-                                    let (e_diff, e_blame, e_history) = (menu_entity.clone(), menu_entity.clone(), menu_entity.clone());
-                                    let (i_diff, p_blame, p_history, p_copy) = (menu_id.clone(), path.clone(), path.clone(), path.clone());
-                                    let (e_compare, p_compare) = (menu_entity.clone(), path.clone());
-                                    let (e_edit, p_edit) = (menu_entity.clone(), path.clone());
-                                    let deleted = menu_kind == Some(StatusKind::Deleted);
-                                    let unversioned = menu_kind == Some(StatusKind::Unversioned);
-                                    let menu = if unversioned {
-                                        let (e_add, e_ign, e_exc) = (menu_entity.clone(), menu_entity.clone(), menu_entity.clone());
-                                        let (p_add, p_ign, p_exc) = (path.clone(), path.clone(), path.clone());
-                                        menu.item(PopupMenuItem::new("Add to VCS").on_click(move |_, _, cx| {
-                                            e_add.update(cx, |this, cx| {
-                                                let paths = this.unversioned_action_paths(&p_add);
-                                                this.add_to_vcs(paths, cx)
-                                            })
-                                        }))
-                                        .item(PopupMenuItem::new("Add to .gitignore").on_click(move |_, _, cx| {
-                                            e_ign.update(cx, |this, cx| {
-                                                let paths = this.unversioned_action_paths(&p_ign);
-                                                this.ignore(paths, false, cx)
-                                            })
-                                        }))
-                                        .item(PopupMenuItem::new("Add to .git/info/exclude").on_click(move |_, _, cx| {
-                                            e_exc.update(cx, |this, cx| {
-                                                let paths = this.unversioned_action_paths(&p_exc);
-                                                this.ignore(paths, true, cx)
-                                            })
-                                        }))
-                                        .separator()
-                                    } else {
-                                        let (e_rb, p_rb) = (menu_entity.clone(), path.clone());
-                                        menu.item(PopupMenuItem::new("Rollback…").on_click(move |_, window, cx| {
-                                            e_rb.update(cx, |this, cx| this.rollback(Some(&p_rb), window, cx))
-                                        }))
-                                        .separator()
-                                    };
-                                    menu.item(PopupMenuItem::new("Edit Source").disabled(deleted).on_click(move |_, _, cx| {
-                                        e_edit.update(cx, |_, cx| cx.emit(CommitEvent::EditSource(p_edit.clone())))
-                                    }))
-                                    .item(PopupMenuItem::new("Show Diff").on_click(move |_, _, cx| {
-                                        e_diff.update(cx, |this, cx| {
-                                            if let Some(source) = this.diff_source(&i_diff) {
-                                                cx.emit(CommitEvent::OpenDiff(source));
-                                            }
-                                        })
-                                    }))
-                                    .separator()
-                                    .item(PopupMenuItem::new("Annotate with Git Blame").disabled(!tracked).on_click(move |_, _, cx| {
-                                        e_blame.update(cx, |_, cx| cx.emit(CommitEvent::Annotate(p_blame.clone())))
-                                    }))
-                                    .item(PopupMenuItem::new("Show History").disabled(!tracked).on_click(move |_, _, cx| {
-                                        e_history.update(cx, |_, cx| cx.emit(CommitEvent::ShowHistory(p_history.clone())))
-                                    }))
-                                    .item(PopupMenuItem::new("Compare with Branch or Revision…").disabled(!tracked).on_click(move |_, _, cx| {
-                                        e_compare.update(cx, |_, cx| cx.emit(CommitEvent::CompareWith(p_compare.clone())))
-                                    }))
-                                    .separator()
-                                    .item(PopupMenuItem::new("Shelve Changes…").on_click({
-                                        let (entity, path) = (menu_entity.clone(), path.clone());
-                                        move |_, window, cx| {
-                                            let (model, paths) = entity.read_with(cx, |this, _| (this.model.clone(), this.action_paths(Some(&path))));
-                                            let name = crate::ui::patch_dialogs::default_shelf_name(&paths);
-                                            crate::ui::patch_dialogs::shelve(model, paths, name, window, cx)
-                                        }
-                                    }))
-                                    .item(PopupMenuItem::new("Shelve Silently").on_click({
-                                        let (entity, path) = (menu_entity.clone(), path.clone());
-                                        move |_, _, cx| {
-                                            let (model, paths) = entity.read_with(cx, |this, _| (this.model.clone(), this.action_paths(Some(&path))));
-                                            crate::ui::patch_dialogs::shelve_silently(model, paths, cx)
-                                        }
-                                    }))
-                                    .item(PopupMenuItem::new("Create Patch…").on_click({
-                                        let (entity, path) = (menu_entity.clone(), path.clone());
-                                        move |_, window, cx| {
-                                            let (model, paths) = entity.read_with(cx, |this, _| (this.model.clone(), this.action_paths(Some(&path))));
-                                            let source = crate::ui::patch_dialogs::PatchSource::Local { paths };
-                                            crate::ui::patch_dialogs::create_patch(model, source, window, cx)
-                                        }
-                                    }))
-                                    .item(PopupMenuItem::new("Copy as Patch to Clipboard").on_click({
-                                        let (entity, path) = (menu_entity.clone(), path.clone());
-                                        move |_, _, cx| {
-                                            let (model, paths) = entity.read_with(cx, |this, _| (this.model.clone(), this.action_paths(Some(&path))));
-                                            let source = crate::ui::patch_dialogs::PatchSource::Local { paths };
-                                            crate::ui::patch_dialogs::copy_patch(model, source, cx)
-                                        }
-                                    }))
-                                    .item(PopupMenuItem::new("Create Gist…").on_click({
-                                        let (entity, path) = (menu_entity.clone(), path.clone());
-                                        move |_, window, cx| {
-                                            let (model, paths) = entity.read_with(cx, |this, _| (this.model.clone(), this.action_paths(Some(&path))));
-                                            let Some(root) = model.read(cx).repository().map(|r| r.root().to_path_buf()) else { return };
-                                            let files: Vec<(String, String)> = paths
-                                                .iter()
-                                                .filter_map(|p| {
-                                                    let content = std::fs::read_to_string(root.join(p)).ok()?;
-                                                    Some((p.rsplit('/').next().unwrap_or(p).to_owned(), content))
-                                                })
-                                                .collect();
-                                            crate::ui::github_dialogs::create_gist(model, files, window, cx)
-                                        }
-                                    }))
-                                    .separator()
-                                    .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {
-                                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(p_copy.clone()))
-                                    }))
+                                .context_menu(move |menu, window, cx| {
+                                    menu::commit_menu(menu, &menu_entity, &menu_id, menu_file.clone(), group_list.clone(), window, cx)
                                 }),
                         )
                     })
