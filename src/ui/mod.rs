@@ -17,6 +17,7 @@ pub mod find_bar;
 pub mod find_popup;
 pub mod find_view;
 pub mod search_everywhere;
+pub mod selectable_text;
 pub mod graph_paint;
 pub mod log_view;
 pub mod mappings_dialog;

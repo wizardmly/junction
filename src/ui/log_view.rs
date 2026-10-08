@@ -33,6 +33,7 @@ use crate::theme::ActivePalette as _;
 use crate::ui::common::{self, DIR_PREFIX, FILE_PREFIX, row_height, tool_button};
 use crate::ui::diff_view::DiffSource;
 use crate::ui::dialogs;
+use crate::ui::selectable_text::{SelectableText, selectable_text};
 use crate::ui::rebase_dialog;
 use crate::ui::graph_paint::graph_canvas;
 
@@ -1592,22 +1593,23 @@ impl LogView {
                     v_flex()
                         .gap_2()
                         // The text is selectable and copies (Ctrl+C), as IntelliJ's details pane.
-                        .child(message_text(&d.hash, &d.message, &entity_for_links))
+                        .child(message_text(&d.message, palette.link, &entity_for_links))
                         .child(
                             h_flex()
                                 .gap_1()
                                 .flex_wrap()
-                                .child(selectable("commit-hash", &d.hash[..d.hash.len().min(10)], palette.link, Some(cx.theme().mono_font_family.clone())))
+                                .child(selectable("commit-hash", 1, &d.hash[..d.hash.len().min(10)], palette.link).font_family(Some(cx.theme().mono_font_family.clone())))
                                 .child(selectable(
                                     "commit-author",
+                                    2,
                                     &format!("{} <{}> on {}", d.author_name, d.author_email, common::format_full_date(d.author_time)),
                                     palette.text_secondary,
-                                    None,
                                 )),
                         )
                         .when(d.committer_email != d.author_email || d.committer_time != d.author_time, |el| {
                             el.child(selectable(
                                 "commit-committer",
+                                3,
                                 &format!(
                                     "committed by {} <{}> on {}",
                                     d.committer_name,
@@ -1615,7 +1617,6 @@ impl LogView {
                                     common::format_full_date(d.committer_time)
                                 ),
                                 palette.text_secondary,
-                                None,
                             ))
                         })
                         .when_some(d.signature.clone(), |el, signature| {
@@ -1632,7 +1633,7 @@ impl LogView {
                                     .text_color(color)
                                     .items_start()
                                     .child(Icon::new(if signature.is_good() { IconName::CircleCheck } else { IconName::TriangleAlert }).small())
-                                    .child(div().flex_1().min_w_0().child(selectable("commit-signature", &signature.describe(), color, None))),
+                                    .child(div().flex_1().min_w_0().child(selectable("commit-signature", 4, &signature.describe(), color))),
                             )
                         })
                         .when(!labels.is_empty(), |el| {
@@ -1644,13 +1645,13 @@ impl LogView {
                         })
                         .child(selectable(
                             "commit-branches",
+                            5,
                             &match d.containing_branches.len() {
                                 0 => "Not in any branch".to_owned(),
                                 n if n <= 5 => format!("In {} branches: {}", n, d.containing_branches.join(", ")),
                                 n => format!("In {} branches: {}, …", n, d.containing_branches[..5].join(", ")),
                             },
                             palette.text_secondary,
-                            None,
                         )),
                 )
             });
@@ -1664,44 +1665,25 @@ impl LogView {
 /// Git's empty tree, the "parent" of a root commit.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-/// The commit message with URLs and commit hashes clickable, as in IntelliJ.
 /// The commit message as selectable text: URLs and hash-like words are
-/// links (a hash goes to that commit in the Log).
-fn message_text(hash: &str, message: &str, entity: &Entity<LogView>) -> impl IntoElement {
-    let escape = |text: &str| {
-        text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace("  ", "&nbsp; ").replace('\n', "<br>")
-    };
-    let mut html = String::new();
-    let mut at = 0;
-    for (range, link) in common::find_links(message) {
-        html.push_str(&escape(&message[at..range.start]));
-        let href = match link {
-            common::Link::Url(url) => url,
-            common::Link::Commit(hash) => format!("{COMMIT_LINK}{hash}"),
-        };
-        html.push_str(&format!("<a href=\"{}\">{}</a>", escape(&href), escape(&message[range.clone()])));
-        at = range.end;
-    }
-    html.push_str(&escape(&message[at..]));
+/// links (a hash goes to that commit in the Log), as in IntelliJ.
+fn message_text(message: &str, link_color: gpui_kit::Hsla, entity: &Entity<LogView>) -> impl IntoElement {
+    let (ranges, links): (Vec<_>, Vec<_>) = common::find_links(message).into_iter().unzip();
     let entity = entity.clone();
-    gpui_kit::component::text::TextView::html(SharedString::from(format!("commit-message-{hash}")), format!("<p>{html}</p>"))
-        .selectable(true)
-        .on_link_click(move |href, _, window, cx| match href.strip_prefix(COMMIT_LINK) {
-            Some(hash) => {
-                let hash = hash.to_owned();
+    selectable_text("commit-message", message.to_owned()).order(0).links(ranges, link_color, move |ix, window, cx| {
+        match &links[ix] {
+            common::Link::Url(url) => cx.open_url(url),
+            common::Link::Commit(hash) => {
+                let hash = hash.clone();
                 entity.update(cx, |this, cx| this.go_to(&hash, window, cx));
             }
-            None => cx.open_url(href),
-        })
+        }
+    })
 }
 
-/// The href of a hash in a commit message.
-const COMMIT_LINK: &str = "junction-commit:";
-
-/// One line of the details pane that can be selected and copied.
-fn selectable(id: &'static str, text: &str, color: gpui_kit::Hsla, font: Option<SharedString>) -> gpui_kit::base::SelectableText {
-    gpui_kit::base::SelectableText::new(id, text.to_owned())
-        .text_style(gpui_kit::TextStyleRefinement { color: Some(color), font_family: font, ..Default::default() })
+/// One line of the details pane; `order` places it for a drag across lines.
+fn selectable(id: &'static str, order: u64, text: &str, color: gpui_kit::Hsla) -> SelectableText {
+    selectable_text(id, text.to_owned()).order(order).color(color)
 }
 
 /// Right-click on a branch or tag in the branches panel: the branch popup's
