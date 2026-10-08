@@ -99,12 +99,16 @@ jobs:
           iconutil -c icns icon.iconset -o "$APP/Contents/Resources/junction.icns"
           # Ad-hoc signature: required for Apple silicon to launch the binary at all.
           codesign --force --deep --sign - "$APP"
+          # Junction.app zipped as is: unzipping gives the .app directly.
+          ditto -c -k --keepParent "$APP" junction-macos-universal.app.zip
           ln -s /Applications dist/Applications
           hdiutil create -volname Junction -srcfolder dist -ov -format UDZO junction-macos-universal.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: junction-macos-universal.dmg
+          path: |
+            junction-macos-universal.dmg
+            junction-macos-universal.app.zip
 
   release:
     needs: [windows, linux, macos]
@@ -128,7 +132,7 @@ jobs:
             --notes "Built from ${GITHUB_SHA::7}.
 
           - Windows: unzip junction-windows-x64.zip and run Junction/junction.exe.
-          - macOS (Apple silicon and Intel): open the .dmg and drag Junction to Applications. The app is not notarized: the first time, right-click Junction and choose Open.
+          - macOS (Apple silicon and Intel): open the .dmg and drag Junction to Applications, or unzip junction-macos-universal.app.zip to get Junction.app. The app is not notarized: the first time, right-click Junction and choose Open.
           - Linux: run Junction-x86_64.AppImage (chmod +x first), or unpack junction-linux-x64.tar.gz.
 
           Checksums are in SHA256SUMS.txt."
