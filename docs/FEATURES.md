@@ -265,7 +265,8 @@
 | 右键：Close / Close Other Tabs / Close Tabs to the Left / Right / Close All Tabs / Close All but Pinned / Pin Tab / Copy Path / Copy Path From Repository Root / Select in Project View / Reopen Closed Tab | M8 | ✅ |
 | 固定标签排在最前并显示图钉；拖动标签调整顺序 | M8 | ✅ |
 | 中键关闭；Ctrl+F4 关闭；Alt+← / Alt+→ 切换（macOS 为 Cmd+Shift+[ / ]） | M8 | ✅ |
-| 分屏（Split Right / Down）、预览标签、多行标签、双击最大化编辑器 | — | ❌ 未做 |
+| 分屏：Split Right / Down、Split and Move Right / Down、Open in / Move to Opposite Group、Unsplit；标签可拖到另一组；某组标签关完后自动合并 | M8 | ✅（两组；同一文件在两组各有一份编辑缓冲） |
+| 预览标签、多行标签、双击最大化编辑器 | — | ❌ 未做 |
 
 ## 阶段
 

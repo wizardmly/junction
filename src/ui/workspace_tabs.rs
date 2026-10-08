@@ -2,6 +2,10 @@
 //! merge, annotate and pull request views shown in the editor area.
 //! Pinned tabs come first; closing a tab activates its left neighbour;
 //! past the tab limit the least recently used unpinned tab closes.
+//!
+//! Split Right / Down adds a second tab group. The focused group's tabs live
+//! in `Workspace::editors` / `front` and the other group's in `split`; focusing
+//! a group swaps them, so every tab operation works on the focused group.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{h_flex, menu::{ContextMenuExt as _, PopupMenuItem}};
@@ -36,9 +40,18 @@ pub(super) enum Front {
     Timeline,
 }
 
+/// The tab group not focused, after Split Right / Down.
+pub(super) struct SplitGroup {
+    pub editors: Vec<EditorTab>,
+    pub front: Front,
+    /// Split Down (one above the other) rather than Split Right.
+    pub vertical: bool,
+}
+
 /// A tab being dragged to a new place.
 #[derive(Clone)]
 struct DraggedTab {
+    group: usize,
     ix: usize,
     title: SharedString,
 }
@@ -50,7 +63,91 @@ impl Render for DraggedTab {
     }
 }
 
+/// Runs `f` on the workspace with tab group `group` focused.
+fn grp(entity: &Entity<Workspace>, group: usize, cx: &mut gpui_kit::App, f: impl FnOnce(&mut Workspace, &mut Context<Workspace>)) {
+    entity.update(cx, |this, cx| {
+        this.focus_group(group, cx);
+        f(this, cx)
+    })
+}
+
 impl Workspace {
+    /// Swaps the focused and the other tab group.
+    pub(super) fn swap_split(&mut self) {
+        if let Some(split) = &mut self.split {
+            std::mem::swap(&mut self.editors, &mut split.editors);
+            std::mem::swap(&mut self.front, &mut split.front);
+            self.active_group = 1 - self.active_group;
+        }
+    }
+
+    /// Focuses tab group 0 (left / top) or 1.
+    pub(super) fn focus_group(&mut self, group: usize, cx: &mut Context<Self>) {
+        if group != self.active_group && self.split.is_some() {
+            self.swap_split();
+            cx.notify();
+        }
+    }
+
+    /// Split Right / Down (`move_it`: Split and Move), or Move to Opposite Group.
+    fn split_tab(&mut self, ix: usize, vertical: bool, move_it: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.editors.get(ix) else { return };
+        let path = tab.view.read(cx).path().to_owned();
+        let revision = tab.view.read(cx).revision().map(str::to_owned);
+        let from = self.active_group;
+        if self.split.is_none() {
+            self.split = Some(SplitGroup { editors: Vec::new(), front: Front::Diff, vertical });
+        }
+        self.swap_split();
+        self.open_tab(path.clone(), revision.clone(), window, cx);
+        let to = self.active_group;
+        if move_it {
+            self.focus_group(from, cx);
+            if let Some(ix) = self.editors.iter().position(|t| t.view.read(cx).path() == path && t.view.read(cx).revision() == revision.as_deref()) {
+                self.close_tabs(vec![ix], cx);
+            }
+            // The source group may have closed and the groups renumbered.
+            let target = if self.split.is_some() { to } else { 0 };
+            self.focus_group(target, cx);
+        }
+        if let Some(ix) = self.editors.iter().position(|t| t.view.read(cx).path() == path && t.view.read(cx).revision() == revision.as_deref()) {
+            self.activate(Front::Editor(ix), window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Unsplit: the other group's tabs join this one.
+    fn unsplit(&mut self, cx: &mut Context<Self>) {
+        let Some(split) = self.split.take() else { return };
+        for tab in split.editors {
+            let (path, rev) = (tab.view.read(cx).path().to_owned(), tab.view.read(cx).revision().map(str::to_owned));
+            if !self.editors.iter().any(|t| t.view.read(cx).path() == path && t.view.read(cx).revision() == rev.as_deref()) {
+                self.editors.push(tab);
+            }
+        }
+        self.active_group = 0;
+        self.fix_front(cx);
+        cx.notify();
+    }
+
+    /// A tab group left empty goes away.
+    fn collapse_empty_group(&mut self, cx: &mut Context<Self>) {
+        if self.split.is_none() || !self.editors.is_empty() {
+            return;
+        }
+        if self.active_group == 0 && self.has_specials(cx) {
+            return;
+        }
+        let split = self.split.take().unwrap();
+        self.editors = split.editors;
+        self.front = split.front;
+        self.active_group = 0;
+    }
+
+    fn has_specials(&self, cx: &gpui_kit::App) -> bool {
+        self.diff.read(cx).title().is_some() || self.merge.is_some() || self.blame.is_some() || self.timeline.is_some()
+    }
+
     /// The file editor the editor area shows, if it shows one.
     pub(super) fn editor(&self) -> Option<&Entity<FileEditor>> {
         match self.front {
@@ -60,12 +157,17 @@ impl Workspace {
     }
 
     fn tab_paths(&self, cx: &gpui_kit::App) -> Vec<String> {
-        self.editors.iter().filter(|t| t.view.read(cx).revision().is_none()).map(|t| t.view.read(cx).path().to_owned()).collect()
+        let other = self.split.iter().flat_map(|s| s.editors.iter());
+        self.editors.iter().chain(other).filter(|t| t.view.read(cx).revision().is_none()).map(|t| t.view.read(cx).path().to_owned()).collect()
     }
 
     /// The tabs in display order.
     fn tab_list(&self, cx: &gpui_kit::App) -> Vec<Front> {
         let mut tabs: Vec<Front> = (0..self.editors.len()).map(Front::Editor).collect();
+        // The diff, merge, annotate and PR views live in the first group.
+        if self.active_group != 0 {
+            return tabs;
+        }
         if self.diff.read(cx).title().is_some() {
             tabs.push(Front::Diff);
         }
@@ -192,6 +294,7 @@ impl Workspace {
             }
             self.remove_tab(ix, cx);
         }
+        self.collapse_empty_group(cx);
         self.fix_front(cx);
         if let Front::Editor(ix) = self.front {
             self.activate_tab(ix, cx);
@@ -203,6 +306,7 @@ impl Workspace {
     pub(super) fn fix_front(&mut self, cx: &mut Context<Self>) {
         let ok = match self.front {
             Front::Editor(ix) => ix < self.editors.len(),
+            _ if self.active_group != 0 => self.editors.is_empty(),
             Front::Diff => self.diff.read(cx).title().is_some() || self.editors.is_empty(),
             Front::Merge => self.merge.is_some(),
             Front::Blame => self.blame.is_some(),
@@ -328,18 +432,21 @@ impl Workspace {
         }
     }
 
-    pub(super) fn render_tab_bar(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
+    /// The focused group's tab bar; `focused` is false while drawing the other group swapped in.
+    pub(super) fn render_tab_bar(&self, focused: bool, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
         let tabs = self.tab_list(cx);
         if tabs.is_empty() {
             return None;
         }
+        let group = self.active_group;
+        let split = self.split.as_ref().map(|s| s.vertical);
         let palette = cx.palette().clone();
         let status: std::collections::HashMap<String, crate::git::status::StatusKind> =
             self.model.read(cx).status().entries.iter().map(|e| (e.path.clone(), e.kind)).collect();
         let entity = cx.entity();
         let count = self.editors.len();
         let row = h_flex()
-            .id("editor-tabs")
+            .id(("editor-tabs", group))
             .h(px(30.))
             .flex_shrink_0()
             .overflow_x_scroll()
@@ -359,7 +466,7 @@ impl Workspace {
                 let title_s: SharedString = title.clone().into();
                 h_flex()
                     .id(("editor-tab", n))
-                    .group("editor-tab")
+                    .group(SharedString::from(format!("editor-tab-{group}")))
                     .h_full()
                     .pl_2()
                     .pr_1()
@@ -371,7 +478,9 @@ impl Workspace {
                     .border_color(palette.border)
                     .relative()
                     .when(active, |el| {
-                        el.bg(palette.panel).child(div().absolute().left_0().right_0().bottom_0().h(px(2.)).bg(palette.accent))
+                        el.bg(palette.panel).child(
+                            div().absolute().left_0().right_0().bottom_0().h(px(2.)).bg(if focused { palette.accent } else { palette.text_secondary }),
+                        )
                     })
                     .when(!active, |el| el.hover(|el| el.bg(palette.hover)))
                     .child(common::icon(icon).text_color(palette.text_secondary))
@@ -383,30 +492,41 @@ impl Workspace {
                             .p(px(2.))
                             .rounded(px(3.))
                             .hover(|el| el.bg(palette.hover))
-                            .when(!active, |el| el.invisible().group_hover("editor-tab", |el| el.visible()))
+                            .when(!active, |el| el.invisible().group_hover(SharedString::from(format!("editor-tab-{group}")), |el| el.visible()))
                             .child(common::icon(IconName::X).text_color(palette.text_secondary))
                             .on_click({
                                 let entity = entity.clone();
                                 move |_, _, cx| {
                                     cx.stop_propagation();
-                                    entity.update(cx, |this, cx| this.close_front(front, cx));
+                                    grp(&entity, group, cx, |this, cx| this.close_front(front, cx));
                                 }
                             }),
                     )
                     .on_click({
                         let entity = entity.clone();
-                        move |_, window, cx| entity.update(cx, |this, cx| this.activate(front, window, cx))
+                        move |_, window, cx| grp(&entity, group, cx, |this, cx| this.activate(front, window, cx))
                     })
                     .on_mouse_down(MouseButton::Middle, {
                         let entity = entity.clone();
-                        move |_, _, cx| entity.update(cx, |this, cx| this.close_front(front, cx))
+                        move |_, _, cx| grp(&entity, group, cx, |this, cx| this.close_front(front, cx))
                     })
                     .when_some(editor_ix, |el, ix| {
-                        el.on_drag(DraggedTab { ix, title: title_s.clone() }, |tab, _, _, cx| cx.new(|_| tab.clone()))
+                        el.on_drag(DraggedTab { group, ix, title: title_s.clone() }, |tab, _, _, cx| cx.new(|_| tab.clone()))
                             .drag_over::<DraggedTab>(move |el, _, _, _| el.bg(palette.selection))
                             .on_drop({
                                 let entity = entity.clone();
-                                move |tab: &DraggedTab, _, cx| entity.update(cx, |this, cx| this.move_tab(tab.ix, ix, cx))
+                                move |tab: &DraggedTab, window, cx| {
+                                    let tab = tab.clone();
+                                    if tab.group == group {
+                                        grp(&entity, group, cx, |this, cx| this.move_tab(tab.ix, ix, cx))
+                                    } else {
+                                        // Dropped on the other group: the tab moves there.
+                                        grp(&entity, tab.group, cx, |this, cx| {
+                                            let vertical = this.split.as_ref().is_some_and(|s| s.vertical);
+                                            this.split_tab(tab.ix, vertical, true, window, cx)
+                                        })
+                                    }
+                                }
                             })
                     })
                     .context_menu({
@@ -416,7 +536,7 @@ impl Workspace {
                             let close = |label: &'static str, enabled: bool, which: fn(usize, usize) -> bool| {
                                 let entity = entity.clone();
                                 PopupMenuItem::new(label).disabled(!enabled).on_click(move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
+                                    grp(&entity, group, cx, |this, cx| {
                                         let ix = editor_ix.unwrap_or(usize::MAX);
                                         let tabs: Vec<usize> = (0..this.editors.len()).filter(|&i| which(i, ix) && !(this.editors[i].pinned && i != ix && label != "Close All Tabs")).collect();
                                         this.close_tabs(tabs, cx);
@@ -425,7 +545,7 @@ impl Workspace {
                             };
                             let Some(ix) = editor_ix else {
                                 let entity = entity.clone();
-                                return menu.item(PopupMenuItem::new("Close").on_click(move |_, _, cx| entity.update(cx, |this, cx| this.close_front(front, cx))));
+                                return menu.item(PopupMenuItem::new("Close").on_click(move |_, _, cx| grp(&entity, group, cx, |this, cx| this.close_front(front, cx))));
                             };
                             let (e1, e2, e3, e4) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
                             let path = path.clone().unwrap_or_default();
@@ -438,14 +558,36 @@ impl Workspace {
                                 .item({
                                     let entity = e4.clone();
                                     PopupMenuItem::new("Close All but Pinned").on_click(move |_, _, cx| {
-                                        entity.update(cx, |this, cx| {
+                                        grp(&entity, group, cx, |this, cx| {
                                             let tabs = (0..this.editors.len()).filter(|&i| !this.editors[i].pinned).collect();
                                             this.close_tabs(tabs, cx);
                                         })
                                     })
                                 })
                                 .separator()
-                                .item(PopupMenuItem::new(if pinned { "Unpin Tab" } else { "Pin Tab" }).on_click(move |_, _, cx| e1.update(cx, |this, cx| this.toggle_pin(ix, cx))))
+                                .item(PopupMenuItem::new(if pinned { "Unpin Tab" } else { "Pin Tab" }).on_click(move |_, _, cx| grp(&e1, group, cx, |this, cx| this.toggle_pin(ix, cx))))
+                                .separator()
+                                .map(|menu| {
+                                    let item = |label: &'static str, vertical: bool, move_it: bool, enabled: bool| {
+                                        let entity = entity.clone();
+                                        PopupMenuItem::new(label).disabled(!enabled).on_click(move |_, window, cx| {
+                                            grp(&entity, group, cx, |this, cx| this.split_tab(ix, vertical, move_it, window, cx))
+                                        })
+                                    };
+                                    match split {
+                                        None => menu
+                                            .item(item("Split Right", false, false, true))
+                                            .item(item("Split Down", true, false, true))
+                                            .item(item("Split and Move Right", false, true, count > 1))
+                                            .item(item("Split and Move Down", true, true, count > 1)),
+                                        Some(vertical) => {
+                                            let entity = entity.clone();
+                                            menu.item(item("Open in Opposite Group", vertical, false, true))
+                                                .item(item("Move to Opposite Group", vertical, true, true))
+                                                .item(PopupMenuItem::new("Unsplit").on_click(move |_, _, cx| grp(&entity, group, cx, |this, cx| this.unsplit(cx))))
+                                        }
+                                    }
+                                })
                                 .separator()
                                 .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {
                                     let full = e2.read(cx).code_index.read(cx).root().map(|r| r.join(&p1).display().to_string()).unwrap_or(p1.clone());
@@ -455,7 +597,7 @@ impl Workspace {
                                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(p2.clone()))
                                 }))
                                 .item(PopupMenuItem::new("Select in Project View").on_click(move |_, window, cx| {
-                                    e3.update(cx, |this, cx| {
+                                    grp(&e3, group, cx, |this, cx| {
                                         this.activate(front, window, cx);
                                         this.select_in_project(&super::SelectInProject, window, cx);
                                     })
@@ -463,7 +605,7 @@ impl Workspace {
                                 .separator()
                                 .item({
                                     let entity = entity.clone();
-                                    PopupMenuItem::new("Reopen Closed Tab").on_click(move |_, window, cx| entity.update(cx, |this, cx| this.reopen_closed_tab(window, cx)))
+                                    PopupMenuItem::new("Reopen Closed Tab").on_click(move |_, window, cx| grp(&entity, group, cx, |this, cx| this.reopen_closed_tab(window, cx)))
                                 })
                         }
                     })

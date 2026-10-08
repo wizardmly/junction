@@ -212,6 +212,9 @@ pub struct Workspace {
     /// What the editor area shows: a file tab, or the diff / merge / annotate / PR view.
     front: Front,
     tab_clock: u64,
+    /// The second tab group after Split Right / Down, and which group is focused.
+    split: Option<tabs::SplitGroup>,
+    active_group: usize,
     /// Reopen Closed Tab, newest last.
     closed_tabs: Vec<String>,
     show_commit: bool,
@@ -285,6 +288,7 @@ impl Workspace {
                 crate::ui::pull_requests::PrEvent::OpenTimeline(target, pr) => {
                     let (target, pr) = (target.clone(), pr.clone());
                     this.timeline = Some(cx.new(|cx| crate::ui::pull_requests::PrTimelineView::new(target, pr, window, cx)));
+                    this.focus_group(0, cx);
                     this.front = Front::Timeline;
                     cx.notify();
                 }
@@ -498,6 +502,8 @@ impl Workspace {
             editors: Vec::new(),
             front: Front::Diff,
             tab_clock: 0,
+            split: None,
+            active_group: 0,
             closed_tabs: Vec::new(),
             show_commit: true,
             show_git: true,
@@ -542,6 +548,7 @@ impl Workspace {
             }
         });
         self.merge = Some((view, subscription));
+        self.focus_group(0, cx);
         self.front = Front::Merge;
         cx.notify();
     }
@@ -629,6 +636,7 @@ impl Workspace {
             }
         });
         self.blame = Some((view, subscription));
+        self.focus_group(0, cx);
         self.front = Front::Blame;
         cx.notify();
     }
@@ -904,6 +912,61 @@ impl Workspace {
             tab._subscription = subscription;
         }
         cx.notify();
+    }
+
+    /// One tab group: its tab bar and what its selected tab shows.
+    fn render_group(&self, focused: bool, has_repo: bool, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let group = self.active_group;
+        let entity = cx.entity();
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, cx| entity.update(cx, |this, cx| this.focus_group(group, cx)))
+            .children(self.render_tab_bar(focused, cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .when(focused && matches!(self.front, Front::Editor(_)), |el| el.key_context(TABS_CONTEXT))
+                    .map(|el| {
+                        if !has_repo {
+                            return el.child(self.render_welcome(cx));
+                        }
+                        match self.front {
+                            Front::Editor(ix) if ix < self.editors.len() => el.child(self.editors[ix].view.clone()),
+                            _ if group != 0 => el,
+                            Front::Timeline if self.timeline.is_some() => el.child(self.timeline.clone().unwrap()),
+                            Front::Merge if self.merge.is_some() => el.child(self.merge.as_ref().unwrap().0.clone()),
+                            Front::Blame if self.blame.is_some() => el.child(self.blame.as_ref().unwrap().0.clone()),
+                            _ => el.child(self.diff.clone()),
+                        }
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// The editor area: one tab group, or two after Split Right / Down.
+    fn render_editor_groups(&mut self, has_repo: bool, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let Some(vertical) = self.split.as_ref().map(|s| s.vertical) else {
+            return div().flex_1().min_h_0().flex().child(self.render_group(true, has_repo, cx)).into_any_element();
+        };
+        let focused = self.active_group;
+        let mine = self.render_group(true, has_repo, cx);
+        self.swap_split();
+        let other = self.render_group(false, has_repo, cx);
+        self.swap_split();
+        let (first, second) = if focused == 0 { (mine, other) } else { (other, mine) };
+        let palette = cx.palette().clone();
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .when(vertical, |el| el.flex_col())
+            .child(first)
+            .child(if vertical { div().h(px(1.)).w_full().bg(palette.border) } else { div().w(px(1.)).h_full().bg(palette.border) })
+            .child(second)
+            .into_any_element()
     }
 
     fn render_popups(&self, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
@@ -1265,6 +1328,7 @@ impl Workspace {
     fn open_diff(&mut self, source: crate::ui::diff_view::DiffSource, cx: &mut Context<Self>) {
         let Some(repository) = self.model.read(cx).repository().cloned() else { return };
         // A diff replaces the annotations and the file editor in the editor area.
+        self.focus_group(0, cx);
         self.front = Front::Diff;
         self.diff.update(cx, |diff, cx| diff.show(repository, source, cx));
         cx.notify();
@@ -2101,25 +2165,7 @@ impl Render for Workspace {
                 el.child(div().p_2().text_sm().text_color(palette.status_conflict).child(error))
             })
             .children(self.render_operation_banner(cx))
-            .children(self.render_tab_bar(cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .when(matches!(self.front, Front::Editor(_)), |el| el.key_context(TABS_CONTEXT))
-                    .map(|el| {
-                        if !has_repo {
-                            return el.child(self.render_welcome(cx));
-                        }
-                        match self.front {
-                            Front::Timeline if self.timeline.is_some() => el.child(self.timeline.clone().unwrap()),
-                            Front::Merge if self.merge.is_some() => el.child(self.merge.as_ref().unwrap().0.clone()),
-                            Front::Blame if self.blame.is_some() => el.child(self.blame.as_ref().unwrap().0.clone()),
-                            Front::Editor(ix) if ix < self.editors.len() => el.child(self.editors[ix].view.clone()),
-                            _ => el.child(self.diff.clone()),
-                        }
-                    }),
-            );
+            .child(self.render_editor_groups(has_repo, cx));
 
         let top = h_resizable("top-split")
             .child(
