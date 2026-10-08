@@ -355,6 +355,32 @@ pub fn apply_hunk(repository: &Repository, revisions: &Revisions, old: &str, new
     Ok(())
 }
 
+/// Stages the work tree lines `lines` (a change block against HEAD, as the
+/// editor's gutter shows it): the index-vs-work-tree blocks they touch move
+/// into the index, other staged changes stay.
+pub fn stage_lines(repository: &Repository, path: &str, work_tree: &str, lines: Range<usize>) -> Result<()> {
+    let index = repository.run(["show", &format!(":{path}")]).unwrap_or_default();
+    let touched: Vec<Hunk> = commit_hunks(&index, work_tree)
+        .into_iter()
+        .filter(|h| {
+            if h.new.is_empty() || lines.is_empty() {
+                h.new.start <= lines.end && lines.start <= h.new.end
+            } else {
+                h.new.start < lines.end && lines.start < h.new.end
+            }
+        })
+        .collect();
+    if touched.is_empty() {
+        anyhow::bail!("these lines are already staged");
+    }
+    let mut content = index;
+    // Bottom-up, so the index lines of the blocks above don't move.
+    for hunk in touched.iter().rev() {
+        content = splice_hunk(&content, work_tree, hunk, true);
+    }
+    write_index(repository, path, &content, true)
+}
+
 /// Replaces a file's staged content. `filter` runs git's clean filters
 /// (line endings), as for work tree content.
 fn write_index(repository: &Repository, path: &str, content: &str, filter: bool) -> Result<()> {
@@ -721,5 +747,38 @@ mod tests {
             .collect();
         // 15 equal lines before (12 folded, 3 kept) and 14 after (11 folded, 3 kept).
         assert_eq!(folds, vec![12, 11]);
+    }
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+    use crate::git::GitConsole;
+
+    #[test]
+    fn stages_only_the_gutter_block() {
+        let dir = std::env::temp_dir().join(format!("junction-stage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git").current_dir(&dir).args(args).output().unwrap();
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "T"]);
+        std::fs::write(dir.join("a.txt"), "1\n2\n3\n4\n5\n6\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+        let repository = Repository::discover(&dir, GitConsole::default()).unwrap();
+        let work = "1\nTWO\n3\n4\n5\nSIX\n";
+        std::fs::write(dir.join("a.txt"), work).unwrap();
+        let hunks = commit_hunks("1\n2\n3\n4\n5\n6\n", work);
+        assert_eq!(hunks.len(), 2);
+        stage_lines(&repository, "a.txt", work, hunks[1].new.clone()).unwrap();
+        assert_eq!(repository.run(["show", ":a.txt"]).unwrap(), "1\n2\n3\n4\n5\nSIX\n");
+        // The first block joins it; the second is already there.
+        stage_lines(&repository, "a.txt", work, hunks[0].new.clone()).unwrap();
+        assert_eq!(repository.run(["show", ":a.txt"]).unwrap(), work);
+        assert!(stage_lines(&repository, "a.txt", work, hunks[1].new.clone()).is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -11,16 +11,17 @@ use std::rc::Rc;
 use gpui_kit::component::{
     h_flex,
     input::{
-        Copy, Cut, DefinitionProvider, Editor, EditorState, HoverProvider, InputEvent, Paste, RangeDecoration, RangeDecorationCollection,
-        RangeDecorationStyle, Rope, SelectAll, ShowDocumentHandler,
+        Copy, Cut, DefinitionProvider, Editor, EditorState, HoverProvider, InputEvent, Paste, Rope, RopeExt as _, SelectAll,
+        ShowDocumentHandler,
     },
     native_menu::NativeMenu,
     v_flex,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::{
-    AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _,
-    Render, Styled as _, Subscription, Window, actions, div, prelude::FluentBuilder as _, px,
+    AppContext as _, Bounds, Context, DispatchPhase, Entity, EventEmitter, InteractiveElement as _, IntoElement, KeyBinding,
+    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, Render, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, actions, anchored, canvas, deferred, div, fill, point, prelude::FluentBuilder as _, px, size,
 };
 
 use crate::git::Repository;
@@ -46,11 +47,16 @@ actions!(
         GotoDeclaration,
         FindUsages,
         FindNext,
-        FindPrevious
+        FindPrevious,
+        CloseChangePopup
     ]
 );
 
 const CONTEXT: &str = "FileEditor";
+const POPUP_CONTEXT: &str = "ChangePopup";
+/// The change marker strip: its width, and the gap to the text.
+const MARKER_WIDTH: f32 = 3.;
+const MARKER_GAP: f32 = 4.;
 
 pub fn init(cx: &mut gpui_kit::App) {
     cx.bind_keys([
@@ -63,6 +69,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-r", gpui_kit::component::input::Replace, Some(CONTEXT)),
         KeyBinding::new("f3", FindNext, Some(CONTEXT)),
         KeyBinding::new("shift-f3", FindPrevious, Some(CONTEXT)),
+        KeyBinding::new("escape", CloseChangePopup, Some(POPUP_CONTEXT)),
     ]);
 }
 
@@ -121,7 +128,11 @@ pub struct FileEditor {
     base: String,
     saved: String,
     hunks: Vec<Hunk>,
-    markers: Option<RangeDecorationCollection>,
+    /// The change block whose popup is open (a click on its gutter marker).
+    popup: Option<usize>,
+    /// Where the popup goes: under its block, as the last paint laid it out.
+    popup_anchor: Rc<std::cell::Cell<Option<Point<Pixels>>>>,
+    popup_focus: gpui_kit::FocusHandle,
     error: Option<String>,
     code_index: Option<Entity<CodeIndex>>,
     _subscriptions: Vec<Subscription>,
@@ -212,6 +223,8 @@ impl FileEditor {
         let state = cx.new(|cx| EditorState::new(window, cx).language(language).line_number(true).searchable(true).default_value(initial));
         let subscriptions = vec![cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
+                // IntelliJ closes the change popup on typing.
+                this.popup = None;
                 this.update_markers(cx);
                 cx.notify();
             }
@@ -224,7 +237,9 @@ impl FileEditor {
             base,
             saved: content,
             hunks: Vec::new(),
-            markers: None,
+            popup: None,
+            popup_anchor: Rc::default(),
+            popup_focus: cx.focus_handle(),
             error,
             code_index: None,
             _subscriptions: subscriptions,
@@ -351,36 +366,238 @@ impl FileEditor {
         self.revision.is_none() && self.text(cx) != self.saved
     }
 
-    /// IntelliJ's change markers: added lines green, modified blue, deletions a thin frame.
+    /// IntelliJ's change markers (painted in the gutter by `marker_strip`).
     fn update_markers(&mut self, cx: &mut Context<Self>) {
         if self.revision.is_some() || self.error.is_some() {
             return;
         }
         let text = self.text(cx);
         self.hunks = diff::commit_hunks(&self.base, &text);
-        let palette = cx.palette().clone();
-        let decorations: Vec<RangeDecoration> = self
-            .hunks
-            .iter()
-            .map(|hunk| {
-                if hunk.new.is_empty() {
-                    let at = line_start(&text, hunk.new.start);
-                    let end = line_start(&text, hunk.new.start + 1).max(at);
-                    RangeDecoration::new(at..end).with_style(RangeDecorationStyle::Frame).with_color(palette.status_deleted)
-                } else {
-                    let range = line_start(&text, hunk.new.start)..line_start(&text, hunk.new.end);
-                    let color = if hunk.old.is_empty() { palette.diff_inserted } else { palette.status_modified.opacity(0.18) };
-                    RangeDecoration::new(range).with_style(RangeDecorationStyle::Fill).with_color(color)
-                }
-            })
-            .collect();
-        match &self.markers {
-            Some(markers) => markers.set(decorations, cx),
-            None => {
-                let markers = self.state.update(cx, |state, cx| state.create_range_decorations_collection(decorations, cx));
-                self.markers = Some(markers);
-            }
+        if self.popup.is_some_and(|ix| ix >= self.hunks.len()) {
+            self.popup = None;
         }
+    }
+
+    /// The gutter's change markers: added lines a green bar, modified a blue
+    /// one, deleted lines a grey wedge between the lines around them. A click
+    /// opens the change popup. Painted after the editor, from its layout.
+    fn marker_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let state = self.state.clone();
+        let hunks = self.hunks.clone();
+        let this = cx.entity().downgrade();
+        let anchor = self.popup_anchor.clone();
+        let popup = self.popup;
+        let palette = cx.palette().clone();
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| {
+                let state = state.read(cx);
+                let Some(line_height) = state.line_height() else { return };
+                let Some(visible) = state.visible_row_range() else { return };
+                let rope = state.text();
+                let lines = rope.lines_len().max(1);
+                let line_top = |line: usize| {
+                    let at = rope.line_start_offset(line.min(lines - 1));
+                    state.range_to_bounds(&(at..at)).map(|b| (b.left(), b.top()))
+                };
+                let mut marks: Vec<(Bounds<Pixels>, usize)> = Vec::new();
+                for (ix, hunk) in hunks.iter().enumerate() {
+                    let (color, rect) = if hunk.new.is_empty() {
+                        // The wedge sits on the boundary above line `start`.
+                        let line = hunk.new.start;
+                        if line + 1 < visible.start || line > visible.end + 1 {
+                            continue;
+                        }
+                        let Some((left, top)) = (if line >= lines { line_top(lines - 1).map(|(l, t)| (l, t + line_height)) } else { line_top(line) })
+                        else {
+                            continue;
+                        };
+                        let x = left - px(MARKER_GAP + MARKER_WIDTH + 2.);
+                        (palette.text_secondary, Bounds::new(point(x, top - px(3.)), size(px(MARKER_WIDTH + 4.), px(6.))))
+                    } else {
+                        let first = hunk.new.start.max(visible.start);
+                        let last = (hunk.new.end - 1).min(visible.end.saturating_sub(1)).min(lines - 1);
+                        if first > last {
+                            continue;
+                        }
+                        let (Some((left, top)), Some((_, bottom))) = (line_top(first), line_top(last)) else { continue };
+                        let x = left - px(MARKER_GAP + MARKER_WIDTH);
+                        let color = if hunk.old.is_empty() { palette.status_added } else { palette.status_modified };
+                        (color, Bounds::new(point(x, top), size(px(MARKER_WIDTH), bottom + line_height - top)))
+                    };
+                    let rect = rect.intersect(&bounds);
+                    if rect.size.height <= px(0.) {
+                        continue;
+                    }
+                    window.paint_quad(fill(rect, color));
+                    marks.push((rect, ix));
+                }
+                // The popup hangs under its block's last visible line.
+                let placed = popup.and_then(|ix| marks.iter().find(|(_, i)| *i == ix)).map(|(r, _)| point(r.left(), r.bottom() + px(2.)));
+                if placed != anchor.get() {
+                    anchor.set(placed);
+                    window.refresh();
+                }
+                window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble || e.button != MouseButton::Left {
+                        return;
+                    }
+                    // A little slack each side: the bar itself is thin.
+                    let hit = marks.iter().find(|(r, _)| {
+                        let wide = Bounds::new(point(r.left() - px(4.), r.top()), size(r.size.width + px(8.), r.size.height.max(px(6.))));
+                        wide.contains(&e.position)
+                    });
+                    if let Some(&(_, ix)) = hit {
+                        cx.stop_propagation();
+                        this.update(cx, |this, cx| this.toggle_popup(ix, window, cx)).ok();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .inset_0()
+    }
+
+    fn toggle_popup(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.popup = if self.popup == Some(ix) { None } else { Some(ix) };
+        if self.popup.is_some() {
+            window.focus(&self.popup_focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn close_popup(&mut self, _: &CloseChangePopup, window: &mut Window, cx: &mut Context<Self>) {
+        self.popup = None;
+        self.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Previous / Next Change from the popup: moves the caret there and
+    /// shows that block's popup, wrapping around as IntelliJ does.
+    fn step_popup(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(ix), count) = (self.popup, self.hunks.len()) else { return };
+        if count == 0 {
+            return;
+        }
+        let next = if forward { (ix + 1) % count } else { (ix + count - 1) % count };
+        let line = self.hunks[next].new.start as u32;
+        self.state.update(cx, |state, cx| {
+            state.set_cursor_position(gpui_kit::component::input::Position::new(line, 0), window, cx)
+        });
+        self.popup = Some(next);
+        window.focus(&self.popup_focus, cx);
+        cx.notify();
+    }
+
+    /// Rollback from the popup: the block goes back to HEAD, as one undoable edit.
+    fn rollback_hunk(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(hunk) = self.hunks.get(ix).cloned() else { return };
+        let text = self.text(cx);
+        let content = diff::splice_hunk(&self.base, &text, &hunk, false);
+        // Only the block's own bytes change; the rest of the text keeps its
+        // offsets, so the edit is local and undo restores it.
+        let start = line_start(&text, hunk.new.start);
+        let tail = text.len() - line_start(&text, hunk.new.end).max(start);
+        let replacement = content[start.min(content.len())..content.len().saturating_sub(tail).max(start.min(content.len()))].to_owned();
+        let end = text.len() - tail;
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(start..end, cx);
+            state.replace(replacement, window, cx);
+        });
+        self.popup = None;
+        self.update_markers(cx);
+        // As Rollback Lines does: the Commit window sees it at once.
+        self.save_now(cx);
+        self.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Stage from the popup: the block's lines go into the index.
+    fn stage_hunk(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(hunk) = self.hunks.get(ix).cloned() else { return };
+        // Git stages what's on disk.
+        self.save_now(cx);
+        let text = self.text(cx);
+        match diff::stage_lines(&self.repository, &self.path, &text, hunk.new.clone()) {
+            Ok(()) => {
+                self.popup = None;
+                cx.emit(FileEditorEvent::FilesChanged);
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+        self.focus(window, cx);
+        cx.notify();
+    }
+
+    /// The change popup: IntelliJ's toolbar over HEAD's version of the block.
+    fn render_popup(&self, ix: usize, at: Point<Pixels>, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let hunk = self.hunks[ix].clone();
+        let old: Vec<String> = self.base.lines().skip(hunk.old.start).take(hunk.old.len()).map(str::to_owned).collect();
+        let count = self.hunks.len();
+        let shown = old.len().min(30);
+        let more = old.len() - shown;
+        let toolbar = h_flex()
+            .gap_0p5()
+            .px_1()
+            .py_0p5()
+            .child(tool_button("change-prev", IconName::ArrowUp, "Previous Change").on_click(cx.listener(|this, _, window, cx| this.step_popup(false, window, cx))))
+            .child(tool_button("change-next", IconName::ArrowDown, "Next Change").on_click(cx.listener(|this, _, window, cx| this.step_popup(true, window, cx))))
+            .child(tool_button("change-rollback", IconName::Undo2, "Rollback  Ctrl+Alt+Z").on_click(cx.listener(move |this, _, window, cx| this.rollback_hunk(ix, window, cx))))
+            .child(tool_button("change-diff", IconName::FileDiff, "Show Diff").on_click(cx.listener(|this, _, window, cx| {
+                this.popup = None;
+                this.show_diff(&ShowFileDiff, window, cx);
+            })))
+            .child(tool_button("change-copy", IconName::Copy, "Copy").on_click({
+                let old = old.join("\n");
+                cx.listener(move |this, _, window, cx| {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(old.clone()));
+                    this.popup = None;
+                    this.focus(window, cx);
+                    cx.notify();
+                })
+            }))
+            .child(tool_button("change-stage", IconName::Plus, "Stage").on_click(cx.listener(move |this, _, window, cx| this.stage_hunk(ix, window, cx))))
+            .child(div().px_1().text_xs().text_color(palette.text_secondary).child(format!("{} of {count}", ix + 1)));
+        let body = (!old.is_empty()).then(|| {
+            v_flex()
+                .id("change-popup-old")
+                .max_h(px(360.))
+                .overflow_y_scroll()
+                .border_t_1()
+                .border_color(palette.border)
+                .bg(palette.diff_deleted)
+                .px_2()
+                .py_1()
+                .font_family(gpui_kit::component::ActiveTheme::theme(&**cx).mono_font_family.clone())
+                .text_xs()
+                .children(old.into_iter().take(shown).map(|line| div().whitespace_nowrap().child(if line.is_empty() { " ".to_owned() } else { line })))
+                .when(more > 0, |el| el.child(div().text_color(palette.text_secondary).child(format!("… {more} more lines"))))
+        });
+        deferred(
+            anchored().position(at).snap_to_window_with_margin(px(8.)).child(
+                v_flex()
+                    .id("change-popup")
+                    .key_context(POPUP_CONTEXT)
+                    .track_focus(&self.popup_focus)
+                    .on_action(cx.listener(Self::close_popup))
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.popup = None;
+                        cx.notify();
+                    }))
+                    .min_w(px(220.))
+                    .max_w(px(720.))
+                    .bg(gpui_kit::component::ActiveTheme::theme(&**cx).popover)
+                    .border_1()
+                    .border_color(palette.border)
+                    .rounded_md()
+                    .shadow_lg()
+                    .overflow_hidden()
+                    .child(toolbar)
+                    .children(body),
+            ),
+        )
+        .with_priority(1)
     }
 
     /// The selected lines (1-based, inclusive), or the cursor's line.
@@ -558,7 +775,7 @@ impl Render for FileEditor {
                 el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(error))
             })
             .child(
-                div().flex_1().min_h_0().child(
+                div().relative().flex_1().min_h_0().child(
                     Editor::new(&self.state)
                         .h_full()
                         .bordered(false)
@@ -586,7 +803,9 @@ impl Render for FileEditor {
                                 .menu("Create Gist…", Box::new(CreateGist));
                             menu.submenu("Git", git)
                         }),
-                ),
+                )
+                .when(!read_only, |el| el.child(self.marker_strip(cx)))
+                .when_some(self.popup.zip(self.popup_anchor.get()), |el, (ix, at)| el.child(self.render_popup(ix, at, cx))),
             )
     }
 }
