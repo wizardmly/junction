@@ -274,6 +274,9 @@ impl Client {
     /// The numbers of the repository's PRs matching a search qualifier
     /// (`review:approved`, `reviewed-by:@me`), for the list's Review filter.
     pub fn search_pulls(&self, repo: &str, qualifier: &str) -> ApiResult<Vec<u64>> {
+        if self.gitlab {
+            return self.gl_search_pulls(repo, qualifier);
+        }
         #[derive(Deserialize)]
         struct Item {
             number: u64,
@@ -357,8 +360,10 @@ pub(crate) mod tests {
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
                 let mut parts = request.split_whitespace();
-                let key = format!("{} {}", parts.next().unwrap_or(""), parts.next().unwrap_or("").split('?').next().unwrap_or(""));
-                log.lock().unwrap().push(format!("{key} {}", String::from_utf8_lossy(&body)));
+                let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                let key = format!("{method} {}", target.split('?').next().unwrap_or(""));
+                // The log keeps the query, so tests can check the parameters sent.
+                log.lock().unwrap().push(format!("{method} {target} {}", String::from_utf8_lossy(&body)));
                 let (status, reply) = routes.iter().find(|(k, _)| *k == key).map_or(("404 Not Found", r#"{"message":"Not Found"}"#), |(_, v)| ("200 OK", *v));
                 let mut stream = stream;
                 write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();

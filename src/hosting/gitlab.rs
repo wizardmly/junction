@@ -262,6 +262,21 @@ impl Client {
         Ok(mrs.into_iter().map(PullRequest::from).filter(|pr| state != "closed" || pr.state == "closed").collect())
     }
 
+    /// The Review filter's GitHub qualifiers as merge request list
+    /// parameters: approvals stand for reviews (GitLab has no review states
+    /// to search; "changes requested" has no equivalent).
+    pub(super) fn gl_search_pulls(&self, repo: &str, qualifier: &str) -> ApiResult<Vec<u64>> {
+        let filter = match qualifier {
+            "review:none" => "approved_by_ids=None".to_owned(),
+            "review:approved" => "approved_by_ids=Any".to_owned(),
+            "reviewed-by:@me" => format!("approved_by_usernames[]={}", project_id(&self.gl_user()?.login)),
+            _ => return Ok(Vec::new()),
+        };
+        let mrs: Vec<GlMergeRequest> =
+            self.gl_get(&format!("/projects/{}/merge_requests?state=all&{filter}&per_page=100", project_id(repo)))?;
+        Ok(mrs.into_iter().map(|mr| mr.iid).collect())
+    }
+
     pub(super) fn gl_pull(&self, repo: &str, number: u64) -> ApiResult<PullRequest> {
         self.gl_get::<GlMergeRequest>(&Self::mr_path(repo, number)).map(Into::into)
     }
@@ -410,7 +425,12 @@ mod tests {
         client.merge("g/sub/p", 5, MergeMethod::Squash, None).unwrap();
         assert_eq!(client.add_line_comment("g/sub/p", 5, "abc", "b.rs", 1, "hm").unwrap().id, 9);
         client.create_pull("g/sub/p", "T", "", "me:topic", "main", true).unwrap();
+        assert_eq!(client.search_pulls("g/sub/p", "review:approved").unwrap(), vec![5]);
+        assert_eq!(client.search_pulls("g/sub/p", "reviewed-by:@me").unwrap(), vec![5]);
+        assert!(client.search_pulls("g/sub/p", "review:changes_requested").unwrap().is_empty());
         let log = seen.lock().unwrap();
+        assert!(log.iter().any(|l| l.contains("merge_requests?state=all&approved_by_ids=Any&")), "{log:?}");
+        assert!(log.iter().any(|l| l.contains("&approved_by_usernames[]=me&")), "{log:?}");
         assert!(log.iter().any(|l| l.starts_with("PUT /api/v4/projects/g%2Fsub%2Fp/merge_requests/5/merge") && l.contains("squash")));
         assert!(log.iter().any(|l| l.contains("/discussions") && l.contains("\"head_sha\":\"abc\"") && l.contains("\"new_line\":1")));
         assert!(log.iter().any(|l| l.starts_with("POST /api/v4/projects/g%2Fsub%2Fp/merge_requests ") && l.contains("Draft: T") && l.contains("\"source_branch\":\"topic\"")));

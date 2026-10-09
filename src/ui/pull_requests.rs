@@ -99,6 +99,8 @@ struct Filters {
     author: Option<String>,
     label: Option<String>,
     assignee: Option<String>,
+    /// GitLab's Reviewer filter (IntelliJ's GitLab list has it instead of GitHub's review search).
+    reviewer: Option<String>,
     review: Option<ReviewFilter>,
 }
 
@@ -114,8 +116,11 @@ enum ReviewFilter {
 impl ReviewFilter {
     const ALL: [Self; 5] = [Self::AwaitingReview, Self::Approved, Self::ChangesRequested, Self::ReviewedByMe, Self::RequestedFromMe];
 
-    fn label(self) -> &'static str {
+    /// GitLab's list is searched by approvals.
+    fn label(self, gitlab: bool) -> &'static str {
         match self {
+            Self::AwaitingReview if gitlab => "Not approved",
+            Self::ReviewedByMe if gitlab => "Approved by you",
             Self::RequestedFromMe => "Review requested from you",
             Self::AwaitingReview => "Awaiting review",
             Self::Approved => "Approved",
@@ -238,7 +243,7 @@ impl PullRequestsView {
                 self.error = None;
                 let state = self.state;
                 let open_number = self.details.as_ref().map(|d| d.pr.number);
-                let qualifier = if target.gitlab() { None } else { self.filters.review.and_then(ReviewFilter::qualifier) };
+                let qualifier = self.filters.review.and_then(ReviewFilter::qualifier);
                 self._load = Some(cx.spawn(async move |this, cx| {
                     let result = cx
                         .background_spawn(async move {
@@ -313,6 +318,7 @@ impl PullRequestsView {
                 filters.author.as_ref().is_none_or(|a| pr.user.login == *a)
                     && filters.label.as_ref().is_none_or(|l| pr.labels.iter().any(|x| x.name == *l))
                     && filters.assignee.as_ref().is_none_or(|a| pr.assignees.iter().any(|x| x.login == *a))
+                    && filters.reviewer.as_ref().is_none_or(|r| pr.requested_reviewers.iter().any(|x| x.login == *r))
                     && match filters.review {
                         None => true,
                         Some(ReviewFilter::RequestedFromMe) => pr.requested_reviewers.iter().any(|r| r.login == me),
@@ -715,13 +721,14 @@ impl Render for PullRequestsView {
 }
 
 impl PullRequestsView {
-    /// Author, Label, Assignee and Review filters under the search field;
+    /// Author, Label, Assignee (GitLab: and Reviewer) and Review filters under the search field;
     /// the choices come from the listed PRs, as IntelliJ's popups offer them.
     fn filter_bar(&self, palette: &crate::theme::Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let mut authors: Vec<String> = self.prs.iter().map(|p| p.user.login.clone()).collect();
         let mut labels: Vec<String> = self.prs.iter().flat_map(|p| p.labels.iter().map(|l| l.name.clone())).collect();
         let mut assignees: Vec<String> = self.prs.iter().flat_map(|p| p.assignees.iter().map(|a| a.login.clone())).collect();
-        for list in [&mut authors, &mut labels, &mut assignees] {
+        let mut reviewers: Vec<String> = self.prs.iter().flat_map(|p| p.requested_reviewers.iter().map(|a| a.login.clone())).collect();
+        for list in [&mut authors, &mut labels, &mut assignees, &mut reviewers] {
             list.sort_by_key(|v| v.to_lowercase());
             list.dedup();
         }
@@ -755,7 +762,11 @@ impl PullRequestsView {
         let review = self.filters.review;
         let gitlab = self.target.as_ref().is_some_and(PrTarget::gitlab);
         let review_entity = entity.clone();
-        let any_filter = self.filters.author.is_some() || self.filters.label.is_some() || self.filters.assignee.is_some() || review.is_some();
+        let any_filter = self.filters.author.is_some()
+            || self.filters.label.is_some()
+            || self.filters.assignee.is_some()
+            || self.filters.reviewer.is_some()
+            || review.is_some();
         h_flex()
             .px_1()
             .gap_0p5()
@@ -765,11 +776,12 @@ impl PullRequestsView {
             .child(chooser("pr-author", "Author", self.filters.author.clone(), authors, |f, v| f.author = v))
             .child(chooser("pr-label", "Label", self.filters.label.clone(), labels, |f, v| f.label = v))
             .child(chooser("pr-assignee", "Assignee", self.filters.assignee.clone(), assignees, |f, v| f.assignee = v))
+            .when(gitlab, |el| el.child(chooser("pr-reviewer", "Reviewer", self.filters.reviewer.clone(), reviewers, |f, v| f.reviewer = v)))
             .child(
                 Button::new("pr-review")
                     .ghost()
                     .xsmall()
-                    .label(review.map_or_else(|| "Review".to_owned(), |r| format!("Review: {}", r.label())))
+                    .label(review.map_or_else(|| "Review".to_owned(), |r| format!("Review: {}", r.label(gitlab))))
                     .selected(review.is_some())
                     .dropdown_menu(move |mut menu, _, _| {
                         let pick = |value: Option<ReviewFilter>| {
@@ -783,9 +795,9 @@ impl PullRequestsView {
                             }
                         };
                         menu = menu.item(PopupMenuItem::new("Any").checked(review.is_none()).on_click(pick(None)));
-                        // GitLab has no review-state search: only the reviewers list.
-                        for filter in ReviewFilter::ALL.into_iter().filter(|f| !gitlab || f.qualifier().is_none()) {
-                            menu = menu.item(PopupMenuItem::new(filter.label()).checked(review == Some(filter)).on_click(pick(Some(filter))));
+                        // GitLab searches approvals, not review states: no "changes requested".
+                        for filter in ReviewFilter::ALL.into_iter().filter(|f| !gitlab || *f != ReviewFilter::ChangesRequested) {
+                            menu = menu.item(PopupMenuItem::new(filter.label(gitlab)).checked(review == Some(filter)).on_click(pick(Some(filter))));
                         }
                         menu
                     }),
