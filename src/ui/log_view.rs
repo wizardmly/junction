@@ -491,7 +491,23 @@ impl LogView {
         self.branches.update(cx, |tree, cx| {
             tree.set_items(items, cx);
             // The selection stays on the same branch, wherever it now is.
-            let ix = selected.and_then(|id| tree.index_of(&id));
+            let mut ix = selected.and_then(|id| tree.index_of(&id));
+            // Speed search selects the first match unless the selection is one.
+            if searching {
+                let is_match = |ix: usize| {
+                    tree.entry(ix).is_some_and(|e| {
+                        !e.is_folder()
+                            && e.item().id.starts_with(BRANCH_PREFIX)
+                            && !e.item().label.starts_with("HEAD (")
+                    })
+                };
+                if !ix.is_some_and(is_match) {
+                    ix = (0..).take_while(|i| tree.entry(*i).is_some()).find(|i| is_match(*i)).or(ix);
+                }
+                if let Some(ix) = ix {
+                    tree.scroll_to_item(ix, ScrollStrategy::Nearest);
+                }
+            }
             tree.set_selected_index(ix, cx);
         });
     }
@@ -2588,6 +2604,10 @@ fn commit_menu(
                 .unwrap_or(path)
         })
     };
+    // The file's actions already compare with the local file; the
+    // branch-rewriting actions and navigation stay in the Log's own menu,
+    // so the History menu keeps to IntelliJ's shorter list.
+    let history = history_path.is_some();
     let menu = match history_path {
         Some(path) => change_menu(menu, entity, &path, &hash, cx).separator(),
         None => menu,
@@ -2595,10 +2615,12 @@ fn commit_menu(
     menu.item(PopupMenuItem::new("Copy Revision Number").on_click(move |_, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()))
     }))
-    .item(PopupMenuItem::new("Compare with Local").disabled(multi).on_click(move |_, _, cx| {
-        let hash = local_hash.clone();
-        local_model.update(cx, |m, cx| m.compare(hash, None, cx))
-    }))
+    .when(!history, |menu| {
+        menu.item(PopupMenuItem::new("Compare with Local").disabled(multi).on_click(move |_, _, cx| {
+            let hash = local_hash.clone();
+            local_model.update(cx, |m, cx| m.compare(hash, None, cx))
+        }))
+    })
     .when_some(compare, |menu, (old, new)| {
         menu.item(PopupMenuItem::new("Compare Versions").on_click(move |_, _, cx| {
             let (old, new) = (old.clone(), new.clone());
@@ -2651,61 +2673,64 @@ fn commit_menu(
         vec!["checkout".into(), "--detach".into(), hash.clone()],
         format!("Checked out {short}"),
     )))
-    .separator()
-    .item(PopupMenuItem::new("Reset Current Branch to Here…").disabled(multi).on_click({
-        let model = model.clone();
-        let hash = hash.clone();
-        move |_, window, cx| dialogs::reset_to(model.clone(), hash.clone(), window, cx)
-    }))
-    .item(PopupMenuItem::new(if multi { "Revert Commits" } else { "Revert Commit" }).on_click(op(
-        "Revert",
-        // Newest first, so each revert applies cleanly on top of the last.
-        ["revert".to_owned(), "--no-edit".to_owned()].into_iter().chain(picks.iter().rev().cloned()).collect(),
-        if multi { format!("Reverted {} commits", picks.len()) } else { format!("Reverted {short}") },
-    )))
-    .item(PopupMenuItem::new("Undo Commit…").disabled(!is_head || multi).on_click(op(
-        "Undo Commit",
-        vec!["reset".into(), "--soft".into(), "HEAD~1".into()],
-        "Commit undone; changes kept in the working tree".into(),
-    )))
-    .item(PopupMenuItem::new("Edit Commit Message…").disabled(multi || !on_branch).on_click({
-        let model = model.clone();
-        let hash = hash.clone();
-        move |_, window, cx| rebase_dialog::reword(model.clone(), hash.clone(), window, cx)
-    }))
-    .item(PopupMenuItem::new(if multi { "Drop Commits" } else { "Drop Commit" }).disabled(!on_branch).on_click({
-        let model = model.clone();
-        let picks = picks.clone();
-        move |_, window, cx| rebase_dialog::drop_commits(model.clone(), picks.clone(), window, cx)
-    }))
-    .item(PopupMenuItem::new("Squash Commits…").disabled(!multi || !on_branch).on_click({
-        let model = model.clone();
-        let picks = picks.clone();
-        move |_, window, cx| rebase_dialog::squash(model.clone(), picks.clone(), window, cx)
-    }))
-    .item(PopupMenuItem::new("Fixup…").disabled(multi || !on_branch).on_click({
-        let model = model.clone();
-        let message = format!("fixup! {}", commit.subject);
-        move |_, _, cx| model.update(cx, |m, cx| m.prefill_commit_message(message.clone(), cx))
-    }))
-    .item(PopupMenuItem::new("Squash Into…").disabled(multi || !on_branch).on_click({
-        let model = model.clone();
-        let message = format!("squash! {}", commit.subject);
-        move |_, _, cx| model.update(cx, |m, cx| m.prefill_commit_message(message.clone(), cx))
-    }))
-    .item(PopupMenuItem::new("Interactively Rebase from Here…").disabled(multi || !on_branch).on_click({
-        let model = model.clone();
-        let hash = hash.clone();
-        move |_, window, cx| rebase_dialog::open(model.clone(), hash.clone(), window, cx)
-    }))
-    .separator()
-    // Opens the Push dialog with the commits up to this one, as IntelliJ
-    // does, also for a branch without an upstream yet.
-    .item(PopupMenuItem::new("Push All up to Here…").disabled(multi || !can_push_here).on_click({
-        let model = model.clone();
-        let hash = hash.clone();
-        move |_, window, cx| dialogs::push_up_to(model.clone(), Some(hash.clone()), window, cx)
-    }))
+    .when(!history, |menu| {
+        menu
+        .separator()
+        .item(PopupMenuItem::new("Reset Current Branch to Here…").disabled(multi).on_click({
+            let model = model.clone();
+            let hash = hash.clone();
+            move |_, window, cx| dialogs::reset_to(model.clone(), hash.clone(), window, cx)
+        }))
+        .item(PopupMenuItem::new(if multi { "Revert Commits" } else { "Revert Commit" }).on_click(op(
+            "Revert",
+            // Newest first, so each revert applies cleanly on top of the last.
+            ["revert".to_owned(), "--no-edit".to_owned()].into_iter().chain(picks.iter().rev().cloned()).collect(),
+            if multi { format!("Reverted {} commits", picks.len()) } else { format!("Reverted {short}") },
+        )))
+        .item(PopupMenuItem::new("Undo Commit…").disabled(!is_head || multi).on_click(op(
+            "Undo Commit",
+            vec!["reset".into(), "--soft".into(), "HEAD~1".into()],
+            "Commit undone; changes kept in the working tree".into(),
+        )))
+        .item(PopupMenuItem::new("Edit Commit Message…").disabled(multi || !on_branch).on_click({
+            let model = model.clone();
+            let hash = hash.clone();
+            move |_, window, cx| rebase_dialog::reword(model.clone(), hash.clone(), window, cx)
+        }))
+        .item(PopupMenuItem::new(if multi { "Drop Commits" } else { "Drop Commit" }).disabled(!on_branch).on_click({
+            let model = model.clone();
+            let picks = picks.clone();
+            move |_, window, cx| rebase_dialog::drop_commits(model.clone(), picks.clone(), window, cx)
+        }))
+        .item(PopupMenuItem::new("Squash Commits…").disabled(!multi || !on_branch).on_click({
+            let model = model.clone();
+            let picks = picks.clone();
+            move |_, window, cx| rebase_dialog::squash(model.clone(), picks.clone(), window, cx)
+        }))
+        .item(PopupMenuItem::new("Fixup…").disabled(multi || !on_branch).on_click({
+            let model = model.clone();
+            let message = format!("fixup! {}", commit.subject);
+            move |_, _, cx| model.update(cx, |m, cx| m.prefill_commit_message(message.clone(), cx))
+        }))
+        .item(PopupMenuItem::new("Squash Into…").disabled(multi || !on_branch).on_click({
+            let model = model.clone();
+            let message = format!("squash! {}", commit.subject);
+            move |_, _, cx| model.update(cx, |m, cx| m.prefill_commit_message(message.clone(), cx))
+        }))
+        .item(PopupMenuItem::new("Interactively Rebase from Here…").disabled(multi || !on_branch).on_click({
+            let model = model.clone();
+            let hash = hash.clone();
+            move |_, window, cx| rebase_dialog::open(model.clone(), hash.clone(), window, cx)
+        }))
+        .separator()
+        // Opens the Push dialog with the commits up to this one, as IntelliJ
+        // does, also for a branch without an upstream yet.
+        .item(PopupMenuItem::new("Push All up to Here…").disabled(multi || !can_push_here).on_click({
+            let model = model.clone();
+            let hash = hash.clone();
+            move |_, window, cx| dialogs::push_up_to(model.clone(), Some(hash.clone()), window, cx)
+        }))
+    })
     .separator()
     .item(PopupMenuItem::new("New Branch…").disabled(multi).on_click({
         let model = model.clone();
@@ -2717,16 +2742,19 @@ fn commit_menu(
         let hash = hash.clone();
         move |_, window, cx| dialogs::new_tag(model.clone(), hash.clone(), window, cx)
     }))
-    .separator()
-    .item(PopupMenuItem::new("Go to Child Commit").disabled(child.is_none() || multi).on_click({
-        let model = model.clone();
-        move |_, _, cx| model.update(cx, |m, cx| m.select_hash(child.clone(), cx))
-    }))
-    .item(PopupMenuItem::new("Go to Parent Commit").disabled(commit.parents.is_empty() || multi).on_click({
-        let model = model.clone();
-        let parent = commit.parents.first().cloned();
-        move |_, _, cx| model.update(cx, |m, cx| m.select_hash(parent.clone(), cx))
-    }))
+    .when(!history, |menu| {
+        menu
+        .separator()
+        .item(PopupMenuItem::new("Go to Child Commit").disabled(child.is_none() || multi).on_click({
+            let model = model.clone();
+            move |_, _, cx| model.update(cx, |m, cx| m.select_hash(child.clone(), cx))
+        }))
+        .item(PopupMenuItem::new("Go to Parent Commit").disabled(commit.parents.is_empty() || multi).on_click({
+            let model = model.clone();
+            let parent = commit.parents.first().cloned();
+            move |_, _, cx| model.update(cx, |m, cx| m.select_hash(parent.clone(), cx))
+        }))
+    })
     .when_some(web.filter(|_| !multi), |menu, web| {
         let url = web.commit_url(&hash);
         menu.separator().item(PopupMenuItem::new(format!("Open on {}", web.host.name())).on_click(move |_, _, cx| cx.open_url(&url)))

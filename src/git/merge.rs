@@ -101,7 +101,17 @@ pub fn branch_titles(repository: &Repository, state: RepositoryState) -> (String
     match state {
         RepositoryState::Merging => {
             let current = repository.run(["symbolic-ref", "--short", "-q", "HEAD"]).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
-            let merged = read("MERGE_MSG").and_then(|m| merged_branch(m.lines().next()?));
+            // A custom merge message (-m) names no branch: fall back to a ref
+            // at MERGE_HEAD, as git name-rev would.
+            let merged = read("MERGE_MSG").and_then(|m| merged_branch(m.lines().next()?)).or_else(|| {
+                let refs = repository
+                    .run(["for-each-ref", "--points-at", "MERGE_HEAD", "--format=%(refname:short)", "refs/heads", "refs/remotes", "refs/tags"])
+                    .ok()?;
+                refs.lines().map(str::trim).find(|r| !r.is_empty()).map(str::to_owned).or_else(|| {
+                    let name = repository.run(["name-rev", "--name-only", "--no-undefined", "MERGE_HEAD"]).ok()?;
+                    Some(name.trim().to_owned()).filter(|n| !n.is_empty())
+                })
+            });
             (from(current, left), from(merged, right))
         }
         RepositoryState::Rebasing => {

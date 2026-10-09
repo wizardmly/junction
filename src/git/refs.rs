@@ -54,6 +54,8 @@ pub struct RepositoryRefs {
     pub recent: Vec<String>,
     /// Starred refs (full names), listed first in each group.
     pub favorites: std::collections::HashSet<String>,
+    /// The configured remotes (`git remote`), origin first.
+    pub remotes: Vec<String>,
     by_commit: HashMap<String, Vec<usize>>,
 }
 
@@ -83,6 +85,9 @@ impl RepositoryRefs {
         let mut this = Self::new(head_commit, current_branch, refs);
         this.recent = recent_branches(&reflog, |name| this.find(&format!("refs/heads/{name}")).is_some());
         this.favorites = load_favorites(repository);
+        let mut remotes: Vec<String> = repository.run(["remote"]).unwrap_or_default().lines().map(str::trim).filter(|r| !r.is_empty()).map(str::to_owned).collect();
+        remotes.sort_by_key(|r| r != "origin");
+        this.remotes = remotes;
         Ok(this)
     }
 
@@ -91,7 +96,7 @@ impl RepositoryRefs {
         for (ix, reference) in refs.iter().enumerate() {
             by_commit.entry(reference.target.clone()).or_default().push(ix);
         }
-        Self { head_commit, current_branch, refs, recent: Vec::new(), favorites: Default::default(), by_commit }
+        Self { head_commit, current_branch, refs, recent: Vec::new(), favorites: Default::default(), remotes: Vec::new(), by_commit }
     }
 
     /// Refs pointing at `hash`, ordered the way IntelliJ labels a row:

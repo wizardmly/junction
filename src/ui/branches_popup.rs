@@ -845,12 +845,14 @@ impl Render for BranchesPopup {
 }
 
 /// Remotes tags push to / delete on, as IntelliJ lists them per remote.
+/// The remotes a tag can be pushed to or deleted on: the configured ones
+/// (none, no "Push to …" items, as in IntelliJ).
 pub(crate) fn remote_names(refs: &crate::git::RepositoryRefs) -> Vec<String> {
+    if !refs.remotes.is_empty() {
+        return refs.remotes.clone();
+    }
     let mut names: Vec<String> = refs.remote_branches().filter_map(|r| r.remote().map(str::to_owned)).collect();
     names.dedup();
-    if names.is_empty() {
-        names.push("origin".into());
-    }
     names
 }
 

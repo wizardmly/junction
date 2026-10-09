@@ -677,6 +677,9 @@ impl CommitView {
     /// Commit, after IntelliJ's pre-commit checks: detached HEAD, CRLF line
     /// separators, and files too large for hosting services.
     fn commit(&mut self, push: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !crate::git::merge::conflicts(self.model.read(cx).status()).is_empty() {
+            return;
+        }
         if self.message.read(cx).value().trim().is_empty() {
             // IntelliJ keeps Commit enabled and asks for the message.
             self.message_error = true;
@@ -708,7 +711,9 @@ impl CommitView {
         if settings.large_file_mb > 0 {
             let limit = settings.large_file_mb as u64;
             for (path, size) in status::large_files(&repository, &paths, limit * 1024 * 1024) {
-                warnings.push(format!("{path} is {} MB, larger than {limit} MB; Git hosts may reject it.", size / (1024 * 1024)));
+                // One decimal, so a 1.9 MB file doesn't read "1 MB, larger than 1 MB".
+                let mb = size as f64 / (1024.0 * 1024.0);
+                warnings.push(format!("{path} is {mb:.1} MB, larger than {limit} MB; Git hosts may reject it."));
             }
         }
         if warnings.is_empty() {
@@ -813,10 +818,12 @@ impl CommitView {
     }
 
     /// Something to commit (or Amend); an empty message is reported on click.
-    fn can_commit(&self, _: &gpui_kit::App) -> bool {
+    fn can_commit(&self, cx: &gpui_kit::App) -> bool {
         let staged_count = self.groups.iter().find(|g| g.scope == STAGED_SCOPE).map_or(0, |g| g.files.len());
         let has_changes = if self.staging { staged_count > 0 } else { !self.included.is_empty() };
-        has_changes || self.amend
+        // Unresolved merge conflicts must be resolved first.
+        let conflicts = !crate::git::merge::conflicts(self.model.read(cx).status()).is_empty();
+        (has_changes || self.amend) && !conflicts
     }
 
     fn on_message_history(&mut self, _: &ShowMessageHistory, window: &mut Window, cx: &mut Context<Self>) {

@@ -54,6 +54,7 @@ impl CommitView {
         let selected = Rc::new(RefCell::new(targets.first().cloned()));
         let new_name = cx.new(|cx| InputState::new(window, cx).placeholder("New changelist name"));
         let entity = cx.entity();
+        let focus_target = new_name.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
             let palette = cx.palette().clone();
             let mut list = v_flex().gap_0p5();
@@ -102,6 +103,7 @@ impl CommitView {
                     true
                 })
         });
+        crate::ui::dialogs::focus_input(&focus_target, window, cx);
     }
 }
 
