@@ -96,6 +96,12 @@ pub struct LogView {
     changes_expanded: bool,
     last_change_selection: Option<SharedString>,
     last_branch_selection: Option<SharedString>,
+    /// A branch selected in the Branches panel whose tip the active filters
+    /// hide: (name, hash), for IntelliJ's "does not match active filters"
+    /// balloon (shown on the next render, which has the window).
+    hidden_branch_tip: Option<(String, String)>,
+    /// View and Reset Filters: the commit to select once the log reloads.
+    select_after_reload: Option<String>,
     show_branches: bool,
     show_details: bool,
     /// Commits reachable from HEAD among the loaded ones, for the Current
@@ -156,6 +162,9 @@ impl LogView {
                     }
                     this.known_authors.1.extend(commits.iter().map(|c| c.author_name.clone()));
                     this.extra_selection.retain(|h| commits.iter().any(|c| &c.hash == h));
+                    if let Some(hash) = this.select_after_reload.take_if(|hash| commits.iter().any(|c| &c.hash == hash)) {
+                        this.model.update(cx, |model, cx| model.select_hash(Some(hash), cx));
+                    }
                     this.rebuild_branches(cx);
                     cx.notify();
                 }
@@ -200,10 +209,20 @@ impl LogView {
                 let selected = branches.read(cx).selected_item().map(|item| item.id.clone());
                 if selected != this.last_branch_selection {
                     this.last_branch_selection = selected.clone();
-                    // Selecting a branch navigates the log to its tip.
+                    // Selecting a branch navigates the log to its tip. A tip the
+                    // filters hide isn't selected behind the list's back: IntelliJ
+                    // says it doesn't match and offers to reset the filters.
                     if let Some(full_name) = selected.as_deref().and_then(|id| id.strip_prefix(BRANCH_PREFIX)) {
-                        let target = this.model.read(cx).refs().find(full_name).map(|r| r.target.clone());
-                        this.model.update(cx, |model, cx| model.select_hash(target, cx));
+                        let model = this.model.read(cx);
+                        let target = model.refs().find(full_name).map(|r| (r.name.clone(), r.target.clone()));
+                        let filtered = *model.filter() != LogFilter { date_order: model.filter().date_order, ..Default::default() };
+                        match target {
+                            Some((name, hash)) if filtered && !model.commits().iter().any(|c| c.hash == hash) => {
+                                this.hidden_branch_tip = Some((name, hash));
+                                cx.notify();
+                            }
+                            target => this.model.update(cx, |model, cx| model.select_hash(target.map(|(_, hash)| hash), cx)),
+                        }
                     }
                 }
             }),
@@ -222,6 +241,8 @@ impl LogView {
             changes_expanded: true,
             last_change_selection: None,
             last_branch_selection: None,
+            hidden_branch_tip: None,
+            select_after_reload: None,
             show_branches: true,
             show_details: true,
             head_reachable: None,
@@ -255,6 +276,13 @@ impl LogView {
             self.details_below = below;
             cx.notify();
         }
+    }
+
+    /// View and Reset Filters: every filter off, then the commit selected.
+    fn reset_filters_and_select(&mut self, hash: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |state, cx| state.set_value("", window, cx));
+        self.select_after_reload = Some(hash);
+        self.update_filter(cx, |f| *f = LogFilter { date_order: f.date_order, ..Default::default() });
     }
 
     fn apply_text_filter(&mut self, cx: &mut Context<Self>) {
@@ -2712,7 +2740,19 @@ impl Focusable for LogView {
 }
 
 impl Render for LogView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some((name, hash)) = self.hidden_branch_tip.take() {
+            let entity = cx.entity();
+            window.push_notification(
+                gpui_kit::component::notification::Notification::warning(format!("{name} does not match active filters")).action(move |_, _, _| {
+                    let (entity, hash) = (entity.clone(), hash.clone());
+                    Button::new("log-reset-filters").label("View and Reset Filters").small().outline().on_click(move |_, window, cx| {
+                        entity.update(cx, |this, cx| this.reset_filters_and_select(hash.clone(), window, cx))
+                    })
+                }),
+                cx,
+            );
+        }
         let palette = cx.palette().clone();
         let count = self.model.read(cx).commits().len();
         let empty = count == 0 && !self.model.read(cx).is_loading();

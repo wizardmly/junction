@@ -27,7 +27,7 @@
 | 收藏分支（星标）、置顶 | M2 | ✅（分支弹窗与 Log 分支面板：星标切换，收藏排在组内最前；默认收藏 main/master） |
 | 按 `/` 分组为目录（feature/xxx） | M1 | ✅ |
 | 分支搜索（直接输入） | M1 | ✅（Log 分支面板顶部搜索框，过滤并展开所有匹配、高亮匹配文字，Esc 清空；在树里直接输入即开始搜索；分支弹窗打开即聚焦搜索） |
-| 单击定位到分支顶端、双击按分支过滤 Log | M1 | ✅（过滤后树的展开状态和选中项不变；键盘：Enter 展开/折叠目录或按分支过滤，←/→ 折叠/展开或到父/子节点） |
+| 单击定位到分支顶端、双击按分支过滤 Log | M1 | ✅（过滤后树的展开状态和选中项不变；分支顶端被当前过滤条件挡住时不选中列表外的提交，像 AS 一样提示 “… does not match active filters”，View and Reset Filters 清空过滤后定位；键盘：Enter 展开/折叠目录或按分支过滤，←/→ 折叠/展开或到父/子节点） |
 | ahead/behind 指示（↑↓ 箭头） | M2 | ✅ |
 | 工具栏：New Branch、Update Selected、Delete、Compare with Current、Show My Branches、Fetch、展开/折叠 | M2 | ✅（New Branch、Fetch、Update Selected、Delete、Compare with Current、Show My Branches（含我提交的分支）、展开/折叠、按分支过滤） |
 | 多仓库根时按仓库分组 | M5 | 🟡（分支弹窗 Repositories 区列出所有根及其分支，点选切换；Commit 树可 Group By Repository。还差：AS 在 Commit 和 Log 里同时列出所有根的改动和提交，这里一次只显示当前根） |
