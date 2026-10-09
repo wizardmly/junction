@@ -196,9 +196,35 @@ impl ActivePalette for App {
 pub fn effective_dark(cx: &App) -> bool {
     let settings = crate::settings::Settings::get(cx);
     if settings.theme_follows_system {
+        // macOS and Windows report the system setting directly (and on a
+        // change, through the windows' appearance callbacks). On Linux the
+        // XDG portal's answer arrives after startup and is missing without a
+        // portal, so a light answer is checked against the desktop's own.
         matches!(cx.window_appearance(), gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark)
+            || (cfg!(any(target_os = "linux", target_os = "freebsd")) && linux_prefers_dark())
     } else {
         settings.dark
+    }
+}
+
+/// GNOME's color scheme, else a dark GTK theme (`GTK_THEME` or GNOME's
+/// theme name), as IntelliJ's Linux "Sync with OS" reads them.
+fn linux_prefers_dark() -> bool {
+    if let Ok(theme) = std::env::var("GTK_THEME") {
+        return theme.to_lowercase().contains("dark");
+    }
+    let gsettings = |key: &str| {
+        std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", key])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().trim_matches('\'').to_lowercase())
+    };
+    match gsettings("color-scheme").as_deref() {
+        Some("prefer-dark") => true,
+        Some("prefer-light") => false,
+        _ => gsettings("gtk-theme").is_some_and(|t| t.contains("dark")),
     }
 }
 
