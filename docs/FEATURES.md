@@ -170,7 +170,7 @@
 |---|---|---|
 | 文件历史（Show History）：Log 标签页 + 该文件的 diff | M3 | ✅（Log 按路径过滤，--follow 跟踪重命名，History Up to Here） |
 | 选中内容历史（Show History for Selection） | M4 | ✅（文件编辑器右键 Git → Show History for Selection，用 git log -L 打开 Log 标签页） |
-| Annotate with Git Blame：作者/日期/提交，按时间着色，悬浮详情，Annotate previous revision | M3 | ✅ |
+| Annotate with Git Blame：在编辑器 gutter 里逐行显示日期/作者（View 子菜单可加提交哈希），按时间着色，悬浮详情，跟随未保存的编辑；右键 Annotate Revision / Annotate Previous Revision（新增该文件的提交上置灰）/ Show Diff / Select in Git Log | M3 | ✅ |
 | 文件查看器里的变更标记（gutter）：点击看 diff、回滚 hunk、stage hunk | M4 | ✅（行号旁的 gutter 竖条：新增绿、修改蓝、删除处灰色楔形；点击弹出 AS 式变更弹窗：上一处 / 下一处（循环）、Rollback（可撤销）、Show Diff、Copy、Stage（只把这块写入 index，其它已暂存内容保留），下方显示 HEAD 里的原内容；Esc 或点外面关闭，打字时自动关闭；Rollback Lines（Ctrl+Alt+Z）） |
 | Show Current Revision | M4 | ✅（编辑器右键 Git → Show Current Revision，在 Log 中选中最后修改该文件的提交） |
 
@@ -265,7 +265,7 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | 每个打开的文件一个标签；文件图标、VCS 状态着色、未保存标记 •；同名文件附带目录名 | M8 | ✅ |
-| Diff、Merge、Annotate、Pull Request 视图也作为标签显示，可切换、可关闭 | M8 | ✅ |
+| Diff、Merge、Pull Request 视图也作为标签显示，可切换、可关闭 | M8 | ✅ |
 | 新标签开在当前标签右侧；关闭后激活左侧标签；关闭时自动保存 | M8 | ✅ |
 | 标签上限 10 个，超出时关闭最久未用的、未固定且未修改的标签 | M8 | ✅ |
 | 右键：Close / Close Other Tabs / Close Tabs to the Left / Right / Close All Tabs / Close All but Pinned / Pin Tab / Copy Path / Copy Path From Repository Root / Select in Project View / Reopen Closed Tab | M8 | ✅ |

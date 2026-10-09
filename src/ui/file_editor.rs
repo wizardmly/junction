@@ -29,6 +29,7 @@ use crate::index::nav::{self, Target};
 use crate::index::service::CodeIndex;
 use crate::git::diff::{self, Hunk};
 use crate::theme::ActivePalette as _;
+use crate::ui::annotation_gutter::{Annotation, AnnotationAction};
 use crate::ui::common::{self, tool_button};
 use crate::ui::diff_view::DiffSource;
 
@@ -157,6 +158,12 @@ pub struct FileEditor {
     popup_focus: gpui_kit::FocusHandle,
     error: Option<String>,
     code_index: Option<Entity<CodeIndex>>,
+    /// Annotate with Git Blame, shown in the gutter.
+    annotation: Option<Annotation>,
+    annotation_task: Option<gpui_kit::Task<()>>,
+    /// The annotation hover card: its line and where the mouse rested.
+    hover_card: Option<(usize, Point<Pixels>)>,
+    hover_task: Option<gpui_kit::Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -307,6 +314,10 @@ impl FileEditor {
                 // IntelliJ closes the change popup on typing.
                 this.popup = None;
                 this.update_markers(cx);
+                // The annotations follow the edit (new lines: Not Committed Yet).
+                if this.annotation.is_some() {
+                    this.load_annotations(true, cx);
+                }
                 if this.is_dirty(cx) {
                     cx.emit(FileEditorEvent::Edited);
                 }
@@ -330,6 +341,10 @@ impl FileEditor {
             popup_focus: cx.focus_handle(),
             error,
             code_index: None,
+            annotation: None,
+            annotation_task: None,
+            hover_card: None,
+            hover_task: None,
             _subscriptions: subscriptions,
         };
         this.update_markers(cx);
@@ -815,8 +830,102 @@ impl FileEditor {
         cx.emit(FileEditorEvent::SelectionHistory { path: self.path.clone(), lines });
     }
 
+    /// Annotate with Git Blame toggles the gutter annotations, as in IntelliJ.
     fn annotate(&mut self, _: &AnnotateFile, _: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(FileEditorEvent::Annotate { path: self.path.clone(), revision: self.revision.clone() });
+        if self.annotation.is_some() {
+            self.annotation_action(AnnotationAction::Close, cx);
+        } else {
+            self.show_annotations(cx);
+        }
+    }
+
+    pub fn annotation(&self) -> Option<&Annotation> {
+        self.annotation.as_ref()
+    }
+
+    /// Shows the blame annotations in the gutter (no-op when shown).
+    pub fn show_annotations(&mut self, cx: &mut Context<Self>) {
+        if self.annotation.is_none() && self.error.is_none() {
+            self.annotation = Some(Annotation::loading());
+            self.load_annotations(false, cx);
+        }
+    }
+
+    /// Blames the text shown: the revision, or the editor's own (possibly
+    /// unsaved) text of a working-tree file. `debounce` waits for typing to pause.
+    fn load_annotations(&mut self, debounce: bool, cx: &mut Context<Self>) {
+        let repository = self.repository.clone();
+        let path = self.path.clone();
+        let revision = self.revision.clone();
+        let text = self.text(cx);
+        self.annotation_task = Some(cx.spawn(async move |this, cx| {
+            if debounce {
+                cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
+            }
+            let result = cx
+                .background_spawn(async move {
+                    match &revision {
+                        Some(rev) => crate::git::blame::blame(&repository, &path, Some(rev)),
+                        None => crate::git::blame::blame_contents(&repository, &path, &text),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let Some(annotation) = this.annotation.as_mut() else { return };
+                match result {
+                    Ok(blame) => annotation.set_blame(blame),
+                    Err(error) => {
+                        annotation.loading = false;
+                        annotation.error = Some(error.to_string().lines().last().unwrap_or_default().to_owned());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Runs what the annotation gutter asked for.
+    pub fn annotation_action(&mut self, action: AnnotationAction, cx: &mut Context<Self>) {
+        match action {
+            AnnotationAction::Annotate { hash, path } => cx.emit(FileEditorEvent::Annotate { path, revision: Some(hash) }),
+            AnnotationAction::SelectInLog(hash) => cx.emit(FileEditorEvent::SelectCommit(hash)),
+            AnnotationAction::ShowDiff { hash, path } => cx.emit(FileEditorEvent::OpenDiff(DiffSource::Commit { hash, path, old_path: None })),
+            AnnotationAction::SetView(view) => {
+                if let Some(annotation) = self.annotation.as_mut() {
+                    annotation.view = view;
+                }
+            }
+            AnnotationAction::Close => {
+                self.annotation = None;
+                self.annotation_task = None;
+                self.hover_card = None;
+                self.hover_task = None;
+            }
+            AnnotationAction::HideCard => {
+                self.hover_card = None;
+                self.hover_task = None;
+            }
+            AnnotationAction::Hover => {
+                // IntelliJ's tooltip waits for the mouse to rest.
+                self.hover_card = None;
+                let hovered = self.annotation.as_ref().and_then(|a| a.hovered.get());
+                self.hover_task = hovered.map(|(line, at)| {
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(std::time::Duration::from_millis(600)).await;
+                        this.update(cx, |this, cx| {
+                            let still = this.annotation.as_ref().and_then(|a| a.hovered.get()).map(|(l, _)| l);
+                            if still == Some(line) {
+                                this.hover_card = Some((line, at));
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    })
+                });
+            }
+        }
+        cx.notify();
     }
 
     fn show_history(&mut self, _: &ShowFileHistory, _: &mut Window, cx: &mut Context<Self>) {
@@ -854,7 +963,7 @@ impl FileEditor {
 }
 
 impl Render for FileEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let dirty = self.is_dirty(cx);
         let read_only = self.read_only();
@@ -863,6 +972,15 @@ impl Render for FileEditor {
             None => self.library_title(cx).unwrap_or_else(|| self.path.clone()),
         };
         let changes = self.hunks.len();
+        let annotated = self.annotation.is_some();
+        let annotation_gutter = self
+            .annotation
+            .as_ref()
+            .filter(|a| !a.loading || !a.blame.lines.is_empty())
+            .map(|a| a.gutter(self.state.clone(), cx.entity().downgrade(), window, cx).into_any_element());
+        let hover_card = self
+            .hover_card
+            .and_then(|(line, at)| Some((at, self.annotation.as_ref()?.hover_card(line, cx)?.into_any_element())));
         v_flex()
             .size_full()
             .key_context(CONTEXT)
@@ -916,8 +1034,12 @@ impl Render for FileEditor {
                 el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(error))
             })
             .child(self.find.clone())
+            .when_some(self.annotation.as_ref().and_then(|a| a.error.clone()), |el, error| {
+                el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(format!("Cannot annotate: {error}")))
+            })
             .child(
                 div().relative().flex_1().min_h_0().child(
+                    h_flex().size_full().children(annotation_gutter).child(div().flex_1().min_w_0().h_full().child(
                     Editor::new(&self.state)
                         .h_full()
                         .bordered(false)
@@ -937,7 +1059,7 @@ impl Render for FileEditor {
                                 .separator();
                             let git = NativeMenu::new()
                                 .menu("Show History for Selection", Box::new(ShowSelectionHistory))
-                                .menu("Annotate with Git Blame", Box::new(AnnotateFile))
+                                .menu(if annotated { "Close Annotations" } else { "Annotate with Git Blame" }, Box::new(AnnotateFile))
                                 .menu("Show History", Box::new(ShowFileHistory))
                                 .menu("Show Current Revision", Box::new(ShowCurrentRevision))
                                 .menu("Show Diff", Box::new(ShowFileDiff))
@@ -947,8 +1069,11 @@ impl Render for FileEditor {
                                 .menu("Create Gist…", Box::new(CreateGist));
                             menu.submenu("Git", git)
                         }),
-                )
+                )))
                 .when(!read_only, |el| el.child(self.marker_strip(cx)))
+                .when_some(hover_card, |el, (at, card)| {
+                    el.child(deferred(anchored().position(point(at.x + px(12.), at.y + px(16.))).child(card)).with_priority(1))
+                })
                 .when_some(self.popup.zip(self.popup_anchor.get()), |el, (ix, at)| el.child(self.render_popup(ix, at, cx))),
             )
     }

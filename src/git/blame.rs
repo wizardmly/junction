@@ -16,6 +16,10 @@ pub struct BlameCommit {
     pub summary: String,
     /// The file's path in that commit (it may have been renamed since).
     pub path: String,
+    /// The commit's parent and the file's path there, when the file
+    /// existed before it: "Annotate Previous Revision" (none for the commit
+    /// that added the file, or a root commit).
+    pub previous: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +59,12 @@ pub fn blame(repository: &Repository, path: &str, revision: Option<&str>) -> Res
     Ok(parse(&repository.run(&args)?))
 }
 
+/// Blames the editor's text of the working-tree `path` (`--contents`), so
+/// the annotations follow unsaved edits; new lines are "Not Committed Yet".
+pub fn blame_contents(repository: &Repository, path: &str, contents: &str) -> Result<Blame> {
+    Ok(parse(&repository.run_with_input(["blame", "--porcelain", "--contents", "-", "--", path], Some(contents))?))
+}
+
 pub(crate) fn parse(output: &str) -> Blame {
     let mut blame = Blame::default();
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -74,6 +84,7 @@ pub(crate) fn parse(output: &str) -> Blame {
                 author_time: 0,
                 summary: String::new(),
                 path: String::new(),
+                previous: None,
             });
             blame.commits.len() - 1
         });
@@ -94,6 +105,8 @@ pub(crate) fn parse(output: &str) -> Blame {
                 entry.summary = v.to_owned();
             } else if let Some(v) = line.strip_prefix("filename ") {
                 entry.path = v.to_owned();
+            } else if let Some((hash, path)) = line.strip_prefix("previous ").and_then(|v| v.split_once(' ')) {
+                entry.previous = Some((hash.to_owned(), path.to_owned()));
             }
         }
     }
@@ -111,7 +124,7 @@ mod tests {
         let output = format!(
             "{a} 1 1 2\nauthor Alice\nauthor-mail <alice@x>\nauthor-time 100\nsummary First\nfilename f\n\tline one\n\
              {a} 2 2\n\tline two\n\
-             {b} 1 3 1\nauthor Bob\nauthor-mail <bob@x>\nauthor-time 200\nsummary Second\nfilename f\n\tline three\n"
+             {b} 1 3 1\nauthor Bob\nauthor-mail <bob@x>\nauthor-time 200\nsummary Second\nprevious {a} old\nfilename f\n\tline three\n"
         );
         let blame = parse(&output);
         assert_eq!(blame.commits.len(), 2);
@@ -121,5 +134,7 @@ mod tests {
         assert_eq!(blame.lines[2].text, "line three");
         assert_eq!(blame.commits[0].author_email, "alice@x");
         assert_eq!(blame.commits[1].path, "f");
+        assert_eq!(blame.commits[0].previous, None);
+        assert_eq!(blame.commits[1].previous, Some((a.clone(), "old".to_owned())));
     }
 }

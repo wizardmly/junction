@@ -1,5 +1,5 @@
 //! Editor tabs, after IntelliJ's: one tab per open file plus the diff,
-//! merge, annotate and pull request views shown in the editor area.
+//! merge and pull request views shown in the editor area.
 //! Pinned tabs come first; closing a tab activates its left neighbour;
 //! past the tab limit the least recently used unpinned tab closes.
 //!
@@ -38,7 +38,6 @@ pub(super) enum Front {
     Editor(usize),
     Diff,
     Merge,
-    Blame,
     Timeline,
 }
 
@@ -147,7 +146,7 @@ impl Workspace {
     }
 
     fn has_specials(&self, cx: &gpui_kit::App) -> bool {
-        self.diff.read(cx).title().is_some() || self.merge.is_some() || self.blame.is_some() || self.timeline.is_some()
+        self.diff.read(cx).title().is_some() || self.merge.is_some() || self.timeline.is_some()
     }
 
     /// The file editor the editor area shows, if it shows one.
@@ -175,9 +174,6 @@ impl Workspace {
         }
         if self.merge.is_some() {
             tabs.push(Front::Merge);
-        }
-        if self.blame.is_some() {
-            tabs.push(Front::Blame);
         }
         if self.timeline.is_some() {
             tabs.push(Front::Timeline);
@@ -348,7 +344,6 @@ impl Workspace {
             _ if self.active_group != 0 => self.editors.is_empty(),
             Front::Diff => self.diff.read(cx).title().is_some() || self.editors.is_empty(),
             Front::Merge => self.merge.is_some(),
-            Front::Blame => self.blame.is_some(),
             Front::Timeline => self.timeline.is_some(),
         };
         if ok {
@@ -366,7 +361,6 @@ impl Workspace {
             Front::Editor(ix) => return self.close_tabs(vec![ix], cx),
             Front::Diff => self.diff.update(cx, |diff, cx| diff.clear(cx)),
             Front::Merge => self.merge = None,
-            Front::Blame => self.blame = None,
             Front::Timeline => self.timeline = None,
         }
         self.fix_front(cx);
@@ -462,10 +456,6 @@ impl Workspace {
             Front::Merge => {
                 let path = self.merge.as_ref().map(|(m, _)| m.read(cx).path().to_owned()).unwrap_or_default();
                 (format!("Merge: {}", path.rsplit('/').next().unwrap_or(&path)), IconName::GitMerge, None)
-            }
-            Front::Blame => {
-                let path = self.blame.as_ref().map(|(b, _)| b.read(cx).path().to_owned()).unwrap_or_default();
-                (format!("Annotate: {}", path.rsplit('/').next().unwrap_or(&path)), IconName::UserRound, None)
             }
             Front::Timeline => {
                 let title = self.timeline.as_ref().map(|t| t.read(cx).title()).unwrap_or_else(|| "Pull Request".to_owned());

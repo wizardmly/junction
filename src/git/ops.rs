@@ -18,7 +18,6 @@ pub struct PushPreview {
     /// Whether the branch already tracks a remote branch; a push without
     /// one sets it (`--set-upstream`).
     pub has_upstream: bool,
-    pub commits: Vec<Commit>,
 }
 
 pub(crate) const LOG_FORMAT: &str = "--format=\u{1e}%H\u{1f}%P\u{1f}%an\u{1f}%ae\u{1f}%at\u{1f}%s";
@@ -53,8 +52,8 @@ pub fn push_preview(repository: &Repository) -> Result<PushPreview> {
             branch.clone().unwrap_or_default(),
         ),
     };
-    let (new_branch, commits) = push_commits(repository, &remote, &target)?;
-    Ok(PushPreview { branch, remotes, remote, target, new_branch, has_upstream: upstream.is_some(), commits })
+    let new_branch = repository.run(["rev-parse", "--verify", "-q", &format!("refs/remotes/{remote}/{target}")]).is_err();
+    Ok(PushPreview { branch, remotes, remote, target, new_branch, has_upstream: upstream.is_some() })
 }
 
 /// What pushing HEAD to `remote`/`target` would send, and whether that
@@ -379,8 +378,10 @@ mod tests {
         // No remote: every commit is "new" and would be pushed.
         let preview = push_preview(&repo).unwrap();
         assert!(preview.new_branch);
-        assert_eq!(preview.commits.len(), 1);
         assert_eq!(preview.target, "main");
+        let (new_branch, commits) = push_commits(&repo, &preview.remote, &preview.target).unwrap();
+        assert!(new_branch);
+        assert_eq!(commits.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

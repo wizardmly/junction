@@ -24,7 +24,6 @@ use gpui_kit::{
 
 use crate::model::{OpenProblem, RepoEvent, RepoModel};
 use crate::theme::{self, ActivePalette as _};
-use crate::ui::blame_view::{BlameEvent, BlameView};
 use crate::ui::branches_popup::{self, BranchesPopup};
 use crate::ui::commit_view::{CommitEvent, CommitView};
 use crate::ui::common::tool_button;
@@ -225,8 +224,6 @@ pub struct Workspace {
     /// Git tool window Log tabs; the first is the main "Log".
     log_tabs: Vec<LogTab>,
     active_log: usize,
-    /// Annotate with Git Blame, shown instead of the diff until closed.
-    blame: Option<(Entity<BlameView>, Subscription)>,
     /// Editor tabs, pinned first.
     editors: Vec<EditorTab>,
     /// What the editor area shows: a file tab, or the diff / merge / annotate / PR view.
@@ -287,7 +284,7 @@ impl Workspace {
         let subscriptions = vec![
             cx.subscribe_in(&log, window, |this, _, event: &LogEvent, window, cx| match event {
                 LogEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
-                LogEvent::Annotate { path, revision } => this.annotate(path.clone(), revision.clone(), cx),
+                LogEvent::Annotate { path, revision } => this.annotate(path.clone(), revision.clone(), window, cx),
                 LogEvent::OpenFile { path, revision } => this.open_file(path.clone(), revision.clone(), window, cx),
             }),
             cx.subscribe_in(&changes, window, |this, _, event: &crate::ui::changes_view::ChangesEvent, _window, cx| {
@@ -583,7 +580,6 @@ impl Workspace {
             merge: None,
             log_tabs: vec![LogTab { title: "Log".into(), filter: Default::default(), selected: None }],
             active_log: 0,
-            blame: None,
             editors: Vec::new(),
             front: Front::Diff,
             tab_clock: 0,
@@ -713,32 +709,13 @@ impl Workspace {
         )
     }
 
-    pub fn annotate(&mut self, path: String, revision: Option<String>, cx: &mut Context<Self>) {
-        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
-        if self.blame.as_ref().is_some_and(|(b, _)| b.read(cx).path() == path && b.read(cx).revision() == revision.as_deref()) {
-            return;
+    /// Annotate with Git Blame: opens the file (at `revision`, read-only)
+    /// with the annotations in its gutter, as IntelliJ does.
+    pub fn annotate(&mut self, path: String, revision: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_file(path, revision, window, cx);
+        if let Some(editor) = self.editor() {
+            editor.update(cx, |editor, cx| editor.show_annotations(cx));
         }
-        let model = self.model.clone();
-        let view = cx.new(|cx| BlameView::new(model, repository, path, revision, cx));
-        let subscription = cx.subscribe(&view, |this, _, event: &BlameEvent, cx| match event {
-            BlameEvent::SelectCommit(hash) => {
-                this.tools.open(ToolWindow::Git);
-                this.bottom_tab = BottomTab::Log;
-                let hash = hash.clone();
-                this.model.update(cx, |m, cx| m.select_hash(Some(hash), cx));
-                cx.notify();
-            }
-            BlameEvent::ShowDiff(source) => this.open_diff(source.clone(), cx),
-            BlameEvent::Closed => {
-                this.blame = None;
-                this.fix_front(cx);
-                cx.notify();
-            }
-        });
-        self.blame = Some((view, subscription));
-        self.focus_group(0, cx);
-        self.front = Front::Blame;
-        cx.notify();
     }
 
     /// Show History: a Log tab for one file, following renames, as IntelliJ's "History: name" tab.
@@ -777,7 +754,7 @@ impl Workspace {
             FileEditorEvent::CreateGist { name, content } => {
                 crate::ui::github_dialogs::create_gist(self.model.clone(), vec![(name.clone(), content.clone())], window, cx)
             }
-            FileEditorEvent::Annotate { path, revision } => self.annotate(path.clone(), revision.clone(), cx),
+            FileEditorEvent::Annotate { path, revision } => self.annotate(path.clone(), revision.clone(), window, cx),
             FileEditorEvent::ShowHistory(path) => self.show_history(path.clone(), cx),
             FileEditorEvent::SelectionHistory { path, lines } => {
                 let name = path.rsplit('/').next().unwrap_or(path);
@@ -1039,7 +1016,6 @@ impl Workspace {
                             _ if group != 0 => el,
                             Front::Timeline if self.timeline.is_some() => el.child(self.timeline.clone().unwrap()),
                             Front::Merge if self.merge.is_some() => el.child(self.merge.as_ref().unwrap().0.clone()),
-                            Front::Blame if self.blame.is_some() => el.child(self.blame.as_ref().unwrap().0.clone()),
                             _ => el.child(self.diff.clone()),
                         }
                     }),
@@ -1367,7 +1343,7 @@ impl Workspace {
                 self.open_diff(DiffSource::WorkingTree { path, unversioned }, cx)
             }
             FileAction::OpenFile(path) => self.open_file(path, None, window, cx),
-            FileAction::Annotate(path) => self.annotate(path, None, cx),
+            FileAction::Annotate(path) => self.annotate(path, None, window, cx),
             FileAction::ShowHistory(path) => self.show_history(path, cx),
             FileAction::CompareWithRevision(path) => {
                 let workspace = cx.entity();

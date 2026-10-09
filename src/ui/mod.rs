@@ -1,5 +1,5 @@
 pub mod accounts_dialog;
-pub mod blame_view;
+pub mod annotation_gutter;
 pub mod branches_popup;
 pub mod changes_view;
 pub mod clone_dialog;
