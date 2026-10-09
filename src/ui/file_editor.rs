@@ -55,7 +55,8 @@ actions!(
         OpenFind,
         OpenReplace,
         CompareWithClipboard,
-        DeleteLine
+        DeleteLine,
+        CloseFindBar
     ]
 );
 
@@ -84,6 +85,12 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("f3", FindNext, Some(CONTEXT)),
         KeyBinding::new("shift-f3", FindPrevious, Some(CONTEXT)),
         KeyBinding::new("escape", CloseChangePopup, Some(POPUP_CONTEXT)),
+        // Esc in the text closes the find bar too, once the text field has
+        // passed on it (no menu, extra cursors or completion to dismiss).
+        KeyBinding::new("escape", CloseFindBar, Some(CONTEXT)),
+        // IntelliJ: Next / Previous Occurrence of the Find window's results.
+        KeyBinding::new("secondary-alt-down", crate::ui::workspace::NextOccurrence, Some("FileEditor > Input")),
+        KeyBinding::new("secondary-alt-up", crate::ui::workspace::PreviousOccurrence, Some("FileEditor > Input")),
         // IntelliJ's keymap: Ctrl+Shift+Z redoes, Ctrl+Y deletes the line
         // (over the text field's Windows-style Ctrl+Y redo).
         #[cfg(not(target_os = "macos"))]
@@ -1072,6 +1079,13 @@ impl Render for FileEditor {
             .on_action(cx.listener(|this, _: &PreviousChange, window, cx| this.go_to_change(false, window, cx)))
             .on_action(cx.listener(Self::rollback_lines))
             .on_action(cx.listener(Self::delete_line))
+            .on_action(cx.listener(|this, _: &CloseFindBar, window, cx| {
+                if this.find.read(cx).open {
+                    this.find.update(cx, |f, cx| f.close(window, cx));
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(Self::open_on_hosting))
             .on_action(cx.listener(Self::create_gist))
             .on_action(cx.listener(Self::goto_declaration))

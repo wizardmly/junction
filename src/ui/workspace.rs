@@ -78,7 +78,9 @@ actions!(
         ReopenClosedTab,
         ToggleCommitWindow,
         HideAllToolWindows,
-        HideActiveToolWindow
+        HideActiveToolWindow,
+        NextOccurrence,
+        PreviousOccurrence
     ]
 );
 
@@ -148,6 +150,10 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-f12", FileStructure, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-l" } else { "ctrl-g" }, GotoLine, Some(CONTEXT)),
         KeyBinding::new("alt-f1", SelectInProject, Some(CONTEXT)),
+        // Next / Previous Occurrence in the Find tool window, from anywhere
+        // (the editor binds them over its add-cursor keys, see file_editor).
+        KeyBinding::new("secondary-alt-down", NextOccurrence, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-up", PreviousOccurrence, Some(CONTEXT)),
         // Editor tabs: Ctrl+F4 closes; Alt+Left / Alt+Right switch (Cmd+Shift+[ / ] on macOS).
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-w" } else { "ctrl-f4" }, CloseTab, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -994,6 +1000,16 @@ impl Workspace {
         if let Some(editor) = self.editor().cloned() {
             editor.update(cx, |editor, cx| editor.go_to(line, col, window, cx));
         }
+    }
+
+    /// Ctrl+Alt+Down / Up: the Find window's next / previous result, opened.
+    /// Without results the keys go on to the editor (add a caret).
+    fn step_occurrence(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if !self.find.read(cx).has_occurrences() {
+            cx.propagate();
+            return;
+        }
+        self.find.update(cx, |find, cx| find.step(delta, cx));
     }
 
     fn navigate_back(&mut self, _: &NavigateBack, window: &mut Window, cx: &mut Context<Self>) {
@@ -2690,6 +2706,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FileStructure, window, cx| this.file_structure(window, cx)))
             .on_action(cx.listener(|this, _: &GotoLine, window, cx| this.goto_line(window, cx)))
             .on_action(cx.listener(Self::navigate_back))
+            .on_action(cx.listener(|this, _: &NextOccurrence, _, cx| this.step_occurrence(1, cx)))
+            .on_action(cx.listener(|this, _: &PreviousOccurrence, _, cx| this.step_occurrence(-1, cx)))
             .on_action(cx.listener(Self::navigate_forward))
             .on_action(cx.listener(Self::toggle_project))
             .on_action(cx.listener(|this, _: &ToggleCommitWindow, window, cx| this.toggle_tool(ToolWindow::Commit, window, cx)))

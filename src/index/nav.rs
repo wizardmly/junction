@@ -598,7 +598,7 @@ pub fn comments_and_strings(text: &str, lang: Lang) -> Vec<std::ops::Range<usize
     let mut out = Vec::new();
     let mut i = 0;
     // Push a non-code range, leaving out interpolated parts.
-    let mut push = |out: &mut Vec<std::ops::Range<usize>>, start: usize, end: usize, holes: &[std::ops::Range<usize>]| {
+    let push = |out: &mut Vec<std::ops::Range<usize>>, start: usize, end: usize, holes: &[std::ops::Range<usize>]| {
         let mut from = start;
         for h in holes {
             if h.start > from {

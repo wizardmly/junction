@@ -13,11 +13,12 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Disableable as _, Icon, Selectable as _, Sizable as _, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
+    input::{Editor, EditorState},
     v_flex,
 };
 use gpui_kit::{
-    Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Task, Window, div, prelude::FluentBuilder as _, px, uniform_list,
+    AppContext as _, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    StatefulInteractiveElement as _, Styled as _, Task, Window, div, prelude::FluentBuilder as _, px, relative, uniform_list,
 };
 
 use crate::index::nav::{Target, Usage};
@@ -38,7 +39,8 @@ pub struct FoundItem {
 }
 
 enum Content {
-    Usages(Vec<Usage>),
+    /// The searched word, and its usages.
+    Usages(String, Vec<Usage>),
     Text { request: FindRequest, result: SearchResult },
     Items(Vec<FoundItem>),
 }
@@ -66,6 +68,11 @@ pub struct FindView {
     tabs: Vec<FindTab>,
     active: usize,
     group_by_directory: bool,
+    /// Preview Source: the selected result's file beside the list.
+    show_preview: bool,
+    /// The previewed file, and the result it shows.
+    preview: Option<(String, Entity<EditorState>)>,
+    previewed: Option<Target>,
 }
 
 const WINDOW_LIMIT: usize = 20_000;
@@ -83,7 +90,7 @@ enum Row {
 
 impl FindView {
     pub fn new(index: Entity<CodeIndex>) -> Self {
-        Self { index, tabs: Vec::new(), active: 0, group_by_directory: true }
+        Self { index, tabs: Vec::new(), active: 0, group_by_directory: true, show_preview: true, preview: None, previewed: None }
     }
 
     fn place(&mut self, tab: FindTab, new_tab: bool) -> usize {
@@ -112,15 +119,15 @@ impl FindView {
 
     pub fn find_usages(&mut self, path: String, text: String, offset: usize, cx: &mut Context<Self>) {
         let task = self.index.read(cx).usages(path, text, offset, cx);
-        let ix = self.place(Self::empty_tab("Usages".into(), Content::Usages(Vec::new())), false);
+        let ix = self.place(Self::empty_tab("Usages".into(), Content::Usages(String::new(), Vec::new())), false);
         let task = cx.spawn(async move |this, cx| {
             let (word, usages) = task.await;
             this.update(cx, |this, cx| {
                 let Some(tab) = this.tabs.get_mut(ix) else { return };
                 tab.searching = false;
                 tab.title = if word.is_empty() { "Usages".into() } else { format!("Usages of {word}") };
-                tab.header = if word.is_empty() { "Nothing to search for at the caret".into() } else { format!("Usages of {word} — {} results", usages.len()) };
-                tab.content = Content::Usages(usages);
+                tab.header = if word.is_empty() { "Nothing to search for at the caret".into() } else { format!("Usages of {word} — {}", plural(usages.len(), "result")) };
+                tab.content = Content::Usages(word, usages);
                 cx.notify();
             })
             .ok();
@@ -153,8 +160,8 @@ impl FindView {
                     Ok(found) => {
                         let plus = if found.truncated { "+" } else { "" };
                         tab.header = match &request.replacement {
-                            Some(r) => format!("Occurrences of '{}' to be replaced with '{}' in {} — {}{plus} results", request.query.text, r, request.scope_label, found.matches.len()),
-                            None => format!("Occurrences of '{}' in {} — {}{plus} results", request.query.text, request.scope_label, found.matches.len()),
+                            Some(r) => format!("Occurrences of '{}' to be replaced with '{}' in {} — {}{plus} {}", request.query.text, r, request.scope_label, found.matches.len(), if found.matches.len() == 1 { "result" } else { "results" }),
+                            None => format!("Occurrences of '{}' in {} — {}{plus} {}", request.query.text, request.scope_label, found.matches.len(), if found.matches.len() == 1 { "result" } else { "results" }),
                         };
                         *result = found;
                     }
@@ -175,7 +182,7 @@ impl FindView {
     pub fn show_items(&mut self, title: String, items: Vec<FoundItem>, cx: &mut Context<Self>) {
         let mut tab = Self::empty_tab(title.clone(), Content::Items(Vec::new()));
         tab.searching = false;
-        tab.header = format!("{title} — {} results", items.len());
+        tab.header = format!("{title} — {}", plural(items.len(), "result"));
         tab.content = Content::Items(items);
         self.place(tab, true);
         cx.notify();
@@ -193,7 +200,7 @@ impl FindView {
         let Some(tab) = self.tabs.get(self.active) else { return Vec::new() };
         let mut rows = Vec::new();
         match &tab.content {
-            Content::Usages(usages) => {
+            Content::Usages(_, usages) => {
                 let mut last_group = None;
                 let mut last_file = None;
                 for (i, u) in usages.iter().enumerate() {
@@ -255,7 +262,7 @@ impl FindView {
     fn row_target(&self, row: &Row) -> Option<Target> {
         let tab = self.tabs.get(self.active)?;
         match (row, &tab.content) {
-            (Row::Usage(i, _), Content::Usages(u)) => u.get(*i).map(|u| Target { path: u.path.clone(), line: u.line, col: u.col, name: String::new(), label: u.group.clone(), container: None }),
+            (Row::Usage(i, _), Content::Usages(_, u)) => u.get(*i).map(|u| Target { path: u.path.clone(), line: u.line, col: u.col, name: String::new(), label: u.group.clone(), container: None }),
             (Row::Text(i, _), Content::Text { result, .. }) => result.matches.get(*i).map(target_of),
             (Row::Item(i), Content::Items(items)) => items.get(*i).map(|it| it.target.clone()),
             (Row::File { path, .. }, _) => Some(Target { path: path.clone(), line: 0, col: 0, name: String::new(), label: String::new(), container: None }),
@@ -288,6 +295,11 @@ impl FindView {
             }
         }
         cx.notify();
+    }
+
+    /// Whether the active tab has results to step through.
+    pub fn has_occurrences(&self) -> bool {
+        self.rows().iter().any(|r| matches!(r, Row::Usage(..) | Row::Text(..) | Row::Item(_)))
     }
 
     /// Next / Previous Occurrence (Ctrl+Alt+Down / Up).
@@ -392,6 +404,46 @@ impl FindView {
         self.run_text(ix, cx);
     }
 
+    /// Points the preview at the selected result (after a render, since
+    /// it needs the window).
+    fn update_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.rows();
+        let target = self.tabs.get(self.active).and_then(|t| t.selected).and_then(|s| rows.get(s)).filter(|r| matches!(r, Row::Usage(..) | Row::Text(..) | Row::Item(_))).and_then(|r| self.row_target(r));
+        if target == self.previewed {
+            return;
+        }
+        self.previewed = target.clone();
+        let Some(target) = target else {
+            self.preview = None;
+            return;
+        };
+        let fresh = self.preview.as_ref().is_none_or(|(path, _)| *path != target.path);
+        let file = std::path::Path::new(&target.path);
+        let file = if file.is_absolute() { file.to_path_buf() } else { self.index.read(cx).root().map(|r| r.join(file)).unwrap_or_default() };
+        let text = crate::index::text_search::read_text(&file).unwrap_or_default();
+        if fresh {
+            let language = crate::ui::file_editor::language_for(&target.path);
+            let value = text.clone();
+            let state = cx.new(|cx| {
+                let mut state = EditorState::new(window, cx).language(language).line_number(true).soft_wrap(false).default_value(value);
+                state.set_readonly(true, cx);
+                state
+            });
+            self.preview = Some((target.path.clone(), state));
+        }
+        let Some((_, state)) = &self.preview else { return };
+        // Select the result's line and show it a few lines from the top,
+        // without moving focus from where the user is.
+        let line = target.line as usize;
+        let start = text.split_inclusive('\n').take(line).map(str::len).sum::<usize>();
+        let end = start + text[start.min(text.len())..].find('\n').unwrap_or(text.len().saturating_sub(start));
+        let height = state.read(cx).line_height().unwrap_or(window.line_height());
+        state.update(cx, |state, cx| {
+            state.set_selected_range(start..end, cx);
+            state.set_scroll_offset(gpui_kit::point(px(0.), -(height * line.saturating_sub(4) as f32)), cx);
+        });
+    }
+
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let mut tabs = h_flex().gap_0p5().min_w_0().overflow_x_hidden();
@@ -469,6 +521,14 @@ impl FindView {
                         cx.notify();
                     })),
             )
+            .child(
+                tool_button("find-preview", IconName::Eye, "Preview Source")
+                    .selected(self.show_preview)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_preview = !this.show_preview;
+                        cx.notify();
+                    })),
+            )
             .child(tool_button("find-exclude", IconName::Ban, "Exclude (Delete)").disabled(!text).on_click(cx.listener(|this, _, _, cx| this.exclude_selected(cx))))
             .child(div().flex_1())
             .when(replace, |el| {
@@ -479,8 +539,11 @@ impl FindView {
 }
 
 impl Render for FindView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
+        if self.show_preview {
+            self.update_preview(window, cx);
+        }
         if self.tabs.is_empty() {
             return v_flex()
                 .size_full()
@@ -495,10 +558,18 @@ impl Render for FindView {
         let tab = &self.tabs[self.active];
         let selected = tab.selected;
         let collapsed = tab.collapsed.clone();
-        let usages: Rc<Vec<Usage>> = Rc::new(match &tab.content {
-            Content::Usages(u) => u.clone(),
-            _ => Vec::new(),
-        });
+        let (word, usages): (String, Rc<Vec<Usage>>) = match &tab.content {
+            Content::Usages(w, u) => (w.clone(), Rc::new(u.clone())),
+            _ => (String::new(), Rc::new(Vec::new())),
+        };
+        // Same-named files show their folder.
+        let mut names: std::collections::HashMap<&str, HashSet<&str>> = std::collections::HashMap::new();
+        for row in rows.iter() {
+            if let Row::File { path, .. } = row {
+                names.entry(path.rsplit('/').next().unwrap_or(path)).or_default().insert(path);
+            }
+        }
+        let ambiguous: Rc<HashSet<String>> = Rc::new(names.into_iter().filter(|(_, p)| p.len() > 1).map(|(n, _)| n.to_owned()).collect());
         let matches: Rc<Vec<TextMatch>> = Rc::new(match &tab.content {
             Content::Text { result, .. } => result.matches.clone(),
             _ => Vec::new(),
@@ -532,30 +603,33 @@ impl Render for FindView {
                                 .pl(pad(0))
                                 .child(chevron(true))
                                 .child(div().font_weight(FontWeight::SEMIBOLD).child(label.clone()))
-                                .child(div().text_color(palette.text_secondary).child(format!("{total} results"))),
+                                .child(div().text_color(palette.text_secondary).child(plural(total, "result"))),
                             Row::Group(name, count) => base
                                 .pl(pad(0))
                                 .child(chevron(true))
                                 .child(div().font_weight(FontWeight::SEMIBOLD).child(name.clone()))
-                                .child(div().text_color(palette.text_secondary).child(format!("{count} usages"))),
+                                .child(div().text_color(palette.text_secondary).child(plural(*count, "usage"))),
                             Row::Dir(dir, count) => base
                                 .pl(pad(1))
                                 .child(chevron(!collapsed.contains(&format!("d:{dir}"))))
                                 .child(common::icon(IconName::FolderClosed).text_color(palette.text_secondary))
                                 .child(if dir.is_empty() { "<root>".to_owned() } else { dir.clone() })
-                                .child(div().text_color(palette.text_secondary).child(format!("{count} results"))),
-                            Row::File { path, count, indent } => base
-                                .pl(pad(*indent))
-                                .child(chevron(!collapsed.contains(path)))
-                                .child(common::icon(common::file_icon(path)).text_color(palette.text_secondary))
-                                .child(path.rsplit('/').next().unwrap_or(path).to_owned())
-                                .child(div().text_color(palette.text_secondary).child(format!("{count} {}", if *count == 1 { "result" } else { "results" }))),
+                                .child(div().text_color(palette.text_secondary).child(plural(*count, "result"))),
+                            Row::File { path, count, indent } => {
+                                let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+                                base.pl(pad(*indent))
+                                    .child(chevron(!collapsed.contains(path)))
+                                    .child(common::icon(common::file_icon(path)).text_color(palette.text_secondary))
+                                    .child(name.to_owned())
+                                    .when(ambiguous.contains(name) && !dir.is_empty(), |el| el.child(div().text_color(palette.text_secondary).child(dir.to_owned())))
+                                    .child(div().text_color(palette.text_secondary).child(plural(*count, if usages.is_empty() { "result" } else { "usage" })))
+                            }
                             Row::Usage(i, indent) => {
                                 let u = &usages[*i];
                                 base.pl(pad(*indent))
                                     .gap_2()
                                     .child(div().w(px(36.)).text_right().text_color(palette.text_secondary).child((u.line + 1).to_string()))
-                                    .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(u.text.clone()))
+                                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(highlighted(&u.text, &word_ranges(&u.text, &word), &palette)))
                             }
                             Row::Text(i, indent) => {
                                 let m = &matches[*i];
@@ -603,7 +677,32 @@ impl Render for FindView {
                     .text_color(palette.text_secondary)
                     .child(tab.header.clone()),
             )
-            .child(div().flex_1().min_h_0().child(list))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(div().flex_1().min_w_0().h_full().child(list))
+                    .when_some(self.preview.as_ref().filter(|_| self.show_preview), |el, (_, state)| {
+                        el.child(div().w(relative(0.45)).h_full().flex_shrink_0().border_l_1().border_color(palette.border).child(Editor::new(state).bordered(false).h_full()))
+                    }),
+            )
             .into_any_element()
     }
+}
+
+/// "1 usage", "3 usages".
+fn plural(n: usize, noun: &str) -> String {
+    if n == 1 { format!("1 {noun}") } else { format!("{n} {noun}s") }
+}
+
+/// Whole-word occurrences of `word` in a result line.
+fn word_ranges(text: &str, word: &str) -> Vec<Range<usize>> {
+    if word.is_empty() {
+        return Vec::new();
+    }
+    let is_word = crate::index::nav::is_word_char;
+    text.match_indices(word)
+        .filter(|(i, _)| !text[..*i].chars().next_back().is_some_and(is_word) && !text[i + word.len()..].chars().next().is_some_and(is_word))
+        .map(|(i, _)| i..i + word.len())
+        .collect()
 }

@@ -116,7 +116,7 @@ impl FindBar {
         self.query.read(cx).value().to_string()
     }
 
-    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
         if let Some(highlights) = &self.highlights {
             highlights.clear(cx);
