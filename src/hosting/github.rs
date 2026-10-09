@@ -67,6 +67,10 @@ pub struct PullRequest {
     pub labels: Vec<Label>,
     #[serde(default)]
     pub mergeable: Option<bool>,
+    #[serde(default)]
+    pub assignees: Vec<User>,
+    #[serde(default)]
+    pub requested_reviewers: Vec<User>,
 }
 
 impl PullRequest {
@@ -247,16 +251,40 @@ impl Client {
         self.send("POST", &format!("/repos/{repo}/pulls/{number}/reviews"), json!({ "event": event, "body": body }))
     }
 
-    pub fn merge(&self, repo: &str, number: u64, method: MergeMethod) -> ApiResult<serde_json::Value> {
+    /// Merges with the commit message the Merge dialog edited (its first
+    /// line is the title), or the server's default when `None`.
+    pub fn merge(&self, repo: &str, number: u64, method: MergeMethod, message: Option<&str>) -> ApiResult<serde_json::Value> {
         if self.gitlab {
-            return self.gl_merge(repo, number, method);
+            return self.gl_merge(repo, number, method, message);
         }
         let method = match method {
             MergeMethod::Merge => "merge",
             MergeMethod::Squash => "squash",
             MergeMethod::Rebase => "rebase",
         };
-        self.send("PUT", &format!("/repos/{repo}/pulls/{number}/merge"), json!({ "merge_method": method }))
+        let mut body = json!({ "merge_method": method });
+        if let Some(message) = message {
+            let (title, rest) = message.split_once('\n').unwrap_or((message, ""));
+            body["commit_title"] = json!(title.trim());
+            body["commit_message"] = json!(rest.trim());
+        }
+        self.send("PUT", &format!("/repos/{repo}/pulls/{number}/merge"), body)
+    }
+
+    /// The numbers of the repository's PRs matching a search qualifier
+    /// (`review:approved`, `reviewed-by:@me`), for the list's Review filter.
+    pub fn search_pulls(&self, repo: &str, qualifier: &str) -> ApiResult<Vec<u64>> {
+        #[derive(Deserialize)]
+        struct Item {
+            number: u64,
+        }
+        #[derive(Deserialize)]
+        struct Found {
+            items: Vec<Item>,
+        }
+        let query = format!("repo:{repo} is:pr {qualifier}").replace(' ', "+").replace('@', "%40").replace(':', "%3A");
+        let found: Found = self.get(&format!("/search/issues?q={query}&per_page=100"))?;
+        Ok(found.items.into_iter().map(|i| i.number).collect())
     }
 
     pub fn create_pull(&self, repo: &str, title: &str, body: &str, head: &str, base: &str, draft: bool) -> ApiResult<PullRequest> {
@@ -361,6 +389,7 @@ pub(crate) mod tests {
             ("GET /api/v3/repos/o/r/pulls/7/comments", r#"[{"id":3,"user":{"login":"bo"},"body":"typo","path":"src/a.rs","line":4,"created_at":"2026-10-02T08:00:00Z"}]"#),
             ("POST /api/v3/repos/o/r/pulls/7/reviews", r#"{"id":9,"user":{"login":"me"},"state":"APPROVED"}"#),
             ("PUT /api/v3/repos/o/r/pulls/7/merge", r#"{"merged":true}"#),
+            ("GET /api/v3/search/issues", r#"{"total_count":1,"items":[{"number":7}]}"#),
         ]);
         let client = Client::new(&account(&base));
         assert_eq!(client.user().unwrap().login, "me");
@@ -372,8 +401,11 @@ pub(crate) mod tests {
         let timeline = client.timeline("o/r", 7).unwrap();
         assert_eq!(timeline.iter().map(|c| c.id).collect::<Vec<_>>(), vec![3, 1, 2]);
         client.submit_review("o/r", 7, ReviewEvent::Approve, "LGTM").unwrap();
-        client.merge("o/r", 7, MergeMethod::Squash).unwrap();
+        client.merge("o/r", 7, MergeMethod::Squash, Some("Add login (#7)\n\n* first")).unwrap();
+        assert_eq!(client.search_pulls("o/r", "review:approved").unwrap(), vec![7]);
         let log = seen.lock().unwrap();
+        assert!(log.iter().any(|l| l.contains("\"commit_title\":\"Add login (#7)\"")), "{log:?}");
+        assert!(log.iter().any(|l| l.starts_with("GET /api/v3/search/issues")), "{log:?}");
         assert!(log.iter().any(|l| l.starts_with("POST /api/v3/repos/o/r/pulls/7/reviews") && l.contains("\"APPROVE\"")));
         assert!(log.iter().any(|l| l.starts_with("PUT /api/v3/repos/o/r/pulls/7/merge") && l.contains("squash")));
     }

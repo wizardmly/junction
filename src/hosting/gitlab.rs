@@ -115,6 +115,10 @@ struct GlMergeRequest {
     source_project_id: Option<u64>,
     #[serde(default)]
     target_project_id: Option<u64>,
+    #[serde(default)]
+    assignees: Vec<GlUser>,
+    #[serde(default)]
+    reviewers: Vec<GlUser>,
 }
 
 impl From<GlMergeRequest> for PullRequest {
@@ -141,6 +145,8 @@ impl From<GlMergeRequest> for PullRequest {
             html_url: mr.web_url,
             labels: mr.labels.into_iter().map(|name| Label { name, color: String::new() }).collect(),
             mergeable: mr.merge_status.map(|s| s == "can_be_merged"),
+            assignees: mr.assignees.into_iter().map(Into::into).collect(),
+            requested_reviewers: mr.reviewers.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -314,11 +320,20 @@ impl Client {
 
     /// Merge, Squash and Merge, or Rebase (GitLab rebases the source branch;
     /// the merge then fast-forwards where the project allows it).
-    pub(super) fn gl_merge(&self, repo: &str, number: u64, method: MergeMethod) -> ApiResult<serde_json::Value> {
+    pub(super) fn gl_merge(&self, repo: &str, number: u64, method: MergeMethod, message: Option<&str>) -> ApiResult<serde_json::Value> {
         let path = Self::mr_path(repo, number);
         match method {
-            MergeMethod::Merge => self.gl_send("PUT", &format!("{path}/merge"), json!({})),
-            MergeMethod::Squash => self.gl_send("PUT", &format!("{path}/merge"), json!({ "squash": true })),
+            MergeMethod::Merge => {
+                let body = message.map_or(json!({}), |m| json!({ "merge_commit_message": m }));
+                self.gl_send("PUT", &format!("{path}/merge"), body)
+            }
+            MergeMethod::Squash => {
+                let mut body = json!({ "squash": true });
+                if let Some(message) = message {
+                    body["squash_commit_message"] = json!(message);
+                }
+                self.gl_send("PUT", &format!("{path}/merge"), body)
+            }
             MergeMethod::Rebase => {
                 let _: serde_json::Value = self.gl_send("PUT", &format!("{path}/rebase"), json!({}))?;
                 self.gl_send("PUT", &format!("{path}/merge"), json!({}))
@@ -392,7 +407,7 @@ mod tests {
         let timeline = client.timeline("g/sub/p", 5).unwrap();
         assert_eq!(timeline[1].line, Some(2));
         client.submit_review("g/sub/p", 5, ReviewEvent::Approve, "").unwrap();
-        client.merge("g/sub/p", 5, MergeMethod::Squash).unwrap();
+        client.merge("g/sub/p", 5, MergeMethod::Squash, None).unwrap();
         assert_eq!(client.add_line_comment("g/sub/p", 5, "abc", "b.rs", 1, "hm").unwrap().id, 9);
         client.create_pull("g/sub/p", "T", "", "me:topic", "main", true).unwrap();
         let log = seen.lock().unwrap();
