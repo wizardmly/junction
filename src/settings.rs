@@ -31,6 +31,9 @@ pub struct Settings {
     pub update_shelve: bool,
     /// Multi-root projects: "Execute branch operations on all roots".
     pub sync_branches: bool,
+    /// Ctrl+T shows the Update Project dialog; its "Don't show again"
+    /// turns this off and the remembered options are used directly.
+    pub update_dialog: bool,
     /// "Auto-update if push of the current branch was rejected".
     pub auto_update_on_push_rejected: bool,
     /// "Warn if CRLF line separators are about to be committed".
@@ -231,6 +234,7 @@ impl Default for Settings {
             update_method: UpdateMethod::Merge,
             update_shelve: false,
             sync_branches: true,
+            update_dialog: true,
             use_language_servers: true,
             language_servers: Default::default(),
             auto_update_on_push_rejected: false,
@@ -419,6 +423,7 @@ impl Settings {
                 "commit_show_ignored" => settings.commit_show_ignored = flag,
                 "update_clean" => settings.update_shelve = value == "shelve",
                 "sync_branches" => settings.sync_branches = flag,
+                "update_dialog" => settings.update_dialog = flag,
                 "use_language_servers" => settings.use_language_servers = flag,
                 key if key.starts_with("lsp_") => {
                     if !value.is_empty() {
@@ -488,11 +493,12 @@ impl Settings {
             }
         ));
         text.push_str(&format!(
-            "commit_group_by_directory={}\ncommit_show_ignored={}\nupdate_clean={}\nsync_branches={}\n",
+            "commit_group_by_directory={}\ncommit_show_ignored={}\nupdate_clean={}\nsync_branches={}\nupdate_dialog={}\n",
             self.commit_group_by_directory,
             self.commit_show_ignored,
             if self.update_shelve { "shelve" } else { "stash" },
-            self.sync_branches
+            self.sync_branches,
+            self.update_dialog
         ));
         text.push_str(&format!("use_language_servers={}\n", self.use_language_servers));
         let [l, r, b] = self.tool_window_sizes;
