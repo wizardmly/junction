@@ -56,7 +56,8 @@ actions!(
         OpenReplace,
         CompareWithClipboard,
         DeleteLine,
-        CloseFindBar
+        CloseFindBar,
+        ToggleLineNumbers
     ]
 );
 
@@ -199,12 +200,18 @@ pub struct FileEditor {
     format: TextFormat,
     /// HEAD's version, for change markers.
     base: String,
+    /// Not under version control (neither in HEAD nor in the index): no
+    /// change markers, as IntelliJ shows none for unversioned files.
+    unversioned: bool,
     saved: String,
     hunks: Vec<Hunk>,
     /// The change block whose popup is open (a click on its gutter marker).
     popup: Option<usize>,
     /// Where the popup goes: under its block, as the last paint laid it out.
     popup_anchor: Rc<std::cell::Cell<Option<Point<Pixels>>>>,
+    /// Whether the last right-click landed on the line-number gutter, which
+    /// has its own menu (Annotate with Git Blame), as in IntelliJ.
+    gutter_click: Rc<std::cell::Cell<bool>>,
     popup_focus: gpui_kit::FocusHandle,
     error: Option<String>,
     code_index: Option<Entity<CodeIndex>>,
@@ -351,10 +358,13 @@ impl FileEditor {
         };
         // A library's source (External Libraries) isn't in the repository.
         let external = crate::index::store::ProjectIndex::is_external(&path);
-        let base = if revision.is_none() && !external {
-            repository.run(["show", &format!("HEAD:{path}")]).unwrap_or_default()
+        let (base, unversioned) = if revision.is_none() && !external {
+            match repository.run(["show", &format!("HEAD:{path}")]) {
+                Ok(base) => (base, false),
+                Err(_) => (String::new(), repository.run(["ls-files", "--error-unmatch", "--", &path]).is_err()),
+            }
         } else {
-            content.clone()
+            (content.clone(), false)
         };
         let language = language_for(&path);
         let initial = content.clone();
@@ -409,11 +419,13 @@ impl FileEditor {
             revision,
             state,
             base,
+            unversioned,
             format: TextFormat::of(&content),
             saved: content,
             hunks: Vec::new(),
             popup: None,
             popup_anchor: Rc::default(),
+            gutter_click: Rc::default(),
             popup_focus: cx.focus_handle(),
             error,
             code_index: None,
@@ -587,7 +599,7 @@ impl FileEditor {
 
     /// IntelliJ's change markers (painted in the gutter by `marker_strip`).
     fn update_markers(&mut self, cx: &mut Context<Self>) {
-        if self.read_only() || self.error.is_some() {
+        if self.read_only() || self.error.is_some() || self.unversioned {
             return;
         }
         let text = self.text(cx);
@@ -955,6 +967,40 @@ impl FileEditor {
         }
     }
 
+    /// The gutter menu's Show Line Numbers (Settings › Editor › General).
+    fn toggle_line_numbers(&mut self, _: &ToggleLineNumbers, _: &mut Window, cx: &mut Context<Self>) {
+        crate::settings::Settings::update(cx, |settings| settings.diff.show_line_numbers = !settings.diff.show_line_numbers);
+    }
+
+    /// Tells a right-click on the line-number gutter (left of the text)
+    /// from one on the text, for the context menu.
+    fn gutter_probe(&self) -> impl IntoElement + use<> {
+        let (state, hit) = (self.state.clone(), self.gutter_click.clone());
+        canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                let (state, hit) = (state.clone(), hit.clone());
+                window.on_mouse_event(move |e: &MouseDownEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Capture || e.button != MouseButton::Right {
+                        return;
+                    }
+                    let state = state.read(cx);
+                    let input = state.input_bounds();
+                    let text_left = state.visible_row_range().and_then(|rows| {
+                        let rope = state.text();
+                        let at = rope.line_start_offset(rows.start.min(rope.lines_len().saturating_sub(1)));
+                        state.range_to_bounds(&(at..at)).map(|b| b.left())
+                    });
+                    hit.set(text_left.is_some_and(|left| {
+                        input.contains(&e.position) && e.position.x >= input.left() && e.position.x < left
+                    }));
+                });
+            },
+        )
+        .absolute()
+        .inset_0()
+    }
+
     pub fn annotation(&self) -> Option<&Annotation> {
         self.annotation.as_ref()
     }
@@ -1089,6 +1135,7 @@ impl Render for FileEditor {
         };
         let changes = self.hunks.len();
         let annotated = self.annotation.is_some();
+        let gutter_click = self.gutter_click.clone();
         let annotation_gutter = self
             .annotation
             .as_ref()
@@ -1122,6 +1169,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::find_previous))
             .on_action(cx.listener(Self::show_selection_history))
             .on_action(cx.listener(Self::annotate))
+            .on_action(cx.listener(Self::toggle_line_numbers))
             .on_action(cx.listener(Self::show_history))
             .on_action(cx.listener(Self::show_current_revision))
             .on_action(cx.listener(Self::show_diff))
@@ -1168,7 +1216,15 @@ impl Render for FileEditor {
                         .h_full()
                         .bordered(false)
                         .readonly(read_only)
-                        .context_menu(move |menu: NativeMenu, _, _| {
+                        .context_menu(move |menu: NativeMenu, _, cx| {
+                            // The gutter has IntelliJ's gutter menu instead.
+                            if gutter_click.replace(false) {
+                                let numbers = crate::settings::Settings::get(cx).diff.show_line_numbers;
+                                return menu
+                                    .menu(if annotated { "Close Annotations" } else { "Annotate with Git Blame" }, Box::new(AnnotateFile))
+                                    .separator()
+                                    .menu_with_check("Show Line Numbers", numbers, Box::new(ToggleLineNumbers));
+                            }
                             let menu = menu
                                 .menu("Copy", Box::new(Copy))
                                 .menu_with_disabled("Cut", read_only, Box::new(Cut))
@@ -1194,6 +1250,7 @@ impl Render for FileEditor {
                             menu.submenu("Git", git)
                         }),
                 )))
+                .child(self.gutter_probe())
                 .when(!read_only, |el| el.child(self.marker_strip(cx)))
                 .when_some(hover_card, |el, (at, card)| {
                     el.child(deferred(anchored().position(point(at.x + px(12.), at.y + px(16.))).child(card)).with_priority(1))

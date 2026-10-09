@@ -30,7 +30,8 @@ fn set_key(source: &DiffSource) -> String {
 }
 
 /// The files of a source's change set, as sources of the same kind.
-fn list_files(repository: &Repository, source: &DiffSource) -> Vec<DiffSource> {
+/// `keep` adds the source when git doesn't list it (an unversioned file).
+fn list_files(repository: &Repository, source: &DiffSource, keep: bool) -> Vec<DiffSource> {
     const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
     let name_status = |args: &[&str]| repository.run(args).map(|out| log::parse_name_status(&out)).unwrap_or_default();
     let changes = match source {
@@ -60,7 +61,7 @@ fn list_files(repository: &Repository, source: &DiffSource) -> Vec<DiffSource> {
         })
         .collect();
     // An unversioned file opened from the Commit tool window is in the set too.
-    if !files.iter().any(|f| f.path() == source.path()) {
+    if keep && !files.iter().any(|f| f.path() == source.path()) {
         files.push(source.clone());
         files.sort_by(|a, b| a.path().cmp(b.path()));
     }
@@ -76,12 +77,24 @@ impl DiffView {
         }
         self.files_key = key;
         self.files = vec![source.clone()];
+        // After a refresh, a file that is no longer changed leaves the set
+        // (unless it's unversioned) and the view moves on to its neighbor,
+        // so "N of M" counts what is left.
+        let refresh_index = self.refresh_index.take();
+        let keep = refresh_index.is_none() || matches!(source, DiffSource::WorkingTree { unversioned: true, .. });
         let (repository, source) = (repository.clone(), source.clone());
         self._files_task = Some(cx.spawn(async move |this, cx| {
-            let files = cx.background_spawn(async move { list_files(&repository, &source) }).await;
+            let files = cx.background_spawn(async move { list_files(&repository, &source, keep) }).await;
             this.update(cx, |this, cx| {
                 this.files = files;
                 this.apply_file_order();
+                if let Some(ix) = refresh_index
+                    && this.file_index().is_none()
+                    && !this.files.is_empty()
+                {
+                    let next = this.files[ix.min(this.files.len() - 1)].clone();
+                    this.open_file(next, false, cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -114,6 +127,7 @@ impl DiffView {
         if !matches!(source, DiffSource::WorkingTree { .. } | DiffSource::Staged { .. } | DiffSource::Unstaged { .. }) {
             return;
         }
+        self.refresh_index = self.file_index();
         self.source = None;
         self.files_key.clear();
         self.show(repository, source, cx);

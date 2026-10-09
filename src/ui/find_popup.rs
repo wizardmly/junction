@@ -134,6 +134,9 @@ pub struct FindPopup {
     searching: bool,
     selected: usize,
     preview: Option<(String, Entity<EditorState>)>,
+    /// New results came in: the preview moves to the selected match on the
+    /// next render.
+    preview_stale: bool,
     cancel: Arc<AtomicBool>,
     scroll: gpui_kit::UniformListScrollHandle,
     focus: gpui_kit::FocusHandle,
@@ -214,6 +217,7 @@ impl FindPopup {
             searching: false,
             selected: 0,
             preview: None,
+            preview_stale: false,
             cancel: Arc::new(AtomicBool::new(false)),
             scroll: gpui_kit::UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
@@ -346,6 +350,7 @@ impl FindPopup {
         if self.result.matches.is_empty() {
             self.preview = None;
         }
+        self.preview_stale = true;
     }
 
     fn update_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -552,7 +557,8 @@ fn toggle_button(id: &'static str, label: &'static str, tooltip: &'static str, o
 impl Render for FindPopup {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
-        if self.preview.is_none() && !self.result.matches.is_empty() {
+        if (self.preview.is_none() || self.preview_stale) && !self.result.matches.is_empty() {
+            self.preview_stale = false;
             self.update_preview(window, cx);
         }
         let entity = cx.entity();

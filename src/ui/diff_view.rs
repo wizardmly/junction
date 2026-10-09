@@ -186,6 +186,9 @@ pub struct DiffView {
     files_key: String,
     /// Tree order of local files (see `set_file_order`).
     file_order: Vec<String>,
+    /// Set by `refresh_local`: the shown file's place in the set, to move
+    /// to its neighbor when the file is no longer changed (rolled back).
+    refresh_index: Option<usize>,
     _files_task: Option<Task<()>>,
     /// F7 stopped at the end of the file.
     edge: Option<files::Edge>,
@@ -215,6 +218,7 @@ impl DiffView {
             files: Vec::new(),
             files_key: String::new(),
             file_order: Vec::new(),
+            refresh_index: None,
             _files_task: None,
             edge: None,
             arrive_at_end: false,
@@ -774,7 +778,8 @@ impl DiffView {
                 let files = self.files.clone();
                 let entity = entity.clone();
                 el.child(Button::new("diff-files").ghost().xsmall().icon(IconName::List).label(format!("{} of {n}", ix + 1)).tooltip("Go to Changed File").dropdown_menu(
-                    move |mut menu, _, _| {
+                    move |mut menu, window, cx| {
+                        preselect(ix, window, cx);
                         for (i, file) in files.iter().enumerate() {
                             let (entity, file) = (entity.clone(), file.clone());
                             menu = menu.item(
@@ -790,8 +795,9 @@ impl DiffView {
             .child(separator())
             .child(Button::new("diff-viewer").ghost().xsmall().label(viewer_label).dropdown_menu({
                 let entity = entity.clone();
-                move |menu, _, _| {
+                move |menu, window, cx| {
                     let (a, b) = (entity.clone(), entity.clone());
+                    preselect(if mode == ViewerMode::SideBySide { 0 } else { 1 }, window, cx);
                     menu.item(
                         PopupMenuItem::new("Side-by-side viewer")
                             .checked(mode == ViewerMode::SideBySide)
@@ -806,7 +812,9 @@ impl DiffView {
             }))
             .child(Button::new("diff-whitespace").ghost().xsmall().label(whitespace_label).dropdown_menu({
                 let entity = entity.clone();
-                move |mut menu, _, _| {
+                move |mut menu, window, cx| {
+                    let choices = [IgnoreWhitespace::None, IgnoreWhitespace::Trim, IgnoreWhitespace::All, IgnoreWhitespace::AllAndEmptyLines];
+                    preselect(choices.iter().position(|c| *c == options.ignore_whitespace).unwrap_or(0), window, cx);
                     for (label, value) in [
                         ("Do not ignore", IgnoreWhitespace::None),
                         ("Trim whitespaces", IgnoreWhitespace::Trim),
@@ -823,7 +831,9 @@ impl DiffView {
             }))
             .child(Button::new("diff-highlight").ghost().xsmall().label(highlight_label).dropdown_menu({
                 let entity = entity.clone();
-                move |mut menu, _, _| {
+                move |mut menu, window, cx| {
+                    let choices = [HighlightMode::Words, HighlightMode::Lines, HighlightMode::Split, HighlightMode::Characters, HighlightMode::None];
+                    preselect(choices.iter().position(|c| *c == options.highlight).unwrap_or(0), window, cx);
                     for (label, value) in [
                         ("Highlight words", HighlightMode::Words),
                         ("Highlight lines", HighlightMode::Lines),
@@ -1649,4 +1659,19 @@ mod tests {
         assert_eq!(shape, vec![(true, true), (true, false), (true, false), (false, true), (false, true)]);
     }
 
+}
+
+/// A choice dropdown opens on its current item, as IntelliJ's combo popups
+/// do, so Down / Up move from there (the menu has no initial selection).
+fn preselect(ix: usize, window: &mut Window, cx: &mut Context<gpui_kit::component::menu::PopupMenu>) {
+    let menu = cx.entity().downgrade();
+    window.on_next_frame(move |window, cx| {
+        let Some(menu) = menu.upgrade() else { return };
+        if !gpui_kit::Focusable::focus_handle(menu.read(cx), cx).is_focused(window) {
+            return;
+        }
+        for _ in 0..=ix {
+            window.dispatch_action(Box::new(gpui_kit::base::actions::SelectDown), cx);
+        }
+    });
 }
