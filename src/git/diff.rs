@@ -578,10 +578,12 @@ pub fn load_versions(repository: &Repository, revisions: &Revisions) -> Result<(
         Revisions::WorkingTree { path } => {
             // IntelliJ titles the base with its revision number.
             let head = repository.run(["rev-parse", "--short=8", "HEAD"]).map(|h| h.trim().to_owned()).unwrap_or_else(|_| "HEAD".into());
-            (show(format!("HEAD:{path}")), read_work_tree(repository, path), head, "Current version".into())
+            let base = rename_source(repository, path).unwrap_or_else(|| path.clone());
+            (show(format!("HEAD:{base}")), read_work_tree(repository, path), head, "Current version".into())
         }
         Revisions::Staged { path } => {
-            (show(format!("HEAD:{path}")), show(format!(":{path}")), "HEAD".into(), "Staged".into())
+            let base = rename_source(repository, path).unwrap_or_else(|| path.clone());
+            (show(format!("HEAD:{base}")), show(format!(":{path}")), "HEAD".into(), "Staged".into())
         }
         Revisions::Unstaged { path } => {
             (show(format!(":{path}")), read_work_tree(repository, path), "Staged".into(), "Current version".into())
@@ -601,6 +603,16 @@ pub fn load_versions(repository: &Repository, revisions: &Revisions) -> Result<(
             (read_work_tree(repository, path), other_text, path.clone(), other.to_string_lossy().into_owned())
         }
     })
+}
+
+/// The HEAD path a staged rename came from, so its diff compares the old
+/// file with the new one (IntelliJ's "moved from") instead of showing an add.
+fn rename_source(repository: &Repository, path: &str) -> Option<String> {
+    if repository.run(["cat-file", "-e", &format!("HEAD:{path}")]).is_ok() {
+        return None;
+    }
+    let status = super::status::WorkingTreeStatus::load(repository).ok()?;
+    status.entries.into_iter().find(|e| e.path == path).and_then(|e| e.old_path)
 }
 
 /// A hash is shortened; branch names stay as they are.

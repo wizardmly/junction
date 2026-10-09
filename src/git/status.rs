@@ -74,6 +74,22 @@ fn kind_of(code: char) -> StatusKind {
     }
 }
 
+/// `paths` plus the old path of each rename among them, so a rename is
+/// committed, unstaged, shelved or rolled back as one change (IntelliJ
+/// shows it as a single "before → after" entry).
+pub fn with_rename_sources(repository: &Repository, paths: &[String]) -> Vec<String> {
+    let mut out = paths.to_vec();
+    let Ok(status) = WorkingTreeStatus::load(repository) else { return out };
+    for entry in &status.entries {
+        if let Some(old) = &entry.old_path {
+            if paths.contains(&entry.path) && !out.contains(old) {
+                out.push(old.clone());
+            }
+        }
+    }
+    out
+}
+
 /// `git add` for the given paths (Stage in staging-area mode).
 pub fn stage(repository: &Repository, paths: &[String]) -> Result<()> {
     let mut args = vec!["add".to_owned(), "-A".to_owned(), "--".to_owned()];
@@ -90,7 +106,7 @@ pub fn unstage(repository: &Repository, paths: &[String]) -> Result<()> {
     } else {
         vec!["rm".into(), "--cached".into(), "-r".into(), "-q".into(), "--".into()]
     };
-    args.extend(paths.iter().cloned());
+    args.extend(with_rename_sources(repository, paths));
     repository.run(&args)?;
     Ok(())
 }
@@ -144,6 +160,14 @@ pub struct CommitRequest {
 }
 
 pub fn commit(repository: &Repository, request: &CommitRequest) -> Result<String> {
+    // A checked rename commits its old path's deletion too.
+    let expanded;
+    let request = if request.staged_only || request.paths.is_empty() {
+        request
+    } else {
+        expanded = CommitRequest { paths: with_rename_sources(repository, &request.paths), ..request.clone() };
+        &expanded
+    };
     if !request.unversioned.is_empty() {
         let mut args = vec!["add".to_owned(), "--".to_owned()];
         args.extend(request.unversioned.iter().cloned());

@@ -87,7 +87,8 @@ pub fn parent_of(repository: &Repository, commit: &str) -> String {
 
 /// Create Patch… / Copy as Patch for local changes, unversioned files included.
 pub fn local_changes(repository: &Repository, paths: &[String], reverse: bool) -> Result<String> {
-    let tree = working_tree(repository, paths)?;
+    let paths = super::status::with_rename_sources(repository, paths);
+    let tree = working_tree(repository, &paths)?;
     let base = head(repository).unwrap_or_else(|| EMPTY_TREE.to_owned());
     between(repository, &base, &tree, reverse)
 }
@@ -158,7 +159,7 @@ pub fn rollback(repository: &Repository, paths: &[String]) -> Result<()> {
 pub fn rollback_with(repository: &Repository, paths: &[String], delete_added: bool) -> Result<()> {
     let head = head(repository);
     let mut tracked = Vec::new();
-    for path in paths {
+    for path in &super::status::with_rename_sources(repository, paths) {
         let in_head = head
             .as_ref()
             .is_some_and(|h| repository.run(["cat-file", "-e", &format!("{h}:{path}")]).is_ok());
@@ -268,7 +269,16 @@ pub fn shelve(repository: &Repository, paths: &[String], name: &str, keep: bool)
     if paths.is_empty() {
         bail!("No changes to shelve");
     }
+    let paths = &super::status::with_rename_sources(repository, paths);
     let base = head(repository).context("Cannot shelve before the first commit")?;
+    // Files added to Git (and both sides of renames), so Unshelve restores them as added.
+    let status = super::status::WorkingTreeStatus::load(repository)?;
+    let added: Vec<&str> = status
+        .entries
+        .iter()
+        .filter(|e| paths.contains(&e.path) && matches!(e.index, 'A' | 'R' | 'C'))
+        .flat_map(|e| std::iter::once(e.path.as_str()).chain(e.old_path.as_deref()))
+        .collect();
     let tree = working_tree(repository, paths)?;
     let commit = repository
         .run_with_input(["commit-tree", tree.as_str(), "-p", base.as_str()], Some(name))?
@@ -286,6 +296,9 @@ pub fn shelve(repository: &Repository, paths: &[String], name: &str, keep: bool)
     let dir = root.join(&id);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("shelved.patch"), &patch)?;
+    if !added.is_empty() {
+        std::fs::write(dir.join("added"), added.join("\0"))?;
+    }
     let shelf = Shelf { id: id.clone(), name: name.to_owned(), time, base, commit, deleted: false };
     write_info(&dir, &shelf)?;
     repository.run(["update-ref", &format!("refs/junction/shelf/{id}"), &shelf.commit])?;
@@ -321,6 +334,13 @@ pub fn unshelve(repository: &Repository, shelf: &Shelf, paths: Option<&[String]>
         _ => std::fs::read_to_string(shelf.patch_path(repository))?,
     };
     let outcome = apply(repository, &patch, false)?;
+    // Files that were added when shelved come back added, as in IntelliJ.
+    let added = std::fs::read_to_string(shelf_dir(repository).join(&shelf.id).join("added")).unwrap_or_default();
+    for path in added.split('\0').filter(|p| !p.is_empty()) {
+        if paths.is_none_or(|paths| paths.iter().any(|p| p == path)) {
+            repository.run(["add", "-A", "--", path]).ok();
+        }
+    }
     if !keep && paths.is_none() {
         set_deleted(repository, shelf, true)?;
     }
@@ -436,5 +456,48 @@ mod tests {
         let patch = local_changes(&repository, &["a.txt".to_owned()], false).unwrap();
         let files = files(&repository, &patch).unwrap();
         assert_eq!(files, [PatchFile { path: "a.txt".into(), added: Some(0), removed: Some(1) }]);
+    }
+
+    fn git(dir: &tempdir::Dir, args: &[&str]) {
+        std::process::Command::new("git").current_dir(&dir.0).args(args).output().unwrap();
+    }
+
+    fn porcelain(repository: &Repository) -> String {
+        repository.run(["status", "--porcelain"]).unwrap()
+    }
+
+    #[test]
+    fn commits_a_rename_with_its_old_path() {
+        let (dir, repository) = repo();
+        git(&dir, &["mv", "a.txt", "b.txt"]);
+        let request = crate::git::status::CommitRequest { message: "move".into(), paths: vec!["b.txt".into()], ..Default::default() };
+        crate::git::status::commit(&repository, &request).unwrap();
+        assert_eq!(porcelain(&repository), "");
+        let stat = repository.run(["show", "-M", "--name-status", "--format=", "HEAD"]).unwrap();
+        assert!(stat.starts_with("R100\ta.txt\tb.txt"), "{stat}");
+    }
+
+    #[test]
+    fn unstages_and_rolls_back_both_sides_of_a_rename() {
+        let (dir, repository) = repo();
+        git(&dir, &["mv", "a.txt", "b.txt"]);
+        crate::git::status::unstage(&repository, &["b.txt".to_owned()]).unwrap();
+        assert_eq!(repository.run(["diff", "--cached", "--name-only"]).unwrap(), "");
+        git(&dir, &["add", "-A"]);
+        rollback(&repository, &["b.txt".to_owned()]).unwrap();
+        assert_eq!(porcelain(&repository), "");
+        assert!(dir.0.join("a.txt").exists() && !dir.0.join("b.txt").exists());
+    }
+
+    #[test]
+    fn shelves_renames_and_restores_added_files() {
+        let (dir, repository) = repo();
+        git(&dir, &["mv", "a.txt", "b.txt"]);
+        std::fs::write(dir.0.join("new.txt"), "fresh\n").unwrap();
+        git(&dir, &["add", "new.txt"]);
+        let shelf = shelve(&repository, &["b.txt".to_owned(), "new.txt".to_owned()], "work", false).unwrap();
+        assert_eq!(porcelain(&repository), "");
+        unshelve(&repository, &shelf, None, false).unwrap();
+        assert_eq!(porcelain(&repository), "R  a.txt -> b.txt\nA  new.txt\n");
     }
 }
