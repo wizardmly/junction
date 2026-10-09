@@ -695,8 +695,11 @@ impl CommitView {
                 crlf.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
             ));
         }
-        for (path, size) in status::large_files(&repository, &paths, 50 * 1024 * 1024) {
-            warnings.push(format!("{path} is {} MB; most Git hosts reject files over 50 MB.", size / (1024 * 1024)));
+        if settings.large_file_mb > 0 {
+            let limit = settings.large_file_mb as u64;
+            for (path, size) in status::large_files(&repository, &paths, limit * 1024 * 1024) {
+                warnings.push(format!("{path} is {} MB, larger than {limit} MB; Git hosts may reject it.", size / (1024 * 1024)));
+            }
         }
         if warnings.is_empty() {
             return self.do_commit(push, window, cx);

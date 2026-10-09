@@ -42,6 +42,9 @@ pub struct Settings {
     pub commit_subject_limit: usize,
     /// "Warn when committing in detached HEAD or during rebase".
     pub warn_detached_head: bool,
+    /// Commit › "Warn about files larger than N MB" (most Git hosts reject
+    /// big files); 0 turns the check off.
+    pub large_file_mb: u32,
     /// Commit › "Use non-modal commit interface": Commit (Ctrl+K) works in
     /// the Commit tool window; off, it opens the modal Commit Changes dialog.
     pub non_modal_commit: bool,
@@ -258,6 +261,7 @@ impl Default for Settings {
             commit_subject_limit: 72,
             warn_detached_head: true,
             non_modal_commit: true,
+            large_file_mb: 50,
             cherry_pick_suffix: true,
             commit_push_dialog: true,
             commit_push_dialog_protected_only: false,
@@ -406,6 +410,11 @@ impl Settings {
                 "warn_crlf" => settings.warn_crlf = flag,
                 "warn_detached_head" => settings.warn_detached_head = flag,
                 "non_modal_commit" => settings.non_modal_commit = flag,
+                "large_file_mb" => {
+                    if let Ok(n) = value.parse() {
+                        settings.large_file_mb = n;
+                    }
+                }
                 "cherry_pick_suffix" => settings.cherry_pick_suffix = flag,
                 "commit_push_dialog" => settings.commit_push_dialog = flag,
                 "commit_push_dialog_protected_only" => settings.commit_push_dialog_protected_only = flag,
@@ -534,7 +543,7 @@ impl Settings {
             self.sync_branches,
             self.update_dialog
         ));
-        text.push_str(&format!("use_language_servers={}\n", self.use_language_servers));
+        text.push_str(&format!("use_language_servers={}\nlarge_file_mb={}\n", self.use_language_servers, self.large_file_mb));
         text.push_str(&format!(
             "non_modal_commit={}\ncherry_pick_suffix={}\ncommit_push_dialog={}\ncommit_push_dialog_protected_only={}\neditor_font_size={}\n",
             self.non_modal_commit,
@@ -609,6 +618,7 @@ mod tests {
             sign_off: true,
             run_hooks: false,
             non_modal_commit: false,
+            large_file_mb: 0,
             cherry_pick_suffix: false,
             commit_push_dialog_protected_only: true,
             editor_font_tenths: 140,

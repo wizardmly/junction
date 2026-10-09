@@ -198,7 +198,7 @@
 | Editor 页 | M2 | ✅（General：软换行、行号、空白、缩进线，作用于文件编辑器和 diff / merge 查看器，改动即时生效；Font：字号，作用于编辑器、diff、merge，行高 1.6 倍） |
 | Git 可执行文件路径 + Test 按钮 | M2 | ✅（设置里填写路径，留空为 PATH 中的 git；Test 显示 git 版本或错误） |
 | 启用暂存区 | M2 | ✅ |
-| 提交前警告 CRLF、警告 detached HEAD、大文件 | M3 | ✅（CRLF 的 Fix and Commit 像 AS 一样写全局 core.autocrlf；detached HEAD 用 AS 的提示文字） |
+| 提交前警告 CRLF、警告 detached HEAD、大文件 | M3 | ✅（CRLF 的 Fix and Commit 像 AS 一样写全局 core.autocrlf；detached HEAD 用 AS 的提示文字；大文件：Settings › Version Control › Commit 的 “Warn about files larger than N MB”，默认 50 MB，可关闭） |
 | Cherry-pick 后缀、Commit and Push 时显示 Push 对话框、在所有根上执行分支操作 | M3 | ✅（“Add the 'cherry picked from <hash>' suffix…”：所选提交已在受保护分支的远程分支上时加 -x；“Show Push dialog for Commit and Push” 及 “Show only for commits to protected branches”，关闭时直接推送当前分支；“Execute branch operations on all roots”） |
 | Update method（Merge / Rebase）、Clean working tree using（Stash / Shelve） | M2 | ✅ |
 | 推送被拒时自动更新、Force push 受保护分支列表 | M3 | ✅ |

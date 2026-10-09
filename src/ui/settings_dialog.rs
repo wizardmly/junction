@@ -88,6 +88,7 @@ impl Page {
                 "Run Git hooks",
                 "Sign-off commit",
                 "Clean up commit message",
+                "Warn about files larger than",
             ],
             Page::Mappings => &["Directory", "Root", "Mappings", "VCS"],
             Page::Git => &[
@@ -141,6 +142,7 @@ pub struct SettingsView {
     fetch_interval: Entity<InputState>,
     git_path: Entity<InputState>,
     font_size: Entity<InputState>,
+    large_file: Entity<InputState>,
     /// Languages & Frameworks: a server command per language, and what
     /// runs when it is left empty.
     servers: Vec<(Lang, Entity<InputState>, Option<String>)>,
@@ -166,6 +168,7 @@ impl SettingsView {
         let margin = input(initial.commit_subject_limit.to_string(), window, cx);
         let fetch_interval = input(initial.fetch_interval_minutes.max(1).to_string(), window, cx);
         let font_size = input(format!("{}", initial.editor_font_size()), window, cx);
+        let large_file = input(if initial.large_file_mb > 0 { initial.large_file_mb } else { 50 }.to_string(), window, cx);
         let git_path = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(match crate::git::detected_executable() {
@@ -218,6 +221,7 @@ impl SettingsView {
             fetch_interval,
             git_path,
             font_size,
+            large_file,
             servers,
             git_test: None,
             github,
@@ -252,6 +256,9 @@ impl SettingsView {
         }
         if next.fetch_interval_minutes > 0 {
             next.fetch_interval_minutes = self.fetch_interval.read(cx).value().trim().parse::<u32>().unwrap_or(10).clamp(1, 1440);
+        }
+        if next.large_file_mb > 0 {
+            next.large_file_mb = self.large_file.read(cx).value().trim().parse::<u32>().unwrap_or(50).clamp(1, 100_000);
         }
         if let Ok(size) = self.font_size.read(cx).value().trim().parse::<f32>() {
             next.editor_font_tenths = (size.clamp(8., 32.) * 10.).round() as u32;
@@ -290,6 +297,7 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.commit_subject_limit = from.commit_subject_limit;
     to.warn_detached_head = from.warn_detached_head;
     to.non_modal_commit = from.non_modal_commit;
+    to.large_file_mb = from.large_file_mb;
     to.cherry_pick_suffix = from.cherry_pick_suffix;
     to.commit_push_dialog = from.commit_push_dialog;
     to.commit_push_dialog_protected_only = from.commit_push_dialog_protected_only;
@@ -564,6 +572,23 @@ impl SettingsView {
             .child(self.check("settings-hooks", "Run Git hooks", d.run_hooks, query, |s, v| s.run_hooks = v, cx))
             .child(self.check("settings-signoff", "Sign-off commit", d.sign_off, query, |s, v| s.sign_off = v, cx))
             .child(self.check("settings-cleanup", "Clean up commit message", d.cleanup_message, query, |s, v| s.cleanup_message = v, cx))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_sm()
+                    .child(self.found("Warn about files larger than", query, cx).child(
+                        Checkbox::new("settings-large-files").label("Warn about files larger than").checked(d.large_file_mb > 0).on_change({
+                            let entity = cx.entity();
+                            // The size comes from the field on Apply; 1 marks "on".
+                            move |v, _, cx| {
+                                let on = *v as u32;
+                                entity.update(cx, |this, cx| this.set(|s| s.large_file_mb = on, cx))
+                            }
+                        }),
+                    ))
+                    .child(div().w(px(60.)).child(Input::new(&self.large_file).small().disabled(d.large_file_mb == 0)))
+                    .child("MB"),
+            )
     }
 
     fn git_page(&self, query: &str, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
