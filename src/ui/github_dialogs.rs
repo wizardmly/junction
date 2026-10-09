@@ -13,7 +13,10 @@ use gpui_kit::component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
-use gpui_kit::{App, AppContext as _, ClipboardItem, Entity, ParentElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px};
+use gpui_kit::{
+    App, AppContext as _, ClipboardItem, Entity, InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window, div,
+    prelude::FluentBuilder as _, px,
+};
 
 use crate::git::Repository;
 use crate::hosting::account::{self, Account, Service};
@@ -90,7 +93,7 @@ pub fn share_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut App
                     .child(h_flex().gap_2().child(label("Description:")).child(div().flex_1().child(Input::new(&description).small())))
                     .when(accounts.len() > 1, |el| el.child(h_flex().gap_2().child(label("Share by:")).child(account_picker("share-account", &accounts, &chosen)))),
             )
-            .on_ok(move |_, _, cx| {
+            .on_ok(move |_, window, cx| {
                 let name = name_ok.read(cx).value().trim().to_owned();
                 let remote = remote_ok.read(cx).value().trim().to_owned();
                 if name.is_empty() || remote.is_empty() {
@@ -99,9 +102,23 @@ pub fn share_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut App
                 let description = description_ok.read(cx).value().trim().to_owned();
                 let account = accounts_ok[chosen_ok.get().min(accounts_ok.len() - 1)].clone();
                 let private = private_ok.get();
-                model.update(cx, |m, cx| {
-                    m.run_operation("Share Project on GitHub", move |repo| share(repo, &account, &name, private, &description, &remote), cx)
-                });
+                let Some(repo) = model.read(cx).repository().cloned() else { return true };
+                let model = model.clone();
+                let run = move |initial: Option<(Vec<String>, String)>, cx: &mut App| {
+                    let (account, name, description, remote) = (account.clone(), name.clone(), description.clone(), remote.clone());
+                    model.update(cx, |m, cx| {
+                        m.run_operation("Share Project on GitHub", move |repo| share(repo, &account, &name, private, &description, &remote, initial.as_ref()), cx)
+                    });
+                };
+                if repo.run(["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() {
+                    run(None, cx);
+                } else {
+                    // No commits yet: IntelliJ asks which files go into the initial commit.
+                    let files: Vec<String> = crate::git::status::WorkingTreeStatus::load(&repo)
+                        .map(|s| s.entries.into_iter().map(|e| e.path).collect())
+                        .unwrap_or_default();
+                    window.defer(cx, move |window, cx| initial_commit_files(files, Rc::new(run), window, cx));
+                }
                 true
             })
             .footer(footer("Share"))
@@ -109,12 +126,75 @@ pub fn share_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut App
     focus_input(&focus, window, cx);
 }
 
-fn share(repo: &Repository, account: &Account, name: &str, private: bool, description: &str, remote: &str) -> anyhow::Result<String> {
+/// Share Project's "Add Files For Initial Commit": the project's files,
+/// all checked, and the commit message.
+fn initial_commit_files(files: Vec<String>, run: Rc<dyn Fn(Option<(Vec<String>, String)>, &mut App)>, window: &mut Window, cx: &mut App) {
+    let included = Rc::new(RefCell::new(files.iter().cloned().collect::<std::collections::BTreeSet<String>>()));
+    let message = cx.new(|cx| InputState::new(window, cx).default_value("Initial commit"));
+    window.open_dialog(cx, move |dialog, _, cx| {
+        use gpui_kit::component::scroll::ScrollableElement as _;
+        let palette = cx.palette().clone();
+        let chosen = included.borrow().clone();
+        let mut list = v_flex().gap_px();
+        for (ix, path) in files.iter().enumerate() {
+            let (included, path_owned) = (included.clone(), path.clone());
+            list = list.child(Checkbox::new(("share-file", ix)).label(path.clone()).checked(chosen.contains(path)).on_change(move |v, window, _| {
+                let mut set = included.borrow_mut();
+                if *v { set.insert(path_owned.clone()); } else { set.remove(&path_owned); }
+                window.refresh();
+            }));
+        }
+        let all = included.clone();
+        let every = files.clone();
+        let (included_ok, message_ok, run) = (included.clone(), message.clone(), run.clone());
+        dialog
+            .title("Add Files For Initial Commit")
+            .w(px(520.))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .text_sm()
+                            .child(Checkbox::new("share-all").label(format!("{} of {} files", chosen.len(), files.len())).checked(chosen.len() == files.len()).on_change(move |v, window, _| {
+                                *all.borrow_mut() = if *v { every.iter().cloned().collect() } else { Default::default() };
+                                window.refresh();
+                            })),
+                    )
+                    .child(div().id("share-files").h(px(220.)).p_1().rounded(px(4.)).border_1().border_color(palette.border).overflow_y_scrollbar().child(list))
+                    .child(h_flex().gap_2().child(div().text_sm().text_color(palette.text_secondary).child("Commit Message:")).child(div().flex_1().child(Input::new(&message).small()))),
+            )
+            .on_ok(move |_, _, cx| {
+                let message = message_ok.read(cx).value().trim().to_owned();
+                if message.is_empty() {
+                    return false;
+                }
+                run(Some((included_ok.borrow().iter().cloned().collect(), message)), cx);
+                true
+            })
+            .footer(footer("Add"))
+    });
+}
+
+fn share(
+    repo: &Repository,
+    account: &Account,
+    name: &str,
+    private: bool,
+    description: &str,
+    remote: &str,
+    initial: Option<&(Vec<String>, String)>,
+) -> anyhow::Result<String> {
     let created = Client::new(account).create_repo(name, private, description)?;
     repo.run(["remote", "add", remote, &created.clone_url])?;
-    if repo.run(["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
-        repo.run(["add", "--all"])?;
-        repo.run(["commit", "-m", "Initial commit"])?;
+    if let Some((files, message)) = initial {
+        if !files.is_empty() {
+            let mut add = vec!["add", "--"];
+            add.extend(files.iter().map(String::as_str));
+            repo.run(add)?;
+        }
+        repo.run(["commit", "--allow-empty", "-m", message])?;
     }
     let branch = repo.run(["symbolic-ref", "--short", "HEAD"])?.trim().to_owned();
     repo.run(["push", "--set-upstream", remote, &branch])?;
@@ -250,9 +330,31 @@ pub fn create_pull_request(model: Entity<RepoModel>, target: PrTarget, on_create
     let body = cx.new(|cx| TextareaState::new(window, cx).rows(6).default_value(body_text).placeholder("Description"));
     let draft = Rc::new(Cell::new(false));
     let focus = title.clone();
+    // An open PR from this branch already: IntelliJ shows it instead of creating another.
+    let existing: Rc<RefCell<Option<(u64, String)>>> = Rc::default();
+    {
+        let (existing, target, head) = (existing.clone(), target.clone(), head.clone());
+        let window_handle = window.window_handle();
+        cx.spawn(async move |cx| {
+            let found = cx
+                .background_spawn(async move {
+                    let prs = Client::new(&target.account).pulls(&target.repo, "open").ok()?;
+                    prs.into_iter().find(|pr| pr.head.name == head).map(|pr| (pr.number, pr.html_url))
+                })
+                .await;
+            if found.is_some() {
+                *existing.borrow_mut() = found;
+                window_handle.update(cx, |_, window, _| window.refresh()).ok();
+            }
+        })
+        .detach();
+    }
     window.open_dialog(cx, move |dialog, _, cx| {
-        let secondary = cx.palette().text_secondary;
+        let palette = cx.palette().clone();
+        let secondary = palette.text_secondary;
         let label = |text: &'static str| div().w(px(60.)).text_sm().text_color(secondary).child(text);
+        let already = existing.borrow().clone();
+        let existing_ok = existing.clone();
         let draft_cell = draft.clone();
         let (base_ok, title_ok, body_ok, draft_ok, menu_base) = (base.clone(), title.clone(), body.clone(), draft.clone(), base.clone());
         let (model, target, head, on_created, branches) = (model.clone(), target.clone(), head.clone(), on_created.clone(), remote_branches.clone());
@@ -281,9 +383,30 @@ pub fn create_pull_request(model: Entity<RepoModel>, target: PrTarget, on_create
                     .child(Checkbox::new("cpr-draft").label(format!("Create draft {}", noun.to_lowercase())).checked(draft.get()).on_change(move |v, window, _| {
                         draft_cell.set(*v);
                         window.refresh();
-                    })),
+                    }))
+                    .when_some(already, |el, (number, url)| {
+                        let number = if gitlab { format!("!{number}") } else { format!("#{number}") };
+                        el.child(
+                            h_flex()
+                                .gap_1()
+                                .text_sm()
+                                .child(gpui_kit::component::Icon::new(IconName::TriangleAlert).small().text_color(palette.status_conflict))
+                                .child(format!("{noun} {number} already exists for this branch."))
+                                .child(
+                                    div()
+                                        .id("cpr-existing")
+                                        .text_color(palette.link)
+                                        .cursor_pointer()
+                                        .child("View")
+                                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                                ),
+                        )
+                    }),
             )
             .on_ok(move |_, _, cx| {
+                if existing_ok.borrow().is_some() {
+                    return false;
+                }
                 let title = title_ok.read(cx).value().trim().to_owned();
                 let base = base_ok.read(cx).value().trim().to_owned();
                 if title.is_empty() || base.is_empty() {
