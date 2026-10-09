@@ -189,6 +189,12 @@ pub fn reset_to(model: Entity<RepoModel>, target: String, window: &mut Window, c
 /// The Push dialog: commits that will be pushed, the editable target branch,
 /// and IntelliJ's options (force push with lease, push tags, run hooks).
 pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
+    push_up_to(model, None, window, cx)
+}
+
+/// The Push dialog for the current branch, or (Push All up to Here) for
+/// its commits up to `up_to`.
+pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut Window, cx: &mut App) {
     use crate::git::ops::{self, PushRequest, PushTags};
     use gpui_kit::component::{ActiveTheme as _, h_flex, menu::{DropdownMenu as _, PopupMenuItem}, scroll::ScrollableElement as _};
     use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _};
@@ -232,8 +238,13 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
         commit_files: Vec<Vec<crate::git::log::FileChange>>,
         all_files: Vec<crate::git::log::FileChange>,
     }
+    let up_to_ok = up_to.clone();
     let outgoing = move |repository: &crate::git::Repository, remote: &str, target: &str| {
-        let (new_branch, commits) = ops::push_commits(repository, remote, target).unwrap_or_default();
+        let (new_branch, mut commits) = ops::push_commits(repository, remote, target).unwrap_or_default();
+        // Newest first: the ones above `up_to` stay behind.
+        if let Some(pos) = up_to.as_ref().and_then(|h| commits.iter().position(|c| &c.hash == h)) {
+            commits.drain(..pos);
+        }
         let commit_files: Vec<Vec<crate::git::log::FileChange>> = commits
             .iter()
             .map(|c| crate::git::log::load_details(repository, &c.hash).map(|d| d.changes).unwrap_or_default())
@@ -343,6 +354,7 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
         let ok_model = model.clone();
         let ok_remotes = preview.remotes.clone();
         let ok_default_remote = preview.remote.clone();
+        let ok_up_to = up_to_ok.clone();
         let has_upstream = preview.has_upstream;
         // Settings › Git › Protected branches: no force push to them.
         let protected = Settings::get(cx).is_protected(&target_name);
@@ -477,6 +489,7 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                     },
                     set_upstream: !has_upstream,
                     run_hooks: o.hooks,
+                    up_to: ok_up_to.clone(),
                 };
                 run_push(ok_model.clone(), request, cx);
                 true

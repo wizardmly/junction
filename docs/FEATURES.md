@@ -74,7 +74,7 @@
 |---|---|---|
 | Copy Revision Number（含 `Ctrl+C`） | M1 | ✅ |
 | Create Patch… | M4 | ✅（多选时合并为一个补丁；保存到文件或剪贴板，可反向） |
-| Cherry-Pick | M3 | ✅（冲突走进行中操作横幅） |
+| Cherry-Pick | M3 | ✅（冲突走进行中操作横幅；改动已在当前分支的（空）提交自动跳过，不留下进行中状态） |
 | Checkout Revision | M2 | ✅ |
 | Show Repository at Revision | M4 | ✅（提交右键 → 显示该版本的文件树，双击打开只读编辑器） |
 | Compare with Local | M3 | ✅ |
@@ -83,10 +83,10 @@
 | Undo Commit（最新的未推送提交） | M2 | ✅ |
 | Edit Commit Message…（reword） | M3 | ✅ |
 | Fixup… / Squash Into… | M3 | ✅（预填 fixup!/squash! 提交信息，交互式 Rebase 自动归位） |
-| Drop Commits | M3 | ✅ |
+| Drop Commits | M3 | ✅（通知带 Undo：分支未再变化时恢复被删除的提交） |
 | Squash Commits…（多选） | M3 | ✅ |
 | Interactively Rebase from Here… | M3 | ✅ |
-| Push All up to Here… | M3 | ✅ |
+| Push All up to Here… | M3 | ✅（打开 Push 对话框，只列出到该提交为止的提交；没有 upstream 的分支也可用，推送后设置 upstream） |
 | New Branch… / New Tag… | M2 | ✅ |
 | Go to Child Commit / Go to Parent Commit | M2 | ✅（提交右键 Go to Child Commit / Go to Parent Commit） |
 | Open on GitHub/GitLab | M5 | ✅（Log 提交右键、变更文件右键、文件编辑器 Git 菜单（带选中行）；支持 GitHub / GitLab / Bitbucket / Gitea 类主机） |

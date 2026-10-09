@@ -2425,6 +2425,29 @@ fn change_menu(
     })
 }
 
+/// Cherry-picks, skipping commits whose changes are already in the
+/// current branch (git stops on them, "now empty"), as IntelliJ does
+/// rather than leaving a cherry-pick in progress.
+fn cherry_pick_skipping_empty(repo: &crate::git::Repository, args: &[String], picked: String) -> anyhow::Result<String> {
+    let total = args.len() - 1;
+    let mut skipped = 0;
+    let mut result = repo.run(args);
+    while let Err(error) = result {
+        let text = format!("{error:#}");
+        if skipped >= total || !(text.contains("is now empty") || text.contains("nothing to commit")) {
+            return Err(error);
+        }
+        skipped += 1;
+        result = repo.run(["cherry-pick", "--skip"]);
+    }
+    Ok(match (skipped, total) {
+        (0, _) => picked,
+        (s, t) if s == t && t == 1 => "Nothing to cherry-pick: the commit's changes are already in the current branch".to_owned(),
+        (s, t) if s == t => "Nothing to cherry-pick: the commits' changes are already in the current branch".to_owned(),
+        (s, t) => format!("Cherry-picked {} of {t} commits; {s} skipped, their changes are already in the current branch", t - s),
+    })
+}
+
 fn commit_menu(
     menu: gpui_kit::component::menu::PopupMenu,
     entity: &Entity<LogView>,
@@ -2473,16 +2496,9 @@ fn commit_menu(
             picks.iter().all(|pick| on_head.contains(pick))
         }
     });
-    // Push All up to Here: the current branch's upstream, when the commit is on it.
-    let push_target = {
-        let refs = model.read(cx).refs();
-        let current = refs.current_branch.clone();
-        let upstream = refs.local_branches().find(|r| Some(&r.name) == current.as_ref()).and_then(|r| r.upstream.clone());
-        let repository = model.read(cx).repository().cloned();
-        upstream
-            .filter(|_| repository.is_some_and(|repo| crate::git::rebase::is_on_current_branch(&repo, &commit.hash)))
-            .and_then(|u| u.split_once('/').map(|(r, b)| (r.to_owned(), b.to_owned())))
-    };
+    // Push All up to Here: commits of the current branch (not detached).
+    let can_push_here = model.read(cx).refs().current_branch.is_some()
+        && model.read(cx).repository().is_some_and(|repo| crate::git::rebase::is_on_current_branch(repo, &commit.hash));
     let compare_model = model.clone();
     let compare = if selected.len() == 2 { Some((selected[0].hash.clone(), selected[1].hash.clone())) } else { None };
     let local_model = model.clone();
@@ -2556,7 +2572,13 @@ fn commit_menu(
     }))
     .separator()
     // Commits already on the current branch have nothing to pick.
-    .item(PopupMenuItem::new("Cherry-Pick").disabled(on_branch).on_click(op("Cherry-Pick", cherry_pick, picked)))
+    .item(PopupMenuItem::new("Cherry-Pick").disabled(on_branch).on_click({
+        let model = model.clone();
+        move |_, _, cx| {
+            let (args, picked) = (cherry_pick.clone(), picked.clone());
+            model.update(cx, |model, cx| model.run_operation("Cherry-Pick", move |repo| cherry_pick_skipping_empty(repo, &args, picked), cx));
+        }
+    }))
     .item(PopupMenuItem::new("Checkout Revision").disabled(multi).on_click(op(
         "Checkout",
         vec!["checkout".into(), "--detach".into(), hash.clone()],
@@ -2610,21 +2632,12 @@ fn commit_menu(
         move |_, window, cx| rebase_dialog::open(model.clone(), hash.clone(), window, cx)
     }))
     .separator()
-    .item(PopupMenuItem::new("Push All up to Here…").disabled(multi || push_target.is_none()).on_click({
+    // Opens the Push dialog with the commits up to this one, as IntelliJ
+    // does, also for a branch without an upstream yet.
+    .item(PopupMenuItem::new("Push All up to Here…").disabled(multi || !can_push_here).on_click({
         let model = model.clone();
         let hash = hash.clone();
-        let short = short.clone();
-        move |_, _, cx| {
-            let Some((remote, branch)) = push_target.clone() else { return };
-            let hash = hash.clone();
-            let short = short.clone();
-            model.update(cx, |model, cx| {
-                model.run_operation("Push", move |repo| {
-                    repo.run(["push", remote.as_str(), &format!("{hash}:refs/heads/{branch}")])?;
-                    Ok(format!("Pushed commits up to {short} to {remote}/{branch}"))
-                }, cx)
-            });
-        }
+        move |_, window, cx| dialogs::push_up_to(model.clone(), Some(hash.clone()), window, cx)
     }))
     .separator()
     .item(PopupMenuItem::new("New Branch…").disabled(multi).on_click({

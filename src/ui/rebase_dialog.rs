@@ -454,6 +454,7 @@ fn rewrite(
         repository.run(["rev-list", "--count", &format!("{h}..HEAD")]).ok().and_then(|n| n.trim().parse::<usize>().ok()).unwrap_or(0)
     };
     let Some(oldest) = hashes.iter().max_by_key(|h| count_above(h)).cloned() else { return };
+    let count = hashes.len();
     model.update(cx, |m, cx| {
         m.run_operation(title, move |repo| {
             let base = rebase::base_of(repo, &oldest);
@@ -461,7 +462,13 @@ fn rewrite(
                 .into_iter()
                 .map(|commit| Entry { commit, action: Action::Pick, message: None })
                 .collect();
-            rebase::run_interactive(repo, &base, &plan(entries))
+            let message = rebase::run_interactive(repo, &base, &plan(entries))?;
+            // IntelliJ's balloon: "Dropped 1 commit", with Undo (the workspace adds it).
+            Ok(if title == DROP_TITLE && repo.state() != crate::git::RepositoryState::Rebasing {
+                format!("{DROPPED} {count} commit{}", if count == 1 { "" } else { "s" })
+            } else {
+                message
+            })
         }, cx)
     });
 }
@@ -516,9 +523,13 @@ pub fn reword(model: Entity<RepoModel>, hash: String, window: &mut Window, cx: &
 }
 
 /// Log › Drop Commits.
+/// The title of Drop Commits' notification, and how its message starts.
+pub const DROP_TITLE: &str = "Drop Commits";
+pub const DROPPED: &str = "Dropped";
+
 pub fn drop_commits(model: Entity<RepoModel>, hashes: Vec<String>, window: &mut Window, cx: &mut App) {
     let targets = hashes.clone();
-    rewrite(&model, "Drop Commits", &hashes, window, cx, move |mut entries| {
+    rewrite(&model, DROP_TITLE, &hashes, window, cx, move |mut entries| {
         for entry in &mut entries {
             if targets.contains(&entry.commit.hash) {
                 entry.action = Action::Drop;

@@ -87,6 +87,8 @@ pub struct PushRequest {
     pub tags: PushTags,
     pub set_upstream: bool,
     pub run_hooks: bool,
+    /// Push All up to Here: push this commit of the branch, not its tip.
+    pub up_to: Option<String>,
 }
 
 pub fn push(repository: &Repository, request: &PushRequest) -> Result<String> {
@@ -94,7 +96,8 @@ pub fn push(repository: &Repository, request: &PushRequest) -> Result<String> {
     if request.force_with_lease {
         args.push("--force-with-lease".into());
     }
-    if request.set_upstream {
+    // `--set-upstream` needs a branch as the source; a commit's push sets it below.
+    if request.set_upstream && request.up_to.is_none() {
         args.push("--set-upstream".into());
     }
     if !request.run_hooks {
@@ -106,8 +109,16 @@ pub fn push(repository: &Repository, request: &PushRequest) -> Result<String> {
         PushTags::CurrentBranch => args.push("--follow-tags".into()),
     }
     args.push(request.remote.clone());
-    args.push(format!("{}:refs/heads/{}", request.branch, request.target));
+    let source = request.up_to.as_deref().unwrap_or(&request.branch);
+    args.push(format!("{source}:refs/heads/{}", request.target));
     repository.run(&args)?;
+    if let Some(hash) = &request.up_to {
+        if request.set_upstream {
+            let upstream = format!("--set-upstream-to={}/{}", request.remote, request.target);
+            let _ = repository.run(["branch", upstream.as_str(), request.branch.as_str()]);
+        }
+        return Ok(format!("Pushed commits up to {} to {}/{}", &hash[..hash.len().min(8)], request.remote, request.target));
+    }
     Ok(format!("Pushed {} to {}/{}", request.branch, request.remote, request.target))
 }
 
@@ -122,7 +133,8 @@ pub fn is_rejected(error: &anyhow::Error) -> bool {
 /// local changes) and push once more: "Auto-update if push was rejected".
 pub fn push_with_auto_update(repository: &Repository, request: &PushRequest, rebase: bool) -> Result<String> {
     match push(repository, request) {
-        Err(error) if is_rejected(&error) && !request.force_with_lease => {
+        // Up to a commit: after a rebase that commit is no longer the one to push.
+        Err(error) if is_rejected(&error) && !request.force_with_lease && request.up_to.is_none() => {
             repository.run([
                 "pull",
                 if rebase { "--rebase" } else { "--no-rebase" },
@@ -386,6 +398,39 @@ mod tests {
     }
 
     #[test]
+    fn push_up_to_a_commit_sets_the_upstream() {
+        let origin = temp_repo("upto-src");
+        let bare = origin.with_extension("git");
+        let _ = std::fs::remove_dir_all(&bare);
+        git(&origin, &["init", "-q", "--bare", bare.to_str().unwrap()]);
+        git(&origin, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        for name in ["one", "two"] {
+            std::fs::write(origin.join(format!("{name}.txt")), name).unwrap();
+            git(&origin, &["add", "."]);
+            git(&origin, &["commit", "-qm", name]);
+        }
+        let repo = Repository::discover(&origin, GitConsole::default()).unwrap();
+        let first = repo.run(["rev-parse", "HEAD~1"]).unwrap().trim().to_owned();
+        let branch = repo.run(["branch", "--show-current"]).unwrap().trim().to_owned();
+        let request = PushRequest {
+            remote: "origin".into(),
+            branch: branch.clone(),
+            target: branch.clone(),
+            force_with_lease: false,
+            set_upstream: true,
+            tags: PushTags::None,
+            run_hooks: true,
+            up_to: Some(first.clone()),
+        };
+        push(&repo, &request).unwrap();
+        // Only the first commit went; the branch now tracks the pushed one.
+        assert_eq!(repo.run(["rev-parse", &format!("origin/{branch}")]).unwrap().trim(), first);
+        assert_eq!(repo.run(["rev-parse", "--abbrev-ref", "@{upstream}"]).unwrap().trim(), format!("origin/{branch}"));
+        let _ = std::fs::remove_dir_all(&origin);
+        let _ = std::fs::remove_dir_all(&bare);
+    }
+
+    #[test]
     fn rejected_push_updates_and_retries() {
         let origin = temp_repo("origin-src");
         let bare = origin.with_extension("git");
@@ -417,6 +462,7 @@ mod tests {
             set_upstream: false,
             tags: PushTags::None,
             run_hooks: true,
+            up_to: None,
         };
         assert!(is_rejected(&push(&repo, &request).unwrap_err()));
         push_with_auto_update(&repo, &request, true).unwrap();

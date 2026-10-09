@@ -486,6 +486,38 @@ impl Workspace {
                                 })
                                 .into_any_element()
                         });
+                    } else if title == crate::ui::rebase_dialog::DROP_TITLE && message.starts_with(crate::ui::rebase_dialog::DROPPED) {
+                        // "Undo" puts the dropped commits back while the branch
+                        // is still where the drop left it (rebase saved the old
+                        // tip in ORIG_HEAD).
+                        let heads = this.model.read(cx).repository().and_then(|r| {
+                            let head = |name: &str| r.run(["rev-parse", "--verify", "-q", name]).ok().map(|h| h.trim().to_owned());
+                            Some((head("ORIG_HEAD")?, head("HEAD")?))
+                        });
+                        notification = notification.content(move |_, _, cx| {
+                            let palette = cx.palette().clone();
+                            let (entity, heads) = (entity.clone(), heads.clone());
+                            div()
+                                .id("notify-undo-drop")
+                                .text_sm()
+                                .text_color(palette.link)
+                                .cursor_pointer()
+                                .child("Undo")
+                                .on_click(move |_, _, cx| {
+                                    let Some((old, new)) = heads.clone() else { return };
+                                    let model = entity.read(cx).model.clone();
+                                    model.update(cx, |m, cx| {
+                                        m.run_operation("Undo Drop", move |repo| {
+                                            if repo.run(["rev-parse", "HEAD"])?.trim() != new {
+                                                anyhow::bail!("The branch has changed since the commits were dropped");
+                                            }
+                                            repo.run(["reset", "--keep", &old])?;
+                                            Ok("The dropped commits are back".to_owned())
+                                        }, cx)
+                                    });
+                                })
+                                .into_any_element()
+                        });
                     } else if title == "Commit" {
                         // The balloon's "Undo" link undoes exactly this commit.
                         let committed = this.model.read(cx).repository().and_then(|r| r.run(["rev-parse", "HEAD"]).ok()).map(|h| h.trim().to_owned());
