@@ -680,9 +680,10 @@ impl Workspace {
             MergeEvent::Closed(applied) => {
                 this.merge = None;
                 this.fix_front(cx);
-                // Back to the Conflicts dialog while other files still conflict.
-                let others = merge::conflicts(this.model.read(cx).status()).len() > 1;
-                if *applied && others {
+                // Back to the Conflicts dialog while files still conflict
+                // (the status doesn't know yet of one just resolved).
+                let left = merge::conflicts(this.model.read(cx).status()).len();
+                if left > usize::from(*applied) {
                     this.show_conflicts(window, cx);
                 }
                 cx.notify();

@@ -263,7 +263,7 @@ impl MergeView {
             PaneLayout { mirrored: false, buttons: BUTTON_WIDTH * 2. + 2., ..Default::default() },
         ];
         self.refresh();
-        self.go_to_unresolved(true);
+        self.go_to_first_unresolved();
     }
 
     /// Compare Contents: Left / Base / Right / Result against each other,
@@ -539,7 +539,7 @@ impl MergeView {
                 }
             }
         }
-        self.go_to_unresolved(true);
+        self.go_to_first_unresolved();
     }
 
     /// Resolve Simple Conflicts: the magic wand on every conflict it can do.
@@ -549,7 +549,7 @@ impl MergeView {
                 self.resolve_simple(ix, cx);
             }
         }
-        self.go_to_unresolved(true);
+        self.go_to_first_unresolved();
     }
 
     fn counts(&self) -> (usize, usize) {
@@ -673,6 +673,23 @@ impl MergeView {
             )
         });
         cx.emit(MergeEvent::Closed(true));
+    }
+
+    /// Cancel: asks before throwing away what was merged so far.
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.untouched() {
+            cx.emit(MergeEvent::Closed(false));
+            return;
+        }
+        let entity = cx.entity();
+        crate::ui::dialogs::confirm(
+            "Cancel Visual Merge",
+            "Are you sure you want to exit without applying changes?",
+            "Discard Changes",
+            move |cx| entity.update(cx, |_, cx| cx.emit(MergeEvent::Closed(false))),
+            window,
+            cx,
+        );
     }
 
     /// Accept Left / Accept Right: the whole file from one side.
