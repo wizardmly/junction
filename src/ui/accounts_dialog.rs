@@ -192,7 +192,7 @@ impl Render for AccountsView {
                         ),
                 )
             })
-            .when_some(self.error.clone(), |el, e| el.child(div().text_sm().text_color(palette.status_deleted).child(SharedString::from(e))))
+            .when_some(self.error.clone(), |el, e| el.child(div().text_sm().text_color(palette.status_conflict).child(SharedString::from(e))))
     }
 }
 

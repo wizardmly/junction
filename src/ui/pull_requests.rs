@@ -534,7 +534,7 @@ impl Render for PullRequestsView {
                     .child(tool_button("pr-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(|this, _, _, cx| this.refresh(cx)))),
             )
             .when(self.loading, |el| el.child(div().px_2().py_1().text_xs().text_color(palette.text_secondary).child("Loading…")))
-            .when_some(self.error.clone(), |el, e| el.child(div().px_2().py_1().text_sm().text_color(palette.status_deleted).child(e)))
+            .when_some(self.error.clone(), |el, e| el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(e)))
             .child(div().id("pr-list").flex_1().min_h_0().overflow_y_scrollbar().child(rows))
             .into_any_element()
     }
@@ -752,7 +752,7 @@ impl Render for PrTimelineView {
         for c in &self.comments {
             let badge = match c.state.as_deref() {
                 Some("APPROVED") => Some(("approved", palette.status_added)),
-                Some("CHANGES_REQUESTED") => Some(("requested changes", palette.status_deleted)),
+                Some("CHANGES_REQUESTED") => Some(("requested changes", palette.status_conflict)),
                 Some("COMMENTED") => Some(("reviewed", palette.text_secondary)),
                 Some("DISMISSED") => Some(("dismissed", palette.text_secondary)),
                 _ => None,
@@ -782,7 +782,7 @@ impl Render for PrTimelineView {
                     .child(tool_button("tl-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(|this, _, _, cx| this.reload(cx)))),
             )
             .when(self.loading, |el| el.child(div().px_3().py_1().text_xs().text_color(palette.text_secondary).child("Loading…")))
-            .when_some(self.error.clone(), |el, e| el.child(div().px_3().py_1().text_sm().text_color(palette.status_deleted).child(e)))
+            .when_some(self.error.clone(), |el, e| el.child(div().px_3().py_1().text_sm().text_color(palette.status_conflict).child(e)))
             .child(div().id("timeline").flex_1().min_h_0().overflow_y_scrollbar().child(div().p_3().child(items)))
             .child(
                 v_flex()

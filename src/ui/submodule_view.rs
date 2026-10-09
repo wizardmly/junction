@@ -100,7 +100,7 @@ impl Render for SubmoduleView {
                 SubmoduleState::UpToDate => ("up to date", palette.text_secondary),
                 SubmoduleState::Changed => ("checked out at another commit", palette.status_modified),
                 SubmoduleState::Uninitialized => ("not initialized", palette.status_deleted),
-                SubmoduleState::Conflict => ("conflict", palette.status_deleted),
+                SubmoduleState::Conflict => ("conflict", palette.status_conflict),
             };
             let menu_entity = entity.clone();
             rows = rows.child(

@@ -123,7 +123,7 @@ impl Render for MappingsView {
             .child(div().text_sm().text_color(palette.text_secondary).child(format!("Git roots of {}", self.project.display())))
             .child(div().p_1().rounded(px(4.)).border_1().border_color(palette.border).child(rows))
             .child(h_flex().child(Button::new("mapping-add").small().outline().icon(IconName::Plus).label("Add Root…").on_click(cx.listener(|this, _, _, cx| this.add(cx)))))
-            .when_some(self.error.clone(), |el, e| el.child(div().text_sm().text_color(palette.status_deleted).child(e)))
+            .when_some(self.error.clone(), |el, e| el.child(div().text_sm().text_color(palette.status_conflict).child(e)))
     }
 }
 
