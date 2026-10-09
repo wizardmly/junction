@@ -316,8 +316,11 @@ impl DiffView {
                 vec![(HunkAction::Stage, IconName::Plus, "Stage"), (HunkAction::Revert, IconName::Undo2, "Rollback")]
             }
             Some(DiffSource::Staged { .. }) => vec![(HunkAction::Unstage, IconName::Minus, "Unstage")],
-            // Two files (or the clipboard and a file): copy a change across.
-            Some(DiffSource::Files { .. } | DiffSource::Clipboard { .. }) if self.editable() => vec![(HunkAction::Revert, IconName::ChevronsRight, "Replace")],
+            // Two files, the clipboard and a file, or a revision and the
+            // local file: copy a change across into the editable side.
+            Some(DiffSource::Files { .. } | DiffSource::Clipboard { .. } | DiffSource::Between { new: None, .. }) if self.editable() => {
+                vec![(HunkAction::Revert, IconName::ChevronsRight, "Replace")]
+            }
             _ => Vec::new(),
         }
     }
