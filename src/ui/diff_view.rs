@@ -1313,7 +1313,11 @@ impl DiffView {
     /// the include-all checkbox and revision on the right.
     fn render_two_side_header(&self, old_title: String, new_title: String, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
-        let path = self.source.as_ref().map(|s| s.path().to_owned()).unwrap_or_default();
+        // A renamed file: each side shows its own path.
+        let (path, new_path) = match &self.source {
+            Some(DiffSource::Commit { old_path: Some(old), path, .. } | DiffSource::Between { old_path: Some(old), path, .. }) => (old.clone(), Some(path.clone())),
+            source => (source.as_ref().map(|s| s.path().to_owned()).unwrap_or_default(), None),
+        };
         let included = self.included(cx);
         let partial = self.partial_path(cx).is_some() && !included.is_empty();
         // Three states: all in, none in, or a dash for some.
@@ -1361,7 +1365,10 @@ impl DiffView {
                         }))
                     })
                     .when(edit_pane != Some(1), |el| el.child(common::icon(IconName::Lock).text_color(palette.text_secondary)))
-                    .child(new_title),
+                    .child(div().flex_shrink_0().child(new_title))
+                    .when_some(new_path, |el, path| {
+                        el.child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(palette.text_secondary).child(path))
+                    }),
             )
             .child(div().w(px(STRIPE_WIDTH)).flex_shrink_0())
     }
