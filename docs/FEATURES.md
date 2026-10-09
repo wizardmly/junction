@@ -146,7 +146,7 @@
 | 受保护分支禁止 force push | M3 | ✅ |
 | Manage Remotes 对话框：添加/编辑/删除 | M2 | ✅（Git Remotes：列表、+ 添加 / − 删除 / 编辑（改名 + 改 URL），双击编辑；新 URL 先用 ls-remote 校验，删除前确认） |
 | 凭据：HTTPS 密码/Token 对话框、SSH passphrase、使用 credential helper | M2 | ✅（已配置的 credential helper 优先） |
-| Clone 对话框：URL、目录、GitHub/GitLab 账号仓库列表 | M4 | ✅（URL + 目录自动填充 + Test，填 URL 前不检查目录；已登录 GitHub / GitLab 账号的仓库列表可搜索，点选填入 URL） |
+| Clone 对话框：URL、目录、GitHub/GitLab 账号仓库列表 | M4 | ✅（URL + 目录自动填充 + Test，填 URL 前不检查目录；已登录 GitHub / GitLab 账号的仓库列表可搜索，点选填入 URL；克隆完成后像 AS 一样问 Open Project：This Window / New Window / Cancel，欢迎页直接打开） |
 
 ## 6. Diff 与 Merge
 

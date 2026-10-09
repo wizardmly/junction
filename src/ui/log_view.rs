@@ -169,7 +169,7 @@ impl LogView {
                     }
                     cx.notify();
                 }
-                RepoEvent::Notify { .. } | RepoEvent::Compare { .. } | RepoEvent::PrefillCommitMessage(_) | RepoEvent::OpenLogTab { .. } | RepoEvent::ShowConflicts => {}
+                RepoEvent::Notify { .. } | RepoEvent::Compare { .. } | RepoEvent::PrefillCommitMessage(_) | RepoEvent::OpenLogTab { .. } | RepoEvent::ShowConflicts | RepoEvent::Cloned(_) => {}
             }),
             cx.subscribe_in(&search, window, |this, _, event, _, cx| match event {
                 InputEvent::Change => {

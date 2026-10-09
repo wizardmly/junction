@@ -390,6 +390,9 @@ impl Workspace {
                 if let RepoEvent::OpenLogTab { title, filter } = event {
                     this.open_log_tab(title.clone(), filter.clone(), cx);
                 }
+                if let RepoEvent::Cloned(dir) = event {
+                    clone_dialog::open_cloned(this.model.clone(), dir.clone(), window, cx);
+                }
                 if let RepoEvent::ShowConflicts = event {
                     // Not over the merge tool or a dialog the user has open.
                     if this.merge.is_none() && !window.has_active_dialog(cx) {

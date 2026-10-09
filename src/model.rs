@@ -53,6 +53,10 @@ pub enum RepoEvent {
     /// IntelliJ does after a merge, rebase or cherry-pick (sent once the
     /// status has been reloaded).
     ShowConflicts,
+    /// Get from Version Control finished cloning into this directory; the
+    /// workspace opens it, asking This Window / New Window when a project
+    /// is open, as IntelliJ does.
+    Cloned(PathBuf),
 }
 
 pub struct RepoModel {
@@ -258,7 +262,7 @@ impl RepoModel {
         self.roots.len() > 1
     }
 
-    /// Get from Version Control: `git clone` into `dir`, then open it.
+    /// Get from Version Control: `git clone` into `dir`, then open it (see `RepoEvent::Cloned`).
     pub fn clone_repository(&mut self, url: String, dir: PathBuf, cx: &mut Context<Self>) {
         self.busy = Some(format!("Cloning {url}"));
         cx.notify();
@@ -279,7 +283,7 @@ impl RepoModel {
                 match result {
                     Ok(url) => {
                         cx.emit(RepoEvent::Notify { title: "Clone".into(), message: format!("Cloned {url}"), error: false });
-                        this.open(dir, cx);
+                        cx.emit(RepoEvent::Cloned(dir));
                     }
                     Err(error) => cx.emit(RepoEvent::Notify { title: "Clone failed".into(), message: error.to_string(), error: true }),
                 }

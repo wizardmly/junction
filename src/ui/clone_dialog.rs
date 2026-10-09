@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::component::{
     Sizable as _, WindowExt as _, h_flex,
-    button::Button,
+    button::{Button, ButtonVariants as _},
+    dialog::{DialogClose, DialogFooter},
     input::{Input, InputEvent, InputState},
     v_flex,
 };
@@ -311,6 +312,35 @@ pub fn clone(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
             .footer(footer("Clone"))
     });
     focus_input(&focus, window, cx);
+}
+
+/// Opens a fresh clone. From the Welcome screen it opens here; with a
+/// project open, IntelliJ's "Open Project" asks This Window / New Window.
+pub fn open_cloned(model: Entity<RepoModel>, dir: PathBuf, window: &mut Window, cx: &mut App) {
+    if model.read(cx).repository().is_none() {
+        model.update(cx, |m, cx| m.open(dir, cx));
+        return;
+    }
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (model, here, new) = (model.clone(), dir.clone(), dir.clone());
+        dialog
+            .title("Open Project")
+            .w(px(440.))
+            .child(div().text_sm().child("Where would you like to open the project?"))
+            .footer(
+                DialogFooter::new()
+                    .gap_2()
+                    .child(DialogClose::new().child(Button::new("cloned-cancel").label("Cancel").outline()))
+                    .child(Button::new("cloned-new-window").label("New Window").outline().on_click(move |_, window, cx| {
+                        window.close_dialog(cx);
+                        crate::open_project_window(Some(new.clone()), cx);
+                    }))
+                    .child(Button::new("cloned-this-window").label("This Window").primary().on_click(move |_, window, cx| {
+                        window.close_dialog(cx);
+                        model.update(cx, |m, cx| m.open(here.clone(), cx));
+                    })),
+            )
+    });
 }
 
 /// Create Git Repository: pick a folder and `git init` it.
