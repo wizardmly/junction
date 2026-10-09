@@ -946,7 +946,8 @@ impl DiffView {
                 if empty {
                     overlays.push(div().absolute().left_0().right_0().top(px(y)).h(px(1.)).bg(border_color(seg.kind, &palette)).into_any_element());
                 }
-                let button_top = if range.is_empty() { y - LINE_HEIGHT / 2. } else { y };
+                // On an empty side the buttons sit on the row below the insertion line, as in IntelliJ.
+                let button_top = y;
                 let column = || {
                     h_flex()
                         .absolute()

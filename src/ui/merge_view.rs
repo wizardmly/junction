@@ -726,7 +726,8 @@ impl MergeView {
             if range.is_empty() {
                 out.push(div().absolute().left_0().right_0().top(px(y)).h(px(1.)).bg(colors.border).into_any_element());
             }
-            let top = if range.is_empty() { y - LINE_HEIGHT / 2. } else { y };
+            // On an empty side the buttons sit on the row below the insertion line.
+            let top = y;
             let column = |width: f32| {
                 h_flex()
                     .absolute()
