@@ -500,4 +500,42 @@ mod tests {
         unshelve(&repository, &shelf, None, false).unwrap();
         assert_eq!(porcelain(&repository), "R  a.txt -> b.txt\nA  new.txt\n");
     }
+
+    fn local_branch(name: &str) -> crate::git::RefName {
+        crate::git::RefName {
+            kind: crate::git::RefKind::LocalBranch,
+            name: name.into(),
+            full_name: format!("refs/heads/{name}"),
+            target: String::new(),
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+        }
+    }
+
+    #[test]
+    fn checkout_reports_local_changes_and_smart_checkout_restores_them() {
+        use crate::git::status::{CheckoutMode, CheckoutOutcome, checkout_with, overwritten_files};
+        let (dir, repository) = repo();
+        git(&dir, &["checkout", "-q", "-b", "other"]);
+        std::fs::write(dir.0.join("a.txt"), "one\nOTHER\n").unwrap();
+        git(&dir, &["commit", "-qam", "other"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.0.join("a.txt"), "one\nLOCAL\n").unwrap();
+
+        let error = checkout_with(&repository, &local_branch("other"), CheckoutMode::Plain).unwrap_err().to_string();
+        assert_eq!(overwritten_files(&error), Some(vec!["a.txt".to_owned()]));
+
+        // The stash comes back with a conflict: checked out, reported, stash kept.
+        let outcome = checkout_with(&repository, &local_branch("other"), CheckoutMode::Smart).unwrap();
+        assert_eq!(outcome, CheckoutOutcome::RestoredWithConflicts);
+        assert_eq!(repository.run(["symbolic-ref", "--short", "HEAD"]).unwrap().trim(), "other");
+        assert!(porcelain(&repository).starts_with("UU a.txt"));
+
+        git(&dir, &["reset", "-q", "--hard"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.0.join("a.txt"), "one\nLOCAL\n").unwrap();
+        checkout_with(&repository, &local_branch("other"), CheckoutMode::Force).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.0.join("a.txt")).unwrap(), "one\nOTHER\n");
+    }
 }

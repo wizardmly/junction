@@ -126,11 +126,11 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | 顶部动作：Update Project、Commit、Push、New Branch、Checkout Tag or Revision | M1 | ✅（Update Project…、Commit…、Push…、New Branch…、Checkout Tag or Revision…） |
-| 搜索框（直接输入过滤） | M1 | ✅ |
+| 搜索框（直接输入过滤） | M1 | ✅（输入时高亮第一个匹配；↑↓ 移动、Enter / → 展开分支动作、Enter 执行、← 返回分支；列表可用滚轮滚动；`Ctrl+Shift+\``（X11/Wayland 上报为 Ctrl+~ 也可）打开） |
 | Recent、Local、Remote、Tags 分组；收藏星标 | M1 | ✅（Recent（reflog 最近签出）、Local、Remote、Tags 可折叠分组，Tags 默认折叠；收藏星标） |
 | 当前分支标记、跟踪分支、ahead/behind 箭头 | M2 | ✅ |
-| 分支子菜单：Checkout、New Branch from…、Checkout and Rebase onto Current、Compare with Current、Show Diff with Working Tree、Rebase Current onto Selected、Merge into Current、Pull into Current Using Rebase / Merge、Update、Push…、Rename…、Edit Tracking Branch、Delete | M2 | ✅ |
-| 进行中的操作：Continue / Abort / Skip（rebase、merge、cherry-pick、revert） | M3 | ✅ |
+| 分支子菜单：Checkout、New Branch from…、Checkout and Rebase onto Current、Compare with Current、Show Diff with Working Tree、Rebase Current onto Selected、Merge into Current、Pull into Current Using Rebase / Merge、Update、Push…、Rename…、Edit Tracking Branch、Delete | M2 | ✅（Checkout 遇到会被覆盖的本地改动时弹出 Git Checkout Problem：Smart Checkout / Force Checkout / Don't Checkout，Smart Checkout 恢复改动出现冲突时如实报告并保留 stash；签出远程分支而同名本地分支已存在时询问 Checkout Existing / Overwrite；删除未合并的分支时列出会丢失的提交并提供 Force Delete，删除后通知里有 Restore） |
+| 进行中的操作：Continue / Abort / Skip（rebase、merge、cherry-pick、revert） | M3 | ✅（Abort 先确认；rebase 时标题栏显示 “Rebasing main”，即被 rebase 的分支名） |
 | 多仓库：同步分支控制开关 | M5 | ✅（Execute branch operations on all roots：Checkout、New Branch 同步到所有根，设置会记住） |
 
 ## 5. 远程操作

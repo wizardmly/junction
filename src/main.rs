@@ -41,6 +41,7 @@ fn main() {
         ui::log_view::init(cx);
         ui::workspace::init(cx);
         ui::commit_view::init(cx);
+        ui::branches_popup::init(cx);
         ui::spell_overlay::init(cx);
         ui::file_editor::init(cx);
         ui::find_bar::init(cx);

@@ -99,6 +99,10 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-shift-k", PushChanges, Some(CONTEXT)),
         KeyBinding::new("secondary-t", UpdateProject, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-`", ShowBranches, Some(CONTEXT)),
+        // With Shift held, X11 and Wayland report the shifted key ("~"), so
+        // Ctrl+Shift+` arrives as Ctrl+~ (with or without the Shift flag).
+        KeyBinding::new("secondary-shift-~", ShowBranches, Some(CONTEXT)),
+        KeyBinding::new("secondary-~", ShowBranches, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-9" } else { "alt-9" }, ToggleGitWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-y", Refresh, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-," } else { "ctrl-alt-s" }, OpenSettings, Some(CONTEXT)),
@@ -446,6 +450,26 @@ impl Workspace {
                             })
                         })
                         .autohide(true);
+                    } else if let Some((name, tip)) = (title == "Delete Branch")
+                        .then(|| message.strip_prefix("Deleted branch ")?.strip_suffix(')')?.split_once(" (was "))
+                        .flatten()
+                    {
+                        // IntelliJ's "Restore" link brings the deleted branch back.
+                        let (name, tip) = (name.to_owned(), tip.to_owned());
+                        notification = notification.action(move |_, _, _| {
+                            let entity = entity.clone();
+                            let (name, tip) = (name.clone(), tip.clone());
+                            Button::new("notify-restore").label("Restore").small().outline().on_click(move |_, _, cx| {
+                                let (name, tip) = (name.clone(), tip.clone());
+                                let model = entity.read(cx).model.clone();
+                                model.update(cx, |m, cx| {
+                                    m.run_operation("Restore Branch", move |repo| {
+                                        repo.run(["branch", &name, &tip])?;
+                                        Ok(format!("Restored branch {name}"))
+                                    }, cx)
+                                });
+                            })
+                        });
                     } else if title == "Commit" {
                         // The balloon's "Undo" link undoes exactly this commit.
                         let committed = this.model.read(cx).repository().and_then(|r| r.run(["rev-parse", "HEAD"]).ok()).map(|h| h.trim().to_owned());
@@ -665,7 +689,10 @@ impl Workspace {
                 .when(state != RepositoryState::Merging, |el| {
                     el.child(Button::new("op-skip").small().outline().label("Skip").on_click(step(OperationStep::Skip)))
                 })
-                .child(Button::new("op-abort").small().outline().label("Abort").on_click(step(OperationStep::Abort))),
+                .child(Button::new("op-abort").small().outline().label("Abort").on_click({
+                    let model = self.model.clone();
+                    move |_, window, cx| dialogs::abort_operation(model.clone(), state, window, cx)
+                })),
         )
     }
 
@@ -1991,6 +2018,10 @@ impl Workspace {
         self.branches_popup.update(cx, |popup, cx| popup.reset_search(window, cx));
         let popup = self.branches_popup.clone();
         window.defer(cx, move |window, cx| popup.update(cx, |popup, cx| popup.focus_search(window, cx)));
+        // Opened from the keyboard, the popover focuses itself when it renders;
+        // take the focus back for the search field afterwards.
+        let popup = self.branches_popup.clone();
+        window.on_next_frame(move |window, cx| popup.update(cx, |popup, cx| popup.focus_search(window, cx)));
         cx.notify();
     }
 

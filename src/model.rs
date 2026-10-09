@@ -618,6 +618,30 @@ impl RepoModel {
         }));
     }
 
+    /// Like `run_operation`, but hands the result to `done` (which reports
+    /// it) instead of notifying, for operations that may need to ask next.
+    pub fn run_task<T: Send + 'static>(
+        &mut self,
+        title: impl Into<String>,
+        operation: impl FnOnce(&Repository) -> Result<T> + Send + 'static,
+        done: impl FnOnce(&mut Self, Result<T>, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repository) = self.repository.clone() else { return };
+        self.busy = Some(title.into());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { operation(&repository) }).await;
+            this.update(cx, |this, cx| {
+                this.busy = None;
+                done(this, result, cx);
+                this.reload(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Runs a git operation in the background, then reloads and reports the
     /// result as a notification, the way IntelliJ reports VCS operations.
     pub fn run_operation(

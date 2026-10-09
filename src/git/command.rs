@@ -329,6 +329,16 @@ impl Repository {
         }
     }
 
+    /// The branch a rebase in progress is rebasing (its `head-name`), so the
+    /// VCS widget says "Rebasing main" rather than the detached HEAD's hash.
+    pub fn rebasing_branch(&self) -> Option<String> {
+        ["rebase-merge", "rebase-apply"].iter().find_map(|dir| {
+            let name = std::fs::read_to_string(self.git_dir.join(dir).join("head-name")).ok()?;
+            let name = name.trim();
+            Some(name.strip_prefix("refs/heads/").unwrap_or(name).to_owned()).filter(|n| !n.is_empty() && n != "detached HEAD")
+        })
+    }
+
     /// `user.name` and `user.email`, used to highlight "my" commits.
     pub fn current_user(&self) -> (Option<String>, Option<String>) {
         let get = |key: &str| {

@@ -302,32 +302,81 @@ pub fn last_commit_message(repository: &Repository) -> Option<String> {
     repository.run(["log", "-1", "--format=%B"]).ok().map(|m| m.trim_end().to_owned())
 }
 
+/// How a checkout treats local changes that would be overwritten:
+/// IntelliJ's "Git Checkout Problem" choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckoutMode {
+    /// Fail, so the caller can ask (see `overwritten_files`).
+    Plain,
+    /// Smart Checkout: stash, check out, restore the changes.
+    Smart,
+    /// Force Checkout: discard the local changes in the way.
+    Force,
+}
+
+/// What a checkout did with local changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckoutOutcome {
+    Done,
+    /// Smart Checkout restored the changes with conflicts; they also stay in the stash.
+    RestoredWithConflicts,
+}
+
 /// Checks out a local branch, or creates a tracking branch for a remote one.
-/// If local changes are in the way, does IntelliJ's "Smart Checkout": stash,
-/// check out, and restore the changes.
 pub fn checkout(repository: &Repository, reference: &super::RefName) -> Result<()> {
-    match checkout_plain(repository, reference) {
-        Err(error) if error.to_string().contains("would be overwritten by checkout") => {
-            repository.run(["stash", "push", "--include-untracked", "-m", "Junction Studio smart checkout"])?;
-            let result = checkout_plain(repository, reference);
-            // Restore even if the checkout failed; a conflict leaves the stash for the Stash tab.
-            repository.run(["stash", "pop"])?;
-            result
+    checkout_with(repository, reference, CheckoutMode::Plain).map(|_| ())
+}
+
+pub fn checkout_with(repository: &Repository, reference: &super::RefName, mode: CheckoutMode) -> Result<CheckoutOutcome> {
+    if mode != CheckoutMode::Smart {
+        checkout_plain(repository, reference, mode == CheckoutMode::Force)?;
+        return Ok(CheckoutOutcome::Done);
+    }
+    repository.run(["stash", "push", "--include-untracked", "-m", "Junction Studio smart checkout"])?;
+    if let Err(error) = checkout_plain(repository, reference, false) {
+        // Nothing changed: put the changes back where they were.
+        repository.run(["stash", "pop"]).ok();
+        return Err(error);
+    }
+    match repository.run(["stash", "pop"]) {
+        Ok(_) => Ok(CheckoutOutcome::Done),
+        Err(_) if WorkingTreeStatus::load(repository).is_ok_and(|s| s.entries.iter().any(|e| e.kind == StatusKind::Conflicted)) => {
+            Ok(CheckoutOutcome::RestoredWithConflicts)
         }
-        result => result,
+        Err(error) => anyhow::bail!(
+            "Checked out {}, but the local changes could not be restored; they are kept in the stash.\n{error}",
+            reference.name
+        ),
     }
 }
 
-fn checkout_plain(repository: &Repository, reference: &super::RefName) -> Result<()> {
+/// The files a failed checkout names as in the way ("Your local changes to
+/// the following files would be overwritten by checkout"), if that was the problem.
+pub fn overwritten_files(error: &str) -> Option<Vec<String>> {
+    let mut lines = error.lines().skip_while(|l| !l.contains("would be overwritten by checkout"));
+    lines.next()?;
+    Some(lines.take_while(|l| l.starts_with('\t')).map(|l| l.trim().to_owned()).collect())
+}
+
+fn checkout_plain(repository: &Repository, reference: &super::RefName, force: bool) -> Result<()> {
+    let mut args = vec!["checkout"];
+    if force {
+        args.push("-f");
+    }
     match reference.kind {
         super::RefKind::RemoteBranch => {
-            let local = reference.branch_without_remote();
-            repository.run(["checkout", "-b", local, "--track", &reference.name])?;
+            args.extend(["-b", reference.branch_without_remote(), "--track", &reference.name]);
         }
-        _ => {
-            repository.run(["checkout", &reference.name])?;
-        }
+        _ => args.push(&reference.name),
     }
+    repository.run(&args)?;
+    Ok(())
+}
+
+/// Checkout of a remote branch whose local namesake exists, "Overwrite":
+/// the local branch is reset to the remote one and checked out.
+pub fn checkout_overwriting(repository: &Repository, remote: &super::RefName) -> Result<()> {
+    repository.run(["checkout", "-B", remote.branch_without_remote(), "--track", &remote.name])?;
     Ok(())
 }
 

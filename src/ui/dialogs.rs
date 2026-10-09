@@ -13,7 +13,10 @@ use gpui_kit::component::{
     radio::RadioGroup,
     v_flex,
 };
-use gpui_kit::{App, AppContext as _, Entity, IntoElement as _, ParentElement as _, SharedString, Styled as _, Window, div, px};
+use gpui_kit::{
+    App, AppContext as _, Entity, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px,
+};
 
 use crate::model::RepoModel;
 use crate::settings::{Settings, UpdateMethod};
@@ -1270,6 +1273,70 @@ pub fn configure_gpg(model: Entity<RepoModel>, window: &mut Window, cx: &mut App
             })
             .footer(footer("OK"))
     });
+}
+
+/// A choice between several actions plus Cancel, like IntelliJ's
+/// `Messages.showDialog` with custom buttons. The last option is the default.
+pub fn choose(
+    title: impl Into<SharedString>,
+    message: impl Into<SharedString>,
+    details: Vec<String>,
+    cancel_label: &'static str,
+    options: Vec<(&'static str, Rc<dyn Fn(&mut Window, &mut App)>)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (title, message) = (title.into(), message.into());
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let palette = cx.palette().clone();
+        let last = options.len().saturating_sub(1);
+        let mut footer = DialogFooter::new()
+            .gap_2()
+            .child(DialogClose::new().child(Button::new("choose-cancel").label(cancel_label).outline()));
+        for (ix, (label, run)) in options.iter().enumerate() {
+            let run = run.clone();
+            let button = Button::new(("choose-option", ix)).label(*label).on_click(move |_, window, cx| run(window, cx));
+            footer = footer.child(DialogClose::new().child(if ix == last { button.primary() } else { button.outline() }));
+        }
+        // Files or commits the message refers to, one per line.
+        let list = v_flex()
+            .id("choose-details")
+            .max_h(px(200.))
+            .overflow_y_scroll()
+            .px_2()
+            .text_sm()
+            .text_color(palette.text_secondary)
+            .children(details.iter().map(|line| div().child(line.clone())));
+        dialog
+            .title(title.clone())
+            .w(px(520.))
+            .child(v_flex().gap_2().child(div().text_sm().child(message.clone())).when(!details.is_empty(), |el| el.child(list)))
+            .footer(footer)
+    });
+}
+
+/// Abort Rebase / Merge / Cherry-Pick / Revert, after IntelliJ's confirmation.
+pub fn abort_operation(model: Entity<RepoModel>, state: crate::git::RepositoryState, window: &mut Window, cx: &mut App) {
+    use crate::git::RepositoryState::*;
+    let (title, what) = match state {
+        Rebasing => ("Abort Rebase", "rebase"),
+        Merging => ("Abort Merge", "merge"),
+        CherryPicking => ("Abort Cherry-Pick", "cherry-pick"),
+        Reverting => ("Abort Revert", "revert"),
+        Normal => return,
+    };
+    confirm(
+        title,
+        format!("Are you sure you want to abort the {what}? Changes made during it will be lost."),
+        "Abort",
+        move |cx| {
+            model.update(cx, |m, cx| {
+                m.run_operation("Git", move |repo| crate::git::merge::step(repo, state, crate::git::merge::OperationStep::Abort), cx)
+            })
+        },
+        window,
+        cx,
+    );
 }
 
 /// A Yes / No confirmation, like IntelliJ's `Messages.showYesNoDialog`.
