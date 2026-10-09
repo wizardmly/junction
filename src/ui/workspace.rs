@@ -3,6 +3,7 @@
 //! editor area (diff), the bottom Git tool window (Log / Console), and the
 //! status bar.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 use gpui_kit::component::{
     Disableable as _,
@@ -248,6 +249,11 @@ pub struct Workspace {
     bottom_tab: BottomTab,
     branches_open: bool,
     focus: gpui_kit::FocusHandle,
+    /// Each tool window's content tracks focus, so Shift+Escape knows the
+    /// active one.
+    tool_focus: HashMap<ToolWindow, gpui_kit::FocusHandle>,
+    /// The tool window activated last (opened or focused).
+    last_tool: Option<ToolWindow>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -281,7 +287,7 @@ impl Workspace {
         };
         project.update(cx, |p, cx| p.set_menu(model.clone(), file_actions.clone(), cx));
         commit.update(cx, |c, _| c.set_file_actions(file_actions));
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&log, window, |this, _, event: &LogEvent, window, cx| match event {
                 LogEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
                 LogEvent::Annotate { path, revision } => this.annotate(path.clone(), revision.clone(), window, cx),
@@ -553,6 +559,13 @@ impl Workspace {
                 cx.notify();
             }),
         ];
+        // Shortcuts work from the start, and keep working when the focused
+        // element goes away (a tool window hidden, a popup closed): focus
+        // falls back to the workspace, as IntelliJ returns it to the editor.
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        subscriptions.push(cx.on_focus_lost(window, |this, window, cx| window.focus(&this.focus, cx)));
+        let tool_focus = ToolWindow::ALL.into_iter().map(|w| (w, cx.focus_handle())).collect();
         Self {
             model,
             log,
@@ -597,7 +610,9 @@ impl Workspace {
             caret: cx.new(|_| crate::ui::status_bar::CaretStatus::new()),
             left_tab: LeftTab::Commit,
             branches_open: false,
-            focus: cx.focus_handle(),
+            focus,
+            tool_focus,
+            last_tool: None,
             bottom_tab: BottomTab::Log,
             _subscriptions: subscriptions,
         }
@@ -1311,8 +1326,8 @@ impl Workspace {
         crate::ui::dialogs::focus_input(&input, window, cx);
     }
 
-    fn toggle_project(&mut self, _: &ToggleProjectWindow, _: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_tool(ToolWindow::Project, cx);
+    fn toggle_project(&mut self, _: &ToggleProjectWindow, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_tool(ToolWindow::Project, window, cx);
     }
 
     /// Select In › Project View: shows the current editor's file in the tree.
@@ -1729,26 +1744,60 @@ impl Workspace {
         )
     }
 
-    /// Shift+Escape: hides the bottom tool window, then the left, then the right one.
+    /// The open tool window that holds the focus.
+    fn focused_tool(&self, window: &Window, cx: &App) -> Option<ToolWindow> {
+        ToolWindow::ALL
+            .into_iter()
+            .filter(|w| self.tools.is_open(*w))
+            .find(|w| self.tool_focus.get(w).is_some_and(|f| f.contains_focused(window, cx)))
+    }
+
+    /// Shift+Escape: hides the active tool window, the one with the focus
+    /// (else the one activated last), and gives the focus back.
     fn hide_active_tool_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let side = [Side::Bottom, Side::Left, Side::Right].into_iter().find(|s| self.tools.active(*s).is_some());
-        if let Some(tool) = side.and_then(|s| self.tools.active(s)) {
+        let tool = self
+            .focused_tool(window, cx)
+            .or(self.last_tool.filter(|w| self.tools.is_open(*w)))
+            .or_else(|| [Side::Bottom, Side::Left, Side::Right].into_iter().find_map(|s| self.tools.active(s)));
+        if let Some(tool) = tool {
             self.tools.hide(tool);
+            self.last_tool = None;
             window.focus(&self.focus, cx);
         }
         cx.notify();
     }
 
-    /// Opens or hides a tool window from its stripe button or shortcut.
-    fn toggle_tool(&mut self, window: ToolWindow, cx: &mut Context<Self>) {
-        self.tools.toggle(window);
-        if window == ToolWindow::PullRequests && self.tools.is_open(window) {
+    /// Opens or hides a tool window from its stripe button or shortcut; an
+    /// opened window takes the focus, as IntelliJ activates it.
+    fn toggle_tool(&mut self, tool: ToolWindow, window: &mut Window, cx: &mut Context<Self>) {
+        self.tools.toggle(tool);
+        if tool == ToolWindow::PullRequests && self.tools.is_open(tool) {
             self.prs.update(cx, |prs, cx| prs.refresh(cx));
         }
-        if window == ToolWindow::Notifications {
+        if tool == ToolWindow::Notifications {
             self.unread_notifications = 0;
         }
+        if self.tools.is_open(tool) {
+            self.focus_tool(tool, window, cx);
+        } else {
+            window.focus(&self.focus, cx);
+        }
         cx.notify();
+    }
+
+    /// Moves the focus into a tool window: the Log's table for Git, else the
+    /// window itself.
+    fn focus_tool(&mut self, tool: ToolWindow, window: &mut Window, cx: &mut Context<Self>) {
+        self.last_tool = Some(tool);
+        let handle = match tool {
+            ToolWindow::Git if self.bottom_tab == BottomTab::Log => gpui_kit::Focusable::focus_handle(self.log.read(cx), cx),
+            ToolWindow::Project => gpui_kit::Focusable::focus_handle(self.project.read(cx), cx),
+            _ => match self.tool_focus.get(&tool) {
+                Some(handle) => handle.clone(),
+                None => return,
+            },
+        };
+        window.focus(&handle, cx);
     }
 
     fn tool_window_info(&self, window: ToolWindow, cx: &App) -> (IconName, SharedString, &'static str) {
@@ -1790,7 +1839,7 @@ impl Workspace {
                     .icon(Icon::new(icon))
                     .tooltip(tooltip)
                     .when(self.tools.is_open(window), |b| b.selected(true))
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_tool(window, cx))),
+                    .on_click(cx.listener(move |this, _, w, cx| this.toggle_tool(window, w, cx))),
             )
             .context_menu(move |menu, _, _| {
                 let mut menu = menu.label(title.clone());
@@ -1920,7 +1969,16 @@ impl Workspace {
 
     /// The content of a tool window, shown in the panel of its side.
     fn tool_window_content(&self, window: ToolWindow, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
-        div().size_full().overflow_hidden().child(self.tool_window_view(window, cx)).into_any_element()
+        // Out of the flow (absolute), wide content (a long filter label, a
+        // narrow side panel) is clipped inside the panel instead of pushing
+        // the stripes and the other panels out of the window.
+        div()
+            .id(SharedString::from(format!("tool-window-{window:?}")))
+            .relative()
+            .size_full()
+            .when_some(self.tool_focus.get(&window), |el, focus| el.track_focus(focus))
+            .child(div().absolute().inset_0().overflow_hidden().child(self.tool_window_view(window, cx)))
+            .into_any_element()
     }
 
     fn tool_window_view(&self, window: ToolWindow, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
@@ -2018,9 +2076,8 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_toggle_git(&mut self, _: &ToggleGitWindow, _: &mut Window, cx: &mut Context<Self>) {
-        self.tools.toggle(ToolWindow::Git);
-        cx.notify();
+    fn on_toggle_git(&mut self, _: &ToggleGitWindow, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_tool(ToolWindow::Git, window, cx);
     }
 
     fn on_refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
@@ -2416,6 +2473,8 @@ impl Render for Workspace {
         }
         let active = self.editor().cloned();
         self.caret.update(cx, |caret, cx| caret.set_editor(active, cx));
+        let git_on_side = self.tools.side(ToolWindow::Git) != Side::Bottom;
+        self.log.update(cx, |log, cx| log.set_details_below(git_on_side, cx));
         let palette = cx.palette().clone();
         let error = self.model.read(cx).error().map(str::to_owned);
         let has_repo = self.model.read(cx).repository().is_some();
@@ -2464,6 +2523,9 @@ impl Render for Workspace {
                 resizable_panel()
                     .size(px(sizes[0] as f32))
                     .size_range(px(160.)..px(900.))
+                    // Side windows keep their width; only the editor gives
+                    // way when the other side opens, as in IntelliJ.
+                    .flex_none()
                     .visible(left_content.is_some())
                     .children(left_content),
             )
@@ -2472,6 +2534,7 @@ impl Render for Workspace {
                 resizable_panel()
                     .size(px(sizes[1] as f32))
                     .size_range(px(160.)..px(900.))
+                    .flex_none()
                     .visible(right_content.is_some())
                     .children(right_content),
             );
@@ -2514,9 +2577,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::navigate_back))
             .on_action(cx.listener(Self::navigate_forward))
             .on_action(cx.listener(Self::toggle_project))
-            .on_action(cx.listener(|this, _: &ToggleCommitWindow, _, cx| this.toggle_tool(ToolWindow::Commit, cx)))
-            .on_action(cx.listener(|this, _: &HideAllToolWindows, _, cx| {
+            .on_action(cx.listener(|this, _: &ToggleCommitWindow, window, cx| this.toggle_tool(ToolWindow::Commit, window, cx)))
+            .on_action(cx.listener(|this, _: &HideAllToolWindows, window, cx| {
                 this.tools.toggle_all();
+                window.focus(&this.focus, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &HideActiveToolWindow, window, cx| this.hide_active_tool_window(window, cx)))
@@ -2629,8 +2693,8 @@ fn main_menu(
                     .menu("Commit", Box::new(ToggleCommitWindow))
                     .menu("Git", Box::new(ToggleGitWindow))
                     .menu("Find", Box::new(ToggleFindWindow))
-                    .item(PopupMenuItem::new(prs_title).on_click(move |_, _, cx| {
-                        e3.update(cx, |this, cx| this.toggle_tool(ToolWindow::PullRequests, cx))
+                    .item(PopupMenuItem::new(prs_title).on_click(move |_, window, cx| {
+                        e3.update(cx, |this, cx| this.toggle_tool(ToolWindow::PullRequests, window, cx))
                     }))
             })
             .menu("Hide All Tool Windows", Box::new(HideAllToolWindows))

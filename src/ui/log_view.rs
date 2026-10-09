@@ -37,7 +37,13 @@ use crate::ui::selectable_text::{SelectableText, selectable_text};
 use crate::ui::rebase_dialog;
 use crate::ui::graph_paint::graph_canvas;
 
-actions!(git_log, [SelectPrevious, SelectNext, SelectFirst, SelectLast, CopyRevision, GoToHash]);
+actions!(
+    git_log,
+    [
+        SelectPrevious, SelectNext, SelectFirst, SelectLast, SelectPageUp, SelectPageDown, ExtendPrevious, ExtendNext, ExtendFirst,
+        ExtendLast, SelectAll, CopyRevision, GoToHash
+    ]
+);
 
 const CONTEXT: &str = "GitLog";
 
@@ -47,6 +53,13 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("down", SelectNext, Some(CONTEXT)),
         KeyBinding::new("home", SelectFirst, Some(CONTEXT)),
         KeyBinding::new("end", SelectLast, Some(CONTEXT)),
+        KeyBinding::new("pageup", SelectPageUp, Some(CONTEXT)),
+        KeyBinding::new("pagedown", SelectPageDown, Some(CONTEXT)),
+        KeyBinding::new("shift-up", ExtendPrevious, Some(CONTEXT)),
+        KeyBinding::new("shift-down", ExtendNext, Some(CONTEXT)),
+        KeyBinding::new("shift-home", ExtendFirst, Some(CONTEXT)),
+        KeyBinding::new("shift-end", ExtendLast, Some(CONTEXT)),
+        KeyBinding::new("secondary-a", SelectAll, Some(CONTEXT)),
         KeyBinding::new("secondary-c", CopyRevision, Some(CONTEXT)),
         KeyBinding::new("secondary-f", GoToHash, Some(CONTEXT)),
     ]);
@@ -103,6 +116,8 @@ pub struct LogView {
     /// the drag started and the width then; the widths while dragging.
     column_drag: Option<(usize, f32, u32)>,
     columns: Option<[u32; 3]>,
+    /// The Git window is docked left or right: details under the table.
+    details_below: bool,
     _search_debounce: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -193,11 +208,20 @@ impl LogView {
             anchor: None,
             column_drag: None,
             columns: None,
+            details_below: false,
             _search_debounce: None,
             _subscriptions: subscriptions,
         };
         this.rebuild_branches(cx);
         this
+    }
+
+    /// The Git window moved to a side (or back to the bottom).
+    pub fn set_details_below(&mut self, below: bool, cx: &mut Context<Self>) {
+        if self.details_below != below {
+            self.details_below = below;
+            cx.notify();
+        }
     }
 
     fn apply_text_filter(&mut self, cx: &mut Context<Self>) {
@@ -364,6 +388,16 @@ impl LogView {
         // touched it with its state after the newest one.
         let selected = if self.extra_selection.is_empty() { Vec::new() } else { self.selected_commits(cx) };
         let combined = match self.model.read(cx).repository() {
+            // Many commits (Ctrl+A): one diff from before the oldest to the
+            // newest, rather than a git call per commit.
+            Some(repo) if selected.len() > MAX_COMBINED => {
+                let (oldest, newest) = (&selected[0], &selected[selected.len() - 1]);
+                let old = if oldest.parents.is_empty() { EMPTY_TREE.to_owned() } else { format!("{}^", oldest.hash) };
+                let mut changes = crate::git::diff::changed_files(repo, &old, Some(&newest.hash)).unwrap_or_default();
+                changes.sort_by(|a, b| a.path.cmp(&b.path));
+                let ranges = changes.iter().map(|c| (c.path.clone(), (old.clone(), newest.hash.clone()))).collect();
+                Some((ranges, changes))
+            }
             Some(repo) if selected.len() > 1 => {
                 let mut merged: Vec<crate::git::log::FileChange> = Vec::new();
                 let mut ranges: HashMap<String, (String, String)> = HashMap::new();
@@ -556,8 +590,9 @@ impl LogView {
         }
     }
 
+    /// Arrow keys, Page Up / Down, Home / End: one commit selected, `delta`
+    /// rows from the lead one (clamped to the list).
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        self.extra_selection.clear();
         let model = self.model.read(cx);
         let count = model.commits().len();
         if count == 0 {
@@ -565,7 +600,31 @@ impl LogView {
         }
         let current = model.selected_index().map(|ix| ix as isize).unwrap_or(-1);
         let next = (current + delta).clamp(0, count as isize - 1) as usize;
+        self.extra_selection.clear();
+        self.anchor = Some(next);
         self.model.update(cx, |model, cx| model.select_index(next, cx));
+        self.rebuild_changes(cx);
+        cx.notify();
+    }
+
+    /// Shift with the arrows, Home or End: the range from the anchor grows
+    /// or shrinks, as a Shift-click does.
+    fn extend_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let model = self.model.read(cx);
+        let count = model.commits().len();
+        let Some(current) = model.selected_index() else { return self.move_selection(delta.signum(), cx) };
+        if self.anchor.is_none() {
+            self.anchor = Some(current);
+        }
+        let next = (current as isize + delta).clamp(0, count as isize - 1) as usize;
+        self.click_row(next, false, true, cx);
+    }
+
+    /// Rows visible in the table, for Page Up / Page Down.
+    fn page_rows(&self) -> isize {
+        let state = self.scroll.0.borrow();
+        let height = f32::from(state.base_handle.bounds().size.height);
+        ((height / row_height()).floor() as isize - 1).max(1)
     }
 
     fn on_select_previous(&mut self, _: &SelectPrevious, _: &mut Window, cx: &mut Context<Self>) {
@@ -577,12 +636,48 @@ impl LogView {
     }
 
     fn on_select_first(&mut self, _: &SelectFirst, _: &mut Window, cx: &mut Context<Self>) {
-        self.model.update(cx, |model, cx| model.select_index(0, cx));
+        self.move_selection(isize::MIN / 2, cx);
     }
 
     fn on_select_last(&mut self, _: &SelectLast, _: &mut Window, cx: &mut Context<Self>) {
-        let last = self.model.read(cx).commits().len().saturating_sub(1);
-        self.model.update(cx, |model, cx| model.select_index(last, cx));
+        self.move_selection(isize::MAX / 2, cx);
+    }
+
+    fn on_page_up(&mut self, _: &SelectPageUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_selection(-self.page_rows(), cx);
+    }
+
+    fn on_page_down(&mut self, _: &SelectPageDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_selection(self.page_rows(), cx);
+    }
+
+    fn on_extend_previous(&mut self, _: &ExtendPrevious, _: &mut Window, cx: &mut Context<Self>) {
+        self.extend_selection(-1, cx);
+    }
+
+    fn on_extend_next(&mut self, _: &ExtendNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.extend_selection(1, cx);
+    }
+
+    fn on_extend_first(&mut self, _: &ExtendFirst, _: &mut Window, cx: &mut Context<Self>) {
+        self.extend_selection(isize::MIN / 2, cx);
+    }
+
+    fn on_extend_last(&mut self, _: &ExtendLast, _: &mut Window, cx: &mut Context<Self>) {
+        self.extend_selection(isize::MAX / 2, cx);
+    }
+
+    /// Ctrl+A: every loaded commit, the lead one staying where it is.
+    fn on_select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        let model = self.model.read(cx);
+        let lead = model.selected_hash().map(str::to_owned).or_else(|| model.commits().first().map(|c| c.hash.clone()));
+        let Some(lead) = lead else { return };
+        self.extra_selection = model.commits().iter().map(|c| c.hash.clone()).filter(|h| *h != lead).collect();
+        if model.selected_hash() != Some(lead.as_str()) {
+            self.model.update(cx, |m, cx| m.select_hash(Some(lead), cx));
+        }
+        self.rebuild_changes(cx);
+        cx.notify();
     }
 
     fn on_copy_revision(&mut self, _: &CopyRevision, _: &mut Window, cx: &mut Context<Self>) {
@@ -667,7 +762,10 @@ impl LogView {
         };
         let entity = cx.entity();
 
+        // Long values (several users, a date range, a path) are cut short
+        // so the bar keeps its size, as IntelliJ elides its filter labels.
         let filter_button = |id: &'static str, label: String, active: bool| {
+            let label = if label.chars().count() > 28 { format!("{}…", label.chars().take(27).collect::<String>()) } else { label };
             Button::new(id)
                 .ghost()
                 .xsmall()
@@ -680,10 +778,11 @@ impl LogView {
             .h(px(crate::ui::common::toolbar_height()))
             .px_1()
             .gap_1()
+            .overflow_hidden()
             .border_b_1()
             .border_color(palette.border)
             .child(
-                div().w(px(260.)).child(
+                div().w(px(260.)).min_w(px(120.)).flex_shrink(1.).child(
                     Input::new(&self.search)
                         .xsmall()
                         .cleanable(true)
@@ -1123,9 +1222,11 @@ impl LogView {
                 let text_color = if dim { palette.text_secondary } else { palette.text };
                 let branch_tint = log.highlight_current_branch && on_head == Some(true);
 
+                // The subject keeps some width in a narrow table; the other
+                // columns are clipped instead.
                 let mut subject = h_flex()
                     .flex_1()
-                    .min_w_0()
+                    .min_w(px(160.))
                     .h_full()
                     .overflow_hidden()
                     .child(graph_canvas(row, &palette, is_head));
@@ -1672,6 +1773,9 @@ impl LogView {
     }
 }
 
+/// Above this many selected commits, their changes come from one diff.
+const MAX_COMBINED: usize = 100;
+
 /// Git's empty tree, the "parent" of a root commit.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -1913,10 +2017,15 @@ fn commit_menu(
     let picked = if multi { format!("Cherry-picked {} commits", picks.len()) } else { format!("Cherry-picked {short}") };
     // Edit Message, Drop, Squash, Fixup and Interactively Rebase rewrite the
     // current branch: IntelliJ greys them out for commits not on it.
-    let on_branch = model
-        .read(cx)
-        .repository()
-        .is_some_and(|repo| picks.iter().all(|pick| crate::git::rebase::is_on_current_branch(repo, pick)));
+    let on_branch = model.read(cx).repository().is_some_and(|repo| {
+        if picks.len() <= 20 {
+            picks.iter().all(|pick| crate::git::rebase::is_on_current_branch(repo, pick))
+        } else {
+            // Many selected (Ctrl+A): one rev-list instead of a check each.
+            let on_head: HashSet<String> = repo.run(["rev-list", "HEAD"]).unwrap_or_default().lines().map(str::to_owned).collect();
+            picks.iter().all(|pick| on_head.contains(pick))
+        }
+    });
     // Push All up to Here: the current branch's upstream, when the commit is on it.
     let push_target = {
         let refs = model.read(cx).refs();
@@ -2122,6 +2231,13 @@ impl Render for LogView {
                     .on_action(cx.listener(Self::on_select_next))
                     .on_action(cx.listener(Self::on_select_first))
                     .on_action(cx.listener(Self::on_select_last))
+                    .on_action(cx.listener(Self::on_page_up))
+                    .on_action(cx.listener(Self::on_page_down))
+                    .on_action(cx.listener(Self::on_extend_previous))
+                    .on_action(cx.listener(Self::on_extend_next))
+                    .on_action(cx.listener(Self::on_extend_first))
+                    .on_action(cx.listener(Self::on_extend_last))
+                    .on_action(cx.listener(Self::on_select_all))
                     .on_action(cx.listener(Self::on_copy_revision))
                     .on_action(cx.listener(Self::on_go_to_hash))
                     .flex_1()
@@ -2148,14 +2264,33 @@ impl Render for LogView {
                     }),
             );
 
+        let branches = resizable_panel()
+            .size(px(if self.details_below { 180. } else { 240. }))
+            .size_range(px(120.)..px(500.))
+            .visible(self.show_branches)
+            .child(self.render_branches(cx));
+        if self.details_below {
+            // Docked at a side, the window is tall and narrow: the details go
+            // under the table, as IntelliJ lays out a vertical Log.
+            return h_resizable("log-split-side")
+                .child(branches)
+                .child(
+                    resizable_panel().child(
+                        v_resizable("log-table-details")
+                            .child(resizable_panel().child(table))
+                            .child(
+                                resizable_panel()
+                                    .size(px(320.))
+                                    .size_range(px(120.)..px(1200.))
+                                    .visible(self.show_details)
+                                    .child(self.render_details(cx)),
+                            ),
+                    ),
+                )
+                .into_any_element();
+        }
         h_resizable("log-split")
-            .child(
-                resizable_panel()
-                    .size(px(240.))
-                    .size_range(px(120.)..px(500.))
-                    .visible(self.show_branches)
-                    .child(self.render_branches(cx)),
-            )
+            .child(branches)
             .child(resizable_panel().child(table))
             .child(
                 resizable_panel()
@@ -2164,6 +2299,7 @@ impl Render for LogView {
                     .visible(self.show_details)
                     .child(self.render_details(cx)),
             )
+            .into_any_element()
     }
 }
 

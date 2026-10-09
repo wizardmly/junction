@@ -5,6 +5,9 @@
 
 use crate::settings::Settings;
 
+/// The narrowest a side panel opens when Git moves there.
+const GIT_SIDE_WIDTH: u32 = 640;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum ToolWindow {
     Project,
@@ -192,6 +195,11 @@ impl ToolWindows {
             self.open(window);
         }
         self.save(cx);
+        // The Log needs room beside the editor: a side that was sized for
+        // the Commit window gets wider for Git.
+        if window == ToolWindow::Git && side != Side::Bottom && Settings::get(cx).tool_window_sizes[side.index()] < GIT_SIDE_WIDTH {
+            Settings::update(cx, |s| s.tool_window_sizes[side.index()] = GIT_SIDE_WIDTH);
+        }
     }
 }
 
