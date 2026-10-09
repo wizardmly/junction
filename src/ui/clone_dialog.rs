@@ -199,6 +199,11 @@ impl CloneView {
     }
 
     fn directory_error(&self, cx: &App) -> Option<&'static str> {
+        // Until a URL is entered the field holds the parent folder only;
+        // IntelliJ checks the directory once there is something to clone.
+        if self.url.read(cx).value().trim().is_empty() {
+            return None;
+        }
         let directory = PathBuf::from(self.directory.read(cx).value().trim());
         let not_empty = std::fs::read_dir(&directory).map(|mut d| d.next().is_some()).unwrap_or(false);
         not_empty.then_some("Directory already exists and isn't empty")
