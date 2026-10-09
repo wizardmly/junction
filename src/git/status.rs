@@ -32,7 +32,12 @@ pub struct WorkingTreeStatus {
 impl WorkingTreeStatus {
     pub fn load(repository: &Repository) -> Result<Self> {
         let output = repository.run(["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
-        Ok(Self { entries: parse_porcelain(&output) })
+        let mut entries = parse_porcelain(&output);
+        // With every untracked file listed, a directory still reported as
+        // `?? dir/` is a nested repository: its own root, not unversioned
+        // files of this one (IntelliJ doesn't list it either).
+        entries.retain(|e| !(e.kind == StatusKind::Unversioned && e.path.ends_with('/')));
+        Ok(Self { entries })
     }
 
     pub fn changes(&self) -> impl Iterator<Item = &StatusEntry> {

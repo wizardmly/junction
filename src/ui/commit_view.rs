@@ -678,7 +678,9 @@ impl CommitView {
         if settings.warn_detached_head && self.model.read(cx).refs().current_branch.is_none() {
             warnings.push(match self.model.read(cx).state() {
                 crate::git::RepositoryState::Rebasing => "A rebase is in progress. The commit will be part of the rebased history.".into(),
-                _ => "HEAD is detached: the commit won't belong to any branch and may be lost after checkout.".into(),
+                _ => "The Git repository is in the detached HEAD state. You can look around, make experimental changes and commit them, \
+                      but be sure to checkout a branch not to lose your work. Otherwise you risk losing your changes."
+                    .into(),
             });
         }
         let crlf = if settings.warn_crlf { status::crlf_files(&repository, &paths) } else { Vec::new() };
@@ -711,9 +713,10 @@ impl CommitView {
                         window.close_dialog(cx);
                         fix_entity.update(cx, |this, cx| {
                             if let Some(repo) = this.model.read(cx).repository() {
-                                // Like IntelliJ: let git convert line separators on commit.
+                                // Like IntelliJ: let git convert line separators on
+                                // commit, for every repository (global config).
                                 let value = if cfg!(windows) { "true" } else { "input" };
-                                let _ = repo.run(["config", "core.autocrlf", value]);
+                                let _ = repo.run(["config", "--global", "core.autocrlf", value]);
                             }
                             this.do_commit(push, window, cx)
                         })
@@ -733,7 +736,7 @@ impl CommitView {
                         .items_start()
                         .text_sm()
                         .child(Icon::new(IconName::TriangleAlert).small().text_color(palette.status_conflict))
-                        .child(div().flex_1().child(w.clone()))
+                        .child(div().flex_1().min_w_0().child(w.clone()))
                 })))
                 .footer(footer)
         });
