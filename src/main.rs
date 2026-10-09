@@ -6,6 +6,7 @@
 
 mod askpass;
 mod assets;
+mod crash;
 mod git;
 mod hosting;
 mod index;
@@ -24,6 +25,7 @@ use crate::model::RepoModel;
 use crate::ui::workspace::Workspace;
 
 fn main() {
+    crash::install();
     // Started by git as the interactive-rebase sequence editor.
     if git::rebase::handle_sequence_editor() {
         return;
