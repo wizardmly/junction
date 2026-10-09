@@ -128,7 +128,7 @@ impl LogView {
                     }
                     cx.notify();
                 }
-                RepoEvent::Notify { .. } | RepoEvent::Compare { .. } | RepoEvent::PrefillCommitMessage(_) | RepoEvent::OpenLogTab { .. } => {}
+                RepoEvent::Notify { .. } | RepoEvent::Compare { .. } | RepoEvent::PrefillCommitMessage(_) | RepoEvent::OpenLogTab { .. } | RepoEvent::ShowConflicts => {}
             }),
             cx.subscribe_in(&search, window, |this, _, event, _, cx| match event {
                 InputEvent::Change => {
@@ -1648,6 +1648,7 @@ impl LogView {
                             5,
                             &match d.containing_branches.len() {
                                 0 => "Not in any branch".to_owned(),
+                                1 => format!("In 1 branch: {}", d.containing_branches[0]),
                                 n if n <= 5 => format!("In {} branches: {}", n, d.containing_branches.join(", ")),
                                 n => format!("In {} branches: {}, …", n, d.containing_branches[..5].join(", ")),
                             },
@@ -1657,8 +1658,11 @@ impl LogView {
             });
 
         v_resizable("log-details-split")
-            .child(resizable_panel().child(changes))
-            .child(resizable_panel().size(px(220.)).child(info))
+            // Text measures itself unwrapped; out of the flow (absolute), a
+            // long message or path stays inside the pane instead of widening
+            // the window.
+            .child(resizable_panel().child(div().relative().size_full().child(div().absolute().inset_0().child(changes))))
+            .child(resizable_panel().size(px(220.)).child(div().relative().size_full().child(div().absolute().inset_0().child(info))))
     }
 }
 
@@ -1900,6 +1904,12 @@ fn commit_menu(
     let mut cherry_pick = vec!["cherry-pick".to_owned()];
     cherry_pick.extend(picks.iter().cloned());
     let picked = if multi { format!("Cherry-picked {} commits", picks.len()) } else { format!("Cherry-picked {short}") };
+    // Edit Message, Drop, Squash, Fixup and Interactively Rebase rewrite the
+    // current branch: IntelliJ greys them out for commits not on it.
+    let on_branch = model
+        .read(cx)
+        .repository()
+        .is_some_and(|repo| picks.iter().all(|pick| crate::git::rebase::is_on_current_branch(repo, pick)));
     // Push All up to Here: the current branch's upstream, when the commit is on it.
     let push_target = {
         let refs = model.read(cx).refs();
@@ -1973,32 +1983,32 @@ fn commit_menu(
         vec!["reset".into(), "--soft".into(), "HEAD~1".into()],
         "Commit undone; changes kept in the working tree".into(),
     )))
-    .item(PopupMenuItem::new("Edit Commit Message…").disabled(multi).on_click({
+    .item(PopupMenuItem::new("Edit Commit Message…").disabled(multi || !on_branch).on_click({
         let model = model.clone();
         let hash = hash.clone();
         move |_, window, cx| rebase_dialog::reword(model.clone(), hash.clone(), window, cx)
     }))
-    .item(PopupMenuItem::new(if multi { "Drop Commits" } else { "Drop Commit" }).on_click({
+    .item(PopupMenuItem::new(if multi { "Drop Commits" } else { "Drop Commit" }).disabled(!on_branch).on_click({
         let model = model.clone();
         let picks = picks.clone();
         move |_, window, cx| rebase_dialog::drop_commits(model.clone(), picks.clone(), window, cx)
     }))
-    .item(PopupMenuItem::new("Squash Commits…").disabled(!multi).on_click({
+    .item(PopupMenuItem::new("Squash Commits…").disabled(!multi || !on_branch).on_click({
         let model = model.clone();
         let picks = picks.clone();
         move |_, window, cx| rebase_dialog::squash(model.clone(), picks.clone(), window, cx)
     }))
-    .item(PopupMenuItem::new("Fixup…").disabled(multi).on_click({
+    .item(PopupMenuItem::new("Fixup…").disabled(multi || !on_branch).on_click({
         let model = model.clone();
         let message = format!("fixup! {}", commit.subject);
         move |_, _, cx| model.update(cx, |m, cx| m.prefill_commit_message(message.clone(), cx))
     }))
-    .item(PopupMenuItem::new("Squash Into…").disabled(multi).on_click({
+    .item(PopupMenuItem::new("Squash Into…").disabled(multi || !on_branch).on_click({
         let model = model.clone();
         let message = format!("squash! {}", commit.subject);
         move |_, _, cx| model.update(cx, |m, cx| m.prefill_commit_message(message.clone(), cx))
     }))
-    .item(PopupMenuItem::new("Interactively Rebase from Here…").disabled(multi).on_click({
+    .item(PopupMenuItem::new("Interactively Rebase from Here…").disabled(multi || !on_branch).on_click({
         let model = model.clone();
         let hash = hash.clone();
         move |_, window, cx| rebase_dialog::open(model.clone(), hash.clone(), window, cx)
