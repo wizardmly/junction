@@ -562,31 +562,76 @@ impl MergeView {
         (changes, conflicts)
     }
 
+    /// Shows a change on all three panes and puts the caret on its first
+    /// line, in the pane that has the caret (the result at first).
     fn show_change(&mut self, ix: usize) {
         let Some(change) = self.changes.get(ix) else { return };
         let result = self.states()[ix].result.start;
         self.current = Some(ix);
         let rows = vec![(OURS, self.panes.row_of(OURS, change.ours.start)), (RESULT, self.panes.row_of(RESULT, result)), (THEIRS, self.panes.row_of(THEIRS, change.theirs.start))];
         self.panes.show_rows(rows);
+        let pane = self.caret_pane();
+        let line = self.change_lines(ix, pane).start;
+        let buffer = &self.panes.buffers[pane];
+        let offset = buffer.line_range(line.min(buffer.line_count().saturating_sub(1))).start;
+        self.panes.caret = Some((pane, crate::ui::text_buffer::Selection::caret(offset)));
     }
 
-    /// Next / Previous unresolved change, wrapping around.
-    fn go_to_unresolved(&mut self, from_start: bool) {
-        let unresolved: Vec<usize> = (0..self.changes.len()).filter(|ix| !self.states()[*ix].resolved()).collect();
-        let next = match (from_start, self.current) {
-            (false, Some(c)) => unresolved.iter().copied().find(|ix| *ix > c),
-            _ => None,
-        };
-        if let Some(ix) = next.or(unresolved.first().copied()) {
+    fn caret_pane(&self) -> usize {
+        self.panes.caret.map_or(RESULT, |c| c.0)
+    }
+
+    /// A change's lines on a pane.
+    fn change_lines(&self, ix: usize, pane: usize) -> Range<usize> {
+        match pane {
+            RESULT => self.states()[ix].result.clone(),
+            _ => self.changes[ix].range(pane),
+        }
+    }
+
+    fn unresolved(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.changes.len()).filter(|ix| !self.states()[*ix].resolved())
+    }
+
+    /// The first unresolved change (on opening, after applying changes).
+    fn go_to_first_unresolved(&mut self) {
+        let first = self.unresolved().next();
+        if let Some(ix) = first {
             self.show_change(ix);
         }
     }
 
-    fn go_to_previous(&mut self) {
-        let current = self.current.unwrap_or(0);
-        let previous = (0..current).rev().find(|ix| !self.states()[*ix].resolved());
-        if let Some(ix) = previous.or_else(|| (0..self.changes.len()).rev().find(|ix| !self.states()[*ix].resolved())) {
+    /// Next Change: the first unresolved change below the caret's line.
+    fn next_change(&self) -> Option<usize> {
+        let pane = self.caret_pane();
+        let Some((_, sel)) = self.panes.caret else { return self.unresolved().next() };
+        let line = self.panes.buffers[pane].line_of(sel.head);
+        self.unresolved().find(|ix| self.change_lines(*ix, pane).start > line)
+    }
+
+    /// Previous Change: the last unresolved change above the caret's line.
+    fn previous_change(&self) -> Option<usize> {
+        let pane = self.caret_pane();
+        let (_, sel) = self.panes.caret?;
+        let line = self.panes.buffers[pane].line_of(sel.head);
+        self.unresolved().filter(|ix| {
+            let lines = self.change_lines(*ix, pane);
+            lines.start < line && lines.end <= line
+        })
+        .last()
+    }
+
+    pub fn next_difference(&mut self, cx: &mut Context<Self>) {
+        if let Some(ix) = self.next_change() {
             self.show_change(ix);
+            cx.notify();
+        }
+    }
+
+    pub fn previous_difference(&mut self, cx: &mut Context<Self>) {
+        if let Some(ix) = self.previous_change() {
+            self.show_change(ix);
+            cx.notify();
         }
     }
 
@@ -920,14 +965,16 @@ impl Render for MergeView {
             .border_b_1()
             .border_color(palette.border)
             .bg(palette.toolbar)
-            .child(tool_button("merge-prev", IconName::ChevronUp, "Previous Change (Shift+F7)").on_click(cx.listener(|this, _, _, cx| {
-                this.go_to_previous();
-                cx.notify();
-            })))
-            .child(tool_button("merge-next", IconName::ChevronDown, "Next Change (F7)").on_click(cx.listener(|this, _, _, cx| {
-                this.go_to_unresolved(false);
-                cx.notify();
-            })))
+            .child(
+                tool_button("merge-prev", IconName::ChevronUp, "Previous Change (Shift+F7)")
+                    .disabled(self.previous_change().is_none())
+                    .on_click(cx.listener(|this, _, _, cx| this.previous_difference(cx))),
+            )
+            .child(
+                tool_button("merge-next", IconName::ChevronDown, "Next Change (F7)")
+                    .disabled(self.next_change().is_none())
+                    .on_click(cx.listener(|this, _, _, cx| this.next_difference(cx))),
+            )
             .child(separator())
             .child(
                 tool_button("merge-apply-left-all", IconName::ChevronsRight, "Apply Non-Conflicting Changes from the Left Side")
@@ -1125,7 +1172,7 @@ impl Render for MergeView {
                     .child(Button::new("merge-accept-left").outline().small().label("Accept Left").on_click(cx.listener(|this, _, _, cx| this.accept(true, cx))))
                     .child(Button::new("merge-accept-right").outline().small().label("Accept Right").on_click(cx.listener(|this, _, _, cx| this.accept(false, cx))))
                     .child(div().flex_1())
-                    .child(Button::new("merge-cancel").outline().small().label("Cancel").on_click(cx.listener(|_, _, _, cx| cx.emit(MergeEvent::Closed(false)))))
+                    .child(Button::new("merge-cancel").outline().small().label("Cancel").on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx))))
                     .child(Button::new("merge-apply").primary().small().label("Apply").on_click(cx.listener(|this, _, window, cx| this.apply(window, cx)))),
             )
     }

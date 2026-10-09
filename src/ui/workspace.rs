@@ -660,6 +660,11 @@ impl Workspace {
         );
     }
 
+    /// The merge tool, when it is what the editor area shows (F7 goes to it).
+    fn front_merge(&self) -> Option<Entity<MergeView>> {
+        self.merge.as_ref().filter(|_| self.front == Front::Merge).map(|(m, _)| m.clone())
+    }
+
     pub fn open_merge(&mut self, conflict: Conflict, window: &mut Window, cx: &mut Context<Self>) {
         if !conflict.kind.can_merge() {
             return;
@@ -2621,8 +2626,14 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FindInPath, window, cx| this.open_find_popup(false, window, cx)))
             .on_action(cx.listener(|this, _: &ReplaceInPath, window, cx| this.open_find_popup(true, window, cx)))
             .on_action(cx.listener(|_, _: &OpenSettings, window, cx| dialogs::settings(window, cx)))
-            .on_action(cx.listener(|this, _: &NextDifference, _, cx| this.diff.update(cx, |d, cx| d.next_difference(cx))))
-            .on_action(cx.listener(|this, _: &PreviousDifference, _, cx| this.diff.update(cx, |d, cx| d.previous_difference(cx))))
+            .on_action(cx.listener(|this, _: &NextDifference, _, cx| match this.front_merge() {
+                Some(merge) => merge.update(cx, |m, cx| m.next_difference(cx)),
+                None => this.diff.update(cx, |d, cx| d.next_difference(cx)),
+            }))
+            .on_action(cx.listener(|this, _: &PreviousDifference, _, cx| match this.front_merge() {
+                Some(merge) => merge.update(cx, |m, cx| m.previous_difference(cx)),
+                None => this.diff.update(cx, |d, cx| d.previous_difference(cx)),
+            }))
             .on_action(cx.listener(|this, _: &JumpToSource, _, cx| this.diff.update(cx, |d, cx| d.jump_to_source(cx))))
             .on_action(cx.listener(|this, _: &CompareNextFile, _, cx| this.diff.update(cx, |d, cx| d.compare_next_file(cx))))
             .on_action(cx.listener(|this, _: &ComparePreviousFile, _, cx| this.diff.update(cx, |d, cx| d.compare_previous_file(cx))))
