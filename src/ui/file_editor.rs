@@ -95,6 +95,9 @@ pub enum FileEditorEvent {
     CreateGist { name: String, content: String },
     /// Go to Declaration found these (one jumps, several ask).
     Navigate(Vec<crate::index::nav::Target>),
+    /// Go to Declaration found nothing for the identifier at this offset
+    /// (on a declaration itself, IntelliJ shows its usages instead).
+    NoDeclaration { text: String, offset: usize },
     /// Find Usages of the identifier at a byte offset of this text.
     FindUsages { text: String, offset: usize },
     /// Saved: re-index this file.
@@ -395,10 +398,11 @@ impl FileEditor {
         let Some(index) = self.code_index.clone() else { return };
         let text = self.text(cx);
         let offset = self.state.read(cx).cursor();
-        let task = index.read(cx).definitions(self.path.clone(), text, offset, cx);
+        let task = index.read(cx).definitions(self.path.clone(), text.clone(), offset, cx);
         cx.spawn(async move |this, cx| {
             let targets = task.await;
-            this.update(cx, |_, cx| cx.emit(FileEditorEvent::Navigate(targets))).ok();
+            let event = if targets.is_empty() { FileEditorEvent::NoDeclaration { text, offset } } else { FileEditorEvent::Navigate(targets) };
+            this.update(cx, |_, cx| cx.emit(event)).ok();
         })
         .detach();
     }
@@ -449,7 +453,8 @@ impl FileEditor {
 
     /// Go to Line:Column (Ctrl+G), 1-based.
     pub fn line_count(&self, cx: &gpui_kit::App) -> usize {
-        self.state.read(cx).value().lines().count().max(1)
+        // The line after a final newline counts, as the editor shows it.
+        self.state.read(cx).value().split('\n').count()
     }
 
     pub fn revision(&self) -> Option<&str> {

@@ -2,7 +2,7 @@
 //! Language servers answer first when available (see `lsp`); this is the
 //! fallback and the cross-language part no single server knows.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::bridge::Role;
@@ -123,6 +123,8 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
     // 2. Symbols with this name in the languages this one can see.
     let family = lang.family();
     let mut candidates: Vec<(i32, Target)> = Vec::new();
+    // Kinds of the candidates, by position: (type, constructor).
+    let mut kinds: Vec<(bool, bool)> = Vec::new();
     let mut on_definition = false;
     let mut hints = import_hints(lang, text);
     if matches!(lang, Lang::C | Lang::Cpp | Lang::ObjC) {
@@ -130,7 +132,9 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
     }
     // `x.name`: the type of `x` picks among same-named members.
     let receiver = receiver_type(index, lang, text, range.start, 0);
-    let as_type = used_as_type(text, range.end);
+    let as_type = used_as_type(text, range.start, range.end);
+    let call = text[range.end..].trim_start().starts_with('(');
+    let jvm = matches!(lang, Lang::Java | Lang::Kotlin);
     for (p, e, s) in index.symbols_named(&word) {
         if !family.contains(&e.lang) {
             continue;
@@ -147,7 +151,7 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
         } else {
             // A library symbol: the file's imports and the types it
             // mentions decide, since the index knows no types.
-            if hinted(p, &hints) {
+            if hinted(p, &hints, jvm) {
                 score += IMPORTED;
             }
             if s.container.as_deref().and_then(|c| c.rsplit('.').next()).is_some_and(|c| mentions(text, c)) {
@@ -169,6 +173,7 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
             score += 20;
         }
         score += shared_prefix(p, path) as i32;
+        kinds.push((s.kind.is_type(), s.kind == super::symbols::SymbolKind::Constructor));
         candidates.push((score, symbol_target(p, e.lang, s)));
     }
     // On a definition, IntelliJ shows its other declarations (header ↔
@@ -188,6 +193,22 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
                 .collect();
             if !exports.is_empty() {
                 return dedup(exports);
+            }
+        }
+    }
+    // A type position names the type, not its constructors; outside a call
+    // a class's constructors stand for the class too.
+    if kinds.iter().any(|k| k.0) && (as_type || !call) {
+        let mut keep = kinds.iter().map(|k| if as_type { k.0 } else { !k.1 });
+        candidates.retain(|_| keep.next().unwrap_or(true));
+    }
+    // `import a.b.Name`: the import names the package.
+    if jvm {
+        if let Some(package) = imported_package(text, range.start, &word) {
+            let dir = format!("/{package}/");
+            let in_package = |t: &Target| format!("/{}", t.path.replace('\\', "/")).contains(&dir);
+            if candidates.iter().any(|(_, t)| in_package(t)) {
+                candidates.retain(|(_, t)| in_package(t));
             }
         }
     }
@@ -252,8 +273,16 @@ fn mentions(text: &str, word: &str) -> bool {
     })
 }
 
-/// `List<String> x`, `Foo bar =`: the word ending at `end` names a type.
-fn used_as_type(text: &str, end: usize) -> bool {
+/// `List<String> x`, `Foo bar =`, `name: Foo`, `-> Foo`: the word at
+/// `start..end` names a type.
+fn used_as_type(text: &str, start: usize, end: usize) -> bool {
+    let before = text[..start].trim_end_matches([' ', '\t']);
+    if (before.ends_with(':') && !before.ends_with("::") && !before.ends_with("?:")) || before.ends_with("->") || before.ends_with('<') {
+        return true;
+    }
+    if [" is", " as", " as?", "extends", "implements"].iter().any(|k| before.ends_with(k)) && before.len() < start {
+        return true;
+    }
     let rest = &text[end..];
     let trimmed = rest.trim_start_matches([' ', '\t']);
     if trimmed.starts_with('<') || trimmed.starts_with("[]") {
@@ -423,9 +452,28 @@ pub fn import_hints(lang: Lang, text: &str) -> Vec<String> {
     out
 }
 
+/// The package of a JVM `import a.b.Name` whose last segment is the word
+/// at `start`, as a path: "a/b".
+fn imported_package(text: &str, start: usize, word: &str) -> Option<String> {
+    let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+    let line = &text[line_start..start];
+    let rest = line.trim_start().strip_prefix("import")?.trim_start();
+    let rest = rest.strip_prefix("static ").unwrap_or(rest).trim();
+    let package = rest.strip_suffix('.')?;
+    let after = &text[start + word.len()..];
+    let after = after.split('\n').next().unwrap_or("").trim();
+    // `import a.b.Name` or `import a.b.Name as Alias`, not a package segment.
+    if !(after.is_empty() || after.starts_with("as ") || after == ";") {
+        return None;
+    }
+    (!package.is_empty() && package.chars().all(|c| is_word_char(c) || c == '.')).then(|| package.replace('.', "/"))
+}
+
 /// Whether a library file is one of the hinted ones: its path, without
 /// versions and `src` / `lib` levels, contains a hint at a segment start.
-fn hinted(path: &str, hints: &[String]) -> bool {
+/// With `direct`, a package hint ("java/lang/") covers only the files right
+/// in it, not its subpackages, as JVM imports do.
+fn hinted(path: &str, hints: &[String], direct: bool) -> bool {
     if hints.is_empty() {
         return false;
     }
@@ -444,7 +492,10 @@ fn hinted(path: &str, hints: &[String]) -> bool {
         normal.push('/');
         normal.push_str(segment);
     }
-    hints.iter().any(|h| normal.contains(&format!("/{h}")))
+    hints.iter().any(|h| {
+        let needle = format!("/{h}");
+        normal.match_indices(&needle).any(|(i, _)| !(direct && h.ends_with('/')) || !normal[i + needle.len()..].contains('/'))
+    })
 }
 
 fn shared_prefix(a: &str, b: &str) -> usize {
@@ -491,6 +542,8 @@ pub fn usages(index: &ProjectIndex, root: &Path, word: &str, lang: Option<Lang>)
         }
     }
 
+    // Each file's comments and string literals: text there isn't a usage.
+    let mut non_code: HashMap<String, (Vec<usize>, Vec<std::ops::Range<usize>>)> = HashMap::new();
     let output = crate::git::git_process()
         .args(["grep", "-n", "--column", "-w", "-I", "-F", "--untracked", "--exclude-standard", "-e", word])
         .current_dir(root)
@@ -502,11 +555,22 @@ pub fn usages(index: &ProjectIndex, root: &Path, word: &str, lang: Option<Lang>)
             let Some(entry) = index.files.get(path) else { continue };
             let (Ok(l), Ok(c)) = (l.parse::<u32>(), c.parse::<u32>()) else { continue };
             let line0 = l.saturating_sub(1);
+            // git reports a byte column; editors want UTF-16.
+            let byte_col = (c.saturating_sub(1) as usize).min(text.len());
+            let (starts, skip) = non_code.entry(path.to_owned()).or_insert_with(|| {
+                let source = std::fs::read_to_string(root.join(path)).unwrap_or_default();
+                let starts = std::iter::once(0).chain(source.match_indices('\n').map(|(i, _)| i + 1)).collect();
+                (starts, comments_and_strings(&source, entry.lang))
+            });
+            if let Some(start) = starts.get(line0 as usize) {
+                let at = start + byte_col;
+                if skip.binary_search_by(|r| if r.end <= at { std::cmp::Ordering::Less } else if r.start > at { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal }).is_ok() {
+                    continue;
+                }
+            }
             if !seen.insert((path.to_owned(), line0)) {
                 continue;
             }
-            // git reports a byte column; editors want UTF-16.
-            let byte_col = (c.saturating_sub(1) as usize).min(text.len());
             let col = text.get(..byte_col).map_or(0, |s| s.encode_utf16().count() as u32);
             let is_decl = entry.symbols.iter().any(|s| s.line == line0 && s.name == word);
             let group = if is_decl { "Declarations".to_owned() } else { entry.lang.name().to_owned() };
@@ -519,6 +583,127 @@ pub fn usages(index: &ProjectIndex, root: &Path, word: &str, lang: Option<Lang>)
     };
     out.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.group.cmp(&b.group)).then(a.path.cmp(&b.path)).then(a.line.cmp(&b.line)));
     out
+}
+
+/// Byte ranges of the comments and string literals in `text`, in order.
+/// Interpolated code (`"$name"`, `"${x}"`, Swift's `"\(x)"`, JS's
+/// `` `${x}` ``) stays code. A lexical pass, good enough for Find Usages.
+pub fn comments_and_strings(text: &str, lang: Lang) -> Vec<std::ops::Range<usize>> {
+    let b = text.as_bytes();
+    let hash_comments = lang == Lang::Python;
+    let slash_comments = lang != Lang::Python;
+    // Single quotes delimit strings here; elsewhere a short char literal.
+    let quote_strings = matches!(lang, Lang::Python | Lang::Dart | Lang::JavaScript | Lang::TypeScript | Lang::Tsx | Lang::V);
+    let dollar = matches!(lang, Lang::Kotlin | Lang::Dart);
+    let mut out = Vec::new();
+    let mut i = 0;
+    // Push a non-code range, leaving out interpolated parts.
+    let mut push = |out: &mut Vec<std::ops::Range<usize>>, start: usize, end: usize, holes: &[std::ops::Range<usize>]| {
+        let mut from = start;
+        for h in holes {
+            if h.start > from {
+                out.push(from..h.start);
+            }
+            from = h.end;
+        }
+        if end > from {
+            out.push(from..end);
+        }
+    };
+    while i < b.len() {
+        let c = b[i];
+        if slash_comments && c == b'/' && b.get(i + 1) == Some(&b'/') || hash_comments && c == b'#' {
+            let end = text[i..].find('\n').map_or(b.len(), |n| i + n);
+            out.push(i..end);
+            i = end;
+        } else if slash_comments && c == b'/' && b.get(i + 1) == Some(&b'*') {
+            let end = text[i + 2..].find("*/").map_or(b.len(), |n| i + 2 + n + 2);
+            out.push(i..end);
+            i = end;
+        } else if c == b'"' || c == b'`' && matches!(lang, Lang::Go | Lang::JavaScript | Lang::TypeScript | Lang::Tsx) || c == b'\'' && quote_strings {
+            let triple = c != b'`' && text[i..].starts_with(if c == b'"' { "\"\"\"" } else { "\'\'\'" });
+            let raw_prefix = lang == Lang::Rust && i > 0 && (b[i - 1] == b'r' || b[i - 1] == b'#');
+            let delim = if triple { 3 } else { 1 };
+            let mut j = i + delim;
+            let mut holes = Vec::new();
+            let escapes = c != b'`' || lang != Lang::Go;
+            loop {
+                if j >= b.len() {
+                    break;
+                }
+                if triple && text[j..].starts_with(&text[i..i + 3]) {
+                    j += 3;
+                    break;
+                }
+                if !triple && b[j] == c {
+                    j += 1;
+                    break;
+                }
+                if !triple && b[j] == b'\n' && c != b'`' && !raw_prefix {
+                    break;
+                }
+                if escapes && !raw_prefix && b[j] == b'\\' {
+                    // Swift's `\(expr)` interpolation.
+                    if lang == Lang::Swift && b.get(j + 1) == Some(&b'(') {
+                        let end = matching(b, j + 1, b'(', b')');
+                        holes.push(j + 2..end.saturating_sub(1).max(j + 2));
+                        j = end;
+                        continue;
+                    }
+                    j += 2;
+                    continue;
+                }
+                if (dollar || c == b'`') && b[j] == b'$' {
+                    if b.get(j + 1) == Some(&b'{') {
+                        let end = matching(b, j + 1, b'{', b'}');
+                        holes.push(j + 2..end.saturating_sub(1).max(j + 2));
+                        j = end;
+                        continue;
+                    }
+                    if dollar {
+                        let end = j + 1 + text[j + 1..].find(|ch: char| !is_word_char(ch) || ch == '$').unwrap_or(b.len() - j - 1);
+                        holes.push(j + 1..end);
+                        j = end;
+                        continue;
+                    }
+                }
+                j += 1;
+            }
+            let j = j.min(b.len());
+            push(&mut out, i, j, &holes);
+            i = j;
+        } else if c == b'\'' {
+            // 'x', '\n', '\u0041': a char literal; Rust's 'a is a lifetime.
+            let escaped = b.get(i + 1) == Some(&b'\\');
+            let close = text[i + 1..].char_indices().skip(if escaped { 2 } else { 1 }).take(8).find(|(_, ch)| *ch == '\'').map(|(n, _)| i + 1 + n);
+            match close {
+                Some(end) if escaped || text[i + 1..end].chars().count() == 1 => {
+                    out.push(i..end + 1);
+                    i = end + 1;
+                }
+                _ => i += 1,
+            }
+        } else {
+            i += text[i..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    out
+}
+
+/// The index just past the bracket closing the one at `open`.
+fn matching(b: &[u8], open: usize, left: u8, right: u8) -> usize {
+    let mut depth = 0;
+    for (n, &ch) in b.iter().enumerate().skip(open) {
+        if ch == left {
+            depth += 1;
+        } else if ch == right {
+            depth -= 1;
+            if depth == 0 {
+                return n + 1;
+            }
+        }
+    }
+    b.len()
 }
 
 fn line_of(root: &Path, path: &str, line: u32) -> String {
@@ -749,6 +934,37 @@ mod tests {
         let t = definitions(&index, "App/Main.swift", Lang::Swift, swift, at(swift, "init"));
         assert_eq!((t[0].path.as_str(), t[0].line), ("Sources/GGLoader.h", 1));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn types_and_text_occurrences() {
+        let java = "package com.ex;\npublic class Text {\n  public Text() {}\n  public Text(int n) {}\n  // twice in comment\n  public int twice(int v) { String s = \"twice\"; return v * 2; }\n}\n";
+        let kt = "package com.ex\n\nfun greet(name: Text) {\n    val t = Text(1)\n    println(\"${twice(1)} $name\")\n}\n";
+        let other = "package com.other;\npublic class Text {}\n";
+        let (dir, index) = project(&[("app/com/ex/Text.java", java), ("app/com/ex/Main.kt", kt), ("lib/com/other/Text.java", other)]);
+        // A type position goes to the class, not its constructors.
+        let t = definitions(&index, "app/com/ex/Main.kt", Lang::Kotlin, kt, at(kt, "Text)"));
+        assert!(t.iter().all(|t| t.line == 1), "{t:?}");
+        // `import com.other.Text` names that package's class only.
+        let imports = format!("import com.other.Text\n{kt}");
+        let t = definitions(&index, "app/com/ex/Main.kt", Lang::Kotlin, &imports, at(&imports, "Text\n"));
+        assert_eq!(t.iter().map(|t| t.path.as_str()).collect::<Vec<_>>(), ["lib/com/other/Text.java"]);
+        // Comments and strings aren't usages; interpolated code is.
+        let u = usages(&index, &dir, "twice", Some(Lang::Java));
+        let lines: Vec<(&str, u32)> = u.iter().map(|u| (u.path.as_str(), u.line)).collect();
+        assert_eq!(lines, [("app/com/ex/Text.java", 5), ("app/com/ex/Main.kt", 4)]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lexes_comments_and_strings() {
+        let src = "a /* b */ c // d\ne \"f $g ${h}\" 'i' x<'a>";
+        let ranges = comments_and_strings(src, Lang::Kotlin);
+        let parts: Vec<&str> = ranges.iter().map(|r| &src[r.clone()]).collect();
+        assert_eq!(parts, ["/* b */", "// d", "\"f $", " ${", "}\"", "'i'"]);
+        let rust = "fn f<'a>(x: &'a str) -> char { 'x' }";
+        let parts: Vec<&str> = comments_and_strings(rust, Lang::Rust).iter().map(|r| &rust[r.clone()]).collect();
+        assert_eq!(parts, ["'x'"]);
     }
 
     #[test]

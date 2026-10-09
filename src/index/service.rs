@@ -319,6 +319,13 @@ impl CodeIndex {
         cx.background_spawn(async move { nav::search_symbols(&index.read().unwrap(), &query, types_only, 200) })
     }
 
+    /// Whether the identifier at `offset` is a declaration the index knows.
+    pub fn declared_at(&self, path: &str, text: &str, offset: usize) -> bool {
+        let Some((word, range)) = nav::word_at(text, offset) else { return false };
+        let (line, col) = nav::position(text, range.start);
+        self.index.read().is_ok_and(|index| index.files.get(path).is_some_and(|e| e.symbols.iter().any(|s| s.line == line && s.col == col && s.name == word)))
+    }
+
     pub fn file_symbols(&self, path: &str) -> Vec<nav::SymbolMatch> {
         self.index.read().map(|index| nav::file_symbols(&index, path)).unwrap_or_default()
     }

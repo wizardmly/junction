@@ -789,6 +789,14 @@ impl Workspace {
         match event {
             FileEditorEvent::Edited => self.keep_tab(view, cx),
             FileEditorEvent::Navigate(targets) => self.navigate(targets.clone(), window, cx),
+            FileEditorEvent::NoDeclaration { text, offset } => {
+                let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
+                if self.code_index.read(cx).declared_at(&path, text, *offset) {
+                    self.show_usages_popup(path, text.clone(), *offset, window, cx);
+                } else {
+                    Self::nav_hint("Cannot find declaration to go to", window, cx);
+                }
+            }
             FileEditorEvent::FindUsages { text, offset } => {
                 let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
                 let (index, text, offset) = (self.code_index.clone(), text.clone(), *offset);
@@ -893,12 +901,15 @@ impl Workspace {
     /// Go to Declaration's result: one target opens, several ask.
     fn navigate(&mut self, targets: Vec<crate::index::nav::Target>, window: &mut Window, cx: &mut Context<Self>) {
         match targets.len() {
-            0 => self.model.update(cx, |m, cx| m.notify("Go to Declaration", "Cannot find declaration to go to", false, cx)),
+            0 => Self::nav_hint("Cannot find declaration to go to", window, cx),
             1 => self.go_to_target(targets.into_iter().next().unwrap(), window, cx),
             _ => {
                 let workspace = cx.entity().downgrade();
+                let locations = targets.iter().map(|t| self.location_label(t, cx)).collect();
                 crate::ui::navigate::choose_target(
+                    "Choose Declaration",
                     targets,
+                    locations,
                     Rc::new(move |target, window, cx| {
                         workspace.update(cx, |this, cx| this.go_to_target(target, window, cx)).ok();
                     }),
@@ -907,6 +918,55 @@ impl Workspace {
                 );
             }
         }
+    }
+
+    /// A navigation miss, as IntelliJ's hint: information, not success.
+    fn nav_hint(message: &str, window: &mut Window, cx: &mut Context<Self>) {
+        window.push_notification(Notification::info(message.to_owned()).title("Go to Declaration"), cx);
+    }
+
+    /// Where a target is, for a chooser row: "dir/File.kt:12", or for a
+    /// library file "JDK 17 › java/lang/String.java:120".
+    fn location_label(&self, target: &crate::index::nav::Target, cx: &gpui_kit::App) -> String {
+        let line = target.line + 1;
+        if crate::index::store::ProjectIndex::is_external(&target.path) {
+            let index = self.code_index.read(cx).index.clone();
+            let library = index.read().ok().and_then(|index| {
+                let library = index.external.library_of(&target.path)?;
+                let rel = std::path::Path::new(&target.path).strip_prefix(&library.root).ok()?.to_string_lossy().replace('\\', "/");
+                Some(format!("{} › {rel}:{line}", library.name))
+            });
+            if let Some(label) = library {
+                return label;
+            }
+        }
+        format!("{}:{line}", target.path)
+    }
+
+    /// Go to Declaration on a declaration: its usages, as IntelliJ's Show
+    /// Usages popup (one usage jumps straight there).
+    fn show_usages_popup(&mut self, path: String, text: String, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let task = self.code_index.read(cx).usages(path, text, offset, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let (word, usages) = task.await;
+            this.update_in(cx, |this, window, cx| {
+                let targets: Vec<crate::index::nav::Target> = usages
+                    .into_iter()
+                    .filter(|u| u.group != "Declarations")
+                    .map(|u| crate::index::nav::Target { path: u.path, line: u.line, col: u.col, name: u.text, label: String::new(), container: None })
+                    .collect();
+                match targets.len() {
+                    0 => window.push_notification(Notification::info(format!("No usages of {word} found")).title("Show Usages"), cx),
+                    1 => this.go_to_target(targets.into_iter().next().unwrap(), window, cx),
+                    _ => {
+                        let locations = targets.iter().map(|t| this.location_label(t, cx)).collect();
+                        crate::ui::navigate::choose_target("Usages", targets, locations, this.picker_callback(cx), window, cx);
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Opens a file at a position, remembering where we were for Back.
@@ -1361,7 +1421,14 @@ impl Workspace {
                     true
                 })
         });
-        crate::ui::dialogs::focus_input(&input, window, cx);
+        // IntelliJ selects the prefilled position, so typing replaces it.
+        let select = input.clone();
+        window.defer(cx, move |window, cx| {
+            select.update(cx, |state, cx| {
+                state.focus(window, cx);
+                state.select_all(window, cx);
+            })
+        });
     }
 
     fn toggle_project(&mut self, _: &ToggleProjectWindow, window: &mut Window, cx: &mut Context<Self>) {
