@@ -1336,8 +1336,15 @@ impl Workspace {
         let items = files
             .into_iter()
             .map(|path| {
-                let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
-                let dir = path.rsplit_once('/').map(|(d, _)| d.to_owned()).unwrap_or_default();
+                let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+                // A library file shows its library and folder, not a cache path.
+                let target = crate::index::nav::Target { path: path.clone(), line: 0, col: 0, name: String::new(), label: String::new(), container: None };
+                let location = self.location_label(&target, cx);
+                let location = location.rsplit_once(':').map_or(location.as_str(), |(l, _)| l);
+                let dir = match location.rsplit_once(['/', '\\']) {
+                    Some((d, _)) => d.to_owned(),
+                    None => location.split_once(" › ").map(|(library, _)| library.to_owned()).unwrap_or_default(),
+                };
                 crate::ui::find_view::FoundItem {
                     title: name.clone(),
                     detail: dir,

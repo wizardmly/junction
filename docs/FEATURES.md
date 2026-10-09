@@ -221,9 +221,9 @@
 |---|---|---|
 | 符号索引：Kotlin、Java、C、C++、Objective-C、Rust、Swift、Dart、Go、V、JavaScript、TypeScript、Python | M7 | ✅（tree-sitter 解析；git ls-files 列表；按大小与修改时间增量更新，多线程；缓存在 .git/junction/index.json；保存文件立即重建该文件；状态栏显示进度与“N files, M symbols indexed”） |
 | 跨语言桥接 | M7 | ✅（JNI：Java/Kotlin `native` ↔ C/C++ `Java_包_类_方法`（含 _1 等转义）与 RegisterNatives；Dart FFI `lookupFunction`/`@Native` ↔ C/Rust `extern "C"`/`#[no_mangle]`；Rust `extern "C"` 声明 ↔ C 实现；Swift `@_cdecl`/`@objc` ↔ ObjC/C；Go `//export` 与 cgo `C.name`、V `C.name` ↔ C；C 头文件原型 → 跨 ABI 的实现） |
-| Go to Declaration（Ctrl+B / Ctrl+点击 / F12） | M7 | ✅（顺序：桥接 → LSP → 索引；多个目标弹出选择列表；Ctrl 悬停下划线） |
+| Go to Declaration（Ctrl+B / Ctrl+点击 / F12） | M7 | ✅（顺序：桥接 → LSP → 索引；多个目标弹出 Choose Declaration 列表（↑↓ 选择、Enter 跳转，右侧显示位置，库文件显示“库名 › 路径:行”）；光标在声明本身上时改为列出用法（只有一处直接跳过去）；找不到时给信息提示；目标不在视野内时滚到编辑器中部；Ctrl 悬停下划线） |
 | Quick Documentation（悬停） | M7 | ✅（LSP hover，否则显示声明行与位置） |
-| Find Usages（Alt+F7） | M7 | ✅（Find 工具窗口，按类别 › 文件 › 行分组；索引 + git grep，LSP references 标记“verified”；桥接两侧都列出） |
+| Find Usages（Alt+F7） | M7 | ✅（Find 工具窗口，按类别 › 文件 › 行分组；索引 + git grep，注释和字符串字面量里的文本不算（Kotlin / Dart 的 `$x`、Swift 的 `\(x)` 插值算代码），LSP references 标记“verified”；桥接两侧都列出；结果行高亮命中词，同名文件显示目录，右侧 Preview Source 预览选中结果；编辑器里也可 Ctrl+Alt+↓ / ↑ 跳到下一处 / 上一处） |
 | Go to File / Class / Symbol（Ctrl+Shift+N / Ctrl+N / Ctrl+Alt+Shift+N） | M7 | ✅（打开 Search Everywhere 对应标签，见第 12 节） |
 | Navigate Back / Forward（Ctrl+Alt+← / →） | M7 | ✅ |
 | Project 工具窗口（Alt+1）、Select in Project View（Alt+F1） | M7 | ✅ |
@@ -238,7 +238,7 @@
 | ⋮ › Edit Scopes、Group Tabs、View Mode、Move to、Resize、Remove from Sidebar、Help；Android / Packages 视图 | — | ❌ 不适用（IDE 窗口布局与 Android 模块模型，Junction 没有） |
 | External Libraries：依赖库与 SDK 源码进入索引（跳转、悬停、Go to Class / File / Symbol） | M9 | ✅（Cargo：`cargo metadata` 按本机平台解析，含 Rust std/core/alloc；Go：go.mod + GOMODCACHE、Go SDK；Dart/Flutter：package_config.json、Dart SDK；Gradle：build.gradle / libs.versions.toml 声明的依赖，沿 .module / POM 传递，解压 Gradle 缓存里的 -sources.jar；Android SDK `sources/android-<compileSdk>`；JDK src.zip（含 Android Studio 自带 JBR）；C/C++/ObjC：从项目 #include 出发沿 NDK sysroot、compile_commands.json、编译器搜索路径、Apple SDK framework 解析头文件；SwiftPM / Xcode DerivedData / CocoaPods / Carthage、SDK 的 .swiftinterface；node_modules（优先 .d.ts）；Python venv / 标准库；V vlib / ~/.vmodules。索引按库缓存在用户缓存目录 Junction/libraries，跨项目共享；生成的超大绑定库只保留类型和函数） |
 | 库源码只读打开 | M9 | ✅（标题与状态栏面包屑显示“External Libraries › 库名 › 路径”；库文件里可继续跳转；Select Opened File 定位到 External Libraries 下） |
-| 跳转排序 | M9 | ✅（项目符号优先；库符号按文件的 import / use / #include（含被包含头文件）匹配；`x.member` 按 x 的声明类型（局部声明、字段声明行、返回类型）只留该类型的成员；类型位置优先类型符号） |
+| 跳转排序 | M9 | ✅（项目符号优先；库符号按文件的 import / use / #include（含被包含头文件）匹配；`x.member` 按 x 的声明类型（局部声明、字段声明行、返回类型）只留该类型的成员；类型位置（`name: String`、`List<T>`、`Foo x`）和非调用处跳到类本身，不列构造函数；Java / Kotlin 的 `import a.b.Name` 只认包 a.b 里的 Name，默认导入的 java.lang / kotlin 不含子包） |
 | Project 窗口 External Libraries 节点 | M9 | ✅（Project 视图底部，按 SDK → 依赖排序，展开为库内目录树） |
 | 语言服务器 | M7 | ✅（clangd、rust-analyzer、gopls、jdtls、kotlin-lsp、sourcekit-lsp、dart、v-analyzer、typescript-language-server、pyright/pylsp；按最近的 Cargo.toml / go.mod / pubspec.yaml / settings.gradle 等子项目分别启动；打开文件即预热；服务器忙时 0.6 秒内退回索引结果） |
 | 设置 › Languages & Frameworks | M7 | ✅（总开关；每种语言可填自定义命令或 off，显示 Installed / Not found / Index only） |
@@ -252,13 +252,14 @@
 | Find in Files（Ctrl+Shift+F） | M8 | ✅（浮动弹窗：Cc / W / .* 开关（Alt+C / W / X）；File mask 带常用掩码下拉，支持 `!` 排除；过滤器：Anywhere / In Comments / In String Literals / Except …；In Project / Module（含构建文件的目录）/ Directory（可递归、浏览）/ Scope（Project Files、Production、Test、Open Files、Current File、Recently Viewed、Recently Changed、Local Changes）；结果行高亮命中、右侧文件名和行号，下方只读预览；Enter 打开，Pin 后不关闭；选中文字或光标处单词自动填入；“N matches in M files”） |
 | Replace in Files（Ctrl+Shift+R） | M8 | ✅（替换框；Replace 替换当前行，Replace All 确认后全部替换；正则 `$1` 分组；替换后重建索引、刷新 Commit 列表、重载未修改的编辑器） |
 | Open in Find Window（Ctrl+Enter） | M8 | ✅（Find 工具窗口多标签；Found Occurrences › 目录 › 文件 › 行；Group by Directory、全部展开/折叠、上一处/下一处（Ctrl+Alt+↑/↓）、Exclude（Delete）、Rerun；替换标签有 Replace Selected / Replace All；“Open results in new tab”） |
-| Search Everywhere（双击 Shift） | M8 | ✅（All / Classes / Files / Symbols / Actions / Text 六个标签，Tab 切换；All 每组最多 6 条带“… more”；`/` 列出标签命令；`File.kt:12:3` 跳到行列；Include non-project items（Files 包含被 git 忽略的文件），再按一次快捷键切换它；预览（Alt+P）；按语言 / 分组过滤；Open in Find Tool Window。双击 Shift 已实现，走 gpui 的单独修饰键绑定；Linux 测试环境（Xvfb）收不到单独修饰键事件，所以只实测了 Ctrl+N 等入口） |
+| Search Everywhere（双击 Shift） | M8 | ✅（All / Classes / Files / Symbols / Actions / Text 六个标签，Tab 切换；All 每组最多 6 条带“… more”；`/` 列出标签命令；`File.kt:12:3` 跳到行列；Include non-project items（All / Classes / Files / Symbols；默认只列项目内的项，勾选或再按一次快捷键才加入库，项目里没有匹配时也列库；Files 还包含被 git 忽略的文件；每次打开重置）；预览（Alt+P）；按语言 / 分组过滤；Open in Find Tool Window。双击 Shift 已实现，走 gpui 的单独修饰键绑定；Linux 测试环境（Xvfb）收不到单独修饰键事件，所以只实测了 Ctrl+N 等入口） |
 | Find Action（Ctrl+Shift+A） | M8 | ✅（Git、Navigate、Window 三组命令，显示快捷键） |
 | 匹配规则 | M8 | ✅（IntelliJ 式：查询字符按顺序，每个字符要么紧接上一个命中，要么在词首（驼峰、`_`、`.`、`/`、`-` 之后）；子串也算命中但排在后面） |
-| 编辑器内 Find / Replace（Ctrl+F / Ctrl+R），Find Next / Previous（F3 / Shift+F3） | M8 | ✅（编辑器上方查找栏：Cc / W / .* 开关（Alt+C / W / X）、命中数 “3/17”、无结果或正则错误时红色、所有命中高亮当前项加框；↑↓、Enter / Shift+Enter、F3 / Shift+F3；Replace 行：Replace、Replace All（正则支持 `$1`）、Exclude；Esc 关闭；F3 无查询时用光标处单词） |
-| Recent Files（Ctrl+E） | M8 | ✅（上一个文件排第一，Enter 即切回；可输入过滤） |
-| File Structure（Ctrl+F12） | M8 | ✅（当前文件的声明，按容器缩进，可过滤） |
-| Go to Line:Column（Ctrl+G） | M8 | ✅（`行[:列]`，记入 Back 历史） |
+| 编辑器内 Find / Replace（Ctrl+F / Ctrl+R），Find Next / Previous（F3 / Shift+F3） | M8 | ✅（编辑器上方查找栏：Cc / W / .* 开关（Alt+C / W / X）、命中数 “3/17”、无结果或正则错误时红色、所有命中高亮当前项加框；↑↓、Enter / Shift+Enter、F3 / Shift+F3；Replace 行：Replace、Replace All（正则支持 `$1`）、Exclude；Esc 关闭（焦点回到编辑器后在编辑器里按 Esc 也关闭）；F3 无查询时用光标处单词） |
+| Recent Files（Ctrl+E） | M8 | ✅（上一个文件排第一，Enter 即切回；↑↓ 选择；可输入过滤；库文件显示库名与目录） |
+| File Structure（Ctrl+F12） | M8 | ✅（当前文件的声明，按容器缩进，可过滤，↑↓ 选择、Enter 跳转） |
+| Go to Line:Column（Ctrl+G） | M8 | ✅（预填当前“行:列”并全选，直接输入即替换；`行[:列]`，记入 Back 历史） |
+| 文件编辑器：语法高亮、撤销重做、删除行 | M8 | ✅（tree-sitter 高亮 Kotlin、Java、C、C++、Rust、Go、Swift、Dart、Python、JS/TS、TOML、YAML 等；IntelliJ keymap：Ctrl+Z 撤销、Ctrl+Shift+Z 重做、Ctrl+Y 删除行（macOS：⌘Z / ⇧⌘Z / ⌘⌫）） |
 
 ## 13. 编辑器标签页（M8）
 
