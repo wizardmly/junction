@@ -1400,6 +1400,16 @@ impl Workspace {
             FileAction::ShowHistory(path) => self.show_history(path, cx),
             FileAction::CompareWithRevision(path) => {
                 let workspace = cx.entity();
+                dialogs::compare_file_with_revision(
+                    self.model.clone(),
+                    path,
+                    Rc::new(move |source, _, cx| workspace.update(cx, |this, cx| this.open_diff(source, cx))),
+                    window,
+                    cx,
+                );
+            }
+            FileAction::CompareWithBranch(path) => {
+                let workspace = cx.entity();
                 dialogs::compare_file_with(
                     self.model.clone(),
                     path,

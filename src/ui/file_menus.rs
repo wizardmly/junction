@@ -30,8 +30,10 @@ pub enum FileAction {
     OpenFile(String),
     Annotate(String),
     ShowHistory(String),
-    /// Compare with Revision / Branch: the picker dialog.
+    /// Compare with Revision: the file's revisions to pick from.
     CompareWithRevision(String),
+    /// Compare with Branch: a branch, tag or revision to type or pick.
+    CompareWithBranch(String),
     /// Compare With…: another file picked from disk.
     CompareWithFile(String),
     /// Compare with Clipboard: the clipboard's text against the file.
@@ -180,7 +182,7 @@ fn git_items(menu: PopupMenu, target: &GitTarget, cx: &mut Context<PopupMenu>) -
     .item(entry("Annotate with Git Blame", "").disabled(!file_tracked).on_click(act(FileAction::Annotate)))
     .item(entry("Show Diff", "").disabled(!file_changed).on_click(act(FileAction::ShowDiff)))
     .item(entry("Compare with Revision…", "").disabled(!file_tracked).on_click(act(FileAction::CompareWithRevision)))
-    .item(entry("Compare with Branch…", "").disabled(!file_tracked).on_click(act(FileAction::CompareWithRevision)))
+    .item(entry("Compare with Branch…", "").disabled(!file_tracked).on_click(act(FileAction::CompareWithBranch)))
     .item(entry("Show History", "").disabled(!any_tracked).on_click({
         let (actions, path) = (actions.clone(), file.clone().or_else(|| common_dir(&target.paths)));
         move |_, window, cx| {
