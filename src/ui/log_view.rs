@@ -1571,7 +1571,13 @@ impl LogView {
                                         )
                                     })
                                     .context_menu(move |menu, _, cx| match &menu_path {
-                                        Some(path) => change_menu(menu, &menu_entity, path, cx),
+                                        Some(path) => {
+                                            let hash = menu_entity.read(cx).model.read(cx).selected_hash().map(str::to_owned);
+                                            match hash {
+                                                Some(hash) => change_menu(menu, &menu_entity, path, &hash, cx),
+                                                None => menu,
+                                            }
+                                        }
                                         None => menu,
                                     }),
                             )
@@ -1793,10 +1799,11 @@ fn change_menu(
     menu: gpui_kit::component::menu::PopupMenu,
     entity: &Entity<LogView>,
     path: &str,
+    hash: &str,
     cx: &mut App,
 ) -> gpui_kit::component::menu::PopupMenu {
     let model = entity.read(cx).model.clone();
-    let Some(hash) = model.read(cx).selected_hash().map(str::to_owned) else { return menu };
+    let hash = hash.to_owned();
     let web_file = model.read(cx).web_repo().map(|w| (w.host.name(), w.file_url(&hash, path, None)));
     let short = hash[..hash.len().min(8)].to_owned();
     let path = path.to_owned();
@@ -1924,6 +1931,38 @@ fn commit_menu(
     let compare = if selected.len() == 2 { Some((selected[0].hash.clone(), selected[1].hash.clone())) } else { None };
     let local_model = model.clone();
     let local_hash = hash.clone();
+    // A file's History tab: IntelliJ puts the file's own actions first
+    // (Show Diff, Open Repository Version, Annotate Revision, Get, …).
+    let history_path = {
+        let model = model.read(cx);
+        let filter = model.filter();
+        (filter.paths.len() == 1 && filter.lines.is_none() && !multi).then(|| {
+            // The file's name in that commit, if it was renamed since.
+            let path = filter.paths[0].clone();
+            model
+                .details()
+                .filter(|d| d.hash == commit.hash && d.changes.len() == 1)
+                .map(|d| d.changes[0].path.clone())
+                .or_else(|| {
+                    // Follow the file back from HEAD to that commit.
+                    let output = model.repository()?.run(["log", "--follow", "--name-only", "--format=%H", "HEAD", "--", &path]).ok()?;
+                    let mut current = "";
+                    for line in output.lines().filter(|l| !l.is_empty()) {
+                        if line.len() == 40 && line.bytes().all(|b| b.is_ascii_hexdigit()) {
+                            current = line;
+                        } else if current == commit.hash {
+                            return Some(line.to_owned());
+                        }
+                    }
+                    None
+                })
+                .unwrap_or(path)
+        })
+    };
+    let menu = match history_path {
+        Some(path) => change_menu(menu, entity, &path, &hash, cx).separator(),
+        None => menu,
+    };
     menu.item(PopupMenuItem::new("Copy Revision Number").on_click(move |_, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()))
     }))
