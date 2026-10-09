@@ -139,6 +139,10 @@ pub struct CommitView {
     pre_amend: Option<(String, String)>,
     /// Commit was pressed with an empty message: "Specify commit message".
     message_error: bool,
+    /// Shown in the modal Commit Changes dialog. With non-modal commit off
+    /// and the dialog closed, the view is the Git tool window's Local
+    /// Changes tab: the changes without the message and commit buttons.
+    in_dialog: bool,
     /// Speed search over the changes tree: the typed text while shown.
     search: Option<String>,
     push_after_commit: bool,
@@ -236,6 +240,7 @@ impl CommitView {
             amend: false,
             pre_amend: None,
             message_error: false,
+            in_dialog: false,
             search: None,
             push_after_commit: false,
             operation_message: None,
@@ -658,6 +663,11 @@ impl CommitView {
     fn set_message(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         self.message.update(cx, |state, cx| state.set_value(text, window, cx));
         self.spelling.update(cx, |spelling, cx| spelling.recheck(cx));
+    }
+
+    pub fn set_in_dialog(&mut self, in_dialog: bool, cx: &mut Context<Self>) {
+        self.in_dialog = in_dialog;
+        cx.notify();
     }
 
     pub fn focus_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1090,6 +1100,7 @@ impl Render for CommitView {
         let can_commit = self.can_commit(cx);
         let busy = self.model.read(cx).busy().is_some();
         let history_entity = cx.entity();
+        let commit_area = Settings::get(cx).non_modal_commit || self.in_dialog;
         // First-line length against Settings › Commit › subject limit.
         let subject_hint = {
             let text = self.message.read(cx).value();
@@ -1401,7 +1412,7 @@ impl Render for CommitView {
                     )
                 }),
             )
-            .child(
+            .when(commit_area, |el| el.child(
                 v_flex()
                     .border_t_1()
                     .border_color(palette.border)
@@ -1516,6 +1527,6 @@ impl Render for CommitView {
                             .child(div().flex_1())
                             .child(self.render_options(cx)),
                     ),
-            )
+            ))
     }
 }

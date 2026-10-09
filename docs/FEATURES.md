@@ -206,7 +206,7 @@
 | 使用 credential helper | M2 | ✅（“Use credential helper”，默认开；关闭后只用 Junction 的凭据提示（askpass）；主机有已登录的 GitHub / GitLab 账号时 askpass 直接回答账号名和 token，不弹窗） |
 | 定期检查新的远程提交（incoming） | M4 | ✅（设置 › Update branch info：每 N 分钟（默认 10）后台静默 fetch；分支弹窗、Log 分支树、标题栏分支组件显示 ↓incoming ↑outgoing） |
 | Directory mappings（多根） | M5 | ✅（Settings › Version Control › Directory Mappings，Git 菜单也可打开；自动检测嵌套仓库和已初始化子模块，嵌套仓库不再显示为未版本控制目录；Add Root / Remove / Restore；Update Project 更新所有根） |
-| Commit 设置：非模态提交、清理提交信息、右边距、首行长度 | M3 | ✅（“Use non-modal commit interface” 关闭后 Ctrl+K 打开模态 Commit Changes 对话框；Run Git hooks / Sign-off / Clean up；首行长度计数，超限变红） |
+| Commit 设置：非模态提交、清理提交信息、右边距、首行长度 | M3 | ✅（“Use non-modal commit interface” 关闭后 Ctrl+K 打开模态 Commit Changes 对话框，像 AS 一样没有 Commit 工具窗口（stripe 按钮隐藏），Git 工具窗口多出 Local Changes / Shelf / Stash 标签，Alt+0 打开 Local Changes；Run Git hooks / Sign-off / Clean up；首行长度计数，超限变红） |
 | Log 设置：日期格式、显示/隐藏列 | M2 | ✅（View Options 的列、日期格式、引用、高亮、排序都保存在设置文件中） |
 
 ## 10. 托管平台集成（Android Studio 自带的 GitHub/GitLab 插件）

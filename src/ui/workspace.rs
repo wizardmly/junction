@@ -176,6 +176,11 @@ enum LeftTab {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BottomTab {
+    /// Non-modal commit off: the Commit tool window's tabs move here, as
+    /// in IntelliJ's Git tool window (Local Changes, Shelf, Stash).
+    LocalChanges,
+    Shelf,
+    Stash,
     Log,
     Worktrees,
     Submodules,
@@ -327,6 +332,7 @@ impl Workspace {
                 CommitEvent::Committed => {
                     if this.modal_commit.replace(false) {
                         window.close_dialog(cx);
+                        this.commit.update(cx, |commit, cx| commit.set_in_dialog(false, cx));
                     }
                 }
                 CommitEvent::OpenPush => dialogs::push_after_commit(this.model.clone(), window, cx),
@@ -391,9 +397,7 @@ impl Workspace {
                     }
                 }
                 if let RepoEvent::PrefillCommitMessage(_) = event {
-                    this.tools.open(ToolWindow::Commit);
-                    this.left_tab = LeftTab::Commit;
-                    cx.notify();
+                    this.show_left_tab(LeftTab::Commit, window, cx);
                 }
                 if let RepoEvent::Compare { old, new } = event {
                     this.changes.update(cx, |changes, cx| changes.compare(old.clone(), new.clone(), cx));
@@ -1255,11 +1259,7 @@ impl Workspace {
             ("Project", "Alt+1", op(|this, window, cx| this.toggle_project(&ToggleProjectWindow, window, cx))),
             ("Find", "Alt+3", op(|this, window, cx| this.toggle_find(&ToggleFindWindow, window, cx))),
             ("Git", "Alt+9", op(|this, window, cx| this.on_toggle_git(&ToggleGitWindow, window, cx))),
-            ("Commit", "Alt+0", op(|this, _, cx| {
-                this.tools.open(ToolWindow::Commit);
-                this.left_tab = LeftTab::Commit;
-                cx.notify();
-            })),
+            ("Commit", "Alt+0", op(|this, window, cx| this.show_left_tab(LeftTab::Commit, window, cx))),
             ("Refresh", "Ctrl+Alt+Y", op(|this, window, cx| this.on_refresh(&Refresh, window, cx))),
             ("VCS Operations Popup…", "Alt+`", op(|this, window, cx| this.on_vcs_operations(&VcsOperations, window, cx))),
             ("Close Tab", "Ctrl+F4", op(|this, _, cx| this.close_active_tab(cx))),
@@ -1530,16 +1530,13 @@ impl Workspace {
                 .detach();
             }
             FileAction::CommitFiles(paths) => {
-                self.tools.open(ToolWindow::Commit);
-                self.left_tab = LeftTab::Commit;
+                self.show_left_tab(LeftTab::Commit, window, cx);
                 self.commit.update(cx, |commit, cx| commit.commit_only(paths, window, cx));
                 cx.notify();
             }
             FileAction::Branches => self.open_branches(window, cx),
             FileAction::Unstash => {
-                self.tools.open(ToolWindow::Commit);
-                self.left_tab = LeftTab::Stash;
-                cx.notify();
+                self.show_left_tab(LeftTab::Stash, window, cx);
             }
             FileAction::FilesChanged => {
                 self.code_index.update(cx, |index, cx| index.refresh(cx));
@@ -1866,10 +1863,7 @@ impl Workspace {
                     |this, _, window, cx| dialogs::update_project(this.model.clone(), window, cx),
                 )))
                 .child(tool_button("tb-commit", IconName::Check, if cfg!(target_os = "macos") { "Commit…  ⌘K" } else { "Commit…  Ctrl+K" }).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.tools.open(ToolWindow::Commit);
-                        cx.notify();
-                    },
+                    |this, _, window, cx| this.on_commit(&CommitChanges, window, cx),
                 )))
                 .child(tool_button("tb-push", IconName::ArrowUpFromLine, if cfg!(target_os = "macos") { "Push…  ⇧⌘K" } else { "Push…  Ctrl+Shift+K" }).on_click(cx.listener(
                     |this, _, window, cx| dialogs::push(this.model.clone(), window, cx),
@@ -2016,7 +2010,13 @@ impl Workspace {
     /// foot, as in the new UI; the right stripe holds the right windows.
     fn render_stripe(&self, right: bool, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let palette = cx.palette().clone();
-        let visible = |w: &ToolWindow| *w != ToolWindow::Changes || !self.changes.read(cx).is_empty();
+        // Non-modal commit off: no Commit tool window, as in IntelliJ.
+        let non_modal = Settings::get(cx).non_modal_commit;
+        let visible = |w: &ToolWindow| match w {
+            ToolWindow::Changes => !self.changes.read(cx).is_empty(),
+            ToolWindow::Commit => non_modal,
+            _ => true,
+        };
         let top: Vec<ToolWindow> = self.tools.on_side(if right { Side::Right } else { Side::Left }).into_iter().filter(visible).collect();
         let bottom: Vec<ToolWindow> = if right { Vec::new() } else { self.tools.on_side(Side::Bottom).into_iter().filter(visible).collect() };
         if right && top.is_empty() && !cx.has_active_drag() {
@@ -2189,6 +2189,37 @@ impl Workspace {
             }))
     }
 
+    /// Shows a tab of the Commit tool window. With non-modal commit off
+    /// there is no Commit tool window: Commit opens the Commit Changes
+    /// dialog and Shelf and Stash are tabs of the Git tool window.
+    fn show_left_tab(&mut self, tab: LeftTab, window: &mut Window, cx: &mut Context<Self>) {
+        if Settings::get(cx).non_modal_commit {
+            self.tools.open(ToolWindow::Commit);
+            self.left_tab = tab;
+        } else if tab == LeftTab::Commit {
+            return self.open_modal_commit(window, cx);
+        } else {
+            self.tools.open(ToolWindow::Git);
+            self.bottom_tab = if tab == LeftTab::Shelf { BottomTab::Shelf } else { BottomTab::Stash };
+        }
+        cx.notify();
+    }
+
+    /// Alt+0: the Commit tool window, or (non-modal commit off) the Git
+    /// tool window's Local Changes tab.
+    fn toggle_commit_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if Settings::get(cx).non_modal_commit {
+            return self.toggle_tool(ToolWindow::Commit, window, cx);
+        }
+        if self.tools.is_open(ToolWindow::Git) && self.bottom_tab == BottomTab::LocalChanges {
+            self.tools.hide(ToolWindow::Git);
+        } else {
+            self.tools.open(ToolWindow::Git);
+            self.bottom_tab = BottomTab::LocalChanges;
+        }
+        cx.notify();
+    }
+
     fn on_commit(&mut self, _: &CommitChanges, window: &mut Window, cx: &mut Context<Self>) {
         if !Settings::get(cx).non_modal_commit {
             return self.open_modal_commit(window, cx);
@@ -2209,14 +2240,18 @@ impl Workspace {
         // The view is shown in one place at a time.
         self.tools.hide(ToolWindow::Commit);
         self.modal_commit.set(true);
+        self.commit.update(cx, |commit, cx| commit.set_in_dialog(true, cx));
         let (commit, open) = (self.commit.clone(), self.modal_commit.clone());
         window.open_dialog(cx, move |dialog, _, _| {
-            let open = open.clone();
+            let (open, commit_view) = (open.clone(), commit.clone());
             dialog
                 .title("Commit Changes")
                 .w(px(760.))
                 .child(div().h(px(560.)).child(commit.clone()))
-                .on_close(move |_, _, _| open.set(false))
+                .on_close(move |_, _, cx| {
+                    open.set(false);
+                    commit_view.update(cx, |commit, cx| commit.set_in_dialog(false, cx));
+                })
         });
         self.commit.update(cx, |commit, cx| commit.focus_message(window, cx));
         cx.notify();
@@ -2285,16 +2320,12 @@ impl Workspace {
             Some(("Reset HEAD…", "", op(|this, window, cx| dialogs::reset_to(this.model.clone(), "HEAD".into(), window, cx)))),
             None,
             Some(("Stash Changes…", "", op(|this, window, cx| dialogs::stash(this.model.clone(), window, cx)))),
-            Some(("Unstash Changes…", "", op(|this, _, cx| {
-                this.tools.open(ToolWindow::Commit);
-                this.left_tab = LeftTab::Stash;
-                cx.notify();
+            Some(("Unstash Changes…", "", op(|this, window, cx| {
+                this.show_left_tab(LeftTab::Stash, window, cx);
             }))),
             Some(("Shelve Changes…", "", op(|this, window, cx| this.commit.update(cx, |c, cx| c.shelve(window, cx))))),
-            Some(("Unshelve Changes…", "", op(|this, _, cx| {
-                this.tools.open(ToolWindow::Commit);
-                this.left_tab = LeftTab::Shelf;
-                cx.notify();
+            Some(("Unshelve Changes…", "", op(|this, window, cx| {
+                this.show_left_tab(LeftTab::Shelf, window, cx);
             }))),
             None,
             Some(("Create Patch…", "", op(|this, window, cx| this.commit.update(cx, |c, cx| c.create_patch(window, cx))))),
@@ -2396,6 +2427,7 @@ impl Workspace {
                 .when(value != current, |el| el.text_color(palette.text_secondary))
         };
         let current = self.bottom_tab;
+        let non_modal = Settings::get(cx).non_modal_commit;
         let has_submodules = self.model.read(cx).repository().is_some_and(|r| r.root().join(".gitmodules").exists());
         v_flex()
             .size_full()
@@ -2408,6 +2440,14 @@ impl Workspace {
                     .border_b_1()
                     .border_color(palette.border)
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Git"))
+                    .when(!non_modal, |el| {
+                        el.child(tab("tab-local-changes", "Local Changes", BottomTab::LocalChanges, current).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.bottom_tab = BottomTab::LocalChanges;
+                                cx.notify();
+                            },
+                        )).child("Local Changes"))
+                    })
                     .children(self.log_tabs.iter().enumerate().map(|(ix, log_tab)| {
                         let active = current == BottomTab::Log && ix == self.active_log;
                         div()
@@ -2437,6 +2477,16 @@ impl Workspace {
                         let title = format!("Log {}", this.log_tabs.len() + 1);
                         this.open_log_tab(title, Default::default(), cx);
                     })))
+                    .when(!non_modal, |el| {
+                        el.child(tab("tab-shelf", "Shelf", BottomTab::Shelf, current).on_click(cx.listener(|this, _, _, cx| {
+                            this.bottom_tab = BottomTab::Shelf;
+                            cx.notify();
+                        })).child("Shelf"))
+                        .child(tab("tab-stash", "Stash", BottomTab::Stash, current).on_click(cx.listener(|this, _, _, cx| {
+                            this.bottom_tab = BottomTab::Stash;
+                            cx.notify();
+                        })).child("Stash"))
+                    })
                     .child(tab("tab-worktrees", "Worktrees", BottomTab::Worktrees, current).on_click(cx.listener(
                         |this, _, _, cx| {
                             this.bottom_tab = BottomTab::Worktrees;
@@ -2470,6 +2520,13 @@ impl Workspace {
                     }))),
             )
             .child(div().flex_1().min_h_0().map(|el| match current {
+                // The view is shown in one place at a time: the dialog has it while open.
+                BottomTab::LocalChanges if self.modal_commit.get() => el.child(
+                    div().size_full().flex().items_center().justify_center().text_sm().text_color(palette.text_secondary).child("Shown in the Commit Changes dialog"),
+                ),
+                BottomTab::LocalChanges => el.child(self.commit.clone()),
+                BottomTab::Shelf => el.child(self.shelf.clone()),
+                BottomTab::Stash => el.child(self.stash.clone()),
                 BottomTab::Log => el.child(self.log.clone()),
                 BottomTab::Worktrees => el.child(self.worktrees.clone()),
                 BottomTab::Submodules => el.child(self.submodules.clone()),
@@ -2645,6 +2702,12 @@ impl Render for Workspace {
         }
         let active = self.editor().cloned();
         self.caret.update(cx, |caret, cx| caret.set_editor(active, cx));
+        if !Settings::get(cx).non_modal_commit && self.tools.is_open(ToolWindow::Commit) {
+            self.tools.hide(ToolWindow::Commit);
+        }
+        if Settings::get(cx).non_modal_commit && matches!(self.bottom_tab, BottomTab::LocalChanges | BottomTab::Shelf | BottomTab::Stash) {
+            self.bottom_tab = BottomTab::Log;
+        }
         let git_on_side = self.tools.side(ToolWindow::Git) != Side::Bottom;
         self.log.update(cx, |log, cx| log.set_details_below(git_on_side, cx));
         let palette = cx.palette().clone();
@@ -2751,7 +2814,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &PreviousOccurrence, _, cx| this.step_occurrence(-1, cx)))
             .on_action(cx.listener(Self::navigate_forward))
             .on_action(cx.listener(Self::toggle_project))
-            .on_action(cx.listener(|this, _: &ToggleCommitWindow, window, cx| this.toggle_tool(ToolWindow::Commit, window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleCommitWindow, window, cx| this.toggle_commit_window(window, cx)))
             .on_action(cx.listener(|this, _: &HideAllToolWindows, window, cx| {
                 this.tools.toggle_all();
                 window.focus(&this.focus, cx);
@@ -2972,10 +3035,8 @@ fn main_menu(
             })
             .separator()
             .menu("Stash Changes…", Box::new(StashChanges))
-            .item(PopupMenuItem::new("Unstash Changes…").on_click(on(&e, |this, _, cx| {
-                this.tools.open(ToolWindow::Commit);
-                this.left_tab = LeftTab::Stash;
-                cx.notify();
+            .item(PopupMenuItem::new("Unstash Changes…").on_click(on(&e, |this, window, cx| {
+                this.show_left_tab(LeftTab::Stash, window, cx);
             })))
             .separator()
             .item(PopupMenuItem::new("Create Patch…").on_click(on(&e, |this, window, cx| {
