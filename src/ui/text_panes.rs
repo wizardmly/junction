@@ -1090,7 +1090,11 @@ impl<T: Clone + Default> TextPanes<T> {
         } else if width > 0. && caret_x > x + width - 20. {
             x = caret_x - width + 60.;
         }
-        self.scroll_to(pane, x, y);
+        // A caret already in view scrolls nothing: the linked panes keep
+        // their places too.
+        if (x, y) != self.scroll[pane] {
+            self.scroll_to(pane, x, y);
+        }
         None
     }
 
