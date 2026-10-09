@@ -146,7 +146,7 @@
 | 受保护分支禁止 force push | M3 | ✅ |
 | Manage Remotes 对话框：添加/编辑/删除 | M2 | ✅（Git Remotes：列表、+ 添加 / − 删除 / 编辑（改名 + 改 URL），双击编辑；新 URL 先用 ls-remote 校验，删除前确认） |
 | 凭据：HTTPS 密码/Token 对话框、SSH passphrase、使用 credential helper | M2 | ✅（已配置的 credential helper 优先） |
-| Clone 对话框：URL、目录、GitHub/GitLab 账号仓库列表 | M4 | ✅（URL + 目录自动填充 + Test；已登录 GitHub / GitLab 账号的仓库列表可搜索，点选填入 URL） |
+| Clone 对话框：URL、目录、GitHub/GitLab 账号仓库列表 | M4 | ✅（URL + 目录自动填充 + Test，填 URL 前不检查目录；已登录 GitHub / GitLab 账号的仓库列表可搜索，点选填入 URL） |
 
 ## 6. Diff 与 Merge
 
@@ -193,16 +193,20 @@
 
 | 设置项 | 阶段 | 状态 |
 |---|---|---|
+| Settings 对话框结构 | M2 | ✅（左侧搜索框 + 设置树：Appearance & Behavior › Appearance、Keymap、Editor › General / Font、Version Control › Commit / Directory Mappings / Git / GitHub / GitLab、Languages & Frameworks；搜索按页名和选项文字过滤并高亮命中项；Cancel / Apply / OK） |
+| Keymap 页 | M2 | ✅（列出主要动作及快捷键，可 Change（按下新快捷键）、Remove、Reset，冲突时提示；改动存 keymap.conf，启动时覆盖默认绑定） |
+| Editor 页 | M2 | ✅（General：diff / merge 查看器的软换行、行号、空白、缩进线；Font：字号，作用于编辑器、diff、merge，行高 1.6 倍） |
 | Git 可执行文件路径 + Test 按钮 | M2 | ✅（设置里填写路径，留空为 PATH 中的 git；Test 显示 git 版本或错误） |
 | 启用暂存区 | M2 | ✅ |
-| 提交前警告 CRLF、警告 detached HEAD、大文件 | M3 | ✅（CRLF 支持 Fix and Commit） |
+| 提交前警告 CRLF、警告 detached HEAD、大文件 | M3 | ✅（CRLF 的 Fix and Commit 像 AS 一样写全局 core.autocrlf；detached HEAD 用 AS 的提示文字） |
+| Cherry-pick 后缀、Commit and Push 时显示 Push 对话框、在所有根上执行分支操作 | M3 | ✅（“Add the 'cherry picked from <hash>' suffix…”：所选提交已在受保护分支的远程分支上时加 -x；“Show Push dialog for Commit and Push” 及 “Show only for commits to protected branches”，关闭时直接推送当前分支；“Execute branch operations on all roots”） |
 | Update method（Merge / Rebase）、Clean working tree using（Stash / Shelve） | M2 | ✅ |
 | 推送被拒时自动更新、Force push 受保护分支列表 | M3 | ✅ |
 | GPG 签名配置 | M4 | ✅（Commit Options → Configure…：列出 secret key，写入仓库 commit.gpgSign / user.signingKey） |
-| 使用 credential helper | M2 | ✅（“Use credential helper”，默认开；关闭后只用 Junction 的凭据提示（askpass）） |
+| 使用 credential helper | M2 | ✅（“Use credential helper”，默认开；关闭后只用 Junction 的凭据提示（askpass）；主机有已登录的 GitHub / GitLab 账号时 askpass 直接回答账号名和 token，不弹窗） |
 | 定期检查新的远程提交（incoming） | M4 | ✅（设置 › Update branch info：每 N 分钟（默认 10）后台静默 fetch；分支弹窗、Log 分支树、标题栏分支组件显示 ↓incoming ↑outgoing） |
-| Directory mappings（多根） | M5 | ✅（自动检测嵌套仓库和已初始化子模块；Directory Mappings 对话框可 Add Root / Remove / Restore；Update Project 更新所有根） |
-| Commit 设置：非模态提交、清理提交信息、右边距、首行长度 | M3 | ✅（首行长度计数，超限变红） |
+| Directory mappings（多根） | M5 | ✅（Settings › Version Control › Directory Mappings，Git 菜单也可打开；自动检测嵌套仓库和已初始化子模块，嵌套仓库不再显示为未版本控制目录；Add Root / Remove / Restore；Update Project 更新所有根） |
+| Commit 设置：非模态提交、清理提交信息、右边距、首行长度 | M3 | ✅（“Use non-modal commit interface” 关闭后 Ctrl+K 打开模态 Commit Changes 对话框；Run Git hooks / Sign-off / Clean up；首行长度计数，超限变红） |
 | Log 设置：日期格式、显示/隐藏列 | M2 | ✅（View Options 的列、日期格式、引用、高亮、排序都保存在设置文件中） |
 
 ## 10. 托管平台集成（Android Studio 自带的 GitHub/GitLab 插件）
@@ -210,8 +214,8 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | 账号登录（OAuth / Token） | M6 | 🟡（Token 登录，支持 github.com、GitHub Enterprise、gitlab.com 与自建 GitLab（账号对话框选 GitHub / GitLab）；账号存 accounts.json（权限 600）；OAuth 浏览器登录需注册 OAuth App，未做） |
-| Pull Requests 工具窗口：列表、详情、diff 评论、审批、合并 | M6 | ✅（列表 + Open/Closed/All + 搜索；详情：描述、标签、文件，本地 diff（fetch refs/pull/N/head）；Timeline：评论、审查、行评论展示，发评论；Approve / Request Changes；Merge / Squash / Rebase；Checkout；Create Pull Request；PR diff 点新侧行号加行评论，已有评论行号带标记、悬停显示。GitLab 仓库显示为 Merge Requests 工具窗口：MR 列表、详情、文件 diff、Timeline（含系统消息）、评论与行评论（discussion）、Approve、Merge / Squash / Rebase、Checkout（merge-requests/N/head）、Create Merge Request（Draft 前缀），编号显示为 !N） |
-| Share Project on GitHub、Create Gist | M6 | ✅（Share：建仓库、加 remote、无提交时初始提交、push -u；Gist：编辑器选区/整文件或 Commit 面板文件，Secret / 打开浏览器 / 复制 URL） |
+| Pull Requests 工具窗口：列表、详情、diff 评论、审批、合并 | M6 | ✅（列表 + Open/Closed/All + 搜索；详情：描述、标签、文件，本地 diff（fetch refs/pull/N/head）；Timeline：评论、审查、行评论展示，发评论；Approve / Request Changes（正文为空时提示）；Merge… / Squash and Merge… 先编辑合并提交信息，Rebase and Merge… 先确认；Checkout；Create Pull Request（同一分支已有 PR 时提示并不重复创建）；列表另有 Author / Label / Assignee / Review 筛选，详情显示彩色标签、Reviewers、Assignees；PR diff 点新侧行号加行评论，已有评论以内联讨论串显示在行下方，可 Reply。GitLab 仓库显示为 Merge Requests 工具窗口：MR 列表、详情、文件 diff、Timeline（含系统消息）、评论与行评论（discussion）、Approve、Merge / Squash / Rebase、Checkout（merge-requests/N/head）、Create Merge Request（Draft 前缀），编号显示为 !N） |
+| Share Project on GitHub、Create Gist | M6 | ✅（Git › GitHub / GitLab 菜单：Share Project、Create Pull Request、View Pull Requests、Open on GitHub、Create Gist、Manage Accounts；Share：建仓库、加 remote、无提交时先选初始提交的文件和提交信息、push -u；Gist：编辑器选区/整文件或 Commit 面板文件，Secret / 打开浏览器 / 复制 URL） |
 
 ## 11. 代码索引与跳转（M7）
 

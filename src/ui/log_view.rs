@@ -2445,11 +2445,20 @@ fn change_menu(
     })
 }
 
+/// Is `hash` on a remote branch matching the protected branch patterns?
+fn on_protected_remote(repo: &crate::git::Repository, hash: &str, settings: &crate::settings::Settings) -> bool {
+    repo.run(["branch", "-r", "--format=%(refname:short)", "--contains", hash])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|r| r.trim().split_once('/'))
+        .any(|(_, branch)| settings.is_protected(branch))
+}
+
 /// Cherry-picks, skipping commits whose changes are already in the
 /// current branch (git stops on them, "now empty"), as IntelliJ does
 /// rather than leaving a cherry-pick in progress.
 fn cherry_pick_skipping_empty(repo: &crate::git::Repository, args: &[String], picked: String) -> anyhow::Result<String> {
-    let total = args.len() - 1;
+    let total = args.iter().filter(|a| !a.starts_with('-')).count() - 1;
     let mut skipped = 0;
     let mut result = repo.run(args);
     while let Err(error) = result {
@@ -2595,8 +2604,18 @@ fn commit_menu(
     .item(PopupMenuItem::new("Cherry-Pick").disabled(on_branch).on_click({
         let model = model.clone();
         move |_, _, cx| {
-            let (args, picked) = (cherry_pick.clone(), picked.clone());
-            model.update(cx, |model, cx| model.run_operation("Cherry-Pick", move |repo| cherry_pick_skipping_empty(repo, &args, picked), cx));
+            let (mut args, picked) = (cherry_pick.clone(), picked.clone());
+            let settings = crate::settings::Settings::get(cx).clone();
+            model.update(cx, |model, cx| {
+                model.run_operation("Cherry-Pick", move |repo| {
+                    // IntelliJ adds "(cherry picked from commit …)" for commits
+                    // already pushed to a protected branch.
+                    if settings.cherry_pick_suffix && args[1..].iter().any(|hash| on_protected_remote(repo, hash, &settings)) {
+                        args.insert(1, "-x".into());
+                    }
+                    cherry_pick_skipping_empty(repo, &args, picked)
+                }, cx)
+            });
         }
     }))
     .item(PopupMenuItem::new("Checkout Revision").disabled(multi).on_click(op(

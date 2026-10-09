@@ -197,6 +197,8 @@ pub struct Workspace {
     model: Entity<RepoModel>,
     log: Entity<LogView>,
     commit: Entity<CommitView>,
+    /// The modal Commit Changes dialog is open (non-modal commit off).
+    modal_commit: Rc<std::cell::Cell<bool>>,
     stash: Entity<StashView>,
     shelf: Entity<ShelfView>,
     diff: Entity<DiffView>,
@@ -322,7 +324,12 @@ impl Workspace {
                         diff.refresh_local(cx)
                     })
                 }
-                CommitEvent::OpenPush => dialogs::push(this.model.clone(), window, cx),
+                CommitEvent::Committed => {
+                    if this.modal_commit.replace(false) {
+                        window.close_dialog(cx);
+                    }
+                }
+                CommitEvent::OpenPush => dialogs::push_after_commit(this.model.clone(), window, cx),
                 CommitEvent::OpenMerge(conflict) => this.open_merge(conflict.clone(), window, cx),
                 CommitEvent::EditSource(path) => this.open_file(path.clone(), None, window, cx),
             }),
@@ -608,6 +615,7 @@ impl Workspace {
             model,
             log,
             commit,
+            modal_commit: Default::default(),
             stash,
             shelf,
             diff,
@@ -1671,7 +1679,7 @@ impl Workspace {
                             .child(Button::new("welcome-get-git").small().primary().label("Download Git").on_click(|_, _, cx| {
                                 cx.open_url(if cfg!(windows) { "https://git-scm.com/download/win" } else { "https://git-scm.com/downloads" })
                             }))
-                            .child(Button::new("welcome-git-settings").small().label("Set Path to Git…").on_click(|_, window, cx| dialogs::settings(window, cx)))
+                            .child(Button::new("welcome-git-settings").small().label("Set Path to Git…").on_click(cx.listener(|this, _, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx))))
                             .child(Button::new("welcome-retry").small().label("Retry").on_click(cx.listener(|this, _, _, cx| this.model.update(cx, |m, cx| m.retry_open(cx)))));
                     }
                     Some(OpenProblem::Unsafe(root)) => {
@@ -1877,7 +1885,7 @@ impl Workspace {
                     |this, _, window, cx| this.open_search_everywhere(SeTab::All, window, cx),
                 )))
                 .child(tool_button("tb-settings", IconName::Settings, if cfg!(target_os = "macos") { "Settings…  ⌘," } else { "Settings…  Ctrl+Alt+S" }).on_click(
-                    |_, window, cx| dialogs::settings(window, cx),
+                    cx.listener(|this, _, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx)),
                 )),
         )
     }
@@ -2182,8 +2190,34 @@ impl Workspace {
     }
 
     fn on_commit(&mut self, _: &CommitChanges, window: &mut Window, cx: &mut Context<Self>) {
+        if !Settings::get(cx).non_modal_commit {
+            return self.open_modal_commit(window, cx);
+        }
         self.tools.open(ToolWindow::Commit);
         self.left_tab = LeftTab::Commit;
+        self.commit.update(cx, |commit, cx| commit.focus_message(window, cx));
+        cx.notify();
+    }
+
+    /// Settings › Commit › "Use non-modal commit interface" off: Commit
+    /// opens IntelliJ's modal Commit Changes dialog (the changes, the
+    /// message and the commit buttons) instead of the tool window.
+    fn open_modal_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_commit.get() {
+            return;
+        }
+        // The view is shown in one place at a time.
+        self.tools.hide(ToolWindow::Commit);
+        self.modal_commit.set(true);
+        let (commit, open) = (self.commit.clone(), self.modal_commit.clone());
+        window.open_dialog(cx, move |dialog, _, _| {
+            let open = open.clone();
+            dialog
+                .title("Commit Changes")
+                .w(px(760.))
+                .child(div().h(px(560.)).child(commit.clone()))
+                .on_close(move |_, _, _| open.set(false))
+        });
         self.commit.update(cx, |commit, cx| commit.focus_message(window, cx));
         cx.notify();
     }
@@ -2272,7 +2306,7 @@ impl Workspace {
                 this.bottom_tab = BottomTab::Log;
                 cx.notify();
             }))),
-            Some(("Settings…", "Ctrl+Alt+S", op(|_, window, cx| dialogs::settings(window, cx)))),
+            Some(("Settings…", "Ctrl+Alt+S", op(|this, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx)))),
         ]
     }
 
@@ -2728,7 +2762,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_find))
             .on_action(cx.listener(|this, _: &FindInPath, window, cx| this.open_find_popup(false, window, cx)))
             .on_action(cx.listener(|this, _: &ReplaceInPath, window, cx| this.open_find_popup(true, window, cx)))
-            .on_action(cx.listener(|_, _: &OpenSettings, window, cx| dialogs::settings(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx)))
             .on_action(cx.listener(|this, _: &NextDifference, _, cx| match this.front_merge() {
                 Some(merge) => merge.update(cx, |m, cx| m.next_difference(cx)),
                 None => this.diff.update(cx, |d, cx| d.next_difference(cx)),

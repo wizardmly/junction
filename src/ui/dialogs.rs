@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gpui_kit::component::{
     Disableable as _,
-    Selectable as _, Sizable as _, WindowExt as _,
+    Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     dialog::{DialogAction, DialogClose, DialogFooter},
@@ -190,6 +190,31 @@ pub fn reset_to(model: Entity<RepoModel>, target: String, window: &mut Window, c
 /// and IntelliJ's options (force push with lease, push tags, run hooks).
 pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
     push_up_to(model, None, window, cx)
+}
+
+/// After Commit and Push: the Push dialog, or a direct push of the current
+/// branch when Settings › Git turns the dialog off (or keeps it for
+/// protected branches only and the target isn't one).
+pub fn push_after_commit(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
+    use crate::git::ops::{self, PushRequest, PushTags};
+    let settings = Settings::get(cx).clone();
+    let preview = model.read(cx).repository().and_then(|repo| ops::push_preview(repo).ok()).filter(|p| p.branch.is_some() && !p.remotes.is_empty());
+    let Some(preview) = preview else { return push(model, window, cx) };
+    let dialog = settings.commit_push_dialog && (!settings.commit_push_dialog_protected_only || settings.is_protected(&preview.target));
+    if dialog {
+        return push(model, window, cx);
+    }
+    let request = PushRequest {
+        remote: preview.remote,
+        branch: preview.branch.unwrap_or_default(),
+        target: preview.target,
+        force_with_lease: false,
+        tags: PushTags::None,
+        set_upstream: !preview.has_upstream,
+        run_hooks: settings.run_hooks,
+        up_to: None,
+    };
+    run_push(model, request, cx);
 }
 
 /// The Push dialog for the current branch, or (Push All up to Here) for
@@ -787,262 +812,6 @@ pub fn checkout_revision(model: Entity<RepoModel>, window: &mut Window, cx: &mut
 }
 
 /// Settings › Version Control › Git, plus Appearance. Changes apply on OK.
-pub fn settings(window: &mut Window, cx: &mut App) {
-    let draft = Rc::new(std::cell::RefCell::new(Settings::get(cx).clone()));
-    let initial = Settings::get(cx).clone();
-    let protected = cx.new(|cx| InputState::new(window, cx).default_value(initial.protected_branches.clone()));
-    let margin = cx.new(|cx| InputState::new(window, cx).default_value(initial.commit_subject_limit.to_string()));
-    let fetch_interval = cx.new(|cx| InputState::new(window, cx).default_value(initial.fetch_interval_minutes.max(1).to_string()));
-    let git_path = cx.new(|cx| InputState::new(window, cx).placeholder(match crate::git::detected_executable() {
-        Some(git) => format!("Auto-detected: {}", git.display()),
-        None => "Git not found: install Git or enter its path".to_owned(),
-    }).default_value(initial.git_executable.clone()));
-    // Settings › Languages & Frameworks: one server command per language,
-    // with what would run when left empty.
-    let servers: Vec<(crate::index::lang::Lang, Entity<InputState>, Option<String>)> = crate::index::lang::Lang::ALL
-        .into_iter()
-        .filter(|l| *l != crate::index::lang::Lang::Tsx)
-        .map(|lang| {
-            let detected = crate::index::lsp::detected(lang);
-            let placeholder = match &detected {
-                Some(command) => format!("Auto: {command}"),
-                None => format!("Not found: {}", lang.default_servers().join(" / ")),
-            };
-            let value = initial.language_servers.get(lang.key()).cloned().unwrap_or_default();
-            (lang, cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).default_value(value)), detected)
-        })
-        .collect();
-    let servers = Rc::new(servers);
-    // The page shown, from the list on the left.
-    let page: Rc<Cell<usize>> = Rc::default();
-    // The Test button's result line.
-    let git_test: Rc<std::cell::RefCell<Option<Result<String, String>>>> = Rc::default();
-    window.open_dialog(cx, move |dialog, _, cx| {
-        let palette = cx.palette().clone();
-        let current = draft.borrow().clone();
-        let fetch_draft = draft.clone();
-        let section = |title: &'static str| {
-            div().pt_1().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).text_color(palette.text).child(title)
-        };
-        let check = |id: &'static str, label: &'static str, value: bool, set: fn(&mut Settings, bool)| {
-            let draft = draft.clone();
-            Checkbox::new(id).label(label).checked(value).on_change(move |v, window, _| {
-                set(&mut draft.borrow_mut(), *v);
-                window.refresh();
-            })
-        };
-        let theme_draft = draft.clone();
-        let update_draft = draft.clone();
-        let ok_draft = draft.clone();
-        let (ok_protected, ok_margin, ok_fetch, ok_git_path) = (protected.clone(), margin.clone(), fetch_interval.clone(), git_path.clone());
-        let (test_path, test_result) = (git_path.clone(), git_test.clone());
-        let test_line = git_test.borrow().clone();
-        let ok_servers = servers.clone();
-        let server_rows = servers.iter().map(|(lang, input, detected)| {
-            let status = match (input.read(cx).value().trim(), detected) {
-                ("off", _) => ("Off", palette.text_secondary),
-                (custom, _) if !custom.is_empty() => {
-                    let found = custom.split_whitespace().next().and_then(crate::index::lsp::find_program).is_some();
-                    if found { ("Custom", palette.status_added) } else { ("Not found", palette.status_conflict) }
-                }
-                (_, Some(_)) => ("Installed", palette.status_added),
-                (_, None) => ("Index only", palette.text_secondary),
-            };
-            gpui_kit::component::h_flex()
-                .gap_2()
-                .text_sm()
-                .child(div().w(px(90.)).child(lang.name()))
-                .child(div().flex_1().child(Input::new(input).small().disabled(!current.use_language_servers)))
-                .child(div().w(px(70.)).text_xs().text_color(status.1).child(status.0))
-        });
-        let page_index = page.get();
-        let nav = |ix: usize, label: &'static str| {
-            let page = page.clone();
-            Button::new(("settings-page", ix)).small().ghost().w_full().justify_start().selected(page_index == ix).label(label).on_click(move |_, window, _| {
-                page.set(ix);
-                window.refresh();
-            })
-        };
-        let navigation = v_flex().w(px(170.)).gap_1().child(nav(0, "Version Control")).child(nav(1, "Languages & Frameworks"));
-        let general = v_flex()
-                    .gap_2()
-                    .child(section("Appearance"))
-                    .child(
-                        RadioGroup::horizontal("settings-theme")
-                            .children(["Dark", "Light", "Sync with OS"])
-                            .selected_index(Some(if current.theme_follows_system { 2 } else if current.dark { 0 } else { 1 }))
-                            .on_change(move |ix, window, _| {
-                                let mut draft = theme_draft.borrow_mut();
-                                draft.theme_follows_system = *ix == 2;
-                                if *ix < 2 {
-                                    draft.dark = *ix == 0;
-                                }
-                                window.refresh();
-                            }),
-                    )
-                    .child(check("settings-compact", "Compact mode", current.compact, |s, v| s.compact = v))
-                    .child(section("Version Control › Git"))
-                    .child(
-                        gpui_kit::component::h_flex()
-                            .gap_2()
-                            .text_sm()
-                            .child("Path to Git executable:")
-                            .child(div().flex_1().child(Input::new(&git_path).small()))
-                            .child(Button::new("settings-git-test").small().label("Test").on_click(move |_, window, cx| {
-                                let path = test_path.read(cx).value().to_string();
-                                *test_result.borrow_mut() = Some(crate::git::executable_version(&path).map_err(|e| e.to_string()));
-                                window.refresh();
-                            })),
-                    )
-                    .children(test_line.map(|result| {
-                        let (text, color) = match result {
-                            Ok(version) => (version, palette.status_added),
-                            Err(error) => (error, palette.status_conflict),
-                        };
-                        div().pl_6().text_xs().text_color(color).child(text)
-                    }))
-                    .child(check(
-                        "settings-credential-helper",
-                        "Use credential helper",
-                        current.use_credential_helper,
-                        |s, v| s.use_credential_helper = v,
-                    ))
-                    .child(check("settings-staging", "Enable staging area", current.staging_area, |s, v| s.staging_area = v))
-                    .child(
-                        div()
-                            .pl_6()
-                            .text_xs()
-                            .text_color(palette.text_secondary)
-                            .child("Show Staged and Unstaged changes in the Commit tool window instead of changelists"),
-                    )
-                    .child(check(
-                        "settings-auto-update",
-                        "Auto-update if push of the current branch was rejected",
-                        current.auto_update_on_push_rejected,
-                        |s, v| s.auto_update_on_push_rejected = v,
-                    ))
-                    .child(check(
-                        "settings-update-dialog",
-                        "Show the Update Project dialog (Ctrl+T)",
-                        current.update_dialog,
-                        |s, v| s.update_dialog = v,
-                    ))
-                    .child(div().pt_1().text_sm().text_color(palette.text_secondary).child("Update method"))
-                    .child(
-                        RadioGroup::horizontal("settings-update-method")
-                            .children(["Merge", "Rebase"])
-                            .selected_index(Some(if current.update_method == UpdateMethod::Rebase { 1 } else { 0 }))
-                            .on_change(move |ix, window, _| {
-                                update_draft.borrow_mut().update_method =
-                                    if *ix == 1 { UpdateMethod::Rebase } else { UpdateMethod::Merge };
-                                window.refresh();
-                            }),
-                    )
-                    .child(div().pt_1().text_sm().text_color(palette.text_secondary).child("Clean working tree using"))
-                    .child(
-                        RadioGroup::horizontal("settings-update-clean")
-                            .children(["Stash", "Shelve"])
-                            .selected_index(Some(if current.update_shelve { 1 } else { 0 }))
-                            .on_change({
-                                let draft = draft.clone();
-                                move |ix, window, _| {
-                                    draft.borrow_mut().update_shelve = *ix == 1;
-                                    window.refresh();
-                                }
-                            }),
-                    )
-                    .child(
-                        gpui_kit::component::h_flex()
-                            .gap_2()
-                            .pt_1()
-                            .text_sm()
-                            .child("Protected branches:")
-                            .child(div().flex_1().child(Input::new(&protected).small())),
-                    )
-                    .child(
-                        gpui_kit::component::h_flex()
-                            .gap_2()
-                            .text_sm()
-                            .child(Checkbox::new("settings-fetch").label("Update branch info: fetch every").checked(current.fetch_interval_minutes > 0).on_change(
-                                move |v, window, _| {
-                                    // The minutes come from the input on OK; 1 marks "on".
-                                    fetch_draft.borrow_mut().fetch_interval_minutes = *v as u32;
-                                    window.refresh();
-                                },
-                            ))
-                            .child(div().w(px(50.)).child(Input::new(&fetch_interval).small().disabled(current.fetch_interval_minutes == 0)))
-                            .child("minutes"),
-                    )
-                    .child(check(
-                        "settings-crlf",
-                        "Warn if CRLF line separators are about to be committed",
-                        current.warn_crlf,
-                        |s, v| s.warn_crlf = v,
-                    ))
-                    .child(check(
-                        "settings-detached",
-                        "Warn when committing in detached HEAD or during rebase",
-                        current.warn_detached_head,
-                        |s, v| s.warn_detached_head = v,
-                    ))
-                    .child(section("Version Control › Commit"))
-                    .child(
-                        gpui_kit::component::h_flex()
-                            .gap_2()
-                            .text_sm()
-                            .child("Subject line length limit:")
-                            .child(div().w(px(70.)).child(Input::new(&margin).small())),
-                    );
-        let languages = v_flex()
-                    .gap_2()
-                    .child(section("Languages & Frameworks › Code Navigation"))
-                    .child(check(
-                        "settings-lsp",
-                        "Use language servers for Go to Declaration, Quick Documentation and Find Usages",
-                        current.use_language_servers,
-                        |s, v| s.use_language_servers = v,
-                    ))
-                    .child(div().pl_6().text_xs().text_color(palette.text_secondary).child(
-                        "The built-in index always answers, and resolves calls across JNI, Dart FFI, extern \"C\" and Swift/Objective-C bridges. \
-                         Leave a command empty to use the detected server, or type off to disable one.",
-                    ))
-                    .children(server_rows);
-        dialog
-            .title("Settings")
-            .w(px(780.))
-            .child(
-                gpui_kit::component::h_flex()
-                    .items_start()
-                    .gap_4()
-                    .child(navigation)
-                    .child(div().flex_1().min_w_0().child(if page_index == 0 { general.into_any_element() } else { languages.into_any_element() })),
-            )
-            .footer(footer("OK"))
-            .on_ok(move |_, window, cx| {
-                let mut next = ok_draft.borrow().clone();
-                next.protected_branches = ok_protected.read(cx).value().trim().to_owned();
-                next.git_executable = ok_git_path.read(cx).value().trim().to_owned();
-                next.language_servers = ok_servers
-                    .iter()
-                    .filter_map(|(lang, input, _)| {
-                        let command = input.read(cx).value().trim().to_owned();
-                        (!command.is_empty()).then(|| (lang.key().to_owned(), command))
-                    })
-                    .collect();
-                if let Ok(limit) = ok_margin.read(cx).value().trim().parse::<usize>() {
-                    next.commit_subject_limit = limit.clamp(20, 200);
-                }
-                if next.fetch_interval_minutes > 0 {
-                    next.fetch_interval_minutes = ok_fetch.read(cx).value().trim().parse::<u32>().unwrap_or(10).clamp(1, 1440);
-                }
-                Settings::update(cx, |s| *s = next);
-                crate::theme::refresh(cx);
-                window.refresh();
-                true
-            })
-    });
-}
-
 /// Opens the merge tool for a conflict (handed in by the workspace).
 pub type OpenMerge = Rc<dyn Fn(crate::git::merge::Conflict, &mut Window, &mut App)>;
 

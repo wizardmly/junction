@@ -28,15 +28,24 @@ pub struct AccountsView {
     error: Option<String>,
     /// Called after an account is added or removed (refreshes PR lists).
     on_change: Option<std::rc::Rc<dyn Fn(&mut App)>>,
+    /// Settings › Version Control › GitHub / GitLab: that service's accounts only.
+    only: Option<Service>,
 }
 
 impl AccountsView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let server = cx.new(|cx| InputState::new(window, cx).default_value("github.com"));
+        Self::new_for(None, window, cx)
+    }
+
+    /// The accounts of one service (a Settings page), or of both.
+    pub fn new_for(only: Option<Service>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let service = only.unwrap_or(Service::GitHub);
+        let host = if service == Service::GitLab { "gitlab.com" } else { "github.com" };
+        let server = cx.new(|cx| InputState::new(window, cx).default_value(host));
         let token = cx.new(|cx| InputState::new(window, cx).placeholder("Personal access token").masked(true));
         let accounts = account::load();
-        let adding = accounts.is_empty();
-        Self { accounts, service: Service::GitHub, server, token, adding, checking: false, error: None, on_change: None }
+        let adding = !accounts.iter().any(|a| only.is_none_or(|s| a.service == s));
+        Self { accounts, service, server, token, adding, checking: false, error: None, on_change: None, only }
     }
 
     /// GitHub or GitLab: the server field follows unless the user typed one.
@@ -92,7 +101,8 @@ impl Render for AccountsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let mut list = v_flex().gap_px();
-        for (ix, acc) in self.accounts.iter().enumerate() {
+        let only = self.only;
+        for (ix, acc) in self.accounts.iter().enumerate().filter(|(_, a)| only.is_none_or(|s| a.service == s)) {
             list = list.child(
                 h_flex()
                     .h(px(30.))
@@ -113,7 +123,7 @@ impl Render for AccountsView {
                     }))),
             );
         }
-        if self.accounts.is_empty() {
+        if !self.accounts.iter().any(|a| only.is_none_or(|s| a.service == s)) {
             list = list.child(div().p_2().text_sm().text_color(palette.text_secondary).child("No accounts"));
         }
         v_flex()
@@ -150,7 +160,7 @@ impl Render for AccountsView {
                         .border_1()
                         .border_color(palette.border)
                         .child(div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Log In with Token"))
-                        .child(
+                        .when(only.is_none(), |el| el.child(
                             h_flex()
                                 .gap_2()
                                 .child(div().w(px(60.)).text_sm().text_color(palette.text_secondary).child("Service:"))
@@ -160,7 +170,7 @@ impl Render for AccountsView {
                                 .child(Button::new("account-gitlab").xsmall().label("GitLab").map(|b| if service == Service::GitLab { b.primary() } else { b.outline() }).on_click(
                                     cx.listener(|this, _, window, cx| this.set_service(Service::GitLab, window, cx)),
                                 )),
-                        )
+                        ))
                         .child(h_flex().gap_2().child(div().w(px(60.)).text_sm().text_color(palette.text_secondary).child("Server:")).child(div().flex_1().child(Input::new(&self.server).small())))
                         .child(h_flex().gap_2().child(div().w(px(60.)).text_sm().text_color(palette.text_secondary).child("Token:")).child(div().flex_1().child(Input::new(&self.token).small())))
                         .child(

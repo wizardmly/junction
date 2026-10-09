@@ -18,7 +18,7 @@ use crate::git::roots::{self, Mappings};
 use crate::model::RepoModel;
 use crate::theme::ActivePalette as _;
 
-struct MappingsView {
+pub struct MappingsView {
     model: Entity<RepoModel>,
     project: PathBuf,
     detected: Vec<PathBuf>,
@@ -127,13 +127,21 @@ impl Render for MappingsView {
     }
 }
 
+impl MappingsView {
+    /// The project's roots (Settings › Version Control › Directory Mappings).
+    pub fn new(model: Entity<RepoModel>, cx: &App) -> Option<Self> {
+        let project = model.read(cx).project_root().map(PathBuf::from)?;
+        let repository = crate::git::Repository::discover(&project, Default::default()).ok()?;
+        let mut detected = vec![project.clone()];
+        detected.extend(roots::scan_nested(&project));
+        let mappings = roots::load_mappings(&repository);
+        Some(MappingsView { model, project, detected, mappings, error: None })
+    }
+}
+
 pub fn directory_mappings(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
-    let Some(project) = model.read(cx).project_root().map(PathBuf::from) else { return };
-    let Ok(repository) = crate::git::Repository::discover(&project, Default::default()) else { return };
-    let mut detected = vec![project.clone()];
-    detected.extend(roots::scan_nested(&project));
-    let mappings = roots::load_mappings(&repository);
-    let view = cx.new(|_| MappingsView { model, project, detected, mappings, error: None });
+    let Some(view) = MappingsView::new(model, cx) else { return };
+    let view = cx.new(|_| view);
     window.open_dialog(cx, move |dialog, _, _| {
         dialog.title("Directory Mappings").w(px(600.)).child(view.clone()).footer(
             gpui_kit::component::dialog::DialogFooter::new()

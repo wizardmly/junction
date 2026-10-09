@@ -45,6 +45,8 @@ fn main() {
         ui::spell_overlay::init(cx);
         ui::file_editor::init(cx);
         ui::find_bar::init(cx);
+        // After every module bound its keys: Settings › Keymap's changes go over them.
+        ui::keymap::init(cx);
         let settings = settings::Settings::load();
         settings.apply_git();
         ui::common::set_compact(settings.compact);

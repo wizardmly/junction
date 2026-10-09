@@ -41,6 +41,8 @@ pub enum CommitEvent {
     OpenDiff(DiffSource),
     /// "Commit and Push…" committed; show the Push dialog next.
     OpenPush,
+    /// A commit succeeded (closes the modal Commit Changes dialog).
+    Committed,
     /// A conflicted file was picked: open the merge tool.
     OpenMerge(Conflict),
     /// Edit Source (F4).
@@ -182,6 +184,7 @@ impl CommitView {
                         // IntelliJ keeps the author override only for one commit.
                         this.author.update(cx, |state, cx| state.set_value("", window, cx));
                         this.set_message(String::new(), window, cx);
+                        cx.emit(CommitEvent::Committed);
                         if push {
                             cx.emit(CommitEvent::OpenPush);
                         }

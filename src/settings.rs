@@ -42,6 +42,18 @@ pub struct Settings {
     pub commit_subject_limit: usize,
     /// "Warn when committing in detached HEAD or during rebase".
     pub warn_detached_head: bool,
+    /// Commit › "Use non-modal commit interface": Commit (Ctrl+K) works in
+    /// the Commit tool window; off, it opens the modal Commit Changes dialog.
+    pub non_modal_commit: bool,
+    /// "Add the 'cherry picked from <hash>' suffix when picking commits
+    /// pushed to protected branches".
+    pub cherry_pick_suffix: bool,
+    /// "Show Push dialog for Commit and Push", optionally "only for commits
+    /// to protected branches"; otherwise Commit and Push pushes directly.
+    pub commit_push_dialog: bool,
+    pub commit_push_dialog_protected_only: bool,
+    /// Editor › Font › Size, in tenths of a point (the editor, diff and merge viewers).
+    pub editor_font_tenths: u32,
     /// "Protected branches": force push is refused for these (comma-separated).
     pub protected_branches: String,
     /// Commit options remembered between commits.
@@ -245,6 +257,11 @@ impl Default for Settings {
             warn_crlf: true,
             commit_subject_limit: 72,
             warn_detached_head: true,
+            non_modal_commit: true,
+            cherry_pick_suffix: true,
+            commit_push_dialog: true,
+            commit_push_dialog_protected_only: false,
+            editor_font_tenths: 125,
             protected_branches: "master, main".into(),
             sign_off: false,
             run_hooks: true,
@@ -341,6 +358,10 @@ pub fn forget_project(path: &std::path::Path) {
 }
 
 impl Settings {
+    pub fn editor_font_size(&self) -> f32 {
+        self.editor_font_tenths as f32 / 10.
+    }
+
     pub fn is_protected(&self, branch: &str) -> bool {
         self.protected_branches.split(',').map(str::trim).any(|p| !p.is_empty() && (p == branch || glob(p, branch)))
     }
@@ -384,6 +405,15 @@ impl Settings {
                 "auto_update_on_push_rejected" => settings.auto_update_on_push_rejected = flag,
                 "warn_crlf" => settings.warn_crlf = flag,
                 "warn_detached_head" => settings.warn_detached_head = flag,
+                "non_modal_commit" => settings.non_modal_commit = flag,
+                "cherry_pick_suffix" => settings.cherry_pick_suffix = flag,
+                "commit_push_dialog" => settings.commit_push_dialog = flag,
+                "commit_push_dialog_protected_only" => settings.commit_push_dialog_protected_only = flag,
+                "editor_font_size" => {
+                    if let Ok(size) = value.parse::<f32>() {
+                        settings.editor_font_tenths = (size.clamp(8., 32.) * 10.).round() as u32;
+                    }
+                }
                 "protected_branches" => settings.protected_branches = value.to_owned(),
                 "sign_off" => settings.sign_off = flag,
                 "run_hooks" => settings.run_hooks = flag,
@@ -505,6 +535,14 @@ impl Settings {
             self.update_dialog
         ));
         text.push_str(&format!("use_language_servers={}\n", self.use_language_servers));
+        text.push_str(&format!(
+            "non_modal_commit={}\ncherry_pick_suffix={}\ncommit_push_dialog={}\ncommit_push_dialog_protected_only={}\neditor_font_size={}\n",
+            self.non_modal_commit,
+            self.cherry_pick_suffix,
+            self.commit_push_dialog,
+            self.commit_push_dialog_protected_only,
+            self.editor_font_size()
+        ));
         let [l, r, b] = self.tool_window_sizes;
         text.push_str(&format!(
             "theme_dark={}\ncompact_mode={}\ntool_windows={}\ntool_window_sizes={l},{r},{b}\ncommit_group_by_module={}\ncommit_group_by_repository={}\n",
@@ -538,6 +576,7 @@ impl Settings {
         crate::git::set_executable(&self.git_executable);
         crate::git::set_use_credential_helper(self.use_credential_helper);
         crate::index::lsp::configure(self.use_language_servers, self.language_servers.clone());
+        crate::ui::diff_panes::set_font_size(self.editor_font_size());
     }
 
     pub fn update(cx: &mut App, f: impl FnOnce(&mut Self)) {
@@ -565,7 +604,16 @@ mod tests {
         diff.project.single_click = true;
         diff.project.sort = ProjectSort::Modified;
         assert_eq!(Settings::parse(&diff.serialize()), diff);
-        let custom = Settings { protected_branches: "release/*, main".into(), sign_off: true, run_hooks: false, ..Default::default() };
+        let custom = Settings {
+            protected_branches: "release/*, main".into(),
+            sign_off: true,
+            run_hooks: false,
+            non_modal_commit: false,
+            cherry_pick_suffix: false,
+            commit_push_dialog_protected_only: true,
+            editor_font_tenths: 140,
+            ..Default::default()
+        };
         assert_eq!(Settings::parse(&custom.serialize()), custom);
     }
 
