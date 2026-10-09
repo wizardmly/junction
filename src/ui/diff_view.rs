@@ -942,7 +942,84 @@ fn review_number(review: &Review, path: Rc<str>, ix: usize, line: usize, palette
         .into_any_element()
 }
 
+/// An inline review thread's height below its line: a header per comment
+/// and its body's lines (about 100 characters to a line), plus Reply.
+fn thread_height(notes: &[String]) -> f32 {
+    let lines: usize = notes
+        .iter()
+        .map(|n| 1 + n.split_once(": ").map_or(n.as_str(), |(_, body)| body).lines().map(|l| l.chars().count() / 100 + 1).sum::<usize>())
+        .sum();
+    lines as f32 * 18. + notes.len() as f32 * 6. + 44.
+}
+
+/// A review's comments on a line, shown under it as IntelliJ's inline
+/// discussion: author and text per comment, and Reply.
+fn review_thread(notes: &[String], path: Rc<str>, line: usize, top: f32, left: f32, palette: &Palette, cx: &mut Context<DiffView>) -> AnyElement {
+    let height = thread_height(notes);
+    v_flex()
+        .id(("review-thread", line))
+        .absolute()
+        .top(px(top + 3.))
+        .left(px(left))
+        .right(px(12.))
+        .h(px(height - 6.))
+        .overflow_hidden()
+        .px_2()
+        .py_1()
+        .gap_1p5()
+        .rounded(px(4.))
+        .border_1()
+        .border_color(palette.border)
+        .bg(palette.panel)
+        .text_sm()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .children(notes.iter().map(|note| {
+            let (author, body) = note.split_once(": ").unwrap_or(("", note.as_str()));
+            v_flex()
+                .child(div().text_xs().font_weight(gpui_kit::FontWeight::SEMIBOLD).text_color(palette.text).child(author.to_owned()))
+                .children(body.lines().map(|l| div().text_color(palette.text).child(l.to_owned())))
+        }))
+        .child(
+            div()
+                .id(("review-reply", line))
+                .text_xs()
+                .text_color(palette.link)
+                .cursor_pointer()
+                .child("Reply")
+                .on_click(cx.listener(move |_, _, _, cx| cx.emit(CommentLine { path: path.to_string(), line }))),
+        )
+        .into_any_element()
+}
+
 impl DiffView {
+    /// A review's commented lines among a pane's rows: (row, line).
+    fn thread_rows(&self, rows: impl Iterator<Item = (usize, Option<usize>)>) -> Vec<(usize, usize)> {
+        let Some(review) = &self.review else { return Vec::new() };
+        rows.filter_map(|(ix, line)| line.filter(|l| review.comments.contains_key(l)).map(|l| (ix, l))).collect()
+    }
+
+    /// Reserves each thread's space under its row and returns the
+    /// threads to draw over the visible part of `pane`.
+    fn review_threads(&mut self, pane: usize, threads: &[(usize, usize)], palette: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(review) = self.review.clone() else {
+            self.panes.set_blocks(pane, HashMap::new());
+            return Vec::new();
+        };
+        let heights: HashMap<usize, f32> = threads.iter().map(|(ix, line)| (*ix, thread_height(&review.comments[line]))).collect();
+        self.panes.set_blocks(pane, heights);
+        let path: Rc<str> = self.source.as_ref().map(|s| s.path()).unwrap_or_default().into();
+        let visible = self.panes.visible_rows(pane);
+        let left = self.panes.layouts[pane].text_left();
+        threads
+            .iter()
+            .filter(|(ix, _)| visible.contains(ix))
+            .map(|(ix, line)| {
+                let top = self.panes.row_top(pane, *ix) + self.panes.row_height(pane, *ix);
+                review_thread(&review.comments[line], path.clone(), *line, top, left, palette, cx)
+            })
+            .collect()
+    }
+
     /// Per change: whether it goes into the next commit (partial commits).
     fn included(&self, cx: &App) -> Vec<bool> {
         self.exclusions(cx).iter().map(|(old, new)| old.iter().chain(new).any(|out| !*out) || old.len() + new.len() == 0).collect()
@@ -1036,11 +1113,22 @@ impl DiffView {
         let visible = if height > 0. { height } else { 1600. };
         let append = self.panes.ctrl_held && self.editable();
 
+        // A review's comment threads open under their lines; aligned panes
+        // keep the same space on the left so rows stay level.
+        let threads = self.thread_rows(two.right.iter().enumerate().map(|(ix, row)| match row {
+            PaneRow::Line { side, .. } => (ix, Some(side.line)),
+            _ => (ix, None),
+        }));
+        let paired = two.left.len() == two.right.len() && self.aligned;
         let mut panes = Vec::new();
         for pane in 0..2 {
+            let mut overlays = self.review_threads(pane, if pane == 1 || paired { &threads } else { &[] }, &palette, cx);
+            if pane == 0 {
+                // The left side only keeps the space.
+                overlays.clear();
+            }
             let looks = self.row_looks(pane, &palette, cx);
             let layout = self.panes.layouts[pane];
-            let mut overlays = Vec::new();
             // Per change: the insertion line on an empty side, and the gutter buttons.
             for seg in two.segments.iter() {
                 let Some(change) = seg.change else { continue };
@@ -1246,7 +1334,11 @@ impl DiffView {
         let layout = self.panes.layouts[1];
         let visible = self.panes.visible_rows(1);
         let rows = self.rows.clone();
-        let mut overlays = Vec::new();
+        let threads = self.thread_rows(rows.iter().enumerate().map(|(ix, row)| match row {
+            Display::Line { right: Some(side), .. } => (ix, Some(side.line)),
+            _ => (ix, None),
+        }));
+        let mut overlays = self.review_threads(1, &threads, &palette, cx);
         for ix in visible {
             let Some(Display::Line { change: Some(change), .. }) = rows.get(ix) else { continue };
             let change = *change;

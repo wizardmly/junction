@@ -206,6 +206,9 @@ pub struct TextPanes<T = ()> {
     wrap_cols: Vec<usize>,
     /// The panes changed rows since the heights were paired.
     layout_dirty: bool,
+    /// Space the host fills below a row (a review's inline comment thread),
+    /// per pane by row.
+    blocks: Vec<std::collections::HashMap<usize, f32>>,
 }
 
 /// A mouse drag the panes follow anywhere in the window.
@@ -268,6 +271,7 @@ impl<T: Clone + Default> TextPanes<T> {
             tops: vec![vec![0.]; panes],
             wrap_cols: vec![0; panes],
             layout_dirty: false,
+            blocks: vec![Default::default(); panes],
         }
     }
 
@@ -351,11 +355,19 @@ impl<T: Clone + Default> TextPanes<T> {
         let rows = &self.rows[pane];
         let mut tops = Vec::with_capacity(rows.len() + 1);
         let mut wraps = Vec::new();
-        if cols == usize::MAX {
+        let blocks = &self.blocks[pane];
+        if cols == usize::MAX && blocks.is_empty() {
             tops.extend((0..=rows.len()).map(|r| r as f32 * LINE_HEIGHT));
+        } else if cols == usize::MAX {
+            let mut y = 0.;
+            for row in 0..rows.len() {
+                tops.push(y);
+                y += LINE_HEIGHT + blocks.get(&row).copied().unwrap_or(0.);
+            }
+            tops.push(y);
         } else {
             let mut y = 0.;
-            for row in rows {
+            for (ix, row) in rows.iter().enumerate() {
                 let text = match *row {
                     RowTarget::Line(line) => Some(&self.buffers[pane]).filter(|b| line < b.line_count()).map(|b| b.line(line)),
                     RowTarget::Other { pane: p, line } => self.buffers.get(p).filter(|b| line < b.line_count()).map(|b| b.line(line)),
@@ -363,7 +375,7 @@ impl<T: Clone + Default> TextPanes<T> {
                 };
                 let starts = text.map_or_else(|| vec![0], |t| wrap_starts(t, cols));
                 tops.push(y);
-                y += starts.len() as f32 * LINE_HEIGHT;
+                y += starts.len() as f32 * LINE_HEIGHT + blocks.get(&ix).copied().unwrap_or(0.);
                 wraps.push(starts);
             }
             tops.push(y);
@@ -407,9 +419,9 @@ impl<T: Clone + Default> TextPanes<T> {
             let mut y = 0.;
             let tops = &mut self.tops[pane];
             tops.clear();
-            for n in lines {
+            for (row, n) in lines.into_iter().enumerate() {
                 tops.push(y);
-                y += n as f32 * LINE_HEIGHT;
+                y += n as f32 * LINE_HEIGHT + self.blocks[pane].get(&row).copied().unwrap_or(0.);
             }
             tops.push(y);
         }
@@ -1289,9 +1301,20 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
         self.row_y(pane, row) - self.scroll[pane].1
     }
 
-    /// A row's height (taller when wrapped).
+    /// A row's height (taller when wrapped), without the block below it.
     pub fn row_height(&self, pane: usize, row: usize) -> f32 {
-        (self.row_y(pane, row + 1) - self.row_y(pane, row)).max(LINE_HEIGHT)
+        let block = self.blocks[pane].get(&row).copied().unwrap_or(0.);
+        (self.row_y(pane, row + 1) - self.row_y(pane, row) - block).max(LINE_HEIGHT)
+    }
+
+    /// Reserves space below rows for the host to fill (inline review
+    /// threads); a change re-lays the pane out.
+    pub fn set_blocks(&mut self, pane: usize, blocks: std::collections::HashMap<usize, f32>) {
+        if self.blocks[pane] != blocks {
+            self.blocks[pane] = blocks;
+            self.relayout_pane(pane);
+            self.layout_dirty = true;
+        }
     }
 
     /// Each row's top before scrolling, and the content height after them,
