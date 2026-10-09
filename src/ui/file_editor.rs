@@ -106,9 +106,14 @@ impl EventEmitter<FileEditorEvent> for FileEditor {}
 
 /// The tree-sitter language for a file name (plain text when unknown).
 pub fn language_for(path: &str) -> &'static str {
-    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_ascii_lowercase();
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    // C++ standard headers have no extension (External Libraries).
+    if ext.is_empty() && crate::index::store::ProjectIndex::is_external(path) && crate::index::libraries::library_lang(path).is_some() {
+        return "cpp";
+    }
     match (name.as_str(), ext) {
+        (_, "swiftinterface") => "swift",
         ("cmakelists.txt", _) | (_, "cmake") => "cmake",
         ("makefile" | "gnumakefile", _) | (_, "mk") => "make",
         (_, "rs") => "rust",
@@ -287,7 +292,9 @@ impl FileEditor {
                 Err(error) => (String::new(), Some(error.to_string())),
             },
         };
-        let base = if revision.is_none() {
+        // A library's source (External Libraries) isn't in the repository.
+        let external = crate::index::store::ProjectIndex::is_external(&path);
+        let base = if revision.is_none() && !external {
             repository.run(["show", &format!("HEAD:{path}")]).unwrap_or_default()
         } else {
             content.clone()
@@ -306,7 +313,7 @@ impl FileEditor {
                 cx.notify();
             }
         })];
-        let read_only = revision.is_some();
+        let read_only = revision.is_some() || external;
         let find = cx.new(|cx| crate::ui::find_bar::FindBar::new(state.clone(), read_only, window, cx));
         let mut this = Self {
             find,
@@ -351,7 +358,7 @@ impl FileEditor {
             lsp.show_document = Some(show);
             cx.notify();
         });
-        if self.revision.is_none() {
+        if !self.read_only() {
             let text = self.state.read(cx).value().to_string();
             index.read(cx).warm_up(&self.path, text, cx);
         }
@@ -445,12 +452,28 @@ impl FileEditor {
     }
 
     pub fn is_dirty(&self, cx: &gpui_kit::App) -> bool {
-        self.revision.is_none() && self.text(cx) != self.saved
+        !self.read_only() && self.text(cx) != self.saved
+    }
+
+    /// A revision, or a library's source: neither is edited.
+    pub fn read_only(&self) -> bool {
+        self.revision.is_some() || crate::index::store::ProjectIndex::is_external(&self.path)
+    }
+
+    /// "< JDK 21 > › java/util/List.java" for a library file.
+    fn library_title(&self, cx: &gpui_kit::App) -> Option<String> {
+        if !crate::index::store::ProjectIndex::is_external(&self.path) {
+            return None;
+        }
+        let index = self.code_index.as_ref()?.read(cx).index.read().ok()?;
+        let library = index.external.library_of(&self.path)?;
+        let rel = std::path::Path::new(&self.path).strip_prefix(&library.root).ok()?.to_string_lossy().replace('\\', "/");
+        Some(format!("{} › {rel}", library.name))
     }
 
     /// IntelliJ's change markers (painted in the gutter by `marker_strip`).
     fn update_markers(&mut self, cx: &mut Context<Self>) {
-        if self.revision.is_some() || self.error.is_some() {
+        if self.read_only() || self.error.is_some() {
             return;
         }
         let text = self.text(cx);
@@ -720,7 +743,7 @@ impl FileEditor {
 
     /// Saves unsaved text, as IntelliJ does when a tab closes.
     pub fn save_now(&mut self, cx: &mut Context<Self>) {
-        if self.revision.is_some() {
+        if self.read_only() {
             return;
         }
         let text = self.text(cx);
@@ -761,7 +784,7 @@ impl FileEditor {
     }
 
     fn rollback_lines(&mut self, _: &RollbackLines, window: &mut Window, cx: &mut Context<Self>) {
-        if self.revision.is_some() {
+        if self.read_only() {
             return;
         }
         let text = self.text(cx);
@@ -813,7 +836,7 @@ impl FileEditor {
     /// Compare with Clipboard: the clipboard against the file (saved first),
     /// which stays editable in the diff.
     fn compare_with_clipboard(&mut self, _: &CompareWithClipboard, window: &mut Window, cx: &mut Context<Self>) {
-        if self.revision.is_some() {
+        if self.read_only() {
             return;
         }
         self.save(&SaveFile, window, cx);
@@ -834,10 +857,10 @@ impl Render for FileEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let dirty = self.is_dirty(cx);
-        let read_only = self.revision.is_some();
+        let read_only = self.read_only();
         let title = match &self.revision {
             Some(rev) => format!("{} ({})", self.path, &rev[..rev.len().min(8)]),
-            None => self.path.clone(),
+            None => self.library_title(cx).unwrap_or_else(|| self.path.clone()),
         };
         let changes = self.hunks.len();
         v_flex()

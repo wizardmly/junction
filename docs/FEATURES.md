@@ -234,6 +234,10 @@
 | 文件按 VCS 状态着色（修改蓝、新增绿、未跟踪红），含已修改文件的目录也着色 | M8 | ✅ |
 | 键盘导航：↑↓ / ← 收起或回到父目录 / → 展开或进入 / Enter、F4 打开 / Home / End / PgUp / PgDn | M8 | ✅ |
 | ⋮ › Edit Scopes、Group Tabs、View Mode、Move to、Resize、Remove from Sidebar、Help；Android / Packages 视图 | — | ❌ 不适用（IDE 窗口布局与 Android 模块模型，Junction 没有） |
+| External Libraries：依赖库与 SDK 源码进入索引（跳转、悬停、Go to Class / File / Symbol） | M9 | ✅（Cargo：`cargo metadata` 按本机平台解析，含 Rust std/core/alloc；Go：go.mod + GOMODCACHE、Go SDK；Dart/Flutter：package_config.json、Dart SDK；Gradle：build.gradle / libs.versions.toml 声明的依赖，沿 .module / POM 传递，解压 Gradle 缓存里的 -sources.jar；Android SDK `sources/android-<compileSdk>`；JDK src.zip（含 Android Studio 自带 JBR）；C/C++/ObjC：从项目 #include 出发沿 NDK sysroot、compile_commands.json、编译器搜索路径、Apple SDK framework 解析头文件；SwiftPM / Xcode DerivedData / CocoaPods / Carthage、SDK 的 .swiftinterface；node_modules（优先 .d.ts）；Python venv / 标准库；V vlib / ~/.vmodules。索引按库缓存在用户缓存目录 Junction/libraries，跨项目共享；生成的超大绑定库只保留类型和函数） |
+| 库源码只读打开 | M9 | ✅（标题与状态栏面包屑显示“External Libraries › 库名 › 路径”；库文件里可继续跳转；Select Opened File 定位到 External Libraries 下） |
+| 跳转排序 | M9 | ✅（项目符号优先；库符号按文件的 import / use / #include（含被包含头文件）匹配；`x.member` 按 x 的声明类型（局部声明、字段声明行、返回类型）只留该类型的成员；类型位置优先类型符号） |
+| Project 窗口 External Libraries 节点 | M9 | ✅（Project 视图底部，按 SDK → 依赖排序，展开为库内目录树） |
 | 语言服务器 | M7 | ✅（clangd、rust-analyzer、gopls、jdtls、kotlin-lsp、sourcekit-lsp、dart、v-analyzer、typescript-language-server、pyright/pylsp；按最近的 Cargo.toml / go.mod / pubspec.yaml / settings.gradle 等子项目分别启动；打开文件即预热；服务器忙时 0.6 秒内退回索引结果） |
 | 设置 › Languages & Frameworks | M7 | ✅（总开关；每种语言可填自定义命令或 off，显示 Installed / Not found / Index only） |
 

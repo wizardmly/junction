@@ -12,6 +12,7 @@ use gpui_kit::{App, AppContext as _, Context, EventEmitter, Task};
 use super::lang::Lang;
 use super::lsp::LspManager;
 use super::nav::{self, Target, Usage};
+use super::libraries::ExternalIndex;
 use super::store::ProjectIndex;
 
 pub enum IndexEvent {
@@ -26,6 +27,8 @@ pub struct CodeIndex {
     /// (done, total) while files are being indexed.
     pub progress: Option<(usize, usize)>,
     updating: bool,
+    /// Set while the libraries are being indexed.
+    library_phase: Arc<std::sync::atomic::AtomicBool>,
     /// Another refresh was asked for while one ran.
     again: bool,
     _task: Option<Task<()>>,
@@ -52,6 +55,7 @@ impl CodeIndex {
             lsp: Arc::default(),
             progress: None,
             updating: false,
+            library_phase: Arc::default(),
             again: false,
             _task: None,
             _poll: Some(poll),
@@ -89,6 +93,7 @@ impl CodeIndex {
         }
         self.updating = true;
         let index = self.index.clone();
+        let phase = self.library_phase.clone();
         let (tx, rx) = std::sync::mpsc::channel::<(usize, usize)>();
         self._task = Some(cx.spawn(async move |this, cx| {
             let work = cx.background_spawn(async move {
@@ -125,6 +130,22 @@ impl CodeIndex {
                     if let Ok(index) = index.read() {
                         index.save();
                     }
+                }
+                // Then the libraries, so project navigation is ready first.
+                let (files, previous) = {
+                    let index = index.read().unwrap();
+                    (index.all_files.clone(), index.external.clone())
+                };
+                let stamp = super::libraries::inputs_stamp(&root, &files);
+                if !previous.scanned || previous.stamp != stamp {
+                    phase.store(true, std::sync::atomic::Ordering::Relaxed);
+                    tx.send((0, 0)).ok();
+                    let libraries = super::libraries::discover(&root, &files);
+                    let external = ExternalIndex::build(libraries, stamp, Some(&previous), &|done, total| {
+                        tx.send((done, total)).ok();
+                    });
+                    index.write().unwrap().external = Arc::new(external);
+                    phase.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
             });
             // Forward progress until the work finishes.
@@ -178,7 +199,7 @@ impl CodeIndex {
     }
 
     pub fn lang_of(path: &str, text: &str) -> Option<Lang> {
-        let lang = Lang::from_path(path)?;
+        let lang = if ProjectIndex::is_external(path) { super::libraries::library_lang(path)? } else { Lang::from_path(path)? };
         Some(if path.ends_with(".h") { Lang::for_header(text) } else { lang })
     }
 
@@ -201,7 +222,7 @@ impl CodeIndex {
             // the index already has an answer, don't wait long for it.
             let patience = if local.is_empty() { Duration::from_secs(10) } else { Duration::from_millis(600) };
             let file = root.join(&path);
-            if let Some(client) = lsp.client(lang, &file) {
+            if let Some(client) = (!ProjectIndex::is_external(&path)).then(|| lsp.client(lang, &file)).flatten() {
                 let (line, col) = nav::position(&text, offset);
                 if let Ok(locations) = client.definition(&file, lang, &text, line, col, patience) {
                     if !locations.is_empty() {
@@ -232,7 +253,7 @@ impl CodeIndex {
         let (index, lsp) = (self.index.clone(), self.lsp.clone());
         cx.background_spawn(async move {
             nav::word_at(&text, offset)?;
-            if let Some(client) = lsp.client(lang, &root.join(&path)) {
+            if let Some(client) = (!ProjectIndex::is_external(&path)).then(|| lsp.client(lang, &root.join(&path))).flatten() {
                 let (line, col) = nav::position(&text, offset);
                 if let Ok(Some(markdown)) = client.hover(&root.join(&path), lang, &text, line, col, Duration::from_secs(2)) {
                     return Some(markdown);
@@ -272,7 +293,7 @@ impl CodeIndex {
             // The server's references are exact; mark them and add any the
             // text search missed.
             if let Some(lang) = lang {
-                if let Some(client) = lsp.client(lang, &root.join(&path)) {
+                if let Some(client) = (!ProjectIndex::is_external(&path)).then(|| lsp.client(lang, &root.join(&path))).flatten() {
                     let (line, col) = nav::position(&text, offset);
                     if let Ok(refs) = client.references(&root.join(&path), lang, &text, line, col) {
                         for r in refs {
@@ -360,8 +381,12 @@ impl CodeIndex {
 
     /// For the status bar.
     pub fn summary(&self) -> String {
-        if let Some((done, total)) = self.progress {
-            return format!("Indexing… {done}/{total}");
+        let libraries = self.library_phase.load(std::sync::atomic::Ordering::Relaxed);
+        match self.progress {
+            Some((_, 0)) if libraries => return "Scanning external libraries…".into(),
+            Some((done, total)) if libraries => return format!("Indexing external libraries… {done}/{total}"),
+            Some((done, total)) => return format!("Indexing… {done}/{total}"),
+            None => {}
         }
         if self.updating {
             return "Indexing…".into();
@@ -371,6 +396,9 @@ impl CodeIndex {
             return String::new();
         }
         let mut out = format!("{} files, {} symbols indexed", index.files.len(), index.symbol_count());
+        if !index.external.is_empty() {
+            out.push_str(&format!(" · {} libraries", index.external.libraries.len()));
+        }
         let servers = self.lsp.status();
         if !servers.is_empty() {
             let list: Vec<String> = servers.iter().map(|(name, state)| format!("{name}: {state}")).collect();

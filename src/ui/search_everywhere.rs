@@ -255,6 +255,21 @@ impl SearchEverywhere {
         let (name, position) = split_position(&query);
         let name = name.to_owned();
         let index = self.index.read(cx);
+        // Library items show their library, as IntelliJ's "< JDK 21 >".
+        let libraries: Vec<(std::path::PathBuf, String)> =
+            index.index.read().map(|i| i.external.libraries.iter().map(|l| (l.root.clone(), l.name.clone())).collect()).unwrap_or_default();
+        let shown = move |path: &str| -> String {
+            if !crate::index::store::ProjectIndex::is_external(path) {
+                return path.to_owned();
+            }
+            libraries
+                .iter()
+                .find_map(|(root, name)| {
+                    let rel = std::path::Path::new(path).strip_prefix(root).ok()?;
+                    Some(format!("{name} › {}", rel.to_string_lossy().replace('\\', "/")))
+                })
+                .unwrap_or_else(|| path.to_owned())
+        };
         let classes = wants(SeTab::Classes).then(|| index.search_symbols(name.clone(), true, cx));
         let symbols = wants(SeTab::Symbols).then(|| index.search_symbols(name.clone(), false, cx));
         let files = wants(SeTab::Files).then(|| index.search_files(name.clone(), cx));
@@ -303,7 +318,7 @@ impl SearchEverywhere {
                     .map(|m| Kind::Target {
                         title: m.target.name.clone(),
                         detail: m.target.container.clone().unwrap_or_default(),
-                        right: m.target.path.clone(),
+                        right: shown(&m.target.path),
                         icon: symbol_icon(m.kind),
                         target: at(m.target),
                     })
@@ -334,8 +349,9 @@ impl SearchEverywhere {
                     .filter(|(p, _)| lang_ok(p))
                     .take(limit)
                     .map(|(path, _)| {
-                        let file = path.rsplit('/').next().unwrap_or(&path).to_owned();
-                        let dir = path.rsplit_once('/').map(|(d, _)| d.to_owned()).unwrap_or_default();
+                        let file = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+                        let full = shown(&path);
+                        let dir = full.rsplit_once('/').map(|(d, _)| d.to_owned()).unwrap_or_default();
                         Kind::Target {
                             title: file.clone(),
                             detail: dir,
@@ -354,7 +370,7 @@ impl SearchEverywhere {
                     .filter(|m| lang_ok(&m.target.path))
                     .take(limit)
                     .map(|m| {
-                        let file = m.target.path.rsplit('/').next().unwrap_or(&m.target.path).to_owned();
+                        let file = m.target.path.rsplit(['/', '\\']).next().unwrap_or(&m.target.path).to_owned();
                         Kind::Target {
                             title: m.target.name.clone(),
                             detail: match &m.target.container {

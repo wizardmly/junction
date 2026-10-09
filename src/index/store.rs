@@ -10,6 +10,7 @@ use std::time::UNIX_EPOCH;
 use serde::{Deserialize, Serialize};
 
 use super::bridge::{self, BridgeItem};
+use super::libraries::ExternalIndex;
 use super::lang::Lang;
 use super::symbols::{self, Symbol};
 
@@ -40,9 +41,12 @@ pub struct ProjectIndex {
     names: HashMap<String, Vec<(String, usize)>>,
     #[serde(skip)]
     keys: HashMap<String, Vec<(String, usize)>>,
+    /// Dependencies and SDKs ("External Libraries"), keyed by absolute path.
+    #[serde(skip)]
+    pub external: std::sync::Arc<ExternalIndex>,
 }
 
-fn stat(path: &Path) -> Option<(u64, u64)> {
+pub fn stat(path: &Path) -> Option<(u64, u64)> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64;
     Some((meta.len(), mtime))
@@ -67,19 +71,29 @@ pub fn list_files(root: &Path) -> Vec<String> {
 }
 
 pub fn index_file(root: &Path, rel: &str) -> Option<FileEntry> {
-    let mut lang = Lang::from_path(rel)?;
-    let path = root.join(rel);
-    let (size, mtime) = stat(&path)?;
+    index_path(&root.join(rel), Lang::from_path(rel)?, true)
+}
+
+/// Indexes one file; `.h` files get their language from their contents.
+/// Library files skip bridges: those are the project's own boundaries.
+pub fn index_path(path: &Path, mut lang: Lang, with_bridges: bool) -> Option<FileEntry> {
+    let (size, mtime) = stat(path)?;
     if size > MAX_FILE_SIZE || !path.is_file() {
         return None;
     }
-    let bytes = std::fs::read(&path).ok()?;
-    let text = String::from_utf8_lossy(&bytes);
-    if rel.ends_with(".h") {
+    let bytes = std::fs::read(path).ok()?;
+    let mut text = String::from_utf8_lossy(&bytes);
+    if path.extension().is_some_and(|e| e == "h") {
         lang = Lang::for_header(&text);
     }
+    // System headers hide declarations behind attribute macros the
+    // parser can't see through (glibc's __THROW, libstdc++'s _GLIBCXX_…).
+    if !with_bridges && matches!(lang, Lang::C | Lang::Cpp | Lang::ObjC) {
+        text = std::borrow::Cow::Owned(super::libraries::blank_macros(&text));
+    }
     let symbols = symbols::extract(lang, &text);
-    let bridges = bridge::extract(lang, rel, &text, &symbols);
+    let rel = path.to_string_lossy();
+    let bridges = if with_bridges { bridge::extract(lang, &rel, &text, &symbols) } else { Vec::new() };
     Some(FileEntry { lang, mtime, size, symbols, bridges })
 }
 
@@ -214,12 +228,26 @@ impl ProjectIndex {
         self.files.values().map(|f| f.symbols.len()).sum()
     }
 
-    /// Symbols with this exact name.
+    /// Symbols with this exact name: the project's, then the libraries'.
     pub fn symbols_named<'a>(&'a self, name: &str) -> impl Iterator<Item = (&'a str, &'a FileEntry, &'a Symbol)> + 'a {
+        self.project_symbols_named(name).chain(self.external.symbols_named(name))
+    }
+
+    pub fn project_symbols_named<'a>(&'a self, name: &str) -> impl Iterator<Item = (&'a str, &'a FileEntry, &'a Symbol)> + 'a {
         self.names.get(name).into_iter().flatten().filter_map(|(path, i)| {
             let entry = self.files.get(path)?;
             Some((path.as_str(), entry, entry.symbols.get(*i)?))
         })
+    }
+
+    /// A project or library file's entry.
+    pub fn file(&self, path: &str) -> Option<&FileEntry> {
+        self.files.get(path).or_else(|| self.external.files.get(path))
+    }
+
+    /// Whether a path is a library file rather than the project's.
+    pub fn is_external(path: &str) -> bool {
+        Path::new(path).is_absolute()
     }
 
     /// Bridge sites with this key.
@@ -230,9 +258,14 @@ impl ProjectIndex {
         })
     }
 
-    /// All symbol names, for Go to Symbol.
+    /// The project's symbol names, for Go to Symbol.
     pub fn names(&self) -> impl Iterator<Item = &String> {
         self.names.keys()
+    }
+
+    /// Symbol names only libraries have.
+    pub fn external_names(&self) -> impl Iterator<Item = &String> {
+        self.external.names().filter(|n| !self.names.contains_key(*n))
     }
 }
 

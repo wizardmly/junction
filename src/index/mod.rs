@@ -6,6 +6,7 @@ pub mod lang;
 pub mod symbols;
 pub mod bridge;
 pub mod store;
+pub mod libraries;
 pub mod nav;
 pub mod lsp;
 pub mod service;

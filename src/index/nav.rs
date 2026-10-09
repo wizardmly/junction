@@ -124,6 +124,13 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
     let family = lang.family();
     let mut candidates: Vec<(i32, Target)> = Vec::new();
     let mut on_definition = false;
+    let mut hints = import_hints(lang, text);
+    if matches!(lang, Lang::C | Lang::Cpp | Lang::ObjC) {
+        hints = included_hints(index, hints);
+    }
+    // `x.name`: the type of `x` picks among same-named members.
+    let receiver = receiver_type(index, lang, text, range.start, 0);
+    let as_type = used_as_type(text, range.end);
     for (p, e, s) in index.symbols_named(&word) {
         if !family.contains(&e.lang) {
             continue;
@@ -135,6 +142,25 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
         let mut score = 0;
         if p == path {
             score += 100;
+        } else if !ProjectIndex::is_external(p) {
+            score += PROJECT;
+        } else {
+            // A library symbol: the file's imports and the types it
+            // mentions decide, since the index knows no types.
+            if hinted(p, &hints) {
+                score += IMPORTED;
+            }
+            if s.container.as_deref().and_then(|c| c.rsplit('.').next()).is_some_and(|c| mentions(text, c)) {
+                score += 25;
+            }
+        }
+        if let Some(receiver) = &receiver {
+            if s.container.as_deref().and_then(|c| c.rsplit(['.', ':']).next()) == Some(receiver.as_str()) {
+                score += RECEIVER;
+            }
+        }
+        if as_type && s.kind.is_type() {
+            score += 15;
         }
         if e.lang == lang {
             score += 40;
@@ -165,8 +191,18 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
             }
         }
     }
+    // Members of the receiver's type win over every other same-named member.
+    if candidates.iter().any(|(s, _)| *s >= RECEIVER) && receiver.is_some() {
+        candidates.retain(|(s, _)| *s >= RECEIVER);
+    }
+    // Unrelated library symbols only count when nothing better exists.
+    let strong = candidates.iter().any(|(s, t)| !ProjectIndex::is_external(&t.path) || *s >= IMPORTED);
+    if strong {
+        candidates.retain(|(s, t)| !ProjectIndex::is_external(&t.path) || *s >= IMPORTED);
+    }
     if !candidates.is_empty() {
         candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.path.cmp(&b.1.path)).then(a.1.line.cmp(&b.1.line)));
+        candidates.truncate(MAX_CHOICES);
         // Same-file hits win outright: locals and members shadow the rest.
         let best = candidates[0].0;
         let cut = if best >= 100 { 100 } else { i32::MIN };
@@ -197,6 +233,218 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
         }
     }
     dedup(out)
+}
+
+/// Rank of a project symbol over a library's.
+const PROJECT: i32 = 50;
+/// Rank of a library symbol the file imports.
+const IMPORTED: i32 = 60;
+/// Rank of a member of the receiver's type.
+const RECEIVER: i32 = 1000;
+/// Most targets offered in the chooser.
+const MAX_CHOICES: usize = 40;
+
+fn mentions(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + word.len()..].chars().next();
+        !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char)
+    })
+}
+
+/// `List<String> x`, `Foo bar =`: the word ending at `end` names a type.
+fn used_as_type(text: &str, end: usize) -> bool {
+    let rest = &text[end..];
+    let trimmed = rest.trim_start_matches([' ', '\t']);
+    if trimmed.starts_with('<') || trimmed.starts_with("[]") {
+        return true;
+    }
+    if trimmed.len() == rest.len() {
+        return false;
+    }
+    let ident = trimmed.find(|c: char| !is_word_char(c)).unwrap_or(trimmed.len());
+    ident > 0 && trimmed[ident..].trim_start().starts_with(['=', ';', ',', ')', ':'])
+}
+
+/// The identifier before `.` / `->` / `::` / `?.` ending right before `start`.
+fn qualifier(text: &str, start: usize) -> Option<(String, usize)> {
+    let before = text[..start].trim_end();
+    let before = before.strip_suffix("?.").or_else(|| before.strip_suffix("!!.")).or_else(|| before.strip_suffix('.')).or_else(|| before.strip_suffix("->")).or_else(|| before.strip_suffix("::"))?;
+    let before = before.trim_end().trim_end_matches(['?', '!', ')']);
+    // `foo().bar`: the call's name stands in for its result.
+    let before = before.trim_end_matches(|c: char| c == '(');
+    let end = before.len();
+    let begin = before.rfind(|c: char| !is_word_char(c)).map_or(0, |i| i + before[i..].chars().next().unwrap().len_utf8());
+    let word = &before[begin..end];
+    (!word.is_empty() && !word.starts_with(|c: char| c.is_ascii_digit())).then(|| (word.to_owned(), begin))
+}
+
+/// The declared type of the receiver of the member at `start`, from the
+/// file's own declarations or a member's declaration line. A best effort:
+/// the index has no types.
+fn receiver_type(index: &ProjectIndex, lang: Lang, text: &str, start: usize, depth: usize) -> Option<String> {
+    let (name, at) = qualifier(text, start)?;
+    if matches!(name.as_str(), "this" | "self" | "super" | "Self") {
+        return None;
+    }
+    // A type or namespace: `System.out`, `Build.VERSION`, `std::vector`.
+    if name.starts_with(|c: char| c.is_uppercase()) || matches!(lang, Lang::Cpp | Lang::Rust) && text[at + name.len()..].trim_start().starts_with("::") {
+        return Some(name);
+    }
+    if let Some(ty) = declared_type(text, &name) {
+        return Some(ty);
+    }
+    // A member of another receiver: `System.out` → the field `out` of `System`.
+    if depth < 2 {
+        let owner = receiver_type(index, lang, text, at, depth + 1)?;
+        for (p, _, s) in index.symbols_named(&name) {
+            if s.container.as_deref().and_then(|c| c.rsplit(['.', ':']).next()) != Some(owner.as_str()) {
+                continue;
+            }
+            let path = if ProjectIndex::is_external(p) { std::path::PathBuf::from(p) } else { index.root.join(p) };
+            let line = std::fs::read_to_string(&path).ok().and_then(|t| t.lines().nth(s.line as usize).map(str::to_owned))?;
+            if let Some(ty) = declared_type(&line, &name).or_else(|| return_type(&line, &name)) {
+                return Some(ty);
+            }
+        }
+    }
+    None
+}
+
+/// `Type name`, `Type<…> name`, `name: Type`, `name = Type(` / `new Type(`.
+fn declared_type(text: &str, name: &str) -> Option<String> {
+    let name = regex::escape(name);
+    let patterns = [
+        format!(r"\b([A-Z][\w]*)\s*(?:<[^;=(){{}}]*>)?(?:\[\])?\s*[*&]?\s*\b{name}\s*[;=,)]"),
+        format!(r"\b(?:val|var|let|const)?\s*\b{name}\s*:\s*(?:\[)?([A-Z]\w*)"),
+        format!(r"\b{name}\s*(?::=|=)\s*(?:new\s+|&)?([A-Z]\w*)\s*[(<{{.]"),
+    ];
+    for pattern in patterns {
+        let Ok(re) = regex::Regex::new(&pattern) else { continue };
+        if let Some(c) = re.captures(text) {
+            return Some(c[1].to_owned());
+        }
+    }
+    None
+}
+
+/// A method's return type from its declaration line: `Foo name(`, `fun name(): Foo`, `-> Foo`.
+fn return_type(line: &str, name: &str) -> Option<String> {
+    let name = regex::escape(name);
+    let re = regex::Regex::new(&format!(r"(?:\b([A-Z]\w*)(?:<[^()]*>)?\s+{name}\s*\(|\b{name}\s*\([^)]*\)\s*(?::|->)\s*([A-Z]\w*))")).ok()?;
+    let c = re.captures(line)?;
+    c.get(1).or(c.get(2)).map(|m| m.as_str().to_owned())
+}
+
+/// C includes plus what those library headers include in turn, so
+/// `<vector>` reaches `bits/stl_vector.h`.
+fn included_hints(index: &ProjectIndex, hints: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = hints.clone();
+    let mut seen: HashSet<String> = hints.iter().cloned().collect();
+    let mut frontier = hints;
+    for _ in 0..2 {
+        let mut next = Vec::new();
+        for hint in &frontier {
+            let suffix = format!("/{hint}");
+            let Some(file) = index.external.libraries.iter().flat_map(|l| l.files.iter()).find(|f| f.replace('\\', "/").ends_with(&suffix)) else { continue };
+            let text = std::fs::read_to_string(file).unwrap_or_default();
+            for include in import_hints(Lang::C, &text) {
+                if seen.insert(include.clone()) {
+                    next.push(include);
+                }
+            }
+        }
+        out.extend(next.iter().cloned());
+        frontier = next;
+        if out.len() > 300 {
+            break;
+        }
+    }
+    out
+}
+
+/// Path fragments a file's imports point at: "java/util/List",
+/// "kotlinx/coroutines/", "fmt/", "serde/de/", "stdio.h"…
+pub fn import_hints(lang: Lang, text: &str) -> Vec<String> {
+    use std::sync::OnceLock;
+    static JVM: OnceLock<regex::Regex> = OnceLock::new();
+    static GO: OnceLock<regex::Regex> = OnceLock::new();
+    static RUST: OnceLock<regex::Regex> = OnceLock::new();
+    static DART: OnceLock<regex::Regex> = OnceLock::new();
+    static C: OnceLock<regex::Regex> = OnceLock::new();
+    static PY: OnceLock<regex::Regex> = OnceLock::new();
+    static JS: OnceLock<regex::Regex> = OnceLock::new();
+    static SWIFT: OnceLock<regex::Regex> = OnceLock::new();
+    let re = |slot: &'static OnceLock<regex::Regex>, pattern: &str| slot.get_or_init(|| regex::Regex::new(pattern).unwrap());
+    let captures = |re: &regex::Regex| re.captures_iter(text).filter_map(|c| c.get(1).map(|m| m.as_str().to_owned())).collect::<Vec<_>>();
+    let mut out = Vec::new();
+    match lang {
+        Lang::Java | Lang::Kotlin => {
+            for import in captures(re(&JVM, r"(?m)^\s*import\s+(?:static\s+)?([\w.]+)")) {
+                let path = import.replace('.', "/");
+                if let Some((parent, _)) = path.rsplit_once('/') {
+                    out.push(format!("{parent}/"));
+                }
+                out.push(path);
+            }
+            // Same-package and java.lang / kotlin defaults.
+            out.extend(["java/lang/".to_owned(), "kotlin/".to_owned(), "kotlin/collections/".to_owned(), "kotlin/text/".to_owned(), "kotlin/io/".to_owned()]);
+        }
+        Lang::Go => out.extend(captures(re(&GO, r#"(?m)^\s*(?:import\s+)?(?:[\w.]+\s+)?"([\w./\-]+)"\s*$"#)).into_iter().map(|p| format!("{p}/"))),
+        Lang::Rust => {
+            for import in captures(re(&RUST, r"(?m)^\s*(?:pub\s+)?use\s+([\w:]+)")) {
+                let parts: Vec<&str> = import.split("::").filter(|p| !p.is_empty()).collect();
+                if parts.len() > 1 {
+                    out.push(format!("{}/", parts[..parts.len() - 1].join("/")));
+                }
+                out.push(parts.join("/"));
+            }
+            out.extend(["core/".to_owned(), "alloc/".to_owned(), "std/prelude/".to_owned()]);
+        }
+        Lang::Dart => {
+            for import in captures(re(&DART, r#"(?m)^\s*(?:import|export)\s+['"]([^'"]+)['"]"#)) {
+                if let Some(rest) = import.strip_prefix("package:") {
+                    out.push(rest.to_owned());
+                    out.push(format!("{}/", rest.split('/').next().unwrap_or(rest)));
+                } else if let Some(rest) = import.strip_prefix("dart:") {
+                    out.push(format!("{rest}/"));
+                }
+            }
+            out.push("core/".to_owned());
+        }
+        Lang::C | Lang::Cpp | Lang::ObjC => out.extend(captures(re(&C, r#"(?m)^\s*#\s*(?:include|import)\s*[<"]([^>"]+)[>"]"#))),
+        Lang::Python => out.extend(captures(re(&PY, r"(?m)^\s*(?:from|import)\s+([\w.]+)")).into_iter().map(|p| p.replace('.', "/"))),
+        Lang::JavaScript | Lang::TypeScript | Lang::Tsx => {
+            out.extend(captures(re(&JS, r#"(?:from\s+|require\(\s*|import\s+)['"]([^'"./][^'"]*)['"]"#)).into_iter().map(|p| format!("node_modules/{p}")))
+        }
+        Lang::Swift => out.extend(captures(re(&SWIFT, r"(?m)^\s*(?:@\w+\s+)*import\s+(?:\w+\s+)?(\w+)")).into_iter().map(|m| format!("{m}.")).chain(["Swift.".to_owned()])),
+        Lang::V => out.extend(captures(re(&JVM, r"(?m)^\s*import\s+(?:static\s+)?([\w.]+)")).into_iter().map(|p| format!("{}/", p.replace('.', "/"))).chain(["builtin/".to_owned()])),
+    }
+    out
+}
+
+/// Whether a library file is one of the hinted ones: its path, without
+/// versions and `src` / `lib` levels, contains a hint at a segment start.
+fn hinted(path: &str, hints: &[String]) -> bool {
+    if hints.is_empty() {
+        return false;
+    }
+    let mut normal = String::with_capacity(path.len());
+    for segment in path.replace('\\', "/").split('/') {
+        if matches!(segment, "src" | "lib" | "library" | "Headers" | "Modules") {
+            continue;
+        }
+        // serde-1.0.219 → serde; module@v1.2.0 → module; Foo.framework → Foo.
+        let segment = segment.split('@').next().unwrap_or(segment);
+        let segment = match segment.rfind('-') {
+            Some(i) if segment[i + 1..].starts_with(|c: char| c.is_ascii_digit()) => &segment[..i],
+            _ => segment,
+        };
+        let segment = segment.strip_suffix(".framework").or_else(|| segment.strip_suffix(".swiftmodule")).unwrap_or(segment);
+        normal.push('/');
+        normal.push_str(segment);
+    }
+    hints.iter().any(|h| normal.contains(&format!("/{h}")))
 }
 
 fn shared_prefix(a: &str, b: &str) -> usize {
@@ -372,14 +620,17 @@ pub fn search_symbols(index: &ProjectIndex, query: &str, types_only: bool, limit
         return Vec::new();
     }
     let mut out: Vec<SymbolMatch> = Vec::new();
-    for name in index.names() {
+    for name in index.names().chain(index.external_names()) {
         let Some(score) = fuzzy_score(query, name) else { continue };
         for (p, e, s) in index.symbols_named(name) {
             if (types_only && !s.kind.is_type()) || s.decl && types_only {
                 continue;
             }
             let exact = if name.eq_ignore_ascii_case(query) { 50 } else { 0 };
-            out.push(SymbolMatch { target: symbol_target(p, e.lang, s), kind: s.kind, score: score + exact - s.decl as i32 * 5 });
+            // Library items follow the project's, as with IntelliJ's
+            // "Include non-project items".
+            let external = if ProjectIndex::is_external(p) { 40 } else { 0 };
+            out.push(SymbolMatch { target: symbol_target(p, e.lang, s), kind: s.kind, score: score + exact - s.decl as i32 * 5 - external });
         }
     }
     out.sort_by(|a, b| b.score.cmp(&a.score).then(a.target.name.len().cmp(&b.target.name.len())).then(a.target.path.cmp(&b.target.path)));
@@ -389,7 +640,7 @@ pub fn search_symbols(index: &ProjectIndex, query: &str, types_only: bool, limit
 
 /// File Structure (Ctrl+F12): the file's symbols in source order.
 pub fn file_symbols(index: &ProjectIndex, path: &str) -> Vec<SymbolMatch> {
-    let Some(entry) = index.files.get(path) else { return Vec::new() };
+    let Some(entry) = index.file(path) else { return Vec::new() };
     let mut out: Vec<SymbolMatch> = entry
         .symbols
         .iter()
@@ -415,6 +666,15 @@ pub fn search_files(index: &ProjectIndex, query: &str, limit: usize) -> Vec<(Str
             Some((path.clone(), score))
         })
         .collect();
+    // Library files, after the project's.
+    for library in &index.external.libraries {
+        for path in &library.files {
+            let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+            if let Some(score) = fuzzy_score(query, name) {
+                out.push((path.clone(), score + 20 - 40));
+            }
+        }
+    }
     out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.len().cmp(&b.0.len())));
     out.truncate(limit);
     out

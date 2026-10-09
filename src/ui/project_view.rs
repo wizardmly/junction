@@ -64,6 +64,9 @@ enum RowKind {
     Root,
     Dir,
     File,
+    /// "External Libraries" and one library under it.
+    Libraries,
+    Library,
 }
 
 #[derive(Clone, Debug)]
@@ -138,7 +141,17 @@ pub struct ProjectView {
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     root_dir: Option<PathBuf>,
+    /// External Libraries: (name, root, absolute files).
+    libraries: Rc<Vec<(String, PathBuf, Vec<String>)>>,
+    libraries_from: usize,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Row keys under External Libraries (not repository paths).
+const LIBRARIES_KEY: &str = "\u{1}libraries";
+
+fn library_key(ix: usize) -> String {
+    format!("\u{1}library/{ix}")
 }
 
 impl EventEmitter<OpenTarget> for ProjectView {}
@@ -194,6 +207,8 @@ impl ProjectView {
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             root_dir: None,
+            libraries: Rc::default(),
+            libraries_from: 0,
             _subscriptions: subscriptions,
         };
         this.reload(cx);
@@ -241,7 +256,28 @@ impl ProjectView {
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
-        let files = self.index.read(cx).index.read().map(|i| i.all_files.clone()).unwrap_or_default();
+        let seen = self.libraries_from;
+        let (files, libraries) = self
+            .index
+            .read(cx)
+            .index
+            .read()
+            .map(|i| {
+                // The library index is replaced, never changed in place.
+                let from = std::sync::Arc::as_ptr(&i.external) as usize;
+                let libraries = (from != seen).then(|| {
+                    let list: Vec<(String, PathBuf, Vec<String>)> = i.external.libraries.iter().map(|l| (l.name.clone(), l.root.clone(), l.files.clone())).collect();
+                    (from, list)
+                });
+                (i.all_files.clone(), libraries)
+            })
+            .unwrap_or_default();
+        if let Some((from, libraries)) = libraries {
+            self.libraries_from = from;
+            self.libraries = Rc::new(libraries);
+            self.flatten();
+            cx.notify();
+        }
         if *self.files == files && !self.files.is_empty() {
             return;
         }
@@ -366,7 +402,42 @@ impl ProjectView {
         };
         let ctx = WalkCtx { expanded: &self.expanded, settings: &self.settings, root: root_dir.as_deref() };
         walk(&self.tree, "", base, &ctx, &mut rows);
+        if self.mode == ProjectMode::Project && !self.libraries.is_empty() {
+            self.library_rows(&mut rows);
+        }
         self.rows = Rc::new(rows);
+    }
+
+    /// External Libraries, after the project as in IntelliJ: each library's
+    /// files as a tree; file rows carry absolute paths.
+    fn library_rows(&self, rows: &mut Vec<Row>) {
+        rows.push(Row { depth: 0, name: "External Libraries".into(), path: LIBRARIES_KEY.into(), kind: RowKind::Libraries, excluded: false });
+        if !self.expanded.contains(LIBRARIES_KEY) {
+            return;
+        }
+        let ctx = WalkCtx { expanded: &self.expanded, settings: &self.settings, root: None };
+        for (ix, (name, root, files)) in self.libraries.iter().enumerate() {
+            let key = library_key(ix);
+            let open = self.expanded.contains(&key);
+            rows.push(Row { depth: 1, name: name.clone(), path: key.clone(), kind: RowKind::Library, excluded: false });
+            if !open {
+                continue;
+            }
+            let mut tree = Dir { loaded: true, ..Default::default() };
+            for file in files {
+                if let Ok(rel) = Path::new(file).strip_prefix(root) {
+                    tree.insert(&rel.to_string_lossy().replace('\\', "/"), false);
+                }
+            }
+            let prefix = format!("{key}/");
+            let start = rows.len();
+            walk(&tree, &prefix, 2, &ctx, rows);
+            for row in &mut rows[start..] {
+                if row.kind == RowKind::File {
+                    row.path = root.join(&row.path[prefix.len()..]).to_string_lossy().into_owned();
+                }
+            }
+        }
     }
 
     fn select_row(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -413,7 +484,7 @@ impl ProjectView {
             RowKind::File if self.settings.preview_tab => self.preview(row.path, cx),
             RowKind::File if self.settings.single_click => self.open(row.path, cx),
             // Folders open on a single click; the second click of a double click is ignored.
-            RowKind::Dir | RowKind::Root if count == 1 => self.toggle(&row.path, cx),
+            RowKind::Dir | RowKind::Root | RowKind::Libraries | RowKind::Library if count == 1 => self.toggle(&row.path, cx),
             _ => {}
         }
         cx.notify();
@@ -421,6 +492,10 @@ impl ProjectView {
 
     /// Select In › Project View, and the Select Opened File button.
     pub fn reveal(&mut self, path: &str, cx: &mut Context<Self>) {
+        if crate::index::store::ProjectIndex::is_external(path) {
+            self.reveal_library_file(path, cx);
+            return;
+        }
         if !self.tree_has(path) && self.mode != ProjectMode::Project {
             self.mode = ProjectMode::Project;
             self.rebuild_tree(cx);
@@ -431,6 +506,31 @@ impl ProjectView {
         for part in &parts[..parts.len().saturating_sub(1)] {
             prefix = if prefix.is_empty() { (*part).to_owned() } else { format!("{prefix}/{part}") };
             self.expanded.insert(prefix.clone());
+        }
+        self.selected = Some(path.to_owned());
+        self.flatten();
+        if let Some(ix) = self.selected_ix() {
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
+        }
+        cx.notify();
+    }
+
+    fn reveal_library_file(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(ix) = self.libraries.iter().position(|(_, _, files)| files.binary_search_by(|f| f.as_str().cmp(path)).is_ok()) else { return };
+        if self.mode != ProjectMode::Project {
+            self.mode = ProjectMode::Project;
+            self.rebuild_tree(cx);
+        }
+        let key = library_key(ix);
+        self.expanded.insert(LIBRARIES_KEY.into());
+        self.expanded.insert(key.clone());
+        if let Ok(rel) = Path::new(path).strip_prefix(&self.libraries[ix].1) {
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            let mut prefix = key;
+            for part in rel.split('/').collect::<Vec<_>>().iter().rev().skip(1).rev() {
+                prefix = format!("{prefix}/{part}");
+                self.expanded.insert(prefix.clone());
+            }
         }
         self.selected = Some(path.to_owned());
         self.flatten();
@@ -502,13 +602,17 @@ impl ProjectView {
     }
 
     fn target(&self, row: &Row, cx: &App) -> Option<ProjectTarget> {
+        // Library sources have no file actions (they're read-only).
+        if row.path.starts_with('\u{1}') || crate::index::store::ProjectIndex::is_external(&row.path) {
+            return None;
+        }
         let (model, actions, root) = (self.model.clone()?, self.actions.clone()?, self.root(cx)?);
         let is_dir = row.kind != RowKind::File;
         let prefix = format!("{}/", row.path);
         let files = match row.kind {
             RowKind::Root => self.files.to_vec(),
             RowKind::Dir => self.files.iter().filter(|f| f.starts_with(&prefix)).cloned().collect(),
-            RowKind::File => Vec::new(),
+            _ => Vec::new(),
         };
         Some(ProjectTarget { model, root, path: row.path.clone(), is_dir, files, actions, clipboard: self.clipboard.clone() })
     }
@@ -802,6 +906,8 @@ impl Render for ProjectView {
                                     RowKind::Dir if open => IconName::FolderOpen,
                                     RowKind::Dir => IconName::FolderClosed,
                                     RowKind::File => common::file_icon(&row.path),
+                                    RowKind::Libraries => IconName::Layers,
+                                    RowKind::Library => IconName::Archive,
                                 })
                                 .text_color(if row.excluded { excluded_color(palette.dark) } else { palette.text_secondary }),
                             )

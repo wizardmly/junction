@@ -2307,7 +2307,22 @@ impl Workspace {
         // Breadcrumbs: project › folders › file.
         let mut crumbs: Vec<String> = project.into_iter().collect();
         if let Some(file) = &file {
-            crumbs.extend(file.split('/').map(str::to_owned));
+            // A library file: External Libraries › library › path inside it.
+            let library = crate::index::store::ProjectIndex::is_external(file)
+                .then(|| {
+                    let index = self.code_index.read(cx).index.read().ok()?;
+                    let library = index.external.library_of(file)?;
+                    let rel = std::path::Path::new(file).strip_prefix(&library.root).ok()?.to_string_lossy().replace('\\', "/");
+                    Some((library.name.clone(), rel))
+                })
+                .flatten();
+            match library {
+                Some((name, rel)) => {
+                    crumbs = vec!["External Libraries".to_owned(), name];
+                    crumbs.extend(rel.split('/').map(str::to_owned));
+                }
+                None => crumbs.extend(file.split(['/', '\\']).filter(|p| !p.is_empty()).map(str::to_owned)),
+            }
         }
         let crumb_count = crumbs.len();
         let mut path = h_flex().gap_0p5().min_w_0().overflow_hidden();
