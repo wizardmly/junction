@@ -54,7 +54,8 @@ actions!(
         PreviousChange,
         OpenFind,
         OpenReplace,
-        CompareWithClipboard
+        CompareWithClipboard,
+        DeleteLine
     ]
 );
 
@@ -83,6 +84,14 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("f3", FindNext, Some(CONTEXT)),
         KeyBinding::new("shift-f3", FindPrevious, Some(CONTEXT)),
         KeyBinding::new("escape", CloseChangePopup, Some(POPUP_CONTEXT)),
+        // IntelliJ's keymap: Ctrl+Shift+Z redoes, Ctrl+Y deletes the line
+        // (over the text field's Windows-style Ctrl+Y redo).
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-z", gpui_kit::component::input::Redo, Some("FileEditor > Input")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-y", DeleteLine, Some("FileEditor > Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-backspace", DeleteLine, Some("FileEditor > Input")),
     ]);
 }
 
@@ -414,9 +423,30 @@ impl FileEditor {
         self.code_index = Some(index);
     }
 
-    /// Moves the cursor to a 0-based line and UTF-16 column, scrolled into view.
+    /// Moves the cursor to a 0-based line and UTF-16 column. A line out of
+    /// view scrolls to the middle of the editor, as IntelliJ's navigation.
     pub fn go_to(&mut self, line: u32, col: u32, window: &mut Window, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| state.set_cursor_position(lsp_position(line, col), window, cx));
+        self.center_line(line as usize, 0, window, cx);
+    }
+
+    fn center_line(&mut self, line: usize, attempt: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let (Some(range), Some(height)) = (state.visible_row_range(), state.line_height()) else {
+            // A file just opened isn't laid out yet: after its first frame.
+            if attempt < 4 {
+                cx.on_next_frame(window, move |this, window, cx| this.center_line(line, attempt + 1, window, cx));
+            }
+            return;
+        };
+        // The range has a row of overscan past the bottom edge.
+        let rows = range.len().saturating_sub(2).max(1);
+        if line >= range.start + 1 && line + 3 <= range.end || line < rows / 2 && range.start == 0 {
+            return;
+        }
+        let top = line.saturating_sub(rows / 2);
+        let x = state.scroll_offset().x;
+        self.state.update(cx, |state, cx| state.set_scroll_offset(gpui_kit::point(x, -(height * top as f32)), cx));
     }
 
     /// (line, UTF-16 column) of the cursor, for navigation history.
@@ -834,6 +864,23 @@ impl FileEditor {
         cx.emit(FileEditorEvent::CreateGist { name, content });
     }
 
+    /// Delete Line (Ctrl+Y): the lines the selection touches.
+    fn delete_line(&mut self, _: &DeleteLine, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only() {
+            return;
+        }
+        let text = self.text(cx);
+        let (start, end) = self.selected_lines(cx);
+        let from = line_start(&text, start - 1);
+        let to = line_start(&text, end);
+        // The last line takes the newline before it instead.
+        let from = if to == text.len() && !text[from..].contains('\n') && from > 0 { from - 1 } else { from };
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(from..to, cx);
+            state.replace("", window, cx);
+        });
+    }
+
     fn rollback_lines(&mut self, _: &RollbackLines, window: &mut Window, cx: &mut Context<Self>) {
         if self.read_only() {
             return;
@@ -1024,6 +1071,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(|this, _: &NextChange, window, cx| this.go_to_change(true, window, cx)))
             .on_action(cx.listener(|this, _: &PreviousChange, window, cx| this.go_to_change(false, window, cx)))
             .on_action(cx.listener(Self::rollback_lines))
+            .on_action(cx.listener(Self::delete_line))
             .on_action(cx.listener(Self::open_on_hosting))
             .on_action(cx.listener(Self::create_gist))
             .on_action(cx.listener(Self::goto_declaration))
