@@ -361,12 +361,16 @@ mod tests {
         git(&origin, &["add", "."]);
         git(&origin, &["commit", "-qm", "second"]);
         std::fs::write(local.join("a.txt"), "local\n").unwrap();
+        std::fs::write(local.join("c.txt"), "new\n").unwrap();
+        git(&local, &["add", "c.txt"]);
 
         let repo = Repository::discover(&local, GitConsole::default()).unwrap();
-        let message = update_project(&repo, false, CleanWith::Shelve).unwrap();
+        let message = update_project(&repo, true, CleanWith::Shelve).unwrap();
         assert!(message.starts_with("1 file updated in 1 commit\u{1f}"), "{message}");
         assert_eq!(std::fs::read_to_string(local.join("a.txt")).unwrap(), "local\n");
         assert!(local.join("b.txt").exists());
+        // A file added to Git before the update comes back added, not unversioned.
+        assert_eq!(repo.run(["status", "--porcelain", "--", "c.txt"]).unwrap().trim(), "A  c.txt");
         let shelves = crate::git::patch::shelves(&repo);
         assert_eq!(shelves.len(), 1);
         assert!(shelves[0].deleted && shelves[0].name.starts_with("Uncommitted changes before Update"));
