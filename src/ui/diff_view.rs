@@ -25,7 +25,7 @@ use crate::git::blob::{self, ImageInfo, ImageKind};
 use crate::git::diff::{self, DiffOptions, DiffRow, FileDiff, HighlightMode, HunkAction, IgnoreWhitespace, Revisions, RowKind, Side};
 use crate::theme::{ActivePalette as _, Palette};
 use crate::ui::common::{self, tool_button};
-use crate::ui::diff_panes::{BlockColors, Connector, DIVIDER_WIDTH, LINE_HEIGHT, PaneRow, TwoSide, fold_links, paint_divider};
+use crate::ui::diff_panes::{line_height, BlockColors, Connector, DIVIDER_WIDTH, PaneRow, TwoSide, fold_links, paint_divider};
 use crate::ui::text_panes::{BUTTON_WIDTH, GUTTER_WIDTH, PaneContent, PaneLayout, RowLook, RowTarget, STRIPE_WIDTH, TextPanes, pane_area};
 
 pub(crate) mod edit;
@@ -1134,7 +1134,7 @@ impl DiffView {
                 let Some(change) = seg.change else { continue };
                 let range = if pane == 0 { seg.left.clone() } else { seg.right.clone() };
                 let y = self.panes.row_top(pane, range.start);
-                if self.panes.row_top(pane, range.end) < -LINE_HEIGHT || y > visible + LINE_HEIGHT {
+                if self.panes.row_top(pane, range.end) < -line_height() || y > visible + line_height() {
                     continue;
                 }
                 let rows = if pane == 0 { &two.left[range.clone()] } else { &two.right[range.clone()] };
@@ -1148,7 +1148,7 @@ impl DiffView {
                     h_flex()
                         .absolute()
                         .top(px(button_top))
-                        .h(px(LINE_HEIGHT))
+                        .h(px(line_height()))
                         .justify_center()
                         .items_center()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1351,7 +1351,7 @@ impl DiffView {
                 .top(px(self.panes.row_top(1, ix)))
                 .left(px(layout.buttons_offset()))
                 .w(px(buttons_width))
-                .h(px(LINE_HEIGHT))
+                .h(px(line_height()))
                 .justify_center()
                 .items_center()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());

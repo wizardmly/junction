@@ -25,7 +25,7 @@ use crate::git::merge::{self, Conflict, MergeChunk};
 use crate::model::RepoModel;
 use crate::theme::{ActivePalette as _, Palette};
 use crate::ui::common::{self, tool_button};
-use crate::ui::diff_panes::{BlockColors, Connector, DIVIDER_WIDTH, LINE_HEIGHT, Segment, paint_divider};
+use crate::ui::diff_panes::{line_height, BlockColors, Connector, DIVIDER_WIDTH, Segment, paint_divider};
 use crate::ui::diff_view::edit::replacement;
 use crate::ui::text_buffer::EditKind;
 use crate::ui::text_panes::{BUTTON_WIDTH, PaneContent, PaneHost, PaneLayout, RowLook, RowTarget, STRIPE_WIDTH, TextPanes, pane_area};
@@ -786,7 +786,7 @@ impl MergeView {
             };
             let block = self.block(ix, pane);
             let y = self.panes.row_top(pane, block.start);
-            if self.panes.row_top(pane, block.end) < -LINE_HEIGHT || y > height {
+            if self.panes.row_top(pane, block.end) < -line_height() || y > height {
                 continue;
             }
             let Some(colors) = kind.colors(palette) else { continue };
@@ -799,7 +799,7 @@ impl MergeView {
                 h_flex()
                     .absolute()
                     .top(px(top))
-                    .h(px(LINE_HEIGHT))
+                    .h(px(line_height()))
                     .w(px(width))
                     .justify_center()
                     .items_center()

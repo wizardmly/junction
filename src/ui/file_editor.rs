@@ -1137,7 +1137,7 @@ impl Render for FileEditor {
             })
             .child(
                 div().relative().flex_1().min_h_0().child(
-                    h_flex().size_full().children(annotation_gutter).child(div().flex_1().min_w_0().h_full().child(
+                    h_flex().size_full().children(annotation_gutter).child(div().flex_1().min_w_0().h_full().text_size(px(crate::ui::diff_panes::font_size())).child(
                     Editor::new(&self.state)
                         .h_full()
                         .bordered(false)

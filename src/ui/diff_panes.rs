@@ -10,7 +10,22 @@ use gpui_kit::{Bounds, Hsla, PathBuilder, Pixels, Window, point, px};
 
 use crate::git::diff::{DiffRow, RowKind, Side};
 
-pub const LINE_HEIGHT: f32 = 20.;
+/// The editor font size (Settings › Editor › Font), in tenths of a point.
+static FONT_TENTHS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(125);
+
+pub fn set_font_size(size: f32) {
+    FONT_TENTHS.store((size.clamp(8., 32.) * 10.).round() as u32, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The diff, merge and text panes' font size.
+pub fn font_size() -> f32 {
+    FONT_TENTHS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 10.
+}
+
+/// A pane line's height: 20 px at the default 12.5 pt.
+pub fn line_height() -> f32 {
+    (font_size() * 1.6).round()
+}
 /// The divider between two panes, where change blocks are connected.
 pub const DIVIDER_WIDTH: f32 = 24.;
 
@@ -230,7 +245,7 @@ pub fn paint_divider(
     let height = f32::from(bounds.size.height);
     // Row tops come from the panes: wrapped rows are taller.
     let y = |tops: &[f32], row: usize, offset: f32| {
-        top + tops.get(row).or(tops.last()).copied().unwrap_or(row as f32 * LINE_HEIGHT) - offset
+        top + tops.get(row).or(tops.last()).copied().unwrap_or(row as f32 * line_height()) - offset
     };
     for c in connectors {
         let (l0, l1) = (y(tops.0, c.left.start, scroll.0), y(tops.0, c.left.end, scroll.0));
@@ -254,7 +269,7 @@ pub fn paint_divider(
     }
     // Collapsed fragments are joined by a line between their middles.
     for (l, r) in folds {
-        let (a, b) = (y(tops.0, *l, scroll.0) + LINE_HEIGHT / 2., y(tops.1, *r, scroll.1) + LINE_HEIGHT / 2.);
+        let (a, b) = (y(tops.0, *l, scroll.0) + line_height() / 2., y(tops.1, *r, scroll.1) + line_height() / 2.);
         let mut link = PathBuilder::stroke(px(1.));
         link.move_to(point(x0, px(a)));
         link.line_to(point(x1, px(b)));

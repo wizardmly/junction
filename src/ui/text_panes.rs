@@ -23,14 +23,13 @@ use gpui_kit::{
 
 use crate::theme::Palette;
 use crate::ui::common;
-use crate::ui::diff_panes::{LINE_HEIGHT, Segment, map_row};
+use crate::ui::diff_panes::{Segment, font_size, line_height, map_row};
 use crate::ui::text_buffer::{Buffer, EditKind, History, Selection};
 
 actions!(text_panes, [Paste]);
 
 /// The key context of the panes.
 pub const PANE_CONTEXT: &str = "TextPanes";
-pub const FONT_SIZE: f32 = 12.5;
 /// Text starts this far right of its cell's left edge.
 pub const TEXT_PADDING: f32 = 8.;
 pub const GUTTER_WIDTH: f32 = 44.;
@@ -40,8 +39,11 @@ pub const STRIPE_WIDTH: f32 = 12.;
 /// The gutter's change marker, against the divider.
 const MARKER_WIDTH: f32 = 3.;
 const TAB_WIDTH: usize = 4;
-/// Approximate advance of the monospace font, for horizontal scroll bounds.
-const CHAR_WIDTH: f32 = 7.6;
+/// Approximate advance of the monospace font, for horizontal scroll bounds
+/// until the font is measured.
+fn char_width_guess() -> f32 {
+    7.6 * font_size() / 12.5
+}
 
 /// What a pane row shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,7 +113,7 @@ impl PaneLayout {
         } else if self.double_numbers {
             2. * GUTTER_WIDTH
         } else if self.digits > 0 {
-            self.digits.max(2) as f32 * CHAR_WIDTH + 8.
+            self.digits.max(2) as f32 * char_width_guess() + 8.
         } else {
             GUTTER_WIDTH
         };
@@ -265,7 +267,7 @@ impl<T: Clone + Default> TextPanes<T> {
             indent_guides: true,
             weights: vec![1.; panes],
             drag: None,
-            char_width: Rc::new(Cell::new(CHAR_WIDTH)),
+            char_width: Rc::new(Cell::new(char_width_guess())),
             soft_wrap: false,
             wraps: vec![Vec::new(); panes],
             tops: vec![vec![0.]; panes],
@@ -357,12 +359,12 @@ impl<T: Clone + Default> TextPanes<T> {
         let mut wraps = Vec::new();
         let blocks = &self.blocks[pane];
         if cols == usize::MAX && blocks.is_empty() {
-            tops.extend((0..=rows.len()).map(|r| r as f32 * LINE_HEIGHT));
+            tops.extend((0..=rows.len()).map(|r| r as f32 * line_height()));
         } else if cols == usize::MAX {
             let mut y = 0.;
             for row in 0..rows.len() {
                 tops.push(y);
-                y += LINE_HEIGHT + blocks.get(&row).copied().unwrap_or(0.);
+                y += line_height() + blocks.get(&row).copied().unwrap_or(0.);
             }
             tops.push(y);
         } else {
@@ -375,7 +377,7 @@ impl<T: Clone + Default> TextPanes<T> {
                 };
                 let starts = text.map_or_else(|| vec![0], |t| wrap_starts(t, cols));
                 tops.push(y);
-                y += starts.len() as f32 * LINE_HEIGHT + blocks.get(&ix).copied().unwrap_or(0.);
+                y += starts.len() as f32 * line_height() + blocks.get(&ix).copied().unwrap_or(0.);
                 wraps.push(starts);
             }
             tops.push(y);
@@ -421,7 +423,7 @@ impl<T: Clone + Default> TextPanes<T> {
             tops.clear();
             for (row, n) in lines.into_iter().enumerate() {
                 tops.push(y);
-                y += n as f32 * LINE_HEIGHT + self.blocks[pane].get(&row).copied().unwrap_or(0.);
+                y += n as f32 * line_height() + self.blocks[pane].get(&row).copied().unwrap_or(0.);
             }
             tops.push(y);
         }
@@ -449,7 +451,7 @@ impl<T: Clone + Default> TextPanes<T> {
     fn y_to_row(&self, pane: usize, y: f32) -> f32 {
         let row = self.row_at(pane, y);
         let (top, bottom) = (self.row_y(pane, row), self.row_y(pane, row + 1));
-        if bottom <= top { (y / LINE_HEIGHT).max(0.) } else { row as f32 + ((y - top) / (bottom - top)).clamp(0., 1.) }
+        if bottom <= top { (y / line_height()).max(0.) } else { row as f32 + ((y - top) / (bottom - top)).clamp(0., 1.) }
     }
 
     fn row_to_y(&self, pane: usize, row: f32) -> f32 {
@@ -488,7 +490,7 @@ impl<T: Clone + Default> TextPanes<T> {
         if part > 0 {
             x += wrap_indent(text, self.wrap_cols[pane]) as f32 * self.char_width.get();
         }
-        Some((x, self.row_y(pane, row) + part as f32 * LINE_HEIGHT))
+        Some((x, self.row_y(pane, row) + part as f32 * line_height()))
     }
 
     /// The pane rows every buffer line gets, with nothing folded.
@@ -637,7 +639,7 @@ impl<T: Clone + Default> TextPanes<T> {
     }
 
     fn on_wheel(&mut self, pane: usize, event: &ScrollWheelEvent) {
-        let delta = event.delta.pixel_delta(px(LINE_HEIGHT));
+        let delta = event.delta.pixel_delta(px(line_height()));
         let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
         let (x, y) = self.scroll[pane];
         if event.modifiers.shift && dx == 0. {
@@ -692,7 +694,7 @@ impl<T: Clone + Default> TextPanes<T> {
         let (start, end, indent) = match self.line_row(pane, line) {
             Some(LineRow::Row(own)) if self.wraps[pane].get(own).is_some_and(|w| w.len() > 1) => {
                 let wraps = self.row_wraps(pane, own);
-                let part = if own == row { (((y - self.row_y(pane, row)) / LINE_HEIGHT).floor().max(0.) as usize).min(wraps.len() - 1) } else { wraps.len() - 1 };
+                let part = if own == row { (((y - self.row_y(pane, row)) / line_height()).floor().max(0.) as usize).min(wraps.len() - 1) } else { wraps.len() - 1 };
                 let indent = if part > 0 { wrap_indent(text, self.wrap_cols[pane]) as f32 * self.char_width.get() } else { 0. };
                 (wraps[part], wraps.get(part + 1).copied().unwrap_or(text.len()), indent)
             }
@@ -786,9 +788,9 @@ impl<T: Clone + Default> TextPanes<T> {
         let b = self.bounds.borrow()[pane];
         let (x, y) = self.scroll[pane];
         if event.position.y < b.origin.y {
-            self.scroll_to(pane, x, y - LINE_HEIGHT);
+            self.scroll_to(pane, x, y - line_height());
         } else if event.position.y > b.origin.y + b.size.height {
-            self.scroll_to(pane, x, y + LINE_HEIGHT);
+            self.scroll_to(pane, x, y + line_height());
         }
         let position = point(
             event.position.x.clamp(b.origin.x, b.origin.x + b.size.width),
@@ -840,7 +842,7 @@ impl<T: Clone + Default> TextPanes<T> {
         if m.alt {
             return Outcome::Ignored;
         }
-        let page = ((self.view_height.get() / LINE_HEIGHT) as isize - 1).max(1);
+        let page = ((self.view_height.get() / line_height()) as isize - 1).max(1);
         let b = &self.buffers[pane];
         match (keystroke.key.as_str(), ctrl) {
             ("left", false) => {
@@ -1093,8 +1095,8 @@ impl<T: Clone + Default> TextPanes<T> {
         let height = self.view_height.get();
         if top < y {
             y = top;
-        } else if height > 0. && top + LINE_HEIGHT > y + height {
-            y = top + LINE_HEIGHT - height;
+        } else if height > 0. && top + line_height() > y + height {
+            y = top + line_height() - height;
         }
         let width = self.text_extent(pane).1 - TEXT_PADDING;
         if caret_x < x {
@@ -1192,7 +1194,7 @@ impl<T: Clone + Default> TextPanes<T> {
         let (sx, sy) = self.scroll[pane];
         let x = b.origin.x + px(self.layouts[pane].text_left() + cx_ - sx);
         let y = b.origin.y + px(cy - sy);
-        Some(Bounds::new(point(x, y), size(px(2.), px(LINE_HEIGHT))))
+        Some(Bounds::new(point(x, y), size(px(2.), px(line_height()))))
     }
 
     pub fn character_index_for_point(&self, position: gpui_kit::Point<Pixels>, window: &Window, cx: &App) -> Option<usize> {
@@ -1304,7 +1306,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
     /// A row's height (taller when wrapped), without the block below it.
     pub fn row_height(&self, pane: usize, row: usize) -> f32 {
         let block = self.blocks[pane].get(&row).copied().unwrap_or(0.);
-        (self.row_y(pane, row + 1) - self.row_y(pane, row) - block).max(LINE_HEIGHT)
+        (self.row_y(pane, row + 1) - self.row_y(pane, row) - block).max(line_height())
     }
 
     /// Reserves space below rows for the host to fill (inline review
@@ -1479,7 +1481,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                             let backgrounds: Vec<_> = backgrounds.iter().map(|(r, c)| (clip(start, end, r), *c)).filter(|(r, _)| !r.is_empty()).collect();
                             parts = parts.child(
                                 div()
-                                    .h(px(LINE_HEIGHT))
+                                    .h(px(line_height()))
                                     .flex()
                                     .when(i > 0, |el| el.pl(px(indent)))
                                     .child(pane_text(&text[start..end], &syntax, &backgrounds, 0., self.show_whitespace, palette)),
@@ -1496,7 +1498,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                         while column < indent {
                             let x = text_left + column as f32 * char_width;
                             if x >= layout.text_left() - TEXT_PADDING {
-                                guides.push(div().absolute().top(px(top)).h(px(LINE_HEIGHT)).left(px(x)).w(px(1.)).bg(palette.border).into_any_element());
+                                guides.push(div().absolute().top(px(top)).h(px(line_height())).left(px(x)).w(px(1.)).bg(palette.border).into_any_element());
                             }
                             column += unit;
                         }
@@ -1595,7 +1597,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                 let left_edge = layout.text_left() - TEXT_PADDING;
                 if x >= left_edge {
                     let y = caret_y - self.scroll[pane].1;
-                    children.push(div().absolute().top(px(y)).left(px(x)).w(px(2.)).h(px(LINE_HEIGHT)).bg(palette.text).into_any_element());
+                    children.push(div().absolute().top(px(y)).left(px(x)).w(px(2.)).h(px(line_height())).bg(palette.text).into_any_element());
                 }
             }
         }
@@ -1614,7 +1616,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
             .h_full()
             .overflow_hidden()
             .font_family(cx.theme().mono_font_family.clone())
-            .text_size(px(FONT_SIZE))
+            .text_size(px(font_size()))
             .cursor(gpui_kit::CursorStyle::IBeam)
             .on_scroll_wheel(cx.listener(move |view: &mut V, e: &ScrollWheelEvent, _, cx| {
                 view.panes().on_wheel(pane, e);
@@ -1977,7 +1979,7 @@ fn shape(text: &str, window: &Window, cx: &App) -> gpui_kit::ShapedLine {
         underline: None,
         strikethrough: None,
     };
-    window.text_system().shape_line(SharedString::from(text.to_owned()), px(FONT_SIZE), &[run], None)
+    window.text_system().shape_line(SharedString::from(text.to_owned()), px(font_size()), &[run], None)
 }
 
 /// Lays background ranges (later ones win) over syntax styles, giving the
