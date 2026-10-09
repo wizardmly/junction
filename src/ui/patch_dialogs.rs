@@ -8,6 +8,7 @@ use gpui_kit::component::{
     Sizable as _, WindowExt as _, h_flex,
     button::Button,
     checkbox::Checkbox,
+    menu::{DropdownMenu as _, PopupMenuItem},
     input::{Input, InputEvent, InputState},
     radio::RadioGroup,
     scroll::ScrollableElement as _,
@@ -18,6 +19,7 @@ use gpui_kit::{
     Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 
+use crate::git::changelists::Changelists;
 use crate::git::patch::{self, ApplyOutcome, PatchFile};
 use crate::model::RepoModel;
 use crate::theme::ActivePalette as _;
@@ -206,6 +208,10 @@ pub struct ApplyPatchView {
     text: Option<String>,
     files: Vec<PatchFile>,
     error: Option<String>,
+    /// "Add to changelist" (changelists only, not with the staging area):
+    /// the lists and the chosen one, the active one at first.
+    changelists: Vec<String>,
+    changelist: Option<String>,
     _load: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -222,12 +228,18 @@ impl ApplyPatchView {
             }));
             input
         });
+        let lists = match model.read(cx).repository() {
+            Some(repository) if !crate::settings::Settings::get(cx).staging_area => Some(Changelists::load(repository)),
+            _ => None,
+        };
         let mut this = Self {
             model,
             path,
             text: clipboard,
             files: Vec::new(),
             error: None,
+            changelists: lists.as_ref().map(|l| l.lists.iter().map(|l| l.name.clone()).collect()).unwrap_or_default(),
+            changelist: lists.map(|l| l.active),
             _load: None,
             _subscriptions: subscriptions,
         };
@@ -347,6 +359,26 @@ impl Render for ApplyPatchView {
                     .overflow_y_scrollbar()
                     .child(list),
             )
+            .when_some(self.changelist.clone(), |el, current| {
+                let lists = self.changelists.clone();
+                let entity = cx.entity();
+                el.child(
+                    h_flex().gap_2().child(div().text_sm().child("Add to changelist:")).child(
+                        Button::new("apply-changelist").small().outline().label(current.clone()).dropdown_caret(true).dropdown_menu(move |mut menu, _, _| {
+                            for name in &lists {
+                                let (entity, name) = (entity.clone(), name.clone());
+                                menu = menu.item(PopupMenuItem::new(name.clone()).checked(name == current).on_click(move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.changelist = Some(name.clone());
+                                        cx.notify();
+                                    })
+                                }));
+                            }
+                            menu
+                        }),
+                    ),
+                )
+            })
             .when_some(self.error.clone(), |el, error| el.child(div().text_xs().text_color(palette.status_conflict).child(error)))
     }
 }
@@ -380,10 +412,19 @@ pub fn apply_patch(model: Entity<RepoModel>, clipboard: bool, window: &mut Windo
                 }
                 let Ok(text) = view.patch_text(cx) else { return false };
                 let count = view.files.len();
+                let paths: Vec<String> = view.files.iter().map(|f| f.path.clone()).collect();
+                let changelist = view.changelist.clone();
                 model.update(cx, |model, cx| {
                     model.run_operation("Apply Patch", move |repo| {
                         let files = if count == 1 { "1 file".to_owned() } else { format!("{count} files") };
-                        Ok(match patch::apply(repo, &text, false)? {
+                        // As IntelliJ: new files are added to Git, and the changes go to the chosen changelist.
+                        let (outcome, _) = patch::apply_adding_new(repo, &text, &paths)?;
+                        if let Some(target) = changelist {
+                            let mut lists = Changelists::load(repo);
+                            lists.move_files(&paths, &target);
+                            lists.save(repo);
+                        }
+                        Ok(match outcome {
                             ApplyOutcome::Clean => format!("Patch applied to {files}"),
                             ApplyOutcome::Merged => format!("Patch applied to {files} with a three-way merge"),
                             ApplyOutcome::Conflicts => "Patch applied with conflicts; resolve them in the Commit tool window".into(),

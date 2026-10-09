@@ -142,6 +142,25 @@ pub fn apply(repository: &Repository, patch: &str, to_index: bool) -> Result<App
     }
 }
 
+/// Apply Patch: like `apply`, and the files the patch creates are added to
+/// Git, as IntelliJ adds them to VCS. Returns the added paths too.
+pub fn apply_adding_new(repository: &Repository, patch: &str, paths: &[String]) -> Result<(ApplyOutcome, Vec<String>)> {
+    let untracked = |repository: &Repository| -> Vec<String> {
+        let mut args = vec!["ls-files", "--others", "--exclude-standard", "-z", "--"];
+        args.extend(paths.iter().map(String::as_str));
+        repository.run(args).map(|out| out.split('\0').filter(|p| !p.is_empty()).map(str::to_owned).collect()).unwrap_or_default()
+    };
+    let before = if paths.is_empty() { Vec::new() } else { untracked(repository) };
+    let outcome = apply(repository, patch, false)?;
+    let created: Vec<String> = if paths.is_empty() { Vec::new() } else { untracked(repository).into_iter().filter(|p| !before.contains(p)).collect() };
+    if !created.is_empty() {
+        let mut args = vec!["add", "--"];
+        args.extend(created.iter().map(String::as_str));
+        repository.run(args)?;
+    }
+    Ok((outcome, created))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApplyOutcome {
     Clean,
@@ -487,6 +506,21 @@ mod tests {
         rollback(&repository, &["b.txt".to_owned()]).unwrap();
         assert_eq!(porcelain(&repository), "");
         assert!(dir.0.join("a.txt").exists() && !dir.0.join("b.txt").exists());
+    }
+
+    #[test]
+    fn apply_patch_adds_the_files_it_creates() {
+        let (dir, repository) = repo();
+        std::fs::write(dir.0.join("new.txt"), "fresh\n").unwrap();
+        std::fs::write(dir.0.join("a.txt"), "one\nmore\n").unwrap();
+        std::fs::write(dir.0.join("stray.txt"), "untracked\n").unwrap();
+        let paths = vec!["a.txt".to_owned(), "new.txt".to_owned()];
+        let patch = local_changes(&repository, &paths, false).unwrap();
+        git(&dir, &["checkout", "--", "a.txt"]);
+        std::fs::remove_file(dir.0.join("new.txt")).unwrap();
+        let (outcome, added) = apply_adding_new(&repository, &patch, &paths).unwrap();
+        assert_eq!((outcome, added), (ApplyOutcome::Clean, vec!["new.txt".to_owned()]));
+        assert_eq!(porcelain(&repository), " M a.txt\nA  new.txt\n?? stray.txt\n");
     }
 
     #[test]

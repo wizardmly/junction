@@ -184,7 +184,7 @@
 | Cherry-pick（多选）、冲突处理 | M3 | ✅ |
 | Reset HEAD 对话框 | M2 | ✅ |
 | Tag：新建（轻量/附注、指定提交）、删除、推送 | M2 | ✅（新建；分支弹窗 Tag 子菜单：Push to <remote>、Delete、Delete on <remote>） |
-| 补丁：Create Patch / Apply Patch（含预览） | M4 | ✅（本地改动含未跟踪文件；Apply 先直接应用，失败时三方合并；剪贴板） |
+| 补丁：Create Patch / Apply Patch（含预览） | M4 | ✅（本地改动含未跟踪文件；Apply 先直接应用，失败时三方合并；像 AS 一样把补丁新建的文件加入 Git，改动放进 “Add to changelist” 选的变更列表（暂存区模式下无此项）；剪贴板） |
 | Worktree：列表、新建、删除、打开 | M5 | ✅（Git 工具窗口 Worktrees 标签页：列表、New Worktree…、Open、Open in New Window、Delete；菜单入口） |
 | Submodule：识别、更新 | M5 | ✅（Submodules 标签页：状态、Update / Update All / Sync、打开或新窗口打开；diff 显示 Subproject commit（含 -dirty）；子模块图标；Update Project 时跟随更新） |
 | Git 控制台（Console 标签页）：执行过的 git 命令及输出 | M1 | ✅（每条 “时:分:秒.毫秒: [仓库] git …”，下面是输出，错误红色；像 AS 一样只列出做事的命令，刷新用的只读查询不列；格式串里的控制字符显示为 %x1e；左侧 Soft-Wrap、Scroll to the End、Clear All） |
