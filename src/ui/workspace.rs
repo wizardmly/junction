@@ -413,16 +413,23 @@ impl Workspace {
                         return;
                     }
                     // Update Project: "N files updated in M commits" with View Commits.
+                    let (warning, message) = match message.strip_prefix(dialogs::PARTIAL_FAILURE) {
+                        Some(rest) => (true, rest.to_owned()),
+                        None => (false, message.clone()),
+                    };
                     let (message, updated_range) = match message.split_once('\u{1f}') {
                         Some((text, range)) => (text.to_owned(), Some(range.to_owned())),
                         None => (message.clone(), None),
                     };
                     let message = &message;
+                    let title = &if warning { format!("{title} finished with errors") } else { title.clone() };
                     let entity = cx.entity();
                     let mut notification = if *error {
                         // A short summary; the full output is in the Console tab.
                         let detail = message.split_once(" failed: ").map_or(message.as_str(), |(_, rest)| rest);
                         Notification::error(error_summary(detail)).title(title.clone())
+                    } else if warning {
+                        Notification::warning(message.clone()).title(title.clone())
                     } else {
                         Notification::success(message.clone()).title(title.clone())
                     };
@@ -580,6 +587,7 @@ impl Workspace {
                         title: title.clone(),
                         message: message.clone(),
                         error: *error,
+                        warning,
                         time: chrono::Local::now(),
                     });
                     this.notifications.truncate(200);
@@ -1466,7 +1474,7 @@ impl Workspace {
     }
 
     fn toggle_project(&mut self, _: &ToggleProjectWindow, window: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_tool(ToolWindow::Project, window, cx);
+        self.shortcut_tool(ToolWindow::Project, window, cx);
     }
 
     /// Select In › Project View: shows the current editor's file in the tree.
@@ -1928,6 +1936,20 @@ impl Workspace {
         cx.notify();
     }
 
+    /// A tool window's shortcut (Alt+1, Alt+9, Alt+0): as in IntelliJ, a
+    /// window that is shown but doesn't hold the focus is activated; only
+    /// the active one is hidden.
+    fn shortcut_tool(&mut self, tool: ToolWindow, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.tool_focus.get(&tool).is_some_and(|f| f.contains_focused(window, cx));
+        if self.tools.is_open(tool) && !focused {
+            self.tools.open(tool);
+            self.focus_tool(tool, window, cx);
+            cx.notify();
+        } else {
+            self.toggle_tool(tool, window, cx);
+        }
+    }
+
     /// Moves the focus into a tool window: the Log's table for Git, else the
     /// window itself.
     fn focus_tool(&mut self, tool: ToolWindow, window: &mut Window, cx: &mut Context<Self>) {
@@ -2084,9 +2106,11 @@ impl Workspace {
                     .child(
                         h_flex()
                             .gap_1()
-                            .child(Icon::new(if record.error { IconName::CircleX } else { IconName::CircleCheck }).xsmall().text_color(
-                                if record.error { palette.status_conflict } else { palette.status_added },
-                            ))
+                            .child(match (record.error, record.warning) {
+                                (true, _) => Icon::new(IconName::CircleX).xsmall().text_color(palette.status_conflict),
+                                (_, true) => Icon::new(IconName::TriangleAlert).xsmall().text_color(palette.ref_head),
+                                _ => Icon::new(IconName::CircleCheck).xsmall().text_color(palette.status_added),
+                            })
                             .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(record.title.clone()))
                             .child(div().text_xs().text_color(palette.text_secondary).child(record.time.format("%H:%M").to_string())),
                     )
@@ -2212,13 +2236,16 @@ impl Workspace {
     /// tool window's Local Changes tab.
     fn toggle_commit_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if Settings::get(cx).non_modal_commit {
-            return self.toggle_tool(ToolWindow::Commit, window, cx);
+            return self.shortcut_tool(ToolWindow::Commit, window, cx);
         }
-        if self.tools.is_open(ToolWindow::Git) && self.bottom_tab == BottomTab::LocalChanges {
+        let focused = self.tool_focus.get(&ToolWindow::Git).is_some_and(|f| f.contains_focused(window, cx));
+        if self.tools.is_open(ToolWindow::Git) && self.bottom_tab == BottomTab::LocalChanges && focused {
             self.tools.hide(ToolWindow::Git);
+            window.focus(&self.focus, cx);
         } else {
             self.tools.open(ToolWindow::Git);
             self.bottom_tab = BottomTab::LocalChanges;
+            self.focus_tool(ToolWindow::Git, window, cx);
         }
         cx.notify();
     }
@@ -2287,7 +2314,7 @@ impl Workspace {
     }
 
     fn on_toggle_git(&mut self, _: &ToggleGitWindow, window: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_tool(ToolWindow::Git, window, cx);
+        self.shortcut_tool(ToolWindow::Git, window, cx);
     }
 
     fn on_refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {

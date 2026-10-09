@@ -17,7 +17,7 @@ use gpui_kit::{
 
 use crate::model::RepoModel;
 use crate::theme::ActivePalette as _;
-use crate::ui::dialogs::{focus_input, footer};
+use crate::ui::dialogs::{focus_input, footer_enabled};
 
 /// The folder name git would pick for a URL: `…/repo.git` → `repo`.
 pub fn directory_name(url: &str) -> String {
@@ -46,6 +46,9 @@ pub struct CloneView {
     /// Repositories of the logged-in GitHub accounts, picked to fill the URL.
     repos: Vec<crate::hosting::github::Repo>,
     repos_state: Option<String>,
+    /// Accounts whose repositories couldn't be listed, with the error; the
+    /// other accounts' repositories still show.
+    repo_errors: Vec<String>,
     repo_filter: Entity<InputState>,
     _repos: Option<Task<()>>,
     directory: Entity<InputState>,
@@ -66,26 +69,28 @@ impl CloneView {
         let repo_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search repositories"));
         let accounts: Vec<_> = crate::hosting::account::load()
             .into_iter()
+            .filter(|a| a.service == crate::hosting::account::Service::GitHub)
             .collect();
         let repos_task = (!accounts.is_empty()).then(|| {
             cx.spawn(async move |this, cx| {
                 let result = cx
                     .background_spawn(async move {
-                        let mut all = Vec::new();
+                        // Each account on its own: one failing doesn't hide the others.
+                        let (mut all, mut errors) = (Vec::new(), Vec::new());
                         for account in &accounts {
-                            all.extend(crate::hosting::github::Client::new(account).repos()?);
+                            match crate::hosting::github::Client::new(account).repos() {
+                                Ok(repos) => all.extend(repos),
+                                Err(error) => errors.push(format!("{}@{}: {error}", account.login, account.server)),
+                            }
                         }
-                        anyhow::Ok(all)
+                        (all, errors)
                     })
                     .await;
                 this.update(cx, |this, cx| {
-                    match result {
-                        Ok(repos) => {
-                            this.repos_state = repos.is_empty().then(|| "No repositories".into());
-                            this.repos = repos;
-                        }
-                        Err(error) => this.repos_state = Some(error.to_string()),
-                    }
+                    let (repos, errors) = result;
+                    this.repos_state = (repos.is_empty() && errors.is_empty()).then(|| "No repositories".into());
+                    this.repos = repos;
+                    this.repo_errors = errors;
                     cx.notify();
                 })
                 .ok();
@@ -103,9 +108,13 @@ impl CloneView {
                 }
                 this.url_changed(window, cx);
             }),
-            cx.subscribe(&directory, |this, _, event: &InputEvent, _| {
-                if matches!(event, InputEvent::Change) && !this.syncing {
-                    this.directory_edited = true;
+            cx.subscribe(&directory, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    if !this.syncing {
+                        this.directory_edited = true;
+                    }
+                    // The directory check (and the Clone button) follow the field.
+                    cx.notify();
                 }
             }),
         ];
@@ -113,6 +122,7 @@ impl CloneView {
             url,
             repos: Vec::new(),
             repos_state: repos_task.as_ref().map(|_| "Loading repositories…".into()),
+            repo_errors: Vec::new(),
             repo_filter,
             _repos: repos_task,
             directory,
@@ -265,6 +275,9 @@ impl Render for CloneView {
                                 .border_color(palette.border)
                                 .overflow_y_scroll()
                                 .when_some(self.repos_state.clone(), |el, state| el.child(div().p_2().text_xs().text_color(palette.text_secondary).child(state)))
+                                .children(self.repo_errors.iter().map(|error| {
+                                    div().px_2().py_1().text_xs().text_color(palette.status_conflict).child(error.clone())
+                                }))
                                 .child(list),
                         ),
                 )
@@ -293,8 +306,12 @@ impl Render for CloneView {
 pub fn clone(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
     let view = cx.new(|cx| CloneView::new(window, cx));
     let focus = view.read(cx).url.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
+    window.open_dialog(cx, move |dialog, _, cx| {
         let view_ok = view.clone();
+        let valid = {
+            let view = view.read(cx);
+            view.request(cx).is_some() && view.directory_error(cx).is_none()
+        };
         let model = model.clone();
         dialog
             .title("Get from Version Control")
@@ -309,7 +326,7 @@ pub fn clone(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                 model.update(cx, |m, cx| m.clone_repository(url, directory, cx));
                 true
             })
-            .footer(footer("Clone"))
+            .footer(footer_enabled("Clone", valid))
     });
     focus_input(&focus, window, cx);
 }

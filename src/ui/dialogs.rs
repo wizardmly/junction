@@ -29,10 +29,16 @@ pub fn focus_input(input: &Entity<InputState>, window: &mut Window, cx: &mut App
 }
 
 pub fn footer(ok_label: &'static str) -> DialogFooter {
+    footer_enabled(ok_label, true)
+}
+
+/// A footer whose OK button is greyed out while the input is invalid
+/// (IntelliJ's validation disables the default action).
+pub fn footer_enabled(ok_label: &'static str, enabled: bool) -> DialogFooter {
     DialogFooter::new()
         .gap_2()
         .child(DialogClose::new().child(Button::new("cancel").label("Cancel").outline()))
-        .child(DialogAction::new().child(Button::new("ok").label(ok_label).primary()))
+        .child(DialogAction::new().child(Button::new("ok").label(ok_label).primary().disabled(!enabled)))
 }
 
 /// Git › New Branch: name, "Checkout branch" (on by default), start point.
@@ -383,6 +389,16 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
         let has_upstream = preview.has_upstream;
         // Settings › Git › Protected branches: no force push to them.
         let protected = Settings::get(cx).is_protected(&target_name);
+        // Where a force push would go, for its confirmation.
+        let force_target = {
+            let (options, target, remotes, default_remote) =
+                (options.clone(), target.clone(), preview.remotes.clone(), preview.remote.clone());
+            move |cx: &App| {
+                let remote = remotes.get(options.borrow().remote).cloned().unwrap_or_else(|| default_remote.clone());
+                format!("{remote}/{}", target.read(cx).value().trim())
+            }
+        };
+        let force_branch = branch.clone();
         let push = Rc::new(move |force: bool, cx: &mut App| -> bool {
             let o = *ok_options.borrow();
             let target = ok_target.read(cx).value().trim().to_owned();
@@ -528,14 +544,34 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
                                 }
                             }))
                             .dropdown_menu(move |menu, _, _| {
-                                let force_push = force_push.clone();
+                                let (force_push, force_target, force_branch) = (force_push.clone(), force_target.clone(), force_branch.clone());
                                 menu.item(
                                     PopupMenuItem::new(if protected { "Force Push (protected branch)" } else { "Force Push" })
                                         .disabled(protected)
                                         .on_click(move |_, window, cx| {
-                                            if force_push(true, cx) {
-                                                window.close_dialog(cx);
-                                            }
+                                            // IntelliJ asks first: a force push can overwrite
+                                            // commits at the remote.
+                                            let message = format!(
+                                                "You're going to force push \"{force_branch}\" to \"{}\". It may overwrite commits at the remote. Are you sure you want to proceed?",
+                                                force_target(cx)
+                                            );
+                                            // Over the Push dialog: Cancel goes back to it.
+                                            let (force_push, message) = (force_push.clone(), SharedString::from(message));
+                                            window.open_dialog(cx, move |dialog, _, _| {
+                                                let force_push = force_push.clone();
+                                                dialog
+                                                    .title("Force Push")
+                                                    .w(px(460.))
+                                                    .child(div().text_sm().child(message.clone()))
+                                                    .footer(footer("Force Push"))
+                                                    .on_ok(move |_, window, cx| {
+                                                        if force_push(true, cx) {
+                                                            // The Push dialog goes too.
+                                                            window.defer(cx, |window, cx| window.close_dialog(cx));
+                                                        }
+                                                        true
+                                                    })
+                                            });
                                         }),
                                 )
                             }),
@@ -595,22 +631,54 @@ pub fn push_rejected(model: Entity<RepoModel>, window: &mut Window, cx: &mut App
         })
     };
     // The configured update method is the default button.
-    let mut options = vec![("Rebase", update(true)), ("Merge", update(false))];
+    let mut options = vec![("Rebase", true, update(true)), ("Merge", false, update(false))];
     if settings.update_method == UpdateMethod::Rebase {
         options.reverse();
     }
-    choose(
-        "Push Rejected",
-        format!(
-            "Push of current branch {} was rejected. Remote changes need to be merged before pushing.",
-            request.branch
-        ),
-        Vec::new(),
-        "Cancel",
-        options,
-        window,
-        cx,
-    );
+    let message: SharedString = format!(
+        "Push of current branch {} was rejected. Remote changes need to be merged before pushing.",
+        request.branch
+    )
+    .into();
+    // IntelliJ's "Remember the update method choice and silently update in
+    // future": turns on auto-update with the chosen method.
+    let remember = Rc::new(Cell::new(false));
+    window.open_dialog(cx, move |dialog, _, _| {
+        let last = options.len().saturating_sub(1);
+        let mut footer = DialogFooter::new()
+            .gap_2()
+            .child(DialogClose::new().child(Button::new("rejected-cancel").label("Cancel").outline()));
+        for (ix, (label, rebase, run)) in options.iter().enumerate() {
+            let (run, rebase, remember) = (run.clone(), *rebase, remember.clone());
+            let button = Button::new(("rejected-option", ix)).label(*label).on_click(move |_, window, cx| {
+                window.close_dialog(cx);
+                if remember.get() {
+                    Settings::update(cx, |s| {
+                        s.auto_update_on_push_rejected = true;
+                        s.update_method = if rebase { UpdateMethod::Rebase } else { UpdateMethod::Merge };
+                    });
+                }
+                run(window, cx)
+            });
+            footer = footer.child(if ix == last { button.primary() } else { button.outline() });
+        }
+        let remember_cell = remember.clone();
+        dialog
+            .title("Push Rejected")
+            .w(px(520.))
+            .child(
+                v_flex().gap_3().child(div().text_sm().child(message.clone())).child(
+                    Checkbox::new("rejected-remember")
+                        .label("Remember the update method choice and silently update in future")
+                        .checked(remember.get())
+                        .on_change(move |value, window, _| {
+                            remember_cell.set(*value);
+                            window.refresh();
+                        }),
+                ),
+            )
+            .footer(footer)
+    });
 }
 
 /// Update Project (`Ctrl+T`): fetch, then merge or rebase, cleaning the
@@ -686,6 +754,10 @@ pub fn update_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut Ap
     });
 }
 
+/// Starts an operation's message when it partly failed (some roots of
+/// Update Project): the balloon is a warning, not a success.
+pub const PARTIAL_FAILURE: char = '\u{1d}';
+
 /// Runs Update Project; multi-root projects update every root, as IntelliJ does.
 fn run_update(model: Entity<RepoModel>, rebase: bool, clean: crate::git::ops::CleanWith, cx: &mut App) {
     model.update(cx, |model, cx| {
@@ -709,8 +781,10 @@ fn run_update(model: Entity<RepoModel>, rebase: bool, clean: crate::git::ops::Cl
             if !failed.is_empty() && lines.is_empty() {
                 anyhow::bail!("{}", failed.join("\n"));
             }
+            let partial = !failed.is_empty();
             lines.extend(failed.into_iter().map(|f| format!("{f} (failed)")));
-            Ok(lines.join("\n"))
+            let message = lines.join("\n");
+            Ok(if partial { format!("{PARTIAL_FAILURE}{message}") } else { message })
         }, cx)
     });
 }
@@ -838,10 +912,21 @@ pub fn conflicts(model: Entity<RepoModel>, open_merge: OpenMerge, window: &mut W
     use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _};
 
     let selected = Rc::new(Cell::new(0usize));
+    // The sides named by branch ("Changes from feature"), read once.
+    let titles = {
+        let model = model.read(cx);
+        let state = model.state();
+        model.repository().map_or_else(
+            || {
+                let (left, right) = merge::side_titles(state);
+                (left.to_owned(), right.to_owned())
+            },
+            |repository| merge::branch_titles(repository, state),
+        )
+    };
     window.open_dialog(cx, move |dialog, _, cx| {
         let palette = cx.palette().clone();
-        let state = model.read(cx).state();
-        let (ours_title, theirs_title) = merge::side_titles(state);
+        let (ours_title, theirs_title) = titles.clone();
         let conflicts = merge::conflicts(model.read(cx).status());
         let current = selected.get().min(conflicts.len().saturating_sub(1));
         let chosen = conflicts.get(current).cloned();

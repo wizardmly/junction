@@ -74,5 +74,7 @@ pub struct NotificationRecord {
     pub title: String,
     pub message: String,
     pub error: bool,
+    /// Finished with some failures (a warning).
+    pub warning: bool,
     pub time: chrono::DateTime<chrono::Local>,
 }
