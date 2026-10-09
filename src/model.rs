@@ -49,6 +49,10 @@ pub enum RepoEvent {
     OpenLogTab { title: String, filter: LogFilter },
     /// Fixup… / Squash Into…: put a message in the commit box.
     PrefillCommitMessage(String),
+    /// An operation stopped on conflicts: open the Conflicts dialog, as
+    /// IntelliJ does after a merge, rebase or cherry-pick (sent once the
+    /// status has been reloaded).
+    ShowConflicts,
 }
 
 pub struct RepoModel {
@@ -78,6 +82,9 @@ pub struct RepoModel {
     web_repo: Option<git::hosting::WebRepo>,
     loading: bool,
     busy: Option<String>,
+    /// An operation just stopped on conflicts; the next reload opens the
+    /// Conflicts dialog.
+    conflicts_pending: bool,
     error: Option<String>,
     open_problem: Option<OpenProblem>,
     failed_path: Option<PathBuf>,
@@ -139,6 +146,7 @@ impl RepoModel {
             web_repo: None,
             loading: false,
             busy: None,
+            conflicts_pending: false,
             error: None,
             open_problem: None,
             failed_path: None,
@@ -443,6 +451,9 @@ impl RepoModel {
                     Err(error) => this.error = Some(error.to_string()),
                 }
                 cx.emit(RepoEvent::Reloaded);
+                if std::mem::take(&mut this.conflicts_pending) && !git::merge::conflicts(&this.status).is_empty() {
+                    cx.emit(RepoEvent::ShowConflicts);
+                }
                 cx.notify();
             })
             .ok();
@@ -653,13 +664,30 @@ impl RepoModel {
         let Some(repository) = self.repository.clone() else { return };
         let title = title.into();
         self.busy = Some(title.clone());
+        // Conflicts that were already there are the Conflicts dialog's own
+        // business (Accept Yours, Merge…); only new ones open it.
+        let had_conflicts = !git::merge::conflicts(&self.status).is_empty();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { operation(&repository) }).await;
+            let result = cx
+                .background_spawn(async move {
+                    let result = operation(&repository);
+                    let conflicted = result.is_err()
+                        && !had_conflicts
+                        && repository.run(["diff", "--name-only", "--diff-filter=U"]).is_ok_and(|o| !o.trim().is_empty());
+                    (result, conflicted)
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.busy = None;
+                let (result, conflicted) = result;
                 let event = match result {
                     Ok(message) => RepoEvent::Notify { title, message, error: false },
+                    // The Conflicts dialog says it all; no error balloon.
+                    Err(_) if conflicted => {
+                        this.conflicts_pending = true;
+                        RepoEvent::Notify { title, message: String::new(), error: false }
+                    }
                     Err(error) => RepoEvent::Notify { title: format!("{title} failed"), message: error.to_string(), error: true },
                 };
                 cx.emit(event);

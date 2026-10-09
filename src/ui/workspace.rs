@@ -368,6 +368,12 @@ impl Workspace {
                 if let RepoEvent::OpenLogTab { title, filter } = event {
                     this.open_log_tab(title.clone(), filter.clone(), cx);
                 }
+                if let RepoEvent::ShowConflicts = event {
+                    // Not over the merge tool or a dialog the user has open.
+                    if this.merge.is_none() && !window.has_active_dialog(cx) {
+                        this.show_conflicts(window, cx);
+                    }
+                }
                 if let RepoEvent::PrefillCommitMessage(_) = event {
                     this.tools.open(ToolWindow::Commit);
                     this.left_tab = LeftTab::Commit;
@@ -649,6 +655,8 @@ impl Workspace {
         }
         let palette = cx.palette().clone();
         let conflicts = merge::conflicts(model.status());
+        let editing = state == RepositoryState::Rebasing
+            && model.repository().is_some_and(|r| r.git_dir().join("rebase-merge").join("amend").exists());
         let label = match state {
             RepositoryState::Rebasing => "Rebase in progress",
             RepositoryState::Merging => "Merge in progress",
@@ -675,6 +683,8 @@ impl Workspace {
                 .child(Icon::new(IconName::GitMergeConflict).small())
                 .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(label))
                 .child(div().text_color(palette.text_secondary).child(match conflicts.len() {
+                    // An `edit` step of an interactive rebase, not a conflict.
+                    0 if editing => "Stopped for editing".to_owned(),
                     0 => "All conflicts resolved".to_owned(),
                     1 => "1 file with conflicts".to_owned(),
                     n => format!("{n} files with conflicts"),

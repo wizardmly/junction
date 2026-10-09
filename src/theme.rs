@@ -237,6 +237,10 @@ pub fn apply(dark: bool, cx: &mut App) {
         theme.title_bar_border = p.border;
         theme.popover = if p.dark { hex(0x2b2d30) } else { hex(0xffffff) };
         theme.input = if p.dark { hex(0x4e5157) } else { hex(0xc9ccd6) };
+        // IntelliJ's balloons rise from the bottom right, above the status
+        // bar, clear of the conflict banner and dialog buttons up top.
+        theme.notification.placement = gpui_kit::Anchor::BottomRight;
+        theme.notification.margins.bottom = px(40.);
     });
     cx.set_global(palette);
 }

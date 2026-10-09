@@ -27,7 +27,7 @@ use gpui_kit::{
 
 use crate::git::changelists::{self, Changelists};
 use crate::git::status::{self, CommitRequest};
-use crate::git::StatusKind;
+use crate::git::{RepositoryState, StatusKind};
 use crate::git::merge::{self, Conflict};
 use crate::model::{ExcludedHunks, RepoEvent, RepoModel};
 use crate::settings::Settings;
@@ -140,6 +140,9 @@ pub struct CommitView {
     /// Speed search over the changes tree: the typed text while shown.
     search: Option<String>,
     push_after_commit: bool,
+    /// The merge / cherry-pick message last put in the box, so it is
+    /// offered once per operation rather than after every reload.
+    operation_message: Option<String>,
     last_selection: Option<SharedString>,
     /// Commit Options popover: "Author" override and "GPG-sign" (defaults to `commit.gpgSign`).
     author: Entity<InputState>,
@@ -162,7 +165,10 @@ impl CommitView {
         let spelling = cx.new(|cx| crate::ui::spell_overlay::SpellOverlay::new(message.clone(), cx));
         let subscriptions = vec![
             cx.subscribe_in(&model, window, |this, _, event, window, cx| match event {
-                RepoEvent::Reloaded => this.rebuild(cx),
+                RepoEvent::Reloaded => {
+                    this.rebuild(cx);
+                    this.prefill_operation_message(window, cx);
+                }
                 RepoEvent::PrefillCommitMessage(message) => {
                     this.set_message(format!("{message}\n\n"), window, cx);
                     this.message.update(cx, |state, cx| state.focus(window, cx));
@@ -229,6 +235,7 @@ impl CommitView {
             message_error: false,
             search: None,
             push_after_commit: false,
+            operation_message: None,
             last_selection: None,
             author,
             gpg_sign: None,
@@ -612,6 +619,39 @@ impl CommitView {
     }
 
     /// Sets the commit message from code, keeping the spelling marks in step.
+    /// During a merge, cherry-pick, revert or rebase stop, IntelliJ fills
+    /// the commit message with git's prepared one (`.git/MERGE_MSG`, or the
+    /// rebased commit's message), without its `#` comment lines.
+    fn prefill_operation_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let model = self.model.read(cx);
+        let Some(git_dir) = model.repository().map(|r| r.git_dir().to_path_buf()) else { return };
+        let file = match model.state() {
+            RepositoryState::Normal => {
+                // Done (Continue or Abort): drop the message it left behind.
+                if let Some(old) = self.operation_message.take() {
+                    if self.message.read(cx).value().trim() == old {
+                        self.set_message(String::new(), window, cx);
+                    }
+                }
+                return;
+            }
+            RepositoryState::Rebasing => git_dir.join("rebase-merge").join("message"),
+            _ => git_dir.join("MERGE_MSG"),
+        };
+        let Ok(text) = std::fs::read_to_string(file) else { return };
+        let text: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+        let text = text.join("\n").trim().to_owned();
+        if text.is_empty() || self.operation_message.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        // Never over a message the user is writing.
+        if !self.message.read(cx).value().trim().is_empty() {
+            return;
+        }
+        self.operation_message = Some(text.clone());
+        self.set_message(text, window, cx);
+    }
+
     fn set_message(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         self.message.update(cx, |state, cx| state.set_value(text, window, cx));
         self.spelling.update(cx, |spelling, cx| spelling.recheck(cx));
