@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use gpui_kit::{
-    App, Bounds, Hsla, InteractiveElement as _, ParentElement as _, PathBuilder, Pixels, StatefulInteractiveElement as _, Styled as _, Window,
+    App, Bounds, Hsla, InteractiveElement as _, ParentElement as _, PathBuilder, Pixels, Styled as _, Window,
     canvas, div, fill, point, px, size,
 };
 

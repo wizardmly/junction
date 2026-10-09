@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::{
-    Selectable as _, WindowExt as _,
+    Disableable as _, Selectable as _, WindowExt as _,
     ActiveTheme as _, Icon, Sizable as _, h_flex, h_resizable,
     button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState},
@@ -103,7 +103,10 @@ pub struct LogView {
     head_reachable: Option<(usize, Option<String>, Rc<HashSet<String>>)>,
     /// Recently used Branch / User / Paths filters, newest first (filter history).
     recent_branch_filters: Vec<Vec<String>>,
-    recent_user_filters: Vec<String>,
+    recent_user_filters: Vec<Vec<String>>,
+    /// Every author seen in this repository's log, for the User filter:
+    /// it stays the same when a filter narrows the list (keyed by root).
+    known_authors: (Option<std::path::PathBuf>, std::collections::BTreeSet<String>),
     recent_path_filters: Vec<Vec<String>>,
     /// Branches panel › Expand All / Collapse All, until the next toggle.
     branch_tree_expanded: Option<bool>,
@@ -147,6 +150,11 @@ impl LogView {
             cx.subscribe(&model, |this, _, event, cx| match event {
                 RepoEvent::Reloaded => {
                     let commits = this.model.read(cx).commits().clone();
+                    let root = this.model.read(cx).repository().map(|r| r.root().to_path_buf());
+                    if this.known_authors.0 != root {
+                        this.known_authors = (root, Default::default());
+                    }
+                    this.known_authors.1.extend(commits.iter().map(|c| c.author_name.clone()));
                     this.extra_selection.retain(|h| commits.iter().any(|c| &c.hash == h));
                     this.rebuild_branches(cx);
                     cx.notify();
@@ -219,6 +227,7 @@ impl LogView {
             head_reachable: None,
             recent_branch_filters: Vec::new(),
             recent_user_filters: Vec::new(),
+            known_authors: (None, Default::default()),
             recent_path_filters: Vec::new(),
             branch_tree_expanded: None,
             my_branches: false,
@@ -274,8 +283,8 @@ impl LogView {
         if filter.branches.len() > 1 || filter.branches.first().is_some_and(|b| b != "HEAD") {
             remember(&mut self.recent_branch_filters, &filter.branches);
         }
-        if let Some(author) = &filter.author {
-            remember(&mut self.recent_user_filters, author);
+        if !filter.authors.is_empty() {
+            remember(&mut self.recent_user_filters, &filter.authors);
         }
         if !filter.paths.is_empty() && filter.lines.is_none() {
             remember(&mut self.recent_path_filters, &filter.paths);
@@ -318,6 +327,54 @@ impl LogView {
                     let chosen = checked.borrow();
                     let branches: Vec<String> = names.iter().filter(|n| chosen.contains(*n)).cloned().collect();
                     entity.update(cx, |this, cx| this.update_filter(cx, |f| f.branches = branches));
+                    true
+                })
+        });
+    }
+
+    /// User › Select…: several users, checked from the log's authors or
+    /// typed (names or emails, comma-separated), as IntelliJ's dialog.
+    fn select_users(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let names: Vec<String> = self.known_authors.1.iter().cloned().collect();
+        let current = self.model.read(cx).filter().authors.clone();
+        let checked: Rc<std::cell::RefCell<HashSet<String>>> =
+            Rc::new(std::cell::RefCell::new(current.iter().filter(|a| names.contains(a)).cloned().collect()));
+        let others: Vec<String> = current.iter().filter(|a| !names.contains(a)).cloned().collect();
+        let typed = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Other users: name or email, comma-separated").default_value(others.join(", "))
+        });
+        let entity = cx.entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let mut list = v_flex().gap_1().max_h(px(320.)).overflow_y_scrollbar().id("select-users");
+            for (ix, name) in names.iter().enumerate() {
+                let (state, name_c) = (checked.clone(), name.clone());
+                list = list.child(
+                    gpui_kit::component::checkbox::Checkbox::new(SharedString::from(format!("sel-user-{ix}")))
+                        .label(name.clone())
+                        .checked(checked.borrow().contains(name))
+                        .on_change(move |v, window, _| {
+                            if *v {
+                                state.borrow_mut().insert(name_c.clone());
+                            } else {
+                                state.borrow_mut().remove(&name_c);
+                            }
+                            window.refresh();
+                        }),
+                );
+            }
+            let (checked, entity, names, typed_ok) = (checked.clone(), entity.clone(), names.clone(), typed.clone());
+            dialog
+                .title("Select Users")
+                .w(px(380.))
+                .child(v_flex().gap_2().child(list).child(Input::new(&typed).small()))
+                .footer(dialogs::footer("OK"))
+                .on_ok(move |_, _, cx| {
+                    let chosen = checked.borrow();
+                    let mut authors: Vec<String> = names.iter().filter(|n| chosen.contains(*n)).cloned().collect();
+                    let text = typed_ok.read(cx).value().to_string();
+                    authors.extend(text.split(',').map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned));
+                    authors.dedup();
+                    entity.update(cx, |this, cx| this.update_filter(cx, |f| f.authors = authors));
                     true
                 })
         });
@@ -661,19 +718,43 @@ impl LogView {
             .collect()
     }
 
-    /// Go to Hash / Branch / Tag (`Ctrl+F` in the Log).
+    /// Go to Hash / Branch / Tag (`Ctrl+F` in the Log): branches and tags
+    /// matching what is typed are offered below the field, as IntelliJ's
+    /// completion; ↑↓ pick one, Enter goes to it (or to the typed hash).
     fn on_go_to_hash(&mut self, _: &GoToHash, window: &mut Window, cx: &mut Context<Self>) {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Hash, branch or tag"));
+        let refs = self.model.read(cx).refs().clone();
+        let names: Vec<(String, RefKind)> =
+            refs.local_branches().chain(refs.remote_branches()).chain(refs.tags()).map(|r| (r.name.clone(), r.kind)).collect();
+        let log = cx.entity();
+        let suggestions = cx.new(|cx| GoToSuggestions::new(input.clone(), names, log, cx));
         let entity = cx.entity();
         window.open_dialog(cx, {
             let input = input.clone();
             move |dialog, _, _| {
-            let input_ok = input.clone();
+            let (input_ok, suggestions_ok) = (input.clone(), suggestions.clone());
+            let (up, down) = (suggestions.clone(), suggestions.clone());
             let entity = entity.clone();
             dialog
                 .title("Go to Hash/Branch/Tag")
                 .w(px(420.))
-                .child(Input::new(&input))
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .capture_action(move |_: &gpui_kit::component::input::MoveUp, _, cx| {
+                                    cx.stop_propagation();
+                                    up.update(cx, |s, cx| s.step(-1, cx));
+                                })
+                                .capture_action(move |_: &gpui_kit::component::input::MoveDown, _, cx| {
+                                    cx.stop_propagation();
+                                    down.update(cx, |s, cx| s.step(1, cx));
+                                })
+                                .child(Input::new(&input)),
+                        )
+                        .child(suggestions.clone()),
+                )
                 .footer(
                     gpui_kit::component::dialog::DialogFooter::new()
                         .gap_2()
@@ -681,7 +762,7 @@ impl LogView {
                         .child(gpui_kit::component::dialog::DialogAction::new().child(Button::new("goto-ok").label("Go").primary())),
                 )
                 .on_ok(move |_, window, cx| {
-                    let text = input_ok.read(cx).value().trim().to_owned();
+                    let text = suggestions_ok.read(cx).chosen().unwrap_or_else(|| input_ok.read(cx).value().trim().to_owned());
                     entity.update(cx, |this, cx| this.go_to(&text, window, cx));
                     true
                 })
@@ -875,17 +956,19 @@ impl LogView {
         let filter = model.filter().clone();
         let refs = model.refs().clone();
         let user_email = model.user_email().map(str::to_owned);
-        let mut authors: Vec<String> = model.commits().iter().map(|c| c.author_name.clone()).collect();
-        authors.sort();
-        authors.dedup();
-        authors.truncate(40);
+        let authors: Vec<String> = self.known_authors.1.iter().take(40).cloned().collect();
 
         let branch_label = match filter.branches.as_slice() {
             [] => "Branch".to_owned(),
             [one] => format!("Branch: {one}"),
             many => format!("Branch: {} selected", many.len()),
         };
-        let user_label = filter.author.as_ref().map_or("User".to_owned(), |a| format!("User: {a}"));
+        // My email shows as "me", as IntelliJ labels it.
+        let user_name = |a: &String| if Some(a) == user_email.as_ref() { "me".to_owned() } else { a.clone() };
+        let user_label = match filter.authors.as_slice() {
+            [] => "User".to_owned(),
+            authors => format!("User: {}", authors.iter().map(user_name).collect::<Vec<_>>().join(", ")),
+        };
         let date_label = match (&filter.since, &filter.until) {
             (Some(since), Some(until)) => format!("Date: {since} – {until}"),
             (Some(since), None) => format!("Date: since {since}"),
@@ -995,43 +1078,45 @@ impl LogView {
                     menu.max_h(px(420.))
                 }
             }))
-            .child(filter_button("filter-user", user_label, filter.author.is_some()).dropdown_menu({
+            .child(filter_button("filter-user", user_label, !filter.authors.is_empty()).dropdown_menu({
                 let entity = entity.clone();
-                let current = filter.author.clone();
+                let current = filter.authors.clone();
                 let recent_users = self.recent_user_filters.clone();
                 move |mut menu, _, _| {
-                    let set = |author: Option<String>| {
+                    let set = |authors: Vec<String>| {
                         let entity = entity.clone();
                         move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
-                            let author = author.clone();
-                            entity.update(cx, |this, cx| this.update_filter(cx, |f| f.author = author));
+                            let authors = authors.clone();
+                            entity.update(cx, |this, cx| this.update_filter(cx, |f| f.authors = authors));
                         }
                     };
-                    menu = menu.item(PopupMenuItem::new("All").checked(current.is_none()).on_click(set(None)));
+                    menu = menu.item(PopupMenuItem::new("All").checked(current.is_empty()).on_click(set(Vec::new())));
                     if let Some(email) = &user_email {
-                        menu = menu.item(
-                            PopupMenuItem::new("me")
-                                .checked(current.as_deref() == Some(email.as_str()))
-                                .on_click(set(Some(email.clone()))),
-                        );
+                        menu = menu.item(PopupMenuItem::new("me").checked(current == [email.clone()]).on_click(set(vec![email.clone()])));
                     }
-                    let recent_users: Vec<&String> = recent_users.iter().filter(|u| Some(*u) != user_email.as_ref()).collect();
-                    if !recent_users.is_empty() {
+                    let select = entity.clone();
+                    menu = menu.item(PopupMenuItem::new("Select…").on_click(move |_, window, cx| {
+                        select.update(cx, |this, cx| this.select_users(window, cx))
+                    }));
+                    let recent: Vec<&Vec<String>> =
+                        recent_users.iter().filter(|u| user_email.as_ref().is_none_or(|me| **u != [me.clone()])).collect();
+                    if !recent.is_empty() {
                         menu = menu.separator().label("Recent");
-                        for author in recent_users {
-                            menu = menu.item(
-                                PopupMenuItem::new(author.clone())
-                                    .checked(current.as_ref() == Some(author))
-                                    .on_click(set(Some(author.clone()))),
-                            );
+                        for authors in recent {
+                            let label = authors
+                                .iter()
+                                .map(|a| if Some(a) == user_email.as_ref() { "me" } else { a.as_str() })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            menu = menu.item(PopupMenuItem::new(label).checked(&current == authors).on_click(set(authors.clone())));
                         }
                     }
                     menu = menu.separator();
                     for author in &authors {
                         menu = menu.item(
                             PopupMenuItem::new(author.clone())
-                                .checked(current.as_ref() == Some(author))
-                                .on_click(set(Some(author.clone()))),
+                                .checked(current == [author.clone()])
+                                .on_click(set(vec![author.clone()])),
                         );
                     }
                     menu.max_h(px(420.))
@@ -1079,8 +1164,8 @@ impl LogView {
                         clear.update(cx, |this, cx| this.update_filter(cx, |f| f.paths.clear()))
                     }));
                     let pick = entity.clone();
-                    menu = menu.item(PopupMenuItem::new("Select Folders…").on_click(move |_, _, cx| {
-                        pick.update(cx, |this, cx| this.select_paths(cx))
+                    menu = menu.item(PopupMenuItem::new("Select Folders…").on_click(move |_, window, cx| {
+                        pick.update(cx, |this, cx| this.select_paths(window, cx))
                     }));
                     if !recent_paths.is_empty() {
                         menu = menu.separator().label("Recent");
@@ -1177,29 +1262,78 @@ impl LogView {
             )
     }
 
-    /// Paths › Select Folders…: folders or files to limit the Log to.
-    fn select_paths(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self.model.read(cx).repository().map(|r| r.root().to_path_buf()) else { return };
-        let receiver = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
-            files: true,
-            directories: true,
-            multiple: true,
-            prompt: Some("Filter by Paths".into()),
+    /// Paths › Select Folders…: the repository's folders and files as a
+    /// tree to check, as IntelliJ's structure filter shows the project.
+    fn select_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.model.read(cx).repository().cloned() else { return };
+        let files: Vec<String> = repo.run(["ls-files"]).unwrap_or_default().lines().map(str::to_owned).collect();
+        let tree_state = cx.new(|cx| TreeState::new(cx).items(common::file_tree_with(files, "", false)));
+        let checked: Rc<std::cell::RefCell<HashSet<String>>> =
+            Rc::new(std::cell::RefCell::new(self.model.read(cx).filter().paths.iter().cloned().collect()));
+        let entity = cx.entity();
+        let palette = cx.palette().clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let rows_checked = checked.clone();
+            let palette = palette.clone();
+            let list = tree(&tree_state, move |ix, entry, _, _, _| {
+                let id = entry.item().id.to_string();
+                let path = id.strip_prefix(DIR_PREFIX).or_else(|| id.strip_prefix(FILE_PREFIX)).unwrap_or_default().to_owned();
+                let set = rows_checked.borrow();
+                // A path under a checked folder is part of the filter too.
+                let inherited = set.iter().any(|p| path.starts_with(&format!("{p}/")));
+                let state = rows_checked.clone();
+                let toggle_path = path.clone();
+                ListItem::new(ix).py_0().px_1().h(px(row_height())).child(
+                    h_flex()
+                        .w_full()
+                        .gap_1()
+                        .pl(px(entry.depth() as f32 * 14.))
+                        .text_sm()
+                        .child(if entry.is_folder() {
+                            Icon::new(if entry.is_expanded() { IconName::ChevronDown } else { IconName::ChevronRight })
+                                .xsmall()
+                                .text_color(palette.text_secondary)
+                        } else {
+                            Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black())
+                        })
+                        .child(
+                            div().on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(
+                                gpui_kit::component::checkbox::Checkbox::new(SharedString::from(format!("path-{ix}")))
+                                    .checked(inherited || set.contains(&path))
+                                    .disabled(inherited)
+                                    .on_change(move |v, window, _| {
+                                        let mut set = state.borrow_mut();
+                                        if *v {
+                                            set.retain(|p| !p.starts_with(&format!("{toggle_path}/")));
+                                            set.insert(toggle_path.clone());
+                                        } else {
+                                            set.remove(&toggle_path);
+                                        }
+                                        window.refresh();
+                                    }),
+                            ),
+                        )
+                        .child(
+                            Icon::new(if entry.is_folder() { IconName::Folder } else { common::file_icon(&path) })
+                                .small()
+                                .text_color(palette.text_secondary),
+                        )
+                        .child(entry.item().label.clone()),
+                )
+            });
+            let (checked, entity) = (checked.clone(), entity.clone());
+            dialog
+                .title("Select Folders and Files")
+                .w(px(460.))
+                .child(div().h(px(380.)).border_1().border_color(palette.border).child(list.size_full()))
+                .footer(dialogs::footer("OK"))
+                .on_ok(move |_, _, cx| {
+                    let mut paths: Vec<String> = checked.borrow().iter().cloned().collect();
+                    paths.sort();
+                    entity.update(cx, |this, cx| this.update_filter(cx, |f| f.paths = paths));
+                    true
+                })
         });
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(paths))) = receiver.await else { return };
-            let relative: Vec<String> = paths
-                .iter()
-                .filter_map(|p| p.strip_prefix(&root).ok())
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .map(|p| if p.is_empty() { ".".to_owned() } else { p })
-                .collect();
-            if relative.is_empty() {
-                return;
-            }
-            this.update(cx, |this, cx| this.update_filter(cx, |f| f.paths = relative)).ok();
-        })
-        .detach();
     }
 
     /// Date › Select…: a from / to range (`--since` / `--until`).
@@ -1974,6 +2108,88 @@ impl LogView {
             // the window.
             .child(resizable_panel().child(div().relative().size_full().child(div().absolute().inset_0().child(changes))))
             .child(resizable_panel().size(px(220.)).child(div().relative().size_full().child(div().absolute().inset_0().child(info))))
+    }
+}
+
+/// The branches and tags offered under the Go to Hash/Branch/Tag field.
+struct GoToSuggestions {
+    input: Entity<InputState>,
+    names: Vec<(String, RefKind)>,
+    log: Entity<LogView>,
+    matches: Vec<usize>,
+    selected: Option<usize>,
+    _subscription: Subscription,
+}
+
+impl GoToSuggestions {
+    fn new(input: Entity<InputState>, names: Vec<(String, RefKind)>, log: Entity<LogView>, cx: &mut Context<Self>) -> Self {
+        let subscription = cx.observe(&input, |this, _, cx| this.refresh(cx));
+        let mut this = Self { input, names, log, matches: Vec::new(), selected: None, _subscription: subscription };
+        this.refresh(cx);
+        this
+    }
+
+    /// Matches for the typed text: names starting with it first; the first
+    /// is preselected once something is typed.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        let text = self.input.read(cx).value().trim().to_lowercase();
+        let mut matches: Vec<usize> = (0..self.names.len()).filter(|&ix| self.names[ix].0.to_lowercase().contains(&text)).collect();
+        matches.sort_by_key(|&ix| !self.names[ix].0.to_lowercase().starts_with(&text));
+        matches.truncate(8);
+        if matches != self.matches {
+            self.selected = (!text.is_empty() && !matches.is_empty()).then_some(0);
+            self.matches = matches;
+            cx.notify();
+        }
+    }
+
+    fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.matches.is_empty() {
+            return;
+        }
+        let last = self.matches.len() as isize - 1;
+        let next = self.selected.map_or(if delta > 0 { 0 } else { last }, |s| (s as isize + delta).clamp(0, last));
+        self.selected = Some(next as usize);
+        cx.notify();
+    }
+
+    fn chosen(&self) -> Option<String> {
+        self.selected.and_then(|s| self.matches.get(s)).map(|&ix| self.names[ix].0.clone())
+    }
+}
+
+impl Render for GoToSuggestions {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let mut list = v_flex().min_h(px(row_height() * 4.));
+        for (row, &ix) in self.matches.iter().enumerate() {
+            let (name, kind) = self.names[ix].clone();
+            let (icon, color) = match kind {
+                RefKind::Tag => (IconName::Tag, palette.ref_tag),
+                RefKind::RemoteBranch => (IconName::GitBranch, palette.ref_remote),
+                RefKind::LocalBranch => (IconName::GitBranch, palette.ref_local),
+            };
+            let log = self.log.clone();
+            list = list.child(
+                h_flex()
+                    .id(("goto-suggestion", row))
+                    .h(px(row_height()))
+                    .px_2()
+                    .gap_1()
+                    .rounded_sm()
+                    .text_sm()
+                    .cursor_pointer()
+                    .when(self.selected == Some(row), |el| el.bg(palette.selection))
+                    .when(self.selected != Some(row), |el| el.hover(|s| s.bg(palette.hover)))
+                    .child(Icon::new(icon).xsmall().text_color(color))
+                    .child(name.clone())
+                    .on_click(move |_, window, cx| {
+                        window.close_dialog(cx);
+                        log.update(cx, |this, cx| this.go_to(&name, window, cx));
+                    }),
+            );
+        }
+        list
     }
 }
 

@@ -46,7 +46,7 @@
 | IntelliSort / 按拓扑 / 按日期排序 | M2 | ✅（View Options › Sort：IntelliSort（拓扑序）/ By Date（--date-order）） |
 | 折叠/展开线性分支、显示长边 | M3 | ✅（View Options → Collapse Linear Branches，“⋯ N commits”点击展开；Show Long Edges） |
 | 日期格式：相对时间 / 绝对时间 | M1 | ✅（View Options › Relative Dates：“5 minutes ago”；否则 Today/Yesterday/日期） |
-| `Ctrl+F` 跳转到 hash / 分支 / 标签 | M2 | ✅ |
+| `Ctrl+F` 跳转到 hash / 分支 / 标签 | M2 | ✅（输入时在下方列出匹配的分支和标签，↑↓ 选择，Enter 跳转） |
 | 多个 Log 标签页（从分支打开新标签） | M3 | ✅ |
 
 ### 2.3 过滤栏
@@ -54,9 +54,9 @@
 |---|---|---|
 | 文本/哈希搜索，选项：正则、区分大小写 | M1 | ✅（搜索框内 Cc（区分大小写）、.*（正则）开关；hash 前缀也能搜） |
 | Branch 过滤（多选、收藏） | M1 | ✅（All、HEAD、Favorites、Select…（多选对话框）、Recent、本地/远程列表） |
-| User 过滤（me、作者列表） | M2 | ✅ |
+| User 过滤（me、作者列表） | M2 | ✅（All、me（标签显示 “User: me”）、Select…（勾选作者或输入多个名字/邮箱）、Recent、作者列表（不随过滤变化）） |
 | Date 过滤（最近 24h/7 天/自定义） | M2 | ✅（最近 24h / 7 天 / 30 天 / 1 年；Select… 自定义 From / To） |
-| Paths 过滤（结构过滤：选择目录/文件） | M2 | ✅（Paths 下拉：All、Select Folders…（文件或目录，可多选）；文件夹不加 --follow） |
+| Paths 过滤（结构过滤：选择目录/文件） | M2 | ✅（Paths 下拉：All、Select Folders…（应用内的仓库目录树，勾选文件或目录，可多选）；文件夹不加 --follow） |
 | 过滤历史记录 | M3 | ✅（Branch / User / Paths 下拉里的 Recent：最近 5 个过滤条件（当前会话）） |
 
 ### 2.4 提交详情 + 变更树（右侧）

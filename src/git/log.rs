@@ -30,7 +30,8 @@ pub struct LogFilter {
     pub text: String,
     pub regex: bool,
     pub match_case: bool,
-    pub author: Option<String>,
+    /// Authors (names or emails); a commit by any of them matches.
+    pub authors: Vec<String>,
     /// Passed to `--since`, e.g. `7 days ago`.
     pub since: Option<String>,
     /// Passed to `--until` (a custom date range's end).
@@ -64,7 +65,7 @@ pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize
         args.push("--exclude=refs/junction/*".into());
         args.push("--all".into());
     }
-    if let Some(author) = &filter.author {
+    for author in &filter.authors {
         args.push(format!("--author={author}"));
     }
     if let Some(since) = &filter.since {
