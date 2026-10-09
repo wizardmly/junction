@@ -314,9 +314,9 @@ impl CodeIndex {
         })
     }
 
-    pub fn search_symbols(&self, query: String, types_only: bool, cx: &App) -> Task<Vec<nav::SymbolMatch>> {
+    pub fn search_symbols(&self, query: String, types_only: bool, libraries: bool, cx: &App) -> Task<Vec<nav::SymbolMatch>> {
         let index = self.index.clone();
-        cx.background_spawn(async move { nav::search_symbols(&index.read().unwrap(), &query, types_only, 200) })
+        cx.background_spawn(async move { nav::search_symbols(&index.read().unwrap(), &query, types_only, libraries, 200) })
     }
 
     /// Whether the identifier at `offset` is a declaration the index knows.
@@ -330,9 +330,9 @@ impl CodeIndex {
         self.index.read().map(|index| nav::file_symbols(&index, path)).unwrap_or_default()
     }
 
-    pub fn search_files(&self, query: String, cx: &App) -> Task<Vec<(String, i32)>> {
+    pub fn search_files(&self, query: String, libraries: bool, cx: &App) -> Task<Vec<(String, i32)>> {
         let index = self.index.clone();
-        cx.background_spawn(async move { nav::search_files(&index.read().unwrap(), &query, 200) })
+        cx.background_spawn(async move { nav::search_files(&index.read().unwrap(), &query, libraries, 200) })
     }
 
     /// Find in Files over `files` (all project files when `None`), in file order.

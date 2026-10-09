@@ -201,6 +201,8 @@ impl SearchEverywhere {
     /// Opens on a tab. `text` (the editor selection) replaces the query.
     pub fn show(&mut self, tab: SeTab, text: Option<String>, actions: Vec<ActionEntry>, window: &mut Window, cx: &mut Context<Self>) {
         self.tab = tab;
+        // Each opening starts with the project's items only.
+        self.include_non_project = false;
         self.actions = Rc::new(actions);
         if let Some(text) = text.filter(|t| !t.is_empty() && !t.contains('\n')) {
             self.input.update(cx, |s, cx| s.set_value(text, window, cx));
@@ -270,9 +272,10 @@ impl SearchEverywhere {
                 })
                 .unwrap_or_else(|| path.to_owned())
         };
-        let classes = wants(SeTab::Classes).then(|| index.search_symbols(name.clone(), true, cx));
-        let symbols = wants(SeTab::Symbols).then(|| index.search_symbols(name.clone(), false, cx));
-        let files = wants(SeTab::Files).then(|| index.search_files(name.clone(), cx));
+        let libraries = self.include_non_project;
+        let classes = wants(SeTab::Classes).then(|| index.search_symbols(name.clone(), true, libraries, cx));
+        let symbols = wants(SeTab::Symbols).then(|| index.search_symbols(name.clone(), false, libraries, cx));
+        let files = wants(SeTab::Files).then(|| index.search_files(name.clone(), libraries, cx));
         let text = wants(SeTab::Text).then(|| {
             let q = TextQuery { text: raw.clone(), ..Default::default() };
             index.find_text(q, FileScope::Project, if tab == SeTab::All { ALL_LIMIT + 1 } else { TAB_LIMIT }, cancel.clone(), cx)
@@ -590,7 +593,7 @@ impl Render for SearchEverywhere {
                     .on_click(cx.listener(move |this, _, _, cx| this.set_tab(tab, cx))),
             );
         }
-        let non_project = matches!(self.tab, SeTab::All | SeTab::Files);
+        let non_project = !matches!(self.tab, SeTab::Actions | SeTab::Text);
         let header = h_flex()
             .h(px(40.))
             .px_2()

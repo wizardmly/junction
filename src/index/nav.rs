@@ -798,17 +798,25 @@ fn intellij_matching() {
     assert!(fuzzy_score("Main", "MainActivity").unwrap() > fuzzy_score("Main", "DomainModel").unwrap_or(-100));
 }
 
-/// Go to Symbol (or Go to Class with `types_only`), best first.
-pub fn search_symbols(index: &ProjectIndex, query: &str, types_only: bool, limit: usize) -> Vec<SymbolMatch> {
+/// Go to Symbol (or Go to Class with `types_only`), best first. Library
+/// symbols count with `libraries` ("Include non-project items"), or when
+/// the project has no match, as in IntelliJ.
+pub fn search_symbols(index: &ProjectIndex, query: &str, types_only: bool, libraries: bool, limit: usize) -> Vec<SymbolMatch> {
+    let found = symbols_matching(index, query, types_only, libraries, limit);
+    if found.is_empty() && !libraries { symbols_matching(index, query, types_only, true, limit) } else { found }
+}
+
+fn symbols_matching(index: &ProjectIndex, query: &str, types_only: bool, libraries: bool, limit: usize) -> Vec<SymbolMatch> {
     let query = query.trim();
     if query.is_empty() {
         return Vec::new();
     }
     let mut out: Vec<SymbolMatch> = Vec::new();
-    for name in index.names().chain(index.external_names()) {
+    let external: Box<dyn Iterator<Item = &String>> = if libraries { Box::new(index.external_names()) } else { Box::new(std::iter::empty()) };
+    for name in index.names().chain(external) {
         let Some(score) = fuzzy_score(query, name) else { continue };
         for (p, e, s) in index.symbols_named(name) {
-            if (types_only && !s.kind.is_type()) || s.decl && types_only {
+            if (types_only && !s.kind.is_type()) || s.decl && types_only || !libraries && ProjectIndex::is_external(p) {
                 continue;
             }
             let exact = if name.eq_ignore_ascii_case(query) { 50 } else { 0 };
@@ -835,8 +843,9 @@ pub fn file_symbols(index: &ProjectIndex, path: &str) -> Vec<SymbolMatch> {
     out
 }
 
-/// Go to File, best first.
-pub fn search_files(index: &ProjectIndex, query: &str, limit: usize) -> Vec<(String, i32)> {
+/// Go to File, best first; library files with `libraries`, or when no
+/// project file matches.
+pub fn search_files(index: &ProjectIndex, query: &str, libraries: bool, limit: usize) -> Vec<(String, i32)> {
     let query = query.trim();
     if query.is_empty() {
         return Vec::new();
@@ -852,7 +861,8 @@ pub fn search_files(index: &ProjectIndex, query: &str, limit: usize) -> Vec<(Str
         })
         .collect();
     // Library files, after the project's.
-    for library in &index.external.libraries {
+    let libraries = libraries || out.is_empty();
+    for library in index.external.libraries.iter().filter(|_| libraries) {
         for path in &library.files {
             let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
             if let Some(score) = fuzzy_score(query, name) {
