@@ -26,10 +26,10 @@
 | 树：HEAD (Current Branch)、Local、Remote（按 remote 分组）、Tags | M1 | ✅ |
 | 收藏分支（星标）、置顶 | M2 | ✅（分支弹窗与 Log 分支面板：星标切换，收藏排在组内最前；默认收藏 main/master） |
 | 按 `/` 分组为目录（feature/xxx） | M1 | ✅ |
-| 分支搜索（直接输入） | M1 | ✅（Log 分支面板顶部搜索框，过滤并展开所有匹配；分支弹窗打开即聚焦搜索） |
-| 单击定位到分支顶端、双击按分支过滤 Log | M1 | ✅ |
+| 分支搜索（直接输入） | M1 | ✅（Log 分支面板顶部搜索框，过滤并展开所有匹配、高亮匹配文字，Esc 清空；在树里直接输入即开始搜索；分支弹窗打开即聚焦搜索） |
+| 单击定位到分支顶端、双击按分支过滤 Log | M1 | ✅（过滤后树的展开状态和选中项不变；键盘：Enter 展开/折叠目录或按分支过滤，←/→ 折叠/展开或到父/子节点） |
 | ahead/behind 指示（↑↓ 箭头） | M2 | ✅ |
-| 工具栏：New Branch、Update Selected、Delete、Compare with Current、Show My Branches、Fetch、展开/折叠 | M2 | ✅（New Branch、Fetch、Update Selected、Delete、Compare with Current、Show My Branches、展开/折叠、按分支过滤） |
+| 工具栏：New Branch、Update Selected、Delete、Compare with Current、Show My Branches、Fetch、展开/折叠 | M2 | ✅（New Branch、Fetch、Update Selected、Delete、Compare with Current、Show My Branches（含我提交的分支）、展开/折叠、按分支过滤） |
 | 多仓库根时按仓库分组 | M5 | 🟡（分支弹窗 Repositories 区列出所有根及其分支，点选切换；Commit 树可 Group By Repository。还差：AS 在 Commit 和 Log 里同时列出所有根的改动和提交，这里一次只显示当前根） |
 | 右键菜单：与分支弹窗动作一致（见 §4） | M2 | ✅（与分支弹窗相同的动作 + Add to / Remove from Favorites） |
 
@@ -63,7 +63,7 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | 变更文件树：按目录分组、按模块分组、扁平列表；文件状态颜色（新增绿、修改蓝、删除灰、重命名） | M1 | ✅（详情上方工具条：Expand All、Collapse All、View Options › Group By Directory / Module，都关时为扁平列表；状态颜色，重命名显示 from 旧路径） |
-| 详情：完整提交信息、hash、作者/提交者、日期、包含该提交的分支、标签 | M1 | ✅（作者与提交者不同时显示提交者） |
+| 详情：完整提交信息、hash、作者/提交者、日期、包含该提交的分支、标签 | M1 | ✅（作者与提交者不同时显示提交者；超过 5 个分支时 Show all 展开全部） |
 | 双击文件打开 Diff；Diff 预览（编辑器区或面板内） | M2 | ✅ |
 | 多选提交时显示合并后的变更 | M3 | ✅ |
 | 签名信息（GPG 验证） | M4 | ✅（详情面板显示 Verified / Bad / 无法校验 与签名者、key；GPG 与 SSH 签名） |

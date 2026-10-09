@@ -41,11 +41,12 @@ actions!(
     git_log,
     [
         SelectPrevious, SelectNext, SelectFirst, SelectLast, SelectPageUp, SelectPageDown, ExtendPrevious, ExtendNext, ExtendFirst,
-        ExtendLast, SelectAll, CopyRevision, GoToHash
+        ExtendLast, SelectAll, CopyRevision, GoToHash, BranchConfirm
     ]
 );
 
 const CONTEXT: &str = "GitLog";
+const BRANCHES_CONTEXT: &str = "GitLogBranches";
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -62,6 +63,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-a", SelectAll, Some(CONTEXT)),
         KeyBinding::new("secondary-c", CopyRevision, Some(CONTEXT)),
         KeyBinding::new("secondary-f", GoToHash, Some(CONTEXT)),
+        KeyBinding::new("enter", BranchConfirm, Some(BRANCHES_CONTEXT)),
     ]);
 }
 
@@ -105,8 +107,17 @@ pub struct LogView {
     recent_path_filters: Vec<Vec<String>>,
     /// Branches panel › Expand All / Collapse All, until the next toggle.
     branch_tree_expanded: Option<bool>,
-    /// Branches panel › Show My Branches: only refs whose tip I authored.
+    /// Branches panel › Show My Branches: only refs with commits I authored.
     my_branches: bool,
+    /// The refs Show My Branches keeps, for the refs they were computed from.
+    my_refs: Option<(Vec<(String, String)>, HashSet<String>)>,
+    /// The branches tree as last built; its items share their expanded
+    /// state with the tree, so a rebuild can keep what the user opened.
+    branch_items: Vec<TreeItem>,
+    /// Whether `branch_items` are speed search results (all folders open).
+    branch_searching: bool,
+    /// Open (true) or closed folders of the branches tree, by id.
+    branch_expansion: HashMap<SharedString, bool>,
     /// Commits selected besides the model's selected (lead) commit, by
     /// Ctrl/Cmd-click or Shift-click.
     extra_selection: HashSet<String>,
@@ -118,6 +129,8 @@ pub struct LogView {
     columns: Option<[u32; 3]>,
     /// The graph with long edges hidden, keyed by the layout it came from.
     short_graph: Option<(usize, Arc<crate::git::GraphLayout>)>,
+    /// The details list every branch holding the commit, not only five.
+    show_all_branches: bool,
     /// The Git window is docked left or right: details under the table.
     details_below: bool,
     _search_debounce: Option<Task<()>>,
@@ -139,6 +152,9 @@ impl LogView {
                     cx.notify();
                 }
                 RepoEvent::SelectionChanged | RepoEvent::DetailsLoaded => {
+                    if matches!(event, RepoEvent::SelectionChanged) {
+                        this.show_all_branches = false;
+                    }
                     this.rebuild_changes(cx);
                     if let Some(ix) = this.model.read(cx).selected_index() {
                         this.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
@@ -206,11 +222,16 @@ impl LogView {
             recent_path_filters: Vec::new(),
             branch_tree_expanded: None,
             my_branches: false,
+            my_refs: None,
+            branch_items: Vec::new(),
+            branch_searching: false,
+            branch_expansion: HashMap::new(),
             extra_selection: HashSet::new(),
             anchor: None,
             column_drag: None,
             columns: None,
             short_graph: None,
+            show_all_branches: false,
             details_below: false,
             _search_debounce: None,
             _subscriptions: subscriptions,
@@ -317,6 +338,10 @@ impl LogView {
     }
 
     fn rebuild_branches(&mut self, cx: &mut Context<Self>) {
+        // What the user opened or closed, unless it was search results.
+        if !self.branch_searching {
+            collect_expanded(&self.branch_items, &mut self.branch_expansion);
+        }
         let mut refs = self.model.read(cx).refs().clone();
         // Speed search: keep matching refs only, with every folder open.
         let query = self.branch_search.read(cx).value().trim().to_lowercase();
@@ -325,18 +350,7 @@ impl LogView {
             refs.refs.retain(|r| r.name.to_lowercase().contains(&query));
         }
         if self.my_branches {
-            let model = self.model.read(cx);
-            let me = model.user_email().map(str::to_lowercase);
-            let tips = model
-                .repository()
-                .and_then(|repo| repo.run(["for-each-ref", "--format=%(refname)%09%(authoremail)", "refs/heads", "refs/remotes"]).ok())
-                .unwrap_or_default();
-            let mine: HashSet<String> = tips
-                .lines()
-                .filter_map(|line| line.split_once('\t'))
-                .filter(|(_, email)| me.as_deref().is_some_and(|me| email.trim_matches(['<', '>']).to_lowercase() == me))
-                .map(|(name, _)| name.to_owned())
-                .collect();
+            let mine = self.my_refs(cx);
             refs.refs.retain(|r| r.kind == RefKind::Tag || mine.contains(&r.full_name));
         }
         // Favorites first within each group, as IntelliJ pins them.
@@ -365,7 +379,10 @@ impl LogView {
                     .children(group_branches(&branches, &format!("remote/{name}"), |r| r.branch_without_remote().to_owned()))
             })
             .collect();
-        items.push(TreeItem::new("group:remote", "Remote").expanded(true).children(remote_items));
+        // No remotes, no Remote node, as in IntelliJ.
+        if !remote_items.is_empty() {
+            items.push(TreeItem::new("group:remote", "Remote").expanded(true).children(remote_items));
+        }
         let tags: Vec<&RefName> = refs.tags().collect();
         if !tags.is_empty() {
             items.push(
@@ -374,12 +391,124 @@ impl LogView {
                 ),
             );
         }
-        if searching || self.branch_tree_expanded == Some(true) {
+        if searching {
             items = items.into_iter().map(expand_all).collect();
-        } else if self.branch_tree_expanded == Some(false) {
-            items = items.into_iter().map(collapse_all).collect();
+        } else if let Some(expand) = self.branch_tree_expanded.take() {
+            // Expand All / Collapse All, once.
+            items = items.into_iter().map(if expand { expand_all } else { collapse_all }).collect();
+        } else {
+            // A reload or a filter keeps the folders the user opened or closed.
+            restore_expanded(&items, &self.branch_expansion);
         }
-        self.branches.update(cx, |tree, cx| tree.set_items(items, cx));
+        self.branch_items = items.clone();
+        self.branch_searching = searching;
+        let selected = self.branches.read(cx).selected_item().map(|item| item.id.clone());
+        self.branches.update(cx, |tree, cx| {
+            tree.set_items(items, cx);
+            // The selection stays on the same branch, wherever it now is.
+            let ix = selected.and_then(|id| tree.index_of(&id));
+            tree.set_selected_index(ix, cx);
+        });
+    }
+
+    fn set_branch_search(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.branch_search.update(cx, |state, cx| state.set_value(value, window, cx));
+        self.rebuild_branches(cx);
+        cx.notify();
+    }
+
+    /// Opens or closes a folder of the branches tree, keeping the selection.
+    fn toggle_branch_folder(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(entry) = self.branches.read(cx).entry(ix).cloned() else { return };
+        if !entry.is_folder() {
+            return;
+        }
+        entry.item().clone().expanded(!entry.is_expanded());
+        let (items, id) = (self.branch_items.clone(), entry.item().id.clone());
+        self.branches.update(cx, |tree, cx| {
+            tree.set_items(items, cx);
+            let ix = tree.index_of(&id);
+            tree.set_selected_index(ix, cx);
+        });
+    }
+
+    /// Enter: opens or closes a folder; on a branch, filters the Log by it
+    /// (as a double click).
+    fn on_branch_confirm(&mut self, _: &BranchConfirm, _: &mut Window, cx: &mut Context<Self>) {
+        let tree = self.branches.read(cx);
+        let Some(ix) = tree.selected_index() else { return };
+        let Some(entry) = tree.entry(ix) else { return };
+        if entry.is_folder() {
+            return self.toggle_branch_folder(ix, cx);
+        }
+        let full = entry.item().id.strip_prefix(BRANCH_PREFIX).map(str::to_owned);
+        if let Some(name) = full.and_then(|full| self.model.read(cx).refs().find(&full).map(|r| r.name.clone())) {
+            self.update_filter(cx, |f| f.branches = vec![name]);
+        }
+    }
+
+    /// ←: on a branch or a closed folder, goes to the parent folder (the tree
+    /// itself closes an open one).
+    fn on_branch_left(&mut self, _: &gpui_kit::base::actions::SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
+        let tree = self.branches.read(cx);
+        let Some(ix) = tree.selected_index() else { return };
+        let Some(entry) = tree.entry(ix) else { return };
+        if entry.is_folder() && entry.is_expanded() {
+            return;
+        }
+        let depth = entry.depth();
+        let parent = (0..ix).rev().find(|&i| tree.entry(i).is_some_and(|e| e.depth() + 1 == depth));
+        if let Some(parent) = parent {
+            cx.stop_propagation();
+            self.branches.update(cx, |tree, cx| {
+                tree.set_selected_index(Some(parent), cx);
+                tree.scroll_to_item(parent, ScrollStrategy::Nearest);
+            });
+        }
+    }
+
+    /// →: on an open folder, goes to its first child (the tree itself opens
+    /// a closed one).
+    fn on_branch_right(&mut self, _: &gpui_kit::base::actions::SelectRight, _: &mut Window, cx: &mut Context<Self>) {
+        let tree = self.branches.read(cx);
+        let Some(ix) = tree.selected_index() else { return };
+        if tree.entry(ix).is_some_and(|e| e.is_folder() && e.is_expanded()) {
+            cx.stop_propagation();
+            self.branches.update(cx, |tree, cx| {
+                tree.set_selected_index(Some(ix + 1), cx);
+                tree.scroll_to_item(ix + 1, ScrollStrategy::Nearest);
+            });
+        }
+    }
+
+    /// Refs holding a commit I authored (Show My Branches), computed once
+    /// per set of refs.
+    fn my_refs(&mut self, cx: &App) -> HashSet<String> {
+        let model = self.model.read(cx);
+        let key: Vec<(String, String)> = model.refs().refs.iter().map(|r| (r.full_name.clone(), r.target.clone())).collect();
+        if let Some((k, mine)) = &self.my_refs {
+            if *k == key {
+                return mine.clone();
+            }
+        }
+        let me = model.user_email().map(str::to_owned);
+        let mine: HashSet<String> = match (model.repository(), me) {
+            (Some(repo), Some(me)) => model
+                .refs()
+                .refs
+                .iter()
+                .filter(|r| r.kind != RefKind::Tag)
+                .filter(|r| {
+                    let author = format!("--author=<{me}>");
+                    repo.run(["log", "-1", "--format=%H", "--regexp-ignore-case", "--fixed-strings", &author, &r.full_name])
+                        .is_ok_and(|out| !out.trim().is_empty())
+                })
+                .map(|r| r.full_name.clone())
+                .collect(),
+            _ => HashSet::new(),
+        };
+        self.my_refs = Some((key, mine.clone()));
+        mine
     }
 
     fn rebuild_changes(&mut self, cx: &mut Context<Self>) {
@@ -1420,6 +1549,7 @@ impl LogView {
     fn render_branches(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let refs = self.model.read(cx).refs().clone();
+        let query = self.branch_search.read(cx).value().trim().to_owned();
         let entity = cx.entity();
         v_flex()
             .size_full()
@@ -1493,10 +1623,38 @@ impl LogView {
                     .py_1()
                     .border_b_1()
                     .border_color(palette.border)
+                    // Escape clears the search first, as IntelliJ's search fields do.
+                    .capture_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
+                        if !this.branch_search.read(cx).value().is_empty() {
+                            cx.stop_propagation();
+                            this.set_branch_search(String::new(), window, cx);
+                        }
+                    }))
                     .child(Input::new(&self.branch_search).xsmall().cleanable(true)),
             )
             .child(
-                div().flex_1().min_h_0().child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .key_context(BRANCHES_CONTEXT)
+                    .on_action(cx.listener(Self::on_branch_confirm))
+                    .capture_action(cx.listener(Self::on_branch_left))
+                    .capture_action(cx.listener(Self::on_branch_right))
+                    // Typing in the tree starts the speed search.
+                    .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                        let keystroke = &event.keystroke;
+                        let modifiers = keystroke.modifiers;
+                        if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
+                            return;
+                        }
+                        let Some(text) = keystroke.key_char.clone().filter(|t| t.chars().all(|c| !c.is_control())) else { return };
+                        cx.stop_propagation();
+                        let value = format!("{}{text}", this.branch_search.read(cx).value());
+                        this.set_branch_search(value, window, cx);
+                        let input = this.branch_search.clone();
+                        input.update(cx, |state, cx| state.focus(window, cx));
+                    }))
+                    .child(
                     tree(&self.branches, move |ix, entry, _selected, _, _| {
                         let item = entry.item();
                         let id = item.id.to_string();
@@ -1552,7 +1710,10 @@ impl LogView {
                                         Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black())
                                     })
                                     .child(Icon::new(icon_name).small().text_color(icon_color))
-                                    .child(item.label.clone())
+                                    .child(match label_match(&item.label, &query) {
+                                        Some(range) => crate::ui::find_popup::highlighted(&item.label, &[range], &palette).into_any_element(),
+                                        None => item.label.clone().into_any_element(),
+                                    })
                                     .when_some(reference.filter(|r| r.ahead > 0 || r.behind > 0), |el, r| {
                                         el.child(
                                             h_flex()
@@ -1780,17 +1941,30 @@ impl LogView {
                             }
                             el.child(row)
                         })
-                        .child(selectable(
-                            "commit-branches",
-                            5,
-                            &match d.containing_branches.len() {
+                        .child({
+                            let n = d.containing_branches.len();
+                            let all = self.show_all_branches || n <= 5;
+                            let shown = if all { &d.containing_branches[..] } else { &d.containing_branches[..5] };
+                            let text = match n {
                                 0 => "Not in any branch".to_owned(),
-                                1 => format!("In 1 branch: {}", d.containing_branches[0]),
-                                n if n <= 5 => format!("In {} branches: {}", n, d.containing_branches.join(", ")),
-                                n => format!("In {} branches: {}, …", n, d.containing_branches[..5].join(", ")),
-                            },
-                            palette.text_secondary,
-                        )),
+                                1 => format!("In 1 branch: {}", shown[0]),
+                                n => format!("In {n} branches: {}", shown.join(", ")),
+                            };
+                            // More than five: "Show all" lists the rest, as in IntelliJ.
+                            v_flex().child(selectable("commit-branches", 5, &text, palette.text_secondary)).when(!all, |el| {
+                                el.child(
+                                    div()
+                                        .id("commit-branches-all")
+                                        .text_color(palette.link)
+                                        .cursor_pointer()
+                                        .child(format!("Show all {n}"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.show_all_branches = true;
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                        }),
                 )
             });
 
@@ -1860,6 +2034,33 @@ fn branch_menu(
             })
         },
     ))
+}
+
+/// Where the speed search query appears in a tree label (case-insensitive).
+fn label_match(label: &str, query: &str) -> Option<std::ops::Range<usize>> {
+    if query.is_empty() {
+        return None;
+    }
+    let start = label.to_ascii_lowercase().find(&query.to_ascii_lowercase())?;
+    Some(start..start + query.len())
+}
+
+/// Folder ids of a tree and whether each is open.
+fn collect_expanded(items: &[TreeItem], out: &mut HashMap<SharedString, bool>) {
+    for item in items.iter().filter(|i| i.is_folder()) {
+        out.insert(item.id.clone(), item.is_expanded());
+        collect_expanded(&item.children, out);
+    }
+}
+
+/// Opens or closes the folders that were known before, by id.
+fn restore_expanded(items: &[TreeItem], expanded: &HashMap<SharedString, bool>) {
+    for item in items.iter().filter(|i| i.is_folder()) {
+        if let Some(&open) = expanded.get(&item.id) {
+            item.clone().expanded(open);
+        }
+        restore_expanded(&item.children, expanded);
+    }
 }
 
 fn collapse_all(mut item: TreeItem) -> TreeItem {
