@@ -1267,7 +1267,8 @@ fn flatten(rows: &[DiffRow], expanded: &HashSet<usize>, mode: ViewerMode, out: &
                 if expanded.contains(id) {
                     flatten(rows, expanded, mode, out);
                 } else {
-                    out.push(Display::Fold { id: *id, count: rows.len() });
+                    // The unified pane shows the new side's lines.
+                    out.push(Display::Fold { id: *id, count: crate::ui::diff_panes::side_lines(rows, true) });
                 }
             }
             DiffRow::Line { kind, left, right, change } => {

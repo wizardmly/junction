@@ -64,8 +64,10 @@ impl TwoSide {
                 DiffRow::Fold { id, rows } => {
                     self.close_block();
                     self.push_equal(true, true);
-                    self.left.push(PaneRow::Fold { id: *id, count: rows.len() });
-                    self.right.push(PaneRow::Fold { id: *id, count: rows.len() });
+                    // Each pane counts its own lines: blank lines the
+                    // whitespace option ignores may be on one side only.
+                    self.left.push(PaneRow::Fold { id: *id, count: side_lines(rows, false) });
+                    self.right.push(PaneRow::Fold { id: *id, count: side_lines(rows, true) });
                 }
                 DiffRow::Line { change: None, left, right, .. } => {
                     // One side only: a blank line the whitespace option ignores.
@@ -168,6 +170,16 @@ impl TwoSide {
     }
 }
 
+/// How many lines of one side (`right` or left) folded rows hold.
+pub fn side_lines(rows: &[DiffRow], right: bool) -> usize {
+    rows.iter()
+        .map(|row| match row {
+            DiffRow::Line { left, right: r, .. } => usize::from(if right { r.is_some() } else { left.is_some() }),
+            DiffRow::Fold { rows, .. } => side_lines(rows, right),
+        })
+        .sum()
+}
+
 /// Maps a (fractional) row of one pane to the other, IntelliJ's sync
 /// scrolling: unchanged stretches move row for row, change blocks
 /// proportionally.
@@ -268,6 +280,16 @@ mod tests {
     fn build(old: &str, new: &str) -> TwoSide {
         let d = diff::compute(old, new, DiffOptions { context: None, ..Default::default() });
         TwoSide::build(&d.rows, &HashSet::new())
+    }
+
+    #[test]
+    fn folds_count_each_sides_own_lines() {
+        // A blank line only on the right, ignored with empty lines.
+        let options = DiffOptions { context: Some(0), ignore_whitespace: diff::IgnoreWhitespace::AllAndEmptyLines, ..Default::default() };
+        let d = diff::compute("a\nb\nc\nd\n", "a\nb\n\nc\nd\n", options);
+        let t = TwoSide::build(&d.rows, &HashSet::new());
+        let count = |rows: &[PaneRow]| rows.iter().find_map(|r| if let PaneRow::Fold { count, .. } = r { Some(*count) } else { None });
+        assert_eq!((count(&t.left), count(&t.right)), (Some(4), Some(5)));
     }
 
     #[test]
