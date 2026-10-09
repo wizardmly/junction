@@ -77,7 +77,7 @@
 | Cherry-Pick | M3 | ✅（冲突走进行中操作横幅；改动已在当前分支的（空）提交自动跳过，不留下进行中状态） |
 | Checkout Revision | M2 | ✅ |
 | Show Repository at Revision | M4 | ✅（提交右键 → 显示该版本的文件树，双击打开只读编辑器） |
-| Compare with Local | M3 | ✅ |
+| Compare with Local | M3 | ✅（提交详情里文件的右键菜单也有 Compare with Local / Compare Before with Local） |
 | Reset Current Branch to Here…（Soft / Mixed / Hard / Keep） | M2 | ✅ |
 | Revert Commit | M3 | ✅（冲突走进行中操作横幅） |
 | Undo Commit（最新的未推送提交） | M2 | ✅ |
@@ -154,14 +154,14 @@
 |---|---|---|
 | 双栏 Side-by-side / 统一 Unified 视图 | M2 | ✅（双栏按 AS 重做：两栏只显示各自的行，gutter 镜像贴着中间分隔条，分隔条画连接块，左 gutter `>>` 回滚、右 gutter 包含复选框，标题条锁图标 + 版本 + 路径，error stripe 可点可拖；单栏也可编辑、有语法高亮，删除行只读显示在新增行上方，两列行号，gutter 有 Revert × 和包含复选框；逐项对照见 [DIFF_MERGE.md](DIFF_MERGE.md)） |
 | 忽略空白：不忽略 / 行首尾 / 全部 / 全部加空行 | M2 | ✅ |
-| 高亮：按词 / 按行 / 按字符 / 不高亮 | M2 | ✅ |
-| 折叠未改动片段、同步滚动、上/下一处差异、Jump to Source (F4)、跳到下一个文件 | M2 | ✅（Alt+← / Alt+→、F7 到末尾进入下一个文件） |
-| 右侧可编辑（工作区文件）、单个 chunk 回滚 / 应用 | M3 | ✅（双栏右侧直接编辑：光标、选择、拖选、双击选词、Smart Home、Ctrl+D/Y、Tab/Shift+Tab、输入法、撤销重做、复制粘贴，改完实时重算并自动保存；`>>` 在缓冲区里回滚可撤销，按住 Ctrl 变 Append；暂存区模式 chunk Stage / Unstage；单栏编辑未做） |
+| 高亮：按词 / 按行 / 按字符 / 不高亮 | M2 | ✅（不高亮时连接块、`>>` 和复选框也不显示） |
+| 折叠未改动片段、同步滚动、上/下一处差异、Jump to Source (F4)、跳到下一个文件 | M2 | ✅（F7 / Shift+F7 从光标所在行找下一处 / 上一处并移动光标；F4 打开光标所在行（另一侧的行按 diff 换算），和分支 / 版本 / 剪贴板比较时也能用；Alt+← / Alt+→、F7 到末尾进入下一个文件） |
+| 右侧可编辑（工作区文件）、单个 chunk 回滚 / 应用 | M3 | ✅（双栏右侧直接编辑：光标、选择、拖选、双击选词、Smart Home、Ctrl+D/Y、Tab/Shift+Tab、输入法、撤销重做、复制粘贴，改完实时重算并自动保存；`>>` 在缓冲区里回滚可撤销，按住 Ctrl 变 Append（点击时也读取鼠标事件的 Ctrl）；部分包含的变更块和「全部包含」复选框显示三态「−」；右键 Compare with Clipboard；暂存区模式 chunk Stage / Unstage；单栏编辑未做） |
 | 语法高亮（tree-sitter，与编辑器一致） | M2 | ✅（双栏、单栏、Merge 都有） |
 | 二进制 / 图片对比 | M4 | ✅（并排显示两侧图片（PNG/JPEG/GIF/BMP/WebP/ICO），下方显示尺寸、格式、文件大小；非图片显示大小；新增/删除提示） |
 | 冲突对话框：文件列表，Accept Yours / Accept Theirs / Merge… | M3 | ✅（Merge / Rebase / Cherry-pick / Update 遇到冲突时自动弹出；Commit 面板预填 MERGE_MSG 或被变基提交的信息） |
-| 三方合并工具：左（Yours）中（Result）右（Theirs）、魔棒应用非冲突改动、逐块接受、Resolve simple conflicts | M3 | ✅（按 AS 重做：三个独立编辑器，结果栏从 base 开始、可直接编辑并可撤销，两条分隔条连接块，`>>` `×` / `<<` `×` 紧贴分隔条，第二侧自动 Append，冲突红色，魔棒逐词合并简单冲突，工具栏 Apply Non-Conflicting（左/全部/右）、Resolve Simple Conflicts、同步滚动；有未解决变更时 Apply 先确认；Compare Contents 下拉可把 Left / Right / Result 与 Base 或彼此对比） |
-| Compare with Branch… / Compare with Revision… / Compare two commits | M3 | ✅ |
+| 三方合并工具：左（Yours）中（Result）右（Theirs）、魔棒应用非冲突改动、逐块接受、Resolve simple conflicts | M3 | ✅（按 AS 重做：三个独立编辑器，结果栏从 base 开始、可直接编辑并可撤销，两条分隔条连接块，`>>` `×` / `<<` `×` 紧贴分隔条，第二侧自动 Append，冲突红色，魔棒逐词合并简单冲突，工具栏 Apply Non-Conflicting（左/全部/右）、Resolve Simple Conflicts、同步滚动；有未解决变更时 Apply 先确认；Compare Contents 下拉可把 Left / Right / Result 与 Base 或彼此对比；栏标题写分支名（Changes from main / Changes from feature）；F7 / Shift+F7 从光标找未解决的变更并移动光标；改过内容后 Cancel 先确认放弃，然后回到冲突对话框） |
+| Compare with Branch… / Compare with Revision… / Compare two commits | M3 | ✅（Compare with Revision… 列出该文件的历史版本（跟随重命名，可输入过滤，↑↓ 选择）；Compare with Branch… 是分支 / 标签 / 版本输入框加分支列表；重命名文件的 diff 标题两侧各显示自己的路径） |
 | 分支比较视图（两个分支的提交差异 + 文件差异） | M3 | ✅（current..branch 提交列表 + Swap Branches + Show Files） |
 
 ## 7. 文件级功能

@@ -28,9 +28,9 @@
 | 2.2 | 按住 Ctrl 时，`>>` 变成「Append」（插入左边内容，不删除右边） | ✅ |
 | 2.3 | 左边也可编辑时，右 gutter 显示 `<<` | ✅（Compare With… 另一个文件时左栏是项目文件，可编辑，右 gutter 显示 `<<`，Ctrl 切 Append；只读的一侧标题带锁） |
 | 2.4 | 部分提交：每个变更在**右编辑器 gutter** 的变更首行显示复选框（包含进本次提交） | ✅ |
-| 2.5 | 右栏标题的复选框控制全部变更；工具栏右侧显示「7 differences, 0 included」 | ✅ |
+| 2.5 | 右栏标题的复选框控制全部变更；工具栏右侧显示「7 differences, 0 included」 | ✅（部分包含时标题复选框和变更块复选框显示「−」） |
 | 2.6 | 暂存区模式：Stage / Unstage / Rollback 的箭头同样在 gutter 里 | ✅ |
-| 2.7 | 编辑器右键菜单：Revert Selected Changes、Include/Exclude Lines into Commit、Compare with Clipboard 等 | ✅ 缺 Compare with Clipboard |
+| 2.7 | 编辑器右键菜单：Revert Selected Changes、Include/Exclude Lines into Commit、Compare with Clipboard 等 | ✅（Compare with Clipboard：剪贴板对比选中文本或该栏全文，本地文件一侧仍可编辑） |
 | 2.8 | 行级部分提交：可以只包含一个变更里的部分行（右键 Include Lines into Commit） | ✅ 排除的行变淡 |
 
 ## 3. 可编辑
@@ -45,12 +45,12 @@
 
 | # | AS 的表现 | 现状 |
 |---|---|---|
-| 4.1 | ↑ Previous Difference（Shift+F7）、↓ Next Difference（F7）；到末尾再按会提示跳到下一个文件 | ✅ |
-| 4.2 | ✎ Jump to Source（F4） | ✅ |
+| 4.1 | ↑ Previous Difference（Shift+F7）、↓ Next Difference（F7）；到末尾再按会提示跳到下一个文件 | ✅（从光标所在行找，光标移到变更处） |
+| 4.2 | ✎ Jump to Source（F4） | ✅（打开光标所在行） |
 | 4.3 | ← / → Compare Previous / Next File（Alt+←/→）；文件列表按钮（选择要对比的文件） | ✅ |
 | 4.4 | 查看器下拉：Side-by-side viewer / Unified viewer | ✅ |
 | 4.5 | 空白下拉：Do not ignore / Trim whitespaces / Ignore whitespaces / Ignore whitespaces and empty lines | ✅ |
-| 4.6 | 高亮下拉：Highlight words / Highlight lines / Highlight split changes / Highlight characters / Do not highlight | ✅ |
+| 4.6 | 高亮下拉：Highlight words / Highlight lines / Highlight split changes / Highlight characters / Do not highlight | ✅（Do not highlight 不显示任何变更标记、连接块和按钮） |
 | 4.7 | 折叠未修改片段开关 | ✅ |
 | 4.8 | 同步滚动开关 | ✅ |
 | 4.9 | 齿轮菜单：上下文行数、显示行号、显示空白字符、显示缩进线、软换行、对齐变更（Align changes）、在编辑器标签页打开等 | ✅（Soft-Wrap：长行按栏宽在空格处折行，续行保留缩进，并排时两栏对应行等高；diff 本身就在编辑器标签页打开；Merge 的齿轮也有 Align Changes，三栏每个变更块等高） |
@@ -69,14 +69,14 @@
 
 | # | AS 的表现 | 现状 |
 |---|---|---|
-| 6.1 | 三个独立编辑器：左「Changes from 我方」只读，中「Result」可编辑，右「Changes from 对方」只读。标题带分支和版本 | ✅ |
+| 6.1 | 三个独立编辑器：左「Changes from 我方」只读，中「Result」可编辑，右「Changes from 对方」只读。标题带分支和版本 | ✅（标题写分支名；不写版本号） |
 | 6.2 | 两条分隔条，分别连接 左↔中、中↔右，画法同 1.3 | ✅ |
 | 6.3 | 左栏 gutter 靠中间一侧有 `>>`（应用到结果）和 `×`（忽略）；右栏对应 `<<` 和 `×` | ✅ |
 | 6.4 | 冲突用红色；只有一方改动的块按类型着色；已解决的块变淡或消失 | ✅ |
 | 6.5 | 冲突两边都应用时，第二个箭头变成 Append（追加在第一个后面） | ✅ |
 | 6.6 | 结果栏 gutter 显示魔棒，可自动解决简单冲突；工具栏有「Resolve simple conflicts」 | ✅ |
 | 6.7 | 工具栏：↑↓ 跳到上一个/下一个变更，Apply All Non-Conflicting Changes（左 / 全部 / 右三个按钮），空白、高亮、折叠、同步滚动、齿轮、帮助，右侧显示「N changes, M conflicts」 | ✅（空白：Do not ignore / Trim / Ignore whitespaces / … and empty lines，在还没处理任何变更时可切换（重新比较）；高亮：words / lines / characters / Do not highlight） |
-| 6.8 | 底部按钮：Accept Left、Accept Right、Cancel、Apply；还有冲突未解决时点 Apply 会提示确认 | ✅ |
+| 6.8 | 底部按钮：Accept Left、Accept Right、Cancel、Apply；还有冲突未解决时点 Apply 会提示确认 | ✅（改过内容后 Cancel 先确认放弃；关闭后回到冲突对话框） |
 | 6.9 | 结果栏可自由编辑，编辑后重新计算各块状态 | ✅ |
 | 6.10 | 和 Base 对比：工具栏 Compare Contents 下拉（Left / Right / Result 与 Base，Left 与 Right，Left / Right 与 Result），在 diff 标签页打开只读对比 | ✅ |
 
