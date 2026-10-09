@@ -54,6 +54,8 @@ pub struct RebaseEditor {
     /// Rows added with Ctrl/Cmd-click, for Unite.
     extra: std::collections::BTreeSet<usize>,
     message: Entity<TextareaState>,
+    /// The changed files of each commit looked at, for the details panel.
+    files: std::collections::HashMap<String, Vec<crate::git::log::FileChange>>,
     _subscription: Subscription,
 }
 
@@ -77,6 +79,7 @@ impl RebaseEditor {
             selected: 0,
             extra: Default::default(),
             message,
+            files: Default::default(),
             _subscription: subscription,
         };
         this.load_message(window, cx);
@@ -85,6 +88,11 @@ impl RebaseEditor {
 
     fn load_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.entries.get(self.selected) else { return };
+        let hash = entry.commit.hash.clone();
+        if !self.files.contains_key(&hash) {
+            let changes = crate::git::log::load_details(&self.repository, &hash).map(|d| d.changes).unwrap_or_default();
+            self.files.insert(hash, changes);
+        }
         let text = entry.message.clone().unwrap_or_else(|| rebase::message_of(&self.repository, &entry.commit.hash));
         self.message.update(cx, |state, cx| state.set_value(text, window, cx));
     }
@@ -312,12 +320,63 @@ impl Render for RebaseEditor {
                     .rounded_md()
                     .child(rows),
             )
-            .child(div().text_xs().text_color(palette.text_secondary).child(if editable {
-                "Commit message"
-            } else {
-                "Commit message (choose Reword or Squash to edit)"
-            }))
-            .child(Textarea::new(&self.message).h(px(110.)).disabled(!editable))
+            .child(
+                // IntelliJ's details: the message beside the commit's changed files.
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_2()
+                            .child(div().text_xs().text_color(palette.text_secondary).child(if editable {
+                                "Commit message"
+                            } else {
+                                "Commit message (choose Reword or Squash to edit)"
+                            }))
+                            .child(Textarea::new(&self.message).h(px(110.)).disabled(!editable)),
+                    )
+                    .child(self.render_files(cx)),
+            )
+    }
+}
+
+impl RebaseEditor {
+    /// The selected commit's changed files.
+    fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let files = self.entries.get(self.selected).and_then(|e| self.files.get(&e.commit.hash)).cloned().unwrap_or_default();
+        let mut list = v_flex().gap_px().child(div().pb_1().text_xs().text_color(palette.text_secondary).child(format!(
+            "{} file{} changed",
+            files.len(),
+            if files.len() == 1 { "" } else { "s" }
+        )));
+        for file in &files {
+            let (dir, name) = file.path.rsplit_once('/').map_or(("", file.path.as_str()), |(d, n)| (d, n));
+            list = list.child(
+                h_flex()
+                    .h(px(20.))
+                    .gap_1p5()
+                    .text_sm()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(gpui_kit::component::Icon::new(IconName::File).xsmall().text_color(palette.text_secondary))
+                    .child(div().flex_shrink_0().text_color(crate::ui::common::change_color(file.kind, &palette)).child(name.to_owned()))
+                    .child(div().min_w_0().text_xs().text_color(palette.text_secondary).text_ellipsis().child(dir.to_owned())),
+            );
+        }
+        div()
+            .id("rebase-files")
+            .w(px(260.))
+            .flex_shrink_0()
+            .h(px(130.))
+            .p_2()
+            .border_1()
+            .border_color(palette.border)
+            .rounded_md()
+            .overflow_y_scroll()
+            .child(list)
     }
 }
 

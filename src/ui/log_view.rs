@@ -1960,7 +1960,8 @@ fn commit_menu(
         }
     }))
     .separator()
-    .item(PopupMenuItem::new("Cherry-Pick").disabled(is_head && !multi).on_click(op("Cherry-Pick", cherry_pick, picked)))
+    // Commits already on the current branch have nothing to pick.
+    .item(PopupMenuItem::new("Cherry-Pick").disabled(on_branch).on_click(op("Cherry-Pick", cherry_pick, picked)))
     .item(PopupMenuItem::new("Checkout Revision").disabled(multi).on_click(op(
         "Checkout",
         vec!["checkout".into(), "--detach".into(), hash.clone()],
