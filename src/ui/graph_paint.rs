@@ -1,6 +1,11 @@
 //! Paints one row of the commit graph.
 
-use gpui_kit::{Bounds, Hsla, ParentElement as _, PathBuilder, Pixels, Styled as _, Window, canvas, div, fill, point, px, size};
+use std::rc::Rc;
+
+use gpui_kit::{
+    App, Bounds, Hsla, InteractiveElement as _, ParentElement as _, PathBuilder, Pixels, StatefulInteractiveElement as _, Styled as _, Window,
+    canvas, div, fill, point, px, size,
+};
 
 use crate::git::graph::{GraphRow, Half};
 use crate::theme::Palette;
@@ -14,16 +19,35 @@ pub fn graph_width(row: &GraphRow) -> Pixels {
     px(LANE_WIDTH * row.width.max(1) as f32 + 6.)
 }
 
-pub fn graph_canvas(row: GraphRow, palette: &Palette, head: bool) -> impl gpui_kit::IntoElement {
+/// Goes to a row: the other end of a hidden long edge whose arrow was clicked.
+pub type OnArrow = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
+pub fn graph_canvas(row: GraphRow, palette: &Palette, head: bool, row_ix: usize, on_arrow: &OnArrow) -> impl gpui_kit::IntoElement {
     let colors: Vec<Hsla> = (0..palette.graph.len()).map(|ix| palette.graph_color(ix)).collect();
     let width = graph_width(&row);
-    div().w(width).h_full().flex_shrink_0().child(
+    let arrows: Vec<_> = row.arrows.iter().map(|arrow| {
+        let (target, on_arrow) = (arrow.target, on_arrow.clone());
+        div()
+            .id(("graph-arrow", row_ix * 64 + arrow.lane.min(63)))
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(LANE_WIDTH * arrow.lane as f32 + 3.))
+            .w(px(LANE_WIDTH))
+            .cursor_pointer()
+            .on_mouse_down(gpui_kit::MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                on_arrow(target, window, cx);
+            })
+    }).collect();
+    div().relative().w(width).h_full().flex_shrink_0().child(
         canvas(
             move |_, _, _| {},
             move |bounds, _, window, _| paint_row(&row, &colors, head, bounds, window),
         )
         .size_full(),
     )
+    .children(arrows)
 }
 
 fn paint_row(row: &GraphRow, colors: &[Hsla], head: bool, bounds: Bounds<Pixels>, window: &mut Window) {
@@ -53,6 +77,18 @@ fn paint_row(row: &GraphRow, colors: &[Hsla], head: bool, bounds: Bounds<Pixels>
         }
         if let Ok(path) = path.build() {
             window.paint_path(path, color(line.color));
+        }
+    }
+
+    // A hidden long edge ends in a small arrowhead at the row's middle.
+    for arrow in &row.arrows {
+        let (tip, back) = if arrow.down { (middle + px(2.), middle - px(2.)) } else { (middle - px(2.), middle + px(2.)) };
+        let mut path = PathBuilder::stroke(px(LINE_WIDTH));
+        path.move_to(point(x(arrow.lane) - px(3.5), back));
+        path.line_to(point(x(arrow.lane), tip));
+        path.line_to(point(x(arrow.lane) + px(3.5), back));
+        if let Ok(path) = path.build() {
+            window.paint_path(path, color(arrow.color));
         }
     }
 

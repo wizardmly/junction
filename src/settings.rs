@@ -85,6 +85,8 @@ pub struct LogSettings {
     pub compact_refs: bool,
     /// Reference labels before the subject (else after it, right-aligned).
     pub refs_on_left: bool,
+    /// Draw long edges whole instead of cutting them into arrows.
+    pub show_long_edges: bool,
     pub highlight_mine: bool,
     pub highlight_merges: bool,
     pub highlight_current_branch: bool,
@@ -110,7 +112,8 @@ impl Default for LogSettings {
             show_hash: false,
             relative_dates: false,
             compact_refs: false,
-            refs_on_left: true,
+            refs_on_left: false,
+            show_long_edges: false,
             highlight_mine: true,
             highlight_merges: true,
             highlight_current_branch: false,
@@ -203,7 +206,7 @@ impl DiffSettings {
 }
 
 impl LogSettings {
-    fn fields(&mut self) -> [(&'static str, &mut bool); 13] {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 14] {
         [
             ("log_changes_by_directory", &mut self.changes_by_directory),
             ("log_changes_by_module", &mut self.changes_by_module),
@@ -213,6 +216,7 @@ impl LogSettings {
             ("log_relative_dates", &mut self.relative_dates),
             ("log_compact_refs", &mut self.compact_refs),
             ("log_refs_on_left", &mut self.refs_on_left),
+            ("log_show_long_edges", &mut self.show_long_edges),
             ("log_highlight_mine", &mut self.highlight_mine),
             ("log_highlight_merges", &mut self.highlight_merges),
             ("log_highlight_current_branch", &mut self.highlight_current_branch),

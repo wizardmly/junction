@@ -116,6 +116,8 @@ pub struct LogView {
     /// the drag started and the width then; the widths while dragging.
     column_drag: Option<(usize, f32, u32)>,
     columns: Option<[u32; 3]>,
+    /// The graph with long edges hidden, keyed by the layout it came from.
+    short_graph: Option<(usize, Arc<crate::git::GraphLayout>)>,
     /// The Git window is docked left or right: details under the table.
     details_below: bool,
     _search_debounce: Option<Task<()>>,
@@ -208,6 +210,7 @@ impl LogView {
             anchor: None,
             column_drag: None,
             columns: None,
+            short_graph: None,
             details_below: false,
             _search_debounce: None,
             _subscriptions: subscriptions,
@@ -1018,6 +1021,7 @@ impl LogView {
                                     })
                                 },
                             ))
+                            .item(toggle("Show Long Edges", log.show_long_edges, |l, v| l.show_long_edges = v, false))
                             .separator()
                             .label("Sort")
                             .item(toggle("IntelliSort", !log.sort_by_date, |l, _| l.sort_by_date = false, true))
@@ -1102,6 +1106,19 @@ impl LogView {
         });
     }
 
+    /// The graph with long edges cut into arrows (cached per layout).
+    fn graph_without_long_edges(&mut self, graph: Arc<crate::git::GraphLayout>) -> Arc<crate::git::GraphLayout> {
+        let key = Arc::as_ptr(&graph) as usize;
+        match &self.short_graph {
+            Some((k, hidden)) if *k == key => hidden.clone(),
+            _ => {
+                let hidden = Arc::new(graph.hide_long_edges());
+                self.short_graph = Some((key, hidden.clone()));
+                hidden
+            }
+        }
+    }
+
     /// Hashes reachable from HEAD within the loaded log (cached per load).
     fn head_reachable(&mut self, cx: &App) -> Rc<HashSet<String>> {
         let model = self.model.read(cx);
@@ -1177,6 +1194,9 @@ impl LogView {
         let graph = model.graph().clone();
         let refs = model.refs().clone();
         let selected = model.selected_index();
+        let show_long_edges = Settings::get(cx).log.show_long_edges;
+        let graph = if show_long_edges { graph } else { self.graph_without_long_edges(graph) };
+        let model = self.model.read(cx);
         let extra = self.extra_selection.clone();
         let me = model.user_email().map(str::to_owned);
         let log = Settings::get(cx).log.clone();
@@ -1205,6 +1225,16 @@ impl LogView {
                 })
         };
         let reachable = if log.highlight_current_branch || log.highlight_not_merged { Some(self.head_reachable(cx)) } else { None };
+        // Clicking a long edge's arrow goes to the edge's other end.
+        let on_arrow: crate::ui::graph_paint::OnArrow = {
+            let entity = entity.clone();
+            Rc::new(move |target, window, cx| {
+                entity.update(cx, |this, cx| {
+                    window.focus(&this.focus, cx);
+                    this.click_row(target, false, false, cx);
+                })
+            })
+        };
         let model = self.model.read(cx);
 
         range
@@ -1229,7 +1259,7 @@ impl LogView {
                     .min_w(px(160.))
                     .h_full()
                     .overflow_hidden()
-                    .child(graph_canvas(row, &palette, is_head));
+                    .child(graph_canvas(row, &palette, is_head, ix, &on_arrow));
                 let shown = if log.compact_refs { 1 } else { 4 };
                 let mut ref_labels = h_flex().flex_shrink_0();
                 // A detached HEAD gets its own label, as in IntelliJ.

@@ -36,15 +36,15 @@
 ### 2.2 提交列表（中间）
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 提交图（彩色泳道、合并线、长边折叠为箭头） | M1 | ✅ |
+| 提交图（彩色泳道、合并线、长边折叠为箭头） | M1 | ✅（跨 30 行以上的长边默认只画两端，以箭头收尾，点击箭头跳到另一端；View Options › Show Long Edges 画出整条边） |
 | 列：Subject（含分支/标签标签）、Author、Date、Hash；列可显示/隐藏、可拖宽 | M1 | ✅（View Options › Show Columns：Author / Date / Hash 显示隐藏并记住；拖动列的左边缘改宽度，宽度记住） |
-| 引用标签：本地分支、远程分支、标签、HEAD；左/右侧显示；紧凑引用视图 | M1 | ✅（本地/远程/标签/HEAD 标签；View Options：Compact References View、Show References on the Left） |
+| 引用标签：本地分支、远程分支、标签、HEAD；左/右侧显示；紧凑引用视图 | M1 | ✅（本地/远程/标签/HEAD 标签；默认在右侧，与 IntelliJ 一致；View Options：Compact References View、Show References on the Left） |
 | 虚拟滚动，几十万提交流畅 | M1 | ✅ |
 | 分段加载（先加载最近的，滚动时加载更多） | M2 | ✅（先 1000 条，其余后台加载） |
-| 多选（Shift/Ctrl） | M2 | ✅（多选后可 Cherry-Pick / Revert / 复制哈希） |
+| 多选（Shift/Ctrl） | M2 | ✅（多选后可 Cherry-Pick / Revert / 复制哈希；键盘：↑↓、PageUp/PageDown、Home/End，Shift+↑↓/Home/End 扩展选择，Ctrl+A 全选） |
 | 高亮：我的提交（粗体）、合并提交（灰色）、当前分支提交、未合并到当前分支的提交 | M2 | ✅（View Options › Highlight：My Commits（粗体）、Merge Commits（灰色）、Current Branch（底色）、Not Merged into Current Branch（灰色）） |
 | IntelliSort / 按拓扑 / 按日期排序 | M2 | ✅（View Options › Sort：IntelliSort（拓扑序）/ By Date（--date-order）） |
-| 折叠/展开线性分支、显示长边 | M3 | ✅（View Options → Collapse Linear Branches，“⋯ N commits”点击展开） |
+| 折叠/展开线性分支、显示长边 | M3 | ✅（View Options → Collapse Linear Branches，“⋯ N commits”点击展开；Show Long Edges） |
 | 日期格式：相对时间 / 绝对时间 | M1 | ✅（View Options › Relative Dates：“5 minutes ago”；否则 Today/Yesterday/日期） |
 | `Ctrl+F` 跳转到 hash / 分支 / 标签 | M2 | ✅ |
 | 多个 Log 标签页（从分支打开新标签） | M3 | ✅ |
