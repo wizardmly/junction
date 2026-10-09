@@ -358,8 +358,34 @@ impl FileEditor {
         };
         let language = language_for(&path);
         let initial = content.clone();
-        let state = cx.new(|cx| EditorState::new(window, cx).language(language).line_number(true).searchable(true).default_value(initial));
-        let subscriptions = vec![cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
+        // Settings › Editor › General: line numbers, whitespaces, indent guides, soft wrap.
+        let view = crate::settings::Settings::get(cx).diff.clone();
+        let state = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language(language)
+                .line_number(view.show_line_numbers)
+                .show_whitespaces(view.show_whitespaces)
+                .indent_guides(view.show_indent_guides)
+                .soft_wrap(view.soft_wrap)
+                .searchable(true)
+                .default_value(initial)
+        });
+        let settings_state = state.clone();
+        let mut shown = view;
+        let settings = cx.observe_global_in::<crate::settings::Settings>(window, move |_, window, cx| {
+            let view = crate::settings::Settings::get(cx).diff.clone();
+            if view == shown {
+                return;
+            }
+            settings_state.update(cx, |state, cx| {
+                state.set_line_number(view.show_line_numbers, window, cx);
+                state.set_show_whitespaces(view.show_whitespaces, window, cx);
+                state.set_indent_guides(view.show_indent_guides, window, cx);
+                state.set_soft_wrap(view.soft_wrap, window, cx);
+            });
+            shown = view;
+        });
+        let subscriptions = vec![settings, cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 // IntelliJ closes the change popup on typing.
                 this.popup = None;

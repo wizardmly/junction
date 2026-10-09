@@ -80,7 +80,7 @@ impl Page {
         match self {
             Page::Appearance => &["Theme", "Dark", "Light", "Sync with OS", "Compact mode"],
             Page::Keymap => &["Shortcut", "Keyboard"],
-            Page::EditorGeneral => &["Soft-wrap", "Show line numbers", "Show whitespaces", "Show indent guides", "Diff", "Merge"],
+            Page::EditorGeneral => &["Soft-wrap", "Show line numbers", "Show whitespaces", "Show indent guides", "Appearance", "Diff", "Merge"],
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::Commit => &[
                 "Use non-modal commit interface",
@@ -515,7 +515,8 @@ impl SettingsView {
         let d = &self.draft.diff;
         v_flex()
             .gap_2()
-            .child(self.section("Diff and Merge Viewers", cx))
+            .child(self.section("Appearance", cx))
+            .child(self.note("The editor, and the diff and merge viewers", cx))
             .child(self.check("settings-soft-wrap", "Soft-wrap", d.soft_wrap, query, |s, v| s.diff.soft_wrap = v, cx))
             .child(self.check("settings-line-numbers", "Show line numbers", d.show_line_numbers, query, |s, v| s.diff.show_line_numbers = v, cx))
             .child(self.check("settings-whitespaces", "Show whitespaces", d.show_whitespaces, query, |s, v| s.diff.show_whitespaces = v, cx))

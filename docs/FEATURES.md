@@ -195,7 +195,7 @@
 |---|---|---|
 | Settings 对话框结构 | M2 | ✅（左侧搜索框 + 设置树：Appearance & Behavior › Appearance、Keymap、Editor › General / Font、Version Control › Commit / Directory Mappings / Git / GitHub / GitLab、Languages & Frameworks；搜索按页名和选项文字过滤并高亮命中项；Cancel / Apply / OK） |
 | Keymap 页 | M2 | ✅（列出主要动作及快捷键，可 Change（按下新快捷键）、Remove、Reset，冲突时提示；改动存 keymap.conf，启动时覆盖默认绑定） |
-| Editor 页 | M2 | ✅（General：diff / merge 查看器的软换行、行号、空白、缩进线；Font：字号，作用于编辑器、diff、merge，行高 1.6 倍） |
+| Editor 页 | M2 | ✅（General：软换行、行号、空白、缩进线，作用于文件编辑器和 diff / merge 查看器，改动即时生效；Font：字号，作用于编辑器、diff、merge，行高 1.6 倍） |
 | Git 可执行文件路径 + Test 按钮 | M2 | ✅（设置里填写路径，留空为 PATH 中的 git；Test 显示 git 版本或错误） |
 | 启用暂存区 | M2 | ✅ |
 | 提交前警告 CRLF、警告 detached HEAD、大文件 | M3 | ✅（CRLF 的 Fix and Commit 像 AS 一样写全局 core.autocrlf；detached HEAD 用 AS 的提示文字） |
