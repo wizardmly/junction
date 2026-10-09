@@ -849,7 +849,7 @@ impl FileEditor {
 
     /// Git › Open on GitHub: the file at this revision (HEAD's commit for the
     /// working tree), with the selected lines highlighted.
-    fn open_on_hosting(&mut self, _: &OpenOnHosting, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_on_hosting(&mut self, _: &OpenOnHosting, _: &mut Window, cx: &mut Context<Self>) {
         let Some(web) = crate::git::hosting::web_repo(&self.repository) else {
             self.error = Some("No GitHub, GitLab or Bitbucket remote found".into());
             cx.notify();
@@ -863,7 +863,7 @@ impl FileEditor {
     }
 
     /// Create Gist: the selection, or the whole file when nothing is selected.
-    fn create_gist(&mut self, _: &CreateGist, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn create_gist(&mut self, _: &CreateGist, _: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
         let range: Range<usize> = self.state.read(cx).selected_range();
         let content = if range.is_empty() { text } else { text.get(range).unwrap_or_default().to_owned() };

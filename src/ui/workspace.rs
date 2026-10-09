@@ -2963,10 +2963,43 @@ fn main_menu(
             })))
             .item(PopupMenuItem::new("Directory Mappings…").on_click(model_op(&e, crate::ui::mappings_dialog::directory_mappings)))
             .separator()
-            .submenu("GitHub / GitLab", window, cx, move |menu, _, _| {
+            // IntelliJ's Git › GitHub group.
+            .submenu("GitHub / GitLab", window, cx, move |menu, _, cx| {
                 let e3 = e2.clone();
+                let (e4, e5, e6, e7) = (e2.clone(), e2.clone(), e2.clone(), e2.clone());
+                let web = e2.read(cx).model.read(cx).web_repo().map(|w| w.base.clone());
+                let has_file = e2.read(cx).editor().is_some();
                 menu.item(PopupMenuItem::new("Share Project on GitHub…").on_click(model_op(&e2, crate::ui::github_dialogs::share_project)))
-                    .item(PopupMenuItem::new("Accounts…").on_click(move |_, window, cx| {
+                    .item(PopupMenuItem::new("Create Pull Request…").on_click(move |_, window, cx| {
+                        let prs = e4.read(cx).prs.clone();
+                        prs.update(cx, |prs, cx| prs.create_pull_request(window, cx))
+                    }))
+                    .item(PopupMenuItem::new("View Pull Requests").on_click(move |_, window, cx| {
+                        e5.update(cx, |this, cx| {
+                            if !this.tools.is_open(ToolWindow::PullRequests) {
+                                this.toggle_tool(ToolWindow::PullRequests, window, cx)
+                            }
+                        })
+                    }))
+                    .separator()
+                    .item(PopupMenuItem::new("Open on GitHub / GitLab").disabled(web.is_none()).on_click(move |_, window, cx| {
+                        // The file in the editor at its lines, else the repository's page.
+                        match e6.read(cx).editor().cloned() {
+                            Some(editor) => editor.update(cx, |editor, cx| editor.open_on_hosting(&crate::ui::file_editor::OpenOnHosting, window, cx)),
+                            None => {
+                                if let Some(web) = &web {
+                                    cx.open_url(web)
+                                }
+                            }
+                        }
+                    }))
+                    .item(PopupMenuItem::new("Create Gist…").disabled(!has_file).on_click(move |_, window, cx| {
+                        if let Some(editor) = e7.read(cx).editor().cloned() {
+                            editor.update(cx, |editor, cx| editor.create_gist(&crate::ui::file_editor::CreateGist, window, cx))
+                        }
+                    }))
+                    .separator()
+                    .item(PopupMenuItem::new("Manage Accounts…").on_click(move |_, window, cx| {
                         let prs = e3.read(cx).prs.clone();
                         crate::ui::accounts_dialog::accounts(
                             Some(Rc::new(move |cx: &mut App| prs.update(cx, |prs, cx| prs.refresh(cx)))),
