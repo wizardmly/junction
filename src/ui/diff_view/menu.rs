@@ -7,7 +7,7 @@ use std::ops::Range;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::{App, Context, Entity, Window};
 
-use super::DiffView;
+use super::{DiffSource, DiffView};
 use crate::git::diff::{self, Hunk};
 use crate::ui::text_panes;
 
@@ -88,6 +88,32 @@ impl DiffView {
         }
     }
 
+    /// Compare with Clipboard on a pane: the clipboard against the
+    /// selection, or against the pane's text. The local file stays
+    /// editable; anything else is compared read-only.
+    fn compare_with_clipboard(&mut self, cx: &mut Context<Self>) {
+        let (Some(repository), Some(source)) = (self.repository.clone(), self.source.clone()) else { return };
+        let clipboard = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+        let (pane, selection) = match self.panes.caret {
+            Some((pane, sel)) => (pane, sel.range()),
+            None => (self.caret_pane(), 0..0),
+        };
+        let path = source.path().to_owned();
+        let source = if selection.is_empty() && self.edit_pane() == Some(pane) {
+            DiffSource::Clipboard { path, text: clipboard }
+        } else {
+            let text = &self.panes.buffers[pane].text();
+            let title = match (&self.loaded, selection.is_empty()) {
+                (_, false) => "Selection".to_owned(),
+                (Some(loaded), true) => if pane == 0 { loaded.old_title.clone() } else { loaded.new_title.clone() },
+                (None, true) => String::new(),
+            };
+            let new = if selection.is_empty() { text.to_string() } else { text[selection].to_owned() };
+            DiffSource::Texts { path, old: clipboard, new, old_title: "Clipboard".to_owned(), new_title: title }
+        };
+        self.show(repository, source, cx);
+    }
+
     /// The panes' context menu.
     pub(super) fn context_menu(entity: &Entity<Self>, menu: PopupMenu, cx: &mut Context<PopupMenu>) -> PopupMenu {
         let view = entity.read(cx);
@@ -105,6 +131,7 @@ impl DiffView {
             .item(PopupMenuItem::new("Include Lines into Commit").disabled(!partial).on_click(on(|v, _, cx| v.set_lines_included(true, cx))))
             .item(PopupMenuItem::new("Exclude Lines from Commit").disabled(!partial).on_click(on(|v, _, cx| v.set_lines_included(false, cx))))
             .separator()
+            .item(PopupMenuItem::new("Compare with Clipboard").on_click(on(|v, _, cx| v.compare_with_clipboard(cx))))
             .item(PopupMenuItem::new("Jump to Source").disabled(!jump).on_click(on(|v, _, cx| v.jump_to_source(cx))))
     }
 }
