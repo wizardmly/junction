@@ -1243,6 +1243,15 @@ pub fn pane_area<V: PaneHost>(id: &'static str, focus: &FocusHandle, cx: &mut Co
                 cx.notify();
             }
         }))
+        // Mouse moves carry the modifiers too, also while another window
+        // has the keyboard.
+        .on_mouse_move(cx.listener(|view: &mut V, e: &MouseMoveEvent, _, cx| {
+            let panes = view.panes();
+            if panes.ctrl_held != e.modifiers.secondary() {
+                panes.ctrl_held = e.modifiers.secondary();
+                cx.notify();
+            }
+        }))
         .flex_1()
         .min_h_0()
         .w_full()

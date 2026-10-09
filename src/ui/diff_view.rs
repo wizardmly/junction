@@ -10,7 +10,6 @@ use std::sync::Arc;
 use gpui_kit::component::{
     Disableable as _, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
-    checkbox::Checkbox,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
@@ -310,7 +309,8 @@ impl DiffView {
     fn hunk_actions(&self) -> Vec<(HunkAction, IconName, &'static str)> {
         // A submodule pointer has no lines to roll back or stage piecewise.
         let submodule = |text: &str| text.starts_with("Subproject commit ");
-        if self.loaded.as_ref().is_some_and(|l| submodule(&l.old) || submodule(&l.new)) {
+        // Do not highlight shows no changes, so no buttons either.
+        if self.loaded.as_ref().is_some_and(|l| submodule(&l.old) || submodule(&l.new)) || !self.highlighted() {
             return Vec::new();
         }
         match &self.source {
@@ -328,9 +328,10 @@ impl DiffView {
         }
     }
 
-    fn apply_hunk(&mut self, change: usize, action: HunkAction, window: &mut Window, cx: &mut Context<Self>) {
+    /// A gutter button; `ctrl` is whether Ctrl was down for the click.
+    fn apply_hunk(&mut self, change: usize, action: HunkAction, ctrl: bool, window: &mut Window, cx: &mut Context<Self>) {
         if action == HunkAction::Revert && self.editable() {
-            let append = self.panes.ctrl_held;
+            let append = ctrl || self.panes.ctrl_held;
             self.revert_change(change, append, window, cx);
             return;
         }
@@ -359,6 +360,7 @@ impl DiffView {
                 if !crate::settings::Settings::get(cx).staging_area
                     && self.options.ignore_whitespace == diff::IgnoreWhitespace::None
                     && self.options.highlight != HighlightMode::Split
+                    && self.highlighted()
                     && !self.diff.binary =>
             {
                 Some(path.clone())
@@ -946,6 +948,11 @@ impl DiffView {
         self.exclusions(cx).iter().map(|(old, new)| old.iter().chain(new).any(|out| !*out) || old.len() + new.len() == 0).collect()
     }
 
+    /// Per change: only some of its lines go into the commit.
+    fn partly_included(&self, cx: &App) -> Vec<bool> {
+        self.exclusions(cx).iter().map(|(old, new)| old.iter().chain(new).any(|out| *out) && old.iter().chain(new).any(|out| !*out)).collect()
+    }
+
     /// How each visible row of a pane looks: its block's color (or the
     /// inner fragment's, for a line inserted inside a modified block), its
     /// changed words, and the gutter marker when highlighting is off.
@@ -982,7 +989,7 @@ impl DiffView {
                     } else {
                         Vec::new()
                     };
-                    let marker = kind.filter(|_| highlight == HighlightMode::None).map(|k| border_color(k, palette));
+                    let marker = None;
                     let number = review.as_ref().map(|r| review_number(r, path.clone(), ix, side.line, palette, cx));
                     let background = background.map(|c| c.opacity(faint));
                     let words = words.into_iter().map(|(r, c)| (r, c.opacity(faint))).collect();
@@ -1005,6 +1012,7 @@ impl DiffView {
         let actions = self.hunk_actions();
         let partial = self.partial_path(cx).is_some();
         let included = self.included(cx);
+        let partly = self.partly_included(cx);
         let two = self.two.clone();
         let actions_width = if actions.is_empty() { 0. } else { BUTTON_WIDTH * actions.len() as f32 + 2. };
         let check_width = if partial { BUTTON_WIDTH + 2. } else { 0. };
@@ -1043,7 +1051,7 @@ impl DiffView {
                 }
                 let rows = if pane == 0 { &two.left[range.clone()] } else { &two.right[range.clone()] };
                 let empty = TwoSide::no_lines(rows);
-                if empty {
+                if empty && self.highlighted() {
                     overlays.push(div().absolute().left_0().right_0().top(px(y)).h(px(1.)).bg(border_color(seg.kind, &palette)).into_any_element());
                 }
                 // On an empty side the buttons sit on the row below the insertion line, as in IntelliJ.
@@ -1069,23 +1077,26 @@ impl DiffView {
                         };
                         el = el.child(
                             tool_button(gpui_kit::ElementId::NamedInteger(format!("pane-{tooltip}").into(), change as u64), icon, tooltip)
-                                .on_click(cx.listener(move |this, _, window, cx| this.apply_hunk(change, action, window, cx))),
+                                .on_click(cx.listener(move |this, e: &gpui_kit::ClickEvent, window, cx| this.apply_hunk(change, action, e.modifiers().secondary(), window, cx))),
                         );
                     }
                     overlays.push(el.into_any_element());
                 }
                 if pane == 1 && partial {
                     let checked = included.get(change).copied().unwrap_or(true);
+                    let entity = cx.entity();
                     overlays.push(
                         column()
                             .left(px(layout.buttons_offset()))
                             .w(px(check_width))
-                            .child(
-                                Checkbox::new(gpui_kit::ElementId::NamedInteger("hunk-include".into(), change as u64))
-                                    .checked(checked)
-                                    .tooltip("Include into commit")
-                                    .on_change(cx.listener(move |this, value: &bool, _, cx| this.toggle_hunk(change, *value, cx))),
-                            )
+                            .child(common::tri_checkbox(
+                                gpui_kit::ElementId::NamedInteger("hunk-include".into(), change as u64),
+                                checked,
+                                partly.get(change).copied().unwrap_or(false),
+                                "Include into commit",
+                                cx,
+                                move |value, _, cx| entity.update(cx, |this, cx| this.toggle_hunk(change, value, cx)),
+                            ))
                             .into_any_element(),
                     );
                 }
@@ -1093,10 +1104,11 @@ impl DiffView {
             panes.push(self.panes.render_pane(pane, PaneContent { looks, overlays }, &palette, window, cx));
         }
 
+        let highlighted = self.highlighted();
         let connectors: Vec<Connector> = two
             .segments
             .iter()
-            .filter(|s| s.change.is_some())
+            .filter(|s| s.change.is_some() && highlighted)
             .map(|s| Connector {
                 left: s.left.clone(),
                 right: s.right.clone(),
@@ -1121,7 +1133,7 @@ impl DiffView {
         let marks = |pane: usize| -> Vec<(Range<usize>, Hsla)> {
             two.segments
                 .iter()
-                .filter(|s| s.change.is_some())
+                .filter(|s| s.change.is_some() && highlighted)
                 .map(|s| (if pane == 0 { s.left.clone() } else { s.right.clone() }, border_color(s.kind, &palette)))
                 .collect()
         };
@@ -1198,7 +1210,7 @@ impl DiffView {
                     }
                     _ => Vec::new(),
                 };
-                let marker = colors.filter(|_| highlight == HighlightMode::None).map(|c| c.1);
+                let marker = None;
                 let block = (highlight != HighlightMode::None).then(|| border_color(*kind, palette));
                 let same = |r: Option<&Display>| matches!(r, Some(Display::Line { change: Some(c), .. }) if *c == change);
                 let top = block.filter(|_| ix == 0 || !same(rows.get(ix - 1)));
@@ -1218,6 +1230,7 @@ impl DiffView {
         let actions = if self.edit_pane() == Some(0) { Vec::new() } else { self.hunk_actions() };
         let partial = self.partial_path(cx).is_some();
         let included = self.included(cx);
+        let partly = self.partly_included(cx);
         let buttons = actions.len() + partial as usize;
         let buttons_width = if buttons == 0 { 0. } else { BUTTON_WIDTH * buttons as f32 + 2. };
         self.panes.layouts = vec![
@@ -1252,18 +1265,21 @@ impl DiffView {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
             if partial {
                 let checked = included.get(change).copied().unwrap_or(true);
-                el = el.child(
-                    Checkbox::new(gpui_kit::ElementId::NamedInteger("unified-include".into(), change as u64))
-                        .checked(checked)
-                        .tooltip("Include into commit")
-                        .on_change(cx.listener(move |this, value: &bool, _, cx| this.toggle_hunk(change, *value, cx))),
-                );
+                let entity = cx.entity();
+                el = el.child(common::tri_checkbox(
+                    gpui_kit::ElementId::NamedInteger("unified-include".into(), change as u64),
+                    checked,
+                    partly.get(change).copied().unwrap_or(false),
+                    "Include into commit",
+                    cx,
+                    move |value, _, cx| entity.update(cx, |this, cx| this.toggle_hunk(change, value, cx)),
+                ));
             }
             for (action, icon, tooltip) in actions.iter().copied() {
                 let (icon, tooltip) = if action == HunkAction::Revert { (IconName::Close, "Revert") } else { (icon, tooltip) };
                 el = el.child(
                     tool_button(gpui_kit::ElementId::NamedInteger(format!("unified-{tooltip}").into(), change as u64), icon, tooltip)
-                        .on_click(cx.listener(move |this, _, window, cx| this.apply_hunk(change, action, window, cx))),
+                        .on_click(cx.listener(move |this, e: &gpui_kit::ClickEvent, window, cx| this.apply_hunk(change, action, e.modifiers().secondary(), window, cx))),
                 );
             }
             overlays.push(el.into_any_element());
@@ -1272,6 +1288,9 @@ impl DiffView {
         // Error stripe marks: each block's rows.
         let mut marks: Vec<(Range<usize>, Hsla)> = Vec::new();
         for (ix, row) in rows.iter().enumerate() {
+            if !self.highlighted() {
+                break;
+            }
             if let Display::Line { change: Some(c), kind, .. } = row {
                 match marks.last_mut() {
                     Some((range, _)) if range.end == ix && matches!(rows.get(ix - 1), Some(Display::Line { change: Some(p), .. }) if p == c) => {
@@ -1297,7 +1316,10 @@ impl DiffView {
         let path = self.source.as_ref().map(|s| s.path().to_owned()).unwrap_or_default();
         let included = self.included(cx);
         let partial = self.partial_path(cx).is_some() && !included.is_empty();
-        let all = included.iter().all(|i| *i);
+        // Three states: all in, none in, or a dash for some.
+        let partly = self.partly_included(cx);
+        let all = included.iter().all(|i| *i) && !partly.iter().any(|p| *p);
+        let none = !included.iter().any(|i| *i);
         let edit_pane = self.edit_pane();
         h_flex()
             .h(px(26.))
@@ -1333,12 +1355,10 @@ impl DiffView {
                     .pl(px(6.))
                     .gap_1p5()
                     .when(partial, |el| {
-                        el.child(
-                            Checkbox::new("hunk-include-all")
-                                .checked(all)
-                                .tooltip("Include all changes into commit")
-                                .on_change(cx.listener(|this, value: &bool, _, cx| this.set_all_included(*value, cx))),
-                        )
+                        let entity = cx.entity();
+                        el.child(common::tri_checkbox("hunk-include-all", all, !all && !none, "Include all changes into commit", cx, move |value, _, cx| {
+                            entity.update(cx, |this, cx| this.set_all_included(value, cx))
+                        }))
                     })
                     .when(edit_pane != Some(1), |el| el.child(common::icon(IconName::Lock).text_color(palette.text_secondary)))
                     .child(new_title),

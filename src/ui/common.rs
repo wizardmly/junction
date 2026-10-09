@@ -50,6 +50,42 @@ pub fn tool_button(id: impl Into<ElementId>, name: IconName, tooltip: impl Into<
 }
 
 /// IntelliJ's default log date format: "Today 14:32", "Yesterday 09:15", or the date.
+/// IntelliJ's three-state checkbox: a dash when only part of what it
+/// stands for is included; clicking it then includes everything.
+pub fn tri_checkbox(
+    id: impl Into<ElementId>,
+    checked: bool,
+    partial: bool,
+    tooltip: &'static str,
+    cx: &gpui_kit::App,
+    on_change: impl Fn(bool, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> gpui_kit::Div {
+    use gpui_kit::{ParentElement as _, Styled as _, prelude::FluentBuilder as _, px};
+    let theme = gpui_kit::component::ActiveTheme::theme(cx);
+    let (mark_bg, mark_fg) = (theme.primary, theme.primary_foreground);
+    gpui_kit::div()
+        .relative()
+        .child(
+            gpui_kit::component::checkbox::Checkbox::new(id)
+                .checked(checked || partial)
+                .tooltip(tooltip)
+                .on_change(move |value, window, cx| on_change(partial || *value, window, cx)),
+        )
+        .when(partial, |el| {
+            el.child(
+                gpui_kit::div()
+                    .absolute()
+                    .inset_0()
+                    .rounded(px(3.))
+                    .bg(mark_bg)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(gpui_kit::div().w(px(8.)).h(px(2.)).bg(mark_fg)),
+            )
+        })
+}
+
 pub fn format_date(unix_seconds: i64) -> String {
     let Some(time) = Local.timestamp_opt(unix_seconds, 0).single() else { return String::new() };
     let today = Local::now().date_naive();
