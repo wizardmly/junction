@@ -51,3 +51,6 @@ opt-level = 2
 # instead, so Windows release builds cross-compile from Linux and macOS.
 [patch.crates-io]
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_LibraryLoader"] }
