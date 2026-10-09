@@ -81,10 +81,42 @@ impl DiffView {
             let files = cx.background_spawn(async move { list_files(&repository, &source) }).await;
             this.update(cx, |this, cx| {
                 this.files = files;
+                this.apply_file_order();
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    /// The Commit tool window's tree order for local changes, so "N of M" and
+    /// Compare Next File follow the tree rather than git's path order.
+    pub fn set_file_order(&mut self, order: Vec<String>) {
+        self.file_order = order;
+    }
+
+    fn apply_file_order(&mut self) {
+        let local = self.files.first().is_some_and(|f| {
+            matches!(f, DiffSource::WorkingTree { .. } | DiffSource::Staged { .. } | DiffSource::Unstaged { .. })
+        });
+        if !local || self.file_order.is_empty() {
+            return;
+        }
+        let rank = |path: &str| self.file_order.iter().position(|p| p == path).unwrap_or(usize::MAX);
+        let mut files = std::mem::take(&mut self.files);
+        files.sort_by_key(|f| rank(f.path()));
+        self.files = files;
+    }
+
+    /// Reloads a working-tree / staged / unstaged diff after its change moved
+    /// on (a commit, rollback or stage); other diffs stay as they are.
+    pub fn refresh_local(&mut self, cx: &mut Context<Self>) {
+        let (Some(repository), Some(source)) = (self.repository.clone(), self.source.clone()) else { return };
+        if !matches!(source, DiffSource::WorkingTree { .. } | DiffSource::Staged { .. } | DiffSource::Unstaged { .. }) {
+            return;
+        }
+        self.source = None;
+        self.files_key.clear();
+        self.show(repository, source, cx);
     }
 
     fn file_index(&self) -> Option<usize> {

@@ -60,7 +60,8 @@ impl SpellOverlay {
         this
     }
 
-    fn recheck(&mut self, cx: &mut Context<Self>) {
+    /// Re-checks the text; call it after setting the value programmatically.
+    pub fn recheck(&mut self, cx: &mut Context<Self>) {
         let state = self.input.read(cx);
         let text = state.value();
         let cursor = state.cursor();

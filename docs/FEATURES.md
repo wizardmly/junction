@@ -96,20 +96,22 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | 变更树：Changes（changelist）、Unversioned Files、Ignored Files | M1 | ✅（Changes、Unversioned Files、Ignored Files 可在 View Options 显示） |
-| 复选框选择要提交的文件；全选 | M1 | ✅（文件、目录、changelist 节点都有复选框，节点勾选即全选其下文件） |
+| 复选框选择要提交的文件；全选 | M1 | ✅（文件、目录、changelist 节点都有复选框，节点勾选即全选其下文件；部分勾选时显示三态 “—”，点它全选；点节点复选框不会折叠节点；新出现的改动（含提交 / Undo 后再次出现的路径、Add to VCS 后的文件）默认勾选；重命名作为一个改动提交 / 回滚 / unstage / shelve，旧路径的删除一起处理） |
 | 分组：目录 / 模块 / 仓库；展开全部/折叠全部 | M2 | ✅（View Options › Group By Repository / Module / Directory，可组合，都关为扁平；模块按 build.gradle、Cargo.toml、CMakeLists.txt 等构建文件识别；展开全部、折叠全部） |
 | 多个 Changelist：新建、移动文件到、设为活动 | M4 | ✅（New / Edit / Delete / Set Active；Move to Another Changelist；活动列表粗体，新改动进入活动列表） |
 | Staging 模式（启用暂存区）：Staged / Unstaged 两棵树，Stage/Unstage 按钮 | M2 | ✅ |
 | 部分提交：按 chunk / 按行勾选（diff 中的复选框） | M4 | ✅（changelist 模式：diff 中每个 chunk 有复选框，提交时用临时 index 只提交勾选的 chunk；暂存区模式按 chunk Stage / Unstage） |
 | 提交信息编辑器：拼写检查、右边距线、首行长度提示、提交信息历史（`Ctrl+M`） | M1/M3 | ✅（等宽字体、右边距线、首行长度提示、Ctrl+M 历史；拼写检查：错词绿色波浪线，`Alt+Enter` 或右键错词弹出 Change to 建议和 Save to dictionary，内置 SCOWL 英文词表加开发常用词，用户词典存在配置目录 dictionary.txt，代码样式的词如 camelCase、路径、反引号内容不检查） |
-| Amend 复选框（自动载入上次提交信息） | M1 | ✅ |
-| Commit / Commit and Push… | M1 | ✅（Ctrl+Enter 提交，Ctrl+Alt+K 提交并推送（macOS ⌘⏎ / ⌥⌘K），提交成功后弹出 Push 对话框；Amend 时为 Amend Commit / Amend Commit and Push…） |
-| 提交选项：作者、Sign-off、GPG 签名、运行 Git hooks、清理 | M3 | ✅ |
+| Amend 复选框（自动载入上次提交信息） | M1 | ✅（取消勾选时恢复原来输入的信息，载入的信息被改过则保留） |
+| Commit / Commit and Push… | M1 | ✅（Ctrl+Enter 提交，Ctrl+Alt+K 提交并推送（macOS ⌘⏎ / ⌥⌘K），提交成功后弹出 Push 对话框；Amend 时为 Amend Commit / Amend Commit and Push…；信息为空时点 Commit 提示 “Specify commit message”；提交失败时保留提交信息、Amend 和作者） |
+| 提交选项：作者、Sign-off、GPG 签名、运行 Git hooks、清理 | M3 | ✅（Author 输入框可输入空格） |
 | 提交前检查：Reformat、Optimize imports、Analyze code、Check TODO（IDE 特有，客户端只保留 hooks） | — | — |
 | 工具栏：Refresh、Rollback、Show Diff、Shelve、Stash、Update | M2 | ✅ |
-| Diff 预览（选中文件即预览） | M2 | ✅ |
+| Diff 预览（选中文件即预览） | M2 | ✅（提交、回滚、stage 后刷新；“N of M” 和 Alt+←/→ 按变更树顺序；重命名文件与旧路径对比） |
+| 变更树速搜（直接输入定位文件，Esc 关闭） | M2 | ✅ |
+| 快捷键：Delete、Ctrl+Alt+Z、Alt+Shift+M、Ctrl+D、F4、Ctrl+Alt+A、Ctrl+Alt+H | M2 | ✅（Delete / Rollback / Move 作用于选中的文件或节点，不是已勾选的文件） |
 | Rollback Changes 对话框（删除本地副本选项） | M2 | ✅（列出要回滚的文件（可取消勾选）、修改/新增/删除计数、“Delete local copies of added files”；暂存模式下未暂存的从 index 回滚；文件右键 Rollback…） |
-| 添加到 VCS / 添加到 .gitignore | M2 | ✅（未版本化文件右键：Add to VCS、Add to .gitignore、Add to .git/info/exclude） |
+| 添加到 VCS / 添加到 .gitignore | M2 | ✅（未版本化文件右键：Add to VCS、Add to .gitignore、Add to .git/info/exclude；已跟踪文件的菜单不显示 Add to .gitignore） |
 | 提交完成通知 + Undo | M2 | ✅（Undo：soft reset 并恢复提交信息） |
 
 ### 3.1 Shelf / Stash
@@ -117,7 +119,7 @@
 |---|---|---|
 | Stash Changes 对话框（消息、Keep index） | M2 | ✅（含 Include untracked） |
 | Stashes 列表：查看内容、Apply、Pop、Drop、Clear、Unstash as branch、Reinstate index | M2 | ✅（查看、Apply、Pop、Unstash As…（Pop、Reinstate index、As new branch）、Drop（确认）、Clear（确认）） |
-| Shelf（IntelliJ 特有补丁货架）：Shelve、Unshelve、Shelve silently、Recently deleted | M4 | ✅（Shelf 标签页；Unshelve、Unshelve and Keep、Rename、Delete、Restore、Import Patches；补丁文件 + refs/junction 保存） |
+| Shelf（IntelliJ 特有补丁货架）：Shelve、Unshelve、Shelve silently、Recently deleted | M4 | ✅（Shelf 标签页；Unshelve…（对话框：目标 changelist 或新建、“Remove successfully applied files from the shelf”）、Unshelve and Keep、Rename、Delete、Restore、Import Patches；Shelve Silently（Ctrl+Alt+H、右键菜单）；已添加的文件和重命名恢复为已添加状态；补丁文件 + refs/junction 保存） |
 
 ## 4. 分支弹窗（标题栏 VCS 组件 / `Ctrl+Shift+\``）
 

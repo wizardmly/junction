@@ -192,15 +192,20 @@ pub(super) fn commit_menu(
         }))
         .item(entry("Add to VCS", "Ctrl+Alt+A").disabled(unversioned.is_empty()).on_click(move |_, _, cx| file_menus::add_to_vcs(&m_add, p_add.clone(), cx)));
     let (m_ignore, p_ignore) = (model.clone(), unversioned.clone());
-    let none_unversioned = unversioned.is_empty();
-    let menu = menu.submenu_with_icon(Some(Icon::new(IconName::Ban)), "Add to .gitignore", window, cx, move |m, _, _| {
-        let (m1, p1, m2, p2) = (m_ignore.clone(), p_ignore.clone(), m_ignore.clone(), p_ignore.clone());
-        m.item(entry(".gitignore", "").disabled(none_unversioned).on_click(move |_, _, cx| file_menus::ignore(&m1, p1.clone(), false, cx)))
-            .item(entry(".git/info/exclude", "").disabled(none_unversioned).on_click(move |_, _, cx| file_menus::ignore(&m2, p2.clone(), true, cx)))
-    });
+    // IntelliJ offers Add to .gitignore on unversioned files only.
+    let menu = if unversioned.is_empty() {
+        menu
+    } else {
+        menu.submenu_with_icon(Some(Icon::new(IconName::Ban)), "Add to .gitignore", window, cx, move |m, _, _| {
+            let (m1, p1, m2, p2) = (m_ignore.clone(), p_ignore.clone(), m_ignore.clone(), p_ignore.clone());
+            m.item(entry(".gitignore", "").on_click(move |_, _, cx| file_menus::ignore(&m1, p1.clone(), false, cx)))
+                .item(entry(".git/info/exclude", "").on_click(move |_, _, cx| file_menus::ignore(&m2, p2.clone(), true, cx)))
+        })
+    };
     let (m_patch, p_patch) = (model.clone(), tracked.clone());
     let (m_copy, p_copy) = (model.clone(), paths.clone());
     let (m_shelve, p_shelve) = (model.clone(), tracked.clone());
+    let (m_silent, p_silent) = (model.clone(), tracked.clone());
     let m_refresh = model.clone();
     let menu = menu
         .separator()
@@ -216,6 +221,9 @@ pub(super) fn commit_menu(
             let paths = p_shelve.clone();
             let name = crate::ui::patch_dialogs::default_shelf_name(&paths);
             crate::ui::patch_dialogs::shelve(m_shelve.clone(), paths, name, window, cx)
+        }))
+        .item(entry("Shelve Silently", "Ctrl+Alt+H").disabled(tracked.is_empty()).on_click(move |_, _, cx| {
+            crate::ui::patch_dialogs::shelve_silently(m_silent.clone(), p_silent.clone(), cx)
         }))
         .separator()
         .item(entry("Refresh", "").icon(Icon::new(IconName::RefreshCw)).on_click(move |_, _, cx| m_refresh.update(cx, |m, cx| m.reload(cx))))

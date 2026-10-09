@@ -296,8 +296,19 @@ impl Workspace {
                     }
                 }
             }),
-            cx.subscribe_in(&commit, window, |this, _, event: &CommitEvent, window, cx| match event {
-                CommitEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
+            cx.subscribe_in(&commit, window, |this, commit, event: &CommitEvent, window, cx| match event {
+                CommitEvent::OpenDiff(source) => {
+                    let order = commit.read(cx).file_order().to_vec();
+                    this.diff.update(cx, |diff, _| diff.set_file_order(order));
+                    this.open_diff(source.clone(), cx)
+                }
+                CommitEvent::RefreshDiff => {
+                    let order = commit.read(cx).file_order().to_vec();
+                    this.diff.update(cx, |diff, cx| {
+                        diff.set_file_order(order);
+                        diff.refresh_local(cx)
+                    })
+                }
                 CommitEvent::OpenPush => dialogs::push(this.model.clone(), window, cx),
                 CommitEvent::OpenMerge(conflict) => this.open_merge(conflict.clone(), window, cx),
                 CommitEvent::EditSource(path) => this.open_file(path.clone(), None, window, cx),

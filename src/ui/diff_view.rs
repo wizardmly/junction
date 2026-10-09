@@ -185,6 +185,8 @@ pub struct DiffView {
     /// The files of the shown change set, for Compare Previous / Next File.
     files: Vec<DiffSource>,
     files_key: String,
+    /// Tree order of local files (see `set_file_order`).
+    file_order: Vec<String>,
     _files_task: Option<Task<()>>,
     /// F7 stopped at the end of the file.
     edge: Option<files::Edge>,
@@ -213,6 +215,7 @@ impl DiffView {
             _task: None,
             files: Vec::new(),
             files_key: String::new(),
+            file_order: Vec::new(),
             _files_task: None,
             edge: None,
             arrive_at_end: false,

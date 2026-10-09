@@ -19,7 +19,13 @@ use gpui_kit::{
     div, prelude::FluentBuilder as _, px,
 };
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use gpui_kit::component::checkbox::Checkbox;
+
 use crate::git::FileChangeKind;
+use crate::git::changelists::Changelists;
 use crate::git::patch::{self, ApplyOutcome, Shelf};
 use crate::model::{RepoEvent, RepoModel};
 use crate::theme::ActivePalette as _;
@@ -138,12 +144,92 @@ impl ShelfView {
         cx.notify();
     }
 
+    /// IntelliJ's Unshelve Changes dialog: the changelist to put the changes
+    /// in (an existing one or a new name) and whether to remove them from the shelf.
+    fn unshelve_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shelf) = self.current().cloned() else { return };
+        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        let lists = Changelists::load(&repository);
+        let names: Vec<String> = lists.lists.iter().map(|l| l.name.clone()).collect();
+        let selected = Rc::new(RefCell::new(lists.active.clone()));
+        let remove = Rc::new(Cell::new(!shelf.deleted));
+        let new_name = cx.new(|cx| InputState::new(window, cx).placeholder("New changelist name"));
+        let entity = cx.entity();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let palette = cx.palette().clone();
+            let mut list = v_flex().gap_0p5();
+            for (ix, name) in names.iter().enumerate() {
+                let chosen = *selected.borrow() == *name;
+                let (select, name_owned) = (selected.clone(), name.clone());
+                list = list.child(
+                    h_flex()
+                        .id(SharedString::from(format!("unshelve-target-{ix}")))
+                        .px_2()
+                        .h(px(26.))
+                        .rounded_sm()
+                        .text_sm()
+                        .cursor_pointer()
+                        .when(chosen, |el| el.bg(palette.selection))
+                        .child(name.clone())
+                        .on_click(move |_, window, _| {
+                            *select.borrow_mut() = name_owned.clone();
+                            window.refresh();
+                        }),
+                );
+            }
+            let (remove_set, remove_ok) = (remove.clone(), remove.clone());
+            let (selected, new_name_ok, entity, shelf) = (selected.clone(), new_name.clone(), entity.clone(), shelf.clone());
+            dialog
+                .title("Unshelve Changes")
+                .w(px(420.))
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(div().text_sm().text_color(palette.text_secondary).child("Changelist:"))
+                        .child(list)
+                        .child(div().text_sm().text_color(palette.text_secondary).child("Or a new changelist:"))
+                        .child(Input::new(&new_name))
+                        .child(
+                            Checkbox::new("unshelve-remove")
+                                .label("Remove successfully applied files from the shelf")
+                                .checked(remove.get())
+                                .on_change(move |value, window, _| {
+                                    remove_set.set(*value);
+                                    window.refresh();
+                                }),
+                        ),
+                )
+                .footer(footer("Unshelve"))
+                .on_ok(move |_, _, cx| {
+                    let new = new_name_ok.read(cx).value().trim().to_owned();
+                    let target = if new.is_empty() { selected.borrow().clone() } else { new };
+                    let keep = !remove_ok.get();
+                    let shelf = shelf.clone();
+                    entity.update(cx, |this, cx| this.unshelve_to(shelf, keep, Some(target), cx));
+                    true
+                })
+        });
+    }
+
     fn unshelve(&mut self, keep: bool, cx: &mut Context<Self>) {
         let Some(shelf) = self.current().cloned() else { return };
+        self.unshelve_to(shelf, keep, None, cx);
+    }
+
+    /// Unshelves `shelf`, filing its files into `changelist` when given.
+    fn unshelve_to(&mut self, shelf: Shelf, keep: bool, changelist: Option<String>, cx: &mut Context<Self>) {
         self.model.update(cx, |model, cx| {
             model.run_operation("Unshelve", move |repo| {
                 let keep = keep || shelf.deleted;
-                Ok(match patch::unshelve(repo, &shelf, None, keep)? {
+                let outcome = patch::unshelve(repo, &shelf, None, keep)?;
+                if let Some(target) = changelist {
+                    let files: Vec<String> = patch::shelf_files(repo, &shelf)?.into_iter().map(|f| f.path).collect();
+                    let mut lists = Changelists::load(repo);
+                    lists.add(&target, "", false);
+                    lists.move_files(&files, &target);
+                    lists.save(repo);
+                }
+                Ok(match outcome {
                     ApplyOutcome::Clean => format!("Unshelved \u{201c}{}\u{201d}", shelf.name),
                     ApplyOutcome::Merged => format!("Unshelved \u{201c}{}\u{201d} with a three-way merge", shelf.name),
                     ApplyOutcome::Conflicts => format!("Unshelved \u{201c}{}\u{201d} with conflicts", shelf.name),
@@ -247,10 +333,10 @@ impl ShelfView {
             .text_sm()
             .when(selected, |el| el.bg(palette.selection))
             .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
-            .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+            .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                 this.select(Some(id.clone()), cx);
                 if event.click_count() == 2 && !deleted {
-                    this.unshelve(false, cx);
+                    this.unshelve_dialog(window, cx);
                 }
             }))
             .context_menu(move |menu, _, _| {
@@ -268,7 +354,7 @@ impl ShelfView {
                         })
                     }
                 };
-                menu.item(PopupMenuItem::new("Unshelve").on_click(act(|this, _, cx| this.unshelve(false, cx))))
+                menu.item(PopupMenuItem::new("Unshelve…").on_click(act(|this, window, cx| this.unshelve_dialog(window, cx))))
                     .item(PopupMenuItem::new("Unshelve and Keep in Shelf").on_click(act(|this, _, cx| this.unshelve(true, cx))))
                     .separator()
                     .when(deleted, |menu| menu.item(PopupMenuItem::new("Restore").on_click(act(|this, _, cx| this.restore(cx)))))
@@ -371,7 +457,7 @@ impl Render for ShelfView {
                     .child(
                         tool_button("shelf-unshelve", IconName::ArrowUpFromLine, "Unshelve")
                             .disabled(!has_selection)
-                            .on_click(cx.listener(|this, _, _, cx| this.unshelve(false, cx))),
+                            .on_click(cx.listener(|this, _, window, cx| this.unshelve_dialog(window, cx))),
                     )
                     .child(
                         tool_button("shelf-delete", IconName::X, "Delete")

@@ -45,11 +45,14 @@ pub enum CommitEvent {
     OpenMerge(Conflict),
     /// Edit Source (F4).
     EditSource(String),
+    /// The previewed file's change moved on (committed, rolled back, staged):
+    /// reload the diff preview.
+    RefreshDiff,
 }
 
 impl EventEmitter<CommitEvent> for CommitView {}
 
-gpui_kit::actions!(commit_view, [ShowMessageHistory, CommitChanges, CommitAndPush, ShowDiff, RollbackFiles, AddToVcs, DeleteFiles, EditSource, MoveToChangelist]);
+gpui_kit::actions!(commit_view, [ShowMessageHistory, CommitChanges, CommitAndPush, ShowDiff, RollbackFiles, AddToVcs, DeleteFiles, EditSource, MoveToChangelist, ShelveSilently]);
 
 const CONTEXT: &str = "CommitView";
 /// The changes tree, where IntelliJ's file shortcuts apply (not in the message editor).
@@ -64,6 +67,11 @@ pub fn init(cx: &mut gpui_kit::App) {
         // in the Commit tool window, the message editor included.
         KeyBinding::new("secondary-enter", CommitChanges, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-k", CommitAndPush, Some(CONTEXT)),
+        // A popover toggles on Space; a text field inside one (Commit Options'
+        // Author) must get the space as text instead.
+        KeyBinding::new("space", gpui_kit::NoAction, Some("Popover > Input")),
+        // Shelve Silently: no dialog, named after the files.
+        KeyBinding::new("ctrl-alt-h", ShelveSilently, Some(CONTEXT)),
         // The message editor's own Ctrl+Enter would otherwise win.
         KeyBinding::new("secondary-enter", CommitChanges, Some("CommitView > Input")),
         KeyBinding::new("secondary-alt-k", CommitAndPush, Some("CommitView > Input")),
@@ -115,23 +123,34 @@ pub struct CommitView {
     /// Expand All / Collapse All: how the next rebuild lays out the tree.
     expand_all: bool,
     included: HashSet<String>,
-    /// Every path we have seen, so new changes start included and
-    /// unchecked ones stay unchecked across refreshes.
+    /// The changed paths of the last refresh, so new changes start included
+    /// and unchecked ones stay unchecked across refreshes. A path leaves it
+    /// when its change goes away (committed, rolled back), so a later change
+    /// to it starts included again, as in IntelliJ.
     known: HashSet<String>,
     kinds: HashMap<String, StatusKind>,
     /// The workspace's handler for menu actions (Git submenu, Delete, …).
     file_actions: Option<crate::ui::file_menus::FileActions>,
     counts: HashMap<SharedString, usize>,
     amend: bool,
+    /// Amend loaded the last commit's message over this one: (typed, loaded).
+    pre_amend: Option<(String, String)>,
+    /// Commit was pressed with an empty message: "Specify commit message".
+    message_error: bool,
+    /// Speed search over the changes tree: the typed text while shown.
+    search: Option<String>,
     push_after_commit: bool,
     last_selection: Option<SharedString>,
     /// Commit Options popover: "Author" override and "GPG-sign" (defaults to `commit.gpgSign`).
     author: Entity<InputState>,
     gpg_sign: Option<bool>,
     changelists: Changelists,
-    changelists_root: Option<std::path::PathBuf>,
     /// Group By › Module: each changed file's module folder.
     modules: HashMap<String, String>,
+    /// The files in tree order, so the diff's "N of M" and Alt+Left/Right follow the tree.
+    file_order: Vec<String>,
+    /// HEAD at the last refresh; a new commit refreshes the diff preview.
+    head: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -145,15 +164,21 @@ impl CommitView {
             cx.subscribe_in(&model, window, |this, _, event, window, cx| match event {
                 RepoEvent::Reloaded => this.rebuild(cx),
                 RepoEvent::PrefillCommitMessage(message) => {
-                    let message = format!("{message}\n\n");
-                    this.message.update(cx, |state, cx| {
-                        state.set_value(message, window, cx);
-                        state.focus(window, cx);
-                    });
+                    this.set_message(format!("{message}\n\n"), window, cx);
+                    this.message.update(cx, |state, cx| state.focus(window, cx));
                 }
-                RepoEvent::Notify { title, error, .. } if title == "Commit" => {
-                    if std::mem::take(&mut this.push_after_commit) && !error {
-                        cx.emit(CommitEvent::OpenPush);
+                RepoEvent::Notify { title, error, .. } if title == "Commit" || title == "Commit failed" => {
+                    let push = std::mem::take(&mut this.push_after_commit);
+                    // A failed commit keeps the message, Amend and the author, as in IntelliJ.
+                    if !error {
+                        this.amend = false;
+                        this.pre_amend = None;
+                        // IntelliJ keeps the author override only for one commit.
+                        this.author.update(cx, |state, cx| state.set_value("", window, cx));
+                        this.set_message(String::new(), window, cx);
+                        if push {
+                            cx.emit(CommitEvent::OpenPush);
+                        }
                     }
                 }
                 _ => {}
@@ -164,8 +189,9 @@ impl CommitView {
                     this.rebuild(cx);
                 }
             }),
-            cx.subscribe(&message, |_, _, event: &InputEvent, cx| {
+            cx.subscribe(&message, |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
+                    this.message_error = false;
                     cx.notify();
                 }
             }),
@@ -199,13 +225,17 @@ impl CommitView {
             file_actions: None,
             counts: HashMap::new(),
             amend: false,
+            pre_amend: None,
+            message_error: false,
+            search: None,
             push_after_commit: false,
             last_selection: None,
             author,
             gpg_sign: None,
             changelists: Changelists::default(),
-            changelists_root: None,
             modules: HashMap::new(),
+            file_order: Vec::new(),
+            head: None,
             _subscriptions: subscriptions,
         };
         this.rebuild(cx);
@@ -234,16 +264,19 @@ impl CommitView {
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let status = self.model.read(cx).status().clone();
+        let selected_file = self.selected_file();
+        let old_kind = selected_file.as_ref().and_then(|p| self.kinds.get(p).copied());
+        let head = self.model.read(cx).refs().head_commit.clone();
+        let head_moved = std::mem::replace(&mut self.head, head.clone()) != head;
         self.staging = Settings::get(cx).staging_area;
         self.kinds = status.entries.iter().map(|e| (e.path.clone(), e.kind)).collect();
         // IntelliJ includes tracked changes by default and leaves unversioned files out.
-        for entry in status.changes() {
-            if self.known.insert(entry.path.clone()) {
-                self.included.insert(entry.path.clone());
+        let changed: HashSet<String> = status.changes().map(|e| e.path.clone()).collect();
+        self.known.retain(|path| changed.contains(path));
+        for path in &changed {
+            if self.known.insert(path.clone()) {
+                self.included.insert(path.clone());
             }
-        }
-        for entry in status.unversioned() {
-            self.known.insert(entry.path.clone());
         }
         self.included.retain(|path| self.kinds.contains_key(path));
 
@@ -264,11 +297,8 @@ impl CommitView {
         } else {
             // One group per changelist, the active one's new changes landing in it.
             let changes = not_conflicted(status.changes().map(|e| (e.path.clone(), e.kind)).collect());
-            let root = self.model.read(cx).repository().map(|r| r.root().to_path_buf());
-            if root != self.changelists_root {
-                self.changelists = self.model.read(cx).repository().map(Changelists::load).unwrap_or_default();
-                self.changelists_root = root;
-            }
+            // Read from disk each time: Unshelve can file changes into a changelist too.
+            self.changelists = self.model.read(cx).repository().map(Changelists::load).unwrap_or_default();
             let changed: Vec<String> = changes.iter().map(|(p, _)| p.clone()).collect();
             if self.changelists.sync(&changed) {
                 self.save_changelists(cx);
@@ -336,19 +366,48 @@ impl CommitView {
             .collect();
         self.counts.clear();
         common::count_files(&items, &mut self.counts);
-        self.tree.update(cx, |tree, cx| tree.set_items(items, cx));
+        fn collect_files(items: &[TreeItem], out: &mut Vec<String>) {
+            for item in items {
+                if let Some((_, path)) = CommitView::path_of(&item.id) {
+                    out.push(path.to_owned());
+                }
+                collect_files(&item.children, out);
+            }
+        }
+        self.file_order.clear();
+        collect_files(&items, &mut self.file_order);
+        // Keep the selection across refreshes (set_items clears it).
+        let previous = self.last_selection.clone();
+        self.tree.update(cx, |tree, cx| {
+            tree.set_items(items, cx);
+            if let Some(ix) = previous.as_ref().and_then(|id| tree.index_of(id)) {
+                tree.set_selected_index(Some(ix), cx);
+            }
+        });
+        if let Some(path) = selected_file {
+            let still_there = previous.as_ref().is_some_and(|id| self.tree.read(cx).index_of(id).is_some());
+            if !still_there || head_moved || self.kinds.get(&path).copied() != old_kind {
+                cx.emit(CommitEvent::RefreshDiff);
+            }
+        }
         cx.notify();
+    }
+
+    /// The changed files in the order the tree lists them.
+    pub fn file_order(&self) -> &[String] {
+        &self.file_order
     }
 
     fn group_of(&self, id: &str) -> Option<&Group> {
         self.groups.iter().find(|g| g.id == id || id.starts_with(g.scope.as_str()))
     }
 
+    /// The files a toolbar action (Shelve, Create Patch) works on: the
+    /// checked files, or in staging mode the selected node. Selection-based
+    /// actions (Delete, Rollback, Move) use `selected_paths` instead.
     fn action_paths(&self, file: Option<&str>) -> Vec<String> {
         if let Some(file) = file {
-            if !self.included.contains(file) {
-                return vec![file.to_owned()];
-            }
+            return vec![file.to_owned()];
         }
         if self.staging {
             return self.last_selection.as_deref().map(|id| self.paths_under(id)).unwrap_or_default();
@@ -363,6 +422,18 @@ impl CommitView {
         let name = self.message.read(cx).value().lines().next().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
         let name = name.unwrap_or_else(|| crate::ui::patch_dialogs::default_shelf_name(&paths));
         crate::ui::patch_dialogs::shelve(self.model.clone(), paths, name, window, cx);
+    }
+
+    /// Shelve Silently (Ctrl+Alt+H): the selected files, else the checked ones.
+    pub fn shelve_silently(&mut self, cx: &mut Context<Self>) {
+        let selected = if self.last_selection.is_some() { self.selected_paths() } else { Vec::new() };
+        let paths = if selected.is_empty() { self.action_paths(None) } else { selected };
+        let paths: Vec<String> = paths.into_iter().filter(|p| self.kinds.get(p) != Some(&StatusKind::Unversioned)).collect();
+        if paths.is_empty() {
+            self.model.update(cx, |m, cx| m.notify("Shelve Changes", "Select the files to shelve", true, cx));
+            return;
+        }
+        crate::ui::patch_dialogs::shelve_silently(self.model.clone(), paths, cx);
     }
 
     pub fn create_patch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -459,7 +530,7 @@ impl CommitView {
         // IntelliJ puts the changelist's comment in an empty commit message.
         let comment = self.changelists.comment(&name).to_owned();
         if !comment.is_empty() && self.message.read(cx).value().trim().is_empty() {
-            self.message.update(cx, |state, cx| state.set_value(comment, window, cx));
+            self.set_message(comment, window, cx);
         }
         self.update_changelists(cx, |lists| lists.active = name);
     }
@@ -520,14 +591,30 @@ impl CommitView {
         cx.notify();
     }
 
+    /// Amend loads the last commit's message into an empty editor; unchecking
+    /// it puts back what was there, unless the loaded message was edited.
     fn set_amend(&mut self, amend: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.amend = amend;
-        if amend && self.message.read(cx).value().trim().is_empty() {
+        let current = self.message.read(cx).value().to_string();
+        if amend && current.trim().is_empty() {
             if let Some(last) = self.model.read(cx).repository().and_then(status::last_commit_message) {
-                self.message.update(cx, |state, cx| state.set_value(last, window, cx));
+                self.pre_amend = Some((current, last.clone()));
+                self.set_message(last, window, cx);
+            }
+        } else if !amend {
+            if let Some((typed, loaded)) = self.pre_amend.take() {
+                if current == loaded {
+                    self.set_message(typed, window, cx);
+                }
             }
         }
         cx.notify();
+    }
+
+    /// Sets the commit message from code, keeping the spelling marks in step.
+    fn set_message(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.message.update(cx, |state, cx| state.set_value(text, window, cx));
+        self.spelling.update(cx, |spelling, cx| spelling.recheck(cx));
     }
 
     pub fn focus_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -538,6 +625,10 @@ impl CommitView {
     /// separators, and files too large for hosting services.
     fn commit(&mut self, push: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.message.read(cx).value().trim().is_empty() {
+            // IntelliJ keeps Commit enabled and asks for the message.
+            self.message_error = true;
+            self.focus_message(window, cx);
+            cx.notify();
             return;
         }
         let Some(repository) = self.model.read(cx).repository().cloned() else { return };
@@ -649,24 +740,23 @@ impl CommitView {
         ExcludedHunks::update(cx, |map| map.retain(|path, _| !committed.contains(path)));
         crate::settings::remember_message(&message);
         self.push_after_commit = push;
+        // The message, Amend and the author are reset once the commit succeeds
+        // (see the "Commit" notification above).
+        let _ = window;
         self.model.update(cx, |model, cx| {
             model.run_operation("Commit", move |repo| {
                 let hash = status::commit(repo, &request)?;
                 Ok(format!("{count} file{} committed: {}", if count == 1 { "" } else { "s" }, &hash[..8]))
             }, cx)
         });
-        self.amend = false;
-        // IntelliJ keeps the author override only for one commit.
-        self.author.update(cx, |state, cx| state.set_value("", window, cx));
-        self.message.update(cx, |state, cx| state.set_value("", window, cx));
         cx.notify();
     }
 
-    /// A message, and something to commit (or Amend).
-    fn can_commit(&self, cx: &gpui_kit::App) -> bool {
+    /// Something to commit (or Amend); an empty message is reported on click.
+    fn can_commit(&self, _: &gpui_kit::App) -> bool {
         let staged_count = self.groups.iter().find(|g| g.scope == STAGED_SCOPE).map_or(0, |g| g.files.len());
         let has_changes = if self.staging { staged_count > 0 } else { !self.included.is_empty() };
-        !self.message.read(cx).value().trim().is_empty() && (has_changes || self.amend)
+        has_changes || self.amend
     }
 
     fn on_message_history(&mut self, _: &ShowMessageHistory, window: &mut Window, cx: &mut Context<Self>) {
@@ -693,10 +783,8 @@ impl CommitView {
                             window.close_dialog(cx);
                             let chosen = chosen.clone();
                             entity.update(cx, |this, cx| {
-                                this.message.update(cx, |state, cx| {
-                                    state.set_value(chosen, window, cx);
-                                    state.focus(window, cx);
-                                })
+                                this.set_message(chosen, window, cx);
+                                this.focus_message(window, cx);
                             });
                         })
                         .child(div().child(message.lines().next().unwrap_or_default().to_owned()))
@@ -768,14 +856,82 @@ impl CommitView {
 }
 
 impl CommitView {
+    /// Speed search: typing in the tree selects the next row whose name matches.
+    fn on_tree_key(&mut self, event: &gpui_kit::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let k = &event.keystroke;
+        let m = k.modifiers;
+        let plain = !m.control && !m.alt && !m.platform && !m.function;
+        if self.search.is_some() {
+            match k.key.as_str() {
+                "escape" => self.search = None,
+                "backspace" => {
+                    if let Some(q) = &mut self.search {
+                        q.pop();
+                    }
+                    self.jump_match(0, true, cx);
+                }
+                _ => match k.key_char.as_ref().filter(|_| plain) {
+                    Some(ch) if k.key != "enter" => {
+                        self.search.get_or_insert_with(String::new).push_str(ch);
+                        self.jump_match(0, true, cx);
+                    }
+                    // Any other key closes the search and does its usual thing.
+                    _ => {
+                        self.search = None;
+                        cx.notify();
+                        return;
+                    }
+                },
+            }
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        let Some(ch) = k.key_char.as_ref().filter(|c| plain && !c.trim().is_empty()) else { return };
+        self.search = Some(ch.clone());
+        self.jump_match(0, true, cx);
+        cx.notify();
+        cx.stop_propagation();
+    }
+
+    fn search_matches(&self, label: &str) -> bool {
+        let Some(q) = self.search.as_deref().filter(|q| !q.is_empty()) else { return false };
+        crate::index::nav::fuzzy_score(q, label).is_some()
+    }
+
+    /// Selects the first visible row matching the speed search at or after the
+    /// selection (`offset` rows on), wrapping around.
+    fn jump_match(&mut self, offset: usize, forward: bool, cx: &mut Context<Self>) -> bool {
+        let tree = self.tree.read(cx);
+        let rows: Vec<String> = (0..).map_while(|ix| tree.entry(ix).map(|e| e.item().label.to_string())).collect();
+        let n = rows.len();
+        if n == 0 {
+            return false;
+        }
+        let from = tree.selected_index().unwrap_or(0) + offset;
+        for step in 0..n {
+            let ix = if forward { (from + step) % n } else { (from + n * 2 - step) % n };
+            if self.search_matches(&rows[ix]) {
+                self.tree.update(cx, |tree, cx| {
+                    tree.set_selected_index(Some(ix), cx);
+                    tree.scroll_to_item(ix, gpui_kit::ScrollStrategy::Center);
+                });
+                return true;
+            }
+        }
+        false
+    }
+
     /// The selected node's file, for the tree's keyboard shortcuts.
     fn selected_file(&self) -> Option<String> {
         self.last_selection.as_deref().and_then(Self::path_of).map(|(_, p)| p.to_owned())
     }
 
+    /// The selected file, or every file under the selected folder or group:
+    /// what Delete, Rollback and Move act on, as in IntelliJ (not the checked files).
     fn selected_paths(&self) -> Vec<String> {
         match self.selected_file() {
-            Some(file) => self.action_paths(Some(&file)),
+            Some(file) => vec![file],
             None => self.last_selection.as_deref().map(|id| self.paths_under(id)).unwrap_or_default(),
         }
     }
@@ -787,8 +943,7 @@ impl CommitView {
     }
 
     fn on_rollback(&mut self, _: &RollbackFiles, window: &mut Window, cx: &mut Context<Self>) {
-        let file = self.selected_file().filter(|_| !self.staging);
-        self.rollback(file.as_deref(), window, cx);
+        self.rollback(None, window, cx);
     }
 
     fn on_add_to_vcs(&mut self, _: &AddToVcs, _: &mut Window, cx: &mut Context<Self>) {
@@ -818,9 +973,9 @@ impl CommitView {
         }
     }
 
-    /// Rollback…: checked files (or the clicked one), or in staging mode the
-    /// selected node (unstaged changes come back from the index, staged ones
-    /// from HEAD), confirmed in the Rollback Changes dialog.
+    /// Rollback…: the clicked file, else the selected node (the checked files
+    /// when nothing is selected); in staging mode unstaged changes come back
+    /// from the index, staged ones from HEAD. Confirmed in the Rollback Changes dialog.
     pub fn rollback(&mut self, file: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         use crate::ui::rollback_dialog::{self, RollbackFrom};
         let (paths, from) = if self.staging && file.is_none() {
@@ -832,7 +987,12 @@ impl CommitView {
             let from = if scope.as_deref() == Some(UNSTAGED_SCOPE) { RollbackFrom::Index } else { RollbackFrom::Head };
             (self.paths_under(&id), from)
         } else {
-            (self.action_paths(file), RollbackFrom::Head)
+            let paths = match file {
+                Some(file) => vec![file.to_owned()],
+                None if self.last_selection.is_some() => self.selected_paths(),
+                None => self.action_paths(None),
+            };
+            (paths, RollbackFrom::Head)
         };
         let files = paths.into_iter().map(|p| {
             let kind = self.kinds.get(&p).copied().unwrap_or(StatusKind::Modified);
@@ -908,6 +1068,7 @@ impl Render for CommitView {
         v_flex()
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::on_message_history))
+            .on_action(cx.listener(|this, _: &ShelveSilently, _, cx| this.shelve_silently(cx)))
             .on_action(cx.listener(|this, _: &CommitChanges, window, cx| {
                 if this.can_commit(cx) && this.model.read(cx).busy().is_none() {
                     this.commit(false, window, cx)
@@ -1015,7 +1176,14 @@ impl Render for CommitView {
                 div()
                     .flex_1()
                     .min_h_0()
+                    .relative()
                     .key_context(TREE_CONTEXT)
+                    .on_key_down(cx.listener(Self::on_tree_key))
+                    .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        if this.search.take().is_some() {
+                            cx.notify();
+                        }
+                    }))
                     .on_action(cx.listener(Self::on_show_diff))
                     .on_action(cx.listener(Self::on_rollback))
                     .on_action(cx.listener(Self::on_add_to_vcs))
@@ -1023,14 +1191,18 @@ impl Render for CommitView {
                     .on_action(cx.listener(Self::on_edit_source))
                     .on_action(cx.listener(Self::on_move_to_changelist))
                     .child(
-                    tree(&self.tree, move |ix, entry, _, _, _| {
+                    tree(&self.tree, move |ix, entry, _, _, cx| {
                         let palette = &tree_palette;
                         let item = entry.item();
                         let id = item.id.clone();
                         let file = CommitView::path_of(&id).map(|(_, p)| p.to_owned());
-                        let checked = match &file {
-                            Some(path) => included.contains(path),
-                            None => paths_by_node.get(&id).is_some_and(|paths| !paths.is_empty() && paths.iter().all(|p| included.contains(p))),
+                        let (checked, partial) = match &file {
+                            Some(path) => (included.contains(path), false),
+                            None => {
+                                let paths = paths_by_node.get(&id).map(Vec::as_slice).unwrap_or_default();
+                                let n = paths.iter().filter(|p| included.contains(*p)).count();
+                                (n > 0 && n == paths.len(), n > 0 && n < paths.len())
+                            }
                         };
                         let color = kinds.get(id.as_ref()).map_or(palette.text, |k| common::status_color(*k, palette));
                         let is_group = group_ids.iter().any(|g| g.as_str() == id.as_ref());
@@ -1065,12 +1237,36 @@ impl Render for CommitView {
                                         && !id.starts_with(IGNORED_SCOPE)
                                         && id.as_ref() != "grp:ignored",
                                     |el| {
+                                    // A click on a folder's box must not also fold the folder.
+                                    let theme = gpui_kit::component::ActiveTheme::theme(&*cx);
+                                    let (mark_bg, mark_fg) = (theme.primary, theme.primary_foreground);
                                     el.child(
-                                        Checkbox::new(SharedString::from(format!("check-{id}")))
-                                            .checked(checked)
-                                            .on_change(move |value, _, cx| {
-                                                let id = toggle_id.clone();
-                                                toggle_entity.update(cx, |this, cx| this.toggle(&id, *value, cx));
+                                        div()
+                                            .relative()
+                                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                            .child(
+                                                Checkbox::new(SharedString::from(format!("check-{id}")))
+                                                    .checked(checked)
+                                                    .on_change(move |value, _, cx| {
+                                                        // A partly included node includes everything on click, as in IntelliJ.
+                                                        let value = partial || *value;
+                                                        let id = toggle_id.clone();
+                                                        toggle_entity.update(cx, |this, cx| this.toggle(&id, value, cx));
+                                                    }),
+                                            )
+                                            // IntelliJ's three-state box: a dash when only some files are included.
+                                            .when(partial, |el| {
+                                                el.child(
+                                                    div()
+                                                        .absolute()
+                                                        .inset_0()
+                                                        .rounded(px(3.))
+                                                        .bg(mark_bg)
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .child(div().w(px(8.)).h(px(2.)).bg(mark_fg)),
+                                                )
                                             }),
                                     )
                                     },
@@ -1130,7 +1326,30 @@ impl Render for CommitView {
                         )
                     })
                     .size_full(),
-                ),
+                )
+                .when_some(self.search.clone(), |el, q| {
+                    let found = q.is_empty() || {
+                        let tree = self.tree.read(cx);
+                        (0..).map_while(|ix| tree.entry(ix)).any(|e| self.search_matches(&e.item().label))
+                    };
+                    el.child(
+                        h_flex()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(24.))
+                            .px_2()
+                            .gap_1()
+                            .text_sm()
+                            .bg(gpui_kit::Hsla { a: 1.0, ..palette.panel })
+                            .border_b_1()
+                            .border_color(palette.border)
+                            .shadow_sm()
+                            .child(common::icon(IconName::Search).text_color(palette.text_secondary))
+                            .child(div().text_color(if found { palette.text } else { palette.status_unversioned }).child(q)),
+                    )
+                }),
             )
             .child(
                 v_flex()
@@ -1174,9 +1393,7 @@ impl Render for CommitView {
                                                 let entity = entity.clone();
                                                 menu = menu.item(PopupMenuItem::new(subject).on_click(move |_, window, cx| {
                                                     let message = message.clone();
-                                                    entity.update(cx, |this, cx| {
-                                                        this.message.update(cx, |state, cx| state.set_value(message, window, cx))
-                                                    })
+                                                    entity.update(cx, |this, cx| this.set_message(message, window, cx))
                                                 }));
                                             }
                                             menu.max_h(px(360.))
@@ -1205,6 +1422,23 @@ impl Render for CommitView {
                                 this.spelling.update(cx, |spelling, cx| spelling.show_at_cursor(window, cx))
                             }))
                             .child(Textarea::new(&self.message).h(px(110.)))
+                            .when(self.message_error, |el| {
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .bottom(px(6.))
+                                        .right(px(8.))
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded(px(4.))
+                                        .text_xs()
+                                        .text_color(palette.status_conflict)
+                                        .bg(gpui_kit::Hsla { a: 1.0, ..palette.panel })
+                                        .border_1()
+                                        .border_color(palette.status_conflict)
+                                        .child("Specify commit message"),
+                                )
+                            })
                             .child(div().absolute().top(px(4.)).bottom(px(4.)).left(margin).w(px(1.)).bg(palette.border))
                             .child(self.spelling.clone())
                     })
