@@ -141,7 +141,7 @@
 | Update Project（`Ctrl+T`）对话框：Merge / Rebase；Using Stash / Shelve | M2 | ✅（Merge / Rebase；Using Stash / Shelve，选择会记住；Don't show again 后 Ctrl+T 直接更新，设置 › Git 可恢复对话框；Merge 产生 “Merge remote-tracking branch 'origin/main'”；结果只统计收到的远程提交，View Commits 只列这些提交） |
 | 更新结果：Updated files 树、被更新的提交 Log 标签页 | M3 | ✅（通知：文件数 / 提交数；View Files 打开更新文件树，View Commits 打开 Update Info 日志标签页） |
 | Pull 对话框：remote、分支、选项（--rebase、--ff-only、--no-ff、--squash、--no-commit） | M2 | ✅（Pull to <分支>：remote 下拉、分支输入+远程分支列表、--rebase/--ff-only/--no-ff/--squash/--no-commit/--no-verify，互斥项置灰，预览命令） |
-| Push 对话框：每个仓库待推送的提交列表 + 变更树、目标分支可编辑（新分支标记）、Force push（--force-with-lease）、Push tags（All / Current branch）、Run hooks、Set upstream | M2 | ✅（左侧提交列表，右侧变更文件；点选提交只看该提交的文件；改目标分支或从 remote 下拉换 remote 时实时重算提交和 New 标记；没有可推送内容时 Push 置灰） |
+| Push 对话框：每个仓库待推送的提交列表 + 变更树、目标分支可编辑（新分支标记）、Force push（--force-with-lease）、Push tags（All / Current branch）、Run hooks、Set upstream | M2 | ✅（左侧提交列表，右侧变更文件；点选提交只看该提交的文件；改目标分支或从 remote 下拉换 remote 时实时重算提交和 New 标记；没有可推送内容时 Push 置灰；Force Push 像 AS 一样在 Push ▾ 下拉里，受保护分支时该项禁用） |
 | 推送被拒：提示 Merge / Rebase 后重推，"自动更新"选项 | M3 | ✅（Push Rejected 对话框：Rebase / Merge / Cancel，默认按钮跟随设置的更新方式；更新后自动重推） |
 | 受保护分支禁止 force push | M3 | ✅ |
 | Manage Remotes 对话框：添加/编辑/删除 | M2 | ✅（Git Remotes：列表、+ 添加 / − 删除 / 编辑（改名 + 改 URL），双击编辑；新 URL 先用 ls-remote 校验，删除前确认） |

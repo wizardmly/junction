@@ -187,7 +187,8 @@ pub fn reset_to(model: Entity<RepoModel>, target: String, window: &mut Window, c
 }
 
 /// The Push dialog: commits that will be pushed, the editable target branch,
-/// and IntelliJ's options (force push with lease, push tags, run hooks).
+/// and IntelliJ's options (push tags, run hooks); Force Push (with lease)
+/// is in the Push button's dropdown.
 pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
     push_up_to(model, None, window, cx)
 }
@@ -243,7 +244,6 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
     let target = cx.new(|cx| InputState::new(window, cx).default_value(preview.target.clone()));
     #[derive(Clone, Copy)]
     struct Options {
-        force: bool,
         tags: Option<usize>,
         hooks: bool,
         remote: usize,
@@ -251,7 +251,7 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
         selected: Option<usize>,
     }
     let remote_ix = preview.remotes.iter().position(|r| *r == preview.remote).unwrap_or(0);
-    let options = Rc::new(RefCell::new(Options { force: false, tags: None, hooks: true, remote: remote_ix, selected: None }));
+    let options = Rc::new(RefCell::new(Options { tags: None, hooks: true, remote: remote_ix, selected: None }));
     /// What the push would send to one remote branch, worked out again
     /// whenever the remote or the target branch changes.
     struct Outgoing {
@@ -383,7 +383,32 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
         let has_upstream = preview.has_upstream;
         // Settings › Git › Protected branches: no force push to them.
         let protected = Settings::get(cx).is_protected(&target_name);
-        let force_label = current.force && !protected;
+        let push = Rc::new(move |force: bool, cx: &mut App| -> bool {
+            let o = *ok_options.borrow();
+            let target = ok_target.read(cx).value().trim().to_owned();
+            if target.is_empty() || nothing {
+                return false;
+            }
+            let remote = ok_remotes.get(o.remote).cloned().unwrap_or_else(|| ok_default_remote.clone());
+            let force = force && !Settings::get(cx).is_protected(&target);
+            let request = PushRequest {
+                remote,
+                branch: ok_branch.clone(),
+                target,
+                force_with_lease: force,
+                tags: match o.tags {
+                    None => PushTags::None,
+                    Some(0) => PushTags::All,
+                    Some(_) => PushTags::CurrentBranch,
+                },
+                set_upstream: !has_upstream,
+                run_hooks: o.hooks,
+                up_to: ok_up_to.clone(),
+            };
+            run_push(ok_model.clone(), request, cx);
+            true
+        });
+        let (ok_push, button_push, force_push) = (push.clone(), push.clone(), push);
 
         dialog
             .title(format!("Push Commits to {repo_name}"))
@@ -482,50 +507,39 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
                                     .checked(current.hooks)
                                     .on_change(set(&options, |o, v| o.hooks = v)),
                             )
-                            .child(
-                                Checkbox::new("push-force")
-                                    .label("Force push (--force-with-lease)")
-                                    .checked(current.force)
-                                    .disabled(protected)
-                                    .on_change(set(&options, |o, v| o.force = v)),
-                            )
                             .when(protected, |el| {
                                 el.child(div().text_xs().text_color(palette.text_secondary).child("Force push is disabled: protected branch"))
                             }),
                     ),
             )
-            .on_ok(move |_, _, cx| {
-                let o = *ok_options.borrow();
-                let target = ok_target.read(cx).value().trim().to_owned();
-                if target.is_empty() || nothing {
-                    return false;
-                }
-                let remote = ok_remotes.get(o.remote).cloned().unwrap_or_else(|| ok_default_remote.clone());
-                let force = o.force && !Settings::get(cx).is_protected(&target);
-                let request = PushRequest {
-                    remote,
-                    branch: ok_branch.clone(),
-                    target,
-                    force_with_lease: force,
-                    tags: match o.tags {
-                        None => PushTags::None,
-                        Some(0) => PushTags::All,
-                        Some(_) => PushTags::CurrentBranch,
-                    },
-                    set_upstream: !has_upstream,
-                    run_hooks: o.hooks,
-                    up_to: ok_up_to.clone(),
-                };
-                run_push(ok_model.clone(), request, cx);
-                true
-            })
+            .on_ok(move |_, _, cx| ok_push(false, cx))
             .footer(
                 DialogFooter::new()
                     .gap_2()
                     .child(DialogClose::new().child(Button::new("cancel").label("Cancel").outline()))
-                    .child(DialogAction::new().child(
-                        Button::new("ok").label(if force_label { "Force Push" } else { "Push" }).primary().disabled(nothing),
-                    )),
+                    .child(
+                        // IntelliJ's Push ▾: Force Push (--force-with-lease) in the dropdown.
+                        gpui_kit::component::button::DropdownButton::new("push-split")
+                            .primary()
+                            .disabled(nothing)
+                            .button(Button::new("ok").label("Push").on_click(move |_, window, cx| {
+                                if button_push(false, cx) {
+                                    window.close_dialog(cx);
+                                }
+                            }))
+                            .dropdown_menu(move |menu, _, _| {
+                                let force_push = force_push.clone();
+                                menu.item(
+                                    PopupMenuItem::new(if protected { "Force Push (protected branch)" } else { "Force Push" })
+                                        .disabled(protected)
+                                        .on_click(move |_, window, cx| {
+                                            if force_push(true, cx) {
+                                                window.close_dialog(cx);
+                                            }
+                                        }),
+                                )
+                            }),
+                    ),
             )
     });
 }
