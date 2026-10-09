@@ -14,7 +14,7 @@
 | 左/右/下 工具窗口条 | Commit、Git（Log/Console）、可拖拽、可隐藏、记住尺寸 | M1 | ✅（Project、Commit、Pull Requests、Changes、Git、Notifications；按钮可拖到左 / 右 / 下或在右键菜单 Move to，Hide；每侧同时开一个；Hide All（Ctrl+Shift+F12）、Hide Active（Shift+Esc）；布局和三侧尺寸写入设置） |
 | 状态栏 | 分支、行分隔符、后台任务进度、通知 | M1 | ✅（面包屑 项目 › 路径、后台任务转圈、索引状态、行:列（点开 Go to Line）、LF/CRLF、UTF-8、缩进、只读锁、当前分支（点开分支弹窗）；通知进右侧 Notifications 工具窗口，未读时铃铛带点） |
 | VCS 操作弹窗 | `Alt+\``（macOS `Ctrl+V`）快速操作列表 | M3 | ✅（数字键 1–9 快选、上下键、回车，显示各平台快捷键） |
-| 通知气泡 | 操作结果、错误、可点击的动作（View、Undo、Show details） | M2 | ✅（View Commit、Show Details、Update Project、提交后 Undo） |
+| 通知气泡 | 操作结果、错误、可点击的动作（View、Undo、Show details） | M2 | ✅（右下角弹出，不挡冲突横幅；View Commit、Show Details、提交后 Undo；错误只摘 fatal/error 行） |
 | 主题 | 亮/暗、跟随系统、Int UI 配色、紧凑模式 | M1 | ✅（Settings › Appearance：Dark / Light / Sync with OS，系统切换时跟着变；Compact mode 行高 20、工具栏 28；也在主菜单 View › Appearance） |
 | 快捷键 | 与 IntelliJ 默认 keymap 一致（`Ctrl+K` 提交、`Ctrl+Shift+K` 推送、`Ctrl+T` 更新…） | M2 | ✅（Windows/Linux 用 IntelliJ 默认 keymap，macOS 用 macOS keymap：Ctrl/⌘+K、Ctrl/⌘+Shift+K、Ctrl/⌘+T、Alt/⌘+1/0/9、Ctrl+Alt+S/⌘,、Ctrl+G/⌘L、Ctrl+Alt+←→/⌘[ ]、Ctrl+Shift+F12、Shift+Esc、Ctrl+Enter / Ctrl+Alt+K 提交、F7、Ctrl+D、F4、Ctrl+Alt+Z 等；菜单显示 mac 符号；Help › Keyboard Shortcuts 列表） |
 
@@ -138,13 +138,13 @@
 | 功能 | 阶段 | 状态 |
 |---|---|---|
 | Fetch（全部 remote） | M2 | ✅ |
-| Update Project（`Ctrl+T`）对话框：Merge / Rebase；Using Stash / Shelve | M2 | ✅（Merge / Rebase；Using Stash / Shelve，选择会记住） |
+| Update Project（`Ctrl+T`）对话框：Merge / Rebase；Using Stash / Shelve | M2 | ✅（Merge / Rebase；Using Stash / Shelve，选择会记住；Don't show again 后 Ctrl+T 直接更新，设置 › Git 可恢复对话框；Merge 产生 “Merge remote-tracking branch 'origin/main'”；结果只统计收到的远程提交，View Commits 只列这些提交） |
 | 更新结果：Updated files 树、被更新的提交 Log 标签页 | M3 | ✅（通知：文件数 / 提交数；View Files 打开更新文件树，View Commits 打开 Update Info 日志标签页） |
 | Pull 对话框：remote、分支、选项（--rebase、--ff-only、--no-ff、--squash、--no-commit） | M2 | ✅（Pull to <分支>：remote 下拉、分支输入+远程分支列表、--rebase/--ff-only/--no-ff/--squash/--no-commit/--no-verify，互斥项置灰，预览命令） |
-| Push 对话框：每个仓库待推送的提交列表 + 变更树、目标分支可编辑（新分支标记）、Force push（--force-with-lease）、Push tags（All / Current branch）、Run hooks、Set upstream | M2 | ✅（左侧提交列表，右侧变更文件；点选提交只看该提交的文件） |
-| 推送被拒：提示 Merge / Rebase 后重推，"自动更新"选项 | M3 | ✅ |
+| Push 对话框：每个仓库待推送的提交列表 + 变更树、目标分支可编辑（新分支标记）、Force push（--force-with-lease）、Push tags（All / Current branch）、Run hooks、Set upstream | M2 | ✅（左侧提交列表，右侧变更文件；点选提交只看该提交的文件；改目标分支或从 remote 下拉换 remote 时实时重算提交和 New 标记；没有可推送内容时 Push 置灰） |
+| 推送被拒：提示 Merge / Rebase 后重推，"自动更新"选项 | M3 | ✅（Push Rejected 对话框：Rebase / Merge / Cancel，默认按钮跟随设置的更新方式；更新后自动重推） |
 | 受保护分支禁止 force push | M3 | ✅ |
-| Manage Remotes 对话框：添加/编辑/删除 | M2 | ✅（Git Remotes：列表、+ 添加 / − 删除 / 编辑（改名 + 改 URL），双击编辑） |
+| Manage Remotes 对话框：添加/编辑/删除 | M2 | ✅（Git Remotes：列表、+ 添加 / − 删除 / 编辑（改名 + 改 URL），双击编辑；新 URL 先用 ls-remote 校验，删除前确认） |
 | 凭据：HTTPS 密码/Token 对话框、SSH passphrase、使用 credential helper | M2 | ✅（已配置的 credential helper 优先） |
 | Clone 对话框：URL、目录、GitHub/GitLab 账号仓库列表 | M4 | ✅（URL + 目录自动填充 + Test；已登录 GitHub / GitLab 账号的仓库列表可搜索，点选填入 URL） |
 
@@ -159,7 +159,7 @@
 | 右侧可编辑（工作区文件）、单个 chunk 回滚 / 应用 | M3 | ✅（双栏右侧直接编辑：光标、选择、拖选、双击选词、Smart Home、Ctrl+D/Y、Tab/Shift+Tab、输入法、撤销重做、复制粘贴，改完实时重算并自动保存；`>>` 在缓冲区里回滚可撤销，按住 Ctrl 变 Append；暂存区模式 chunk Stage / Unstage；单栏编辑未做） |
 | 语法高亮（tree-sitter，与编辑器一致） | M2 | ✅（双栏、单栏、Merge 都有） |
 | 二进制 / 图片对比 | M4 | ✅（并排显示两侧图片（PNG/JPEG/GIF/BMP/WebP/ICO），下方显示尺寸、格式、文件大小；非图片显示大小；新增/删除提示） |
-| 冲突对话框：文件列表，Accept Yours / Accept Theirs / Merge… | M3 | ✅ |
+| 冲突对话框：文件列表，Accept Yours / Accept Theirs / Merge… | M3 | ✅（Merge / Rebase / Cherry-pick / Update 遇到冲突时自动弹出；Commit 面板预填 MERGE_MSG 或被变基提交的信息） |
 | 三方合并工具：左（Yours）中（Result）右（Theirs）、魔棒应用非冲突改动、逐块接受、Resolve simple conflicts | M3 | ✅（按 AS 重做：三个独立编辑器，结果栏从 base 开始、可直接编辑并可撤销，两条分隔条连接块，`>>` `×` / `<<` `×` 紧贴分隔条，第二侧自动 Append，冲突红色，魔棒逐词合并简单冲突，工具栏 Apply Non-Conflicting（左/全部/右）、Resolve Simple Conflicts、同步滚动；有未解决变更时 Apply 先确认；Compare Contents 下拉可把 Left / Right / Result 与 Base 或彼此对比） |
 | Compare with Branch… / Compare with Revision… / Compare two commits | M3 | ✅ |
 | 分支比较视图（两个分支的提交差异 + 文件差异） | M3 | ✅（current..branch 提交列表 + Swap Branches + Show Files） |
@@ -187,7 +187,7 @@
 | 补丁：Create Patch / Apply Patch（含预览） | M4 | ✅（本地改动含未跟踪文件；Apply 先直接应用，失败时三方合并；剪贴板） |
 | Worktree：列表、新建、删除、打开 | M5 | ✅（Git 工具窗口 Worktrees 标签页：列表、New Worktree…、Open、Open in New Window、Delete；菜单入口） |
 | Submodule：识别、更新 | M5 | ✅（Submodules 标签页：状态、Update / Update All / Sync、打开或新窗口打开；diff 显示 Subproject commit（含 -dirty）；子模块图标；Update Project 时跟随更新） |
-| Git 控制台（Console 标签页）：所有执行过的 git 命令及输出 | M1 | ✅（每条 “时:分:秒.毫秒: [仓库] git …”，下面是输出，错误红色；左侧 Soft-Wrap、Scroll to the End、Clear All） |
+| Git 控制台（Console 标签页）：执行过的 git 命令及输出 | M1 | ✅（每条 “时:分:秒.毫秒: [仓库] git …”，下面是输出，错误红色；像 AS 一样只列出做事的命令，刷新用的只读查询不列；格式串里的控制字符显示为 %x1e；左侧 Soft-Wrap、Scroll to the End、Clear All） |
 
 ## 9. 设置（Settings › Version Control › Git）
 
