@@ -1295,8 +1295,12 @@ pub fn choose(
             .child(DialogClose::new().child(Button::new("choose-cancel").label(cancel_label).outline()));
         for (ix, (label, run)) in options.iter().enumerate() {
             let run = run.clone();
-            let button = Button::new(("choose-option", ix)).label(*label).on_click(move |_, window, cx| run(window, cx));
-            footer = footer.child(DialogClose::new().child(if ix == last { button.primary() } else { button.outline() }));
+            // A button with its own click handler isn't closed by DialogClose; close first.
+            let button = Button::new(("choose-option", ix)).label(*label).on_click(move |_, window, cx| {
+                window.close_dialog(cx);
+                run(window, cx)
+            });
+            footer = footer.child(if ix == last { button.primary() } else { button.outline() });
         }
         // Files or commits the message refers to, one per line.
         let list = v_flex()

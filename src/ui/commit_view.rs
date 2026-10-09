@@ -665,8 +665,10 @@ impl CommitView {
                 .gap_2()
                 .child(gpui_kit::component::dialog::DialogClose::new().child(Button::new("warn-cancel").label("Cancel").outline()));
             if has_crlf {
-                footer = footer.child(gpui_kit::component::dialog::DialogClose::new().child(
+                // A button with its own click handler isn't closed by DialogClose; close first.
+                footer = footer.child(
                     Button::new("warn-fix").label("Fix and Commit").outline().on_click(move |_, window, cx| {
+                        window.close_dialog(cx);
                         fix_entity.update(cx, |this, cx| {
                             if let Some(repo) = this.model.read(cx).repository() {
                                 // Like IntelliJ: let git convert line separators on commit.
@@ -676,13 +678,12 @@ impl CommitView {
                             this.do_commit(push, window, cx)
                         })
                     }),
-                ));
+                );
             }
-            footer = footer.child(gpui_kit::component::dialog::DialogClose::new().child(
-                Button::new("warn-commit").label("Commit Anyway").primary().on_click(move |_, window, cx| {
-                    commit_entity.update(cx, |this, cx| this.do_commit(push, window, cx))
-                }),
-            ));
+            footer = footer.child(Button::new("warn-commit").label("Commit Anyway").primary().on_click(move |_, window, cx| {
+                window.close_dialog(cx);
+                commit_entity.update(cx, |this, cx| this.do_commit(push, window, cx))
+            }));
             dialog
                 .title("Commit")
                 .w(px(520.))

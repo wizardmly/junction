@@ -456,19 +456,26 @@ impl Workspace {
                     {
                         // IntelliJ's "Restore" link brings the deleted branch back.
                         let (name, tip) = (name.to_owned(), tip.to_owned());
-                        notification = notification.action(move |_, _, _| {
-                            let entity = entity.clone();
-                            let (name, tip) = (name.clone(), tip.clone());
-                            Button::new("notify-restore").label("Restore").small().outline().on_click(move |_, _, cx| {
-                                let (name, tip) = (name.clone(), tip.clone());
-                                let model = entity.read(cx).model.clone();
-                                model.update(cx, |m, cx| {
-                                    m.run_operation("Restore Branch", move |repo| {
-                                        repo.run(["branch", &name, &tip])?;
-                                        Ok(format!("Restored branch {name}"))
-                                    }, cx)
-                                });
-                            })
+                        notification = notification.content(move |_, _, cx| {
+                            let palette = cx.palette().clone();
+                            let (entity, name, tip) = (entity.clone(), name.clone(), tip.clone());
+                            div()
+                                .id("notify-restore")
+                                .text_sm()
+                                .text_color(palette.link)
+                                .cursor_pointer()
+                                .child("Restore")
+                                .on_click(move |_, _, cx| {
+                                    let (name, tip) = (name.clone(), tip.clone());
+                                    let model = entity.read(cx).model.clone();
+                                    model.update(cx, |m, cx| {
+                                        m.run_operation("Restore Branch", move |repo| {
+                                            repo.run(["branch", &name, &tip])?;
+                                            Ok(format!("Restored branch {name}"))
+                                        }, cx)
+                                    });
+                                })
+                                .into_any_element()
                         });
                     } else if title == "Commit" {
                         // The balloon's "Undo" link undoes exactly this commit.
