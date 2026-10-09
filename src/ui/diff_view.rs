@@ -910,12 +910,17 @@ impl DiffView {
         let check_width = if partial { BUTTON_WIDTH + 2. } else { 0. };
         // With the left pane editable the arrows are `<<` on the right gutter.
         let left_edits = self.edit_pane() == Some(0);
-        let (left_buttons, right_buttons) = if left_edits { (0., actions_width) } else { (actions_width, check_width) };
+        // The arrows sit inside the line-number column, by the text.
+        let (left_inline, right_inline) = if left_edits { (0., actions_width) } else { (actions_width, 0.) };
         self.panes.layouts = vec![
-            PaneLayout { mirrored: true, buttons: left_buttons, ..Default::default() },
-            PaneLayout { mirrored: false, buttons: right_buttons, ..Default::default() },
+            PaneLayout { mirrored: true, inline_buttons: left_inline, ..Default::default() },
+            PaneLayout { mirrored: false, buttons: check_width, inline_buttons: right_inline, ..Default::default() },
         ];
         self.panes.apply_settings(cx);
+        // A review's comment buttons take the fixed-width number column.
+        if self.review.is_some() {
+            self.panes.layouts[1].digits = 0;
+        }
         self.panes.primary = 0;
         // A review's line numbers are its comment buttons.
         self.panes.layouts[1].hide_numbers &= self.review.is_none();

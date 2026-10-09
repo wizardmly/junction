@@ -12,7 +12,7 @@ use crate::git::diff::{DiffRow, RowKind, Side};
 
 pub const LINE_HEIGHT: f32 = 20.;
 /// The divider between two panes, where change blocks are connected.
-pub const DIVIDER_WIDTH: f32 = 30.;
+pub const DIVIDER_WIDTH: f32 = 24.;
 
 /// One displayed row of a pane.
 #[derive(Clone, Debug)]

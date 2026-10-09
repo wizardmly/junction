@@ -96,17 +96,26 @@ pub struct PaneLayout {
     /// Two number columns (the unified viewer's old and new line numbers,
     /// which the host supplies as each row's `number`).
     pub double_numbers: bool,
+    /// Digits of the largest line number: the column fits them, as in
+    /// IntelliJ (0: the fixed width).
+    pub digits: usize,
+    /// Buttons drawn inside the number column on its text side (the
+    /// diff's `>>`), so they take no column of their own.
+    pub inline_buttons: f32,
 }
 
 impl PaneLayout {
     pub fn numbers_width(&self) -> f32 {
-        if self.hide_numbers {
+        let numbers = if self.hide_numbers {
             0.
         } else if self.double_numbers {
             2. * GUTTER_WIDTH
+        } else if self.digits > 0 {
+            self.digits.max(2) as f32 * CHAR_WIDTH + 8.
         } else {
             GUTTER_WIDTH
-        }
+        };
+        numbers + self.inline_buttons
     }
 
     /// Marker, line numbers and buttons.
@@ -123,7 +132,7 @@ impl PaneLayout {
     /// or right (mirrored) edge. As in IntelliJ, the line numbers sit
     /// against the divider and the buttons between them and the text.
     pub fn buttons_offset(&self) -> f32 {
-        MARKER_WIDTH + self.numbers_width()
+        MARKER_WIDTH + self.numbers_width() - self.inline_buttons
     }
 }
 
@@ -1462,7 +1471,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                             .h_full()
                             .flex_shrink_0()
                             .text_right()
-                            .map(|el| if layout.mirrored { el.pr_2() } else { el.pr_1() })
+                            .map(|el| if layout.mirrored { el.pr_1() } else { el.pr(px(4. + layout.inline_buttons)) })
                             .text_color(palette.text_disabled)
                             .when(!layout.hide_numbers, |el| el.child((line + 1).to_string()))
                             .into_any_element()
@@ -1738,8 +1747,11 @@ impl<T: Clone + Default> TextPanes<T> {
             self.soft_wrap = settings.soft_wrap;
             self.layout_dirty = true;
         }
-        for layout in &mut self.layouts {
+        for (pane, layout) in self.layouts.iter_mut().enumerate() {
             layout.hide_numbers = !settings.show_line_numbers;
+            if !layout.double_numbers {
+                layout.digits = self.buffers.get(pane).map_or(0, |b| b.line_count().max(1).to_string().len());
+            }
         }
         self.relayout();
     }
