@@ -91,6 +91,40 @@ pub fn side_titles(state: RepositoryState) -> (&'static str, &'static str) {
     }
 }
 
+/// The merge tool's titles with the branches named, as IntelliJ has them
+/// ("Changes from main" and "Changes from feature" for a merge); the
+/// generic ones where a branch can't be told.
+pub fn branch_titles(repository: &Repository, state: RepositoryState) -> (String, String) {
+    let (left, right) = side_titles(state);
+    let read = |name: &str| std::fs::read_to_string(repository.git_dir().join(name)).ok();
+    let from = |branch: Option<String>, fallback: &str| branch.map_or_else(|| fallback.to_owned(), |b| format!("Changes from {b}"));
+    match state {
+        RepositoryState::Merging => {
+            let current = repository.run(["symbolic-ref", "--short", "-q", "HEAD"]).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+            let merged = read("MERGE_MSG").and_then(|m| merged_branch(m.lines().next()?));
+            (from(current, left), from(merged, right))
+        }
+        RepositoryState::Rebasing => {
+            // The branch (or remote branch) the commits go onto.
+            let onto = ["rebase-merge/onto", "rebase-apply/onto"].iter().find_map(|f| read(f)).map(|h| h.trim().to_owned());
+            let name = onto.and_then(|hash| {
+                let refs = repository.run(["for-each-ref", "--points-at", &hash, "--format=%(refname:short)", "refs/heads", "refs/remotes"]).ok()?;
+                refs.lines().next().map(str::to_owned)
+            });
+            (from(name, left), right.to_owned())
+        }
+        _ => (left.to_owned(), right.to_owned()),
+    }
+}
+
+/// The branch a merge message names: "Merge branch 'feature' into main",
+/// "Merge remote-tracking branch 'origin/dev'".
+fn merged_branch(line: &str) -> Option<String> {
+    let start = line.find('\'')? + 1;
+    let end = start + line[start..].find('\'')?;
+    Some(line[start..end].to_owned()).filter(|b| !b.is_empty())
+}
+
 pub fn accept(repository: &Repository, conflict: &Conflict, ours: bool) -> Result<()> {
     let path = conflict.path.as_str();
     let deleted_on_chosen_side = match conflict.kind {
@@ -337,6 +371,14 @@ pub fn step(repository: &Repository, state: RepositoryState, step: OperationStep
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_message_names_the_branch() {
+        assert_eq!(merged_branch("Merge branch 'feature' into main").as_deref(), Some("feature"));
+        assert_eq!(merged_branch("Merge remote-tracking branch 'origin/dev'").as_deref(), Some("origin/dev"));
+        assert_eq!(merged_branch("Merge commit 'abc123'").as_deref(), Some("abc123"));
+        assert_eq!(merged_branch("Something else"), None);
+    }
 
     #[test]
     fn simple_conflicts_merge_by_words() {

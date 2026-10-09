@@ -139,7 +139,8 @@ impl Kind {
 pub struct MergeView {
     model: Entity<RepoModel>,
     conflict: Conflict,
-    titles: (&'static str, &'static str),
+    /// The side panes' titles, naming the branches once known.
+    titles: (String, String),
     /// The common ancestor's text, for Compare Contents.
     base: String,
     changes: Vec<Change>,
@@ -165,7 +166,9 @@ pub struct MergeView {
 
 impl MergeView {
     pub fn new(model: Entity<RepoModel>, repository: Repository, conflict: Conflict, cx: &mut Context<Self>) -> Self {
-        let titles = merge::side_titles(model.read(cx).state());
+        let state = model.read(cx).state();
+        let (left, right) = merge::side_titles(state);
+        let titles = (left.to_owned(), right.to_owned());
         let mut panes = TextPanes::new(3, cx);
         panes.editable = Some(RESULT);
         let mut this = Self {
@@ -189,8 +192,10 @@ impl MergeView {
         };
         this._load = Some(cx.spawn(async move |this, cx| {
             let path = conflict.path.clone();
-            let versions = cx.background_spawn(async move { merge::load_versions(&repository, &path) }).await;
+            let (versions, titles) =
+                cx.background_spawn(async move { (merge::load_versions(&repository, &path), merge::branch_titles(&repository, state)) }).await;
             this.update(cx, |this, cx| {
+                this.titles = titles;
                 match versions {
                     Ok(v) => this.load(v),
                     Err(error) => this.error = Some(error.to_string()),
@@ -272,9 +277,9 @@ impl MergeView {
             _ => self.result_text(),
         };
         let title = |which: usize| match which {
-            0 => self.titles.0.to_owned(),
+            0 => self.titles.0.clone(),
             1 => "Base".to_owned(),
-            2 => self.titles.1.to_owned(),
+            2 => self.titles.1.clone(),
             _ => "Result".to_owned(),
         };
         cx.emit(MergeEvent::Compare(crate::ui::diff_view::DiffSource::Texts {
@@ -1054,11 +1059,11 @@ impl Render for MergeView {
             .border_b_1()
             .border_color(palette.border)
             .child(div().w(px(STRIPE_WIDTH)))
-            .child(title(self.titles.0, true, OURS))
+            .child(title(&self.titles.0, true, OURS))
             .child(div().w(px(DIVIDER_WIDTH)))
             .child(title("Result", false, RESULT))
             .child(div().w(px(DIVIDER_WIDTH)))
-            .child(title(self.titles.1, true, THEIRS))
+            .child(title(&self.titles.1, true, THEIRS))
             .child(div().w(px(STRIPE_WIDTH)));
 
         let mut panes = Vec::new();
