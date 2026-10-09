@@ -2684,6 +2684,7 @@ fn main_menu(
     let (e, f) = (entity.clone(), focus.clone());
     let menu = menu.submenu("Git", window, cx, move |menu, window, cx| {
         let e2 = e.clone();
+        let e3 = e.clone();
         let f2 = f.clone();
         menu.action_context(f.clone())
             .menu("Commit…", Box::new(CommitChanges))
@@ -2702,6 +2703,29 @@ fn main_menu(
             .item(PopupMenuItem::new("Merge…").on_click(model_op(&e, dialogs::merge)))
             .item(PopupMenuItem::new("Rebase…").on_click(model_op(&e, dialogs::rebase)))
             .menu("Branches…", Box::new(ShowBranches))
+            .item(PopupMenuItem::new("New Branch…").on_click(model_op(&e, |model, window, cx| dialogs::new_branch(model, "HEAD".into(), window, cx))))
+            .item(PopupMenuItem::new("New Tag…").on_click(model_op(&e, |model, window, cx| dialogs::new_tag(model, "HEAD".into(), window, cx))))
+            .item(PopupMenuItem::new("Reset HEAD…").on_click(model_op(&e, |model, window, cx| dialogs::reset_to(model, "HEAD".into(), window, cx))))
+            .separator()
+            // IntelliJ's Git › Current File, for the file in the editor.
+            .submenu("Current File", window, cx, move |menu, _, cx| {
+                let no_file = e3.read(cx).editor().is_none();
+                menu.item(PopupMenuItem::new("Annotate with Git Blame").disabled(no_file).on_click(on(&e3, |this, _, cx| {
+                    if let Some(editor) = this.editor().cloned() {
+                        editor.update(cx, |editor, cx| editor.show_annotations(cx));
+                    }
+                })))
+                .item(PopupMenuItem::new("Show History").disabled(no_file).on_click(on(&e3, |this, _, cx| {
+                    if let Some(path) = this.editor().map(|e| e.read(cx).path().to_owned()) {
+                        this.show_history(path, cx);
+                    }
+                })))
+                .item(PopupMenuItem::new("Show Diff").disabled(no_file).on_click(on(&e3, |this, _, cx| {
+                    if let Some(path) = this.editor().map(|e| e.read(cx).path().to_owned()) {
+                        this.open_diff(crate::ui::diff_view::DiffSource::WorkingTree { path, unversioned: false }, cx);
+                    }
+                })))
+            })
             .separator()
             .menu("Stash Changes…", Box::new(StashChanges))
             .item(PopupMenuItem::new("Unstash Changes…").on_click(on(&e, |this, _, cx| {

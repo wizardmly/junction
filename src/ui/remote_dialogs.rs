@@ -225,13 +225,29 @@ pub struct RemotesView {
     name: Entity<InputState>,
     url: Entity<InputState>,
     error: Option<String>,
+    /// The URL is being checked with `git ls-remote` before saving.
+    checking: bool,
+    /// Remove asks first: the remote awaiting confirmation.
+    confirm_remove: Option<String>,
+    _task: Option<gpui_kit::Task<()>>,
 }
 
 impl RemotesView {
     fn new(model: Entity<RepoModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("origin"));
         let url = cx.new(|cx| InputState::new(window, cx).placeholder("https://github.com/owner/repository.git"));
-        let mut this = Self { model, remotes: Vec::new(), selected: None, editing: None, name, url, error: None };
+        let mut this = Self {
+            model,
+            remotes: Vec::new(),
+            selected: None,
+            editing: None,
+            name,
+            url,
+            error: None,
+            checking: false,
+            confirm_remove: None,
+            _task: None,
+        };
         this.reload(cx);
         this
     }
@@ -253,6 +269,7 @@ impl RemotesView {
         self.name.update(cx, |s, cx| s.set_value(name, window, cx));
         self.url.update(cx, |s, cx| s.set_value(url, window, cx));
         self.editing = Some(remote.map(|r| r.name));
+        self.confirm_remove = None;
         self.error = None;
         cx.notify();
     }
@@ -267,25 +284,44 @@ impl RemotesView {
             return;
         }
         let Some(repository) = self.model.read(cx).repository().cloned() else { return };
-        let result = match &editing {
-            None => remotes::add(&repository, &name, &url),
-            Some(old) => remotes::edit(&repository, old, &name, &url),
-        };
-        match result {
-            Ok(()) => {
-                self.editing = None;
-                self.error = None;
-                self.model.update(cx, |m, cx| m.reload(cx));
-            }
-            Err(error) => self.error = Some(error.to_string().lines().last().unwrap_or_default().to_owned()),
-        }
-        self.reload(cx);
+        // A new URL is checked first (IntelliJ's "Checking URL…"); a rename
+        // that keeps the URL isn't.
+        let unchanged = editing.as_ref().is_some_and(|old| self.remotes.iter().any(|r| &r.name == old && r.fetch_url == url));
+        self.checking = true;
+        self.error = None;
+        cx.notify();
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    if !unchanged {
+                        remotes::check_url(&repository, &url)?;
+                    }
+                    match &editing {
+                        None => remotes::add(&repository, &name, &url),
+                        Some(old) => remotes::edit(&repository, old, &name, &url),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.checking = false;
+                match result {
+                    Ok(()) => {
+                        this.editing = None;
+                        this.error = None;
+                        this.model.update(cx, |m, cx| m.reload(cx));
+                    }
+                    Err(error) => this.error = Some(error.to_string().lines().last().unwrap_or_default().to_owned()),
+                }
+                this.reload(cx);
+            })
+            .ok();
+        }));
     }
 
     fn remove(&mut self, cx: &mut Context<Self>) {
-        let Some(remote) = self.selected.and_then(|ix| self.remotes.get(ix)).cloned() else { return };
+        let Some(name) = self.confirm_remove.take() else { return };
         let Some(repository) = self.model.read(cx).repository().cloned() else { return };
-        match remotes::remove(&repository, &remote.name) {
+        match remotes::remove(&repository, &name) {
             Ok(()) => {
                 self.error = None;
                 self.model.update(cx, |m, cx| m.reload(cx));
@@ -331,6 +367,7 @@ impl Render for RemotesView {
             );
         }
         let editing = self.editing.clone();
+        let checking = self.checking;
         v_flex()
             .gap_2()
             .child(
@@ -340,7 +377,12 @@ impl Render for RemotesView {
                         |this, _, window, cx| this.start_edit(None, window, cx),
                     )))
                     .child(Button::new("remote-remove").ghost().small().icon(IconName::Minus).tooltip("Remove").disabled(!has_selection).on_click(
-                        cx.listener(|this, _, _, cx| this.remove(cx)),
+                        cx.listener(|this, _, _, cx| {
+                            this.confirm_remove = this.selected.and_then(|ix| this.remotes.get(ix)).map(|r| r.name.clone());
+                            this.editing = None;
+                            this.error = None;
+                            cx.notify();
+                        }),
                     ))
                     .child(Button::new("remote-edit").ghost().small().icon(IconName::Settings2).tooltip("Edit").disabled(!has_selection).on_click(
                         cx.listener(|this, _, window, cx| {
@@ -352,6 +394,23 @@ impl Render for RemotesView {
                     )),
             )
             .child(table)
+            .when_some(self.confirm_remove.clone(), |el, name| {
+                el.child(
+                    h_flex()
+                        .gap_2()
+                        .p_2()
+                        .border_1()
+                        .border_color(palette.border)
+                        .rounded_md()
+                        .text_sm()
+                        .child(div().flex_1().child(format!("Remove remote '{name}'?")))
+                        .child(Button::new("remote-remove-cancel").small().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                            this.confirm_remove = None;
+                            cx.notify();
+                        })))
+                        .child(Button::new("remote-remove-ok").primary().small().label("Remove").on_click(cx.listener(|this, _, _, cx| this.remove(cx)))),
+                )
+            })
             .when_some(editing, |el, editing| {
                 el.child(
                     v_flex()
@@ -372,7 +431,15 @@ impl Render for RemotesView {
                                     this.error = None;
                                     cx.notify();
                                 })))
-                                .child(Button::new("remote-save").primary().small().label("OK").on_click(cx.listener(|this, _, _, cx| this.save(cx)))),
+                                .when(checking, |el| el.child(div().text_xs().text_color(palette.text_secondary).child("Checking URL…")))
+                                .child(
+                                    Button::new("remote-save")
+                                        .primary()
+                                        .small()
+                                        .label("OK")
+                                        .disabled(checking)
+                                        .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
+                                ),
                         ),
                 )
             })

@@ -57,6 +57,16 @@ pub fn edit(repository: &Repository, old_name: &str, name: &str, url: &str) -> R
     Ok(())
 }
 
+/// IntelliJ's check when defining a remote: `git ls-remote` must reach it.
+pub fn check_url(repository: &Repository, url: &str) -> Result<()> {
+    repository.run(["ls-remote", "--heads", url]).map_err(|error| {
+        let text = error.to_string();
+        let reason = text.lines().filter(|l| !l.trim().is_empty()).find(|l| l.contains("fatal:")).or(text.lines().last()).unwrap_or_default();
+        anyhow::anyhow!("Remote URL test failed: {}", reason.split_once("fatal: ").map_or(reason, |(_, r)| r).trim())
+    })?;
+    Ok(())
+}
+
 pub fn remove(repository: &Repository, name: &str) -> Result<()> {
     repository.run(["remote", "remove", name])?;
     Ok(())
@@ -65,6 +75,19 @@ pub fn remove(repository: &Repository, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checks_remote_urls() {
+        let dir = std::env::temp_dir().join(format!("junction-test-remote-url-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("git").arg("-C").arg(&dir).args(["init", "-q"]).status().unwrap().success());
+        let repo = Repository::discover(&dir, crate::git::GitConsole::default()).unwrap();
+        assert!(check_url(&repo, dir.to_str().unwrap()).is_ok());
+        let error = check_url(&repo, "/nonexistent/repo").unwrap_err().to_string();
+        assert!(error.starts_with("Remote URL test failed: ") && error.contains("/nonexistent/repo"), "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn parses_remote_v() {
