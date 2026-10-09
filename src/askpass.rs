@@ -2,6 +2,8 @@
 //! `SSH_ASKPASS` with the prompt as the only argument ("Username for
 //! 'https://…':", "Password for …", "Enter passphrase for key …"); we show a
 //! small login window, like IntelliJ's, and print the answer on stdout.
+//! A host with a GitHub / GitLab account logged in gets the account's login
+//! and token without a window, as IntelliJ's hosting auth providers do.
 
 use gpui_kit::component::{
     Sizable as _, TitleBar, h_flex,
@@ -87,7 +89,30 @@ fn is_secret(prompt: &str) -> bool {
     lower.contains("password") || lower.contains("passphrase") || lower.contains("token")
 }
 
+/// The answer an account gives to git's "Username for 'https://host'" /
+/// "Password for 'https://user@host'" prompt, when one serves that host.
+fn account_answer(prompt: &str) -> Option<String> {
+    let url = prompt.split('\'').nth(1)?;
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split('/').next()?;
+    let (user, host) = match authority.rsplit_once('@') {
+        Some((user, host)) => (Some(user), host),
+        None => (None, authority),
+    };
+    let account = crate::hosting::account::for_host(host)?;
+    let lower = prompt.to_lowercase();
+    if lower.starts_with("username") {
+        return Some(account.login);
+    }
+    // Only the account's own login (or a token-style user) gets its token.
+    let token_user = |u: &str| u == account.login || matches!(u, "x-access-token" | "oauth2" | "git");
+    (lower.starts_with("password") && user.is_none_or(token_user)).then_some(account.token)
+}
+
 pub fn run(prompt: String) {
+    if let Some(answer) = account_answer(&prompt) {
+        finish(Some(answer));
+    }
     gpui_kit::application().with_assets(crate::assets::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         let settings = crate::settings::Settings::load();
@@ -120,4 +145,14 @@ pub fn run(prompt: String) {
         cx.on_window_closed(|_, _| finish(None)).detach();
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn prompts_name_the_host() {
+        // No account file in the test environment: nothing is answered.
+        assert_eq!(super::account_answer("Username for 'https://unknown.example': "), None);
+        assert_eq!(super::account_answer("Enter passphrase for key '/x/id_rsa': "), None);
+    }
 }
