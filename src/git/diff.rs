@@ -617,7 +617,12 @@ fn rename_source(repository: &Repository, path: &str) -> Option<String> {
 
 /// A hash is shortened; branch names stay as they are.
 fn revision_title(revision: &str) -> String {
-    if revision.len() == 40 && revision.bytes().all(|b| b.is_ascii_hexdigit()) { revision[..8].to_owned() } else { revision.to_owned() }
+    // A full hash, maybe with a suffix ("…^" for its parent): shortened.
+    let hash = revision.get(..40).filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()));
+    match hash {
+        Some(_) if !revision[40..].starts_with(|c: char| c.is_ascii_alphanumeric()) => format!("{}{}", &revision[..8], &revision[40..]),
+        _ => revision.to_owned(),
+    }
 }
 
 /// Files that differ between `old` and `new` (the working tree when `None`),
@@ -643,6 +648,14 @@ fn read_work_tree(repository: &Repository, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revision_titles_shorten_hashes() {
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(revision_title(hash), "01234567");
+        assert_eq!(revision_title(&format!("{hash}^")), "01234567^");
+        assert_eq!(revision_title("main"), "main");
+    }
 
     fn kinds(diff: &FileDiff) -> Vec<RowKind> {
         diff.rows

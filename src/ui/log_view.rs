@@ -2358,6 +2358,11 @@ fn change_menu(
     let web_file = model.read(cx).web_repo().map(|w| (w.host.name(), w.file_url(&hash, path, None)));
     let short = hash[..hash.len().min(8)].to_owned();
     let path = path.to_owned();
+    // What the commit did to the file: nothing to compare on a side it lacks.
+    let (kind, old_path) = entity.read(cx).change_kinds.get(&path).cloned().unzip();
+    let old_path = old_path.flatten();
+    let added = kind == Some(FileChangeKind::Added);
+    let no_local = !entity.read(cx).model.read(cx).repository().is_some_and(|r| r.root().join(&path).exists());
     let (e_diff, e_blame, e_history, e_here) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
     let (p_diff, p_blame, p_history, p_here, p_copy) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
     let (h_blame, h_here) = (hash.clone(), hash.clone());
@@ -2369,6 +2374,21 @@ fn change_menu(
                 cx.emit(LogEvent::OpenDiff(source));
             }
         })
+    }))
+    .item(PopupMenuItem::new("Compare with Local").disabled(no_local).on_click({
+        let (entity, path, hash) = (entity.clone(), path.clone(), hash.clone());
+        move |_, _, cx| {
+            let source = DiffSource::Between { old: hash.clone(), new: None, path: path.clone(), old_path: None };
+            entity.update(cx, |_, cx| cx.emit(LogEvent::OpenDiff(source)))
+        }
+    }))
+    // The file as it was before the commit, at its old path if renamed.
+    .item(PopupMenuItem::new("Compare Before with Local").disabled(added || no_local).on_click({
+        let (entity, path, hash, old_path) = (entity.clone(), path.clone(), hash.clone(), old_path.clone());
+        move |_, _, cx| {
+            let source = DiffSource::Between { old: format!("{hash}^"), new: None, path: path.clone(), old_path: old_path.clone() };
+            entity.update(cx, |_, cx| cx.emit(LogEvent::OpenDiff(source)))
+        }
     }))
     .item(PopupMenuItem::new("Open Repository Version").on_click({
         let (entity, path, hash) = (entity.clone(), path.clone(), hash.clone());
