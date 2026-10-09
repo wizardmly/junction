@@ -397,24 +397,76 @@ where
     let success = output.status.success();
 
     // The console shows what a user would have typed, not our -c overrides.
-    let command_line = format!("git {}", args.iter().map(|arg| quote(arg)).collect::<Vec<_>>().join(" "));
+    let command_line = format!("git {}", args.iter().map(|arg| quote(&printable(arg))).collect::<Vec<_>>().join(" "));
     let mut console_output = String::new();
     if !stdout.is_empty() && stdout.len() < 4096 && !stdout.contains(&0) {
         console_output.push_str(&String::from_utf8_lossy(&stdout));
     }
     console_output.push_str(&stderr);
-    console.push(ConsoleEntry {
-        time,
-        root: cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        command_line: command_line.clone(),
-        output: console_output.trim_end().to_owned(),
-        success,
-    });
+    // Like IntelliJ's console, only commands that do something are listed,
+    // not the queries behind every refresh.
+    if !is_query(&args) {
+        console.push(ConsoleEntry {
+            time,
+            root: cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            command_line: command_line.clone(),
+            output: console_output.trim_end().to_owned(),
+            success,
+        });
+    }
 
     if !success {
-        bail!("{command_line} failed: {}", stderr.trim());
+        // Some commands (merge conflicts) explain the failure on stdout.
+        let detail = if stderr.trim().is_empty() { String::from_utf8_lossy(&stdout).into_owned() } else { stderr };
+        bail!("{command_line} failed: {}", detail.trim());
     }
     Ok(stdout)
+}
+
+/// Control characters in our `--format` strings, written as git's own
+/// `%x1e` escapes so the console line is readable.
+fn printable(arg: &str) -> String {
+    if !arg.contains(|c: char| c.is_control()) {
+        return arg.to_owned();
+    }
+    arg.chars().map(|c| if c.is_control() { format!("%x{:02x}", c as u32) } else { c.to_string() }).collect()
+}
+
+/// Whether a command only reads the repository (status, log, rev-parse,
+/// `config --get`, `branch --format`, ...): the console leaves those out.
+pub fn is_query(args: &[String]) -> bool {
+    // Skip `-c key=value` and `-C dir` ahead of the subcommand.
+    let mut rest = args.iter().map(String::as_str);
+    let command = loop {
+        match rest.next() {
+            Some("-c" | "-C") => {
+                rest.next();
+            }
+            Some(arg) if arg.starts_with('-') && arg != "--version" => {}
+            Some(arg) => break arg,
+            None => return false,
+        }
+    };
+    let rest: Vec<&str> = rest.collect();
+    let positional = rest.iter().filter(|a| !a.starts_with('-')).count();
+    let has = |flags: &[&str]| rest.iter().any(|a| flags.iter().any(|f| a == f || a.starts_with(&format!("{f}="))));
+    match command {
+        "rev-parse" | "show" | "cat-file" | "log" | "status" | "for-each-ref" | "diff" | "diff-tree" | "diff-index" | "diff-files"
+        | "ls-files" | "ls-tree" | "rev-list" | "merge-base" | "blame" | "annotate" | "check-ignore" | "check-attr" | "name-rev"
+        | "describe" | "var" | "version" | "--version" | "shortlog" | "grep" | "show-ref" | "cherry" | "range-diff"
+        | "count-objects" | "verify-commit" | "verify-tag" | "check-ref-format" | "merge-tree" | "ls-remote" | "reflog" => true,
+        "hash-object" => !has(&["-w"]),
+        "symbolic-ref" => positional < 2,
+        "config" => has(&["--get", "--get-all", "--get-regexp", "--list", "-l", "--get-urlmatch"]) || positional < 2 && !has(&["--unset", "--unset-all", "--add", "--remove-section", "--rename-section"]),
+        "worktree" => rest.first() == Some(&"list"),
+        "stash" => matches!(rest.first(), Some(&"list" | &"show")),
+        "remote" => positional == 0 || matches!(rest.first(), Some(&"get-url" | &"show")),
+        "branch" => positional == 0 && !has(&["-d", "-D", "--delete", "-m", "-M", "--move", "-u", "--set-upstream-to", "--unset-upstream", "-c", "-C"]) || has(&["--list", "--format", "--contains", "--merged", "--no-merged", "--points-at", "--show-current"]),
+        "tag" => positional == 0 && !has(&["-d", "--delete"]) || has(&["-l", "--list", "--format", "--contains", "--points-at", "--merged", "--no-merged"]),
+        "submodule" => matches!(rest.first(), Some(&"status" | &"summary")),
+        "notes" => matches!(rest.first(), Some(&"show" | &"list")),
+        _ => false,
+    }
 }
 
 fn quote(arg: &str) -> String {
@@ -422,5 +474,25 @@ fn quote(arg: &str) -> String {
         format!("\"{}\"", arg.replace('"', "\\\""))
     } else {
         arg.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod console_tests {
+    use super::*;
+
+    fn args(line: &str) -> Vec<String> {
+        line.split(' ').map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn queries_stay_out_of_the_console() {
+        for query in ["rev-parse HEAD", "-c x=y status --porcelain", "branch --format=%(refname)", "worktree list --porcelain", "config --get user.name", "stash list", "remote", "tag"] {
+            assert!(is_query(&args(query)), "{query}");
+        }
+        for action in ["fetch --all", "push origin main", "branch topic", "branch -D topic", "config user.name T", "stash push", "remote add o /x", "tag v1", "worktree add ../w", "commit -m x"] {
+            assert!(!is_query(&args(action)), "{action}");
+        }
+        assert_eq!(printable("--format=\u{1e}%H\u{1f}%s"), "--format=%x1e%H%x1f%s");
     }
 }

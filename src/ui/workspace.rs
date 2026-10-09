@@ -393,8 +393,7 @@ impl Workspace {
                     let mut notification = if *error {
                         // A short summary; the full output is in the Console tab.
                         let detail = message.split_once(" failed: ").map_or(message.as_str(), |(_, rest)| rest);
-                        let summary: Vec<&str> = detail.lines().filter(|l| !l.trim().is_empty()).take(2).collect();
-                        Notification::error(summary.join("\n")).title(title.clone())
+                        Notification::error(error_summary(detail)).title(title.clone())
                     } else {
                         Notification::success(message.clone()).title(title.clone())
                     };
@@ -432,7 +431,8 @@ impl Workspace {
                                 .cursor_pointer()
                                 .child("View Files")
                                 .on_click(move |_, _, cx| {
-                                    let Some((old, new)) = range.split_once("..") else { return };
+                                    let files = range.split(' ').next().unwrap_or_default();
+                                    let Some((old, new)) = files.split_once("..") else { return };
                                     let (old, new) = (old.to_owned(), new.to_owned());
                                     entity.update(cx, |this, cx| this.model.update(cx, |m, cx| m.compare(old, Some(new), cx)));
                                 })
@@ -442,9 +442,9 @@ impl Workspace {
                             let entity = entity.clone();
                             let range = range.clone();
                             Button::new("notify-view-commits").label("View Commits").small().outline().on_click(move |_, _, cx| {
-                                let range = range.clone();
+                                let commits = range.split(' ').last().unwrap_or_default().to_owned();
                                 entity.update(cx, |this, cx| {
-                                    let filter = crate::git::LogFilter { branches: vec![range], ..Default::default() };
+                                    let filter = crate::git::LogFilter { branches: vec![commits], ..Default::default() };
                                     this.open_log_tab("Update Info".into(), filter, cx);
                                 })
                             })
@@ -2306,6 +2306,7 @@ impl Workspace {
                 v_flex()
                     .h_full()
                     .w(px(28.))
+                    .flex_shrink_0()
                     .py_1()
                     .gap_0p5()
                     .items_center()
@@ -2334,6 +2335,7 @@ impl Workspace {
                 div()
                     .id("git-console")
                     .flex_1()
+                    .min_w_0()
                     .h_full()
                     .track_scroll(&self.console_scroll)
                     .overflow_y_scroll()
@@ -2769,4 +2771,31 @@ fn main_menu(
         menu.item(PopupMenuItem::new("Keyboard Shortcuts").on_click(|_, window, cx| dialogs::keymap_reference(window, cx)))
             .item(PopupMenuItem::new(format!("About {APP_NAME}")).on_click(|_, window, cx| dialogs::about(window, cx)))
     })
+}
+
+/// The lines of a failed command's output worth a notification: git's
+/// `fatal:` / `error:` lines (a multi-remote fetch prints progress for the
+/// remotes that worked first), else the first two lines.
+fn error_summary(detail: &str) -> String {
+    let lines: Vec<&str> = detail.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let errors: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| l.starts_with("fatal:") || l.starts_with("error:") || l.starts_with("ERROR:"))
+        .collect();
+    let chosen = if errors.is_empty() { lines.into_iter().take(2).collect() } else { errors.into_iter().take(3).collect::<Vec<_>>() };
+    chosen.join("\n")
+}
+
+#[cfg(test)]
+mod error_summary_tests {
+    #[test]
+    fn prefers_fatal_lines() {
+        let output = "Fetching origin\nFetching bad\nfatal: '/nonexistent' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nerror: could not fetch bad";
+        assert_eq!(
+            super::error_summary(output),
+            "fatal: '/nonexistent' does not appear to be a git repository\nfatal: Could not read from remote repository.\nerror: could not fetch bad"
+        );
+        assert_eq!(super::error_summary("a\nb\nc"), "a\nb");
+    }
 }

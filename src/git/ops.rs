@@ -139,15 +139,23 @@ pub enum CleanWith {
 /// The message carries the updated range after a unit separator.
 pub fn update_project(repository: &Repository, rebase: bool, clean: CleanWith) -> Result<String> {
     repository.run(["fetch", "--all", "--prune"])?;
-    if repository.run(["rev-parse", "--abbrev-ref", "@{upstream}"]).is_err() {
+    let Some(upstream) = repository
+        .run(["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .ok()
+        .map(|u| u.trim().to_owned())
+        .filter(|u| !u.is_empty())
+    else {
         anyhow::bail!("the current branch has no tracked branch");
-    }
-    let mode = if rebase { "--rebase" } else { "--no-rebase" };
+    };
+    // IntelliJ merges or rebases onto the fetched tracked branch rather
+    // than running `git pull`, so a merge reads "Merge remote-tracking
+    // branch 'origin/main'".
+    let command = if rebase { "rebase" } else { "merge" };
     let before = repository.run(["rev-parse", "HEAD"])?.trim().to_owned();
     let mut restore_note = String::new();
     match clean {
         CleanWith::Stash => {
-            repository.run(["pull", mode, "--autostash"])?;
+            repository.run([command, "--autostash", &upstream])?;
         }
         CleanWith::Shelve => {
             let changed = repository.run(["diff", "--name-only", "-z", "HEAD"])?;
@@ -158,7 +166,7 @@ pub fn update_project(repository: &Repository, rebase: bool, clean: CleanWith) -
                 let name = format!("Uncommitted changes before Update at {}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
                 Some(super::patch::shelve(repository, &paths, &name, false)?)
             };
-            let pulled = repository.run(["pull", mode]);
+            let pulled = repository.run([command, &upstream]);
             if let Some(shelf) = &shelf {
                 match super::patch::unshelve(repository, shelf, None, false) {
                     Ok(super::patch::ApplyOutcome::Conflicts) => {
@@ -188,14 +196,30 @@ pub fn update_project(repository: &Repository, rebase: bool, clean: CleanWith) -
             }
         }
     }
-    let count = repository.run(["rev-list", "--count", &range]).unwrap_or_default();
+    let incoming = repository.run(["rev-parse", "@{upstream}"]).map(|o| o.trim().to_owned()).unwrap_or_else(|_| after.clone());
+    Ok(format!("{}{restore_note}\u{1f}{}", updated_summary(repository, &before, &after, &incoming), updated_ranges(&before, &after, &incoming)))
+}
+
+/// "N files updated in M commits" for an update that moved HEAD from
+/// `before` to `after` by merging or rebasing onto `incoming`. As in
+/// IntelliJ, only the received commits count: local commits replayed by
+/// a rebase and the merge commit itself are not "updated".
+pub fn updated_summary(repository: &Repository, before: &str, after: &str, incoming: &str) -> String {
+    let count = repository.run(["rev-list", "--count", &format!("{before}..{incoming}")]).unwrap_or_default();
     let count = count.trim();
-    let files = repository.run(["diff", "--name-only", &range]).map(|o| o.lines().count()).unwrap_or(0);
-    Ok(format!(
-        "{files} file{} updated in {count} commit{}{restore_note}\u{1f}{range}",
+    let files = repository.run(["diff", "--name-only", &format!("{before}..{after}")]).map(|o| o.lines().count()).unwrap_or(0);
+    format!(
+        "{files} file{} updated in {count} commit{}",
         if files == 1 { "" } else { "s" },
         if count == "1" { "" } else { "s" }
-    ))
+    )
+}
+
+/// The ranges an update notification carries after its unit separator:
+/// the changed files (`before..after`), then the received commits
+/// (`before..incoming`), separated by a space.
+pub fn updated_ranges(before: &str, after: &str, incoming: &str) -> String {
+    format!("{before}..{after} {before}..{incoming}")
 }
 
 /// One entry of `git stash list`.
@@ -369,6 +393,39 @@ mod tests {
         assert!(mine.join("b.txt").exists());
         for dir in [origin, bare, mine, theirs] {
             let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn update_counts_only_received_commits() {
+        for rebase in [true, false] {
+            let name = if rebase { "count-rebase" } else { "count-merge" };
+            let origin = temp_repo(&format!("{name}-origin"));
+            let local = origin.with_file_name(format!("junction-test-{name}-local-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&local);
+            git(&origin, &["clone", "-q", origin.to_str().unwrap(), local.to_str().unwrap()]);
+            git(&local, &["config", "user.name", "T"]);
+            git(&local, &["config", "user.email", "t@x"]);
+            std::fs::write(origin.join("b.txt"), "b\n").unwrap();
+            git(&origin, &["add", "."]);
+            git(&origin, &["commit", "-qm", "remote"]);
+            std::fs::write(local.join("c.txt"), "c\n").unwrap();
+            git(&local, &["add", "."]);
+            git(&local, &["commit", "-qm", "local"]);
+
+            let repo = Repository::discover(&local, GitConsole::default()).unwrap();
+            let message = update_project(&repo, rebase, CleanWith::Stash).unwrap();
+            let (summary, ranges) = message.split_once('\u{1f}').unwrap();
+            assert_eq!(summary, "1 file updated in 1 commit", "rebase={rebase}");
+            let commits = ranges.split(' ').last().unwrap();
+            assert_eq!(repo.run(["rev-list", "--count", commits]).unwrap().trim(), "1");
+            if !rebase {
+                let subject = repo.run(["log", "-1", "--format=%s"]).unwrap();
+                assert_eq!(subject.trim(), "Merge remote-tracking branch 'origin/main'");
+            }
+            for dir in [origin, local] {
+                let _ = std::fs::remove_dir_all(dir);
+            }
         }
     }
 }

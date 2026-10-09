@@ -198,14 +198,13 @@ pub fn pull(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                         if before == after {
                             return Ok("Already up to date".into());
                         }
-                        let range = format!("{}..{}", before.trim(), after.trim());
-                        let count = repo.run(["rev-list", "--count", &range]).unwrap_or_default();
-                        let count = count.trim();
-                        let files = repo.run(["diff", "--name-only", &range]).map(|o| o.lines().count()).unwrap_or(0);
+                        let (before, after) = (before.trim(), after.trim());
+                        // The fetched branch the pull merged or rebased onto.
+                        let incoming = repo.run(["rev-parse", "FETCH_HEAD"]).map(|o| o.trim().to_owned()).unwrap_or_else(|_| after.to_owned());
                         Ok(format!(
-                            "{files} file{} updated in {count} commit{}\u{1f}{range}",
-                            if files == 1 { "" } else { "s" },
-                            if count == "1" { "" } else { "s" }
+                            "{}\u{1f}{}",
+                            crate::git::ops::updated_summary(repo, before, after, &incoming),
+                            crate::git::ops::updated_ranges(before, after, &incoming)
                         ))
                     }, cx)
                 });
