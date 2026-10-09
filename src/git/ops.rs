@@ -15,6 +15,9 @@ pub struct PushPreview {
     pub target: String,
     /// True when the remote branch does not exist yet ("New" in IntelliJ).
     pub new_branch: bool,
+    /// Whether the branch already tracks a remote branch; a push without
+    /// one sets it (`--set-upstream`).
+    pub has_upstream: bool,
     pub commits: Vec<Commit>,
 }
 
@@ -50,15 +53,23 @@ pub fn push_preview(repository: &Repository) -> Result<PushPreview> {
             branch.clone().unwrap_or_default(),
         ),
     };
+    let (new_branch, commits) = push_commits(repository, &remote, &target)?;
+    Ok(PushPreview { branch, remotes, remote, target, new_branch, has_upstream: upstream.is_some(), commits })
+}
+
+/// What pushing HEAD to `remote`/`target` would send, and whether that
+/// creates the remote branch. The Push dialog asks again whenever the
+/// target branch or remote changes.
+pub fn push_commits(repository: &Repository, remote: &str, target: &str) -> Result<(bool, Vec<Commit>)> {
     let remote_ref = format!("refs/remotes/{remote}/{target}");
-    let new_branch = repository.run(["rev-parse", "--verify", "-q", &remote_ref]).is_err();
+    let new_branch = target.is_empty() || repository.run(["rev-parse", "--verify", "-q", &remote_ref]).is_err();
     let commits = if new_branch {
-        // Everything not already on some remote.
-        parse_log(&repository.run(["log", LOG_FORMAT, "HEAD", "--not", "--remotes"])?)
+        // Everything that remote doesn't have yet.
+        parse_log(&repository.run(["log", LOG_FORMAT, "HEAD", "--not", &format!("--remotes={remote}")])?)
     } else {
         parse_log(&repository.run(["log", LOG_FORMAT, &format!("{remote_ref}..HEAD")])?)
     };
-    Ok(PushPreview { branch, remotes, remote, target, new_branch, commits })
+    Ok((new_branch, commits))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +158,24 @@ pub fn update_project(repository: &Repository, rebase: bool, clean: CleanWith) -
     else {
         anyhow::bail!("the current branch has no tracked branch");
     };
+    update_onto(repository, &upstream, rebase, clean)
+}
+
+/// The Push Rejected dialog's Merge / Rebase: fetch the push target,
+/// update onto it, and push again.
+pub fn update_after_rejected_push(repository: &Repository, request: &PushRequest, rebase: bool, clean: CleanWith) -> Result<String> {
+    repository.run(["fetch", &request.remote])?;
+    let onto = format!("{}/{}", request.remote, request.target);
+    let updated = update_onto(repository, &onto, rebase, clean)?;
+    let updated = updated.split('\u{1f}').next().unwrap_or_default().to_owned();
+    let pushed = push(repository, request)?;
+    Ok(format!("{pushed} ({updated})"))
+}
+
+/// Merges or rebases the current branch onto the already fetched `onto`,
+/// keeping local changes out of the way with stash or a shelf.
+fn update_onto(repository: &Repository, onto: &str, rebase: bool, clean: CleanWith) -> Result<String> {
+    let upstream = onto;
     // IntelliJ merges or rebases onto the fetched tracked branch rather
     // than running `git pull`, so a merge reads "Merge remote-tracking
     // branch 'origin/main'".
@@ -155,7 +184,7 @@ pub fn update_project(repository: &Repository, rebase: bool, clean: CleanWith) -
     let mut restore_note = String::new();
     match clean {
         CleanWith::Stash => {
-            repository.run([command, "--autostash", &upstream])?;
+            repository.run([command, "--autostash", upstream])?;
         }
         CleanWith::Shelve => {
             let changed = repository.run(["diff", "--name-only", "-z", "HEAD"])?;
@@ -166,7 +195,7 @@ pub fn update_project(repository: &Repository, rebase: bool, clean: CleanWith) -
                 let name = format!("Uncommitted changes before Update at {}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
                 Some(super::patch::shelve(repository, &paths, &name, false)?)
             };
-            let pulled = repository.run([command, &upstream]);
+            let pulled = repository.run([command, upstream]);
             if let Some(shelf) = &shelf {
                 match super::patch::unshelve(repository, shelf, None, false) {
                     Ok(super::patch::ApplyOutcome::Conflicts) => {
@@ -196,7 +225,7 @@ pub fn update_project(repository: &Repository, rebase: bool, clean: CleanWith) -
             }
         }
     }
-    let incoming = repository.run(["rev-parse", "@{upstream}"]).map(|o| o.trim().to_owned()).unwrap_or_else(|_| after.clone());
+    let incoming = repository.run(["rev-parse", upstream]).map(|o| o.trim().to_owned()).unwrap_or_else(|_| after.clone());
     Ok(format!("{}{restore_note}\u{1f}{}", updated_summary(repository, &before, &after, &incoming), updated_ranges(&before, &after, &incoming)))
 }
 

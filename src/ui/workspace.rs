@@ -403,16 +403,16 @@ impl Workspace {
                     } else {
                         Notification::success(message.clone()).title(title.clone())
                     };
+                    // A rejected push asks how to update, in IntelliJ's
+                    // Push Rejected dialog rather than a balloon.
+                    if message.split_once(" failed: ").map_or(message.as_str(), |(_, rest)| rest).starts_with(dialogs::PUSH_REJECTED)
+                        || message.starts_with(dialogs::PUSH_REJECTED)
+                    {
+                        dialogs::push_rejected(this.model.clone(), window, cx);
+                        return;
+                    }
                     // IntelliJ's balloon actions: the obvious next step.
-                    if message.starts_with("Push rejected") {
-                        notification = notification.action(move |_, _, _| {
-                            let entity = entity.clone();
-                            Button::new("notify-update").label("Update Project…").small().primary().on_click(move |_, window, cx| {
-                                let model = entity.read(cx).model.clone();
-                                dialogs::update_project(model, window, cx);
-                            })
-                        });
-                    } else if *error {
+                    if *error {
                         notification = notification.action(move |_, _, _| {
                             let entity = entity.clone();
                             Button::new("notify-details").label("Show Details").small().outline().on_click(move |_, _, cx| {

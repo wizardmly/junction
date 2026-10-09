@@ -190,7 +190,7 @@ pub fn reset_to(model: Entity<RepoModel>, target: String, window: &mut Window, c
 /// and IntelliJ's options (force push with lease, push tags, run hooks).
 pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
     use crate::git::ops::{self, PushRequest, PushTags};
-    use gpui_kit::component::{ActiveTheme as _, h_flex, scroll::ScrollableElement as _};
+    use gpui_kit::component::{ActiveTheme as _, h_flex, menu::{DropdownMenu as _, PopupMenuItem}, scroll::ScrollableElement as _};
     use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _};
     use std::cell::RefCell;
 
@@ -221,13 +221,23 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
     }
     let remote_ix = preview.remotes.iter().position(|r| *r == preview.remote).unwrap_or(0);
     let options = Rc::new(RefCell::new(Options { force: false, tags: None, hooks: true, remote: remote_ix, selected: None }));
-    // The right-hand change tree: each commit's files, and their union.
-    let commit_files: Vec<Vec<crate::git::log::FileChange>> = preview
-        .commits
-        .iter()
-        .map(|c| crate::git::log::load_details(&repository, &c.hash).map(|d| d.changes).unwrap_or_default())
-        .collect();
-    let all_files: Vec<crate::git::log::FileChange> = {
+    /// What the push would send to one remote branch, worked out again
+    /// whenever the remote or the target branch changes.
+    struct Outgoing {
+        remote: String,
+        target: String,
+        new_branch: bool,
+        commits: Vec<crate::git::Commit>,
+        /// Each commit's files, and their union for the change tree.
+        commit_files: Vec<Vec<crate::git::log::FileChange>>,
+        all_files: Vec<crate::git::log::FileChange>,
+    }
+    let outgoing = move |repository: &crate::git::Repository, remote: &str, target: &str| {
+        let (new_branch, commits) = ops::push_commits(repository, remote, target).unwrap_or_default();
+        let commit_files: Vec<Vec<crate::git::log::FileChange>> = commits
+            .iter()
+            .map(|c| crate::git::log::load_details(repository, &c.hash).map(|d| d.changes).unwrap_or_default())
+            .collect();
         let mut seen = std::collections::BTreeMap::new();
         // Oldest first, so the newest change to a path wins.
         for files in commit_files.iter().rev() {
@@ -235,17 +245,34 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                 seen.insert(file.path.clone(), file.clone());
             }
         }
-        seen.into_values().collect()
+        Outgoing { remote: remote.to_owned(), target: target.to_owned(), new_branch, commits, commit_files, all_files: seen.into_values().collect() }
     };
+    let computed = Rc::new(RefCell::new(Outgoing {
+        remote: preview.remote.clone(),
+        target: preview.target.clone(),
+        new_branch: preview.new_branch,
+        commits: Vec::new(),
+        commit_files: Vec::new(),
+        all_files: Vec::new(),
+    }));
+    *computed.borrow_mut() = outgoing(&repository, &preview.remote, &preview.target);
     let repo_name = repository.name();
 
     window.open_dialog(cx, move |dialog, _, cx| {
         let palette = cx.palette().clone();
         let mono = cx.theme().mono_font_family.clone();
+        let remote = preview.remotes.get(options.borrow().remote).cloned().unwrap_or_else(|| preview.remote.clone());
+        let target_name = target.read(cx).value().trim().to_owned();
+        // IntelliJ re-checks the target as it is edited: "New", and the
+        // commits that remote doesn't have.
+        if computed.borrow().remote != remote || computed.borrow().target != target_name {
+            *computed.borrow_mut() = outgoing(&repository, &remote, &target_name);
+            options.borrow_mut().selected = None;
+        }
         let current = *options.borrow();
-        let remote = preview.remotes.get(current.remote).cloned().unwrap_or_else(|| preview.remote.clone());
+        let out = computed.borrow();
         let mut commits = v_flex().gap_px();
-        for (ix, commit) in preview.commits.iter().enumerate() {
+        for (ix, commit) in out.commits.iter().enumerate() {
             let is_selected = current.selected == Some(ix);
             let select_options = options.clone();
             commits = commits.child(
@@ -257,21 +284,22 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                     .rounded(px(3.))
                     .text_sm()
                     .cursor_pointer()
+                    .overflow_hidden()
                     .when(is_selected, |el| el.bg(palette.selection))
                     .on_click(move |_, window, _| {
                         let mut o = select_options.borrow_mut();
                         o.selected = if o.selected == Some(ix) { None } else { Some(ix) };
                         window.refresh();
                     })
-                    .child(div().font_family(mono.clone()).text_color(palette.text_secondary).child(commit.short_hash().to_owned()))
-                    .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(commit.subject.clone()))
-                    .child(div().text_color(palette.text_secondary).child(commit.author_name.clone())),
+                    .child(div().flex_shrink_0().font_family(mono.clone()).text_color(palette.text_secondary).child(commit.short_hash().to_owned()))
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(commit.subject.clone()))
+                    .child(div().flex_shrink_0().text_color(palette.text_secondary).child(commit.author_name.clone())),
             );
         }
-        if preview.commits.is_empty() {
+        if out.commits.is_empty() {
             commits = commits.child(div().text_sm().text_color(palette.text_secondary).child("Nothing to push"));
         }
-        let shown_files = current.selected.and_then(|ix| commit_files.get(ix)).unwrap_or(&all_files);
+        let shown_files = current.selected.and_then(|ix| out.commit_files.get(ix)).unwrap_or(&out.all_files);
         let mut files = v_flex()
             .gap_px()
             .child(div().pb_1().text_xs().text_color(palette.text_secondary).child(format!(
@@ -289,10 +317,14 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::File).xsmall().text_color(palette.text_secondary))
-                    .child(div().text_color(crate::ui::common::change_color(file.kind, &palette)).child(name.to_owned()))
-                    .child(div().text_xs().text_color(palette.text_secondary).text_ellipsis().child(dir.to_owned())),
+                    .child(div().flex_shrink_0().text_color(crate::ui::common::change_color(file.kind, &palette)).child(name.to_owned()))
+                    .child(div().min_w_0().text_xs().text_color(palette.text_secondary).text_ellipsis().child(dir.to_owned())),
             );
         }
+        let new_branch = out.new_branch;
+        // Nothing to send: IntelliJ greys out Push (tags still count).
+        let nothing = out.commits.is_empty() && !new_branch && current.tags.is_none();
+        drop(out);
 
         let set = |options: &Rc<RefCell<Options>>, edit: fn(&mut Options, bool)| {
             let options = options.clone();
@@ -311,9 +343,10 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
         let ok_model = model.clone();
         let ok_remotes = preview.remotes.clone();
         let ok_default_remote = preview.remote.clone();
-        let has_upstream = !preview.new_branch;
+        let has_upstream = preview.has_upstream;
         // Settings › Git › Protected branches: no force push to them.
-        let protected = Settings::get(cx).is_protected(target.read(cx).value().trim());
+        let protected = Settings::get(cx).is_protected(&target_name);
+        let force_label = current.force && !protected;
 
         dialog
             .title(format!("Push Commits to {repo_name}"))
@@ -327,22 +360,30 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                             .text_sm()
                             .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(branch.clone()))
                             .child("→")
-                            .child(
-                                Button::new("push-remote")
-                                    .ghost()
-                                    .xsmall()
-                                    .label(remote.clone())
-                                    .when(remotes.len() > 1, |b| {
-                                        b.on_click(move |_, window, _| {
-                                            let mut o = remote_options.borrow_mut();
-                                            o.remote = (o.remote + 1) % remotes.len().max(1);
-                                            window.refresh();
+                            .child({
+                                // IntelliJ's remote link opens the list of remotes.
+                                let button = Button::new("push-remote").ghost().xsmall().label(remote.clone());
+                                if remotes.len() > 1 {
+                                    button
+                                        .dropdown_caret(true)
+                                        .dropdown_menu(move |mut menu, _, _| {
+                                            for (ix, name) in remotes.iter().enumerate() {
+                                                let options = remote_options.clone();
+                                                menu = menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, window, _| {
+                                                    options.borrow_mut().remote = ix;
+                                                    window.refresh();
+                                                }));
+                                            }
+                                            menu
                                         })
-                                    }),
-                            )
+                                        .into_any_element()
+                                } else {
+                                    button.into_any_element()
+                                }
+                            })
                             .child(":")
                             .child(div().w(px(220.)).child(Input::new(&target).xsmall()))
-                            .when(preview.new_branch, |el| {
+                            .when(new_branch, |el| {
                                 el.child(
                                     div()
                                         .px_1()
@@ -360,11 +401,12 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                             .rounded(px(4.))
                             .border_1()
                             .border_color(palette.border)
-                            .child(div().id("push-commits").flex_1().h_full().p_1().overflow_y_scrollbar().child(commits))
+                            .child(div().id("push-commits").flex_1().min_w_0().h_full().p_1().overflow_y_scrollbar().child(commits))
                             .child(
                                 div()
                                     .id("push-files")
                                     .w(px(260.))
+                                    .flex_shrink_0()
                                     .h_full()
                                     .p_2()
                                     .border_l_1()
@@ -418,7 +460,7 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
             .on_ok(move |_, _, cx| {
                 let o = *ok_options.borrow();
                 let target = ok_target.read(cx).value().trim().to_owned();
-                if target.is_empty() {
+                if target.is_empty() || nothing {
                     return false;
                 }
                 let remote = ok_remotes.get(o.remote).cloned().unwrap_or_else(|| ok_default_remote.clone());
@@ -436,27 +478,87 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                     set_upstream: !has_upstream,
                     run_hooks: o.hooks,
                 };
-                let settings = Settings::get(cx);
-                let auto_update = settings.auto_update_on_push_rejected;
-                let rebase = settings.update_method == UpdateMethod::Rebase;
-                ok_model.update(cx, |model, cx| {
-                    model.run_operation(if request.force_with_lease { "Force Push" } else { "Push" }, move |repo| {
-                        if auto_update {
-                            return ops::push_with_auto_update(repo, &request, rebase);
-                        }
-                        ops::push(repo, &request).map_err(|error| {
-                            if ops::is_rejected(&error) {
-                                anyhow::anyhow!("Push rejected: the remote has commits that aren't in {}. Update Project (Ctrl+T), then push again.", request.branch)
-                            } else {
-                                error
-                            }
-                        })
-                    }, cx)
-                });
+                run_push(ok_model.clone(), request, cx);
                 true
             })
-            .footer(footer(if current.force && !protected { "Force Push" } else { "Push" }))
+            .footer(
+                DialogFooter::new()
+                    .gap_2()
+                    .child(DialogClose::new().child(Button::new("cancel").label("Cancel").outline()))
+                    .child(DialogAction::new().child(
+                        Button::new("ok").label(if force_label { "Force Push" } else { "Push" }).primary().disabled(nothing),
+                    )),
+            )
     });
+}
+
+/// The push a rejection interrupted, for the Push Rejected dialog's
+/// Merge / Rebase to finish.
+static REJECTED_PUSH: std::sync::Mutex<Option<crate::git::ops::PushRequest>> = std::sync::Mutex::new(None);
+
+/// Runs a push; with "Auto-update if push was rejected" a rejection
+/// updates and retries, otherwise it leads to the Push Rejected dialog.
+fn run_push(model: Entity<RepoModel>, request: crate::git::ops::PushRequest, cx: &mut App) {
+    use crate::git::ops;
+    let settings = Settings::get(cx);
+    let auto_update = settings.auto_update_on_push_rejected;
+    let rebase = settings.update_method == UpdateMethod::Rebase;
+    model.update(cx, |model, cx| {
+        model.run_operation(if request.force_with_lease { "Force Push" } else { "Push" }, move |repo| {
+            if auto_update {
+                return ops::push_with_auto_update(repo, &request, rebase);
+            }
+            ops::push(repo, &request).map_err(|error| {
+                if ops::is_rejected(&error) {
+                    let message = anyhow::anyhow!("{PUSH_REJECTED} the remote has commits that aren't in {}.", request.branch);
+                    *REJECTED_PUSH.lock().unwrap() = Some(request.clone());
+                    message
+                } else {
+                    error
+                }
+            })
+        }, cx)
+    });
+}
+
+/// How a rejected push's error message starts; the workspace answers it
+/// with [`push_rejected`].
+pub const PUSH_REJECTED: &str = "Push rejected:";
+
+/// IntelliJ's Push Rejected dialog: the remote has commits the branch
+/// doesn't, so merge or rebase onto them and push again.
+pub fn push_rejected(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
+    let Some(request) = REJECTED_PUSH.lock().unwrap().take() else { return };
+    let settings = Settings::get(cx);
+    let clean = if settings.update_shelve { crate::git::ops::CleanWith::Shelve } else { crate::git::ops::CleanWith::Stash };
+    let update = |rebase: bool| -> Rc<dyn Fn(&mut Window, &mut App)> {
+        let (model, request) = (model.clone(), request.clone());
+        Rc::new(move |_, cx| {
+            let request = request.clone();
+            model.update(cx, |model, cx| {
+                model.run_operation("Push", move |repo| {
+                    crate::git::ops::update_after_rejected_push(repo, &request, rebase, clean)
+                }, cx)
+            });
+        })
+    };
+    // The configured update method is the default button.
+    let mut options = vec![("Rebase", update(true)), ("Merge", update(false))];
+    if settings.update_method == UpdateMethod::Rebase {
+        options.reverse();
+    }
+    choose(
+        "Push Rejected",
+        format!(
+            "Push of current branch {} was rejected. Remote changes need to be merged before pushing.",
+            request.branch
+        ),
+        Vec::new(),
+        "Cancel",
+        options,
+        window,
+        cx,
+    );
 }
 
 /// Update Project (`Ctrl+T`): fetch, then merge or rebase, cleaning the
