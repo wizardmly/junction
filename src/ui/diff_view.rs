@@ -367,6 +367,12 @@ impl DiffView {
         }
     }
 
+    /// Changes are shown: Do not highlight shows the two texts with no
+    /// change markers, connectors or buttons, as IntelliJ does.
+    fn highlighted(&self) -> bool {
+        self.options.highlight != HighlightMode::None
+    }
+
     fn signature(&self, change: usize) -> Option<u64> {
         let loaded = self.loaded.as_ref()?;
         Some(diff::hunk_signature(&loaded.old, &loaded.new, self.diff.hunks.get(change)?))
@@ -485,8 +491,29 @@ impl DiffView {
     fn set_mode(&mut self, mode: ViewerMode, cx: &mut Context<Self>) {
         self.mode = mode;
         self.rebuild_rows();
-        if let Some(change) = self.current {
-            self.go_to_change(change);
+        match self.panes.caret {
+            // The caret stays on its line; the unified viewer has only the
+            // new side, so a caret on the old one is taken across.
+            Some((pane, sel)) => {
+                let line = self.panes.buffers[pane].line_of(sel.head);
+                if mode == ViewerMode::Unified && pane == 0 {
+                    let line = self.transfer_line(line, true);
+                    let buffer = &self.panes.buffers[1];
+                    let offset = buffer.line_range(line.min(buffer.line_count().saturating_sub(1))).start;
+                    self.panes.caret = Some((1, crate::ui::text_buffer::Selection::caret(offset)));
+                    self.panes.show_rows(vec![(1, self.panes.row_of(1, line))]);
+                } else if mode == ViewerMode::Unified {
+                    self.panes.show_rows(vec![(1, self.panes.row_of(1, line))]);
+                } else {
+                    let other = self.transfer_line(line, pane == 0);
+                    self.panes.show_rows(vec![(pane, self.panes.row_of(pane, line)), (1 - pane, self.panes.row_of(1 - pane, other))]);
+                }
+            }
+            None => {
+                if let Some(change) = self.current {
+                    self.go_to_change(change);
+                }
+            }
         }
         cx.notify();
     }
@@ -500,66 +527,136 @@ impl DiffView {
         self.rows.iter().position(|row| matches!(row, Display::Line { change: Some(c), .. } if *c == change))
     }
 
+    /// Shows a change and puts the caret on its first line, in the pane
+    /// that has the caret (the editable or right one at first).
     fn go_to_change(&mut self, change: usize) {
+        let Some(hunk) = self.diff.hunks.get(change).cloned() else { return };
+        let pane = self.caret_pane();
+        let line = if pane == 0 { hunk.old.start } else { hunk.new.start };
+        let buffer = &self.panes.buffers[pane];
+        let offset = buffer.line_range(line.min(buffer.line_count().saturating_sub(1))).start;
+        self.panes.caret = Some((pane, crate::ui::text_buffer::Selection::caret(offset)));
+        self.current = Some(change);
         if self.mode == ViewerMode::SideBySide {
             let Some(seg) = self.two.change_segment(change).cloned() else { return };
-            self.current = Some(change);
             self.panes.show_rows(vec![(0, seg.left.start), (1, seg.right.start)]);
             return;
         }
         if let Some(row) = self.change_row(change) {
-            self.current = Some(change);
             self.panes.show_rows(vec![(1, row)]);
         }
     }
 
-    fn set_all_included(&mut self, include: bool, cx: &mut Context<Self>) {
-        let Some(path) = self.partial_path(cx) else { return };
-        let signatures: Vec<u64> = (0..self.diff.hunks.len()).filter_map(|c| self.signature(c)).collect();
-        crate::model::ExcludedHunks::update(cx, |map| {
-            let set = map.entry(path).or_default();
-            for s in signatures {
-                if include {
-                    set.remove(&s);
-                } else {
-                    set.insert(s);
-                }
-            }
-        });
-        cx.notify();
+    /// The pane F7 and F4 work from: the caret's, else the editable (or
+    /// right) one. The unified viewer has only the right one.
+    fn caret_pane(&self) -> usize {
+        if self.mode == ViewerMode::Unified {
+            return 1;
+        }
+        self.panes.caret.map(|c| c.0).or(self.edit_pane()).unwrap_or(1)
     }
 
-    /// The working-tree line Jump to Source opens: the current change's,
-    /// else the line at the top of the right pane.
+    /// The caret's line in that pane, if it has the caret.
+    fn caret_line(&self) -> Option<usize> {
+        let pane = self.caret_pane();
+        self.panes.caret.filter(|c| c.0 == pane).map(|(_, sel)| self.panes.buffers[pane].line_of(sel.head))
+    }
+
+    fn hunk_lines(&self, change: usize, pane: usize) -> Range<usize> {
+        let hunk = &self.diff.hunks[change];
+        if pane == 0 { hunk.old.clone() } else { hunk.new.clone() }
+    }
+
+    /// IntelliJ's Next Difference: the first change that starts below the
+    /// caret's line.
+    fn next_change(&self) -> Option<usize> {
+        if !self.highlighted() {
+            return None;
+        }
+        let pane = self.caret_pane();
+        match self.caret_line() {
+            None => (self.diff.changes > 0).then_some(0),
+            Some(line) => (0..self.diff.hunks.len()).find(|c| self.hunk_lines(*c, pane).start > line),
+        }
+    }
+
+    /// Previous Difference: the last change wholly above the caret's line.
+    fn previous_change(&self) -> Option<usize> {
+        if !self.highlighted() {
+            return None;
+        }
+        let pane = self.caret_pane();
+        let line = self.caret_line()?;
+        (0..self.diff.hunks.len()).rev().find(|c| {
+            let lines = self.hunk_lines(*c, pane);
+            lines.start < line && lines.end <= line
+        })
+    }
+
+    /// A line of one side on the other: lines between changes move with
+    /// them, a line inside a change goes to the change's start.
+    fn transfer_line(&self, line: usize, from_old: bool) -> usize {
+        let mut delta: isize = 0;
+        for hunk in &self.diff.hunks {
+            let (from, to) = if from_old { (&hunk.old, &hunk.new) } else { (&hunk.new, &hunk.old) };
+            if line < from.start {
+                break;
+            }
+            if line < from.end {
+                return to.start;
+            }
+            delta = to.end as isize - from.end as isize;
+        }
+        (line as isize + delta).max(0) as usize
+    }
+
+    /// The include-all checkbox: every change whole, lines left out or
+    /// taken in one by one included.
+    fn set_all_included(&mut self, include: bool, cx: &mut Context<Self>) {
+        for change in 0..self.diff.hunks.len() {
+            self.toggle_hunk(change, include, cx);
+        }
+    }
+
+    /// The local file's line Jump to Source opens: the caret's (a line of
+    /// the other side taken across), else the line at the top of the pane.
     fn jump_target(&self) -> Option<crate::index::nav::Target> {
-        let path = match self.source.as_ref()? {
-            DiffSource::WorkingTree { path, .. } | DiffSource::Unstaged { path } => path.clone(),
+        // The pane that shows the local file.
+        let (path, local) = match self.source.as_ref()? {
+            DiffSource::WorkingTree { path, .. }
+            | DiffSource::Unstaged { path }
+            | DiffSource::Between { path, new: None, .. }
+            | DiffSource::Clipboard { path, .. } => (path.clone(), 1),
+            DiffSource::Files { path, .. } => (path.clone(), 0),
             _ => return None,
         };
+        let target = |line: usize| crate::index::nav::Target { path: path.clone(), line: line as u32, col: 0, name: String::new(), label: String::new(), container: None };
+        if let Some((pane, sel)) = self.panes.caret {
+            let line = self.panes.buffers[pane].line_of(sel.head);
+            let line = if pane == local { line } else { self.transfer_line(line, local == 1) };
+            return Some(target(line));
+        }
         if self.mode == ViewerMode::Unified {
             let top = self.panes.row_at(1, self.panes.scroll[1].1);
-            let row = self.current.and_then(|c| self.change_row(c)).unwrap_or(top);
-            let line = self.rows[row.min(self.rows.len().saturating_sub(1))..]
+            let line = self.rows[top.min(self.rows.len().saturating_sub(1))..]
                 .iter()
                 .find_map(|r| match r {
                     Display::Line { right: Some(side), .. } => Some(side.line.saturating_sub(1)),
                     _ => None,
                 })
                 .unwrap_or(0);
-            return Some(crate::index::nav::Target { path, line: line as u32, col: 0, name: String::new(), label: String::new(), container: None });
+            return Some(target(line));
         }
-        let row = match self.current.and_then(|c| self.two.change_segment(c)) {
-            Some(seg) => seg.right.start,
-            None => self.panes.row_at(1, self.panes.scroll[1].1),
-        };
-        let line = self.two.right[row.min(self.two.right.len().saturating_sub(1))..]
+        let rows = if local == 0 { &self.two.left } else { &self.two.right };
+        let top = self.panes.row_at(local, self.panes.scroll[local].1);
+        let line = rows[top.min(rows.len().saturating_sub(1))..]
             .iter()
             .find_map(|r| match r {
                 PaneRow::Line { side, .. } => Some(side.line.saturating_sub(1)),
                 PaneRow::Fold { .. } | PaneRow::Filler => None,
             })
             .unwrap_or(0);
-        Some(crate::index::nav::Target { path, line: line as u32, col: 0, name: String::new(), label: String::new(), container: None })
+        Some(target(line))
     }
 
     pub fn jump_to_source(&mut self, cx: &mut Context<Self>) {
@@ -569,17 +666,17 @@ impl DiffView {
     }
 
     fn has_next(&self) -> bool {
-        self.current.map_or(self.diff.changes > 0, |c| c + 1 < self.diff.changes)
+        self.next_change().is_some()
     }
 
     fn has_previous(&self) -> bool {
-        self.current.is_some_and(|c| c > 0)
+        self.previous_change().is_some()
     }
 
     pub fn next_difference(&mut self, cx: &mut Context<Self>) {
-        if self.has_next() {
+        if let Some(change) = self.next_change() {
             self.edge = None;
-            self.go_to_change(self.current.map_or(0, |c| c + 1));
+            self.go_to_change(change);
             cx.notify();
         } else {
             self.past_end(files::Edge::Next, cx);
@@ -587,9 +684,9 @@ impl DiffView {
     }
 
     pub fn previous_difference(&mut self, cx: &mut Context<Self>) {
-        if let Some(c) = self.current.filter(|c| *c > 0) {
+        if let Some(change) = self.previous_change() {
             self.edge = None;
-            self.go_to_change(c - 1);
+            self.go_to_change(change);
             cx.notify();
         } else {
             self.past_end(files::Edge::Previous, cx);
