@@ -65,6 +65,7 @@ const MARKER_WIDTH: f32 = 3.;
 const MARKER_GAP: f32 = 4.;
 
 pub fn init(cx: &mut gpui_kit::App) {
+    register_grammars();
     cx.bind_keys([
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" }, SaveFile, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-z", RollbackLines, Some(CONTEXT)),
@@ -108,6 +109,35 @@ pub enum FileEditorEvent {
 
 impl EventEmitter<FileEditorEvent> for FileEditor {}
 
+/// Highlighting the toolkit lacks: its C++ query is only the C++ additions
+/// (tree-sitter-cpp's queries inherit C's), Swift has none, Dart isn't
+/// built in.
+fn register_grammars() {
+    use gpui_kit::component::highlighter::{LanguageConfig, LanguageRegistry};
+    let registry = LanguageRegistry::singleton();
+    for (name, language, highlights) in grammars() {
+        registry.register(name, &LanguageConfig::new(name, language, Vec::new(), &highlights, "", ""));
+    }
+}
+
+fn grammars() -> [(&'static str, tree_sitter::Language, String); 3] {
+    [
+        ("cpp", tree_sitter_cpp::LANGUAGE.into(), format!("{}\n{}", tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY)),
+        ("swift", tree_sitter_swift::LANGUAGE.into(), tree_sitter_swift::HIGHLIGHTS_QUERY.to_owned()),
+        ("dart", tree_sitter_dart::LANGUAGE.into(), tree_sitter_dart::HIGHLIGHTS_QUERY.to_owned()),
+    ]
+}
+
+#[cfg(test)]
+#[test]
+fn registered_grammars_compile() {
+    for (name, language, highlights) in grammars() {
+        if let Err(error) = tree_sitter::Query::new(&language, &highlights) {
+            panic!("{name}: {error}");
+        }
+    }
+}
+
 /// The tree-sitter language for a file name (plain text when unknown).
 pub fn language_for(path: &str) -> &'static str {
     let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_ascii_lowercase();
@@ -124,6 +154,7 @@ pub fn language_for(path: &str) -> &'static str {
         (_, "kt" | "kts") => "kotlin",
         (_, "java") => "java",
         (_, "swift") => "swift",
+        (_, "dart") => "dart",
         (_, "go") => "go",
         (_, "c" | "h") => "c",
         (_, "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "mm" | "m") => "cpp",
