@@ -279,19 +279,39 @@ impl<T: Clone + Default> TextPanes<T> {
 
     /// New texts: forgets the caret, undo and highlighting.
     pub fn set_texts(&mut self, texts: Vec<String>, language: &str) {
-        self.buffers = texts.into_iter().map(Buffer::new).collect();
-        self.caret = None;
-        self.marked = None;
-        self.history.clear();
-        self.line_edits.clear();
+        self.set_plain_texts(texts);
         for pane in 0..self.buffers.len() {
             self.highlight(pane, language);
         }
     }
 
-    /// Re-parses one pane for syntax colors.
+    /// New texts without syntax colors yet: they come from
+    /// [`highlight_texts`] off the main thread, through [`Self::set_highlighters`].
+    pub fn set_plain_texts(&mut self, texts: Vec<String>) {
+        self.buffers = texts.into_iter().map(Buffer::new).collect();
+        self.caret = None;
+        self.marked = None;
+        self.history.clear();
+        self.line_edits.clear();
+        self.highlighters = (0..self.buffers.len()).map(|_| None).collect();
+    }
+
+    /// Installs highlighters made for `texts`, for the panes still showing them.
+    pub fn set_highlighters(&mut self, texts: &[String], highlighters: Vec<Highlighter>) {
+        for (pane, (text, highlighter)) in texts.iter().zip(highlighters).enumerate() {
+            if self.buffers.get(pane).is_some_and(|b| b.text() == text) {
+                self.highlighters[pane] = Some(highlighter);
+            }
+        }
+    }
+
+    /// Re-parses one pane for syntax colors (keeping its highlighter, whose
+    /// queries are costly to build, when the language is the same).
     pub fn highlight(&mut self, pane: usize, language: &str) {
-        let mut highlighter = gpui_kit::component::highlighter::SyntaxHighlighter::new(language);
+        let mut highlighter = match self.highlighters[pane].take() {
+            Some(h) if h.language().as_ref() == language => h,
+            _ => take_highlighter(language),
+        };
         highlighter.update(None, &gpui_kit::component::Rope::from_str(self.buffers[pane].text()), Some(Duration::from_millis(200)));
         self.highlighters[pane] = Some(highlighter);
     }
@@ -2085,4 +2105,52 @@ mod tests {
         assert_eq!(out[1].1.background_color, Some(gpui_kit::blue()));
         assert_eq!(out[2].0, 4..6);
     }
+}
+
+pub type Highlighter = gpui_kit::component::highlighter::SyntaxHighlighter;
+
+/// Highlighters built ahead, by language: building one compiles the
+/// grammar's queries (~25 ms for Rust), more than parsing a file.
+static SPARE_HIGHLIGHTERS: std::sync::Mutex<Vec<Highlighter>> = std::sync::Mutex::new(Vec::new());
+
+/// A highlighter for `language`, a spare one when there is (and another
+/// spare is built in the background for the next file).
+fn take_highlighter(language: &str) -> Highlighter {
+    let spare = {
+        let mut spares = SPARE_HIGHLIGHTERS.lock().unwrap();
+        spares.iter().position(|h| h.language().as_ref() == language).map(|ix| spares.swap_remove(ix))
+    };
+    let language = language.to_owned();
+    let refill = language.clone();
+    std::thread::spawn(move || {
+        let highlighter = Highlighter::new(&refill);
+        let mut spares = SPARE_HIGHLIGHTERS.lock().unwrap();
+        // Two per language (a diff's two sides), a few languages.
+        // (A language without a grammar comes back as another: not kept.)
+        if highlighter.language().as_ref() == refill.as_str() && spares.iter().filter(|h| h.language().as_ref() == refill.as_str()).count() < 2 {
+            if spares.len() >= 8 {
+                spares.remove(0);
+            }
+            spares.push(highlighter);
+        }
+    });
+    spare.unwrap_or_else(|| Highlighter::new(&language))
+}
+
+/// Parses each text for syntax colors, in parallel. Slow (tens of ms for a
+/// big file), so run it off the main thread.
+pub fn highlight_texts(texts: &[String], language: &str) -> Vec<Highlighter> {
+    std::thread::scope(|scope| {
+        let jobs: Vec<_> = texts
+            .iter()
+            .map(|text| {
+                let mut highlighter = take_highlighter(language);
+                scope.spawn(move || {
+                    highlighter.update(None, &gpui_kit::component::Rope::from_str(text), Some(Duration::from_millis(500)));
+                    highlighter
+                })
+            })
+            .collect();
+        jobs.into_iter().map(|job| job.join().unwrap()).collect()
+    })
 }

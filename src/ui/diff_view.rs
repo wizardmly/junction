@@ -186,6 +186,7 @@ pub struct DiffView {
     /// meanwhile.
     stale: bool,
     _stale_task: Option<Task<()>>,
+    _highlight_task: Option<Task<()>>,
     /// The files of the shown change set, for Compare Previous / Next File.
     files: Vec<DiffSource>,
     files_key: String,
@@ -222,6 +223,7 @@ impl DiffView {
             _task: None,
             stale: false,
             _stale_task: None,
+            _highlight_task: None,
             files: Vec::new(),
             files_key: String::new(),
             file_order: Vec::new(),
@@ -311,7 +313,23 @@ impl DiffView {
                 match result {
                     Ok((loaded, file_diff)) => {
                         let language = crate::ui::file_editor::language_for(this.source.as_ref().map(|s| s.path()).unwrap_or_default());
-                        this.panes.set_texts(vec![loaded.old.clone(), loaded.new.clone()], language);
+                        // Text first, colors a moment later: parsing is the slow part.
+                        let texts = vec![loaded.old.clone(), loaded.new.clone()];
+                        this.panes.set_plain_texts(texts.clone());
+                        let language = language.to_owned();
+                        this._highlight_task = Some(cx.spawn(async move |this, cx| {
+                            let (texts, highlighters) = cx
+                                .background_spawn(async move {
+                                    let highlighters = crate::ui::text_panes::highlight_texts(&texts, &language);
+                                    (texts, highlighters)
+                                })
+                                .await;
+                            this.update(cx, |this, cx| {
+                                this.panes.set_highlighters(&texts, highlighters);
+                                cx.notify();
+                            })
+                            .ok();
+                        }));
                         this.loaded = Some(loaded);
                         this.panes.editable = this.edit_pane();
                         this.set_diff(file_diff);
@@ -332,7 +350,7 @@ impl DiffView {
 
     fn clear_content(&mut self) {
         self.stale = false;
-        self.panes.set_texts(vec![String::new(), String::new()], "plaintext");
+        self.panes.set_plain_texts(vec![String::new(), String::new()]);
         self.loaded = None;
         self.diff = FileDiff::default();
         self.rows = Rc::new(Vec::new());

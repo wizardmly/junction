@@ -144,3 +144,21 @@ fn bench_symbol_search() {
         assert_eq!(got, all, "{q}");
     }
 }
+
+/// Steps of switching a file in the diff viewer (run in this repository).
+#[test]
+#[ignore]
+fn bench_diff_switch() {
+    let root = PathBuf::from(std::env::var("JUNCTION_BENCH").expect("JUNCTION_BENCH"));
+    let repository = Repository::discover(&root, GitConsole::default()).unwrap();
+    let hash = repository.run(["rev-parse", "449b918"]).unwrap().trim().to_owned();
+    for path in ["src/git/graph.rs", "src/ui/log_view.rs", "src/model.rs"] {
+        println!("{path}");
+        let rev = git::diff::Revisions::Commit { hash: hash.clone(), path: path.into(), old_path: None };
+        let (old, new, _, _) = time("load_versions", || git::diff::load_versions(&repository, &rev).unwrap());
+        time("compute", || git::diff::compute(&old, &new, Default::default()));
+        let texts = vec![old, new];
+        time("highlight_texts", || crate::ui::text_panes::highlight_texts(&texts, "rust"));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
