@@ -181,6 +181,11 @@ pub struct DiffView {
     panes: TextPanes,
     save_task: Option<Task<()>>,
     _task: Option<Task<()>>,
+    /// The previous file is still shown while the next one loads, so
+    /// switching files doesn't flash an empty viewer; it can't be edited
+    /// meanwhile.
+    stale: bool,
+    _stale_task: Option<Task<()>>,
     /// The files of the shown change set, for Compare Previous / Next File.
     files: Vec<DiffSource>,
     files_key: String,
@@ -215,6 +220,8 @@ impl DiffView {
             panes: TextPanes::new(2, cx),
             save_task: None,
             _task: None,
+            stale: false,
+            _stale_task: None,
             files: Vec::new(),
             files_key: String::new(),
             file_order: Vec::new(),
@@ -251,6 +258,7 @@ impl DiffView {
         self.rows = Rc::new(Vec::new());
         self.review = None;
         self._task = None;
+        self.stale = false;
         cx.notify();
     }
 
@@ -263,12 +271,26 @@ impl DiffView {
         self.source = Some(source.clone());
         self.edge = None;
         self.load_files(&repository, &source, cx);
-        self.panes.set_texts(vec![String::new(), String::new()], "plaintext");
         self.review = None;
-        self.loaded = None;
-        self.diff = FileDiff::default();
-        self.rows = Rc::new(Vec::new());
         self.error = None;
+        if self.loaded.is_some() {
+            self.stale = true;
+            self.panes.editable = None;
+            // A slow load shows the empty viewer after all, as IntelliJ
+            // shows its loading state after a moment.
+            self._stale_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
+                this.update(cx, |this, cx| {
+                    if this.stale {
+                        this.clear_content();
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }));
+        } else {
+            self.clear_content();
+        }
         cx.notify();
         let options = self.options;
         self._task = Some(cx.spawn(async move |this, cx| {
@@ -284,6 +306,8 @@ impl DiffView {
                 })
                 .await;
             this.update(cx, |this, cx| {
+                this.stale = false;
+                this._stale_task = None;
                 match result {
                     Ok((loaded, file_diff)) => {
                         let language = crate::ui::file_editor::language_for(this.source.as_ref().map(|s| s.path()).unwrap_or_default());
@@ -295,12 +319,23 @@ impl DiffView {
                         let first = if std::mem::take(&mut this.arrive_at_end) { last } else { 0 };
                         this.go_to_change(first);
                     }
-                    Err(error) => this.error = Some(error.to_string()),
+                    Err(error) => {
+                        this.clear_content();
+                        this.error = Some(error.to_string());
+                    }
                 }
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    fn clear_content(&mut self) {
+        self.stale = false;
+        self.panes.set_texts(vec![String::new(), String::new()], "plaintext");
+        self.loaded = None;
+        self.diff = FileDiff::default();
+        self.rows = Rc::new(Vec::new());
     }
 
     /// Marks the shown diff as a pull request's, taking line comments.
@@ -334,6 +369,9 @@ impl DiffView {
 
     /// A gutter button; `ctrl` is whether Ctrl was down for the click.
     fn apply_hunk(&mut self, change: usize, action: HunkAction, ctrl: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.stale {
+            return;
+        }
         if action == HunkAction::Revert && self.editable() {
             let append = ctrl || self.panes.ctrl_held;
             self.revert_change(change, append, window, cx);

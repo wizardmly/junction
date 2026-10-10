@@ -80,6 +80,8 @@ impl EventEmitter<LogEvent> for LogView {}
 const BRANCH_PREFIX: &str = "ref:";
 
 pub struct LogView {
+    /// The table, branch tree and details, each drawn as a view of its own.
+    parts: Vec<Entity<LogPart>>,
     model: Entity<RepoModel>,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
@@ -238,7 +240,7 @@ impl LogView {
             }),
         ];
         let mut this = Self {
-            model,
+            model: model.clone(),
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             search,
@@ -260,6 +262,18 @@ impl LogView {
             recent_user_filters: Vec::new(),
             known_authors: (None, Default::default()),
             authors_from: 0,
+            parts: [Part::Table, Part::Branches, Part::Details]
+                .into_iter()
+                .map(|part| {
+                    let log = cx.entity();
+                    cx.new(|cx| {
+                        // Redrawn whenever the Log or the repository changes.
+                        cx.observe(&log, |_, _, cx| cx.notify()).detach();
+                        cx.observe(&model, |_, _, cx| cx.notify()).detach();
+                        LogPart { log: log.downgrade(), part }
+                    })
+                })
+                .collect(),
             recent_path_filters: Vec::new(),
             branch_tree_expanded: None,
             my_branches: false,
@@ -1085,51 +1099,73 @@ impl LogView {
                 let refs = refs.clone();
                 let selected = filter.branches.clone();
                 let recent_branches = self.recent_branch_filters.clone();
-                move |mut menu, _, _| {
-                    let set = |entity: &Entity<LogView>, branches: Vec<String>| {
+                // Laid out as IntelliJ's branch filter: Select…, Favorites,
+                // recent filters, HEAD and the favorite refs at the top, every
+                // branch in a Local submenu and one submenu per remote.
+                move |mut menu, window, cx| {
+                    fn set(entity: &Entity<LogView>, branches: Vec<String>) -> impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static {
                         let entity = entity.clone();
-                        move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
+                        move |_, _, cx| {
                             let branches = branches.clone();
                             entity.update(cx, |this, cx| this.update_filter(cx, |f| f.branches = branches));
                         }
-                    };
-                    menu = menu.item(PopupMenuItem::new("All").checked(selected.is_empty()).on_click(set(&entity, vec![])));
-                    if refs.current_branch.is_some() || refs.head_commit.is_some() {
-                        menu = menu.item(PopupMenuItem::new("HEAD").checked(selected == ["HEAD"]).on_click(set(&entity, vec!["HEAD".into()])));
                     }
-                    let favorites: Vec<String> = refs.refs.iter().filter(|r| refs.favorites.contains(&r.full_name)).map(|r| r.name.clone()).collect();
-                    if !favorites.is_empty() {
-                        menu = menu.item(PopupMenuItem::new("Favorites").checked(selected == favorites).on_click(set(&entity, favorites.clone())));
+                    fn branch_item(entity: &Entity<LogView>, selected: &[String], refs: &crate::git::refs::RepositoryRefs, branch: &crate::git::refs::RefName, label: &str) -> PopupMenuItem {
+                        let item = PopupMenuItem::new(label.to_owned())
+                            .checked(selected == [branch.name.clone()])
+                            .on_click(set(entity, vec![branch.name.clone()]));
+                        if refs.favorites.contains(&branch.full_name) { item.icon(IconName::Star) } else { item }
+                    }
+                    if !selected.is_empty() {
+                        menu = menu.item(PopupMenuItem::new("All").on_click(set(&entity, vec![])));
                     }
                     let select_entity = entity.clone();
                     menu = menu.item(PopupMenuItem::new("Select…").on_click(move |_, window, cx| {
                         select_entity.update(cx, |this, cx| this.select_branches(window, cx))
                     }));
-                    if !recent_branches.is_empty() {
-                        menu = menu.separator().label("Recent");
-                        for recent in &recent_branches {
-                            menu = menu.item(PopupMenuItem::new(recent.join(", ")).checked(&selected == recent).on_click(set(&entity, recent.clone())));
+                    let favorites: Vec<&crate::git::refs::RefName> = refs.refs.iter().filter(|r| refs.favorites.contains(&r.full_name)).collect();
+                    let favorite_names: Vec<String> = favorites.iter().map(|r| r.name.clone()).collect();
+                    if favorites.len() > 1 {
+                        menu = menu.item(PopupMenuItem::new("Favorites").checked(selected == favorite_names).on_click(set(&entity, favorite_names.clone())));
+                    }
+                    for recent in &recent_branches {
+                        // Single branches already have their own row below.
+                        if recent.len() == 1 && (recent[0] == "HEAD" || favorite_names.contains(&recent[0])) || *recent == favorite_names {
+                            continue;
                         }
+                        menu = menu.item(PopupMenuItem::new(recent.join(", ")).checked(&selected == recent).on_click(set(&entity, recent.clone())));
                     }
-                    menu = menu.separator().label("Local");
-                    for branch in refs.local_branches() {
-                        let name = branch.name.clone();
+                    if refs.current_branch.is_some() || refs.head_commit.is_some() {
                         menu = menu.item(
-                            PopupMenuItem::new(name.clone())
-                                .checked(selected.contains(&name))
-                                .on_click(set(&entity, vec![name])),
+                            PopupMenuItem::new("HEAD").icon(IconName::Star).checked(selected == ["HEAD"]).on_click(set(&entity, vec!["HEAD".into()])),
                         );
                     }
-                    menu = menu.separator().label("Remote");
-                    for branch in refs.remote_branches() {
-                        let name = branch.name.clone();
-                        menu = menu.item(
-                            PopupMenuItem::new(name.clone())
-                                .checked(selected.contains(&name))
-                                .on_click(set(&entity, vec![name])),
-                        );
+                    for branch in &favorites {
+                        menu = menu.item(branch_item(&entity, &selected, &refs, branch, &branch.name));
                     }
-                    menu.max_h(px(420.))
+                    menu = menu.separator();
+                    if refs.local_branches().next().is_some() {
+                        let (entity, refs, selected) = (entity.clone(), refs.clone(), selected.clone());
+                        menu = menu.submenu("Local", window, cx, move |mut sub, _, _| {
+                            for branch in refs.local_branches() {
+                                sub = sub.item(branch_item(&entity, &selected, &refs, branch, &branch.name));
+                            }
+                            sub.max_h(px(420.)).scrollable(true)
+                        });
+                    }
+                    for remote in &refs.remotes {
+                        if !refs.remote_branches().any(|b| b.remote() == Some(remote.as_str())) {
+                            continue;
+                        }
+                        let (entity, refs, selected, remote) = (entity.clone(), refs.clone(), selected.clone(), remote.clone());
+                        menu = menu.submenu(format!("{remote}/..."), window, cx, move |mut sub, _, _| {
+                            for branch in refs.remote_branches().filter(|b| b.remote() == Some(remote.as_str())) {
+                                sub = sub.item(branch_item(&entity, &selected, &refs, branch, branch.branch_without_remote()));
+                            }
+                            sub.max_h(px(420.)).scrollable(true)
+                        });
+                    }
+                    menu
                 }
             }))
             .child(filter_button("filter-user", user_label, !filter.authors.is_empty()).dropdown_menu({
@@ -1719,6 +1755,55 @@ impl LogView {
                 )
             })
             .collect()
+    }
+
+    /// The commit table (its own view, see [`LogPart`]).
+    fn render_table(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let palette = cx.palette().clone();
+        let count = self.model.read(cx).commits().len();
+        let empty = count == 0 && !self.model.read(cx).is_loading();
+
+        div()
+            .id("log-table")
+            .key_context(CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(Self::on_select_previous))
+            .on_action(cx.listener(Self::on_select_next))
+            .on_action(cx.listener(Self::on_select_first))
+            .on_action(cx.listener(Self::on_select_last))
+            .on_action(cx.listener(Self::on_page_up))
+            .on_action(cx.listener(Self::on_page_down))
+            .on_action(cx.listener(Self::on_extend_previous))
+            .on_action(cx.listener(Self::on_extend_next))
+            .on_action(cx.listener(Self::on_extend_first))
+            .on_action(cx.listener(Self::on_extend_last))
+            .on_action(cx.listener(Self::on_select_all))
+            .on_action(cx.listener(Self::on_copy_revision))
+            .on_action(cx.listener(Self::on_go_to_hash))
+            .flex_1()
+            .min_h_0()
+            .relative()
+            .when(empty, |el| {
+                el.child(
+                    v_flex()
+                        .size_full()
+                        .items_center()
+                        .justify_center()
+                        .text_color(palette.text_secondary)
+                        .child("No commits matching filters"),
+                )
+            })
+            .when(!empty, |el| {
+                el.child(
+                    uniform_list("log-rows", count, cx.processor(Self::render_rows))
+                        .track_scroll(&self.scroll)
+                        .size_full(),
+                )
+                .vertical_scrollbar(&self.scroll)
+                .when(self.column_drag.is_some(), |el| el.child(self.column_drag_tracker(cx)))
+            })
+            .size_full()
+            .into_any_element()
     }
 
     fn render_branches(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2778,61 +2863,17 @@ impl Render for LogView {
                 cx,
             );
         }
-        let palette = cx.palette().clone();
-        let count = self.model.read(cx).commits().len();
-        let empty = count == 0 && !self.model.read(cx).is_loading();
-
         let table = v_flex()
             .size_full()
             .child(self.render_filter_bar(cx))
             .children(self.render_compare_banner(cx))
-            .child(
-                div()
-                    .id("log-table")
-                    .key_context(CONTEXT)
-                    .track_focus(&self.focus)
-                    .on_action(cx.listener(Self::on_select_previous))
-                    .on_action(cx.listener(Self::on_select_next))
-                    .on_action(cx.listener(Self::on_select_first))
-                    .on_action(cx.listener(Self::on_select_last))
-                    .on_action(cx.listener(Self::on_page_up))
-                    .on_action(cx.listener(Self::on_page_down))
-                    .on_action(cx.listener(Self::on_extend_previous))
-                    .on_action(cx.listener(Self::on_extend_next))
-                    .on_action(cx.listener(Self::on_extend_first))
-                    .on_action(cx.listener(Self::on_extend_last))
-                    .on_action(cx.listener(Self::on_select_all))
-                    .on_action(cx.listener(Self::on_copy_revision))
-                    .on_action(cx.listener(Self::on_go_to_hash))
-                    .flex_1()
-                    .min_h_0()
-                    .relative()
-                    .when(empty, |el| {
-                        el.child(
-                            v_flex()
-                                .size_full()
-                                .items_center()
-                                .justify_center()
-                                .text_color(palette.text_secondary)
-                                .child("No commits matching filters"),
-                        )
-                    })
-                    .when(!empty, |el| {
-                        el.child(
-                            uniform_list("log-rows", count, cx.processor(Self::render_rows))
-                                .track_scroll(&self.scroll)
-                                .size_full(),
-                        )
-                        .vertical_scrollbar(&self.scroll)
-                        .when(self.column_drag.is_some(), |el| el.child(self.column_drag_tracker(cx)))
-                    }),
-            );
+            .child(div().flex_1().min_h_0().child(crate::ui::common::cached(&self.parts[0])));
 
         let branches = resizable_panel()
             .size(px(if self.details_below { 180. } else { 240. }))
             .size_range(px(120.)..px(500.))
             .visible(self.show_branches)
-            .child(self.render_branches(cx));
+            .child(crate::ui::common::cached(&self.parts[1]));
         if self.details_below {
             // Docked at a side, the window is tall and narrow: the details go
             // under the table, as IntelliJ lays out a vertical Log.
@@ -2847,7 +2888,7 @@ impl Render for LogView {
                                     .size(px(320.))
                                     .size_range(px(120.)..px(1200.))
                                     .visible(self.show_details)
-                                    .child(self.render_details(cx)),
+                                    .child(crate::ui::common::cached(&self.parts[2])),
                             ),
                     ),
                 )
@@ -2861,9 +2902,36 @@ impl Render for LogView {
                     .size(px(380.))
                     .size_range(px(200.)..px(800.))
                     .visible(self.show_details)
-                    .child(self.render_details(cx)),
+                    .child(crate::ui::common::cached(&self.parts[2])),
             )
             .into_any_element()
     }
 }
 
+
+#[derive(Clone, Copy)]
+enum Part {
+    Table,
+    Branches,
+    Details,
+}
+
+/// A part of the Log drawn as its own view: a menu hovered or a row
+/// selected redraws only the parts that render it, the rest is reused.
+struct LogPart {
+    log: gpui_kit::WeakEntity<LogView>,
+    part: Part,
+}
+
+impl Render for LogPart {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let part = self.part;
+        self.log
+            .update(cx, |log, cx| match part {
+                Part::Table => log.render_table(cx),
+                Part::Branches => log.render_branches(cx).into_any_element(),
+                Part::Details => log.render_details(cx).into_any_element(),
+            })
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}

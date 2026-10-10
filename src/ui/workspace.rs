@@ -596,7 +596,13 @@ impl Workspace {
                     }
                 }
             }),
-            cx.observe(&model, |_, _, cx| cx.notify()),
+            // Panels are drawn from their last frame until they change; the
+            // repository and the index changing redraws the ones showing them.
+            cx.observe(&model, |this, _, cx| {
+                this.redraw_panels(cx);
+                cx.notify();
+            }),
+            cx.observe(&code_index, |this, _, cx| this.redraw_panels(cx)),
             // A gutter Rollback / Stage / Unstage in the diff changed files.
             cx.subscribe_in(&diff, window, |this, _, event: &crate::ui::diff_view::CommentLine, window, cx| {
                 let (path, line) = (event.path.clone(), event.line);
@@ -1164,11 +1170,11 @@ impl Workspace {
                             return el.child(self.render_welcome(cx));
                         }
                         match self.front {
-                            Front::Editor(ix) if ix < self.editors.len() => el.child(self.editors[ix].view.clone()),
+                            Front::Editor(ix) if ix < self.editors.len() => el.child(crate::ui::common::cached(&self.editors[ix].view)),
                             _ if group != 0 => el,
-                            Front::Timeline if self.timeline.is_some() => el.child(self.timeline.clone().unwrap()),
-                            Front::Merge if self.merge.is_some() => el.child(self.merge.as_ref().unwrap().0.clone()),
-                            _ => el.child(self.diff.clone()),
+                            Front::Timeline if self.timeline.is_some() => el.child(crate::ui::common::cached(self.timeline.as_ref().unwrap())),
+                            Front::Merge if self.merge.is_some() => el.child(crate::ui::common::cached(&self.merge.as_ref().unwrap().0)),
+                            _ => el.child(crate::ui::common::cached(&self.diff)),
                         }
                     }),
             )
@@ -2154,12 +2160,38 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Redraws every cached panel (see [`crate::ui::common::cached`]).
+    fn redraw_panels(&self, cx: &mut Context<Self>) {
+        fn redraw<V: 'static>(view: &Entity<V>, cx: &mut Context<Workspace>) {
+            view.update(cx, |_, cx| cx.notify());
+        }
+        redraw(&self.commit, cx);
+        redraw(&self.stash, cx);
+        redraw(&self.shelf, cx);
+        redraw(&self.diff, cx);
+        redraw(&self.worktrees, cx);
+        redraw(&self.submodules, cx);
+        redraw(&self.find, cx);
+        redraw(&self.project, cx);
+        redraw(&self.prs, cx);
+        redraw(&self.changes, cx);
+        for tab in &self.editors {
+            redraw(&tab.view, cx);
+        }
+        if let Some((merge, _)) = &self.merge {
+            redraw(merge, cx);
+        }
+        if let Some(timeline) = &self.timeline {
+            redraw(timeline, cx);
+        }
+    }
+
     fn tool_window_view(&self, window: ToolWindow, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         match window {
-            ToolWindow::Project => self.project.clone().into_any_element(),
+            ToolWindow::Project => crate::ui::common::cached(&self.project),
             ToolWindow::Commit => self.render_left(cx).into_any_element(),
-            ToolWindow::PullRequests => self.prs.clone().into_any_element(),
-            ToolWindow::Changes => self.changes.clone().into_any_element(),
+            ToolWindow::PullRequests => crate::ui::common::cached(&self.prs),
+            ToolWindow::Changes => crate::ui::common::cached(&self.changes),
             ToolWindow::Git => self.render_bottom(cx).into_any_element(),
             ToolWindow::Notifications => self.render_notifications(cx).into_any_element(),
         }
@@ -2210,9 +2242,9 @@ impl Workspace {
                     }))),
             )
             .child(div().flex_1().min_h_0().map(|el| match current {
-                LeftTab::Commit => el.child(self.commit.clone()),
-                LeftTab::Stash => el.child(self.stash.clone()),
-                LeftTab::Shelf => el.child(self.shelf.clone()),
+                LeftTab::Commit => el.child(crate::ui::common::cached(&self.commit)),
+                LeftTab::Stash => el.child(crate::ui::common::cached(&self.stash)),
+                LeftTab::Shelf => el.child(crate::ui::common::cached(&self.shelf)),
             }))
     }
 
@@ -2554,13 +2586,15 @@ impl Workspace {
                 BottomTab::LocalChanges if self.modal_commit.get() => el.child(
                     div().size_full().flex().items_center().justify_center().text_sm().text_color(palette.text_secondary).child("Shown in the Commit Changes dialog"),
                 ),
-                BottomTab::LocalChanges => el.child(self.commit.clone()),
-                BottomTab::Shelf => el.child(self.shelf.clone()),
-                BottomTab::Stash => el.child(self.stash.clone()),
+                BottomTab::LocalChanges => el.child(crate::ui::common::cached(&self.commit)),
+                BottomTab::Shelf => el.child(crate::ui::common::cached(&self.shelf)),
+                BottomTab::Stash => el.child(crate::ui::common::cached(&self.stash)),
+                // Not cached itself: a cached view redraws everything inside it when
+                // it changes, while the Log's parts are cached one by one.
                 BottomTab::Log => el.child(self.log.clone()),
-                BottomTab::Worktrees => el.child(self.worktrees.clone()),
-                BottomTab::Submodules => el.child(self.submodules.clone()),
-                BottomTab::Find => el.child(self.find.clone()),
+                BottomTab::Worktrees => el.child(crate::ui::common::cached(&self.worktrees)),
+                BottomTab::Submodules => el.child(crate::ui::common::cached(&self.submodules)),
+                BottomTab::Find => el.child(crate::ui::common::cached(&self.find)),
                 BottomTab::Console => el.child(self.render_console(cx)),
             }))
     }

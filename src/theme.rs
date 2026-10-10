@@ -269,4 +269,6 @@ pub fn apply(dark: bool, cx: &mut App) {
         theme.notification.margins.bottom = px(40.);
     });
     cx.set_global(palette);
+    // Panels drawn from their last frame pick up the new colors too.
+    cx.refresh_windows();
 }

@@ -382,3 +382,11 @@ mod link_tests {
         assert_eq!(&text[links[1].0.clone()], "https://example.com/issues/12");
     }
 }
+
+/// A panel view drawn from its last frame unless it changed: hovering a
+/// menu or typing in one panel then doesn't lay out and paint the others.
+/// (Its render must only read entities and globals that notify.)
+pub fn cached<V: gpui_kit::Render>(view: &gpui_kit::Entity<V>) -> gpui_kit::AnyElement {
+    use gpui_kit::{IntoElement as _, Styled as _};
+    view.clone().cached(gpui_kit::StyleRefinement::default().size_full()).into_any_element()
+}

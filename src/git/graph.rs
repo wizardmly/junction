@@ -96,7 +96,6 @@ struct Event {
 
 #[derive(Clone, Copy, Debug)]
 struct Segment {
-    lane: u32,
     color: u32,
     /// The row where the lane opens (at its bottom half) and the row where
     /// it ends; `u32::MAX` while it runs past the last loaded row.
@@ -142,8 +141,8 @@ impl GraphLayout {
             }
             let hash = commit.hash.as_str();
             let width_before = lanes.len();
-            let mut open = |this: &mut Self, lane: usize, color: u32| {
-                this.segments.push(Segment { lane: lane as u32, color, start: row as u32, end: u32::MAX });
+            let open = |this: &mut Self, color: u32| {
+                this.segments.push(Segment { color, start: row as u32, end: u32::MAX });
                 (this.segments.len() - 1) as u32
             };
             let close = |this: &mut Self, segment: u32| this.segments[segment as usize].end = row as u32;
@@ -172,7 +171,7 @@ impl GraphLayout {
                         let lane = lanes[ix].take().unwrap();
                         close(&mut this, lane.segment);
                         this.events.push(Event { kind: EventKind::Moved, from: ix as u32, to: node_lane as u32, color, segment: lane.segment });
-                        let segment = open(&mut this, node_lane, node_color);
+                        let segment = open(&mut this, node_color);
                         this.events.push(Event { kind: EventKind::Parent, from: node_lane as u32, to: node_lane as u32, color: node_color, segment });
                         lanes[node_lane] = Some(Lane { waiting_for: lane.waiting_for, segment });
                         waiting.insert(lane.waiting_for, node_lane);
@@ -186,7 +185,7 @@ impl GraphLayout {
                 } else {
                     (free_slot(&mut lanes), new_color())
                 };
-                let segment = open(&mut this, ix, color);
+                let segment = open(&mut this, color);
                 lanes[ix] = Some(Lane { waiting_for: parent, segment });
                 waiting.insert(parent, ix);
                 this.events.push(Event { kind: EventKind::Parent, from: node_lane as u32, to: ix as u32, color, segment });
@@ -245,10 +244,6 @@ impl GraphLayout {
             }
         }
         out
-    }
-
-    pub fn row(&self, row: usize, long_edges: bool) -> Option<GraphRow> {
-        self.rows(row..row + 1, long_edges).pop()
     }
 
     fn draw(&self, row: usize, lanes: &[u32], long_edges: bool) -> GraphRow {

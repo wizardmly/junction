@@ -16,6 +16,9 @@ impl DiffView {
     /// is the right pane, except for Compare With… a file, where the project
     /// file is on the left (and `<<` copies changes into it).
     pub(super) fn edit_pane(&self) -> Option<usize> {
+        if self.stale {
+            return None;
+        }
         let pane = match self.source {
             Some(DiffSource::WorkingTree { .. } | DiffSource::Unstaged { .. } | DiffSource::Between { new: None, .. } | DiffSource::Clipboard { .. }) => 1,
             Some(DiffSource::Files { .. }) => 0,

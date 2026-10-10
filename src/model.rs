@@ -32,6 +32,8 @@ impl ExcludedHunks {
         f(&mut value.0);
         value.0.retain(|_, set| !set.is_empty());
         cx.set_global(value);
+        // Both the diff and the Commit tool window show these.
+        cx.refresh_windows();
     }
 }
 
