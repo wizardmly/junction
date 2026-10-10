@@ -20,9 +20,7 @@ impl Workspace {
             return;
         }
         if revision.is_none() {
-            self.recent_files.retain(|p| *p != path);
-            self.recent_files.insert(0, path.clone());
-            self.recent_files.truncate(50);
+            self.recent_files.touch(&path);
         }
         self.open_tab(path, revision, window, cx);
     }
@@ -56,8 +54,7 @@ impl Workspace {
             }
             FileEditorEvent::Saved(path) => {
                 let path = path.clone();
-                self.recently_changed.retain(|p| *p != path);
-                self.recently_changed.insert(0, path.clone());
+                self.recently_changed.touch(&path);
                 self.code_index.update(cx, |index, cx| index.refresh_file(&path, cx));
             }
             FileEditorEvent::CreateGist { name, content } => {
@@ -90,8 +87,7 @@ impl Workspace {
     /// Files changed on disk by Replace: re-index, refresh VCS, reload an unmodified editor.
     pub(super) fn files_changed(&mut self, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         for path in &paths {
-            self.recently_changed.retain(|p| p != path);
-            self.recently_changed.insert(0, path.clone());
+            self.recently_changed.touch(path);
             let path = path.clone();
             self.code_index.update(cx, |index, cx| index.refresh_file(&path, cx));
         }

@@ -8,13 +8,13 @@ impl Workspace {
         let current_file = self.editor().filter(|e| e.read(cx).revision().is_none()).map(|e| e.read(cx).path().to_owned());
         let open_files: Vec<String> = self.editors.iter().filter(|t| t.view.read(cx).revision().is_none()).map(|t| t.view.read(cx).path().to_owned()).collect();
         let local_changes: Vec<String> = self.model.read(cx).status().entries.iter().map(|e| e.path.clone()).collect();
-        let mut recently_changed = self.recently_changed.clone();
+        let mut recently_changed = self.recently_changed.to_vec();
         recently_changed.extend(local_changes.iter().filter(|p| !self.recently_changed.contains(p)).cloned());
         let modules = self.code_index.read(cx).root().map(|root| modules_of(&crate::index::store::list_files(root))).unwrap_or_default();
         crate::ui::find_popup::ScopeData {
             open_files,
             current_file,
-            recent_files: self.recent_files.clone(),
+            recent_files: self.recent_files.to_vec(),
             recently_changed,
             local_changes,
             modules,

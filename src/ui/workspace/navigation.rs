@@ -77,12 +77,8 @@ impl Workspace {
 
     /// Opens a file at a position, remembering where we were for Back.
     pub(super) fn go_to_target(&mut self, target: crate::index::nav::Target, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(here) = self.current_position(cx) {
-            if self.nav_back.last() != Some(&here) {
-                self.nav_back.push(here);
-            }
-        }
-        self.nav_forward.clear();
+        let here = self.current_position(cx);
+        self.nav.jumped_from(here);
         self.open_at(target.path, target.line, target.col, window, cx);
     }
 
@@ -113,18 +109,14 @@ impl Workspace {
     }
 
     pub(super) fn navigate_back(&mut self, _: &NavigateBack, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((path, line, col)) = self.nav_back.pop() else { return };
-        if let Some(here) = self.current_position(cx) {
-            self.nav_forward.push(here);
-        }
+        let here = self.current_position(cx);
+        let Some((path, line, col)) = self.nav.back(here) else { return };
         self.open_at(path, line, col, window, cx);
     }
 
     pub(super) fn navigate_forward(&mut self, _: &NavigateForward, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((path, line, col)) = self.nav_forward.pop() else { return };
-        if let Some(here) = self.current_position(cx) {
-            self.nav_back.push(here);
-        }
+        let here = self.current_position(cx);
+        let Some((path, line, col)) = self.nav.forward(here) else { return };
         self.open_at(path, line, col, window, cx);
     }
 
@@ -163,7 +155,7 @@ impl Workspace {
             .collect::<Vec<_>>();
         let n = items.len();
         let on_pick = self.picker_callback(cx);
-        let recent: Vec<String> = self.recent_files.clone();
+        let recent: Vec<String> = self.recent_files.to_vec();
         let workspace = cx.entity().downgrade();
         // Re-opening a recent file keeps its last caret: open without a position.
         let open_plain: Rc<dyn Fn(crate::index::nav::Target, &mut Window, &mut gpui_kit::App)> = Rc::new(move |target, window, cx| {
@@ -216,10 +208,7 @@ impl Workspace {
                 let (path, here) = { let e = editor.read(cx); (e.path().to_owned(), e.cursor(cx)) };
                 workspace
                     .update(cx, |this, cx| {
-                        let here = (path.clone(), here.0, here.1);
-                        if this.nav_back.last() != Some(&here) {
-                            this.nav_back.push(here);
-                        }
+                        this.nav.remember((path.clone(), here.0, here.1));
                         editor.update(cx, |e, cx| e.go_to(target_line, col.saturating_sub(1), window, cx));
                     })
                     .ok();

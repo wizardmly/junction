@@ -85,6 +85,7 @@ actions!(
 );
 
 mod tabs;
+mod history;
 mod chrome;
 mod files;
 mod menu;
@@ -226,13 +227,12 @@ pub struct Workspace {
     search_everywhere: Option<(Entity<crate::ui::search_everywhere::SearchEverywhere>, Subscription)>,
     show_search_everywhere: bool,
     /// Recently opened files, newest first, for Recent Files and the Scope tab.
-    recent_files: Vec<String>,
+    recent_files: history::RecentPaths,
     /// Files saved or replaced this session, newest first.
-    recently_changed: Vec<String>,
+    recently_changed: history::RecentPaths,
     project: Entity<crate::ui::project_view::ProjectView>,
-    /// Navigate › Back / Forward: (path, line, column).
-    nav_back: Vec<(String, u32, u32)>,
-    nav_forward: Vec<(String, u32, u32)>,
+    /// Navigate › Back / Forward.
+    nav: history::NavHistory,
     /// The Pull Requests tool window, sharing the left side with Commit.
     prs: Entity<crate::ui::pull_requests::PullRequestsView>,
     /// The Changes tool window (compare results); its stripe button shows while it has tabs.
@@ -657,11 +657,10 @@ impl Workspace {
             show_find_popup: false,
             search_everywhere: None,
             show_search_everywhere: false,
-            recent_files: Vec::new(),
-            recently_changed: Vec::new(),
+            recent_files: history::RecentPaths::with_limit(50),
+            recently_changed: history::RecentPaths::default(),
             project,
-            nav_back: Vec::new(),
-            nav_forward: Vec::new(),
+            nav: history::NavHistory::default(),
             changes,
             timeline: None,
             merge: None,
