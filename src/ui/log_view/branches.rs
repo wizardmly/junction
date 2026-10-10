@@ -8,7 +8,7 @@ impl LogView {
     pub(super) fn run_selected_branch_action(&mut self, matches: fn(&str) -> bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.branches.read(cx).selected_item().map(|i| i.id.to_string()) else { return };
         let Some(full) = id.strip_prefix(BRANCH_PREFIX) else { return };
-        let refs = self.model.read(cx).refs().clone();
+        let refs = self.model.read(cx).log_refs().clone();
         let Some(reference) = refs.find(full).cloned() else { return };
         let remotes = crate::ui::branches_popup::remote_names(&refs);
         let actions = crate::ui::branches_popup::branch_actions(&self.model, &reference, refs.current_branch.as_deref(), &remotes);
@@ -22,7 +22,7 @@ impl LogView {
         if !self.branch_searching {
             collect_expanded(&self.branch_items, &mut self.branch_expansion);
         }
-        let mut refs = (**self.model.read(cx).refs()).clone();
+        let mut refs = (**self.model.read(cx).log_refs()).clone();
         // Speed search: keep matching refs only, with every folder open.
         let query = self.branch_search.read(cx).value().trim().to_lowercase();
         let searching = !query.is_empty();
@@ -138,7 +138,7 @@ impl LogView {
             return self.toggle_branch_folder(ix, cx);
         }
         let full = entry.item().id.strip_prefix(BRANCH_PREFIX).map(str::to_owned);
-        if let Some(name) = full.and_then(|full| self.model.read(cx).refs().find(&full).map(|r| r.name.clone())) {
+        if let Some(name) = full.and_then(|full| self.model.read(cx).log_refs().find(&full).map(|r| r.name.clone())) {
             self.update_filter(cx, |f| f.branches = vec![name]);
         }
     }
@@ -181,7 +181,7 @@ impl LogView {
     /// per set of refs.
     pub(super) fn my_refs(&mut self, cx: &App) -> HashSet<String> {
         let model = self.model.read(cx);
-        let key: Vec<(String, String)> = model.refs().refs.iter().map(|r| (r.full_name.clone(), r.target.clone())).collect();
+        let key: Vec<(String, String)> = model.log_refs().refs.iter().map(|r| (r.full_name.clone(), r.target.clone())).collect();
         if let Some((k, mine)) = &self.my_refs {
             if *k == key {
                 return mine.clone();
@@ -190,7 +190,7 @@ impl LogView {
         let me = model.user_email().map(str::to_owned);
         let mine: HashSet<String> = match (model.repository(), me) {
             (Some(repo), Some(me)) => model
-                .refs()
+                .log_refs()
                 .refs
                 .iter()
                 .filter(|r| r.kind != RefKind::Tag)
@@ -209,7 +209,7 @@ impl LogView {
 
     pub(super) fn render_branches(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
-        let refs = self.model.read(cx).refs().clone();
+        let refs = self.model.read(cx).log_refs().clone();
         let query = self.branch_search.read(cx).value().trim().to_owned();
         let entity = cx.entity();
         v_flex()
@@ -273,7 +273,7 @@ impl LogView {
                             let name = selected
                                 .as_deref()
                                 .and_then(|id| id.strip_prefix(BRANCH_PREFIX))
-                                .and_then(|full| this.model.read(cx).refs().find(full).map(|r| r.name.clone()));
+                                .and_then(|full| this.model.read(cx).log_refs().find(full).map(|r| r.name.clone()));
                             this.update_filter(cx, |f| f.branches = name.into_iter().collect());
                         }),
                     ))

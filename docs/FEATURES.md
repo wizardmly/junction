@@ -30,7 +30,7 @@
 | 单击定位到分支顶端、双击按分支过滤 Log | M1 | ✅（过滤后树的展开状态和选中项不变；分支顶端被当前过滤条件挡住时不选中列表外的提交，像 AS 一样提示 “… does not match active filters”，View and Reset Filters 清空过滤后定位；键盘：Enter 展开/折叠目录或按分支过滤，←/→ 折叠/展开或到父/子节点） |
 | ahead/behind 指示（↑↓ 箭头） | M2 | ✅ |
 | 工具栏：New Branch、Update Selected、Delete、Compare with Current、Show My Branches、Fetch、展开/折叠 | M2 | ✅（New Branch、Fetch、Update Selected、Delete、Compare with Current、Show My Branches（含我提交的分支）、展开/折叠、按分支过滤） |
-| 多仓库根时按仓库分组 | M5 | 🟡（分支弹窗 Repositories 区列出所有根及其分支，点选切换；Commit 树可 Group By Repository。还差：AS 在 Commit 和 Log 里同时列出所有根的改动和提交，这里一次只显示当前根） |
+| 多仓库根：Commit 和 Log 同时列出所有根 | M5 | ✅（像 AS 一样：Commit 窗口列出所有根的改动，Group By › Repository 每个根一个节点并显示其分支；勾选跨多个根的文件提交时每个根各提交一次（同一条信息），Stage/Unstage、Rollback、Add to VCS、Shelve、Diff 预览都按文件所在的根执行。Log 把所有根的提交按时间合并显示，左侧 Root 色条区分仓库（悬停显示根名），详情里显示 Root；Paths 过滤器多了 Roots 勾选项，可只看某几个根，Paths 路径可跨根；Branch 过滤按名字作用于所有有该分支的根；选中某个根的提交后，右键操作、详情、交互式 Rebase 等都在该根执行。分支弹窗 Repositories 区仍可切换当前根） |
 | 右键菜单：与分支弹窗动作一致（见 §4） | M2 | ✅（与分支弹窗相同的动作 + Add to / Remove from Favorites） |
 
 ### 2.2 提交列表（中间）
@@ -178,7 +178,7 @@
 
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 交互式 Rebase 对话框：pick / reword / edit / squash / fixup / drop，拖拽排序，右侧提交详情，Unite（合并多行） | M3 | ✅（拖拽排序、Ctrl/Cmd 多选后 Unite） |
+| 交互式 Rebase 对话框：pick / reword / edit / squash / fixup / drop，拖拽排序，右侧提交详情，Unite（合并多行） | M3 | ✅（与 AS 对齐：Pick、Stop to Edit、Reword、Squash、Fixup、Drop 作用于所有选中行；单击 / Ctrl·Cmd 单击 / Shift 单击多选；选中多行时 Squash、Fixup 变成 Unite，把选中的提交移到最旧那条上方合成一个，Squash 合并所有提交信息；可一次拖动多行，蓝线指示落点；左侧图形列显示操作（合并的提交用色线连到目标，丢弃的提交离开主线）；双击行即 Reword 并聚焦信息框；快捷键 Alt+P / E / R / S / F / D、Delete、Alt+↑ / ↓ 移动、↑ / ↓ 选择） |
 | Rebase 对话框（git rebase 全部选项：--onto、--interactive、--rebase-merges、--keep-empty…） | M3 | ✅ |
 | Merge 对话框（--no-ff、--ff-only、--squash、-m、--no-commit、--allow-unrelated-histories） | M3 | ✅ |
 | Cherry-pick（多选）、冲突处理 | M3 | ✅ |

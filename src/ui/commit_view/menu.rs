@@ -138,7 +138,7 @@ pub(super) fn commit_menu(
     let staging = this.staging;
     let model = this.model.clone();
     let actions = this.file_actions();
-    let root = model.read(cx).repository().map(|r| r.root().to_path_buf());
+    let root = model.read(cx).project_repository().map(|r| r.root().to_path_buf());
     let scope = this.scope_of(id).unwrap_or_default();
     let first = file.clone().or_else(|| paths.first().cloned());
     let diff_source = first.as_ref().and_then(|f| this.diff_source(&format!("{scope}{FILE_PREFIX}{f}")));

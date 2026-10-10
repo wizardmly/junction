@@ -135,7 +135,7 @@ pub struct GitTarget {
 
 impl GitTarget {
     fn kinds(&self, cx: &App) -> HashMap<String, StatusKind> {
-        self.model.read(cx).status().entries.iter().map(|e| (e.path.clone(), e.kind)).collect()
+        self.model.read(cx).project_status().entries.iter().map(|e| (e.path.clone(), e.kind)).collect()
     }
 }
 
@@ -251,7 +251,7 @@ fn common_dir(paths: &[String]) -> Option<String> {
 
 pub fn add_to_vcs(model: &Entity<RepoModel>, paths: Vec<String>, cx: &mut App) {
     model.update(cx, |m, cx| {
-        m.run_operation("Add to VCS", move |repo| {
+        m.run_in_roots("Add to VCS", paths, move |repo, paths| {
             let mut args = vec!["add".to_owned(), "--".into()];
             args.extend(paths.iter().cloned());
             repo.run(&args)?;

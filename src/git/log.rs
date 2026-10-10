@@ -13,6 +13,9 @@ pub struct Commit {
     /// Unix seconds.
     pub author_time: i64,
     pub subject: String,
+    /// The project root the commit belongs to (its index in the model's
+    /// roots), when the Log shows several repositories.
+    pub root: u16,
 }
 
 impl Commit {
@@ -42,6 +45,8 @@ pub struct LogFilter {
     pub lines: Option<(usize, usize)>,
     /// View Options › Sort by date (`--date-order`); set from the settings.
     pub date_order: bool,
+    /// Paths › the roots shown in a multi-root project; empty shows all.
+    pub roots: Vec<std::path::PathBuf>,
 }
 
 const FIELD: char = '\u{1f}';
@@ -61,6 +66,39 @@ pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize
 /// the walk too, so the page leaves them out (it is replaced moments later).
 pub fn load_first_page(repository: &Repository, filter: &LogFilter) -> Result<Vec<Commit>> {
     load(repository, filter, Some(FIRST_PAGE), true)
+}
+
+/// The Log of several repositories: each root's commits (in git's order)
+/// interleaved newest first, each keeping its own order, as IntelliJ shows
+/// a multi-root project. A commit listed by two roots (the same history
+/// cloned twice) is shown once.
+pub fn merge_logs(logs: Vec<(u16, Vec<Commit>)>) -> Vec<Commit> {
+    let total = logs.iter().map(|(_, l)| l.len()).sum();
+    let mut out = Vec::with_capacity(total);
+    let mut seen = std::collections::HashSet::with_capacity(total);
+    let mut iters: Vec<std::iter::Peekable<std::vec::IntoIter<Commit>>> = logs
+        .into_iter()
+        .map(|(root, mut commits)| {
+            for commit in &mut commits {
+                commit.root = root;
+            }
+            commits.into_iter().peekable()
+        })
+        .collect();
+    loop {
+        let next = iters
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(ix, it)| it.peek().map(|c| (ix, c.author_time)))
+            // The newest head; the first root wins a tie.
+            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)));
+        let Some((ix, _)) = next else { break };
+        let commit = iters[ix].next().expect("peeked");
+        if seen.insert(commit.hash.clone()) {
+            out.push(commit);
+        }
+    }
+    out
 }
 
 fn load(repository: &Repository, filter: &LogFilter, limit: Option<usize>, first_page: bool) -> Result<Vec<Commit>> {
@@ -254,7 +292,7 @@ fn parse_record(record: &str, people: &mut People) -> Option<Commit> {
     let author_email = people.get(fields.next()?);
     let author_time = fields.next()?.parse().unwrap_or(0);
     let subject = fields.next().unwrap_or_default().to_owned();
-    Some(Commit { hash, parents, author_name, author_email, author_time, subject })
+    Some(Commit { hash, parents, author_name, author_email, author_time, subject, root: 0 })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -620,7 +658,19 @@ mod collapse_tests {
             author_email: "".into(),
             author_time: 0,
             subject: hash.into(),
+            root: 0,
         }
+    }
+
+    #[test]
+    fn merges_root_logs_by_time_keeping_each_order() {
+        let at = |hash: &str, time: i64| Commit { author_time: time, ..commit(hash, &[]) };
+        let a = vec![at("a3", 30), at("a2", 10), at("a1", 20)];
+        let b = vec![at("b2", 25), at("a2", 10), at("b1", 5)];
+        let merged = merge_logs(vec![(0, a), (1, b)]);
+        let order: Vec<(&str, u16)> = merged.iter().map(|c| (c.hash.as_str(), c.root)).collect();
+        // a1 is older than b2 by time but stays after a2, its root's order.
+        assert_eq!(order, vec![("a3", 0), ("b2", 1), ("a2", 0), ("a1", 0), ("b1", 1)]);
     }
 
     #[test]

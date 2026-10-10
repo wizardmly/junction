@@ -514,6 +514,7 @@ mod tests {
             author_email: "".into(),
             author_time: 0,
             subject: String::new(),
+            root: 0,
         }
     }
 

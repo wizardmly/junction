@@ -41,7 +41,7 @@ impl LogView {
 
     /// Branch › Select…: several branches at once.
     pub(super) fn select_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let refs = self.model.read(cx).refs().clone();
+        let refs = self.model.read(cx).log_refs().clone();
         let names: Vec<String> = refs.local_branches().chain(refs.remote_branches()).chain(refs.tags()).map(|r| r.name.clone()).collect();
         let checked: Rc<std::cell::RefCell<HashSet<String>>> =
             Rc::new(std::cell::RefCell::new(self.model.read(cx).filter().branches.iter().cloned().collect()));
@@ -180,7 +180,7 @@ impl LogView {
         let palette = cx.palette().clone();
         let model = self.model.read(cx);
         let filter = model.filter().clone();
-        let refs = model.refs().clone();
+        let refs = model.log_refs().clone();
         let user_email = model.user_email().map(str::to_owned);
         let authors: Vec<String> = self.known_authors.1.iter().take(40).cloned().collect();
 
@@ -256,19 +256,59 @@ impl LogView {
             .child(filter_button("filter-user", user_label, !filter.authors.is_empty()).dropdown_menu(self.user_filter_menu(&entity, &filter, user_email, authors)))
             .child(filter_button("filter-date", date_label, filter.since.is_some() || filter.until.is_some()).dropdown_menu(Self::date_filter_menu(&entity, &filter)))
             .child({
-                let label = match filter.paths.as_slice() {
-                    [] => "Paths".to_owned(),
-                    [one] => format!("Path: {one}"),
-                    many => format!("Paths: {}", many.len()),
+                // A multi-root project: the roots the Log shows, as IntelliJ's
+                // Paths filter lists them.
+                let roots: Vec<(std::path::PathBuf, String)> = match model.project_root().filter(|_| model.is_multi_root()) {
+                    Some(project) => model.root_states().iter().map(|r| (r.path.clone(), crate::git::roots::label(project, &r.path))).collect(),
+                    None => Vec::new(),
+                };
+                let shown_roots: Vec<String> =
+                    roots.iter().filter(|(path, _)| filter.roots.contains(path)).map(|(_, name)| name.clone()).collect();
+                let label = match (filter.paths.as_slice(), shown_roots.as_slice()) {
+                    ([], []) => "Paths".to_owned(),
+                    ([], [one]) => format!("Root: {one}"),
+                    ([], many) => format!("Roots: {}", many.len()),
+                    ([one], _) => format!("Path: {one}"),
+                    (many, _) => format!("Paths: {}", many.len()),
                 };
                 let entity = entity.clone();
                 let current = filter.paths.clone();
+                let current_roots = filter.roots.clone();
                 let recent_paths = self.recent_path_filters.clone();
-                filter_button("filter-path", label, !filter.paths.is_empty()).dropdown_menu(move |mut menu, _, _| {
+                let active = !filter.paths.is_empty() || !filter.roots.is_empty();
+                filter_button("filter-path", label, active).dropdown_menu(move |mut menu, _, _| {
                     let clear = entity.clone();
-                    menu = menu.item(PopupMenuItem::new("All").checked(current.is_empty()).on_click(move |_, _, cx| {
-                        clear.update(cx, |this, cx| this.update_filter(cx, |f| f.paths.clear()))
+                    menu = menu.item(PopupMenuItem::new("All").checked(current.is_empty() && current_roots.is_empty()).on_click(move |_, _, cx| {
+                        clear.update(cx, |this, cx| {
+                            this.update_filter(cx, |f| {
+                                f.paths.clear();
+                                f.roots.clear();
+                            })
+                        })
                     }));
+                    if !roots.is_empty() {
+                        menu = menu.separator().label("Roots");
+                        let all: Vec<std::path::PathBuf> = roots.iter().map(|(p, _)| p.clone()).collect();
+                        for (path, name) in &roots {
+                            let shown = current_roots.is_empty() || current_roots.contains(path);
+                            let (entity, path, all, current_roots) = (entity.clone(), path.clone(), all.clone(), current_roots.clone());
+                            menu = menu.item(PopupMenuItem::new(name.clone()).checked(shown).on_click(move |_, _, cx| {
+                                // Toggles the root; at least one stays shown.
+                                let mut shown: Vec<std::path::PathBuf> = if current_roots.is_empty() { all.clone() } else { current_roots.clone() };
+                                if let Some(ix) = shown.iter().position(|p| *p == path) {
+                                    shown.remove(ix);
+                                } else {
+                                    shown.push(path.clone());
+                                }
+                                if shown.is_empty() {
+                                    return;
+                                }
+                                let roots = if shown.len() == all.len() { Vec::new() } else { all.iter().filter(|p| shown.contains(p)).cloned().collect() };
+                                entity.update(cx, |this, cx| this.update_filter(cx, |f| f.roots = roots))
+                            }));
+                        }
+                        menu = menu.separator();
+                    }
                     let pick = entity.clone();
                     menu = menu.item(PopupMenuItem::new("Select Folders…").on_click(move |_, window, cx| {
                         pick.update(cx, |this, cx| this.select_paths(window, cx))
@@ -537,8 +577,26 @@ impl LogView {
     /// Paths › Select Folders…: the repository's folders and files as a
     /// tree to check, as IntelliJ's structure filter shows the project.
     pub(super) fn select_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(repo) = self.model.read(cx).repository().cloned() else { return };
-        let files: Vec<String> = repo.run(["ls-files"]).unwrap_or_default().lines().map(str::to_owned).collect();
+        // Paths are relative to the project: every root's files in a multi-root one.
+        let model = self.model.read(cx);
+        let roots: Vec<(String, crate::git::Repository)> = if model.is_multi_root() {
+            model.root_states().iter().map(|r| (r.prefix.clone(), r.repository.clone())).collect()
+        } else {
+            model.repository().cloned().into_iter().map(|r| (String::new(), r)).collect()
+        };
+        if roots.is_empty() {
+            return;
+        }
+        let files: Vec<String> = roots
+            .iter()
+            .flat_map(|(prefix, repo)| {
+                repo.run(["ls-files"])
+                    .unwrap_or_default()
+                    .lines()
+                    .map(|p| if prefix.is_empty() { p.to_owned() } else { format!("{prefix}/{p}") })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let tree_state = cx.new(|cx| TreeState::new(cx).items(common::file_tree_with(files, "", false)));
         let checked: Rc<std::cell::RefCell<HashSet<String>>> =
             Rc::new(std::cell::RefCell::new(self.model.read(cx).filter().paths.iter().cloned().collect()));

@@ -149,6 +149,13 @@ pub fn file_icon(path: &str) -> IconName {
     }
 }
 
+/// The Log's Root column: a color per repository of a multi-root
+/// project, as IntelliJ tells the roots apart.
+pub fn root_color(ix: usize) -> gpui_kit::Hsla {
+    const COLORS: [u32; 8] = [0x4c8cdd, 0xe0954a, 0x6fb35f, 0xc06bd1, 0xd9c24a, 0x4bb5b0, 0xd7615d, 0x8a8fd6];
+    gpui_kit::rgb(COLORS[ix % COLORS.len()]).into()
+}
+
 pub const FILE_PREFIX: &str = "f:";
 pub const DIR_PREFIX: &str = "d:";
 /// Group By › Module nodes: `m:<module folder>` ("" is the root module).
@@ -187,7 +194,7 @@ pub fn grouped_file_tree(
     expanded: bool,
     by_directory: bool,
     modules: Option<(&str, &dyn Fn(&str) -> String)>,
-    repository: Option<&str>,
+    repositories: Option<&[(String, String)]>,
 ) -> Vec<TreeItem> {
     let leaves = |paths: Vec<String>, prefix: &str| -> Vec<TreeItem> {
         if by_directory {
@@ -222,8 +229,34 @@ pub fn grouped_file_tree(
             })
             .collect()
     };
-    match repository {
-        Some(name) => vec![TreeItem::new(format!("{scope}{REPO_PREFIX}{name}"), name.to_owned()).expanded(expanded).children(by_module(paths))],
+    match repositories {
+        // One node per repository (`r:<its folder in the project>`), each
+        // file under the deepest root holding it.
+        Some(roots) if roots.len() > 1 => {
+            let mut files: Vec<Vec<String>> = vec![Vec::new(); roots.len()];
+            for path in paths {
+                let ix = roots
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (prefix, _))| prefix.is_empty() || path.strip_prefix(prefix.as_str()).is_some_and(|r| r.starts_with('/')))
+                    .max_by_key(|(_, (prefix, _))| prefix.len())
+                    .map_or(0, |(ix, _)| ix);
+                files[ix].push(path);
+            }
+            roots
+                .iter()
+                .zip(files)
+                .filter(|(_, files)| !files.is_empty())
+                .map(|((prefix, name), files)| {
+                    let children = if modules.is_some() { by_module(files) } else { leaves(files, prefix) };
+                    TreeItem::new(format!("{scope}{REPO_PREFIX}{prefix}"), name.clone()).expanded(expanded).children(children)
+                })
+                .collect()
+        }
+        Some(roots) => {
+            let name = roots.first().map(|(_, name)| name.as_str()).unwrap_or_default();
+            vec![TreeItem::new(format!("{scope}{REPO_PREFIX}"), name.to_owned()).expanded(expanded).children(by_module(paths))]
+        }
         None => by_module(paths),
     }
 }

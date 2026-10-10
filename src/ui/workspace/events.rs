@@ -179,9 +179,18 @@ impl Workspace {
                 });
             } else if title == "Commit" {
                 // The balloon's "Undo" link undoes exactly this commit.
-                let committed = this.model.read(cx).repository().and_then(|r| r.run(["rev-parse", "HEAD"]).ok()).map(|h| h.trim().to_owned());
+                // (Only for a commit to the active repository: a multi-root
+                // commit, one per root, has nothing single to undo.)
+                let short = message.rsplit(": ").next().unwrap_or_default().trim().to_owned();
+                let committed = this
+                    .model
+                    .read(cx)
+                    .repository()
+                    .and_then(|r| r.run(["rev-parse", "HEAD"]).ok())
+                    .map(|h| h.trim().to_owned())
+                    .filter(|h| !message.contains('\n') && !short.is_empty() && h.starts_with(&short));
                 let undo_entity = entity.clone();
-                notification = notification.content(move |_, _, cx| {
+                notification = if committed.is_none() { notification } else { notification.content(move |_, _, cx| {
                     let palette = cx.palette().clone();
                     let (entity, hash) = (undo_entity.clone(), committed.clone());
                     v_flex()
@@ -198,7 +207,7 @@ impl Workspace {
                                 }),
                         )
                         .into_any_element()
-                });
+                }) };
                 notification = notification.action(move |_, _, _| {
                     let entity = entity.clone();
                     Button::new("notify-view").label("View Commit").small().outline().on_click(move |_, _, cx| {

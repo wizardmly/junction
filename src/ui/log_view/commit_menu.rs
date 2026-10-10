@@ -63,8 +63,9 @@ pub(super) fn commit_menu(
         let model = model.read(cx);
         let filter = model.filter();
         (filter.paths.len() == 1 && filter.lines.is_none() && !multi).then(|| {
-            // The file's name in that commit, if it was renamed since.
-            let path = filter.paths[0].clone();
+            // The file's name in that commit, if it was renamed since (in
+            // its own root's terms, in a multi-root project).
+            let path = model.route(&filter.paths[0]).map(|(_, own)| own).unwrap_or_else(|| filter.paths[0].clone());
             model
                 .details()
                 .filter(|d| d.hash == commit.hash && d.changes.len() == 1)

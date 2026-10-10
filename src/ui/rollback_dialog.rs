@@ -106,7 +106,8 @@ pub fn rollback(model: Entity<RepoModel>, files: Vec<(String, StatusKind)>, from
                 }
                 let delete_added = view.delete_added;
                 model.update(cx, |m, cx| {
-                    m.run_operation("Rollback", move |repo| {
+                    // In each root its own files, in a multi-root project.
+                    m.run_in_roots("Rollback", paths, move |repo, paths| {
                         match from {
                             RollbackFrom::Index => {
                                 let mut args = vec!["restore".to_owned(), "--worktree".into(), "--".into()];

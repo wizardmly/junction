@@ -40,6 +40,23 @@ impl WorkingTreeStatus {
         Ok(Self { entries })
     }
 
+    /// Several roots' statuses as one, for a multi-root project: each path
+    /// gets its root's folder (relative to the project) in front.
+    pub fn combined<'a>(parts: impl IntoIterator<Item = (&'a str, &'a WorkingTreeStatus)>) -> Self {
+        let join = |prefix: &str, path: &str| if prefix.is_empty() { path.to_owned() } else { format!("{prefix}/{path}") };
+        let entries = parts
+            .into_iter()
+            .flat_map(|(prefix, status)| {
+                status.entries.iter().map(move |e| StatusEntry {
+                    path: join(prefix, &e.path),
+                    old_path: e.old_path.as_deref().map(|p| join(prefix, p)),
+                    ..e.clone()
+                })
+            })
+            .collect();
+        Self { entries }
+    }
+
     pub fn changes(&self) -> impl Iterator<Item = &StatusEntry> {
         self.entries.iter().filter(|e| e.kind != StatusKind::Unversioned)
     }

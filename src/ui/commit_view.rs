@@ -165,6 +165,8 @@ pub struct CommitView {
     file_order: Vec<String>,
     /// HEAD at the last refresh; a new commit refreshes the diff preview.
     head: Option<String>,
+    /// Group By › Repository: each root's branch, by its path prefix.
+    repo_branches: HashMap<String, String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -219,7 +221,7 @@ impl CommitView {
                     this.last_selection = selected.clone();
                     let path = selected.as_deref().and_then(Self::path_of).map(|(_, p)| p.to_owned());
                     let conflict = path.and_then(|path| {
-                        merge::conflicts(this.model.read(cx).status()).into_iter().find(|c| c.path == path)
+                        merge::conflicts(this.model.read(cx).project_status()).into_iter().find(|c| c.path == path)
                     });
                     if let Some(conflict) = conflict.filter(|c| c.kind.can_merge()) {
                         cx.emit(CommitEvent::OpenMerge(conflict));
@@ -258,6 +260,7 @@ impl CommitView {
             modules: HashMap::new(),
             file_order: Vec::new(),
             head: None,
+            repo_branches: HashMap::new(),
             _subscriptions: subscriptions,
         };
         this.rebuild(cx);
@@ -285,7 +288,8 @@ impl CommitView {
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let status = self.model.read(cx).status().clone();
+        // Every root's changes in a multi-root project, paths relative to the project.
+        let status = self.model.read(cx).project_status().clone();
         let selected_file = self.selected_file();
         let old_kind = selected_file.as_ref().and_then(|p| self.kinds.get(p).copied());
         let head = self.model.read(cx).refs().head_commit.clone();
@@ -320,7 +324,7 @@ impl CommitView {
             // One group per changelist, the active one's new changes landing in it.
             let changes = not_conflicted(status.changes().map(|e| (e.path.clone(), e.kind)).collect());
             // Read from disk each time: Unshelve can file changes into a changelist too.
-            self.changelists = self.model.read(cx).repository().map(Changelists::load).unwrap_or_default();
+            self.changelists = self.model.read(cx).project_repository().map(Changelists::load).unwrap_or_default();
             let changed: Vec<String> = changes.iter().map(|(p, _)| p.clone()).collect();
             if self.changelists.sync(&changed) {
                 self.save_changelists(cx);
@@ -345,14 +349,44 @@ impl CommitView {
             groups.insert(0, conflicts_group);
         }
         if Settings::get(cx).commit_show_ignored {
-            let ignored = self.model.read(cx).repository().map(crate::git::status::ignored).unwrap_or_default();
+            let model = self.model.read(cx);
+            let ignored: Vec<String> = if model.root_states().len() > 1 {
+                model
+                    .root_states()
+                    .iter()
+                    .flat_map(|root| {
+                        crate::git::status::ignored(&root.repository)
+                            .into_iter()
+                            .map(|p| if root.prefix.is_empty() { p } else { format!("{}/{p}", root.prefix) })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect()
+            } else {
+                model.repository().map(crate::git::status::ignored).unwrap_or_default()
+            };
             groups.push(Group::new("grp:ignored", IGNORED_SCOPE, "Ignored Files", ignored.into_iter().map(|p| (p, StatusKind::Unversioned)).collect()));
         }
         self.groups = groups;
         let settings = Settings::get(cx);
         let (by_directory, by_module, by_repository) =
             (settings.commit_group_by_directory, settings.commit_group_by_module, settings.commit_group_by_repository);
-        let repository = self.model.read(cx).repository().map(|r| (r.root().to_path_buf(), r.name()));
+        let repository = self.model.read(cx).project_repository().map(|r| (r.root().to_path_buf(), r.name()));
+        // Group By › Repository: one node per root, each with its branch.
+        let repositories: Vec<(String, String)> = {
+            let model = self.model.read(cx);
+            match model.project_root().filter(|_| model.root_states().len() > 1) {
+                Some(project) => model.root_states().iter().map(|r| (r.prefix.clone(), crate::git::roots::label(project, &r.path))).collect(),
+                None => vec![(String::new(), model.repository().map(|r| r.name()).unwrap_or_default())],
+            }
+        };
+        self.repo_branches = {
+            let model = self.model.read(cx);
+            if model.root_states().len() > 1 {
+                model.root_states().iter().map(|r| (r.prefix.clone(), r.refs.current_branch.clone().unwrap_or_else(|| "HEAD".into()))).collect()
+            } else {
+                model.refs().current_branch.clone().map(|b| (String::new(), b)).into_iter().collect()
+            }
+        };
         self.modules.clear();
         if let (true, Some((root, _))) = (by_module, &repository) {
             let mut cache = HashMap::new();
@@ -382,7 +416,7 @@ impl CommitView {
                         expand,
                         by_directory,
                         by_module.then_some((repo_name.as_str(), &module_of as &dyn Fn(&str) -> String)),
-                        by_repository.then_some(repo_name.as_str()),
+                        by_repository.then_some(repositories.as_slice()),
                     ))
             })
             .collect();
@@ -488,7 +522,7 @@ impl CommitView {
     }
 
     fn save_changelists(&self, cx: &Context<Self>) {
-        if let Some(repository) = self.model.read(cx).repository() {
+        if let Some(repository) = self.model.read(cx).project_repository() {
             self.changelists.save(repository);
         }
     }
@@ -580,6 +614,10 @@ impl CommitView {
         if let Some((_, path)) = Self::path_of(id) {
             return vec![path.to_owned()];
         }
+        // A repository node: its root's files in the group.
+        if let Some(paths) = self.node_paths.get(id).filter(|_| id.contains(common::REPO_PREFIX)) {
+            return paths.clone();
+        }
         let Some(group) = self.group_of(id) else { return Vec::new() };
         let rest = id.strip_prefix(group.scope.as_str());
         if let Some(module) = rest.and_then(|r| r.strip_prefix(common::MODULE_PREFIX)) {
@@ -605,7 +643,7 @@ impl CommitView {
         }
         let title = if unstage { "Unstage" } else { "Stage" };
         self.model.update(cx, |model, cx| {
-            model.run_operation(title, move |repo| {
+            model.run_in_roots(title, paths, move |repo, paths| {
                 if unstage { status::unstage(repo, &paths)? } else { status::stage(repo, &paths)? }
                 Ok(String::new())
             }, cx)
@@ -703,7 +741,7 @@ impl CommitView {
     /// Commit, after IntelliJ's pre-commit checks: detached HEAD, CRLF line
     /// separators, and files too large for hosting services.
     fn commit(&mut self, push: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !crate::git::merge::conflicts(self.model.read(cx).status()).is_empty() {
+        if !crate::git::merge::conflicts(self.model.read(cx).project_status()).is_empty() {
             return;
         }
         if self.message.read(cx).value().trim().is_empty() {
@@ -725,7 +763,18 @@ impl CommitView {
                     .into(),
             });
         }
-        let crlf = if settings.warn_crlf { status::crlf_files(&repository, &paths) } else { Vec::new() };
+        let _ = repository;
+        // In each root its own files (paths come back relative to the project).
+        let routed = self.model.read(cx).route_all(&paths);
+        let in_project = |repository: &crate::git::Repository, path: String| {
+            let prefix = self.model.read(cx).prefix_of(repository.root());
+            if prefix.is_empty() { path } else { format!("{prefix}/{path}") }
+        };
+        let crlf: Vec<String> = if settings.warn_crlf {
+            routed.iter().flat_map(|(repo, own)| status::crlf_files(repo, own).into_iter().map(|p| in_project(repo, p))).collect()
+        } else {
+            Vec::new()
+        };
         if !crlf.is_empty() {
             warnings.push(format!(
                 "{} file{} with CRLF line separators will be committed as is: {}",
@@ -736,7 +785,10 @@ impl CommitView {
         }
         if settings.large_file_mb > 0 {
             let limit = settings.large_file_mb as u64;
-            for (path, size) in status::large_files(&repository, &paths, limit * 1024 * 1024) {
+            let large = routed.iter().flat_map(|(repo, own)| {
+                status::large_files(repo, own, limit * 1024 * 1024).into_iter().map(|(p, size)| (in_project(repo, p), size))
+            });
+            for (path, size) in large.collect::<Vec<_>>() {
                 // One decimal, so a 1.9 MB file doesn't read "1 MB, larger than 1 MB".
                 let mb = size as f64 / (1024.0 * 1024.0);
                 warnings.push(format!("{path} is {mb:.1} MB, larger than {limit} MB; Git hosts may reject it."));
@@ -807,18 +859,26 @@ impl CommitView {
             return;
         }
         let staged_only = self.staging;
-        let paths: Vec<String> = if staged_only { Vec::new() } else { self.commit_paths(cx) };
-        let unversioned: Vec<String> =
-            paths.iter().filter(|p| self.kinds.get(*p) == Some(&StatusKind::Unversioned)).cloned().collect();
-        let count = if staged_only { self.commit_paths(cx).len() } else { paths.len() };
+        // In a multi-root project each root gets its own commit, with the
+        // same message; staged-only commits go to the roots with staged files.
+        let all_paths = self.commit_paths(cx);
+        let unversioned_paths: HashSet<String> =
+            all_paths.iter().filter(|p| self.kinds.get(*p) == Some(&StatusKind::Unversioned)).cloned().collect();
+        let unversioned: HashSet<String> = self
+            .model
+            .read(cx)
+            .route_all(&unversioned_paths.into_iter().collect::<Vec<_>>())
+            .into_iter()
+            .flat_map(|(repo, own)| own.into_iter().map(move |p| format!("{}\u{0}{p}", repo.root().display())))
+            .collect();
         let settings = Settings::get(cx).clone();
         let author = self.author.read(cx).value().trim().to_owned();
         let gpg_sign = self.gpg_default(cx);
         let request = CommitRequest {
             message: message.clone(),
             amend: self.amend,
-            paths,
-            unversioned,
+            paths: Vec::new(),
+            unversioned: Vec::new(),
             sign_off: settings.sign_off,
             staged_only,
             author: (!author.is_empty()).then_some(author),
@@ -827,7 +887,7 @@ impl CommitView {
             cleanup: settings.cleanup_message,
             excluded_hunks: if staged_only { Default::default() } else { ExcludedHunks::get(cx).clone() },
         };
-        let committed = request.paths.clone();
+        let committed: HashSet<String> = self.model.read(cx).route_all(&all_paths).into_iter().flat_map(|(_, own)| own).collect();
         ExcludedHunks::update(cx, |map| map.retain(|path, _| !committed.contains(path)));
         crate::settings::remember_message(&message);
         self.push_after_commit = push;
@@ -835,7 +895,14 @@ impl CommitView {
         // (see the "Commit" notification above).
         let _ = window;
         self.model.update(cx, |model, cx| {
-            model.run_operation("Commit", move |repo| {
+            model.run_in_roots("Commit", all_paths, move |repo, own| {
+                let mut request = request.clone();
+                let count = own.len();
+                let root = repo.root().display().to_string();
+                request.unversioned = own.iter().filter(|p| unversioned.contains(&format!("{root}\u{0}{p}"))).cloned().collect();
+                if !staged_only {
+                    request.paths = own;
+                }
                 let hash = status::commit(repo, &request)?;
                 Ok(format!("{count} file{} committed: {}", if count == 1 { "" } else { "s" }, &hash[..8]))
             }, cx)
@@ -848,7 +915,7 @@ impl CommitView {
         let staged_count = self.groups.iter().find(|g| g.scope == STAGED_SCOPE).map_or(0, |g| g.files.len());
         let has_changes = if self.staging { staged_count > 0 } else { !self.included.is_empty() };
         // Unresolved merge conflicts must be resolved first.
-        let conflicts = !crate::git::merge::conflicts(self.model.read(cx).status()).is_empty();
+        let conflicts = !crate::git::merge::conflicts(self.model.read(cx).project_status()).is_empty();
         (has_changes || self.amend) && !conflicts
     }
 
@@ -1047,7 +1114,7 @@ impl CommitView {
     }
 
     fn on_delete(&mut self, _: &DeleteFiles, window: &mut Window, cx: &mut Context<Self>) {
-        let root = self.model.read(cx).repository().map(|r| r.root().to_path_buf());
+        let root = self.model.read(cx).project_repository().map(|r| r.root().to_path_buf());
         if let Some(root) = root {
             crate::ui::file_menus::delete_files(root, self.selected_paths(), self.file_actions(), window, cx);
         }
@@ -1243,6 +1310,7 @@ impl CommitView {
             if staging { HashSet::new() } else { ExcludedHunks::get(cx).keys().cloned().collect() };
 
         let tree_palette = palette.clone();
+        let repo_branches = self.repo_branches.clone();
         div()
             .flex_1()
             .min_h_0()
@@ -1286,6 +1354,11 @@ impl CommitView {
                 let stage_id = id.clone();
                 let n = counts.get(&id).copied().unwrap_or(0);
                 let (menu_entity, menu_id, menu_file) = (entity.clone(), id.clone(), file.clone());
+                // A repository node shows its branch next to its name.
+                let repo_branch = id
+                    .split_once(':')
+                    .and_then(|(_, rest)| rest.strip_prefix(common::REPO_PREFIX))
+                    .and_then(|prefix| repo_branches.get(prefix).cloned());
                 ListItem::new(ix).py_0().px_1().h(px(row_height())).child(
                     h_flex()
                         .w_full()
@@ -1360,6 +1433,7 @@ impl CommitView {
                                 .when(is_active, |el| el.font_weight(gpui_kit::FontWeight::BOLD))
                                 .child(item.label.clone()),
                         )
+                        .when_some(repo_branch, |el, branch| el.child(div().text_xs().text_color(palette.text_secondary).child(branch)))
                         .when_some(file.as_ref().filter(|_| !by_directory).and_then(|f| f.rsplit_once('/')).map(|(dir, _)| dir.to_owned()), |el, dir| {
                             el.child(div().text_xs().text_color(palette.text_secondary).child(dir))
                         })

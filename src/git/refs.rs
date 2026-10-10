@@ -57,6 +57,9 @@ pub struct RepositoryRefs {
     /// The configured remotes (`git remote`), origin first.
     pub remotes: Vec<String>,
     by_commit: HashMap<String, Vec<usize>>,
+    /// Other roots' refs whose names `refs` already has (a multi-root Log
+    /// labels their commits too); `by_commit` numbers them after `refs`.
+    shadowed: Vec<RefName>,
 }
 
 impl RepositoryRefs {
@@ -96,7 +99,41 @@ impl RepositoryRefs {
         for (ix, reference) in refs.iter().enumerate() {
             by_commit.entry(reference.target.clone()).or_default().push(ix);
         }
-        Self { head_commit, current_branch, refs, recent: Vec::new(), favorites: Default::default(), remotes: Vec::new(), by_commit }
+        Self { head_commit, current_branch, refs, recent: Vec::new(), favorites: Default::default(), remotes: Vec::new(), by_commit, shadowed: Vec::new() }
+    }
+
+    /// The refs of several roots for one Log: `active`'s, then the others'
+    /// branches and tags it doesn't have. A name several roots share is
+    /// listed once (a Branch filter by name applies to every root) while
+    /// each root's commit keeps its label.
+    pub fn merged(active: &RepositoryRefs, others: &[&RepositoryRefs]) -> Self {
+        let mut this = active.clone();
+        this.shadowed.clear();
+        let mut names: std::collections::HashSet<String> = this.refs.iter().map(|r| r.full_name.clone()).collect();
+        for other in others {
+            for reference in &other.refs {
+                if names.insert(reference.full_name.clone()) {
+                    this.refs.push(reference.clone());
+                } else {
+                    this.shadowed.push(reference.clone());
+                }
+            }
+            for remote in &other.remotes {
+                if !this.remotes.contains(remote) {
+                    this.remotes.push(remote.clone());
+                }
+            }
+        }
+        this.refs.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
+        this.by_commit.clear();
+        for (ix, reference) in this.refs.iter().chain(this.shadowed.iter()).enumerate() {
+            this.by_commit.entry(reference.target.clone()).or_default().push(ix);
+        }
+        this
+    }
+
+    fn at(&self, ix: usize) -> &RefName {
+        self.refs.get(ix).unwrap_or_else(|| &self.shadowed[ix - self.refs.len()])
     }
 
     /// Refs pointing at `hash`, ordered the way IntelliJ labels a row:
@@ -107,7 +144,7 @@ impl RepositoryRefs {
             .get(hash)
             .into_iter()
             .flatten()
-            .map(|&ix| &self.refs[ix])
+            .map(|&ix| self.at(ix))
             .collect();
         refs.sort_by_key(|r| (Some(&r.name) != self.current_branch.as_ref() || r.kind != RefKind::LocalBranch, r.kind));
         refs

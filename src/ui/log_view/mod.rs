@@ -336,6 +336,12 @@ impl LogView {
     /// File History in its own Log tab, optionally starting from a commit.
     fn open_history_tab(&mut self, path: String, from: Option<String>, cx: &mut Context<Self>) {
         let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        // The Log's paths are relative to the project; the commit's are its root's.
+        let path = {
+            let model = self.model.read(cx);
+            let prefix = model.repository().filter(|_| model.is_multi_root()).map(|r| model.prefix_of(r.root())).unwrap_or_default();
+            if prefix.is_empty() { path } else { format!("{prefix}/{path}") }
+        };
         let filter = LogFilter { paths: vec![path], branches: from.into_iter().collect(), ..Default::default() };
         self.model.update(cx, |m, cx| m.open_log_tab(format!("History: {name}"), filter, cx));
     }

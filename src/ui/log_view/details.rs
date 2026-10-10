@@ -103,7 +103,13 @@ impl LogView {
         let palette = cx.palette().clone();
         let model = self.model.read(cx);
         let details = model.details().cloned();
-        let refs = model.refs().clone();
+        let refs = model.log_refs().clone();
+        // A multi-root project: which repository the commit is in.
+        let root = model.project_root().filter(|_| model.is_multi_root()).and_then(|project| {
+            let active = model.repository()?.root();
+            let ix = model.root_states().iter().position(|r| r.path == active)?;
+            Some((ix, crate::git::roots::label(project, active), active.display().to_string()))
+        });
         let kinds = self.change_kinds.clone();
         let counts = self.change_counts.clone();
         let entity = cx.entity();
@@ -300,6 +306,15 @@ impl LogView {
                                 row = row.child(ref_label(label, refs.current_branch.as_deref(), &palette));
                             }
                             el.child(row)
+                        })
+                        .when_some(root.clone(), |el, (ix, name, path)| {
+                            el.child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .text_color(palette.text_secondary)
+                                    .child(div().size(px(9.)).rounded_sm().bg(common::root_color(ix)))
+                                    .child(selectable("commit-root", 6, &format!("Root: {name}  ({path})"), palette.text_secondary)),
+                            )
                         })
                         .when(d.complete, |el| el.child({
                             let n = d.containing_branches.len();

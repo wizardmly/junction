@@ -216,7 +216,11 @@ impl Workspace {
     }
 
     pub(super) fn open_tab(&mut self, path: String, revision: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        // Working-tree files are relative to the project; a revision comes
+        // from the active repository (the Log's selected root).
+        let model = self.model.read(cx);
+        let repository = if revision.is_some() { model.repository() } else { model.project_repository() };
+        let Some(repository) = repository.cloned() else { return };
         let existing = self.editors.iter().position(|t| t.view.read(cx).path() == path && t.view.read(cx).revision() == revision.as_deref());
         let ix = match existing {
             Some(ix) => {
@@ -474,7 +478,7 @@ impl Workspace {
         let split = self.split.as_ref().map(|s| s.vertical);
         let palette = cx.palette().clone();
         let status: std::collections::HashMap<String, crate::git::status::StatusKind> =
-            self.model.read(cx).status().entries.iter().map(|e| (e.path.clone(), e.kind)).collect();
+            self.model.read(cx).project_status().entries.iter().map(|e| (e.path.clone(), e.kind)).collect();
         let entity = cx.entity();
         let count = self.editors.len();
         let row = h_flex()

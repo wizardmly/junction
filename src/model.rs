@@ -93,6 +93,15 @@ pub struct RepoModel {
     /// The project's own repository; other roots are switched to in place.
     project_root: Option<PathBuf>,
     roots: Vec<RootInfo>,
+    /// Every root's repository, refs and changes in a multi-root project
+    /// (empty with a single root), in the order of `roots`.
+    root_states: Arc<Vec<RootState>>,
+    /// The changes of every root, paths relative to the project: what the
+    /// Commit tool window lists.
+    project_status: Arc<WorkingTreeStatus>,
+    /// The branches and tags of every root the Log shows, for its labels,
+    /// branches tree and Branch filter.
+    log_refs: Arc<RepositoryRefs>,
     /// Where "Open on GitHub / GitLab" points, from the tracked remote.
     web_repo: Option<git::hosting::WebRepo>,
     loading: bool,
@@ -123,6 +132,137 @@ pub struct RootInfo {
     pub branch: Option<String>,
 }
 
+/// One root of a multi-root project, loaded with every reload: the Commit
+/// tool window lists its changes and the Log its commits next to the
+/// other roots', as IntelliJ does.
+#[derive(Clone)]
+pub struct RootState {
+    pub path: PathBuf,
+    /// The root's folder relative to the project, `/`-separated; empty for
+    /// the project's own repository. Commit window paths start with it.
+    pub prefix: String,
+    pub repository: Repository,
+    pub refs: Arc<RepositoryRefs>,
+    pub status: Arc<WorkingTreeStatus>,
+    pub state: RepositoryState,
+    pub web: Option<git::hosting::WebRepo>,
+    pub user_email: Option<String>,
+    pub submodules: HashSet<String>,
+}
+
+impl RootState {
+    fn load(path: &Path, project: Option<&Path>, console: &GitConsole) -> Option<Self> {
+        let repository = Repository::discover(path, console.clone()).ok()?;
+        let root = repository.root().to_path_buf();
+        let refs = RepositoryRefs::load(&repository).ok()?;
+        let status = WorkingTreeStatus::load(&repository).ok()?;
+        let submodules = if root.join(".gitmodules").exists() {
+            git::submodule::gitlink_paths(&repository).into_iter().collect()
+        } else {
+            HashSet::new()
+        };
+        let prefix = match project.and_then(|p| root.strip_prefix(p).ok()) {
+            Some(rel) => rel.to_string_lossy().replace('\\', "/"),
+            None => root.to_string_lossy().replace('\\', "/"),
+        };
+        Some(Self {
+            path: root,
+            prefix,
+            web: git::hosting::web_repo(&repository),
+            user_email: repository.current_user().1,
+            state: repository.state(),
+            refs: Arc::new(refs),
+            status: Arc::new(status),
+            submodules,
+            repository,
+        })
+    }
+
+    /// Every root at once, each on its own thread; roots git can't read are left out.
+    fn load_all(paths: &[PathBuf], project: Option<&Path>, console: &GitConsole) -> Vec<Self> {
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = paths.iter().map(|path| scope.spawn(move || Self::load(path, project, console))).collect();
+            jobs.into_iter().filter_map(|job| job.join().ok().flatten()).collect()
+        })
+    }
+}
+
+/// The root a project-relative path belongs to: the deepest root whose
+/// folder holds it, and the path inside that root.
+fn route_path<'a>(states: &[RootState], path: &'a str) -> Option<(usize, &'a str)> {
+    states
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, state)| {
+            if state.prefix.is_empty() {
+                return Some((ix, 0, path));
+            }
+            let rest = path.strip_prefix(state.prefix.as_str())?;
+            let rest = if rest.is_empty() { rest } else { rest.strip_prefix('/')? };
+            Some((ix, state.prefix.len(), rest))
+        })
+        .max_by_key(|(_, depth, _)| *depth)
+        .map(|(ix, _, rest)| (ix, rest))
+}
+
+/// One repository the Log reads, with the filter adjusted to it.
+#[derive(Clone)]
+struct LogSource {
+    root: u16,
+    repository: Repository,
+    filter: LogFilter,
+}
+
+/// What the Log reads for `filter`: the active repository alone with a
+/// single root; otherwise every root the Paths filter shows, each with the
+/// filter's paths that lie in it and the filter's branches it has.
+fn log_sources(states: &[RootState], active: &Repository, filter: &LogFilter) -> Vec<LogSource> {
+    if states.len() < 2 {
+        let root = states.iter().position(|s| s.path == active.root()).unwrap_or(0) as u16;
+        return vec![LogSource { root, repository: active.clone(), filter: filter.clone() }];
+    }
+    let mut sources = Vec::new();
+    for (ix, state) in states.iter().enumerate() {
+        if !filter.roots.is_empty() && !filter.roots.contains(&state.path) {
+            continue;
+        }
+        let mut own = filter.clone();
+        own.roots.clear();
+        if !filter.paths.is_empty() {
+            own.paths = filter
+                .paths
+                .iter()
+                .filter_map(|p| route_path(states, p).filter(|(root, _)| *root == ix).map(|(_, rest)| rest.to_owned()))
+                .collect();
+            if own.paths.is_empty() {
+                continue;
+            }
+            // A path that is the root itself means all of it.
+            if own.paths.iter().any(String::is_empty) {
+                own.paths.clear();
+                own.lines = None;
+            }
+        }
+        if !filter.branches.is_empty() {
+            let active_root = state.path == active.root();
+            own.branches = filter
+                .branches
+                .iter()
+                .filter(|b| {
+                    *b == "HEAD"
+                        || if b.contains("..") { active_root } else { state.repository.run(["rev-parse", "--verify", "-q", b.as_str()]).is_ok() }
+                })
+                .cloned()
+                .collect();
+            if own.branches.is_empty() {
+                continue;
+            }
+        }
+        sources.push(LogSource { root: ix as u16, repository: state.repository.clone(), filter: own });
+    }
+    sources
+}
+
 /// A failed open the user can fix from the Welcome screen.
 #[derive(Clone, Debug)]
 pub enum OpenProblem {
@@ -132,25 +272,31 @@ pub enum OpenProblem {
 }
 
 /// The log's inputs: every ref tip (the log lists `--all`), HEAD, the
-/// repository and the filter.
+/// repositories and the filter.
 #[derive(Clone, Debug, PartialEq)]
 struct LogKey {
-    root: PathBuf,
-    tips: String,
+    roots: Vec<(u16, PathBuf, String)>,
     filter: LogFilter,
 }
 
 impl LogKey {
-    fn load(repository: &Repository, filter: &LogFilter) -> Self {
-        let tips = repository.run(["for-each-ref", "--format=%(objectname) %(refname)"]).unwrap_or_default();
-        let head = repository.run(["rev-parse", "-q", "--verify", "HEAD"]).unwrap_or_default();
-        // A checkout of a branch only moves HEAD among commits the log
-        // already lists: unless the log follows HEAD itself, that keeps it
-        // (rather than loading a large history again).
-        let follows_head = filter.branches.iter().any(|b| b == "HEAD");
-        let listed = !head.trim().is_empty() && tips.contains(head.trim());
-        let tips = if follows_head || !listed { tips + &head } else { tips };
-        Self { root: repository.root().to_path_buf(), tips, filter: filter.clone() }
+    fn load(sources: &[LogSource], filter: &LogFilter) -> Self {
+        let roots = sources
+            .iter()
+            .map(|source| {
+                let repository = &source.repository;
+                let tips = repository.run(["for-each-ref", "--format=%(objectname) %(refname)"]).unwrap_or_default();
+                let head = repository.run(["rev-parse", "-q", "--verify", "HEAD"]).unwrap_or_default();
+                // A checkout of a branch only moves HEAD among commits the log
+                // already lists: unless the log follows HEAD itself, that keeps it
+                // (rather than loading a large history again).
+                let follows_head = source.filter.branches.iter().any(|b| b == "HEAD");
+                let listed = !head.trim().is_empty() && tips.contains(head.trim());
+                let tips = if follows_head || !listed { tips + &head } else { tips };
+                (source.root, repository.root().to_path_buf(), tips)
+            })
+            .collect();
+        Self { roots, filter: filter.clone() }
     }
 }
 
@@ -158,23 +304,48 @@ struct LoadedLog {
     commits: Vec<Commit>,
     graph: GraphLayout,
     rows: git::log::CommitRows,
+    /// Every repository's whole log is in (not just its first page).
+    complete: bool,
 }
 
 impl LoadedLog {
-    fn load(repository: &Repository, filter: &LogFilter, first_page: bool) -> Result<Self> {
-        let mut commits = if first_page { git::log::load_first_page(repository, filter)? } else { Vec::new() };
-        // The first page leaves out tags; a short log is loaded whole right away.
-        if commits.len() < git::log::FIRST_PAGE {
-            commits = git::log::load_log(repository, filter, None)?;
+    fn load(sources: &[LogSource], first_page: bool) -> Result<Self> {
+        fn one(repository: &Repository, filter: &LogFilter, first_page: bool) -> Result<(Vec<Commit>, bool)> {
+            let commits = if first_page { git::log::load_first_page(repository, filter)? } else { Vec::new() };
+            // The first page leaves out tags; a short log is loaded whole right away.
+            if commits.len() < git::log::FIRST_PAGE {
+                return Ok((git::log::load_log(repository, filter, None)?, true));
+            }
+            Ok((commits, false))
         }
+        let results: Vec<Result<(Vec<Commit>, bool)>> = std::thread::scope(|scope| {
+            let jobs: Vec<_> =
+                sources.iter().map(|source| scope.spawn(move || one(&source.repository, &source.filter, first_page))).collect();
+            jobs.into_iter().map(|job| job.join().unwrap_or_else(|_| Err(anyhow::anyhow!("git log failed")))).collect()
+        });
+        let mut complete = true;
+        let mut logs = Vec::new();
+        for (source, result) in sources.iter().zip(results) {
+            match result {
+                Ok((commits, done)) => {
+                    complete &= done;
+                    logs.push((source.root, commits));
+                }
+                // One root failing (a filter it can't take) leaves the others.
+                Err(error) if sources.len() == 1 => return Err(error),
+                Err(_) => {}
+            }
+        }
+        let commits = git::log::merge_logs(logs);
         let graph = GraphLayout::build(&commits);
         let rows = git::log::CommitRows::build(&commits);
-        Ok(Self { commits, graph, rows })
+        Ok(Self { commits, graph, rows, complete })
     }
 }
 
 struct Snapshot {
     roots: Vec<RootInfo>,
+    root_states: Vec<RootState>,
     web: Option<git::hosting::WebRepo>,
     refs: RepositoryRefs,
     /// The first page of the log when it changed, and its key.
@@ -209,6 +380,9 @@ impl RepoModel {
             submodule_paths: HashSet::new(),
             project_root: None,
             roots: Vec::new(),
+            root_states: Arc::default(),
+            project_status: Arc::default(),
+            log_refs: Arc::default(),
             web_repo: None,
             loading: false,
             busy: None,
@@ -240,6 +414,7 @@ impl RepoModel {
                 crate::settings::remember_project(repository.root());
                 self.project_root = Some(repository.root().to_path_buf());
                 self.roots.clear();
+                self.root_states = Arc::default();
                 self.user_email = repository.current_user().1;
                 self.repository = Some(repository);
                 self.error = None;
@@ -281,6 +456,7 @@ impl RepoModel {
         self.filter.branches.clear();
         self.filter.paths.clear();
         self.filter.lines = None;
+        self.filter.roots.clear();
         self.log_key = None;
     }
 
@@ -288,6 +464,13 @@ impl RepoModel {
     /// window and branch widget then show that repository.
     pub fn switch_root(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if self.repository.as_ref().is_some_and(|r| r.root() == path) {
+            return;
+        }
+        // A multi-root project has every root loaded: the Log and the Commit
+        // window already list them all and stay as they are.
+        if let Some(state) = self.root_states.iter().find(|s| s.path == path).cloned() {
+            self.focus_root(state, cx);
+            cx.emit(RepoEvent::Reloaded);
             return;
         }
         match Repository::discover(&path, self.console.clone()) {
@@ -301,6 +484,121 @@ impl RepoModel {
             }
             Err(error) => cx.emit(RepoEvent::Notify { title: "Switch Repository".into(), message: error.to_string(), error: true }),
         }
+    }
+
+    /// Makes a loaded root the active one, without reloading anything: the
+    /// branch widget, the operations and the selected commit's details then
+    /// work on it.
+    fn focus_root(&mut self, state: RootState, cx: &mut Context<Self>) {
+        self.repository = Some(state.repository);
+        self.refs = state.refs;
+        self.status = (*state.status).clone();
+        self.state = state.state;
+        self.web_repo = state.web;
+        self.user_email = state.user_email;
+        self.submodule_paths = state.submodules;
+        self.details_cache.clear();
+        cx.notify();
+    }
+
+    /// Every root of a multi-root project with its changes and refs; empty
+    /// with a single root.
+    pub fn root_states(&self) -> &Arc<Vec<RootState>> {
+        &self.root_states
+    }
+
+    /// The changes the Commit tool window lists: every root's in a
+    /// multi-root project (paths relative to the project), else the
+    /// repository's own.
+    pub fn project_status(&self) -> &WorkingTreeStatus {
+        if self.root_states.len() > 1 { &self.project_status } else { &self.status }
+    }
+
+    /// The repository and its own path for a path of `project_status` (in
+    /// a multi-root project, the root that holds it).
+    pub fn route(&self, path: &str) -> Option<(Repository, String)> {
+        if self.root_states.len() > 1 {
+            let (ix, rest) = route_path(&self.root_states, path)?;
+            return Some((self.root_states[ix].repository.clone(), rest.to_owned()));
+        }
+        Some((self.repository.clone()?, path.to_owned()))
+    }
+
+    /// Paths of `project_status` grouped by the root that holds them, each
+    /// with its root's own paths, in root order.
+    pub fn route_all(&self, paths: &[String]) -> Vec<(Repository, Vec<String>)> {
+        let mut groups: Vec<(Repository, Vec<String>)> = Vec::new();
+        for path in paths {
+            let Some((repository, own)) = self.route(path) else { continue };
+            match groups.iter_mut().find(|(r, _)| r.root() == repository.root()) {
+                Some((_, list)) => list.push(own),
+                None => groups.push((repository, vec![own])),
+            }
+        }
+        groups
+    }
+
+    /// The prefix a root's own paths get in `project_status` ("" for the project's repository).
+    pub fn prefix_of(&self, root: &Path) -> String {
+        self.root_states.iter().find(|s| s.path == root).map(|s| s.prefix.clone()).unwrap_or_default()
+    }
+
+    /// The project's own repository (files of the Project tool window and
+    /// the editor are relative to it), whichever root is active.
+    pub fn project_repository(&self) -> Option<&Repository> {
+        self.root_states.iter().find(|s| s.prefix.is_empty()).map(|s| &s.repository).or(self.repository.as_ref())
+    }
+
+    /// Refs of every root the Log shows (the active repository's alone with one root).
+    pub fn log_refs(&self) -> &Arc<RepositoryRefs> {
+        if self.root_states.len() > 1 { &self.log_refs } else { &self.refs }
+    }
+
+    /// Runs `operation` in each root holding some of `paths` (project
+    /// paths), with that root's own paths, then reloads and reports the
+    /// result: one commit per repository, as IntelliJ commits a
+    /// multi-root change set.
+    pub fn run_in_roots(
+        &mut self,
+        title: impl Into<String>,
+        paths: Vec<String>,
+        operation: impl Fn(&Repository, Vec<String>) -> Result<String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let groups = self.route_all(&paths);
+        if groups.len() <= 1 && self.root_states.len() <= 1 {
+            let own = groups.into_iter().next().map(|(_, own)| own).unwrap_or(paths);
+            return self.run_operation(title, move |repo| operation(repo, own), cx);
+        }
+        let project = self.project_root.clone();
+        let title = title.into();
+        self.busy = Some(title.clone());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let mut messages = Vec::new();
+                    for (repository, own) in groups {
+                        let name = project.as_deref().map(|p| git::roots::label(p, repository.root())).unwrap_or_default();
+                        let message = operation(&repository, own).map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+                        if !message.is_empty() {
+                            messages.push(if messages.is_empty() && name.is_empty() { message } else { format!("{name}: {message}") });
+                        }
+                    }
+                    anyhow::Ok(messages.join("\n"))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.busy = None;
+                cx.emit(match result {
+                    Ok(message) => RepoEvent::Notify { title, message, error: false },
+                    Err(error) => RepoEvent::Notify { title: format!("{title} failed"), message: error.to_string(), error: true },
+                });
+                this.reload(cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub fn web_repo(&self) -> Option<&git::hosting::WebRepo> {
@@ -467,6 +765,7 @@ impl RepoModel {
     fn reload_log(&mut self, cx: &mut Context<Self>) {
         let Some(repository) = self.repository.clone() else { return };
         let filter = self.effective_filter(cx);
+        let states = self.root_states.clone();
         self.loading = true;
         cx.notify();
         self._log_task = Some(cx.spawn(async move |this, cx| {
@@ -474,21 +773,22 @@ impl RepoModel {
                 .background_spawn({
                     let (repository, filter) = (repository.clone(), filter.clone());
                     async move {
-                        let key = LogKey::load(&repository, &filter);
-                        let l = LoadedLog::load(&repository, &filter, true)?;
-                        anyhow::Ok((l, key))
+                        let sources = log_sources(&states, &repository, &filter);
+                        let key = LogKey::load(&sources, &filter);
+                        let l = LoadedLog::load(&sources, true)?;
+                        anyhow::Ok((l, key, sources))
                     }
                 })
                 .await;
             let full = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok((log, key)) => {
-                        let complete = log.commits.len() < git::log::FIRST_PAGE;
+                    Ok((log, key, sources)) => {
+                        let complete = log.complete;
                         this.set_log(log);
                         this.log_key = Some(key);
                         this.log_changed(cx);
-                        (!complete).then(|| this.load_full_log(repository, filter, cx))
+                        (!complete).then(|| this.load_full_log(sources, cx))
                     }
                     Err(error) => {
                         this.error = Some(error.to_string());
@@ -526,7 +826,8 @@ impl RepoModel {
         cx.notify();
     }
 
-    /// Reloads refs, the log, and working tree status in the background.
+    /// Reloads refs, the log, and working tree status in the background
+    /// (of every root, in a multi-root project).
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let Some(repository) = self.repository.clone() else { return };
         let filter = self.effective_filter(cx);
@@ -541,24 +842,6 @@ impl RepoModel {
         self._reload_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let refs = RepositoryRefs::load(&repository)?;
-                    // The log only changes with the refs (or the filter); a
-                    // reload after staging or editing keeps it.
-                    let key = LogKey::load(&repository, &filter);
-                    let log = if previous_key.as_ref() != Some(&key) {
-                        // The first page shows quickly; the rest follows below.
-                        // (A failing log, say for a branch filter that no longer
-                        // matches, still lets the refs and the status refresh.)
-                        Some(LoadedLog::load(&repository, &filter, true).map(|log| (log, key)))
-                    } else {
-                        None
-                    };
-                    let status = WorkingTreeStatus::load(&repository)?;
-                    let submodules = if repository.root().join(".gitmodules").exists() {
-                        git::submodule::gitlink_paths(&repository).into_iter().collect()
-                    } else {
-                        HashSet::new()
-                    };
                     let paths = if known_roots.is_empty() {
                         project_root
                             .as_ref()
@@ -568,24 +851,55 @@ impl RepoModel {
                     } else {
                         known_roots
                     };
-                    let roots = paths
-                        .into_iter()
-                        .map(|path| {
-                            let branch = git::run_in(&git::executable(), &path, &GitConsole::default(), ["symbolic-ref", "--short", "-q", "HEAD"], None, &[])
-                                .ok()
-                                .map(|b| b.trim().to_owned())
-                                .filter(|b| !b.is_empty());
-                            RootInfo { path, branch }
-                        })
-                        .collect();
-                    let web = git::hosting::web_repo(&repository);
-                    anyhow::Ok((Snapshot { roots, web, refs, log, status, state: repository.state(), submodules }, repository, filter))
+                    // Several roots: all of them load, the active one among them.
+                    let root_states = if paths.len() > 1 { RootState::load_all(&paths, project_root.as_deref(), &console) } else { Vec::new() };
+                    let active = root_states.iter().find(|s| s.path == repository.root()).cloned();
+                    let (refs, status, submodules, web, state) = match &active {
+                        Some(a) => ((*a.refs).clone(), (*a.status).clone(), a.submodules.clone(), a.web.clone(), a.state),
+                        None => {
+                            let refs = RepositoryRefs::load(&repository)?;
+                            let status = WorkingTreeStatus::load(&repository)?;
+                            let submodules = if repository.root().join(".gitmodules").exists() {
+                                git::submodule::gitlink_paths(&repository).into_iter().collect()
+                            } else {
+                                HashSet::new()
+                            };
+                            (refs, status, submodules, git::hosting::web_repo(&repository), repository.state())
+                        }
+                    };
+                    // The log only changes with the refs (or the filter); a
+                    // reload after staging or editing keeps it.
+                    let sources = log_sources(&root_states, &repository, &filter);
+                    let key = LogKey::load(&sources, &filter);
+                    let log = if previous_key.as_ref() != Some(&key) {
+                        // The first page shows quickly; the rest follows below.
+                        // (A failing log, say for a branch filter that no longer
+                        // matches, still lets the refs and the status refresh.)
+                        Some(LoadedLog::load(&sources, true).map(|log| (log, key)))
+                    } else {
+                        None
+                    };
+                    let roots = if root_states.is_empty() {
+                        paths
+                            .into_iter()
+                            .map(|path| {
+                                let branch = git::run_in(&git::executable(), &path, &GitConsole::default(), ["symbolic-ref", "--short", "-q", "HEAD"], None, &[])
+                                    .ok()
+                                    .map(|b| b.trim().to_owned())
+                                    .filter(|b| !b.is_empty());
+                                RootInfo { path, branch }
+                            })
+                            .collect()
+                    } else {
+                        root_states.iter().map(|s| RootInfo { path: s.path.clone(), branch: s.refs.current_branch.clone() }).collect()
+                    };
+                    anyhow::Ok((Snapshot { roots, root_states, web, refs, log, status, state, submodules }, repository, filter, sources))
                 })
                 .await;
             this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok((snapshot, repository, filter)) => {
+                    Ok((snapshot, repository, filter, sources)) => {
                         let mut log_error = None;
                         this.details_cache.clear();
                         this.refs = Arc::new(snapshot.refs);
@@ -599,17 +913,19 @@ impl RepoModel {
                             other => other.map(|log| log.ok()).flatten(),
                         };
                         if let Some((log, key)) = log {
-                            let complete = log.commits.len() < git::log::FIRST_PAGE;
+                            let complete = log.complete;
                             // (A short log came whole; a long one was the first page.)
                             this.set_log(log);
                             this.log_key = Some(key);
                             // A new log replaces one still loading.
-                            this._log_task = (!complete).then(|| this.load_full_log(repository, filter, cx));
+                            this._log_task = (!complete).then(|| this.load_full_log(sources, cx));
                         }
+                        let _ = repository;
                         this.status = snapshot.status;
                         this.state = snapshot.state;
                         this.submodule_paths = snapshot.submodules;
                         this.roots = snapshot.roots;
+                        this.set_root_states(snapshot.root_states);
                         this.web_repo = snapshot.web;
                         this.error = log_error;
                         this.keep_selection(cx);
@@ -629,13 +945,28 @@ impl RepoModel {
         }));
     }
 
+    /// Keeps every root's state and what is built from it: the Commit
+    /// window's combined changes and the Log's combined refs.
+    fn set_root_states(&mut self, states: Vec<RootState>) {
+        if states.len() > 1 {
+            self.project_status = Arc::new(WorkingTreeStatus::combined(states.iter().map(|s| (s.prefix.as_str(), &*s.status))));
+            let active = self.repository.as_ref().map(|r| r.root().to_path_buf());
+            let others: Vec<&RepositoryRefs> = states.iter().filter(|s| Some(&s.path) != active.as_ref()).map(|s| &*s.refs).collect();
+            self.log_refs = Arc::new(RepositoryRefs::merged(&self.refs, &others));
+        } else {
+            self.project_status = Arc::default();
+            self.log_refs = Arc::default();
+        }
+        self.root_states = Arc::new(states);
+    }
+
     /// Loads the whole log after its first page, then refreshes git's
     /// commit-graph so the next first page comes sorted at once.
-    fn load_full_log(&mut self, repository: Repository, filter: LogFilter, cx: &mut Context<Self>) -> Task<()> {
+    fn load_full_log(&mut self, sources: Vec<LogSource>, cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this, cx| {
             let full = cx.background_spawn({
-                let repository = repository.clone();
-                async move { LoadedLog::load(&repository, &filter, false) }
+                let sources = sources.clone();
+                async move { LoadedLog::load(&sources, false) }
             });
             let full = full.await;
             this.update(cx, |this, cx| match full {
@@ -648,7 +979,12 @@ impl RepoModel {
                 Err(_) => this.log_key = None,
             })
             .ok();
-            cx.background_spawn(async move { git::log::write_commit_graph(&repository) }).await;
+            cx.background_spawn(async move {
+                for source in &sources {
+                    git::log::write_commit_graph(&source.repository);
+                }
+            })
+            .await;
         })
     }
 
@@ -753,6 +1089,14 @@ impl RepoModel {
             return;
         }
         self.selected = hash.clone();
+        // In a multi-root project the commit's own repository becomes the
+        // active one, so its details and the Log's actions work on it.
+        let root = hash.as_deref().and_then(|h| self.row_of(h)).and_then(|row| self.commits.get(row)).map(|c| c.root as usize);
+        if let Some(state) = root.filter(|_| self.root_states.len() > 1).and_then(|ix| self.root_states.get(ix)) {
+            if self.repository.as_ref().is_none_or(|r| r.root() != state.path) {
+                self.focus_root(state.clone(), cx);
+            }
+        }
         // The previous commit's details stay up while the next ones load
         // (usually a few ms), so the details pane doesn't flash empty; a
         // slow load clears them after a moment.

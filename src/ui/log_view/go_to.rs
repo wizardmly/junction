@@ -8,7 +8,7 @@ impl LogView {
     /// completion; ↑↓ pick one, Enter goes to it (or to the typed hash).
     pub(super) fn on_go_to_hash(&mut self, _: &GoToHash, window: &mut Window, cx: &mut Context<Self>) {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Hash, branch or tag"));
-        let refs = self.model.read(cx).refs().clone();
+        let refs = self.model.read(cx).log_refs().clone();
         let names: Vec<(String, RefKind)> =
             refs.local_branches().chain(refs.remote_branches()).chain(refs.tags()).map(|r| (r.name.clone(), r.kind)).collect();
         let log = cx.entity();
@@ -63,11 +63,11 @@ impl LogView {
         let model = self.model.read(cx);
         let needle = text.to_ascii_lowercase();
         let target = model
-            .refs()
+            .log_refs()
             .find(text)
             .map(|r| r.target.clone())
             .or_else(|| {
-                model.refs().refs.iter().find(|r| r.name == text).map(|r| r.target.clone())
+                model.log_refs().refs.iter().find(|r| r.name == text).map(|r| r.target.clone())
             })
             .or_else(|| model.commits().iter().find(|c| c.hash.starts_with(&needle)).map(|c| c.hash.clone()))
             .or_else(|| {

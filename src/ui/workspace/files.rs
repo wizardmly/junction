@@ -100,7 +100,7 @@ impl Workspace {
             })
             .collect();
         for ix in stale {
-            let Some(repository) = self.model.read(cx).repository().cloned() else { break };
+            let Some(repository) = self.model.read(cx).project_repository().cloned() else { break };
             let old = self.editors[ix].view.clone();
             let (path, (line, col)) = (old.read(cx).path().to_owned(), old.read(cx).cursor(cx));
             let view = cx.new(|cx| FileEditor::new(repository, path, None, window, cx));
@@ -145,7 +145,7 @@ impl Workspace {
         use crate::ui::file_menus::FileAction;
         match action {
             FileAction::ShowDiff(path) => {
-                let unversioned = self.model.read(cx).status().entries.iter().any(|e| e.path == path && e.kind == crate::git::StatusKind::Unversioned);
+                let unversioned = self.model.read(cx).project_status().entries.iter().any(|e| e.path == path && e.kind == crate::git::StatusKind::Unversioned);
                 self.open_diff(DiffSource::WorkingTree { path, unversioned }, cx)
             }
             FileAction::OpenFile(path) => self.open_file(path, None, window, cx),
@@ -201,7 +201,19 @@ impl Workspace {
     }
 
     pub(super) fn open_diff(&mut self, source: crate::ui::diff_view::DiffSource, cx: &mut Context<Self>) {
-        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        use crate::ui::diff_view::DiffSource;
+        let Some(mut repository) = self.model.read(cx).repository().cloned() else { return };
+        // Local changes have paths relative to the project: in a multi-root
+        // project the diff opens in the root that holds the file.
+        let mut source = source;
+        if self.model.read(cx).root_states().len() > 1 {
+            if let DiffSource::WorkingTree { path, .. } | DiffSource::Staged { path } | DiffSource::Unstaged { path } = &mut source {
+                if let Some((root, own)) = self.model.read(cx).route(path) {
+                    repository = root;
+                    *path = own;
+                }
+            }
+        }
         // A diff replaces the annotations and the file editor in the editor area.
         self.focus_group(0, cx);
         self.front = Front::Diff;

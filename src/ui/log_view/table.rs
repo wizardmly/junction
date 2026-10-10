@@ -228,8 +228,13 @@ impl LogView {
         let model = self.model.read(cx);
         let commits = model.commits().clone();
         let graph = model.graph().clone();
-        let refs = model.refs().clone();
+        // Every shown root's branches and tags label its commits.
+        let refs = model.log_refs().clone();
         let selected = model.selected_index();
+        // A multi-root project: the Root column, a color per repository.
+        let root_names: Option<Vec<SharedString>> = model.project_root().filter(|_| model.is_multi_root()).map(|project| {
+            model.root_states().iter().map(|r| SharedString::from(crate::git::roots::label(project, &r.path))).collect()
+        });
         let show_long_edges = Settings::get(cx).log.show_long_edges;
         let graph_rows = graph.rows(range.clone(), show_long_edges);
         let model = self.model.read(cx);
@@ -399,6 +404,18 @@ impl LogView {
                             }
                         })
                         .context_menu(move |menu, window, cx| commit_menu(menu, &menu_entity, &menu_commit, window, cx))
+                        .when_some(root_names.as_ref().and_then(|names| names.get(commit.root as usize).cloned()), |el, name| {
+                            el.child(
+                                div()
+                                    .id(SharedString::from(format!("root-{}", commit.hash)))
+                                    .flex_shrink_0()
+                                    .w(px(6.))
+                                    .h_full()
+                                    .mr_1()
+                                    .bg(common::root_color(commit.root as usize))
+                                    .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(window, cx)),
+                            )
+                        })
                         .child(subject)
                         .when(log.show_author, |el| {
                             el.child(

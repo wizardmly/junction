@@ -485,7 +485,7 @@ pub fn shelve(model: Entity<RepoModel>, paths: Vec<String>, default_name: String
                 let paths = paths.clone();
                 let keep = keep_ok.get();
                 model.update(cx, |model, cx| {
-                    model.run_operation("Shelve Changes", move |repo| {
+                    model.run_in_roots("Shelve Changes", paths, move |repo, paths| {
                         patch::shelve(repo, &paths, &name, keep)?;
                         Ok(format!("Shelved {} file{} as \u{201c}{name}\u{201d}", paths.len(), if paths.len() == 1 { "" } else { "s" }))
                     }, cx)
@@ -504,7 +504,7 @@ pub fn shelve_silently(model: Entity<RepoModel>, paths: Vec<String>, cx: &mut Ap
     }
     let name = default_shelf_name(&paths);
     model.update(cx, |model, cx| {
-        model.run_operation("Shelve Changes", move |repo| {
+        model.run_in_roots("Shelve Changes", paths, move |repo, paths| {
             patch::shelve(repo, &paths, &name, false)?;
             Ok(format!("Shelved \u{201c}{name}\u{201d}"))
         }, cx)

@@ -323,7 +323,7 @@ impl ProjectView {
         let Some(model) = &self.model else { return };
         let mut status = HashMap::new();
         let mut dirs = HashSet::new();
-        for entry in &model.read(cx).status().entries {
+        for entry in &model.read(cx).project_status().entries {
             status.insert(entry.path.clone(), entry.kind);
             if entry.kind != StatusKind::Unversioned {
                 let mut p = entry.path.as_str();
