@@ -172,8 +172,8 @@ mod tests {
         Commit {
             hash: hash.into(),
             parents: vec![],
-            author_name: String::new(),
-            author_email: String::new(),
+            author_name: "".into(),
+            author_email: "".into(),
             author_time: 0,
             subject: subject.into(),
         }

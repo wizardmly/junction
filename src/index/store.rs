@@ -2,8 +2,9 @@
 //! incrementally (by size and modification time) and cached in the
 //! repository's git directory between runs.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 
@@ -14,8 +15,8 @@ use super::libraries::ExternalIndex;
 use super::lang::Lang;
 use super::symbols::{self, Symbol};
 
-/// Bumped whenever extraction changes, so stale caches are rebuilt.
-const CACHE_VERSION: u32 = 1;
+/// Bumped whenever extraction or the cache format changes, so stale caches are rebuilt.
+const CACHE_VERSION: u32 = 2;
 /// Larger files are generated or vendored; skipping them keeps indexing fast.
 const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
 
@@ -37,10 +38,14 @@ pub struct ProjectIndex {
     /// relative with `/` separators — indexed or not, for Go to File.
     pub all_files: Vec<String>,
     pub files: BTreeMap<String, FileEntry>,
+    /// Where each symbol name and bridge key occurs: (file, position in
+    /// its list). Files share one path string.
+    /// Names also keep [`char_mask`] of themselves, so a search can skip
+    /// most names without reading them.
     #[serde(skip)]
-    names: HashMap<String, Vec<(String, usize)>>,
+    names: HashMap<String, (u64, Vec<(Arc<str>, u32)>)>,
     #[serde(skip)]
-    keys: HashMap<String, Vec<(String, usize)>>,
+    keys: HashMap<String, Vec<(Arc<str>, u32)>>,
     /// Dependencies and SDKs ("External Libraries"), keyed by absolute path.
     #[serde(skip)]
     pub external: std::sync::Arc<ExternalIndex>,
@@ -97,6 +102,56 @@ pub fn index_path(path: &Path, mut lang: Lang, with_bridges: bool) -> Option<Fil
     Some(FileEntry { lang, mtime, size, symbols, bridges })
 }
 
+/// Which letters and digits (case-insensitive) a name contains, one bit
+/// each: a query matches only names having all of its own.
+pub fn char_mask(text: &str) -> u64 {
+    text.bytes().fold(0, |mask, b| match b.to_ascii_lowercase() {
+        c @ b'a'..=b'z' => mask | 1 << (c - b'a'),
+        c @ b'0'..=b'9' => mask | 1 << (26 + c - b'0'),
+        _ => mask,
+    })
+}
+
+/// Files that changed since the index was taken, see [`ProjectIndex::scan`].
+pub struct IndexChanges {
+    all_files: Vec<String>,
+    removed: Vec<String>,
+    updated: Vec<(String, FileEntry)>,
+}
+
+/// Indexes files on every core, reporting (done, total).
+fn index_files(root: &Path, files: &[String], progress: &(dyn Fn(usize, usize) + Sync)) -> Vec<(String, FileEntry)> {
+    let total = files.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(rel) = files.get(i) else { break };
+                        if let Some(entry) = index_file(root, rel) {
+                            out.push((rel.clone(), entry));
+                        }
+                        let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if d % 64 == 0 || d == total {
+                            progress(d, total);
+                        }
+                    }
+                    out
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+    })
+}
+
 impl ProjectIndex {
     fn cache_path(root: &Path) -> Option<PathBuf> {
         let output = crate::git::git_process()
@@ -105,14 +160,19 @@ impl ProjectIndex {
             .output()
             .ok()?;
         let dir = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        (!dir.is_empty()).then(|| PathBuf::from(dir).join("junction").join("index.json"))
+        (!dir.is_empty()).then(|| PathBuf::from(dir).join("junction").join("index.bin"))
     }
 
     /// The cached index for a project, or an empty one.
     pub fn load(root: &Path) -> Self {
-        let cached = Self::cache_path(root)
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|bytes| serde_json::from_slice::<ProjectIndex>(&bytes).ok())
+        let path = Self::cache_path(root);
+        if let Some(path) = &path {
+            // The JSON cache of earlier versions.
+            std::fs::remove_file(path.with_extension("json")).ok();
+        }
+        let cached = path
+            .and_then(|p| std::fs::File::open(p).ok())
+            .and_then(|file| bincode::deserialize_from::<_, ProjectIndex>(std::io::BufReader::with_capacity(1 << 20, file)).ok())
             .filter(|index| index.version == CACHE_VERSION);
         let mut index = cached.unwrap_or_default();
         index.version = CACHE_VERSION;
@@ -126,11 +186,15 @@ impl ProjectIndex {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).ok();
         }
-        if let Ok(bytes) = serde_json::to_vec(self) {
-            let tmp = path.with_extension("json.tmp");
-            if std::fs::write(&tmp, bytes).is_ok() {
-                std::fs::rename(&tmp, &path).ok();
-            }
+        let tmp = path.with_extension("bin.tmp");
+        let written = std::fs::File::create(&tmp).ok().is_some_and(|file| {
+            let mut out = std::io::BufWriter::with_capacity(1 << 20, file);
+            bincode::serialize_into(&mut out, self).is_ok() && std::io::Write::flush(&mut out).is_ok()
+        });
+        if written {
+            std::fs::rename(&tmp, &path).ok();
+        } else {
+            std::fs::remove_file(&tmp).ok();
         }
     }
 
@@ -138,90 +202,115 @@ impl ProjectIndex {
     /// reporting (done, total) of the files that needed work. Returns
     /// whether anything changed.
     pub fn update(&mut self, progress: &(dyn Fn(usize, usize) + Sync)) -> bool {
+        match self.scan(progress) {
+            Some(changes) => {
+                self.apply(changes);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// What changed on disk since the index was taken, with the changed
+    /// files already parsed; `None` when nothing did. Only reads the
+    /// index, so queries keep answering from it meanwhile.
+    pub fn scan(&self, progress: &(dyn Fn(usize, usize) + Sync)) -> Option<IndexChanges> {
         let all = list_files(&self.root);
-        let mut changed = all.len() != self.all_files.len();
         let mut stale: Vec<String> = Vec::new();
-        let mut keep: BTreeMap<String, FileEntry> = BTreeMap::new();
+        let mut kept = HashSet::new();
         for rel in &all {
             if Lang::from_path(rel).is_none() {
                 continue;
             }
             let current = stat(&self.root.join(rel));
-            match (self.files.remove(rel), current) {
+            match (self.files.get(rel), current) {
                 (Some(entry), Some((size, mtime))) if entry.size == size && entry.mtime == mtime => {
-                    keep.insert(rel.clone(), entry);
+                    kept.insert(rel.as_str());
                 }
                 (_, Some((size, _))) if size <= MAX_FILE_SIZE => stale.push(rel.clone()),
                 _ => {}
             }
         }
-        // Whatever is left in `files` was deleted or became ignored.
-        changed |= !self.files.is_empty() || !stale.is_empty();
-        self.files = keep;
-        self.all_files = all;
+        // Deleted, now ignored, too large, or about to be re-indexed.
+        let removed: Vec<String> = self.files.keys().filter(|rel| !kept.contains(rel.as_str())).cloned().collect();
+        if stale.is_empty() && removed.is_empty() && all == self.all_files {
+            return None;
+        }
+        let updated = index_files(&self.root, &stale, progress);
+        Some(IndexChanges { all_files: all, removed, updated })
+    }
 
-        let total = stale.len();
-        if total > 0 {
-            let next = AtomicUsize::new(0);
-            let done = AtomicUsize::new(0);
-            let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
-            let root = self.root.clone();
-            let results: Vec<Vec<(String, FileEntry)>> = std::thread::scope(|scope| {
-                let handles: Vec<_> = (0..threads)
-                    .map(|_| {
-                        scope.spawn(|| {
-                            let mut out = Vec::new();
-                            loop {
-                                let i = next.fetch_add(1, Ordering::Relaxed);
-                                let Some(rel) = stale.get(i) else { break };
-                                if let Some(entry) = index_file(&root, rel) {
-                                    out.push((rel.clone(), entry));
-                                }
-                                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-                                if d % 64 == 0 || d == total {
-                                    progress(d, total);
-                                }
-                            }
-                            out
-                        })
-                    })
-                    .collect();
-                handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
-            });
-            for (rel, entry) in results.into_iter().flatten() {
-                self.files.insert(rel, entry);
+    /// Applies what [`scan`](Self::scan) found.
+    pub fn apply(&mut self, changes: IndexChanges) {
+        self.all_files = changes.all_files;
+        // Many changes (a branch switch): rebuilding the lookups is quicker.
+        let rebuild = changes.removed.len() + changes.updated.len() > 1000.max(self.files.len() / 8);
+        for rel in &changes.removed {
+            if let Some(old) = self.files.remove(rel) {
+                if !rebuild {
+                    self.unmap(rel, &old);
+                }
             }
         }
-        if changed {
+        for (rel, entry) in changes.updated {
+            if !rebuild {
+                self.map(&rel, &entry);
+            }
+            self.files.insert(rel, entry);
+        }
+        if rebuild {
             self.rebuild_maps();
         }
-        changed
     }
 
     /// Re-indexes one file now (after a save in the editor).
     pub fn refresh_file(&mut self, rel: &str) {
-        match index_file(&self.root, rel) {
-            Some(entry) => {
-                self.files.insert(rel.to_owned(), entry);
-            }
-            None => {
-                self.files.remove(rel);
+        if let Some(old) = self.files.remove(rel) {
+            self.unmap(rel, &old);
+        }
+        if let Some(entry) = index_file(&self.root, rel) {
+            self.map(rel, &entry);
+            self.files.insert(rel.to_owned(), entry);
+        }
+    }
+
+    fn map(&mut self, path: &str, entry: &FileEntry) {
+        let path: Arc<str> = path.into();
+        for (i, s) in entry.symbols.iter().enumerate() {
+            self.names.entry(s.name.clone()).or_insert_with(|| (char_mask(&s.name), Vec::new())).1.push((path.clone(), i as u32));
+        }
+        for (i, b) in entry.bridges.iter().enumerate() {
+            self.keys.entry(b.key.clone()).or_default().push((path.clone(), i as u32));
+        }
+    }
+
+    fn unmap(&mut self, path: &str, entry: &FileEntry) {
+        for s in &entry.symbols {
+            if let Some((_, list)) = self.names.get_mut(&s.name) {
+                list.retain(|(p, _)| &**p != path);
+                if list.is_empty() {
+                    self.names.remove(&s.name);
+                }
             }
         }
-        self.rebuild_maps();
+        for b in &entry.bridges {
+            if let Some(list) = self.keys.get_mut(&b.key) {
+                list.retain(|(p, _)| &**p != path);
+                if list.is_empty() {
+                    self.keys.remove(&b.key);
+                }
+            }
+        }
     }
 
     fn rebuild_maps(&mut self) {
         self.names.clear();
         self.keys.clear();
-        for (path, entry) in &self.files {
-            for (i, s) in entry.symbols.iter().enumerate() {
-                self.names.entry(s.name.clone()).or_default().push((path.clone(), i));
-            }
-            for (i, b) in entry.bridges.iter().enumerate() {
-                self.keys.entry(b.key.clone()).or_default().push((path.clone(), i));
-            }
+        let files = std::mem::take(&mut self.files);
+        for (path, entry) in &files {
+            self.map(path, entry);
         }
+        self.files = files;
     }
 
     pub fn symbol_count(&self) -> usize {
@@ -234,9 +323,9 @@ impl ProjectIndex {
     }
 
     pub fn project_symbols_named<'a>(&'a self, name: &str) -> impl Iterator<Item = (&'a str, &'a FileEntry, &'a Symbol)> + 'a {
-        self.names.get(name).into_iter().flatten().filter_map(|(path, i)| {
-            let entry = self.files.get(path)?;
-            Some((path.as_str(), entry, entry.symbols.get(*i)?))
+        self.names.get(name).into_iter().flat_map(|(_, at)| at).filter_map(|(path, i)| {
+            let (path, entry) = self.files.get_key_value(&**path)?;
+            Some((path.as_str(), entry, entry.symbols.get(*i as usize)?))
         })
     }
 
@@ -253,14 +342,19 @@ impl ProjectIndex {
     /// Bridge sites with this key.
     pub fn bridges_keyed<'a>(&'a self, key: &str) -> impl Iterator<Item = (&'a str, &'a FileEntry, &'a BridgeItem)> + 'a {
         self.keys.get(key).into_iter().flatten().filter_map(|(path, i)| {
-            let entry = self.files.get(path)?;
-            Some((path.as_str(), entry, entry.bridges.get(*i)?))
+            let (path, entry) = self.files.get_key_value(&**path)?;
+            Some((path.as_str(), entry, entry.bridges.get(*i as usize)?))
         })
     }
 
     /// The project's symbol names, for Go to Symbol.
     pub fn names(&self) -> impl Iterator<Item = &String> {
         self.names.keys()
+    }
+
+    /// The project's symbol names with their [`char_mask`].
+    pub fn names_with_masks(&self) -> impl Iterator<Item = (&String, u64)> {
+        self.names.iter().map(|(name, (mask, _))| (name, *mask))
     }
 
     /// Symbol names only libraries have.

@@ -219,7 +219,7 @@ fn stable_hash(text: &str) -> u64 {
 fn cache_file(lib: &Library) -> Option<PathBuf> {
     let key = lib.root.to_string_lossy();
     let name: String = lib.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).take(60).collect();
-    Some(cache_dir()?.join("libraries").join(format!("{name}-{:016x}.json", stable_hash(&key))))
+    Some(cache_dir()?.join("libraries").join(format!("{name}-{:016x}.bin", stable_hash(&key))))
 }
 
 /// The language of a library file: by extension, plus C++ standard
@@ -237,10 +237,14 @@ pub fn library_lang(path: &str) -> Option<Lang> {
 
 fn index_library(lib: &Library, files: &[String], done: &AtomicUsize, total: usize, progress: &(dyn Fn(usize, usize) + Sync)) -> Vec<(String, FileEntry)> {
     let cache_path = cache_file(lib);
+    if let Some(path) = &cache_path {
+        // The JSON cache of earlier versions.
+        std::fs::remove_file(path.with_extension("json")).ok();
+    }
     let mut cache: LibraryCache = cache_path
         .as_ref()
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|bytes| serde_json::from_slice::<LibraryCache>(&bytes).ok())
+        .and_then(|p| std::fs::File::open(p).ok())
+        .and_then(|file| bincode::deserialize_from::<_, LibraryCache>(std::io::BufReader::with_capacity(1 << 20, file)).ok())
         .filter(|c| c.version == CACHE_VERSION)
         .unwrap_or_default();
     let mut stale: Vec<&String> = Vec::new();
@@ -292,8 +296,8 @@ fn index_library(lib: &Library, files: &[String], done: &AtomicUsize, total: usi
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir).ok();
             }
-            if let Ok(bytes) = serde_json::to_vec(&cache) {
-                let tmp = path.with_extension("json.tmp");
+            if let Ok(bytes) = bincode::serialize(&cache) {
+                let tmp = path.with_extension("bin.tmp");
                 if std::fs::write(&tmp, bytes).is_ok() {
                     std::fs::rename(&tmp, &path).ok();
                 }

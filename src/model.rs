@@ -68,6 +68,11 @@ pub struct RepoModel {
     /// The log as loaded, before Collapse Linear Branches folds it.
     all_commits: Arc<Vec<Commit>>,
     all_graph: Arc<GraphLayout>,
+    /// Row lookup by hash, for `commits` and `all_commits`.
+    rows: Arc<git::log::CommitRows>,
+    all_rows: Arc<git::log::CommitRows>,
+    /// What the loaded log shows: reloads keep it while refs and filter stay the same.
+    log_key: Option<LogKey>,
     collapse_linear: bool,
     expanded_runs: HashSet<String>,
     hidden: HashMap<String, usize>,
@@ -93,6 +98,7 @@ pub struct RepoModel {
     open_problem: Option<OpenProblem>,
     failed_path: Option<PathBuf>,
     _reload_task: Option<Task<()>>,
+    _log_task: Option<Task<()>>,
     _details_task: Option<Task<()>>,
     _fetch_task: Option<Task<()>>,
 }
@@ -114,12 +120,48 @@ pub enum OpenProblem {
     Unsafe(PathBuf),
 }
 
+/// The log's inputs: every ref tip (the log lists `--all`), HEAD, the
+/// repository and the filter.
+#[derive(Clone, Debug, PartialEq)]
+struct LogKey {
+    root: PathBuf,
+    tips: String,
+    filter: LogFilter,
+}
+
+impl LogKey {
+    fn load(repository: &Repository, filter: &LogFilter) -> Self {
+        let tips = repository.run(["for-each-ref", "--format=%(objectname) %(refname)"]).unwrap_or_default();
+        let head = repository.run(["rev-parse", "-q", "--verify", "HEAD"]).unwrap_or_default();
+        Self { root: repository.root().to_path_buf(), tips: tips + &head, filter: filter.clone() }
+    }
+}
+
+struct LoadedLog {
+    commits: Vec<Commit>,
+    graph: GraphLayout,
+    rows: git::log::CommitRows,
+}
+
+impl LoadedLog {
+    fn load(repository: &Repository, filter: &LogFilter, first_page: bool) -> Result<Self> {
+        let mut commits = if first_page { git::log::load_first_page(repository, filter)? } else { Vec::new() };
+        // The first page leaves out tags; a short log is loaded whole right away.
+        if commits.len() < git::log::FIRST_PAGE {
+            commits = git::log::load_log(repository, filter, None)?;
+        }
+        let graph = GraphLayout::build(&commits);
+        let rows = git::log::CommitRows::build(&commits);
+        Ok(Self { commits, graph, rows })
+    }
+}
+
 struct Snapshot {
     roots: Vec<RootInfo>,
     web: Option<git::hosting::WebRepo>,
     refs: RepositoryRefs,
-    commits: Vec<Commit>,
-    graph: GraphLayout,
+    /// The first page of the log when it changed, and its key.
+    log: Option<(LoadedLog, LogKey)>,
     status: WorkingTreeStatus,
     state: RepositoryState,
     submodules: HashSet<String>,
@@ -135,6 +177,9 @@ impl RepoModel {
             graph: Arc::default(),
             all_commits: Arc::default(),
             all_graph: Arc::default(),
+            rows: Arc::default(),
+            all_rows: Arc::default(),
+            log_key: None,
             collapse_linear: false,
             expanded_runs: HashSet::new(),
             hidden: HashMap::new(),
@@ -155,6 +200,7 @@ impl RepoModel {
             open_problem: None,
             failed_path: None,
             _reload_task: None,
+            _log_task: None,
             _details_task: None,
             _fetch_task: None,
         };
@@ -343,8 +389,12 @@ impl RepoModel {
     }
 
     pub fn selected_index(&self) -> Option<usize> {
-        let hash = self.selected.as_deref()?;
-        self.commits.iter().position(|c| c.hash == hash)
+        self.row_of(self.selected.as_deref()?)
+    }
+
+    /// The Log row showing a commit.
+    pub fn row_of(&self, hash: &str) -> Option<usize> {
+        self.rows.get(&self.commits, hash)
     }
 
     pub fn submodule_paths(&self) -> &HashSet<String> {
@@ -384,17 +434,23 @@ impl RepoModel {
         // Roots are scanned once per project (and after Directory Mappings
         // change); each reload only refreshes their branches.
         let known_roots: Vec<PathBuf> = self.roots.iter().map(|r| r.path.clone()).collect();
+        let previous_key = self.log_key.clone();
         self.loading = true;
         cx.notify();
         self._reload_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
                     let refs = RepositoryRefs::load(&repository)?;
-                    // The first page shows quickly; the rest follows below.
-                    let commits = git::log::load_log(&repository, &filter, Some(git::log::FIRST_PAGE))?;
-                    let graph = GraphLayout::build(&commits);
+                    // The log only changes with the refs (or the filter); a
+                    // reload after staging or editing keeps it.
+                    let key = LogKey::load(&repository, &filter);
+                    let log = if previous_key.as_ref() != Some(&key) {
+                        // The first page shows quickly; the rest follows below.
+                        Some((LoadedLog::load(&repository, &filter, true)?, key))
+                    } else {
+                        None
+                    };
                     let status = WorkingTreeStatus::load(&repository)?;
-                    let complete = commits.len() < git::log::FIRST_PAGE;
                     let submodules = if repository.root().join(".gitmodules").exists() {
                         git::submodule::gitlink_paths(&repository).into_iter().collect()
                     } else {
@@ -420,19 +476,22 @@ impl RepoModel {
                         })
                         .collect();
                     let web = git::hosting::web_repo(&repository);
-                    anyhow::Ok((Snapshot { roots, web, refs, commits, graph, status, state: repository.state(), submodules }, complete, repository, filter))
+                    anyhow::Ok((Snapshot { roots, web, refs, log, status, state: repository.state(), submodules }, repository, filter))
                 })
                 .await;
-            let (result, rest) = match result {
-                Ok((snapshot, complete, repository, filter)) => (Ok(snapshot), (!complete).then_some((repository, filter))),
-                Err(error) => (Err(error), None),
-            };
             this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok(snapshot) => {
+                    Ok((snapshot, repository, filter)) => {
                         this.refs = snapshot.refs;
-                        this.set_log(snapshot.commits, snapshot.graph);
+                        if let Some((log, key)) = snapshot.log {
+                            let complete = log.commits.len() < git::log::FIRST_PAGE;
+                            // (A short log came whole; a long one was the first page.)
+                            this.set_log(log);
+                            this.log_key = Some(key);
+                            // A new log replaces one still loading.
+                            this._log_task = (!complete).then(|| this.load_full_log(repository, filter, cx));
+                        }
                         this.status = snapshot.status;
                         this.state = snapshot.state;
                         this.submodule_paths = snapshot.submodules;
@@ -441,18 +500,21 @@ impl RepoModel {
                         this.error = None;
                         // Keep the selection if the commit is still listed, else
                         // select HEAD the way the Log does on first open.
-                        let keep = this.selected.as_ref().is_some_and(|h| this.commits.iter().any(|c| &c.hash == h));
+                        let keep = this.selected.as_deref().is_some_and(|h| this.row_of(h).is_some());
                         if !keep {
                             let head = this.refs.head_commit.clone();
                             let target = head
-                                .filter(|h| this.commits.iter().any(|c| &c.hash == h))
+                                .filter(|h| this.row_of(h).is_some())
                                 .or_else(|| this.commits.first().map(|c| c.hash.clone()));
                             this.select_hash(target, cx);
                         } else if let Some(hash) = this.selected.clone() {
                             this.load_details(hash, cx);
                         }
                     }
-                    Err(error) => this.error = Some(error.to_string()),
+                    Err(error) => {
+                        this.error = Some(error.to_string());
+                        this.log_key = None;
+                    }
                 }
                 cx.emit(RepoEvent::Reloaded);
                 if std::mem::take(&mut this.conflicts_pending) && !git::merge::conflicts(&this.status).is_empty() {
@@ -461,29 +523,36 @@ impl RepoModel {
                 cx.notify();
             })
             .ok();
-
-            let Some((repository, filter)) = rest else { return };
-            let full = cx
-                .background_spawn(async move {
-                    let commits = git::log::load_log(&repository, &filter, None)?;
-                    let graph = GraphLayout::build(&commits);
-                    anyhow::Ok((commits, graph))
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                if let Ok((commits, graph)) = full {
-                    this.set_log(commits, graph);
-                    cx.emit(RepoEvent::Reloaded);
-                    cx.notify();
-                }
-            })
-            .ok();
         }));
     }
 
-    fn set_log(&mut self, commits: Vec<Commit>, graph: GraphLayout) {
-        self.all_commits = Arc::new(commits);
-        self.all_graph = Arc::new(graph);
+    /// Loads the whole log after its first page, then refreshes git's
+    /// commit-graph so the next first page comes sorted at once.
+    fn load_full_log(&mut self, repository: Repository, filter: LogFilter, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            let full = cx.background_spawn({
+                let repository = repository.clone();
+                async move { LoadedLog::load(&repository, &filter, false) }
+            });
+            let full = full.await;
+            this.update(cx, |this, cx| match full {
+                Ok(log) => {
+                    this.set_log(log);
+                    cx.emit(RepoEvent::Reloaded);
+                    cx.notify();
+                }
+                // Load the log again on the next reload.
+                Err(_) => this.log_key = None,
+            })
+            .ok();
+            cx.background_spawn(async move { git::log::write_commit_graph(&repository) }).await;
+        })
+    }
+
+    fn set_log(&mut self, log: LoadedLog) {
+        self.all_commits = Arc::new(log.commits);
+        self.all_graph = Arc::new(log.graph);
+        self.all_rows = Arc::new(log.rows);
         self.apply_collapse();
     }
 
@@ -491,6 +560,7 @@ impl RepoModel {
         if !self.collapse_linear {
             self.commits = self.all_commits.clone();
             self.graph = self.all_graph.clone();
+            self.rows = self.all_rows.clone();
             self.hidden.clear();
             return;
         }
@@ -498,6 +568,7 @@ impl RepoModel {
         let (commits, hidden) =
             git::log::collapse_linear(&self.all_commits, |h| !refs.for_commit(h).is_empty(), &self.expanded_runs);
         self.graph = Arc::new(GraphLayout::build(&commits));
+        self.rows = Arc::new(git::log::CommitRows::build(&commits));
         self.commits = Arc::new(commits);
         self.hidden = hidden;
     }

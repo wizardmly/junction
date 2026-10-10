@@ -305,6 +305,34 @@ impl Repository {
         run_in(&self.executable, &self.root, &self.console, args, input, env)
     }
 
+    /// Runs a query, handing its stdout to `read` as git writes it, so a
+    /// large output (the whole log) is parsed while git still runs.
+    pub fn run_streaming<R>(&self, args: &[String], read: impl FnOnce(&mut dyn std::io::BufRead) -> R) -> Result<R> {
+        let mut child = command_in(&self.executable, &self.root, args, &[])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to run git")?;
+        let stderr = child.stderr.take().unwrap();
+        // Drain stderr alongside, so a chatty git can't block on a full pipe.
+        let errors = std::thread::spawn(move || {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::BufReader::new(stderr), &mut text).ok();
+            text
+        });
+        let mut stdout = std::io::BufReader::with_capacity(1 << 16, child.stdout.take().unwrap());
+        let result = read(&mut stdout);
+        // Whatever `read` left unread.
+        std::io::copy(&mut stdout, &mut std::io::sink()).ok();
+        let status = child.wait()?;
+        let stderr = errors.join().unwrap_or_default();
+        if !status.success() {
+            bail!("git {} failed: {}", args.join(" "), stderr.trim());
+        }
+        Ok(result)
+    }
+
     /// Runs git and returns raw stdout.
     pub fn run_bytes<I, S>(&self, args: I) -> Result<Vec<u8>>
     where
@@ -370,19 +398,7 @@ where
 {
     let args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_owned()).collect();
     let time = chrono::Local::now();
-    let mut child = git_command(executable)
-        .current_dir(cwd)
-        .envs(crate::askpass::git_env())
-        // Stable, parseable output regardless of the user's config.
-        .args(["-c", "core.quotepath=false", "-c", "color.ui=false", "-c", "log.showSignature=false"])
-        // With the credential helper off, credentials come from our askpass prompt only.
-        .args(if NO_CREDENTIAL_HELPER.load(std::sync::atomic::Ordering::Relaxed) { &["-c", "credential.helper="][..] } else { &[][..] })
-        .args(&args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        // Never block on an editor (rebase/cherry-pick --continue, merge commits).
-        .env("GIT_EDITOR", "true")
-        .envs(env.iter().copied())
-        .env("LC_ALL", "C")
+    let mut child = command_in(executable, cwd, &args, env)
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -421,6 +437,25 @@ where
         bail!("{command_line} failed: {}", detail.trim());
     }
     Ok(stdout)
+}
+
+/// git with the options every command runs with.
+fn command_in(executable: &Path, cwd: &Path, args: &[String], env: &[(&str, &str)]) -> Command {
+    let mut command = git_command(executable);
+    command
+        .current_dir(cwd)
+        .envs(crate::askpass::git_env())
+        // Stable, parseable output regardless of the user's config.
+        .args(["-c", "core.quotepath=false", "-c", "color.ui=false", "-c", "log.showSignature=false"])
+        // With the credential helper off, credentials come from our askpass prompt only.
+        .args(if NO_CREDENTIAL_HELPER.load(std::sync::atomic::Ordering::Relaxed) { &["-c", "credential.helper="][..] } else { &[][..] })
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        // Never block on an editor (rebase/cherry-pick --continue, merge commits).
+        .env("GIT_EDITOR", "true")
+        .envs(env.iter().copied())
+        .env("LC_ALL", "C");
+    command
 }
 
 /// Control characters in our `--format` strings, written as git's own

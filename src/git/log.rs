@@ -7,8 +7,9 @@ use super::Repository;
 pub struct Commit {
     pub hash: String,
     pub parents: Vec<String>,
-    pub author_name: String,
-    pub author_email: String,
+    /// Shared between a person's commits.
+    pub author_name: std::sync::Arc<str>,
+    pub author_email: std::sync::Arc<str>,
     /// Unix seconds.
     pub author_time: i64,
     pub subject: String,
@@ -50,15 +51,31 @@ const RECORD: char = '\u{1e}';
 pub const FIRST_PAGE: usize = 1000;
 
 pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize>) -> Result<Vec<Commit>> {
-    let mut args: Vec<String> = vec![
-        "log".into(),
+    load(repository, filter, limit, false)
+}
+
+/// The first page shown while the whole log loads. Sorting needs git to
+/// walk the history up to the oldest ref first, which takes seconds in a
+/// large repository unless git has a commit-graph; without one the page
+/// comes in commit date order. Tags pointing deep into the history slow
+/// the walk too, so the page leaves them out (it is replaced moments later).
+pub fn load_first_page(repository: &Repository, filter: &LogFilter) -> Result<Vec<Commit>> {
+    load(repository, filter, Some(FIRST_PAGE), true)
+}
+
+fn load(repository: &Repository, filter: &LogFilter, limit: Option<usize>, first_page: bool) -> Result<Vec<Commit>> {
+    let sorted = !first_page || has_commit_graph(repository);
+    let mut args: Vec<String> = vec!["log".into()];
+    if sorted {
         // IntelliJ's default is IntelliSort; topological order keeps branches
         // contiguous in the graph the same way.
-        if filter.date_order { "--date-order" } else { "--topo-order" }.into(),
-        "--no-color".into(),
-        format!("--format={RECORD}%H{FIELD}%P{FIELD}%an{FIELD}%ae{FIELD}%at{FIELD}%s"),
-    ];
-    if filter.branches.is_empty() {
+        args.push(if filter.date_order { "--date-order" } else { "--topo-order" }.into());
+    }
+    args.push("--no-color".into());
+    args.push(format!("--format={RECORD}%H{FIELD}%P{FIELD}%an{FIELD}%ae{FIELD}%at{FIELD}%s"));
+    if filter.branches.is_empty() && first_page {
+        args.extend(["--branches".into(), "--remotes".into(), "HEAD".into()]);
+    } else if filter.branches.is_empty() {
         // Stashes and shelves are listed separately, as in IntelliJ.
         // (`--exclude` only applies to the `--all` after it.)
         args.push("--exclude=refs/stash".into());
@@ -114,8 +131,26 @@ pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize
         }
     }
 
-    let output = repository.run(&args)?;
-    let mut commits = parse_log(&output);
+    let mut commits = repository.run_streaming(&args, |out| {
+        let mut commits = Vec::new();
+        let mut record = Vec::new();
+        let mut people = People::default();
+        loop {
+            record.clear();
+            match out.read_until(RECORD as u8, &mut record) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            if record.last() == Some(&(RECORD as u8)) {
+                record.pop();
+            }
+            if let Some(commit) = parse_record(&String::from_utf8_lossy(&record), &mut people) {
+                commits.push(commit);
+            }
+        }
+        commits.shrink_to_fit();
+        commits
+    })?;
     if hash_search {
         // A hex string may be a hash prefix or a word in a message; IntelliJ matches both.
         let needle = text.to_ascii_lowercase();
@@ -124,24 +159,102 @@ pub fn load_log(repository: &Repository, filter: &LogFilter, limit: Option<usize
     Ok(commits)
 }
 
-pub(crate) fn parse_log(output: &str) -> Vec<Commit> {
-    output
-        .split(RECORD)
-        .filter_map(|record| {
-            let record = record.trim_end_matches('\n');
-            if record.is_empty() {
-                return None;
+fn objects_dir(repository: &Repository) -> Option<std::path::PathBuf> {
+    // Linked worktrees keep their objects in the main repository.
+    let git_dir = repository.git_dir();
+    let common = std::fs::read_to_string(git_dir.join("commondir")).ok().map(|c| git_dir.join(c.trim()));
+    Some(common.unwrap_or_else(|| git_dir.to_path_buf()).join("objects"))
+}
+
+/// Whether git keeps a commit-graph, which lets it sort the log without
+/// reading the whole history first.
+pub fn has_commit_graph(repository: &Repository) -> bool {
+    objects_dir(repository).is_some_and(|objects| {
+        let info = objects.join("info");
+        info.join("commit-graph").is_file() || info.join("commit-graphs").join("commit-graph-chain").is_file()
+    })
+}
+
+/// Writes or extends git's commit-graph (what `git gc` and `git maintenance`
+/// do), so the next log loads sorted in moments. Adding a layer for new
+/// commits is cheap; the first write of a large history takes a while.
+pub fn write_commit_graph(repository: &Repository) {
+    let disabled = repository.run(["config", "--bool", "core.commitGraph"]).is_ok_and(|v| v.trim() == "false");
+    if disabled {
+        return;
+    }
+    crate::git::git_process()
+        .args(["commit-graph", "write", "--reachable", "--split", "--no-progress"])
+        .current_dir(repository.root())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok();
+}
+
+/// Finds a commit's row by its hash without scanning the log.
+#[derive(Debug, Default)]
+pub struct CommitRows(std::collections::HashMap<u64, u32>);
+
+impl CommitRows {
+    pub fn build(commits: &[Commit]) -> Self {
+        let mut map = std::collections::HashMap::with_capacity(commits.len());
+        for (ix, commit) in commits.iter().enumerate() {
+            if let Some(key) = row_key(&commit.hash) {
+                map.entry(key).or_insert(ix as u32);
             }
-            let mut fields = record.splitn(6, FIELD);
-            let hash = fields.next()?.to_owned();
-            let parents = fields.next()?.split_whitespace().map(str::to_owned).collect();
-            let author_name = fields.next()?.to_owned();
-            let author_email = fields.next()?.to_owned();
-            let author_time = fields.next()?.parse().unwrap_or(0);
-            let subject = fields.next().unwrap_or_default().to_owned();
-            Some(Commit { hash, parents, author_name, author_email, author_time, subject })
-        })
-        .collect()
+        }
+        Self(map)
+    }
+
+    pub fn get(&self, commits: &[Commit], hash: &str) -> Option<usize> {
+        let ix = row_key(hash).and_then(|key| self.0.get(&key)).map(|&ix| ix as usize);
+        match ix {
+            Some(ix) if commits.get(ix).is_some_and(|c| c.hash == hash) => Some(ix),
+            // Not a full hash, or two hashes sharing the first 16 digits.
+            _ => (hash.len() < 40 || ix.is_some()).then(|| commits.iter().position(|c| c.hash == hash)).flatten(),
+        }
+    }
+}
+
+fn row_key(hash: &str) -> Option<u64> {
+    u64::from_str_radix(hash.get(..16)?, 16).ok()
+}
+
+pub(crate) fn parse_log(output: &str) -> Vec<Commit> {
+    let mut people = People::default();
+    output.split(RECORD).filter_map(|r| parse_record(r, &mut people)).collect()
+}
+
+/// Author names and emails, each kept once.
+#[derive(Default)]
+struct People(std::collections::HashSet<std::sync::Arc<str>>);
+
+impl People {
+    fn get(&mut self, name: &str) -> std::sync::Arc<str> {
+        if let Some(known) = self.0.get(name) {
+            return known.clone();
+        }
+        let name: std::sync::Arc<str> = name.into();
+        self.0.insert(name.clone());
+        name
+    }
+}
+
+fn parse_record(record: &str, people: &mut People) -> Option<Commit> {
+    let record = record.trim_end_matches('\n');
+    if record.is_empty() {
+        return None;
+    }
+    let mut fields = record.splitn(6, FIELD);
+    let hash = fields.next()?.to_owned();
+    let parents = fields.next()?.split_whitespace().map(str::to_owned).collect();
+    let author_name = people.get(fields.next()?);
+    let author_email = people.get(fields.next()?);
+    let author_time = fields.next()?.parse().unwrap_or(0);
+    let subject = fields.next().unwrap_or_default().to_owned();
+    Some(Commit { hash, parents, author_name, author_email, author_time, subject })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -266,7 +379,8 @@ pub fn load_details(repository: &Repository, hash: &str) -> Result<CommitDetails
     if parents.is_empty() {
         diff_args.push("--root");
     } else if parents.len() > 1 {
-        diff_args.extend(["-m", "--first-parent"]);
+        // (`-m --first-parent` would list the diffs against every parent.)
+        diff_args.push(&parents[0]);
     }
     diff_args.push(&hash);
     let changes = parse_name_status(&repository.run(&diff_args)?);
@@ -417,8 +531,8 @@ mod collapse_tests {
         Commit {
             hash: hash.into(),
             parents: parents.iter().map(|p| p.to_string()).collect(),
-            author_name: String::new(),
-            author_email: String::new(),
+            author_name: "".into(),
+            author_email: "".into(),
             author_time: 0,
             subject: hash.into(),
         }

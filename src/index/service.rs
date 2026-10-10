@@ -114,12 +114,15 @@ impl CodeIndex {
                         true
                     }
                     None => {
-                        // Incremental: stat everything, re-parse the changed files.
-                        let mut copy = index.read().unwrap().clone();
-                        let changed = copy.update(&|done, total| {
+                        // Incremental: stat everything and re-parse the changed
+                        // files while queries keep using the index, then apply.
+                        let changes = index.read().unwrap().scan(&|done, total| {
                             tx.send((done, total)).ok();
                         });
-                        *index.write().unwrap() = copy;
+                        let changed = changes.is_some();
+                        if let Some(changes) = changes {
+                            index.write().unwrap().apply(changes);
+                        }
                         changed
                     }
                 };

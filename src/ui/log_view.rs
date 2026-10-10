@@ -106,13 +106,15 @@ pub struct LogView {
     show_details: bool,
     /// Commits reachable from HEAD among the loaded ones, for the Current
     /// Branch / Not Merged highlighters; keyed by the commit list and HEAD.
-    head_reachable: Option<(usize, Option<String>, Rc<HashSet<String>>)>,
+    head_reachable: Option<(usize, Option<String>, Rc<Vec<bool>>)>,
     /// Recently used Branch / User / Paths filters, newest first (filter history).
     recent_branch_filters: Vec<Vec<String>>,
     recent_user_filters: Vec<Vec<String>>,
     /// Every author seen in this repository's log, for the User filter:
     /// it stays the same when a filter narrows the list (keyed by root).
     known_authors: (Option<std::path::PathBuf>, std::collections::BTreeSet<String>),
+    /// The log `known_authors` last took names from.
+    authors_from: usize,
     recent_path_filters: Vec<Vec<String>>,
     /// Branches panel › Expand All / Collapse All, until the next toggle.
     branch_tree_expanded: Option<bool>,
@@ -137,7 +139,6 @@ pub struct LogView {
     column_drag: Option<(usize, f32, u32)>,
     columns: Option<[u32; 3]>,
     /// The graph with long edges hidden, keyed by the layout it came from.
-    short_graph: Option<(usize, Arc<crate::git::GraphLayout>)>,
     /// The details list every branch holding the commit, not only five.
     show_all_branches: bool,
     /// The Git window is docked left or right: details under the table.
@@ -159,10 +160,19 @@ impl LogView {
                     let root = this.model.read(cx).repository().map(|r| r.root().to_path_buf());
                     if this.known_authors.0 != root {
                         this.known_authors = (root, Default::default());
+                        this.authors_from = 0;
                     }
-                    this.known_authors.1.extend(commits.iter().map(|c| c.author_name.clone()));
-                    this.extra_selection.retain(|h| commits.iter().any(|c| &c.hash == h));
-                    if let Some(hash) = this.select_after_reload.take_if(|hash| commits.iter().any(|c| &c.hash == hash)) {
+                    // Reloads that keep the log (after staging, say) skip this.
+                    if std::mem::replace(&mut this.authors_from, Arc::as_ptr(&commits) as usize) != Arc::as_ptr(&commits) as usize {
+                        for commit in commits.iter() {
+                            if !this.known_authors.1.contains(&*commit.author_name) {
+                                this.known_authors.1.insert(commit.author_name.to_string());
+                            }
+                        }
+                    }
+                    let model = this.model.read(cx);
+                    this.extra_selection.retain(|h| model.row_of(h).is_some());
+                    if let Some(hash) = this.select_after_reload.take_if(|hash| model.row_of(hash).is_some()) {
                         this.model.update(cx, |model, cx| model.select_hash(Some(hash), cx));
                     }
                     this.rebuild_branches(cx);
@@ -217,7 +227,7 @@ impl LogView {
                         let target = model.refs().find(full_name).map(|r| (r.name.clone(), r.target.clone()));
                         let filtered = *model.filter() != LogFilter { date_order: model.filter().date_order, ..Default::default() };
                         match target {
-                            Some((name, hash)) if filtered && !model.commits().iter().any(|c| c.hash == hash) => {
+                            Some((name, hash)) if filtered && model.row_of(&hash).is_none() => {
                                 this.hidden_branch_tip = Some((name, hash));
                                 cx.notify();
                             }
@@ -249,6 +259,7 @@ impl LogView {
             recent_branch_filters: Vec::new(),
             recent_user_filters: Vec::new(),
             known_authors: (None, Default::default()),
+            authors_from: 0,
             recent_path_filters: Vec::new(),
             branch_tree_expanded: None,
             my_branches: false,
@@ -260,7 +271,6 @@ impl LogView {
             anchor: None,
             column_drag: None,
             columns: None,
-            short_graph: None,
             show_all_branches: false,
             details_below: false,
             _search_debounce: None,
@@ -834,7 +844,7 @@ impl LogView {
                     repo.run(["rev-parse", "--verify", "-q", &format!("{text}^{{commit}}")]).ok().map(|h| h.trim().to_owned())
                 })
             });
-        match target.filter(|hash| model.commits().iter().any(|c| &c.hash == hash)) {
+        match target.filter(|hash| model.row_of(hash).is_some()) {
             Some(hash) => {
                 self.extra_selection.clear();
                 self.model.update(cx, |m, cx| m.select_hash(Some(hash), cx));
@@ -1413,21 +1423,8 @@ impl LogView {
         });
     }
 
-    /// The graph with long edges cut into arrows (cached per layout).
-    fn graph_without_long_edges(&mut self, graph: Arc<crate::git::GraphLayout>) -> Arc<crate::git::GraphLayout> {
-        let key = Arc::as_ptr(&graph) as usize;
-        match &self.short_graph {
-            Some((k, hidden)) if *k == key => hidden.clone(),
-            _ => {
-                let hidden = Arc::new(graph.hide_long_edges());
-                self.short_graph = Some((key, hidden.clone()));
-                hidden
-            }
-        }
-    }
-
-    /// Hashes reachable from HEAD within the loaded log (cached per load).
-    fn head_reachable(&mut self, cx: &App) -> Rc<HashSet<String>> {
+    /// Which rows are reachable from HEAD within the loaded log (cached per load).
+    fn head_reachable(&mut self, cx: &App) -> Rc<Vec<bool>> {
         let model = self.model.read(cx);
         let commits = model.commits().clone();
         let head = model.refs().head_commit.clone();
@@ -1437,14 +1434,13 @@ impl LogView {
                 return set.clone();
             }
         }
-        let parents: HashMap<&str, &Vec<String>> = commits.iter().map(|c| (c.hash.as_str(), &c.parents)).collect();
-        let mut reachable = HashSet::new();
-        let mut stack: Vec<String> = head.iter().cloned().collect();
-        while let Some(hash) = stack.pop() {
-            if let Some(ps) = parents.get(hash.as_str()) {
-                stack.extend(ps.iter().filter(|p| !reachable.contains(*p)).cloned());
+        let mut reachable = vec![false; commits.len()];
+        let mut stack: Vec<usize> = head.as_deref().and_then(|h| model.row_of(h)).into_iter().collect();
+        while let Some(ix) = stack.pop() {
+            if std::mem::replace(&mut reachable[ix], true) {
+                continue;
             }
-            reachable.insert(hash);
+            stack.extend(commits[ix].parents.iter().filter_map(|p| model.row_of(p)).filter(|&p| !reachable[p]));
         }
         let set = Rc::new(reachable);
         self.head_reachable = Some((key, head, set.clone()));
@@ -1502,9 +1498,9 @@ impl LogView {
         let refs = model.refs().clone();
         let selected = model.selected_index();
         let show_long_edges = Settings::get(cx).log.show_long_edges;
-        let graph = if show_long_edges { graph } else { self.graph_without_long_edges(graph) };
+        let graph_rows = graph.rows(range.clone(), show_long_edges);
         let model = self.model.read(cx);
-        let extra = self.extra_selection.clone();
+        let extra: Vec<bool> = range.clone().map(|ix| commits.get(ix).is_some_and(|c| self.extra_selection.contains(&c.hash))).collect();
         let me = model.user_email().map(str::to_owned);
         let log = Settings::get(cx).log.clone();
         let show_hash = log.show_hash;
@@ -1544,16 +1540,17 @@ impl LogView {
         };
         let model = self.model.read(cx);
 
+        let range_start = range.start;
         range
             .filter_map(|ix| {
                 let commit = commits.get(ix)?;
-                let row = graph.rows.get(ix).cloned().unwrap_or_default();
-                let is_selected = selected == Some(ix) || extra.contains(&commit.hash);
+                let row = graph_rows.get(ix - range_start).cloned().unwrap_or_default();
+                let is_selected = selected == Some(ix) || extra[ix - range_start];
                 let is_head = refs.head_commit.as_deref() == Some(commit.hash.as_str());
-                let mine = log.highlight_mine && me.as_deref().is_some_and(|me| me == commit.author_email);
+                let mine = log.highlight_mine && me.as_deref().is_some_and(|me| *me == *commit.author_email);
                 let labels = refs.for_commit(&commit.hash);
                 let is_merge = commit.parents.len() > 1;
-                let on_head = reachable.as_ref().map(|r| r.contains(&commit.hash));
+                let on_head = reachable.as_ref().map(|r| r.get(ix).copied().unwrap_or(false));
                 // Merge commits and commits not merged into HEAD are greyed, as IntelliJ's highlighters do.
                 let dim = (log.highlight_merges && is_merge) || (log.highlight_not_merged && on_head == Some(false));
                 let text_color = if dim { palette.text_secondary } else { palette.text };
@@ -1683,7 +1680,7 @@ impl LogView {
                                     .text_ellipsis()
                                     .text_color(palette.text_secondary)
                                     .when(mine, |el| el.font_weight(FontWeight::SEMIBOLD))
-                                    .child(commit.author_name.clone()),
+                                    .child(commit.author_name.to_string()),
                             )
                         })
                         .when(log.show_date, |el| {

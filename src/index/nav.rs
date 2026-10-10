@@ -2,7 +2,7 @@
 //! Language servers answer first when available (see `lsp`); this is the
 //! fallback and the cross-language part no single server knows.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
 use super::bridge::Role;
@@ -542,39 +542,69 @@ pub fn usages(index: &ProjectIndex, root: &Path, word: &str, lang: Option<Lang>)
         }
     }
 
-    // Each file's comments and string literals: text there isn't a usage.
-    let mut non_code: HashMap<String, (Vec<usize>, Vec<std::ops::Range<usize>>)> = HashMap::new();
     let output = crate::git::git_process()
         .args(["grep", "-n", "--column", "-w", "-I", "-F", "--untracked", "--exclude-standard", "-e", word])
         .current_dir(root)
         .output();
-    if let Ok(output) = output {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let mut parts = line.splitn(4, ':');
-            let (Some(path), Some(l), Some(c), Some(text)) = (parts.next(), parts.next(), parts.next(), parts.next()) else { continue };
-            let Some(entry) = index.files.get(path) else { continue };
-            let (Ok(l), Ok(c)) = (l.parse::<u32>(), c.parse::<u32>()) else { continue };
-            let line0 = l.saturating_sub(1);
-            // git reports a byte column; editors want UTF-16.
-            let byte_col = (c.saturating_sub(1) as usize).min(text.len());
-            let (starts, skip) = non_code.entry(path.to_owned()).or_insert_with(|| {
-                let source = std::fs::read_to_string(root.join(path)).unwrap_or_default();
-                let starts = std::iter::once(0).chain(source.match_indices('\n').map(|(i, _)| i + 1)).collect();
-                (starts, comments_and_strings(&source, entry.lang))
-            });
-            if let Some(start) = starts.get(line0 as usize) {
+    // Hits per indexed file, in git's order: (0-based line, byte column, line text).
+    let mut groups: Vec<(&str, &super::store::FileEntry, Vec<(u32, usize, String)>)> = Vec::new();
+    let stdout = output.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    for line in stdout.lines() {
+        let mut parts = line.splitn(4, ':');
+        let (Some(path), Some(l), Some(c), Some(text)) = (parts.next(), parts.next(), parts.next(), parts.next()) else { continue };
+        let Some((path, entry)) = index.files.get_key_value(path) else { continue };
+        let (Ok(l), Ok(c)) = (l.parse::<u32>(), c.parse::<u32>()) else { continue };
+        // git reports a byte column; editors want UTF-16.
+        let byte_col = (c.saturating_sub(1) as usize).min(text.len());
+        let hit = (l.saturating_sub(1), byte_col, text.to_owned());
+        match groups.last_mut() {
+            Some((p, _, hits)) if *p == path.as_str() => hits.push(hit),
+            _ => groups.push((path.as_str(), entry, vec![hit])),
+        }
+    }
+    // Each file's comments and string literals: text there isn't a usage.
+    // Files are read and scanned on every core.
+    let usages_in = |path: &str, entry: &super::store::FileEntry, hits: &[(u32, usize, String)]| -> Vec<Usage> {
+        let source = std::fs::read_to_string(root.join(path)).unwrap_or_default();
+        let starts: Vec<usize> = std::iter::once(0).chain(source.match_indices('\n').map(|(i, _)| i + 1)).collect();
+        let skip = comments_and_strings(&source, entry.lang);
+        let mut out = Vec::new();
+        for (line0, byte_col, text) in hits {
+            if let Some(start) = starts.get(*line0 as usize) {
                 let at = start + byte_col;
                 if skip.binary_search_by(|r| if r.end <= at { std::cmp::Ordering::Less } else if r.start > at { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal }).is_ok() {
                     continue;
                 }
             }
-            if !seen.insert((path.to_owned(), line0)) {
-                continue;
-            }
-            let col = text.get(..byte_col).map_or(0, |s| s.encode_utf16().count() as u32);
-            let is_decl = entry.symbols.iter().any(|s| s.line == line0 && s.name == word);
+            let col = text.get(..*byte_col).map_or(0, |s| s.encode_utf16().count() as u32);
+            let is_decl = entry.symbols.iter().any(|s| s.line == *line0 && s.name == word);
             let group = if is_decl { "Declarations".to_owned() } else { entry.lang.name().to_owned() };
-            out.push(Usage { path: path.to_owned(), line: line0, col, text: text.trim().to_owned(), group });
+            out.push(Usage { path: path.to_owned(), line: *line0, col, text: text.trim().to_owned(), group });
+        }
+        out
+    };
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8).min(groups.len().max(1));
+    let mut per_file: Vec<(usize, Vec<Usage>)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((path, entry, hits)) = groups.get(i) else { break };
+                        done.push((i, usages_in(path, entry, hits)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|w| w.join().unwrap_or_default()).collect()
+    });
+    per_file.sort_by_key(|(i, _)| *i);
+    for usage in per_file.into_iter().flat_map(|(_, u)| u) {
+        if seen.insert((usage.path.clone(), usage.line)) {
+            out.push(usage);
         }
     }
     let rank = |u: &Usage| {
@@ -726,12 +756,65 @@ pub struct SymbolMatch {
 /// after `_`, `.`, `/`, `-`, a digit run). A plain substring also matches,
 /// ranked lower. `None` when the query doesn't match.
 pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
-    if query.is_empty() {
-        return Some(0);
+    Fuzzy::new(query).score(candidate)
+}
+
+/// A query for [`fuzzy_score`], prepared once for scoring many candidates.
+pub struct Fuzzy {
+    q: Vec<char>,
+}
+
+impl Fuzzy {
+    pub fn new(query: &str) -> Self {
+        Self { q: query.chars().filter(|c| !c.is_whitespace() && *c != '*').flat_map(|c| c.to_lowercase()).collect() }
     }
-    let q: Vec<char> = query.chars().filter(|c| !c.is_whitespace() && *c != '*').flat_map(|c| c.to_lowercase()).collect();
-    if q.is_empty() {
-        return Some(0);
+
+    /// Whether the query's characters occur in order: every match needs
+    /// that, and checking it first skips most candidates cheaply.
+    fn may_match(&self, candidate: &str) -> bool {
+        let mut q = self.q.iter();
+        let mut want = q.next();
+        for c in candidate.chars() {
+            let Some(&w) = want else { break };
+            let lower = if c.is_ascii() { c.to_ascii_lowercase() } else { c.to_lowercase().next().unwrap_or(c) };
+            if lower == w {
+                want = q.next();
+            }
+        }
+        want.is_none()
+    }
+
+    pub fn score(&self, candidate: &str) -> Option<i32> {
+        let q = &self.q;
+        if q.is_empty() {
+            return Some(0);
+        }
+        if !self.may_match(candidate) {
+            return None;
+        }
+        score_prepared(q, candidate)
+    }
+}
+
+fn score_prepared(q: &[char], candidate: &str) -> Option<i32> {
+    // Most names are short ASCII: score them without allocating.
+    const SHORT: usize = 128;
+    if candidate.is_ascii() && candidate.len() <= SHORT && q.len() <= SHORT && q.iter().all(char::is_ascii) {
+        let bytes = candidate.as_bytes();
+        let mut lower = [0u8; SHORT];
+        let mut starts = [false; SHORT];
+        let mut query = [0u8; SHORT];
+        for (i, &c) in bytes.iter().enumerate() {
+            lower[i] = c.to_ascii_lowercase();
+            starts[i] = i == 0
+                || (c.is_ascii_uppercase() && !bytes[i - 1].is_ascii_uppercase())
+                || (c.is_ascii_alphanumeric() && !bytes[i - 1].is_ascii_alphanumeric())
+                || (c.is_ascii_digit() != bytes[i - 1].is_ascii_digit() && c.is_ascii_alphanumeric());
+        }
+        for (i, c) in q.iter().enumerate() {
+            query[i] = *c as u8;
+        }
+        return combine(&query[..q.len()], &lower[..bytes.len()], &starts[..bytes.len()]);
     }
     let chars: Vec<char> = candidate.chars().collect();
     let lower: Vec<char> = chars.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
@@ -743,8 +826,14 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
                 || (chars[i].is_ascii_digit() != chars[i - 1].is_ascii_digit() && chars[i].is_alphanumeric())
         })
         .collect();
+    combine(q, &lower, &starts)
+}
+
+/// The score of a query (lowercase) against a lowercased candidate and
+/// its word starts: the better of the hump match and a plain substring.
+fn combine<T: PartialEq>(q: &[T], lower: &[T], starts: &[bool]) -> Option<i32> {
     // Depth-first over match positions; queries are short.
-    fn walk(q: &[char], qi: usize, lower: &[char], starts: &[bool], from: usize, prev: Option<usize>, budget: &mut u32) -> Option<i32> {
+    fn walk<T: PartialEq>(q: &[T], qi: usize, lower: &[T], starts: &[bool], from: usize, prev: Option<usize>, budget: &mut u32) -> Option<i32> {
         if qi == q.len() {
             return Some(0);
         }
@@ -772,18 +861,16 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
         best
     }
     let mut budget = 2000;
-    let hump = walk(&q, 0, &lower, &starts, 0, None, &mut budget);
-    let needle: String = q.iter().collect();
-    let hay: String = lower.iter().collect();
-    let substring = hay.find(&needle).map(|_| q.len() as i32 * 4);
+    let hump = walk(q, 0, lower, starts, 0, None, &mut budget);
+    let substring = lower.windows(q.len()).any(|w| w == q).then(|| q.len() as i32 * 4);
     let score = match (hump, substring) {
         (Some(h), Some(s)) => h.max(s),
         (Some(h), None) => h,
         (None, Some(s)) => s,
         (None, None) => return None,
     };
-    let prefix = if hay.starts_with(&needle) { 15 } else { 0 };
-    Some(score + prefix - (chars.len() as i32 - q.len() as i32).max(0) / 4)
+    let prefix = if lower.starts_with(q) { 15 } else { 0 };
+    Some(score + prefix - (lower.len() as i32 - q.len() as i32).max(0) / 4)
 }
 
 #[cfg(test)]
@@ -811,24 +898,65 @@ fn symbols_matching(index: &ProjectIndex, query: &str, types_only: bool, librari
     if query.is_empty() {
         return Vec::new();
     }
-    let mut out: Vec<SymbolMatch> = Vec::new();
+    // Score the names on every core, then look at their symbols best
+    // name first, and build only the matches shown.
+    let fuzzy = Fuzzy::new(query);
     let external: Box<dyn Iterator<Item = &String>> = if libraries { Box::new(index.external_names()) } else { Box::new(std::iter::empty()) };
-    for name in index.names().chain(external) {
-        let Some(score) = fuzzy_score(query, name) else { continue };
+    // Names lacking a letter of the query can't match; the masks say so
+    // without reading the names themselves.
+    let want = super::store::char_mask(query);
+    let names: Vec<&String> = index
+        .names_with_masks()
+        .filter(|(_, mask)| mask & want == want)
+        .map(|(name, _)| name)
+        .chain(external.filter(|n| super::store::char_mask(n) & want == want))
+        .collect();
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
+    let mut scored: Vec<(i32, &String)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = names
+            .chunks(names.len().div_ceil(threads).max(1))
+            .map(|chunk| scope.spawn(|| chunk.iter().filter_map(|n| fuzzy.score(n).map(|s| (s, *n))).collect::<Vec<_>>()))
+            .collect();
+        workers.into_iter().flat_map(|w| w.join().unwrap_or_default()).collect()
+    });
+    // A symbol scores at most its name's score (plus 50 for the exact
+    // name); declarations and library symbols score less.
+    for (score, name) in &mut scored {
+        if name.eq_ignore_ascii_case(query) {
+            *score += 50;
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut found: Vec<(i32, &str, &super::store::FileEntry, &super::symbols::Symbol)> = Vec::new();
+    let mut threshold = i32::MIN;
+    let mut checked = 0;
+    for (ix, &(score, name)) in scored.iter().enumerate() {
+        // Once `limit` matches are in, names that can't reach them are skipped.
+        if score < threshold {
+            break;
+        }
+        if found.len() >= limit && (ix == 0 || scored[ix - 1].0 != score) && found.len() != checked {
+            checked = found.len();
+            let mut finals: Vec<i32> = found.iter().map(|f| f.0).collect();
+            let (_, kth, _) = finals.select_nth_unstable_by(limit - 1, |a, b| b.cmp(a));
+            threshold = *kth;
+            if score < threshold {
+                break;
+            }
+        }
         for (p, e, s) in index.symbols_named(name) {
             if (types_only && !s.kind.is_type()) || s.decl && types_only || !libraries && ProjectIndex::is_external(p) {
                 continue;
             }
-            let exact = if name.eq_ignore_ascii_case(query) { 50 } else { 0 };
             // Library items follow the project's, as with IntelliJ's
             // "Include non-project items".
             let external = if ProjectIndex::is_external(p) { 40 } else { 0 };
-            out.push(SymbolMatch { target: symbol_target(p, e.lang, s), kind: s.kind, score: score + exact - s.decl as i32 * 5 - external });
+            found.push((score - s.decl as i32 * 5 - external, p, e, s));
         }
     }
-    out.sort_by(|a, b| b.score.cmp(&a.score).then(a.target.name.len().cmp(&b.target.name.len())).then(a.target.path.cmp(&b.target.path)));
-    out.truncate(limit);
-    out
+    found.sort_by(|a, b| b.0.cmp(&a.0).then(a.3.name.len().cmp(&b.3.name.len())).then(a.1.cmp(b.1)));
+    found.truncate(limit);
+    found.into_iter().map(|(score, p, e, s)| SymbolMatch { target: symbol_target(p, e.lang, s), kind: s.kind, score }).collect()
 }
 
 /// File Structure (Ctrl+F12): the file's symbols in source order.
@@ -851,12 +979,13 @@ pub fn search_files(index: &ProjectIndex, query: &str, libraries: bool, limit: u
         return Vec::new();
     }
     // A query with a slash matches against the whole path, otherwise the name.
+    let fuzzy = Fuzzy::new(query);
     let mut out: Vec<(String, i32)> = index
         .all_files
         .iter()
         .filter_map(|path| {
             let name = path.rsplit('/').next().unwrap_or(path);
-            let score = if query.contains('/') { fuzzy_score(query, path)? } else { fuzzy_score(query, name).map(|s| s + 20).or_else(|| fuzzy_score(query, path))? };
+            let score = if query.contains('/') { fuzzy.score(path)? } else { fuzzy.score(name).map(|s| s + 20).or_else(|| fuzzy.score(path))? };
             Some((path.clone(), score))
         })
         .collect();
@@ -865,7 +994,7 @@ pub fn search_files(index: &ProjectIndex, query: &str, libraries: bool, limit: u
     for library in index.external.libraries.iter().filter(|_| libraries) {
         for path in &library.files {
             let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-            if let Some(score) = fuzzy_score(query, name) {
+            if let Some(score) = fuzzy.score(name) {
                 out.push((path.clone(), score + 20 - 40));
             }
         }

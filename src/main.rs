@@ -4,6 +4,8 @@
 // A GUI app on Windows: no console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(test)]
+mod bench;
 mod askpass;
 mod assets;
 mod crash;

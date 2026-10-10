@@ -268,7 +268,7 @@ impl Render for RebaseEditor {
                                     .to_owned(),
                             ),
                     )
-                    .child(div().w(px(90.)).text_color(palette.text_secondary).child(entry.commit.author_name.clone())),
+                    .child(div().w(px(90.)).text_color(palette.text_secondary).child(entry.commit.author_name.to_string())),
             );
         }
         let current = self.entries.get(selected).map(|e| e.action);

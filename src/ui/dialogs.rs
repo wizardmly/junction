@@ -335,7 +335,7 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
                     })
                     .child(div().flex_shrink_0().font_family(mono.clone()).text_color(palette.text_secondary).child(commit.short_hash().to_owned()))
                     .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(commit.subject.clone()))
-                    .child(div().flex_shrink_0().text_color(palette.text_secondary).child(commit.author_name.clone())),
+                    .child(div().flex_shrink_0().text_color(palette.text_secondary).child(commit.author_name.to_string())),
             );
         }
         if out.commits.is_empty() {
