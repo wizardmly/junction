@@ -170,6 +170,16 @@ pub fn commits_above(repository: &Repository, hash: &str) -> usize {
     repository.run(["rev-list", "--count", &format!("{hash}..HEAD")]).ok().and_then(|n| n.trim().parse::<usize>().ok()).unwrap_or(0)
 }
 
+/// Undoes a Drop Commit rebase that moved the branch from `old` to `new`,
+/// as long as the branch is still at `new`.
+pub fn undo_drop(repository: &Repository, old: &str, new: &str) -> Result<()> {
+    if repository.run(["rev-parse", "HEAD"])?.trim() != new {
+        anyhow::bail!("The branch has changed since the commits were dropped");
+    }
+    repository.run(["reset", "--keep", old])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +271,16 @@ mod tests {
         assert_eq!(commits_above(&t.repo, &first), 2);
         assert_eq!(commits_above(&t.repo, &second), 1);
         assert_eq!(commits_above(&t.repo, "nonexistent"), 0);
+    }
+
+    #[test]
+    fn undo_drop_only_while_the_branch_is_unchanged() {
+        let t = crate::git::test_support::TestRepo::new("rebase-undo-drop");
+        let old = t.commit("b.txt", "b", "second");
+        t.git(&["reset", "-q", "--hard", "HEAD~1"]);
+        let new = t.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        undo_drop(&t.repo, &old, &new).unwrap();
+        assert_eq!(t.git(&["rev-parse", "HEAD"]).trim(), old);
+        assert!(undo_drop(&t.repo, &old, &new).is_err());
     }
 }

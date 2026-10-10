@@ -545,10 +545,7 @@ impl Workspace {
                                     let model = entity.read(cx).model.clone();
                                     model.update(cx, |m, cx| {
                                         m.run_operation("Undo Drop", move |repo| {
-                                            if repo.run(["rev-parse", "HEAD"])?.trim() != new {
-                                                anyhow::bail!("The branch has changed since the commits were dropped");
-                                            }
-                                            repo.run(["reset", "--keep", &old])?;
+                                            crate::git::rebase::undo_drop(repo, &old, &new)?;
                                             Ok("The dropped commits are back".to_owned())
                                         }, cx)
                                     });

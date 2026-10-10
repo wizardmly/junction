@@ -237,6 +237,17 @@ pub fn unmerged_commits(repository: &Repository, reference: &str, limit: usize) 
         .unwrap_or_default()
 }
 
+/// The remote branches (without the remote's name) that contain `hash`.
+pub fn remote_branches_containing(repository: &Repository, hash: &str) -> Vec<String> {
+    repository
+        .run(["branch", "-r", "--format=%(refname:short)", "--contains", hash])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|r| r.trim().split_once('/'))
+        .map(|(_, branch)| branch.to_owned())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +285,20 @@ mod tests {
         assert_eq!(commits.len(), 1);
         assert!(commits[0].ends_with(" topic work"));
         assert!(unmerged_commits(&t.repo, "refs/heads/old", 20).is_empty());
+    }
+
+    #[test]
+    fn remote_branches_containing_a_commit() {
+        let t = crate::git::test_support::TestRepo::new("refs-remote-contains");
+        let first = t.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        let bare = t.bare_remote("origin");
+        t.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+        t.git(&["push", "-q", "origin", "main", "main:release/1"]);
+        let local = t.commit("l.txt", "l", "local only");
+        t.git(&["fetch", "-q", "origin"]);
+        let mut branches = remote_branches_containing(&t.repo, &first);
+        branches.sort();
+        assert_eq!(branches, ["main", "release/1"]);
+        assert!(remote_branches_containing(&t.repo, &local).is_empty());
     }
 }

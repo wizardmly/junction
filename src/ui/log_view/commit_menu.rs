@@ -2,38 +2,6 @@
 
 use super::*;
 
-/// Is `hash` on a remote branch matching the protected branch patterns?
-pub(super) fn on_protected_remote(repo: &crate::git::Repository, hash: &str, settings: &crate::settings::Settings) -> bool {
-    repo.run(["branch", "-r", "--format=%(refname:short)", "--contains", hash])
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|r| r.trim().split_once('/'))
-        .any(|(_, branch)| settings.is_protected(branch))
-}
-
-/// Cherry-picks, skipping commits whose changes are already in the
-/// current branch (git stops on them, "now empty"), as IntelliJ does
-/// rather than leaving a cherry-pick in progress.
-pub(super) fn cherry_pick_skipping_empty(repo: &crate::git::Repository, args: &[String], picked: String) -> anyhow::Result<String> {
-    let total = args.iter().filter(|a| !a.starts_with('-')).count() - 1;
-    let mut skipped = 0;
-    let mut result = repo.run(args);
-    while let Err(error) = result {
-        let text = format!("{error:#}");
-        if skipped >= total || !(text.contains("is now empty") || text.contains("nothing to commit")) {
-            return Err(error);
-        }
-        skipped += 1;
-        result = repo.run(["cherry-pick", "--skip"]);
-    }
-    Ok(match (skipped, total) {
-        (0, _) => picked,
-        (s, t) if s == t && t == 1 => "Nothing to cherry-pick: the commit's changes are already in the current branch".to_owned(),
-        (s, t) if s == t => "Nothing to cherry-pick: the commits' changes are already in the current branch".to_owned(),
-        (s, t) => format!("Cherry-picked {} of {t} commits; {s} skipped, their changes are already in the current branch", t - s),
-    })
-}
-
 pub(super) fn commit_menu(
     menu: gpui_kit::component::menu::PopupMenu,
     entity: &Entity<LogView>,
@@ -173,10 +141,10 @@ pub(super) fn commit_menu(
                 model.run_operation("Cherry-Pick", move |repo| {
                     // IntelliJ adds "(cherry picked from commit …)" for commits
                     // already pushed to a protected branch.
-                    if settings.cherry_pick_suffix && args[1..].iter().any(|hash| on_protected_remote(repo, hash, &settings)) {
+                    if settings.cherry_pick_suffix && args[1..].iter().any(|hash| crate::git::refs::remote_branches_containing(repo, hash).iter().any(|b| settings.is_protected(b))) {
                         args.insert(1, "-x".into());
                     }
-                    cherry_pick_skipping_empty(repo, &args, picked)
+                    crate::git::ops::cherry_pick_skipping_empty(repo, &args, picked)
                 }, cx)
             });
         }

@@ -368,6 +368,29 @@ pub fn rename_path(repository: Option<&Repository>, path: &str, from: &std::path
     }
 }
 
+/// Cherry-picks, skipping commits whose changes are already in the
+/// current branch (git stops on them, "now empty"), as IntelliJ does
+/// rather than leaving a cherry-pick in progress.
+pub fn cherry_pick_skipping_empty(repo: &Repository, args: &[String], picked: String) -> Result<String> {
+    let total = args.iter().filter(|a| !a.starts_with('-')).count() - 1;
+    let mut skipped = 0;
+    let mut result = repo.run(args);
+    while let Err(error) = result {
+        let text = format!("{error:#}");
+        if skipped >= total || !(text.contains("is now empty") || text.contains("nothing to commit")) {
+            return Err(error);
+        }
+        skipped += 1;
+        result = repo.run(["cherry-pick", "--skip"]);
+    }
+    Ok(match (skipped, total) {
+        (0, _) => picked,
+        (s, t) if s == t && t == 1 => "Nothing to cherry-pick: the commit's changes are already in the current branch".to_owned(),
+        (s, t) if s == t => "Nothing to cherry-pick: the commits' changes are already in the current branch".to_owned(),
+        (s, t) => format!("Cherry-picked {} of {t} commits; {s} skipped, their changes are already in the current branch", t - s),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +624,24 @@ mod tests {
         assert!(t.dir.join("v.txt").exists() && !t.dir.join("u.txt").exists());
         rename_path(None, "v.txt", &t.dir.join("v.txt"), &t.dir.join("w.txt"));
         assert!(t.dir.join("w.txt").exists());
+    }
+
+    #[test]
+    fn cherry_pick_skips_commits_already_applied() {
+        let t = crate::git::test_support::TestRepo::new("ops-cherry-pick");
+        t.git(&["checkout", "-q", "-b", "topic"]);
+        let a = t.commit("x.txt", "x", "add x");
+        let b = t.commit("y.txt", "y", "add y");
+        t.git(&["checkout", "-q", "main"]);
+        t.commit("x.txt", "x", "same x");
+        let args: Vec<String> = ["cherry-pick".to_owned(), a.clone(), b.clone()].to_vec();
+        let message = cherry_pick_skipping_empty(&t.repo, &args, "Picked".into()).unwrap();
+        assert_eq!(message, "Cherry-picked 1 of 2 commits; 1 skipped, their changes are already in the current branch");
+        assert!(t.dir.join("y.txt").exists());
+        let again: Vec<String> = ["cherry-pick".to_owned(), a].to_vec();
+        let message = cherry_pick_skipping_empty(&t.repo, &again, "Picked".into()).unwrap();
+        assert_eq!(message, "Nothing to cherry-pick: the commit's changes are already in the current branch");
+        let one: Vec<String> = ["cherry-pick".to_owned(), t.git(&["rev-parse", "topic~1"]).trim().to_owned()].to_vec();
+        assert!(cherry_pick_skipping_empty(&t.repo, &one, "Picked".into()).is_ok());
     }
 }
