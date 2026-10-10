@@ -3,7 +3,7 @@
 //! message editor for Reword / Squash.
 
 use gpui_kit::component::{
-    Disableable as _, Sizable as _, WindowExt as _, h_flex,
+    Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
     dialog::{DialogAction, DialogClose, DialogFooter},
     input::{InputEvent, Textarea, TextareaState},
@@ -11,7 +11,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
     px,
 };
@@ -50,10 +50,14 @@ pub struct RebaseEditor {
     /// Newest first, as displayed.
     entries: Vec<Entry>,
     original: Vec<Entry>,
+    /// The row the message editor and the changes show (the last clicked).
     selected: usize,
-    /// Rows added with Ctrl/Cmd-click, for Unite.
-    extra: std::collections::BTreeSet<usize>,
+    /// Selected rows: Ctrl/Cmd-click adds one, Shift-click a range from
+    /// `anchor`. Actions apply to all of them, as in IntelliJ.
+    selection: std::collections::BTreeSet<usize>,
+    anchor: usize,
     message: Entity<TextareaState>,
+    focus: FocusHandle,
     /// The changed files of each commit looked at, for the details panel.
     files: std::collections::HashMap<String, Vec<crate::git::log::FileChange>>,
     _subscription: Subscription,
@@ -68,6 +72,7 @@ impl RebaseEditor {
                 if let Some(entry) = this.entries.get_mut(this.selected) {
                     if matches!(entry.action, Action::Reword | Action::Squash) {
                         entry.message = Some(text);
+                        cx.notify();
                     }
                 }
             }
@@ -77,8 +82,10 @@ impl RebaseEditor {
             original: entries.clone(),
             entries,
             selected: 0,
-            extra: Default::default(),
+            selection: [0].into(),
+            anchor: 0,
             message,
+            focus: cx.focus_handle(),
             files: Default::default(),
             _subscription: subscription,
         };
@@ -97,103 +104,164 @@ impl RebaseEditor {
         self.message.update(cx, |state, cx| state.set_value(text, window, cx));
     }
 
+    fn rows(&self) -> Vec<usize> {
+        self.selection.iter().copied().filter(|&ix| ix < self.entries.len()).collect()
+    }
+
     fn select(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.extra.clear();
         self.selected = ix.min(self.entries.len().saturating_sub(1));
+        self.anchor = self.selected;
+        self.selection = [self.selected].into();
         self.load_message(window, cx);
         cx.notify();
     }
 
-    fn set_action(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
-        // The oldest commit has nothing below it to squash into.
-        let oldest = self.selected + 1 == self.entries.len();
-        if oldest && matches!(action, Action::Squash | Action::Fixup) {
-            return;
+    /// A click on a row: plain selects it, Ctrl/Cmd adds or removes it,
+    /// Shift selects the range from the last plain click.
+    fn click(&mut self, ix: usize, modifiers: gpui_kit::Modifiers, window: &mut Window, cx: &mut Context<Self>) {
+        if modifiers.shift {
+            let (from, to) = (self.anchor.min(ix), self.anchor.max(ix));
+            self.selection = (from..=to).collect();
+        } else if modifiers.secondary() {
+            if !self.selection.remove(&ix) {
+                self.selection.insert(ix);
+            }
+            if self.selection.is_empty() {
+                self.selection.insert(ix);
+            }
+            self.anchor = ix;
+        } else {
+            return self.select(ix, window, cx);
         }
-        if let Some(entry) = self.entries.get_mut(self.selected) {
-            entry.action = action;
-            if action == Action::Squash && entry.message.is_none() {
+        self.selected = ix;
+        self.load_message(window, cx);
+        cx.notify();
+    }
+
+    /// The toolbar's actions on every selected row. Squash and Fixup with
+    /// several rows selected unite them; on one row they fold it into the
+    /// commit below.
+    fn set_action(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.rows();
+        if rows.len() > 1 && matches!(action, Action::Squash | Action::Fixup) {
+            return self.unite(action, window, cx);
+        }
+        for ix in rows {
+            // The oldest commit has nothing below it to squash into.
+            let oldest = ix + 1 == self.entries.len();
+            if oldest && matches!(action, Action::Squash | Action::Fixup) {
+                continue;
+            }
+            self.entries[ix].action = action;
+            if action == Action::Squash && self.entries[ix].message.is_none() {
                 // Squash proposes both messages, like git's default.
-                let below = &self.entries[self.selected + 1];
                 let joined = format!(
                     "{}\n\n{}",
-                    rebase::message_of(&self.repository, &below.commit.hash),
-                    rebase::message_of(&self.repository, &self.entries[self.selected].commit.hash)
+                    rebase::message_of(&self.repository, &self.entries[ix + 1].commit.hash),
+                    rebase::message_of(&self.repository, &self.entries[ix].commit.hash)
                 );
-                self.entries[self.selected].message = Some(joined);
+                self.entries[ix].message = Some(joined);
             }
         }
         self.load_message(window, cx);
         cx.notify();
     }
 
-    fn toggle_extra(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if ix != self.selected && !self.extra.remove(&ix) {
-            self.extra.insert(ix);
-        }
-        cx.notify();
+    /// Reword (also a double-click): the message editor takes the new message.
+    fn reword(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.selection = [self.selected].into();
+        self.set_action(Action::Reword, window, cx);
+        self.message.update(cx, |state, cx| state.focus(window, cx));
     }
 
-    /// Drag and drop: moves row `from` to where row `to` is.
-    fn move_row(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
-        if from == to || from >= self.entries.len() || to >= self.entries.len() {
-            return;
-        }
-        let entry = self.entries.remove(from);
-        self.entries.insert(to, entry);
-        self.extra.clear();
-        self.selected = to;
-        cx.notify();
-    }
-
-    /// IntelliJ's Unite: the selected commits become one, squashed into the
+    /// IntelliJ's Unite: the selected commits become one, folded into the
     /// oldest of them, which keeps its place.
-    fn unite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut rows: Vec<usize> = self.extra.iter().copied().chain([self.selected]).collect();
-        rows.sort_unstable();
-        rows.dedup();
-        let Some(&target) = rows.last() else { return };
-        if rows.len() < 2 {
-            return;
+    fn unite(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.rows();
+        let Some(range) = rebase::unite(&mut self.entries, &rows, action) else { return };
+        if action == Action::Squash {
+            // The united commit's message: every message, oldest first.
+            let messages: Vec<String> = self.entries[range.clone()]
+                .iter()
+                .rev()
+                .map(|e| e.message.clone().unwrap_or_else(|| rebase::message_of(&self.repository, &e.commit.hash)))
+                .collect();
+            self.entries[range.start].message = Some(messages.join("\n\n"));
         }
-        // Newest first: the oldest is the last row. Pull the others down next to it,
-        // keeping their relative order, then squash them.
-        let mut moved: Vec<Entry> = rows[..rows.len() - 1].iter().map(|&ix| self.entries[ix].clone()).collect();
-        for &ix in rows[..rows.len() - 1].iter().rev() {
-            self.entries.remove(ix);
-        }
-        let target = target - (rows.len() - 1);
-        for entry in &mut moved {
-            entry.action = Action::Squash;
-            entry.message = None;
-        }
-        let count = moved.len();
-        for (offset, entry) in moved.into_iter().enumerate() {
-            self.entries.insert(target + offset, entry);
-        }
-        if matches!(self.entries[target + count].action, Action::Drop | Action::Squash | Action::Fixup) {
-            self.entries[target + count].action = Action::Pick;
-        }
-        self.extra.clear();
-        self.selected = target;
+        self.selected = range.start;
+        self.anchor = range.start;
+        self.selection = range.collect();
         self.load_message(window, cx);
         cx.notify();
     }
 
-    fn move_selected(&mut self, up: bool, cx: &mut Context<Self>) {
-        let ix = self.selected;
-        let target = if up { ix.checked_sub(1) } else { (ix + 1 < self.entries.len()).then_some(ix + 1) };
-        if let Some(target) = target {
-            self.entries.swap(ix, target);
-            self.selected = target;
-            cx.notify();
+    /// Drag and drop: moves the dragged row (with the rest of the selection
+    /// when it is part of it) onto row `to`.
+    fn drop_rows(&mut self, from: usize, to: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = if self.selection.contains(&from) { self.rows() } else { vec![from] };
+        let moved = rebase::move_rows(&mut self.entries, &rows, to);
+        self.after_move(moved, window, cx);
+    }
+
+    /// Move Up / Move Down (Alt+Up / Alt+Down): the selected rows by one.
+    fn move_selected(&mut self, up: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.rows();
+        let (Some(&first), Some(&last)) = (rows.first(), rows.last()) else { return };
+        let to = if up { first.checked_sub(1) } else { (last + 1 < self.entries.len()).then_some(last + 1) };
+        if let Some(to) = to {
+            let moved = rebase::move_rows(&mut self.entries, &rows, to);
+            self.after_move(moved, window, cx);
         }
+    }
+
+    fn after_move(&mut self, moved: Vec<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(&first) = moved.first() else { return };
+        self.selected = first;
+        self.anchor = first;
+        self.selection = moved.into_iter().collect();
+        self.load_message(window, cx);
+        cx.notify();
     }
 
     fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.entries = self.original.clone();
-        self.load_message(window, cx);
-        cx.notify();
+        self.select(0, window, cx);
+    }
+
+    /// The dialog's shortcuts, as in IntelliJ: Alt+P / E / R / S / F / D
+    /// (Delete drops too), Alt+Up / Alt+Down, and Up / Down to move the selection.
+    fn on_key(&mut self, event: &gpui_kit::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Typing in the message editor is its own.
+        if !self.focus.is_focused(window) {
+            return;
+        }
+        let k = &event.keystroke;
+        let alt = k.modifiers.alt && !k.modifiers.control && !k.modifiers.platform;
+        let action = match k.key.as_str() {
+            "p" if alt => Some(Action::Pick),
+            "e" if alt => Some(Action::Edit),
+            "s" if alt => Some(Action::Squash),
+            "f" if alt => Some(Action::Fixup),
+            "d" if alt => Some(Action::Drop),
+            "delete" | "backspace" if !alt => Some(Action::Drop),
+            _ => None,
+        };
+        match (action, k.key.as_str()) {
+            (Some(action), _) => self.set_action(action, window, cx),
+            (None, "r") if alt => self.reword(window, cx),
+            (None, "up") if alt => self.move_selected(true, window, cx),
+            (None, "down") if alt => self.move_selected(false, window, cx),
+            (None, "up") if self.selected > 0 => {
+                let ix = self.selected - 1;
+                self.click(ix, k.modifiers, window, cx)
+            }
+            (None, "down") if self.selected + 1 < self.entries.len() => {
+                let ix = self.selected + 1;
+                self.click(ix, k.modifiers, window, cx)
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
     }
 
     /// Entries in git's order (oldest first). Messages are kept only where
@@ -214,6 +282,60 @@ impl RebaseEditor {
     }
 }
 
+/// The graph column: a commit dot on the branch line; a squashed or fixed
+/// up commit hangs off the line and joins the commit it folds into, and a
+/// dropped one leaves the line, as in IntelliJ's dialog.
+fn graph_cell(entries: &[Entry], ix: usize, palette: &crate::theme::Palette) -> impl IntoElement {
+    let action = entries[ix].action;
+    let folds = |a: Action| matches!(a, Action::Squash | Action::Fixup);
+    // This row is part of a group folding into a commit below.
+    let joins_below = folds(action);
+    // A folded commit sits right above: join it.
+    let joins_above = ix > 0 && folds(entries[ix - 1].action) && action != Action::Drop;
+    let line = palette.text_secondary;
+    let accent = palette.status_renamed;
+    let first = ix == 0;
+    let last = ix + 1 == entries.len();
+    let x_main = px(9.);
+    let x_side = px(19.);
+    div()
+        .relative()
+        .w(px(28.))
+        .h_full()
+        .flex_shrink_0()
+        // The branch line through every commit.
+        .child(div().absolute().left(x_main).top(if first { px(12.) } else { px(0.) }).bottom(if last { px(12.) } else { px(0.) }).w(px(1.)).bg(line))
+        .when(joins_below, |el| {
+            // From this commit down into the next row.
+            el.child(div().absolute().left(x_side).top(px(12.)).bottom(px(0.)).w(px(2.)).bg(accent))
+        })
+        .when(joins_above && !joins_below, |el| {
+            el.child(div().absolute().left(x_side).top(px(0.)).h(px(12.)).w(px(2.)).bg(accent))
+                .child(div().absolute().left(x_main).top(px(11.)).w(px(11.)).h(px(2.)).bg(accent))
+        })
+        .when(joins_above && joins_below, |el| el.child(div().absolute().left(x_side).top(px(0.)).h(px(12.)).w(px(2.)).bg(accent)))
+        .child(match action {
+            Action::Drop => div()
+                .absolute()
+                .left(x_side - px(3.))
+                .top(px(8.))
+                .size(px(8.))
+                .rounded_full()
+                .border_1()
+                .border_color(palette.status_deleted),
+            Action::Squash | Action::Fixup => {
+                div().absolute().left(x_side - px(3.)).top(px(9.)).size(px(8.)).rounded_full().bg(accent)
+            }
+            _ => div()
+                .absolute()
+                .left(x_main - px(4.))
+                .top(px(8.))
+                .size(px(9.))
+                .rounded_full()
+                .bg(if matches!(action, Action::Reword | Action::Edit) { palette.accent } else { line }),
+        })
+}
+
 impl Render for RebaseEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
@@ -225,30 +347,40 @@ impl Render for RebaseEditor {
             Action::Drop => palette.status_deleted,
         };
         let mut rows = v_flex();
-        let extra = self.extra.clone();
+        let count = self.selection.len();
         for (ix, entry) in self.entries.iter().enumerate() {
             let dropped = entry.action == Action::Drop;
             let accent = palette.accent;
-            let dragged = DraggedRow { ix, subject: entry.commit.subject.clone().into() };
+            let dragging = if self.selection.contains(&ix) && count > 1 { count } else { 1 };
+            let label = if dragging > 1 { format!("{} commits", dragging) } else { entry.commit.subject.clone() };
+            let dragged = DraggedRow { ix, subject: label.into() };
+            let moving_down = move |row: &DraggedRow| row.ix < ix;
+            let is_selected = self.selection.contains(&ix);
             rows = rows.child(
                 h_flex()
                     .id(SharedString::from(format!("rebase-row-{ix}")))
                     .h(px(24.))
-                    .px_2()
+                    .pr_2()
                     .gap_2()
                     .text_sm()
-                    .when(ix == selected || extra.contains(&ix), |el| el.bg(palette.selection))
-                    // Drag a row to reorder, as in IntelliJ's dialog.
+                    .when(is_selected, |el| el.bg(palette.selection))
+                    // Drag rows to reorder, as in IntelliJ's dialog; the line
+                    // shows where they land.
                     .on_drag(dragged, |row, _, _, cx| cx.new(|_| row.clone()))
-                    .drag_over::<DraggedRow>(move |style, _, _, _| style.border_t_2().border_color(accent))
-                    .on_drop(cx.listener(move |this, row: &DraggedRow, _, cx| this.move_row(row.ix, ix, cx)))
+                    .drag_over::<DraggedRow>(move |style, row, _, _| {
+                        if moving_down(row) { style.border_b_2().border_color(accent) } else { style.border_t_2().border_color(accent) }
+                    })
+                    .on_drop(cx.listener(move |this, row: &DraggedRow, window, cx| this.drop_rows(row.ix, ix, window, cx)))
                     .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                        if event.modifiers().secondary() {
-                            this.toggle_extra(ix, cx)
+                        window.focus(&this.focus, cx);
+                        if event.click_count() == 2 {
+                            this.select(ix, window, cx);
+                            this.reword(window, cx);
                         } else {
-                            this.select(ix, window, cx)
+                            this.click(ix, event.modifiers(), window, cx)
                         }
                     }))
+                    .child(graph_cell(&self.entries, ix, &palette))
                     .child(div().w(px(56.)).text_color(action_color(entry.action)).child(entry.action.label()))
                     .child(div().w(px(64.)).text_color(palette.text_secondary).child(entry.commit.short_hash().to_owned()))
                     .child(
@@ -273,40 +405,54 @@ impl Render for RebaseEditor {
         }
         let current = self.entries.get(selected).map(|e| e.action);
         let editable = matches!(current, Some(Action::Reword | Action::Squash));
-        let oldest = selected + 1 == self.entries.len();
-        let action_button = |id: &'static str, action: Action, cx: &mut Context<Self>| {
+        let multi = count > 1;
+        // On the oldest row alone there is nothing below to fold into.
+        let oldest_only = !multi && selected + 1 == self.entries.len();
+        let action_button = |id: &'static str, label: &'static str, action: Action, shortcut: &'static str, cx: &mut Context<Self>| {
             Button::new(id)
                 .xsmall()
-                .label(action.label())
-                .when(current == Some(action), |b| b.primary())
-                .when(current != Some(action), |b| b.ghost())
-                .disabled(oldest && matches!(action, Action::Squash | Action::Fixup))
-                .on_click(cx.listener(move |this, _, window, cx| this.set_action(action, window, cx)))
+                .label(label)
+                .tooltip(shortcut)
+                .when(current == Some(action) && !multi, |b| b.primary())
+                .when(current != Some(action) || multi, |b| b.ghost())
+                .disabled(oldest_only && matches!(action, Action::Squash | Action::Fixup))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    window.focus(&this.focus, cx);
+                    if action == Action::Reword { this.reword(window, cx) } else { this.set_action(action, window, cx) }
+                }))
         };
 
         v_flex()
             .gap_2()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::on_key))
             .child(
                 h_flex()
                     .gap_0p5()
-                    .child(action_button("rb-pick", Action::Pick, cx))
-                    .child(action_button("rb-edit", Action::Edit, cx))
-                    .child(action_button("rb-reword", Action::Reword, cx))
-                    .child(action_button("rb-squash", Action::Squash, cx))
-                    .child(action_button("rb-fixup", Action::Fixup, cx))
-                    .child(action_button("rb-drop", Action::Drop, cx))
-                    .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
-                    .child(tool_button("rb-up", IconName::ChevronUp, "Move Up").on_click(cx.listener(|this, _, _, cx| this.move_selected(true, cx))))
-                    .child(tool_button("rb-down", IconName::ChevronDown, "Move Down").on_click(cx.listener(|this, _, _, cx| this.move_selected(false, cx))))
+                    .child(action_button("rb-pick", "Pick", Action::Pick, "Pick  Alt+P", cx))
                     .child(
-                        Button::new("rb-unite")
-                            .ghost()
-                            .xsmall()
-                            .label("Unite")
-                            .tooltip("Squash the selected commits into one (Ctrl/Cmd-click to select several)")
-                            .disabled(self.extra.is_empty())
-                            .on_click(cx.listener(|this, _, window, cx| this.unite(window, cx))),
+                        action_button("rb-edit", "Stop to Edit", Action::Edit, "Stop to Edit  Alt+E", cx).icon(Icon::new(IconName::Pause)),
                     )
+                    .child(action_button("rb-reword", "Reword", Action::Reword, "Reword  Alt+R (or double-click)", cx))
+                    // With several commits selected, Squash and Fixup unite them.
+                    .child(action_button(
+                        "rb-squash",
+                        if multi { "Unite" } else { "Squash" },
+                        Action::Squash,
+                        if multi { "Unite the selected commits, combining their messages  Alt+S" } else { "Squash into the commit below  Alt+S" },
+                        cx,
+                    ))
+                    .child(action_button(
+                        "rb-fixup",
+                        if multi { "Unite (Fixup)" } else { "Fixup" },
+                        Action::Fixup,
+                        if multi { "Unite the selected commits, keeping the oldest message  Alt+F" } else { "Fixup into the commit below  Alt+F" },
+                        cx,
+                    ))
+                    .child(action_button("rb-drop", "Drop", Action::Drop, "Drop  Alt+D / Delete", cx))
+                    .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
+                    .child(tool_button("rb-up", IconName::ChevronUp, "Move Up  Alt+Up").on_click(cx.listener(|this, _, window, cx| this.move_selected(true, window, cx))))
+                    .child(tool_button("rb-down", IconName::ChevronDown, "Move Down  Alt+Down").on_click(cx.listener(|this, _, window, cx| this.move_selected(false, window, cx))))
                     .child(div().flex_1())
                     .child(Button::new("rb-reset").ghost().xsmall().label("Reset").on_click(cx.listener(|this, _, window, cx| this.reset(window, cx)))),
             )
@@ -408,6 +554,8 @@ pub fn open_onto(model: Entity<RepoModel>, base: String, window: &mut Window, cx
     let entries: Vec<Entry> = rebase::autosquash(commits).into_iter().rev().collect();
     let count = entries.len();
     let editor = cx.new(|cx| RebaseEditor::new(repository, entries, window, cx));
+    let focus = editor.read(cx).focus.clone();
+    window.defer(cx, move |window, cx| window.focus(&focus, cx));
     let branch = model.read(cx).refs().current_branch.clone().unwrap_or_else(|| "HEAD".into());
     window.open_dialog(cx, move |dialog, _, _| {
         let editor_ok = editor.clone();

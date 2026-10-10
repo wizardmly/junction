@@ -164,6 +164,61 @@ fn run_with_editor(repository: &Repository, base: &str, entries: &[Entry], edito
     })
 }
 
+/// The Rebasing Commits dialog's Unite: rows (display order, newest first)
+/// become one commit. The others move right above the oldest of them, which
+/// keeps its place, and fold into it with `action` (Squash or Fixup).
+/// Returns the rows the united group now takes.
+pub fn unite(entries: &mut Vec<Entry>, rows: &[usize], action: Action) -> Option<std::ops::Range<usize>> {
+    let mut rows: Vec<usize> = rows.iter().copied().filter(|&r| r < entries.len()).collect();
+    rows.sort_unstable();
+    rows.dedup();
+    let (&base, others) = rows.split_last()?;
+    if others.is_empty() {
+        return None;
+    }
+    let mut moved: Vec<Entry> = others.iter().map(|&ix| entries[ix].clone()).collect();
+    for &ix in others.iter().rev() {
+        entries.remove(ix);
+    }
+    let base = base - others.len();
+    for entry in &mut moved {
+        entry.action = action;
+        entry.message = None;
+    }
+    let count = moved.len();
+    for (offset, entry) in moved.into_iter().enumerate() {
+        entries.insert(base + offset, entry);
+    }
+    if matches!(entries[base + count].action, Action::Drop | Action::Squash | Action::Fixup) {
+        entries[base + count].action = Action::Pick;
+    }
+    Some(base..base + count + 1)
+}
+
+/// Drag and drop in the dialog: moves `rows` (kept in their order) onto row
+/// `to`, above it when dragged up and below it when dragged down. Returns
+/// the rows' new positions; a drop inside the selection changes nothing.
+pub fn move_rows(entries: &mut Vec<Entry>, rows: &[usize], to: usize) -> Vec<usize> {
+    let mut rows: Vec<usize> = rows.iter().copied().filter(|&r| r < entries.len()).collect();
+    rows.sort_unstable();
+    rows.dedup();
+    if rows.is_empty() || to >= entries.len() || rows.contains(&to) {
+        return rows;
+    }
+    let down = to > rows[0];
+    let moved: Vec<Entry> = rows.iter().map(|&ix| entries[ix].clone()).collect();
+    for &ix in rows.iter().rev() {
+        entries.remove(ix);
+    }
+    let target = to - rows.iter().filter(|&&r| r < to).count();
+    let at = if down { target + 1 } else { target };
+    let count = moved.len();
+    for (offset, entry) in moved.into_iter().enumerate() {
+        entries.insert(at + offset, entry);
+    }
+    (at..at + count).collect()
+}
+
 /// How many commits HEAD has above `hash`; the oldest of several commits
 /// has the most.
 pub fn commits_above(repository: &Repository, hash: &str) -> usize {
@@ -192,7 +247,40 @@ mod tests {
             author_email: "".into(),
             author_time: 0,
             subject: subject.into(),
+            root: 0,
         }
+    }
+
+
+    fn subjects(entries: &[Entry]) -> Vec<String> {
+        entries.iter().map(|e| format!("{} {}", e.action.label(), e.commit.subject)).collect()
+    }
+
+    fn picks(names: &[&str]) -> Vec<Entry> {
+        names.iter().map(|n| Entry { commit: commit(n, n), action: Action::Pick, message: None }).collect()
+    }
+
+    #[test]
+    fn unite_gathers_rows_above_the_oldest() {
+        let mut entries = picks(&["e", "d", "c", "b", "a"]);
+        let range = unite(&mut entries, &[0, 2, 3], Action::Squash).unwrap();
+        assert_eq!(range, 1..4);
+        assert_eq!(subjects(&entries), vec!["Pick d", "Squash e", "Squash c", "Pick b", "Pick a"]);
+        let mut entries = picks(&["c", "b", "a"]);
+        assert!(unite(&mut entries, &[1], Action::Fixup).is_none());
+        let range = unite(&mut entries, &[0, 2], Action::Fixup).unwrap();
+        assert_eq!(range, 1..3);
+        assert_eq!(subjects(&entries), vec!["Pick b", "Fixup c", "Pick a"]);
+    }
+
+    #[test]
+    fn move_rows_drops_above_or_below_the_target() {
+        let mut entries = picks(&["e", "d", "c", "b", "a"]);
+        assert_eq!(move_rows(&mut entries, &[0, 1], 3), vec![2, 3]);
+        assert_eq!(subjects(&entries).join(","), "Pick c,Pick b,Pick e,Pick d,Pick a");
+        assert_eq!(move_rows(&mut entries, &[4], 0), vec![0]);
+        assert_eq!(subjects(&entries).join(","), "Pick a,Pick c,Pick b,Pick e,Pick d");
+        assert_eq!(move_rows(&mut entries, &[1, 2], 2), vec![1, 2]);
     }
 
     #[test]
