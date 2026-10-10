@@ -51,8 +51,14 @@ opt-level = 2
 # gpui embeds DirectX shaders precompiled with the Windows SDK's fxc.exe in
 # release builds. The vendored copy compiles the embedded HLSL at startup
 # instead, so Windows release builds cross-compile from Linux and macOS.
+#
+# gpui-component and gpui-base are vendored for IntelliJ placement: dialogs open
+# centered without sliding down, and notification balloons stack upward from
+# the bottom right with a gap instead of collapsing (look for "Junction:").
 [patch.crates-io]
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+gpui-component = { path = "vendor/gpui-component" }
+gpui-base = { path = "vendor/gpui-base" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_LibraryLoader"] }
