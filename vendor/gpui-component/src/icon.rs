@@ -4,7 +4,7 @@ use crate::{ActiveTheme, Sizable, Size};
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, Hsla, IntoElement, Pixels, Radians, Render,
     RenderOnce, SharedString, StyleRefinement, Styled, Svg, Transformation, Window,
-    prelude::FluentBuilder as _, svg,
+    ParentElement as _, prelude::FluentBuilder as _, svg,
 };
 pub use gpui_kit_assets::IconNamed;
 
@@ -78,6 +78,12 @@ impl IconNameExt for gpui_kit_assets::IconName {
 pub(crate) enum IconSource {
     Path(SharedString),
     Data(Arc<[u8]>),
+    /// Junction: a full-color icon as one-color layers painted in order,
+    /// (asset path, RGBA) for the light and the dark theme.
+    Layers {
+        light: &'static [(&'static str, u32)],
+        dark: &'static [(&'static str, u32)],
+    },
 }
 
 #[derive(Clone, IntoElement)]
@@ -149,6 +155,56 @@ impl Icon {
         self.style == other.style && self.size == other.size
     }
 
+    /// Junction: a full-color icon drawn as one-color SVG layers, as GPUI
+    /// draws an SVG as a mask. Its own colors win over `text_color`.
+    pub fn layers(light: &'static [(&'static str, u32)], dark: &'static [(&'static str, u32)]) -> Self {
+        let mut icon = Self::default();
+        icon.source = IconSource::Layers { light, dark };
+        icon
+    }
+
+    /// Junction: draws the icon, as layers when it has them.
+    fn into_drawn(self, text_size: Pixels, fallback_color: Hsla, dark: bool) -> AnyElement {
+        let IconSource::Layers { light, dark: dark_layers } = self.source.clone() else {
+            return self.into_svg(text_size, fallback_color).into_any_element();
+        };
+        let layers = if dark { dark_layers } else { light };
+        // IntelliJ's icons are drawn on a 16px grid; smaller they blur.
+        let size = match self.size {
+            Some(Size::XSmall | Size::Small) => Some(Size::Size(gpui::px(16.))),
+            size => size,
+        };
+        // The box takes the icon's size; each layer fills it.
+        let sized = |el: gpui::Div| {
+            let has_base_size = self.style.size.width.is_some() || self.style.size.height.is_some();
+            el.map(|mut this| {
+                *this.style() = self.style.clone();
+                this
+            })
+            .flex_shrink_0()
+            .when(!has_base_size && size.is_none(), |this| this.size(gpui::px(16.).max(text_size)))
+            .when_some(size, |this, size| match size {
+                Size::Size(px) => this.size(px),
+                Size::XSmall => this.size_3(),
+                Size::Small => this.size_3p5(),
+                Size::Medium => this.size_4(),
+                Size::Large => this.size_6(),
+            })
+        };
+        sized(gpui::div().relative())
+            .children(layers.iter().map(|(path, rgba)| {
+                svg()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .path(*path)
+                    .text_color(gpui::rgba(*rgba))
+                    .when_some(self.transformation, |this, t| this.with_transformation(t))
+            }))
+            .into_any_element()
+    }
+
     /// Create a new view for the icon
     pub fn view(self, cx: &mut App) -> Entity<Icon> {
         cx.new(|_| self)
@@ -194,6 +250,8 @@ impl Icon {
             .map(|this| match self.source {
                 IconSource::Path(path) => this.path(path),
                 IconSource::Data(data) => this.data(&data),
+                // Junction: drawn by into_element.
+                IconSource::Layers { .. } => this,
             })
             .when_some(self.transformation, |this, transformation| {
                 this.with_transformation(transformation)
@@ -220,9 +278,10 @@ impl Sizable for Icon {
 }
 
 impl RenderOnce for Icon {
-    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let text_size = window.text_style().font_size.to_pixels(window.rem_size());
-        self.into_svg(text_size, window.text_style().color)
+        // Junction: layered icons pick the theme's variant.
+        self.into_drawn(text_size, window.text_style().color, cx.theme().mode.is_dark())
     }
 }
 
@@ -235,7 +294,7 @@ impl From<Icon> for AnyElement {
 impl Render for Icon {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text_size = window.text_style().font_size.to_pixels(window.rem_size());
-        self.clone().into_svg(text_size, cx.theme().foreground)
+        self.clone().into_drawn(text_size, cx.theme().foreground, cx.theme().mode.is_dark())
     }
 }
 

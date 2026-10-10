@@ -2,9 +2,9 @@
 //! item for item as IntelliJ's.
 
 use std::cell::RefCell;
+use crate::ui::as_icons as icons;
 use std::rc::Rc;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Icon, WindowExt as _, h_flex,
     input::{Input, InputState},
@@ -157,7 +157,7 @@ pub(super) fn commit_menu(
             let paths = p_commit.clone();
             e_commit.update(cx, |this, cx| this.commit_only(paths, window, cx))
         }))
-        .item(entry("Rollback…", "Ctrl+Alt+Z").icon(Icon::new(IconName::Undo2)).disabled(tracked.is_empty()).on_click(move |_, window, cx| {
+        .item(entry("Rollback…", "Ctrl+Alt+Z").icon(Icon::new(icons::VCS_REVERT)).disabled(tracked.is_empty()).on_click(move |_, window, cx| {
             let (file, paths) = (rollback_file.clone(), p_rollback.clone());
             e_rollback.update(cx, |this, cx| match &file {
                 Some(file) => this.rollback(Some(file), window, cx),
@@ -171,17 +171,17 @@ pub(super) fn commit_menu(
             let paths = p_move.clone();
             e_move.update(cx, |this, cx| this.move_dialog(paths, window, cx))
         }))
-        .item(entry("Show Diff", "Ctrl+D").icon(Icon::new(IconName::GitCompare)).disabled(d_diff.is_none()).on_click(move |_, _, cx| {
+        .item(entry("Show Diff", "Ctrl+D").icon(Icon::new(icons::VCS_DIFF)).disabled(d_diff.is_none()).on_click(move |_, _, cx| {
             if let Some(source) = d_diff.clone() {
                 e_diff.update(cx, |_, cx| cx.emit(CommitEvent::OpenDiff(source)))
             }
         }))
-        .item(entry("Show Diff in a New Tab", "").icon(Icon::new(IconName::GitCompare)).disabled(d_tab.is_none()).on_click(move |_, _, cx| {
+        .item(entry("Show Diff in a New Tab", "").icon(Icon::new(icons::VCS_DIFF)).disabled(d_tab.is_none()).on_click(move |_, _, cx| {
             if let Some(source) = d_tab.clone() {
                 e_tab.update(cx, |_, cx| cx.emit(CommitEvent::OpenDiff(source)))
             }
         }))
-        .item(entry("Jump to Source", "F4").icon(Icon::new(IconName::Pencil)).disabled(first.is_none()).on_click(move |_, _, cx| {
+        .item(entry("Jump to Source", "F4").icon(Icon::new(icons::EDIT)).disabled(first.is_none()).on_click(move |_, _, cx| {
             if let Some(path) = p_source.clone() {
                 e_source.update(cx, |_, cx| cx.emit(CommitEvent::EditSource(path)))
             }
@@ -198,7 +198,7 @@ pub(super) fn commit_menu(
     let menu = if unversioned.is_empty() {
         menu
     } else {
-        menu.submenu_with_icon(Some(Icon::new(IconName::Ban)), "Add to .gitignore", window, cx, move |m, _, _| {
+        menu.submenu_with_icon(Some(Icon::new(icons::FILE_IGNORED)), "Add to .gitignore", window, cx, move |m, _, _| {
             let (m1, p1, m2, p2) = (m_ignore.clone(), p_ignore.clone(), m_ignore.clone(), p_ignore.clone());
             m.item(entry(".gitignore", "").on_click(move |_, _, cx| file_menus::ignore(&m1, p1.clone(), false, cx)))
                 .item(entry(".git/info/exclude", "").on_click(move |_, _, cx| file_menus::ignore(&m2, p2.clone(), true, cx)))
@@ -211,7 +211,7 @@ pub(super) fn commit_menu(
     let m_refresh = model.clone();
     let menu = menu
         .separator()
-        .item(entry("Create Patch from Local Changes…", "").icon(Icon::new(IconName::Plus)).disabled(tracked.is_empty()).on_click(move |_, window, cx| {
+        .item(entry("Create Patch from Local Changes…", "").icon(Icon::new(icons::ADD)).disabled(tracked.is_empty()).on_click(move |_, window, cx| {
             let source = crate::ui::patch_dialogs::PatchSource::Local { paths: p_patch.clone() };
             crate::ui::patch_dialogs::create_patch(m_patch.clone(), source, window, cx)
         }))
@@ -219,7 +219,7 @@ pub(super) fn commit_menu(
             let source = crate::ui::patch_dialogs::PatchSource::Local { paths: p_copy.clone() };
             crate::ui::patch_dialogs::copy_patch(m_copy.clone(), source, cx)
         }))
-        .item(entry("Shelve Changes…", "").icon(Icon::new(IconName::ArrowDownToLine)).disabled(tracked.is_empty()).on_click(move |_, window, cx| {
+        .item(entry("Shelve Changes…", "").icon(Icon::new(icons::VCS_UPDATE)).disabled(tracked.is_empty()).on_click(move |_, window, cx| {
             let paths = p_shelve.clone();
             let name = crate::ui::patch_dialogs::default_shelf_name(&paths);
             crate::ui::patch_dialogs::shelve(m_shelve.clone(), paths, name, window, cx)
@@ -228,7 +228,7 @@ pub(super) fn commit_menu(
             crate::ui::patch_dialogs::shelve_silently(m_silent.clone(), p_silent.clone(), cx)
         }))
         .separator()
-        .item(entry("Refresh", "").icon(Icon::new(IconName::RefreshCw)).on_click(move |_, _, cx| m_refresh.update(cx, |m, cx| m.reload(cx))))
+        .item(entry("Refresh", "").icon(Icon::new(icons::REFRESH)).on_click(move |_, _, cx| m_refresh.update(cx, |m, cx| m.reload(cx))))
         .separator();
     let menu = if file.is_some() { file_menus::local_history_submenu(menu, window, cx) } else { menu };
     let target = GitTarget { model, paths, file, actions };

@@ -79,8 +79,8 @@ impl ToolWindow {
 }
 
 /// A stripe button being dragged, drawn as its icon.
-#[derive(Clone, Copy)]
-pub struct DraggedToolWindow(pub ToolWindow, pub gpui_kit::assets::IconName);
+#[derive(Clone)]
+pub struct DraggedToolWindow(pub ToolWindow, pub gpui_kit::component::Icon);
 
 impl gpui_kit::Render for DraggedToolWindow {
     fn render(&mut self, _: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<Self>) -> impl gpui_kit::IntoElement {
@@ -94,7 +94,7 @@ impl gpui_kit::Render for DraggedToolWindow {
             .justify_center()
             .rounded_md()
             .bg(palette.selection)
-            .child(gpui_kit::component::Icon::new(self.1))
+            .child(self.1.clone())
     }
 }
 

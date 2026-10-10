@@ -4,6 +4,7 @@
 //! Stage / Unstage actions instead of checkboxes, like IntelliJ.
 
 use std::rc::Rc;
+use crate::ui::as_icons as icons;
 use std::collections::{HashMap, HashSet};
 
 use gpui_kit::component::{
@@ -834,7 +835,7 @@ impl CommitView {
                         .gap_2()
                         .items_start()
                         .text_sm()
-                        .child(Icon::new(IconName::TriangleAlert).small().text_color(palette.status_conflict))
+                        .child(Icon::new(icons::STATUS_WARNING).small().text_color(palette.status_conflict))
                         .child(div().flex_1().min_w_0().child(w.clone()))
                 })))
                 .footer(footer)
@@ -971,7 +972,7 @@ impl CommitView {
                 Button::new("commit-options-button")
                     .ghost()
                     .small()
-                    .icon(Icon::new(IconName::Settings))
+                    .icon(Icon::new(icons::SETTINGS))
                     .tooltip("Commit Options"),
             )
             .content(move |_, _, cx| {
@@ -1201,14 +1202,14 @@ impl CommitView {
             .gap_0p5()
             .border_b_1()
             .border_color(palette.border)
-            .child(tool_button("commit-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(
+            .child(tool_button("commit-refresh", icons::REFRESH, "Refresh").on_click(cx.listener(
                 |this, _, _, cx| this.model.update(cx, |m, cx| m.reload(cx)),
             )))
             .child(
-                tool_button("commit-rollback", IconName::Undo2, "Rollback…")
+                tool_button("commit-rollback", icons::VCS_REVERT, "Rollback…")
                     .on_click(cx.listener(|this, _, window, cx| this.rollback(None, window, cx))),
             )
-            .child(tool_button("commit-diff", IconName::FileDiff, "Show Diff").on_click(cx.listener(
+            .child(tool_button("commit-diff", icons::VCS_DIFF, "Show Diff").on_click(cx.listener(
                 |this, _, _, cx| {
                     if let Some(source) = this.last_selection.clone().and_then(|id| this.diff_source(&id)) {
                         cx.emit(CommitEvent::OpenDiff(source));
@@ -1216,15 +1217,15 @@ impl CommitView {
                 },
             )))
             .child(
-                tool_button("commit-shelve", IconName::Layers, "Shelve Changes…")
+                tool_button("commit-shelve", icons::VCS_CHANGELIST, "Shelve Changes…")
                     .on_click(cx.listener(|this, _, window, cx| this.shelve(window, cx))),
             )
             .child(
-                tool_button("commit-stash", IconName::Archive, "Stash Changes…")
+                tool_button("commit-stash", icons::VCS_SHELVE, "Stash Changes…")
                     .on_click(cx.listener(|this, _, window, cx| crate::ui::dialogs::stash(this.model.clone(), window, cx))),
             )
             .child(
-                tool_button("commit-update", IconName::ArrowDownToLine, "Update Project…  Ctrl+T")
+                tool_button("commit-update", icons::VCS_UPDATE, "Update Project…  Ctrl+T")
                     .on_click(cx.listener(|this, _, window, cx| crate::ui::dialogs::update_project(this.model.clone(), window, cx))),
             )
             .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
@@ -1232,7 +1233,7 @@ impl CommitView {
                 Button::new("commit-view-options")
                     .ghost()
                     .xsmall()
-                    .icon(Icon::new(IconName::Eye))
+                    .icon(Icon::new(icons::SHOW))
                     .tooltip("View Options")
                     .dropdown_menu({
                         let entity = cx.entity();
@@ -1266,22 +1267,22 @@ impl CommitView {
                         }
                     }),
             )
-            .child(tool_button("commit-expand", IconName::ChevronsUpDown, "Expand All").on_click(cx.listener(|this, _, _, cx| {
+            .child(tool_button("commit-expand", icons::EXPAND_ALL, "Expand All").on_click(cx.listener(|this, _, _, cx| {
                 this.expand_all = true;
                 this.rebuild(cx);
             })))
-            .child(tool_button("commit-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(|this, _, _, cx| {
+            .child(tool_button("commit-collapse", icons::COLLAPSE_ALL, "Collapse All").on_click(cx.listener(|this, _, _, cx| {
                 this.expand_all = false;
                 this.rebuild(cx);
             })))
             .when(staging, |el| {
                 el.child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
                     .child(
-                        tool_button("commit-stage", IconName::Plus, "Stage")
+                        tool_button("commit-stage", icons::ADD, "Stage")
                             .on_click(cx.listener(|this, _, _, cx| this.stage_selected(false, cx))),
                     )
                     .child(
-                        tool_button("commit-unstage", IconName::Minus, "Unstage")
+                        tool_button("commit-unstage", icons::REMOVE, "Unstage")
                             .on_click(cx.listener(|this, _, _, cx| this.stage_selected(true, cx))),
                     )
             })
@@ -1367,7 +1368,7 @@ impl CommitView {
                         .pl(px(entry.depth() as f32 * 14.))
                         .text_sm()
                         .child(if entry.is_folder() {
-                            Icon::new(if entry.is_expanded() { IconName::ChevronDown } else { IconName::ChevronRight })
+                            Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT })
                                 .xsmall()
                                 .text_color(palette.text_secondary)
                         } else {
@@ -1417,11 +1418,11 @@ impl CommitView {
                         .when(!is_group, |el| {
                             el.child(
                                 Icon::new(match &file {
-                                    Some(p) if submodules.contains(p.as_str()) => IconName::FolderGit2,
+                                    Some(p) if submodules.contains(p.as_str()) => Icon::from(icons::MODULE),
                                     Some(p) => common::file_icon(p),
-                                    None if id.split_once(':').is_some_and(|(_, r)| r.starts_with(common::REPO_PREFIX)) => IconName::FolderGit2,
-                                    None if id.split_once(':').is_some_and(|(_, r)| r.starts_with(common::MODULE_PREFIX)) => IconName::Layers,
-                                    None => IconName::Folder,
+                                    None if id.split_once(':').is_some_and(|(_, r)| r.starts_with(common::REPO_PREFIX)) => Icon::from(icons::MODULE),
+                                    None if id.split_once(':').is_some_and(|(_, r)| r.starts_with(common::MODULE_PREFIX)) => Icon::from(icons::MODULE),
+                                    None => Icon::from(icons::FOLDER),
                                 })
                                 .small()
                                 .text_color(palette.text_secondary),
@@ -1454,7 +1455,7 @@ impl CommitView {
                                 div().opacity(0.).group_hover("commit-row", |s| s.opacity(1.)).child(
                                     tool_button(
                                         SharedString::from(format!("stage-{id}")),
-                                        if in_staged { IconName::Minus } else { IconName::Plus },
+                                        if in_staged { icons::REMOVE } else { icons::ADD },
                                         if in_staged { "Unstage" } else { "Stage" },
                                     )
                                     .on_click(move |_, _, cx| {
@@ -1490,7 +1491,7 @@ impl CommitView {
                     .border_b_1()
                     .border_color(palette.border)
                     .shadow_sm()
-                    .child(common::icon(IconName::Search).text_color(palette.text_secondary))
+                    .child(common::icon(icons::SEARCH).text_color(palette.text_secondary))
                     .child(div().text_color(if found { palette.text } else { palette.status_unversioned }).child(q)),
             )
         })
@@ -1535,7 +1536,7 @@ impl CommitView {
                         Button::new("commit-history")
                             .ghost()
                             .xsmall()
-                            .icon(Icon::new(IconName::Clock))
+                            .icon(Icon::new(icons::HISTORY))
                             .tooltip("Commit Message History  Ctrl+M")
                             .dropdown_menu({
                                 let entity = history_entity.clone();

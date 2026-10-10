@@ -1,6 +1,7 @@
 //! The branches tree beside the Log.
 
 use super::*;
+use crate::ui::as_icons as icons;
 
 impl LogView {
     /// Runs the branch popup's action (matched by label) on the branch
@@ -221,13 +222,13 @@ impl LogView {
                     .gap_0p5()
                     .border_b_1()
                     .border_color(palette.border)
-                    .child(tool_button("branches-new", IconName::Plus, "New Branch…").on_click(cx.listener(
+                    .child(tool_button("branches-new", icons::ADD, "New Branch…").on_click(cx.listener(
                         |this, _, window, cx| {
                             let start = this.model.read(cx).selected_hash().unwrap_or("HEAD").to_owned();
                             dialogs::new_branch(this.model.clone(), start, window, cx);
                         },
                     )))
-                    .child(tool_button("branches-fetch", IconName::CloudDownload, "Fetch").on_click(cx.listener(
+                    .child(tool_button("branches-fetch", icons::VCS_FETCH, "Fetch").on_click(cx.listener(
                         |this, _, _, cx| {
                             this.model.update(cx, |model, cx| {
                                 model.run_operation("Fetch", |repo| {
@@ -237,17 +238,17 @@ impl LogView {
                             });
                         },
                     )))
-                    .child(tool_button("branches-update", IconName::ArrowDownToLine, "Update Selected").on_click(cx.listener(
+                    .child(tool_button("branches-update", icons::VCS_UPDATE, "Update Selected").on_click(cx.listener(
                         |this, _, window, cx| this.run_selected_branch_action(|label| label == "Update", window, cx),
                     )))
-                    .child(tool_button("branches-delete", IconName::Delete, "Delete").on_click(cx.listener(
+                    .child(tool_button("branches-delete", icons::DELETE, "Delete").on_click(cx.listener(
                         |this, _, window, cx| this.run_selected_branch_action(|label| label == "Delete", window, cx),
                     )))
-                    .child(tool_button("branches-compare", IconName::GitCompare, "Compare with Current").on_click(cx.listener(
+                    .child(tool_button("branches-compare", icons::VCS_DIFF, "Compare with Current").on_click(cx.listener(
                         |this, _, window, cx| this.run_selected_branch_action(|label| label.starts_with("Compare with"), window, cx),
                     )))
                     .child(
-                        tool_button("branches-mine", IconName::User, "Show My Branches")
+                        tool_button("branches-mine", icons::USER, "Show My Branches")
                             .selected(self.my_branches)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.my_branches = !this.my_branches;
@@ -255,19 +256,19 @@ impl LogView {
                                 cx.notify();
                             })),
                     )
-                    .child(tool_button("branches-expand", IconName::ChevronsUpDown, "Expand All").on_click(cx.listener(
+                    .child(tool_button("branches-expand", icons::EXPAND_ALL, "Expand All").on_click(cx.listener(
                         |this, _, _, cx| {
                             this.branch_tree_expanded = Some(true);
                             this.rebuild_branches(cx);
                         },
                     )))
-                    .child(tool_button("branches-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(
+                    .child(tool_button("branches-collapse", icons::COLLAPSE_ALL, "Collapse All").on_click(cx.listener(
                         |this, _, _, cx| {
                             this.branch_tree_expanded = Some(false);
                             this.rebuild_branches(cx);
                         },
                     )))
-                    .child(tool_button("branches-filter", IconName::ListFilter, "Filter Log by Selected Branch").on_click(
+                    .child(tool_button("branches-filter", icons::FILTER, "Filter Log by Selected Branch").on_click(
                         cx.listener(|this, _, _, cx| {
                             let selected = this.branches.read(cx).selected_item().map(|i| i.id.clone());
                             let name = selected
@@ -325,11 +326,11 @@ impl LogView {
                             r.kind == RefKind::LocalBranch && Some(&r.name) == refs.current_branch.as_ref()
                         });
                         let icon_name = if entry.is_folder() {
-                            if id.starts_with("group:") { IconName::FolderGit2 } else { IconName::Folder }
+                            if id.starts_with("group:") { icons::MODULE } else { icons::FOLDER }
                         } else {
                             match reference.as_ref().map(|r| r.kind) {
-                                Some(RefKind::Tag) => IconName::Tag,
-                                _ => IconName::GitBranch,
+                                Some(RefKind::Tag) => icons::TAG,
+                                _ => icons::BRANCH,
                             }
                         };
                         let icon_color = match reference.as_ref().map(|r| r.kind) {
@@ -340,7 +341,7 @@ impl LogView {
                             _ => palette.text_secondary,
                         };
                         let is_favorite = full_name.as_ref().is_some_and(|f| refs.favorites.contains(f));
-                        let icon_name = if is_favorite && !entry.is_folder() { IconName::Star } else { icon_name };
+                        let icon_name = if is_favorite && !entry.is_folder() { icons::STAR } else { icon_name };
                         let menu_reference = reference.clone();
                         let (menu_entity, menu_refs) = (entity.clone(), refs.clone());
                         let entity = entity.clone();
@@ -364,7 +365,7 @@ impl LogView {
                                     .pl(px(entry.depth() as f32 * 14.))
                                     .text_sm()
                                     .child(if entry.is_folder() {
-                                        Icon::new(if entry.is_expanded() { IconName::ChevronDown } else { IconName::ChevronRight })
+                                        Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT })
                                             .xsmall()
                                             .text_color(palette.text_secondary)
                                     } else {
@@ -511,10 +512,10 @@ pub(super) fn group_branches(branches: &[&RefName], scope: &str, short: impl Fn(
 pub(super) fn ref_label(reference: &RefName, current_branch: Option<&str>, palette: &crate::theme::Palette) -> impl IntoElement {
     let is_current = reference.kind == RefKind::LocalBranch && Some(reference.name.as_str()) == current_branch;
     let (icon, color) = match reference.kind {
-        _ if is_current => (IconName::GitBranch, palette.ref_head),
-        RefKind::LocalBranch => (IconName::GitBranch, palette.ref_local),
-        RefKind::RemoteBranch => (IconName::GitBranch, palette.ref_remote),
-        RefKind::Tag => (IconName::Tag, palette.ref_tag),
+        _ if is_current => (icons::BRANCH, palette.ref_head),
+        RefKind::LocalBranch => (icons::BRANCH, palette.ref_local),
+        RefKind::RemoteBranch => (icons::BRANCH, palette.ref_remote),
+        RefKind::Tag => (icons::TAG, palette.ref_tag),
     };
     h_flex()
         .flex_shrink_0()

@@ -236,6 +236,11 @@ pub(super) fn resolve_icon_image(
                 bytes.to_vec(),
             )));
         }
+        // Junction: native menus draw an image; the first layer stands for it.
+        IconSource::Layers { light, .. } => match light.first() {
+            Some((path, _)) => return asset_source.load(path).ok().flatten().map(|b| Arc::new(Image::from_bytes(ImageFormat::Svg, b.to_vec()))),
+            None => return None,
+        },
     };
     if path.is_empty() {
         return None;

@@ -2,8 +2,8 @@
 //! Recent Files and File Structure pickers.
 
 use std::rc::Rc;
+use crate::ui::as_icons as icons;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     WindowExt as _, h_flex,
     input::{Input, InputEvent, InputState},
@@ -17,6 +17,7 @@ use gpui_kit::{
 
 use crate::index::nav::Target;
 use crate::theme::ActivePalette as _;
+use gpui_kit::component::Icon;
 use crate::ui::common::{self};
 use crate::ui::find_view::FoundItem;
 
@@ -24,17 +25,23 @@ use crate::ui::find_view::FoundItem;
 #[derive(Clone)]
 pub struct OpenTarget(pub Target);
 
-pub fn symbol_icon(kind: crate::index::symbols::SymbolKind) -> IconName {
+pub fn symbol_icon(kind: crate::index::symbols::SymbolKind) -> Icon {
     use crate::index::symbols::SymbolKind as K;
+    // Android Studio's structure icons.
     match kind {
-        K::Class | K::Struct | K::Interface | K::Protocol | K::Trait | K::Extension => IconName::Layers,
-        K::Enum | K::EnumMember => IconName::Rows3,
-        K::Function | K::Method | K::Constructor => IconName::CircleDot,
-        K::Field | K::Property | K::Variable | K::Constant => IconName::Circle,
-        K::Module | K::Namespace => IconName::FolderClosed,
-        K::TypeAlias => IconName::Hash,
-        K::Macro => IconName::Hash,
+        K::Class | K::Struct | K::Extension => icons::CLASS,
+        K::Interface | K::Protocol | K::Trait => icons::INTERFACE,
+        K::Enum => icons::ENUM,
+        K::Function | K::Macro => icons::FUNCTION,
+        K::Method | K::Constructor => icons::METHOD,
+        K::Field | K::EnumMember => icons::FIELD,
+        K::Property => icons::PROPERTY,
+        K::Constant => icons::CONSTANT,
+        K::Variable => icons::VARIABLE,
+        K::Module | K::Namespace => icons::PACKAGE,
+        K::TypeAlias => icons::TYPE_ALIAS,
     }
+    .into()
 }
 
 /// "Choose Declaration": several targets for one name. `locations` is what
@@ -141,7 +148,7 @@ impl Render for ListPicker {
                     .cursor_pointer()
                     .when(row == self.selected, |el| el.bg(palette.selection))
                     .when(row != self.selected, |el| el.hover(|el| el.bg(palette.hover)))
-                    .child(common::icon(item.icon).text_color(palette.text_secondary))
+                    .child(common::icon(item.icon.clone()).text_color(palette.text_secondary))
                     .child(div().text_sm().whitespace_nowrap().child(item.title.clone()))
                     .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_xs().text_color(palette.text_secondary).child(item.detail.clone()))
                     .when(!location.is_empty(), |el| {

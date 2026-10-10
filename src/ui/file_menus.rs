@@ -3,11 +3,11 @@
 //! right, the same separators, and the shared Git submenu.
 
 use std::cell::RefCell;
+use crate::ui::as_icons as icons;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Icon, WindowExt as _, h_flex,
     input::{Input, InputState},
@@ -193,7 +193,7 @@ fn git_items(menu: PopupMenu, target: &GitTarget, cx: &mut Context<PopupMenu>) -
     }))
     .item(entry("Show History for Selection", "").disabled(true))
     .separator()
-    .item(entry("Rollback…", "Ctrl+Alt+Z").icon(Icon::new(IconName::Undo2)).disabled(changed.is_empty()).on_click({
+    .item(entry("Rollback…", "Ctrl+Alt+Z").icon(Icon::new(icons::VCS_REVERT)).disabled(changed.is_empty()).on_click({
         let model = model.clone();
         let files: Vec<(String, StatusKind)> = changed.iter().map(|p| (p.clone(), kinds[p])).collect();
         move |_, window, cx| {
@@ -359,19 +359,19 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
     let t = target.clone();
     let menu = menu.submenu("New", window, cx, move |m, _, _| {
         let (file, dir) = (t.clone(), t.clone());
-        m.item(entry("File", "").icon(Icon::new(IconName::File)).on_click(move |_, window, cx| new_entry(&file, false, window, cx)))
-            .item(entry("Directory", "").icon(Icon::new(IconName::Folder)).on_click(move |_, window, cx| new_entry(&dir, true, window, cx)))
+        m.item(entry("File", "").icon(Icon::new(icons::FILE_TEXT)).on_click(move |_, window, cx| new_entry(&file, false, window, cx)))
+            .item(entry("Directory", "").icon(Icon::new(icons::FOLDER)).on_click(move |_, window, cx| new_entry(&dir, true, window, cx)))
     });
     let has_clipboard = target.clipboard.borrow().is_some();
     let (t_cut, t_copy, t_paste) = (target.clone(), target.clone(), target.clone());
     let t = target.clone();
     let menu = menu
         .separator()
-        .item(entry("Cut", "Ctrl+X").icon(Icon::new(IconName::Scissors)).disabled(target.path.is_empty()).on_click(move |_, _, cx| {
+        .item(entry("Cut", "Ctrl+X").icon(Icon::new(icons::CUT)).disabled(target.path.is_empty()).on_click(move |_, _, cx| {
             *t_cut.clipboard.borrow_mut() = Some((vec![t_cut.full()], true));
             cx.write_to_clipboard(ClipboardItem::new_string(t_cut.full().to_string_lossy().into_owned()));
         }))
-        .item(entry("Copy", "Ctrl+C").icon(Icon::new(IconName::Copy)).on_click(move |_, _, cx| {
+        .item(entry("Copy", "Ctrl+C").icon(Icon::new(icons::COPY)).on_click(move |_, _, cx| {
             *t_copy.clipboard.borrow_mut() = Some((vec![t_copy.full()], false));
             cx.write_to_clipboard(ClipboardItem::new_string(t_copy.full().to_string_lossy().into_owned()));
         }))
@@ -381,7 +381,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
                 .item(entry("File Name", "").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone()))))
                 .item(entry("Path From Repository Root", "").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(rel.clone()))))
         })
-        .item(entry("Paste", "Ctrl+V").icon(Icon::new(IconName::Clipboard)).disabled(!has_clipboard).on_click(move |_, window, cx| paste(&t_paste, window, cx)))
+        .item(entry("Paste", "Ctrl+V").icon(Icon::new(icons::PASTE)).disabled(!has_clipboard).on_click(move |_, window, cx| paste(&t_paste, window, cx)))
         .separator()
         .item(entry("Find Usages", "Alt+F7").disabled(true))
         .when(is_dir, |m| m.item(entry("Find in Files…", "Ctrl+Shift+F").disabled(true)).item(entry("Replace in Files…", "Ctrl+Shift+R").disabled(true)));
@@ -404,7 +404,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
     let t_delete = target.clone();
     let menu = menu
         .separator()
-        .item(entry("Reformat Code", "Ctrl+Alt+L").icon(Icon::new(IconName::TextAlignStart)).disabled(true))
+        .item(entry("Reformat Code", "Ctrl+Alt+L").icon(Icon::new(icons::FILE_TEXT)).disabled(true))
         .item(entry("Optimize Imports", "Ctrl+Alt+O").disabled(true))
         .item(entry("Delete…", "Delete").disabled(target.path.is_empty()).on_click(move |_, window, cx| {
             delete_files(t_delete.root.clone(), vec![t_delete.path.clone()], t_delete.actions.clone(), window, cx)
@@ -413,7 +413,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         .separator();
     let t_split = target.clone();
     let menu = menu.when(!is_dir, |m| {
-        m.item(entry("Open in Right Split", "Shift+Enter").icon(Icon::new(IconName::Columns2)).on_click(move |_, window, cx| {
+        m.item(entry("Open in Right Split", "Shift+Enter").icon(Icon::new(icons::SPLIT_VERTICALLY)).on_click(move |_, window, cx| {
             (t_split.actions)(FileAction::OpenFile(t_split.path.clone()), window, cx)
         }))
     });
@@ -434,14 +434,14 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
     let menu = git_submenu(menu, git, window, cx);
     let (t_reload, t_compare, t_clip, t_gist) = (target.clone(), target.clone(), target.clone(), target.clone());
     let menu = menu.item(entry("Repair IDE on File", "").disabled(true))
-        .item(entry("Reload from Disk", "").icon(Icon::new(IconName::RefreshCw)).on_click(move |_, window, cx| {
+        .item(entry("Reload from Disk", "").icon(Icon::new(icons::REFRESH)).on_click(move |_, window, cx| {
             (t_reload.actions)(FileAction::FilesChanged, window, cx)
         }))
         .separator()
-        .item(entry("Compare With…", "Ctrl+D").icon(Icon::new(IconName::GitCompare)).disabled(is_dir).on_click(move |_, window, cx| {
+        .item(entry("Compare With…", "Ctrl+D").icon(Icon::new(icons::VCS_DIFF)).disabled(is_dir).on_click(move |_, window, cx| {
             (t_compare.actions)(FileAction::CompareWithFile(t_compare.path.clone()), window, cx)
         }))
-        .item(entry("Compare with Clipboard", "").icon(Icon::new(IconName::Clipboard)).disabled(is_dir).on_click(move |_, window, cx| {
+        .item(entry("Compare with Clipboard", "").icon(Icon::new(icons::PASTE)).disabled(is_dir).on_click(move |_, window, cx| {
             (t_clip.actions)(FileAction::CompareWithClipboard(t_clip.path.clone()), window, cx)
         }))
         .separator();

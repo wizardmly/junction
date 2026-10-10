@@ -3,8 +3,8 @@
 //! merge actions; the conversation timeline opens in the editor area.
 
 use std::rc::Rc;
+use crate::ui::as_icons as icons;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Icon, Selectable as _, Sizable as _, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -605,7 +605,7 @@ impl Render for PullRequestsView {
                 .justify_center()
                 .gap_3()
                 .p_4()
-                .child(Icon::new(IconName::GitPullRequest).large().text_color(palette.text_secondary))
+                .child(Icon::new(icons::PULL_REQUESTS).large().text_color(palette.text_secondary))
                 .child(div().text_sm().text_color(palette.text_secondary).text_center().child(problem.clone()))
                 .when(problem.starts_with("Log in"), |el| {
                     el.child(Button::new("pr-login").small().primary().label("Log In…").on_click(move |_, window, cx| {
@@ -645,7 +645,7 @@ impl Render for PullRequestsView {
                         h_flex()
                             .gap_1p5()
                             .text_sm()
-                            .child(Icon::new(IconName::GitPullRequest).small().text_color(state_color(status, &palette)))
+                            .child(Icon::new(icons::PULL_REQUESTS).small().text_color(state_color(status, &palette)))
                             .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(gpui_kit::FontWeight::MEDIUM).child(pr.title.clone()))
                             .children(pr.labels.iter().take(2).map(|l| label_chip(l, &palette))),
                     )
@@ -695,8 +695,8 @@ impl Render for PullRequestsView {
                                 menu
                             }),
                     )
-                    .child(tool_button("pr-create", IconName::Plus, if self.title() == "Merge Requests" { "Create Merge Request" } else { "Create Pull Request" }).on_click(cx.listener(|this, _, window, cx| this.create_pull_request(window, cx))))
-                    .child(tool_button("pr-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(|this, _, _, cx| this.refresh(cx)))),
+                    .child(tool_button("pr-create", icons::ADD, if self.title() == "Merge Requests" { "Create Merge Request" } else { "Create Pull Request" }).on_click(cx.listener(|this, _, window, cx| this.create_pull_request(window, cx))))
+                    .child(tool_button("pr-refresh", icons::REFRESH, "Refresh").on_click(cx.listener(|this, _, _, cx| this.refresh(cx)))),
             )
             .child(self.filter_bar(&palette, cx))
             .when(self.loading, |el| el.child(div().px_2().py_1().text_xs().text_color(palette.text_secondary).child("Loading…")))
@@ -789,7 +789,7 @@ impl PullRequestsView {
                     }),
             )
             .when(any_filter, |el| {
-                el.child(tool_button("pr-clear-filters", IconName::Close, "Clear Filters").on_click(cx.listener(|this, _, _, cx| {
+                el.child(tool_button("pr-clear-filters", icons::CLOSE, "Clear Filters").on_click(cx.listener(|this, _, _, cx| {
                     let reload = this.filters.review.is_some();
                     this.filters = Filters::default();
                     this.review_matches = None;
@@ -843,12 +843,12 @@ impl PullRequestsView {
                     .gap_1()
                     .border_b_1()
                     .border_color(palette.border)
-                    .child(tool_button("pr-back", IconName::ChevronLeft, "Back to List").on_click(cx.listener(|this, _, _, cx| {
+                    .child(tool_button("pr-back", icons::CHEVRON_LEFT, "Back to List").on_click(cx.listener(|this, _, _, cx| {
                         this.details = None;
                         cx.notify();
                     })))
                     .child(div().flex_1().text_sm().text_color(palette.text_secondary).child(self.number(pr.number)))
-                    .child(tool_button("pr-web", IconName::Globe, if self.title() == "Merge Requests" { "Open on GitLab" } else { "Open on GitHub" }).on_click(move |_, _, cx| cx.open_url(&web_url))),
+                    .child(tool_button("pr-web", icons::EXTERNAL_LINK, if self.title() == "Merge Requests" { "Open on GitLab" } else { "Open on GitHub" }).on_click(move |_, _, cx| cx.open_url(&web_url))),
             )
             .child(
                 div().id("pr-details").flex_1().min_h_0().overflow_y_scrollbar().child(
@@ -883,14 +883,14 @@ impl PullRequestsView {
                             h_flex()
                                 .gap_1()
                                 .flex_wrap()
-                                .child(Button::new("pr-timeline").xsmall().outline().icon(IconName::MessageSquare).label("Timeline").on_click(cx.listener(|this, _, _, cx| {
+                                .child(Button::new("pr-timeline").xsmall().outline().icon(icons::BALLOON).label("Timeline").on_click(cx.listener(|this, _, _, cx| {
                                     if let (Some(target), Some(details)) = (this.target.clone(), this.details.as_ref()) {
                                         cx.emit(PrEvent::OpenTimeline(target, details.pr.clone()));
                                     }
                                 })))
-                                .child(Button::new("pr-checkout").xsmall().outline().icon(IconName::GitBranch).label("Checkout").on_click(cx.listener(|this, _, _, cx| this.checkout(cx))))
+                                .child(Button::new("pr-checkout").xsmall().outline().icon(icons::BRANCH).label("Checkout").on_click(cx.listener(|this, _, _, cx| this.checkout(cx))))
                                 .when(open, |el| {
-                                    el.child(Button::new("pr-approve").xsmall().outline().icon(IconName::Check).label("Approve").on_click(cx.listener(|this, _, _, cx| {
+                                    el.child(Button::new("pr-approve").xsmall().outline().icon(icons::CHECKED).label("Approve").on_click(cx.listener(|this, _, _, cx| {
                                         this.api_op("Approve", |c, repo, n| {
                                             c.submit_review(repo, n, ReviewEvent::Approve, "")?;
                                             Ok(format!("Approved #{n}"))
@@ -1051,9 +1051,9 @@ impl Render for PrTimelineView {
                     .gap_2()
                     .border_b_1()
                     .border_color(palette.border)
-                    .child(Icon::new(IconName::GitPullRequest).small().text_color(state_color(self.pr.status(), &palette)))
+                    .child(Icon::new(icons::PULL_REQUESTS).small().text_color(state_color(self.pr.status(), &palette)))
                     .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(format!("{} {}", self.pr.title, self.target.number(self.pr.number))))
-                    .child(tool_button("tl-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(|this, _, _, cx| this.reload(cx)))),
+                    .child(tool_button("tl-refresh", icons::REFRESH, "Refresh").on_click(cx.listener(|this, _, _, cx| this.reload(cx)))),
             )
             .when(self.loading, |el| el.child(div().px_3().py_1().text_xs().text_color(palette.text_secondary).child("Loading…")))
             .when_some(self.error.clone(), |el, e| el.child(div().px_3().py_1().text_sm().text_color(palette.status_conflict).child(e)))

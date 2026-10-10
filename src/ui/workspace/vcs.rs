@@ -2,6 +2,7 @@
 //! Operations popup, conflicts / merge, and the Git tool window's Log tabs.
 
 use super::*;
+use crate::ui::as_icons as icons;
 
 impl Workspace {
     pub(super) fn show_conflicts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -83,7 +84,7 @@ impl Workspace {
                 .bg(if conflicts.is_empty() { palette.diff_header } else { palette.diff_deleted })
                 .border_b_1()
                 .border_color(palette.border)
-                .child(Icon::new(IconName::GitMergeConflict).small())
+                .child(Icon::new(icons::VCS_MERGE).small())
                 .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(label))
                 .child(div().text_color(palette.text_secondary).child(match conflicts.len() {
                     // An `edit` step of an interactive rebase, not a conflict.

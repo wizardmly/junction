@@ -3,7 +3,7 @@
 //! history behind the Notifications tool window.
 
 use gpui_kit::component::{Icon, Sizable as _, h_flex};
-use gpui_kit::assets::IconName;
+use crate::ui::as_icons as icons;
 use gpui_kit::{
     Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
     Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
@@ -64,7 +64,7 @@ impl Render for CaretStatus {
             .child(widget("status-separator", if format.crlf { "CRLF" } else { "LF" }.into(), "Line Separator"))
             .child(widget("status-encoding", "UTF-8".into(), "File Encoding"))
             .child(widget("status-indent", format.indent.into(), "Indent"))
-            .when(read_only, |el| el.child(Icon::new(IconName::Lock).xsmall().text_color(palette.text_secondary)))
+            .when(read_only, |el| el.child(Icon::new(icons::LOCKED).xsmall().text_color(palette.text_secondary)))
     }
 }
 

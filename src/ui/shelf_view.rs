@@ -2,6 +2,7 @@
 //! Unshelve, Rename, Delete, Recently Deleted, and Import Patches.
 
 use std::collections::HashMap;
+use crate::ui::as_icons as icons;
 
 use gpui_kit::component::{
     Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex,
@@ -12,7 +13,6 @@ use gpui_kit::component::{
     tree::{TreeState, tree},
     v_flex, v_resizable, resizable_panel,
 };
-use gpui_kit::assets::IconName;
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
     PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
@@ -361,7 +361,7 @@ impl ShelfView {
                     .item(PopupMenuItem::new("Rename…").on_click(act(|this, window, cx| this.rename(window, cx))))
                     .item(PopupMenuItem::new(if deleted { "Delete Permanently" } else { "Delete" }).on_click(act(|this, _, cx| this.delete(cx))))
             })
-            .child(Icon::new(IconName::Layers).small().text_color(palette.text_secondary))
+            .child(Icon::new(icons::VCS_CHANGELIST).small().text_color(palette.text_secondary))
             .child(
                 div()
                     .flex_1()
@@ -410,7 +410,7 @@ impl Render for ShelfView {
                         this.show_deleted = !this.show_deleted;
                         cx.notify();
                     }))
-                    .child(Icon::new(if self.show_deleted { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall())
+                    .child(Icon::new(if self.show_deleted { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).xsmall())
                     .child(format!("Recently Deleted ({deleted_count})")),
             );
             if self.show_deleted {
@@ -436,7 +436,7 @@ impl Render for ShelfView {
                     .child(
                         Icon::new(match &path {
                             Some(p) => common::file_icon(p),
-                            None => IconName::Folder,
+                            None => Icon::from(icons::FOLDER),
                         })
                         .small()
                         .text_color(palette.text_secondary),
@@ -455,19 +455,19 @@ impl Render for ShelfView {
                     .border_b_1()
                     .border_color(palette.border)
                     .child(
-                        tool_button("shelf-unshelve", IconName::ArrowUpFromLine, "Unshelve")
+                        tool_button("shelf-unshelve", icons::VCS_PUSH, "Unshelve")
                             .disabled(!has_selection)
                             .on_click(cx.listener(|this, _, window, cx| this.unshelve_dialog(window, cx))),
                     )
                     .child(
-                        tool_button("shelf-delete", IconName::X, "Delete")
+                        tool_button("shelf-delete", icons::CLOSE, "Delete")
                             .disabled(!has_selection)
                             .on_click(cx.listener(|this, _, _, cx| this.delete(cx))),
                     )
-                    .child(tool_button("shelf-import", IconName::ArrowDownToLine, "Import Patches…").on_click(
+                    .child(tool_button("shelf-import", icons::VCS_UPDATE, "Import Patches…").on_click(
                         cx.listener(|this, _, _, cx| this.import(cx)),
                     ))
-                    .child(tool_button("shelf-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(
+                    .child(tool_button("shelf-refresh", icons::REFRESH, "Refresh").on_click(cx.listener(
                         |this, _, _, cx| this.reload(cx),
                     ))),
             )

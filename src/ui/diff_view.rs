@@ -3,6 +3,7 @@
 //! fragments, and Previous / Next Difference (Shift+F7 / F7).
 
 use std::collections::{HashMap, HashSet};
+use crate::ui::as_icons as icons;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13,7 +14,6 @@ use gpui_kit::component::{
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
-use gpui_kit::assets::IconName;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, MouseButton, canvas, Hsla, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
@@ -363,7 +363,7 @@ impl DiffView {
     }
 
     /// The gutter actions IntelliJ offers for this kind of diff.
-    fn hunk_actions(&self) -> Vec<(HunkAction, IconName, &'static str)> {
+    fn hunk_actions(&self) -> Vec<(HunkAction, icons::AsIcon, &'static str)> {
         // A submodule pointer has no lines to roll back or stage piecewise.
         let submodule = |text: &str| text.starts_with("Subproject commit ");
         // Do not highlight shows no changes, so no buttons either.
@@ -371,15 +371,15 @@ impl DiffView {
             return Vec::new();
         }
         match &self.source {
-            Some(DiffSource::WorkingTree { unversioned: false, .. }) => vec![(HunkAction::Revert, IconName::Undo2, "Rollback")],
+            Some(DiffSource::WorkingTree { unversioned: false, .. }) => vec![(HunkAction::Revert, icons::VCS_REVERT, "Rollback")],
             Some(DiffSource::Unstaged { .. }) => {
-                vec![(HunkAction::Stage, IconName::Plus, "Stage"), (HunkAction::Revert, IconName::Undo2, "Rollback")]
+                vec![(HunkAction::Stage, icons::ADD, "Stage"), (HunkAction::Revert, icons::VCS_REVERT, "Rollback")]
             }
-            Some(DiffSource::Staged { .. }) => vec![(HunkAction::Unstage, IconName::Minus, "Unstage")],
+            Some(DiffSource::Staged { .. }) => vec![(HunkAction::Unstage, icons::REMOVE, "Unstage")],
             // Two files, the clipboard and a file, or a revision and the
             // local file: copy a change across into the editable side.
             Some(DiffSource::Files { .. } | DiffSource::Clipboard { .. } | DiffSource::Between { new: None, .. }) if self.editable() => {
-                vec![(HunkAction::Revert, IconName::ChevronsRight, "Replace")]
+                vec![(HunkAction::Revert, icons::DIFF_ARROW_RIGHT, "Replace")]
             }
             _ => Vec::new(),
         }
@@ -805,35 +805,35 @@ impl DiffView {
             .border_color(palette.border)
             .bg(palette.toolbar)
             .child(
-                tool_button("diff-prev", IconName::ChevronUp, "Previous Difference (Shift+F7)")
+                tool_button("diff-prev", icons::UP, "Previous Difference (Shift+F7)")
                     .disabled(!self.has_previous() && self.neighbor(false).is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.previous_difference(cx))),
             )
             .child(
-                tool_button("diff-next", IconName::ChevronDown, "Next Difference (F7)")
+                tool_button("diff-next", icons::DOWN, "Next Difference (F7)")
                     .disabled(!self.has_next() && self.neighbor(true).is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.next_difference(cx))),
             )
             .child(
-                tool_button("diff-jump", IconName::Pencil, "Jump to Source (F4)")
+                tool_button("diff-jump", icons::EDIT, "Jump to Source (F4)")
                     .disabled(self.jump_target().is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.jump_to_source(cx))),
             )
             .child(separator())
             .child(
-                tool_button("diff-prev-file", IconName::ArrowLeft, "Compare Previous File (Alt+Left)")
+                tool_button("diff-prev-file", icons::LEFT, "Compare Previous File (Alt+Left)")
                     .disabled(self.neighbor(false).is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.compare_previous_file(cx))),
             )
             .child(
-                tool_button("diff-next-file", IconName::ArrowRight, "Compare Next File (Alt+Right)")
+                tool_button("diff-next-file", icons::RIGHT, "Compare Next File (Alt+Right)")
                     .disabled(self.neighbor(true).is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.compare_next_file(cx))),
             )
             .when_some(self.file_position().filter(|(_, n)| *n > 1), |el, (ix, n)| {
                 let files = self.files.clone();
                 let entity = entity.clone();
-                el.child(Button::new("diff-files").ghost().xsmall().icon(IconName::List).label(format!("{} of {n}", ix + 1)).tooltip("Go to Changed File").dropdown_menu(
+                el.child(Button::new("diff-files").ghost().xsmall().icon(icons::LIST_FILES).label(format!("{} of {n}", ix + 1)).tooltip("Go to Changed File").dropdown_menu(
                     move |mut menu, window, cx| {
                         preselect(ix, window, cx);
                         for (i, file) in files.iter().enumerate() {
@@ -906,7 +906,7 @@ impl DiffView {
                 }
             }))
             .child(
-                tool_button("diff-collapse", IconName::FoldVertical, "Collapse Unchanged Fragments")
+                tool_button("diff-collapse", icons::COLLAPSE_ALL, "Collapse Unchanged Fragments")
                     .selected(options.context.is_some())
                     .on_click(cx.listener(|this, _, _, cx| {
                         let lines = crate::settings::Settings::get(cx).diff.context_lines;
@@ -915,7 +915,7 @@ impl DiffView {
             )
             .when(mode == ViewerMode::SideBySide, |el| {
                 el.child(
-                    tool_button("diff-sync", IconName::Link2, "Synchronize Scrolling")
+                    tool_button("diff-sync", icons::SYNCHRONIZE_SCROLLING, "Synchronize Scrolling")
                         .selected(self.panes.sync)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.panes.sync = !this.panes.sync;
@@ -923,11 +923,11 @@ impl DiffView {
                         })),
                 )
             })
-            .child(Button::new("diff-gear").ghost().xsmall().icon(IconName::Settings).tooltip("Settings").dropdown_menu(
+            .child(Button::new("diff-gear").ghost().xsmall().icon(icons::SETTINGS).tooltip("Settings").dropdown_menu(
                 move |menu, window, cx| crate::ui::text_panes::gear_menu(menu, mode == ViewerMode::SideBySide, window, cx),
             ))
             .child(
-                tool_button("diff-help", IconName::CircleQuestionMark, "Help")
+                tool_button("diff-help", icons::QUESTION_MARK, "Help")
                     .on_click(|_, _, cx| cx.open_url("https://www.jetbrains.com/help/idea/differences-viewer.html")),
             )
             .child(separator())
@@ -994,7 +994,7 @@ fn review_number(review: &Review, path: Rc<str>, ix: usize, line: usize, palette
         .cursor_pointer()
         .text_color(palette.text_disabled)
         .hover(|st| st.bg(palette.hover).text_color(palette.text))
-        .when(notes.is_some(), |el| el.child(common::icon(IconName::MessageSquare).text_color(palette.link)))
+        .when(notes.is_some(), |el| el.child(common::icon(icons::BALLOON).text_color(palette.link)))
         .child(line.to_string())
         .tooltip(move |window, cx| {
             let text = match &notes {
@@ -1223,10 +1223,10 @@ impl DiffView {
                     let mut el = if left_edits { column().left(px(layout.buttons_offset())) } else { column().right(px(layout.buttons_offset())) }.w(px(actions_width));
                     for (action, icon, tooltip) in actions.iter().copied() {
                         let (icon, tooltip) = match action {
-                            HunkAction::Revert if append && left_edits => (IconName::ArrowLeftToLine, "Append"),
-                            HunkAction::Revert if append => (IconName::ArrowRightToLine, "Append"),
-                            HunkAction::Revert if left_edits => (IconName::ChevronsLeft, "Replace"),
-                            HunkAction::Revert => (IconName::ChevronsRight, if tooltip == "Replace" { "Replace" } else { "Revert" }),
+                            HunkAction::Revert if append && left_edits => (icons::DIFF_ARROW, "Append"),
+                            HunkAction::Revert if append => (icons::DIFF_ARROW_RIGHT, "Append"),
+                            HunkAction::Revert if left_edits => (icons::DIFF_ARROW, "Replace"),
+                            HunkAction::Revert => (icons::DIFF_ARROW_RIGHT, if tooltip == "Replace" { "Replace" } else { "Revert" }),
                             _ => (icon, tooltip),
                         };
                         el = el.child(
@@ -1434,7 +1434,7 @@ impl DiffView {
                 ));
             }
             for (action, icon, tooltip) in actions.iter().copied() {
-                let (icon, tooltip) = if action == HunkAction::Revert { (IconName::Close, "Revert") } else { (icon, tooltip) };
+                let (icon, tooltip) = if action == HunkAction::Revert { (icons::CLOSE, "Revert") } else { (icon, tooltip) };
                 el = el.child(
                     tool_button(gpui_kit::ElementId::NamedInteger(format!("unified-{tooltip}").into(), change as u64), icon, tooltip)
                         .on_click(cx.listener(move |this, e: &gpui_kit::ClickEvent, window, cx| this.apply_hunk(change, action, e.modifiers().secondary(), window, cx))),
@@ -1501,7 +1501,7 @@ impl DiffView {
                     .pl(px(6.))
                     .gap_1p5()
                     // A lock marks a read-only side.
-                    .when(edit_pane != Some(0), |el| el.child(common::icon(IconName::Lock).text_color(palette.text_secondary)))
+                    .when(edit_pane != Some(0), |el| el.child(common::icon(icons::LOCKED).text_color(palette.text_secondary)))
                     .child(div().flex_shrink_0().child(old_title))
                     .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(palette.text_secondary).child(path)),
             )
@@ -1522,7 +1522,7 @@ impl DiffView {
                             entity.update(cx, |this, cx| this.set_all_included(value, cx))
                         }))
                     })
-                    .when(edit_pane != Some(1), |el| el.child(common::icon(IconName::Lock).text_color(palette.text_secondary)))
+                    .when(edit_pane != Some(1), |el| el.child(common::icon(icons::LOCKED).text_color(palette.text_secondary)))
                     .child(div().flex_shrink_0().child(new_title))
                     .when_some(new_path, |el, path| {
                         el.child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(palette.text_secondary).child(path))

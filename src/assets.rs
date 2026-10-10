@@ -96,26 +96,16 @@ pub struct AppAssets;
 /// IntelliJ-style icons of our own (Project view), served as "junction/<name>.svg".
 const OWN_ICONS: &[(&str, &[u8])] = &[
     ("junction/android.svg", include_bytes!("../assets/icons/android.svg")),
-    ("junction/class.svg", include_bytes!("../assets/icons/class.svg")),
-    ("junction/class-abstract.svg", include_bytes!("../assets/icons/class-abstract.svg")),
-    ("junction/folder.svg", include_bytes!("../assets/icons/folder.svg")),
-    ("junction/gradle.svg", include_bytes!("../assets/icons/gradle.svg")),
-    ("junction/jar.svg", include_bytes!("../assets/icons/jar.svg")),
-    ("junction/kotlin.svg", include_bytes!("../assets/icons/kotlin.svg")),
-    ("junction/kotlin-badge.svg", include_bytes!("../assets/icons/kotlin-badge.svg")),
-    ("junction/kotlin-cut.svg", include_bytes!("../assets/icons/kotlin-cut.svg")),
-    ("junction/libraries.svg", include_bytes!("../assets/icons/libraries.svg")),
-    ("junction/library-badge.svg", include_bytes!("../assets/icons/library-badge.svg")),
-    ("junction/library-bars.svg", include_bytes!("../assets/icons/library-bars.svg")),
     ("junction/markdown.svg", include_bytes!("../assets/icons/markdown.svg")),
-    ("junction/module.svg", include_bytes!("../assets/icons/module.svg")),
-    ("junction/module-badge.svg", include_bytes!("../assets/icons/module-badge.svg")),
 ];
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if let Some((_, bytes)) = OWN_ICONS.iter().find(|(p, _)| *p == path) {
             return Ok(Some(Cow::Borrowed(*bytes)));
+        }
+        if let Some(bytes) = path.starts_with("as/").then(|| crate::ui::as_icons::load(path)).flatten() {
+            return Ok(Some(Cow::Borrowed(bytes)));
         }
         if let Some(bytes) = GitIcons.load(path)? {
             return Ok(Some(bytes));

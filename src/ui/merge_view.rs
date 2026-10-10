@@ -6,6 +6,7 @@
 //! applies all non-conflicting changes from the left, both or the right side.
 
 use std::ops::Range;
+use crate::ui::as_icons as icons;
 
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::{
@@ -13,7 +14,6 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     v_flex,
 };
-use gpui_kit::assets::IconName;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, EventEmitter, Hsla, InteractiveElement as _, IntoElement, MouseButton,
     ParentElement as _, StatefulInteractiveElement as _, Render, Styled as _, Task, Window, canvas, div, prelude::FluentBuilder as _, px,
@@ -812,7 +812,7 @@ impl MergeView {
                             column(layout.buttons)
                                 .left(px(layout.buttons_offset()))
                                 .child(
-                                    tool_button(("merge-wand", ix), IconName::WandSparkles, "Resolve simple conflict")
+                                    tool_button(("merge-wand", ix), icons::MAGIC_RESOLVE, "Resolve simple conflict")
                                         .on_click(cx.listener(move |this, _, _, cx| this.resolve_simple(ix, cx))),
                                 )
                                 .into_any_element(),
@@ -822,11 +822,11 @@ impl MergeView {
                 _ => {
                     let apply = tool_button(
                         (if ours { "merge-apply-left" } else { "merge-apply-right" }, ix),
-                        if ours { IconName::ChevronsRight } else { IconName::ChevronsLeft },
+                        if ours { icons::DIFF_ARROW_RIGHT } else { icons::DIFF_ARROW },
                         if state.side(!ours) == SideState::Applied { "Append" } else { "Accept" },
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.apply_side(ix, ours, cx)));
-                    let ignore = tool_button((if ours { "merge-ignore-left" } else { "merge-ignore-right" }, ix), IconName::X, "Ignore")
+                    let ignore = tool_button((if ours { "merge-ignore-left" } else { "merge-ignore-right" }, ix), icons::CLOSE, "Ignore")
                         .on_click(cx.listener(move |this, _, _, cx| this.ignore_side(ix, ours, cx)));
                     let el = column(layout.buttons);
                     out.push(if ours {
@@ -983,33 +983,33 @@ impl Render for MergeView {
             .border_color(palette.border)
             .bg(palette.toolbar)
             .child(
-                tool_button("merge-prev", IconName::ChevronUp, "Previous Change (Shift+F7)")
+                tool_button("merge-prev", icons::UP, "Previous Change (Shift+F7)")
                     .disabled(self.previous_change().is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.previous_difference(cx))),
             )
             .child(
-                tool_button("merge-next", IconName::ChevronDown, "Next Change (F7)")
+                tool_button("merge-next", icons::DOWN, "Next Change (F7)")
                     .disabled(self.next_change().is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.next_difference(cx))),
             )
             .child(separator())
             .child(
-                tool_button("merge-apply-left-all", IconName::ChevronsRight, "Apply Non-Conflicting Changes from the Left Side")
+                tool_button("merge-apply-left-all", icons::DIFF_ARROW_RIGHT, "Apply Non-Conflicting Changes from the Left Side")
                     .disabled(!has_non_conflicting(Some(true)))
                     .on_click(cx.listener(|this, _, _, cx| this.apply_non_conflicting(Some(true), cx))),
             )
             .child(
-                tool_button("merge-apply-all", IconName::CheckCheck, "Apply All Non-Conflicting Changes")
+                tool_button("merge-apply-all", icons::CHECKED, "Apply All Non-Conflicting Changes")
                     .disabled(!has_non_conflicting(None))
                     .on_click(cx.listener(|this, _, _, cx| this.apply_non_conflicting(None, cx))),
             )
             .child(
-                tool_button("merge-apply-right-all", IconName::ChevronsLeft, "Apply Non-Conflicting Changes from the Right Side")
+                tool_button("merge-apply-right-all", icons::DIFF_ARROW, "Apply Non-Conflicting Changes from the Right Side")
                     .disabled(!has_non_conflicting(Some(false)))
                     .on_click(cx.listener(|this, _, _, cx| this.apply_non_conflicting(Some(false), cx))),
             )
             .child(
-                tool_button("merge-wand-all", IconName::WandSparkles, "Resolve Simple Conflicts")
+                tool_button("merge-wand-all", icons::MAGIC_RESOLVE, "Resolve Simple Conflicts")
                     .disabled(!has_simple)
                     .on_click(cx.listener(|this, _, _, cx| this.resolve_all_simple(cx))),
             )
@@ -1049,7 +1049,7 @@ impl Render for MergeView {
                 })
             })
             .child(separator())
-            .child(tool_button("merge-collapse", IconName::FoldVertical, "Collapse Unchanged Fragments").selected(self.collapse).on_click(cx.listener(
+            .child(tool_button("merge-collapse", icons::COLLAPSE_ALL, "Collapse Unchanged Fragments").selected(self.collapse).on_click(cx.listener(
                 |this, _, _, cx| {
                     this.collapse = !this.collapse;
                     this.expanded.clear();
@@ -1057,7 +1057,7 @@ impl Render for MergeView {
                     cx.notify();
                 },
             )))
-            .child(tool_button("merge-sync", IconName::Link2, "Synchronize Scrolling").selected(self.panes.sync).on_click(cx.listener(|this, _, _, cx| {
+            .child(tool_button("merge-sync", icons::SYNCHRONIZE_SCROLLING, "Synchronize Scrolling").selected(self.panes.sync).on_click(cx.listener(|this, _, _, cx| {
                 this.panes.sync = !this.panes.sync;
                 cx.notify();
             })))
@@ -1067,7 +1067,7 @@ impl Render for MergeView {
                 gpui_kit::component::button::Button::new("merge-compare")
                     .ghost()
                     .xsmall()
-                    .icon(IconName::FileDiff)
+                    .icon(icons::VCS_DIFF)
                     .tooltip("Compare Contents")
                     .dropdown_menu(move |menu, _, _| {
                         let item = |label: &'static str, old: usize, new: usize| {
@@ -1088,12 +1088,12 @@ impl Render for MergeView {
                 gpui_kit::component::button::Button::new("merge-gear")
                     .ghost()
                     .xsmall()
-                    .icon(IconName::Settings)
+                    .icon(icons::SETTINGS)
                     .tooltip("Settings")
                     .dropdown_menu(|menu, window, cx| crate::ui::text_panes::gear_menu(menu, true, window, cx))
             })
             .child(
-                tool_button("merge-help", IconName::CircleQuestionMark, "Help")
+                tool_button("merge-help", icons::QUESTION_MARK, "Help")
                     .on_click(|_, _, cx| cx.open_url("https://www.jetbrains.com/help/idea/resolve-conflicts.html")),
             )
             .child(separator())
@@ -1113,7 +1113,7 @@ impl Render for MergeView {
                 .min_w_0()
                 .px(px(6.))
                 .gap_1p5()
-                .when(lock, |el| el.child(common::icon(IconName::Lock).text_color(palette.text_secondary)))
+                .when(lock, |el| el.child(common::icon(icons::LOCKED).text_color(palette.text_secondary)))
                 .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text.to_owned()))
         };
         let header = h_flex()

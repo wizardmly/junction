@@ -4,8 +4,8 @@
 //! Matches are highlighted in the editor, the current one selected.
 
 use std::ops::Range;
+use crate::ui::as_icons as icons;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Disableable as _, Icon, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -277,7 +277,7 @@ impl Render for FindBar {
         if !self.open {
             return v_flex();
         }
-        let toggle = |id: &'static str, icon: IconName, tip: &'static str, on: bool| tool_button(id, icon, tip).when(on, |b| b.selected(true));
+        let toggle = |id: &'static str, icon: Icon, tip: &'static str, on: bool| tool_button(id, icon, tip).when(on, |b| b.selected(true));
         let status = match (&self.error, self.current) {
             (Some(error), _) => error.clone(),
             (None, _) if self.query.read(cx).value().is_empty() => String::new(),
@@ -291,19 +291,19 @@ impl Render for FindBar {
                 div().w(px(300.)).child(
                     Input::new(&self.query)
                         .small()
-                        .prefix(Icon::new(IconName::Search).xsmall().text_color(palette.text_secondary))
+                        .prefix(Icon::new(icons::SEARCH).xsmall().text_color(palette.text_secondary))
                         .suffix(
                             h_flex()
                                 .gap_0p5()
-                                .child(toggle("find-case", IconName::CaseSensitive, "Match Case  Alt+C", self.case_sensitive).on_click(cx.listener(|this, _, _, cx| {
+                                .child(toggle("find-case", Icon::from(icons::MATCH_CASE), "Match Case  Alt+C", self.case_sensitive).on_click(cx.listener(|this, _, _, cx| {
                                     this.case_sensitive = !this.case_sensitive;
                                     this.search(false, cx);
                                 })))
-                                .child(toggle("find-words", IconName::WholeWord, "Words  Alt+W", self.whole_words).on_click(cx.listener(|this, _, _, cx| {
+                                .child(toggle("find-words", Icon::from(icons::EXACT_WORDS), "Words  Alt+W", self.whole_words).on_click(cx.listener(|this, _, _, cx| {
                                     this.whole_words = !this.whole_words;
                                     this.search(false, cx);
                                 })))
-                                .child(toggle("find-regex", IconName::Regex, "Regex  Alt+X", self.regex).on_click(cx.listener(|this, _, _, cx| {
+                                .child(toggle("find-regex", Icon::from(icons::REGEX), "Regex  Alt+X", self.regex).on_click(cx.listener(|this, _, _, cx| {
                                     this.regex = !this.regex;
                                     this.search(false, cx);
                                 }))),
@@ -317,10 +317,10 @@ impl Render for FindBar {
                     .text_color(if no_match { palette.status_conflict } else { palette.text_secondary })
                     .child(status),
             )
-            .child(tool_button("find-prev", IconName::ArrowUp, "Previous Occurrence  Shift+Enter").on_click(cx.listener(|this, _, _, cx| this.step(false, cx))))
-            .child(tool_button("find-next", IconName::ArrowDown, "Next Occurrence  Enter").on_click(cx.listener(|this, _, _, cx| this.step(true, cx))))
+            .child(tool_button("find-prev", icons::UP, "Previous Occurrence  Shift+Enter").on_click(cx.listener(|this, _, _, cx| this.step(false, cx))))
+            .child(tool_button("find-next", icons::DOWN, "Next Occurrence  Enter").on_click(cx.listener(|this, _, _, cx| this.step(true, cx))))
             .child(div().flex_1())
-            .child(tool_button("find-close", IconName::X, "Close  Escape").on_click(cx.listener(|this, _, window, cx| this.close(window, cx))));
+            .child(tool_button("find-close", icons::CLOSE, "Close  Escape").on_click(cx.listener(|this, _, window, cx| this.close(window, cx))));
         let replace_row = self.replace_mode.then(|| {
             h_flex()
                 .gap_1()

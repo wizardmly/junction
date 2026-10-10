@@ -2,6 +2,7 @@
 //! Apply / Pop / Drop / Clear / Unstash as Branch.
 
 use std::collections::HashMap;
+use crate::ui::as_icons as icons;
 
 use gpui_kit::component::{
     Disableable as _, Icon, Sizable as _, h_flex,
@@ -11,7 +12,6 @@ use gpui_kit::component::{
     tree::{TreeState, tree},
     v_flex, v_resizable, resizable_panel,
 };
-use gpui_kit::assets::IconName;
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
@@ -217,7 +217,7 @@ impl Render for StashView {
                         }))
                         .item(PopupMenuItem::new("Clear…").on_click(move |_, window, cx| c.update(cx, |this, cx| this.clear(window, cx))))
                     })
-                    .child(Icon::new(IconName::Archive).small().text_color(palette.text_secondary))
+                    .child(Icon::new(icons::VCS_SHELVE).small().text_color(palette.text_secondary))
                     .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(stash.message.clone()))
                     .when_some(stash.branch.clone(), |el, branch| {
                         el.child(div().text_xs().text_color(palette.ref_local).child(branch))
@@ -244,7 +244,7 @@ impl Render for StashView {
                     .child(
                         Icon::new(match &path {
                             Some(p) => common::file_icon(p),
-                            None => IconName::Folder,
+                            None => Icon::from(icons::FOLDER),
                         })
                         .small()
                         .text_color(palette.text_secondary),
@@ -262,25 +262,25 @@ impl Render for StashView {
                     .gap_0p5()
                     .border_b_1()
                     .border_color(palette.border)
-                    .child(tool_button("stash-new", IconName::Plus, "Stash Changes…").on_click(cx.listener(
+                    .child(tool_button("stash-new", icons::ADD, "Stash Changes…").on_click(cx.listener(
                         |this, _, window, cx| dialogs::stash(this.model.clone(), window, cx),
                     )))
-                    .child(tool_button("stash-apply", IconName::Check, "Apply").disabled(!has_selection).on_click(
+                    .child(tool_button("stash-apply", icons::CHECKED, "Apply").disabled(!has_selection).on_click(
                         cx.listener(|this, _, _, cx| this.stash_op("Apply Stash", "apply", cx)),
                     ))
-                    .child(tool_button("stash-pop", IconName::ArrowUpFromLine, "Pop").disabled(!has_selection).on_click(
+                    .child(tool_button("stash-pop", icons::VCS_PUSH, "Pop").disabled(!has_selection).on_click(
                         cx.listener(|this, _, _, cx| this.stash_op("Pop Stash", "pop", cx)),
                     ))
-                    .child(tool_button("stash-unstash-as", IconName::GitBranch, "Unstash As…").disabled(!has_selection).on_click(
+                    .child(tool_button("stash-unstash-as", icons::BRANCH, "Unstash As…").disabled(!has_selection).on_click(
                         cx.listener(|this, _, window, cx| this.unstash_as(window, cx)),
                     ))
-                    .child(tool_button("stash-drop", IconName::X, "Drop…").disabled(!has_selection).on_click(
+                    .child(tool_button("stash-drop", icons::CLOSE, "Drop…").disabled(!has_selection).on_click(
                         cx.listener(|this, _, window, cx| this.drop_stash(window, cx)),
                     ))
-                    .child(tool_button("stash-clear", IconName::Delete, "Clear…").disabled(self.stashes.is_empty()).on_click(
+                    .child(tool_button("stash-clear", icons::DELETE, "Clear…").disabled(self.stashes.is_empty()).on_click(
                         cx.listener(|this, _, window, cx| this.clear(window, cx)),
                     ))
-                    .child(tool_button("stash-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(
+                    .child(tool_button("stash-refresh", icons::REFRESH, "Refresh").on_click(cx.listener(
                         |this, _, _, cx| this.reload(cx),
                     ))),
             )

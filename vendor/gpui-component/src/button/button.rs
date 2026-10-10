@@ -300,6 +300,12 @@ impl Button {
 
     /// Presentation supplied by a styled compound control. Standalone buttons
     /// retain their normal size-derived content style.
+    /// Junction: the icon's size, apart from the button's.
+    pub fn icon_size(mut self, size: impl Into<Size>) -> Self {
+        self.icon_size = Some(size.into());
+        self
+    }
+
     pub(crate) fn content_style(mut self, style: StyleRefinement, icon_size: Size) -> Self {
         self.content_style = style;
         self.icon_size = Some(icon_size);
@@ -595,6 +601,17 @@ impl InteractiveElement for Button {
     }
 }
 
+/// Junction: IntelliJ's ActionButton hover and pressed backgrounds.
+fn ghost_background(pressed: bool, cx: &App) -> Background {
+    let rgb = match (cx.theme().mode.is_dark(), pressed) {
+        (true, false) => 0x393b40,
+        (true, true) => 0x43454a,
+        (false, false) => 0xdfe1e5,
+        (false, true) => 0xcfd1d5,
+    };
+    gpui::rgb(rgb).into()
+}
+
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let style: ButtonVariant = self.variant;
@@ -612,8 +629,10 @@ impl RenderOnce for Button {
         let normal_style = style.normal(self.outline, cx);
         let selected_style = style.selected(self.outline, cx);
         let disabled_style = style.disabled(self.outline, cx);
+        // Junction: IntelliJ draws toolbar icons at 16px in a 22px button.
         let icon_size = self.icon_size.unwrap_or_else(|| match self.size {
             Size::Size(v) => Size::Size(v * 0.75),
+            Size::XSmall | Size::Small => Size::Size(gpui::px(16.)),
             _ => self.size,
         });
         let has_content = self.icon.is_some() || self.label.is_some() || !children.is_empty();
@@ -660,7 +679,7 @@ impl RenderOnce for Button {
                     // Icon Button
                     match self.size {
                         Size::Size(px) => this.size(px),
-                        Size::XSmall => this.size_5(),
+                        Size::XSmall => this.size(gpui::px(22.)),
                         Size::Small => this.size_6(),
                         Size::Large | Size::Medium => this.size_8(),
                     }
@@ -1165,14 +1184,8 @@ impl ButtonVariant {
                 }
             }
             Self::Custom(colors) => colors.hover.into(),
-            Self::Ghost => {
-                let accent: Background = cx.theme().tokens.accent.into();
-                if cx.theme().mode.is_dark() {
-                    accent.opacity(0.5)
-                } else {
-                    accent
-                }
-            }
+            // Junction: IntelliJ's ActionButton.hoverBackground.
+            Self::Ghost => ghost_background(false, cx),
             Self::Link => cx.theme().transparent.into(),
             Self::Text => cx.theme().transparent.into(),
         };
@@ -1181,7 +1194,8 @@ impl ButtonVariant {
         let fg = match self {
             Self::Link => cx.theme().link_hover,
             Self::Text => cx.theme().foreground,
-            Self::Ghost => cx.theme().accent_foreground,
+            // Junction: icons keep their colors on hover, as in IntelliJ.
+            Self::Ghost => self.text_color(outline, cx),
             _ => self.text_color(outline, cx),
         };
 
@@ -1220,7 +1234,7 @@ impl ButtonVariant {
                     cx.theme().tokens.button_secondary_active.into()
                 }
             }
-            Self::Ghost => cx.theme().tokens.button_active.into(),
+            Self::Ghost => ghost_background(true, cx),
             Self::Danger => {
                 if outline {
                     self.outline_background(ButtonStyleState::Active, cx)
@@ -1285,7 +1299,7 @@ impl ButtonVariant {
             Self::Default => cx.theme().tokens.button_active.into(),
             Self::Primary => cx.theme().tokens.button_primary_active.into(),
             Self::Secondary => cx.theme().tokens.button_secondary_active.into(),
-            Self::Ghost => cx.theme().tokens.secondary_active.into(),
+            Self::Ghost => ghost_background(true, cx),
             Self::Danger => cx.theme().tokens.button_danger_active.into(),
             Self::Warning => cx.theme().tokens.button_warning_active.into(),
             Self::Success => cx.theme().tokens.button_success_active.into(),

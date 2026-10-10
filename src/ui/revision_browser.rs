@@ -2,6 +2,7 @@
 //! opens it read-only in the file editor.
 
 use std::rc::Rc;
+use crate::ui::as_icons as icons;
 
 use gpui_kit::component::{
     Icon, Sizable as _, WindowExt as _, h_flex,
@@ -41,11 +42,11 @@ pub fn open(model: Entity<RepoModel>, revision: String, open_file: OpenFile, win
                 .pl(px(entry.depth() as f32 * 14.))
                 .text_sm()
                 .child(if entry.is_folder() {
-                    Icon::new(if entry.is_expanded() { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall()
+                    Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).xsmall()
                 } else {
                     Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black())
                 })
-                .child(Icon::new(path.as_deref().map_or(IconName::Folder, common::file_icon)).small())
+                .child(Icon::new(path.as_deref().map_or(Icon::from(icons::FOLDER), common::file_icon)).small())
                 .child(div().child(item.label.clone()));
             ListItem::new(ix).py_0().px_1().h(px(row_height())).child(row).on_click(move |event, window, cx| {
                 // Double-click (or Enter-like single click on a file) opens it, as IntelliJ's F4.

@@ -7,7 +7,7 @@
 //! in `Workspace::editors` / `front` and the other group's in `split`; focusing
 //! a group swaps them, so every tab operation works on the focused group.
 
-use gpui_kit::assets::IconName;
+use crate::ui::as_icons as icons;
 use gpui_kit::component::{h_flex, menu::{ContextMenuExt as _, PopupMenuItem}};
 use gpui_kit::{
     AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
@@ -436,7 +436,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn tab_title(&self, front: Front, cx: &gpui_kit::App) -> (String, IconName, Option<String>) {
+    fn tab_title(&self, front: Front, cx: &gpui_kit::App) -> (String, gpui_kit::component::Icon, Option<String>) {
         match front {
             Front::Editor(ix) => {
                 let editor = self.editors[ix].view.read(cx);
@@ -456,14 +456,14 @@ impl Workspace {
                 }
                 (title, common::file_icon(path), Some(path.to_owned()))
             }
-            Front::Diff => (self.diff.read(cx).title().unwrap_or_default(), IconName::FileDiff, None),
+            Front::Diff => (self.diff.read(cx).title().unwrap_or_default(), gpui_kit::component::Icon::from(icons::VCS_DIFF), None),
             Front::Merge => {
                 let path = self.merge.as_ref().map(|(m, _)| m.read(cx).path().to_owned()).unwrap_or_default();
-                (format!("Merge: {}", path.rsplit('/').next().unwrap_or(&path)), IconName::GitMerge, None)
+                (format!("Merge: {}", path.rsplit('/').next().unwrap_or(&path)), gpui_kit::component::Icon::from(icons::VCS_MERGE), None)
             }
             Front::Timeline => {
                 let title = self.timeline.as_ref().map(|t| t.read(cx).title()).unwrap_or_else(|| "Pull Request".to_owned());
-                (title, IconName::GitPullRequest, None)
+                (title, gpui_kit::component::Icon::from(icons::PULL_REQUESTS), None)
             }
         }
     }
@@ -529,7 +529,7 @@ impl Workspace {
                             .when_some(color, |el, c| el.text_color(c))
                             .child(if dirty { format!("{title} •") } else { title.clone() }),
                     )
-                    .when(pinned, |el| el.child(common::icon(IconName::Pin).text_color(palette.text_secondary)))
+                    .when(pinned, |el| el.child(common::icon(icons::PIN).text_color(palette.text_secondary)))
                     .child(
                         div()
                             .id(("editor-tab-close", n))
@@ -537,7 +537,7 @@ impl Workspace {
                             .rounded(px(3.))
                             .hover(|el| el.bg(palette.hover))
                             .when(!active, |el| el.invisible().group_hover(SharedString::from(format!("editor-tab-{group}")), |el| el.visible()))
-                            .child(common::icon(IconName::X).text_color(palette.text_secondary))
+                            .child(common::icon(icons::CLOSE).text_color(palette.text_secondary))
                             .on_click({
                                 let entity = entity.clone();
                                 move |_, _, cx| {

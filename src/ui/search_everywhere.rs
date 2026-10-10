@@ -3,13 +3,13 @@
 //! Ctrl+Alt+Shift+N and Ctrl+Shift+A open it on their tab.
 
 use std::collections::HashSet;
+use crate::ui::as_icons as icons;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Disableable as _, Icon, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -88,7 +88,7 @@ pub enum SeEvent {
 
 #[derive(Clone)]
 enum Kind {
-    Target { title: String, detail: String, right: String, icon: IconName, target: Target },
+    Target { title: String, detail: String, right: String, icon: Icon, target: Target },
     Action(usize),
     Text(TextMatch),
     Command(SeTab),
@@ -521,7 +521,7 @@ impl SearchEverywhere {
                 .rows
                 .iter()
                 .filter_map(|r| match &r.kind {
-                    Kind::Target { title, detail, icon, target, .. } => Some(FoundItem { title: title.clone(), detail: detail.clone(), icon: *icon, target: target.clone() }),
+                    Kind::Target { title, detail, icon, target, .. } => Some(FoundItem { title: title.clone(), detail: detail.clone(), icon: icon.clone(), target: target.clone() }),
                     Kind::Text(m) => Some(FoundItem { title: m.text.clone(), detail: format!("{}:{}", m.path, m.line + 1), icon: common::file_icon(&m.path), target: target_of(m) }),
                     _ => None,
                 })
@@ -540,7 +540,7 @@ impl SearchEverywhere {
         Button::new("se-filter")
             .ghost()
             .xsmall()
-            .icon(Icon::new(IconName::Funnel))
+            .icon(Icon::new(icons::FILTER))
             .tooltip("Filter")
             .selected(active)
             .disabled(tab == SeTab::Actions)
@@ -609,7 +609,7 @@ impl Render for SearchEverywhere {
                 )))
             })
             .child(
-                tool_button("se-preview", IconName::SquareSplitVertical, "Preview (Alt+P)")
+                tool_button("se-preview", icons::PREVIEW, "Preview (Alt+P)")
                     .selected(self.show_preview)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.show_preview = !this.show_preview;
@@ -619,7 +619,7 @@ impl Render for SearchEverywhere {
                     })),
             )
             .child(self.render_filter(cx))
-            .child(tool_button("se-find-window", IconName::SquareArrowDownLeft, "Open in Find Tool Window").on_click(cx.listener(|this, _, _, cx| this.open_in_find_window(cx))));
+            .child(tool_button("se-find-window", icons::OPEN_NEW_TAB, "Open in Find Tool Window").on_click(cx.listener(|this, _, _, cx| this.open_in_find_window(cx))));
 
         let rows = Rc::new(self.rows.clone());
         let actions = self.actions.clone();
@@ -661,14 +661,14 @@ impl Render for SearchEverywhere {
                             let group_label = div().w(px(64.)).flex_shrink_0().text_xs().text_right().text_color(palette.text_secondary).child(if first { row.group.label() } else { "" });
                             match &row.kind {
                                 Kind::Target { title, detail, right: r, icon, .. } => base
-                                    .child(common::icon(*icon).text_color(palette.text_secondary))
+                                    .child(common::icon(icon.clone()).text_color(palette.text_secondary))
                                     .child(div().whitespace_nowrap().child(title.clone()))
                                     .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_xs().text_color(palette.text_secondary).child(detail.clone()))
                                     .child(right(r.clone()))
                                     .when(all, |el| el.child(group_label)),
                                 Kind::Action(i) => {
                                     let a = &actions[*i];
-                                    base.child(common::icon(IconName::Zap).text_color(palette.text_secondary))
+                                    base.child(common::icon(icons::LIGHTNING).text_color(palette.text_secondary))
                                         .child(div().whitespace_nowrap().child(a.name.clone()))
                                         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_xs().text_color(palette.text_secondary).child(a.group.clone()))
                                         .child(right(a.shortcut.clone()))
@@ -720,7 +720,7 @@ impl Render for SearchEverywhere {
             .child(
                 div().px_2().pb_2().child(
                     Input::new(&self.input)
-                        .prefix(Icon::new(IconName::Search).small().text_color(palette.text_secondary)),
+                        .prefix(Icon::new(icons::SEARCH).small().text_color(palette.text_secondary)),
                 ),
             )
             .child(body)

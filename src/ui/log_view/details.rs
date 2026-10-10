@@ -1,6 +1,7 @@
 //! The commit details panel: changed files and the message.
 
 use super::*;
+use crate::ui::as_icons as icons;
 
 impl LogView {
     pub(super) fn rebuild_changes(&mut self, cx: &mut Context<Self>) {
@@ -134,12 +135,12 @@ impl LogView {
                         None => "No commit selected".into(),
                     })
                     .child(div().flex_1())
-                    .child(tool_button("log-changes-expand", IconName::ChevronsUpDown, "Expand All").on_click(cx.listener(|this, _, _, cx| {
+                    .child(tool_button("log-changes-expand", icons::EXPAND_ALL, "Expand All").on_click(cx.listener(|this, _, _, cx| {
                         this.changes_expanded = true;
                         this.rebuild_changes(cx);
                         cx.notify();
                     })))
-                    .child(tool_button("log-changes-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(|this, _, _, cx| {
+                    .child(tool_button("log-changes-collapse", icons::COLLAPSE_ALL, "Collapse All").on_click(cx.listener(|this, _, _, cx| {
                         this.changes_expanded = false;
                         this.rebuild_changes(cx);
                         cx.notify();
@@ -147,7 +148,7 @@ impl LogView {
                     .child({
                         let settings = Settings::get(cx).log.clone();
                         let entity = cx.entity();
-                        Button::new("log-changes-options").ghost().xsmall().icon(IconName::Eye).tooltip("View Options").dropdown_menu(move |menu, _, _| {
+                        Button::new("log-changes-options").ghost().xsmall().icon(icons::SHOW).tooltip("View Options").dropdown_menu(move |menu, _, _| {
                             let toggle = |label: &'static str, on: bool, set: fn(&mut crate::settings::LogSettings, bool)| {
                                 let entity = entity.clone();
                                 PopupMenuItem::new(label).checked(on).on_click(move |_, _, cx| {
@@ -200,17 +201,17 @@ impl LogView {
                                     .text_sm()
                                     .when(entry.is_folder(), |el| {
                                         el.child(
-                                            Icon::new(if entry.is_expanded() { IconName::ChevronDown } else { IconName::ChevronRight })
+                                            Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT })
                                                 .xsmall()
                                                 .text_color(palette.text_secondary),
                                         )
                                     })
                                     .child(
                                         Icon::new(match &path {
-                                            Some(p) if submodules.contains(p.as_str()) => IconName::FolderGit2,
+                                            Some(p) if submodules.contains(p.as_str()) => Icon::from(icons::MODULE),
                                             Some(p) => common::file_icon(p),
-                                            None if id.starts_with(common::MODULE_PREFIX) => IconName::Layers,
-                                            None => IconName::Folder,
+                                            None if id.starts_with(common::MODULE_PREFIX) => Icon::from(icons::MODULE),
+                                            None => Icon::from(icons::FOLDER),
                                         })
                                         .small()
                                         .text_color(palette.text_secondary),
@@ -296,7 +297,7 @@ impl LogView {
                                     .gap_1()
                                     .text_color(color)
                                     .items_start()
-                                    .child(Icon::new(if signature.is_good() { IconName::CircleCheck } else { IconName::TriangleAlert }).small())
+                                    .child(Icon::new(if signature.is_good() { icons::STATUS_SUCCESS } else { icons::STATUS_WARNING }).small())
                                     .child(div().flex_1().min_w_0().child(selectable("commit-signature", 4, &signature.describe(), color))),
                             )
                         })

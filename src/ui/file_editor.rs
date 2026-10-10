@@ -5,6 +5,7 @@
 //! Rollback Lines.
 
 use std::cell::RefCell;
+use crate::ui::as_icons as icons;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -17,7 +18,6 @@ use gpui_kit::component::{
     native_menu::NativeMenu,
     v_flex,
 };
-use gpui_kit::assets::IconName;
 use gpui_kit::{
     AppContext as _, Bounds, Context, DispatchPhase, Entity, EventEmitter, InteractiveElement as _, IntoElement, KeyBinding,
     MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, Render, StatefulInteractiveElement as _, Styled as _,
@@ -843,14 +843,14 @@ impl FileEditor {
             .gap_0p5()
             .px_1()
             .py_0p5()
-            .child(tool_button("change-prev", IconName::ArrowUp, "Previous Change").on_click(cx.listener(|this, _, window, cx| this.step_popup(false, window, cx))))
-            .child(tool_button("change-next", IconName::ArrowDown, "Next Change").on_click(cx.listener(|this, _, window, cx| this.step_popup(true, window, cx))))
-            .child(tool_button("change-rollback", IconName::Undo2, "Rollback  Ctrl+Alt+Z").on_click(cx.listener(move |this, _, window, cx| this.rollback_hunk(ix, window, cx))))
-            .child(tool_button("change-diff", IconName::FileDiff, "Show Diff").on_click(cx.listener(|this, _, window, cx| {
+            .child(tool_button("change-prev", icons::UP, "Previous Change").on_click(cx.listener(|this, _, window, cx| this.step_popup(false, window, cx))))
+            .child(tool_button("change-next", icons::DOWN, "Next Change").on_click(cx.listener(|this, _, window, cx| this.step_popup(true, window, cx))))
+            .child(tool_button("change-rollback", icons::VCS_REVERT, "Rollback  Ctrl+Alt+Z").on_click(cx.listener(move |this, _, window, cx| this.rollback_hunk(ix, window, cx))))
+            .child(tool_button("change-diff", icons::VCS_DIFF, "Show Diff").on_click(cx.listener(|this, _, window, cx| {
                 this.popup = None;
                 this.show_diff(&ShowFileDiff, window, cx);
             })))
-            .child(tool_button("change-copy", IconName::Copy, "Copy").on_click({
+            .child(tool_button("change-copy", icons::COPY, "Copy").on_click({
                 let old = old.join("\n");
                 cx.listener(move |this, _, window, cx| {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(old.clone()));
@@ -859,7 +859,7 @@ impl FileEditor {
                     cx.notify();
                 })
             }))
-            .child(tool_button("change-stage", IconName::Plus, "Stage").on_click(cx.listener(move |this, _, window, cx| this.stage_hunk(ix, window, cx))))
+            .child(tool_button("change-stage", icons::ADD, "Stage").on_click(cx.listener(move |this, _, window, cx| this.stage_hunk(ix, window, cx))))
             .child(div().px_1().text_xs().text_color(palette.text_secondary).child(format!("{} of {count}", ix + 1)));
         let body = (!old.is_empty()).then(|| {
             v_flex()
@@ -1246,11 +1246,11 @@ impl Render for FileEditor {
                     })
                     .child(div().flex_1())
                     .when(!read_only, |el| {
-                        el.child(tool_button("editor-save", IconName::Check, "Save  Ctrl+S").on_click(cx.listener(
+                        el.child(tool_button("editor-save", icons::CHECKED, "Save  Ctrl+S").on_click(cx.listener(
                             |this, _, window, cx| this.save(&SaveFile, window, cx),
                         )))
                     })
-                    .child(tool_button("editor-diff", IconName::FileDiff, "Show Diff").on_click(cx.listener(
+                    .child(tool_button("editor-diff", icons::VCS_DIFF, "Show Diff").on_click(cx.listener(
                         |this, _, window, cx| this.show_diff(&ShowFileDiff, window, cx),
                     )))
             )

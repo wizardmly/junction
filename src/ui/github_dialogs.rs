@@ -2,9 +2,9 @@
 //! and Create Pull Request, as the GitHub plugin of Android Studio has them.
 
 use std::cell::{Cell, RefCell};
+use crate::ui::as_icons as icons;
 use std::rc::Rc;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Sizable as _, WindowExt as _, h_flex,
     button::Button,
@@ -45,7 +45,7 @@ fn notify(model: &Entity<RepoModel>, title: &str, message: String, error: bool, 
 fn account_picker(id: &'static str, accounts: &[Account], chosen: &Rc<Cell<usize>>) -> impl gpui_kit::IntoElement {
     let label = accounts.get(chosen.get()).map(|a| format!("{} ({})", a.login, a.server)).unwrap_or_default();
     let (accounts, chosen) = (accounts.to_vec(), chosen.clone());
-    Button::new(id).small().outline().label(label).icon(IconName::ChevronDown).dropdown_menu(move |mut menu, _, _| {
+    Button::new(id).small().outline().label(label).icon(icons::CHEVRON_DOWN).dropdown_menu(move |mut menu, _, _| {
         for (ix, a) in accounts.iter().enumerate() {
             let chosen = chosen.clone();
             menu = menu.item(PopupMenuItem::new(format!("{} ({})", a.login, a.server)).checked(chosen.get() == ix).on_click(move |_, window, _| {
@@ -331,7 +331,7 @@ pub fn create_pull_request(model: Entity<RepoModel>, target: PrTarget, on_create
                             .gap_2()
                             .child(label("Base:"))
                             .child(div().flex_1().child(Input::new(&base).small()))
-                            .child(Button::new("cpr-bases").small().outline().icon(IconName::ChevronDown).dropdown_menu(move |mut menu, _, _| {
+                            .child(Button::new("cpr-bases").small().outline().icon(icons::CHEVRON_DOWN).dropdown_menu(move |mut menu, _, _| {
                                 for name in &branches {
                                     let (input, name) = (menu_base.clone(), name.clone());
                                     menu = menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, window, cx| input.update(cx, |s, cx| s.set_value(name.clone(), window, cx))));
@@ -352,7 +352,7 @@ pub fn create_pull_request(model: Entity<RepoModel>, target: PrTarget, on_create
                             h_flex()
                                 .gap_1()
                                 .text_sm()
-                                .child(gpui_kit::component::Icon::new(IconName::TriangleAlert).small().text_color(palette.status_conflict))
+                                .child(gpui_kit::component::Icon::new(icons::STATUS_WARNING).small().text_color(palette.status_conflict))
                                 .child(format!("{noun} {number} already exists for this branch."))
                                 .child(
                                     div()

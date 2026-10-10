@@ -10,7 +10,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Disableable as _, Sizable as _,
     Icon,
@@ -34,6 +33,7 @@ use crate::index::service::{CodeIndex, IndexEvent};
 use crate::model::{RepoEvent, RepoModel};
 use crate::settings::{ProjectSettings, ProjectSort, Settings};
 use crate::theme::ActivePalette as _;
+use crate::ui::as_icons::{self as icons, AsIcon};
 use crate::ui::common::{self, row_height, tool_button};
 use crate::ui::file_menus::{FileActions, FileClipboard, ProjectTarget};
 use crate::ui::navigate::OpenTarget;
@@ -104,6 +104,8 @@ struct Row {
     leaf: bool,
     /// A folder holding a build file: a module, with the module badge.
     module: bool,
+    /// A Gradle module: Android Studio draws it with the green badge.
+    android: bool,
     /// Greyed after the name: a library's location, "library root".
     note: Option<String>,
     /// Inside a library: drawn on IntelliJ's "non-project files" yellow.
@@ -119,7 +121,7 @@ struct Row {
 impl Row {
     fn new(depth: usize, name: String, path: String, kind: RowKind, excluded: bool) -> Self {
         let leaf = kind == RowKind::File;
-        Row { depth, name, path, kind, excluded, leaf, module: false, note: None, library: false, group: "", class: None, source: None }
+        Row { depth, name, path, kind, excluded, leaf, module: false, android: false, note: None, library: false, group: "", class: None, source: None }
     }
 }
 
@@ -986,7 +988,8 @@ fn walk(dir: &Dir, prefix: &str, depth: usize, ctx: &WalkCtx, rows: &mut Vec<Row
             }
         }
         let module = !ctx.package_dots && node.files.iter().any(|(f, _)| common::BUILD_FILES.contains(&f.as_str()));
-        entries.push((Row { module, ..Row::new(depth, label, path, RowKind::Dir, node.excluded) }, Some(node)));
+        let android = module && node.files.iter().any(|(f, _)| f == "build.gradle" || f == "build.gradle.kts");
+        entries.push((Row { module, android, ..Row::new(depth, label, path, RowKind::Dir, node.excluded) }, Some(node)));
     }
     for (f, excluded) in &dir.files {
         entries.push((Row::new(depth, f.clone(), format!("{prefix}{f}"), RowKind::File, *excluded), None));
@@ -1027,123 +1030,99 @@ fn layered(layers: Vec<(&'static str, Hsla)>) -> gpui_kit::AnyElement {
     div().relative().size(px(14.)).flex_shrink_0().children(layers.into_iter().map(|(name, color)| own_svg(name, color))).into_any_element()
 }
 
-/// The colors of IntelliJ's new UI icons.
+/// Colors for the few icons Android Studio's set doesn't carry.
 struct IconColors {
     gray: Hsla,
     blue: Hsla,
-    green: Hsla,
-    orange: Hsla,
-    purple: Hsla,
     android: Hsla,
-    back: Hsla,
 }
 
 fn icon_colors(palette: &crate::theme::Palette) -> IconColors {
     let c = |light: u32, dark: u32| -> Hsla { gpui_kit::rgb(if palette.dark { dark } else { light }).into() };
-    IconColors {
-        gray: c(0x6c707e, 0xced0d6),
-        blue: c(0x3574f0, 0x548af7),
-        green: c(0x5fb865, 0x5fad65),
-        orange: c(0xe08855, 0xe08855),
-        purple: c(0x834df0, 0xa571e6),
-        android: c(0x3ddc84, 0x3ddc84),
-        back: palette.panel,
-    }
+    IconColors { gray: c(0x6c707e, 0xced0d6), blue: c(0x3574f0, 0x548af7), android: c(0x3ddc84, 0x3ddc84) }
 }
 
-/// A row's icon, after Android Studio's: module folders, excluded folders,
-/// file types, and the library, archive and class icons of External Libraries.
-/// `back` is the row's background, for icons drawn over a cut-out.
-fn row_icon(row: &Row, back: Hsla, palette: &crate::theme::Palette) -> gpui_kit::AnyElement {
+/// One of Android Studio's icons, at its 16px.
+fn as_icon(icon: AsIcon) -> gpui_kit::AnyElement {
+    Icon::from(icon).size(px(16.)).into_any_element()
+}
+
+/// A row's icon: Android Studio's own, for module folders, excluded folders,
+/// file types, and the libraries, archives and classes of External Libraries.
+fn row_icon(row: &Row, palette: &crate::theme::Palette) -> gpui_kit::AnyElement {
     let k = icon_colors(palette);
     match row.kind {
-        RowKind::Root => layered(vec![("junction/module.svg", k.gray), ("junction/module-badge.svg", k.blue)]),
-        RowKind::Dir if row.excluded => layered(vec![("junction/folder.svg", k.orange)]),
-        RowKind::Dir if row.module => layered(vec![("junction/module.svg", k.gray), ("junction/module-badge.svg", k.green)]),
-        RowKind::Dir => layered(vec![("junction/folder.svg", k.gray)]),
+        RowKind::Root => as_icon(icons::MODULE),
+        RowKind::Dir if row.excluded => as_icon(icons::EXCLUDE_ROOT),
+        RowKind::Dir if row.module && row.android => as_icon(icons::MODULE_ANDROID),
+        RowKind::Dir if row.module => as_icon(icons::MODULE),
+        RowKind::Dir => as_icon(icons::FOLDER),
         RowKind::File => file_type_icon(&row.name, palette),
-        RowKind::Libraries => layered(vec![("junction/libraries.svg", k.gray)]),
+        RowKind::Libraries => as_icon(icons::LIBRARY),
         RowKind::Library if row.group == "Android SDK" => layered(vec![("junction/android.svg", k.android)]),
-        RowKind::Library => layered(vec![
-            ("junction/module.svg", k.gray),
-            ("junction/library-badge.svg", k.blue),
-            ("junction/library-bars.svg", k.back),
-        ]),
-        RowKind::LibraryRoot => layered(vec![("junction/jar.svg", k.blue)]),
+        RowKind::Library if row.group == "JDK" => as_icon(icons::JDK),
+        RowKind::Library => as_icon(icons::LIBRARY_FOLDER),
+        RowKind::LibraryRoot => as_icon(icons::FILE_ARCHIVE),
         RowKind::Class => {
             let (kind, kotlin) = row.class.unwrap_or((ClassIcon::Class, false));
-            if kind == ClassIcon::Facade {
-                return layered(vec![("junction/kotlin.svg", k.purple)]);
-            }
-            class_icon(kind, kotlin, back, palette)
+            as_icon(class_icon(kind, kotlin))
         }
     }
 }
 
-/// A file's icon by its type, as Android Studio draws them.
+/// A file's icon by its type, as Android Studio draws it.
 fn file_type_icon(name: &str, palette: &crate::theme::Palette) -> gpui_kit::AnyElement {
     let k = icon_colors(palette);
-    // Lucide icons, drawn in the same 14px box as ours.
-    let lucide = |icon: IconName, color: Hsla| {
-        div().size(px(14.)).flex_shrink_0().flex().items_center().justify_center().child(Icon::new(icon).size(px(13.)).text_color(color)).into_any_element()
-    };
     let lower = name.to_lowercase();
     let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    match ext {
-        _ if lower.ends_with(".gradle.kts") => layered(vec![("junction/gradle.svg", k.gray), ("junction/kotlin-badge.svg", k.purple)]),
-        "gradle" => layered(vec![("junction/gradle.svg", k.gray)]),
-        "kt" | "kts" => layered(vec![("junction/kotlin.svg", k.purple)]),
-        "java" => class_icon(ClassIcon::Class, false, palette.panel, palette),
-        "md" | "markdown" => layered(vec![("junction/markdown.svg", k.blue)]),
-        "properties" | "conf" | "cfg" | "ini" | "toml" | "editorconfig" => lucide(IconName::Settings, k.gray),
-        _ if lower.starts_with(".gitignore") || lower == ".gitattributes" || lower.ends_with("ignore") => lucide(IconName::Ban, k.gray),
-        "sh" | "bash" | "zsh" | "command" => lucide(IconName::SquareTerminal, k.gray),
-        _ if lower == "gradlew" => lucide(IconName::SquareTerminal, k.gray),
-        "xml" | "html" | "htm" | "svg" => lucide(IconName::CodeXml, k.orange),
-        "json" | "yaml" | "yml" => lucide(IconName::Braces, k.gray),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" => lucide(IconName::Image, k.gray),
-        "txt" | "pro" | "bat" | "cmd" | "log" | "" => lucide(IconName::TextAlignStart, k.gray),
-        _ => lucide(common::file_icon(name), k.gray),
-    }
+    let icon = match ext {
+        _ if lower.ends_with(".gradle.kts") => icons::GRADLE_KOTLIN,
+        "gradle" => icons::GRADLE,
+        "kt" => icons::KOTLIN,
+        "kts" => icons::KOTLIN_SCRIPT,
+        "java" => icons::CLASS,
+        "md" | "markdown" => return layered(vec![("junction/markdown.svg", k.blue)]),
+        "properties" => icons::FILE_PROPERTIES,
+        "conf" | "cfg" | "ini" | "toml" => icons::FILE_CONFIG,
+        "editorconfig" => icons::FILE_EDITOR_CONFIG,
+        _ if lower.starts_with(".gitignore") || lower == ".gitattributes" || lower.ends_with("ignore") => icons::FILE_IGNORED,
+        "sh" | "bash" | "zsh" | "command" => icons::FILE_SHELL,
+        _ if lower == "gradlew" => icons::FILE_SHELL,
+        "xml" | "svg" => icons::FILE_XML,
+        "html" | "htm" => icons::FILE_HTML,
+        "css" | "scss" => icons::FILE_CSS,
+        "js" | "mjs" | "ts" | "tsx" | "jsx" => icons::FILE_JAVASCRIPT,
+        "json" => icons::FILE_JSON,
+        "yaml" | "yml" => icons::FILE_YAML,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" => icons::FILE_IMAGE,
+        "zip" | "jar" | "aar" | "tar" | "gz" | "7z" => icons::FILE_ARCHIVE,
+        "patch" | "diff" => icons::FILE_PATCH,
+        "mf" => icons::FILE_MANIFEST,
+        "so" | "dll" | "exe" | "bin" | "class" | "dex" => icons::FILE_BINARY,
+        "txt" | "pro" | "bat" | "cmd" | "log" | "" => icons::FILE_TEXT,
+        // Languages Android Studio draws with plugin icons we don't have.
+        _ => return div().size(px(16.)).flex_shrink_0().flex().items_center().justify_center()
+            .child(Icon::new(common::file_icon(name)).size(px(14.)).text_color(k.gray)).into_any_element(),
+    };
+    as_icon(icon)
 }
 
-/// IntelliJ's class icons: a ringed letter in the kind's color, with
-/// Kotlin's mark in the corner.
-fn class_icon(kind: ClassIcon, kotlin: bool, back: Hsla, palette: &crate::theme::Palette) -> gpui_kit::AnyElement {
-    let k = icon_colors(palette);
-    let (letter, ring, ring_svg) = match kind {
-        ClassIcon::Class => ("C", k.blue, "junction/class.svg"),
-        ClassIcon::Abstract => ("C", k.gray, "junction/class-abstract.svg"),
-        ClassIcon::Interface => ("I", k.green, "junction/class.svg"),
-        ClassIcon::Enum => ("E", k.blue, "junction/class.svg"),
-        ClassIcon::Annotation => ("@", k.green, "junction/class.svg"),
-        ClassIcon::Object | ClassIcon::Facade => ("O", k.orange, "junction/class.svg"),
-    };
-    div()
-        .relative()
-        .size(px(14.))
-        .flex_shrink_0()
-        .child(own_svg(ring_svg, ring))
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size(px(14.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(8.))
-                .font_weight(gpui_kit::FontWeight::BOLD)
-                .text_color(ring)
-                .line_height(px(14.))
-                .child(letter),
-        )
-        .when(kotlin, |el| {
-            // The badge sits on a cut-out of the ring, as IntelliJ draws it.
-            el.child(own_svg("junction/kotlin-cut.svg", back)).child(own_svg("junction/kotlin-badge.svg", k.purple))
-        })
-        .into_any_element()
+/// Android Studio's class icons; Kotlin's carry its mark.
+fn class_icon(kind: ClassIcon, kotlin: bool) -> AsIcon {
+    match (kind, kotlin) {
+        (ClassIcon::Class, false) => icons::CLASS,
+        (ClassIcon::Class, true) => icons::CLASS_KOTLIN,
+        (ClassIcon::Abstract, false) => icons::CLASS_ABSTRACT,
+        (ClassIcon::Abstract, true) => icons::CLASS_ABSTRACT_KOTLIN,
+        (ClassIcon::Interface, false) => icons::INTERFACE,
+        (ClassIcon::Interface, true) => icons::INTERFACE_KOTLIN,
+        (ClassIcon::Enum, false) => icons::ENUM,
+        (ClassIcon::Enum, true) => icons::ENUM_KOTLIN,
+        (ClassIcon::Annotation, false) => icons::ANNOTATION,
+        (ClassIcon::Annotation, true) => icons::ANNOTATION_KOTLIN,
+        (ClassIcon::Object, _) => icons::OBJECT_KOTLIN,
+        (ClassIcon::Facade, _) => icons::KOTLIN,
+    }
 }
 
 /// Android Studio's brown for files Git ignores.
@@ -1174,7 +1153,6 @@ impl Render for ProjectView {
                         // Libraries and excluded folders sit on IntelliJ's yellow.
                         let yellow = row.library || (row.excluded && row.kind == RowKind::Dir);
                         let is_selected = selected.as_deref() == Some(row.path.as_str());
-                        let back = if is_selected { palette.selection } else if yellow { library_background(palette.dark) } else { palette.panel };
                         let open = expanded.contains(&row.path);
                         let color = if row.excluded {
                             Some(excluded_color(palette.dark))
@@ -1211,7 +1189,7 @@ impl Render for ProjectView {
                                     .id(("chevron", ix))
                                     .w(px(14.))
                                     .flex_shrink_0()
-                                    .when(is_dir, |el| el.child(common::icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }).text_color(palette.text_secondary)))
+                                    .when(is_dir, |el| el.child(Icon::from(if open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).size(px(16.))))
                                     // A class opens on a double click, so its arrow alone folds nested classes.
                                     .when(is_dir && row.kind == RowKind::Class, |el| {
                                         let path = row.path.clone();
@@ -1222,7 +1200,7 @@ impl Render for ProjectView {
                                         }))
                                     }),
                             )
-                            .child(row_icon(row, back, &palette))
+                            .child(row_icon(row, &palette))
                             .child(div().when_some(color, |el, c| el.text_color(c)).when(row.kind == RowKind::Root, |el| el.font_weight(gpui_kit::FontWeight::SEMIBOLD)).child(name_el))
                             .when_some(row.note.clone(), |el, note| el.child(div().ml_1().overflow_hidden().text_ellipsis().text_color(palette.text_secondary).child(note)))
                             .when(row.kind == RowKind::Root, |el| {
@@ -1277,7 +1255,7 @@ impl Render for ProjectView {
                             .ghost()
                             .xsmall()
                             .label(mode.label())
-                            .icon(IconName::ChevronDown)
+                            .icon(icons::CHEVRON_DOWN)
                             .dropdown_menu(move |mut menu, _, _| {
                                 for m in ProjectMode::ALL {
                                     let entity = mode_entity.clone();
@@ -1289,20 +1267,20 @@ impl Render for ProjectView {
                             }),
                     )
                     .child(div().flex_1())
-                    .child(tool_button("project-new", IconName::Plus, "New").dropdown_menu(move |menu, _, _| {
+                    .child(tool_button("project-new", icons::ADD, "New").dropdown_menu(move |menu, _, _| {
                         let (a, b) = (new_entity.clone(), new_entity.clone());
                         menu.item(PopupMenuItem::new("File").on_click(move |_, window, cx| a.update(cx, |this, cx| this.new_entry(false, window, cx))))
                             .item(PopupMenuItem::new("Directory").on_click(move |_, window, cx| b.update(cx, |this, cx| this.new_entry(true, window, cx))))
                     }))
                     .child(
-                        tool_button("project-locate", IconName::Crosshair, "Select Opened File")
+                        tool_button("project-locate", icons::LOCATE, "Select Opened File")
                             .disabled(!current)
                             .on_click(cx.listener(|this, _, window, cx| this.select_opened_file(window, cx))),
                     )
-                    .child(tool_button("project-expand", IconName::ChevronsUpDown, "Expand All").on_click(cx.listener(|this, _, _, cx| this.expand_all(cx))))
-                    .child(tool_button("project-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(|this, _, _, cx| this.collapse_all(cx))))
+                    .child(tool_button("project-expand", icons::EXPAND_ALL, "Expand All").on_click(cx.listener(|this, _, _, cx| this.expand_all(cx))))
+                    .child(tool_button("project-collapse", icons::COLLAPSE_ALL, "Collapse All").on_click(cx.listener(|this, _, _, cx| this.collapse_all(cx))))
                     .child(
-                        tool_button("project-options", IconName::EllipsisVertical, "Options")
+                        tool_button("project-options", icons::MORE_VERTICAL, "Options")
                             .dropdown_menu(move |menu, window, cx| Self::options_menu(menu, options_entity.clone(), window, cx)),
                     ),
             )
@@ -1328,7 +1306,7 @@ impl Render for ProjectView {
                                 .border_b_1()
                                 .border_color(palette.border)
                                 .shadow_sm()
-                                .child(common::icon(IconName::Search).text_color(palette.text_secondary))
+                                .child(common::icon(icons::SEARCH).text_color(palette.text_secondary))
                                 .child(div().text_color(if found { palette.text } else { palette.status_unversioned }).child(if q.is_empty() { "Search for:".to_owned() } else { q })),
                         )
                     }),

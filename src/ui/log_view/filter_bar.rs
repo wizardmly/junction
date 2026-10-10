@@ -2,6 +2,7 @@
 //! compare banner.
 
 use super::*;
+use crate::ui::as_icons as icons;
 
 impl LogView {
     /// View and Reset Filters: every filter off, then the commit selected.
@@ -153,7 +154,7 @@ impl LogView {
                 .bg(palette.diff_header)
                 .border_b_1()
                 .border_color(palette.border)
-                .child(Icon::new(IconName::GitCompare).small().text_color(palette.text_secondary))
+                .child(Icon::new(icons::VCS_DIFF).small().text_color(palette.text_secondary))
                 .child(div().child(match count {
                     // Update Project's "View Commits".
                     n if updated => format!("{n} commit{} received by Update Project ({base}..{branch})", if n == 1 { "" } else { "s" }),
@@ -170,7 +171,7 @@ impl LogView {
                     this.model.update(cx, |m, cx| m.compare(old, Some(new), cx));
                 })))
                 .child(
-                    tool_button("compare-close", IconName::Close, "Close Comparison")
+                    tool_button("compare-close", icons::CLOSE, "Close Comparison")
                         .on_click(cx.listener(|this, _, _, cx| this.update_filter(cx, |f| f.branches.clear()))),
                 ),
         )
@@ -212,7 +213,7 @@ impl LogView {
                 .xsmall()
                 .label(label)
                 .when(active, |b| b.selected(true))
-                .icon(Icon::new(IconName::ChevronDown).xsmall())
+                .icon(Icon::new(icons::CHEVRON_DOWN).xsmall())
         };
 
         h_flex()
@@ -227,15 +228,16 @@ impl LogView {
                     Input::new(&self.search)
                         .xsmall()
                         .cleanable(true)
-                        .prefix(Icon::new(IconName::Search).xsmall().text_color(palette.text_secondary))
+                        .prefix(Icon::new(icons::SEARCH).xsmall().text_color(palette.text_secondary))
                         .suffix(
                             h_flex()
                                 .gap_0p5()
                                 .child(
                                     Button::new("search-case")
                                         .ghost()
-                                        .xsmall()
-                                        .label("Cc")
+                                        .with_size(px(18.))
+                                        .icon(icons::MATCH_CASE)
+                                        .icon_size(px(16.))
                                         .tooltip("Match Case")
                                         .selected(filter.match_case)
                                         .on_click(cx.listener(|this, _, _, cx| this.update_filter(cx, |f| f.match_case = !f.match_case))),
@@ -243,8 +245,9 @@ impl LogView {
                                 .child(
                                     Button::new("search-regex")
                                         .ghost()
-                                        .xsmall()
-                                        .label(".*")
+                                        .with_size(px(18.))
+                                        .icon(icons::REGEX)
+                                        .icon_size(px(16.))
                                         .tooltip("Regex")
                                         .selected(filter.regex)
                                         .on_click(cx.listener(|this, _, _, cx| this.update_filter(cx, |f| f.regex = !f.regex))),
@@ -330,11 +333,11 @@ impl LogView {
             .when(model.is_loading(), |el| {
                 el.child(div().text_xs().text_color(palette.text_secondary).child("Loading…"))
             })
-            .child(tool_button("log-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(|this, _, _, cx| {
+            .child(tool_button("log-refresh", icons::REFRESH, "Refresh").on_click(cx.listener(|this, _, _, cx| {
                 this.model.update(cx, |model, cx| model.reload(cx));
             })))
             .child(
-                tool_button("log-toggle-branches", IconName::PanelLeft, "Show Branches")
+                tool_button("log-toggle-branches", icons::LAYOUT, "Show Branches")
                     .selected(self.show_branches)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.show_branches = !this.show_branches;
@@ -342,7 +345,7 @@ impl LogView {
                     })),
             )
             .child(
-                tool_button("log-toggle-details", IconName::Rows3, "Show Details")
+                tool_button("log-toggle-details", icons::PREVIEW_ONLY, "Show Details")
                     .selected(self.show_details)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.show_details = !this.show_details;
@@ -353,7 +356,7 @@ impl LogView {
                 Button::new("log-options")
                     .ghost()
                     .xsmall()
-                    .icon(Icon::new(IconName::Eye))
+                    .icon(Icon::new(icons::SHOW))
                     .tooltip("View Options")
                     .dropdown_menu(self.view_options_menu(&entity, cx)),
             )
@@ -392,7 +395,7 @@ impl LogView {
                 let item = PopupMenuItem::new(label.to_owned())
                     .checked(selected == [branch.name.clone()])
                     .on_click(set(entity, vec![branch.name.clone()]));
-                if refs.favorites.contains(&branch.full_name) { item.icon(IconName::Star) } else { item }
+                if refs.favorites.contains(&branch.full_name) { item.icon(icons::STAR) } else { item }
             }
             if !selected.is_empty() {
                 menu = menu.item(PopupMenuItem::new("All").on_click(set(&entity, vec![])));
@@ -415,7 +418,7 @@ impl LogView {
             }
             if refs.current_branch.is_some() || refs.head_commit.is_some() {
                 menu = menu.item(
-                    PopupMenuItem::new("HEAD").icon(IconName::Star).checked(selected == ["HEAD"]).on_click(set(&entity, vec!["HEAD".into()])),
+                    PopupMenuItem::new("HEAD").icon(icons::STAR).checked(selected == ["HEAD"]).on_click(set(&entity, vec!["HEAD".into()])),
                 );
             }
             for branch in &favorites {
@@ -620,7 +623,7 @@ impl LogView {
                         .pl(px(entry.depth() as f32 * 14.))
                         .text_sm()
                         .child(if entry.is_folder() {
-                            Icon::new(if entry.is_expanded() { IconName::ChevronDown } else { IconName::ChevronRight })
+                            Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT })
                                 .xsmall()
                                 .text_color(palette.text_secondary)
                         } else {
@@ -644,7 +647,7 @@ impl LogView {
                             ),
                         )
                         .child(
-                            Icon::new(if entry.is_folder() { IconName::Folder } else { common::file_icon(&path) })
+                            Icon::new(if entry.is_folder() { Icon::from(icons::FOLDER) } else { common::file_icon(&path) })
                                 .small()
                                 .text_color(palette.text_secondary),
                         )

@@ -4,12 +4,12 @@
 //! here as a plain list.
 
 use std::collections::{BTreeMap, HashSet};
+use crate::ui::as_icons as icons;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Disableable as _, Icon, Selectable as _, Sizable as _, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -34,7 +34,7 @@ use crate::ui::navigate::OpenTarget;
 pub struct FoundItem {
     pub title: String,
     pub detail: String,
-    pub icon: IconName,
+    pub icon: Icon,
     pub target: Target,
 }
 
@@ -466,7 +466,7 @@ impl FindView {
                         Button::new(("find-tab-close", ix))
                             .ghost()
                             .xsmall()
-                            .icon(Icon::new(IconName::Close))
+                            .icon(Icon::new(icons::CLOSE))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.close_tab(ix, cx)
@@ -500,7 +500,7 @@ impl FindView {
             .gap_0p5()
             .flex_shrink_0()
             .child(
-                tool_button("find-rerun", IconName::RefreshCw, "Rerun")
+                tool_button("find-rerun", icons::REFRESH, "Rerun")
                     .disabled(!text)
                     .on_click(cx.listener(|this, _, _, cx| {
                         let ix = this.active;
@@ -508,12 +508,12 @@ impl FindView {
                     })),
             )
             .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
-            .child(tool_button("find-prev", IconName::ArrowUp, "Previous Occurrence (Ctrl+Alt+Up)").on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))))
-            .child(tool_button("find-next", IconName::ArrowDown, "Next Occurrence (Ctrl+Alt+Down)").on_click(cx.listener(|this, _, _, cx| this.step(1, cx))))
-            .child(tool_button("find-expand", IconName::ChevronsUpDown, "Expand All").on_click(cx.listener(|this, _, _, cx| this.set_all_collapsed(false, cx))))
-            .child(tool_button("find-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(|this, _, _, cx| this.set_all_collapsed(true, cx))))
+            .child(tool_button("find-prev", icons::UP, "Previous Occurrence (Ctrl+Alt+Up)").on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))))
+            .child(tool_button("find-next", icons::DOWN, "Next Occurrence (Ctrl+Alt+Down)").on_click(cx.listener(|this, _, _, cx| this.step(1, cx))))
+            .child(tool_button("find-expand", icons::EXPAND_ALL, "Expand All").on_click(cx.listener(|this, _, _, cx| this.set_all_collapsed(false, cx))))
+            .child(tool_button("find-collapse", icons::COLLAPSE_ALL, "Collapse All").on_click(cx.listener(|this, _, _, cx| this.set_all_collapsed(true, cx))))
             .child(
-                tool_button("find-group-dir", IconName::FolderTree, "Group by Directory")
+                tool_button("find-group-dir", icons::SHOW_AS_TREE, "Group by Directory")
                     .selected(self.group_by_directory)
                     .disabled(!text)
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -522,14 +522,14 @@ impl FindView {
                     })),
             )
             .child(
-                tool_button("find-preview", IconName::Eye, "Preview Source")
+                tool_button("find-preview", icons::SHOW, "Preview Source")
                     .selected(self.show_preview)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.show_preview = !this.show_preview;
                         cx.notify();
                     })),
             )
-            .child(tool_button("find-exclude", IconName::Ban, "Exclude (Delete)").disabled(!text).on_click(cx.listener(|this, _, _, cx| this.exclude_selected(cx))))
+            .child(tool_button("find-exclude", icons::FILE_IGNORED, "Exclude (Delete)").disabled(!text).on_click(cx.listener(|this, _, _, cx| this.exclude_selected(cx))))
             .child(div().flex_1())
             .when(replace, |el| {
                 el.child(Button::new("find-replace-selected").small().outline().label("Replace Selected").on_click(cx.listener(|this, _, window, cx| this.replace(true, window, cx))))
@@ -585,7 +585,7 @@ impl Render for FindView {
             rows.len(),
             cx.processor(move |_, range: Range<usize>, _, cx| {
                 let palette = cx.palette().clone();
-                let chevron = |open: bool| common::icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }).text_color(palette.text_secondary);
+                let chevron = |open: bool| common::icon(if open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).text_color(palette.text_secondary);
                 range
                     .map(|ix| {
                         let base = h_flex()
@@ -612,7 +612,7 @@ impl Render for FindView {
                             Row::Dir(dir, count) => base
                                 .pl(pad(1))
                                 .child(chevron(!collapsed.contains(&format!("d:{dir}"))))
-                                .child(common::icon(IconName::FolderClosed).text_color(palette.text_secondary))
+                                .child(common::icon(icons::FOLDER).text_color(palette.text_secondary))
                                 .child(if dir.is_empty() { "<root>".to_owned() } else { dir.clone() })
                                 .child(div().text_color(palette.text_secondary).child(plural(*count, "result"))),
                             Row::File { path, count, indent } => {
@@ -642,7 +642,7 @@ impl Render for FindView {
                                 let it = &items[*i];
                                 base.pl(pad(0))
                                     .gap_2()
-                                    .child(common::icon(it.icon).text_color(palette.text_secondary))
+                                    .child(common::icon(it.icon.clone()).text_color(palette.text_secondary))
                                     .child(it.title.clone())
                                     .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().text_xs().text_color(palette.text_secondary).child(it.detail.clone()))
                             }

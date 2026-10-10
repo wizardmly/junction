@@ -245,6 +245,7 @@
 | 跳转排序 | M9 | ✅（项目符号优先；库符号按文件的 import / use / #include（含被包含头文件）匹配；`x.member` 按 x 的声明类型（局部声明、字段声明行、返回类型）只留该类型的成员；类型位置（`name: String`、`List<T>`、`Foo x`）和非调用处跳到类本身，不列构造函数；Java / Kotlin 的 `import a.b.Name` 只认包 a.b 里的 Name，默认导入的 java.lang / kotlin 不含子包） |
 | Project 窗口 External Libraries 节点 | M9 | ✅（与 AS 一致：Project 视图底部，SDK 在前；库名“Gradle: group:artifact:version@aar”、“< Android API 34, extension level 7 Platform >”（灰字 SDK 路径）、“< jbr-21 >”；展开为“xxx.jar  library root”，包名用点号合并（androidx.collection），JVM 源码按类显示（类/接口/枚举/注解/object/抽象类图标，Kotlin 角标，嵌套类可展开，顶层函数显示为 XxxKt），库内区域浅黄底；库文件的状态栏面包屑为“xxx.jar › 包 › 类”） |
 | Project 窗口图标与 AS 新 UI 一致 | M9 | ✅（模块文件夹带蓝/绿角标，排除目录橙色文件夹 + 浅黄底，被忽略文件棕色字；Gradle 大象（.kts 带 Kotlin 角标）、Kotlin、Java 类、Markdown “M↓”、properties 齿轮、.gitignore、脚本、文本、XML、JSON、图片各自的图标） |
+| 全应用图标与按钮样式与 AS 新 UI 一致 | M9 | ✅（图标直接用 IntelliJ 官方新 UI SVG（Apache 2.0，assets/as-icons），按原色分层渲染、浅色/深色各一套：工具窗口栏、各工具栏、Git/Log/Commit/Diff/Merge、弹窗、搜索、状态栏；工具栏按钮 22px、图标 16px，工具窗口栏图标 20px；悬停/按下底色取 AS ActionButton 的颜色，悬停不改图标颜色） |
 | 语言服务器 | M7 | ✅（clangd、rust-analyzer、gopls、jdtls、kotlin-lsp、sourcekit-lsp、dart、v-analyzer、typescript-language-server、pyright/pylsp；按最近的 Cargo.toml / go.mod / pubspec.yaml / settings.gradle 等子项目分别启动；打开文件即预热；服务器忙时 0.6 秒内退回索引结果） |
 | 设置 › Languages & Frameworks | M7 | ✅（总开关；每种语言可填自定义命令或 off，显示 Installed / Not found / Index only） |
 

@@ -4,12 +4,12 @@
 //! with a preview, and Open in Find Window.
 
 use std::ops::Range;
+use crate::ui::as_icons as icons;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Disableable as _, Icon, Selectable as _, Sizable as _, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -570,11 +570,11 @@ impl Render for FindPopup {
             .child(toggle_button("find-regex", ".*", "Regex (Alt+X)", self.regex).on_click(cx.listener(|this, _, _, cx| this.toggle(|t| t.regex = !t.regex, cx))));
         let search_row = div().px_3().child(
             Input::new(&self.query)
-                .prefix(Icon::new(IconName::Search).small().text_color(palette.text_secondary))
+                .prefix(Icon::new(icons::SEARCH).small().text_color(palette.text_secondary))
                 .suffix(toggles),
         );
         let replace_row = self.replace_mode.then(|| {
-            div().px_3().pt_1().child(Input::new(&self.replacement).prefix(Icon::new(IconName::Replace).small().text_color(palette.text_secondary)))
+            div().px_3().pt_1().child(Input::new(&self.replacement).prefix(Icon::new(icons::REPLACE).small().text_color(palette.text_secondary)))
         });
         let error = self.error.clone().map(|e| div().px_3().pt_1().text_xs().text_color(palette.status_conflict).child(e));
 
@@ -628,7 +628,7 @@ impl FindPopup {
                 h_flex()
                     .w(px(130.))
                     .child(div().flex_1().child(Input::new(&self.mask).xsmall().disabled(!self.mask_on)))
-                    .child(Button::new("find-mask-menu").ghost().xsmall().icon(Icon::new(IconName::ChevronDown)).disabled(!self.mask_on).dropdown_menu({
+                    .child(Button::new("find-mask-menu").ghost().xsmall().icon(Icon::new(icons::CHEVRON_DOWN)).disabled(!self.mask_on).dropdown_menu({
                         let entity = entity.clone();
                         move |mut menu, _, _| {
                             for mask in ["*.java", "*.kt", "*.kts", "*.xml", "*.gradle", "*.c", "*.cpp", "*.h", "*.rs", "*.swift", "*.dart", "*.go", "*.m", "*.v", "*.ts", "*.py", "*.md"] {
@@ -648,7 +648,7 @@ impl FindPopup {
                 Button::new("find-filter")
                     .ghost()
                     .xsmall()
-                    .icon(Icon::new(IconName::Funnel))
+                    .icon(Icon::new(icons::FILTER))
                     .tooltip("Filter Search Results")
                     .selected(context != SearchContext::Anywhere)
                     .dropdown_menu({
@@ -666,7 +666,7 @@ impl FindPopup {
                     }),
             )
             .child(
-                tool_button("find-pin", IconName::Pin, if self.pinned { "Unpin Window" } else { "Pin Window" })
+                tool_button("find-pin", icons::PIN, if self.pinned { "Unpin Window" } else { "Pin Window" })
                     .selected(self.pinned)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.pinned = !this.pinned;
@@ -722,11 +722,11 @@ impl FindPopup {
                 scope_row = scope_row
                     .child(div().w(px(240.)).child(Input::new(&self.directory).small()))
                     .child(
-                        tool_button("find-recursive", IconName::FolderTree, "Recursive")
+                        tool_button("find-recursive", icons::SHOW_AS_TREE, "Recursive")
                             .selected(self.recursive)
                             .on_click(cx.listener(|this, _, _, cx| this.toggle(|t| t.recursive = !t.recursive, cx))),
                     )
-                    .child(tool_button("find-browse", IconName::FolderOpen, "Browse…").on_click(cx.listener(|this, _, window, cx| this.browse(window, cx))));
+                    .child(tool_button("find-browse", icons::FOLDER, "Browse…").on_click(cx.listener(|this, _, window, cx| this.browse(window, cx))));
             }
             ScopeTab::Scope => {
                 let named = self.named;

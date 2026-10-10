@@ -9,7 +9,7 @@ use gpui_kit::component::{
     input::{InputEvent, Textarea, TextareaState},
     v_flex,
 };
-use gpui_kit::assets::IconName;
+use crate::ui::as_icons as icons;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
@@ -431,7 +431,7 @@ impl Render for RebaseEditor {
                     .gap_0p5()
                     .child(action_button("rb-pick", "Pick", Action::Pick, "Pick  Alt+P", cx))
                     .child(
-                        action_button("rb-edit", "Stop to Edit", Action::Edit, "Stop to Edit  Alt+E", cx).icon(Icon::new(IconName::Pause)),
+                        action_button("rb-edit", "Stop to Edit", Action::Edit, "Stop to Edit  Alt+E", cx).icon(Icon::new(icons::PAUSE)),
                     )
                     .child(action_button("rb-reword", "Reword", Action::Reword, "Reword  Alt+R (or double-click)", cx))
                     // With several commits selected, Squash and Fixup unite them.
@@ -451,8 +451,8 @@ impl Render for RebaseEditor {
                     ))
                     .child(action_button("rb-drop", "Drop", Action::Drop, "Drop  Alt+D / Delete", cx))
                     .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
-                    .child(tool_button("rb-up", IconName::ChevronUp, "Move Up  Alt+Up").on_click(cx.listener(|this, _, window, cx| this.move_selected(true, window, cx))))
-                    .child(tool_button("rb-down", IconName::ChevronDown, "Move Down  Alt+Down").on_click(cx.listener(|this, _, window, cx| this.move_selected(false, window, cx))))
+                    .child(tool_button("rb-up", icons::CHEVRON_UP, "Move Up  Alt+Up").on_click(cx.listener(|this, _, window, cx| this.move_selected(true, window, cx))))
+                    .child(tool_button("rb-down", icons::CHEVRON_DOWN, "Move Down  Alt+Down").on_click(cx.listener(|this, _, window, cx| this.move_selected(false, window, cx))))
                     .child(div().flex_1())
                     .child(Button::new("rb-reset").ghost().xsmall().label("Reset").on_click(cx.listener(|this, _, window, cx| this.reset(window, cx)))),
             )
@@ -507,7 +507,7 @@ impl RebaseEditor {
                     .text_sm()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .child(gpui_kit::component::Icon::new(IconName::File).xsmall().text_color(palette.text_secondary))
+                    .child(gpui_kit::component::Icon::new(icons::FILE_TEXT).xsmall().text_color(palette.text_secondary))
                     .child(div().flex_shrink_0().text_color(crate::ui::common::change_color(file.kind, &palette)).child(name.to_owned()))
                     .child(div().min_w_0().text_xs().text_color(palette.text_secondary).text_ellipsis().child(dir.to_owned())),
             );

@@ -2,8 +2,8 @@
 //! roots, detected ones plus folders added by hand, each removable.
 
 use std::path::PathBuf;
+use crate::ui::as_icons as icons;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Icon, Sizable as _, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -87,7 +87,7 @@ impl Render for MappingsView {
                     .gap_2()
                     .text_sm()
                     .rounded(px(3.))
-                    .child(Icon::new(IconName::FolderGit2).small().text_color(palette.text_secondary))
+                    .child(Icon::new(icons::MODULE).small().text_color(palette.text_secondary))
                     .child(
                         div()
                             .flex_1()
@@ -122,7 +122,7 @@ impl Render for MappingsView {
             .gap_2()
             .child(div().text_sm().text_color(palette.text_secondary).child(format!("Git roots of {}", self.project.display())))
             .child(div().p_1().rounded(px(4.)).border_1().border_color(palette.border).child(rows))
-            .child(h_flex().child(Button::new("mapping-add").small().outline().icon(IconName::Plus).label("Add Root…").on_click(cx.listener(|this, _, _, cx| this.add(cx)))))
+            .child(h_flex().child(Button::new("mapping-add").small().outline().icon(icons::ADD).label("Add Root…").on_click(cx.listener(|this, _, _, cx| this.add(cx)))))
             .when_some(self.error.clone(), |el, e| el.child(div().text_sm().text_color(palette.status_conflict).child(e)))
     }
 }

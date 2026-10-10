@@ -3,9 +3,10 @@
 //! remote branches stays as smooth as over a short menu.
 
 use std::ops::Range;
+use crate::ui::as_icons as icons;
 use std::rc::Rc;
 
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _};
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, SharedString, UniformListScrollHandle, Window, div, px, uniform_list};
@@ -50,9 +51,9 @@ impl RefList {
                     .gap_x_1()
                     .text_sm()
                     .hover(|s| s.bg(accent).text_color(accent_text))
-                    .child(div().w(px(16.)).flex_none().children(row.favorite.then(|| Icon::new(IconName::Star).xsmall())))
+                    .child(div().w(px(16.)).flex_none().children(row.favorite.then(|| Icon::new(icons::STAR).xsmall())))
                     .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(row.label.clone()))
-                    .children(row.checked.then(|| Icon::new(IconName::Check).xsmall()))
+                    .children(row.checked.then(|| Icon::new(icons::CHECKED).xsmall()))
                     .on_click(move |_, window, cx| {
                         pick(value.clone(), window, cx);
                         // Closes the menu and its parent, as a picked item does.
@@ -81,7 +82,7 @@ pub fn add_rows(mut menu: PopupMenu, rows: Vec<RefRow>, pick: Pick, cx: &mut Con
         for row in rows {
             let (pick, value) = (pick.clone(), row.value.clone());
             let item = PopupMenuItem::new(row.label).checked(row.checked).on_click(move |_, window, cx| pick(value.clone(), window, cx));
-            menu = menu.item(if row.favorite { item.icon(IconName::Star) } else { item });
+            menu = menu.item(if row.favorite { item.icon(icons::STAR) } else { item });
         }
         return menu;
     }

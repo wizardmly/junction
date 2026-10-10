@@ -2,6 +2,7 @@
 //! Shelf, Pull Requests) and bottom (Git: Log, Console, …) panels.
 
 use super::*;
+use crate::ui::as_icons as icons;
 
 impl Workspace {
     /// The open tool window that holds the focus.
@@ -74,15 +75,15 @@ impl Workspace {
         window.focus(&handle, cx);
     }
 
-    pub(super) fn tool_window_info(&self, window: ToolWindow, cx: &App) -> (IconName, SharedString, &'static str) {
+    pub(super) fn tool_window_info(&self, window: ToolWindow, cx: &App) -> (Icon, SharedString, &'static str) {
         match window {
-            ToolWindow::Project => (IconName::FolderTree, "Project".into(), "Alt+1"),
-            ToolWindow::Commit => (IconName::GitCommitVertical, "Commit".into(), "Alt+0"),
-            ToolWindow::PullRequests => (IconName::GitPullRequest, self.prs.read(cx).title().into(), ""),
-            ToolWindow::Changes => (IconName::FileDiff, "Changes".into(), ""),
-            ToolWindow::Git => (IconName::GitGraph, "Git".into(), "Alt+9"),
+            ToolWindow::Project => (Icon::from(icons::TW_PROJECT), "Project".into(), "Alt+1"),
+            ToolWindow::Commit => (Icon::from(icons::TW_COMMIT), "Commit".into(), "Alt+0"),
+            ToolWindow::PullRequests => (Icon::from(icons::PULL_REQUESTS), self.prs.read(cx).title().into(), ""),
+            ToolWindow::Changes => (Icon::from(icons::VCS_DIFF), "Changes".into(), ""),
+            ToolWindow::Git => (Icon::from(icons::TW_VCS), "Git".into(), "Alt+9"),
             ToolWindow::Notifications => {
-                (if self.unread_notifications > 0 { IconName::BellDot } else { IconName::Bell }, "Notifications".into(), "")
+                (Icon::from(icons::TW_NOTIFICATIONS), "Notifications".into(), "")
             }
         }
     }
@@ -101,7 +102,7 @@ impl Workspace {
         let entity = cx.entity();
         div()
             .id(SharedString::from(format!("stripe-{window:?}")))
-            .on_drag(DraggedToolWindow(window, icon), |dragged, _, _, cx| cx.new(|_| *dragged))
+            .on_drag(DraggedToolWindow(window, icon.clone()), |dragged, _, _, cx| cx.new(|_| dragged.clone()))
             .drag_over::<DraggedToolWindow>(move |el, _, _, _| el.border_t_2().border_color(palette.accent))
             .on_drop(cx.listener(move |this, dragged: &DraggedToolWindow, _, cx| {
                 this.tools.move_to(dragged.0, side, Some(window), cx);
@@ -110,7 +111,9 @@ impl Workspace {
             .child(
                 Button::new(SharedString::from(format!("stripe-button-{window:?}")))
                     .ghost()
+                    // IntelliJ's new UI: 20px icons in 32px stripe buttons.
                     .icon(Icon::new(icon))
+                    .icon_size(px(20.))
                     .tooltip(tooltip)
                     .when(self.tools.is_open(window), |b| b.selected(true))
                     .on_click(cx.listener(move |this, _, w, cx| this.toggle_tool(window, w, cx))),
@@ -286,7 +289,7 @@ impl Workspace {
                         cx.notify();
                     })))
                     .child(div().flex_1())
-                    .child(tool_button("commit-hide", IconName::Minus, "Hide").on_click(cx.listener(|this, _, _, cx| {
+                    .child(tool_button("commit-hide", icons::HIDE, "Hide").on_click(cx.listener(|this, _, _, cx| {
                         this.tools.hide(ToolWindow::Commit);
                         cx.notify();
                     }))),
@@ -389,7 +392,7 @@ impl Workspace {
                             .child(log_tab.title.clone())
                             .when(ix > 0, |el| {
                                 el.child(
-                                    tool_button(("tab-log-close", ix), IconName::X, "Close Tab")
+                                    tool_button(("tab-log-close", ix), icons::CLOSE, "Close Tab")
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             cx.stop_propagation();
                                             this.close_log_tab(ix, cx)
@@ -397,7 +400,7 @@ impl Workspace {
                                 )
                             })
                     }))
-                    .child(tool_button("tab-log-new", IconName::Plus, "New Log Tab").on_click(cx.listener(|this, _, _, cx| {
+                    .child(tool_button("tab-log-new", icons::ADD, "New Log Tab").on_click(cx.listener(|this, _, _, cx| {
                         let title = format!("Log {}", this.log_tabs.len() + 1);
                         this.open_log_tab(title, Default::default(), cx);
                     })))
@@ -438,7 +441,7 @@ impl Workspace {
                         },
                     )).child("Console"))
                     .child(div().flex_1())
-                    .child(tool_button("git-hide", IconName::Minus, "Hide").on_click(cx.listener(|this, _, _, cx| {
+                    .child(tool_button("git-hide", icons::HIDE, "Hide").on_click(cx.listener(|this, _, _, cx| {
                         this.tools.hide(ToolWindow::Git);
                         cx.notify();
                     }))),
@@ -495,7 +498,7 @@ impl Workspace {
             self.console_seen.set(entries.len());
             self.console_scroll.scroll_to_bottom();
         }
-        let toggle = |id: &'static str, icon: IconName, tip: &'static str, on: bool| {
+        let toggle = |id: &'static str, icon: Icon, tip: &'static str, on: bool| {
             tool_button(id, icon, tip).when(on, |b| b.selected(true))
         };
         h_flex()
@@ -510,12 +513,12 @@ impl Workspace {
                     .items_center()
                     .border_r_1()
                     .border_color(palette.border)
-                    .child(toggle("console-wrap", IconName::TextWrap, "Soft-Wrap", wrap).on_click(cx.listener(|this, _, _, cx| {
+                    .child(toggle("console-wrap", Icon::from(icons::SOFT_WRAP), "Soft-Wrap", wrap).on_click(cx.listener(|this, _, _, cx| {
                         this.console_wrap = !this.console_wrap;
                         cx.notify();
                     })))
                     .child(
-                        toggle("console-end", IconName::ArrowDownToLine, "Scroll to the End", self.console_autoscroll).on_click(cx.listener(|this, _, _, cx| {
+                        toggle("console-end", Icon::from(icons::VCS_UPDATE), "Scroll to the End", self.console_autoscroll).on_click(cx.listener(|this, _, _, cx| {
                             this.console_autoscroll = !this.console_autoscroll;
                             if this.console_autoscroll {
                                 this.console_scroll.scroll_to_bottom();
@@ -523,7 +526,7 @@ impl Workspace {
                             cx.notify();
                         })),
                     )
-                    .child(tool_button("console-clear", IconName::Delete, "Clear All").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(tool_button("console-clear", icons::DELETE, "Clear All").on_click(cx.listener(move |this, _, _, cx| {
                         console.clear();
                         this.console_seen.set(0);
                         cx.notify();

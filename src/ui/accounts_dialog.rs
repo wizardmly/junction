@@ -1,7 +1,7 @@
 //! Settings › Version Control › GitHub / GitLab: accounts logged in with a token.
 //! "Log In" checks the token against the API before saving it.
 
-use gpui_kit::assets::IconName;
+use crate::ui::as_icons as icons;
 use gpui_kit::component::{
     Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -109,7 +109,7 @@ impl Render for AccountsView {
                     .px_2()
                     .gap_2()
                     .text_sm()
-                    .child(Icon::new(IconName::GitPullRequest).small().text_color(palette.text_secondary))
+                    .child(Icon::new(icons::PULL_REQUESTS).small().text_color(palette.text_secondary))
                     .child(div().w(px(48.)).text_xs().text_color(palette.text_secondary).child(if acc.service == Service::GitLab { "GitLab" } else { "GitHub" }))
                     .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(acc.login.clone()))
                     .child(div().flex_1().text_color(palette.text_secondary).child(acc.server.clone()))
@@ -130,7 +130,7 @@ impl Render for AccountsView {
             .gap_3()
             .child(div().p_1().rounded(px(4.)).border_1().border_color(palette.border).child(list))
             .when(!self.adding, |el| {
-                el.child(h_flex().child(Button::new("account-add").small().outline().icon(IconName::Plus).label("Add Account…").on_click(cx.listener(|this, _, _, cx| {
+                el.child(h_flex().child(Button::new("account-add").small().outline().icon(icons::ADD).label("Add Account…").on_click(cx.listener(|this, _, _, cx| {
                     this.adding = true;
                     cx.notify();
                 }))))

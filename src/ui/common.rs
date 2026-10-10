@@ -1,6 +1,7 @@
 //! Small pieces shared by the Git client's views.
 
 use std::collections::BTreeMap;
+use crate::ui::as_icons as icons;
 
 use chrono::{Local, TimeZone as _};
 use gpui_kit::component::{
@@ -9,6 +10,7 @@ use gpui_kit::component::{
     tree::TreeItem,
 };
 use gpui_kit::assets::IconName;
+use gpui_kit::Styled as _;
 use gpui_kit::{ElementId, Hsla, SharedString};
 
 use crate::git::{FileChangeKind, StatusKind};
@@ -40,12 +42,12 @@ pub fn header_height() -> f32 {
     if compact() { 26. } else { 30. }
 }
 
-pub fn icon(name: IconName) -> Icon {
+pub fn icon(name: impl Into<Icon>) -> Icon {
     Icon::new(name).small()
 }
 
 /// A borderless icon button, as used on IntelliJ tool window toolbars.
-pub fn tool_button(id: impl Into<ElementId>, name: IconName, tooltip: impl Into<SharedString>) -> Button {
+pub fn tool_button(id: impl Into<ElementId>, name: impl Into<Icon>, tooltip: impl Into<SharedString>) -> Button {
     Button::new(id).ghost().xsmall().icon(Icon::new(name)).tooltip(tooltip)
 }
 
@@ -140,14 +142,44 @@ pub fn status_color(kind: StatusKind, palette: &Palette) -> Hsla {
     }
 }
 
-/// Icon for a file, by extension.
-pub fn file_icon(path: &str) -> IconName {
-    match path.rsplit('.').next().unwrap_or_default() {
-        "rs" | "kt" | "kts" | "java" | "c" | "h" | "cc" | "cpp" | "hpp" | "swift" | "dart" | "go" | "m" | "mm"
-        | "v" | "js" | "ts" | "tsx" | "py" => IconName::FileCode,
-        _ => IconName::File,
-    }
+/// A file's icon by its type, as Android Studio draws it.
+pub fn file_icon(path: &str) -> Icon {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_lowercase();
+    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    let icon = match ext {
+        _ if name.ends_with(".gradle.kts") => icons::GRADLE_KOTLIN,
+        "gradle" => icons::GRADLE,
+        "kt" => icons::KOTLIN,
+        "kts" => icons::KOTLIN_SCRIPT,
+        "java" => icons::CLASS,
+        // Markdown's "M↓" comes from a plugin whose icon isn't published.
+        "md" | "markdown" => return Icon::empty().path("junction/markdown.svg").text_color(gpui_kit::rgb(0x3574f0)),
+        "properties" => icons::FILE_PROPERTIES,
+        "conf" | "cfg" | "ini" | "toml" => icons::FILE_CONFIG,
+        "editorconfig" => icons::FILE_EDITOR_CONFIG,
+        _ if name.starts_with(".gitignore") || name == ".gitattributes" || name.ends_with("ignore") => icons::FILE_IGNORED,
+        "sh" | "bash" | "zsh" | "command" => icons::FILE_SHELL,
+        _ if name == "gradlew" => icons::FILE_SHELL,
+        "xml" | "svg" => icons::FILE_XML,
+        "html" | "htm" => icons::FILE_HTML,
+        "css" | "scss" => icons::FILE_CSS,
+        "js" | "mjs" | "ts" | "tsx" | "jsx" => icons::FILE_JAVASCRIPT,
+        "json" => icons::FILE_JSON,
+        "yaml" | "yml" => icons::FILE_YAML,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" => icons::FILE_IMAGE,
+        "zip" | "jar" | "aar" | "tar" | "gz" | "7z" => icons::FILE_ARCHIVE,
+        "patch" | "diff" => icons::FILE_PATCH,
+        "mf" => icons::FILE_MANIFEST,
+        "so" | "dll" | "exe" | "bin" | "class" | "dex" => icons::FILE_BINARY,
+        // Languages Android Studio draws with plugin icons we don't have.
+        "rs" | "c" | "h" | "cc" | "cpp" | "hpp" | "swift" | "dart" | "go" | "m" | "mm" | "v" | "py" => {
+            return Icon::new(IconName::FileCode).text_color(gpui_kit::rgb(0x6c707e));
+        }
+        _ => icons::FILE_TEXT,
+    };
+    icon.into()
 }
+
 
 /// The Log's Root column: a color per repository of a multi-root
 /// project, as IntelliJ tells the roots apart.

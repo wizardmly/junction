@@ -1,6 +1,7 @@
 //! Go to Hash / Branch / Tag (Ctrl+F) with its suggestions.
 
 use super::*;
+use crate::ui::as_icons as icons;
 
 impl LogView {
     /// Go to Hash / Branch / Tag (`Ctrl+F` in the Log): branches and tags
@@ -143,9 +144,9 @@ impl Render for GoToSuggestions {
         for (row, &ix) in self.matches.iter().enumerate() {
             let (name, kind) = self.names[ix].clone();
             let (icon, color) = match kind {
-                RefKind::Tag => (IconName::Tag, palette.ref_tag),
-                RefKind::RemoteBranch => (IconName::GitBranch, palette.ref_remote),
-                RefKind::LocalBranch => (IconName::GitBranch, palette.ref_local),
+                RefKind::Tag => (icons::TAG, palette.ref_tag),
+                RefKind::RemoteBranch => (icons::BRANCH, palette.ref_remote),
+                RefKind::LocalBranch => (icons::BRANCH, palette.ref_local),
             };
             let log = self.log.clone();
             list = list.child(

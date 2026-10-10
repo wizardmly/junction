@@ -2,10 +2,10 @@
 //! repository, with New Worktree…, Open, Open in New Window and Delete.
 
 use std::path::{Path, PathBuf};
+use crate::ui::as_icons as icons;
 use std::rc::Rc;
 use std::cell::Cell;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex,
     button::Button,
@@ -169,14 +169,14 @@ impl Render for WorktreeView {
                             })
                         }))
                     })
-                    .child(Icon::new(if wt.main { IconName::FolderGit2 } else { IconName::Folder }).small().text_color(palette.text_secondary))
+                    .child(Icon::new(if wt.main { icons::MODULE } else { icons::FOLDER }).small().text_color(palette.text_secondary))
                     .child(div().w(px(180.)).overflow_hidden().whitespace_nowrap().text_ellipsis().when(is_current, |el| el.font_weight(gpui_kit::FontWeight::SEMIBOLD)).child(name))
                     .child(
                         h_flex()
                             .w(px(200.))
                             .gap_1()
                             .overflow_hidden()
-                            .child(Icon::new(IconName::GitBranch).xsmall().text_color(if wt.branch.is_some() { palette.ref_local } else { palette.text_secondary }))
+                            .child(Icon::new(icons::BRANCH).xsmall().text_color(if wt.branch.is_some() { palette.ref_local } else { palette.text_secondary }))
                             .child(div().whitespace_nowrap().text_ellipsis().child(branch)),
                     )
                     .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(palette.text_secondary).child(wt.path.display().to_string()))
@@ -196,25 +196,25 @@ impl Render for WorktreeView {
                     .gap_0p5()
                     .border_b_1()
                     .border_color(palette.border)
-                    .child(tool_button("wt-new", IconName::Plus, "New Worktree…").on_click(cx.listener(|this, _, window, cx| {
+                    .child(tool_button("wt-new", icons::ADD, "New Worktree…").on_click(cx.listener(|this, _, window, cx| {
                         new_worktree(this.model.clone(), window, cx)
                     })))
                     .child(
-                        tool_button("wt-open", IconName::FolderOpen, "Open")
+                        tool_button("wt-open", icons::FOLDER, "Open")
                             .disabled(selected.is_none())
                             .on_click(cx.listener(|this, _, _, cx| this.open(false, cx))),
                     )
                     .child(
-                        tool_button("wt-open-new", IconName::PanelLeft, "Open in New Window")
+                        tool_button("wt-open-new", icons::LAYOUT, "Open in New Window")
                             .disabled(selected.is_none())
                             .on_click(cx.listener(|this, _, _, cx| this.open(true, cx))),
                     )
                     .child(
-                        tool_button("wt-delete", IconName::Delete, "Delete…")
+                        tool_button("wt-delete", icons::DELETE, "Delete…")
                             .disabled(!can_delete)
                             .on_click(cx.listener(|this, _, window, cx| this.delete(window, cx))),
                     )
-                    .child(tool_button("wt-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(|this, _, _, cx| this.reload(cx)))),
+                    .child(tool_button("wt-refresh", icons::REFRESH, "Refresh").on_click(cx.listener(|this, _, _, cx| this.reload(cx)))),
             )
             .child(div().id("worktrees").flex_1().min_h_0().overflow_y_scrollbar().child(rows))
     }
@@ -265,7 +265,7 @@ pub fn new_worktree(model: Entity<RepoModel>, window: &mut Window, cx: &mut App)
                             .child(label("Branch:"))
                             .child(div().flex_1().child(Input::new(&branch)))
                             .when(!is_new, |el| {
-                                el.child(Button::new("wt-branches").outline().icon(IconName::ChevronDown).dropdown_menu(move |mut menu, _, _| {
+                                el.child(Button::new("wt-branches").outline().icon(icons::CHEVRON_DOWN).dropdown_menu(move |mut menu, _, _| {
                                     for name in &existing {
                                         let input = menu_branch.clone();
                                         let name = name.clone();

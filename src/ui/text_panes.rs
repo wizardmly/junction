@@ -1390,7 +1390,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                             .hover(|st| st.text_color(palette.text))
                             .map(|el| if layout.mirrored { el.pl_2() } else { el.pl(px(layout.text_left() - TEXT_PADDING + 4.)) })
                             .on_click(cx.listener(move |view: &mut V, _, window, cx| settle(view, Outcome::OpenFold(id), false, window, cx)))
-                            .child(common::icon(gpui_kit::assets::IconName::ChevronRight))
+                            .child(common::icon(crate::ui::as_icons::CHEVRON_RIGHT))
                             .child(format!("{count} unchanged lines"))
                             .into_any_element(),
                     );

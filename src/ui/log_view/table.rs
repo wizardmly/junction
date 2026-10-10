@@ -1,6 +1,7 @@
 //! The commit table: rows, graph, columns and keyboard selection.
 
 use super::*;
+use crate::ui::as_icons as icons;
 
 impl LogView {
     /// Mouse selection: plain click selects one commit, Ctrl/Cmd-click
@@ -312,7 +313,7 @@ impl LogView {
                             .gap_0p5()
                             .mr_1p5()
                             .text_xs()
-                            .child(Icon::new(IconName::GitBranch).xsmall().text_color(palette.ref_head))
+                            .child(Icon::new(icons::BRANCH).xsmall().text_color(palette.ref_head))
                             .child(div().text_color(palette.ref_head).child("HEAD")),
                     );
                 }

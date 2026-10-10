@@ -8,7 +8,7 @@ use gpui_kit::component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
-use gpui_kit::assets::IconName;
+use crate::ui::as_icons as icons;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
@@ -148,7 +148,7 @@ impl Render for PullView {
                             }),
                     )
                     .child(div().flex_1().child(Input::new(&self.branch).small()))
-                    .child(Button::new("pull-branches").outline().small().icon(IconName::ChevronDown).dropdown_menu(move |mut menu, _, _| {
+                    .child(Button::new("pull-branches").outline().small().icon(icons::CHEVRON_DOWN).dropdown_menu(move |mut menu, _, _| {
                         for branch in &branches {
                             let input = branch_input.clone();
                             let branch = branch.clone();
@@ -358,10 +358,10 @@ impl Render for RemotesView {
             .child(
                 h_flex()
                     .gap_1()
-                    .child(Button::new("remote-add").ghost().small().icon(IconName::Plus).tooltip("Add").on_click(cx.listener(
+                    .child(Button::new("remote-add").ghost().small().icon(icons::ADD).tooltip("Add").on_click(cx.listener(
                         |this, _, window, cx| this.start_edit(None, window, cx),
                     )))
-                    .child(Button::new("remote-remove").ghost().small().icon(IconName::Minus).tooltip("Remove").disabled(!has_selection).on_click(
+                    .child(Button::new("remote-remove").ghost().small().icon(icons::REMOVE).tooltip("Remove").disabled(!has_selection).on_click(
                         cx.listener(|this, _, _, cx| {
                             this.confirm_remove = this.selected.and_then(|ix| this.remotes.get(ix)).map(|r| r.name.clone());
                             this.editing = None;
@@ -369,7 +369,7 @@ impl Render for RemotesView {
                             cx.notify();
                         }),
                     ))
-                    .child(Button::new("remote-edit").ghost().small().icon(IconName::Settings2).tooltip("Edit").disabled(!has_selection).on_click(
+                    .child(Button::new("remote-edit").ghost().small().icon(icons::EDIT).tooltip("Edit").disabled(!has_selection).on_click(
                         cx.listener(|this, _, window, cx| {
                             let remote = this.selected.and_then(|ix| this.remotes.get(ix)).cloned();
                             if remote.is_some() {
@@ -466,7 +466,7 @@ pub fn edit_tracking_branch(model: Entity<RepoModel>, branch: String, upstream: 
                         h_flex()
                             .gap_2()
                             .child(div().flex_1().child(Input::new(&input)))
-                            .child(Button::new("tracking-branches").outline().icon(IconName::ChevronDown).dropdown_menu(move |mut menu, _, _| {
+                            .child(Button::new("tracking-branches").outline().icon(icons::CHEVRON_DOWN).dropdown_menu(move |mut menu, _, _| {
                                 for name in &branches {
                                     let input = menu_input.clone();
                                     let name = name.clone();

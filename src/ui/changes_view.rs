@@ -4,8 +4,8 @@
 //! repository root, and selecting a file shows its diff in the editor area.
 
 use std::collections::HashMap;
+use crate::ui::as_icons as icons;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Disableable as _, Icon, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
@@ -300,20 +300,20 @@ impl ChangesView {
         let model = this.model.clone();
         let (e_diff, e_tab, e_get) = (entity.clone(), entity.clone(), entity.clone());
         let (s_diff, s_tab) = (source.clone(), source.clone());
-        menu.item(entry("Show Diff", "Ctrl+D").icon(Icon::new(IconName::GitCompare)).disabled(source.is_none()).on_click(move |_, _, cx| {
+        menu.item(entry("Show Diff", "Ctrl+D").icon(Icon::new(icons::VCS_DIFF)).disabled(source.is_none()).on_click(move |_, _, cx| {
             if let Some(source) = s_diff.clone() {
                 e_diff.update(cx, |_, cx| cx.emit(ChangesEvent::OpenDiff(source)))
             }
         }))
-        .item(entry("Show Diff in a New Tab", "").icon(Icon::new(IconName::GitCompare)).disabled(source.is_none()).on_click(move |_, _, cx| {
+        .item(entry("Show Diff in a New Tab", "").icon(Icon::new(icons::VCS_DIFF)).disabled(source.is_none()).on_click(move |_, _, cx| {
             if let Some(source) = s_tab.clone() {
                 e_tab.update(cx, |_, cx| cx.emit(ChangesEvent::OpenDiff(source)))
             }
         }))
-        .item(entry("Create Patch…", "").icon(Icon::new(IconName::Plus)).disabled(files.is_empty()).on_click(move |_, window, cx| {
+        .item(entry("Create Patch…", "").icon(Icon::new(icons::ADD)).disabled(files.is_empty()).on_click(move |_, window, cx| {
             crate::ui::patch_dialogs::create_patch(model.clone(), patch.clone(), window, cx)
         }))
-        .item(entry("Get", "").icon(Icon::new(IconName::Download)).disabled(!local || files.is_empty()).on_click(move |_, _, cx| {
+        .item(entry("Get", "").icon(Icon::new(icons::DOWNLOAD)).disabled(!local || files.is_empty()).on_click(move |_, _, cx| {
             let files = files.clone();
             e_get.update(cx, |this, cx| this.get_files(files, cx))
         }))
@@ -343,7 +343,7 @@ impl ChangesView {
                         .on_click(cx.listener(move |this, _, _, cx| this.select_tab(ix, cx)))
                         .child(div().truncate().child(tab.short_title()))
                         .child(
-                            tool_button(SharedString::from(format!("changes-tab-close-{ix}")), IconName::X, "Close Tab")
+                            tool_button(SharedString::from(format!("changes-tab-close-{ix}")), icons::CLOSE, "Close Tab")
                                 .on_click(cx.listener(move |this, _, _, cx| this.close_tab(ix, cx))),
                         ),
                 );
@@ -362,7 +362,7 @@ impl ChangesView {
                 Button::new("changes-options")
                     .ghost()
                     .xsmall()
-                    .icon(Icon::new(IconName::EllipsisVertical))
+                    .icon(Icon::new(icons::MORE_VERTICAL))
                     .tooltip("Options")
                     .dropdown_menu(move |menu, _, _| {
                         let (close, close_all) = (entity.clone(), entity.clone());
@@ -370,7 +370,7 @@ impl ChangesView {
                             .item(PopupMenuItem::new("Close All Tabs").on_click(move |_, _, cx| close_all.update(cx, |this, cx| this.close_all(cx))))
                     }),
             )
-            .child(tool_button("changes-hide", IconName::Minus, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(ChangesEvent::Hide))))
+            .child(tool_button("changes-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(ChangesEvent::Hide))))
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -384,19 +384,19 @@ impl ChangesView {
             .px_1()
             .gap_0p5()
             .flex_shrink_0()
-            .child(tool_button("changes-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(|this, _, _, cx| this.reload(cx))))
+            .child(tool_button("changes-refresh", icons::REFRESH, "Refresh").on_click(cx.listener(|this, _, _, cx| this.reload(cx))))
             .child(
-                tool_button("changes-swap", IconName::ArrowLeftRight, "Swap Sides")
+                tool_button("changes-swap", icons::SWAP_PANELS, "Swap Sides")
                     .disabled(local || tab.is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.swap_sides(cx))),
             )
             .child(
-                tool_button("changes-get", IconName::Download, "Get from Revision")
+                tool_button("changes-get", icons::DOWNLOAD, "Get from Revision")
                     .disabled(!local)
                     .on_click(cx.listener(|this, _, _, cx| this.get_from_revision(cx))),
             )
             .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
-            .child(Button::new("changes-view-options").ghost().xsmall().icon(Icon::new(IconName::Eye)).tooltip("View Options").dropdown_menu(
+            .child(Button::new("changes-view-options").ghost().xsmall().icon(Icon::new(icons::SHOW)).tooltip("View Options").dropdown_menu(
                 move |menu, _, _| {
                     let entity = entity.clone();
                     menu.label("Group By").item(PopupMenuItem::new("Directory").checked(group).on_click(move |_, _, cx| {
@@ -408,8 +408,8 @@ impl ChangesView {
                 },
             ))
             .child(div().flex_1())
-            .child(tool_button("changes-expand", IconName::ChevronsUpDown, "Expand All").on_click(cx.listener(|this, _, _, cx| this.rebuild(Some(true), cx))))
-            .child(tool_button("changes-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(|this, _, _, cx| this.rebuild(Some(false), cx))))
+            .child(tool_button("changes-expand", icons::EXPAND_ALL, "Expand All").on_click(cx.listener(|this, _, _, cx| this.rebuild(Some(true), cx))))
+            .child(tool_button("changes-collapse", icons::COLLAPSE_ALL, "Collapse All").on_click(cx.listener(|this, _, _, cx| this.rebuild(Some(false), cx))))
     }
 }
 
@@ -477,7 +477,7 @@ impl Render for ChangesView {
                                     .text_sm()
                                     .when(entry.is_folder(), |el| {
                                         el.child(
-                                            Icon::new(if entry.is_expanded() { IconName::ChevronDown } else { IconName::ChevronRight })
+                                            Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT })
                                                 .xsmall()
                                                 .text_color(palette.text_secondary),
                                         )
@@ -485,8 +485,8 @@ impl Render for ChangesView {
                                     .child(
                                         Icon::new(match &path {
                                             Some(p) => common::file_icon(p),
-                                            None if is_root => IconName::FolderGit2,
-                                            None => IconName::Folder,
+                                            None if is_root => Icon::from(icons::MODULE),
+                                            None => Icon::from(icons::FOLDER),
                                         })
                                         .small()
                                         .text_color(palette.text_secondary),

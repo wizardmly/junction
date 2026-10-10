@@ -2,7 +2,7 @@
 //! a `.gitmodules`): each submodule's commit and state, with Update,
 //! Update All, Sync, Open and Open in New Window.
 
-use gpui_kit::assets::IconName;
+use crate::ui::as_icons as icons;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, menu::{ContextMenuExt as _, PopupMenuItem}, scroll::ScrollableElement as _, v_flex};
 use gpui_kit::{
     AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
@@ -141,7 +141,7 @@ impl Render for SubmoduleView {
                             })
                         }))
                     })
-                    .child(Icon::new(IconName::FolderGit2).small().text_color(palette.text_secondary))
+                    .child(Icon::new(icons::MODULE).small().text_color(palette.text_secondary))
                     .child(div().w(px(220.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(sub.path.clone()))
                     .child(div().w(px(90.)).font_family(gpui_kit::component::ActiveTheme::theme(&**cx).mono_font_family.clone()).text_color(palette.text_secondary).child(sub.commit[..sub.commit.len().min(8)].to_owned()))
                     .child(div().w(px(140.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(palette.text_secondary).child(sub.describe.clone().unwrap_or_default()))
@@ -162,20 +162,20 @@ impl Render for SubmoduleView {
                     .gap_0p5()
                     .border_b_1()
                     .border_color(palette.border)
-                    .child(tool_button("sm-update-all", IconName::ArrowDownToLine, "Update All Submodules (init, recursive)").on_click(cx.listener(|this, _, _, cx| this.update(true, cx))))
+                    .child(tool_button("sm-update-all", icons::VCS_UPDATE, "Update All Submodules (init, recursive)").on_click(cx.listener(|this, _, _, cx| this.update(true, cx))))
                     .child(
-                        tool_button("sm-update", IconName::Download, "Update Selected")
+                        tool_button("sm-update", icons::DOWNLOAD, "Update Selected")
                             .disabled(selected.is_none())
                             .on_click(cx.listener(|this, _, _, cx| this.update(false, cx))),
                     )
-                    .child(tool_button("sm-sync", IconName::RefreshCw, "Sync URLs").on_click(cx.listener(|this, _, _, cx| this.sync(cx))))
+                    .child(tool_button("sm-sync", icons::REFRESH, "Sync URLs").on_click(cx.listener(|this, _, _, cx| this.sync(cx))))
                     .child(
-                        tool_button("sm-open", IconName::FolderOpen, "Open")
+                        tool_button("sm-open", icons::FOLDER, "Open")
                             .disabled(!can_open)
                             .on_click(cx.listener(|this, _, _, cx| this.open(false, cx))),
                     )
                     .child(
-                        tool_button("sm-open-new", IconName::PanelLeft, "Open in New Window")
+                        tool_button("sm-open-new", icons::LAYOUT, "Open in New Window")
                             .disabled(!can_open)
                             .on_click(cx.listener(|this, _, _, cx| this.open(true, cx))),
                     ),

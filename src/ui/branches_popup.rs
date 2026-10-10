@@ -3,6 +3,7 @@
 //! its actions inline, where IntelliJ shows them in a side submenu.
 
 use std::rc::Rc;
+use crate::ui::as_icons as icons;
 
 use gpui_kit::component::{
     Icon, Sizable as _, h_flex,
@@ -527,7 +528,7 @@ impl BranchesPopup {
             let switch_model = self.model.clone();
             rows.push(
                 row(SharedString::from(format!("bp-root-{ix}")), &palette)
-                    .child(Icon::new(IconName::FolderGit2).small().text_color(palette.text_secondary))
+                    .child(Icon::new(icons::MODULE).small().text_color(palette.text_secondary))
                     .child(div().when(is_active, |el| el.font_weight(gpui_kit::FontWeight::SEMIBOLD)).child(crate::git::roots::label(&project, &root.path)))
                     .child(div().flex_1())
                     .child(
@@ -535,10 +536,10 @@ impl BranchesPopup {
                             .gap_0p5()
                             .text_xs()
                             .text_color(palette.text_secondary)
-                            .child(Icon::new(IconName::GitBranch).xsmall())
+                            .child(Icon::new(icons::BRANCH).xsmall())
                             .child(root.branch.clone().unwrap_or_else(|| "detached".into())),
                     )
-                    .when(is_active, |el| el.child(Icon::new(IconName::Check).xsmall().text_color(palette.accent)))
+                    .when(is_active, |el| el.child(Icon::new(icons::CHECKED).xsmall().text_color(palette.accent)))
                     .on_click(move |_, _, cx| {
                         let path = path.clone();
                         switch_model.update(cx, |m, cx| m.switch_root(path, cx));
@@ -549,7 +550,7 @@ impl BranchesPopup {
         let sync = crate::settings::Settings::get(cx).sync_branches;
         rows.push(
             row("bp-sync", &palette)
-                .child(Icon::new(if sync { IconName::Check } else { IconName::Circle }).xsmall().text_color(if sync { palette.accent } else { gpui_kit::transparent_black() }))
+                .child(Icon::new(if sync { Icon::from(icons::CHECKED) } else { Icon::from(IconName::Circle) }).xsmall().text_color(if sync { palette.accent } else { gpui_kit::transparent_black() }))
                 .child(div().text_color(palette.text_secondary).child("Execute branch operations on all roots"))
                 .on_click(move |_, _, cx| crate::settings::Settings::update(cx, |s| s.sync_branches = !s.sync_branches))
                 .into_any_element(),
@@ -583,7 +584,7 @@ impl Render for BranchesPopup {
             el.when(cursor == Some(nav_ix), |el| el.bg(palette.hover))
         };
 
-        let top_action = |id: &'static str, icon: IconName, label: &'static str, run: Run, nav_ix: usize| {
+        let top_action = |id: &'static str, icon: Icon, label: &'static str, run: Run, nav_ix: usize| {
             let row_run = run.clone();
             highlight(row(id, &palette), nav_ix)
                 .child(Icon::new(icon).small().text_color(palette.text_secondary))
@@ -596,7 +597,7 @@ impl Render for BranchesPopup {
                     }
                 })
         };
-        let mut push_top = |rows: &mut Vec<gpui_kit::AnyElement>, id: &'static str, icon: IconName, label: &'static str, run: Run| {
+        let mut push_top = |rows: &mut Vec<gpui_kit::AnyElement>, id: &'static str, icon: Icon, label: &'static str, run: Run| {
             let nav_ix = nav.len();
             nav.push((rows.len(), Nav::Run(run.clone())));
             rows.push(top_action(id, icon, label, run, nav_ix).into_any_element());
@@ -615,7 +616,7 @@ impl Render for BranchesPopup {
                 .text_xs()
                 .text_color(palette.text_secondary)
                 .cursor_pointer()
-                .child(Icon::new(if is_collapsed { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall())
+                .child(Icon::new(if is_collapsed { icons::CHEVRON_RIGHT } else { icons::CHEVRON_DOWN }).xsmall())
                 .child(title)
                 .when(is_collapsed, |el| el.child(div().child(format!("({count})"))))
                 .on_click(move |_, _, cx| {
@@ -649,13 +650,13 @@ impl Render for BranchesPopup {
                         }) as Run
                     };
                     if state != Merging {
-                        push_top(&mut rows, "bp-continue", IconName::Play, continue_label, step(OperationStep::Continue));
+                        push_top(&mut rows, "bp-continue", Icon::from(icons::RUN), continue_label, step(OperationStep::Continue));
                     }
                     if state == Rebasing {
-                        push_top(&mut rows, "bp-skip", IconName::ArrowRight, "Skip Commit", step(OperationStep::Skip));
+                        push_top(&mut rows, "bp-skip", Icon::from(icons::RIGHT), "Skip Commit", step(OperationStep::Skip));
                     }
                     let abort_model = self.model.clone();
-                    push_top(&mut rows, "bp-abort", IconName::X, abort_label, Rc::new(move |window: &mut Window, cx: &mut App| {
+                    push_top(&mut rows, "bp-abort", Icon::from(icons::CLOSE), abort_label, Rc::new(move |window: &mut Window, cx: &mut App| {
                         dialogs::abort_operation(abort_model.clone(), state, window, cx)
                     }));
                     rows.push(div().flex_shrink_0().my_1().h(px(1.)).bg(palette.border).into_any_element());
@@ -664,21 +665,21 @@ impl Render for BranchesPopup {
             let new_model = self.model.clone();
             let new_head = head.clone();
             let update_model = self.model.clone();
-            push_top(&mut rows, "bp-update", IconName::ArrowDownToLine, "Update Project…", Rc::new(move |window: &mut Window, cx: &mut App| {
+            push_top(&mut rows, "bp-update", Icon::from(icons::VCS_UPDATE), "Update Project…", Rc::new(move |window: &mut Window, cx: &mut App| {
                 dialogs::update_project(update_model.clone(), window, cx)
             }));
             if let Some(run) = self.on_commit.clone() {
-                push_top(&mut rows, "bp-commit", IconName::Check, "Commit…", run);
+                push_top(&mut rows, "bp-commit", Icon::from(icons::CHECKED), "Commit…", run);
             }
             let push_model = self.model.clone();
-            push_top(&mut rows, "bp-push", IconName::ArrowUpFromLine, "Push…", Rc::new(move |window: &mut Window, cx: &mut App| {
+            push_top(&mut rows, "bp-push", Icon::from(icons::VCS_PUSH), "Push…", Rc::new(move |window: &mut Window, cx: &mut App| {
                 dialogs::push(push_model.clone(), window, cx)
             }));
-            push_top(&mut rows, "bp-new", IconName::Plus, "New Branch…", Rc::new(move |window: &mut Window, cx: &mut App| {
+            push_top(&mut rows, "bp-new", Icon::from(icons::ADD), "New Branch…", Rc::new(move |window: &mut Window, cx: &mut App| {
                 dialogs::new_branch(new_model.clone(), new_head.clone(), window, cx)
             }));
             let revision_model = self.model.clone();
-            push_top(&mut rows, "bp-checkout-rev", IconName::Tag, "Checkout Tag or Revision…", Rc::new(move |window: &mut Window, cx: &mut App| {
+            push_top(&mut rows, "bp-checkout-rev", Icon::from(icons::TAG), "Checkout Tag or Revision…", Rc::new(move |window: &mut Window, cx: &mut App| {
                 dialogs::checkout_revision(revision_model.clone(), window, cx)
             }));
             // Multi-root projects: pick the repository whose branches are listed
@@ -690,7 +691,7 @@ impl Render for BranchesPopup {
         drop(push_top);
 
         let favorites = refs.favorites.clone();
-        let mut add_group = |rows: &mut Vec<gpui_kit::AnyElement>, nav: &mut Vec<(usize, Nav)>, title: &'static str, mut refs_in_group: Vec<RefName>| {
+        let add_group = |rows: &mut Vec<gpui_kit::AnyElement>, nav: &mut Vec<(usize, Nav)>, title: &'static str, mut refs_in_group: Vec<RefName>| {
             if refs_in_group.is_empty() {
                 return;
             }
@@ -725,11 +726,11 @@ impl Render for BranchesPopup {
                         .when(expanded, |el| el.bg(palette.selection))
                         .child(
                             Icon::new(if is_favorite {
-                                IconName::Star
+                                icons::STAR
                             } else if reference.kind == RefKind::Tag {
-                                IconName::Tag
+                                icons::TAG
                             } else {
-                                IconName::GitBranch
+                                icons::BRANCH
                             })
                             .small()
                             .text_color(if is_favorite { palette.ref_head } else { color }),
@@ -742,7 +743,7 @@ impl Render for BranchesPopup {
                             el.child(div().text_xs().text_color(palette.text_secondary).child(upstream))
                         })
                         .child(star)
-                        .child(Icon::new(if expanded { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall().text_color(palette.text_secondary))
+                        .child(Icon::new(if expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).xsmall().text_color(palette.text_secondary))
                         .on_click(move |_, _, cx| {
                             let name = toggle_name.clone();
                             toggle_entity.update(cx, |this, cx| {
@@ -814,7 +815,7 @@ impl Render for BranchesPopup {
             .on_action(cx.listener(|this, _: &CollapseSelected, _, cx| this.expand_selected(false, cx)))
             .w(px(400.))
             .gap_1()
-            .child(Input::new(&self.search).small().prefix(Icon::new(IconName::Search).xsmall()))
+            .child(Input::new(&self.search).small().prefix(Icon::new(icons::SEARCH).xsmall()))
             .child(
                 div()
                     .relative()
@@ -840,7 +841,7 @@ fn favorite_star(model: &Entity<RepoModel>, title: &str, full_name: &str, is_fav
         .id(SharedString::from(format!("star-{title}-{full_name}")))
         .px_0p5()
         .child(
-            Icon::new(if is_favorite { IconName::StarOff } else { IconName::Star })
+            Icon::new(if is_favorite { icons::STAR_EMPTY } else { icons::STAR })
                 .xsmall()
                 .text_color(palette.text_secondary),
         )

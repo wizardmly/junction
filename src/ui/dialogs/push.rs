@@ -410,7 +410,7 @@ fn file_list(shown_files: &[crate::git::log::FileChange], palette: &crate::theme
                 .text_sm()
                 .overflow_hidden()
                 .whitespace_nowrap()
-                .child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::File).xsmall().text_color(palette.text_secondary))
+                .child(gpui_kit::component::Icon::new(crate::ui::as_icons::FILE_TEXT).xsmall().text_color(palette.text_secondary))
                 .child(div().flex_shrink_0().text_color(crate::ui::common::change_color(file.kind, &palette)).child(name.to_owned()))
                 .child(div().min_w_0().text_xs().text_color(palette.text_secondary).text_ellipsis().child(dir.to_owned())),
         );

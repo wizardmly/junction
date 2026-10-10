@@ -2,6 +2,7 @@
 //! and status bar.
 
 use super::*;
+use crate::ui::as_icons as icons;
 
 impl Workspace {
     /// One tab group: its tab bar and what its selected tab shows.
@@ -63,7 +64,7 @@ impl Workspace {
         let palette = cx.palette().clone();
         let recent = crate::settings::recent_projects();
         let error = self.model.read(cx).error().map(str::to_owned);
-        let action = |id: &'static str, icon: IconName, label: &'static str| {
+        let action = |id: &'static str, icon: Icon, label: &'static str| {
             Button::new(id).small().icon(Icon::new(icon)).label(label)
         };
         let mut list = v_flex().gap_px();
@@ -132,13 +133,13 @@ impl Workspace {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(action("welcome-open", IconName::FolderOpen, "Open").on_click(cx.listener(
+                    .child(action("welcome-open", Icon::from(icons::FOLDER), "Open").on_click(cx.listener(
                         |this, _, window, cx| this.open_repository(window, cx),
                     )))
-                    .child(action("welcome-clone", IconName::ArrowDownToLine, "Get from VCS").on_click(cx.listener(
+                    .child(action("welcome-clone", Icon::from(icons::VCS_UPDATE), "Get from VCS").on_click(cx.listener(
                         |this, _, window, cx| clone_dialog::clone(this.model.clone(), window, cx),
                     )))
-                    .child(action("welcome-init", IconName::Plus, "New Repository").on_click(cx.listener(
+                    .child(action("welcome-init", Icon::from(icons::ADD), "New Repository").on_click(cx.listener(
                         |this, _, _, cx| clone_dialog::init(this.model.clone(), cx),
                     ))),
             )
@@ -273,7 +274,7 @@ impl Workspace {
                                         .child(project.chars().take(2).collect::<String>().to_uppercase()),
                                 )
                                 .child(div().font_weight(FontWeight::SEMIBOLD).child(project))
-                                .child(Icon::new(IconName::ChevronDown).xsmall()),
+                                .child(Icon::new(icons::CHEVRON_DOWN).xsmall()),
                         )
                         .dropdown_menu({
                             let entity = entity.clone();
@@ -326,7 +327,7 @@ impl Workspace {
                             Button::new("vcs-widget")
                                 .ghost()
                                 .small()
-                                .icon(Icon::new(IconName::GitBranch).small())
+                                .icon(Icon::new(icons::BRANCH).small())
                                 .label(branch)
                                 .when_some(track, |el, (behind, ahead)| {
                                     el.child(
@@ -337,7 +338,7 @@ impl Workspace {
                                             .when(ahead > 0, |el| el.child(div().text_color(palette.status_added).child(format!("↑{ahead}")))),
                                     )
                                 })
-                                .child(Icon::new(IconName::ChevronDown).xsmall()),
+                                .child(Icon::new(icons::CHEVRON_DOWN).xsmall()),
                         )
                         .child(popup),
                 )
@@ -345,26 +346,26 @@ impl Workspace {
                 .when_some(busy, |el, busy| {
                     el.child(div().text_xs().text_color(palette.text_secondary).child(format!("{busy}…")))
                 })
-                .child(tool_button("tb-update", IconName::ArrowDownToLine, if cfg!(target_os = "macos") { "Update Project…  ⌘T" } else { "Update Project…  Ctrl+T" }).on_click(cx.listener(
+                .child(tool_button("tb-update", icons::VCS_UPDATE, if cfg!(target_os = "macos") { "Update Project…  ⌘T" } else { "Update Project…  Ctrl+T" }).on_click(cx.listener(
                     |this, _, window, cx| dialogs::update_project(this.model.clone(), window, cx),
                 )))
-                .child(tool_button("tb-commit", IconName::Check, if cfg!(target_os = "macos") { "Commit…  ⌘K" } else { "Commit…  Ctrl+K" }).on_click(cx.listener(
+                .child(tool_button("tb-commit", icons::CHECKED, if cfg!(target_os = "macos") { "Commit…  ⌘K" } else { "Commit…  Ctrl+K" }).on_click(cx.listener(
                     |this, _, window, cx| this.on_commit(&CommitChanges, window, cx),
                 )))
-                .child(tool_button("tb-push", IconName::ArrowUpFromLine, if cfg!(target_os = "macos") { "Push…  ⇧⌘K" } else { "Push…  Ctrl+Shift+K" }).on_click(cx.listener(
+                .child(tool_button("tb-push", icons::VCS_PUSH, if cfg!(target_os = "macos") { "Push…  ⇧⌘K" } else { "Push…  Ctrl+Shift+K" }).on_click(cx.listener(
                     |this, _, window, cx| dialogs::push(this.model.clone(), window, cx),
                 )))
-                .child(tool_button("tb-fetch", IconName::CloudDownload, "Fetch").on_click(op(
+                .child(tool_button("tb-fetch", icons::VCS_FETCH, "Fetch").on_click(op(
                     "Fetch",
                     &["fetch", "--all", "--prune"],
                     "Fetched all remotes",
                 )))
                 // The new UI's right corner: Search Everywhere and Settings.
                 .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
-                .child(tool_button("tb-search", IconName::Search, "Search Everywhere  Double Shift").on_click(cx.listener(
+                .child(tool_button("tb-search", icons::SEARCH, "Search Everywhere  Double Shift").on_click(cx.listener(
                     |this, _, window, cx| this.open_search_everywhere(SeTab::All, window, cx),
                 )))
-                .child(tool_button("tb-settings", IconName::Settings, if cfg!(target_os = "macos") { "Settings…  ⌘," } else { "Settings…  Ctrl+Alt+S" }).on_click(
+                .child(tool_button("tb-settings", icons::SETTINGS, if cfg!(target_os = "macos") { "Settings…  ⌘," } else { "Settings…  Ctrl+Alt+S" }).on_click(
                     cx.listener(|this, _, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx)),
                 )),
         )
@@ -390,9 +391,9 @@ impl Workspace {
                         h_flex()
                             .gap_1()
                             .child(match (record.error, record.warning) {
-                                (true, _) => Icon::new(IconName::CircleX).xsmall().text_color(palette.status_conflict),
-                                (_, true) => Icon::new(IconName::TriangleAlert).xsmall().text_color(palette.ref_head),
-                                _ => Icon::new(IconName::CircleCheck).xsmall().text_color(palette.status_added),
+                                (true, _) => Icon::new(icons::STATUS_ERROR).xsmall().text_color(palette.status_conflict),
+                                (_, true) => Icon::new(icons::STATUS_WARNING).xsmall().text_color(palette.ref_head),
+                                _ => Icon::new(icons::STATUS_SUCCESS).xsmall().text_color(palette.status_added),
                             })
                             .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(record.title.clone()))
                             .child(div().text_xs().text_color(palette.text_secondary).child(record.time.format("%H:%M").to_string())),
@@ -411,11 +412,11 @@ impl Workspace {
                     .border_b_1()
                     .border_color(palette.border)
                     .child(div().flex_1().text_sm().font_weight(FontWeight::SEMIBOLD).child("Notifications"))
-                    .child(tool_button("notifications-clear", IconName::Delete, "Clear All").on_click(cx.listener(|this, _, _, cx| {
+                    .child(tool_button("notifications-clear", icons::DELETE, "Clear All").on_click(cx.listener(|this, _, _, cx| {
                         this.notifications.clear();
                         cx.notify();
                     })))
-                    .child(tool_button("notifications-hide", IconName::Minus, "Hide").on_click(cx.listener(|this, _, _, cx| {
+                    .child(tool_button("notifications-hide", icons::HIDE, "Hide").on_click(cx.listener(|this, _, _, cx| {
                         this.tools.hide(ToolWindow::Notifications);
                         cx.notify();
                     }))),
@@ -463,7 +464,7 @@ impl Workspace {
         let mut path = h_flex().gap_0p5().min_w_0().overflow_hidden();
         for (ix, crumb) in crumbs.into_iter().enumerate() {
             if ix > 0 {
-                path = path.child(Icon::new(IconName::ChevronRight).xsmall());
+                path = path.child(Icon::new(icons::CHEVRON_RIGHT).xsmall());
             }
             path = path.child(div().when(ix + 1 == crumb_count && file.is_some(), |el| el.text_color(palette.text)).child(crumb));
         }
@@ -495,7 +496,7 @@ impl Workspace {
                     .rounded_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(palette.hover))
-                    .child(h_flex().gap_1().child(Icon::new(IconName::GitBranch).xsmall()).child(branch))
+                    .child(h_flex().gap_1().child(Icon::new(icons::BRANCH).xsmall()).child(branch))
                     .on_click(cx.listener(|this, _, window, cx| this.open_branches(window, cx))),
             )
     }
