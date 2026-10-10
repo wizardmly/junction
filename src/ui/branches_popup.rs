@@ -509,6 +509,53 @@ impl BranchesPopup {
             _ => {}
         }
     }
+
+    /// Multi-root projects: the repository whose branches are listed (and
+    /// that branch operations target), plus synchronous control.
+    fn repository_rows(&self, palette: &crate::theme::Palette, cx: &App) -> Vec<gpui_kit::AnyElement> {
+        let palette = palette.clone();
+        let model = self.model.read(cx);
+        let mut rows: Vec<gpui_kit::AnyElement> = Vec::new();
+        let project = model.project_root().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let active = model.repository().map(|r| r.root().to_path_buf());
+        rows.push(
+            div().flex_shrink_0().px_2().pt_2().pb_0p5().text_xs().text_color(palette.text_secondary).child("Repositories").into_any_element(),
+        );
+        for (ix, root) in model.roots().iter().enumerate() {
+            let is_active = active.as_ref() == Some(&root.path);
+            let path = root.path.clone();
+            let switch_model = self.model.clone();
+            rows.push(
+                row(SharedString::from(format!("bp-root-{ix}")), &palette)
+                    .child(Icon::new(IconName::FolderGit2).small().text_color(palette.text_secondary))
+                    .child(div().when(is_active, |el| el.font_weight(gpui_kit::FontWeight::SEMIBOLD)).child(crate::git::roots::label(&project, &root.path)))
+                    .child(div().flex_1())
+                    .child(
+                        h_flex()
+                            .gap_0p5()
+                            .text_xs()
+                            .text_color(palette.text_secondary)
+                            .child(Icon::new(IconName::GitBranch).xsmall())
+                            .child(root.branch.clone().unwrap_or_else(|| "detached".into())),
+                    )
+                    .when(is_active, |el| el.child(Icon::new(IconName::Check).xsmall().text_color(palette.accent)))
+                    .on_click(move |_, _, cx| {
+                        let path = path.clone();
+                        switch_model.update(cx, |m, cx| m.switch_root(path, cx));
+                    })
+                    .into_any_element(),
+            );
+        }
+        let sync = crate::settings::Settings::get(cx).sync_branches;
+        rows.push(
+            row("bp-sync", &palette)
+                .child(Icon::new(if sync { IconName::Check } else { IconName::Circle }).xsmall().text_color(if sync { palette.accent } else { gpui_kit::transparent_black() }))
+                .child(div().text_color(palette.text_secondary).child("Execute branch operations on all roots"))
+                .on_click(move |_, _, cx| crate::settings::Settings::update(cx, |s| s.sync_branches = !s.sync_branches))
+                .into_any_element(),
+        );
+        rows
+    }
 }
 
 impl gpui_kit::EventEmitter<gpui_kit::DismissEvent> for BranchesPopup {}
@@ -637,44 +684,7 @@ impl Render for BranchesPopup {
             // Multi-root projects: pick the repository whose branches are listed
             // (and that branch operations target), plus synchronous control.
             if model.is_multi_root() {
-                let project = model.project_root().map(std::path::Path::to_path_buf).unwrap_or_default();
-                let active = model.repository().map(|r| r.root().to_path_buf());
-                rows.push(
-                    div().flex_shrink_0().px_2().pt_2().pb_0p5().text_xs().text_color(palette.text_secondary).child("Repositories").into_any_element(),
-                );
-                for (ix, root) in model.roots().iter().enumerate() {
-                    let is_active = active.as_ref() == Some(&root.path);
-                    let path = root.path.clone();
-                    let switch_model = self.model.clone();
-                    rows.push(
-                        row(SharedString::from(format!("bp-root-{ix}")), &palette)
-                            .child(Icon::new(IconName::FolderGit2).small().text_color(palette.text_secondary))
-                            .child(div().when(is_active, |el| el.font_weight(gpui_kit::FontWeight::SEMIBOLD)).child(crate::git::roots::label(&project, &root.path)))
-                            .child(div().flex_1())
-                            .child(
-                                h_flex()
-                                    .gap_0p5()
-                                    .text_xs()
-                                    .text_color(palette.text_secondary)
-                                    .child(Icon::new(IconName::GitBranch).xsmall())
-                                    .child(root.branch.clone().unwrap_or_else(|| "detached".into())),
-                            )
-                            .when(is_active, |el| el.child(Icon::new(IconName::Check).xsmall().text_color(palette.accent)))
-                            .on_click(move |_, _, cx| {
-                                let path = path.clone();
-                                switch_model.update(cx, |m, cx| m.switch_root(path, cx));
-                            })
-                            .into_any_element(),
-                    );
-                }
-                let sync = crate::settings::Settings::get(cx).sync_branches;
-                rows.push(
-                    row("bp-sync", &palette)
-                        .child(Icon::new(if sync { IconName::Check } else { IconName::Circle }).xsmall().text_color(if sync { palette.accent } else { gpui_kit::transparent_black() }))
-                        .child(div().text_color(palette.text_secondary).child("Execute branch operations on all roots"))
-                        .on_click(move |_, _, cx| crate::settings::Settings::update(cx, |s| s.sync_branches = !s.sync_branches))
-                        .into_any_element(),
-                );
+                rows.extend(self.repository_rows(&palette, cx));
             }
         }
         drop(push_top);
@@ -707,26 +717,7 @@ impl Render for BranchesPopup {
                 let toggle_name = key.clone();
                 let toggle_entity = entity.clone();
                 let is_favorite = favorites.contains(&reference.full_name);
-                let star_model = self.model.clone();
-                let star_name = reference.full_name.clone();
-                let star = div()
-                    .id(SharedString::from(format!("star-{title}-{}", reference.full_name)))
-                    .px_0p5()
-                    .child(
-                        Icon::new(if is_favorite { IconName::StarOff } else { IconName::Star })
-                            .xsmall()
-                            .text_color(palette.text_secondary),
-                    )
-                    .on_click(move |_, _, cx| {
-                        cx.stop_propagation();
-                        let name = star_name.clone();
-                        star_model.update(cx, |model, cx| {
-                            if let Some(repo) = model.repository() {
-                                let _ = crate::git::refs::set_favorite(repo, &name, !is_favorite);
-                            }
-                            model.reload(cx);
-                        });
-                    });
+                let star = favorite_star(&self.model, title, &reference.full_name, is_favorite, &palette);
                 let nav_ix = nav.len();
                 nav.push((rows.len(), Nav::Branch(key.clone())));
                 rows.push(
@@ -839,6 +830,30 @@ impl Render for BranchesPopup {
                     .vertical_scrollbar(&self.scroll),
             )
     }
+}
+
+/// The star that adds a branch to Favorites or removes it.
+fn favorite_star(model: &Entity<RepoModel>, title: &str, full_name: &str, is_favorite: bool, palette: &crate::theme::Palette) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let star_model = model.clone();
+    let star_name = full_name.to_owned();
+    div()
+        .id(SharedString::from(format!("star-{title}-{full_name}")))
+        .px_0p5()
+        .child(
+            Icon::new(if is_favorite { IconName::StarOff } else { IconName::Star })
+                .xsmall()
+                .text_color(palette.text_secondary),
+        )
+        .on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            let name = star_name.clone();
+            star_model.update(cx, |model, cx| {
+                if let Some(repo) = model.repository() {
+                    let _ = crate::git::refs::set_favorite(repo, &name, !is_favorite);
+                }
+                model.reload(cx);
+            });
+        })
 }
 
 /// Remotes tags push to / delete on, as IntelliJ lists them per remote.
