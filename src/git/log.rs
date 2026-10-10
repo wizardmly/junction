@@ -303,6 +303,9 @@ pub struct CommitDetails {
     /// Branches that contain this commit ("In 3 branches: main, …").
     pub containing_branches: Vec<String>,
     pub signature: Option<Signature>,
+    /// The branches and signature are loaded (they come a moment after
+    /// the rest: `branch --contains` walks history, verifying runs gpg).
+    pub complete: bool,
 }
 
 /// A commit's GPG / SSH signature, as git verifies it (`%G?`).
@@ -356,16 +359,38 @@ fn load_signature(repository: &Repository, hash: &str) -> Option<Signature> {
 }
 
 pub fn load_details(repository: &Repository, hash: &str) -> Result<CommitDetails> {
-    let header = repository.run([
-        "show",
-        "-s",
-        &format!("--format=%H{FIELD}%P{FIELD}%an{FIELD}%ae{FIELD}%at{FIELD}%cn{FIELD}%ce{FIELD}%ct{FIELD}%B"),
-        hash,
-    ])?;
+    let mut details = load_details_basic(repository, hash)?;
+    (details.containing_branches, details.signature) = load_details_extra(repository, &details.hash);
+    details.complete = true;
+    Ok(details)
+}
+
+/// The header and the changed files, what the details pane shows first.
+/// The two git calls run side by side (process start-up is most of their
+/// time, on Windows especially).
+pub fn load_details_basic(repository: &Repository, hash: &str) -> Result<CommitDetails> {
+    let (header, changes) = std::thread::scope(|scope| {
+        // Against the first parent; a root commit, against nothing.
+        let changes = scope.spawn(|| {
+            let parent = format!("{hash}^1");
+            repository
+                .run(["diff-tree", "--no-commit-id", "-r", "-M", "--name-status", "-z", &parent, hash])
+                .or_else(|_| repository.run(["diff-tree", "--no-commit-id", "-r", "-M", "--name-status", "-z", "--root", hash]))
+        });
+        let header = repository.run([
+            "show",
+            "-s",
+            &format!("--format=%H{FIELD}%P{FIELD}%an{FIELD}%ae{FIELD}%at{FIELD}%cn{FIELD}%ce{FIELD}%ct{FIELD}%B"),
+            hash,
+        ]);
+        (header, changes.join().unwrap_or_else(|_| Err(anyhow::anyhow!("diff-tree failed"))))
+    });
+    let header = header?;
     let mut fields = header.splitn(9, FIELD);
     let mut next = || fields.next().unwrap_or_default().to_owned();
     let hash = next();
-    let parents: Vec<String> = next().split_whitespace().map(str::to_owned).collect();
+    // (The parents: like IntelliJ, a merge shows its changes against the first.)
+    let _parents = next();
     let author_name = next();
     let author_email = next();
     let author_time = next().parse().unwrap_or(0);
@@ -373,31 +398,7 @@ pub fn load_details(repository: &Repository, hash: &str) -> Result<CommitDetails
     let committer_email = next();
     let committer_time = next().parse().unwrap_or(0);
     let message = next().trim_end().to_owned();
-
-    // Like IntelliJ, a merge commit shows its changes against the first parent.
-    let mut diff_args = vec!["diff-tree", "--no-commit-id", "-r", "-M", "--name-status", "-z"];
-    if parents.is_empty() {
-        diff_args.push("--root");
-    } else if parents.len() > 1 {
-        // (`-m --first-parent` would list the diffs against every parent.)
-        diff_args.push(&parents[0]);
-    }
-    diff_args.push(&hash);
-    let changes = parse_name_status(&repository.run(&diff_args)?);
-
-    let containing_branches = repository
-        .run(["branch", "-a", "--contains", &hash, "--format=%(refname)"])
-        .map(|output| {
-            // Full names, so "(HEAD detached at …)" and origin/HEAD (short: "origin") drop out.
-            output
-                .lines()
-                .filter(|l| l.starts_with("refs/") && !l.ends_with("/HEAD"))
-                .map(|l| l.strip_prefix("refs/heads/").or_else(|| l.strip_prefix("refs/remotes/")).unwrap_or(l).to_owned())
-                .collect()
-        })
-        .unwrap_or_default();
-    let signature = load_signature(repository, &hash);
-
+    let changes = parse_name_status(&changes?);
     Ok(CommitDetails {
         hash,
         author_name,
@@ -408,8 +409,28 @@ pub fn load_details(repository: &Repository, hash: &str) -> Result<CommitDetails
         committer_time,
         message,
         changes,
-        signature,
-        containing_branches,
+        signature: None,
+        containing_branches: Vec::new(),
+        complete: false,
+    })
+}
+
+/// The branches containing the commit and its signature, side by side.
+pub fn load_details_extra(repository: &Repository, hash: &str) -> (Vec<String>, Option<Signature>) {
+    std::thread::scope(|scope| {
+        let signature = scope.spawn(|| load_signature(repository, hash));
+        let branches = repository
+            .run(["branch", "-a", "--contains", hash, "--format=%(refname)"])
+            .map(|output| {
+                // Full names, so "(HEAD detached at …)" and origin/HEAD (short: "origin") drop out.
+                output
+                    .lines()
+                    .filter(|l| l.starts_with("refs/") && !l.ends_with("/HEAD"))
+                    .map(|l| l.strip_prefix("refs/heads/").or_else(|| l.strip_prefix("refs/remotes/")).unwrap_or(l).to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        (branches, signature.join().ok().flatten())
     })
 }
 

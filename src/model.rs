@@ -105,6 +105,11 @@ pub struct RepoModel {
     failed_path: Option<PathBuf>,
     _reload_task: Option<Task<()>>,
     _log_task: Option<Task<()>>,
+    _stale_details_task: Option<Task<()>>,
+    _read_ahead_task: Option<Task<()>>,
+    /// Details of commits seen or read ahead; cleared when the refs may have
+    /// changed (their branch lists).
+    details_cache: HashMap<String, git::log::CommitDetails>,
     _details_task: Option<Task<()>>,
     _fetch_task: Option<Task<()>>,
 }
@@ -173,7 +178,7 @@ struct Snapshot {
     web: Option<git::hosting::WebRepo>,
     refs: RepositoryRefs,
     /// The first page of the log when it changed, and its key.
-    log: Option<(LoadedLog, LogKey)>,
+    log: Option<Result<(LoadedLog, LogKey)>>,
     status: WorkingTreeStatus,
     state: RepositoryState,
     submodules: HashSet<String>,
@@ -213,6 +218,9 @@ impl RepoModel {
             failed_path: None,
             _reload_task: None,
             _log_task: None,
+            _stale_details_task: None,
+            _read_ahead_task: None,
+            details_cache: HashMap::new(),
             _details_task: None,
             _fetch_task: None,
         };
@@ -237,6 +245,7 @@ impl RepoModel {
                 self.error = None;
                 self.selected = None;
                 self.details = None;
+                self.forget_repository_filters();
                 self.reload(cx);
             }
             Err(error) => {
@@ -266,6 +275,15 @@ impl RepoModel {
         }
     }
 
+    /// Branches and paths name things of the previous repository: a log
+    /// filtered by them would fail (or be empty) in another.
+    fn forget_repository_filters(&mut self) {
+        self.filter.branches.clear();
+        self.filter.paths.clear();
+        self.filter.lines = None;
+        self.log_key = None;
+    }
+
     /// Makes another root of the project the active one: the Log, Commit
     /// window and branch widget then show that repository.
     pub fn switch_root(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -278,6 +296,7 @@ impl RepoModel {
                 self.repository = Some(repository);
                 self.selected = None;
                 self.details = None;
+                self.forget_repository_filters();
                 self.reload(cx);
             }
             Err(error) => cx.emit(RepoEvent::Notify { title: "Switch Repository".into(), message: error.to_string(), error: true }),
@@ -528,7 +547,9 @@ impl RepoModel {
                     let key = LogKey::load(&repository, &filter);
                     let log = if previous_key.as_ref() != Some(&key) {
                         // The first page shows quickly; the rest follows below.
-                        Some((LoadedLog::load(&repository, &filter, true)?, key))
+                        // (A failing log, say for a branch filter that no longer
+                        // matches, still lets the refs and the status refresh.)
+                        Some(LoadedLog::load(&repository, &filter, true).map(|log| (log, key)))
                     } else {
                         None
                     };
@@ -565,9 +586,19 @@ impl RepoModel {
                 this.loading = false;
                 match result {
                     Ok((snapshot, repository, filter)) => {
+                        let mut log_error = None;
+                        this.details_cache.clear();
                         this.refs = Arc::new(snapshot.refs);
                         // (Unless the filter changed meanwhile: its own load wins.)
-                        if let Some((log, key)) = snapshot.log.filter(|_| this.effective_filter(cx) == filter) {
+                        let log = match snapshot.log.filter(|_| this.effective_filter(cx) == filter) {
+                            Some(Err(error)) => {
+                                this.log_key = None;
+                                log_error = Some(error.to_string());
+                                None
+                            }
+                            other => other.map(|log| log.ok()).flatten(),
+                        };
+                        if let Some((log, key)) = log {
                             let complete = log.commits.len() < git::log::FIRST_PAGE;
                             // (A short log came whole; a long one was the first page.)
                             this.set_log(log);
@@ -580,7 +611,7 @@ impl RepoModel {
                         this.submodule_paths = snapshot.submodules;
                         this.roots = snapshot.roots;
                         this.web_repo = snapshot.web;
-                        this.error = None;
+                        this.error = log_error;
                         this.keep_selection(cx);
                     }
                     Err(error) => {
@@ -722,27 +753,121 @@ impl RepoModel {
             return;
         }
         self.selected = hash.clone();
-        self.details = None;
+        // The previous commit's details stay up while the next ones load
+        // (usually a few ms), so the details pane doesn't flash empty; a
+        // slow load clears them after a moment.
+        if hash.is_none() {
+            self.details = None;
+        }
         cx.emit(RepoEvent::SelectionChanged);
         cx.notify();
         if let Some(hash) = hash {
-            self.load_details(hash, cx);
+            self.load_details(hash.clone(), cx);
+            self._stale_details_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
+                this.update(cx, |this, cx| {
+                    if this.details.as_ref().is_some_and(|d| d.hash != hash) {
+                        this.details = None;
+                        cx.emit(RepoEvent::DetailsLoaded);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }));
         }
     }
 
     fn load_details(&mut self, hash: String, cx: &mut Context<Self>) {
         let Some(repository) = self.repository.clone() else { return };
+        // Seen (or read ahead) before: shown at once.
+        if let Some(details) = self.details_cache.get(&hash).cloned() {
+            self.details = Some(details);
+            cx.emit(RepoEvent::DetailsLoaded);
+            cx.notify();
+            self.read_ahead(&hash, cx);
+            return;
+        }
         self._details_task = Some(cx.spawn(async move |this, cx| {
-            let details = cx
-                .background_spawn(async move { git::log::load_details(&repository, &hash) })
+            // The header and files first, then the branches and signature.
+            let basic = cx
+                .background_spawn({
+                    let (repository, hash) = (repository.clone(), hash.clone());
+                    async move { git::log::load_details_basic(&repository, &hash) }
+                })
                 .await;
+            let Ok(basic) = basic else { return };
+            let full_hash = basic.hash.clone();
+            let shown = this.update(cx, |this, cx| {
+                if this.selected.as_deref() != Some(full_hash.as_str()) {
+                    return false;
+                }
+                // (A reload of the shown commit keeps its branches meanwhile.)
+                if !this.details.as_ref().is_some_and(|d| d.hash == full_hash) {
+                    this.details = Some(basic.clone());
+                    cx.emit(RepoEvent::DetailsLoaded);
+                    cx.notify();
+                }
+                true
+            });
+            if !matches!(shown, Ok(true)) {
+                return;
+            }
+            let (branches, signature) = cx
+                .background_spawn({
+                    let (repository, hash) = (repository.clone(), full_hash.clone());
+                    async move { git::log::load_details_extra(&repository, &hash) }
+                })
+                .await;
+            let mut details = basic;
+            (details.containing_branches, details.signature, details.complete) = (branches, signature, true);
             this.update(cx, |this, cx| {
-                if let Ok(details) = details {
-                    if this.selected.as_deref() == Some(details.hash.as_str()) {
-                        this.details = Some(details);
-                        cx.emit(RepoEvent::DetailsLoaded);
-                        cx.notify();
-                    }
+                this.remember_details(details.clone());
+                if this.selected.as_deref() == Some(details.hash.as_str()) {
+                    let hash = details.hash.clone();
+                    this.details = Some(details);
+                    cx.emit(RepoEvent::DetailsLoaded);
+                    cx.notify();
+                    this.read_ahead(&hash, cx);
+                }
+            })
+            .ok();
+        }));
+    }
+
+    fn remember_details(&mut self, details: git::log::CommitDetails) {
+        if self.details_cache.len() >= 256 {
+            self.details_cache.clear();
+        }
+        self.details_cache.insert(details.hash.clone(), details);
+    }
+
+    /// Loads the commits above and below the selected one in the
+    /// background, so moving through the Log with the arrow keys shows
+    /// their details at once.
+    fn read_ahead(&mut self, hash: &str, cx: &mut Context<Self>) {
+        let (Some(repository), Some(row)) = (self.repository.clone(), self.row_of(hash)) else { return };
+        let next: Vec<String> = [row.checked_sub(1), Some(row + 1)]
+            .into_iter()
+            .flatten()
+            .filter_map(|r| self.commits.get(r))
+            .map(|c| c.hash.to_string())
+            .filter(|h| !self.details_cache.contains_key(h))
+            .collect();
+        if next.is_empty() {
+            return;
+        }
+        self._read_ahead_task = Some(cx.spawn(async move |this, cx| {
+            let loaded = cx
+                .background_spawn(async move {
+                    std::thread::scope(|scope| {
+                        let jobs: Vec<_> = next.iter().map(|h| scope.spawn(|| git::log::load_details(&repository, h))).collect();
+                        jobs.into_iter().filter_map(|j| j.join().ok()?.ok()).collect::<Vec<_>>()
+                    })
+                })
+                .await;
+            this.update(cx, |this, _| {
+                for details in loaded {
+                    this.remember_details(details);
                 }
             })
             .ok();

@@ -2233,7 +2233,7 @@ impl LogView {
                             }
                             el.child(row)
                         })
-                        .child({
+                        .when(d.complete, |el| el.child({
                             let n = d.containing_branches.len();
                             let all = self.show_all_branches || n <= 5;
                             let shown = if all { &d.containing_branches[..] } else { &d.containing_branches[..5] };
@@ -2256,7 +2256,7 @@ impl LogView {
                                         })),
                                 )
                             })
-                        }),
+                        })),
                 )
             });
 
