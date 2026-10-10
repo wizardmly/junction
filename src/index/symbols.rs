@@ -374,6 +374,13 @@ impl Walker<'_> {
         }
     }
 
+    /// The declaration carries this modifier (`abstract`, `annotation`…).
+    fn declared_with(&self, node: Node, modifier: &str) -> bool {
+        let mut cursor = node.walk();
+        let found = node.children(&mut cursor).any(|c| c.kind() == "modifiers" && self.text_of(c).split_whitespace().any(|m| m == modifier));
+        found
+    }
+
     fn text_of(&self, node: Node) -> &str {
         node.utf8_text(self.text.as_bytes()).unwrap_or_default()
     }
@@ -389,6 +396,17 @@ impl Walker<'_> {
                     "enum" => return K::Enum,
                     "extension" => return K::Extension,
                     "class" | "actor" => return K::Class,
+                    _ => {}
+                }
+            }
+        }
+        // Kotlin's class_declaration covers interfaces and enum classes.
+        if self.lang == Lang::Kotlin && node.kind() == "class_declaration" {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "interface" => return K::Interface,
+                    "enum" | "enum_class_body" => return K::Enum,
                     _ => {}
                 }
             }
@@ -432,6 +450,11 @@ impl Walker<'_> {
         let detail = match rule.name {
             Selector => Some(selector(node, self.text)),
             _ if node.kind() == "impl_item" => node.child_by_field_name("trait").map(|t| format!("impl {}", self.text_of(t))),
+            // What the Project view's class icons tell apart.
+            _ if self.lang == Lang::Kotlin && node.kind() == "object_declaration" => Some("object".into()),
+            _ if node.kind() == "annotation_type_declaration" => Some("annotation".into()),
+            _ if self.lang == Lang::Kotlin && kind == K::Class && self.declared_with(node, "annotation") => Some("annotation".into()),
+            _ if self.declared_with(node, "abstract") && kind == K::Class => Some("abstract".into()),
             _ => None,
         };
         // An impl block is a container, not a symbol of its own; a bodiless
@@ -733,5 +756,17 @@ mod tests {
             ["class:Foo", "method:bar@Foo", "function:add", "variable:handler", "interface:I", "method:m@I decl", "type alias:T", "enum:E"]
         );
         assert_eq!(names(Lang::Python, "class A:\n    def m(self):\n        pass\ndef f():\n    pass\n"), ["class:A", "method:m@A", "function:f"]);
+    }
+}
+
+#[cfg(test)]
+mod kotlin_kinds {
+    use super::*;
+
+    #[test]
+    fn kinds_and_tags() {
+        let src = "package a\npublic sealed interface Map<K> { }\npublic enum class Mode { A, B }\nannotation class Exp\nabstract class Base\ninternal object Utils { }\nclass Plain\n";
+        let got: Vec<String> = extract(Lang::Kotlin, src).into_iter().filter(|s| s.kind.is_type()).map(|s| format!("{}:{}:{}", s.kind.label(), s.name, s.detail.unwrap_or_default())).collect();
+        assert_eq!(got, ["interface:Map:", "enum:Mode:", "class:Exp:annotation", "class:Base:abstract", "class:Utils:object", "class:Plain:"]);
     }
 }

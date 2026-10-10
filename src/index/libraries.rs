@@ -18,7 +18,7 @@ use super::lang::Lang;
 use super::store::{self, FileEntry};
 
 /// Bumped whenever extraction changes, so stale caches are rebuilt.
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 /// Per library; bigger ones are cut (generated or vendored code).
 const MAX_LIBRARY_FILES: usize = 12_000;
 /// Headers reached through `#include` from the project.
@@ -29,11 +29,16 @@ const MAX_ARTIFACTS: usize = 600;
 /// One library: a root and the source files under it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Library {
-    /// "serde 1.0.219", "< JDK 21 >", "Android API 34"…
+    /// "serde 1.0.219", "< jbr-21 >", "Gradle: androidx.core:core:1.13.1@aar"…
     pub name: String,
     /// The Project view's grouping: "Cargo", "Gradle", "JDK"…
     pub group: &'static str,
     pub root: PathBuf,
+    /// The archive the sources stand for, shown as the library's root
+    /// ("core-1.13.1.jar  library root"); files sit right under the library without it.
+    pub root_label: Option<String>,
+    /// Shown greyed after the name, as IntelliJ shows an SDK's home.
+    pub location: Option<String>,
     /// Only these files; otherwise every source file under `root`.
     pub only: Option<Vec<PathBuf>>,
     /// Paths under `root` (with `/`) that are left out.
@@ -46,6 +51,8 @@ pub struct LibraryInfo {
     pub name: String,
     pub group: &'static str,
     pub root: PathBuf,
+    pub root_label: Option<String>,
+    pub location: Option<String>,
     /// Absolute paths, sorted.
     pub files: Vec<String>,
 }
@@ -139,7 +146,14 @@ impl ExternalIndex {
             }
             indexed.sort();
             if !indexed.is_empty() {
-                out.libraries.push(LibraryInfo { name: lib.name.clone(), group: lib.group, root: lib.root.clone(), files: indexed });
+                out.libraries.push(LibraryInfo {
+                    name: lib.name.clone(),
+                    group: lib.group,
+                    root: lib.root.clone(),
+                    root_label: lib.root_label.clone(),
+                    location: lib.location.clone(),
+                    files: indexed,
+                });
             }
             out.built.push((lib, files));
         }
@@ -517,7 +531,7 @@ fn newest_subdir(dir: &Path, prefix: &str) -> Option<PathBuf> {
 }
 
 fn lib(name: impl Into<String>, group: &'static str, root: PathBuf) -> Library {
-    Library { name: name.into(), group, root, only: None, exclude: Vec::new() }
+    Library { name: name.into(), group, root, root_label: None, location: None, only: None, exclude: Vec::new() }
 }
 
 // --- Rust ---------------------------------------------------------------
@@ -866,13 +880,33 @@ fn android_sdk(ctx: &Project, out: &mut Vec<Library>) -> Option<PathBuf> {
     let sources = sdk.join("sources");
     let platform = wanted.map(|n| sources.join(format!("android-{n}"))).filter(|p| p.is_dir()).or_else(|| newest_subdir(&sources, "android-"));
     if let Some(platform) = platform {
-        let api = platform.file_name().unwrap().to_string_lossy().trim_start_matches("android-").to_owned();
+        // Named after the compileSdk platform, as IntelliJ does, even when
+        // only another level's sources are installed.
+        let api = wanted.map(|n| n.to_string()).unwrap_or_else(|| platform.file_name().unwrap().to_string_lossy().trim_start_matches("android-").to_owned());
         out.push(Library {
             exclude: vec!["com/android/internal", "com/android/server", "com/android/systemui"],
-            ..lib(format!("Android API {api} Platform"), "Android SDK", platform)
+            root_label: Some("android.jar".into()),
+            location: Some(sdk.display().to_string()),
+            ..lib(android_platform_name(&sdk, &api), "Android SDK", platform)
         });
     }
     Some(sdk)
+}
+
+/// "< Android API 34, extension level 7 Platform >", the SDK table name
+/// Android Studio gives a platform.
+fn android_platform_name(sdk: &Path, api: &str) -> String {
+    let dir = sdk.join("platforms").join(format!("android-{api}"));
+    static LEVEL: OnceLock<Regex> = OnceLock::new();
+    let re = regex(&LEVEL, r"<extension-level>\s*(\d+)\s*</extension-level>");
+    let level = re
+        .captures(&read(&dir.join("package.xml")))
+        .map(|c| c[1].to_owned())
+        .or_else(|| read(&dir.join("source.properties")).lines().find_map(|l| l.strip_prefix("Platform.ExtensionLevel=").map(|v| v.trim().to_owned())));
+    match level {
+        Some(level) => format!("< Android API {api}, extension level {level} Platform >"),
+        None => format!("< Android API {api} Platform >"),
+    }
 }
 
 fn gradle(ctx: &Project, out: &mut Vec<Library>) {
@@ -913,7 +947,11 @@ fn gradle(ctx: &Project, out: &mut Vec<Library>) {
             if let Some(root) = extract_sources(&jar, &format!("gradle/{group}/{artifact}-{version}"), &|name| {
                 (name.ends_with(".java") || name.ends_with(".kt")).then(|| name.to_owned())
             }) {
-                out.push(lib(format!("{group}:{artifact}:{version}"), "Gradle", root));
+                // Android libraries ship as .aar; IntelliJ names them "…@aar"
+                // and shows their classes.jar as the root.
+                let aar = named(".aar").is_some() || named(".pom").is_some_and(|pom| read(&pom).contains("<packaging>aar</packaging>"));
+                let (suffix, jar) = if aar { ("@aar", "classes.jar".to_owned()) } else { ("", format!("{artifact}-{version}.jar")) };
+                out.push(Library { root_label: Some(jar), ..lib(format!("Gradle: {group}:{artifact}:{version}{suffix}"), "Gradle", root) });
             }
         }
         // Follow the dependencies: Gradle module metadata, else the POM.
@@ -1137,7 +1175,11 @@ fn jdk(ctx: &Project, out: &mut Vec<Library>) {
         };
         let major = version.split(['.', '_']).next().unwrap_or("?").to_owned();
         if let Some(root) = extract_sources(&src, &format!("jdk/{}-{:08x}", version, stable_hash(&src.to_string_lossy()) as u32), &map) {
-            out.push(lib(format!("< JDK {major} >"), "JDK", root));
+            // IntelliJ names a detected JDK "jbr-21", "corretto-17"…: its folder and version.
+            let folder = home.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = if folder.is_empty() || folder.chars().any(|c| c.is_ascii_digit()) { folder } else { format!("{folder}-{major}") };
+            let name = if name.is_empty() { format!("< JDK {major} >") } else { format!("< {name} >") };
+            out.push(Library { location: Some(home.display().to_string()), ..lib(name, "JDK", root) });
         }
         return;
     }

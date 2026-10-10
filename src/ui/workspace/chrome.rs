@@ -443,11 +443,16 @@ impl Workspace {
                     let index = self.code_index.read(cx).index.read().ok()?;
                     let library = index.external.library_of(file)?;
                     let rel = std::path::Path::new(file).strip_prefix(&library.root).ok()?.to_string_lossy().replace('\\', "/");
-                    Some((library.name.clone(), rel))
+                    Some((library.root_label.clone(), library.name.clone(), rel))
                 })
                 .flatten();
             match library {
-                Some((name, rel)) => {
+                // IntelliJ's: the archive, its packages, then the class ("core-1.13.1.jar › androidx › core › Foo").
+                Some((Some(archive), _, rel)) => {
+                    crumbs = vec![archive];
+                    crumbs.extend(rel.split('/').map(|p| p.strip_suffix(".java").or_else(|| p.strip_suffix(".kt")).unwrap_or(p).to_owned()));
+                }
+                Some((None, name, rel)) => {
                     crumbs = vec!["External Libraries".to_owned(), name];
                     crumbs.extend(rel.split('/').map(str::to_owned));
                 }

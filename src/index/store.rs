@@ -16,7 +16,7 @@ use super::lang::Lang;
 use super::symbols::{self, Symbol};
 
 /// Bumped whenever extraction or the cache format changes, so stale caches are rebuilt.
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 /// Larger files are generated or vendored; skipping them keeps indexing fast.
 const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
 

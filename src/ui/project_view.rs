@@ -7,11 +7,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Disableable as _, Sizable as _,
+    Icon,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
@@ -24,7 +26,10 @@ use gpui_kit::{
 };
 
 use crate::git::status::StatusKind;
+use crate::index::libraries::ExternalIndex;
 use crate::index::nav::Target;
+use crate::index::store::FileEntry;
+use crate::index::symbols::{Symbol, SymbolKind};
 use crate::index::service::{CodeIndex, IndexEvent};
 use crate::model::{RepoEvent, RepoModel};
 use crate::settings::{ProjectSettings, ProjectSort, Settings};
@@ -67,6 +72,23 @@ enum RowKind {
     /// "External Libraries" and one library under it.
     Libraries,
     Library,
+    /// A library's archive ("core-1.13.1.jar  library root").
+    LibraryRoot,
+    /// A class of a library's JVM sources, shown as IntelliJ shows a jar.
+    Class,
+}
+
+/// The icon of a library class, after IntelliJ's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ClassIcon {
+    Class,
+    Abstract,
+    Interface,
+    Enum,
+    Annotation,
+    Object,
+    /// A Kotlin file's top-level functions ("UtilsKt").
+    Facade,
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +100,27 @@ struct Row {
     kind: RowKind,
     /// Ignored by Git: IntelliJ's "excluded", drawn in olive.
     excluded: bool,
+    /// Has no children (a file, a class without nested classes).
+    leaf: bool,
+    /// A folder holding a build file: a module, with the module badge.
+    module: bool,
+    /// Greyed after the name: a library's location, "library root".
+    note: Option<String>,
+    /// Inside a library: drawn on IntelliJ's "non-project files" yellow.
+    library: bool,
+    /// A library's group ("Gradle", "Android SDK"…) for its icon.
+    group: &'static str,
+    /// A class row's icon and whether it comes from Kotlin.
+    class: Option<(ClassIcon, bool)>,
+    /// A class row's source: (absolute file, line, column).
+    source: Option<(String, u32, u32)>,
+}
+
+impl Row {
+    fn new(depth: usize, name: String, path: String, kind: RowKind, excluded: bool) -> Self {
+        let leaf = kind == RowKind::File;
+        Row { depth, name, path, kind, excluded, leaf, module: false, note: None, library: false, group: "", class: None, source: None }
+    }
 }
 
 #[derive(Default)]
@@ -141,9 +184,8 @@ pub struct ProjectView {
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     root_dir: Option<PathBuf>,
-    /// External Libraries: (name, root, absolute files).
-    libraries: Rc<Vec<(String, PathBuf, Vec<String>)>>,
-    libraries_from: usize,
+    /// External Libraries, with their files' symbols for the class view.
+    external: Arc<ExternalIndex>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -152,6 +194,38 @@ const LIBRARIES_KEY: &str = "\u{1}libraries";
 
 fn library_key(ix: usize) -> String {
     format!("\u{1}library/{ix}")
+}
+
+/// The path segment of a library's archive row, under its library key.
+const LIBRARY_ROOT: &str = "\u{2}root";
+
+/// Sources IntelliJ shows as compiled classes.
+fn is_jvm_source(path: &str) -> bool {
+    path.ends_with(".java") || path.ends_with(".kt")
+}
+
+/// Sorts each level of a flattened tree, children kept under their parent:
+/// packages first, then classes and files by name.
+fn sort_siblings(rows: &mut Vec<Row>) {
+    fn sort(rows: Vec<Row>) -> Vec<Row> {
+        let Some(depth) = rows.first().map(|r| r.depth) else { return rows };
+        let mut blocks: Vec<Vec<Row>> = Vec::new();
+        for row in rows {
+            match blocks.last_mut() {
+                Some(block) if row.depth > depth => block.push(row),
+                _ => blocks.push(vec![row]),
+            }
+        }
+        blocks.sort_by_cached_key(|b| (b[0].kind != RowKind::Dir, b[0].name.to_lowercase()));
+        let mut out = Vec::new();
+        for mut block in blocks {
+            let children = block.split_off(1);
+            out.extend(block);
+            out.extend(sort(children));
+        }
+        out
+    }
+    *rows = sort(std::mem::take(rows));
 }
 
 impl EventEmitter<OpenTarget> for ProjectView {}
@@ -211,8 +285,7 @@ impl ProjectView {
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             root_dir: None,
-            libraries: Rc::default(),
-            libraries_from: 0,
+            external: Arc::default(),
             _subscriptions: subscriptions,
         };
         this.reload(cx);
@@ -260,25 +333,16 @@ impl ProjectView {
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
-        let seen = self.libraries_from;
-        let (files, libraries) = self
+        let (files, external) = self
             .index
             .read(cx)
             .index
             .read()
-            .map(|i| {
-                // The library index is replaced, never changed in place.
-                let from = std::sync::Arc::as_ptr(&i.external) as usize;
-                let libraries = (from != seen).then(|| {
-                    let list: Vec<(String, PathBuf, Vec<String>)> = i.external.libraries.iter().map(|l| (l.name.clone(), l.root.clone(), l.files.clone())).collect();
-                    (from, list)
-                });
-                (i.all_files.clone(), libraries)
-            })
+            .map(|i| (i.all_files.clone(), i.external.clone()))
             .unwrap_or_default();
-        if let Some((from, libraries)) = libraries {
-            self.libraries_from = from;
-            self.libraries = Rc::new(libraries);
+        // The library index is replaced, never changed in place.
+        if !Arc::ptr_eq(&external, &self.external) {
+            self.external = external;
             self.flatten();
             cx.notify();
         }
@@ -395,7 +459,7 @@ impl ProjectView {
         let root_dir = self.root_dir.clone();
         let base = if self.mode == ProjectMode::Project {
             let name = root_dir.as_ref().and_then(|r| r.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            rows.push(Row { depth: 0, name, path: String::new(), kind: RowKind::Root, excluded: false });
+            rows.push(Row::new(0, name, String::new(), RowKind::Root, false));
             if !self.expanded.contains("") {
                 self.rows = Rc::new(rows);
                 return;
@@ -404,43 +468,122 @@ impl ProjectView {
         } else {
             0
         };
-        let ctx = WalkCtx { expanded: &self.expanded, settings: &self.settings, root: root_dir.as_deref() };
+        let ctx = WalkCtx { expanded: &self.expanded, settings: &self.settings, root: root_dir.as_deref(), package_dots: false };
         walk(&self.tree, "", base, &ctx, &mut rows);
-        if self.mode == ProjectMode::Project && !self.libraries.is_empty() {
+        if self.mode == ProjectMode::Project && !self.external.libraries.is_empty() {
             self.library_rows(&mut rows);
         }
         self.rows = Rc::new(rows);
     }
 
-    /// External Libraries, after the project as in IntelliJ: each library's
-    /// files as a tree; file rows carry absolute paths.
+    /// External Libraries, after the project as in IntelliJ: each library,
+    /// its archive ("library root"), then packages and classes for JVM
+    /// sources, folders and files for the rest. File rows carry absolute paths.
     fn library_rows(&self, rows: &mut Vec<Row>) {
-        rows.push(Row { depth: 0, name: "External Libraries".into(), path: LIBRARIES_KEY.into(), kind: RowKind::Libraries, excluded: false });
+        rows.push(Row::new(0, "External Libraries".into(), LIBRARIES_KEY.into(), RowKind::Libraries, false));
         if !self.expanded.contains(LIBRARIES_KEY) {
             return;
         }
-        let ctx = WalkCtx { expanded: &self.expanded, settings: &self.settings, root: None };
-        for (ix, (name, root, files)) in self.libraries.iter().enumerate() {
+        let ctx = WalkCtx { expanded: &self.expanded, settings: &self.settings, root: None, package_dots: true };
+        for (ix, library) in self.external.libraries.iter().enumerate() {
             let key = library_key(ix);
             let open = self.expanded.contains(&key);
-            rows.push(Row { depth: 1, name: name.clone(), path: key.clone(), kind: RowKind::Library, excluded: false });
+            rows.push(Row { note: library.location.clone(), group: library.group, ..Row::new(1, library.name.clone(), key.clone(), RowKind::Library, false) });
             if !open {
                 continue;
             }
+            let mut depth = 2;
+            if let Some(label) = &library.root_label {
+                let root_key = format!("{key}/{LIBRARY_ROOT}");
+                rows.push(Row { note: Some("library root".into()), library: true, ..Row::new(2, label.clone(), root_key.clone(), RowKind::LibraryRoot, false) });
+                if !self.expanded.contains(&root_key) {
+                    continue;
+                }
+                depth = 3;
+            }
             let mut tree = Dir { loaded: true, ..Default::default() };
-            for file in files {
-                if let Ok(rel) = Path::new(file).strip_prefix(root) {
+            for file in &library.files {
+                if let Ok(rel) = Path::new(file).strip_prefix(&library.root) {
                     tree.insert(&rel.to_string_lossy().replace('\\', "/"), false);
                 }
             }
             let prefix = format!("{key}/");
             let start = rows.len();
-            walk(&tree, &prefix, 2, &ctx, rows);
-            for row in &mut rows[start..] {
-                if row.kind == RowKind::File {
-                    row.path = root.join(&row.path[prefix.len()..]).to_string_lossy().into_owned();
+            walk(&tree, &prefix, depth, &ctx, rows);
+            let mut out = Vec::with_capacity(rows.len() - start);
+            for mut row in rows.drain(start..) {
+                row.library = true;
+                if row.kind != RowKind::File {
+                    out.push(row);
+                    continue;
+                }
+                let path = library.root.join(&row.path[prefix.len()..]).to_string_lossy().into_owned();
+                match self.external.files.get(&path).filter(|_| is_jvm_source(&path)) {
+                    // A source file shows as the classes compiled from it.
+                    Some(entry) => self.class_rows(&path, entry, row.depth, &mut out),
+                    None => {
+                        row.path = path;
+                        out.push(row);
+                    }
                 }
             }
+            // Packages first, then classes and files by name, as in a jar.
+            sort_siblings(&mut out);
+            rows.extend(out);
+        }
+    }
+
+    /// A JVM source file's top-level classes, each with its nested classes
+    /// when expanded; a Kotlin file's top-level functions as "NameKt".
+    fn class_rows(&self, path: &str, entry: &FileEntry, depth: usize, out: &mut Vec<Row>) {
+        let kotlin = !path.ends_with(".java");
+        let types: Vec<&Symbol> = entry.symbols.iter().filter(|s| s.kind.is_type() && s.kind != SymbolKind::TypeAlias).collect();
+        let start = out.len();
+        fn add(this: &ProjectView, path: &str, types: &[&Symbol], container: Option<&str>, depth: usize, kotlin: bool, out: &mut Vec<Row>) {
+            for symbol in types.iter().filter(|s| s.container.as_deref() == container) {
+                let qualified = match container {
+                    Some(c) => format!("{c}.{}", symbol.name),
+                    None => symbol.name.clone(),
+                };
+                let key = format!("{path}#{qualified}");
+                let nested = types.iter().any(|s| s.container.as_deref() == Some(qualified.as_str()));
+                let icon = match (symbol.kind, symbol.detail.as_deref()) {
+                    (_, Some("annotation")) => ClassIcon::Annotation,
+                    (_, Some("object")) => ClassIcon::Object,
+                    (_, Some("abstract")) => ClassIcon::Abstract,
+                    (SymbolKind::Interface | SymbolKind::Protocol | SymbolKind::Trait, _) => ClassIcon::Interface,
+                    (SymbolKind::Enum, _) => ClassIcon::Enum,
+                    _ => ClassIcon::Class,
+                };
+                out.push(Row {
+                    leaf: !nested,
+                    library: true,
+                    class: Some((icon, kotlin)),
+                    source: Some((path.to_owned(), symbol.line, symbol.col)),
+                    ..Row::new(depth, symbol.name.clone(), key.clone(), RowKind::Class, false)
+                });
+                if nested && this.expanded.contains(&key) {
+                    add(this, path, types, Some(&qualified), depth + 1, kotlin, out);
+                }
+            }
+        }
+        add(self, path, &types, None, depth, kotlin, out);
+        let top_level = |s: &&Symbol| s.container.is_none() && !s.kind.is_type() && s.kind != SymbolKind::EnumMember;
+        if kotlin && entry.symbols.iter().any(|s| top_level(&s)) {
+            let stem = Path::new(path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let first = entry.symbols.iter().find(top_level).map_or((0, 0), |s| (s.line, s.col));
+            out.push(Row {
+                leaf: true,
+                library: true,
+                class: Some((ClassIcon::Facade, true)),
+                source: Some((path.to_owned(), first.0, first.1)),
+                ..Row::new(depth, format!("{stem}Kt"), format!("{path}#{stem}Kt"), RowKind::Class, false)
+            });
+        }
+        if out.len() == start {
+            // Nothing declared (package-info, a script): the file itself.
+            let name = Path::new(path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            out.push(Row { library: true, ..Row::new(depth, name, path.to_owned(), RowKind::File, false) });
         }
     }
 
@@ -478,6 +621,16 @@ impl ProjectView {
         cx.emit(OpenTarget(Target { path, line: 0, col: 0, name, label: String::new(), container: None }));
     }
 
+    /// A file, or a class at its declaration.
+    fn open_row(&mut self, row: &Row, cx: &mut Context<Self>) {
+        match &row.source {
+            Some((path, line, col)) => {
+                cx.emit(OpenTarget(Target { path: path.clone(), line: *line, col: *col, name: row.name.clone(), label: String::new(), container: None }))
+            }
+            None => self.open(row.path.clone(), cx),
+        }
+    }
+
     fn click(&mut self, ix: usize, count: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(ix).cloned() else { return };
         window.focus(&self.focus, cx);
@@ -487,8 +640,11 @@ impl ProjectView {
             RowKind::File if count >= 2 => self.open(row.path, cx),
             RowKind::File if self.settings.preview_tab => self.preview(row.path, cx),
             RowKind::File if self.settings.single_click => self.open(row.path, cx),
+            // A class opens on a double click; its arrow folds nested classes.
+            RowKind::Class if count >= 2 => self.open_row(&row, cx),
+            RowKind::Class if self.settings.single_click => self.open_row(&row, cx),
             // Folders open on a single click; the second click of a double click is ignored.
-            RowKind::Dir | RowKind::Root | RowKind::Libraries | RowKind::Library if count == 1 => self.toggle(&row.path, cx),
+            _ if !row.leaf && row.kind != RowKind::Class && count == 1 => self.toggle(&row.path, cx),
             _ => {}
         }
         cx.notify();
@@ -520,7 +676,7 @@ impl ProjectView {
     }
 
     fn reveal_library_file(&mut self, path: &str, cx: &mut Context<Self>) {
-        let Some(ix) = self.libraries.iter().position(|(_, _, files)| files.binary_search_by(|f| f.as_str().cmp(path)).is_ok()) else { return };
+        let Some(ix) = self.external.libraries.iter().position(|l| l.files.binary_search_by(|f| f.as_str().cmp(path)).is_ok()) else { return };
         if self.mode != ProjectMode::Project {
             self.mode = ProjectMode::Project;
             self.rebuild_tree(cx);
@@ -528,7 +684,10 @@ impl ProjectView {
         let key = library_key(ix);
         self.expanded.insert(LIBRARIES_KEY.into());
         self.expanded.insert(key.clone());
-        if let Ok(rel) = Path::new(path).strip_prefix(&self.libraries[ix].1) {
+        if self.external.libraries[ix].root_label.is_some() {
+            self.expanded.insert(format!("{key}/{LIBRARY_ROOT}"));
+        }
+        if let Ok(rel) = Path::new(path).strip_prefix(&self.external.libraries[ix].root) {
             let rel = rel.to_string_lossy().replace('\\', "/");
             let mut prefix = key;
             for part in rel.split('/').collect::<Vec<_>>().iter().rev().skip(1).rev() {
@@ -538,6 +697,10 @@ impl ProjectView {
         }
         self.selected = Some(path.to_owned());
         self.flatten();
+        if self.selected_ix().is_none() {
+            // Shown as its classes: the first one stands for the file.
+            self.selected = self.rows.iter().find(|r| r.source.as_ref().is_some_and(|(f, _, _)| f == path)).map(|r| r.path.clone());
+        }
         if let Some(ix) = self.selected_ix() {
             self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
         }
@@ -607,7 +770,7 @@ impl ProjectView {
 
     fn target(&self, row: &Row, cx: &App) -> Option<ProjectTarget> {
         // Library sources have no file actions (they're read-only).
-        if row.path.starts_with('\u{1}') || crate::index::store::ProjectIndex::is_external(&row.path) {
+        if row.library || row.path.starts_with('\u{1}') || crate::index::store::ProjectIndex::is_external(&row.path) {
             return None;
         }
         let (model, actions, root) = (self.model.clone()?, self.actions.clone()?, self.root(cx)?);
@@ -626,7 +789,7 @@ impl ProjectView {
         let row = self
             .selected_ix()
             .and_then(|ix| self.rows.get(ix).cloned())
-            .unwrap_or(Row { depth: 0, name: String::new(), path: String::new(), kind: RowKind::Root, excluded: false });
+            .unwrap_or(Row::new(0, String::new(), String::new(), RowKind::Root, false));
         if let Some(target) = self.target(&row, cx) {
             crate::ui::file_menus::new_entry(&target, directory, window, cx);
         }
@@ -711,7 +874,7 @@ impl ProjectView {
             "pageup" => self.select_row(ix.map_or(0, |i| i.saturating_sub(20)), cx),
             "right" => {
                 let (Some(ix), Some(row)) = (ix, row) else { return };
-                if row.kind != RowKind::File {
+                if !row.leaf {
                     if self.expanded.contains(&row.path) {
                         if self.rows.get(ix + 1).is_some_and(|r| r.depth > row.depth) {
                             self.select_row(ix + 1, cx);
@@ -723,7 +886,7 @@ impl ProjectView {
             }
             "left" => {
                 let (Some(ix), Some(row)) = (ix, row) else { return };
-                if row.kind != RowKind::File && self.expanded.contains(&row.path) {
+                if !row.leaf && self.expanded.contains(&row.path) {
                     self.toggle(&row.path, cx);
                 } else if let Some(parent) = (0..ix).rev().find(|&i| self.rows[i].depth < row.depth) {
                     self.select_row(parent, cx);
@@ -742,7 +905,7 @@ impl ProjectView {
 
     fn activate(&mut self, row: Option<Row>, cx: &mut Context<Self>) {
         match row {
-            Some(row) if row.kind == RowKind::File => self.open(row.path, cx),
+            Some(row) if matches!(row.kind, RowKind::File | RowKind::Class) => self.open_row(&row, cx),
             Some(row) => self.toggle(&row.path, cx),
             None => {}
         }
@@ -796,6 +959,8 @@ struct WalkCtx<'a> {
     expanded: &'a HashSet<String>,
     settings: &'a ProjectSettings,
     root: Option<&'a Path>,
+    /// Inside a library: compacted folders are packages ("androidx.collection").
+    package_dots: bool,
 }
 
 fn extension(name: &str) -> String {
@@ -813,17 +978,18 @@ fn walk(dir: &Dir, prefix: &str, depth: usize, ctx: &WalkCtx, rows: &mut Vec<Row
         let (mut label, mut path, mut node) = (name.clone(), format!("{prefix}{name}"), sub);
         // Compact Middle Packages: single-child folder chains become one row ("src/main/java").
         if ctx.settings.compact_middle {
-            while node.loaded && node.files.is_empty() && node.dirs.len() == 1 {
+            while node.loaded && !node.excluded && node.files.is_empty() && node.dirs.len() == 1 {
                 let (n, s) = node.dirs.iter().next().unwrap();
-                label = format!("{label}/{n}");
+                label = format!("{label}{}{n}", if ctx.package_dots { "." } else { "/" });
                 path = format!("{path}/{n}");
                 node = s;
             }
         }
-        entries.push((Row { depth, name: label, path, kind: RowKind::Dir, excluded: node.excluded }, Some(node)));
+        let module = !ctx.package_dots && node.files.iter().any(|(f, _)| common::BUILD_FILES.contains(&f.as_str()));
+        entries.push((Row { module, ..Row::new(depth, label, path, RowKind::Dir, node.excluded) }, Some(node)));
     }
     for (f, excluded) in &dir.files {
-        entries.push((Row { depth, name: f.clone(), path: format!("{prefix}{f}"), kind: RowKind::File, excluded: *excluded }, None));
+        entries.push((Row::new(depth, f.clone(), format!("{prefix}{f}"), RowKind::File, *excluded), None));
     }
     let on_top = ctx.settings.folders_on_top;
     match ctx.settings.sort {
@@ -846,9 +1012,143 @@ fn walk(dir: &Dir, prefix: &str, depth: usize, ctx: &WalkCtx, rows: &mut Vec<Row
     }
 }
 
-/// IntelliJ's olive for files Git ignores.
+/// IntelliJ's "Non-Project Files" color, behind everything inside a library.
+fn library_background(dark: bool) -> Hsla {
+    if dark { gpui_kit::rgb(0x36352c).into() } else { gpui_kit::rgb(0xfff9eb).into() }
+}
+
+/// One of our own icons ("junction/<name>.svg"), drawn in one color.
+fn own_svg(name: &'static str, color: Hsla) -> gpui_kit::Svg {
+    gpui_kit::svg().absolute().top_0().left_0().size(px(14.)).path(name).text_color(color)
+}
+
+/// Icons stacked in one 14px box, each layer in its own color.
+fn layered(layers: Vec<(&'static str, Hsla)>) -> gpui_kit::AnyElement {
+    div().relative().size(px(14.)).flex_shrink_0().children(layers.into_iter().map(|(name, color)| own_svg(name, color))).into_any_element()
+}
+
+/// The colors of IntelliJ's new UI icons.
+struct IconColors {
+    gray: Hsla,
+    blue: Hsla,
+    green: Hsla,
+    orange: Hsla,
+    purple: Hsla,
+    android: Hsla,
+    back: Hsla,
+}
+
+fn icon_colors(palette: &crate::theme::Palette) -> IconColors {
+    let c = |light: u32, dark: u32| -> Hsla { gpui_kit::rgb(if palette.dark { dark } else { light }).into() };
+    IconColors {
+        gray: c(0x6c707e, 0xced0d6),
+        blue: c(0x3574f0, 0x548af7),
+        green: c(0x5fb865, 0x5fad65),
+        orange: c(0xe08855, 0xe08855),
+        purple: c(0x834df0, 0xa571e6),
+        android: c(0x3ddc84, 0x3ddc84),
+        back: palette.panel,
+    }
+}
+
+/// A row's icon, after Android Studio's: module folders, excluded folders,
+/// file types, and the library, archive and class icons of External Libraries.
+/// `back` is the row's background, for icons drawn over a cut-out.
+fn row_icon(row: &Row, back: Hsla, palette: &crate::theme::Palette) -> gpui_kit::AnyElement {
+    let k = icon_colors(palette);
+    match row.kind {
+        RowKind::Root => layered(vec![("junction/module.svg", k.gray), ("junction/module-badge.svg", k.blue)]),
+        RowKind::Dir if row.excluded => layered(vec![("junction/folder.svg", k.orange)]),
+        RowKind::Dir if row.module => layered(vec![("junction/module.svg", k.gray), ("junction/module-badge.svg", k.green)]),
+        RowKind::Dir => layered(vec![("junction/folder.svg", k.gray)]),
+        RowKind::File => file_type_icon(&row.name, palette),
+        RowKind::Libraries => layered(vec![("junction/libraries.svg", k.gray)]),
+        RowKind::Library if row.group == "Android SDK" => layered(vec![("junction/android.svg", k.android)]),
+        RowKind::Library => layered(vec![
+            ("junction/module.svg", k.gray),
+            ("junction/library-badge.svg", k.blue),
+            ("junction/library-bars.svg", k.back),
+        ]),
+        RowKind::LibraryRoot => layered(vec![("junction/jar.svg", k.blue)]),
+        RowKind::Class => {
+            let (kind, kotlin) = row.class.unwrap_or((ClassIcon::Class, false));
+            if kind == ClassIcon::Facade {
+                return layered(vec![("junction/kotlin.svg", k.purple)]);
+            }
+            class_icon(kind, kotlin, back, palette)
+        }
+    }
+}
+
+/// A file's icon by its type, as Android Studio draws them.
+fn file_type_icon(name: &str, palette: &crate::theme::Palette) -> gpui_kit::AnyElement {
+    let k = icon_colors(palette);
+    // Lucide icons, drawn in the same 14px box as ours.
+    let lucide = |icon: IconName, color: Hsla| {
+        div().size(px(14.)).flex_shrink_0().flex().items_center().justify_center().child(Icon::new(icon).size(px(13.)).text_color(color)).into_any_element()
+    };
+    let lower = name.to_lowercase();
+    let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    match ext {
+        _ if lower.ends_with(".gradle.kts") => layered(vec![("junction/gradle.svg", k.gray), ("junction/kotlin-badge.svg", k.purple)]),
+        "gradle" => layered(vec![("junction/gradle.svg", k.gray)]),
+        "kt" | "kts" => layered(vec![("junction/kotlin.svg", k.purple)]),
+        "java" => class_icon(ClassIcon::Class, false, palette.panel, palette),
+        "md" | "markdown" => layered(vec![("junction/markdown.svg", k.blue)]),
+        "properties" | "conf" | "cfg" | "ini" | "toml" | "editorconfig" => lucide(IconName::Settings, k.gray),
+        _ if lower.starts_with(".gitignore") || lower == ".gitattributes" || lower.ends_with("ignore") => lucide(IconName::Ban, k.gray),
+        "sh" | "bash" | "zsh" | "command" => lucide(IconName::SquareTerminal, k.gray),
+        _ if lower == "gradlew" => lucide(IconName::SquareTerminal, k.gray),
+        "xml" | "html" | "htm" | "svg" => lucide(IconName::CodeXml, k.orange),
+        "json" | "yaml" | "yml" => lucide(IconName::Braces, k.gray),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" => lucide(IconName::Image, k.gray),
+        "txt" | "pro" | "bat" | "cmd" | "log" | "" => lucide(IconName::TextAlignStart, k.gray),
+        _ => lucide(common::file_icon(name), k.gray),
+    }
+}
+
+/// IntelliJ's class icons: a ringed letter in the kind's color, with
+/// Kotlin's mark in the corner.
+fn class_icon(kind: ClassIcon, kotlin: bool, back: Hsla, palette: &crate::theme::Palette) -> gpui_kit::AnyElement {
+    let k = icon_colors(palette);
+    let (letter, ring, ring_svg) = match kind {
+        ClassIcon::Class => ("C", k.blue, "junction/class.svg"),
+        ClassIcon::Abstract => ("C", k.gray, "junction/class-abstract.svg"),
+        ClassIcon::Interface => ("I", k.green, "junction/class.svg"),
+        ClassIcon::Enum => ("E", k.blue, "junction/class.svg"),
+        ClassIcon::Annotation => ("@", k.green, "junction/class.svg"),
+        ClassIcon::Object | ClassIcon::Facade => ("O", k.orange, "junction/class.svg"),
+    };
+    div()
+        .relative()
+        .size(px(14.))
+        .flex_shrink_0()
+        .child(own_svg(ring_svg, ring))
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size(px(14.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(8.))
+                .font_weight(gpui_kit::FontWeight::BOLD)
+                .text_color(ring)
+                .line_height(px(14.))
+                .child(letter),
+        )
+        .when(kotlin, |el| {
+            // The badge sits on a cut-out of the ring, as IntelliJ draws it.
+            el.child(own_svg("junction/kotlin-cut.svg", back)).child(own_svg("junction/kotlin-badge.svg", k.purple))
+        })
+        .into_any_element()
+}
+
+/// Android Studio's brown for files Git ignores.
 fn excluded_color(dark: bool) -> Hsla {
-    if dark { gpui_kit::rgb(0x8c8c4a).into() } else { gpui_kit::rgb(0x848504).into() }
+    if dark { gpui_kit::rgb(0xc59a5c).into() } else { gpui_kit::rgb(0x9a5b00).into() }
 }
 
 impl Render for ProjectView {
@@ -870,7 +1170,11 @@ impl Render for ProjectView {
                 range
                     .map(|ix| {
                         let row = &rows[ix];
-                        let is_dir = row.kind != RowKind::File;
+                        let is_dir = !row.leaf;
+                        // Libraries and excluded folders sit on IntelliJ's yellow.
+                        let yellow = row.library || (row.excluded && row.kind == RowKind::Dir);
+                        let is_selected = selected.as_deref() == Some(row.path.as_str());
+                        let back = if is_selected { palette.selection } else if yellow { library_background(palette.dark) } else { palette.panel };
                         let open = expanded.contains(&row.path);
                         let color = if row.excluded {
                             Some(excluded_color(palette.dark))
@@ -899,23 +1203,28 @@ impl Render for ProjectView {
                             .text_sm()
                             .cursor_pointer()
                             .whitespace_nowrap()
-                            .when(selected.as_deref() == Some(row.path.as_str()), |el| el.bg(palette.selection))
+                            .when(yellow, |el| el.bg(library_background(palette.dark)))
+                            .when(is_selected, |el| el.bg(palette.selection))
                             .hover(|el| el.bg(palette.hover))
-                            .child(div().w(px(14.)).flex_shrink_0().when(is_dir, |el| {
-                                el.child(common::icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }).text_color(palette.text_secondary))
-                            }))
                             .child(
-                                common::icon(match row.kind {
-                                    RowKind::Root => IconName::FolderGit2,
-                                    RowKind::Dir if open => IconName::FolderOpen,
-                                    RowKind::Dir => IconName::FolderClosed,
-                                    RowKind::File => common::file_icon(&row.path),
-                                    RowKind::Libraries => IconName::Layers,
-                                    RowKind::Library => IconName::Archive,
-                                })
-                                .text_color(if row.excluded { excluded_color(palette.dark) } else { palette.text_secondary }),
+                                div()
+                                    .id(("chevron", ix))
+                                    .w(px(14.))
+                                    .flex_shrink_0()
+                                    .when(is_dir, |el| el.child(common::icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }).text_color(palette.text_secondary)))
+                                    // A class opens on a double click, so its arrow alone folds nested classes.
+                                    .when(is_dir && row.kind == RowKind::Class, |el| {
+                                        let path = row.path.clone();
+                                        el.on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.selected = Some(path.clone());
+                                            this.toggle(&path, cx);
+                                        }))
+                                    }),
                             )
+                            .child(row_icon(row, back, &palette))
                             .child(div().when_some(color, |el, c| el.text_color(c)).when(row.kind == RowKind::Root, |el| el.font_weight(gpui_kit::FontWeight::SEMIBOLD)).child(name_el))
+                            .when_some(row.note.clone(), |el, note| el.child(div().ml_1().overflow_hidden().text_ellipsis().text_color(palette.text_secondary).child(note)))
                             .when(row.kind == RowKind::Root, |el| {
                                 el.child(div().ml_1().overflow_hidden().text_ellipsis().text_xs().text_color(palette.text_secondary).child(root_path.clone()))
                             })
