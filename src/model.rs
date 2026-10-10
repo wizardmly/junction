@@ -41,6 +41,9 @@ impl ExcludedHunks {
 pub enum RepoEvent {
     /// Refs, log, or status changed.
     Reloaded,
+    /// Only the log changed (a filter, its full history arriving after the
+    /// first page): the Log redraws, nothing else needs to reload.
+    LogLoaded,
     SelectionChanged,
     DetailsLoaded,
     /// An operation finished; shown as a balloon notification.
@@ -136,7 +139,13 @@ impl LogKey {
     fn load(repository: &Repository, filter: &LogFilter) -> Self {
         let tips = repository.run(["for-each-ref", "--format=%(objectname) %(refname)"]).unwrap_or_default();
         let head = repository.run(["rev-parse", "-q", "--verify", "HEAD"]).unwrap_or_default();
-        Self { root: repository.root().to_path_buf(), tips: tips + &head, filter: filter.clone() }
+        // A checkout of a branch only moves HEAD among commits the log
+        // already lists: unless the log follows HEAD itself, that keeps it
+        // (rather than loading a large history again).
+        let follows_head = filter.branches.iter().any(|b| b == "HEAD");
+        let listed = !head.trim().is_empty() && tips.contains(head.trim());
+        let tips = if follows_head || !listed { tips + &head } else { tips };
+        Self { root: repository.root().to_path_buf(), tips, filter: filter.clone() }
     }
 }
 
@@ -423,15 +432,85 @@ impl RepoModel {
     pub fn set_filter(&mut self, filter: LogFilter, cx: &mut Context<Self>) {
         if self.filter != filter {
             self.filter = filter;
-            self.reload(cx);
+            self.reload_log(cx);
         }
+    }
+
+    /// The filter the log is loaded with (its order comes from the settings).
+    fn effective_filter(&self, cx: &gpui_kit::App) -> LogFilter {
+        let mut filter = self.filter.clone();
+        filter.date_order = crate::settings::Settings::get(cx).log.sort_by_date;
+        filter
+    }
+
+    /// Loads the log alone, for a new filter: refs and the working tree
+    /// haven't changed, and `git status` is the slow part of a reload.
+    fn reload_log(&mut self, cx: &mut Context<Self>) {
+        let Some(repository) = self.repository.clone() else { return };
+        let filter = self.effective_filter(cx);
+        self.loading = true;
+        cx.notify();
+        self._log_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn({
+                    let (repository, filter) = (repository.clone(), filter.clone());
+                    async move {
+                        let key = LogKey::load(&repository, &filter);
+                        let l = LoadedLog::load(&repository, &filter, true)?;
+                        anyhow::Ok((l, key))
+                    }
+                })
+                .await;
+            let full = this.update(cx, |this, cx| {
+                this.loading = false;
+                match result {
+                    Ok((log, key)) => {
+                        let complete = log.commits.len() < git::log::FIRST_PAGE;
+                        this.set_log(log);
+                        this.log_key = Some(key);
+                        this.log_changed(cx);
+                        (!complete).then(|| this.load_full_log(repository, filter, cx))
+                    }
+                    Err(error) => {
+                        this.error = Some(error.to_string());
+                        this.log_key = None;
+                        cx.notify();
+                        None
+                    }
+                }
+            });
+            // Keeps loading the rest under this same task, so a newer
+            // filter cancels it.
+            if let Ok(Some(full)) = full {
+                full.await;
+            }
+        }));
+    }
+
+    /// After a new log: keep the selection if the commit is still listed,
+    /// else select HEAD as the Log does on first open.
+    fn keep_selection(&mut self, cx: &mut Context<Self>) {
+        let keep = self.selected.as_deref().is_some_and(|h| self.row_of(h).is_some());
+        if !keep {
+            let head = self.refs.head_commit.clone();
+            let target = head.filter(|h| self.row_of(h).is_some()).or_else(|| self.commits.first().map(|c| c.hash.clone()));
+            self.select_hash(target, cx);
+        } else if let Some(hash) = self.selected.clone() {
+            self.load_details(hash, cx);
+        }
+    }
+
+    fn log_changed(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
+        self.keep_selection(cx);
+        cx.emit(RepoEvent::LogLoaded);
+        cx.notify();
     }
 
     /// Reloads refs, the log, and working tree status in the background.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let Some(repository) = self.repository.clone() else { return };
-        let mut filter = self.filter.clone();
-        filter.date_order = crate::settings::Settings::get(cx).log.sort_by_date;
+        let filter = self.effective_filter(cx);
         let project_root = self.project_root.clone();
         let console = self.console.clone();
         // Roots are scanned once per project (and after Directory Mappings
@@ -487,7 +566,8 @@ impl RepoModel {
                 match result {
                     Ok((snapshot, repository, filter)) => {
                         this.refs = Arc::new(snapshot.refs);
-                        if let Some((log, key)) = snapshot.log {
+                        // (Unless the filter changed meanwhile: its own load wins.)
+                        if let Some((log, key)) = snapshot.log.filter(|_| this.effective_filter(cx) == filter) {
                             let complete = log.commits.len() < git::log::FIRST_PAGE;
                             // (A short log came whole; a long one was the first page.)
                             this.set_log(log);
@@ -501,18 +581,7 @@ impl RepoModel {
                         this.roots = snapshot.roots;
                         this.web_repo = snapshot.web;
                         this.error = None;
-                        // Keep the selection if the commit is still listed, else
-                        // select HEAD the way the Log does on first open.
-                        let keep = this.selected.as_deref().is_some_and(|h| this.row_of(h).is_some());
-                        if !keep {
-                            let head = this.refs.head_commit.clone();
-                            let target = head
-                                .filter(|h| this.row_of(h).is_some())
-                                .or_else(|| this.commits.first().map(|c| c.hash.clone()));
-                            this.select_hash(target, cx);
-                        } else if let Some(hash) = this.selected.clone() {
-                            this.load_details(hash, cx);
-                        }
+                        this.keep_selection(cx);
                     }
                     Err(error) => {
                         this.error = Some(error.to_string());
@@ -541,7 +610,7 @@ impl RepoModel {
             this.update(cx, |this, cx| match full {
                 Ok(log) => {
                     this.set_log(log);
-                    cx.emit(RepoEvent::Reloaded);
+                    cx.emit(RepoEvent::LogLoaded);
                     cx.notify();
                 }
                 // Load the log again on the next reload.
@@ -553,10 +622,19 @@ impl RepoModel {
     }
 
     fn set_log(&mut self, log: LoadedLog) {
-        self.all_commits = Arc::new(log.commits);
-        self.all_graph = Arc::new(log.graph);
-        self.all_rows = Arc::new(log.rows);
+        let old = (
+            std::mem::replace(&mut self.all_commits, Arc::new(log.commits)),
+            std::mem::replace(&mut self.all_graph, Arc::new(log.graph)),
+            std::mem::replace(&mut self.all_rows, Arc::new(log.rows)),
+            self.commits.clone(),
+            self.graph.clone(),
+            self.rows.clone(),
+        );
         self.apply_collapse();
+        // Freeing a big log (a million commits) takes most of a second:
+        // not on the main thread. (Views still holding a copy free theirs
+        // when they next draw, and only drop a reference then.)
+        std::thread::spawn(move || drop(old));
     }
 
     fn apply_collapse(&mut self) {
@@ -589,14 +667,14 @@ impl RepoModel {
         self.collapse_linear = collapse;
         self.expanded_runs.clear();
         self.apply_collapse();
-        cx.emit(RepoEvent::Reloaded);
+        cx.emit(RepoEvent::LogLoaded);
         cx.notify();
     }
 
     pub fn expand_run(&mut self, hash: String, cx: &mut Context<Self>) {
         self.expanded_runs.insert(hash);
         self.apply_collapse();
-        cx.emit(RepoEvent::Reloaded);
+        cx.emit(RepoEvent::LogLoaded);
         cx.notify();
     }
 

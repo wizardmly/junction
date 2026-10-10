@@ -377,6 +377,10 @@ impl Workspace {
             }),
             cx.subscribe_in(&model, window, |this, _, event, window, cx| {
                 if let RepoEvent::Reloaded = event {
+                    // Open files follow what git did to the working tree.
+                    for tab in &this.editors {
+                        tab.view.update(cx, |editor, cx| editor.sync_with_disk(window, cx));
+                    }
                     // Index the opened project; re-index what changed on disk.
                     let root = this.model.read(cx).project_root().map(|p| p.to_path_buf());
                     this.code_index.update(cx, |index, cx| {
@@ -823,6 +827,12 @@ impl Workspace {
     fn on_file_editor_event(&mut self, view: &Entity<FileEditor>, event: &FileEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             FileEditorEvent::Edited => self.keep_tab(view, cx),
+            FileEditorEvent::Deleted => {
+                // Closed without saving: saving would bring the file back.
+                if let Some(ix) = self.editors.iter().position(|t| t.view == *view) {
+                    self.remove_tab(ix, cx);
+                }
+            }
             FileEditorEvent::Navigate(targets) => self.navigate(targets.clone(), window, cx),
             FileEditorEvent::NoDeclaration { text, offset } => {
                 let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };

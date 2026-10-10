@@ -122,6 +122,8 @@ pub enum FileEditorEvent {
     Saved(String),
     /// The text was edited (a preview tab becomes a normal one).
     Edited,
+    /// The file is gone from disk (a checkout, say) and had no unsaved edits.
+    Deleted,
 }
 
 impl EventEmitter<FileEditorEvent> for FileEditor {}
@@ -581,6 +583,45 @@ impl FileEditor {
 
     pub fn is_dirty(&self, cx: &gpui_kit::App) -> bool {
         !self.read_only() && self.text(cx) != self.saved
+    }
+
+    /// After git changed the working tree (checkout, pull, rollback…):
+    /// takes the file's new text from disk unless it has unsaved edits, as
+    /// IntelliJ reloads its editors, and the new HEAD version for the
+    /// change markers.
+    pub fn sync_with_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only() || self.error.is_some() {
+            return;
+        }
+        let (repository, path) = (self.repository.clone(), self.path.clone());
+        let task = cx.background_spawn(async move {
+            let disk = std::fs::read(repository.root().join(&path)).ok().map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+            let base = repository.run(["show", &format!("HEAD:{path}")]).ok();
+            (disk, base)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let (disk, base) = task.await;
+            this.update_in(cx, |this, window, cx| {
+                if this.is_dirty(cx) {
+                    return;
+                }
+                let Some(disk) = disk else {
+                    cx.emit(FileEditorEvent::Deleted);
+                    return;
+                };
+                if disk != this.saved {
+                    this.format = TextFormat::of(&disk);
+                    this.saved = disk.clone();
+                    this.state.update(cx, |state, cx| state.set_value(disk, window, cx));
+                }
+                this.unversioned = base.is_none();
+                this.base = base.unwrap_or_default();
+                this.update_markers(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// A revision, or a library's source: neither is edited.

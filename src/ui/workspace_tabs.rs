@@ -297,7 +297,7 @@ impl Workspace {
     }
 
     /// Removes a tab without saving; keeps `front` pointing at the same tab.
-    fn remove_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+    pub(super) fn remove_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix >= self.editors.len() {
             return;
         }

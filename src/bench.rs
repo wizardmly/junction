@@ -162,3 +162,19 @@ fn bench_diff_switch() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
+
+/// Switching the Log's Branch filter: the first page and what it waits on.
+#[test]
+#[ignore]
+fn bench_filter_switch() {
+    let root = PathBuf::from(std::env::var("JUNCTION_BENCH").expect("JUNCTION_BENCH"));
+    let repository = Repository::discover(&root, GitConsole::default()).unwrap();
+    for branches in [vec!["master".to_owned()], vec![], vec!["HEAD".to_owned()]] {
+        let filter = git::log::LogFilter { branches, ..Default::default() };
+        println!("{:?}", filter.branches);
+        time("refs tips", || repository.run(["for-each-ref", "--format=%(objectname) %(refname)"]).unwrap());
+        let page = time("first page", || git::log::load_first_page(&repository, &filter).unwrap());
+        time("graph", || git::graph::GraphLayout::build(&page));
+        time("rows", || git::log::CommitRows::build(&page));
+    }
+}

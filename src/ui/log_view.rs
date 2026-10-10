@@ -115,6 +115,7 @@ pub struct LogView {
     /// Every author seen in this repository's log, for the User filter:
     /// it stays the same when a filter narrows the list (keyed by root).
     known_authors: (Option<std::path::PathBuf>, std::collections::BTreeSet<String>),
+    authors_task: Option<Task<()>>,
     /// The log `known_authors` last took names from.
     authors_from: usize,
     recent_path_filters: Vec<Vec<String>>,
@@ -157,7 +158,7 @@ impl LogView {
         let changes = cx.new(|cx| TreeState::new(cx));
         let subscriptions = vec![
             cx.subscribe(&model, |this, _, event, cx| match event {
-                RepoEvent::Reloaded => {
+                RepoEvent::Reloaded | RepoEvent::LogLoaded => {
                     let commits = this.model.read(cx).commits().clone();
                     let root = this.model.read(cx).repository().map(|r| r.root().to_path_buf());
                     if this.known_authors.0 != root {
@@ -166,11 +167,29 @@ impl LogView {
                     }
                     // Reloads that keep the log (after staging, say) skip this.
                     if std::mem::replace(&mut this.authors_from, Arc::as_ptr(&commits) as usize) != Arc::as_ptr(&commits) as usize {
-                        for commit in commits.iter() {
-                            if !this.known_authors.1.contains(&*commit.author_name) {
-                                this.known_authors.1.insert(commit.author_name.to_string());
-                            }
-                        }
+                        // A million commits take a while: gathered off the main thread.
+                        let root = this.known_authors.0.clone();
+                        this.authors_task = Some(cx.spawn(async move |this, cx| {
+                            let names = cx
+                                .background_spawn(async move {
+                                    // Names are shared between commits: one look per distinct name.
+                                    let mut seen = std::collections::HashSet::new();
+                                    let mut names = Vec::new();
+                                    for commit in commits.iter() {
+                                        if seen.insert(Arc::as_ptr(&commit.author_name) as *const u8 as usize) {
+                                            names.push(commit.author_name.clone());
+                                        }
+                                    }
+                                    names
+                                })
+                                .await;
+                            this.update(cx, |this, _| {
+                                if this.known_authors.0 == root {
+                                    this.known_authors.1.extend(names.iter().map(|n| n.to_string()));
+                                }
+                            })
+                            .ok();
+                        }));
                     }
                     let model = this.model.read(cx);
                     this.extra_selection.retain(|h| model.row_of(h).is_some());
@@ -261,6 +280,7 @@ impl LogView {
             recent_branch_filters: Vec::new(),
             recent_user_filters: Vec::new(),
             known_authors: (None, Default::default()),
+            authors_task: None,
             authors_from: 0,
             parts: [Part::Table, Part::Branches, Part::Details]
                 .into_iter()
