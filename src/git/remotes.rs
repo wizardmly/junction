@@ -72,6 +72,45 @@ pub fn remove(repository: &Repository, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The remote to work with when none is chosen: `origin`, else the first one.
+pub fn preferred(repository: &Repository) -> String {
+    let names = super::ops::remotes(repository);
+    names.iter().find(|n| *n == "origin").or(names.first()).cloned().unwrap_or_else(|| "origin".into())
+}
+
+/// The remote's default branch (its `HEAD`), else the first of main /
+/// master / develop it has, else "main".
+pub fn default_branch(repository: &Repository, remote: &str) -> String {
+    if let Ok(head) = repository.run(["symbolic-ref", "--short", &format!("refs/remotes/{remote}/HEAD")]) {
+        if let Some((_, branch)) = head.trim().split_once('/') {
+            return branch.to_owned();
+        }
+    }
+    for candidate in ["main", "master", "develop"] {
+        if repository.run(["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{remote}/{candidate}")]).is_ok() {
+            return candidate.to_owned();
+        }
+    }
+    "main".into()
+}
+
+/// Adds `url` as `remote`, optionally commits `initial` (files to add and a
+/// message) first, and pushes the current branch with upstream tracking.
+pub fn publish(repository: &Repository, remote: &str, url: &str, initial: Option<&(Vec<String>, String)>) -> Result<()> {
+    repository.run(["remote", "add", remote, url])?;
+    if let Some((files, message)) = initial {
+        if !files.is_empty() {
+            let mut add = vec!["add", "--"];
+            add.extend(files.iter().map(String::as_str));
+            repository.run(add)?;
+        }
+        repository.run(["commit", "--allow-empty", "-m", message])?;
+    }
+    let branch = repository.run(["symbolic-ref", "--short", "HEAD"])?.trim().to_owned();
+    repository.run(["push", "--set-upstream", remote, &branch])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +137,37 @@ mod tests {
         assert_eq!(remotes.len(), 2);
         assert_eq!(remotes[0].push_url, None);
         assert_eq!(remotes[1].push_url.as_deref(), Some("git@c:y.git"));
+    }
+
+    #[test]
+    fn preferred_and_default_branch() {
+        let t = crate::git::test_support::TestRepo::new("remotes-default");
+        assert_eq!(preferred(&t.repo), "origin");
+        assert_eq!(default_branch(&t.repo, "origin"), "main");
+        let bare = t.bare_remote("up");
+        t.git(&["remote", "add", "upstream", bare.to_str().unwrap()]);
+        assert_eq!(preferred(&t.repo), "upstream");
+        t.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+        assert_eq!(preferred(&t.repo), "origin");
+        t.git(&["push", "-q", "origin", "main:develop"]);
+        t.git(&["fetch", "-q", "origin"]);
+        assert_eq!(default_branch(&t.repo, "origin"), "develop");
+        t.git(&["push", "-q", "origin", "main:master"]);
+        t.git(&["fetch", "-q", "origin"]);
+        assert_eq!(default_branch(&t.repo, "origin"), "master");
+        t.git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"]);
+        assert_eq!(default_branch(&t.repo, "origin"), "develop");
+    }
+
+    #[test]
+    fn publish_commits_and_pushes() {
+        let t = crate::git::test_support::TestRepo::new("remotes-publish");
+        let bare = t.bare_remote("gh");
+        std::fs::write(t.dir.join("b.txt"), "b\n").unwrap();
+        let initial = (vec!["b.txt".to_owned()], "Initial commit".to_owned());
+        publish(&t.repo, "github", bare.to_str().unwrap(), Some(&initial)).unwrap();
+        let pushed = crate::git::test_support::git(&bare, &["log", "--format=%s", "main"]);
+        assert_eq!(pushed.lines().collect::<Vec<_>>(), ["Initial commit", "first"]);
+        assert_eq!(t.git(&["rev-parse", "--abbrev-ref", "main@{upstream}"]).trim(), "github/main");
     }
 }

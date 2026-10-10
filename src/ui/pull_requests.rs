@@ -158,14 +158,7 @@ fn resolve(model: &RepoModel) -> Result<PrTarget, String> {
         account::Service::GitHub => github::repo_path(&web.base),
     }
     .ok_or("Cannot tell the repository from the remote URL")?;
-    let remote = model
-        .repository()
-        .and_then(|r| r.run(["remote"]).ok())
-        .and_then(|list| {
-            let names: Vec<String> = list.lines().map(str::to_owned).collect();
-            names.iter().find(|n| *n == "origin").or(names.first()).cloned()
-        })
-        .unwrap_or_else(|| "origin".into());
+    let remote = model.repository().map(crate::git::remotes::preferred).unwrap_or_else(|| "origin".into());
     Ok(PrTarget { account, repo, remote })
 }
 
@@ -441,16 +434,9 @@ impl PullRequestsView {
             let label = target.number(pr.number);
             m.run_operation(if target.gitlab() { "Checkout Merge Request" } else { "Checkout Pull Request" }, move |repo| {
                 let branch = pr.head.name.clone();
-                let exists = repo.run(["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")]).is_ok();
-                if exists {
-                    repo.run(["checkout", &branch])?;
-                    repo.run(["merge", "--ff-only", &pr.head.sha]).ok();
-                } else {
-                    // GitLab keeps each merge request's head under merge-requests/.
-                    let head = if target.gitlab() { format!("merge-requests/{}/head", pr.number) } else { format!("pull/{}/head", pr.number) };
-                    repo.run(["fetch", &target.remote, &format!("{head}:{branch}")])?;
-                    repo.run(["checkout", &branch])?;
-                }
+                // GitLab keeps each merge request's head under merge-requests/.
+                let head = if target.gitlab() { format!("merge-requests/{}/head", pr.number) } else { format!("pull/{}/head", pr.number) };
+                crate::git::ops::checkout_pull_request(repo, &target.remote, &head, &branch, &pr.head.sha)?;
                 Ok(format!("Checked out {label} as {branch}"))
             }, cx)
         });

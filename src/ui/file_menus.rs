@@ -495,16 +495,7 @@ fn rename(target: &ProjectTarget, window: &mut Window, cx: &mut App) {
         if to == from || to.exists() {
             return;
         }
-        // Tracked files move with git mv, so the rename shows as one change.
-        let tracked = model.read(cx).repository().is_some_and(|r| r.run(["ls-files", "--error-unmatch", "--", path.as_str()]).is_ok());
-        let moved = tracked
-            && model
-                .read(cx)
-                .repository()
-                .is_some_and(|r| r.run(["mv", "--", from.to_string_lossy().as_ref(), to.to_string_lossy().as_ref()]).is_ok());
-        if !moved {
-            let _ = std::fs::rename(&from, &to);
-        }
+        crate::git::ops::rename_path(model.read(cx).repository(), &path, &from, &to);
         actions(FileAction::FilesChanged, window, cx);
     }, window, cx);
 }

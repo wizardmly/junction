@@ -63,7 +63,7 @@ pub fn share_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut App
     let Some(accounts) = github_accounts(window, cx) else { return };
     let Some(repo) = model.read(cx).repository().cloned() else { return };
     let folder = repo.root().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let has_origin = repo.run(["remote"]).map(|r| r.lines().any(|l| l == "origin")).unwrap_or(false);
+    let has_origin = crate::git::ops::remotes(&repo).iter().any(|r| r == "origin");
     let name = cx.new(|cx| InputState::new(window, cx).default_value(folder));
     let remote = cx.new(|cx| InputState::new(window, cx).default_value(if has_origin { "github" } else { "origin" }));
     let description = cx.new(|cx| InputState::new(window, cx));
@@ -187,17 +187,7 @@ fn share(
     initial: Option<&(Vec<String>, String)>,
 ) -> anyhow::Result<String> {
     let created = Client::new(account).create_repo(name, private, description)?;
-    repo.run(["remote", "add", remote, &created.clone_url])?;
-    if let Some((files, message)) = initial {
-        if !files.is_empty() {
-            let mut add = vec!["add", "--"];
-            add.extend(files.iter().map(String::as_str));
-            repo.run(add)?;
-        }
-        repo.run(["commit", "--allow-empty", "-m", message])?;
-    }
-    let branch = repo.run(["symbolic-ref", "--short", "HEAD"])?.trim().to_owned();
-    repo.run(["push", "--set-upstream", remote, &branch])?;
+    crate::git::remotes::publish(repo, remote, &created.clone_url, initial)?;
     Ok(format!("Successfully shared project on GitHub: {}", created.html_url))
 }
 
@@ -276,34 +266,6 @@ pub fn create_gist(model: Entity<RepoModel>, files: Vec<(String, String)>, windo
     focus_input(&focus, window, cx);
 }
 
-/// The base branch a new pull request targets: the remote's default branch.
-fn default_base(repo: &Repository, remote: &str) -> String {
-    if let Ok(head) = repo.run(["symbolic-ref", "--short", &format!("refs/remotes/{remote}/HEAD")]) {
-        if let Some((_, branch)) = head.trim().split_once('/') {
-            return branch.to_owned();
-        }
-    }
-    for candidate in ["main", "master", "develop"] {
-        if repo.run(["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{remote}/{candidate}")]).is_ok() {
-            return candidate.to_owned();
-        }
-    }
-    "main".into()
-}
-
-/// Title and description from the commits the PR would bring: a single
-/// commit gives both; several give the branch's first commit subject.
-fn default_message(repo: &Repository, remote: &str, base: &str) -> (String, String) {
-    let range = format!("{remote}/{base}..HEAD");
-    let subjects = repo.run(["log", "--reverse", "--format=%s", &range]).unwrap_or_default();
-    let subjects: Vec<&str> = subjects.lines().collect();
-    match subjects.as_slice() {
-        [] => (String::new(), String::new()),
-        [only] => (only.to_string(), repo.run(["log", "-1", "--format=%b"]).map(|b| b.trim().to_owned()).unwrap_or_default()),
-        [first, ..] => (first.to_string(), subjects.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n")),
-    }
-}
-
 /// Create Pull Request: base and head branches, title, description, draft.
 /// The head branch is pushed first.
 pub fn create_pull_request(model: Entity<RepoModel>, target: PrTarget, on_created: Rc<dyn Fn(&mut App)>, window: &mut Window, cx: &mut App) {
@@ -316,8 +278,8 @@ pub fn create_pull_request(model: Entity<RepoModel>, target: PrTarget, on_create
         notify(&model, action, format!("Check out a branch to create a {} from", noun.to_lowercase()), true, cx);
         return;
     };
-    let base_name = default_base(&repo, &target.remote);
-    let (title_text, body_text) = default_message(&repo, &target.remote, &base_name);
+    let base_name = crate::git::remotes::default_branch(&repo, &target.remote);
+    let (title_text, body_text) = crate::git::log::pull_request_message(&repo, &format!("{}/{base_name}..HEAD", target.remote));
     let remote_branches: Vec<String> = model
         .read(cx)
         .refs()

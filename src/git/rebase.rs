@@ -164,6 +164,12 @@ fn run_with_editor(repository: &Repository, base: &str, entries: &[Entry], edito
     })
 }
 
+/// How many commits HEAD has above `hash`; the oldest of several commits
+/// has the most.
+pub fn commits_above(repository: &Repository, hash: &str) -> usize {
+    repository.run(["rev-list", "--count", &format!("{hash}..HEAD")]).ok().and_then(|n| n.trim().parse::<usize>().ok()).unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +250,16 @@ mod tests {
         assert_eq!(log.lines().collect::<Vec<_>>(), vec!["one, reworded", "base"]);
         assert!(dir.join("two.txt").exists() && !dir.join("three.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn counts_commits_above() {
+        let t = crate::git::test_support::TestRepo::new("rebase-above");
+        let first = t.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        let second = t.commit("b.txt", "b", "second");
+        t.commit("c.txt", "c", "third");
+        assert_eq!(commits_above(&t.repo, &first), 2);
+        assert_eq!(commits_above(&t.repo, &second), 1);
+        assert_eq!(commits_above(&t.repo, "nonexistent"), 0);
     }
 }

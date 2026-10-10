@@ -224,6 +224,19 @@ fn parse_track(track: &str) -> (u32, u32) {
     (ahead, behind)
 }
 
+/// Whether `reference` (a full ref name) is merged into `target`.
+pub fn is_merged(repository: &Repository, reference: &str, target: &str) -> bool {
+    repository.run(["merge-base", "--is-ancestor", reference, target]).is_ok()
+}
+
+/// Up to `limit` commits on `reference` that aren't in HEAD, as "hash subject".
+pub fn unmerged_commits(repository: &Repository, reference: &str, limit: usize) -> Vec<String> {
+    repository
+        .run(["log", "--format=%h %s", "-n", &limit.to_string(), &format!("HEAD..{reference}")])
+        .map(|out| out.lines().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +259,20 @@ mod tests {
         assert_eq!(refs[1].target, "ccc");
         assert_eq!(refs[2].remote(), Some("origin"));
         assert_eq!(refs[2].branch_without_remote(), "feature/x");
+    }
+
+    #[test]
+    fn merged_and_unmerged_commits() {
+        let t = crate::git::test_support::TestRepo::new("refs-merged");
+        t.git(&["branch", "old"]);
+        t.git(&["checkout", "-q", "-b", "topic"]);
+        t.commit("t.txt", "t", "topic work");
+        t.git(&["checkout", "-q", "main"]);
+        assert!(is_merged(&t.repo, "refs/heads/old", "HEAD"));
+        assert!(!is_merged(&t.repo, "refs/heads/topic", "HEAD"));
+        let commits = unmerged_commits(&t.repo, "refs/heads/topic", 20);
+        assert_eq!(commits.len(), 1);
+        assert!(commits[0].ends_with(" topic work"));
+        assert!(unmerged_commits(&t.repo, "refs/heads/old", 20).is_empty());
     }
 }

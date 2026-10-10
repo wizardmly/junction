@@ -16,6 +16,8 @@ use gpui_kit::{
 use crate::model::RepoModel;
 use crate::theme::ActivePalette as _;
 
+use crate::git::log::FileRevision;
+
 use super::{branch_picker, focus_input, footer};
 
 pub type OpenDiff = Rc<dyn Fn(crate::ui::diff_view::DiffSource, &mut Window, &mut App)>;
@@ -49,40 +51,13 @@ pub fn compare_file_with(model: Entity<RepoModel>, path: String, open_diff: Open
     focus_input(&focus_target, window, cx);
 }
 
-/// One revision of a file, for Compare with Revision.
-#[derive(Clone)]
-struct FileRevision {
-    hash: String,
-    author: String,
-    time: i64,
-    subject: String,
-    /// The file's path in that revision (it may have been renamed since).
-    path: String,
-}
-
-/// The commits that changed a file, newest first, following renames.
-fn file_revisions(repository: &crate::git::Repository, path: &str) -> Vec<FileRevision> {
-    let Ok(out) = repository.run(["log", "--follow", "-n", "1000", "--format=%x1e%H%x1f%an%x1f%at%x1f%s", "--name-only", "--", path]) else {
-        return Vec::new();
-    };
-    out.split('\x1e')
-        .filter_map(|record| {
-            let mut lines = record.lines();
-            let mut fields = lines.next()?.split('\x1f');
-            let (hash, author, time, subject) = (fields.next()?, fields.next()?, fields.next()?, fields.next().unwrap_or_default());
-            let at = lines.map(str::trim).find(|l| !l.is_empty()).unwrap_or(path);
-            Some(FileRevision { hash: hash.to_owned(), author: author.to_owned(), time: time.parse().unwrap_or(0), subject: subject.to_owned(), path: at.to_owned() })
-        })
-        .collect()
-}
-
 /// Compare with Revision…: IntelliJ's list of the file's revisions (hash,
 /// date, author, message), filtered as you type; the chosen one opens
 /// against the local file.
 pub fn compare_file_with_revision(model: Entity<RepoModel>, path: String, open_diff: OpenDiff, window: &mut Window, cx: &mut App) {
     use gpui_kit::component::h_flex;
     let Some(repository) = model.read(cx).repository().cloned() else { return };
-    let revisions = Rc::new(file_revisions(&repository, &path));
+    let revisions = Rc::new(crate::git::log::file_revisions(&repository, &path));
     let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter by hash, author or message"));
     let focus_target = filter.clone();
     let selected = Rc::new(Cell::new(0usize));

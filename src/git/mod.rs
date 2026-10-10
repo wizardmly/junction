@@ -20,6 +20,8 @@ pub mod roots;
 pub mod worktree;
 pub mod status;
 pub mod submodule;
+#[cfg(test)]
+pub mod test_support;
 
 pub use command::{GitConsole, Repository, OpenError, detected_executable, executable, executable_version, git_process, redetect_executable, trust_directory, run_in, set_executable, set_use_credential_helper};
 pub use graph::GraphLayout;

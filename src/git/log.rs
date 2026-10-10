@@ -453,6 +453,46 @@ pub(crate) fn parse_name_status(output: &str) -> Vec<FileChange> {
     changes
 }
 
+/// A commit that changed a file, for Compare with Revision.
+#[derive(Clone)]
+pub struct FileRevision {
+    pub hash: String,
+    pub author: String,
+    pub time: i64,
+    pub subject: String,
+    /// The file's path in that revision (it may have been renamed since).
+    pub path: String,
+}
+
+/// The commits that changed a file, newest first, following renames.
+pub fn file_revisions(repository: &Repository, path: &str) -> Vec<FileRevision> {
+    let Ok(out) = repository.run(["log", "--follow", "-n", "1000", "--format=%x1e%H%x1f%an%x1f%at%x1f%s", "--name-only", "--", path]) else {
+        return Vec::new();
+    };
+    out.split('\x1e')
+        .filter_map(|record| {
+            let mut lines = record.lines();
+            let mut fields = lines.next()?.split('\x1f');
+            let (hash, author, time, subject) = (fields.next()?, fields.next()?, fields.next()?, fields.next().unwrap_or_default());
+            let at = lines.map(str::trim).find(|l| !l.is_empty()).unwrap_or(path);
+            Some(FileRevision { hash: hash.to_owned(), author: author.to_owned(), time: time.parse().unwrap_or(0), subject: subject.to_owned(), path: at.to_owned() })
+        })
+        .collect()
+}
+
+/// A pull request's default title and description from the commits in
+/// `range`: a single commit gives both; several give the first subject and
+/// a list of all subjects.
+pub fn pull_request_message(repository: &Repository, range: &str) -> (String, String) {
+    let subjects = repository.run(["log", "--reverse", "--format=%s", range]).unwrap_or_default();
+    let subjects: Vec<&str> = subjects.lines().collect();
+    match subjects.as_slice() {
+        [] => (String::new(), String::new()),
+        [only] => (only.to_string(), repository.run(["log", "-1", "--format=%b"]).map(|b| b.trim().to_owned()).unwrap_or_default()),
+        [first, ..] => (first.to_string(), subjects.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,6 +516,30 @@ mod tests {
         assert_eq!(changes[1].kind, FileChangeKind::Renamed);
         assert_eq!(changes[1].old_path.as_deref(), Some("old.rs"));
         assert_eq!(changes[1].path, "new.rs");
+    }
+
+    #[test]
+    fn file_revisions_follow_renames() {
+        let t = crate::git::test_support::TestRepo::new("log-file-revisions");
+        t.commit("a.txt", "1\n2\n3\n4\n5\n", "grow");
+        t.git(&["mv", "a.txt", "b.txt"]);
+        t.git(&["commit", "-qm", "rename"]);
+        let revisions = file_revisions(&t.repo, "b.txt");
+        let summary: Vec<(&str, &str)> = revisions.iter().map(|r| (r.subject.as_str(), r.path.as_str())).collect();
+        assert_eq!(summary, [("rename", "b.txt"), ("grow", "a.txt"), ("first", "a.txt")]);
+        assert!(revisions.iter().all(|r| r.author == "T" && r.hash.len() == 40 && r.time > 0));
+        assert!(file_revisions(&t.repo, "missing.txt").is_empty());
+    }
+
+    #[test]
+    fn pull_request_message_from_commits() {
+        let t = crate::git::test_support::TestRepo::new("log-pr-message");
+        t.git(&["branch", "base"]);
+        assert_eq!(pull_request_message(&t.repo, "base..HEAD"), (String::new(), String::new()));
+        t.git(&["commit", "-q", "--allow-empty", "-m", "Add login", "-m", "Details here"]);
+        assert_eq!(pull_request_message(&t.repo, "base..HEAD"), ("Add login".into(), "Details here".into()));
+        t.commit("c.txt", "c", "Fix typo");
+        assert_eq!(pull_request_message(&t.repo, "base..HEAD"), ("Add login".into(), "- Add login\n- Fix typo".into()));
     }
 }
 

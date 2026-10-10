@@ -450,10 +450,7 @@ fn rewrite(
         return warn("The selected commits aren't all on the current branch", window, cx);
     }
     // The oldest selected commit is the one with the most commits above it.
-    let count_above = |h: &String| {
-        repository.run(["rev-list", "--count", &format!("{h}..HEAD")]).ok().and_then(|n| n.trim().parse::<usize>().ok()).unwrap_or(0)
-    };
-    let Some(oldest) = hashes.iter().max_by_key(|h| count_above(h)).cloned() else { return };
+    let Some(oldest) = hashes.iter().max_by_key(|h| rebase::commits_above(&repository, h)).cloned() else { return };
     let count = hashes.len();
     model.update(cx, |m, cx| {
         m.run_operation(title, move |repo| {
@@ -545,11 +542,7 @@ pub fn squash(model: Entity<RepoModel>, hashes: Vec<String>, window: &mut Window
     let Some(repository) = model.read(cx).repository().cloned() else { return };
     // Messages oldest first, as git would combine them.
     let mut ordered = hashes.clone();
-    ordered.sort_by_key(|h| {
-        std::cmp::Reverse(
-            repository.run(["rev-list", "--count", &format!("{h}..HEAD")]).ok().and_then(|n| n.trim().parse::<usize>().ok()).unwrap_or(0),
-        )
-    });
+    ordered.sort_by_key(|h| std::cmp::Reverse(rebase::commits_above(&repository, h)));
     let combined = ordered.iter().map(|h| rebase::message_of(&repository, h)).collect::<Vec<_>>().join("\n\n");
     message_dialog("Squash Commits", "Squash", combined, window, cx, move |message, window, cx| {
         let targets = ordered.clone();

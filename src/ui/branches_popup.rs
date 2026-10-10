@@ -391,7 +391,7 @@ fn delete_branch(model: &Entity<RepoModel>, reference: &RefName, window: &mut Wi
     let Some(repository) = model.read(cx).repository().cloned() else { return };
     let name = reference.name.clone();
     let tip = reference.target.clone();
-    let merged_into = |target: &str| repository.run(["merge-base", "--is-ancestor", &reference.full_name, target]).is_ok();
+    let merged_into = |target: &str| crate::git::refs::is_merged(&repository, &reference.full_name, target);
     let upstream_merged = reference.upstream.as_ref().is_some_and(|u| merged_into(&format!("refs/remotes/{u}")));
     let delete = move |force: bool, model: &Entity<RepoModel>, cx: &mut App| {
         let (name, tip) = (name.clone(), tip.clone());
@@ -406,10 +406,7 @@ fn delete_branch(model: &Entity<RepoModel>, reference: &RefName, window: &mut Wi
         return delete(false, model, cx);
     }
     let current = model.read(cx).refs().current_branch.clone().unwrap_or_else(|| "HEAD".into());
-    let commits: Vec<String> = repository
-        .run(["log", "--format=%h %s", "-n", "20", &format!("HEAD..{}", reference.full_name)])
-        .map(|out| out.lines().map(str::to_owned).collect())
-        .unwrap_or_default();
+    let commits = crate::git::refs::unmerged_commits(&repository, &reference.full_name, 20);
     let model = model.clone();
     let delete = Rc::new(delete);
     dialogs::choose(

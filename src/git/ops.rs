@@ -327,6 +327,47 @@ pub fn stash_save(repository: &Repository, request: &StashRequest) -> Result<Str
     Ok("Local changes stashed".into())
 }
 
+/// Checks out a pull / merge request's branch: an existing local branch is
+/// fast-forwarded to `head_sha` when it can be; otherwise `head_ref` (e.g.
+/// `pull/7/head`) is fetched from `remote` into a new local `branch`.
+pub fn checkout_pull_request(repository: &Repository, remote: &str, head_ref: &str, branch: &str, head_sha: &str) -> Result<()> {
+    if repository.run(["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")]).is_ok() {
+        repository.run(["checkout", branch])?;
+        repository.run(["merge", "--ff-only", head_sha]).ok();
+    } else {
+        repository.run(["fetch", remote, &format!("{head_ref}:{branch}")])?;
+        repository.run(["checkout", branch])?;
+    }
+    Ok(())
+}
+
+/// Runs a `git pull` command line and describes the result the way the
+/// Pull dialog reports it: "Already up to date", or the update summary and
+/// ranges joined by U+001F.
+pub fn pull(repository: &Repository, args: &[String]) -> Result<String> {
+    let before = repository.run(["rev-parse", "HEAD"]).unwrap_or_default();
+    repository.run(args)?;
+    let after = repository.run(["rev-parse", "HEAD"]).unwrap_or_default();
+    if before == after {
+        return Ok("Already up to date".into());
+    }
+    let (before, after) = (before.trim(), after.trim());
+    // The fetched branch the pull merged or rebased onto.
+    let incoming = repository.run(["rev-parse", "FETCH_HEAD"]).map(|o| o.trim().to_owned()).unwrap_or_else(|_| after.to_owned());
+    Ok(format!("{}\u{1f}{}", updated_summary(repository, before, after, &incoming), updated_ranges(before, after, &incoming)))
+}
+
+/// Renames a file or folder: tracked paths move with `git mv` so the rename
+/// shows as one change, anything else (or a failed `git mv`) is renamed on
+/// disk. `path` is `from` relative to the repository root.
+pub fn rename_path(repository: Option<&Repository>, path: &str, from: &std::path::Path, to: &std::path::Path) {
+    let tracked = repository.is_some_and(|r| r.run(["ls-files", "--error-unmatch", "--", path]).is_ok());
+    let moved = tracked && repository.is_some_and(|r| r.run(["mv", "--", from.to_string_lossy().as_ref(), to.to_string_lossy().as_ref()]).is_ok());
+    if !moved {
+        let _ = std::fs::rename(from, to);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,5 +548,58 @@ mod tests {
                 let _ = std::fs::remove_dir_all(dir);
             }
         }
+    }
+
+    #[test]
+    fn checkout_pull_request_fetches_or_fast_forwards() {
+        let t = crate::git::test_support::TestRepo::new("ops-checkout-pr");
+        let bare = t.bare_remote("origin");
+        t.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+        t.git(&["push", "-q", "origin", "main"]);
+        let first_pr = t.commit("f.txt", "1", "feature");
+        t.git(&["push", "-q", "origin", "HEAD:refs/pull/7/head"]);
+        t.git(&["reset", "-q", "--hard", "HEAD~1"]);
+        checkout_pull_request(&t.repo, "origin", "pull/7/head", "feature", &first_pr).unwrap();
+        assert_eq!(t.git(&["symbolic-ref", "--short", "HEAD"]).trim(), "feature");
+        assert_eq!(t.git(&["rev-parse", "HEAD"]).trim(), first_pr);
+        // The branch exists now: a newer head fast-forwards it.
+        let newer = t.commit("f.txt", "2", "feature 2");
+        t.git(&["checkout", "-q", "main"]);
+        t.git(&["branch", "-q", "-f", "feature", &first_pr]);
+        checkout_pull_request(&t.repo, "origin", "pull/7/head", "feature", &newer).unwrap();
+        assert_eq!(t.git(&["rev-parse", "HEAD"]).trim(), newer);
+    }
+
+    #[test]
+    fn pull_reports_up_to_date_or_summary() {
+        let up = crate::git::test_support::TestRepo::new("ops-pull-up");
+        let bare = up.bare_remote("origin");
+        up.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+        up.git(&["push", "-q", "origin", "main"]);
+        let down = crate::git::test_support::TestRepo::new("ops-pull-down");
+        down.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+        down.git(&["fetch", "-q", "origin"]);
+        down.git(&["reset", "-q", "--hard", "origin/main"]);
+        let args: Vec<String> = ["pull", "--no-rebase", "origin", "main"].map(String::from).to_vec();
+        assert_eq!(pull(&down.repo, &args).unwrap(), "Already up to date");
+        let before = down.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        let after = up.commit("n.txt", "n", "new");
+        up.git(&["push", "-q", "origin", "main"]);
+        let message = pull(&down.repo, &args).unwrap();
+        let (summary, ranges) = message.split_once('\u{1f}').unwrap();
+        assert!(summary.contains('1'), "{summary}");
+        assert_eq!(ranges, format!("{before}..{after} {before}..{after}"));
+    }
+
+    #[test]
+    fn rename_path_uses_git_mv_for_tracked_files() {
+        let t = crate::git::test_support::TestRepo::new("ops-rename");
+        rename_path(Some(&t.repo), "a.txt", &t.dir.join("a.txt"), &t.dir.join("b.txt"));
+        assert!(t.git(&["status", "--porcelain"]).starts_with("R  a.txt -> b.txt"));
+        std::fs::write(t.dir.join("u.txt"), "u").unwrap();
+        rename_path(Some(&t.repo), "u.txt", &t.dir.join("u.txt"), &t.dir.join("v.txt"));
+        assert!(t.dir.join("v.txt").exists() && !t.dir.join("u.txt").exists());
+        rename_path(None, "v.txt", &t.dir.join("v.txt"), &t.dir.join("w.txt"));
+        assert!(t.dir.join("w.txt").exists());
     }
 }

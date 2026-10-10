@@ -191,22 +191,7 @@ pub fn pull(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
             .on_ok(move |_, _, cx| {
                 let Some(args) = view_ok.read(cx).args(cx) else { return false };
                 model.update(cx, |model, cx| {
-                    model.run_operation("Pull", move |repo| {
-                        let before = repo.run(["rev-parse", "HEAD"]).unwrap_or_default();
-                        repo.run(&args)?;
-                        let after = repo.run(["rev-parse", "HEAD"]).unwrap_or_default();
-                        if before == after {
-                            return Ok("Already up to date".into());
-                        }
-                        let (before, after) = (before.trim(), after.trim());
-                        // The fetched branch the pull merged or rebased onto.
-                        let incoming = repo.run(["rev-parse", "FETCH_HEAD"]).map(|o| o.trim().to_owned()).unwrap_or_else(|_| after.to_owned());
-                        Ok(format!(
-                            "{}\u{1f}{}",
-                            crate::git::ops::updated_summary(repo, before, after, &incoming),
-                            crate::git::ops::updated_ranges(before, after, &incoming)
-                        ))
-                    }, cx)
+                    model.run_operation("Pull", move |repo| crate::git::ops::pull(repo, &args), cx)
                 });
                 true
             })
