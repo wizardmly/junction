@@ -252,163 +252,9 @@ impl LogView {
                         ),
                 ),
             )
-            .child(filter_button("filter-branch", branch_label, !filter.branches.is_empty()).dropdown_menu({
-                let entity = entity.clone();
-                let refs = refs.clone();
-                let selected = filter.branches.clone();
-                let recent_branches = self.recent_branch_filters.clone();
-                // Laid out as IntelliJ's branch filter: Select…, Favorites,
-                // recent filters, HEAD and the favorite refs at the top, every
-                // branch in a Local submenu and one submenu per remote.
-                move |mut menu, window, cx| {
-                    fn set(entity: &Entity<LogView>, branches: Vec<String>) -> impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static {
-                        let entity = entity.clone();
-                        move |_, _, cx| {
-                            let branches = branches.clone();
-                            entity.update(cx, |this, cx| this.update_filter(cx, |f| f.branches = branches));
-                        }
-                    }
-                    fn ref_row(selected: &[String], refs: &crate::git::refs::RepositoryRefs, branch: &crate::git::refs::RefName, label: &str) -> crate::ui::ref_menu::RefRow {
-                        crate::ui::ref_menu::RefRow {
-                            label: label.to_owned().into(),
-                            value: branch.name.clone(),
-                            favorite: refs.favorites.contains(&branch.full_name),
-                            checked: selected == [branch.name.clone()],
-                        }
-                    }
-                    fn pick(entity: &Entity<LogView>) -> std::rc::Rc<dyn Fn(String, &mut Window, &mut App)> {
-                        let entity = entity.clone();
-                        std::rc::Rc::new(move |name, _, cx| entity.update(cx, |this, cx| this.update_filter(cx, |f| f.branches = vec![name])))
-                    }
-                    fn branch_item(entity: &Entity<LogView>, selected: &[String], refs: &crate::git::refs::RepositoryRefs, branch: &crate::git::refs::RefName, label: &str) -> PopupMenuItem {
-                        let item = PopupMenuItem::new(label.to_owned())
-                            .checked(selected == [branch.name.clone()])
-                            .on_click(set(entity, vec![branch.name.clone()]));
-                        if refs.favorites.contains(&branch.full_name) { item.icon(IconName::Star) } else { item }
-                    }
-                    if !selected.is_empty() {
-                        menu = menu.item(PopupMenuItem::new("All").on_click(set(&entity, vec![])));
-                    }
-                    let select_entity = entity.clone();
-                    menu = menu.item(PopupMenuItem::new("Select…").on_click(move |_, window, cx| {
-                        select_entity.update(cx, |this, cx| this.select_branches(window, cx))
-                    }));
-                    let favorites: Vec<&crate::git::refs::RefName> = refs.refs.iter().filter(|r| refs.favorites.contains(&r.full_name)).collect();
-                    let favorite_names: Vec<String> = favorites.iter().map(|r| r.name.clone()).collect();
-                    if favorites.len() > 1 {
-                        menu = menu.item(PopupMenuItem::new("Favorites").checked(selected == favorite_names).on_click(set(&entity, favorite_names.clone())));
-                    }
-                    for recent in &recent_branches {
-                        // Single branches already have their own row below.
-                        if recent.len() == 1 && (recent[0] == "HEAD" || favorite_names.contains(&recent[0])) || *recent == favorite_names {
-                            continue;
-                        }
-                        menu = menu.item(PopupMenuItem::new(recent.join(", ")).checked(&selected == recent).on_click(set(&entity, recent.clone())));
-                    }
-                    if refs.current_branch.is_some() || refs.head_commit.is_some() {
-                        menu = menu.item(
-                            PopupMenuItem::new("HEAD").icon(IconName::Star).checked(selected == ["HEAD"]).on_click(set(&entity, vec!["HEAD".into()])),
-                        );
-                    }
-                    for branch in &favorites {
-                        menu = menu.item(branch_item(&entity, &selected, &refs, branch, &branch.name));
-                    }
-                    menu = menu.separator();
-                    if refs.local_branches().next().is_some() {
-                        let (entity, refs, selected) = (entity.clone(), refs.clone(), selected.clone());
-                        menu = menu.submenu("Local", window, cx, move |sub, _, cx| {
-                            let rows = refs.local_branches().map(|b| ref_row(&selected, &refs, b, &b.name)).collect();
-                            crate::ui::ref_menu::add_rows(sub, rows, pick(&entity), cx)
-                        });
-                    }
-                    for remote in &refs.remotes {
-                        if !refs.remote_branches().any(|b| b.remote() == Some(remote.as_str())) {
-                            continue;
-                        }
-                        let (entity, refs, selected, remote) = (entity.clone(), refs.clone(), selected.clone(), remote.clone());
-                        menu = menu.submenu(format!("{remote}/..."), window, cx, move |sub, _, cx| {
-                            let rows = refs
-                                .remote_branches()
-                                .filter(|b| b.remote() == Some(remote.as_str()))
-                                .map(|b| ref_row(&selected, &refs, b, b.branch_without_remote()))
-                                .collect();
-                            crate::ui::ref_menu::add_rows(sub, rows, pick(&entity), cx)
-                        });
-                    }
-                    menu
-                }
-            }))
-            .child(filter_button("filter-user", user_label, !filter.authors.is_empty()).dropdown_menu({
-                let entity = entity.clone();
-                let current = filter.authors.clone();
-                let recent_users = self.recent_user_filters.clone();
-                move |mut menu, _, _| {
-                    let set = |authors: Vec<String>| {
-                        let entity = entity.clone();
-                        move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
-                            let authors = authors.clone();
-                            entity.update(cx, |this, cx| this.update_filter(cx, |f| f.authors = authors));
-                        }
-                    };
-                    menu = menu.item(PopupMenuItem::new("All").checked(current.is_empty()).on_click(set(Vec::new())));
-                    if let Some(email) = &user_email {
-                        menu = menu.item(PopupMenuItem::new("me").checked(current == [email.clone()]).on_click(set(vec![email.clone()])));
-                    }
-                    let select = entity.clone();
-                    menu = menu.item(PopupMenuItem::new("Select…").on_click(move |_, window, cx| {
-                        select.update(cx, |this, cx| this.select_users(window, cx))
-                    }));
-                    let recent: Vec<&Vec<String>> =
-                        recent_users.iter().filter(|u| user_email.as_ref().is_none_or(|me| **u != [me.clone()])).collect();
-                    if !recent.is_empty() {
-                        menu = menu.separator().label("Recent");
-                        for authors in recent {
-                            let label = authors
-                                .iter()
-                                .map(|a| if Some(a) == user_email.as_ref() { "me" } else { a.as_str() })
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            menu = menu.item(PopupMenuItem::new(label).checked(&current == authors).on_click(set(authors.clone())));
-                        }
-                    }
-                    menu = menu.separator();
-                    for author in &authors {
-                        menu = menu.item(
-                            PopupMenuItem::new(author.clone())
-                                .checked(current == [author.clone()])
-                                .on_click(set(vec![author.clone()])),
-                        );
-                    }
-                    menu.max_h(px(420.))
-                }
-            }))
-            .child(filter_button("filter-date", date_label, filter.since.is_some() || filter.until.is_some()).dropdown_menu({
-                let entity = entity.clone();
-                let current = filter.since.clone();
-                move |mut menu, _, _| {
-                    for (label, since) in [
-                        ("All", None),
-                        ("Last 24 hours", Some("24 hours ago")),
-                        ("Last 7 days", Some("7 days ago")),
-                        ("Last 30 days", Some("30 days ago")),
-                        ("Last year", Some("1 year ago")),
-                    ] {
-                        let entity = entity.clone();
-                        let since = since.map(str::to_owned);
-                        menu = menu.item(PopupMenuItem::new(label).checked(current == since).on_click(move |_, _, cx| {
-                            let since = since.clone();
-                            entity.update(cx, |this, cx| this.update_filter(cx, |f| {
-                                f.since = since;
-                                f.until = None;
-                            }));
-                        }));
-                    }
-                    let entity = entity.clone();
-                    menu.separator().item(PopupMenuItem::new("Select…").on_click(move |_, window, cx| {
-                        entity.update(cx, |this, cx| this.select_date_range(window, cx))
-                    }))
-                }
-            }))
+            .child(filter_button("filter-branch", branch_label, !filter.branches.is_empty()).dropdown_menu(self.branch_filter_menu(&entity, &refs, &filter)))
+            .child(filter_button("filter-user", user_label, !filter.authors.is_empty()).dropdown_menu(self.user_filter_menu(&entity, &filter, user_email, authors)))
+            .child(filter_button("filter-date", date_label, filter.since.is_some() || filter.until.is_some()).dropdown_menu(Self::date_filter_menu(&entity, &filter)))
             .child({
                 let label = match filter.paths.as_slice() {
                     [] => "Paths".to_owned(),
@@ -469,57 +315,223 @@ impl LogView {
                     .xsmall()
                     .icon(Icon::new(IconName::Eye))
                     .tooltip("View Options")
-                    .dropdown_menu({
-                        let entity = entity.clone();
-                        let log = Settings::get(cx).log.clone();
-                        let collapse = self.model.read(cx).collapse_linear();
-                        move |menu, _, _| {
-                            let collapse_entity = entity.clone();
-                            // Each toggle flips one View Options flag and reloads when it changes the order.
-                            let toggle = |label: &'static str, on: bool, set: fn(&mut crate::settings::LogSettings, bool), reload: bool| {
-                                let entity = entity.clone();
-                                PopupMenuItem::new(label).checked(on).on_click(move |_, _, cx| {
-                                    Settings::update(cx, |s| set(&mut s.log, !on));
-                                    entity.update(cx, |this, cx| {
-                                        if reload {
-                                            this.model.update(cx, |model, cx| model.reload(cx));
-                                        }
-                                        cx.notify();
-                                    });
-                                })
-                            };
-                            menu.item(PopupMenuItem::new("Collapse Linear Branches").checked(collapse).on_click(
-                                move |_, _, cx| {
-                                    collapse_entity.update(cx, |this, cx| {
-                                        this.model.update(cx, |model, cx| model.set_collapse_linear(!collapse, cx));
-                                    })
-                                },
-                            ))
-                            .item(toggle("Show Long Edges", log.show_long_edges, |l, v| l.show_long_edges = v, false))
-                            .separator()
-                            .label("Sort")
-                            .item(toggle("IntelliSort", !log.sort_by_date, |l, _| l.sort_by_date = false, true))
-                            .item(toggle("By Date", log.sort_by_date, |l, _| l.sort_by_date = true, true))
-                            .separator()
-                            .label("Highlight")
-                            .item(toggle("My Commits", log.highlight_mine, |l, v| l.highlight_mine = v, false))
-                            .item(toggle("Merge Commits", log.highlight_merges, |l, v| l.highlight_merges = v, false))
-                            .item(toggle("Current Branch", log.highlight_current_branch, |l, v| l.highlight_current_branch = v, false))
-                            .item(toggle("Not Merged into Current Branch", log.highlight_not_merged, |l, v| l.highlight_not_merged = v, false))
-                            .separator()
-                            .label("References")
-                            .item(toggle("Compact References View", log.compact_refs, |l, v| l.compact_refs = v, false))
-                            .item(toggle("Show References on the Left", log.refs_on_left, |l, v| l.refs_on_left = v, false))
-                            .separator()
-                            .label("Show Columns")
-                            .item(toggle("Author", log.show_author, |l, v| l.show_author = v, false))
-                            .item(toggle("Date", log.show_date, |l, v| l.show_date = v, false))
-                            .item(toggle("Hash", log.show_hash, |l, v| l.show_hash = v, false))
-                            .separator()
-                            .item(toggle("Relative Dates", log.relative_dates, |l, v| l.relative_dates = v, false))
-                        }
-                    }),
+                    .dropdown_menu(self.view_options_menu(&entity, cx)),
             )
+    }
+
+    /// Branch filter: laid out as IntelliJ's.
+    fn branch_filter_menu(&self, entity: &Entity<LogView>, refs: &std::sync::Arc<crate::git::RepositoryRefs>, filter: &LogFilter) -> impl Fn(gpui_kit::component::menu::PopupMenu, &mut Window, &mut Context<gpui_kit::component::menu::PopupMenu>) -> gpui_kit::component::menu::PopupMenu + 'static {
+        let entity = entity.clone();
+        let refs = refs.clone();
+        let selected = filter.branches.clone();
+        let recent_branches = self.recent_branch_filters.clone();
+        // Laid out as IntelliJ's branch filter: Select…, Favorites,
+        // recent filters, HEAD and the favorite refs at the top, every
+        // branch in a Local submenu and one submenu per remote.
+        move |mut menu, window, cx| {
+            fn set(entity: &Entity<LogView>, branches: Vec<String>) -> impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static {
+                let entity = entity.clone();
+                move |_, _, cx| {
+                    let branches = branches.clone();
+                    entity.update(cx, |this, cx| this.update_filter(cx, |f| f.branches = branches));
+                }
+            }
+            fn ref_row(selected: &[String], refs: &crate::git::refs::RepositoryRefs, branch: &crate::git::refs::RefName, label: &str) -> crate::ui::ref_menu::RefRow {
+                crate::ui::ref_menu::RefRow {
+                    label: label.to_owned().into(),
+                    value: branch.name.clone(),
+                    favorite: refs.favorites.contains(&branch.full_name),
+                    checked: selected == [branch.name.clone()],
+                }
+            }
+            fn pick(entity: &Entity<LogView>) -> std::rc::Rc<dyn Fn(String, &mut Window, &mut App)> {
+                let entity = entity.clone();
+                std::rc::Rc::new(move |name, _, cx| entity.update(cx, |this, cx| this.update_filter(cx, |f| f.branches = vec![name])))
+            }
+            fn branch_item(entity: &Entity<LogView>, selected: &[String], refs: &crate::git::refs::RepositoryRefs, branch: &crate::git::refs::RefName, label: &str) -> PopupMenuItem {
+                let item = PopupMenuItem::new(label.to_owned())
+                    .checked(selected == [branch.name.clone()])
+                    .on_click(set(entity, vec![branch.name.clone()]));
+                if refs.favorites.contains(&branch.full_name) { item.icon(IconName::Star) } else { item }
+            }
+            if !selected.is_empty() {
+                menu = menu.item(PopupMenuItem::new("All").on_click(set(&entity, vec![])));
+            }
+            let select_entity = entity.clone();
+            menu = menu.item(PopupMenuItem::new("Select…").on_click(move |_, window, cx| {
+                select_entity.update(cx, |this, cx| this.select_branches(window, cx))
+            }));
+            let favorites: Vec<&crate::git::refs::RefName> = refs.refs.iter().filter(|r| refs.favorites.contains(&r.full_name)).collect();
+            let favorite_names: Vec<String> = favorites.iter().map(|r| r.name.clone()).collect();
+            if favorites.len() > 1 {
+                menu = menu.item(PopupMenuItem::new("Favorites").checked(selected == favorite_names).on_click(set(&entity, favorite_names.clone())));
+            }
+            for recent in &recent_branches {
+                // Single branches already have their own row below.
+                if recent.len() == 1 && (recent[0] == "HEAD" || favorite_names.contains(&recent[0])) || *recent == favorite_names {
+                    continue;
+                }
+                menu = menu.item(PopupMenuItem::new(recent.join(", ")).checked(&selected == recent).on_click(set(&entity, recent.clone())));
+            }
+            if refs.current_branch.is_some() || refs.head_commit.is_some() {
+                menu = menu.item(
+                    PopupMenuItem::new("HEAD").icon(IconName::Star).checked(selected == ["HEAD"]).on_click(set(&entity, vec!["HEAD".into()])),
+                );
+            }
+            for branch in &favorites {
+                menu = menu.item(branch_item(&entity, &selected, &refs, branch, &branch.name));
+            }
+            menu = menu.separator();
+            if refs.local_branches().next().is_some() {
+                let (entity, refs, selected) = (entity.clone(), refs.clone(), selected.clone());
+                menu = menu.submenu("Local", window, cx, move |sub, _, cx| {
+                    let rows = refs.local_branches().map(|b| ref_row(&selected, &refs, b, &b.name)).collect();
+                    crate::ui::ref_menu::add_rows(sub, rows, pick(&entity), cx)
+                });
+            }
+            for remote in &refs.remotes {
+                if !refs.remote_branches().any(|b| b.remote() == Some(remote.as_str())) {
+                    continue;
+                }
+                let (entity, refs, selected, remote) = (entity.clone(), refs.clone(), selected.clone(), remote.clone());
+                menu = menu.submenu(format!("{remote}/..."), window, cx, move |sub, _, cx| {
+                    let rows = refs
+                        .remote_branches()
+                        .filter(|b| b.remote() == Some(remote.as_str()))
+                        .map(|b| ref_row(&selected, &refs, b, b.branch_without_remote()))
+                        .collect();
+                    crate::ui::ref_menu::add_rows(sub, rows, pick(&entity), cx)
+                });
+            }
+            menu
+        }
+    }
+
+    /// User filter: all, me, recent selections and known authors.
+    fn user_filter_menu(&self, entity: &Entity<LogView>, filter: &LogFilter, user_email: Option<String>, authors: Vec<String>) -> impl Fn(gpui_kit::component::menu::PopupMenu, &mut Window, &mut Context<gpui_kit::component::menu::PopupMenu>) -> gpui_kit::component::menu::PopupMenu + 'static {
+        let entity = entity.clone();
+        let current = filter.authors.clone();
+        let recent_users = self.recent_user_filters.clone();
+        move |mut menu, _, _| {
+            let set = |authors: Vec<String>| {
+                let entity = entity.clone();
+                move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
+                    let authors = authors.clone();
+                    entity.update(cx, |this, cx| this.update_filter(cx, |f| f.authors = authors));
+                }
+            };
+            menu = menu.item(PopupMenuItem::new("All").checked(current.is_empty()).on_click(set(Vec::new())));
+            if let Some(email) = &user_email {
+                menu = menu.item(PopupMenuItem::new("me").checked(current == [email.clone()]).on_click(set(vec![email.clone()])));
+            }
+            let select = entity.clone();
+            menu = menu.item(PopupMenuItem::new("Select…").on_click(move |_, window, cx| {
+                select.update(cx, |this, cx| this.select_users(window, cx))
+            }));
+            let recent: Vec<&Vec<String>> =
+                recent_users.iter().filter(|u| user_email.as_ref().is_none_or(|me| **u != [me.clone()])).collect();
+            if !recent.is_empty() {
+                menu = menu.separator().label("Recent");
+                for authors in recent {
+                    let label = authors
+                        .iter()
+                        .map(|a| if Some(a) == user_email.as_ref() { "me" } else { a.as_str() })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    menu = menu.item(PopupMenuItem::new(label).checked(&current == authors).on_click(set(authors.clone())));
+                }
+            }
+            menu = menu.separator();
+            for author in &authors {
+                menu = menu.item(
+                    PopupMenuItem::new(author.clone())
+                        .checked(current == [author.clone()])
+                        .on_click(set(vec![author.clone()])),
+                );
+            }
+            menu.max_h(px(420.))
+        }
+    }
+
+    /// Date filter: preset ranges and Select….
+    fn date_filter_menu(entity: &Entity<LogView>, filter: &LogFilter) -> impl Fn(gpui_kit::component::menu::PopupMenu, &mut Window, &mut Context<gpui_kit::component::menu::PopupMenu>) -> gpui_kit::component::menu::PopupMenu + 'static {
+        let entity = entity.clone();
+        let current = filter.since.clone();
+        move |mut menu, _, _| {
+            for (label, since) in [
+                ("All", None),
+                ("Last 24 hours", Some("24 hours ago")),
+                ("Last 7 days", Some("7 days ago")),
+                ("Last 30 days", Some("30 days ago")),
+                ("Last year", Some("1 year ago")),
+            ] {
+                let entity = entity.clone();
+                let since = since.map(str::to_owned);
+                menu = menu.item(PopupMenuItem::new(label).checked(current == since).on_click(move |_, _, cx| {
+                    let since = since.clone();
+                    entity.update(cx, |this, cx| this.update_filter(cx, |f| {
+                        f.since = since;
+                        f.until = None;
+                    }));
+                }));
+            }
+            let entity = entity.clone();
+            menu.separator().item(PopupMenuItem::new("Select…").on_click(move |_, window, cx| {
+                entity.update(cx, |this, cx| this.select_date_range(window, cx))
+            }))
+        }
+    }
+
+    /// View Options (eye): collapse, sorting, highlights, references, columns.
+    fn view_options_menu(&self, entity: &Entity<LogView>, cx: &App) -> impl Fn(gpui_kit::component::menu::PopupMenu, &mut Window, &mut Context<gpui_kit::component::menu::PopupMenu>) -> gpui_kit::component::menu::PopupMenu + 'static {
+        let entity = entity.clone();
+        let log = Settings::get(cx).log.clone();
+        let collapse = self.model.read(cx).collapse_linear();
+        move |menu, _, _| {
+            let collapse_entity = entity.clone();
+            // Each toggle flips one View Options flag and reloads when it changes the order.
+            let toggle = |label: &'static str, on: bool, set: fn(&mut crate::settings::LogSettings, bool), reload: bool| {
+                let entity = entity.clone();
+                PopupMenuItem::new(label).checked(on).on_click(move |_, _, cx| {
+                    Settings::update(cx, |s| set(&mut s.log, !on));
+                    entity.update(cx, |this, cx| {
+                        if reload {
+                            this.model.update(cx, |model, cx| model.reload(cx));
+                        }
+                        cx.notify();
+                    });
+                })
+            };
+            menu.item(PopupMenuItem::new("Collapse Linear Branches").checked(collapse).on_click(
+                move |_, _, cx| {
+                    collapse_entity.update(cx, |this, cx| {
+                        this.model.update(cx, |model, cx| model.set_collapse_linear(!collapse, cx));
+                    })
+                },
+            ))
+            .item(toggle("Show Long Edges", log.show_long_edges, |l, v| l.show_long_edges = v, false))
+            .separator()
+            .label("Sort")
+            .item(toggle("IntelliSort", !log.sort_by_date, |l, _| l.sort_by_date = false, true))
+            .item(toggle("By Date", log.sort_by_date, |l, _| l.sort_by_date = true, true))
+            .separator()
+            .label("Highlight")
+            .item(toggle("My Commits", log.highlight_mine, |l, v| l.highlight_mine = v, false))
+            .item(toggle("Merge Commits", log.highlight_merges, |l, v| l.highlight_merges = v, false))
+            .item(toggle("Current Branch", log.highlight_current_branch, |l, v| l.highlight_current_branch = v, false))
+            .item(toggle("Not Merged into Current Branch", log.highlight_not_merged, |l, v| l.highlight_not_merged = v, false))
+            .separator()
+            .label("References")
+            .item(toggle("Compact References View", log.compact_refs, |l, v| l.compact_refs = v, false))
+            .item(toggle("Show References on the Left", log.refs_on_left, |l, v| l.refs_on_left = v, false))
+            .separator()
+            .label("Show Columns")
+            .item(toggle("Author", log.show_author, |l, v| l.show_author = v, false))
+            .item(toggle("Date", log.show_date, |l, v| l.show_date = v, false))
+            .item(toggle("Hash", log.show_hash, |l, v| l.show_hash = v, false))
+            .separator()
+            .item(toggle("Relative Dates", log.relative_dates, |l, v| l.relative_dates = v, false))
+        }
     }
 
     /// Paths › Select Folders…: the repository's folders and files as a
