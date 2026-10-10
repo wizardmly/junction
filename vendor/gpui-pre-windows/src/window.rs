@@ -491,7 +491,10 @@ impl WindowsWindow {
         let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp {
             (WS_EX_TOOLWINDOW | WS_EX_TOPMOST, WINDOW_STYLE(0x0))
         } else {
-            let mut dwstyle = WS_SYSMENU;
+            // WS_CAPTION stays on even though the title bar is drawn by the
+            // app (WM_NCCALCSIZE removes the caption area): without it the
+            // taskbar button only activates the window and never minimizes it.
+            let mut dwstyle = WS_SYSMENU | WS_CAPTION;
 
             if params.is_resizable {
                 dwstyle |= WS_THICKFRAME | WS_MAXIMIZEBOX;

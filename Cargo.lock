@@ -3556,6 +3556,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "chrono",
+ "embed-resource",
  "gpui-kit",
  "lsp-types",
  "regex",
