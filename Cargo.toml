@@ -13,6 +13,8 @@ gpui-kit = { version = "0.7.1", features = [
     "tree-sitter-rust", "tree-sitter-swift", "tree-sitter-javascript", "tree-sitter-typescript",
     "tree-sitter-python", "tree-sitter-toml", "tree-sitter-yaml", "tree-sitter-markdown",
     "tree-sitter-bash", "tree-sitter-cmake", "tree-sitter-make", "tree-sitter-proto",
+    "tree-sitter-html", "tree-sitter-css", "tree-sitter-sql", "tree-sitter-lua",
+    "tree-sitter-diff", "tree-sitter-jsdoc", "tree-sitter-csharp", "tree-sitter-ruby", "tree-sitter-php", "tree-sitter-scala",
 ] }
 anyhow = "1"
 chrono = "0.4"
@@ -37,6 +39,16 @@ tree-sitter-python = "0.23"
 tree-sitter-dart = "0.2"
 tree-sitter-objc = "3"
 tree-sitter-vlang = "0.1"
+# Highlighting only (the editor): XML, Gradle's Groovy, .properties, and the
+# grammars the toolkit ships without queries (CMake, proto, C#).
+tree-sitter-xml = "0.7"
+tree-sitter-groovy = "0.1"
+tree-sitter-properties = "0.3"
+tree-sitter-cmake = "0.7"
+tree-sitter-proto = "0.2"
+tree-sitter-c-sharp = "0.23"
+# Image sizes for the image viewer (the toolkit decodes with it too).
+image = { version = "0.25", default-features = false }
 regex = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 lsp-types = { version = "0.97", features = ["proposed"] }

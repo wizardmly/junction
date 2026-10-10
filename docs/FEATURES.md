@@ -158,6 +158,8 @@
 | 折叠未改动片段、同步滚动、上/下一处差异、Jump to Source (F4)、跳到下一个文件 | M2 | ✅（F7 / Shift+F7 从光标所在行找下一处 / 上一处并移动光标；F4 打开光标所在行（另一侧的行按 diff 换算），和分支 / 版本 / 剪贴板比较时也能用；Alt+← / Alt+→、F7 到末尾进入下一个文件） |
 | 右侧可编辑（工作区文件）、单个 chunk 回滚 / 应用 | M3 | ✅（双栏右侧直接编辑：光标、选择、拖选、双击选词、Smart Home、Ctrl+D/Y、Tab/Shift+Tab、输入法、撤销重做、复制粘贴，改完实时重算并自动保存；`>>` 在缓冲区里回滚可撤销，按住 Ctrl 变 Append（点击时也读取鼠标事件的 Ctrl）；部分包含的变更块和「全部包含」复选框显示三态「−」；右键 Compare with Clipboard；暂存区模式 chunk Stage / Unstage；单栏编辑未做） |
 | 语法高亮（tree-sitter，与编辑器一致） | M2 | ✅（双栏、单栏、Merge 都有） |
+| 所有支持语言都有语法高亮，配色与 AS 一致 | M9 | ✅（C、C++、Objective-C、Rust、Go、Java、Kotlin、Swift、Dart、V（.v/.vsh）、JavaScript、TypeScript、TSX、Python，以及 XML（含 .iml、.plist、.svg）、HTML、CSS、JSON、YAML、TOML、Markdown、Gradle（Groovy / Kotlin DSL）、.properties、CMake、Makefile、Shell、proto、SQL、Lua、Ruby、PHP、C#、Scala、diff；配色取 AS 新 UI 的 Dark / Light 方案，int、i32 等内置类型按关键字着色；每种语言有单元测试） |
+| 图片直接查看 | M9 | ✅（PNG、JPG、GIF、WebP、BMP、ICO、TIFF 在编辑器标签里显示，默认适应窗口，Zoom In / Zoom Out / Actual Size / Fit 按钮，标题显示“宽x高 格式 大小”；历史版本里的图片也能看） |
 | 二进制 / 图片对比 | M4 | ✅（并排显示两侧图片（PNG/JPEG/GIF/BMP/WebP/ICO），下方显示尺寸、格式、文件大小；非图片显示大小；新增/删除提示） |
 | 冲突对话框：文件列表，Accept Yours / Accept Theirs / Merge… | M3 | ✅（Merge / Rebase / Cherry-pick / Update 遇到冲突时自动弹出；Commit 面板预填 MERGE_MSG 或被变基提交的信息） |
 | 三方合并工具：左（Yours）中（Result）右（Theirs）、魔棒应用非冲突改动、逐块接受、Resolve simple conflicts | M3 | ✅（按 AS 重做：三个独立编辑器，结果栏从 base 开始、可直接编辑并可撤销，两条分隔条连接块，`>>` `×` / `<<` `×` 紧贴分隔条，第二侧自动 Append，冲突红色，魔棒逐词合并简单冲突，工具栏 Apply Non-Conflicting（左/全部/右）、Resolve Simple Conflicts、同步滚动；有未解决变更时 Apply 先确认；Compare Contents 下拉可把 Left / Right / Result 与 Base 或彼此对比；栏标题写分支名（Changes from main / Changes from feature）；F7 / Shift+F7 从光标找未解决的变更并移动光标；改过内容后 Cancel 先确认放弃，然后回到冲突对话框） |

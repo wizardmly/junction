@@ -128,22 +128,60 @@ pub enum FileEditorEvent {
 
 impl EventEmitter<FileEditorEvent> for FileEditor {}
 
-/// Highlighting the toolkit lacks: its C++ query is only the C++ additions
-/// (tree-sitter-cpp's queries inherit C's), Swift has none, Dart isn't
-/// built in.
+/// Highlighting the toolkit lacks or Android Studio colors differently:
+/// C, C++, ObjC, Java and Rust built-in types are keywords; C++'s and TSX's
+/// queries are only additions to C's and TypeScript's; Swift has none; Dart,
+/// ObjC, XML, Groovy (Gradle), .properties and V aren't built in; CMake,
+/// proto and C# come without queries. Ours (Groovy, proto, V) are in
+/// assets/highlights.
 fn register_grammars() {
     use gpui_kit::component::highlighter::{LanguageConfig, LanguageRegistry};
     let registry = LanguageRegistry::singleton();
     for (name, language, highlights) in grammars() {
-        registry.register(name, &LanguageConfig::new(name, language, Vec::new(), &highlights, "", ""));
+        // Rust's macro bodies are Rust again.
+        let (injection_languages, injections) = match name {
+            "rust" => (vec!["rust".into()], include_str!("../../vendor/gpui-component/src/highlighter/languages/rust/injections.scm")),
+            _ => (Vec::new(), ""),
+        };
+        registry.register(name, &LanguageConfig::new(name, language, injection_languages, &highlights, injections, ""));
     }
 }
 
-fn grammars() -> [(&'static str, tree_sitter::Language, String); 3] {
-    [
-        ("cpp", tree_sitter_cpp::LANGUAGE.into(), format!("{}\n{}", tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY)),
+/// Android Studio colors built-in types (`int`, `i32`) as keywords; the
+/// first pattern matching a node wins, so these go first.
+const C_BUILTINS: &str = "(primitive_type) @keyword\n(sized_type_specifier) @keyword\n";
+
+fn grammars() -> Vec<(&'static str, tree_sitter::Language, String)> {
+    vec![
+        ("c", tree_sitter_c::LANGUAGE.into(), format!("{C_BUILTINS}{}", tree_sitter_c::HIGHLIGHT_QUERY)),
+        ("cpp", tree_sitter_cpp::LANGUAGE.into(), format!("{C_BUILTINS}{}\n{}", tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY)),
+        (
+            "java",
+            tree_sitter_java::LANGUAGE.into(),
+            format!("[(integral_type) (floating_point_type) (boolean_type) (void_type)] @keyword\n{}", tree_sitter_java::HIGHLIGHTS_QUERY),
+        ),
+        (
+            "rust",
+            tree_sitter_rust::LANGUAGE.into(),
+            format!("(primitive_type) @keyword\n[(integer_literal) (float_literal)] @number\n{}", include_str!("../../vendor/gpui-component/src/highlighter/languages/rust/highlights.scm")),
+        ),
         ("swift", tree_sitter_swift::LANGUAGE.into(), tree_sitter_swift::HIGHLIGHTS_QUERY.to_owned()),
         ("dart", tree_sitter_dart::LANGUAGE.into(), tree_sitter_dart::HIGHLIGHTS_QUERY.to_owned()),
+        // TSX's query is only TypeScript's additions, like C++'s.
+        (
+            "tsx",
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            format!("{}\n{}\n{}", tree_sitter_typescript::HIGHLIGHTS_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY, tree_sitter_javascript::HIGHLIGHT_QUERY),
+        ),
+        ("objc", tree_sitter_objc::LANGUAGE.into(), format!("{C_BUILTINS}{}\n{}", tree_sitter_objc::HIGHLIGHTS_QUERY, tree_sitter_c::HIGHLIGHT_QUERY)),
+        ("xml", tree_sitter_xml::LANGUAGE_XML.into(), tree_sitter_xml::XML_HIGHLIGHT_QUERY.to_owned()),
+        ("dtd", tree_sitter_xml::LANGUAGE_DTD.into(), tree_sitter_xml::DTD_HIGHLIGHT_QUERY.to_owned()),
+        ("properties", tree_sitter_properties::LANGUAGE.into(), tree_sitter_properties::HIGHLIGHTS_QUERY.to_owned()),
+        ("groovy", tree_sitter_groovy::LANGUAGE.into(), include_str!("../../assets/highlights/groovy.scm").to_owned()),
+        ("cmake", tree_sitter_cmake::LANGUAGE.into(), tree_sitter_cmake::HIGHLIGHTS_QUERY.to_owned()),
+        ("proto", tree_sitter_proto::LANGUAGE.into(), include_str!("../../assets/highlights/proto.scm").to_owned()),
+        ("csharp", tree_sitter_c_sharp::LANGUAGE.into(), tree_sitter_c_sharp::HIGHLIGHTS_QUERY.to_owned()),
+        ("v", tree_sitter_vlang::LANGUAGE.into(), include_str!("../../assets/highlights/v.scm").to_owned()),
     ]
 }
 
@@ -175,19 +213,81 @@ pub fn language_for(path: &str) -> &'static str {
         (_, "swift") => "swift",
         (_, "dart") => "dart",
         (_, "go") => "go",
+        (_, "v" | "vsh") => "v",
         (_, "c" | "h") => "c",
-        (_, "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "mm" | "m") => "cpp",
+        (_, "cc" | "cpp" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "ipp" | "inl" | "tpp") => "cpp",
+        (_, "m" | "mm") => "objc",
         (_, "js" | "mjs" | "cjs" | "jsx") => "javascript",
-        (_, "ts" | "tsx") => "typescript",
-        (_, "py") => "python",
-        (_, "json") => "json",
+        (_, "ts" | "mts" | "cts") => "typescript",
+        (_, "tsx") => "tsx",
+        (_, "py" | "pyi") => "python",
+        (_, "json" | "jsonc") => "json",
         (_, "toml") => "toml",
         (_, "yml" | "yaml") => "yaml",
         (_, "md" | "markdown") => "markdown",
-        (_, "sh" | "bash" | "zsh") => "bash",
+        (_, "sh" | "bash" | "zsh") | ("gradlew", _) => "bash",
         (_, "proto") => "proto",
+        (_, "xml" | "xsd" | "xsl" | "xslt" | "svg" | "plist" | "iml" | "xib" | "storyboard" | "pom" | "kml") => "xml",
+        (_, "dtd") => "dtd",
+        (_, "html" | "htm" | "xhtml") => "html",
+        (_, "css") => "css",
+        (_, "gradle" | "groovy") => "groovy",
+        (_, "properties") => "properties",
+        (_, "sql") => "sql",
+        (_, "lua") => "lua",
+        (_, "rb") | ("gemfile" | "rakefile" | "podfile", _) => "ruby",
+        (_, "php") => "php",
+        (_, "cs") => "csharp",
+        (_, "scala" | "sc") => "scala",
+        (_, "diff" | "patch") => "diff",
         _ => "plaintext",
     }
+}
+
+/// An image opened in the editor.
+struct ImageFile {
+    image: std::sync::Arc<gpui_kit::Image>,
+    format: gpui_kit::ImageFormat,
+    width: u32,
+    height: u32,
+    size: usize,
+    /// The viewer's size at the last paint, for Fit Zoom to Window.
+    viewport: Rc<std::cell::Cell<gpui_kit::Size<Pixels>>>,
+}
+
+impl ImageFile {
+    fn new(format: gpui_kit::ImageFormat, bytes: Vec<u8>) -> Self {
+        let (width, height) = image::ImageReader::new(std::io::Cursor::new(&bytes))
+            .with_guessed_format()
+            .ok()
+            .and_then(|r| r.into_dimensions().ok())
+            .unwrap_or((0, 0));
+        let size = bytes.len();
+        Self { image: std::sync::Arc::new(gpui_kit::Image::from_bytes(format, bytes)), format, width, height, size, viewport: Rc::default() }
+    }
+
+    /// "64x64 PNG 1.2 kB", as IntelliJ's image editor shows it.
+    fn info(&self) -> String {
+        let name = format!("{:?}", self.format).to_uppercase();
+        let size = if self.size < 1024 { format!("{} B", self.size) } else if self.size < 1024 * 1024 { format!("{:.1} kB", self.size as f64 / 1024.) } else { format!("{:.1} MB", self.size as f64 / (1024. * 1024.)) };
+        format!("{}x{} {name} {size}", self.width, self.height)
+    }
+}
+
+/// The image formats the editor shows as pictures. SVG stays text (XML).
+fn image_format(path: &str) -> Option<gpui_kit::ImageFormat> {
+    use gpui_kit::ImageFormat::*;
+    let ext = path.rsplit_once('.')?.1.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => Png,
+        "jpg" | "jpeg" => Jpeg,
+        "gif" => Gif,
+        "webp" => Webp,
+        "bmp" => Bmp,
+        "ico" => Ico,
+        "tif" | "tiff" => Tiff,
+        _ => return None,
+    })
 }
 
 pub struct FileEditor {
@@ -225,6 +325,10 @@ pub struct FileEditor {
     hover_task: Option<gpui_kit::Task<()>>,
     markers_task: Option<gpui_kit::Task<()>>,
     _subscriptions: Vec<Subscription>,
+    /// An image file, shown instead of the text (IntelliJ's image viewer).
+    image: Option<ImageFile>,
+    /// The image's zoom; `None` fits it to the window (shrinking only).
+    zoom: Option<f32>,
 }
 
 /// Ctrl+click / Ctrl+hover and Quick Documentation through the code index.
@@ -348,7 +452,19 @@ impl FileEditor {
     }
 
     pub fn new(repository: Repository, path: String, revision: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (content, error) = match &revision {
+        let image = image_format(&path).map(|format| {
+            let bytes = match &revision {
+                Some(rev) => repository.run_bytes(["show", &format!("{rev}:{path}")]).map_err(|e| e.to_string()),
+                None => std::fs::read(repository.root().join(&path)).map_err(|e| e.to_string()),
+            };
+            bytes.map(|bytes| ImageFile::new(format, bytes))
+        });
+        let (image, image_error) = match image {
+            Some(Ok(image)) => (Some(image), None),
+            Some(Err(error)) => (None, Some(error)),
+            None => (None, None),
+        };
+        let (content, error) = if image_error.is_some() || image.is_some() { (String::new(), image_error) } else { match &revision {
             Some(rev) => match repository.run(["show", &format!("{rev}:{path}")]) {
                 Ok(text) => (text, None),
                 Err(error) => (String::new(), Some(error.to_string())),
@@ -358,10 +474,10 @@ impl FileEditor {
                 Ok(bytes) => (String::from_utf8_lossy(&bytes).into_owned(), None),
                 Err(error) => (String::new(), Some(error.to_string())),
             },
-        };
+        } };
         // A library's source (External Libraries) isn't in the repository.
         let external = crate::index::store::ProjectIndex::is_external(&path);
-        let (base, unversioned) = if revision.is_none() && !external {
+        let (base, unversioned) = if revision.is_none() && !external && image.is_none() {
             match repository.run(["show", &format!("HEAD:{path}")]) {
                 Ok(base) => (base, false),
                 Err(_) => (String::new(), repository.run(["ls-files", "--error-unmatch", "--", &path]).is_err()),
@@ -437,6 +553,8 @@ impl FileEditor {
             hover_card: None,
             hover_task: None,
             markers_task: None,
+            image,
+            zoom: None,
             _subscriptions: subscriptions,
         };
         this.update_markers(cx);
@@ -445,6 +563,57 @@ impl FileEditor {
 
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// The zoom that fits the image in the last laid-out viewer, 1 at most.
+    fn fit_zoom(&self) -> f32 {
+        let Some(image) = &self.image else { return 1. };
+        let bounds = image.viewport.get();
+        if image.width == 0 || image.height == 0 || bounds.width <= px(0.) {
+            return 1.;
+        }
+        let margin = 32.;
+        let fit = ((f32::from(bounds.width) - margin) / image.width as f32).min((f32::from(bounds.height) - margin) / image.height as f32);
+        fit.clamp(1. / 32., 1.)
+    }
+
+    /// The image, centered at its zoom, scrollable when larger than the view.
+    fn render_image(&self, image: &ImageFile, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let palette = cx.palette().clone();
+        let zoom = self.zoom.unwrap_or_else(|| self.fit_zoom());
+        let (w, h) = (image.width as f32 * zoom, image.height as f32 * zoom);
+        let viewport = image.viewport.clone();
+        let entity = cx.entity().downgrade();
+        div()
+            .id("image-viewer")
+            .flex_1()
+            .min_h_0()
+            .overflow_scroll()
+            .bg(gpui_kit::component::ActiveTheme::theme(&**cx).highlight_theme.style.editor_background.unwrap_or(palette.panel))
+            .child(
+                gpui_kit::canvas(
+                    move |bounds, _, cx| {
+                        // A resize changes the fit: draw again with the new size.
+                        if viewport.replace(bounds.size) != bounds.size {
+                            entity.update(cx, |_, cx| cx.notify()).ok();
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(
+                h_flex().min_w_full().min_h_full().justify_center().items_center().p_4().child(
+                    gpui_kit::img(image.image.clone())
+                        .w(px(w))
+                        .h(px(h))
+                        .flex_none()
+                        .border_1()
+                        .border_color(palette.border),
+                ),
+            )
+            .into_any_element()
     }
 
     /// Navigation through the project's code index: Ctrl+click, hover,
@@ -626,7 +795,7 @@ impl FileEditor {
 
     /// A revision, or a library's source: neither is edited.
     pub fn read_only(&self) -> bool {
-        self.revision.is_some() || crate::index::store::ProjectIndex::is_external(&self.path)
+        self.revision.is_some() || self.image.is_some() || crate::index::store::ProjectIndex::is_external(&self.path)
     }
 
     /// "< JDK 21 > › java/util/List.java" for a library file.
@@ -1196,6 +1365,9 @@ impl Render for FileEditor {
         let hover_card = self
             .hover_card
             .and_then(|(line, at)| Some((at, self.annotation.as_ref()?.hover_card(line, cx)?.into_any_element())));
+        let has_image = self.image.is_some();
+        let image_info = self.image.as_ref().map(ImageFile::info);
+        let image_body = self.image.as_ref().map(|image| self.render_image(image, cx));
         v_flex()
             .size_full()
             .key_context(CONTEXT)
@@ -1236,8 +1408,9 @@ impl Render for FileEditor {
                     .text_sm()
                     .child(common::icon(common::file_icon(&self.path)))
                     .child(div().child(title))
+                    .when_some(image_info, |el, info| el.child(div().text_xs().text_color(palette.text_secondary).child(info)))
                     .when(dirty, |el| el.child(div().text_color(palette.text_secondary).child("•")))
-                    .when(read_only, |el| el.child(div().text_xs().text_color(palette.text_secondary).child("read-only")))
+                    .when(read_only && !has_image, |el| el.child(div().text_xs().text_color(palette.text_secondary).child("read-only")))
                     .when(!read_only && changes > 0, |el| {
                         el.child(div().text_xs().text_color(palette.text_secondary).child(format!(
                             "{changes} change{}",
@@ -1250,9 +1423,25 @@ impl Render for FileEditor {
                             |this, _, window, cx| this.save(&SaveFile, window, cx),
                         )))
                     })
-                    .child(tool_button("editor-diff", icons::VCS_DIFF, "Show Diff").on_click(cx.listener(
+                    .when(has_image, |el| {
+                        // IntelliJ's image editor toolbar.
+                        let zoom = |id: &'static str, icon: icons::AsIcon, tooltip: &'static str, to: fn(Option<f32>) -> Option<f32>| {
+                            tool_button(id, icon, tooltip).on_click(cx.listener(move |this, _, _, cx| {
+                                this.zoom = to(this.zoom.or(Some(this.fit_zoom())));
+                                cx.notify();
+                            }))
+                        };
+                        el.child(zoom("image-zoom-in", icons::ZOOM_IN, "Zoom In", |z| z.map(|z| (z * 1.5).min(32.))))
+                            .child(zoom("image-zoom-out", icons::ZOOM_OUT, "Zoom Out", |z| z.map(|z| (z / 1.5).max(1. / 32.))))
+                            .child(zoom("image-actual", icons::ACTUAL_ZOOM, "Actual Size", |_| Some(1.)))
+                            .child(zoom("image-fit", icons::FIT_CONTENT, "Fit Zoom to Window", |_| None).on_click(cx.listener(|this, _, _, cx| {
+                                this.zoom = None;
+                                cx.notify();
+                            })))
+                    })
+                    .when(!has_image, |el| el.child(tool_button("editor-diff", icons::VCS_DIFF, "Show Diff").on_click(cx.listener(
                         |this, _, window, cx| this.show_diff(&ShowFileDiff, window, cx),
-                    )))
+                    ))))
             )
             .when_some(self.error.clone(), |el, error| {
                 el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(error))
@@ -1261,7 +1450,8 @@ impl Render for FileEditor {
             .when_some(self.annotation.as_ref().and_then(|a| a.error.clone()), |el, error| {
                 el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(format!("Cannot annotate: {error}")))
             })
-            .child(
+            .when_some(image_body, |el, body| el.child(body))
+            .when(!has_image, |el| el.child(
                 div().relative().flex_1().min_h_0().child(
                     h_flex().size_full().children(annotation_gutter).child(div().flex_1().min_w_0().h_full().text_size(px(crate::ui::diff_panes::font_size())).child(
                     Editor::new(&self.state)
@@ -1308,7 +1498,7 @@ impl Render for FileEditor {
                     el.child(deferred(anchored().position(point(at.x + px(12.), at.y + px(16.))).child(card)).with_priority(1))
                 })
                 .when_some(self.popup.zip(self.popup_anchor.get()), |el, (ix, at)| el.child(self.render_popup(ix, at, cx))),
-            )
+            ))
     }
 }
 
@@ -1325,5 +1515,70 @@ mod tests {
         let text = "a\nbb\nccc\n";
         assert_eq!(line_start(text, 2), 5);
         assert_eq!(line_of(text, 5), 2);
+    }
+}
+
+/// Every language Junction indexes, and the other files it opens, gets
+/// keywords (or tags) in the editor's keyword color.
+#[cfg(test)]
+#[test]
+fn every_language_highlights() {
+    use gpui_kit::component::highlighter::SyntaxHighlighter;
+    register_grammars();
+    let theme = crate::theme::editor_colors(true);
+    let keyword = theme.style.syntax.keyword.map(gpui_kit::HighlightStyle::from).and_then(|s| s.color);
+    let tag = theme.style.syntax.tag.map(gpui_kit::HighlightStyle::from).and_then(|s| s.color);
+    let samples = [
+        ("a.c", "static int main(void) { return 0; }", "return"),
+        ("b.c", "unsigned long x = 0;", "unsigned long"),
+        ("c.c", "int main(int argc) { char c; }", "char"),
+        ("d.c", "int main(int argc) { char c; }", "int"),
+        ("b.cpp", "int x = 0;", "int"),
+        ("B.java", "class B { int x; }", "int"),
+        ("b.rs", "fn f(x: i32) {}", "i32"),
+        ("a.h", "typedef struct point { int x; } point;", "struct"),
+        ("a.cpp", "namespace demo { class Foo {}; }", "namespace"),
+        ("a.m", "@interface Foo : NSObject\n@end\n", "@interface"),
+        ("a.mm", "@implementation Foo\n@end\n", "@implementation"),
+        ("a.rs", "pub fn main() { let x = 1; }", "let"),
+        ("a.go", "package main\nfunc main() { return }", "func"),
+        ("A.java", "public class A { }", "class"),
+        ("A.kt", "class A { fun f() = 1 }", "fun"),
+        ("a.swift", "func f() -> Int { return 1 }", "func"),
+        ("a.dart", "class A { void f() { return; } }", "class"),
+        ("a.v", "module main\nfn main() {\n\tmut x := 1\n\treturn\n}\n", "fn"),
+        ("a.js", "const x = 1; function f() { return x; }", "function"),
+        ("a.ts", "interface A { x: number }", "interface"),
+        ("a.tsx", "const a = <div/>; export default a;", "const"),
+        ("a.py", "def f():\n    return 1\n", "def"),
+        ("build.gradle", "plugins { id 'java' }\nif (true) { def x = 1 }\n", "def"),
+        ("a.sh", "if true; then echo hi; fi", "if"),
+        ("a.sql", "SELECT a FROM b;", "SELECT"),
+        ("a.lua", "local x = 1", "local"),
+        ("a.rb", "def f\nend\n", "def"),
+        ("a.cs", "class A { }", "class"),
+        ("CMakeLists.txt", "if(WIN32)\nendif()\n", "if"),
+        ("a.proto", "syntax = \"proto3\";\nmessage A { int32 x = 1; }", "message"),
+        ("a.scala", "object A { val x = 1 }", "object"),
+        ("a.php", "<?php function f() { return 1; }", "function"),
+    ];
+    for (name, text, word) in samples {
+        let language = language_for(name);
+        let rope = gpui_kit::component::Rope::from_str(text);
+        let mut highlighter = SyntaxHighlighter::new(language);
+        highlighter.update(None, &rope, None);
+        let at = text.find(word).unwrap();
+        let styles = highlighter.styles(&(0..text.len()), &theme);
+        let color = styles.iter().find(|(r, _)| r.start <= at && at < r.end).and_then(|(_, s)| s.color);
+        assert_eq!(color, keyword, "{name} ({language}): {word:?} in {styles:?}");
+    }
+    for (name, text, word) in [("a.xml", "<manifest package=\"a\"><app/></manifest>", "manifest"), ("a.html", "<div class=\"a\"></div>", "div")] {
+        let rope = gpui_kit::component::Rope::from_str(text);
+        let mut highlighter = SyntaxHighlighter::new(language_for(name));
+        highlighter.update(None, &rope, None);
+        let at = text.find(word).unwrap();
+        let styles = highlighter.styles(&(0..text.len()), &theme);
+        let color = styles.iter().find(|(r, _)| r.start <= at && at < r.end).and_then(|(_, s)| s.color);
+        assert!(color.is_some() && (color == tag || color == keyword), "{name}: {styles:?}");
     }
 }

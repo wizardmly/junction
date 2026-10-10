@@ -267,8 +267,82 @@ pub fn apply(dark: bool, cx: &mut App) {
         // bar, clear of the conflict banner and dialog buttons up top.
         theme.notification.placement = gpui_kit::Anchor::BottomRight;
         theme.notification.margins.bottom = px(40.);
+        theme.highlight_theme = std::sync::Arc::new(editor_colors(p.dark));
     });
     cx.set_global(palette);
     // Panels drawn from their last frame pick up the new colors too.
     cx.refresh_windows();
+}
+
+/// Android Studio's editor color schemes (new UI "Dark" and "Light"): the
+/// colors IntelliJ gives Kotlin and Java, applied to every language.
+pub(crate) fn editor_colors(dark: bool) -> gpui_kit::component::highlighter::HighlightTheme {
+    // (keyword, string, number, comment, doc comment, declaration, field,
+    //  annotation / macro, tag, escape, text, background)
+    let c = if dark {
+        ["#cf8e6d", "#6aab73", "#2aacb8", "#7a7e85", "#5f826b", "#56a8f5", "#c77dbb", "#b3ae60", "#d5b778", "#cf8e6d", "#bcbec4", "#1e1f22"]
+    } else {
+        ["#0033b3", "#067d17", "#1750eb", "#8c8c8c", "#8c8c8c", "#00627a", "#871094", "#9e880d", "#0033b3", "#0037a6", "#080808", "#ffffff"]
+    };
+    let [keyword, string, number, comment, doc, function, field, annotation, tag, escape, text, background] = c;
+    let (line_number, active_line_number, active_line) =
+        if dark { ("#4b5059", "#a1a3ab", "#26282e") } else { ("#aeb3c2", "#767a8a", "#f5f8fe") };
+    let style = |color: &str| serde_json::json!({ "color": color });
+    let italic = |color: &str| serde_json::json!({ "color": color, "font_style": "italic" });
+    let bold = |color: &str| serde_json::json!({ "color": color, "font_weight": 700 });
+    let json = serde_json::json!({
+        "name": if dark { "Android Studio Dark" } else { "Android Studio Light" },
+        "appearance": if dark { "dark" } else { "light" },
+        "style": {
+            "editor.background": background,
+            "editor.foreground": text,
+            "editor.active_line.background": active_line,
+            "editor.line_number": line_number,
+            "editor.active_line_number": active_line_number,
+            "syntax": {
+                "attribute": style(annotation),
+                "boolean": style(keyword),
+                "comment": if dark { style(comment) } else { italic(comment) },
+                "comment_doc": italic(doc),
+                "constant": italic(field),
+                "embedded": style(text),
+                "emphasis": italic(text),
+                "emphasis.strong": bold(text),
+                "enum": italic(field),
+                "function": style(function),
+                "keyword": style(keyword),
+                "label": style(annotation),
+                "link_text": style(function),
+                "link_uri": style(string),
+                "number": style(number),
+                "preproc": style(annotation),
+                "property": style(field),
+                "punctuation.list_marker": style(keyword),
+                "punctuation.special": style(keyword),
+                "string": style(string),
+                "string.escape": style(escape),
+                "string.regex": style(string),
+                "string.special": style(string),
+                "string.special.symbol": style(field),
+                "tag": style(tag),
+                "tag.doctype": style(keyword),
+                "text.code.span": style(string),
+                "text.literal": style(string),
+                "title": bold(keyword),
+                "variable.special": style(keyword),
+                "variant": italic(field),
+            },
+        },
+    });
+    serde_json::from_value(json).expect("editor colors")
+}
+
+#[cfg(test)]
+#[test]
+fn editor_colors_parse() {
+    for dark in [false, true] {
+        let theme = editor_colors(dark);
+        assert!(theme.style.syntax.keyword.is_some());
+        assert!(theme.style.editor_background.is_some());
+    }
 }

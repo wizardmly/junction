@@ -4,6 +4,7 @@
 
 use super::as_icons::AsIcon;
 
+pub const ACTUAL_ZOOM: AsIcon = AsIcon { light: &[("as/actual-zoom.l0.svg", 0x6c707eff)], dark: &[("as/actual-zoom.d0.svg", 0xced0d6ff)] };
 pub const ADD: AsIcon = AsIcon { light: &[("as/add.l0.svg", 0x6c707eff)], dark: &[("as/add.d0.svg", 0xced0d6ff)] };
 pub const ADD_FILE: AsIcon = AsIcon { light: &[("as/add-file.l0.svg", 0x3574f0ff), ("as/add-file.l1.svg", 0x6c707eff)], dark: &[("as/add-file.d0.svg", 0x548af7ff), ("as/add-file.d1.svg", 0xced0d6ff)] };
 pub const ALIAS: AsIcon = AsIcon { light: &[("as/alias.l0.svg", 0xe7effdff), ("as/alias.l1.svg", 0x3574f0ff)], dark: &[("as/alias.d0.svg", 0x25324dff), ("as/alias.d1.svg", 0x548af7ff)] };
@@ -85,12 +86,14 @@ pub const FILE_YAML: AsIcon = AsIcon { light: &[("as/file-yaml.l0.svg", 0xfff7f7
 pub const FILTER: AsIcon = AsIcon { light: &[("as/filter.l0.svg", 0x6c707eff)], dark: &[("as/filter.d0.svg", 0xced0d6ff)] };
 pub const FIND_BACKWARD: AsIcon = AsIcon { light: &[("as/find-backward.l0.svg", 0x3574f0ff), ("as/find-backward.l1.svg", 0x6c707eff)], dark: &[("as/find-backward.d0.svg", 0x548af7ff), ("as/find-backward.d1.svg", 0xced0d6ff)] };
 pub const FIND_FORWARD: AsIcon = AsIcon { light: &[("as/find-forward.l0.svg", 0x3574f0ff), ("as/find-forward.l1.svg", 0x6c707eff)], dark: &[("as/find-forward.d0.svg", 0x548af7ff), ("as/find-forward.d1.svg", 0xced0d6ff)] };
+pub const FIT_CONTENT: AsIcon = AsIcon { light: &[("as/fit-content.l0.svg", 0x6c707eff)], dark: &[("as/fit-content.d0.svg", 0xced0d6ff)] };
 pub const FOLDER: AsIcon = AsIcon { light: &[("as/folder.l0.svg", 0xebecf0ff), ("as/folder.l1.svg", 0x6c707eff)], dark: &[("as/folder.d0.svg", 0x43454aff), ("as/folder.d1.svg", 0xced0d6ff)] };
 pub const FORCE_REFRESH: AsIcon = AsIcon { light: &[("as/force-refresh.l0.svg", 0xdb3b4bff)], dark: &[("as/force-refresh.d0.svg", 0xdb5c5cff)] };
 pub const FUNCTION: AsIcon = AsIcon { light: &[("as/function.l0.svg", 0xfff7f7ff), ("as/function.l1.svg", 0xdb3b4bff)], dark: &[("as/function.d0.svg", 0x402929ff), ("as/function.d1.svg", 0xdb5c5cff)] };
 pub const GRADLE: AsIcon = AsIcon { light: &[("as/gradle.l0.svg", 0x6c707eff)], dark: &[("as/gradle.d0.svg", 0xced0d6ff)] };
 pub const GRADLE_KOTLIN: AsIcon = AsIcon { light: &[("as/gradle-kotlin.l0.svg", 0x6c707eff), ("as/gradle-kotlin.l1.svg", 0xfaf5ffff), ("as/gradle-kotlin.l2.svg", 0x834df0ff)], dark: &[("as/gradle-kotlin.d0.svg", 0xced0d6ff), ("as/gradle-kotlin.d1.svg", 0x2f2936ff), ("as/gradle-kotlin.d2.svg", 0xa571e6ff)] };
 pub const GREEN_CHECKMARK: AsIcon = AsIcon { light: &[("as/green-checkmark.l0.svg", 0x369650ff)], dark: &[("as/green-checkmark.d0.svg", 0x57965cff)] };
+pub const GRID: AsIcon = AsIcon { light: &[("as/grid.l0.svg", 0x6c707eff)], dark: &[("as/grid.d0.svg", 0xced0d6ff)] };
 pub const GROUP_BY_MODULE: AsIcon = AsIcon { light: &[("as/group-by-module.l0.svg", 0x6c707eff), ("as/group-by-module.l1.svg", 0xedf3ffff), ("as/group-by-module.l2.svg", 0x3574f0ff)], dark: &[("as/group-by-module.d0.svg", 0xced0d6ff), ("as/group-by-module.d1.svg", 0x25324dff), ("as/group-by-module.d2.svg", 0x548af7ff)] };
 pub const GROUP_BY_PACKAGE: AsIcon = AsIcon { light: &[("as/group-by-package.l0.svg", 0x6c707eff), ("as/group-by-package.l1.svg", 0xebecf0ff), ("as/group-by-package.l2.svg", 0x6c707eff)], dark: &[("as/group-by-package.d0.svg", 0xced0d6ff), ("as/group-by-package.d1.svg", 0x43454aff), ("as/group-by-package.d2.svg", 0xced0d6ff)] };
 pub const HELP: AsIcon = AsIcon { light: &[("as/help.l0.svg", 0x6c707eff)], dark: &[("as/help.d0.svg", 0xced0d6ff)] };
@@ -215,9 +218,13 @@ pub const VCS_SHELVE: AsIcon = AsIcon { light: &[("as/vcs-shelve.l0.svg", 0x6c70
 pub const VCS_UNSHELVE: AsIcon = AsIcon { light: &[("as/vcs-unshelve.l0.svg", 0x6c707eff)], dark: &[("as/vcs-unshelve.d0.svg", 0xced0d6ff)] };
 pub const VCS_UNVERSIONED: AsIcon = AsIcon { light: &[("as/vcs-unversioned.l0.svg", 0x6c707eff), ("as/vcs-unversioned.l1.svg", 0xebecf0ff), ("as/vcs-unversioned.l2.svg", 0x6c707eff)], dark: &[("as/vcs-unversioned.d0.svg", 0xced0d6ff), ("as/vcs-unversioned.d1.svg", 0x43454aff), ("as/vcs-unversioned.d2.svg", 0xced0d6ff)] };
 pub const VCS_UPDATE: AsIcon = AsIcon { light: &[("as/vcs-update.l0.svg", 0x6c707eff)], dark: &[("as/vcs-update.d0.svg", 0xced0d6ff)] };
+pub const ZOOM_IN: AsIcon = AsIcon { light: &[("as/zoom-in.l0.svg", 0x6c707eff)], dark: &[("as/zoom-in.d0.svg", 0xced0d6ff)] };
+pub const ZOOM_OUT: AsIcon = AsIcon { light: &[("as/zoom-out.l0.svg", 0x6c707eff)], dark: &[("as/zoom-out.d0.svg", 0xced0d6ff)] };
 
 /// Every layer file, served by the asset source.
 pub static FILES: &[(&str, &[u8])] = &[
+    ("as/actual-zoom.l0.svg", include_bytes!("../../assets/as-icons/gen/actual-zoom.l0.svg")),
+    ("as/actual-zoom.d0.svg", include_bytes!("../../assets/as-icons/gen/actual-zoom.d0.svg")),
     ("as/add.l0.svg", include_bytes!("../../assets/as-icons/gen/add.l0.svg")),
     ("as/add.d0.svg", include_bytes!("../../assets/as-icons/gen/add.d0.svg")),
     ("as/add-file.l0.svg", include_bytes!("../../assets/as-icons/gen/add-file.l0.svg")),
@@ -474,6 +481,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/find-forward.l1.svg", include_bytes!("../../assets/as-icons/gen/find-forward.l1.svg")),
     ("as/find-forward.d0.svg", include_bytes!("../../assets/as-icons/gen/find-forward.d0.svg")),
     ("as/find-forward.d1.svg", include_bytes!("../../assets/as-icons/gen/find-forward.d1.svg")),
+    ("as/fit-content.l0.svg", include_bytes!("../../assets/as-icons/gen/fit-content.l0.svg")),
+    ("as/fit-content.d0.svg", include_bytes!("../../assets/as-icons/gen/fit-content.d0.svg")),
     ("as/folder.l0.svg", include_bytes!("../../assets/as-icons/gen/folder.l0.svg")),
     ("as/folder.l1.svg", include_bytes!("../../assets/as-icons/gen/folder.l1.svg")),
     ("as/folder.d0.svg", include_bytes!("../../assets/as-icons/gen/folder.d0.svg")),
@@ -494,6 +503,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/gradle-kotlin.d2.svg", include_bytes!("../../assets/as-icons/gen/gradle-kotlin.d2.svg")),
     ("as/green-checkmark.l0.svg", include_bytes!("../../assets/as-icons/gen/green-checkmark.l0.svg")),
     ("as/green-checkmark.d0.svg", include_bytes!("../../assets/as-icons/gen/green-checkmark.d0.svg")),
+    ("as/grid.l0.svg", include_bytes!("../../assets/as-icons/gen/grid.l0.svg")),
+    ("as/grid.d0.svg", include_bytes!("../../assets/as-icons/gen/grid.d0.svg")),
     ("as/group-by-module.l0.svg", include_bytes!("../../assets/as-icons/gen/group-by-module.l0.svg")),
     ("as/group-by-module.l1.svg", include_bytes!("../../assets/as-icons/gen/group-by-module.l1.svg")),
     ("as/group-by-module.l2.svg", include_bytes!("../../assets/as-icons/gen/group-by-module.l2.svg")),
@@ -864,4 +875,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/vcs-unversioned.d2.svg", include_bytes!("../../assets/as-icons/gen/vcs-unversioned.d2.svg")),
     ("as/vcs-update.l0.svg", include_bytes!("../../assets/as-icons/gen/vcs-update.l0.svg")),
     ("as/vcs-update.d0.svg", include_bytes!("../../assets/as-icons/gen/vcs-update.d0.svg")),
+    ("as/zoom-in.l0.svg", include_bytes!("../../assets/as-icons/gen/zoom-in.l0.svg")),
+    ("as/zoom-in.d0.svg", include_bytes!("../../assets/as-icons/gen/zoom-in.d0.svg")),
+    ("as/zoom-out.l0.svg", include_bytes!("../../assets/as-icons/gen/zoom-out.l0.svg")),
+    ("as/zoom-out.d0.svg", include_bytes!("../../assets/as-icons/gen/zoom-out.d0.svg")),
 ];
