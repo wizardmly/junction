@@ -1121,8 +1121,107 @@ fn changelist_menu(
     }))
 }
 
-impl Render for CommitView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl CommitView {
+    /// Refresh, Rollback, Diff, Shelve, Stash, Update, View Options, Expand /
+    /// Collapse, and Stage / Unstage in staging mode.
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let staging = self.staging;
+        let by_directory = Settings::get(cx).commit_group_by_directory;
+        h_flex()
+            .h(px(crate::ui::common::toolbar_height()))
+            .px_1()
+            .gap_0p5()
+            .border_b_1()
+            .border_color(palette.border)
+            .child(tool_button("commit-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(
+                |this, _, _, cx| this.model.update(cx, |m, cx| m.reload(cx)),
+            )))
+            .child(
+                tool_button("commit-rollback", IconName::Undo2, "Rollback…")
+                    .on_click(cx.listener(|this, _, window, cx| this.rollback(None, window, cx))),
+            )
+            .child(tool_button("commit-diff", IconName::FileDiff, "Show Diff").on_click(cx.listener(
+                |this, _, _, cx| {
+                    if let Some(source) = this.last_selection.clone().and_then(|id| this.diff_source(&id)) {
+                        cx.emit(CommitEvent::OpenDiff(source));
+                    }
+                },
+            )))
+            .child(
+                tool_button("commit-shelve", IconName::Layers, "Shelve Changes…")
+                    .on_click(cx.listener(|this, _, window, cx| this.shelve(window, cx))),
+            )
+            .child(
+                tool_button("commit-stash", IconName::Archive, "Stash Changes…")
+                    .on_click(cx.listener(|this, _, window, cx| crate::ui::dialogs::stash(this.model.clone(), window, cx))),
+            )
+            .child(
+                tool_button("commit-update", IconName::ArrowDownToLine, "Update Project…  Ctrl+T")
+                    .on_click(cx.listener(|this, _, window, cx| crate::ui::dialogs::update_project(this.model.clone(), window, cx))),
+            )
+            .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
+            .child(
+                Button::new("commit-view-options")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(IconName::Eye))
+                    .tooltip("View Options")
+                    .dropdown_menu({
+                        let entity = cx.entity();
+                        let settings = Settings::get(cx);
+                        let (by_dir, by_module, by_repo, show_ignored) = (
+                            by_directory,
+                            settings.commit_group_by_module,
+                            settings.commit_group_by_repository,
+                            settings.commit_show_ignored,
+                        );
+                        move |menu, _, _| {
+                            let (e1, e2, e3, e4) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
+                            menu.label("Group By")
+                                .item(PopupMenuItem::new("Repository").checked(by_repo).on_click(move |_, _, cx| {
+                                    Settings::update(cx, |s| s.commit_group_by_repository = !by_repo);
+                                    e3.update(cx, |this, cx| this.rebuild(cx));
+                                }))
+                                .item(PopupMenuItem::new("Module").checked(by_module).on_click(move |_, _, cx| {
+                                    Settings::update(cx, |s| s.commit_group_by_module = !by_module);
+                                    e4.update(cx, |this, cx| this.rebuild(cx));
+                                }))
+                                .item(PopupMenuItem::new("Directory").checked(by_dir).on_click(move |_, _, cx| {
+                                    Settings::update(cx, |s| s.commit_group_by_directory = !by_dir);
+                                    e1.update(cx, |this, cx| this.rebuild(cx));
+                                }))
+                                .separator()
+                                .item(PopupMenuItem::new("Show Ignored Files").checked(show_ignored).on_click(move |_, _, cx| {
+                                    Settings::update(cx, |s| s.commit_show_ignored = !show_ignored);
+                                    e2.update(cx, |this, cx| this.rebuild(cx));
+                                }))
+                        }
+                    }),
+            )
+            .child(tool_button("commit-expand", IconName::ChevronsUpDown, "Expand All").on_click(cx.listener(|this, _, _, cx| {
+                this.expand_all = true;
+                this.rebuild(cx);
+            })))
+            .child(tool_button("commit-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(|this, _, _, cx| {
+                this.expand_all = false;
+                this.rebuild(cx);
+            })))
+            .when(staging, |el| {
+                el.child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
+                    .child(
+                        tool_button("commit-stage", IconName::Plus, "Stage")
+                            .on_click(cx.listener(|this, _, _, cx| this.stage_selected(false, cx))),
+                    )
+                    .child(
+                        tool_button("commit-unstage", IconName::Minus, "Unstage")
+                            .on_click(cx.listener(|this, _, _, cx| this.stage_selected(true, cx))),
+                    )
+            })
+    }
+
+    /// The changes tree with its checkboxes, plus the speed search overlay.
+    fn render_tree(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let submodules = self.model.read(cx).submodule_paths().clone();
         let palette = cx.palette().clone();
         let staging = self.staging;
@@ -1130,16 +1229,6 @@ impl Render for CommitView {
         let included = self.included.clone();
         let counts = self.counts.clone();
         let entity = cx.entity();
-        let can_commit = self.can_commit(cx);
-        let busy = self.model.read(cx).busy().is_some();
-        let history_entity = cx.entity();
-        let commit_area = Settings::get(cx).non_modal_commit || self.in_dialog;
-        // First-line length against Settings › Commit › subject limit.
-        let subject_hint = {
-            let text = self.message.read(cx).value();
-            let len = text.lines().next().unwrap_or_default().chars().count();
-            (len > 0).then_some((len, Settings::get(cx).commit_subject_limit))
-        };
 
         // Per node: the paths under it (for group/dir checkboxes), its color,
         // and whether it is a group or belongs to the Staged tree.
@@ -1154,6 +1243,317 @@ impl Render for CommitView {
             if staging { HashSet::new() } else { ExcludedHunks::get(cx).keys().cloned().collect() };
 
         let tree_palette = palette.clone();
+        div()
+            .flex_1()
+            .min_h_0()
+            .relative()
+            .key_context(TREE_CONTEXT)
+            .on_key_down(cx.listener(Self::on_tree_key))
+            .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.search.take().is_some() {
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(Self::on_show_diff))
+            .on_action(cx.listener(Self::on_rollback))
+            .on_action(cx.listener(Self::on_add_to_vcs))
+            .on_action(cx.listener(Self::on_delete))
+            .on_action(cx.listener(Self::on_edit_source))
+            .on_action(cx.listener(Self::on_move_to_changelist))
+            .child(
+            tree(&self.tree, move |ix, entry, _, _, cx| {
+                let palette = &tree_palette;
+                let item = entry.item();
+                let id = item.id.clone();
+                let file = CommitView::path_of(&id).map(|(_, p)| p.to_owned());
+                let (checked, partial) = match &file {
+                    Some(path) => (included.contains(path), false),
+                    None => {
+                        let paths = paths_by_node.get(&id).map(Vec::as_slice).unwrap_or_default();
+                        let n = paths.iter().filter(|p| included.contains(*p)).count();
+                        (n > 0 && n == paths.len(), n > 0 && n < paths.len())
+                    }
+                };
+                let color = kinds.get(id.as_ref()).map_or(palette.text, |k| common::status_color(*k, palette));
+                let is_group = group_ids.iter().any(|g| g.as_str() == id.as_ref());
+                let group_list = changelist_of.get(id.as_ref()).cloned();
+                let is_active = group_list.as_deref() == Some(active_list.as_str()) && list_names.len() > 1;
+                let in_staged = id.starts_with(STAGED_SCOPE) || id.as_ref() == "grp:staged";
+                let in_conflicts = id.starts_with(CONFLICTS_SCOPE) || id.as_ref() == "grp:conflicts";
+                let toggle_entity = entity.clone();
+                let toggle_id = id.clone();
+                let stage_entity = entity.clone();
+                let stage_id = id.clone();
+                let n = counts.get(&id).copied().unwrap_or(0);
+                let (menu_entity, menu_id, menu_file) = (entity.clone(), id.clone(), file.clone());
+                ListItem::new(ix).py_0().px_1().h(px(row_height())).child(
+                    h_flex()
+                        .w_full()
+                        .gap_1()
+                        .group("commit-row")
+                        .pl(px(entry.depth() as f32 * 14.))
+                        .text_sm()
+                        .child(if entry.is_folder() {
+                            Icon::new(if entry.is_expanded() { IconName::ChevronDown } else { IconName::ChevronRight })
+                                .xsmall()
+                                .text_color(palette.text_secondary)
+                        } else {
+                            Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black())
+                        })
+                        .when(
+                            !staging
+                                && !id.starts_with(CONFLICTS_SCOPE)
+                                && id.as_ref() != "grp:conflicts"
+                                && !id.starts_with(IGNORED_SCOPE)
+                                && id.as_ref() != "grp:ignored",
+                            |el| {
+                            // A click on a folder's box must not also fold the folder.
+                            let theme = gpui_kit::component::ActiveTheme::theme(&*cx);
+                            let (mark_bg, mark_fg) = (theme.primary, theme.primary_foreground);
+                            el.child(
+                                div()
+                                    .relative()
+                                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                    .child(
+                                        Checkbox::new(SharedString::from(format!("check-{id}")))
+                                            .checked(checked)
+                                            .on_change(move |value, _, cx| {
+                                                // A partly included node includes everything on click, as in IntelliJ.
+                                                let value = partial || *value;
+                                                let id = toggle_id.clone();
+                                                toggle_entity.update(cx, |this, cx| this.toggle(&id, value, cx));
+                                            }),
+                                    )
+                                    // IntelliJ's three-state box: a dash when only some files are included.
+                                    .when(partial, |el| {
+                                        el.child(
+                                            div()
+                                                .absolute()
+                                                .inset_0()
+                                                .rounded(px(3.))
+                                                .bg(mark_bg)
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(div().w(px(8.)).h(px(2.)).bg(mark_fg)),
+                                        )
+                                    }),
+                            )
+                            },
+                        )
+                        .when(!is_group, |el| {
+                            el.child(
+                                Icon::new(match &file {
+                                    Some(p) if submodules.contains(p.as_str()) => IconName::FolderGit2,
+                                    Some(p) => common::file_icon(p),
+                                    None if id.split_once(':').is_some_and(|(_, r)| r.starts_with(common::REPO_PREFIX)) => IconName::FolderGit2,
+                                    None if id.split_once(':').is_some_and(|(_, r)| r.starts_with(common::MODULE_PREFIX)) => IconName::Layers,
+                                    None => IconName::Folder,
+                                })
+                                .small()
+                                .text_color(palette.text_secondary),
+                            )
+                        })
+                        .child(
+                            div()
+                                .text_color(color)
+                                .when(is_active, |el| el.font_weight(gpui_kit::FontWeight::BOLD))
+                                .child(item.label.clone()),
+                        )
+                        .when_some(file.as_ref().filter(|_| !by_directory).and_then(|f| f.rsplit_once('/')).map(|(dir, _)| dir.to_owned()), |el, dir| {
+                            el.child(div().text_xs().text_color(palette.text_secondary).child(dir))
+                        })
+                        .when(file.as_ref().is_some_and(|f| partial_paths.contains(f)), |el| {
+                            el.child(div().text_xs().text_color(palette.text_secondary).child("partially included"))
+                        })
+                        .when(file.is_none(), |el| {
+                            el.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.text_secondary)
+                                    .child(format!("{n} {}", if n == 1 { "file" } else { "files" })),
+                            )
+                        })
+                        // Staging mode: a +/- button appears on hover, as in IntelliJ.
+                        .when(staging && (n > 0 || file.is_some()) && !in_conflicts, |el| {
+                            el.child(div().flex_1()).child(
+                                div().opacity(0.).group_hover("commit-row", |s| s.opacity(1.)).child(
+                                    tool_button(
+                                        SharedString::from(format!("stage-{id}")),
+                                        if in_staged { IconName::Minus } else { IconName::Plus },
+                                        if in_staged { "Unstage" } else { "Stage" },
+                                    )
+                                    .on_click(move |_, _, cx| {
+                                        let id = stage_id.clone();
+                                        stage_entity.update(cx, |this, cx| this.stage_node(&id, cx));
+                                    }),
+                                ),
+                            )
+                        })
+                        .context_menu(move |menu, window, cx| {
+                            menu::commit_menu(menu, &menu_entity, &menu_id, menu_file.clone(), group_list.clone(), window, cx)
+                        }),
+                )
+            })
+            .size_full(),
+        )
+        .when_some(self.search.clone(), |el, q| {
+            let found = q.is_empty() || {
+                let tree = self.tree.read(cx);
+                (0..).map_while(|ix| tree.entry(ix)).any(|e| self.search_matches(&e.item().label))
+            };
+            el.child(
+                h_flex()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(24.))
+                    .px_2()
+                    .gap_1()
+                    .text_sm()
+                    .bg(gpui_kit::Hsla { a: 1.0, ..palette.panel })
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .shadow_sm()
+                    .child(common::icon(IconName::Search).text_color(palette.text_secondary))
+                    .child(div().text_color(if found { palette.text } else { palette.status_unversioned }).child(q)),
+            )
+        })
+    }
+
+    /// Amend, the message editor, and the Commit / Commit and Push buttons.
+    fn render_commit_area(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let can_commit = self.can_commit(cx);
+        let busy = self.model.read(cx).busy().is_some();
+        let history_entity = cx.entity();
+        // First-line length against Settings › Commit › subject limit.
+        let subject_hint = {
+            let text = self.message.read(cx).value();
+            let len = text.lines().next().unwrap_or_default().chars().count();
+            (len > 0).then_some((len, Settings::get(cx).commit_subject_limit))
+        };
+        v_flex()
+            .border_t_1()
+            .border_color(palette.border)
+            .p_2()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        Checkbox::new("amend")
+                            .label("Amend")
+                            .checked(self.amend)
+                            .on_change(cx.listener(|this, value, window, cx| this.set_amend(*value, window, cx))),
+                    )
+                    .child(div().flex_1())
+                    .when_some(subject_hint, |el, (len, limit)| {
+                        el.child(
+                            div()
+                                .text_xs()
+                                .text_color(if len > limit { palette.status_conflict } else { palette.text_secondary })
+                                .child(format!("{len}/{limit}")),
+                        )
+                    })
+                    .child(
+                        Button::new("commit-history")
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(IconName::Clock))
+                            .tooltip("Commit Message History  Ctrl+M")
+                            .dropdown_menu({
+                                let entity = history_entity.clone();
+                                move |mut menu, _, _| {
+                                    let history = crate::settings::message_history();
+                                    if history.is_empty() {
+                                        return menu.item(PopupMenuItem::new("No recent commit messages").disabled(true));
+                                    }
+                                    for message in history {
+                                        let subject: String = message.lines().next().unwrap_or_default().chars().take(70).collect();
+                                        let entity = entity.clone();
+                                        menu = menu.item(PopupMenuItem::new(subject).on_click(move |_, window, cx| {
+                                            let message = message.clone();
+                                            entity.update(cx, |this, cx| this.set_message(message, window, cx))
+                                        }));
+                                    }
+                                    menu.max_h(px(360.))
+                                }
+                            }),
+                    ),
+            )
+            .child({
+                // The commit message uses the editor font with a right margin
+                // line at the subject limit, as IntelliJ's commit editor does.
+                let mono = gpui_kit::component::ActiveTheme::theme(&**cx).mono_font_family.clone();
+                let font_size = gpui_kit::rems(0.875).to_pixels(window.rem_size());
+                let font = gpui_kit::font(mono.clone());
+                let advance = window
+                    .text_system()
+                    .advance(window.text_system().resolve_font(&font), font_size, 'm')
+                    .map(|size| size.width)
+                    .unwrap_or(px(7.));
+                let margin = px(12.) + advance * Settings::get(cx).commit_subject_limit as f32;
+                div()
+                    .relative()
+                    .overflow_hidden()
+                    .font_family(mono)
+                    .key_context(crate::ui::spell_overlay::EDITOR_CONTEXT)
+                    .on_action(cx.listener(|this, _: &crate::ui::spell_overlay::ShowSpellingFixes, window, cx| {
+                        this.spelling.update(cx, |spelling, cx| spelling.show_at_cursor(window, cx))
+                    }))
+                    .child(Textarea::new(&self.message).h(px(110.)))
+                    .when(self.message_error, |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .bottom(px(6.))
+                                .right(px(8.))
+                                .px_2()
+                                .py_0p5()
+                                .rounded(px(4.))
+                                .text_xs()
+                                .text_color(palette.status_conflict)
+                                .bg(gpui_kit::Hsla { a: 1.0, ..palette.panel })
+                                .border_1()
+                                .border_color(palette.status_conflict)
+                                .child("Specify commit message"),
+                        )
+                    })
+                    .child(div().absolute().top(px(4.)).bottom(px(4.)).left(margin).w(px(1.)).bg(palette.border))
+                    .child(self.spelling.clone())
+            })
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("do-commit")
+                            .primary()
+                            .small()
+                            .label(if self.amend { "Amend Commit" } else { "Commit" })
+                            .disabled(!can_commit || busy)
+                            .tooltip(if cfg!(target_os = "macos") { "Commit (⌘⏎)" } else { "Commit (Ctrl+Enter)" })
+                            .on_click(cx.listener(|this, _, window, cx| this.commit(false, window, cx))),
+                    )
+                    .child(
+                        Button::new("do-commit-push")
+                            .outline()
+                            .small()
+                            .label(if self.amend { "Amend Commit and Push…" } else { "Commit and Push…" })
+                            .disabled(!can_commit || busy)
+                            .tooltip(if cfg!(target_os = "macos") { "Commit and Push (⌥⌘K)" } else { "Commit and Push (Ctrl+Alt+K)" })
+                            .on_click(cx.listener(|this, _, window, cx| this.commit(true, window, cx))),
+                    )
+                    .child(div().flex_1())
+                    .child(self.render_options(cx)),
+            )
+    }
+}
+
+impl Render for CommitView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let commit_area = Settings::get(cx).non_modal_commit || self.in_dialog;
         v_flex()
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::on_message_history))
@@ -1169,392 +1569,8 @@ impl Render for CommitView {
                 }
             }))
             .size_full()
-            .child(
-                h_flex()
-                    .h(px(crate::ui::common::toolbar_height()))
-                    .px_1()
-                    .gap_0p5()
-                    .border_b_1()
-                    .border_color(palette.border)
-                    .child(tool_button("commit-refresh", IconName::RefreshCw, "Refresh").on_click(cx.listener(
-                        |this, _, _, cx| this.model.update(cx, |m, cx| m.reload(cx)),
-                    )))
-                    .child(
-                        tool_button("commit-rollback", IconName::Undo2, "Rollback…")
-                            .on_click(cx.listener(|this, _, window, cx| this.rollback(None, window, cx))),
-                    )
-                    .child(tool_button("commit-diff", IconName::FileDiff, "Show Diff").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            if let Some(source) = this.last_selection.clone().and_then(|id| this.diff_source(&id)) {
-                                cx.emit(CommitEvent::OpenDiff(source));
-                            }
-                        },
-                    )))
-                    .child(
-                        tool_button("commit-shelve", IconName::Layers, "Shelve Changes…")
-                            .on_click(cx.listener(|this, _, window, cx| this.shelve(window, cx))),
-                    )
-                    .child(
-                        tool_button("commit-stash", IconName::Archive, "Stash Changes…")
-                            .on_click(cx.listener(|this, _, window, cx| crate::ui::dialogs::stash(this.model.clone(), window, cx))),
-                    )
-                    .child(
-                        tool_button("commit-update", IconName::ArrowDownToLine, "Update Project…  Ctrl+T")
-                            .on_click(cx.listener(|this, _, window, cx| crate::ui::dialogs::update_project(this.model.clone(), window, cx))),
-                    )
-                    .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
-                    .child(
-                        Button::new("commit-view-options")
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::new(IconName::Eye))
-                            .tooltip("View Options")
-                            .dropdown_menu({
-                                let entity = cx.entity();
-                                let settings = Settings::get(cx);
-                                let (by_dir, by_module, by_repo, show_ignored) = (
-                                    by_directory,
-                                    settings.commit_group_by_module,
-                                    settings.commit_group_by_repository,
-                                    settings.commit_show_ignored,
-                                );
-                                move |menu, _, _| {
-                                    let (e1, e2, e3, e4) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
-                                    menu.label("Group By")
-                                        .item(PopupMenuItem::new("Repository").checked(by_repo).on_click(move |_, _, cx| {
-                                            Settings::update(cx, |s| s.commit_group_by_repository = !by_repo);
-                                            e3.update(cx, |this, cx| this.rebuild(cx));
-                                        }))
-                                        .item(PopupMenuItem::new("Module").checked(by_module).on_click(move |_, _, cx| {
-                                            Settings::update(cx, |s| s.commit_group_by_module = !by_module);
-                                            e4.update(cx, |this, cx| this.rebuild(cx));
-                                        }))
-                                        .item(PopupMenuItem::new("Directory").checked(by_dir).on_click(move |_, _, cx| {
-                                            Settings::update(cx, |s| s.commit_group_by_directory = !by_dir);
-                                            e1.update(cx, |this, cx| this.rebuild(cx));
-                                        }))
-                                        .separator()
-                                        .item(PopupMenuItem::new("Show Ignored Files").checked(show_ignored).on_click(move |_, _, cx| {
-                                            Settings::update(cx, |s| s.commit_show_ignored = !show_ignored);
-                                            e2.update(cx, |this, cx| this.rebuild(cx));
-                                        }))
-                                }
-                            }),
-                    )
-                    .child(tool_button("commit-expand", IconName::ChevronsUpDown, "Expand All").on_click(cx.listener(|this, _, _, cx| {
-                        this.expand_all = true;
-                        this.rebuild(cx);
-                    })))
-                    .child(tool_button("commit-collapse", IconName::ChevronsDownUp, "Collapse All").on_click(cx.listener(|this, _, _, cx| {
-                        this.expand_all = false;
-                        this.rebuild(cx);
-                    })))
-                    .when(staging, |el| {
-                        el.child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
-                            .child(
-                                tool_button("commit-stage", IconName::Plus, "Stage")
-                                    .on_click(cx.listener(|this, _, _, cx| this.stage_selected(false, cx))),
-                            )
-                            .child(
-                                tool_button("commit-unstage", IconName::Minus, "Unstage")
-                                    .on_click(cx.listener(|this, _, _, cx| this.stage_selected(true, cx))),
-                            )
-                    }),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .relative()
-                    .key_context(TREE_CONTEXT)
-                    .on_key_down(cx.listener(Self::on_tree_key))
-                    .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(|this, _, _, cx| {
-                        if this.search.take().is_some() {
-                            cx.notify();
-                        }
-                    }))
-                    .on_action(cx.listener(Self::on_show_diff))
-                    .on_action(cx.listener(Self::on_rollback))
-                    .on_action(cx.listener(Self::on_add_to_vcs))
-                    .on_action(cx.listener(Self::on_delete))
-                    .on_action(cx.listener(Self::on_edit_source))
-                    .on_action(cx.listener(Self::on_move_to_changelist))
-                    .child(
-                    tree(&self.tree, move |ix, entry, _, _, cx| {
-                        let palette = &tree_palette;
-                        let item = entry.item();
-                        let id = item.id.clone();
-                        let file = CommitView::path_of(&id).map(|(_, p)| p.to_owned());
-                        let (checked, partial) = match &file {
-                            Some(path) => (included.contains(path), false),
-                            None => {
-                                let paths = paths_by_node.get(&id).map(Vec::as_slice).unwrap_or_default();
-                                let n = paths.iter().filter(|p| included.contains(*p)).count();
-                                (n > 0 && n == paths.len(), n > 0 && n < paths.len())
-                            }
-                        };
-                        let color = kinds.get(id.as_ref()).map_or(palette.text, |k| common::status_color(*k, palette));
-                        let is_group = group_ids.iter().any(|g| g.as_str() == id.as_ref());
-                        let group_list = changelist_of.get(id.as_ref()).cloned();
-                        let is_active = group_list.as_deref() == Some(active_list.as_str()) && list_names.len() > 1;
-                        let in_staged = id.starts_with(STAGED_SCOPE) || id.as_ref() == "grp:staged";
-                        let in_conflicts = id.starts_with(CONFLICTS_SCOPE) || id.as_ref() == "grp:conflicts";
-                        let toggle_entity = entity.clone();
-                        let toggle_id = id.clone();
-                        let stage_entity = entity.clone();
-                        let stage_id = id.clone();
-                        let n = counts.get(&id).copied().unwrap_or(0);
-                        let (menu_entity, menu_id, menu_file) = (entity.clone(), id.clone(), file.clone());
-                        ListItem::new(ix).py_0().px_1().h(px(row_height())).child(
-                            h_flex()
-                                .w_full()
-                                .gap_1()
-                                .group("commit-row")
-                                .pl(px(entry.depth() as f32 * 14.))
-                                .text_sm()
-                                .child(if entry.is_folder() {
-                                    Icon::new(if entry.is_expanded() { IconName::ChevronDown } else { IconName::ChevronRight })
-                                        .xsmall()
-                                        .text_color(palette.text_secondary)
-                                } else {
-                                    Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black())
-                                })
-                                .when(
-                                    !staging
-                                        && !id.starts_with(CONFLICTS_SCOPE)
-                                        && id.as_ref() != "grp:conflicts"
-                                        && !id.starts_with(IGNORED_SCOPE)
-                                        && id.as_ref() != "grp:ignored",
-                                    |el| {
-                                    // A click on a folder's box must not also fold the folder.
-                                    let theme = gpui_kit::component::ActiveTheme::theme(&*cx);
-                                    let (mark_bg, mark_fg) = (theme.primary, theme.primary_foreground);
-                                    el.child(
-                                        div()
-                                            .relative()
-                                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                            .child(
-                                                Checkbox::new(SharedString::from(format!("check-{id}")))
-                                                    .checked(checked)
-                                                    .on_change(move |value, _, cx| {
-                                                        // A partly included node includes everything on click, as in IntelliJ.
-                                                        let value = partial || *value;
-                                                        let id = toggle_id.clone();
-                                                        toggle_entity.update(cx, |this, cx| this.toggle(&id, value, cx));
-                                                    }),
-                                            )
-                                            // IntelliJ's three-state box: a dash when only some files are included.
-                                            .when(partial, |el| {
-                                                el.child(
-                                                    div()
-                                                        .absolute()
-                                                        .inset_0()
-                                                        .rounded(px(3.))
-                                                        .bg(mark_bg)
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .child(div().w(px(8.)).h(px(2.)).bg(mark_fg)),
-                                                )
-                                            }),
-                                    )
-                                    },
-                                )
-                                .when(!is_group, |el| {
-                                    el.child(
-                                        Icon::new(match &file {
-                                            Some(p) if submodules.contains(p.as_str()) => IconName::FolderGit2,
-                                            Some(p) => common::file_icon(p),
-                                            None if id.split_once(':').is_some_and(|(_, r)| r.starts_with(common::REPO_PREFIX)) => IconName::FolderGit2,
-                                            None if id.split_once(':').is_some_and(|(_, r)| r.starts_with(common::MODULE_PREFIX)) => IconName::Layers,
-                                            None => IconName::Folder,
-                                        })
-                                        .small()
-                                        .text_color(palette.text_secondary),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .text_color(color)
-                                        .when(is_active, |el| el.font_weight(gpui_kit::FontWeight::BOLD))
-                                        .child(item.label.clone()),
-                                )
-                                .when_some(file.as_ref().filter(|_| !by_directory).and_then(|f| f.rsplit_once('/')).map(|(dir, _)| dir.to_owned()), |el, dir| {
-                                    el.child(div().text_xs().text_color(palette.text_secondary).child(dir))
-                                })
-                                .when(file.as_ref().is_some_and(|f| partial_paths.contains(f)), |el| {
-                                    el.child(div().text_xs().text_color(palette.text_secondary).child("partially included"))
-                                })
-                                .when(file.is_none(), |el| {
-                                    el.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(palette.text_secondary)
-                                            .child(format!("{n} {}", if n == 1 { "file" } else { "files" })),
-                                    )
-                                })
-                                // Staging mode: a +/- button appears on hover, as in IntelliJ.
-                                .when(staging && (n > 0 || file.is_some()) && !in_conflicts, |el| {
-                                    el.child(div().flex_1()).child(
-                                        div().opacity(0.).group_hover("commit-row", |s| s.opacity(1.)).child(
-                                            tool_button(
-                                                SharedString::from(format!("stage-{id}")),
-                                                if in_staged { IconName::Minus } else { IconName::Plus },
-                                                if in_staged { "Unstage" } else { "Stage" },
-                                            )
-                                            .on_click(move |_, _, cx| {
-                                                let id = stage_id.clone();
-                                                stage_entity.update(cx, |this, cx| this.stage_node(&id, cx));
-                                            }),
-                                        ),
-                                    )
-                                })
-                                .context_menu(move |menu, window, cx| {
-                                    menu::commit_menu(menu, &menu_entity, &menu_id, menu_file.clone(), group_list.clone(), window, cx)
-                                }),
-                        )
-                    })
-                    .size_full(),
-                )
-                .when_some(self.search.clone(), |el, q| {
-                    let found = q.is_empty() || {
-                        let tree = self.tree.read(cx);
-                        (0..).map_while(|ix| tree.entry(ix)).any(|e| self.search_matches(&e.item().label))
-                    };
-                    el.child(
-                        h_flex()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .h(px(24.))
-                            .px_2()
-                            .gap_1()
-                            .text_sm()
-                            .bg(gpui_kit::Hsla { a: 1.0, ..palette.panel })
-                            .border_b_1()
-                            .border_color(palette.border)
-                            .shadow_sm()
-                            .child(common::icon(IconName::Search).text_color(palette.text_secondary))
-                            .child(div().text_color(if found { palette.text } else { palette.status_unversioned }).child(q)),
-                    )
-                }),
-            )
-            .when(commit_area, |el| el.child(
-                v_flex()
-                    .border_t_1()
-                    .border_color(palette.border)
-                    .p_2()
-                    .gap_2()
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .child(
-                                Checkbox::new("amend")
-                                    .label("Amend")
-                                    .checked(self.amend)
-                                    .on_change(cx.listener(|this, value, window, cx| this.set_amend(*value, window, cx))),
-                            )
-                            .child(div().flex_1())
-                            .when_some(subject_hint, |el, (len, limit)| {
-                                el.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(if len > limit { palette.status_conflict } else { palette.text_secondary })
-                                        .child(format!("{len}/{limit}")),
-                                )
-                            })
-                            .child(
-                                Button::new("commit-history")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(Icon::new(IconName::Clock))
-                                    .tooltip("Commit Message History  Ctrl+M")
-                                    .dropdown_menu({
-                                        let entity = history_entity.clone();
-                                        move |mut menu, _, _| {
-                                            let history = crate::settings::message_history();
-                                            if history.is_empty() {
-                                                return menu.item(PopupMenuItem::new("No recent commit messages").disabled(true));
-                                            }
-                                            for message in history {
-                                                let subject: String = message.lines().next().unwrap_or_default().chars().take(70).collect();
-                                                let entity = entity.clone();
-                                                menu = menu.item(PopupMenuItem::new(subject).on_click(move |_, window, cx| {
-                                                    let message = message.clone();
-                                                    entity.update(cx, |this, cx| this.set_message(message, window, cx))
-                                                }));
-                                            }
-                                            menu.max_h(px(360.))
-                                        }
-                                    }),
-                            ),
-                    )
-                    .child({
-                        // The commit message uses the editor font with a right margin
-                        // line at the subject limit, as IntelliJ's commit editor does.
-                        let mono = gpui_kit::component::ActiveTheme::theme(&**cx).mono_font_family.clone();
-                        let font_size = gpui_kit::rems(0.875).to_pixels(window.rem_size());
-                        let font = gpui_kit::font(mono.clone());
-                        let advance = window
-                            .text_system()
-                            .advance(window.text_system().resolve_font(&font), font_size, 'm')
-                            .map(|size| size.width)
-                            .unwrap_or(px(7.));
-                        let margin = px(12.) + advance * Settings::get(cx).commit_subject_limit as f32;
-                        div()
-                            .relative()
-                            .overflow_hidden()
-                            .font_family(mono)
-                            .key_context(crate::ui::spell_overlay::EDITOR_CONTEXT)
-                            .on_action(cx.listener(|this, _: &crate::ui::spell_overlay::ShowSpellingFixes, window, cx| {
-                                this.spelling.update(cx, |spelling, cx| spelling.show_at_cursor(window, cx))
-                            }))
-                            .child(Textarea::new(&self.message).h(px(110.)))
-                            .when(self.message_error, |el| {
-                                el.child(
-                                    div()
-                                        .absolute()
-                                        .bottom(px(6.))
-                                        .right(px(8.))
-                                        .px_2()
-                                        .py_0p5()
-                                        .rounded(px(4.))
-                                        .text_xs()
-                                        .text_color(palette.status_conflict)
-                                        .bg(gpui_kit::Hsla { a: 1.0, ..palette.panel })
-                                        .border_1()
-                                        .border_color(palette.status_conflict)
-                                        .child("Specify commit message"),
-                                )
-                            })
-                            .child(div().absolute().top(px(4.)).bottom(px(4.)).left(margin).w(px(1.)).bg(palette.border))
-                            .child(self.spelling.clone())
-                    })
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("do-commit")
-                                    .primary()
-                                    .small()
-                                    .label(if self.amend { "Amend Commit" } else { "Commit" })
-                                    .disabled(!can_commit || busy)
-                                    .tooltip(if cfg!(target_os = "macos") { "Commit (⌘⏎)" } else { "Commit (Ctrl+Enter)" })
-                                    .on_click(cx.listener(|this, _, window, cx| this.commit(false, window, cx))),
-                            )
-                            .child(
-                                Button::new("do-commit-push")
-                                    .outline()
-                                    .small()
-                                    .label(if self.amend { "Amend Commit and Push…" } else { "Commit and Push…" })
-                                    .disabled(!can_commit || busy)
-                                    .tooltip(if cfg!(target_os = "macos") { "Commit and Push (⌥⌘K)" } else { "Commit and Push (Ctrl+Alt+K)" })
-                                    .on_click(cx.listener(|this, _, window, cx| this.commit(true, window, cx))),
-                            )
-                            .child(div().flex_1())
-                            .child(self.render_options(cx)),
-                    ),
-            ))
+            .child(self.render_toolbar(cx))
+            .child(self.render_tree(cx))
+            .when(commit_area, |el| el.child(self.render_commit_area(window, cx)))
     }
 }
