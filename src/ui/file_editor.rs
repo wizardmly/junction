@@ -221,6 +221,7 @@ pub struct FileEditor {
     /// The annotation hover card: its line and where the mouse rested.
     hover_card: Option<(usize, Point<Pixels>)>,
     hover_task: Option<gpui_kit::Task<()>>,
+    markers_task: Option<gpui_kit::Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -433,6 +434,7 @@ impl FileEditor {
             annotation_task: None,
             hover_card: None,
             hover_task: None,
+            markers_task: None,
             _subscriptions: subscriptions,
         };
         this.update_markers(cx);
@@ -602,11 +604,20 @@ impl FileEditor {
         if self.read_only() || self.error.is_some() || self.unversioned {
             return;
         }
-        let text = self.text(cx);
-        self.hunks = diff::commit_hunks(&self.base, &text);
-        if self.popup.is_some_and(|ix| ix >= self.hunks.len()) {
-            self.popup = None;
-        }
+        // Diffing a long file takes a while: off the main thread, the
+        // markers following a moment after the typing.
+        let (base, text) = (self.base.clone(), self.text(cx));
+        self.markers_task = Some(cx.spawn(async move |this, cx| {
+            let hunks = cx.background_spawn(async move { diff::commit_hunks(&base, &text) }).await;
+            this.update(cx, |this, cx| {
+                this.hunks = hunks;
+                if this.popup.is_some_and(|ix| ix >= this.hunks.len()) {
+                    this.popup = None;
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// The gutter's change markers: added lines a green bar, modified a blue

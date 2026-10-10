@@ -170,7 +170,11 @@ impl Focusable for ProjectView {
 impl ProjectView {
     pub fn new(index: Entity<CodeIndex>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![
-            cx.subscribe(&index, |this, _, _: &IndexEvent, cx| this.reload(cx)),
+            cx.subscribe(&index, |this, _, event: &IndexEvent, cx| {
+                if matches!(event, IndexEvent::Changed) {
+                    this.reload(cx)
+                }
+            }),
             cx.observe_global::<Settings>(|this, cx| {
                 let settings = Settings::get(cx).project.clone();
                 if settings != this.settings {
@@ -861,7 +865,7 @@ impl Render for ProjectView {
         let list = uniform_list(
             "project-files",
             rows.len(),
-            cx.processor(move |this, range: Range<usize>, _, cx| {
+            cx.processor(move |_, range: Range<usize>, _, cx| {
                 let palette = cx.palette().clone();
                 range
                     .map(|ix| {
@@ -925,8 +929,10 @@ impl Render for ProjectView {
                                 })
                             })
                             .context_menu({
-                                let target = this.target(row, cx);
-                                move |m, window, cx| match target.clone() {
+                                // Built when the menu opens: a folder's target lists
+                                // every file under it, too costly for each row drawn.
+                                let (view, row) = (cx.entity().downgrade(), row.clone());
+                                move |m, window, cx| match view.upgrade().and_then(|view| view.read(cx).target(&row, cx)) {
                                     Some(target) => crate::ui::file_menus::project_menu(m, target, window, cx),
                                     None => m,
                                 }

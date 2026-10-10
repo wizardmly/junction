@@ -64,7 +64,8 @@ pub enum RepoEvent {
 pub struct RepoModel {
     repository: Option<Repository>,
     console: GitConsole,
-    refs: RepositoryRefs,
+    /// Shared, so the views' per-frame copies are cheap.
+    refs: Arc<RepositoryRefs>,
     commits: Arc<Vec<Commit>>,
     graph: Arc<GraphLayout>,
     /// The log as loaded, before Collapse Linear Branches folds it.
@@ -174,7 +175,7 @@ impl RepoModel {
         let mut this = Self {
             repository: None,
             console: GitConsole::default(),
-            refs: RepositoryRefs::default(),
+            refs: Arc::default(),
             commits: Arc::default(),
             graph: Arc::default(),
             all_commits: Arc::default(),
@@ -358,7 +359,7 @@ impl RepoModel {
         &self.console
     }
 
-    pub fn refs(&self) -> &RepositoryRefs {
+    pub fn refs(&self) -> &Arc<RepositoryRefs> {
         &self.refs
     }
 
@@ -485,7 +486,7 @@ impl RepoModel {
                 this.loading = false;
                 match result {
                     Ok((snapshot, repository, filter)) => {
-                        this.refs = snapshot.refs;
+                        this.refs = Arc::new(snapshot.refs);
                         if let Some((log, key)) = snapshot.log {
                             let complete = log.commits.len() < git::log::FIRST_PAGE;
                             // (A short log came whole; a long one was the first page.)

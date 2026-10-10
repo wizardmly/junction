@@ -451,7 +451,7 @@ impl LogView {
         if !self.branch_searching {
             collect_expanded(&self.branch_items, &mut self.branch_expansion);
         }
-        let mut refs = self.model.read(cx).refs().clone();
+        let mut refs = (**self.model.read(cx).refs()).clone();
         // Speed search: keep matching refs only, with every folder open.
         let query = self.branch_search.read(cx).value().trim().to_lowercase();
         let searching = !query.is_empty();
@@ -1110,6 +1110,18 @@ impl LogView {
                             entity.update(cx, |this, cx| this.update_filter(cx, |f| f.branches = branches));
                         }
                     }
+                    fn ref_row(selected: &[String], refs: &crate::git::refs::RepositoryRefs, branch: &crate::git::refs::RefName, label: &str) -> crate::ui::ref_menu::RefRow {
+                        crate::ui::ref_menu::RefRow {
+                            label: label.to_owned().into(),
+                            value: branch.name.clone(),
+                            favorite: refs.favorites.contains(&branch.full_name),
+                            checked: selected == [branch.name.clone()],
+                        }
+                    }
+                    fn pick(entity: &Entity<LogView>) -> std::rc::Rc<dyn Fn(String, &mut Window, &mut App)> {
+                        let entity = entity.clone();
+                        std::rc::Rc::new(move |name, _, cx| entity.update(cx, |this, cx| this.update_filter(cx, |f| f.branches = vec![name])))
+                    }
                     fn branch_item(entity: &Entity<LogView>, selected: &[String], refs: &crate::git::refs::RepositoryRefs, branch: &crate::git::refs::RefName, label: &str) -> PopupMenuItem {
                         let item = PopupMenuItem::new(label.to_owned())
                             .checked(selected == [branch.name.clone()])
@@ -1146,11 +1158,9 @@ impl LogView {
                     menu = menu.separator();
                     if refs.local_branches().next().is_some() {
                         let (entity, refs, selected) = (entity.clone(), refs.clone(), selected.clone());
-                        menu = menu.submenu("Local", window, cx, move |mut sub, _, _| {
-                            for branch in refs.local_branches() {
-                                sub = sub.item(branch_item(&entity, &selected, &refs, branch, &branch.name));
-                            }
-                            sub.max_h(px(420.)).scrollable(true)
+                        menu = menu.submenu("Local", window, cx, move |sub, _, cx| {
+                            let rows = refs.local_branches().map(|b| ref_row(&selected, &refs, b, &b.name)).collect();
+                            crate::ui::ref_menu::add_rows(sub, rows, pick(&entity), cx)
                         });
                     }
                     for remote in &refs.remotes {
@@ -1158,11 +1168,13 @@ impl LogView {
                             continue;
                         }
                         let (entity, refs, selected, remote) = (entity.clone(), refs.clone(), selected.clone(), remote.clone());
-                        menu = menu.submenu(format!("{remote}/..."), window, cx, move |mut sub, _, _| {
-                            for branch in refs.remote_branches().filter(|b| b.remote() == Some(remote.as_str())) {
-                                sub = sub.item(branch_item(&entity, &selected, &refs, branch, branch.branch_without_remote()));
-                            }
-                            sub.max_h(px(420.)).scrollable(true)
+                        menu = menu.submenu(format!("{remote}/..."), window, cx, move |sub, _, cx| {
+                            let rows = refs
+                                .remote_branches()
+                                .filter(|b| b.remote() == Some(remote.as_str()))
+                                .map(|b| ref_row(&selected, &refs, b, b.branch_without_remote()))
+                                .collect();
+                            crate::ui::ref_menu::add_rows(sub, rows, pick(&entity), cx)
                         });
                     }
                     menu

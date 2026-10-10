@@ -3,6 +3,7 @@
 //! With "Enable staging area" on, it shows Staged / Unstaged trees with
 //! Stage / Unstage actions instead of checkboxes, like IntelliJ.
 
+use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
 
 use gpui_kit::component::{
@@ -134,6 +135,10 @@ pub struct CommitView {
     /// The workspace's handler for menu actions (Git submenu, Delete, …).
     file_actions: Option<crate::ui::file_menus::FileActions>,
     counts: HashMap<SharedString, usize>,
+    /// Per tree node: the files under it (for folder checkboxes), and each
+    /// file node's status; worked out when the tree changes, not per frame.
+    node_paths: Rc<HashMap<SharedString, Vec<String>>>,
+    node_kinds: Rc<HashMap<String, StatusKind>>,
     amend: bool,
     /// Amend loaded the last commit's message over this one: (typed, loaded).
     pre_amend: Option<(String, String)>,
@@ -237,6 +242,8 @@ impl CommitView {
             kinds: HashMap::new(),
             file_actions: None,
             counts: HashMap::new(),
+            node_paths: Rc::default(),
+            node_kinds: Rc::default(),
             amend: false,
             pre_amend: None,
             message_error: false,
@@ -381,6 +388,25 @@ impl CommitView {
             .collect();
         self.counts.clear();
         common::count_files(&items, &mut self.counts);
+        fn files_under(items: &[TreeItem], out: &mut HashMap<SharedString, Vec<String>>) -> Vec<String> {
+            let mut all = Vec::new();
+            for item in items {
+                if let Some((_, path)) = CommitView::path_of(&item.id) {
+                    all.push(path.to_owned());
+                } else {
+                    let below = files_under(&item.children, out);
+                    all.extend(below.iter().cloned());
+                    out.insert(item.id.clone(), below);
+                }
+            }
+            all
+        }
+        let mut node_paths = HashMap::new();
+        files_under(&items, &mut node_paths);
+        self.node_paths = Rc::new(node_paths);
+        self.node_kinds = Rc::new(
+            self.groups.iter().flat_map(|g| g.files.iter().map(move |(p, k)| (format!("{}{}{}", g.scope, FILE_PREFIX, p), *k))).collect(),
+        );
         fn collect_files(items: &[TreeItem], out: &mut Vec<String>) {
             for item in items {
                 if let Some((_, path)) = CommitView::path_of(&item.id) {
@@ -1117,13 +1143,8 @@ impl Render for CommitView {
 
         // Per node: the paths under it (for group/dir checkboxes), its color,
         // and whether it is a group or belongs to the Staged tree.
-        let paths_by_node: HashMap<SharedString, Vec<String>> =
-            counts.keys().map(|id| (id.clone(), self.paths_under(id))).collect();
-        let kinds: HashMap<String, StatusKind> = self
-            .groups
-            .iter()
-            .flat_map(|g| g.files.iter().map(move |(p, k)| (format!("{}{}{}", g.scope, FILE_PREFIX, p), *k)))
-            .collect();
+        let paths_by_node = self.node_paths.clone();
+        let kinds = self.node_kinds.clone();
         let group_ids: Vec<String> = self.groups.iter().map(|g| g.id.clone()).collect();
         let changelist_of: HashMap<String, String> =
             self.groups.iter().filter_map(|g| g.changelist.clone().map(|c| (g.id.clone(), c))).collect();

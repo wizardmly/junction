@@ -16,8 +16,10 @@ use super::libraries::ExternalIndex;
 use super::store::ProjectIndex;
 
 pub enum IndexEvent {
-    /// Indexing progressed or finished.
+    /// The index's content changed (files, symbols, libraries).
     Changed,
+    /// Only the progress or the language servers' status did.
+    Progress,
 }
 
 pub struct CodeIndex {
@@ -33,9 +35,20 @@ pub struct CodeIndex {
     again: bool,
     _task: Option<Task<()>>,
     _poll: Option<Task<()>>,
+    /// "N files, M symbols indexed…", counted once per change rather than
+    /// on every frame of the status bar.
+    counts: std::cell::RefCell<Option<String>>,
 }
 
 impl EventEmitter<IndexEvent> for CodeIndex {}
+
+/// The index's content changed: recount and tell the views.
+macro_rules! this_changed {
+    ($this:expr, $cx:expr) => {{
+        $this.counts.replace(None);
+        $cx.emit(IndexEvent::Changed);
+    }};
+}
 
 impl CodeIndex {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -44,7 +57,7 @@ impl CodeIndex {
         let poll = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                if this.update(cx, |this, cx| if !this.lsp.status().is_empty() { cx.emit(IndexEvent::Changed) }).is_err() {
+                if this.update(cx, |this, cx| if !this.lsp.status().is_empty() { cx.emit(IndexEvent::Progress) }).is_err() {
                     break;
                 }
             }
@@ -59,6 +72,7 @@ impl CodeIndex {
             again: false,
             _task: None,
             _poll: Some(poll),
+            counts: Default::default(),
         }
     }
 
@@ -78,7 +92,7 @@ impl CodeIndex {
         self.progress = None;
         self.updating = false;
         self._task = None;
-        cx.emit(IndexEvent::Changed);
+        this_changed!(self, cx);
         if root.is_some() {
             self.refresh(cx);
         }
@@ -94,6 +108,10 @@ impl CodeIndex {
         self.updating = true;
         let index = self.index.clone();
         let phase = self.library_phase.clone();
+        // Set when the work replaced part of the index, so views reload
+        // the file list only then, not on every progress tick.
+        let changed_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let content = changed_flag.clone();
         let (tx, rx) = std::sync::mpsc::channel::<(usize, usize)>();
         self._task = Some(cx.spawn(async move |this, cx| {
             let work = cx.background_spawn(async move {
@@ -130,6 +148,9 @@ impl CodeIndex {
                     *index.write().unwrap() = fresh;
                 }
                 if changed {
+                    content.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                if changed {
                     if let Ok(index) = index.read() {
                         index.save();
                     }
@@ -148,6 +169,7 @@ impl CodeIndex {
                         tx.send((done, total)).ok();
                     });
                     index.write().unwrap().external = Arc::new(external);
+                    content.store(true, std::sync::atomic::Ordering::Relaxed);
                     phase.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
             });
@@ -166,7 +188,12 @@ impl CodeIndex {
                             this.progress = None;
                             this.updating = false;
                         }
-                        cx.emit(IndexEvent::Changed);
+                        let changed = changed_flag.swap(false, std::sync::atomic::Ordering::Relaxed);
+                        if changed || finished {
+                            this_changed!(this, cx);
+                        } else {
+                            cx.emit(IndexEvent::Progress);
+                        }
                     })
                     .is_err();
                 if finished || done {
@@ -180,7 +207,7 @@ impl CodeIndex {
             })
             .ok();
         }));
-        cx.emit(IndexEvent::Changed);
+        this_changed!(self, cx);
     }
 
     /// Re-indexes one file right away (after saving it).
@@ -196,7 +223,7 @@ impl CodeIndex {
                 }
             })
             .await;
-            this.update(cx, |_, cx| cx.emit(IndexEvent::Changed)).ok();
+            this.update(cx, |this, cx| this_changed!(this, cx)).ok();
         })
         .detach();
     }
@@ -401,13 +428,23 @@ impl CodeIndex {
         if self.updating {
             return "Indexing…".into();
         }
-        let Ok(index) = self.index.read() else { return String::new() };
-        if index.files.is_empty() {
-            return String::new();
-        }
-        let mut out = format!("{} files, {} symbols indexed", index.files.len(), index.symbol_count());
-        if !index.external.is_empty() {
-            out.push_str(&format!(" · {} libraries", index.external.libraries.len()));
+        let mut out = self
+            .counts
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                let Ok(index) = self.index.read() else { return String::new() };
+                if index.files.is_empty() {
+                    return String::new();
+                }
+                let mut out = format!("{} files, {} symbols indexed", index.files.len(), index.symbol_count());
+                if !index.external.is_empty() {
+                    out.push_str(&format!(" · {} libraries", index.external.libraries.len()));
+                }
+                out
+            })
+            .clone();
+        if out.is_empty() {
+            return out;
         }
         let servers = self.lsp.status();
         if !servers.is_empty() {

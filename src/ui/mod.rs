@@ -37,6 +37,7 @@ pub mod shelf_view;
 pub mod spell_overlay;
 pub mod status_bar;
 pub mod stash_view;
+pub mod ref_menu;
 pub mod workspace;
 pub mod worktree_view;
 pub mod submodule_view;
