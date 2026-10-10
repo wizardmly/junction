@@ -61,7 +61,7 @@ pub fn push_after_commit(model: Entity<RepoModel>, window: &mut Window, cx: &mut
 pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut Window, cx: &mut App) {
     use crate::git::ops::{self, PushRequest, PushTags};
     use gpui_kit::component::{ActiveTheme as _, h_flex, menu::{DropdownMenu as _, PopupMenuItem}, scroll::ScrollableElement as _};
-    use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _};
+    use gpui_kit::{InteractiveElement as _, prelude::FluentBuilder as _};
     use std::cell::RefCell;
 
     let Some(repository) = model.read(cx).repository().cloned() else { return };
@@ -80,47 +80,10 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
         return;
     };
     let target = cx.new(|cx| InputState::new(window, cx).default_value(preview.target.clone()));
-    #[derive(Clone, Copy)]
-    struct Options {
-        tags: Option<usize>,
-        hooks: bool,
-        remote: usize,
-        /// The commit whose files the change tree shows; all commits when `None`.
-        selected: Option<usize>,
-    }
     let remote_ix = preview.remotes.iter().position(|r| *r == preview.remote).unwrap_or(0);
     let options = Rc::new(RefCell::new(Options { tags: None, hooks: true, remote: remote_ix, selected: None }));
-    /// What the push would send to one remote branch, worked out again
-    /// whenever the remote or the target branch changes.
-    struct Outgoing {
-        remote: String,
-        target: String,
-        new_branch: bool,
-        commits: Vec<crate::git::Commit>,
-        /// Each commit's files, and their union for the change tree.
-        commit_files: Vec<Vec<crate::git::log::FileChange>>,
-        all_files: Vec<crate::git::log::FileChange>,
-    }
     let up_to_ok = up_to.clone();
-    let outgoing = move |repository: &crate::git::Repository, remote: &str, target: &str| {
-        let (new_branch, mut commits) = ops::push_commits(repository, remote, target).unwrap_or_default();
-        // Newest first: the ones above `up_to` stay behind.
-        if let Some(pos) = up_to.as_ref().and_then(|h| commits.iter().position(|c| &c.hash == h)) {
-            commits.drain(..pos);
-        }
-        let commit_files: Vec<Vec<crate::git::log::FileChange>> = commits
-            .iter()
-            .map(|c| crate::git::log::load_details(repository, &c.hash).map(|d| d.changes).unwrap_or_default())
-            .collect();
-        let mut seen = std::collections::BTreeMap::new();
-        // Oldest first, so the newest change to a path wins.
-        for files in commit_files.iter().rev() {
-            for file in files {
-                seen.insert(file.path.clone(), file.clone());
-            }
-        }
-        Outgoing { remote: remote.to_owned(), target: target.to_owned(), new_branch, commits, commit_files, all_files: seen.into_values().collect() }
-    };
+    let outgoing = move |repository: &crate::git::Repository, remote: &str, target: &str| Outgoing::compute(repository, remote, target, up_to.as_deref());
     let computed = Rc::new(RefCell::new(Outgoing {
         remote: preview.remote.clone(),
         target: preview.target.clone(),
@@ -145,56 +108,9 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
         }
         let current = *options.borrow();
         let out = computed.borrow();
-        let mut commits = v_flex().gap_px();
-        for (ix, commit) in out.commits.iter().enumerate() {
-            let is_selected = current.selected == Some(ix);
-            let select_options = options.clone();
-            commits = commits.child(
-                h_flex()
-                    .id(("push-commit", ix))
-                    .h(px(22.))
-                    .px_1()
-                    .gap_2()
-                    .rounded(px(3.))
-                    .text_sm()
-                    .cursor_pointer()
-                    .overflow_hidden()
-                    .when(is_selected, |el| el.bg(palette.selection))
-                    .on_click(move |_, window, _| {
-                        let mut o = select_options.borrow_mut();
-                        o.selected = if o.selected == Some(ix) { None } else { Some(ix) };
-                        window.refresh();
-                    })
-                    .child(div().flex_shrink_0().font_family(mono.clone()).text_color(palette.text_secondary).child(commit.short_hash().to_owned()))
-                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(commit.subject.clone()))
-                    .child(div().flex_shrink_0().text_color(palette.text_secondary).child(commit.author_name.to_string())),
-            );
-        }
-        if out.commits.is_empty() {
-            commits = commits.child(div().text_sm().text_color(palette.text_secondary).child("Nothing to push"));
-        }
+        let commits = commit_list(&out, current, &options, &palette, &mono);
         let shown_files = current.selected.and_then(|ix| out.commit_files.get(ix)).unwrap_or(&out.all_files);
-        let mut files = v_flex()
-            .gap_px()
-            .child(div().pb_1().text_xs().text_color(palette.text_secondary).child(format!(
-                "{} file{} changed",
-                shown_files.len(),
-                if shown_files.len() == 1 { "" } else { "s" }
-            )));
-        for file in shown_files {
-            let (dir, name) = file.path.rsplit_once('/').map_or(("", file.path.as_str()), |(d, n)| (d, n));
-            files = files.child(
-                h_flex()
-                    .h(px(22.))
-                    .gap_1p5()
-                    .text_sm()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::File).xsmall().text_color(palette.text_secondary))
-                    .child(div().flex_shrink_0().text_color(crate::ui::common::change_color(file.kind, &palette)).child(name.to_owned()))
-                    .child(div().min_w_0().text_xs().text_color(palette.text_secondary).text_ellipsis().child(dir.to_owned())),
-            );
-        }
+        let files = file_list(shown_files, &palette);
         let new_branch = out.new_branch;
         // Nothing to send: IntelliJ greys out Push (tags still count).
         let nothing = out.commits.is_empty() && !new_branch && current.tags.is_none();
@@ -380,35 +296,148 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
                                 menu.item(
                                     PopupMenuItem::new(if protected { "Force Push (protected branch)" } else { "Force Push" })
                                         .disabled(protected)
-                                        .on_click(move |_, window, cx| {
-                                            // IntelliJ asks first: a force push can overwrite
-                                            // commits at the remote.
-                                            let message = format!(
-                                                "You're going to force push \"{force_branch}\" to \"{}\". It may overwrite commits at the remote. Are you sure you want to proceed?",
-                                                force_target(cx)
-                                            );
-                                            // Over the Push dialog: Cancel goes back to it.
-                                            let (force_push, message) = (force_push.clone(), SharedString::from(message));
-                                            window.open_dialog(cx, move |dialog, _, _| {
-                                                let force_push = force_push.clone();
-                                                dialog
-                                                    .title("Force Push")
-                                                    .w(px(460.))
-                                                    .child(div().text_sm().child(message.clone()))
-                                                    .footer(footer("Force Push"))
-                                                    .on_ok(move |_, window, cx| {
-                                                        if force_push(true, cx) {
-                                                            // The Push dialog goes too.
-                                                            window.defer(cx, |window, cx| window.close_dialog(cx));
-                                                        }
-                                                        true
-                                                    })
-                                            });
-                                        }),
+                                        .on_click(move |_, window, cx| confirm_force_push(&force_branch, &force_target(cx), force_push.clone(), window, cx)),
                                 )
                             }),
                     ),
             )
+    });
+}
+
+/// Push dialog state the controls change.
+#[derive(Clone, Copy)]
+struct Options {
+    tags: Option<usize>,
+    hooks: bool,
+    remote: usize,
+    /// The commit whose files the change tree shows; all commits when `None`.
+    selected: Option<usize>,
+}
+
+/// What the push would send to one remote branch, worked out again
+/// whenever the remote or the target branch changes.
+struct Outgoing {
+    remote: String,
+    target: String,
+    new_branch: bool,
+    commits: Vec<crate::git::Commit>,
+    /// Each commit's files, and their union for the change tree.
+    commit_files: Vec<Vec<crate::git::log::FileChange>>,
+    all_files: Vec<crate::git::log::FileChange>,
+}
+
+impl Outgoing {
+    /// The commits `remote`/`target` doesn't have (from `up_to` down, when
+    /// given) and the files each one changes.
+    fn compute(repository: &crate::git::Repository, remote: &str, target: &str, up_to: Option<&str>) -> Self {
+        let (new_branch, mut commits) = crate::git::ops::push_commits(repository, remote, target).unwrap_or_default();
+        // Newest first: the ones above `up_to` stay behind.
+        if let Some(pos) = up_to.and_then(|h| commits.iter().position(|c| c.hash == h)) {
+            commits.drain(..pos);
+        }
+        let commit_files: Vec<Vec<crate::git::log::FileChange>> = commits
+            .iter()
+            .map(|c| crate::git::log::load_details(repository, &c.hash).map(|d| d.changes).unwrap_or_default())
+            .collect();
+        let mut seen = std::collections::BTreeMap::new();
+        // Oldest first, so the newest change to a path wins.
+        for files in commit_files.iter().rev() {
+            for file in files {
+                seen.insert(file.path.clone(), file.clone());
+            }
+        }
+        Outgoing { remote: remote.to_owned(), target: target.to_owned(), new_branch, commits, commit_files, all_files: seen.into_values().collect() }
+    }
+}
+
+/// The outgoing commits; a click selects one to show only its files.
+fn commit_list(
+    out: &Outgoing,
+    current: Options,
+    options: &Rc<std::cell::RefCell<Options>>,
+    palette: &crate::theme::Palette,
+    mono: &SharedString,
+) -> gpui_kit::Div {
+    use gpui_kit::component::h_flex;
+    use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _};
+    let mut commits = v_flex().gap_px();
+    for (ix, commit) in out.commits.iter().enumerate() {
+        let is_selected = current.selected == Some(ix);
+        let select_options = options.clone();
+        commits = commits.child(
+            h_flex()
+                .id(("push-commit", ix))
+                .h(px(22.))
+                .px_1()
+                .gap_2()
+                .rounded(px(3.))
+                .text_sm()
+                .cursor_pointer()
+                .overflow_hidden()
+                .when(is_selected, |el| el.bg(palette.selection))
+                .on_click(move |_, window, _| {
+                    let mut o = select_options.borrow_mut();
+                    o.selected = if o.selected == Some(ix) { None } else { Some(ix) };
+                    window.refresh();
+                })
+                .child(div().flex_shrink_0().font_family(mono.clone()).text_color(palette.text_secondary).child(commit.short_hash().to_owned()))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(commit.subject.clone()))
+                .child(div().flex_shrink_0().text_color(palette.text_secondary).child(commit.author_name.to_string())),
+        );
+    }
+    if out.commits.is_empty() {
+        commits = commits.child(div().text_sm().text_color(palette.text_secondary).child("Nothing to push"));
+    }
+    commits
+}
+
+/// The files the shown commits change.
+fn file_list(shown_files: &[crate::git::log::FileChange], palette: &crate::theme::Palette) -> gpui_kit::Div {
+    use gpui_kit::component::h_flex;
+    let mut files = v_flex()
+        .gap_px()
+        .child(div().pb_1().text_xs().text_color(palette.text_secondary).child(format!(
+            "{} file{} changed",
+            shown_files.len(),
+            if shown_files.len() == 1 { "" } else { "s" }
+        )));
+    for file in shown_files {
+        let (dir, name) = file.path.rsplit_once('/').map_or(("", file.path.as_str()), |(d, n)| (d, n));
+        files = files.child(
+            h_flex()
+                .h(px(22.))
+                .gap_1p5()
+                .text_sm()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::File).xsmall().text_color(palette.text_secondary))
+                .child(div().flex_shrink_0().text_color(crate::ui::common::change_color(file.kind, &palette)).child(name.to_owned()))
+                .child(div().min_w_0().text_xs().text_color(palette.text_secondary).text_ellipsis().child(dir.to_owned())),
+        );
+    }
+    files
+}
+
+/// Asks before a force push (it can overwrite commits at the remote), over
+/// the Push dialog: Cancel goes back to it.
+fn confirm_force_push(force_branch: &str, force_target: &str, force_push: Rc<dyn Fn(bool, &mut App) -> bool>, window: &mut Window, cx: &mut App) {
+    let message = SharedString::from(format!(
+        "You're going to force push \"{force_branch}\" to \"{force_target}\". It may overwrite commits at the remote. Are you sure you want to proceed?"
+    ));
+    window.open_dialog(cx, move |dialog, _, _| {
+        let force_push = force_push.clone();
+        dialog
+            .title("Force Push")
+            .w(px(460.))
+            .child(div().text_sm().child(message.clone()))
+            .footer(footer("Force Push"))
+            .on_ok(move |_, window, cx| {
+                if force_push(true, cx) {
+                    // The Push dialog goes too.
+                    window.defer(cx, |window, cx| window.close_dialog(cx));
+                }
+                true
+            })
     });
 }
 
