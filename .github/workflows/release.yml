@@ -105,7 +105,12 @@ jobs:
           ln -s /Applications dist/Applications
           # hdiutil guesses the image size from the folder and can come up short; give it room.
           SIZE=$(( $(du -sm dist | cut -f1) + 64 ))
-          hdiutil create -volname 'Junction Studio' -srcfolder dist -ov -format UDZO -size ${SIZE}m junction-macos-universal.dmg
+          # hdiutil now and then fails with "Resource busy" on the runners; retry.
+          for attempt in 1 2 3 4 5; do
+            hdiutil create -volname 'Junction Studio' -srcfolder dist -ov -format UDZO -size ${SIZE}m junction-macos-universal.dmg && break
+            [ $attempt = 5 ] && exit 1
+            sleep $((attempt * 5))
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: macos
