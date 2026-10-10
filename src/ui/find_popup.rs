@@ -561,9 +561,58 @@ impl Render for FindPopup {
             self.preview_stale = false;
             self.update_preview(window, cx);
         }
+        let header = self.render_header(cx);
+
+        let toggles = h_flex()
+            .gap_0p5()
+            .child(toggle_button("find-case", "Cc", "Match Case (Alt+C)", self.case_sensitive).on_click(cx.listener(|this, _, _, cx| this.toggle(|t| t.case_sensitive = !t.case_sensitive, cx))))
+            .child(toggle_button("find-words", "W", "Words (Alt+W)", self.whole_words).on_click(cx.listener(|this, _, _, cx| this.toggle(|t| t.whole_words = !t.whole_words, cx))))
+            .child(toggle_button("find-regex", ".*", "Regex (Alt+X)", self.regex).on_click(cx.listener(|this, _, _, cx| this.toggle(|t| t.regex = !t.regex, cx))));
+        let search_row = div().px_3().child(
+            Input::new(&self.query)
+                .prefix(Icon::new(IconName::Search).small().text_color(palette.text_secondary))
+                .suffix(toggles),
+        );
+        let replace_row = self.replace_mode.then(|| {
+            div().px_3().pt_1().child(Input::new(&self.replacement).prefix(Icon::new(IconName::Replace).small().text_color(palette.text_secondary)))
+        });
+        let error = self.error.clone().map(|e| div().px_3().pt_1().text_xs().text_color(palette.status_conflict).child(e));
+
+        let scope_row = self.render_scope_row(cx);
+
+        let has_query = !self.query.read(cx).value().is_empty();
+        let body = self.render_results(has_query, cx);
+
+        let footer = self.render_footer(has_query, cx);
+
+        v_flex()
+            .id("find-popup")
+            .key_context("FindPopup")
+            .w(px(780.))
+            .h(px(if self.replace_mode { 680. } else { 640. }))
+            .bg(gpui_kit::Hsla { a: 1.0, ..palette.panel })
+            .border_1()
+            .border_color(palette.border)
+            .rounded(px(8.))
+            .shadow_lg()
+            .overflow_hidden()
+            .occlude()
+            .track_focus(&self.focus)
+            .child(header)
+            .child(search_row)
+            .children(replace_row)
+            .children(error)
+            .child(scope_row)
+            .child(body)
+            .child(footer)
+    }
+}
+
+impl FindPopup {
+    /// Title, file mask, context filter and pin.
+    fn render_header(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let entity = cx.entity();
         let title = if self.replace_mode { "Replace in Files" } else { "Find in Files" };
-
         let context = self.context;
         let header = h_flex()
             .h(px(40.))
@@ -624,22 +673,13 @@ impl Render for FindPopup {
                         cx.notify();
                     })),
             );
+        header.into_any_element()
+    }
 
-        let toggles = h_flex()
-            .gap_0p5()
-            .child(toggle_button("find-case", "Cc", "Match Case (Alt+C)", self.case_sensitive).on_click(cx.listener(|this, _, _, cx| this.toggle(|t| t.case_sensitive = !t.case_sensitive, cx))))
-            .child(toggle_button("find-words", "W", "Words (Alt+W)", self.whole_words).on_click(cx.listener(|this, _, _, cx| this.toggle(|t| t.whole_words = !t.whole_words, cx))))
-            .child(toggle_button("find-regex", ".*", "Regex (Alt+X)", self.regex).on_click(cx.listener(|this, _, _, cx| this.toggle(|t| t.regex = !t.regex, cx))));
-        let search_row = div().px_3().child(
-            Input::new(&self.query)
-                .prefix(Icon::new(IconName::Search).small().text_color(palette.text_secondary))
-                .suffix(toggles),
-        );
-        let replace_row = self.replace_mode.then(|| {
-            div().px_3().pt_1().child(Input::new(&self.replacement).prefix(Icon::new(IconName::Replace).small().text_color(palette.text_secondary)))
-        });
-        let error = self.error.clone().map(|e| div().px_3().pt_1().text_xs().text_color(palette.status_conflict).child(e));
-
+    /// In Project / Module / Directory / Scope, and the match count.
+    fn render_scope_row(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let palette = cx.palette().clone();
+        let entity = cx.entity();
         let tab_button = |id: &'static str, label: &'static str, tab: ScopeTab, current: ScopeTab| {
             Button::new(id).ghost().small().label(label).selected(tab == current)
         };
@@ -726,8 +766,12 @@ impl Render for FindPopup {
             )
         };
         scope_row = scope_row.child(div().flex_1()).child(div().text_xs().text_color(palette.text_secondary).child(count));
+        scope_row.into_any_element()
+    }
 
-        let has_query = !self.query.read(cx).value().is_empty();
+    /// The result list and the preview of the selected match.
+    fn render_results(&self, has_query: bool, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let palette = cx.palette().clone();
         let matches = Rc::new(self.result.matches.clone());
         let selected = self.selected;
         let body = if !has_query || matches.is_empty() {
@@ -799,7 +843,12 @@ impl Render for FindPopup {
                 .children(preview)
                 .into_any_element()
         };
+        body
+    }
 
+    /// "Open results in new tab", Open in Find Window, Replace / Replace All.
+    fn render_footer(&self, has_query: bool, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let palette = cx.palette().clone();
         let footer = h_flex()
             .h(px(44.))
             .px_3()
@@ -839,27 +888,7 @@ impl Render for FindPopup {
                         .on_click(cx.listener(|this, _, window, cx| this.replace_all(window, cx))),
                 )
             });
-
-        v_flex()
-            .id("find-popup")
-            .key_context("FindPopup")
-            .w(px(780.))
-            .h(px(if self.replace_mode { 680. } else { 640. }))
-            .bg(gpui_kit::Hsla { a: 1.0, ..palette.panel })
-            .border_1()
-            .border_color(palette.border)
-            .rounded(px(8.))
-            .shadow_lg()
-            .overflow_hidden()
-            .occlude()
-            .track_focus(&self.focus)
-            .child(header)
-            .child(search_row)
-            .children(replace_row)
-            .children(error)
-            .child(scope_row)
-            .child(body)
-            .child(footer)
+        footer.into_any_element()
     }
 }
 
