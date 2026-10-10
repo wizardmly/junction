@@ -1363,73 +1363,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
         let selection = self.caret.filter(|c| c.0 == pane && !c.1.is_empty()).map(|c| c.1.range());
         let mut children: Vec<AnyElement> = Vec::new();
 
-        // Measures the pane; takes text input while it has the caret; lets a
-        // drag selection follow the mouse anywhere in the window.
-        {
-            let bounds_cell = self.bounds.clone();
-            let measured = self.view_height.clone();
-            let notify = entity.clone();
-            let input = (focused && self.caret.is_some_and(|c| c.0 == pane)).then(|| (self.focus.clone(), entity.clone()));
-            let primary = pane == self.primary;
-            let wrapping = self.soft_wrap;
-            let selecting = (primary && self.selecting).then(|| entity.clone());
-            let dragging = (primary && self.drag.is_some()).then(|| entity.clone());
-            children.push(
-                canvas(
-                    move |bounds, _, cx| {
-                        let old = std::mem::replace(&mut bounds_cell.borrow_mut()[pane], bounds);
-                        let h = f32::from(bounds.size.height);
-                        if wrapping && (old.size.width - bounds.size.width).abs() > px(0.5) {
-                            let notify = notify.clone();
-                            cx.defer(move |cx| notify.update(cx, |_, cx| cx.notify()));
-                        }
-                        if primary && (measured.get() - h).abs() > 0.5 {
-                            measured.set(h);
-                            // Paint again with the rows the new height shows.
-                            cx.defer(move |cx| notify.update(cx, |_, cx| cx.notify()));
-                        }
-                    },
-                    move |bounds, _, window, cx| {
-                        if let Some((focus, entity)) = input {
-                            window.handle_input(&focus, ElementInputHandler::new(bounds, entity), cx);
-                        }
-                        if let Some(entity) = dragging {
-                            let up = entity.clone();
-                            window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
-                                if phase == DispatchPhase::Bubble {
-                                    entity.update(cx, |view, cx| {
-                                        if view.panes().drag_move(e) {
-                                            cx.notify();
-                                        }
-                                    });
-                                }
-                            });
-                            window.on_mouse_event(move |_: &gpui_kit::MouseUpEvent, phase, _, cx| {
-                                if phase == DispatchPhase::Bubble {
-                                    up.update(cx, |view, cx| {
-                                        view.panes().drag = None;
-                                        cx.notify();
-                                    });
-                                }
-                            });
-                        }
-                        if let Some(entity) = selecting {
-                            window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
-                                if phase == DispatchPhase::Bubble {
-                                    entity.update(cx, |view, cx| {
-                                        let outcome = view.panes().mouse_move(e, window, cx);
-                                        settle(view, outcome, false, window, cx);
-                                    });
-                                }
-                            });
-                        }
-                    },
-                )
-                .absolute()
-                .size_full()
-                .into_any_element(),
-            );
-        }
+        children.push(self.pane_input_canvas(pane, focused, &entity));
 
         let range = self.visible_rows(pane);
         let char_width = f32::from(shape("        ", window, cx).width) / 8.;
@@ -1575,52 +1509,9 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
         );
         children.extend(content.overlays);
 
-        // The horizontal scrollbar under the text, when lines are wider.
-        let (text_w, view_w) = self.text_extent(pane);
-        if !self.soft_wrap && view_w > 0. && text_w > view_w + 1. {
-            let thumb = (view_w * view_w / text_w).max(30.);
-            let at = scroll_x / (text_w - view_w) * (view_w - thumb);
-            let track_left = if layout.mirrored { 0. } else { layout.gutter_width() };
-            let thumb_color = palette.text_disabled.opacity(0.45);
-            children.push(
-                div()
-                    .id(("pane-hscroll", pane))
-                    .absolute()
-                    .bottom_0()
-                    .left(px(track_left))
-                    .w(px(view_w))
-                    .h(px(HSCROLL_HEIGHT))
-                    .cursor_default()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view: &mut V, e: &MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            let panes = view.panes();
-                            let origin = f32::from(panes.bounds.borrow()[pane].origin.x) + track_left;
-                            let x = f32::from(e.position.x) - origin;
-                            let (sx, sy) = panes.scroll[pane];
-                            // On the track: page towards the click; on the thumb: drag.
-                            let target = if x < at { sx - view_w } else if x > at + thumb { sx + view_w } else { sx };
-                            panes.scroll_to(pane, target, sy);
-                            panes.drag = Some(Drag::HScroll { pane, start_x: f32::from(e.position.x), start_scroll: panes.scroll[pane].0 });
-                            cx.notify();
-                        }),
-                    )
-                    .child(div().absolute().top(px(2.)).left(px(at)).w(px(thumb)).h(px(HSCROLL_HEIGHT - 4.)).rounded_full().bg(thumb_color))
-                    .into_any_element(),
-            );
-        }
+        children.extend(self.pane_hscrollbar(pane, layout, scroll_x, palette, cx));
 
-        if let Some((_, sel)) = self.caret.filter(|c| c.0 == pane && focused) {
-            if let Some((caret_x, caret_y)) = self.caret_point(pane, sel.head, window, cx) {
-                let x = layout.text_left() + caret_x - scroll_x;
-                let left_edge = layout.text_left() - TEXT_PADDING;
-                if x >= left_edge {
-                    let y = caret_y - self.scroll[pane].1;
-                    children.push(div().absolute().top(px(y)).left(px(x)).w(px(2.)).h(px(line_height())).bg(palette.text).into_any_element());
-                }
-            }
-        }
+        children.extend(self.pane_caret(pane, focused, layout, scroll_x, palette, window, cx));
 
         let weight = self.weights.get(pane).copied().unwrap_or(1.);
         div()
@@ -1660,6 +1551,124 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
             )
             .children(children)
             .into_any_element()
+    }
+
+    /// Measures the pane; takes text input while it has the caret; lets a
+    /// drag selection follow the mouse anywhere in the window.
+    fn pane_input_canvas<V: PaneHost<Extra = T>>(&self, pane: usize, focused: bool, entity: &gpui_kit::Entity<V>) -> AnyElement {
+        let bounds_cell = self.bounds.clone();
+        let measured = self.view_height.clone();
+        let notify = entity.clone();
+        let input = (focused && self.caret.is_some_and(|c| c.0 == pane)).then(|| (self.focus.clone(), entity.clone()));
+        let primary = pane == self.primary;
+        let wrapping = self.soft_wrap;
+        let selecting = (primary && self.selecting).then(|| entity.clone());
+        let dragging = (primary && self.drag.is_some()).then(|| entity.clone());
+        canvas(
+            move |bounds, _, cx| {
+                let old = std::mem::replace(&mut bounds_cell.borrow_mut()[pane], bounds);
+                let h = f32::from(bounds.size.height);
+                if wrapping && (old.size.width - bounds.size.width).abs() > px(0.5) {
+                    let notify = notify.clone();
+                    cx.defer(move |cx| notify.update(cx, |_, cx| cx.notify()));
+                }
+                if primary && (measured.get() - h).abs() > 0.5 {
+                    measured.set(h);
+                    // Paint again with the rows the new height shows.
+                    cx.defer(move |cx| notify.update(cx, |_, cx| cx.notify()));
+                }
+            },
+            move |bounds, _, window, cx| {
+                if let Some((focus, entity)) = input {
+                    window.handle_input(&focus, ElementInputHandler::new(bounds, entity), cx);
+                }
+                if let Some(entity) = dragging {
+                    let up = entity.clone();
+                    window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble {
+                            entity.update(cx, |view, cx| {
+                                if view.panes().drag_move(e) {
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    });
+                    window.on_mouse_event(move |_: &gpui_kit::MouseUpEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble {
+                            up.update(cx, |view, cx| {
+                                view.panes().drag = None;
+                                cx.notify();
+                            });
+                        }
+                    });
+                }
+                if let Some(entity) = selecting {
+                    window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
+                        if phase == DispatchPhase::Bubble {
+                            entity.update(cx, |view, cx| {
+                                let outcome = view.panes().mouse_move(e, window, cx);
+                                settle(view, outcome, false, window, cx);
+                            });
+                        }
+                    });
+                }
+            },
+        )
+        .absolute()
+        .size_full()
+        .into_any_element()
+    }
+
+    /// The horizontal scrollbar under the text, when lines are wider.
+    fn pane_hscrollbar<V: PaneHost<Extra = T>>(&self, pane: usize, layout: PaneLayout, scroll_x: f32, palette: &Palette, cx: &mut Context<V>) -> Option<AnyElement> {
+        let (text_w, view_w) = self.text_extent(pane);
+        if self.soft_wrap || view_w <= 0. || text_w <= view_w + 1. {
+            return None;
+        }
+        let thumb = (view_w * view_w / text_w).max(30.);
+        let at = scroll_x / (text_w - view_w) * (view_w - thumb);
+        let track_left = if layout.mirrored { 0. } else { layout.gutter_width() };
+        let thumb_color = palette.text_disabled.opacity(0.45);
+        Some(
+            div()
+                .id(("pane-hscroll", pane))
+                .absolute()
+                .bottom_0()
+                .left(px(track_left))
+                .w(px(view_w))
+                .h(px(HSCROLL_HEIGHT))
+                .cursor_default()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view: &mut V, e: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        let panes = view.panes();
+                        let origin = f32::from(panes.bounds.borrow()[pane].origin.x) + track_left;
+                        let x = f32::from(e.position.x) - origin;
+                        let (sx, sy) = panes.scroll[pane];
+                        // On the track: page towards the click; on the thumb: drag.
+                        let target = if x < at { sx - view_w } else if x > at + thumb { sx + view_w } else { sx };
+                        panes.scroll_to(pane, target, sy);
+                        panes.drag = Some(Drag::HScroll { pane, start_x: f32::from(e.position.x), start_scroll: panes.scroll[pane].0 });
+                        cx.notify();
+                    }),
+                )
+                .child(div().absolute().top(px(2.)).left(px(at)).w(px(thumb)).h(px(HSCROLL_HEIGHT - 4.)).rounded_full().bg(thumb_color))
+                .into_any_element(),
+        )
+    }
+
+    /// The caret, while this pane has focus and it is in view.
+    fn pane_caret<V: PaneHost<Extra = T>>(&self, pane: usize, focused: bool, layout: PaneLayout, scroll_x: f32, palette: &Palette, window: &mut Window, cx: &mut Context<V>) -> Option<AnyElement> {
+        let (_, sel) = self.caret.filter(|c| c.0 == pane && focused)?;
+        let (caret_x, caret_y) = self.caret_point(pane, sel.head, window, cx)?;
+        let x = layout.text_left() + caret_x - scroll_x;
+        let left_edge = layout.text_left() - TEXT_PADDING;
+        if x < left_edge {
+            return None;
+        }
+        let y = caret_y - self.scroll[pane].1;
+        Some(div().absolute().top(px(y)).left(px(x)).w(px(2.)).h(px(line_height())).bg(palette.text).into_any_element())
     }
 
     /// Error stripe: each mark's place in the whole pane, the visible part
