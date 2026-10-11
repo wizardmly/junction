@@ -43,9 +43,9 @@ impl Workspace {
                     crate::ui::navigate::choose_target(title.clone(), targets.clone(), locations, Some(*at), self.picker_callback(cx), window, cx);
                 }
             }
-            FileEditorEvent::NoDeclaration { text, offset, at } => {
+            FileEditorEvent::NoDeclaration { text, offset, at, declaration } => {
                 let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
-                if self.code_index.read(cx).declared_at(&path, text, *offset) {
+                if *declaration {
                     self.show_usages_popup(path, text.clone(), *offset, *at, window, cx);
                 } else {
                     Self::nav_hint("Cannot find declaration to go to", window, cx);

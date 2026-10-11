@@ -121,7 +121,7 @@ pub enum FileEditorEvent {
     Navigate { targets: Vec<crate::index::nav::Target>, at: Option<Point<Pixels>> },
     /// Go to Declaration found nothing for the identifier at this offset
     /// (on a declaration itself, IntelliJ shows its usages instead).
-    NoDeclaration { text: String, offset: usize, at: Option<Point<Pixels>> },
+    NoDeclaration { text: String, offset: usize, at: Option<Point<Pixels>>, declaration: bool },
     /// A gutter implementation marker: its targets, chosen in a popup at `at`.
     ChooseTargets { title: String, targets: Vec<crate::index::nav::Target>, at: Point<Pixels> },
     /// Find Usages of the identifier at a byte offset of this text.
@@ -367,16 +367,20 @@ impl DefinitionProvider for IndexProvider {
             lsp_types::Range { start: lsp_position(sl, sc), end: lsp_position(el, ec) }
         });
         let root = self.index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
-        let on_declaration = self.index.read(cx).on_declaration(&self.path, &text, offset);
-        let task = if on_declaration { gpui_kit::Task::ready(Vec::new()) } else { self.index.read(cx).definitions(self.path.clone(), text.clone(), offset, cx) };
-        let (last, declaration, index, path) = (self.last.clone(), self.declaration.clone(), self.index.clone(), self.path.clone());
-        cx.spawn(async move |cx| {
-            let targets = task.await;
-            *last.borrow_mut() = targets.clone();
+        let task = self.index.read(cx).go_to(self.path.clone(), text.clone(), offset, cx);
+        let (last, declaration, path) = (self.last.clone(), self.declaration.clone(), self.path.clone());
+        cx.spawn(async move |_| {
+            let nav = task.await;
             *declaration.borrow_mut() = None;
+            let on_declaration = matches!(nav, crate::index::service::Nav::Declaration);
+            let targets = match nav {
+                crate::index::service::Nav::Targets(targets) => targets,
+                crate::index::service::Nav::Declaration => Vec::new(),
+            };
+            *last.borrow_mut() = targets.clone();
             // On a declaration: a link to itself, so Ctrl+hover underlines it
             // and Ctrl+click reaches the show-document hook (usages).
-            if targets.is_empty() && (on_declaration || cx.read_entity(&index, |index, _| index.declared_at(&path, &text, offset))) {
+            if on_declaration {
                 *declaration.borrow_mut() = Some((text.clone(), offset));
                 let uri = crate::index::lsp::path_to_uri(&root.join(&path)).parse::<lsp_types::Uri>()?;
                 let origin = origin.unwrap_or(lsp_types::Range::default());
@@ -656,7 +660,7 @@ impl FileEditor {
             // The popup's corner just right of and below the mouse.
             let at = Some(window.mouse_position() + point(px(2.), px(12.)));
             let event = match declaration.borrow().clone() {
-                Some((text, offset)) => FileEditorEvent::NoDeclaration { text, offset, at },
+                Some((text, offset)) => FileEditorEvent::NoDeclaration { text, offset, at, declaration: true },
                 None => FileEditorEvent::Navigate { targets: last.borrow().clone(), at },
             };
             editor.update(cx, |_, cx| cx.emit(event)).ok();
@@ -813,17 +817,17 @@ impl FileEditor {
         let Some(index) = self.code_index.clone() else { return };
         let text = self.text(cx);
         let offset = self.state.read(cx).cursor();
-        let task = if index.read(cx).on_declaration(&self.path, &text, offset) {
-            gpui_kit::Task::ready(Vec::new())
-        } else {
-            index.read(cx).definitions(self.path.clone(), text.clone(), offset, cx)
-        };
+        let task = index.read(cx).go_to(self.path.clone(), text.clone(), offset, cx);
         cx.spawn(async move |this, cx| {
-            let targets = task.await;
+            let nav = task.await;
             this.update(cx, |this, cx| {
                 // Ctrl+B's popups open under the caret.
                 let at = this.state.read(cx).range_to_bounds(&(offset..offset)).map(|b| b.bottom_left() + point(px(0.), px(4.)));
-                let event = if targets.is_empty() { FileEditorEvent::NoDeclaration { text, offset, at } } else { FileEditorEvent::Navigate { targets, at } };
+                let event = match nav {
+                    crate::index::service::Nav::Declaration => FileEditorEvent::NoDeclaration { text, offset, at, declaration: true },
+                    crate::index::service::Nav::Targets(targets) if targets.is_empty() => FileEditorEvent::NoDeclaration { text, offset, at, declaration: false },
+                    crate::index::service::Nav::Targets(targets) => FileEditorEvent::Navigate { targets, at },
+                };
                 cx.emit(event)
             })
             .ok();

@@ -230,6 +230,7 @@
 | 跨语言桥接 | M7 | ✅（JNI：Java/Kotlin `native` ↔ C/C++ `Java_包_类_方法`（含 _1 等转义）与 RegisterNatives；Dart FFI `lookupFunction`/`@Native` ↔ C/Rust `extern "C"`/`#[no_mangle]`；Rust `extern "C"` 声明 ↔ C 实现；Swift `@_cdecl`/`@objc` ↔ ObjC/C；Go `//export` 与 cgo `C.name`、V `C.name` ↔ C；C 头文件原型 → 跨 ABI 的实现） |
 | Go to Declaration（Ctrl+B / Ctrl+点击 / F12） | M7 | ✅（顺序：桥接 → LSP → 索引；多个目标弹出 Choose Declaration 列表（↑↓ 选择、Enter 跳转，右侧显示位置，库文件显示“库名 › 路径:行”）；光标在声明本身上时改为列出用法（只有一处直接跳过去）；找不到时给信息提示；目标不在视野内时滚到编辑器中部；Ctrl 悬停下划线） |
 | Ctrl+点击弹窗位置 | M9 | ✅（同 AS Windows：Ctrl+点击有多个目标时 Choose Declaration 在鼠标处弹出；点在声明本身上时在鼠标处弹出 Usages 列表（只有一处直接跳）；Ctrl+B 的弹窗出现在光标下方；Ctrl 悬停声明名也有下划线） |
+| Ctrl+点击覆盖所有标识符 | M9 | ✅（对齐 AS：函数参数、局部变量、lambda/for/catch 变量按作用域解析，跳到声明；在这些声明上 Ctrl+点击列出作用域内用法；Kotlin 主构造器 `val`/`var` 参数作为属性索引，`obj.x` 可跳；类名/类型注解/返回类型/父类型跳到类定义；成员调用按接收者类型优先；C 系原型只在没有定义时才算声明。覆盖 Kotlin/Java/C/C++/Rust/Swift/Dart/Go/TS/JS/Python 等。未覆盖：命名参数、Kotlin `it`、`this`/`super`） |
 | 编辑器 gutter 实现/覆盖图标 | M9 | ✅（行号与折叠图标之间，IntelliJ 官方图标：接口/抽象成员有实现时绿色 I↓，类有子类、方法被覆盖时蓝色 O↓，实现接口成员绿色 I↑，覆盖父类成员蓝色 O↑；点击一个目标直接跳，多个在鼠标处弹出 Choose Implementation / Subclass / Super Method 列表；继承关系来自索引：Java/Kotlin/Swift/Dart/TS/JS/Python/C++/ObjC 的父类型列表、Rust `impl Trait for T`，可传递；按简单名匹配；编辑后自动刷新） |
 | Quick Documentation（悬停） | M7 | ✅（LSP hover，否则显示声明行与位置） |
 | Find Usages（Alt+F7） | M7 | ✅（Find 工具窗口，按类别 › 文件 › 行分组；索引 + git grep，注释和字符串字面量里的文本不算（Kotlin / Dart 的 `$x`、Swift 的 `\(x)` 插值算代码），LSP references 标记“verified”；桥接两侧都列出；结果行高亮命中词，同名文件显示目录，右侧 Preview Source 预览选中结果；编辑器里也可 Ctrl+Alt+↓ / ↑ 跳到下一处 / 上一处） |

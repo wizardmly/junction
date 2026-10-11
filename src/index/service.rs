@@ -237,14 +237,40 @@ impl CodeIndex {
     /// built-in index. Paths in the result are relative to the root when
     /// inside it, absolute otherwise.
     pub fn definitions(&self, path: String, text: String, offset: usize, cx: &App) -> Task<Vec<Target>> {
-        let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(Vec::new()) };
+        let task = self.go_to(path, text, offset, cx);
+        cx.background_spawn(async move {
+            match task.await {
+                Nav::Targets(targets) => targets,
+                Nav::Declaration => Vec::new(),
+            }
+        })
+    }
+
+    /// Go to Declaration / Ctrl+click: where the identifier at `offset` is
+    /// declared, or that it is a declaration itself (IntelliJ then shows
+    /// its usages). Locals first, then bridges, the language server and the
+    /// index. Off the main thread: it parses the file.
+    pub fn go_to(&self, path: String, text: String, offset: usize, cx: &App) -> Task<Nav> {
+        let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(Nav::Targets(Vec::new())) };
         let (index, lsp) = (self.index.clone(), self.lsp.clone());
         cx.background_spawn(async move {
+            // A parameter or local variable: its declaration in this file.
+            if let Some(local) = super::locals::resolve(lang, &text, offset) {
+                if local.on_decl {
+                    return Nav::Declaration;
+                }
+                let (line, col) = nav::position(&text, local.decl);
+                let name = nav::word_at(&text, offset).map(|(w, _)| w).unwrap_or_default();
+                return Nav::Targets(vec![Target { path, line, col, name, label: format!("local · {}", lang.name()), container: None }]);
+            }
             let local = {
                 let index = index.read().unwrap();
                 let bridged = nav::bridge_definitions(&index, &path, &text, offset);
                 if !bridged.is_empty() {
-                    return bridged;
+                    return Nav::Targets(bridged);
+                }
+                if symbol_declared_at(&index, &path, &text, offset, false) {
+                    return Nav::Declaration;
                 }
                 nav::definitions(&index, &path, lang, &text, offset)
             };
@@ -256,11 +282,15 @@ impl CodeIndex {
                 let (line, col) = nav::position(&text, offset);
                 if let Ok(locations) = client.definition(&file, lang, &text, line, col, patience) {
                     if !locations.is_empty() {
-                        return locations.into_iter().map(|l| server_target(&root, l, lang)).collect();
+                        return Nav::Targets(locations.into_iter().map(|l| server_target(&root, l, lang)).collect());
                     }
                 }
             }
-            local
+            // A C prototype nothing else defines: its usages, too.
+            if local.is_empty() && symbol_declared_at(&index.read().unwrap(), &path, &text, offset, true) {
+                return Nav::Declaration;
+            }
+            Nav::Targets(local)
         })
     }
 
@@ -316,6 +346,21 @@ impl CodeIndex {
         let (index, lsp) = (self.index.clone(), self.lsp.clone());
         cx.background_spawn(async move {
             let Some((word, _)) = nav::word_at(&text, offset) else { return (String::new(), Vec::new()) };
+            // A parameter or local variable: its uses in its scope.
+            if let Some(local) = lang.and_then(|lang| super::locals::resolve(lang, &text, offset)).filter(|l| !l.member) {
+                let line_text = |at: usize| {
+                    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+                    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+                    text[start..end].trim().to_owned()
+                };
+                let group = lang.map(|l| l.name()).unwrap_or_default().to_owned();
+                let mut found = Vec::new();
+                for (at, group) in std::iter::once((local.decl, "Declarations".to_owned())).chain(local.uses.iter().map(|u| (*u, group.clone()))) {
+                    let (line, col) = nav::position(&text, at);
+                    found.push(Usage { path: path.clone(), line, col, text: line_text(at), group });
+                }
+                return (word, found);
+            }
             let mut found = {
                 let index = index.read().unwrap();
                 nav::usages(&index, &root, &word, lang)
@@ -357,27 +402,6 @@ impl CodeIndex {
     pub fn search_symbols(&self, query: String, types_only: bool, libraries: bool, cx: &App) -> Task<Vec<nav::SymbolMatch>> {
         let index = self.index.clone();
         cx.background_spawn(async move { nav::search_symbols(&index.read().unwrap(), &query, types_only, libraries, 200) })
-    }
-
-    /// Whether the identifier at `offset` is a declaration the index knows.
-    pub fn declared_at(&self, path: &str, text: &str, offset: usize) -> bool {
-        let Some((word, range)) = nav::word_at(text, offset) else { return false };
-        let (line, col) = nav::position(text, range.start);
-        self.index.read().is_ok_and(|index| index.files.get(path).is_some_and(|e| e.symbols.iter().any(|s| s.line == line && s.col == col && s.name == word)))
-    }
-
-    /// On a declaration's name, where Go to Declaration shows its usages
-    /// instead, as IntelliJ does. A C / C++ / Objective-C prototype still
-    /// goes to its definition.
-    pub fn on_declaration(&self, path: &str, text: &str, offset: usize) -> bool {
-        let Some((word, range)) = nav::word_at(text, offset) else { return false };
-        let (line, col) = nav::position(text, range.start);
-        self.index.read().is_ok_and(|index| {
-            index.files.get(path).is_some_and(|e| {
-                let prototypes = matches!(e.lang, Lang::C | Lang::Cpp | Lang::ObjC);
-                e.symbols.iter().any(|s| s.line == line && s.col == col && s.name == word && !(prototypes && s.decl))
-            })
-        })
     }
 
     pub fn file_symbols(&self, path: &str) -> Vec<nav::SymbolMatch> {
@@ -477,6 +501,25 @@ impl CodeIndex {
         }
         out
     }
+}
+
+/// Where Go to Declaration leads.
+pub enum Nav {
+    Targets(Vec<Target>),
+    /// On a declaration: IntelliJ shows its usages.
+    Declaration,
+}
+
+/// The identifier at `offset` is the name of a symbol the index has for
+/// this file. A C / C++ / Objective-C prototype counts only when
+/// `prototypes` (otherwise it goes on to its definition).
+fn symbol_declared_at(index: &ProjectIndex, path: &str, text: &str, offset: usize, prototypes: bool) -> bool {
+    let Some((word, range)) = nav::word_at(text, offset) else { return false };
+    let (line, col) = nav::position(text, range.start);
+    index.files.get(path).is_some_and(|e| {
+        let c_like = matches!(e.lang, Lang::C | Lang::Cpp | Lang::ObjC);
+        e.symbols.iter().any(|s| s.line == line && s.col == col && s.name == word && (prototypes || !(c_like && s.decl)))
+    })
 }
 
 fn server_target(root: &Path, l: super::lsp::Location, lang: Lang) -> Target {

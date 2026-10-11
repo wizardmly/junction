@@ -233,6 +233,8 @@ const KOTLIN_RULES: &[Rule] = &[
     holder("companion_object", K::Class, Child(&["type_identifier"])),
     rule("function_declaration", K::Function, Child(&["simple_identifier"])),
     top("property_declaration", K::Property, Declarator),
+    // `class A(val x: Int)`: a property (plain constructor parameters aren't).
+    rule("class_parameter", K::Property, Child(&["simple_identifier"])),
     rule("type_alias", K::TypeAlias, Child(&["type_identifier"])),
     rule("enum_entry", K::EnumMember, Child(&["simple_identifier"])),
 ];
@@ -432,6 +434,9 @@ impl Walker<'_> {
     }
 
     fn push(&mut self, node: Node, name_node: Node, name: String, kind: SymbolKind, rule: Rule) {
+        if node.kind() == "class_parameter" && node.child(0).is_none_or(|c| c.kind() != "binding_pattern_kind") {
+            return;
+        }
         if name.is_empty() || !name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_' || c == '~' || c == '$') {
             return;
         }
