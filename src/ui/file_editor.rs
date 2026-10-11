@@ -1151,7 +1151,7 @@ impl FileEditor {
                 self.popup = None;
                 cx.emit(FileEditorEvent::FilesChanged);
             }
-            Err(error) => self.notice = Some(error.to_string()),
+            Err(error) => self.set_notice(error.to_string(), cx),
         }
         self.focus(window, cx);
         cx.notify();
@@ -1245,12 +1245,35 @@ impl FileEditor {
         self.save_now(cx);
     }
 
+    /// Shows a failed action's message for a few seconds.
+    fn set_notice(&mut self, notice: impl Into<String>, cx: &mut Context<Self>) {
+        let notice = notice.into();
+        self.notice = Some(notice.clone());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(6)).await;
+            this.update(cx, |this, cx| {
+                if this.notice.as_deref() == Some(notice.as_str()) {
+                    this.notice = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// Saves unsaved text, as IntelliJ does when a tab closes.
     pub fn save_now(&mut self, cx: &mut Context<Self>) {
         if self.read_only() {
             return;
         }
         let text = self.text(cx);
+        // Nothing typed since the last save or load: writing would put a
+        // stale buffer over a file changed outside meanwhile.
+        if text == self.saved {
+            return;
+        }
         match std::fs::write(self.repository.root().join(&self.own), &text) {
             Ok(()) => {
                 self.format = TextFormat::of(&text);
@@ -1258,7 +1281,7 @@ impl FileEditor {
                 cx.emit(FileEditorEvent::FilesChanged);
                 cx.emit(FileEditorEvent::Saved(self.path.clone()));
             }
-            Err(error) => self.notice = Some(error.to_string()),
+            Err(error) => self.set_notice(error.to_string(), cx),
         }
         cx.notify();
     }
@@ -1267,7 +1290,7 @@ impl FileEditor {
     /// working tree), with the selected lines highlighted.
     pub(crate) fn open_on_hosting(&mut self, _: &OpenOnHosting, _: &mut Window, cx: &mut Context<Self>) {
         let Some(web) = crate::git::hosting::web_repo(&self.repository) else {
-            self.notice = Some("No GitHub, GitLab or Bitbucket remote found".into());
+            self.set_notice("No GitHub, GitLab or Bitbucket remote found", cx);
             cx.notify();
             return;
         };
@@ -1480,7 +1503,7 @@ impl FileEditor {
         let rev = self.revision.clone().unwrap_or_else(|| "HEAD".into());
         match self.repository.run(["log", "-1", "--format=%H", &rev, "--", &self.own]) {
             Ok(hash) if !hash.trim().is_empty() => cx.emit(FileEditorEvent::SelectCommit(hash.trim().to_owned())),
-            _ => self.notice = Some("The file isn't in any commit yet".into()),
+            _ => self.set_notice("The file isn't in any commit yet", cx),
         }
         cx.notify();
     }

@@ -540,6 +540,8 @@ impl Workspace {
             self.model.read(cx).project_status().entries.iter().map(|e| (e.path.clone(), e.kind)).collect();
         let entity = cx.entity();
         let count = self.editors.len();
+        // The diff / merge / PR tabs count as tabs to close too.
+        let total = tabs.len();
         // As IntelliJ: the row scrolls sideways (the wheel scrolls it too) and
         // a newly selected tab is scrolled into view.
         let scroll = self.tab_scroll[group].clone();
@@ -720,9 +722,9 @@ impl Workspace {
                             let (p1, p2) = (path.clone(), path.clone());
                             let e5 = entity.clone();
                             menu.item(close("Close", true, |i, ix| i == ix))
-                                .item(close("Close Other Tabs", count > 1, |i, ix| i != ix))
+                                .item(close("Close Other Tabs", total > 1, |i, ix| i != ix))
                                 .item(close("Close Tabs to the Left", ix > 0, |i, ix| i < ix))
-                                .item(close("Close Tabs to the Right", ix + 1 < count, |i, ix| i > ix))
+                                .item(close("Close Tabs to the Right", ix + 1 < total, |i, ix| i > ix))
                                 .item(close("Close All Tabs", true, |_, _| true))
                                 .item({
                                     let entity = e4.clone();

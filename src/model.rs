@@ -128,6 +128,9 @@ pub struct RepoModel {
     /// Where "Open on GitHub / GitLab" points, from the tracked remote.
     web_repo: Option<git::hosting::WebRepo>,
     loading: bool,
+    /// The working tree status of the open project has been read at least
+    /// once (until then it is empty, not "no changes").
+    status_loaded: bool,
     busy: Option<String>,
     /// An operation just stopped on conflicts; the next reload opens the
     /// Conflicts dialog.
@@ -441,6 +444,7 @@ impl RepoModel {
             log_refs: Arc::default(),
             web_repo: None,
             loading: false,
+            status_loaded: false,
             busy: None,
             conflicts_pending: false,
             error: None,
@@ -462,6 +466,7 @@ impl RepoModel {
     }
 
     pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.status_loaded = false;
         match Repository::discover(&path, self.console.clone()) {
             Ok(repository) => {
                 git::migrate_legacy_data(&repository);
@@ -1056,6 +1061,10 @@ impl RepoModel {
         self.user_email.as_deref()
     }
 
+    pub fn status_loaded(&self) -> bool {
+        self.status_loaded
+    }
+
     pub fn is_loading(&self) -> bool {
         self.loading
     }
@@ -1229,6 +1238,7 @@ impl RepoModel {
                 this.loading = false;
                 match result {
                     Ok((snapshot, repository, filter, sources)) => {
+                        this.status_loaded = true;
                         let mut log_error = None;
                         this.details_cache.clear();
                         this.refs = Arc::new(snapshot.refs);

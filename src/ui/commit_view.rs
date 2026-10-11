@@ -328,7 +328,8 @@ impl CommitView {
             // Read from disk each time: Unshelve can file changes into a changelist too.
             self.changelists = self.model.read(cx).project_repository().map(Changelists::load).unwrap_or_default();
             let changed: Vec<String> = changes.iter().map(|(p, _)| p.clone()).collect();
-            if self.changelists.sync(&changed) {
+            // (Not before the first status read: its empty list would drop every assignment.)
+            if self.model.read(cx).status_loaded() && self.changelists.sync(&changed) {
                 self.save_changelists(cx);
             }
             let mut groups: Vec<Group> = self
