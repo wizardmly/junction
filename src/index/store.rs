@@ -43,16 +43,140 @@ pub struct ProjectIndex {
     /// Names also keep [`char_mask`] of themselves, so a search can skip
     /// most names without reading them.
     #[serde(skip)]
-    names: HashMap<String, (u64, Vec<(Arc<str>, u32)>)>,
+    names: ShardedMap<(u64, Vec<(Arc<str>, u32)>)>,
     #[serde(skip)]
-    keys: HashMap<String, Vec<(Arc<str>, u32)>>,
+    keys: FastMap<String, Vec<(Arc<str>, u32)>>,
     /// The symbols naming each supertype (types extending or implementing
     /// it, Rust trait methods), for the gutter's implementation markers.
     #[serde(skip)]
-    subtypes: HashMap<String, Vec<(Arc<str>, u32)>>,
+    subtypes: FastMap<String, Vec<(Arc<str>, u32)>>,
     /// Dependencies and SDKs ("External Libraries"), keyed by absolute path.
     #[serde(skip)]
     pub external: std::sync::Arc<ExternalIndex>,
+}
+
+/// A hash map with a fast, non-cryptographic hasher: the name maps hold
+/// millions of short strings on big projects, where SipHash showed up as
+/// a tenth of loading the index.
+pub type FastMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<FxHasher>>;
+
+/// The Firefox / rustc hash: a multiply and rotate per word.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher(u64);
+
+impl FxHasher {
+    #[inline]
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+impl std::hash::Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            self.add(u64::from_le_bytes(chunk.try_into().unwrap()));
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut word = [0u8; 8];
+            word[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(word));
+        }
+    }
+
+    #[inline]
+    fn write_u8(&mut self, n: u8) {
+        self.add(n as u64);
+    }
+
+    #[inline]
+    fn write_u32(&mut self, n: u32) {
+        self.add(n as u64);
+    }
+
+    #[inline]
+    fn write_u64(&mut self, n: u64) {
+        self.add(n);
+    }
+
+    #[inline]
+    fn write_usize(&mut self, n: usize) {
+        self.add(n as u64);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Shards of the name map, built in parallel when the index loads.
+const SHARDS: usize = 16;
+
+/// A string-keyed map split by key hash into [`SHARDS`] maps, so that
+/// rebuilding it from millions of symbols can use every core.
+#[derive(Clone)]
+struct ShardedMap<V> {
+    shards: Vec<FastMap<String, V>>,
+}
+
+impl<V> Default for ShardedMap<V> {
+    fn default() -> Self {
+        Self { shards: (0..SHARDS).map(|_| FastMap::default()).collect() }
+    }
+}
+
+impl<V> ShardedMap<V> {
+    /// A hash independent of the one inside each shard (different seed),
+    /// so a shard's keys still spread over all of its buckets.
+    fn shard_of(key: &str) -> usize {
+        let mut hasher = FxHasher(0x9e37_79b9_7f4a_7c15);
+        std::hash::Hasher::write(&mut hasher, key.as_bytes());
+        (std::hash::Hasher::finish(&hasher) >> 60) as usize % SHARDS
+    }
+
+    fn get(&self, key: &str) -> Option<&V> {
+        self.shards[Self::shard_of(key)].get(key)
+    }
+
+    fn get_mut(&mut self, key: &str) -> Option<&mut V> {
+        self.shards[Self::shard_of(key)].get_mut(key)
+    }
+
+    fn remove(&mut self, key: &str) -> Option<V> {
+        self.shards[Self::shard_of(key)].remove(key)
+    }
+
+    fn contains_key(&self, key: &str) -> bool {
+        self.get(key).is_some()
+    }
+
+    fn clear(&mut self) {
+        self.shards.iter_mut().for_each(FastMap::clear);
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&String, &V)> {
+        self.shards.iter().flat_map(|shard| shard.iter())
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &String> {
+        self.shards.iter().flat_map(|shard| shard.keys())
+    }
+
+    fn shard_mut(&mut self, key: &str) -> &mut FastMap<String, V> {
+        &mut self.shards[Self::shard_of(key)]
+    }
+}
+
+/// Appends a posting under `key`, allocating the key only when it is new
+/// (most names are seen many times).
+fn push_posting<V: Default>(map: &mut FastMap<String, V>, key: &str, value: impl FnOnce() -> V, push: impl FnOnce(&mut V)) {
+    match map.get_mut(key) {
+        Some(v) => push(v),
+        None => push(map.entry(key.to_owned()).or_insert_with(value)),
+    }
 }
 
 pub fn stat(path: &Path) -> Option<(u64, u64)> {
@@ -280,13 +404,13 @@ impl ProjectIndex {
     fn map(&mut self, path: &str, entry: &FileEntry) {
         let path: Arc<str> = path.into();
         for (i, s) in entry.symbols.iter().enumerate() {
-            self.names.entry(s.name.clone()).or_insert_with(|| (char_mask(&s.name), Vec::new())).1.push((path.clone(), i as u32));
+            push_posting(self.names.shard_mut(&s.name), &s.name, || (char_mask(&s.name), Vec::new()), |v| v.1.push((path.clone(), i as u32)));
             for parent in &s.supers {
-                self.subtypes.entry(parent.clone()).or_default().push((path.clone(), i as u32));
+                push_posting(&mut self.subtypes, parent, Vec::new, |v| v.push((path.clone(), i as u32)));
             }
         }
         for (i, b) in entry.bridges.iter().enumerate() {
-            self.keys.entry(b.key.clone()).or_default().push((path.clone(), i as u32));
+            push_posting(&mut self.keys, &b.key, Vec::new, |v| v.push((path.clone(), i as u32)));
         }
     }
 
@@ -317,15 +441,41 @@ impl ProjectIndex {
         }
     }
 
+    /// Builds the name, supertype and bridge maps from the files: the name
+    /// map's shards on every core (seconds on the Linux kernel otherwise),
+    /// the two small maps beside them.
     fn rebuild_maps(&mut self) {
         self.names.clear();
         self.keys.clear();
         self.subtypes.clear();
-        let files = std::mem::take(&mut self.files);
-        for (path, entry) in &files {
-            self.map(path, entry);
-        }
-        self.files = files;
+        let files: Vec<(Arc<str>, &FileEntry)> = self.files.iter().map(|(path, entry)| (Arc::from(path.as_str()), entry)).collect();
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, SHARDS);
+        let per_thread = SHARDS.div_ceil(threads);
+        let (names, subtypes, keys) = (&mut self.names, &mut self.subtypes, &mut self.keys);
+        std::thread::scope(|scope| {
+            for (chunk, shards) in names.shards.chunks_mut(per_thread).enumerate() {
+                let files = &files;
+                scope.spawn(move || {
+                    let first = chunk * per_thread;
+                    for (path, entry) in files {
+                        for (i, s) in entry.symbols.iter().enumerate() {
+                            let Some(shard) = ShardedMap::<()>::shard_of(&s.name).checked_sub(first).and_then(|at| shards.get_mut(at)) else { continue };
+                            push_posting(shard, &s.name, || (char_mask(&s.name), Vec::new()), |v| v.1.push((path.clone(), i as u32)));
+                        }
+                    }
+                });
+            }
+            for (path, entry) in &files {
+                for (i, s) in entry.symbols.iter().enumerate() {
+                    for parent in &s.supers {
+                        push_posting(subtypes, parent, Vec::new, |v| v.push((path.clone(), i as u32)));
+                    }
+                }
+                for (i, b) in entry.bridges.iter().enumerate() {
+                    push_posting(keys, &b.key, Vec::new, |v| v.push((path.clone(), i as u32)));
+                }
+            }
+        });
     }
 
     pub fn symbol_count(&self) -> usize {

@@ -120,16 +120,34 @@ fn sort(targets: &mut [Target]) {
     });
 }
 
+/// Members of the types below one type, by member name, built once per
+/// type and shared by all of its members.
+type MembersBelow<'a> = HashMap<&'a str, Vec<(&'a str, &'a FileEntry, &'a Symbol)>>;
+
+/// The members named `name` with each owner, built once per member name:
+/// walking up the supertypes then looks each one up instead of scanning
+/// every namesake again.
+type ByOwner<'a> = HashMap<&'a str, Vec<(&'a str, &'a FileEntry, &'a Symbol)>>;
+
+/// Per supertype name: whether it is abstract, and its own supertypes.
+struct Parent {
+    is_abstract: bool,
+    supers: Vec<String>,
+}
+
 /// The gutter markers of a file, from its current symbols.
 pub fn gutter_marks(index: &ProjectIndex, path: &str, symbols: &[Symbol]) -> Vec<GutterMark> {
     let mut out = Vec::new();
     // Subtypes per type name, shared by the type and its members.
     let mut below: HashMap<String, Vec<(&str, &FileEntry, &Symbol)>> = HashMap::new();
+    let mut members_below: HashMap<String, MembersBelow> = HashMap::new();
+    let mut by_owner: HashMap<&str, ByOwner> = HashMap::new();
+    let mut parents: HashMap<String, Parent> = HashMap::new();
     let types_here: HashMap<&str, &Symbol> = symbols.iter().filter(|s| is_class_like(s.kind)).map(|s| (s.name.as_str(), s)).collect();
 
     for s in symbols {
         if is_class_like(s.kind) {
-            let subs = below.entry(s.name.clone()).or_insert_with(|| subtypes(index, &s.name)).clone();
+            let subs = below.entry(s.name.clone()).or_insert_with(|| subtypes(index, &s.name));
             let mut targets: Vec<Target> = subs.iter().map(|(p, e, sub)| target(p, e, sub)).collect();
             // A Rust trait is implemented by `impl Trait for T` blocks, known
             // by their methods: one entry per implementing type.
@@ -159,21 +177,25 @@ pub fn gutter_marks(index: &ProjectIndex, path: &str, symbols: &[Symbol]) -> Vec
         let abstract_owner = owner_type.is_some_and(|t| is_abstract(t.kind));
 
         // Down: the same member in subtypes (Rust: in impls of the trait).
-        let subs = below.entry(owner.to_owned()).or_insert_with(|| subtypes(index, owner)).clone();
-        let mut targets: Vec<Target> = Vec::new();
-        for (p, _, sub) in &subs {
-            let Some(entry) = index.file(p) else { continue };
-            for m in entry.symbols.iter().filter(|m| m.name == s.name && is_member(m.kind) && owner_of(m) == Some(sub.name.as_str())) {
-                targets.push(target(p, entry, m));
-            }
-        }
-        if owner_type.is_some_and(|t| t.kind == SymbolKind::Trait) {
-            for (p, e, m) in index.subtypes_of(owner) {
-                if m.name == s.name && is_member(m.kind) {
-                    targets.push(target(p, e, m));
+        let members = members_below.entry(owner.to_owned()).or_insert_with(|| {
+            let subs = below.entry(owner.to_owned()).or_insert_with(|| subtypes(index, owner));
+            let mut members: MembersBelow = HashMap::new();
+            for (p, _, sub) in subs.iter() {
+                let Some(entry) = index.file(p) else { continue };
+                for m in entry.symbols.iter().filter(|m| is_member(m.kind) && owner_of(m) == Some(sub.name.as_str())) {
+                    members.entry(m.name.as_str()).or_default().push((p, entry, m));
                 }
             }
-        }
+            if owner_type.is_some_and(|t| t.kind == SymbolKind::Trait) {
+                for (p, e, m) in index.subtypes_of(owner) {
+                    if is_member(m.kind) {
+                        members.entry(m.name.as_str()).or_default().push((p, e, m));
+                    }
+                }
+            }
+            members
+        });
+        let mut targets: Vec<Target> = members.get(s.name.as_str()).into_iter().flatten().map(|(p, e, m)| target(p, e, m)).collect();
         if !targets.is_empty() {
             sort(&mut targets);
             let kind = if s.decl || abstract_owner { MarkKind::Implemented } else { MarkKind::Overridden };
@@ -183,26 +205,45 @@ pub fn gutter_marks(index: &ProjectIndex, path: &str, symbols: &[Symbol]) -> Vec
         // Up: the nearest supertype declaring the same member.
         let mut queue: VecDeque<String> = owner_type.map(|t| t.supers.clone()).unwrap_or_default().into();
         queue.extend(s.supers.iter().cloned());
+        if queue.is_empty() {
+            continue;
+        }
+        let namesakes = by_owner.entry(s.name.as_str()).or_insert_with(|| {
+            let mut map: ByOwner = HashMap::new();
+            for (p, e, m) in index.symbols_named(&s.name) {
+                if is_member(m.kind) {
+                    if let Some(owner) = owner_of(m) {
+                        map.entry(owner).or_default().push((p, e, m));
+                    }
+                }
+            }
+            map
+        });
         let mut seen: HashSet<String> = HashSet::from([owner.to_owned()]);
         let mut found: Vec<(Target, bool)> = Vec::new();
         while let Some(parent) = queue.pop_front() {
             if !seen.insert(parent.clone()) || seen.len() > 64 {
                 continue;
             }
-            let parent_abstract = index.symbols_named(&parent).any(|(_, _, t)| is_class_like(t.kind) && is_abstract(t.kind));
-            for (p, e, m) in index.symbols_named(&s.name) {
-                if is_member(m.kind) && owner_of(m) == Some(parent.as_str()) && !(p == path && m.line == s.line) {
-                    found.push((target(p, e, m), m.decl || parent_abstract));
+            let info = parents.entry(parent.clone()).or_insert_with(|| {
+                let mut info = Parent { is_abstract: false, supers: Vec::new() };
+                for (_, _, t) in index.symbols_named(&parent) {
+                    if is_class_like(t.kind) {
+                        info.is_abstract |= is_abstract(t.kind);
+                        info.supers.extend(t.supers.iter().cloned());
+                    }
+                }
+                info
+            });
+            for (p, e, m) in namesakes.get(parent.as_str()).into_iter().flatten() {
+                if !(*p == path && m.line == s.line) {
+                    found.push((target(p, e, m), m.decl || info.is_abstract));
                 }
             }
             if !found.is_empty() {
                 break;
             }
-            for (_, _, t) in index.symbols_named(&parent) {
-                if is_class_like(t.kind) {
-                    queue.extend(t.supers.iter().cloned());
-                }
-            }
+            queue.extend(info.supers.iter().cloned());
         }
         if !found.is_empty() {
             let kind = if found.iter().any(|(_, implements)| *implements) { MarkKind::Implementing } else { MarkKind::Overriding };

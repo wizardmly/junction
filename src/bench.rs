@@ -178,3 +178,56 @@ fn bench_filter_switch() {
         time("rows", || git::log::CommitRows::build(&page));
     }
 }
+
+/// The editor gutter's implementation markers on big files:
+/// `JUNCTION_BENCH_GUTTER=file,file` (default: a sample of the project).
+#[test]
+#[ignore]
+fn bench_gutter() {
+    let root = PathBuf::from(std::env::var("JUNCTION_BENCH").expect("JUNCTION_BENCH"));
+    let mut idx = time("index load (cache)", || index::store::ProjectIndex::load(&root));
+    time("index update", || idx.update(&|_, _| {}));
+    let files: Vec<String> = match std::env::var("JUNCTION_BENCH_GUTTER") {
+        Ok(list) => list.split(',').map(str::to_owned).collect(),
+        Err(_) => idx.files.keys().step_by((idx.files.len() / 200).max(1)).cloned().collect(),
+    };
+    let mut total = std::time::Duration::ZERO;
+    let mut worst = (std::time::Duration::ZERO, String::new());
+    for file in &files {
+        let Ok(text) = std::fs::read_to_string(root.join(file)) else { continue };
+        let Some(lang) = index::service::CodeIndex::lang_of(file, &text) else { continue };
+        let symbols = index::symbols::extract(lang, &text);
+        let t = Instant::now();
+        let marks = index::hierarchy::gutter_marks(&idx, file, &symbols);
+        let took = t.elapsed();
+        total += took;
+        if let Ok(dump) = std::env::var("JUNCTION_BENCH_GUTTER_DUMP") {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dump).unwrap();
+            for m in &marks {
+                writeln!(f, "{file}:{} {:?} {} {:?}", m.line, m.kind, m.name, m.targets.iter().map(|t| format!("{}:{}:{}", t.path, t.line, t.name)).collect::<Vec<_>>()).unwrap();
+            }
+        }
+        if took > worst.0 {
+            worst = (took, file.clone());
+        }
+        if files.len() <= 10 {
+            println!("{file:<60} {:>8.1} ms  {} marks, {} targets", took.as_secs_f64() * 1000.0, marks.len(), marks.iter().map(|m| m.targets.len()).sum::<usize>());
+        }
+    }
+    println!("{} files: total {:.1} ms, worst {:.1} ms ({})", files.len(), total.as_secs_f64() * 1000.0, worst.0.as_secs_f64() * 1000.0, worst.1);
+}
+
+/// Where loading the index cache goes: decoding vs. the name maps.
+#[test]
+#[ignore]
+fn bench_index_load() {
+    let root = PathBuf::from(std::env::var("JUNCTION_BENCH").expect("JUNCTION_BENCH"));
+    let repository = Repository::discover(&root, GitConsole::default()).unwrap();
+    let cache = PathBuf::from(repository.run(["rev-parse", "--absolute-git-dir"]).unwrap().trim()).join("junction/index.bin");
+    let version = u32::from_le_bytes(std::fs::read(&cache).unwrap()[..4].try_into().unwrap());
+    let decoded = time("decode", || index::store::read_cache::<index::store::ProjectIndex>(&cache, version).unwrap());
+    drop(decoded);
+    let idx = time("load (decode + maps)", || index::store::ProjectIndex::load(&root));
+    time("drop", || drop(idx));
+}

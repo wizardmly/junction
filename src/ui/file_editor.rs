@@ -333,7 +333,9 @@ pub struct FileEditor {
     hover_task: Option<gpui_kit::Task<()>>,
     markers_task: Option<gpui_kit::Task<()>>,
     /// The gutter's implementation markers (see `hierarchy_strip`).
-    hierarchy: Vec<crate::index::hierarchy::GutterMark>,
+    /// Sorted by line, each with its slot (two marks on one line keep the
+    /// gutter order: up, then down), shared with the paint callback.
+    hierarchy: Rc<Vec<(u32, usize, crate::index::hierarchy::GutterMark)>>,
     hierarchy_task: Option<gpui_kit::Task<()>>,
     _subscriptions: Vec<Subscription>,
     /// An image file, shown instead of the text (IntelliJ's image viewer).
@@ -582,7 +584,7 @@ impl FileEditor {
             hover_card: None,
             hover_task: None,
             markers_task: None,
-            hierarchy: Vec::new(),
+            hierarchy: Rc::default(),
             hierarchy_task: None,
             image,
             zoom: None,
@@ -708,7 +710,7 @@ impl FileEditor {
                 }
                 let slots = per_line.values().copied().max().unwrap_or(1).clamp(1, 2);
                 this.state.update(cx, |state, cx| state.set_gutter_extra(px(GUTTER_ICON_GAP + GUTTER_ICON_SLOT * slots as f32), cx));
-                this.hierarchy = marks;
+                this.hierarchy = Rc::new(slotted(marks));
                 cx.notify();
             })
             .ok();
@@ -721,16 +723,7 @@ impl FileEditor {
         let state = self.state.clone();
         let this = cx.entity().downgrade();
         let dark = cx.palette().dark;
-        // Two marks on one line keep the gutter order: up, then down.
-        let mut marks: Vec<(u32, usize, crate::index::hierarchy::GutterMark)> = Vec::new();
-        let mut sorted = self.hierarchy.clone();
-        sorted.sort_by_key(|m| (m.line, m.kind.goes_down()));
-        for m in sorted {
-            let slot = marks.iter().filter(|(l, _, _)| *l == m.line).count();
-            if slot < 2 {
-                marks.push((m.line, slot, m));
-            }
-        }
+        let marks = self.hierarchy.clone();
         canvas(
             |_, _, _| {},
             move |bounds, _, window, cx| {
@@ -738,11 +731,12 @@ impl FileEditor {
                 let (Some(line_height), Some(visible), Some(left)) = (state.line_height(), state.visible_row_range(), state.gutter_extra_left()) else { return };
                 let rope = state.text();
                 let lines = rope.lines_len().max(1);
-                let mut hits: Vec<(Bounds<Pixels>, crate::index::hierarchy::GutterMark)> = Vec::new();
-                for (line, slot, mark) in &marks {
+                let mut hits: Vec<(Bounds<Pixels>, usize)> = Vec::new();
+                let first = marks.partition_point(|(line, _, _)| (*line as usize) < visible.start);
+                for (i, (line, slot, mark)) in marks.iter().enumerate().skip(first) {
                     let line = *line as usize;
-                    if line < visible.start || line > visible.end || line >= lines {
-                        continue;
+                    if line > visible.end || line >= lines {
+                        break;
                     }
                     let at = rope.line_start_offset(line);
                     let Some(top) = state.range_to_bounds(&(at..at)).map(|b| b.top()) else { continue };
@@ -761,16 +755,16 @@ impl FileEditor {
                         let color: gpui_kit::Hsla = gpui_kit::rgba(*rgba).into();
                         window.paint_svg(rect, (*path).into(), None, gpui_kit::TransformationMatrix::unit(), color, cx).ok();
                     }
-                    hits.push((rect, mark.clone()));
+                    hits.push((rect, i));
                 }
                 window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
                     if phase != DispatchPhase::Bubble || e.button != MouseButton::Left {
                         return;
                     }
-                    let Some((_, mark)) = hits.iter().find(|(r, _)| r.dilate(px(2.)).contains(&e.position)) else { return };
+                    let Some(&(rect, i)) = hits.iter().find(|(r, _)| r.dilate(px(2.)).contains(&e.position)) else { return };
+                    let mark = &marks[i].2;
                     cx.stop_propagation();
                     // The popup's corner at the icon's bottom right, as IntelliJ's.
-                    let rect = hits.iter().find(|(r, _)| r.dilate(px(2.)).contains(&e.position)).map(|(r, _)| *r).unwrap_or_default();
                     let event = FileEditorEvent::ChooseTargets { title: mark.title(), targets: mark.targets.clone(), at: rect.bottom_right() };
                     this.update(cx, |_, cx| cx.emit(event)).ok();
                     window.refresh();
@@ -1731,4 +1725,18 @@ fn every_language_highlights() {
         let color = styles.iter().find(|(r, _)| r.start <= at && at < r.end).and_then(|(_, s)| s.color);
         assert!(color.is_some() && (color == tag || color == keyword), "{name}: {styles:?}");
     }
+}
+
+/// The gutter's marks sorted by line with their slots, at most two a line:
+/// up, then down, as IntelliJ orders them.
+fn slotted(mut marks: Vec<crate::index::hierarchy::GutterMark>) -> Vec<(u32, usize, crate::index::hierarchy::GutterMark)> {
+    marks.sort_by_key(|m| (m.line, m.kind.goes_down()));
+    let mut out: Vec<(u32, usize, crate::index::hierarchy::GutterMark)> = Vec::with_capacity(marks.len());
+    for m in marks {
+        let slot = out.iter().rev().take_while(|(l, _, _)| *l == m.line).count();
+        if slot < 2 {
+            out.push((m.line, slot, m));
+        }
+    }
+    out
 }
