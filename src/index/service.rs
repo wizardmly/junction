@@ -124,12 +124,16 @@ impl CodeIndex {
                         _ => Some(ProjectIndex::load(&root)),
                     }
                 };
-                let changed = match fresh.as_mut() {
+                // `changed`: the index views read was replaced or edited;
+                // `dirty`: it differs from the cache on disk. Loading an
+                // up-to-date cache is the first, not the second: rewriting
+                // it took seconds at every start on big projects.
+                let (changed, dirty) = match fresh.as_mut() {
                     Some(fresh) => {
-                        fresh.update(&|done, total| {
+                        let dirty = fresh.update(&|done, total| {
                             tx.send((done, total)).ok();
                         });
-                        true
+                        (true, dirty)
                     }
                     None => {
                         // Incremental: stat everything and re-parse the changed
@@ -141,7 +145,7 @@ impl CodeIndex {
                         if let Some(changes) = changes {
                             index.write().unwrap().apply(changes);
                         }
-                        changed
+                        (changed, changed)
                     }
                 };
                 if let Some(fresh) = fresh {
@@ -150,7 +154,7 @@ impl CodeIndex {
                 if changed {
                     content.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
-                if changed {
+                if dirty {
                     if let Ok(index) = index.read() {
                         index.save();
                     }

@@ -309,7 +309,7 @@ pub struct FileEditor {
     /// Line separator and indent, for the status bar.
     format: TextFormat,
     /// HEAD's version, for change markers.
-    base: String,
+    base: std::sync::Arc<str>,
     /// Not under version control (neither in HEAD nor in the index): no
     /// change markers, as IntelliJ shows none for unversioned files.
     unversioned: bool,
@@ -568,7 +568,7 @@ impl FileEditor {
             path,
             revision,
             state,
-            base,
+            base: base.into(),
             unversioned,
             format: TextFormat::of(&content),
             saved: content,
@@ -884,7 +884,7 @@ impl FileEditor {
     }
 
     fn text(&self, cx: &gpui_kit::App) -> String {
-        self.state.read(cx).value().to_string()
+        self.state.read(cx).text().to_string()
     }
 
     /// Focuses the text, as switching to the tab does.
@@ -894,7 +894,9 @@ impl FileEditor {
     }
 
     pub fn is_dirty(&self, cx: &gpui_kit::App) -> bool {
-        !self.read_only() && self.text(cx) != self.saved
+        // Compared piece by piece: tabs ask on every frame, and copying a
+        // long file out of the editor each time showed up while typing.
+        !self.read_only() && *self.state.read(cx).text() != self.saved.as_str()
     }
 
     /// After git changed the working tree (checkout, pull, rollback…):
@@ -927,7 +929,7 @@ impl FileEditor {
                     this.state.update(cx, |state, cx| state.set_value(disk, window, cx));
                 }
                 this.unversioned = base.is_none();
-                this.base = base.unwrap_or_default();
+                this.base = base.unwrap_or_default().into();
                 this.update_markers(cx);
                 cx.notify();
             })
@@ -959,9 +961,9 @@ impl FileEditor {
         }
         // Diffing a long file takes a while: off the main thread, the
         // markers following a moment after the typing.
-        let (base, text) = (self.base.clone(), self.text(cx));
+        let (base, text) = (self.base.clone(), self.state.read(cx).text().clone());
         self.markers_task = Some(cx.spawn(async move |this, cx| {
-            let hunks = cx.background_spawn(async move { diff::commit_hunks(&base, &text) }).await;
+            let hunks = cx.background_spawn(async move { diff::commit_hunks(&base, &text.to_string()) }).await;
             this.update(cx, |this, cx| {
                 this.hunks = hunks;
                 if this.popup.is_some_and(|ix| ix >= this.hunks.len()) {

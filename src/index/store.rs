@@ -161,10 +161,6 @@ impl<V> ShardedMap<V> {
         self.shards.iter().flat_map(|shard| shard.iter())
     }
 
-    fn keys(&self) -> impl Iterator<Item = &String> {
-        self.shards.iter().flat_map(|shard| shard.keys())
-    }
-
     fn shard_mut(&mut self, key: &str) -> &mut FastMap<String, V> {
         &mut self.shards[Self::shard_of(key)]
     }
@@ -528,7 +524,7 @@ impl ProjectIndex {
 
     /// The project's symbol names, for Go to Symbol.
     pub fn names(&self) -> impl Iterator<Item = &String> {
-        self.names.keys()
+        self.names.iter().map(|(name, _)| name)
     }
 
     /// The project's symbol names with their [`char_mask`].

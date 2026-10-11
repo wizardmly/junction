@@ -72,10 +72,37 @@ pub fn load_first_page(repository: &Repository, filter: &LogFilter) -> Result<Ve
 /// interleaved newest first, each keeping its own order, as IntelliJ shows
 /// a multi-root project. A commit listed by two roots (the same history
 /// cloned twice) is shown once.
-pub fn merge_logs(logs: Vec<(u16, Vec<Commit>)>) -> Vec<Commit> {
+pub fn merge_logs(mut logs: Vec<(u16, Vec<Commit>)>) -> Vec<Commit> {
+    // One repository (the usual case): nothing to merge.
+    if logs.len() == 1 {
+        let (root, mut commits) = logs.pop().expect("one log");
+        for commit in &mut commits {
+            commit.root = root;
+        }
+        return commits;
+    }
     let total = logs.iter().map(|(_, l)| l.len()).sum();
+    // Only commits listed by more than one root can repeat: find those
+    // first, from the smaller logs, instead of remembering every hash of
+    // a big history (a second on the Linux kernel).
+    let shared: std::collections::HashSet<String> = {
+        let biggest = logs.iter().enumerate().max_by_key(|(_, (_, l))| l.len()).map_or(0, |(ix, _)| ix);
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (ix, (_, log)) in logs.iter().enumerate() {
+            if ix != biggest {
+                for commit in log {
+                    *counts.entry(commit.hash.as_str()).or_default() += 1;
+                }
+            }
+        }
+        let mut shared: std::collections::HashSet<String> = counts.iter().filter(|(_, n)| **n > 1).map(|(h, _)| (*h).to_owned()).collect();
+        if !counts.is_empty() {
+            shared.extend(logs[biggest].1.iter().filter(|c| counts.contains_key(c.hash.as_str())).map(|c| c.hash.clone()));
+        }
+        shared
+    };
     let mut out = Vec::with_capacity(total);
-    let mut seen = std::collections::HashSet::with_capacity(total);
+    let mut seen = std::collections::HashSet::with_capacity(shared.len());
     let mut iters: Vec<std::iter::Peekable<std::vec::IntoIter<Commit>>> = logs
         .into_iter()
         .map(|(root, mut commits)| {
@@ -94,7 +121,7 @@ pub fn merge_logs(logs: Vec<(u16, Vec<Commit>)>) -> Vec<Commit> {
             .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)));
         let Some((ix, _)) = next else { break };
         let commit = iters[ix].next().expect("peeked");
-        if seen.insert(commit.hash.clone()) {
+        if !shared.contains(&commit.hash) || seen.insert(commit.hash.clone()) {
             out.push(commit);
         }
     }

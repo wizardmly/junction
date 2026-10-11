@@ -1216,27 +1216,43 @@ fn c_family(ctx: &Project, android_sdk: Option<&Path>, out: &mut Vec<Library>) {
     }
 
     // Follow #include from the project's sources into those directories.
+    // Reading the project's sources is most of the work (65k files in the
+    // Linux kernel): it runs on every core first, keeping each file's
+    // includes that aren't next to it, in order.
+    let sources: Vec<PathBuf> = ctx.sources(C_LANGS).collect();
+    let project_includes = project_includes(&sources);
+    // Where an include resolves depends only on its text: most are seen
+    // thousands of times, so each is looked up in the directories once.
+    let mut resolved: HashMap<String, Option<(PathBuf, PathBuf, usize)>> = HashMap::new();
     let mut found: BTreeMap<PathBuf, (usize, Vec<PathBuf>)> = BTreeMap::new();
-    let mut queue: VecDeque<PathBuf> = ctx.sources(C_LANGS).collect();
+    let mut queue: VecDeque<Result<usize, PathBuf>> = (0..sources.len()).map(Ok).collect();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut headers = 0;
-    while let Some(file) = queue.pop_front() {
-        let from_project = file.starts_with(ctx.root);
-        for include in includes(&read(&file)) {
-            // Quoted includes next to the file are the project's own.
-            if from_project && file.parent().is_some_and(|d| d.join(&include).is_file()) {
-                continue;
+    while let Some(item) = queue.pop_front() {
+        let header_includes;
+        let list = match &item {
+            Ok(i) => &project_includes[*i],
+            Err(header) => {
+                header_includes = includes(&read(header));
+                &header_includes
             }
-            let hit = dirs.iter().enumerate().find_map(|(i, d)| {
-                let p = d.join(&include);
-                p.is_file().then(|| (d.clone(), p, i))
-            });
-            let hit = hit.or_else(|| {
-                let (framework, header) = include.split_once('/')?;
-                let root = frameworks.as_ref()?.join(format!("{framework}.framework/Headers"));
-                let p = root.join(header);
-                p.is_file().then(|| (root, p, usize::MAX))
-            });
+        };
+        for include in list {
+            let hit = resolved
+                .entry(include.clone())
+                .or_insert_with(|| {
+                    let hit = dirs.iter().enumerate().find_map(|(i, d)| {
+                        let p = d.join(include);
+                        p.is_file().then(|| (d.clone(), p, i))
+                    });
+                    hit.or_else(|| {
+                        let (framework, header) = include.split_once('/')?;
+                        let root = frameworks.as_ref()?.join(format!("{framework}.framework/Headers"));
+                        let p = root.join(header);
+                        p.is_file().then(|| (root, p, usize::MAX))
+                    })
+                })
+                .clone();
             let Some((root, path, rank)) = hit else { continue };
             if !seen.insert(path.clone()) {
                 continue;
@@ -1247,7 +1263,7 @@ fn c_family(ctx: &Project, android_sdk: Option<&Path>, out: &mut Vec<Library>) {
                 queue.clear();
                 break;
             }
-            queue.push_back(path);
+            queue.push_back(Err(path));
         }
     }
     let mut libs: Vec<(usize, Library)> = found
@@ -1262,6 +1278,36 @@ fn c_family(ctx: &Project, android_sdk: Option<&Path>, out: &mut Vec<Library>) {
         .collect();
     libs.sort_by_key(|(rank, _)| *rank);
     out.extend(libs.into_iter().map(|(_, l)| l));
+}
+
+/// Each project source's includes, minus quoted ones found next to it
+/// (the project's own), read in parallel.
+fn project_includes(sources: &[PathBuf]) -> Vec<Vec<String>> {
+    let next = AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+    let mut out: Vec<Vec<String>> = vec![Vec::new(); sources.len()];
+    let parts: Vec<Vec<(usize, Vec<String>)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut part = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(file) = sources.get(i) else { break };
+                        let parent = file.parent();
+                        let list: Vec<String> = includes(&read(file)).into_iter().filter(|include| !parent.is_some_and(|d| d.join(include).is_file())).collect();
+                        part.push((i, list));
+                    }
+                    part
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
+    });
+    for (i, list) in parts.into_iter().flatten() {
+        out[i] = list;
+    }
+    out
 }
 
 fn includes(text: &str) -> Vec<String> {

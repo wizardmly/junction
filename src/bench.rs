@@ -231,3 +231,31 @@ fn bench_index_load() {
     let idx = time("load (decode + maps)", || index::store::ProjectIndex::load(&root));
     time("drop", || drop(idx));
 }
+
+/// Finding the External Libraries (runs at every start):
+/// `JUNCTION_BENCH_LIBS_DUMP=file` writes what was found, for comparing.
+#[test]
+#[ignore]
+fn bench_libraries() {
+    let root = PathBuf::from(std::env::var("JUNCTION_BENCH").expect("JUNCTION_BENCH"));
+    let files = index::store::list_files(&root);
+    let libraries = time("discover", || index::libraries::discover(&root, &files));
+    println!("  {} libraries", libraries.len());
+    if let Ok(dump) = std::env::var("JUNCTION_BENCH_LIBS_DUMP") {
+        std::fs::write(dump, format!("{libraries:#?}")).unwrap();
+    }
+}
+
+/// A multi-root project's Log: every root's log, merged, then the graph.
+/// `JUNCTION_BENCH_ROOTS=/repo/a,/repo/b`
+#[test]
+#[ignore]
+fn bench_multi_root_log() {
+    let roots: Vec<Repository> = std::env::var("JUNCTION_BENCH_ROOTS").expect("JUNCTION_BENCH_ROOTS").split(',').map(|p| Repository::discover(std::path::Path::new(p), GitConsole::default()).unwrap()).collect();
+    let filter = git::log::LogFilter::default();
+    let logs: Vec<(u16, Vec<git::log::Commit>)> = time("logs", || roots.iter().enumerate().map(|(i, r)| (i as u16, git::log::load_log(r, &filter, None).unwrap())).collect());
+    let merged = time("merge", || git::log::merge_logs(logs));
+    println!("  {} commits", merged.len());
+    time("graph", || git::graph::GraphLayout::build(&merged));
+    time("rows", || git::log::CommitRows::build(&merged));
+}
