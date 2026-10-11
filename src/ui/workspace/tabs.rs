@@ -117,13 +117,28 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Open in Right Split (Project view, Shift+Enter): the file in the other
+    /// group, splitting first when there's one group.
+    pub(super) fn open_in_split(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.split.is_none() {
+            self.split = Some(SplitGroup { editors: Vec::new(), front: Front::Diff, vertical: false });
+            self.swap_split();
+        } else {
+            self.focus_group(1 - self.active_group, cx);
+        }
+        self.open_tab(path, None, window, cx);
+        cx.notify();
+    }
+
     /// Unsplit: the other group's tabs join this one.
     fn unsplit(&mut self, cx: &mut Context<Self>) {
         let Some(split) = self.split.take() else { return };
         for tab in split.editors {
             let (path, rev) = (tab.view.read(cx).path().to_owned(), tab.view.read(cx).revision().map(str::to_owned));
             if !self.editors.iter().any(|t| t.view.read(cx).path() == path && t.view.read(cx).revision() == rev.as_deref()) {
-                self.editors.push(tab);
+                // Pinned tabs stay in front of the others.
+                let at = if tab.pinned { self.editors.iter().take_while(|t| t.pinned).count() } else { self.editors.len() };
+                self.editors.insert(at, tab);
             }
         }
         self.active_group = 0;
@@ -382,6 +397,18 @@ impl Workspace {
         }
         self.fix_front(cx);
         cx.notify();
+    }
+
+    /// Closes the diff / merge / pull request tabs (Close Others, Close All…), but `keep`.
+    fn close_specials(&mut self, keep: Option<Front>, cx: &mut Context<Self>) {
+        if self.active_group != 0 {
+            return;
+        }
+        for front in self.tab_list(cx) {
+            if !matches!(front, Front::Editor(_)) && Some(front) != keep {
+                self.close_front(front, cx);
+            }
+        }
     }
 
     pub(super) fn close_active_tab(&mut self, cx: &mut Context<Self>) {
@@ -644,16 +671,35 @@ impl Workspace {
                                         let ix = editor_ix.unwrap_or(usize::MAX);
                                         let tabs: Vec<usize> = (0..this.editors.len()).filter(|&i| which(i, ix) && !(this.editors[i].pinned && i != ix && label != "Close All Tabs")).collect();
                                         this.close_tabs(tabs, cx);
+                                        // The diff, merge and PR tabs sit right of the files.
+                                        if !matches!(label, "Close" | "Close Tabs to the Left") {
+                                            this.close_specials(None, cx);
+                                        }
                                     })
                                 })
                             };
                             let Some(ix) = editor_ix else {
-                                let entity = entity.clone();
-                                return menu.item(PopupMenuItem::new("Close").on_click(move |_, _, cx| grp(&entity, group, cx, |this, cx| this.close_front(front, cx))));
+                                let (e1, e2, e3) = (entity.clone(), entity.clone(), entity.clone());
+                                return menu
+                                    .item(PopupMenuItem::new("Close").on_click(move |_, _, cx| grp(&e1, group, cx, |this, cx| this.close_front(front, cx))))
+                                    .item(PopupMenuItem::new("Close Other Tabs").on_click(move |_, _, cx| {
+                                        grp(&e2, group, cx, |this, cx| {
+                                            let tabs = (0..this.editors.len()).filter(|&i| !this.editors[i].pinned).collect();
+                                            this.close_tabs(tabs, cx);
+                                            this.close_specials(Some(front), cx);
+                                        })
+                                    }))
+                                    .item(PopupMenuItem::new("Close All Tabs").on_click(move |_, _, cx| {
+                                        grp(&e3, group, cx, |this, cx| {
+                                            this.close_tabs((0..this.editors.len()).collect(), cx);
+                                            this.close_specials(None, cx);
+                                        })
+                                    }));
                             };
                             let (e1, e2, e3, e4) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
                             let path = path.clone().unwrap_or_default();
                             let (p1, p2) = (path.clone(), path.clone());
+                            let e5 = entity.clone();
                             menu.item(close("Close", true, |i, ix| i == ix))
                                 .item(close("Close Other Tabs", count > 1, |i, ix| i != ix))
                                 .item(close("Close Tabs to the Left", ix > 0, |i, ix| i < ix))
@@ -665,6 +711,7 @@ impl Workspace {
                                         grp(&entity, group, cx, |this, cx| {
                                             let tabs = (0..this.editors.len()).filter(|&i| !this.editors[i].pinned).collect();
                                             this.close_tabs(tabs, cx);
+                                            this.close_specials(None, cx);
                                         })
                                     })
                                 })
@@ -698,7 +745,10 @@ impl Workspace {
                                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(full));
                                 }))
                                 .item(PopupMenuItem::new("Copy Path From Repository Root").on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(p2.clone()))
+                                    // A nested root's file: its path in that repository.
+                                    let model = e5.read(cx).model.clone();
+                                    let own = model.read(cx).route(&p2).map(|(_, own)| own).unwrap_or_else(|| p2.clone());
+                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(own))
                                 }))
                                 .item(PopupMenuItem::new("Select in Project View").on_click(move |_, window, cx| {
                                     grp(&e3, group, cx, |this, cx| {

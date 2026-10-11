@@ -183,6 +183,7 @@ impl Workspace {
                 self.open_diff(DiffSource::WorkingTree { path, unversioned }, cx)
             }
             FileAction::OpenFile(path) => self.open_file(path, None, window, cx),
+            FileAction::OpenInSplit(path) => self.open_in_split(path, window, cx),
             FileAction::Annotate(path) => self.annotate(path, None, window, cx),
             FileAction::ShowHistory(path) => self.show_history(path, cx),
             FileAction::CompareWithRevision(path) => {

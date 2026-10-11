@@ -330,6 +330,17 @@ impl ProjectView {
         cx.notify();
     }
 
+    /// An empty folder shown from disk was deleted or renamed.
+    fn tree_has_missing_empty_dirs(&self) -> bool {
+        fn walk(dir: &Dir, path: &str, root: &Path) -> bool {
+            dir.dirs.iter().any(|(name, d)| {
+                let p = if path.is_empty() { name.clone() } else { format!("{path}/{name}") };
+                (!d.excluded && d.dirs.is_empty() && d.files.is_empty() && !root.join(&p).is_dir()) || walk(d, &p, root)
+            })
+        }
+        self.root_dir.as_deref().is_some_and(|root| walk(&self.tree, "", root))
+    }
+
     fn root(&self, cx: &App) -> Option<PathBuf> {
         self.index.read(cx).root().map(Path::to_path_buf)
     }
@@ -349,6 +360,16 @@ impl ProjectView {
             cx.notify();
         }
         if *self.files == files && !self.files.is_empty() {
+            // Same files; a folder may still have been created or removed.
+            let open: Vec<String> = self.expanded.iter().cloned().collect();
+            let gone = self.tree_has_missing_empty_dirs();
+            if gone {
+                self.rebuild_tree(cx);
+            }
+            if self.add_empty_dirs(&open) || gone {
+                self.flatten();
+                cx.notify();
+            }
             return;
         }
         self.files = Rc::new(files);
@@ -361,15 +382,32 @@ impl ProjectView {
 
     fn load_ignored(&mut self, cx: &mut Context<Self>) {
         let Some(root) = self.root(cx) else { return };
+        // Each repository's ignored files (a multi-root project's top folder
+        // may be no repository at all), as project paths.
+        let mut roots: Vec<(PathBuf, String)> = self
+            .model
+            .as_ref()
+            .map(|m| m.read(cx).root_states().iter().map(|s| (s.path.clone(), s.prefix.clone())).collect())
+            .unwrap_or_default();
+        if roots.is_empty() {
+            roots.push((root, String::new()));
+        }
         let task = cx.background_spawn(async move {
-            let Ok(output) = crate::git::git_process()
-                .args(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"])
-                .current_dir(&root)
-                .output()
-            else {
-                return Vec::new();
-            };
-            output.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect::<Vec<_>>()
+            let mut ignored = Vec::new();
+            for (root, prefix) in roots {
+                let Ok(output) = crate::git::git_process()
+                    .args(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"])
+                    .current_dir(&root)
+                    .output()
+                else {
+                    continue;
+                };
+                ignored.extend(output.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| {
+                    let p = String::from_utf8_lossy(p);
+                    if prefix.is_empty() { p.into_owned() } else { format!("{prefix}/{p}") }
+                }));
+            }
+            ignored
         });
         cx.spawn(async move |this, cx| {
             let ignored = task.await;
@@ -436,6 +474,35 @@ impl ProjectView {
             }
         }
         self.tree = tree;
+        let open: Vec<String> = self.expanded.iter().cloned().collect();
+        self.add_empty_dirs(&open);
+    }
+
+    /// Empty folders have no files in the index: the open folders' empty
+    /// subfolders come from disk (New › Directory shows at once). Returns
+    /// whether any was added.
+    fn add_empty_dirs(&mut self, open: &[String]) -> bool {
+        let Some(root) = self.root_dir.clone() else { return false };
+        if !matches!(self.mode, ProjectMode::Project | ProjectMode::ProjectFiles) {
+            return false;
+        }
+        let mut added = false;
+        for open in open {
+            let Some(dir) = self.tree.get_mut(open) else { continue };
+            if dir.excluded {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(root.join(open)) else { continue };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let empty = entry.file_type().is_ok_and(|t| t.is_dir()) && std::fs::read_dir(entry.path()).is_ok_and(|mut d| d.next().is_none());
+                if empty && !dir.dirs.contains_key(&name) {
+                    dir.dirs.insert(name, Dir { loaded: true, ..Default::default() });
+                    added = true;
+                }
+            }
+        }
+        added
     }
 
     /// Reads an excluded folder's children from disk the first time it opens.
@@ -601,6 +668,7 @@ impl ProjectView {
             if let Some(root) = self.root(cx) {
                 self.load_dir(path, &root);
             }
+            self.add_empty_dirs(&[path.to_owned()]);
         }
         self.flatten();
         cx.notify();

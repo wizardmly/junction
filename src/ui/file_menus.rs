@@ -28,6 +28,8 @@ pub enum FileAction {
     /// The file's local changes.
     ShowDiff(String),
     OpenFile(String),
+    /// Open in Right Split.
+    OpenInSplit(String),
     Annotate(String),
     ShowHistory(String),
     /// Compare with Revision: the file's revisions to pick from.
@@ -386,8 +388,10 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
             *t_copy.clipboard.borrow_mut() = Some((vec![t_copy.full()], false));
             cx.write_to_clipboard(ClipboardItem::new_string(t_copy.full().to_string_lossy().into_owned()));
         }))
-        .submenu("Copy Path/Reference…", window, cx, move |m, _, _| {
-            let (abs, name, rel) = (t.full().to_string_lossy().into_owned(), t.name(), t.path.clone());
+        .submenu("Copy Path/Reference…", window, cx, move |m, _, cx| {
+            // Relative to the repository holding it (a nested root's own path).
+            let rel = t.model.read(cx).route(&t.path).map(|(_, own)| own).unwrap_or_else(|| t.path.clone());
+            let (abs, name) = (t.full().to_string_lossy().into_owned(), t.name());
             m.item(entry("Absolute Path", "Ctrl+Shift+C").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(abs.clone()))))
                 .item(entry("File Name", "").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone()))))
                 .item(entry("Path From Repository Root", "").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(rel.clone()))))
@@ -435,7 +439,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
     let t_split = target.clone();
     let menu = menu.when(!is_dir, |m| {
         m.item(entry("Open in Right Split", "Shift+Enter").icon(Icon::new(icons::SPLIT_VERTICALLY)).on_click(move |_, window, cx| {
-            (t_split.actions)(FileAction::OpenFile(t_split.path.clone()), window, cx)
+            (t_split.actions)(FileAction::OpenInSplit(t_split.path.clone()), window, cx)
         }))
     });
     let t = target.clone();
@@ -520,7 +524,12 @@ fn rename(target: &ProjectTarget, window: &mut Window, cx: &mut App) {
         if to == from || to.exists() {
             return;
         }
-        crate::git::ops::rename_path(model.read(cx).repository(), &path, &from, &to);
+        // The repository holding the path (a nested root), with its own path.
+        let routed = model.read(cx).route(&path);
+        match &routed {
+            Some((repo, own)) => crate::git::ops::rename_path(Some(repo), own, &from, &to),
+            None => crate::git::ops::rename_path(model.read(cx).repository(), &path, &from, &to),
+        }
         actions(FileAction::FilesChanged, window, cx);
     }, window, cx);
 }

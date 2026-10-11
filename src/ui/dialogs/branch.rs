@@ -7,9 +7,11 @@ use gpui_kit::component::{
     WindowExt as _,
     checkbox::Checkbox,
     input::{Input, InputState},
+    h_flex,
     radio::RadioGroup,
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Entity, ParentElement as _,
     Styled as _, Window, div, px,
@@ -137,6 +139,8 @@ const RESET_MODES: [(&str, &str, &str); 4] = [
 pub fn reset_to(model: Entity<RepoModel>, target: String, window: &mut Window, cx: &mut App) {
     let mode = Rc::new(Cell::new(1usize));
     let branch = model.read(cx).refs().current_branch.clone().unwrap_or_else(|| "HEAD".into());
+    // Git › Reset HEAD…: IntelliJ asks for the commit ("To Commit:", HEAD).
+    let to_commit = (target == "HEAD").then(|| cx.new(|cx| InputState::new(window, cx).default_value("HEAD")));
     window.open_dialog(cx, move |dialog, _, cx| {
         let secondary = cx.palette().text_secondary;
         let selected = mode.get();
@@ -145,17 +149,24 @@ pub fn reset_to(model: Entity<RepoModel>, target: String, window: &mut Window, c
         let root_row = if target == "HEAD" { super::git_root_row(&model, |m, w, cx| reset_to(m, "HEAD".into(), w, cx), cx) } else { None };
         let model = model.clone();
         let target = target.clone();
+        let commit_row = to_commit.clone().map(|input| {
+            h_flex().gap_2().items_center().child(div().text_sm().child("To Commit:")).child(div().flex_1().child(Input::new(&input)))
+        });
+        let to_commit_ok = to_commit.clone();
         dialog
-            .title("Git Reset")
+            .title(if to_commit.is_some() { "Reset Head" } else { "Git Reset" })
             .w(px(480.))
             .child(
                 v_flex()
                     .gap_3()
                     .children(root_row)
-                    .child(div().text_sm().child(format!(
-                        "This will reset the current branch head ({branch}) to the selected commit {}.",
-                        &target[..target.len().min(8)]
-                    )))
+                    .children(commit_row)
+                    .when(to_commit.is_none(), |el| {
+                        el.child(div().text_sm().child(format!(
+                            "This will reset the current branch head ({branch}) to the selected commit {}.",
+                            &target[..target.len().min(8)]
+                        )))
+                    })
                     .child(
                         RadioGroup::new("reset-mode")
                             .children(RESET_MODES.iter().map(|(label, _, _)| *label))
@@ -169,7 +180,13 @@ pub fn reset_to(model: Entity<RepoModel>, target: String, window: &mut Window, c
             )
             .on_ok(move |_, _, cx| {
                 let (label, flag, _) = RESET_MODES[mode_ok.get()];
-                let target = target.clone();
+                let target = match &to_commit_ok {
+                    Some(input) => input.read(cx).value().trim().to_owned(),
+                    None => target.clone(),
+                };
+                if target.is_empty() {
+                    return false;
+                }
                 model.update(cx, |model, cx| {
                     model.run_operation("Reset", move |repo| {
                         repo.run(["reset", flag, &target])?;

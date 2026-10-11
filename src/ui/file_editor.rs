@@ -325,7 +325,11 @@ pub struct FileEditor {
     /// has its own menu (Annotate with Git Blame), as in IntelliJ.
     gutter_click: Rc<std::cell::Cell<bool>>,
     popup_focus: gpui_kit::FocusHandle,
+    /// The file couldn't be read: no editing, saving or reloading.
     error: Option<String>,
+    /// A failed action (Open on GitHub, Stage Lines…): shown until the next
+    /// edit, without blocking the editor.
+    notice: Option<String>,
     code_index: Option<Entity<CodeIndex>>,
     /// Annotate with Git Blame, shown in the gutter.
     annotation: Option<Annotation>,
@@ -552,6 +556,7 @@ impl FileEditor {
             if matches!(event, InputEvent::Change) {
                 // IntelliJ closes the change popup on typing.
                 this.popup = None;
+                this.notice = None;
                 this.update_markers(cx);
                 this.update_hierarchy(true, cx);
                 // The annotations follow the edit (new lines: Not Committed Yet).
@@ -583,6 +588,7 @@ impl FileEditor {
             gutter_click: Rc::default(),
             popup_focus: cx.focus_handle(),
             error,
+            notice: None,
             code_index: None,
             annotation: None,
             annotation_task: None,
@@ -1145,7 +1151,7 @@ impl FileEditor {
                 self.popup = None;
                 cx.emit(FileEditorEvent::FilesChanged);
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => self.notice = Some(error.to_string()),
         }
         self.focus(window, cx);
         cx.notify();
@@ -1252,7 +1258,7 @@ impl FileEditor {
                 cx.emit(FileEditorEvent::FilesChanged);
                 cx.emit(FileEditorEvent::Saved(self.path.clone()));
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => self.notice = Some(error.to_string()),
         }
         cx.notify();
     }
@@ -1261,7 +1267,7 @@ impl FileEditor {
     /// working tree), with the selected lines highlighted.
     pub(crate) fn open_on_hosting(&mut self, _: &OpenOnHosting, _: &mut Window, cx: &mut Context<Self>) {
         let Some(web) = crate::git::hosting::web_repo(&self.repository) else {
-            self.error = Some("No GitHub, GitLab or Bitbucket remote found".into());
+            self.notice = Some("No GitHub, GitLab or Bitbucket remote found".into());
             cx.notify();
             return;
         };
@@ -1322,6 +1328,9 @@ impl FileEditor {
         self.state.update(cx, |state, cx| state.set_value(content, window, cx));
         // set_value doesn't report a change; refresh the markers ourselves.
         self.update_markers(cx);
+        if self.annotation.is_some() {
+            self.load_annotations(true, cx);
+        }
         self.save(&SaveFile, window, cx);
     }
 
@@ -1471,7 +1480,7 @@ impl FileEditor {
         let rev = self.revision.clone().unwrap_or_else(|| "HEAD".into());
         match self.repository.run(["log", "-1", "--format=%H", &rev, "--", &self.own]) {
             Ok(hash) if !hash.trim().is_empty() => cx.emit(FileEditorEvent::SelectCommit(hash.trim().to_owned())),
-            _ => self.error = Some("The file isn't in any commit yet".into()),
+            _ => self.notice = Some("The file isn't in any commit yet".into()),
         }
         cx.notify();
     }
@@ -1594,7 +1603,7 @@ impl Render for FileEditor {
                         |this, _, window, cx| this.show_diff(&ShowFileDiff, window, cx),
                     ))))
             )
-            .when_some(self.error.clone(), |el, error| {
+            .when_some(self.error.clone().or_else(|| self.notice.clone()), |el, error| {
                 el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(error))
             })
             .child(self.find.clone())
