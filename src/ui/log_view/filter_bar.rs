@@ -262,7 +262,11 @@ impl LogView {
                 // A multi-root project: the roots the Log shows, as IntelliJ's
                 // Paths filter lists them.
                 let roots: Vec<(std::path::PathBuf, String)> = match model.project_root().filter(|_| model.is_multi_root()) {
-                    Some(project) => model.root_states().iter().map(|r| (r.path.clone(), crate::git::roots::label(project, &r.path))).collect(),
+                    Some(project) => model
+                        .root_states()
+                        .iter()
+                        .map(|r| (r.path.clone(), r.path.file_name().map_or_else(|| crate::git::roots::label(project, &r.path), |n| n.to_string_lossy().into_owned())))
+                        .collect(),
                     None => Vec::new(),
                 };
                 let shown_roots: Vec<String> =
@@ -279,31 +283,44 @@ impl LogView {
                 let current_roots = filter.roots.clone();
                 let recent_paths = self.recent_path_filters.clone();
                 let active = !filter.paths.is_empty() || !filter.roots.is_empty();
-                filter_button("filter-path", label, active).dropdown_menu(move |mut menu, _, _| {
-                    let clear = entity.clone();
-                    menu = menu.item(PopupMenuItem::new("All").checked(current.is_empty() && current_roots.is_empty()).on_click(move |_, _, cx| {
-                        clear.update(cx, |this, cx| {
-                            this.update_filter(cx, |f| {
-                                f.paths.clear();
-                                f.roots.clear();
-                            })
-                        })
-                    }));
+                filter_button("filter-path", label, active).dropdown_menu(move |mut menu, _, cx| {
                     if !roots.is_empty() {
-                        // Each root with its Log color, as IntelliJ's Paths popup shows them.
-                        menu = menu.separator();
+                        // A multi-root project, as IntelliJ shows it: Select… /
+                        // Select in Tree…, then each root's box in its Log color.
+                        let (typed, tree) = (entity.clone(), entity.clone());
+                        // (A path filter set: All clears it.)
+                        if !current.is_empty() {
+                            let clear = entity.clone();
+                            menu = menu
+                                .item(PopupMenuItem::new("All").on_click(move |_, _, cx| clear.update(cx, |this, cx| this.update_filter(cx, |f| f.paths.clear()))))
+                                .separator();
+                        }
+                        menu = menu
+                            .item(PopupMenuItem::new("Select…").on_click(move |_, window, cx| typed.update(cx, |this, cx| this.type_paths(window, cx))))
+                            .item(PopupMenuItem::new("Select in Tree…").on_click(move |_, window, cx| tree.update(cx, |this, cx| this.select_paths(window, cx))))
+                            .separator()
+                            .label("Roots");
                         let all: Vec<std::path::PathBuf> = roots.iter().map(|(p, _)| p.clone()).collect();
-                        for (ix, (path, name)) in roots.iter().enumerate() {
+                        let mut sorted: Vec<(usize, &(std::path::PathBuf, String))> = roots.iter().enumerate().collect();
+                        sorted.sort_by_key(|(_, (_, name))| name.to_lowercase());
+                        let border = cx.palette().border;
+                        for (ix, (path, name)) in sorted {
                             let shown = current_roots.is_empty() || current_roots.contains(path);
                             let (entity, path, all, current_roots) = (entity.clone(), path.clone(), all.clone(), current_roots.clone());
                             let name = name.clone();
+                            let color = crate::ui::common::root_color(ix);
                             let item = PopupMenuItem::element(move |_, _| {
-                                gpui_kit::component::h_flex()
-                                    .gap_2()
-                                    .child(div().size(px(10.)).rounded_sm().bg(crate::ui::common::root_color(ix)))
-                                    .child(name.clone())
+                                let check = div()
+                                    .size(px(14.))
+                                    .rounded(px(3.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .when(shown, |el| el.bg(color).child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Check).size(px(11.)).text_color(gpui_kit::white())))
+                                    .when(!shown, |el| el.border_1().border_color(border));
+                                gpui_kit::component::h_flex().gap_2().child(check).child(name.clone())
                             });
-                            menu = menu.item(item.checked(shown).on_click(move |_, _, cx| {
+                            menu = menu.item(item.on_click(move |_, _, cx| {
                                 // Toggles the root; at least one stays shown.
                                 let mut shown: Vec<std::path::PathBuf> = if current_roots.is_empty() { all.clone() } else { current_roots.clone() };
                                 if let Some(ix) = shown.iter().position(|p| *p == path) {
@@ -318,8 +335,17 @@ impl LogView {
                                 entity.update(cx, |this, cx| this.update_filter(cx, |f| f.roots = roots))
                             }));
                         }
-                        menu = menu.separator();
+                        return menu;
                     }
+                    let clear = entity.clone();
+                    menu = menu.item(PopupMenuItem::new("All").checked(current.is_empty() && current_roots.is_empty()).on_click(move |_, _, cx| {
+                        clear.update(cx, |this, cx| {
+                            this.update_filter(cx, |f| {
+                                f.paths.clear();
+                                f.roots.clear();
+                            })
+                        })
+                    }));
                     let pick = entity.clone();
                     menu = menu.item(PopupMenuItem::new("Select Folders…").on_click(move |_, window, cx| {
                         pick.update(cx, |this, cx| this.select_paths(window, cx))
@@ -675,6 +701,42 @@ impl LogView {
                     true
                 })
         });
+    }
+
+    /// Paths › Select… (multi-root): the paths typed one per line,
+    /// relative to the project (or absolute under it).
+    pub(super) fn type_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::input::{Textarea, TextareaState};
+        let project = self.model.read(cx).project_root().map(|p| p.to_path_buf());
+        let current = self.model.read(cx).filter().paths.join("\n");
+        let text = cx.new(|cx| TextareaState::new(window, cx).rows(8).default_value(current).placeholder("One path per line"));
+        let entity = cx.entity();
+        let focus = text.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (text, entity, project) = (text.clone(), entity.clone(), project.clone());
+            dialog
+                .title("Select Paths")
+                .w(px(520.))
+                .child(Textarea::new(&text))
+                .footer(dialogs::footer("OK"))
+                .on_ok(move |_, _, cx| {
+                    let value = text.read(cx).value().to_string();
+                    let mut paths: Vec<String> = value
+                        .lines()
+                        .map(|l| l.trim().trim_end_matches(['/', '\\']))
+                        .filter(|l| !l.is_empty())
+                        .map(|l| match project.as_deref().and_then(|p| std::path::Path::new(l).strip_prefix(p).ok()) {
+                            Some(rel) => rel.to_string_lossy().replace('\\', "/"),
+                            None => l.replace('\\', "/"),
+                        })
+                        .collect();
+                    paths.sort();
+                    paths.dedup();
+                    entity.update(cx, |this, cx| this.update_filter(cx, |f| f.paths = paths));
+                    true
+                })
+        });
+        window.defer(cx, move |window, cx| focus.update(cx, |s, cx| s.focus(window, cx)));
     }
 
     /// Date › Select…: a from / to range (`--since` / `--until`).

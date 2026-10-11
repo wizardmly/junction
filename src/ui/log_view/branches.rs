@@ -211,6 +211,29 @@ impl LogView {
     pub(super) fn render_branches(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let refs = self.model.read(cx).log_refs().clone();
+        // A multi-root project: the repositories each branch is in, as
+        // IntelliJ shows "main (lib, app)".
+        let owners: std::collections::HashMap<String, String> = {
+            let states = self.model.read(cx).root_states();
+            let mut by_ref: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+            if states.len() > 1 {
+                for state in states.iter() {
+                    let name = state.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    for reference in &state.refs.refs {
+                        if reference.kind != RefKind::Tag {
+                            by_ref.entry(reference.full_name.clone()).or_default().push(name.clone());
+                        }
+                    }
+                }
+            }
+            by_ref
+                .into_iter()
+                .map(|(full, mut names)| {
+                    names.sort_by_key(|n| n.to_lowercase());
+                    (full, format!("({})", names.join(", ")))
+                })
+                .collect()
+        };
         let query = self.branch_search.read(cx).value().trim().to_owned();
         let entity = cx.entity();
         v_flex()
@@ -341,6 +364,7 @@ impl LogView {
                         let (menu_entity, menu_refs) = (entity.clone(), refs.clone());
                         let entity = entity.clone();
                         let double_click_name = reference.as_ref().map(|r| r.name.clone());
+                        let owner = full_name.as_ref().filter(|_| !item.label.starts_with("HEAD (")).and_then(|f| owners.get(f).cloned());
                         ListItem::new(ix)
                             .py_0()
                             .px_1()
@@ -371,6 +395,7 @@ impl LogView {
                                         Some(range) => crate::ui::find_popup::highlighted(&item.label, &[range], &palette).into_any_element(),
                                         None => item.label.clone().into_any_element(),
                                     })
+                                    .when_some(owner, |el, owner| el.child(div().text_color(palette.text_secondary).child(owner)))
                                     .when_some(reference.filter(|r| r.ahead > 0 || r.behind > 0), |el, r| {
                                         el.child(
                                             h_flex()
