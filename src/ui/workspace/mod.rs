@@ -252,6 +252,9 @@ pub struct Workspace {
     tab_clock: u64,
     /// The second tab group after Split Right / Down, and which group is focused.
     split: Option<tabs::SplitGroup>,
+    /// Each tab group's tab row scroll, and the tab it last scrolled into view.
+    tab_scroll: [gpui_kit::ScrollHandle; 2],
+    tab_revealed: std::cell::Cell<[Option<(tabs::Front, usize)>; 2]>,
     window_title: String,
     active_group: usize,
     /// Reopen Closed Tab, newest last.
@@ -450,6 +453,8 @@ impl Workspace {
             front: Front::Diff,
             tab_clock: 0,
             split: None,
+            tab_scroll: [gpui_kit::ScrollHandle::new(), gpui_kit::ScrollHandle::new()],
+            tab_revealed: std::cell::Cell::new([None; 2]),
             window_title: String::new(),
             active_group: 0,
             closed_tabs: Vec::new(),
@@ -499,6 +504,8 @@ impl Render for Workspace {
 
         let editor = v_flex()
             .size_full()
+            .min_w_0()
+            .overflow_hidden()
             .bg(palette.panel)
             .when_some(error.filter(|_| has_repo), |el, error| {
                 el.child(div().p_2().text_sm().text_color(palette.status_conflict).child(error))
@@ -630,7 +637,9 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .children(self.render_stripe(false, cx))
-                    .child(div().flex_1().h_full().child(main))
+                    // min_w_0: the tool windows' content (a long tab row) must
+                    // not widen this past the window and push the right stripe out.
+                    .child(div().flex_1().min_w_0().h_full().overflow_hidden().child(main))
                     .children(self.render_stripe(true, cx)),
             )
             .child(self.render_status_bar(cx))

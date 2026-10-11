@@ -39,7 +39,7 @@ impl Workspace {
     /// The editor area: one tab group, or two after Split Right / Down.
     pub(super) fn render_editor_groups(&mut self, has_repo: bool, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let Some(vertical) = self.split.as_ref().map(|s| s.vertical) else {
-            return div().flex_1().min_h_0().flex().child(self.render_group(true, has_repo, cx)).into_any_element();
+            return div().flex_1().min_w_0().min_h_0().flex().child(self.render_group(true, has_repo, cx)).into_any_element();
         };
         let focused = self.active_group;
         let mine = self.render_group(true, has_repo, cx);
@@ -50,6 +50,7 @@ impl Workspace {
         let palette = cx.palette().clone();
         div()
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .flex()
             .when(vertical, |el| el.flex_col())

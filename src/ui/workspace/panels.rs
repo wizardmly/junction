@@ -174,6 +174,7 @@ impl Workspace {
         };
         let mut stripe = v_flex()
             .w(px(if compact { 32. } else { 40. }))
+            .flex_shrink_0()
             .h_full()
             .py_1()
             .gap_1()

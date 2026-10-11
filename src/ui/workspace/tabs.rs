@@ -8,7 +8,7 @@
 //! a group swaps them, so every tab operation works on the focused group.
 
 use crate::ui::as_icons as icons;
-use gpui_kit::component::{h_flex, menu::{ContextMenuExt as _, PopupMenuItem}};
+use gpui_kit::component::{button::ButtonVariants as _, Sizable as _, h_flex, menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem}};
 use gpui_kit::{
     AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
@@ -481,14 +481,52 @@ impl Workspace {
             self.model.read(cx).project_status().entries.iter().map(|e| (e.path.clone(), e.kind)).collect();
         let entity = cx.entity();
         let count = self.editors.len();
-        let row = h_flex()
+        // As IntelliJ: the row scrolls sideways (the wheel scrolls it too) and
+        // a newly selected tab is scrolled into view.
+        let scroll = self.tab_scroll[group].clone();
+        let mut revealed = self.tab_revealed.get();
+        if revealed[group] != Some((self.front, tabs.len())) {
+            revealed[group] = Some((self.front, tabs.len()));
+            self.tab_revealed.set(revealed);
+            if let Some(n) = tabs.iter().position(|f| *f == self.front) {
+                scroll.scroll_to_item(n);
+            }
+        }
+        let overflow = scroll.max_offset().x > px(0.);
+        let hidden_menu = {
+            let entity = entity.clone();
+            let scroll = scroll.clone();
+            let items: Vec<(Front, String, gpui_kit::component::Icon)> = tabs
+                .iter()
+                .map(|&front| {
+                    let (title, icon, _) = self.tab_title(front, cx);
+                    (front, title, icon)
+                })
+                .collect();
+            move |mut menu: gpui_kit::component::menu::PopupMenu, _: &mut Window, _: &mut gpui_kit::Context<gpui_kit::component::menu::PopupMenu>| {
+                // "Show Hidden Tabs": the tabs scrolled out of view.
+                let view = scroll.bounds();
+                let off = scroll.offset().x;
+                for (n, (front, title, icon)) in items.iter().enumerate() {
+                    let shown = scroll.bounds_for_item(n).is_some_and(|b| b.left() + off >= view.left() - px(1.) && b.right() + off <= view.right() + px(1.));
+                    if shown {
+                        continue;
+                    }
+                    let (entity, front) = (entity.clone(), *front);
+                    menu = menu.item(PopupMenuItem::new(title.clone()).icon(icon.clone()).on_click(move |_, window, cx| {
+                        grp(&entity, group, cx, |this, cx| this.activate(front, window, cx))
+                    }));
+                }
+                menu
+            }
+        };
+        let tab_row = h_flex()
             .id(("editor-tabs", group))
-            .h(px(crate::ui::common::header_height()))
-            .flex_shrink_0()
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .overflow_x_scroll()
-            .border_b_1()
-            .border_color(palette.border)
-            .bg(palette.toolbar)
+            .track_scroll(&scroll)
             .children(tabs.into_iter().enumerate().map(|(n, front)| {
                 let active = front == self.front;
                 let (title, icon, path) = self.tab_title(front, cx);
@@ -664,6 +702,45 @@ impl Workspace {
                     })
                     .into_any_element()
             }));
+        // IntelliJ's thin scrollbar over the tabs, shown while hovering the row.
+        let thumb = overflow.then(|| {
+            let view = scroll.bounds().size.width;
+            let content = view + scroll.max_offset().x;
+            let start = -scroll.offset().x / content;
+            let len = view / content;
+            div()
+                .absolute()
+                .top_0()
+                .h(px(3.))
+                .left(gpui_kit::relative(start))
+                .w(gpui_kit::relative(len))
+                .rounded(px(2.))
+                .bg(palette.text_secondary.opacity(0.35))
+                .invisible()
+                .group_hover(SharedString::from(format!("editor-tabs-{group}")), |el| el.visible())
+        });
+        let row = h_flex()
+            .group(SharedString::from(format!("editor-tabs-{group}")))
+            .relative()
+            .w_full()
+            .min_w_0()
+            .h(px(crate::ui::common::header_height()))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(palette.border)
+            .bg(palette.toolbar)
+            .child(tab_row)
+            .when(overflow, |el| {
+                el.child(div().mx_1().flex_shrink_0().child(
+                    gpui_kit::component::button::Button::new(("editor-tabs-hidden", group))
+                        .ghost()
+                        .xsmall()
+                        .icon(icons::CHEVRON_DOWN)
+                        .tooltip("Show Hidden Tabs")
+                        .dropdown_menu(hidden_menu),
+                ))
+            })
+            .children(thumb);
         Some(row.into_any_element())
     }
 }
