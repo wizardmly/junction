@@ -161,7 +161,13 @@ impl LogView {
     pub(super) fn head_reachable(&mut self, cx: &App) -> Rc<Vec<bool>> {
         let model = self.model.read(cx);
         let commits = model.commits().clone();
-        let head = model.refs().head_commit.clone();
+        // Multi-root: each repository's own HEAD (IntelliJ highlights per root).
+        let heads: Vec<String> = if model.root_states().is_empty() {
+            model.refs().head_commit.iter().cloned().collect()
+        } else {
+            model.root_states().iter().filter_map(|s| s.refs.head_commit.clone()).collect()
+        };
+        let head = Some(heads.join(","));
         let key = Arc::as_ptr(&commits) as usize;
         if let Some((k, h, set)) = &self.head_reachable {
             if *k == key && *h == head {
@@ -169,7 +175,7 @@ impl LogView {
             }
         }
         let mut reachable = vec![false; commits.len()];
-        let mut stack: Vec<usize> = head.as_deref().and_then(|h| model.row_of(h)).into_iter().collect();
+        let mut stack: Vec<usize> = heads.iter().filter_map(|h| model.row_of(h)).collect();
         while let Some(ix) = stack.pop() {
             if std::mem::replace(&mut reachable[ix], true) {
                 continue;

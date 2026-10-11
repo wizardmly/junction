@@ -30,14 +30,23 @@ pub fn remotes(repository: &Repository) -> Vec<String> {
 }
 
 pub fn push_preview(repository: &Repository) -> Result<PushPreview> {
-    let branch = repository
-        .run(["symbolic-ref", "-q", "--short", "HEAD"])
-        .ok()
-        .map(|b| b.trim().to_owned())
-        .filter(|b| !b.is_empty());
+    push_preview_of(repository, None)
+}
+
+/// The Push dialog's defaults for a local branch (None: the current one).
+pub fn push_preview_of(repository: &Repository, branch: Option<&str>) -> Result<PushPreview> {
+    let branch = match branch {
+        Some(branch) => Some(branch.to_owned()),
+        None => repository
+            .run(["symbolic-ref", "-q", "--short", "HEAD"])
+            .ok()
+            .map(|b| b.trim().to_owned())
+            .filter(|b| !b.is_empty()),
+    };
     let remotes = remotes(repository);
+    let upstream_of = format!("{}@{{upstream}}", branch.as_deref().unwrap_or(""));
     let upstream = repository
-        .run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+        .run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", upstream_of.as_str()])
         .ok()
         .map(|u| u.trim().to_owned())
         .filter(|u| !u.is_empty());
@@ -60,13 +69,18 @@ pub fn push_preview(repository: &Repository) -> Result<PushPreview> {
 /// creates the remote branch. The Push dialog asks again whenever the
 /// target branch or remote changes.
 pub fn push_commits(repository: &Repository, remote: &str, target: &str) -> Result<(bool, Vec<Commit>)> {
+    push_commits_from(repository, "HEAD", remote, target)
+}
+
+/// What pushing `source` (a branch, or HEAD) would send.
+pub fn push_commits_from(repository: &Repository, source: &str, remote: &str, target: &str) -> Result<(bool, Vec<Commit>)> {
     let remote_ref = format!("refs/remotes/{remote}/{target}");
     let new_branch = target.is_empty() || repository.run(["rev-parse", "--verify", "-q", &remote_ref]).is_err();
     let commits = if new_branch {
         // Everything that remote doesn't have yet.
-        parse_log(&repository.run(["log", LOG_FORMAT, "HEAD", "--not", &format!("--remotes={remote}")])?)
+        parse_log(&repository.run(["log", LOG_FORMAT, source, "--not", &format!("--remotes={remote}")])?)
     } else {
-        parse_log(&repository.run(["log", LOG_FORMAT, &format!("{remote_ref}..HEAD")])?)
+        parse_log(&repository.run(["log", LOG_FORMAT, &format!("{remote_ref}..{source}")])?)
     };
     Ok((new_branch, commits))
 }

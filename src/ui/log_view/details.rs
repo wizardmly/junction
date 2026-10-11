@@ -12,38 +12,70 @@ impl LogView {
         // file compares its state before the oldest selected commit that
         // touched it with its state after the newest one.
         let selected = if self.extra_selection.is_empty() { Vec::new() } else { self.selected_commits(cx) };
-        let combined = match self.model.read(cx).repository() {
-            // Many commits (Ctrl+A): one diff from before the oldest to the
-            // newest, rather than a git call per commit.
-            Some(repo) if selected.len() > MAX_COMBINED => {
-                let (oldest, newest) = (&selected[0], &selected[selected.len() - 1]);
-                let old = if oldest.parents.is_empty() { EMPTY_TREE.to_owned() } else { format!("{}^", oldest.hash) };
-                let mut changes = crate::git::diff::changed_files(repo, &old, Some(&newest.hash)).unwrap_or_default();
-                changes.sort_by(|a, b| a.path.cmp(&b.path));
-                let ranges = changes.iter().map(|c| (c.path.clone(), (old.clone(), newest.hash.clone()))).collect();
-                Some((ranges, changes))
+        // Multi-root: each commit in its own repository; when the selection
+        // spans several, paths get their root's folder in front.
+        self.combined_roots.clear();
+        let combined = if selected.len() > 1 {
+            let model = self.model.read(cx);
+            let mut groups: Vec<(Option<(std::path::PathBuf, String)>, crate::git::Repository, Vec<&crate::git::Commit>)> = Vec::new();
+            for commit in &selected {
+                let (key, repo) = match model.root_states().get(commit.root as usize) {
+                    Some(state) if !model.root_states().is_empty() => (Some((state.path.clone(), state.prefix.clone())), state.repository.clone()),
+                    _ => match model.repository() {
+                        Some(repo) => (None, repo.clone()),
+                        None => continue,
+                    },
+                };
+                match groups.iter_mut().find(|(k, _, _)| *k == key) {
+                    Some((_, _, list)) => list.push(commit),
+                    None => groups.push((key, repo, vec![commit])),
+                }
             }
-            Some(repo) if selected.len() > 1 => {
-                let mut merged: Vec<crate::git::log::FileChange> = Vec::new();
-                let mut ranges: HashMap<String, (String, String)> = HashMap::new();
-                for commit in &selected {
-                    let parent = format!("{}^", commit.hash);
-                    let old = if commit.parents.is_empty() { EMPTY_TREE.to_owned() } else { parent };
-                    let Ok(changes) = crate::git::diff::changed_files(repo, &old, Some(&commit.hash)) else { continue };
-                    for change in changes {
-                        match ranges.get_mut(&change.path) {
-                            Some(range) => range.1 = commit.hash.clone(),
-                            None => {
-                                ranges.insert(change.path.clone(), (old.clone(), commit.hash.clone()));
-                                merged.push(change);
+            let spans = groups.len() > 1;
+            let mut merged: Vec<crate::git::log::FileChange> = Vec::new();
+            let mut ranges: HashMap<String, (String, String)> = HashMap::new();
+            for (key, repo, commits) in &groups {
+                let prefix = match key {
+                    Some((_, prefix)) if spans && !prefix.is_empty() => format!("{prefix}/"),
+                    _ => String::new(),
+                };
+                let mut add = |change: crate::git::log::FileChange, old: &str, new: &str, ranges: &mut HashMap<String, (String, String)>, merged: &mut Vec<crate::git::log::FileChange>| {
+                    let path = format!("{prefix}{}", change.path);
+                    match ranges.get_mut(&path) {
+                        Some(range) => range.1 = new.to_owned(),
+                        None => {
+                            ranges.insert(path.clone(), (old.to_owned(), new.to_owned()));
+                            if spans {
+                                if let Some((root, _)) = key {
+                                    self.combined_roots.insert(path.clone(), (root.clone(), change.path.clone()));
+                                }
                             }
+                            merged.push(crate::git::log::FileChange { path, ..change });
+                        }
+                    }
+                };
+                if commits.len() > MAX_COMBINED {
+                    // Many commits (Ctrl+A): one diff from before the oldest to the
+                    // newest, rather than a git call per commit.
+                    let (oldest, newest) = (commits[0], commits[commits.len() - 1]);
+                    let old = if oldest.parents.is_empty() { EMPTY_TREE.to_owned() } else { format!("{}^", oldest.hash) };
+                    for change in crate::git::diff::changed_files(repo, &old, Some(&newest.hash)).unwrap_or_default() {
+                        add(change, &old, &newest.hash, &mut ranges, &mut merged);
+                    }
+                } else {
+                    for commit in commits {
+                        let old = if commit.parents.is_empty() { EMPTY_TREE.to_owned() } else { format!("{}^", commit.hash) };
+                        let Ok(changes) = crate::git::diff::changed_files(repo, &old, Some(&commit.hash)) else { continue };
+                        for change in changes {
+                            add(change, &old, &commit.hash, &mut ranges, &mut merged);
                         }
                     }
                 }
-                merged.sort_by(|a, b| a.path.cmp(&b.path));
-                Some((ranges, merged))
             }
-            _ => None,
+            merged.sort_by(|a, b| a.path.cmp(&b.path));
+            Some((ranges, merged))
+        } else {
+            None
         };
         let paths: Vec<String> = match (&combined, &details) {
             (Some((ranges, changes)), _) => {
@@ -88,12 +120,23 @@ impl LogView {
         });
     }
 
+    /// Before opening a combined change of another root: makes that root
+    /// the active one, so the diff reads its repository.
+    pub(super) fn focus_change_root(&self, id: &str, cx: &mut App) {
+        let root = id.strip_prefix(FILE_PREFIX).and_then(|p| self.combined_roots.get(p)).map(|(root, _)| root.clone());
+        if let Some(root) = root {
+            self.model.update(cx, |m, cx| m.focus_root_at(&root, cx));
+        }
+    }
+
     pub(super) fn diff_source_for(&self, id: &str, cx: &App) -> Option<DiffSource> {
         let path = id.strip_prefix(FILE_PREFIX)?;
         let old_path = self.change_kinds.get(path).and_then(|(_, old)| old.clone());
         if let Some(ranges) = &self.combined {
             let (old, new) = ranges.get(path)?.clone();
-            return Some(DiffSource::Between { old, new: Some(new), path: path.to_owned(), old_path });
+            // A file of another root: its own path (the root is focused first).
+            let own = self.combined_roots.get(path).map_or(path, |(_, own)| own.as_str());
+            return Some(DiffSource::Between { old, new: Some(new), path: own.to_owned(), old_path });
         }
         let hash = self.model.read(cx).selected_hash()?.to_owned();
         Some(DiffSource::Commit { hash, path: path.to_owned(), old_path })
@@ -187,6 +230,7 @@ impl LogView {
                                 if event.click_count() == 2 {
                                     if let Some(path) = open_path.clone() {
                                         entity.update(cx, |this, cx| {
+                                            this.focus_change_root(&format!("{FILE_PREFIX}{path}"), cx);
                                             if let Some(source) = this.diff_source_for(&format!("{FILE_PREFIX}{path}"), cx) {
                                                 cx.emit(LogEvent::OpenDiff(source));
                                             }
@@ -384,24 +428,44 @@ pub(super) fn change_menu(
     cx: &mut App,
 ) -> gpui_kit::component::menu::PopupMenu {
     let model = entity.read(cx).model.clone();
-    // The menu acts in the shown commit's root.
-    model.update(cx, |m, cx| m.focus_selected_commit(cx));
+    // The menu acts in the shown commit's root; a combined change of several
+    // roots' commits in the file's own root, at the newest commit touching it.
+    let key = path.to_owned();
+    let combined = {
+        let this = entity.read(cx);
+        let range = this.combined.as_ref().and_then(|c| c.get(path)).map(|(_, new)| new.clone());
+        this.combined_roots.get(path).cloned().zip(range)
+    };
+    let (path, hash) = match &combined {
+        Some(((root, own), new)) => {
+            let root = root.clone();
+            model.update(cx, |m, cx| m.focus_root_at(&root, cx));
+            (own.as_str(), new.as_str())
+        }
+        None => {
+            model.update(cx, |m, cx| m.focus_selected_commit(cx));
+            (path, hash)
+        }
+    };
     let hash = hash.to_owned();
     let web_file = model.read(cx).web_repo().map(|w| (w.host.name(), w.file_url(&hash, path, None)));
     let short = hash[..hash.len().min(8)].to_owned();
     let path = path.to_owned();
     // What the commit did to the file: nothing to compare on a side it lacks.
-    let (kind, old_path) = entity.read(cx).change_kinds.get(&path).cloned().unzip();
+    let (kind, old_path) = entity.read(cx).change_kinds.get(&key).cloned().unzip();
     let old_path = old_path.flatten();
     let added = kind == Some(FileChangeKind::Added);
     let no_local = !entity.read(cx).model.read(cx).repository().is_some_and(|r| r.root().join(&path).exists());
     let (e_diff, e_blame, e_history, e_here) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
-    let (p_diff, p_blame, p_history, p_here, p_copy) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
+    // Copy Path: the absolute path, as IntelliJ copies it.
+    let absolute = model.read(cx).repository().map(|r| r.root().join(&path).to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
+    let (p_diff, p_blame, p_history, p_here, p_copy) = (key.clone(), path.clone(), path.clone(), path.clone(), absolute);
     let (h_blame, h_here) = (hash.clone(), hash.clone());
     let (m_get, m_revert) = (model.clone(), model.clone());
     let (p_get, h_get, p_revert, h_revert) = (path.clone(), hash.clone(), path.clone(), hash.clone());
     menu.item(PopupMenuItem::new("Show Diff").on_click(move |_, _, cx| {
         e_diff.update(cx, |this, cx| {
+            this.focus_change_root(&format!("{FILE_PREFIX}{p_diff}"), cx);
             if let Some(source) = this.diff_source_for(&format!("{FILE_PREFIX}{p_diff}"), cx) {
                 cx.emit(LogEvent::OpenDiff(source));
             }

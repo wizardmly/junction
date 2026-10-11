@@ -104,6 +104,8 @@ pub struct LogView {
     change_kinds: HashMap<String, (FileChangeKind, Option<String>)>,
     /// Multi-selection: per file, the revisions its merged change spans.
     combined: Option<HashMap<String, (String, String)>>,
+    /// Multi-root selections: each combined path's root and own path.
+    combined_roots: HashMap<String, (std::path::PathBuf, String)>,
     change_counts: HashMap<SharedString, usize>,
     /// Expand All / Collapse All of the changed files.
     changes_expanded: bool,
@@ -242,7 +244,10 @@ impl LogView {
                 let selected = changes.read(cx).selected_item().map(|item| item.id.clone());
                 if selected != this.last_change_selection {
                     this.last_change_selection = selected.clone();
-                    if let Some(source) = selected.and_then(|id| this.diff_source_for(&id, cx)) {
+                    if let Some(id) = selected {
+                        this.focus_change_root(&id, cx);
+                    }
+                    if let Some(source) = this.last_change_selection.clone().and_then(|id| this.diff_source_for(&id, cx)) {
                         cx.emit(LogEvent::OpenDiff(source));
                     }
                 }
@@ -256,7 +261,7 @@ impl LogView {
                     // says it doesn't match and offers to reset the filters.
                     if let Some(full_name) = selected.as_deref().and_then(|id| id.strip_prefix(BRANCH_PREFIX)) {
                         let model = this.model.read(cx);
-                        let target = model.refs().find(full_name).map(|r| (r.name.clone(), r.target.clone()));
+                        let target = model.log_refs().find(full_name).map(|r| (r.name.clone(), r.target.clone()));
                         let filtered = *model.filter() != LogFilter { date_order: model.filter().date_order, ..Default::default() };
                         match target {
                             Some((name, hash)) if filtered && model.row_of(&hash).is_none() => {
@@ -279,6 +284,7 @@ impl LogView {
             changes,
             change_kinds: HashMap::new(),
             combined: None,
+            combined_roots: HashMap::new(),
             change_counts: HashMap::new(),
             changes_expanded: true,
             last_change_selection: None,

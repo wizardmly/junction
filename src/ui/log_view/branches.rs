@@ -188,22 +188,28 @@ impl LogView {
                 return mine.clone();
             }
         }
-        let me = model.user_email().map(str::to_owned);
-        let mine: HashSet<String> = match (model.repository(), me) {
-            (Some(repo), Some(me)) => model
-                .log_refs()
-                .refs
-                .iter()
-                .filter(|r| r.kind != RefKind::Tag)
-                .filter(|r| {
-                    let author = format!("--author=<{me}>");
-                    repo.run(["log", "-1", "--format=%H", "--regexp-ignore-case", "--fixed-strings", &author, &r.full_name])
-                        .is_ok_and(|out| !out.trim().is_empty())
-                })
-                .map(|r| r.full_name.clone())
-                .collect(),
-            _ => HashSet::new(),
-        };
+        // Each root's refs, checked in that root with its own user.email.
+        let mut roots: Vec<(crate::git::Repository, Option<String>, std::sync::Arc<crate::git::RepositoryRefs>)> =
+            model.root_states().iter().map(|s| (s.repository.clone(), s.user_email.clone(), s.refs.clone())).collect();
+        if roots.is_empty() {
+            if let Some(repo) = model.repository() {
+                roots.push((repo.clone(), model.user_email().map(str::to_owned), model.refs().clone()));
+            }
+        }
+        let mut mine: HashSet<String> = HashSet::new();
+        for (repo, me, refs) in roots {
+            let Some(me) = me else { continue };
+            let author = format!("--author=<{me}>");
+            for r in refs.refs.iter().filter(|r| r.kind != RefKind::Tag) {
+                if !mine.contains(&r.full_name)
+                    && repo
+                    .run(["log", "-1", "--format=%H", "--regexp-ignore-case", "--fixed-strings", &author, &r.full_name])
+                    .is_ok_and(|out| !out.trim().is_empty())
+                {
+                    mine.insert(r.full_name.clone());
+                }
+            }
+        }
         self.my_refs = Some((key, mine.clone()));
         mine
     }
@@ -433,7 +439,9 @@ pub(super) fn branch_menu(
     use crate::ui::branches_popup;
     let model = entity.read(cx).model.clone();
     let remotes = branches_popup::remote_names(refs);
-    let actions = branches_popup::branch_actions(&model, reference, refs.current_branch.as_deref(), &remotes);
+    // Multi-root: the ref's own repository (IntelliJ acts where the branch is).
+    let current = model.update(cx, |m, cx| m.focus_ref_owner(&reference.full_name, cx));
+    let actions = branches_popup::branch_actions(&model, reference, current.as_deref(), &remotes);
     let mut menu = menu;
     for action in actions {
         let run = action.run.clone();

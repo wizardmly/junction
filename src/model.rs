@@ -285,13 +285,18 @@ fn log_sources(states: &[RootState], active: &Repository, filter: &LogFilter) ->
             }
         }
         if !filter.branches.is_empty() {
-            let active_root = state.path == active.root();
             own.branches = filter
                 .branches
                 .iter()
                 .filter(|b| {
                     *b == "HEAD"
-                        || if b.contains("..") { active_root } else { state.repository.run(["rev-parse", "--verify", "-q", b.as_str()]).is_ok() }
+                        || if let Some((from, to)) = b.split_once("..") {
+                            // A range (Compare with): every root that has both ends.
+                            let has = |r: &str| r.is_empty() || state.repository.run(["rev-parse", "--verify", "-q", r.trim_start_matches('.')]).is_ok();
+                            has(from) && has(to)
+                        } else {
+                            state.repository.run(["rev-parse", "--verify", "-q", b.as_str()]).is_ok()
+                        }
                 })
                 .cloned()
                 .collect();
@@ -825,6 +830,19 @@ impl RepoModel {
                 self.focus_root(state, cx);
             }
         }
+    }
+
+    /// A branch or tag menu acts in a root that has the ref: the active one
+    /// when it does, else the first root holding it. Returns that root's
+    /// current branch.
+    pub fn focus_ref_owner(&mut self, full_name: &str, cx: &mut Context<Self>) -> Option<String> {
+        if self.root_states.is_empty() || self.refs.find(full_name).is_some() {
+            return self.refs.current_branch.clone();
+        }
+        let state = self.root_states.iter().find(|s| s.refs.find(full_name).is_some()).cloned()?;
+        let current = state.refs.current_branch.clone();
+        self.focus_root(state, cx);
+        current
     }
 
     /// Makes a Log commit's root the active one (its menu and details act there).

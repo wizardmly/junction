@@ -41,6 +41,8 @@ struct Comparison {
     new: Option<String>,
     files: Vec<crate::git::log::FileChange>,
     error: Option<String>,
+    /// The repository compared (multi-root: the one active when it opened).
+    root: Option<std::path::PathBuf>,
 }
 
 impl Comparison {
@@ -89,6 +91,7 @@ impl ChangesView {
                 this.last_selection = selected.clone();
                 // Selecting a file previews its diff, as IntelliJ does.
                 if let Some(source) = selected.and_then(|id| this.diff_source(&id)) {
+                    this.focus_root(cx);
                     cx.emit(ChangesEvent::OpenDiff(source));
                 }
             }
@@ -119,7 +122,8 @@ impl ChangesView {
                 self.reload(cx);
             }
             None => {
-                self.tabs.push(Comparison { old, new, files: Vec::new(), error: None });
+                let root = self.model.read(cx).repository().map(|r| r.root().to_path_buf());
+                self.tabs.push(Comparison { old, new, files: Vec::new(), error: None, root });
                 self.active = self.tabs.len() - 1;
                 self.reload(cx);
             }
@@ -134,7 +138,7 @@ impl ChangesView {
     /// Re-reads the files; with `force` off the tree (and its selection)
     /// is kept when nothing changed.
     fn load(&mut self, force: bool, cx: &mut Context<Self>) {
-        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        let Some(repository) = self.repository(cx) else { return };
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         let (files, error) = match crate::git::diff::changed_files(&repository, &tab.old, tab.new.as_deref()) {
             Ok(files) => (files, None),
@@ -162,9 +166,8 @@ impl ChangesView {
         let paths = tab.files.iter().map(|f| f.path.clone());
         let children = if self.group_by_directory { common::file_tree(paths, "") } else { common::flat_file_list(paths, "") };
         let root_name = self
-            .model
-            .read(cx)
-            .repository()
+            .repository(cx)
+            .as_ref()
             .and_then(|r| r.root().file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_default();
         let mut root = TreeItem::new(ROOT_ID, root_name).expanded(true).children(children);
@@ -181,6 +184,24 @@ impl ChangesView {
             tree.set_selected_index(None, cx);
         });
         cx.notify();
+    }
+
+    /// The active tab's repository.
+    fn repository(&self, cx: &App) -> Option<crate::git::Repository> {
+        let model = self.model.read(cx);
+        let root = self.tabs.get(self.active).and_then(|t| t.root.clone());
+        match root {
+            Some(root) if !model.root_states().is_empty() => model.root_states().iter().find(|s| s.path == root).map(|s| s.repository.clone()),
+            _ => model.repository().cloned(),
+        }
+    }
+
+    /// Makes the active tab's repository the active root, so diffs, patches
+    /// and Get act in it.
+    fn focus_root(&self, cx: &mut App) {
+        if let Some(root) = self.tabs.get(self.active).and_then(|t| t.root.clone()) {
+            self.model.update(cx, |m, cx| m.focus_root_at(&root, cx));
+        }
     }
 
     fn diff_source(&self, id: &str) -> Option<DiffSource> {
@@ -258,6 +279,7 @@ impl ChangesView {
             return;
         }
         let revision = tab.old.clone();
+        self.focus_root(cx);
         let (restore, remove): (Vec<String>, Vec<String>) = files
             .into_iter()
             .partition(|p| !matches!(self.kinds.get(p), Some((FileChangeKind::Added | FileChangeKind::Copied, _))));
@@ -298,19 +320,26 @@ impl ChangesView {
         let local = tab.new.is_none();
         let patch = crate::ui::patch_dialogs::PatchSource::Between { old: tab.old.clone(), new: tab.new.clone(), paths: files.clone() };
         let model = this.model.clone();
-        let (e_diff, e_tab, e_get) = (entity.clone(), entity.clone(), entity.clone());
+        let (e_diff, e_tab, e_get, e_patch) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
         let (s_diff, s_tab) = (source.clone(), source.clone());
         menu.item(entry("Show Diff", "Ctrl+D").icon(Icon::new(icons::VCS_DIFF)).disabled(source.is_none()).on_click(move |_, _, cx| {
             if let Some(source) = s_diff.clone() {
-                e_diff.update(cx, |_, cx| cx.emit(ChangesEvent::OpenDiff(source)))
+                e_diff.update(cx, |this, cx| {
+                    this.focus_root(cx);
+                    cx.emit(ChangesEvent::OpenDiff(source))
+                })
             }
         }))
         .item(entry("Show Diff in a New Tab", "").icon(Icon::new(icons::VCS_DIFF)).disabled(source.is_none()).on_click(move |_, _, cx| {
             if let Some(source) = s_tab.clone() {
-                e_tab.update(cx, |_, cx| cx.emit(ChangesEvent::OpenDiff(source)))
+                e_tab.update(cx, |this, cx| {
+                    this.focus_root(cx);
+                    cx.emit(ChangesEvent::OpenDiff(source))
+                })
             }
         }))
         .item(entry("Create Patch…", "").icon(Icon::new(icons::ADD)).disabled(files.is_empty()).on_click(move |_, window, cx| {
+            e_patch.update(cx, |this, cx| this.focus_root(cx));
             crate::ui::patch_dialogs::create_patch(model.clone(), patch.clone(), window, cx)
         }))
         .item(entry("Get", "").icon(Icon::new(icons::DOWNLOAD)).disabled(!local || files.is_empty()).on_click(move |_, _, cx| {
@@ -463,6 +492,7 @@ impl Render for ChangesView {
                                     if let Some(path) = open_path.clone() {
                                         open_entity.update(cx, |this, cx| {
                                             if let Some(source) = this.diff_source(&format!("{FILE_PREFIX}{path}")) {
+                                                this.focus_root(cx);
                                                 cx.emit(ChangesEvent::OpenDiff(source));
                                             }
                                         });

@@ -92,13 +92,23 @@ pub fn push_after_commit(model: Entity<RepoModel>, window: &mut Window, cx: &mut
 /// The Push dialog for the current branch, or (Push All up to Here) for
 /// its commits up to `up_to`.
 pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut Window, cx: &mut App) {
+    push_dialog(model, None, up_to, window, cx)
+}
+
+/// A branch's Push… (Branches popup / Log): the dialog for that branch,
+/// current or not.
+pub fn push_branch(model: Entity<RepoModel>, branch: String, window: &mut Window, cx: &mut App) {
+    push_dialog(model, Some(branch), None, window, cx)
+}
+
+fn push_dialog(model: Entity<RepoModel>, source: Option<String>, up_to: Option<String>, window: &mut Window, cx: &mut App) {
     use crate::git::ops::{self, PushRequest, PushTags};
     use gpui_kit::component::{ActiveTheme as _, h_flex, menu::{DropdownMenu as _, PopupMenuItem}, scroll::ScrollableElement as _};
     use gpui_kit::{InteractiveElement as _, prelude::FluentBuilder as _};
     use std::cell::RefCell;
 
     let Some(repository) = model.read(cx).repository().cloned() else { return };
-    let preview = match ops::push_preview(&repository) {
+    let preview = match ops::push_preview_of(&repository, source.as_deref()) {
         Ok(preview) => preview,
         Err(error) => {
             window.push_notification(gpui_kit::component::notification::Notification::error(error.to_string()), cx);
@@ -116,7 +126,8 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
     let remote_ix = preview.remotes.iter().position(|r| *r == preview.remote).unwrap_or(0);
     let options = Rc::new(RefCell::new(Options { tags: None, hooks: true, remote: remote_ix, selected: None }));
     let up_to_ok = up_to.clone();
-    let outgoing = move |repository: &crate::git::Repository, remote: &str, target: &str| Outgoing::compute(repository, remote, target, up_to.as_deref());
+    let from = source.clone().unwrap_or_else(|| "HEAD".to_owned());
+    let outgoing = move |repository: &crate::git::Repository, remote: &str, target: &str| Outgoing::compute(repository, &from, remote, target, up_to.as_deref());
     let computed = Rc::new(RefCell::new(Outgoing {
         remote: preview.remote.clone(),
         target: preview.target.clone(),
@@ -362,8 +373,8 @@ pub(super) struct Outgoing {
 impl Outgoing {
     /// The commits `remote`/`target` doesn't have (from `up_to` down, when
     /// given) and the files each one changes.
-    pub(super) fn compute(repository: &crate::git::Repository, remote: &str, target: &str, up_to: Option<&str>) -> Self {
-        let (new_branch, mut commits) = crate::git::ops::push_commits(repository, remote, target).unwrap_or_default();
+    pub(super) fn compute(repository: &crate::git::Repository, source: &str, remote: &str, target: &str, up_to: Option<&str>) -> Self {
+        let (new_branch, mut commits) = crate::git::ops::push_commits_from(repository, source, remote, target).unwrap_or_default();
         // Newest first: the ones above `up_to` stay behind.
         if let Some(pos) = up_to.and_then(|h| commits.iter().position(|c| c.hash == h)) {
             commits.drain(..pos);

@@ -220,12 +220,12 @@ pub(crate) fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, cur
         actions.push(action(
             format!("Checkout and Rebase onto '{current_name}'"),
             reference.kind == RefKind::LocalBranch,
-            synced_op(model, "Checkout and Rebase", vec!["rebase".into(), current_name.clone(), name.clone()], format!("Rebased {name} onto {current_name}"), Some(reference.full_name.clone())),
+            synced_op(model, "Checkout and Rebase", vec!["rebase".into(), "--autostash".into(), current_name.clone(), name.clone()], format!("Rebased {name} onto {current_name}"), Some(reference.full_name.clone())),
         ));
         actions.push(action(
             format!("Rebase '{current_name}' onto '{name}'"),
             true,
-            synced_op(model, "Rebase", vec!["rebase".into(), name.clone()], format!("Rebased {current_name} onto {name}"), Some(reference.full_name.clone())),
+            synced_op(model, "Rebase", vec!["rebase".into(), "--autostash".into(), name.clone()], format!("Rebased {current_name} onto {name}"), Some(reference.full_name.clone())),
         ));
         actions.push(action(
             format!("Merge '{name}' into '{current_name}'"),
@@ -240,7 +240,7 @@ pub(crate) fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, cur
             actions.push(action(
                 format!("Pull into '{current_name}' Using Rebase"),
                 true,
-                synced_op(model, "Pull", vec!["pull".into(), "--rebase".into(), remote.clone(), branch.clone()], format!("Pulled {name} with rebase"), Some(reference.full_name.clone())),
+                synced_op(model, "Pull", vec!["pull".into(), "--rebase".into(), "--autostash".into(), remote.clone(), branch.clone()], format!("Pulled {name} with rebase"), Some(reference.full_name.clone())),
             ));
             actions.push(action(
                 format!("Pull into '{current_name}' Using Merge"),
@@ -263,12 +263,12 @@ pub(crate) fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, cur
                 };
                 actions.push(action("Update", true, synced_op(model, "Update", args, format!("Updated {name}"), Some(reference.full_name.clone()))));
             }
-            let push_args = if reference.upstream.is_some() {
-                vec!["push".into(), "origin".into(), name.clone()]
-            } else {
-                vec!["push".into(), "-u".into(), "origin".into(), name.clone()]
-            };
-            actions.push(action("Push…", true, git_op(model, "Push", push_args, format!("Pushed {name}"))));
+            let (push_model, push_name) = (model.clone(), name.clone());
+            actions.push(action(
+                "Push…",
+                true,
+                Rc::new(move |window, cx| dialogs::push_branch(push_model.clone(), push_name.clone(), window, cx)),
+            ));
             let rename_model = model.clone();
             let rename_name = name.clone();
             actions.push(action(

@@ -84,7 +84,7 @@ pub fn push_multi(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
             skipped.push((label, "No remotes".into()));
             continue;
         }
-        let out = Outgoing::compute(&repository, &preview.remote, &preview.target, None);
+        let out = Outgoing::compute(&repository, "HEAD", &preview.remote, &preview.target, None);
         // IntelliJ checks the repositories that have something to push.
         let checked = !out.commits.is_empty() || out.new_branch;
         let target = cx.new(|cx| InputState::new(window, cx).default_value(preview.target.clone()));
@@ -122,7 +122,7 @@ pub fn push_multi(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                 let remote = root.remotes.get(root.remote).cloned().unwrap_or_else(|| root.default_remote.clone());
                 let target = root.target.read(cx).value().trim().to_owned();
                 if root.out.remote != remote || root.out.target != target {
-                    root.out = Outgoing::compute(&root.repository, &remote, &target, None);
+                    root.out = Outgoing::compute(&root.repository, "HEAD", &remote, &target, None);
                     reset = true;
                 }
             }

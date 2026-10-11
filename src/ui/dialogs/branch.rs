@@ -61,13 +61,19 @@ pub fn new_branch(model: Entity<RepoModel>, start_point: String, window: &mut Wi
                 let start = start.clone();
                 let checkout = checkout_ok.get();
                 model.update(cx, |model, cx| {
-                    // Synchronous branch control: the new branch is created in every root,
-                    // each from its own HEAD.
+                    // Synchronous branch control: the new branch is created in every root
+                    // that has the start point (HEAD, or a branch of the same name); a
+                    // commit's new branch stays in its own repository.
                     let others = if Settings::get(cx).sync_branches { model.other_roots() } else { Vec::new() };
                     model.run_operation("New Branch", move |repo| {
                         crate::git::status::create_branch(repo, &branch, &start, checkout)?;
                         let synced = crate::ui::branches_popup::sync_to_roots(repo, &others, |other| {
-                            crate::git::status::create_branch(other, &branch, "HEAD", checkout).is_ok()
+                            let shared = start == "HEAD"
+                                || other.run(["rev-parse", "--verify", "-q", &format!("{start}^{{commit}}")]).is_ok_and(|h| {
+                                    // The same name, not the same hash typed in another repository.
+                                    !h.trim().starts_with(start.as_str())
+                                });
+                            shared && crate::git::status::create_branch(other, &branch, &start, checkout).is_ok()
                         });
                         let base = if checkout { format!("Checked out new branch {branch}") } else { format!("Created branch {branch}") };
                         Ok(if synced > 0 { format!("{base} in {} repositories", synced + 1) } else { base })
