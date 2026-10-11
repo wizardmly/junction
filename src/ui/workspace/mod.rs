@@ -311,10 +311,22 @@ impl Workspace {
         project.update(cx, |p, cx| p.set_menu(model.clone(), file_actions.clone(), cx));
         commit.update(cx, |c, _| c.set_file_actions(file_actions));
         let mut subscriptions = vec![
-            cx.subscribe_in(&log, window, |this, _, event: &LogEvent, window, cx| match event {
-                LogEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
-                LogEvent::Annotate { path, revision } => this.annotate(path.clone(), revision.clone(), window, cx),
-                LogEvent::OpenFile { path, revision } => this.open_file(path.clone(), revision.clone(), window, cx),
+            cx.subscribe_in(&log, window, |this, _, event: &LogEvent, window, cx| {
+                // The Log's paths are the selected commit's root's own.
+                this.model.update(cx, |m, cx| m.focus_selected_commit(cx));
+                match event {
+                    LogEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
+                    LogEvent::Annotate { path, revision } => this.annotate(path.clone(), revision.clone(), window, cx),
+                    LogEvent::OpenFile { path, revision: None } => {
+                        let model = this.model.read(cx);
+                        let path = match model.repository().map(|r| r.root().to_path_buf()) {
+                            Some(root) => model.project_path(&root, path),
+                            None => path.clone(),
+                        };
+                        this.open_file(path, None, window, cx)
+                    }
+                    LogEvent::OpenFile { path, revision } => this.open_file(path.clone(), revision.clone(), window, cx),
+                }
             }),
             cx.subscribe_in(&changes, window, |this, _, event: &crate::ui::changes_view::ChangesEvent, _window, cx| {
                 use crate::ui::changes_view::ChangesEvent;
@@ -398,8 +410,13 @@ impl Workspace {
                 let (path, line) = (event.path.clone(), event.line);
                 this.prs.update(cx, |prs, cx| prs.comment_line(path, line, window, cx));
             }),
-            cx.subscribe_in(&diff, window, |this, _, event: &crate::ui::navigate::OpenTarget, window, cx| {
-                this.go_to_target(event.0.clone(), window, cx)
+            cx.subscribe_in(&diff, window, |this, diff, event: &crate::ui::navigate::OpenTarget, window, cx| {
+                // The diff's paths are its repository's own (a nested root's).
+                let mut target = event.0.clone();
+                if let Some(root) = diff.read(cx).repository().map(|r| r.root().to_path_buf()) {
+                    target.path = this.model.read(cx).project_path(&root, &target.path);
+                }
+                this.go_to_target(target, window, cx)
             }),
             cx.subscribe(&diff, |this, _, _: &crate::ui::diff_view::FilesChanged, cx| {
                 this.model.update(cx, |m, cx| m.reload(cx));

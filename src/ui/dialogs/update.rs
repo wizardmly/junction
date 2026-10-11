@@ -93,37 +93,21 @@ pub fn update_project(model: Entity<RepoModel>, window: &mut Window, cx: &mut Ap
     });
 }
 
-/// Starts an operation's message when it partly failed (some roots of
-/// Update Project): the balloon is a warning, not a success.
-pub const PARTIAL_FAILURE: char = '\u{1d}';
+pub use crate::model::PARTIAL_FAILURE;
 
-/// Runs Update Project; multi-root projects update every root, as IntelliJ does.
+/// Runs Update Project; multi-root projects update every root, as IntelliJ
+/// does, each on its own (one failing leaves the others updated).
 fn run_update(model: Entity<RepoModel>, rebase: bool, clean: crate::git::ops::CleanWith, cx: &mut App) {
     model.update(cx, |model, cx| {
-        let roots: Vec<std::path::PathBuf> = model.roots().iter().map(|r| r.path.clone()).collect();
-        let project = model.project_root().map(std::path::Path::to_path_buf);
-        model.run_operation("Update Project", move |repo| {
-            if roots.len() < 2 {
-                return crate::git::ops::update_project(repo, rebase, clean);
-            }
-            let project = project.unwrap_or_else(|| repo.root().to_path_buf());
-            let mut lines = Vec::new();
-            let mut failed = Vec::new();
-            for root in &roots {
-                let label = crate::git::roots::label(&project, root);
-                let result = repo.nested(&root.to_string_lossy()).and_then(|r| crate::git::ops::update_project(&r, rebase, clean));
-                match result {
-                    Ok(message) => lines.push(format!("{label}: {}", message.split('\u{1f}').next().unwrap_or_default())),
-                    Err(error) => failed.push(format!("{label}: {error}")),
-                }
-            }
-            if !failed.is_empty() && lines.is_empty() {
-                anyhow::bail!("{}", failed.join("\n"));
-            }
-            let partial = !failed.is_empty();
-            lines.extend(failed.into_iter().map(|f| format!("{f} (failed)")));
-            let message = lines.join("\n");
-            Ok(if partial { format!("{PARTIAL_FAILURE}{message}") } else { message })
+        let repositories = model.repositories();
+        if repositories.len() < 2 {
+            return model.run_operation("Update Project", move |repo| crate::git::ops::update_project(repo, rebase, clean), cx);
+        }
+        let groups = repositories.into_iter().map(|r| (r, ())).collect();
+        model.run_in_groups_keep_going("Update Project", groups, move |repo, _| {
+            // (The View Commits range is one repository's; not with several.)
+            let message = crate::git::ops::update_project(repo, rebase, clean)?;
+            Ok(message.split('\u{1f}').next().unwrap_or_default().to_owned())
         }, cx)
     });
 }

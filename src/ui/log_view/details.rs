@@ -383,6 +383,8 @@ pub(super) fn change_menu(
     cx: &mut App,
 ) -> gpui_kit::component::menu::PopupMenu {
     let model = entity.read(cx).model.clone();
+    // The menu acts in the shown commit's root.
+    model.update(cx, |m, cx| m.focus_selected_commit(cx));
     let hash = hash.to_owned();
     let web_file = model.read(cx).web_repo().map(|w| (w.host.name(), w.file_url(&hash, path, None)));
     let short = hash[..hash.len().min(8)].to_owned();
@@ -449,6 +451,7 @@ pub(super) fn change_menu(
     .item(PopupMenuItem::new(format!("Get from Revision {short}")).on_click(move |_, _, cx| {
         let (path, hash) = (p_get.clone(), h_get.clone());
         m_get.update(cx, |model, cx| {
+            model.focus_selected_commit(cx);
             model.run_operation("Get from Revision", move |repo| {
                 repo.run(["checkout", hash.as_str(), "--", path.as_str()])?;
                 Ok(format!("{path} restored from {}", &hash[..hash.len().min(8)]))
@@ -458,6 +461,7 @@ pub(super) fn change_menu(
     .item(PopupMenuItem::new("Revert Selected Changes").on_click(move |_, _, cx| {
         let (path, hash) = (p_revert.clone(), h_revert.clone());
         m_revert.update(cx, |model, cx| {
+            model.focus_selected_commit(cx);
             model.run_operation("Revert Changes", move |repo| {
                 let patch = repo.run(["show", "--format=", "--binary", hash.as_str(), "--", path.as_str()])?;
                 repo.run_with_input(["apply", "-R", "--3way", "-"], Some(&patch))?;

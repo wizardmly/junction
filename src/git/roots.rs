@@ -20,12 +20,23 @@ pub struct Mappings {
     pub removed: Vec<PathBuf>,
 }
 
-fn mappings_file(repository: &Repository) -> PathBuf {
-    repository.git_dir().join("junction").join("roots")
+/// Where a project's mappings live: in its repository, or (a folder that
+/// only holds repositories) in Junction's config folder, keyed by its path.
+fn mappings_file(project: &Path) -> Option<PathBuf> {
+    match Repository::discover(project, Default::default()) {
+        Ok(repository) if repository.root() == project => Some(repository.git_dir().join("junction").join("roots")),
+        _ => {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            project.hash(&mut hasher);
+            let name = project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            Some(crate::settings::config_dir()?.join("folder-roots").join(format!("{name}-{:016x}", hasher.finish())))
+        }
+    }
 }
 
-pub fn load_mappings(repository: &Repository) -> Mappings {
-    let text = std::fs::read_to_string(mappings_file(repository)).unwrap_or_default();
+pub fn load_mappings(project: &Path) -> Mappings {
+    let text = mappings_file(project).and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
     let mut mappings = Mappings::default();
     for line in text.lines() {
         if let Some(p) = line.strip_prefix('+') {
@@ -37,8 +48,8 @@ pub fn load_mappings(repository: &Repository) -> Mappings {
     mappings
 }
 
-pub fn save_mappings(repository: &Repository, mappings: &Mappings) -> Result<()> {
-    let path = mappings_file(repository);
+pub fn save_mappings(project: &Path, mappings: &Mappings) -> Result<()> {
+    let path = mappings_file(project).ok_or_else(|| anyhow::anyhow!("No folder to keep the mappings in"))?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -79,11 +90,13 @@ pub fn scan_nested(root: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Every root of the project, the project's repository first.
-pub fn detect(repository: &Repository) -> Vec<PathBuf> {
-    let root = repository.root().to_path_buf();
-    let mappings = load_mappings(repository);
-    let mut roots = vec![root.clone()];
+/// Every root of the project: the project's own repository first (unless
+/// the project is a folder that only holds repositories, as IntelliJ opens
+/// a directory of sibling roots), then the nested ones.
+pub fn detect(project: &Path) -> Vec<PathBuf> {
+    let root = project.to_path_buf();
+    let mappings = load_mappings(project);
+    let mut roots = if root.join(".git").exists() { vec![root.clone()] } else { Vec::new() };
     let mut push = |p: PathBuf| {
         if !roots.contains(&p) && !mappings.removed.iter().any(|r| root.join(r) == p) {
             roots.push(p);
@@ -107,7 +120,7 @@ pub fn label(project: &Path, root: &Path) -> String {
     if root == project {
         return project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| root.display().to_string());
     }
-    root.strip_prefix(project).map(|p| p.display().to_string()).unwrap_or_else(|_| root.display().to_string())
+    root.strip_prefix(project).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_else(|_| root.display().to_string())
 }
 
 #[cfg(test)]
@@ -127,9 +140,27 @@ mod tests {
         assert_eq!(nested, vec![dir.join("libs/a"), dir.join("libs/b")]);
 
         let repo = Repository::discover(&dir, crate::git::GitConsole::default()).unwrap();
-        save_mappings(&repo, &Mappings { added: vec![PathBuf::from("deep/one/two/three")], removed: vec![PathBuf::from("libs/b")] }).unwrap();
-        let roots = detect(&repo);
+        save_mappings(repo.root(), &Mappings { added: vec![PathBuf::from("deep/one/two/three")], removed: vec![PathBuf::from("libs/b")] }).unwrap();
+        let roots = detect(repo.root());
         assert_eq!(roots, vec![repo.root().to_path_buf(), repo.root().join("libs/a"), repo.root().join("deep/one/two/three")]);
         assert_eq!(label(repo.root(), &roots[1]), "libs/a");
+    }
+
+    #[test]
+    fn a_folder_of_repositories_has_only_the_nested_roots() {
+        let dir = std::env::temp_dir().join(format!("junction-test-folder-roots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for sub in ["app", "lib", "docs/site"] {
+            let p = dir.join(sub);
+            std::fs::create_dir_all(&p).unwrap();
+            std::process::Command::new("git").args(["init", "-q"]).current_dir(&p).output().unwrap();
+        }
+        std::fs::create_dir_all(dir.join("plain")).unwrap();
+        assert_eq!(detect(&dir), vec![dir.join("app"), dir.join("lib"), dir.join("docs/site")]);
+        save_mappings(&dir, &Mappings { added: Vec::new(), removed: vec![PathBuf::from("lib")] }).unwrap();
+        assert_eq!(detect(&dir), vec![dir.join("app"), dir.join("docs/site")]);
+        save_mappings(&dir, &Mappings::default()).unwrap();
+        assert_eq!(label(&dir, &dir.join("docs/site")), "docs/site");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

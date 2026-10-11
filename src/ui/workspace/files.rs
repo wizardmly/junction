@@ -133,10 +133,11 @@ impl Workspace {
             })
             .collect();
         for ix in stale {
-            let Some(repository) = self.model.read(cx).project_repository().cloned() else { break };
             let old = self.editors[ix].view.clone();
             let (path, (line, col)) = (old.read(cx).path().to_owned(), old.read(cx).cursor(cx));
-            let view = cx.new(|cx| FileEditor::new(repository, path, None, window, cx));
+            let model = self.model.read(cx);
+            let Some((repository, own)) = model.route(&path).or_else(|| model.project_repository().cloned().map(|r| (r, path.clone()))) else { break };
+            let view = cx.new(|cx| FileEditor::new(repository, own, path, None, window, cx));
             let subscription = cx.subscribe_in(&view, window, Self::on_file_editor_event);
             let index = self.code_index.clone();
             view.update(cx, |editor, cx| {
@@ -239,8 +240,13 @@ impl Workspace {
         // Local changes have paths relative to the project: in a multi-root
         // project the diff opens in the root that holds the file.
         let mut source = source;
-        if self.model.read(cx).root_states().len() > 1 {
-            if let DiffSource::WorkingTree { path, .. } | DiffSource::Staged { path } | DiffSource::Unstaged { path } = &mut source {
+        if !self.model.read(cx).root_states().is_empty() {
+            if let DiffSource::WorkingTree { path, .. }
+            | DiffSource::Staged { path }
+            | DiffSource::Unstaged { path }
+            | DiffSource::Files { path, .. }
+            | DiffSource::Clipboard { path, .. } = &mut source
+            {
                 if let Some((root, own)) = self.model.read(cx).route(path) {
                     repository = root;
                     *path = own;

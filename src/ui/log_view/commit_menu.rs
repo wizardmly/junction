@@ -10,7 +10,23 @@ pub(super) fn commit_menu(
     cx: &mut App,
 ) -> gpui_kit::component::menu::PopupMenu {
     let model = entity.read(cx).model.clone();
+    // The menu acts in the commit's own root.
+    model.update(cx, |m, cx| m.focus_commit_root(commit.root, cx));
     let selected = entity.read(cx).selected_commits(cx);
+    // Commits of several roots (a multi-root Log): each root picks or
+    // reverts its own, as IntelliJ does.
+    let by_root: Vec<(crate::git::Repository, Vec<String>)> = {
+        let states = model.read(cx).root_states().clone();
+        let mut groups: Vec<(u16, Vec<String>)> = Vec::new();
+        for c in &selected {
+            match groups.iter_mut().find(|(root, _)| *root == c.root) {
+                Some((_, hashes)) => hashes.push(c.hash.to_string()),
+                None => groups.push((c.root, vec![c.hash.to_string()])),
+            }
+        }
+        groups.into_iter().filter_map(|(root, hashes)| Some((states.get(root as usize)?.repository.clone(), hashes))).collect()
+    };
+    let spans_roots = by_root.len() > 1;
     let multi = selected.len() > 1;
     let head = model.read(cx).refs().head_commit.clone();
     let is_head = head.as_deref() == Some(commit.hash.as_str());
@@ -133,11 +149,27 @@ pub(super) fn commit_menu(
     }))
     .separator()
     // Commits already on the current branch have nothing to pick.
-    .item(PopupMenuItem::new("Cherry-Pick").disabled(on_branch).on_click({
+    .item(PopupMenuItem::new("Cherry-Pick").disabled(on_branch && !spans_roots).on_click({
         let model = model.clone();
+        let by_root = by_root.clone();
         move |_, _, cx| {
             let (mut args, picked) = (cherry_pick.clone(), picked.clone());
             let settings = crate::settings::Settings::get(cx).clone();
+            if spans_roots {
+                let groups = by_root.clone();
+                model.update(cx, |model, cx| {
+                    model.run_in_groups("Cherry-Pick", groups, move |repo, hashes| {
+                        let mut args = vec!["cherry-pick".to_owned()];
+                        if settings.cherry_pick_suffix && hashes.iter().any(|hash| crate::git::refs::remote_branches_containing(repo, hash).iter().any(|b| settings.is_protected(b))) {
+                            args.push("-x".into());
+                        }
+                        let done = format!("Cherry-picked {} commit{}", hashes.len(), if hashes.len() == 1 { "" } else { "s" });
+                        args.extend(hashes);
+                        crate::git::ops::cherry_pick_skipping_empty(repo, &args, done)
+                    }, cx)
+                });
+                return;
+            }
             model.update(cx, |model, cx| {
                 model.run_operation("Cherry-Pick", move |repo| {
                     // IntelliJ adds "(cherry picked from commit …)" for commits
@@ -163,12 +195,30 @@ pub(super) fn commit_menu(
             let hash = hash.clone();
             move |_, window, cx| dialogs::reset_to(model.clone(), hash.clone(), window, cx)
         }))
-        .item(PopupMenuItem::new(if multi { "Revert Commits" } else { "Revert Commit" }).on_click(op(
-            "Revert",
-            // Newest first, so each revert applies cleanly on top of the last.
-            ["revert".to_owned(), "--no-edit".to_owned()].into_iter().chain(picks.iter().rev().cloned()).collect(),
-            if multi { format!("Reverted {} commits", picks.len()) } else { format!("Reverted {short}") },
-        )))
+        .item(PopupMenuItem::new(if multi { "Revert Commits" } else { "Revert Commit" }).on_click({
+            let single = op(
+                "Revert",
+                // Newest first, so each revert applies cleanly on top of the last.
+                ["revert".to_owned(), "--no-edit".to_owned()].into_iter().chain(picks.iter().rev().cloned()).collect(),
+                if multi { format!("Reverted {} commits", picks.len()) } else { format!("Reverted {short}") },
+            );
+            let (model, by_root) = (model.clone(), by_root.clone());
+            move |event: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+                if !spans_roots {
+                    return single(event, window, cx);
+                }
+                let groups = by_root.clone();
+                model.update(cx, |model, cx| {
+                    model.run_in_groups("Revert", groups, |repo, hashes| {
+                        let count = hashes.len();
+                        let mut args = vec!["revert".to_owned(), "--no-edit".to_owned()];
+                        args.extend(hashes.into_iter().rev());
+                        repo.run(&args)?;
+                        Ok(format!("Reverted {count} commit{}", if count == 1 { "" } else { "s" }))
+                    }, cx)
+                });
+            }
+        }))
         .item(PopupMenuItem::new("Undo Commit…").disabled(!is_head || multi).on_click(op(
             "Undo Commit",
             vec!["reset".into(), "--soft".into(), "HEAD~1".into()],

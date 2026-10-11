@@ -85,15 +85,17 @@ pub fn new_tag(model: Entity<RepoModel>, target: String, window: &mut Window, cx
     let name = cx.new(|cx| InputState::new(window, cx).placeholder("Tag name"));
     let message = cx.new(|cx| InputState::new(window, cx).placeholder("Message (optional, creates an annotated tag)"));
     let focus_target = name.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
+    window.open_dialog(cx, move |dialog, _, cx| {
         let name_for_ok = name.clone();
         let message_for_ok = message.clone();
+        // (On HEAD, from the Git menu: any root; a Log commit's is its own.)
+        let root_row = if target == "HEAD" { super::git_root_row(&model, |m, w, cx| new_tag(m, "HEAD".into(), w, cx), cx) } else { None };
         let model = model.clone();
         let target = target.clone();
         dialog
             .title("Create New Tag")
             .w(px(420.))
-            .child(v_flex().gap_3().child(Input::new(&name)).child(Input::new(&message)))
+            .child(v_flex().gap_3().children(root_row).child(Input::new(&name)).child(Input::new(&message)))
             .on_ok(move |_, _, cx| {
                 let tag = name_for_ok.read(cx).value().trim().to_owned();
                 if tag.is_empty() {
@@ -134,6 +136,7 @@ pub fn reset_to(model: Entity<RepoModel>, target: String, window: &mut Window, c
         let selected = mode.get();
         let mode_cell = mode.clone();
         let mode_ok = mode.clone();
+        let root_row = if target == "HEAD" { super::git_root_row(&model, |m, w, cx| reset_to(m, "HEAD".into(), w, cx), cx) } else { None };
         let model = model.clone();
         let target = target.clone();
         dialog
@@ -142,6 +145,7 @@ pub fn reset_to(model: Entity<RepoModel>, target: String, window: &mut Window, c
             .child(
                 v_flex()
                     .gap_3()
+                    .children(root_row)
                     .child(div().text_sm().child(format!(
                         "This will reset the current branch head ({branch}) to the selected commit {}.",
                         &target[..target.len().min(8)]

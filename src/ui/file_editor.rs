@@ -300,6 +300,8 @@ fn image_format(path: &str) -> Option<gpui_kit::ImageFormat> {
 
 pub struct FileEditor {
     repository: Repository,
+    /// The file inside `repository` (git's path for it).
+    own: String,
     path: String,
     /// `None` for the working tree.
     revision: Option<String>,
@@ -481,11 +483,13 @@ impl FileEditor {
         &self.state
     }
 
-    pub fn new(repository: Repository, path: String, revision: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `path` is the project path the workspace knows the file by; `own`
+    /// the same file inside `repository` (they differ for a nested root).
+    pub fn new(repository: Repository, own: String, path: String, revision: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let image = image_format(&path).map(|format| {
             let bytes = match &revision {
-                Some(rev) => repository.run_bytes(["show", &format!("{rev}:{path}")]).map_err(|e| e.to_string()),
-                None => std::fs::read(repository.root().join(&path)).map_err(|e| e.to_string()),
+                Some(rev) => repository.run_bytes(["show", &format!("{rev}:{own}")]).map_err(|e| e.to_string()),
+                None => std::fs::read(repository.root().join(&own)).map_err(|e| e.to_string()),
             };
             bytes.map(|bytes| ImageFile::new(format, bytes))
         });
@@ -495,11 +499,11 @@ impl FileEditor {
             None => (None, None),
         };
         let (content, error) = if image_error.is_some() || image.is_some() { (String::new(), image_error) } else { match &revision {
-            Some(rev) => match repository.run(["show", &format!("{rev}:{path}")]) {
+            Some(rev) => match repository.run(["show", &format!("{rev}:{own}")]) {
                 Ok(text) => (text, None),
                 Err(error) => (String::new(), Some(error.to_string())),
             },
-            None => match std::fs::read(repository.root().join(&path)) {
+            None => match std::fs::read(repository.root().join(&own)) {
                 Ok(bytes) if bytes.contains(&0) => (String::new(), Some("Binary file".to_owned())),
                 Ok(bytes) => (String::from_utf8_lossy(&bytes).into_owned(), None),
                 Err(error) => (String::new(), Some(error.to_string())),
@@ -508,9 +512,9 @@ impl FileEditor {
         // A library's source (External Libraries) isn't in the repository.
         let external = crate::index::store::ProjectIndex::is_external(&path);
         let (base, unversioned) = if revision.is_none() && !external && image.is_none() {
-            match repository.run(["show", &format!("HEAD:{path}")]) {
+            match repository.run(["show", &format!("HEAD:{own}")]) {
                 Ok(base) => (base, false),
-                Err(_) => (String::new(), repository.run(["ls-files", "--error-unmatch", "--", &path]).is_err()),
+                Err(_) => (String::new(), repository.run(["ls-files", "--error-unmatch", "--", &own]).is_err()),
             }
         } else {
             (content.clone(), false)
@@ -565,6 +569,7 @@ impl FileEditor {
         let mut this = Self {
             find,
             repository,
+            own,
             path,
             revision,
             state,
@@ -908,7 +913,7 @@ impl FileEditor {
         if self.read_only() || self.error.is_some() {
             return;
         }
-        let (repository, path) = (self.repository.clone(), self.path.clone());
+        let (repository, path) = (self.repository.clone(), self.own.clone());
         let task = cx.background_spawn(async move {
             let disk = std::fs::read(repository.root().join(&path)).ok().map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
             let base = repository.run(["show", &format!("HEAD:{path}")]).ok();
@@ -1135,7 +1140,7 @@ impl FileEditor {
         // Git stages what's on disk.
         self.save_now(cx);
         let text = self.text(cx);
-        match diff::stage_lines(&self.repository, &self.path, &text, hunk.new.clone()) {
+        match diff::stage_lines(&self.repository, &self.own, &text, hunk.new.clone()) {
             Ok(()) => {
                 self.popup = None;
                 cx.emit(FileEditorEvent::FilesChanged);
@@ -1240,7 +1245,7 @@ impl FileEditor {
             return;
         }
         let text = self.text(cx);
-        match std::fs::write(self.repository.root().join(&self.path), &text) {
+        match std::fs::write(self.repository.root().join(&self.own), &text) {
             Ok(()) => {
                 self.format = TextFormat::of(&text);
                 self.saved = text;
@@ -1264,7 +1269,7 @@ impl FileEditor {
             Some(revision) => revision.clone(),
             None => self.repository.run(["rev-parse", "HEAD"]).map(|h| h.trim().to_owned()).unwrap_or_else(|_| "HEAD".into()),
         };
-        cx.open_url(&web.file_url(&revision, &self.path, Some(self.selected_lines(cx))));
+        cx.open_url(&web.file_url(&revision, &self.own, Some(self.selected_lines(cx))));
     }
 
     /// Create Gist: the selection, or the whole file when nothing is selected.
@@ -1384,7 +1389,7 @@ impl FileEditor {
     /// unsaved) text of a working-tree file. `debounce` waits for typing to pause.
     fn load_annotations(&mut self, debounce: bool, cx: &mut Context<Self>) {
         let repository = self.repository.clone();
-        let path = self.path.clone();
+        let path = self.own.clone();
         let revision = self.revision.clone();
         let text = self.text(cx);
         self.annotation_task = Some(cx.spawn(async move |this, cx| {
@@ -1464,7 +1469,7 @@ impl FileEditor {
     /// Show Current Revision: selects the last commit that changed the file.
     fn show_current_revision(&mut self, _: &ShowCurrentRevision, _: &mut Window, cx: &mut Context<Self>) {
         let rev = self.revision.clone().unwrap_or_else(|| "HEAD".into());
-        match self.repository.run(["log", "-1", "--format=%H", &rev, "--", &self.path]) {
+        match self.repository.run(["log", "-1", "--format=%H", &rev, "--", &self.own]) {
             Ok(hash) if !hash.trim().is_empty() => cx.emit(FileEditorEvent::SelectCommit(hash.trim().to_owned())),
             _ => self.error = Some("The file isn't in any commit yet".into()),
         }

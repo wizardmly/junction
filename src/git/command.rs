@@ -250,6 +250,13 @@ impl Repository {
         Ok(Self { root, git_dir, executable, console })
     }
 
+    /// A folder outside every repository (the top of a folder of roots):
+    /// files are read from it; git finds nothing there.
+    pub fn unversioned_folder(root: PathBuf, console: GitConsole) -> Self {
+        let git_dir = root.join(".git");
+        Self { root, git_dir, executable: executable(), console }
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }

@@ -224,19 +224,6 @@ impl Workspace {
         let busy = model.busy().map(str::to_owned);
         let entity = cx.entity();
         let popup = self.branches_popup.clone();
-        let operation_model = self.model.clone();
-        let op = move |title: &'static str, args: &'static [&'static str], done: &'static str| {
-            let model = operation_model.clone();
-            move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
-                model.update(cx, |model, cx| {
-                    model.run_operation(title, move |repo| {
-                        repo.run(args)?;
-                        Ok(done.to_owned())
-                    }, cx)
-                });
-            }
-        };
-
         TitleBar::new().child(
             h_flex()
                 .w_full()
@@ -356,10 +343,8 @@ impl Workspace {
                 .child(tool_button("tb-push", icons::VCS_PUSH, if cfg!(target_os = "macos") { "Push…  ⇧⌘K" } else { "Push…  Ctrl+Shift+K" }).on_click(cx.listener(
                     |this, _, window, cx| dialogs::push(this.model.clone(), window, cx),
                 )))
-                .child(tool_button("tb-fetch", icons::VCS_FETCH, "Fetch").on_click(op(
-                    "Fetch",
-                    &["fetch", "--all", "--prune"],
-                    "Fetched all remotes",
+                .child(tool_button("tb-fetch", icons::VCS_FETCH, "Fetch").on_click(cx.listener(
+                    |this, _, _, cx| this.model.update(cx, |m, cx| m.fetch_all(cx)),
                 )))
                 // The new UI's right corner: Search Everywhere and Settings.
                 .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))

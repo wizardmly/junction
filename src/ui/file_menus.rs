@@ -206,12 +206,7 @@ fn git_items(menu: PopupMenu, target: &GitTarget, cx: &mut Context<PopupMenu>) -
     .item(entry("Fetch", "").on_click({
         let model = model.clone();
         move |_, _, cx| {
-            model.update(cx, |m, cx| {
-                m.run_operation("Fetch", |repo| {
-                    repo.run(["fetch", "--all", "--prune"])?;
-                    Ok("Fetched all remotes".into())
-                }, cx)
-            })
+            model.update(cx, |m, cx| m.fetch_all(cx))
         }
     }))
     .separator()

@@ -264,6 +264,11 @@ impl DiffView {
         cx.notify();
     }
 
+    /// The repository the shown diff is in.
+    pub fn repository(&self) -> Option<&Repository> {
+        self.repository.as_ref()
+    }
+
     pub fn show(&mut self, repository: Repository, source: DiffSource, cx: &mut Context<Self>) {
         if self.source.as_ref() == Some(&source) {
             return;

@@ -129,12 +129,7 @@ pub(super) fn main_menu(
             .menu("Update Project…", Box::new(UpdateProject))
             .item(PopupMenuItem::new("Pull…").on_click(model_op(&e, remote_dialogs::pull)))
             .item(PopupMenuItem::new("Fetch").on_click(model_op(&e, |model, _, cx| {
-                model.update(cx, |model, cx| {
-                    model.run_operation("Fetch", |repo| {
-                        repo.run(&["fetch", "--all", "--prune"])?;
-                        Ok("Fetched all remotes".to_owned())
-                    }, cx)
-                })
+                model.update(cx, |model, cx| model.fetch_all(cx))
             })))
             .separator()
             .item(PopupMenuItem::new("Merge…").on_click(model_op(&e, dialogs::merge)))

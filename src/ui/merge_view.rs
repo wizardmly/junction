@@ -162,17 +162,20 @@ pub struct MergeView {
     /// padding too).
     blocks: Vec<[Range<usize>; 3]>,
     _load: Option<Task<()>>,
+    /// The root the conflict is in (resolving happens there).
+    repository: Repository,
 }
 
 impl MergeView {
     pub fn new(model: Entity<RepoModel>, repository: Repository, conflict: Conflict, cx: &mut Context<Self>) -> Self {
-        let state = model.read(cx).state();
+        let state = model.read(cx).state_of(repository.root());
         let (left, right) = merge::side_titles(state);
         let titles = (left.to_owned(), right.to_owned());
         let mut panes = TextPanes::new(3, cx);
         panes.editable = Some(RESULT);
         let mut this = Self {
             model,
+            repository: repository.clone(),
             conflict: conflict.clone(),
             titles,
             base: String::new(),
@@ -662,8 +665,10 @@ impl MergeView {
     fn finish(&mut self, cx: &mut Context<Self>) {
         let content = self.result_text();
         let path = self.conflict.path.clone();
+        let repository = self.repository.clone();
         self.model.update(cx, |model, cx| {
-            model.run_operation(
+            model.run_operation_in(
+                repository,
                 "Resolve Conflict",
                 move |repo| {
                     merge::resolve_with(repo, &path, &content)?;
@@ -695,8 +700,10 @@ impl MergeView {
     /// Accept Left / Accept Right: the whole file from one side.
     fn accept(&mut self, ours: bool, cx: &mut Context<Self>) {
         let conflict = self.conflict.clone();
+        let repository = self.repository.clone();
         self.model.update(cx, |model, cx| {
-            model.run_operation(
+            model.run_operation_in(
+                repository,
                 "Resolve Conflict",
                 move |repo| {
                     merge::accept(repo, &conflict, ours)?;

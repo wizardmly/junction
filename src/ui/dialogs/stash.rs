@@ -39,6 +39,7 @@ pub fn stash(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
             .child(
                 v_flex()
                     .gap_3()
+                    .children(super::git_root_row(&model, stash, cx))
                     .child(div().text_sm().text_color(secondary).child(format!("Current branch: {branch}")))
                     .child(Input::new(&message))
                     .child(

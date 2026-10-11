@@ -351,7 +351,7 @@ impl CommitView {
         }
         if Settings::get(cx).commit_show_ignored {
             let model = self.model.read(cx);
-            let ignored: Vec<String> = if model.root_states().len() > 1 {
+            let ignored: Vec<String> = if !model.root_states().is_empty() {
                 model
                     .root_states()
                     .iter()
@@ -371,18 +371,18 @@ impl CommitView {
         let settings = Settings::get(cx);
         let (by_directory, by_module, by_repository) =
             (settings.commit_group_by_directory, settings.commit_group_by_module, settings.commit_group_by_repository);
-        let repository = self.model.read(cx).project_repository().map(|r| (r.root().to_path_buf(), r.name()));
+        let repository = self.model.read(cx).project_root().map(|r| (r.to_path_buf(), r.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
         // Group By › Repository: one node per root, each with its branch.
         let repositories: Vec<(String, String)> = {
             let model = self.model.read(cx);
-            match model.project_root().filter(|_| model.root_states().len() > 1) {
+            match model.project_root().filter(|_| !model.root_states().is_empty()) {
                 Some(project) => model.root_states().iter().map(|r| (r.prefix.clone(), crate::git::roots::label(project, &r.path))).collect(),
                 None => vec![(String::new(), model.repository().map(|r| r.name()).unwrap_or_default())],
             }
         };
         self.repo_branches = {
             let model = self.model.read(cx);
-            if model.root_states().len() > 1 {
+            if !model.root_states().is_empty() {
                 model.root_states().iter().map(|r| (r.prefix.clone(), r.refs.current_branch.clone().unwrap_or_else(|| "HEAD".into()))).collect()
             } else {
                 model.refs().current_branch.clone().map(|b| (String::new(), b)).into_iter().collect()
@@ -1115,7 +1115,7 @@ impl CommitView {
     }
 
     fn on_delete(&mut self, _: &DeleteFiles, window: &mut Window, cx: &mut Context<Self>) {
-        let root = self.model.read(cx).project_repository().map(|r| r.root().to_path_buf());
+        let root = self.model.read(cx).project_root().map(|r| r.to_path_buf());
         if let Some(root) = root {
             crate::ui::file_menus::delete_files(root, self.selected_paths(), self.file_actions(), window, cx);
         }

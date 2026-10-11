@@ -139,3 +139,46 @@ pub(super) fn branch_picker(id: &'static str, input: &Entity<InputState>, model:
             menu
         }))
 }
+
+/// IntelliJ's "Git Root" combo of a multi-root project's dialogs (Merge,
+/// Rebase, Pull, Stash, Tag, Reset): picking another root makes it the
+/// active one and opens the dialog again for it. `None` with a single root.
+pub(crate) fn git_root_row(
+    model: &Entity<RepoModel>,
+    reopen: fn(Entity<RepoModel>, &mut Window, &mut App),
+    cx: &App,
+) -> Option<gpui_kit::AnyElement> {
+    use gpui_kit::IntoElement as _;
+    use gpui_kit::component::{h_flex, menu::{DropdownMenu as _, PopupMenuItem}};
+    let m = model.read(cx);
+    if !m.is_multi_root() {
+        return None;
+    }
+    let active = m.repository().map(|r| r.root().to_path_buf());
+    let roots: Vec<(std::path::PathBuf, String)> = m.roots().iter().map(|r| (r.path.clone(), m.root_label(&r.path))).collect();
+    let label = roots.iter().find(|(p, _)| Some(p) == active.as_ref()).map(|(_, l)| l.clone()).unwrap_or_default();
+    let secondary = cx.palette().text_secondary;
+    let model = model.clone();
+    Some(
+        h_flex()
+            .gap_2()
+            .text_sm()
+            .child(div().text_color(secondary).child("Git Root:"))
+            .child(Button::new("git-root").outline().small().label(label).dropdown_caret(true).dropdown_menu(move |mut menu, _, _| {
+                for (path, label) in &roots {
+                    let (path, model) = (path.clone(), model.clone());
+                    let checked = Some(&path) == active.as_ref();
+                    menu = menu.item(PopupMenuItem::new(label.clone()).checked(checked).on_click(move |_, window, cx| {
+                        if checked {
+                            return;
+                        }
+                        model.update(cx, |m, cx| m.switch_root(path.clone(), cx));
+                        window.close_dialog(cx);
+                        reopen(model.clone(), window, cx);
+                    }));
+                }
+                menu
+            }))
+            .into_any_element(),
+    )
+}

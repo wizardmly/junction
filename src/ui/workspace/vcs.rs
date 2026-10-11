@@ -24,7 +24,9 @@ impl Workspace {
         if !conflict.kind.can_merge() {
             return;
         }
-        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        // Conflict paths are the project's: the file merges in its own root.
+        let Some((repository, own)) = self.model.read(cx).route(&conflict.path) else { return };
+        let conflict = merge::Conflict { path: own, ..conflict };
         if self.merge.as_ref().is_some_and(|(m, _)| m.read(cx).path() == conflict.path) {
             return;
         }
@@ -37,7 +39,7 @@ impl Workspace {
                 this.fix_front(cx);
                 // Back to the Conflicts dialog while files still conflict
                 // (the status doesn't know yet of one just resolved).
-                let left = merge::conflicts(this.model.read(cx).status()).len();
+                let left = merge::conflicts(this.model.read(cx).project_status()).len();
                 if left > usize::from(*applied) {
                     this.show_conflicts(window, cx);
                 }
@@ -53,14 +55,15 @@ impl Workspace {
     /// "Rebasing main · 2 conflicts · Resolve… Continue Skip Abort", above the editor.
     pub(super) fn render_operation_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let model = self.model.read(cx);
-        let state = model.state();
+        // (In a multi-root project, whichever root has one under way.)
+        let (repository, state) = model.operation_root()?;
         if state == RepositoryState::Normal {
             return None;
         }
         let palette = cx.palette().clone();
-        let conflicts = merge::conflicts(model.status());
-        let editing = state == RepositoryState::Rebasing
-            && model.repository().is_some_and(|r| r.git_dir().join("rebase-merge").join("amend").exists());
+        let conflicts = merge::conflicts(model.status_of(repository.root()));
+        let editing = state == RepositoryState::Rebasing && repository.git_dir().join("rebase-merge").join("amend").exists();
+        let root_name = model.is_multi_root().then(|| model.root_label(repository.root()));
         let label = match state {
             RepositoryState::Rebasing => "Rebase in progress",
             RepositoryState::Merging => "Merge in progress",
@@ -69,9 +72,10 @@ impl Workspace {
             RepositoryState::Normal => "",
         };
         let step = |step: OperationStep| {
-            let model = self.model.clone();
+            let (model, repository) = (self.model.clone(), repository.clone());
             move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
-                model.update(cx, |m, cx| m.run_operation("Git", move |repo| merge::step(repo, state, step), cx));
+                let repository = repository.clone();
+                model.update(cx, |m, cx| m.run_operation_in(repository, "Git", move |repo| merge::step(repo, state, step), cx));
             }
         };
         let entity = cx.entity();
@@ -85,7 +89,10 @@ impl Workspace {
                 .border_b_1()
                 .border_color(palette.border)
                 .child(Icon::new(icons::VCS_MERGE).small())
-                .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(label))
+                .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(match &root_name {
+                    Some(root) => format!("{root}: {label}"),
+                    None => label.to_owned(),
+                }))
                 .child(div().text_color(palette.text_secondary).child(match conflicts.len() {
                     // An `edit` step of an interactive rebase, not a conflict.
                     0 if editing => "Stopped for editing".to_owned(),
@@ -256,10 +263,7 @@ impl Workspace {
             Some(("Update Project…", "Ctrl+T", op(|this, window, cx| dialogs::update_project(this.model.clone(), window, cx)))),
             Some(("Pull…", "", op(|this, window, cx| remote_dialogs::pull(this.model.clone(), window, cx)))),
             Some(("Fetch", "", op(|this, _, cx| {
-                this.model.update(cx, |m, cx| m.run_operation("Fetch", |repo| {
-                    repo.run(["fetch", "--all", "--prune"])?;
-                    Ok("Fetched all remotes".into())
-                }, cx))
+                this.model.update(cx, |m, cx| m.fetch_all(cx))
             }))),
             None,
             Some(("Branches…", "Ctrl+Shift+`", op(|this, window, cx| this.open_branches(window, cx)))),

@@ -230,12 +230,7 @@ impl LogView {
                     )))
                     .child(tool_button("branches-fetch", icons::VCS_FETCH, "Fetch").on_click(cx.listener(
                         |this, _, _, cx| {
-                            this.model.update(cx, |model, cx| {
-                                model.run_operation("Fetch", |repo| {
-                                    repo.run(["fetch", "--all", "--prune"])?;
-                                    Ok("Fetched all remotes".into())
-                                }, cx)
-                            });
+                            this.model.update(cx, |model, cx| model.fetch_all(cx));
                         },
                     )))
                     .child(tool_button("branches-update", icons::VCS_UPDATE, "Update Selected").on_click(cx.listener(

@@ -218,9 +218,15 @@ impl Workspace {
     pub(super) fn open_tab(&mut self, path: String, revision: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         // Working-tree files are relative to the project; a revision comes
         // from the active repository (the Log's selected root).
+        // (A working-tree file of a nested root is read, diffed and blamed
+        // in that root.)
         let model = self.model.read(cx);
-        let repository = if revision.is_some() { model.repository() } else { model.project_repository() };
-        let Some(repository) = repository.cloned() else { return };
+        let routed = if revision.is_some() {
+            model.repository().cloned().map(|r| (r, path.clone()))
+        } else {
+            model.route(&path).or_else(|| model.project_repository().cloned().map(|r| (r, path.clone())))
+        };
+        let Some((repository, own)) = routed else { return };
         let existing = self.editors.iter().position(|t| t.view.read(cx).path() == path && t.view.read(cx).revision() == revision.as_deref());
         let ix = match existing {
             Some(ix) => {
@@ -229,7 +235,7 @@ impl Workspace {
                 ix
             }
             None => {
-                let view = cx.new(|cx| FileEditor::new(repository, path, revision, window, cx));
+                let view = cx.new(|cx| FileEditor::new(repository, own, path, revision, window, cx));
                 let subscription = cx.subscribe_in(&view, window, Self::on_file_editor_event);
                 let index = self.code_index.clone();
                 view.update(cx, |editor, cx| editor.attach_index(index, cx));
@@ -280,6 +286,13 @@ impl Workspace {
             let path = view.read(cx).path().to_owned();
             let open = self.tab_paths(cx);
             self.project.update(cx, |project, cx| project.file_opened(&path, open, cx));
+            // IntelliJ's current repository is the selected file's: the
+            // branch widget and the Git actions follow it.
+            if self.model.read(cx).is_multi_root() {
+                self.model.update(cx, |m, cx| {
+                    m.focus_path(&path, cx);
+                });
+            }
         }
         cx.notify();
     }

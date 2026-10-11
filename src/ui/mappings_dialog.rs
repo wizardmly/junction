@@ -32,8 +32,7 @@ impl MappingsView {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
-        let result = crate::git::Repository::discover(&self.project, Default::default())
-            .and_then(|repo| roots::save_mappings(&repo, &self.mappings));
+        let result = roots::save_mappings(&self.project, &self.mappings);
         self.error = result.err().map(|e| e.to_string());
         self.model.update(cx, |m, cx| m.rescan_roots(cx));
         cx.notify();
@@ -131,10 +130,10 @@ impl MappingsView {
     /// The project's roots (Settings › Version Control › Directory Mappings).
     pub fn new(model: Entity<RepoModel>, cx: &App) -> Option<Self> {
         let project = model.read(cx).project_root().map(PathBuf::from)?;
-        let repository = crate::git::Repository::discover(&project, Default::default()).ok()?;
-        let mut detected = vec![project.clone()];
+        // A folder of repositories has no root of its own.
+        let mut detected = if project.join(".git").exists() { vec![project.clone()] } else { Vec::new() };
         detected.extend(roots::scan_nested(&project));
-        let mappings = roots::load_mappings(&repository);
+        let mappings = roots::load_mappings(&project);
         Some(MappingsView { model, project, detected, mappings, error: None })
     }
 }

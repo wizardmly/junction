@@ -181,12 +181,13 @@ pub fn pull(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
     let view = cx.new(|cx| PullView::new(model.clone(), window, cx));
     let current = model.read(cx).refs().current_branch.clone().unwrap_or_else(|| "HEAD".into());
     let focus = view.read(cx).branch.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let root_row = crate::ui::dialogs::git_root_row(&model, pull, cx);
         let (view_ok, model) = (view.clone(), model.clone());
         dialog
             .title(format!("Pull to {current}"))
             .w(px(560.))
-            .child(view.clone())
+            .child(gpui_kit::component::v_flex().gap_3().children(root_row).child(view.clone()))
             .footer(footer("Pull"))
             .on_ok(move |_, _, cx| {
                 let Some(args) = view_ok.read(cx).args(cx) else { return false };

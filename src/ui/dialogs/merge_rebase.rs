@@ -35,24 +35,27 @@ pub fn conflicts(model: Entity<RepoModel>, open_merge: OpenMerge, window: &mut W
     use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _};
 
     let selected = Rc::new(Cell::new(0usize));
-    // The sides named by branch ("Changes from feature"), read once.
-    let titles = {
-        let model = model.read(cx);
-        let state = model.state();
-        model.repository().map_or_else(
-            || {
-                let (left, right) = merge::side_titles(state);
-                (left.to_owned(), right.to_owned())
-            },
-            |repository| merge::branch_titles(repository, state),
-        )
-    };
+    // The sides named by branch ("Changes from feature"), read once per root.
+    let titles: Rc<std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, (String, String)>>> = Rc::default();
     window.open_dialog(cx, move |dialog, _, cx| {
         let palette = cx.palette().clone();
-        let (ours_title, theirs_title) = titles.clone();
-        let conflicts = merge::conflicts(model.read(cx).status());
+        // Every root's conflicts, paths relative to the project (IntelliJ
+        // lists a multi-root merge's files together).
+        let conflicts = merge::conflicts(model.read(cx).project_status());
         let current = selected.get().min(conflicts.len().saturating_sub(1));
         let chosen = conflicts.get(current).cloned();
+        let routed = chosen.as_ref().and_then(|c| model.read(cx).route(&c.path));
+        let (ours_title, theirs_title) = match &routed {
+            Some((repository, _)) => titles
+                .borrow_mut()
+                .entry(repository.root().to_path_buf())
+                .or_insert_with(|| merge::branch_titles(repository, model.read(cx).state_of(repository.root())))
+                .clone(),
+            None => {
+                let (left, right) = merge::side_titles(model.read(cx).state());
+                (left.to_owned(), right.to_owned())
+            }
+        };
 
         let mut list = v_flex().border_1().border_color(palette.border).rounded_md().h(px(220.)).overflow_hidden().child(
             h_flex()
@@ -100,9 +103,12 @@ pub fn conflicts(model: Entity<RepoModel>, open_merge: OpenMerge, window: &mut W
             let model = model.clone();
             let chosen = chosen.clone();
             move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
-                let Some(conflict) = chosen.clone() else { return };
+                let Some(mut conflict) = chosen.clone() else { return };
+                // In the root that holds the file, by its path there.
+                let Some((repository, own)) = model.read(cx).route(&conflict.path) else { return };
+                conflict.path = own;
                 model.update(cx, |m, cx| {
-                    m.run_operation(if ours { "Accept Yours" } else { "Accept Theirs" }, move |repo| {
+                    m.run_operation_in(repository, if ours { "Accept Yours" } else { "Accept Theirs" }, move |repo| {
                         merge::accept(repo, &conflict, ours)?;
                         Ok(String::new())
                     }, cx)
@@ -188,6 +194,7 @@ pub fn merge(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
             .child(
                 v_flex()
                     .gap_3()
+                    .children(super::git_root_row(&model, merge, cx))
                     .child(branch_picker("merge-branches", &branch, &model, cx))
                     .child(div().text_sm().text_color(secondary).child("Options"))
                     .child(grid)
@@ -249,6 +256,7 @@ pub fn rebase(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
             .child(
                 v_flex()
                     .gap_3()
+                    .children(super::git_root_row(&model, rebase, cx))
                     .child(branch_picker("rebase-branches", &onto, &model, cx))
                     .child(grid)
                     .children(set[2].then(|| Input::new(&upstream))),
@@ -307,8 +315,10 @@ pub fn abort_operation(model: Entity<RepoModel>, state: crate::git::RepositorySt
         format!("Are you sure you want to abort the {what}? Changes made during it will be lost."),
         "Abort",
         move |cx| {
+            // In the root the operation is under way in.
+            let Some((repository, _)) = model.read(cx).operation_root() else { return };
             model.update(cx, |m, cx| {
-                m.run_operation("Git", move |repo| crate::git::merge::step(repo, state, crate::git::merge::OperationStep::Abort), cx)
+                m.run_operation_in(repository, "Git", move |repo| crate::git::merge::step(repo, state, crate::git::merge::OperationStep::Abort), cx)
             })
         },
         window,

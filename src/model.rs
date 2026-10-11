@@ -37,6 +37,10 @@ impl ExcludedHunks {
     }
 }
 
+/// Starts an operation's message when it partly failed (some roots of a
+/// multi-root operation): the balloon is a warning, not a success.
+pub const PARTIAL_FAILURE: char = '\u{1d}';
+
 #[derive(Clone, Debug)]
 pub enum RepoEvent {
     /// Refs, log, or status changed.
@@ -92,6 +96,9 @@ pub struct RepoModel {
     submodule_paths: HashSet<String>,
     /// The project's own repository; other roots are switched to in place.
     project_root: Option<PathBuf>,
+    /// The project is a folder holding repositories, not one itself (as
+    /// IntelliJ opens a directory of sibling roots): every root is nested.
+    folder_project: bool,
     roots: Vec<RootInfo>,
     /// Every root's repository, refs and changes in a multi-root project
     /// (empty with a single root), in the order of `roots`.
@@ -217,7 +224,7 @@ struct LogSource {
 /// single root; otherwise every root the Paths filter shows, each with the
 /// filter's paths that lie in it and the filter's branches it has.
 fn log_sources(states: &[RootState], active: &Repository, filter: &LogFilter) -> Vec<LogSource> {
-    if states.len() < 2 {
+    if states.is_empty() {
         let root = states.iter().position(|s| s.path == active.root()).unwrap_or(0) as u16;
         return vec![LogSource { root, repository: active.clone(), filter: filter.clone() }];
     }
@@ -379,6 +386,7 @@ impl RepoModel {
             user_email: None,
             submodule_paths: HashSet::new(),
             project_root: None,
+            folder_project: false,
             roots: Vec::new(),
             root_states: Arc::default(),
             project_status: Arc::default(),
@@ -409,21 +417,21 @@ impl RepoModel {
         match Repository::discover(&path, self.console.clone()) {
             Ok(repository) => {
                 git::migrate_legacy_data(&repository);
-                self.open_problem = None;
-                self.failed_path = None;
-                crate::settings::remember_project(repository.root());
-                self.project_root = Some(repository.root().to_path_buf());
-                self.roots.clear();
-                self.root_states = Arc::default();
-                self.user_email = repository.current_user().1;
-                self.repository = Some(repository);
-                self.error = None;
-                self.selected = None;
-                self.details = None;
-                self.forget_repository_filters();
-                self.reload(cx);
+                let project = repository.root().to_path_buf();
+                self.open_project(project, repository, false, cx);
             }
             Err(error) => {
+                // A folder that isn't a repository but holds some opens as a
+                // project of those roots, the first one active.
+                let fixable = matches!(error.downcast_ref::<git::OpenError>(), Some(git::OpenError::GitMissing(_) | git::OpenError::Unsafe(_)));
+                let nested = if fixable || !path.is_dir() {
+                    None
+                } else {
+                    git::roots::detect(&path).iter().find_map(|root| Repository::discover(root, self.console.clone()).ok())
+                };
+                if let Some(repository) = nested {
+                    return self.open_project(path, repository, true, cx);
+                }
                 self.open_problem = match error.downcast_ref::<git::OpenError>() {
                     Some(git::OpenError::GitMissing(_)) => Some(OpenProblem::GitMissing),
                     Some(git::OpenError::Unsafe(root)) => Some(OpenProblem::Unsafe(root.clone())),
@@ -434,6 +442,23 @@ impl RepoModel {
                 cx.notify();
             }
         }
+    }
+
+    fn open_project(&mut self, project: PathBuf, repository: Repository, folder: bool, cx: &mut Context<Self>) {
+        self.open_problem = None;
+        self.failed_path = None;
+        crate::settings::remember_project(&project);
+        self.project_root = Some(project);
+        self.folder_project = folder;
+        self.roots.clear();
+        self.root_states = Arc::default();
+        self.user_email = repository.current_user().1;
+        self.repository = Some(repository);
+        self.error = None;
+        self.selected = None;
+        self.details = None;
+        self.forget_repository_filters();
+        self.reload(cx);
     }
 
     /// What the Welcome screen can offer for the last failed open.
@@ -511,14 +536,18 @@ impl RepoModel {
     /// multi-root project (paths relative to the project), else the
     /// repository's own.
     pub fn project_status(&self) -> &WorkingTreeStatus {
-        if self.root_states.len() > 1 { &self.project_status } else { &self.status }
+        if !self.root_states.is_empty() { &self.project_status } else { &self.status }
     }
 
     /// The repository and its own path for a path of `project_status` (in
     /// a multi-root project, the root that holds it).
     pub fn route(&self, path: &str) -> Option<(Repository, String)> {
-        if self.root_states.len() > 1 {
-            let (ix, rest) = route_path(&self.root_states, path)?;
+        if !self.root_states.is_empty() {
+            let Some((ix, rest)) = route_path(&self.root_states, path) else {
+                // A file of a folder project outside every root.
+                let folder = self.project_root.clone().filter(|_| self.folder_project)?;
+                return Some((Repository::unversioned_folder(folder, self.console.clone()), path.to_owned()));
+            };
             return Some((self.root_states[ix].repository.clone(), rest.to_owned()));
         }
         Some((self.repository.clone()?, path.to_owned()))
@@ -546,12 +575,17 @@ impl RepoModel {
     /// The project's own repository (files of the Project tool window and
     /// the editor are relative to it), whichever root is active.
     pub fn project_repository(&self) -> Option<&Repository> {
-        self.root_states.iter().find(|s| s.prefix.is_empty()).map(|s| &s.repository).or(self.repository.as_ref())
+        self.root_states
+            .iter()
+            .find(|s| s.prefix.is_empty())
+            .or(self.root_states.first())
+            .map(|s| &s.repository)
+            .or(self.repository.as_ref())
     }
 
     /// Refs of every root the Log shows (the active repository's alone with one root).
     pub fn log_refs(&self) -> &Arc<RepositoryRefs> {
-        if self.root_states.len() > 1 { &self.log_refs } else { &self.refs }
+        if !self.root_states.is_empty() { &self.log_refs } else { &self.refs }
     }
 
     /// Runs `operation` in each root holding some of `paths` (project
@@ -566,39 +600,204 @@ impl RepoModel {
         cx: &mut Context<Self>,
     ) {
         let groups = self.route_all(&paths);
-        if groups.len() <= 1 && self.root_states.len() <= 1 {
+        if self.root_states.is_empty() {
             let own = groups.into_iter().next().map(|(_, own)| own).unwrap_or(paths);
             return self.run_operation(title, move |repo| operation(repo, own), cx);
         }
+        self.run_in_groups(title, groups, operation, cx);
+    }
+
+    /// Runs `operation` in every root of the project (Fetch, Update), each
+    /// result line naming its root; a single root reports it plainly.
+    pub fn run_in_each_root(
+        &mut self,
+        title: impl Into<String>,
+        operation: impl Fn(&Repository) -> Result<String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.root_states.len() < 2 {
+            return self.run_operation(title, move |repo| operation(repo), cx);
+        }
+        let groups = self.root_states.iter().map(|s| (s.repository.clone(), ())).collect();
+        self.run_in_groups(title, groups, move |repo, _| operation(repo), cx);
+    }
+
+    /// Runs `operation` once per repository with its own input, in order;
+    /// stops at the first failure (earlier roots keep what they did).
+    pub fn run_in_groups<T: Send + 'static>(
+        &mut self,
+        title: impl Into<String>,
+        groups: Vec<(Repository, T)>,
+        operation: impl Fn(&Repository, T) -> Result<String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_groups(title, groups, false, operation, cx)
+    }
+
+    /// Like `run_in_groups`, but a root that fails doesn't stop the others
+    /// (IntelliJ fetches and pushes each repository on its own); the
+    /// balloon lists every root's outcome.
+    pub fn run_in_groups_keep_going<T: Send + 'static>(
+        &mut self,
+        title: impl Into<String>,
+        groups: Vec<(Repository, T)>,
+        operation: impl Fn(&Repository, T) -> Result<String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_groups(title, groups, true, operation, cx)
+    }
+
+    fn run_groups<T: Send + 'static>(
+        &mut self,
+        title: impl Into<String>,
+        groups: Vec<(Repository, T)>,
+        keep_going: bool,
+        operation: impl Fn(&Repository, T) -> Result<String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
         let project = self.project_root.clone();
         let title = title.into();
         self.busy = Some(title.clone());
+        let had_conflicts = !git::merge::conflicts(self.project_status()).is_empty();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
                     let mut messages = Vec::new();
+                    let mut failed = Vec::new();
+                    let mut conflicted = false;
+                    let several = groups.len() > 1;
                     for (repository, own) in groups {
                         let name = project.as_deref().map(|p| git::roots::label(p, repository.root())).unwrap_or_default();
-                        let message = operation(&repository, own).map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
-                        if !message.is_empty() {
-                            messages.push(if messages.is_empty() && name.is_empty() { message } else { format!("{name}: {message}") });
+                        match operation(&repository, own) {
+                            Ok(message) if message.is_empty() => {}
+                            Ok(message) => messages.push(if several { format!("{name}: {message}") } else { message }),
+                            Err(error) => {
+                                conflicted |= !had_conflicts
+                                    && repository.run(["diff", "--name-only", "--diff-filter=U"]).is_ok_and(|o| !o.trim().is_empty());
+                                failed.push(format!("{name}: {error}"));
+                                if !keep_going {
+                                    break;
+                                }
+                            }
                         }
                     }
-                    anyhow::Ok(messages.join("\n"))
+                    (messages, failed, conflicted)
                 })
                 .await;
             this.update(cx, |this, cx| {
                 this.busy = None;
-                cx.emit(match result {
-                    Ok(message) => RepoEvent::Notify { title, message, error: false },
-                    Err(error) => RepoEvent::Notify { title: format!("{title} failed"), message: error.to_string(), error: true },
+                let (messages, failed, conflicted) = result;
+                this.conflicts_pending |= conflicted;
+                cx.emit(if failed.is_empty() {
+                    RepoEvent::Notify { title, message: messages.join("\n"), error: false }
+                } else if messages.is_empty() || !keep_going {
+                    RepoEvent::Notify { title: format!("{title} failed"), message: failed.join("\n"), error: true }
+                } else {
+                    // Some roots did it: a warning listing both.
+                    let lines: Vec<String> = messages.into_iter().chain(failed.into_iter().map(|f| format!("{f} (failed)"))).collect();
+                    RepoEvent::Notify { title, message: format!("{PARTIAL_FAILURE}{}", lines.join("\n")), error: false }
                 });
                 this.reload(cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// The changes of one root (the active repository's when it isn't a loaded root).
+    pub fn status_of(&self, root: &Path) -> &WorkingTreeStatus {
+        self.root_states.iter().find(|s| s.path == root).map(|s| &*s.status).unwrap_or(&self.status)
+    }
+
+    /// A root's own path as a project path (what the editor tabs and the
+    /// Project tool window know it by).
+    pub fn project_path(&self, root: &Path, own: &str) -> String {
+        let prefix = self.prefix_of(root);
+        if prefix.is_empty() || own.is_empty() { format!("{prefix}{own}") } else { format!("{prefix}/{own}") }
+    }
+
+    /// A root's merge / rebase / cherry-pick state.
+    pub fn state_of(&self, root: &Path) -> RepositoryState {
+        self.root_states.iter().find(|s| s.path == root).map(|s| s.state).unwrap_or(self.state)
+    }
+
+    /// The root where a merge, rebase, cherry-pick or revert is under way:
+    /// the active one first, else the first root that has one.
+    pub fn operation_root(&self) -> Option<(Repository, RepositoryState)> {
+        let active = self.repository.clone()?;
+        if self.state != RepositoryState::Normal || self.root_states.is_empty() {
+            return Some((active, self.state));
+        }
+        self.root_states.iter().find(|s| s.state != RepositoryState::Normal).map(|s| (s.repository.clone(), s.state))
+    }
+
+    /// The repository of a loaded root.
+    pub fn repository_at(&self, root: &Path) -> Option<Repository> {
+        if let Some(state) = self.root_states.iter().find(|s| s.path == root) {
+            return Some(state.repository.clone());
+        }
+        self.repository.clone().filter(|r| r.root() == root)
+    }
+
+    /// Every repository of the project, roots in order (the active one alone with a single root).
+    pub fn repositories(&self) -> Vec<Repository> {
+        if self.root_states.is_empty() {
+            return self.repository.clone().into_iter().collect();
+        }
+        self.root_states.iter().map(|s| s.repository.clone()).collect()
+    }
+
+    /// A root's short name ("app", "libs/core"), as IntelliJ labels repositories.
+    pub fn root_label(&self, root: &Path) -> String {
+        match &self.project_root {
+            Some(project) => git::roots::label(project, root),
+            None => root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        }
+    }
+
+    /// Makes the root holding a project path the active one (IntelliJ's
+    /// "current repository" follows the selected file: the branch widget and
+    /// the Git actions then work on it) and returns its repository and the
+    /// path inside it.
+    pub fn focus_path(&mut self, path: &str, cx: &mut Context<Self>) -> Option<(Repository, String)> {
+        let routed = self.route(path)?;
+        if self.repository.as_ref().is_some_and(|r| r.root() != routed.0.root()) {
+            if let Some(state) = self.root_states.iter().find(|s| s.path == routed.0.root()).cloned() {
+                self.focus_root(state, cx);
+            }
+        }
+        Some(routed)
+    }
+
+    /// Makes a Log commit's root the active one (its menu and details act there).
+    pub fn focus_commit_root(&mut self, root: u16, cx: &mut Context<Self>) {
+        let Some(state) = self.root_states.get(root as usize).cloned() else { return };
+        if self.repository.as_ref().is_some_and(|r| r.root() != state.path) {
+            self.focus_root(state, cx);
+        }
+    }
+
+    /// The selected Log commit's root becomes the active one again (an
+    /// editor tab may have moved it to its own file's root meanwhile).
+    pub fn focus_selected_commit(&mut self, cx: &mut Context<Self>) {
+        let root = self.selected_index().and_then(|row| self.commits.get(row)).map(|c| c.root);
+        if let Some(root) = root {
+            self.focus_commit_root(root, cx);
+        }
+    }
+
+    /// Fetch: every remote of every root, as IntelliJ's Fetch does.
+    pub fn fetch_all(&mut self, cx: &mut Context<Self>) {
+        self.run_in_groups_keep_going(
+            "Fetch",
+            self.repositories().into_iter().map(|r| (r, ())).collect(),
+            |repo, _| {
+                repo.run(["fetch", "--all", "--prune"])?;
+                Ok("Fetched all remotes".into())
+            },
+            cx,
+        );
     }
 
     pub fn web_repo(&self) -> Option<&git::hosting::WebRepo> {
@@ -634,7 +833,7 @@ impl RepoModel {
     }
 
     pub fn is_multi_root(&self) -> bool {
-        self.roots.len() > 1
+        self.roots.len() > 1 || self.folder_project
     }
 
     /// Get from Version Control: `git clone` into `dir`, then open it (see `RepoEvent::Cloned`).
@@ -836,6 +1035,7 @@ impl RepoModel {
         // Roots are scanned once per project (and after Directory Mappings
         // change); each reload only refreshes their branches.
         let known_roots: Vec<PathBuf> = self.roots.iter().map(|r| r.path.clone()).collect();
+        let folder = self.folder_project;
         let previous_key = self.log_key.clone();
         self.loading = true;
         cx.notify();
@@ -843,16 +1043,18 @@ impl RepoModel {
             let result = cx
                 .background_spawn(async move {
                     let paths = if known_roots.is_empty() {
-                        project_root
-                            .as_ref()
-                            .and_then(|p| Repository::discover(p, console.clone()).ok())
-                            .map(|project| git::roots::detect(&project))
-                            .unwrap_or_else(|| vec![repository.root().to_path_buf()])
+                        let mut paths = project_root.as_deref().map(git::roots::detect).unwrap_or_default();
+                        if paths.is_empty() {
+                            paths.push(repository.root().to_path_buf());
+                        }
+                        paths
                     } else {
                         known_roots
                     };
-                    // Several roots: all of them load, the active one among them.
-                    let root_states = if paths.len() > 1 { RootState::load_all(&paths, project_root.as_deref(), &console) } else { Vec::new() };
+                    // Several roots (or a folder of them): all of them load,
+                    // the active one among them.
+                    let root_states =
+                        if paths.len() > 1 || folder { RootState::load_all(&paths, project_root.as_deref(), &console) } else { Vec::new() };
                     let active = root_states.iter().find(|s| s.path == repository.root()).cloned();
                     let (refs, status, submodules, web, state) = match &active {
                         Some(a) => ((*a.refs).clone(), (*a.status).clone(), a.submodules.clone(), a.web.clone(), a.state),
@@ -936,7 +1138,7 @@ impl RepoModel {
                     }
                 }
                 cx.emit(RepoEvent::Reloaded);
-                if std::mem::take(&mut this.conflicts_pending) && !git::merge::conflicts(&this.status).is_empty() {
+                if std::mem::take(&mut this.conflicts_pending) && !git::merge::conflicts(this.project_status()).is_empty() {
                     cx.emit(RepoEvent::ShowConflicts);
                 }
                 cx.notify();
@@ -948,7 +1150,7 @@ impl RepoModel {
     /// Keeps every root's state and what is built from it: the Commit
     /// window's combined changes and the Log's combined refs.
     fn set_root_states(&mut self, states: Vec<RootState>) {
-        if states.len() > 1 {
+        if !states.is_empty() {
             self.project_status = Arc::new(WorkingTreeStatus::combined(states.iter().map(|s| (s.prefix.as_str(), &*s.status))));
             let active = self.repository.as_ref().map(|r| r.root().to_path_buf());
             let others: Vec<&RepositoryRefs> = states.iter().filter(|s| Some(&s.path) != active.as_ref()).map(|s| &*s.refs).collect();
@@ -1092,7 +1294,7 @@ impl RepoModel {
         // In a multi-root project the commit's own repository becomes the
         // active one, so its details and the Log's actions work on it.
         let root = hash.as_deref().and_then(|h| self.row_of(h)).and_then(|row| self.commits.get(row)).map(|c| c.root as usize);
-        if let Some(state) = root.filter(|_| self.root_states.len() > 1).and_then(|ix| self.root_states.get(ix)) {
+        if let Some(state) = root.filter(|_| !self.root_states.is_empty()).and_then(|ix| self.root_states.get(ix)) {
             if self.repository.as_ref().is_none_or(|r| r.root() != state.path) {
                 self.focus_root(state.clone(), cx);
             }
@@ -1230,21 +1432,26 @@ impl RepoModel {
                     let minutes = crate::settings::Settings::get(cx).fetch_interval_minutes;
                     let due = minutes > 0 && last_fetch.elapsed().as_secs() >= minutes as u64 * 60;
                     // Never race a user-started operation.
-                    (due && this.busy.is_none()).then(|| this.repository.clone()).flatten()
+                    (due && this.busy.is_none()).then(|| this.repositories()).filter(|r| !r.is_empty())
                 }) else {
                     break;
                 };
-                let Some(repository) = repository else { continue };
+                let Some(repositories) = repository else { continue };
                 last_fetch = std::time::Instant::now();
+                // Every root, as IntelliJ refreshes each repository's branch info.
                 let changed = cx
                     .background_spawn(async move {
-                        let remotes = repository.run(["remote"]).unwrap_or_default();
-                        if remotes.trim().is_empty() {
-                            return false;
+                        let mut changed = false;
+                        for repository in repositories {
+                            let remotes = repository.run(["remote"]).unwrap_or_default();
+                            if remotes.trim().is_empty() {
+                                continue;
+                            }
+                            let before = repository.run(["for-each-ref", "refs/remotes"]).unwrap_or_default();
+                            let _ = repository.run(["fetch", "--all", "--prune", "--quiet"]);
+                            changed |= repository.run(["for-each-ref", "refs/remotes"]).unwrap_or_default() != before;
                         }
-                        let before = repository.run(["for-each-ref", "refs/remotes"]).unwrap_or_default();
-                        let _ = repository.run(["fetch", "--all", "--prune", "--quiet"]);
-                        repository.run(["for-each-ref", "refs/remotes"]).unwrap_or_default() != before
+                        changed
                     })
                     .await;
                 if changed {
@@ -1287,11 +1494,23 @@ impl RepoModel {
         cx: &mut Context<Self>,
     ) {
         let Some(repository) = self.repository.clone() else { return };
+        self.run_operation_in(repository, title, operation, cx)
+    }
+
+    /// `run_operation` in a given root (the one a dialog's Git Root picks,
+    /// or that holds the files acted on).
+    pub fn run_operation_in(
+        &mut self,
+        repository: Repository,
+        title: impl Into<String>,
+        operation: impl FnOnce(&Repository) -> Result<String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
         let title = title.into();
         self.busy = Some(title.clone());
         // Conflicts that were already there are the Conflicts dialog's own
         // business (Accept Yours, Merge…); only new ones open it.
-        let had_conflicts = !git::merge::conflicts(&self.status).is_empty();
+        let had_conflicts = !git::merge::conflicts(self.status_of(repository.root())).is_empty();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
