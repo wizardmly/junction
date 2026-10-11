@@ -144,6 +144,12 @@ pub fn git_submenu(menu: PopupMenu, target: GitTarget, window: &mut Window, cx: 
 }
 
 fn git_items(menu: PopupMenu, target: &GitTarget, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    // IntelliJ's Git actions here work on the clicked file's repository.
+    if let Some(path) = target.file.clone().or_else(|| target.paths.first().cloned()) {
+        target.model.update(cx, |m, cx| {
+            m.focus_path(&path, cx);
+        });
+    }
     let kinds = target.kinds(cx);
     let changed: Vec<String> = target.paths.iter().filter(|p| kinds.get(*p).is_some_and(|k| *k != StatusKind::Unversioned)).cloned().collect();
     let unversioned: Vec<String> = target.paths.iter().filter(|p| kinds.get(*p) == Some(&StatusKind::Unversioned)).cloned().collect();
@@ -257,8 +263,9 @@ pub fn add_to_vcs(model: &Entity<RepoModel>, paths: Vec<String>, cx: &mut App) {
 
 /// Add to .gitignore (the root one) or to .git/info/exclude.
 pub fn ignore(model: &Entity<RepoModel>, paths: Vec<String>, exclude: bool, cx: &mut App) {
+    // Each root's own .gitignore (or exclude file), with its own paths.
     model.update(cx, |m, cx| {
-        m.run_operation("Ignore", move |repo| {
+        m.run_in_roots("Ignore", paths, move |repo, paths| {
             let file = if exclude { repo.git_dir().join("info").join("exclude") } else { repo.root().join(".gitignore") };
             crate::git::status::append_ignore(&file, &paths)?;
             Ok(format!("Ignored {} file{}", paths.len(), if paths.len() == 1 { "" } else { "s" }))

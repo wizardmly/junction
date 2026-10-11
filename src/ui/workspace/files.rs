@@ -186,6 +186,8 @@ impl Workspace {
             FileAction::Annotate(path) => self.annotate(path, None, window, cx),
             FileAction::ShowHistory(path) => self.show_history(path, cx),
             FileAction::CompareWithRevision(path) => {
+                // The file's root becomes the active one; revisions are its.
+                let path = self.model.update(cx, |m, cx| m.focus_path(&path, cx)).map(|(_, own)| own).unwrap_or(path);
                 let workspace = cx.entity();
                 dialogs::compare_file_with_revision(
                     self.model.clone(),
@@ -196,6 +198,7 @@ impl Workspace {
                 );
             }
             FileAction::CompareWithBranch(path) => {
+                let path = self.model.update(cx, |m, cx| m.focus_path(&path, cx)).map(|(_, own)| own).unwrap_or(path);
                 let workspace = cx.entity();
                 dialogs::compare_file_with(
                     self.model.clone(),

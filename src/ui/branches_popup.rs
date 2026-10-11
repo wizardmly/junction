@@ -111,17 +111,51 @@ impl BranchesPopup {
 }
 
 fn git_op(model: &Entity<RepoModel>, title: &'static str, args: Vec<String>, done: String) -> Run {
+    synced_op(model, title, args, done, None)
+}
+
+/// A branch operation; with "Execute branch operations on all roots" in a
+/// multi-root project it runs in every root that has `sync_ref` too (the
+/// active root first), as IntelliJ's synchronous branch control does.
+fn synced_op(model: &Entity<RepoModel>, title: &'static str, args: Vec<String>, done: String, sync_ref: Option<String>) -> Run {
     let model = model.clone();
     Rc::new(move |_, cx| {
         let args = args.clone();
         let done = done.clone();
+        let roots = sync_ref.as_deref().map(|r| synced_roots(&model, r, cx)).unwrap_or_default();
         model.update(cx, |model, cx| {
+            if roots.len() > 1 {
+                let groups = roots.into_iter().map(|r| (r, ())).collect();
+                return model.run_in_groups_keep_going(title, groups, move |repo, _| {
+                    repo.run(&args)?;
+                    Ok(done.clone())
+                }, cx);
+            }
             model.run_operation(title, move |repo| {
                 repo.run(&args)?;
                 Ok(done)
             }, cx)
         });
     })
+}
+
+/// With synchronous branch control on, the roots a branch operation runs
+/// in: the active one, then the others that have `full_ref`. Empty when off
+/// or with a single root.
+pub(crate) fn synced_roots(model: &Entity<RepoModel>, full_ref: &str, cx: &App) -> Vec<crate::git::Repository> {
+    let m = model.read(cx);
+    if !crate::settings::Settings::get(cx).sync_branches || !m.is_multi_root() {
+        return Vec::new();
+    }
+    let Some(active) = m.repository().cloned() else { return Vec::new() };
+    let mut roots = vec![active.clone()];
+    roots.extend(
+        m.repositories()
+            .into_iter()
+            .filter(|r| r.root() != active.root())
+            .filter(|r| r.run(["rev-parse", "--verify", "-q", full_ref]).is_ok()),
+    );
+    roots
 }
 
 /// Runs `op` in each other root; returns how many succeeded.
@@ -186,17 +220,17 @@ pub(crate) fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, cur
         actions.push(action(
             format!("Checkout and Rebase onto '{current_name}'"),
             reference.kind == RefKind::LocalBranch,
-            git_op(model, "Checkout and Rebase", vec!["rebase".into(), current_name.clone(), name.clone()], format!("Rebased {name} onto {current_name}")),
+            synced_op(model, "Checkout and Rebase", vec!["rebase".into(), current_name.clone(), name.clone()], format!("Rebased {name} onto {current_name}"), Some(reference.full_name.clone())),
         ));
         actions.push(action(
             format!("Rebase '{current_name}' onto '{name}'"),
             true,
-            git_op(model, "Rebase", vec!["rebase".into(), name.clone()], format!("Rebased {current_name} onto {name}")),
+            synced_op(model, "Rebase", vec!["rebase".into(), name.clone()], format!("Rebased {current_name} onto {name}"), Some(reference.full_name.clone())),
         ));
         actions.push(action(
             format!("Merge '{name}' into '{current_name}'"),
             true,
-            git_op(model, "Merge", vec!["merge".into(), name.clone()], format!("Merged {name} into {current_name}")),
+            synced_op(model, "Merge", vec!["merge".into(), name.clone()], format!("Merged {name} into {current_name}"), Some(reference.full_name.clone())),
         ));
     }
     match reference.kind {
@@ -206,17 +240,17 @@ pub(crate) fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, cur
             actions.push(action(
                 format!("Pull into '{current_name}' Using Rebase"),
                 true,
-                git_op(model, "Pull", vec!["pull".into(), "--rebase".into(), remote.clone(), branch.clone()], format!("Pulled {name} with rebase")),
+                synced_op(model, "Pull", vec!["pull".into(), "--rebase".into(), remote.clone(), branch.clone()], format!("Pulled {name} with rebase"), Some(reference.full_name.clone())),
             ));
             actions.push(action(
                 format!("Pull into '{current_name}' Using Merge"),
                 true,
-                git_op(model, "Pull", vec!["pull".into(), "--no-rebase".into(), remote.clone(), branch.clone()], format!("Pulled {name} with merge")),
+                synced_op(model, "Pull", vec!["pull".into(), "--no-rebase".into(), remote.clone(), branch.clone()], format!("Pulled {name} with merge"), Some(reference.full_name.clone())),
             ));
             actions.push(action(
                 "Delete",
                 true,
-                git_op(model, "Delete Remote Branch", vec!["push".into(), remote, "--delete".into(), branch], format!("Deleted remote branch {name}")),
+                synced_op(model, "Delete Remote Branch", vec!["push".into(), remote, "--delete".into(), branch], format!("Deleted remote branch {name}"), Some(reference.full_name.clone())),
             ));
         }
         RefKind::LocalBranch => {
@@ -227,7 +261,7 @@ pub(crate) fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, cur
                 } else {
                     vec!["fetch".into(), remote.to_owned(), format!("{remote_branch}:{name}")]
                 };
-                actions.push(action("Update", true, git_op(model, "Update", args, format!("Updated {name}"))));
+                actions.push(action("Update", true, synced_op(model, "Update", args, format!("Updated {name}"), Some(reference.full_name.clone()))));
             }
             let push_args = if reference.upstream.is_some() {
                 vec!["push".into(), "origin".into(), name.clone()]
@@ -394,9 +428,19 @@ fn delete_branch(model: &Entity<RepoModel>, reference: &RefName, window: &mut Wi
     let tip = reference.target.clone();
     let merged_into = |target: &str| crate::git::refs::is_merged(&repository, &reference.full_name, target);
     let upstream_merged = reference.upstream.as_ref().is_some_and(|u| merged_into(&format!("refs/remotes/{u}")));
+    let full_name = reference.full_name.clone();
     let delete = move |force: bool, model: &Entity<RepoModel>, cx: &mut App| {
         let (name, tip) = (name.clone(), tip.clone());
+        // Synchronous branch control: the branch goes in every root.
+        let roots = synced_roots(model, &full_name, cx);
         model.update(cx, |model, cx| {
+            if roots.len() > 1 {
+                let groups = roots.into_iter().map(|r| (r, ())).collect();
+                return model.run_in_groups_keep_going("Delete Branch", groups, move |repo, _| {
+                    repo.run(["branch", if force { "-D" } else { "-d" }, &name])?;
+                    Ok(format!("Deleted branch {name}"))
+                }, cx);
+            }
             model.run_operation("Delete Branch", move |repo| {
                 repo.run(["branch", if force { "-D" } else { "-d" }, &name])?;
                 Ok(format!("Deleted branch {name} (was {})", &tip[..tip.len().min(8)]))

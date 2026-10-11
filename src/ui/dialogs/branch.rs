@@ -192,7 +192,16 @@ pub fn rename_branch(model: Entity<RepoModel>, branch: String, window: &mut Wind
                     return false;
                 }
                 let old = old.clone();
+                // Synchronous branch control: renamed in every root that has it.
+                let roots = crate::ui::branches_popup::synced_roots(&model, &format!("refs/heads/{old}"), cx);
                 model.update(cx, |model, cx| {
+                    if roots.len() > 1 {
+                        let groups = roots.into_iter().map(|r| (r, ())).collect();
+                        return model.run_in_groups_keep_going("Rename Branch", groups, move |repo, _| {
+                            repo.run(["branch", "-m", &old, &new])?;
+                            Ok(format!("Renamed {old} to {new}"))
+                        }, cx);
+                    }
                     model.run_operation("Rename Branch", move |repo| {
                         repo.run(["branch", "-m", &old, &new])?;
                         Ok(format!("Renamed {old} to {new}"))

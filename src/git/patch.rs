@@ -406,6 +406,79 @@ pub fn import_patch(repository: &Repository, name: &str, patch: &str) -> Result<
     Ok(shelf)
 }
 
+/// Rewrites the file paths of a patch's headers (`diff --git`, `---`,
+/// `+++`, rename / copy lines) with `map`; `/dev/null` stays.
+pub fn rewrite_paths(patch: &str, map: impl Fn(&str) -> String) -> String {
+    let mut out = String::with_capacity(patch.len());
+    let mut in_header = false;
+    for line in patch.split_inclusive('\n') {
+        let (body, end) = match line.strip_suffix('\n') {
+            Some(b) => (b, "\n"),
+            None => (line, ""),
+        };
+        if let Some(rest) = body.strip_prefix("diff --git a/") {
+            in_header = true;
+            if let Some((a, b)) = rest.split_once(" b/") {
+                out.push_str(&format!("diff --git a/{} b/{}{end}", map(a), map(b)));
+                continue;
+            }
+        } else if body.starts_with("@@") {
+            in_header = false;
+        } else if in_header {
+            let mut done = false;
+            for lead in ["--- a/", "+++ b/", "rename from ", "rename to ", "copy from ", "copy to "] {
+                if let Some(path) = body.strip_prefix(lead) {
+                    out.push_str(&format!("{lead}{}{end}", map(path)));
+                    done = true;
+                    break;
+                }
+            }
+            if done {
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+/// A root's patch as the project's: its paths get the root's folder in front.
+pub fn with_prefix(patch: &str, prefix: &str) -> String {
+    if prefix.is_empty() {
+        return patch.to_owned();
+    }
+    rewrite_paths(patch, |p| format!("{prefix}/{p}"))
+}
+
+/// Splits a project patch by root: `route` gives a project path's root and
+/// its path there; each root gets its files' sections with those paths.
+/// Files no root holds are left out.
+pub fn split_by_root(patch: &str, route: impl Fn(&str) -> Option<(usize, String)>) -> Vec<(usize, String, Vec<String>)> {
+    let mut sections: Vec<String> = Vec::new();
+    for line in patch.split_inclusive('\n') {
+        if line.starts_with("diff --git ") || sections.is_empty() {
+            sections.push(String::new());
+        }
+        sections.last_mut().unwrap().push_str(line);
+    }
+    let mut groups: Vec<(usize, String, Vec<String>)> = Vec::new();
+    for section in sections {
+        let Some(rest) = section.lines().next().and_then(|l| l.strip_prefix("diff --git a/")) else { continue };
+        let Some((_, path)) = rest.split_once(" b/") else { continue };
+        let Some((root, own)) = route(path) else { continue };
+        let strip = path.strip_suffix(own.as_str()).unwrap_or("").to_owned();
+        let text = rewrite_paths(&section, |p| p.strip_prefix(strip.as_str()).unwrap_or(p).to_owned());
+        match groups.iter_mut().find(|(r, _, _)| *r == root) {
+            Some((_, t, paths)) => {
+                t.push_str(&text);
+                paths.push(own);
+            }
+            None => groups.push((root, text, vec![own])),
+        }
+    }
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,5 +644,28 @@ mod tests {
         std::fs::write(dir.0.join("a.txt"), "one\nLOCAL\n").unwrap();
         checkout_with(&repository, &local_branch("other"), CheckoutMode::Force).unwrap();
         assert_eq!(std::fs::read_to_string(dir.0.join("a.txt")).unwrap(), "one\nOTHER\n");
+    }
+
+    #[test]
+    fn patches_move_between_project_and_root_paths() {
+        let patch = "diff --git a/src/a.rs b/src/a.rs\nindex 1..2 100644\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-x\n+y\n\
+diff --git a/old.txt b/new.txt\nsimilarity index 90%\nrename from old.txt\nrename to new.txt\n\
+diff --git a/n.txt b/n.txt\nnew file mode 100644\n--- /dev/null\n+++ b/n.txt\n@@ -0,0 +1 @@\n+--- a/not-a-header\n";
+        let project = with_prefix(patch, "libs/core");
+        assert!(project.contains("diff --git a/libs/core/src/a.rs b/libs/core/src/a.rs\n"));
+        assert!(project.contains("rename to libs/core/new.txt\n"));
+        assert!(project.contains("--- /dev/null\n+++ b/libs/core/n.txt\n"));
+        assert!(project.contains("+--- a/not-a-header\n"));
+        let other = "diff --git a/README b/README\n--- a/README\n+++ b/README\n@@ -1 +1 @@\n-a\n+b\n";
+        let both = format!("{project}{other}");
+        let groups = split_by_root(&both, |p| match p.strip_prefix("libs/core/") {
+            Some(rest) => Some((1, rest.to_owned())),
+            None => Some((0, p.to_owned())),
+        });
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].0, 1);
+        assert_eq!(groups[0].1, patch);
+        assert_eq!(groups[0].2, vec!["src/a.rs", "new.txt", "n.txt"]);
+        assert_eq!(groups[1], (0, other.to_owned(), vec!["README".to_owned()]));
     }
 }

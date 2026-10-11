@@ -57,10 +57,34 @@ fn build(repository: &crate::git::Repository, source: &PatchSource, reverse: boo
     }
 }
 
+/// Local changes of a multi-root project: each root's files, with the
+/// prefix that makes its paths the project's (IntelliJ's patch base is the
+/// project folder). `None` otherwise.
+type RootGroups = Option<Vec<(crate::git::Repository, Vec<String>, String)>>;
+
+fn root_groups(model: &Entity<RepoModel>, source: &PatchSource, cx: &App) -> RootGroups {
+    let model = model.read(cx);
+    let PatchSource::Local { paths } = source else { return None };
+    if model.root_states().is_empty() {
+        return None;
+    }
+    Some(model.route_all(paths).into_iter().map(|(repo, own)| { let prefix = model.prefix_of(repo.root()); (repo, own, prefix) }).collect())
+}
+
+fn build_for(groups: &RootGroups, repository: &crate::git::Repository, source: &PatchSource, reverse: bool) -> anyhow::Result<String> {
+    let Some(groups) = groups else { return build(repository, source, reverse) };
+    let mut text = String::new();
+    for (repository, paths, prefix) in groups {
+        text.push_str(&patch::with_prefix(&patch::local_changes(repository, paths, reverse)?, prefix));
+    }
+    Ok(text)
+}
+
 /// Copy as Patch to Clipboard: no dialog.
 pub fn copy_patch(model: Entity<RepoModel>, source: PatchSource, cx: &mut App) {
     let Some(repository) = model.read(cx).repository().cloned() else { return };
-    let task = cx.background_spawn(async move { build(&repository, &source, false) });
+    let groups = root_groups(&model, &source, cx);
+    let task = cx.background_spawn(async move { build_for(&groups, &repository, &source, false) });
     cx.spawn(async move |cx| {
         let result = task.await;
         cx.update(|cx| match result {
@@ -77,6 +101,12 @@ pub fn copy_patch(model: Entity<RepoModel>, source: PatchSource, cx: &mut App) {
 /// IntelliJ's Create Patch dialog: save to a file or copy to the clipboard, optionally reversed.
 pub fn create_patch(model: Entity<RepoModel>, source: PatchSource, window: &mut Window, cx: &mut App) {
     let Some(root) = model.read(cx).repository().map(|r| r.root().to_path_buf()) else { return };
+    let groups = root_groups(&model, &source, cx);
+    // (Local changes of several roots: saved in the project folder.)
+    let root = match (&groups, model.read(cx).project_root()) {
+        (Some(_), Some(project)) => project.to_path_buf(),
+        _ => root,
+    };
     let default = root.join(format!("{}.patch", source.label()));
     let path = cx.new(|cx| InputState::new(window, cx).default_value(default.display().to_string()));
     let to_clipboard = Rc::new(Cell::new(false));
@@ -91,6 +121,7 @@ pub fn create_patch(model: Entity<RepoModel>, source: PatchSource, window: &mut 
         let model = model.clone();
         let source = source.clone();
         let root = root.clone();
+        let groups = groups.clone();
         dialog
             .title("Create Patch")
             .w(px(560.))
@@ -144,7 +175,8 @@ pub fn create_patch(model: Entity<RepoModel>, source: PatchSource, window: &mut 
                 let reverse = rev_ok.get();
                 if clip_ok.get() {
                     let Some(repository) = model.read(cx).repository().cloned() else { return true };
-                    let task = cx.background_spawn(async move { build(&repository, &source, reverse) });
+                    let groups = groups.clone();
+                    let task = cx.background_spawn(async move { build_for(&groups, &repository, &source, reverse) });
                     let model = model.clone();
                     cx.spawn(async move |cx| {
                         let result = task.await;
@@ -165,9 +197,10 @@ pub fn create_patch(model: Entity<RepoModel>, source: PatchSource, window: &mut 
                 if target.as_os_str().is_empty() {
                     return false;
                 }
+                let groups = groups.clone();
                 model.update(cx, |model, cx| {
                     model.run_operation("Create Patch", move |repo| {
-                        let text = build(repo, &source, reverse)?;
+                        let text = build_for(&groups, repo, &source, reverse)?;
                         if let Some(parent) = target.parent() {
                             std::fs::create_dir_all(parent).ok();
                         }
@@ -414,6 +447,37 @@ pub fn apply_patch(model: Entity<RepoModel>, clipboard: bool, window: &mut Windo
                 let count = view.files.len();
                 let paths: Vec<String> = view.files.iter().map(|f| f.path.clone()).collect();
                 let changelist = view.changelist.clone();
+                // A multi-root project's patch has the project's paths: each
+                // root applies its own files (IntelliJ's base is the project).
+                let groups: Vec<(crate::git::Repository, (String, Vec<String>))> = {
+                    let m = model.read(cx);
+                    if m.root_states().is_empty() {
+                        Vec::new()
+                    } else {
+                        let repositories = m.repositories();
+                        patch::split_by_root(&text, |p| {
+                            let (repository, own) = m.route(p)?;
+                            Some((repositories.iter().position(|r| r.root() == repository.root())?, own))
+                        })
+                        .into_iter()
+                        .map(|(ix, text, paths)| (repositories[ix].clone(), (text, paths)))
+                        .collect()
+                    }
+                };
+                if !groups.is_empty() {
+                    model.update(cx, |model, cx| {
+                        model.run_in_groups("Apply Patch", groups, |repo, (text, paths)| {
+                            let files = if paths.len() == 1 { "1 file".to_owned() } else { format!("{} files", paths.len()) };
+                            let (outcome, _) = patch::apply_adding_new(repo, &text, &paths)?;
+                            Ok(match outcome {
+                                ApplyOutcome::Clean => format!("Patch applied to {files}"),
+                                ApplyOutcome::Merged => format!("Patch applied to {files} with a three-way merge"),
+                                ApplyOutcome::Conflicts => "Patch applied with conflicts; resolve them in the Commit tool window".into(),
+                            })
+                        }, cx)
+                    });
+                    return true;
+                }
                 model.update(cx, |model, cx| {
                     model.run_operation("Apply Patch", move |repo| {
                         let files = if count == 1 { "1 file".to_owned() } else { format!("{count} files") };

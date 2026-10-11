@@ -73,6 +73,11 @@ impl ShelfView {
                     let path = selected.as_deref().and_then(|id| id.strip_prefix(FILE_PREFIX)).map(str::to_owned);
                     if let (Some(path), Some(shelf)) = (path, this.current()) {
                         if !shelf.commit.is_empty() {
+                            let shelf = shelf.clone();
+                            // The shelf's root becomes the active one: the diff opens there.
+                            if let Some(root) = this.owner_repository(cx).map(|r| r.root().to_path_buf()) {
+                                this.model.update(cx, |m, cx| m.focus_root_at(&root, cx));
+                            }
                             let old_path = this.old_paths.get(&path).cloned();
                             cx.emit(ShelfEvent::OpenDiff(DiffSource::Between {
                                 old: shelf.base.clone(),
@@ -166,11 +171,6 @@ impl ShelfView {
             return;
         };
         let Some(repository) = self.owner_repository(cx) else { return };
-        // Its root becomes the active one: its diffs open there.
-        if self.roots.len() > 1 {
-            let root = repository.root().to_path_buf();
-            self.model.update(cx, |m, cx| m.focus_root_at(&root, cx));
-        }
         self._load = Some(cx.spawn(async move |this, cx| {
             let changes = cx
                 .background_spawn(async move { patch::shelf_files(&repository, &shelf).unwrap_or_default() })

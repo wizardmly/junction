@@ -434,9 +434,11 @@ impl Render for RemotesView {
 }
 
 pub fn manage_remotes(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
-    let view = cx.new(|cx| RemotesView::new(model, window, cx));
-    window.open_dialog(cx, move |dialog, _, _| {
-        dialog.title("Git Remotes").w(px(620.)).child(view.clone()).footer(
+    let view = cx.new(|cx| RemotesView::new(model.clone(), window, cx));
+    window.open_dialog(cx, move |dialog, _, cx| {
+        // A multi-root project: each root's remotes, picked by Git Root.
+        let root_row = crate::ui::dialogs::git_root_row(&model, manage_remotes, cx);
+        dialog.title("Git Remotes").w(px(620.)).child(gpui_kit::component::v_flex().gap_3().children(root_row).child(view.clone())).footer(
             gpui_kit::component::dialog::DialogFooter::new()
                 .child(gpui_kit::component::dialog::DialogClose::new().child(Button::new("remotes-close").label("Close").primary())),
         )
