@@ -192,7 +192,8 @@ impl ShelfView {
     /// in (an existing one or a new name) and whether to remove them from the shelf.
     fn unshelve_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(shelf) = self.current().cloned() else { return };
-        let Some(repository) = self.owner_repository(cx) else { return };
+        // Changelists live in the project's store (the Commit window's), whichever root shelved.
+        let Some(repository) = self.model.read(cx).project_repository().cloned().or_else(|| self.owner_repository(cx)) else { return };
         let lists = Changelists::load(&repository);
         let names: Vec<String> = lists.lists.iter().map(|l| l.name.clone()).collect();
         let selected = Rc::new(RefCell::new(lists.active.clone()));
@@ -263,16 +264,22 @@ impl ShelfView {
     /// Unshelves `shelf`, filing its files into `changelist` when given.
     fn unshelve_to(&mut self, shelf: Shelf, keep: bool, changelist: Option<String>, cx: &mut Context<Self>) {
         let Some(repository) = self.owner_repository(cx) else { return };
+        // Changelists hold project paths in the project's store.
+        let project = self.model.read(cx).project_repository().cloned().unwrap_or_else(|| repository.clone());
+        let prefix = self.model.read(cx).prefix_of(repository.root());
         self.model.update(cx, |model, cx| {
             model.run_operation_in(repository, "Unshelve", move |repo| {
                 let keep = keep || shelf.deleted;
                 let outcome = patch::unshelve(repo, &shelf, None, keep)?;
                 if let Some(target) = changelist {
-                    let files: Vec<String> = patch::shelf_files(repo, &shelf)?.into_iter().map(|f| f.path).collect();
-                    let mut lists = Changelists::load(repo);
+                    let files: Vec<String> = patch::shelf_files(repo, &shelf)?
+                        .into_iter()
+                        .map(|f| if prefix.is_empty() { f.path } else { format!("{prefix}/{}", f.path) })
+                        .collect();
+                    let mut lists = Changelists::load(&project);
                     lists.add(&target, "", false);
                     lists.move_files(&files, &target);
-                    lists.save(repo);
+                    lists.save(&project);
                 }
                 Ok(match outcome {
                     ApplyOutcome::Clean => format!("Unshelved \u{201c}{}\u{201d}", shelf.name),

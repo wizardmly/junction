@@ -166,10 +166,11 @@ impl StashView {
         let model = self.model.clone();
         // (The selected stash's root, in a multi-root project.)
         let Some(repository) = self.owner(cx) else { return };
-        let count = self.owners.iter().filter(|(r, _)| r.root() == repository.root()).count().max(self.stashes.len().min(1));
+        let count = if self.owners.is_empty() { self.stashes.len() } else { self.owners.iter().filter(|(r, _)| r.root() == repository.root()).count() };
+        let stashes = if count == 1 { "the stash".to_owned() } else { format!("all {count} stashes") };
         dialogs::confirm(
             "Clear Stashes",
-            format!("Do you want to remove all {count} stashes? This can't be undone."),
+            format!("Do you want to remove {stashes}? This can't be undone."),
             "Clear",
             move |cx| {
                 let repository = repository.clone();
@@ -267,7 +268,13 @@ impl Render for StashView {
                                 this.drop_stash(window, cx)
                             })
                         }))
-                        .item(PopupMenuItem::new("Clear…").on_click(move |_, window, cx| c.update(cx, |this, cx| this.clear(window, cx))))
+                        .item(PopupMenuItem::new("Clear…").on_click(move |_, window, cx| {
+                            c.update(cx, |this, cx| {
+                                // The right-clicked stash's repository.
+                                this.selected = Some(ix);
+                                this.clear(window, cx)
+                            })
+                        }))
                     })
                     .child(Icon::new(icons::VCS_SHELVE).small().text_color(palette.text_secondary))
                     .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(stash.message.clone()))

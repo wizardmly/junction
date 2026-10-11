@@ -270,7 +270,11 @@ impl DiffView {
     }
 
     pub fn show(&mut self, repository: Repository, source: DiffSource, cx: &mut Context<Self>) {
-        if self.source.as_ref() == Some(&source) {
+        // The same diff again: a local one is read again (the file may have
+        // changed since), a revision diff stays as it is.
+        let local = matches!(source, DiffSource::WorkingTree { .. } | DiffSource::Staged { .. } | DiffSource::Unstaged { .. });
+        let same_repo = self.repository.as_ref().is_some_and(|r| r.root() == repository.root());
+        if self.source.as_ref() == Some(&source) && same_repo && !local {
             return;
         }
         self.flush_save();

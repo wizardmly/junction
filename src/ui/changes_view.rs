@@ -43,6 +43,8 @@ struct Comparison {
     error: Option<String>,
     /// The repository compared (multi-root: the one active when it opened).
     root: Option<std::path::PathBuf>,
+    /// Multi-root: each listed (project) path's repository and own path.
+    owners: HashMap<String, (std::path::PathBuf, String)>,
 }
 
 impl Comparison {
@@ -90,8 +92,8 @@ impl ChangesView {
             if selected != this.last_selection {
                 this.last_selection = selected.clone();
                 // Selecting a file previews its diff, as IntelliJ does.
-                if let Some(source) = selected.and_then(|id| this.diff_source(&id)) {
-                    this.focus_root(cx);
+                if let Some(source) = selected.as_ref().and_then(|id| this.diff_source(id)) {
+                    this.focus_root_of(selected.as_ref().and_then(|id| id.strip_prefix(FILE_PREFIX)), cx);
                     cx.emit(ChangesEvent::OpenDiff(source));
                 }
             }
@@ -123,7 +125,7 @@ impl ChangesView {
             }
             None => {
                 let root = self.model.read(cx).repository().map(|r| r.root().to_path_buf());
-                self.tabs.push(Comparison { old, new, files: Vec::new(), error: None, root });
+                self.tabs.push(Comparison { old, new, files: Vec::new(), error: None, root, owners: HashMap::new() });
                 self.active = self.tabs.len() - 1;
                 self.reload(cx);
             }
@@ -139,16 +141,51 @@ impl ChangesView {
     /// is kept when nothing changed.
     fn load(&mut self, force: bool, cx: &mut Context<Self>) {
         let Some(repository) = self.repository(cx) else { return };
+        // Multi-root: every repository that has the compared revisions, its
+        // files under its folder, as IntelliJ lists all roots.
+        let states: Vec<(std::path::PathBuf, String, crate::git::Repository)> =
+            self.model.read(cx).root_states().iter().map(|s| (s.path.clone(), s.prefix.clone(), s.repository.clone())).collect();
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
-        let (files, error) = match crate::git::diff::changed_files(&repository, &tab.old, tab.new.as_deref()) {
-            Ok(files) => (files, None),
-            Err(error) => (Vec::new(), Some(error.to_string())),
+        let mut owners = HashMap::new();
+        let (files, error) = if states.len() > 1 {
+            let has = |repo: &crate::git::Repository, rev: &str| repo.run(["rev-parse", "--verify", "-q", &format!("{rev}^{{commit}}")]).is_ok();
+            let mut files = Vec::new();
+            let mut error = None;
+            let mut any = false;
+            for (root, prefix, repo) in &states {
+                if !has(repo, &tab.old) || tab.new.as_deref().is_some_and(|n| !has(repo, n)) {
+                    continue;
+                }
+                any = true;
+                let join = |p: &str| if prefix.is_empty() { p.to_owned() } else { format!("{prefix}/{p}") };
+                match crate::git::diff::changed_files(repo, &tab.old, tab.new.as_deref()) {
+                    Ok(changes) => {
+                        for change in changes {
+                            let path = join(&change.path);
+                            owners.insert(path.clone(), (root.clone(), change.path.clone()));
+                            files.push(crate::git::log::FileChange { old_path: change.old_path.as_deref().map(join), path, ..change });
+                        }
+                    }
+                    Err(e) => error = Some(e.to_string()),
+                }
+            }
+            if !any {
+                error = crate::git::diff::changed_files(&repository, &tab.old, tab.new.as_deref()).err().map(|e| e.to_string());
+            }
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+            (files, error)
+        } else {
+            match crate::git::diff::changed_files(&repository, &tab.old, tab.new.as_deref()) {
+                Ok(files) => (files, None),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            }
         };
         if !force && files == tab.files && error == tab.error {
             return;
         }
         tab.files = files;
         tab.error = error;
+        tab.owners = owners;
         self.rebuild(None, cx);
     }
 
@@ -165,10 +202,12 @@ impl ChangesView {
         }
         let paths = tab.files.iter().map(|f| f.path.clone());
         let children = if self.group_by_directory { common::file_tree(paths, "") } else { common::flat_file_list(paths, "") };
-        let root_name = self
-            .repository(cx)
+        let aggregated = !tab.owners.is_empty();
+        let root_name = if aggregated { self.model.read(cx).project_root() } else { None }
+            .map(|p| p.to_path_buf())
+            .or_else(|| self.repository(cx).map(|r| r.root().to_path_buf()))
             .as_ref()
-            .and_then(|r| r.root().file_name().map(|n| n.to_string_lossy().into_owned()))
+            .and_then(|r| r.file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_default();
         let mut root = TreeItem::new(ROOT_ID, root_name).expanded(true).children(children);
         if let Some(expand) = expanded {
@@ -196,10 +235,13 @@ impl ChangesView {
         }
     }
 
-    /// Makes the active tab's repository the active root, so diffs, patches
-    /// and Get act in it.
-    fn focus_root(&self, cx: &mut App) {
-        if let Some(root) = self.tabs.get(self.active).and_then(|t| t.root.clone()) {
+    /// Makes the repository holding `path` the active root, so diffs and
+    /// patches act in it: the repository of `path` (a project path of a multi-root
+    /// comparison), else the tab's own.
+    fn focus_root_of(&self, path: Option<&str>, cx: &mut App) {
+        let tab = self.tabs.get(self.active);
+        let owner = path.and_then(|p| tab?.owners.get(p)).map(|(root, _)| root.clone());
+        if let Some(root) = owner.or_else(|| tab.and_then(|t| t.root.clone())) {
             self.model.update(cx, |m, cx| m.focus_root_at(&root, cx));
         }
     }
@@ -208,7 +250,16 @@ impl ChangesView {
         let path = id.strip_prefix(FILE_PREFIX)?;
         let tab = self.tabs.get(self.active)?;
         let old_path = self.kinds.get(path).and_then(|(_, old)| old.clone());
-        Some(DiffSource::Between { old: tab.old.clone(), new: tab.new.clone(), path: path.to_owned(), old_path })
+        // Another root's file: its own paths (that root is focused first).
+        let (path, old_path) = match tab.owners.get(path) {
+            Some((_, own)) => {
+                let prefix = &path[..path.len() - own.len()];
+                let old_own = old_path.map(|o| o.strip_prefix(prefix).map(str::to_owned).unwrap_or(o));
+                (own.clone(), old_own)
+            }
+            None => (path.to_owned(), old_path),
+        };
+        Some(DiffSource::Between { old: tab.old.clone(), new: tab.new.clone(), path, old_path })
     }
 
     /// Files under the selected node: one file, a directory's, or all.
@@ -279,13 +330,34 @@ impl ChangesView {
             return;
         }
         let revision = tab.old.clone();
-        self.focus_root(cx);
-        let (restore, remove): (Vec<String>, Vec<String>) = files
-            .into_iter()
-            .partition(|p| !matches!(self.kinds.get(p), Some((FileChangeKind::Added | FileChangeKind::Copied, _))));
+        // Grouped by repository (multi-root), each with its own paths.
+        let mut groups: Vec<(Option<std::path::PathBuf>, Vec<String>, Vec<String>)> = Vec::new();
+        for path in files {
+            let added = matches!(self.kinds.get(&path), Some((FileChangeKind::Added | FileChangeKind::Copied, _)));
+            let (root, own) = match tab.owners.get(&path) {
+                Some((root, own)) => (Some(root.clone()), own.clone()),
+                None => (tab.root.clone(), path),
+            };
+            let ix = match groups.iter().position(|g| g.0 == root) {
+                Some(ix) => ix,
+                None => {
+                    groups.push((root, Vec::new(), Vec::new()));
+                    groups.len() - 1
+                }
+            };
+            if added { groups[ix].2.push(own) } else { groups[ix].1.push(own) }
+        }
         let entity = cx.entity();
-        self.model.update(cx, |model, cx| {
-            model.run_operation(
+        for (root, restore, remove) in groups {
+            let repository = {
+                let model = self.model.read(cx);
+                root.as_ref().and_then(|r| model.root_states().iter().find(|s| s.path == *r).map(|s| s.repository.clone())).or_else(|| model.repository().cloned())
+            };
+            let Some(repository) = repository else { continue };
+            let revision = revision.clone();
+            self.model.update(cx, |model, cx| {
+            model.run_operation_in(
+                repository,
                 "Get from Revision",
                 move |repo| {
                     if !restore.is_empty() {
@@ -302,7 +374,8 @@ impl ChangesView {
                 },
                 cx,
             )
-        });
+            });
+        }
         // The operation runs in the background; refresh once it has had time.
         cx.spawn(async move |_, cx| {
             cx.background_executor().timer(std::time::Duration::from_millis(600)).await;
@@ -318,14 +391,25 @@ impl ChangesView {
         let files = this.files_of(id);
         let source = files.first().and_then(|f| this.diff_source(&format!("{FILE_PREFIX}{f}")));
         let local = tab.new.is_none();
-        let patch = crate::ui::patch_dialogs::PatchSource::Between { old: tab.old.clone(), new: tab.new.clone(), paths: files.clone() };
+        // A patch is of one repository: the first file's, with its own paths.
+        let first_root = files.first().and_then(|f| tab.owners.get(f)).map(|(root, _)| root.clone());
+        let patch_paths: Vec<String> = files
+            .iter()
+            .filter_map(|f| match tab.owners.get(f) {
+                Some((root, own)) => (Some(root) == first_root.as_ref()).then(|| own.clone()),
+                None => Some(f.clone()),
+            })
+            .collect();
+        let patch = crate::ui::patch_dialogs::PatchSource::Between { old: tab.old.clone(), new: tab.new.clone(), paths: patch_paths };
+        let first = files.first().cloned();
+        let (f_diff, f_tab, f_patch) = (first.clone(), first.clone(), first);
         let model = this.model.clone();
         let (e_diff, e_tab, e_get, e_patch) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
         let (s_diff, s_tab) = (source.clone(), source.clone());
         menu.item(entry("Show Diff", "Ctrl+D").icon(Icon::new(icons::VCS_DIFF)).disabled(source.is_none()).on_click(move |_, _, cx| {
             if let Some(source) = s_diff.clone() {
                 e_diff.update(cx, |this, cx| {
-                    this.focus_root(cx);
+                    this.focus_root_of(f_diff.as_deref(), cx);
                     cx.emit(ChangesEvent::OpenDiff(source))
                 })
             }
@@ -333,13 +417,13 @@ impl ChangesView {
         .item(entry("Show Diff in a New Tab", "").icon(Icon::new(icons::VCS_DIFF)).disabled(source.is_none()).on_click(move |_, _, cx| {
             if let Some(source) = s_tab.clone() {
                 e_tab.update(cx, |this, cx| {
-                    this.focus_root(cx);
+                    this.focus_root_of(f_tab.as_deref(), cx);
                     cx.emit(ChangesEvent::OpenDiff(source))
                 })
             }
         }))
         .item(entry("Create Patch…", "").icon(Icon::new(icons::ADD)).disabled(files.is_empty()).on_click(move |_, window, cx| {
-            e_patch.update(cx, |this, cx| this.focus_root(cx));
+            e_patch.update(cx, |this, cx| this.focus_root_of(f_patch.as_deref(), cx));
             crate::ui::patch_dialogs::create_patch(model.clone(), patch.clone(), window, cx)
         }))
         .item(entry("Get", "").icon(Icon::new(icons::DOWNLOAD)).disabled(!local || files.is_empty()).on_click(move |_, _, cx| {
@@ -492,7 +576,7 @@ impl Render for ChangesView {
                                     if let Some(path) = open_path.clone() {
                                         open_entity.update(cx, |this, cx| {
                                             if let Some(source) = this.diff_source(&format!("{FILE_PREFIX}{path}")) {
-                                                this.focus_root(cx);
+                                                this.focus_root_of(Some(&path), cx);
                                                 cx.emit(ChangesEvent::OpenDiff(source));
                                             }
                                         });
