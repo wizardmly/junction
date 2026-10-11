@@ -14,11 +14,21 @@ const MAX_DEPTH: usize = 3;
 
 /// The project's Directory Mappings, kept in `<gitdir>/junction/roots` as
 /// `+path` (registered) and `-path` (ignored, not offered again) lines,
-/// paths relative to the project.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// paths relative to the project, and `auto=0` when "Enable automatic
+/// mapping detection" is off.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mappings {
     pub added: Vec<PathBuf>,
     pub removed: Vec<PathBuf>,
+    /// IntelliJ's "Enable automatic mapping detection": nested repositories
+    /// become roots by themselves; off, they're offered in a balloon.
+    pub auto: bool,
+}
+
+impl Default for Mappings {
+    fn default() -> Self {
+        Mappings { added: Vec::new(), removed: Vec::new(), auto: true }
+    }
 }
 
 /// Where a project's mappings live: in its repository, or (a folder that
@@ -44,6 +54,8 @@ pub fn load_mappings(project: &Path) -> Mappings {
             mappings.added.push(PathBuf::from(p));
         } else if let Some(p) = line.strip_prefix('-') {
             mappings.removed.push(PathBuf::from(p));
+        } else if line == "auto=0" {
+            mappings.auto = false;
         }
     }
     mappings
@@ -60,6 +72,9 @@ pub fn save_mappings(project: &Path, mappings: &Mappings) -> Result<()> {
     }
     for p in &mappings.removed {
         text.push_str(&format!("-{}\n", p.display()));
+    }
+    if !mappings.auto {
+        text.push_str("auto=0\n");
     }
     std::fs::write(path, text)?;
     Ok(())
@@ -91,19 +106,21 @@ pub fn scan_nested(root: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Every registered root of the project: the project's own repository
-/// first (unless the project is a folder that only holds repositories),
-/// then the mapped ones. As in IntelliJ, a nested repository is used only
-/// once registered (see `unregistered`); a folder of repositories opened
-/// for the first time registers all of them.
+/// Every root of the project: the project's own repository first (unless
+/// the project is a folder that only holds repositories), then the nested
+/// ones automatic detection finds (unless removed), then mapped ones.
+/// Mapped folders that aren't repositories are left out (see `invalid`).
 pub fn detect(project: &Path) -> Vec<PathBuf> {
     let root = project.to_path_buf();
-    let mut mappings = load_mappings(project);
-    if !root.join(".git").exists() && mappings_file(project).is_some_and(|f| !f.exists()) {
-        mappings.added = scan_nested(&root).iter().filter_map(|p| p.strip_prefix(&root).ok().map(PathBuf::from)).collect();
-        let _ = save_mappings(project, &mappings);
-    }
+    let mappings = load_mappings(project);
     let mut roots = if root.join(".git").exists() { vec![root.clone()] } else { Vec::new() };
+    if mappings.auto {
+        for p in scan_nested(&root) {
+            if !mappings.removed.iter().any(|r| root.join(r) == p) && !roots.contains(&p) {
+                roots.push(p);
+            }
+        }
+    }
     for added in &mappings.added {
         let p = if added.is_absolute() { added.clone() } else { root.join(added) };
         if p.join(".git").exists() && !roots.contains(&p) {
@@ -113,12 +130,33 @@ pub fn detect(project: &Path) -> Vec<PathBuf> {
     roots
 }
 
+/// Mapped folders that aren't Git repositories (any more): IntelliJ's
+/// "VCS root configuration problems" balloon.
+pub fn invalid(project: &Path) -> Vec<PathBuf> {
+    load_mappings(project)
+        .added
+        .iter()
+        .map(|p| if p.is_absolute() { p.clone() } else { project.join(p) })
+        .filter(|p| !p.join(".git").exists())
+        .collect()
+}
+
 /// Repositories under the project that are neither registered nor ignored:
 /// IntelliJ's "Unregistered VCS roots detected" balloon offers to add them.
 pub fn unregistered(project: &Path) -> Vec<PathBuf> {
     let mappings = load_mappings(project);
+    if mappings.auto {
+        return Vec::new();
+    }
     let known = |p: &Path| mappings.added.iter().chain(&mappings.removed).any(|r| project.join(r) == p);
     scan_nested(project).into_iter().filter(|p| !known(p)).collect()
+}
+
+/// Turns "Enable automatic mapping detection" on or off.
+pub fn set_auto(project: &Path, auto: bool) -> Result<()> {
+    let mut mappings = load_mappings(project);
+    mappings.auto = auto;
+    save_mappings(project, &mappings)
 }
 
 /// Registers roots (Add Roots), or stops offering them (Ignore).
@@ -159,8 +197,13 @@ mod tests {
         assert_eq!(nested, vec![dir.join("libs/a"), dir.join("libs/b")]);
 
         let repo = Repository::discover(&dir, crate::git::GitConsole::default()).unwrap();
-        save_mappings(repo.root(), &Mappings { added: vec![PathBuf::from("deep/one/two/three")], removed: vec![PathBuf::from("libs/b")] }).unwrap();
-        // Nested repositories are used once registered; the rest are offered.
+        save_mappings(repo.root(), &Mappings { added: vec![PathBuf::from("deep/one/two/three"), PathBuf::from("gone")], removed: vec![PathBuf::from("libs/b")], auto: true }).unwrap();
+        // Automatic detection: nested repositories are roots unless removed.
+        assert_eq!(detect(repo.root()), vec![repo.root().to_path_buf(), repo.root().join("libs/a"), repo.root().join("deep/one/two/three")]);
+        assert!(unregistered(repo.root()).is_empty());
+        assert_eq!(invalid(repo.root()), vec![repo.root().join("gone")]);
+        // Off: they're used once registered; the rest are offered.
+        set_auto(repo.root(), false).unwrap();
         assert_eq!(detect(repo.root()), vec![repo.root().to_path_buf(), repo.root().join("deep/one/two/three")]);
         assert_eq!(unregistered(repo.root()), vec![repo.root().join("libs/a")]);
         register(repo.root(), &[repo.root().join("libs/a")], true).unwrap();
@@ -180,7 +223,6 @@ mod tests {
             std::process::Command::new("git").args(["init", "-q"]).current_dir(&p).output().unwrap();
         }
         std::fs::create_dir_all(dir.join("plain")).unwrap();
-        // Opened the first time: every repository is registered.
         assert_eq!(detect(&dir), vec![dir.join("app"), dir.join("lib"), dir.join("docs/site")]);
         register(&dir, &[dir.join("lib")], false).unwrap();
         assert_eq!(detect(&dir), vec![dir.join("app"), dir.join("docs/site")]);

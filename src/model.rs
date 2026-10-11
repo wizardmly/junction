@@ -55,6 +55,9 @@ pub enum RepoEvent {
     /// Repositories under the project that aren't registered roots: IntelliJ's
     /// "Unregistered VCS roots detected" balloon (Add Roots / Configure / Ignore).
     UnregisteredRoots(Vec<PathBuf>),
+    /// Mapped folders that aren't Git repositories: IntelliJ's "VCS root
+    /// configuration problems" balloon (Configure…).
+    InvalidRoots(Vec<PathBuf>),
     /// Show the files that differ between two revisions (the working tree when `new` is `None`).
     Compare { old: String, new: Option<String> },
     /// Open another Log tab (File History, Compare with Current, …).
@@ -367,6 +370,8 @@ struct Snapshot {
     submodules: HashSet<String>,
     /// Repositories found under the project but not registered (scanned with the roots).
     unregistered: Vec<PathBuf>,
+    /// Mapped folders that aren't repositories.
+    invalid: Vec<PathBuf>,
 }
 
 impl RepoModel {
@@ -1076,9 +1081,9 @@ impl RepoModel {
         self._reload_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let unregistered = match project_root.as_deref() {
-                        Some(project) if known_roots.is_empty() => git::roots::unregistered(project),
-                        _ => Vec::new(),
+                    let (unregistered, invalid) = match project_root.as_deref() {
+                        Some(project) if known_roots.is_empty() => (git::roots::unregistered(project), git::roots::invalid(project)),
+                        _ => (Vec::new(), Vec::new()),
                     };
                     let paths = if known_roots.is_empty() {
                         let mut paths = project_root.as_deref().map(git::roots::detect).unwrap_or_default();
@@ -1133,7 +1138,7 @@ impl RepoModel {
                     } else {
                         root_states.iter().map(|s| RootInfo { path: s.path.clone(), branch: s.refs.current_branch.clone() }).collect()
                     };
-                    anyhow::Ok((Snapshot { roots, root_states, web, refs, log, status, state, submodules, unregistered }, repository, filter, sources))
+                    anyhow::Ok((Snapshot { roots, root_states, web, refs, log, status, state, submodules, unregistered, invalid }, repository, filter, sources))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -1169,8 +1174,13 @@ impl RepoModel {
                         this.web_repo = snapshot.web;
                         this.error = log_error;
                         this.keep_selection(cx);
-                        if !snapshot.unregistered.is_empty() && !std::mem::replace(&mut this.roots_offered, true) {
-                            cx.emit(RepoEvent::UnregisteredRoots(snapshot.unregistered));
+                        if (!snapshot.unregistered.is_empty() || !snapshot.invalid.is_empty()) && !std::mem::replace(&mut this.roots_offered, true) {
+                            if !snapshot.invalid.is_empty() {
+                                cx.emit(RepoEvent::InvalidRoots(snapshot.invalid));
+                            }
+                            if !snapshot.unregistered.is_empty() {
+                                cx.emit(RepoEvent::UnregisteredRoots(snapshot.unregistered));
+                            }
                         }
                     }
                     Err(error) => {

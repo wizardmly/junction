@@ -42,6 +42,9 @@ impl Workspace {
             this.tools.open(ToolWindow::Changes);
             cx.notify();
         }
+        if let RepoEvent::InvalidRoots(roots) = event {
+            this.report_invalid_roots(roots.clone(), window, cx);
+        }
         if let RepoEvent::UnregisteredRoots(roots) = event {
             this.offer_unregistered_roots(roots.clone(), window, cx);
         }
@@ -285,6 +288,35 @@ impl Workspace {
                     }))
                     .into_any_element()
             });
+        window.push_notification(notification, cx);
+    }
+
+    /// IntelliJ's "VCS root configuration problems": mapped folders that
+    /// aren't repositories, with Configure… (Directory Mappings).
+    fn report_invalid_roots(&mut self, roots: Vec<std::path::PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let model = self.model.clone();
+        let Some(project) = model.read(cx).project_root().map(|p| p.to_path_buf()) else { return };
+        let names: Vec<String> = roots.iter().map(|r| crate::git::roots::label(&project, r)).collect();
+        let message = if roots.len() == 1 {
+            format!("The directory {} is registered as a Git root, but no Git repositories were found there.", names[0])
+        } else {
+            format!("The following directories are registered as VCS roots, but they are not: {}", names.join(", "))
+        };
+        let notification = Notification::error(message).title("VCS root configuration problems").autohide(false).content(move |_, _, cx| {
+            let palette = cx.palette().clone();
+            let (note, model) = (cx.entity(), model.clone());
+            div()
+                .id("roots-problems-configure")
+                .text_sm()
+                .text_color(palette.link)
+                .cursor_pointer()
+                .child("Configure…")
+                .on_click(move |_, window, cx| {
+                    note.update(cx, |n, cx| n.dismiss(window, cx));
+                    crate::ui::mappings_dialog::directory_mappings(model.clone(), window, cx);
+                })
+                .into_any_element()
+        });
         window.push_notification(notification, cx);
     }
 }
