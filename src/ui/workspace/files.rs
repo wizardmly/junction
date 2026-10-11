@@ -242,6 +242,52 @@ impl Workspace {
         }
     }
 
+    /// Show Diff in a New Tab: the diff in a tab of its own, which later
+    /// previews don't replace.
+    pub(super) fn open_diff_in_new_tab(&mut self, source: crate::ui::diff_view::DiffSource, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((repository, source)) = self.route_diff(source, cx) else { return };
+        let view = cx.new(DiffView::new);
+        let subscriptions = vec![
+            cx.subscribe_in(&view, window, |this, diff, event: &crate::ui::navigate::OpenTarget, window, cx| {
+                let mut target = event.0.clone();
+                if let Some(root) = diff.read(cx).repository().map(|r| r.root().to_path_buf()) {
+                    target.path = this.model.read(cx).project_path(&root, &target.path);
+                }
+                this.go_to_target(target, window, cx)
+            }),
+            cx.subscribe(&view, |this, _, _: &crate::ui::diff_view::FilesChanged, cx| {
+                this.model.update(cx, |m, cx| m.reload(cx));
+            }),
+        ];
+        view.update(cx, |diff, cx| diff.show(repository, source, cx));
+        self.diff_tabs.push((view, subscriptions));
+        self.focus_group(0, cx);
+        self.front = Front::DiffTab(self.diff_tabs.len() - 1);
+        cx.notify();
+    }
+
+    /// A diff's repository: local changes have project paths, and in a
+    /// multi-root project open in the root that holds the file.
+    fn route_diff(&self, source: crate::ui::diff_view::DiffSource, cx: &gpui_kit::App) -> Option<(crate::git::Repository, crate::ui::diff_view::DiffSource)> {
+        use crate::ui::diff_view::DiffSource;
+        let mut repository = self.model.read(cx).repository().cloned()?;
+        let mut source = source;
+        if !self.model.read(cx).root_states().is_empty() {
+            if let DiffSource::WorkingTree { path, .. }
+            | DiffSource::Staged { path }
+            | DiffSource::Unstaged { path }
+            | DiffSource::Files { path, .. }
+            | DiffSource::Clipboard { path, .. } = &mut source
+            {
+                if let Some((root, own)) = self.model.read(cx).route(path) {
+                    repository = root;
+                    *path = own;
+                }
+            }
+        }
+        Some((repository, source))
+    }
+
     pub(super) fn open_diff(&mut self, source: crate::ui::diff_view::DiffSource, cx: &mut Context<Self>) {
         use crate::ui::diff_view::DiffSource;
         let Some(mut repository) = self.model.read(cx).repository().cloned() else { return };

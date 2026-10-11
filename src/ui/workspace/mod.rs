@@ -215,6 +215,8 @@ pub struct Workspace {
     stash: Entity<StashView>,
     shelf: Entity<ShelfView>,
     diff: Entity<DiffView>,
+    /// Show Diff in a New Tab: diffs kept in their own tabs.
+    diff_tabs: Vec<(Entity<DiffView>, Vec<Subscription>)>,
     branches_popup: Entity<BranchesPopup>,
     worktrees: Entity<crate::ui::worktree_view::WorktreeView>,
     submodules: Entity<crate::ui::submodule_view::SubmoduleView>,
@@ -334,6 +336,7 @@ impl Workspace {
                 use crate::ui::changes_view::ChangesEvent;
                 match event {
                     ChangesEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
+                    ChangesEvent::OpenDiffInNewTab(source) => this.open_diff_in_new_tab(source.clone(), _window, cx),
                     ChangesEvent::Closed | ChangesEvent::Hide => {
                         this.tools.hide(ToolWindow::Changes);
                         cx.notify();
@@ -346,6 +349,7 @@ impl Workspace {
                     this.diff.update(cx, |diff, _| diff.set_file_order(order));
                     this.open_diff(source.clone(), cx)
                 }
+                CommitEvent::OpenDiffInNewTab(source) => this.open_diff_in_new_tab(source.clone(), window, cx),
                 CommitEvent::RefreshDiff => {
                     let order = commit.read(cx).file_order().to_vec();
                     this.diff.update(cx, |diff, cx| {
@@ -449,6 +453,7 @@ impl Workspace {
             stash,
             shelf,
             diff,
+            diff_tabs: Vec::new(),
             branches_popup,
             worktrees,
             submodules,

@@ -27,6 +27,7 @@ impl Workspace {
                         match self.front {
                             Front::Editor(ix) if ix < self.editors.len() => el.child(crate::ui::common::cached(&self.editors[ix].view)),
                             _ if group != 0 => el,
+                            Front::DiffTab(ix) if ix < self.diff_tabs.len() => el.child(crate::ui::common::cached(&self.diff_tabs[ix].0)),
                             Front::Timeline if self.timeline.is_some() => el.child(crate::ui::common::cached(self.timeline.as_ref().unwrap())),
                             Front::Merge if self.merge.is_some() => el.child(crate::ui::common::cached(&self.merge.as_ref().unwrap().0)),
                             _ => el.child(crate::ui::common::cached(&self.diff)),

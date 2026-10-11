@@ -178,7 +178,7 @@ pub(super) fn commit_menu(
         }))
         .item(entry("Show Diff in a New Tab", "").icon(Icon::new(icons::VCS_DIFF)).disabled(d_tab.is_none()).on_click(move |_, _, cx| {
             if let Some(source) = d_tab.clone() {
-                e_tab.update(cx, |_, cx| cx.emit(CommitEvent::OpenDiff(source)))
+                e_tab.update(cx, |_, cx| cx.emit(CommitEvent::OpenDiffInNewTab(source)))
             }
         }))
         .item(entry("Jump to Source", "F4").icon(Icon::new(icons::EDIT)).disabled(first.is_none()).on_click(move |_, _, cx| {

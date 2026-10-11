@@ -41,6 +41,7 @@ mod menu;
 
 pub enum CommitEvent {
     OpenDiff(DiffSource),
+    OpenDiffInNewTab(DiffSource),
     /// "Commit and Push…" committed; show the Push dialog next.
     OpenPush,
     /// A commit succeeded (closes the modal Commit Changes dialog).

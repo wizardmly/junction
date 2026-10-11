@@ -37,6 +37,8 @@ pub(super) struct EditorTab {
 pub(super) enum Front {
     Editor(usize),
     Diff,
+    /// Show Diff in a New Tab: a diff that stays while the preview changes.
+    DiffTab(usize),
     Merge,
     Timeline,
 }
@@ -187,6 +189,7 @@ impl Workspace {
         if self.diff.read(cx).title().is_some() {
             tabs.push(Front::Diff);
         }
+        tabs.extend((0..self.diff_tabs.len()).map(Front::DiffTab));
         if self.merge.is_some() {
             tabs.push(Front::Merge);
         }
@@ -375,6 +378,7 @@ impl Workspace {
             Front::Editor(ix) => ix < self.editors.len(),
             _ if self.active_group != 0 => self.editors.is_empty(),
             Front::Diff => self.diff.read(cx).title().is_some() || self.editors.is_empty(),
+            Front::DiffTab(ix) => ix < self.diff_tabs.len(),
             Front::Merge => self.merge.is_some(),
             Front::Timeline => self.timeline.is_some(),
         };
@@ -392,6 +396,16 @@ impl Workspace {
         match front {
             Front::Editor(ix) => return self.close_tabs(vec![ix], cx),
             Front::Diff => self.diff.update(cx, |diff, cx| diff.clear(cx)),
+            Front::DiffTab(ix) => {
+                if ix < self.diff_tabs.len() {
+                    self.diff_tabs.remove(ix);
+                }
+                if let Front::DiffTab(shown) = self.front {
+                    if shown > ix {
+                        self.front = Front::DiffTab(shown - 1);
+                    }
+                }
+            }
             Front::Merge => self.merge = None,
             Front::Timeline => self.timeline = None,
         }
@@ -497,6 +511,11 @@ impl Workspace {
                 (title, common::file_icon(path), Some(path.to_owned()))
             }
             Front::Diff => (self.diff.read(cx).title().unwrap_or_default(), gpui_kit::component::Icon::from(icons::VCS_DIFF), None),
+            Front::DiffTab(ix) => (
+                self.diff_tabs.get(ix).and_then(|(d, _)| d.read(cx).title()).unwrap_or_default(),
+                gpui_kit::component::Icon::from(icons::VCS_DIFF),
+                None,
+            ),
             Front::Merge => {
                 let path = self.merge.as_ref().map(|(m, _)| m.read(cx).path().to_owned()).unwrap_or_default();
                 (format!("Merge: {}", path.rsplit(['/', '\\']).next().unwrap_or(&path)), gpui_kit::component::Icon::from(icons::VCS_MERGE), None)

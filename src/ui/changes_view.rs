@@ -30,6 +30,7 @@ const ROOT_ID: &str = "r:";
 
 pub enum ChangesEvent {
     OpenDiff(DiffSource),
+    OpenDiffInNewTab(DiffSource),
     /// The last tab was closed: the tool window goes away.
     Closed,
     Hide,
@@ -418,7 +419,7 @@ impl ChangesView {
             if let Some(source) = s_tab.clone() {
                 e_tab.update(cx, |this, cx| {
                     this.focus_root_of(f_tab.as_deref(), cx);
-                    cx.emit(ChangesEvent::OpenDiff(source))
+                    cx.emit(ChangesEvent::OpenDiffInNewTab(source))
                 })
             }
         }))
