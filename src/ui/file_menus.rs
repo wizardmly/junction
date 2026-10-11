@@ -46,6 +46,8 @@ pub enum FileAction {
     Unstash,
     /// Files were created, renamed or deleted on disk.
     FilesChanged,
+    /// A file or folder moved (Rename, Cut and Paste), project-relative paths.
+    Moved { from: String, to: String },
     /// Find / Replace in Files scoped to a project-relative folder.
     FindInPath { dir: String, replace: bool },
 }
@@ -396,7 +398,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
             let (abs, name) = (t.full().to_string_lossy().into_owned(), t.name());
             m.item(entry("Absolute Path", "Ctrl+Shift+C").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(abs.clone()))))
                 .item(entry("File Name", "").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone()))))
-                .item(entry("Path From Repository Root", "").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(rel.clone()))))
+                .item(entry("Path From Repository Root", "").disabled(rel.is_empty()).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(rel.clone()))))
         })
         .item(entry("Paste", "Ctrl+V").icon(Icon::new(icons::PASTE)).disabled(!has_clipboard).on_click(move |_, window, cx| paste(&t_paste, window, cx)))
         .separator()
@@ -532,8 +534,40 @@ fn rename(target: &ProjectTarget, window: &mut Window, cx: &mut App) {
             Some((repo, own)) => crate::git::ops::rename_path(Some(repo), own, &from, &to),
             None => crate::git::ops::rename_path(model.read(cx).repository(), &path, &from, &to),
         }
-        actions(FileAction::FilesChanged, window, cx);
+        let renamed = std::path::Path::new(&path).with_file_name(&name).to_string_lossy().replace('\\', "/");
+        actions(FileAction::Moved { from: path.clone(), to: renamed }, window, cx);
     }, window, cx);
+}
+
+/// The Project view's keyboard shortcuts for the menu's items (the ones the
+/// menu shows on the right), on the selected row; true when one ran.
+pub fn project_shortcut(target: &ProjectTarget, keystroke: &gpui_kit::Keystroke, window: &mut Window, cx: &mut App) -> bool {
+    let m = keystroke.modifiers;
+    let ctrl = m.control || m.platform;
+    let root = target.path.is_empty();
+    let full = target.full().to_string_lossy().into_owned();
+    match (ctrl, m.alt, m.shift, keystroke.key.as_str()) {
+        (true, false, false, "x") if !root => {
+            *target.clipboard.borrow_mut() = Some((vec![target.full()], true));
+            cx.write_to_clipboard(ClipboardItem::new_string(full));
+        }
+        (true, false, false, "c") => {
+            *target.clipboard.borrow_mut() = Some((vec![target.full()], false));
+            cx.write_to_clipboard(ClipboardItem::new_string(full));
+        }
+        (true, false, false, "v") if target.clipboard.borrow().is_some() => paste(target, window, cx),
+        (true, false, true, "c") => cx.write_to_clipboard(ClipboardItem::new_string(full)),
+        (false, false, true, "f6") if !root => rename(target, window, cx),
+        (false, _, false, "delete") if !root => delete_files(target.root.clone(), vec![target.path.clone()], target.actions.clone(), window, cx),
+        (false, false, true, "enter") if !target.is_dir => (target.actions)(FileAction::OpenInSplit(target.path.clone()), window, cx),
+        (true, false, true, "f" | "r") => {
+            let dir = if target.is_dir { target.path.clone() } else { Path::new(&target.path).parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default() };
+            (target.actions)(FileAction::FindInPath { dir, replace: keystroke.key == "r" }, window, cx)
+        }
+        (true, false, false, "d") if !target.is_dir => (target.actions)(FileAction::CompareWithFile(target.path.clone()), window, cx),
+        _ => return false,
+    }
+    true
 }
 
 fn paste(target: &ProjectTarget, window: &mut Window, cx: &mut App) {
@@ -548,7 +582,28 @@ fn paste(target: &ProjectTarget, window: &mut Window, cx: &mut App) {
         if dest == *source || dest.starts_with(source) {
             continue;
         }
-        let _ = if cut { std::fs::rename(source, &dest) } else { copy_recursive(source, &dest) };
+        if cut {
+            let relative = |p: &Path| p.strip_prefix(&target.root).ok().map(|r| r.to_string_lossy().replace('\\', "/"));
+            let (Some(from), Some(to)) = (relative(source), relative(&dest)) else {
+                let _ = std::fs::rename(source, &dest);
+                continue;
+            };
+            // A tracked file moves with `git mv` (one rename, as after Rename);
+            // within its repository only.
+            let model = target.model.read(cx);
+            match (model.route(&from), model.route(&to)) {
+                (Some((repo, own)), Some((to_repo, _))) if repo.root() == to_repo.root() => crate::git::ops::rename_path(Some(&repo), &own, source, &dest),
+                _ => {
+                    let _ = std::fs::rename(source, &dest);
+                }
+            }
+            // Open tabs follow the moved file.
+            if dest.exists() {
+                (target.actions)(FileAction::Moved { from, to }, window, cx);
+            }
+        } else {
+            let _ = copy_recursive(source, &dest);
+        }
     }
     if cut {
         *target.clipboard.borrow_mut() = None;

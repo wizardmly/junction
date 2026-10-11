@@ -220,11 +220,21 @@ fn git_files(dir: &Path) -> Option<Vec<String>> {
         .output()
         .ok()
         .filter(|o| o.status.success())?;
+    // Files still in the index but gone from disk (deleted, moved away)
+    // aren't in the project any more.
+    let deleted: std::collections::HashSet<Vec<u8>> = crate::git::git_process()
+        .args(["ls-files", "-z", "--deleted"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| o.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(<[u8]>::to_vec).collect())
+        .unwrap_or_default();
     Some(
         output
             .stdout
             .split(|b| *b == 0)
-            .filter(|p| !p.is_empty() && !p.ends_with(b"/"))
+            .filter(|p| !p.is_empty() && !p.ends_with(b"/") && !deleted.contains(*p))
             .map(|p| String::from_utf8_lossy(p).into_owned())
             .collect(),
     )

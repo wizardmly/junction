@@ -147,6 +147,13 @@ impl Render for WorktreeView {
                         }
                         cx.notify();
                     }))
+                    .on_mouse_down(
+                        gpui_kit::MouseButton::Right,
+                        cx.listener(move |this, _, _, cx| {
+                            this.selected = Some(ix);
+                            cx.notify();
+                        }),
+                    )
                     .context_menu(move |menu, _, _| {
                         let (o, n, d) = (menu_entity.clone(), menu_entity.clone(), menu_entity.clone());
                         menu.item(PopupMenuItem::new("Open").disabled(is_current).on_click(move |_, _, cx| {

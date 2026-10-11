@@ -151,6 +151,49 @@ impl Workspace {
         cx.notify();
     }
 
+    /// A file or folder moved on disk (Rename, Cut and Paste): its open
+    /// tabs follow it, keeping their unsaved text and caret, as IntelliJ's do.
+    pub(super) fn retarget_tabs(&mut self, from: &str, to: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let moved = |path: &str| -> Option<String> {
+            if path == from {
+                Some(to.to_owned())
+            } else {
+                path.strip_prefix(from).filter(|rest| rest.starts_with('/')).map(|rest| format!("{to}{rest}"))
+            }
+        };
+        let groups = std::iter::once(&mut self.editors).chain(self.split.as_mut().map(|s| &mut s.editors));
+        let mut retargeted = Vec::new();
+        for (g, editors) in groups.enumerate() {
+            for (ix, tab) in editors.iter().enumerate() {
+                let e = tab.view.read(cx);
+                if let Some(path) = e.revision().is_none().then(|| moved(e.path())).flatten() {
+                    retargeted.push((g, ix, path));
+                }
+            }
+        }
+        for (g, ix, path) in retargeted {
+            let old = if g == 0 { self.editors[ix].view.clone() } else { self.split.as_ref().map(|s| s.editors[ix].view.clone()).expect("split") };
+            let (line, col) = old.read(cx).cursor(cx);
+            let unsaved = old.read(cx).is_dirty(cx).then(|| old.read(cx).text(cx));
+            let model = self.model.read(cx);
+            let Some((repository, own)) = model.route(&path).or_else(|| model.project_repository().cloned().map(|r| (r, path.clone()))) else { continue };
+            let view = cx.new(|cx| FileEditor::new(repository, own, path, None, window, cx));
+            let subscription = cx.subscribe_in(&view, window, Self::on_file_editor_event);
+            let index = self.code_index.clone();
+            view.update(cx, |editor, cx| {
+                editor.attach_index(index, cx);
+                if let Some(text) = unsaved {
+                    editor.set_text(text, window, cx);
+                }
+                editor.go_to(line, col, window, cx);
+            });
+            let tab = if g == 0 { &mut self.editors[ix] } else { &mut self.split.as_mut().expect("split").editors[ix] };
+            tab.view = view;
+            tab._subscription = subscription;
+        }
+        cx.notify();
+    }
+
     pub(super) fn toggle_project(&mut self, _: &ToggleProjectWindow, window: &mut Window, cx: &mut Context<Self>) {
         self.shortcut_tool(ToolWindow::Project, window, cx);
     }
@@ -231,6 +274,11 @@ impl Workspace {
             FileAction::Unstash => {
                 self.show_left_tab(LeftTab::Stash, window, cx);
             }
+            FileAction::Moved { from, to } => {
+                self.retarget_tabs(&from, &to, window, cx);
+                self.code_index.update(cx, |index, cx| index.refresh(cx));
+                self.model.update(cx, |m, cx| m.reload(cx));
+            }
             FileAction::FilesChanged => {
                 self.code_index.update(cx, |index, cx| index.refresh(cx));
                 self.model.update(cx, |m, cx| m.reload(cx));
@@ -245,6 +293,7 @@ impl Workspace {
     /// Show Diff in a New Tab: the diff in a tab of its own, which later
     /// previews don't replace.
     pub(super) fn open_diff_in_new_tab(&mut self, source: crate::ui::diff_view::DiffSource, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_before_diff(&source, cx);
         let Some((repository, source)) = self.route_diff(source, cx) else { return };
         let view = cx.new(DiffView::new);
         let subscriptions = vec![
@@ -288,8 +337,22 @@ impl Workspace {
         Some((repository, source))
     }
 
+    /// The local side of a diff is what the editor holds: unsaved text is
+    /// saved first (IntelliJ diffs the document itself).
+    fn save_before_diff(&mut self, source: &crate::ui::diff_view::DiffSource, cx: &mut Context<Self>) {
+        use crate::ui::diff_view::DiffSource;
+        let (DiffSource::WorkingTree { path, .. } | DiffSource::Unstaged { path } | DiffSource::Clipboard { path, .. }) = source else { return };
+        let views: Vec<_> = self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).collect();
+        for view in views {
+            if view.read(cx).revision().is_none() && view.read(cx).path() == path {
+                view.update(cx, |editor, cx| editor.save_now(cx));
+            }
+        }
+    }
+
     pub(super) fn open_diff(&mut self, source: crate::ui::diff_view::DiffSource, cx: &mut Context<Self>) {
         use crate::ui::diff_view::DiffSource;
+        self.save_before_diff(&source, cx);
         let Some(mut repository) = self.model.read(cx).repository().cloned() else { return };
         // Local changes have paths relative to the project: in a multi-root
         // project the diff opens in the root that holds the file.

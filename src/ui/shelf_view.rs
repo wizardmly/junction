@@ -397,6 +397,15 @@ impl ShelfView {
                     this.unshelve_dialog(window, cx);
                 }
             }))
+            // A right-click selects the row (and shows its files) first.
+            .on_mouse_down(gpui_kit::MouseButton::Right, {
+                let id = menu_id.clone();
+                cx.listener(move |this, _, _, cx| {
+                    if this.selected.as_deref() != Some(id.as_str()) {
+                        this.select(Some(id.clone()), cx);
+                    }
+                })
+            })
             .context_menu(move |menu, _, _| {
                 let entity = menu_entity.clone();
                 let id = menu_id.clone();

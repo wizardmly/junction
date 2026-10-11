@@ -927,6 +927,13 @@ impl ProjectView {
             cx.stop_propagation();
             return;
         }
+        // The context menu's shortcuts (Cut, Copy, Paste, Rename, Delete…).
+        if let Some(target) = row.as_ref().and_then(|row| self.target(row, cx)) {
+            if crate::ui::file_menus::project_shortcut(&target, k, window, cx) {
+                cx.stop_propagation();
+                return;
+            }
+        }
         let last = self.rows.len().saturating_sub(1);
         match k.key.as_str() {
             "down" => self.select_row(ix.map_or(0, |i| (i + 1).min(last)), cx),

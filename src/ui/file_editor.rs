@@ -609,6 +609,11 @@ impl FileEditor {
         &self.path
     }
 
+    /// Replaces the text (unsaved), e.g. a moved file's edits.
+    pub fn set_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.set_value(text, window, cx));
+    }
+
     /// The zoom that fits the image in the last laid-out viewer, 1 at most.
     fn fit_zoom(&self) -> f32 {
         let Some(image) = &self.image else { return 1. };
@@ -895,7 +900,7 @@ impl FileEditor {
         self.revision.as_deref()
     }
 
-    fn text(&self, cx: &gpui_kit::App) -> String {
+    pub fn text(&self, cx: &gpui_kit::App) -> String {
         self.state.read(cx).text().to_string()
     }
 

@@ -240,6 +240,15 @@ impl Render for StashView {
                     .when(selected, |el| el.bg(palette.selection))
                     .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
                     .on_click(cx.listener(move |this, _, _, cx| this.select(Some(ix), cx)))
+                    // A right-click selects the row (and shows its files) first.
+                    .on_mouse_down(
+                        gpui_kit::MouseButton::Right,
+                        cx.listener(move |this, _, _, cx| {
+                            if this.selected != Some(ix) {
+                                this.select(Some(ix), cx)
+                            }
+                        }),
+                    )
                     .context_menu(move |menu, _, _| {
                         let (a, p, d) = (menu_entity.clone(), menu_entity.clone(), menu_entity.clone());
                         let (u, c) = (menu_entity.clone(), menu_entity.clone());
