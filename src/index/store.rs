@@ -175,8 +175,7 @@ impl ProjectIndex {
             std::fs::remove_file(path.with_extension("json")).ok();
         }
         let cached = path
-            .and_then(|p| std::fs::File::open(p).ok())
-            .and_then(|file| bincode::deserialize_from::<_, ProjectIndex>(std::io::BufReader::with_capacity(1 << 20, file)).ok())
+            .and_then(|p| read_cache::<ProjectIndex>(&p, CACHE_VERSION))
             .filter(|index| index.version == CACHE_VERSION);
         let mut index = cached.unwrap_or_default();
         index.version = CACHE_VERSION;
@@ -398,6 +397,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejects_old_and_corrupt_caches() {
+        let path = std::env::temp_dir().join(format!("junction-cache-{}.bin", std::process::id()));
+        // A string's bytes where a length should be: read as a length they ask
+        // for exabytes, which used to abort at startup.
+        let mut bytes = CACHE_VERSION.to_le_bytes().to_vec();
+        bytes.extend_from_slice(b"keystore/release.jks");
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(read_cache::<ProjectIndex>(&path, CACHE_VERSION).is_none());
+        bytes[..4].copy_from_slice(&3u32.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(read_cache::<ProjectIndex>(&path, CACHE_VERSION).is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn indexes_incrementally() {
         let dir = std::env::temp_dir().join(format!("junction-index-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
@@ -429,4 +443,28 @@ mod tests {
         assert_eq!(reloaded.symbols_named("beta").count(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
+}
+
+/// Reads a bincode cache whose first field is its `version: u32`. A file
+/// from another version is skipped before decoding: its layout differs, so a
+/// string's bytes could be read as a length, and allocating that aborts the
+/// process instead of failing. Decoding is also capped at the file's size so
+/// a truncated or corrupt file fails cleanly.
+pub fn read_cache<T: serde::de::DeserializeOwned>(path: &Path, version: u32) -> Option<T> {
+    use bincode::Options;
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let mut head = [0u8; 4];
+    file.read_exact(&mut head).ok()?;
+    if u32::from_le_bytes(head) != version {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .with_limit(len)
+        .deserialize_from(std::io::BufReader::with_capacity(1 << 20, file))
+        .ok()
 }

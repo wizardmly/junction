@@ -257,8 +257,7 @@ fn index_library(lib: &Library, files: &[String], done: &AtomicUsize, total: usi
     }
     let mut cache: LibraryCache = cache_path
         .as_ref()
-        .and_then(|p| std::fs::File::open(p).ok())
-        .and_then(|file| bincode::deserialize_from::<_, LibraryCache>(std::io::BufReader::with_capacity(1 << 20, file)).ok())
+        .and_then(|p| store::read_cache::<LibraryCache>(p, CACHE_VERSION))
         .filter(|c| c.version == CACHE_VERSION)
         .unwrap_or_default();
     let mut stale: Vec<&String> = Vec::new();
