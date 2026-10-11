@@ -28,6 +28,10 @@ use super::footer;
 /// and IntelliJ's options (push tags, run hooks); Force Push (with lease)
 /// is in the Push button's dropdown.
 pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
+    // Several repositories: IntelliJ's tree of them.
+    if model.read(cx).repositories().len() > 1 {
+        return super::push_multi::push_multi(model, window, cx);
+    }
     push_up_to(model, None, window, cx)
 }
 
@@ -37,6 +41,35 @@ pub fn push(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
 pub fn push_after_commit(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
     use crate::git::ops::{self, PushRequest, PushTags};
     let settings = Settings::get(cx).clone();
+    if model.read(cx).repositories().len() > 1 {
+        // Each root that has commits to push, straight away unless the
+        // settings ask for the dialog.
+        let mut requests = Vec::new();
+        for repository in model.read(cx).repositories() {
+            let Some(preview) = ops::push_preview(&repository).ok().filter(|p| p.branch.is_some() && !p.remotes.is_empty()) else { continue };
+            if settings.commit_push_dialog && (!settings.commit_push_dialog_protected_only || settings.is_protected(&preview.target)) {
+                return push(model, window, cx);
+            }
+            let (new_branch, commits) = ops::push_commits(&repository, &preview.remote, &preview.target).unwrap_or_default();
+            if commits.is_empty() && !new_branch {
+                continue;
+            }
+            requests.push((repository, PushRequest {
+                remote: preview.remote,
+                branch: preview.branch.unwrap_or_default(),
+                target: preview.target,
+                force_with_lease: false,
+                tags: PushTags::None,
+                set_upstream: !preview.has_upstream,
+                run_hooks: settings.run_hooks,
+                up_to: None,
+            }));
+        }
+        if !requests.is_empty() {
+            run_push_all(model, requests, cx);
+        }
+        return;
+    }
     let preview = model.read(cx).repository().and_then(|repo| ops::push_preview(repo).ok()).filter(|p| p.branch.is_some() && !p.remotes.is_empty());
     let Some(preview) = preview else { return push(model, window, cx) };
     let dialog = settings.commit_push_dialog && (!settings.commit_push_dialog_protected_only || settings.is_protected(&preview.target));
@@ -316,20 +349,20 @@ struct Options {
 
 /// What the push would send to one remote branch, worked out again
 /// whenever the remote or the target branch changes.
-struct Outgoing {
-    remote: String,
-    target: String,
-    new_branch: bool,
-    commits: Vec<crate::git::Commit>,
+pub(super) struct Outgoing {
+    pub(super) remote: String,
+    pub(super) target: String,
+    pub(super) new_branch: bool,
+    pub(super) commits: Vec<crate::git::Commit>,
     /// Each commit's files, and their union for the change tree.
-    commit_files: Vec<Vec<crate::git::log::FileChange>>,
-    all_files: Vec<crate::git::log::FileChange>,
+    pub(super) commit_files: Vec<Vec<crate::git::log::FileChange>>,
+    pub(super) all_files: Vec<crate::git::log::FileChange>,
 }
 
 impl Outgoing {
     /// The commits `remote`/`target` doesn't have (from `up_to` down, when
     /// given) and the files each one changes.
-    fn compute(repository: &crate::git::Repository, remote: &str, target: &str, up_to: Option<&str>) -> Self {
+    pub(super) fn compute(repository: &crate::git::Repository, remote: &str, target: &str, up_to: Option<&str>) -> Self {
         let (new_branch, mut commits) = crate::git::ops::push_commits(repository, remote, target).unwrap_or_default();
         // Newest first: the ones above `up_to` stay behind.
         if let Some(pos) = up_to.and_then(|h| commits.iter().position(|c| c.hash == h)) {
@@ -392,7 +425,7 @@ fn commit_list(
 }
 
 /// The files the shown commits change.
-fn file_list(shown_files: &[crate::git::log::FileChange], palette: &crate::theme::Palette) -> gpui_kit::Div {
+pub(super) fn file_list(shown_files: &[crate::git::log::FileChange], palette: &crate::theme::Palette) -> gpui_kit::Div {
     use gpui_kit::component::h_flex;
     let mut files = v_flex()
         .gap_px()
@@ -420,7 +453,7 @@ fn file_list(shown_files: &[crate::git::log::FileChange], palette: &crate::theme
 
 /// Asks before a force push (it can overwrite commits at the remote), over
 /// the Push dialog: Cancel goes back to it.
-fn confirm_force_push(force_branch: &str, force_target: &str, force_push: Rc<dyn Fn(bool, &mut App) -> bool>, window: &mut Window, cx: &mut App) {
+pub(super) fn confirm_force_push(force_branch: &str, force_target: &str, force_push: Rc<dyn Fn(bool, &mut App) -> bool>, window: &mut Window, cx: &mut App) {
     let message = SharedString::from(format!(
         "You're going to force push \"{force_branch}\" to \"{force_target}\". It may overwrite commits at the remote. Are you sure you want to proceed?"
     ));
@@ -443,7 +476,7 @@ fn confirm_force_push(force_branch: &str, force_target: &str, force_push: Rc<dyn
 
 /// The push a rejection interrupted, for the Push Rejected dialog's
 /// Merge / Rebase to finish.
-static REJECTED_PUSH: std::sync::Mutex<Option<crate::git::ops::PushRequest>> = std::sync::Mutex::new(None);
+static REJECTED_PUSH: std::sync::Mutex<Option<(Option<std::path::PathBuf>, crate::git::ops::PushRequest)>> = std::sync::Mutex::new(None);
 
 /// Runs a push; with "Auto-update if push was rejected" a rejection
 /// updates and retries, otherwise it leads to the Push Rejected dialog.
@@ -460,7 +493,33 @@ fn run_push(model: Entity<RepoModel>, request: crate::git::ops::PushRequest, cx:
             ops::push(repo, &request).map_err(|error| {
                 if ops::is_rejected(&error) {
                     let message = anyhow::anyhow!("{PUSH_REJECTED} the remote has commits that aren't in {}.", request.branch);
-                    *REJECTED_PUSH.lock().unwrap() = Some(request.clone());
+                    *REJECTED_PUSH.lock().unwrap() = Some((None, request.clone()));
+                    message
+                } else {
+                    error
+                }
+            })
+        }, cx)
+    });
+}
+
+/// Pushes several roots, each with its own request; one root failing
+/// doesn't stop the others (IntelliJ reports each repository's result).
+pub(super) fn run_push_all(model: Entity<RepoModel>, requests: Vec<(crate::git::Repository, crate::git::ops::PushRequest)>, cx: &mut App) {
+    use crate::git::ops;
+    let settings = Settings::get(cx);
+    let auto_update = settings.auto_update_on_push_rejected;
+    let rebase = settings.update_method == UpdateMethod::Rebase;
+    let force = requests.iter().any(|(_, r)| r.force_with_lease);
+    model.update(cx, |model, cx| {
+        model.run_in_groups_keep_going(if force { "Force Push" } else { "Push" }, requests, move |repo, request| {
+            if auto_update {
+                return ops::push_with_auto_update(repo, &request, rebase);
+            }
+            ops::push(repo, &request).map_err(|error| {
+                if ops::is_rejected(&error) {
+                    let message = anyhow::anyhow!("{PUSH_REJECTED} the remote has commits that aren't in {}.", request.branch);
+                    *REJECTED_PUSH.lock().unwrap() = Some((Some(repo.root().to_path_buf()), request.clone()));
                     message
                 } else {
                     error
@@ -477,15 +536,22 @@ pub const PUSH_REJECTED: &str = "Push rejected:";
 /// IntelliJ's Push Rejected dialog: the remote has commits the branch
 /// doesn't, so merge or rebase onto them and push again.
 pub fn push_rejected(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
-    let Some(request) = REJECTED_PUSH.lock().unwrap().take() else { return };
+    let Some((root, request)) = REJECTED_PUSH.lock().unwrap().take() else { return };
+    // (The root it was rejected in, for a multi-root push.)
+    let repository = match root {
+        Some(root) => model.read(cx).repository_at(&root),
+        None => model.read(cx).repository().cloned(),
+    };
+    let Some(repository) = repository else { return };
     let settings = Settings::get(cx);
     let clean = if settings.update_shelve { crate::git::ops::CleanWith::Shelve } else { crate::git::ops::CleanWith::Stash };
     let update = |rebase: bool| -> Rc<dyn Fn(&mut Window, &mut App)> {
-        let (model, request) = (model.clone(), request.clone());
+        let (model, request, repository) = (model.clone(), request.clone(), repository.clone());
         Rc::new(move |_, cx| {
             let request = request.clone();
+            let repository = repository.clone();
             model.update(cx, |model, cx| {
-                model.run_operation("Push", move |repo| {
+                model.run_operation_in(repository, "Push", move |repo| {
                     crate::git::ops::update_after_rejected_push(repo, &request, rebase, clean)
                 }, cx)
             });

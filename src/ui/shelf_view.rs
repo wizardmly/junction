@@ -42,6 +42,11 @@ impl EventEmitter<ShelfEvent> for ShelfView {}
 pub struct ShelfView {
     model: Entity<RepoModel>,
     shelves: Vec<Shelf>,
+    /// The repositories shelves were read from (every root's, in a
+    /// multi-root project) with their names, and each shelf's among them.
+    roots: Vec<(crate::git::Repository, String)>,
+    owner: Vec<usize>,
+    /// `root index|shelf id`: shelves of two roots can share an id.
     selected: Option<String>,
     show_deleted: bool,
     files: Entity<TreeState>,
@@ -83,6 +88,8 @@ impl ShelfView {
         let mut this = Self {
             model,
             shelves: Vec::new(),
+            roots: Vec::new(),
+            owner: Vec::new(),
             selected: None,
             show_deleted: false,
             files,
@@ -96,20 +103,52 @@ impl ShelfView {
         this
     }
 
+    fn key(&self, ix: usize) -> String {
+        format!("{}|{}", self.owner.get(ix).copied().unwrap_or(0), self.shelves[ix].id)
+    }
+
+    fn current_ix(&self) -> Option<usize> {
+        let key = self.selected.as_deref()?;
+        (0..self.shelves.len()).find(|&ix| self.key(ix) == key)
+    }
+
     fn current(&self) -> Option<&Shelf> {
-        let id = self.selected.as_deref()?;
-        self.shelves.iter().find(|s| s.id == id)
+        self.current_ix().map(|ix| &self.shelves[ix])
+    }
+
+    /// The selected shelf's repository.
+    fn owner_repository(&self, cx: &Context<Self>) -> Option<crate::git::Repository> {
+        self.current_ix()
+            .and_then(|ix| self.roots.get(self.owner[ix]))
+            .map(|(r, _)| r.clone())
+            .or_else(|| self.model.read(cx).repository().cloned())
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
-        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        let model = self.model.read(cx);
+        let roots: Vec<(crate::git::Repository, String)> =
+            model.repositories().into_iter().map(|r| { let label = model.root_label(r.root()); (r, label) }).collect();
         self._load = Some(cx.spawn(async move |this, cx| {
-            let shelves = cx.background_spawn(async move { patch::shelves(&repository) }).await;
+            let listed = cx
+                .background_spawn(async move {
+                    let mut shelves = Vec::new();
+                    let mut owner = Vec::new();
+                    for (ix, (repository, _)) in roots.iter().enumerate() {
+                        for shelf in patch::shelves(repository) {
+                            shelves.push(shelf);
+                            owner.push(ix);
+                        }
+                    }
+                    (roots, shelves, owner)
+                })
+                .await;
             this.update(cx, |this, cx| {
-                this.shelves = shelves;
+                (this.roots, this.shelves, this.owner) = listed;
                 let show_deleted = this.show_deleted;
-                let keep = this.selected.clone().filter(|id| this.shelves.iter().any(|s| &s.id == id && (!s.deleted || show_deleted)));
-                let first = this.shelves.iter().find(|s| !s.deleted).map(|s| s.id.clone());
+                let keep = this.selected.clone().filter(|key| {
+                    (0..this.shelves.len()).any(|ix| this.key(ix) == *key && (!this.shelves[ix].deleted || show_deleted))
+                });
+                let first = (0..this.shelves.len()).find(|&ix| !this.shelves[ix].deleted).map(|ix| this.key(ix));
                 this.select(keep.or(first), cx);
             })
             .ok();
@@ -126,7 +165,12 @@ impl ShelfView {
             cx.notify();
             return;
         };
-        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        let Some(repository) = self.owner_repository(cx) else { return };
+        // Its root becomes the active one: its diffs open there.
+        if self.roots.len() > 1 {
+            let root = repository.root().to_path_buf();
+            self.model.update(cx, |m, cx| m.focus_root_at(&root, cx));
+        }
         self._load = Some(cx.spawn(async move |this, cx| {
             let changes = cx
                 .background_spawn(async move { patch::shelf_files(&repository, &shelf).unwrap_or_default() })
@@ -148,7 +192,7 @@ impl ShelfView {
     /// in (an existing one or a new name) and whether to remove them from the shelf.
     fn unshelve_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(shelf) = self.current().cloned() else { return };
-        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        let Some(repository) = self.owner_repository(cx) else { return };
         let lists = Changelists::load(&repository);
         let names: Vec<String> = lists.lists.iter().map(|l| l.name.clone()).collect();
         let selected = Rc::new(RefCell::new(lists.active.clone()));
@@ -218,8 +262,9 @@ impl ShelfView {
 
     /// Unshelves `shelf`, filing its files into `changelist` when given.
     fn unshelve_to(&mut self, shelf: Shelf, keep: bool, changelist: Option<String>, cx: &mut Context<Self>) {
+        let Some(repository) = self.owner_repository(cx) else { return };
         self.model.update(cx, |model, cx| {
-            model.run_operation("Unshelve", move |repo| {
+            model.run_operation_in(repository, "Unshelve", move |repo| {
                 let keep = keep || shelf.deleted;
                 let outcome = patch::unshelve(repo, &shelf, None, keep)?;
                 if let Some(target) = changelist {
@@ -240,8 +285,9 @@ impl ShelfView {
 
     fn delete(&mut self, cx: &mut Context<Self>) {
         let Some(shelf) = self.current().cloned() else { return };
+        let Some(repository) = self.owner_repository(cx) else { return };
         self.model.update(cx, |model, cx| {
-            model.run_operation("Delete Shelf", move |repo| {
+            model.run_operation_in(repository, "Delete Shelf", move |repo| {
                 patch::delete_shelf(repo, &shelf)?;
                 Ok(if shelf.deleted {
                     format!("Deleted \u{201c}{}\u{201d} permanently", shelf.name)
@@ -254,8 +300,9 @@ impl ShelfView {
 
     fn restore(&mut self, cx: &mut Context<Self>) {
         let Some(shelf) = self.current().cloned() else { return };
+        let Some(repository) = self.owner_repository(cx) else { return };
         self.model.update(cx, |model, cx| {
-            model.run_operation("Restore Shelf", move |repo| {
+            model.run_operation_in(repository, "Restore Shelf", move |repo| {
                 patch::set_deleted(repo, &shelf, false)?;
                 Ok(format!("Restored \u{201c}{}\u{201d}", shelf.name))
             }, cx)
@@ -266,11 +313,13 @@ impl ShelfView {
         let Some(shelf) = self.current().cloned() else { return };
         let input = cx.new(|cx| InputState::new(window, cx).default_value(shelf.name.clone()));
         let model = self.model.clone();
+        let Some(repository) = self.owner_repository(cx) else { return };
         let focus = input.clone();
         window.open_dialog(cx, move |dialog, _, _| {
             let input = input.clone();
             let model = model.clone();
             let shelf = shelf.clone();
+            let repository = repository.clone();
             dialog
                 .title("Rename Shelved Changelist")
                 .w(px(420.))
@@ -281,8 +330,9 @@ impl ShelfView {
                         return false;
                     }
                     let shelf = shelf.clone();
+                    let repository = repository.clone();
                     model.update(cx, |model, cx| {
-                        model.run_operation("Rename Shelf", move |repo| {
+                        model.run_operation_in(repository, "Rename Shelf", move |repo| {
                             patch::rename_shelf(repo, &shelf, &name)?;
                             Ok(format!("Renamed to \u{201c}{name}\u{201d}"))
                         }, cx)
@@ -318,10 +368,11 @@ impl ShelfView {
         .detach();
     }
 
-    fn render_row(&self, shelf: &Shelf, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
-        let selected = self.selected.as_deref() == Some(shelf.id.as_str());
-        let id = shelf.id.clone();
+        let shelf = &self.shelves[ix];
+        let id = self.key(ix);
+        let selected = self.selected.as_deref() == Some(id.as_str());
         let deleted = shelf.deleted;
         let menu_entity = cx.entity();
         let menu_id = id.clone();
@@ -383,9 +434,24 @@ impl Render for ShelfView {
         let deleted_count = self.shelves.iter().filter(|s| s.deleted).count();
 
         let mut list = v_flex();
-        let active: Vec<Shelf> = self.shelves.iter().filter(|s| !s.deleted).cloned().collect();
-        for shelf in &active {
-            list = list.child(self.render_row(shelf, cx));
+        let active: Vec<usize> = (0..self.shelves.len()).filter(|&ix| !self.shelves[ix].deleted).collect();
+        let multi = self.model.read(cx).is_multi_root();
+        for (n, &ix) in active.iter().enumerate() {
+            // A root's name over its shelves.
+            if multi && (n == 0 || self.owner[active[n - 1]] != self.owner[ix]) {
+                let label = self.roots.get(self.owner[ix]).map(|(_, l)| l.clone()).unwrap_or_default();
+                list = list.child(
+                    h_flex()
+                        .h(px(row_height() + 2.))
+                        .px_2()
+                        .gap_1p5()
+                        .text_sm()
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .child(Icon::new(icons::VCS_CHANGELIST).small().text_color(palette.text_secondary))
+                        .child(label),
+                );
+            }
+            list = list.child(div().when(multi, |el| el.pl_4()).child(self.render_row(ix, cx)));
         }
         if active.is_empty() {
             list = list.child(
@@ -414,9 +480,9 @@ impl Render for ShelfView {
                     .child(format!("Recently Deleted ({deleted_count})")),
             );
             if self.show_deleted {
-                let deleted: Vec<Shelf> = self.shelves.iter().filter(|s| s.deleted).cloned().collect();
-                for shelf in &deleted {
-                    list = list.child(div().pl_3().child(self.render_row(shelf, cx)));
+                let deleted: Vec<usize> = (0..self.shelves.len()).filter(|&ix| self.shelves[ix].deleted).collect();
+                for ix in deleted {
+                    list = list.child(div().pl_3().child(self.render_row(ix, cx)));
                 }
             }
         }

@@ -21,6 +21,7 @@ use crate::theme::ActivePalette as _;
 
 mod branch;
 mod push;
+mod push_multi;
 mod update;
 mod stash;
 mod merge_rebase;

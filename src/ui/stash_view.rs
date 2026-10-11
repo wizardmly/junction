@@ -35,6 +35,9 @@ impl EventEmitter<StashEvent> for StashView {}
 pub struct StashView {
     model: Entity<RepoModel>,
     stashes: Vec<Stash>,
+    /// Each stash's repository and its root's name (a multi-root project
+    /// lists every root's stashes under the root, as IntelliJ does).
+    owners: Vec<(crate::git::Repository, String)>,
     selected: Option<usize>,
     files: Entity<TreeState>,
     kinds: HashMap<String, FileChangeKind>,
@@ -57,7 +60,8 @@ impl StashView {
                 if selected != this.last_file {
                     this.last_file = selected.clone();
                     let path = selected.as_deref().and_then(|id| id.strip_prefix(FILE_PREFIX)).map(str::to_owned);
-                    if let (Some(path), Some(stash)) = (path, this.selected.and_then(|ix| this.stashes.get(ix))) {
+                    if let (Some(path), Some(stash)) = (path, this.selected.and_then(|ix| this.stashes.get(ix)).cloned()) {
+                        this.focus_owner(cx);
                         cx.emit(StashEvent::OpenDiff(DiffSource::Commit { hash: stash.hash.clone(), path, old_path: None }));
                     }
                 }
@@ -66,6 +70,7 @@ impl StashView {
         let mut this = Self {
             model,
             stashes: Vec::new(),
+            owners: Vec::new(),
             selected: None,
             files,
             kinds: HashMap::new(),
@@ -77,13 +82,38 @@ impl StashView {
         this
     }
 
+    /// The selected stash's root becomes the active one: its diff, Unstash
+    /// As and the rest work there.
+    fn focus_owner(&self, cx: &mut Context<Self>) {
+        let Some((repository, _)) = self.selected.and_then(|ix| self.owners.get(ix)).cloned() else { return };
+        self.model.update(cx, |m, cx| m.focus_root_at(repository.root(), cx));
+    }
+
+    fn owner(&self, cx: &Context<Self>) -> Option<crate::git::Repository> {
+        self.selected.and_then(|ix| self.owners.get(ix)).map(|(r, _)| r.clone()).or_else(|| self.model.read(cx).repository().cloned())
+    }
+
     fn reload(&mut self, cx: &mut Context<Self>) {
-        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        let model = self.model.read(cx);
+        let repositories: Vec<(crate::git::Repository, String)> =
+            model.repositories().into_iter().map(|r| { let label = model.root_label(r.root()); (r, label) }).collect();
         self._load = Some(cx.spawn(async move |this, cx| {
-            let stashes = cx.background_spawn(async move { ops::stash_list(&repository).unwrap_or_default() }).await;
+            let listed = cx
+                .background_spawn(async move {
+                    let mut stashes = Vec::new();
+                    let mut owners = Vec::new();
+                    for (repository, label) in repositories {
+                        for stash in ops::stash_list(&repository).unwrap_or_default() {
+                            stashes.push(stash);
+                            owners.push((repository.clone(), label.clone()));
+                        }
+                    }
+                    (stashes, owners)
+                })
+                .await;
             this.update(cx, |this, cx| {
                 let previous = this.selected.and_then(|ix| this.stashes.get(ix)).map(|s| s.hash.clone());
-                this.stashes = stashes;
+                (this.stashes, this.owners) = listed;
                 let ix = previous.and_then(|h| this.stashes.iter().position(|s| s.hash == h));
                 this.select(ix.or(if this.stashes.is_empty() { None } else { Some(0) }), cx);
             })
@@ -100,7 +130,7 @@ impl StashView {
             cx.notify();
             return;
         };
-        let Some(repository) = self.model.read(cx).repository().cloned() else { return };
+        let Some(repository) = self.owner(cx) else { return };
         self._load = Some(cx.spawn(async move |this, cx| {
             let changes = cx
                 .background_spawn(async move { ops::stash_files(&repository, &stash.name).unwrap_or_default() })
@@ -134,13 +164,17 @@ impl StashView {
             return;
         }
         let model = self.model.clone();
+        // (The selected stash's root, in a multi-root project.)
+        let Some(repository) = self.owner(cx) else { return };
+        let count = self.owners.iter().filter(|(r, _)| r.root() == repository.root()).count().max(self.stashes.len().min(1));
         dialogs::confirm(
             "Clear Stashes",
-            format!("Do you want to remove all {} stashes? This can't be undone.", self.stashes.len()),
+            format!("Do you want to remove all {count} stashes? This can't be undone."),
             "Clear",
             move |cx| {
+                let repository = repository.clone();
                 model.update(cx, |m, cx| {
-                    m.run_operation("Clear Stashes", |repo| {
+                    m.run_operation_in(repository, "Clear Stashes", |repo| {
                         repo.run(["stash", "clear"])?;
                         Ok("All stashes removed".into())
                     }, cx)
@@ -153,13 +187,15 @@ impl StashView {
 
     fn unstash_as(&self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(stash) = self.selected.and_then(|ix| self.stashes.get(ix)).cloned() else { return };
+        self.focus_owner(cx);
         dialogs::unstash_as(self.model.clone(), stash.name, stash.message, window, cx);
     }
 
     fn stash_op(&self, title: &'static str, verb: &'static str, cx: &mut Context<Self>) {
         let Some(stash) = self.selected.and_then(|ix| self.stashes.get(ix)).cloned() else { return };
+        let Some(repository) = self.owner(cx) else { return };
         self.model.update(cx, |model, cx| {
-            model.run_operation(title, move |repo| {
+            model.run_operation_in(repository, title, move |repo| {
                 repo.run(["stash", verb, &stash.name])?;
                 Ok(format!("{title}: {}", stash.message))
             }, cx)
@@ -174,14 +210,30 @@ impl Render for StashView {
         let entity = cx.entity();
 
         let mut list = v_flex();
+        let multi = self.model.read(cx).is_multi_root();
         for (ix, stash) in self.stashes.iter().enumerate() {
             let selected = self.selected == Some(ix);
+            // A root's name over its stashes.
+            let root = self.owners.get(ix).map(|(r, label)| (r.root(), label));
+            if multi && root.is_some() && (ix == 0 || self.owners.get(ix - 1).map(|(r, _)| r.root()) != root.map(|(r, _)| r)) {
+                list = list.child(
+                    h_flex()
+                        .h(px(row_height() + 2.))
+                        .px_2()
+                        .gap_1p5()
+                        .text_sm()
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .child(Icon::new(icons::VCS_SHELVE).small().text_color(palette.text_secondary))
+                        .child(root.map(|(_, l)| l.clone()).unwrap_or_default()),
+                );
+            }
             let menu_entity = entity.clone();
             list = list.child(
                 h_flex()
                     .id(SharedString::from(format!("stash-{}", stash.hash)))
                     .h(px(row_height() + 4.))
-                    .px_2()
+                    .pl(px(if multi { 24. } else { 8. }))
+                    .pr_2()
                     .gap_2()
                     .text_sm()
                     .when(selected, |el| el.bg(palette.selection))

@@ -76,6 +76,11 @@ impl Workspace {
                 dialogs::push_rejected(this.model.clone(), window, cx);
                 return;
             }
+            // A multi-root push: "libs/core: Push rejected: …" among the
+            // other roots' results, which still show.
+            if message.lines().any(|line| line.contains(dialogs::PUSH_REJECTED)) {
+                dialogs::push_rejected(this.model.clone(), window, cx);
+            }
             // IntelliJ's balloon actions: the obvious next step.
             if *error {
                 notification = notification.action(move |_, _, _| {

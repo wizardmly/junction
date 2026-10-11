@@ -770,6 +770,16 @@ impl RepoModel {
         Some(routed)
     }
 
+    /// Makes a loaded root the active one (a stash, a shelf or a file of it
+    /// was picked), without reloading.
+    pub fn focus_root_at(&mut self, root: &Path, cx: &mut Context<Self>) {
+        if self.repository.as_ref().is_some_and(|r| r.root() != root) {
+            if let Some(state) = self.root_states.iter().find(|s| s.path == root).cloned() {
+                self.focus_root(state, cx);
+            }
+        }
+    }
+
     /// Makes a Log commit's root the active one (its menu and details act there).
     pub fn focus_commit_root(&mut self, root: u16, cx: &mut Context<Self>) {
         let Some(state) = self.root_states.get(root as usize).cloned() else { return };
