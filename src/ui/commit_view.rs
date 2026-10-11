@@ -376,7 +376,12 @@ impl CommitView {
         let repositories: Vec<(String, String)> = {
             let model = self.model.read(cx);
             match model.project_root().filter(|_| !model.root_states().is_empty()) {
-                Some(project) => model.root_states().iter().map(|r| (r.prefix.clone(), crate::git::roots::label(project, &r.path))).collect(),
+                // (Named by folder, as IntelliJ names a repository.)
+                Some(project) => model
+                    .root_states()
+                    .iter()
+                    .map(|r| (r.prefix.clone(), r.path.file_name().map_or_else(|| crate::git::roots::label(project, &r.path), |n| n.to_string_lossy().into_owned())))
+                    .collect(),
                 None => vec![(String::new(), model.repository().map(|r| r.name()).unwrap_or_default())],
             }
         };
@@ -1417,10 +1422,11 @@ impl CommitView {
                             },
                         )
                         // A multi-root project's repository node: its Log root color, as IntelliJ shows it.
+                        // (In place of the folder icon, as IntelliJ draws it.)
                         .when_some(repo_branch.as_ref().filter(|_| multi_root).map(|(_, ix)| *ix), |el, ix| {
-                            el.child(div().size(px(10.)).rounded_sm().bg(common::root_color(ix)))
+                            el.child(div().size(px(14.)).rounded(px(3.)).bg(common::root_color(ix)))
                         })
-                        .when(!is_group, |el| {
+                        .when(!is_group && !(multi_root && repo_branch.is_some()), |el| {
                             el.child(
                                 Icon::new(match &file {
                                     Some(p) if submodules.contains(p.as_str()) => Icon::from(icons::MODULE),
@@ -1439,7 +1445,6 @@ impl CommitView {
                                 .when(is_active, |el| el.font_weight(gpui_kit::FontWeight::BOLD))
                                 .child(item.label.clone()),
                         )
-                        .when_some(repo_branch, |el, (branch, _)| el.child(div().text_xs().text_color(palette.text_secondary).child(branch)))
                         .when_some(file.as_ref().filter(|_| !by_directory).and_then(|f| f.rsplit_once('/')).map(|(dir, _)| dir.to_owned()), |el, dir| {
                             el.child(div().text_xs().text_color(palette.text_secondary).child(dir))
                         })
@@ -1453,6 +1458,10 @@ impl CommitView {
                                     .text_color(palette.text_secondary)
                                     .child(format!("{n} {}", if n == 1 { "file" } else { "files" })),
                             )
+                        })
+                        // A repository node's branch, in IntelliJ's grey tag.
+                        .when_some(repo_branch, |el, (branch, _)| {
+                            el.child(div().px_1().rounded(px(3.)).bg(palette.selection_inactive).text_xs().text_color(palette.text).child(branch))
                         })
                         // Staging mode: a +/- button appears on hover, as in IntelliJ.
                         .when(staging && (n > 0 || file.is_some()) && !in_conflicts, |el| {
