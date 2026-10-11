@@ -869,7 +869,8 @@ impl NotificationList {
             id,
             notification,
             ToastOptions {
-                timeout: autohide.then_some(Duration::from_secs(5)),
+                // Junction: IntelliJ balloons fade out after 10 s.
+                timeout: autohide.then_some(Duration::from_secs(10)),
             },
             cx.background_executor().now(),
         );

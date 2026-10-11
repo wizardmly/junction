@@ -173,23 +173,24 @@ impl Workspace {
                 // IntelliJ's "Restore" link brings the deleted branch back (in every root).
                 notification = notification.content(move |_, _, cx| {
                     let palette = cx.palette().clone();
-                    let (entity, deleted) = (entity.clone(), deleted.clone());
+                    let (note, entity, deleted) = (cx.entity(), entity.clone(), deleted.clone());
                     div()
                         .id("notify-restore")
                         .text_sm()
                         .text_color(palette.link)
                         .cursor_pointer()
                         .child("Restore")
-                        .on_click(move |_, _, cx| {
+                        .on_click(move |_, window, cx| {
+                            note.update(cx, |n, cx| n.dismiss(window, cx));
                             let model = entity.read(cx).model.clone();
-                            for (repo, name, tip) in deleted.clone() {
-                                model.update(cx, |m, cx| {
-                                    m.run_operation_in(repo, "Restore Branch", move |repo| {
-                                        repo.run(["branch", &name, &tip])?;
-                                        Ok(format!("Restored branch {name}"))
-                                    }, cx)
-                                });
-                            }
+                            // One operation (and balloon) for every root.
+                            let groups: Vec<_> = deleted.iter().map(|(repo, name, tip)| (repo.clone(), (name.clone(), tip.clone()))).collect();
+                            model.update(cx, |m, cx| {
+                                m.run_in_groups_keep_going("Restore Branch", groups, move |repo, (name, tip)| {
+                                    crate::git::refs::restore_branch(repo, &name, &tip)?;
+                                    Ok(format!("Restored branch {name}"))
+                                }, cx)
+                            });
                         })
                         .into_any_element()
                 });

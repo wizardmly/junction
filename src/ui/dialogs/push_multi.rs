@@ -61,15 +61,25 @@ struct State {
 /// Roots that can't push (detached HEAD, no remote) are listed greyed out
 /// with the reason, as IntelliJ lists them.
 pub fn push_multi(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
+    push_multi_of(model, None, window, cx)
+}
+
+/// The same tree for one local branch (a branch's Push… with synchronous
+/// branch control): every root that has the branch pushes it.
+pub fn push_multi_of(model: Entity<RepoModel>, source: Option<String>, window: &mut Window, cx: &mut App) {
+    let from = source.clone().unwrap_or_else(|| "HEAD".to_owned());
     let m = model.read(cx);
-    let repositories = m.repositories();
+    let mut repositories = m.repositories();
+    if let Some(branch) = &source {
+        repositories.retain(|r| r.run(["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")]).is_ok());
+    }
     let labels: Vec<String> = repositories.iter().map(|r| m.root_label(r.root())).collect();
     let active = m.repository().map(|r| r.root().to_path_buf());
     let project = m.project_root().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut roots = Vec::new();
     let mut skipped = Vec::new();
     for (repository, label) in repositories.into_iter().zip(labels) {
-        let preview = match ops::push_preview(&repository) {
+        let preview = match ops::push_preview_of(&repository, source.as_deref()) {
             Ok(p) => p,
             Err(error) => {
                 skipped.push((label, error.to_string()));
@@ -84,7 +94,7 @@ pub fn push_multi(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
             skipped.push((label, "No remotes".into()));
             continue;
         }
-        let out = Outgoing::compute(&repository, "HEAD", &preview.remote, &preview.target, None);
+        let out = Outgoing::compute(&repository, &from, &preview.remote, &preview.target, None);
         // IntelliJ checks the repositories that have something to push.
         let checked = !out.commits.is_empty() || out.new_branch;
         let target = cx.new(|cx| InputState::new(window, cx).default_value(preview.target.clone()));
@@ -122,7 +132,7 @@ pub fn push_multi(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                 let remote = root.remotes.get(root.remote).cloned().unwrap_or_else(|| root.default_remote.clone());
                 let target = root.target.read(cx).value().trim().to_owned();
                 if root.out.remote != remote || root.out.target != target {
-                    root.out = Outgoing::compute(&root.repository, "HEAD", &remote, &target, None);
+                    root.out = Outgoing::compute(&root.repository, &from, &remote, &target, None);
                     reset = true;
                 }
             }

@@ -98,6 +98,10 @@ pub fn push_up_to(model: Entity<RepoModel>, up_to: Option<String>, window: &mut 
 /// A branch's Push… (Branches popup / Log): the dialog for that branch,
 /// current or not.
 pub fn push_branch(model: Entity<RepoModel>, branch: String, window: &mut Window, cx: &mut App) {
+    // Synchronous branch control: every root that has the branch.
+    if crate::ui::branches_popup::synced_roots(&model, &format!("refs/heads/{branch}"), cx).len() > 1 {
+        return super::push_multi::push_multi_of(model, Some(branch), window, cx);
+    }
     push_dialog(model, Some(branch), None, window, cx)
 }
 

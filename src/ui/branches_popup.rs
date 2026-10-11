@@ -293,6 +293,10 @@ pub(crate) fn branch_actions_with(model: &Entity<RepoModel>, reference: &RefName
                             if roots.len() > 1 {
                                 let groups = roots.into_iter().map(|r| (r, ())).collect();
                                 return model.run_in_groups_keep_going("Update", groups, move |repo, _| {
+                                    // A root whose branch tracks nothing is skipped, as in IntelliJ.
+                                    if repo.run(["rev-parse", "--abbrev-ref", &format!("{name}@{{upstream}}")]).is_err() {
+                                        return Ok(String::new());
+                                    }
                                     update(repo, &name)?;
                                     Ok(format!("Updated {name}"))
                                 }, cx);
@@ -504,12 +508,11 @@ fn run_checkout(model: &Entity<RepoModel>, reference: RefName, mode: status::Che
 fn delete_branch(model: &Entity<RepoModel>, reference: &RefName, window: &mut Window, cx: &mut App) {
     let Some(repository) = model.read(cx).repository().cloned() else { return };
     let name = reference.name.clone();
-    let tip = reference.target.clone();
     let merged_into = |target: &str| crate::git::refs::is_merged(&repository, &reference.full_name, target);
     let upstream_merged = reference.upstream.as_ref().is_some_and(|u| merged_into(&format!("refs/remotes/{u}")));
     let full_name = reference.full_name.clone();
     let delete = move |force: bool, model: &Entity<RepoModel>, cx: &mut App| {
-        let (name, tip) = (name.clone(), tip.clone());
+        let name = name.clone();
         // Synchronous branch control: the branch goes in every root.
         let roots = synced_roots(model, &full_name, cx);
         model.update(cx, |model, cx| {
@@ -517,26 +520,33 @@ fn delete_branch(model: &Entity<RepoModel>, reference: &RefName, window: &mut Wi
                 let groups = roots.into_iter().map(|r| (r, ())).collect();
                 return model.run_in_groups_keep_going("Delete Branch", groups, move |repo, _| {
                     // Each root's own tip, for the balloon's Restore.
-                    let tip = repo.run(["rev-parse", &format!("refs/heads/{name}")]).map(|h| h.trim().to_owned()).unwrap_or_default();
-                    repo.run(["branch", if force { "-D" } else { "-d" }, &name])?;
+                    let tip = crate::git::refs::delete_branch(repo, &name, force)?;
                     Ok(format!("Deleted branch {name} (was {})", &tip[..tip.len().min(8)]))
                 }, cx);
             }
             model.run_operation("Delete Branch", move |repo| {
-                repo.run(["branch", if force { "-D" } else { "-d" }, &name])?;
+                let tip = crate::git::refs::delete_branch(repo, &name, force)?;
                 Ok(format!("Deleted branch {name} (was {})", &tip[..tip.len().min(8)]))
             }, cx)
         });
     };
-    if merged_into("HEAD") || upstream_merged {
-        return delete(false, model, cx);
+    // Every root the branch is deleted from (synchronous branch control):
+    // each one checks its own HEAD and upstream.
+    let roots = synced_roots(model, &reference.full_name, cx);
+    let merged_in = |repo: &crate::git::Repository| {
+        let is_merged = |target: &str| crate::git::refs::is_merged(repo, &reference.full_name, target);
+        let upstream = repo.run(["rev-parse", "--symbolic-full-name", &format!("{}@{{upstream}}", reference.full_name)]).map(|u| u.trim().to_owned());
+        is_merged("HEAD") || upstream.is_ok_and(|u| !u.is_empty() && is_merged(&u))
+    };
+    if if roots.len() > 1 { roots.iter().all(|r| merged_in(r)) } else { merged_into("HEAD") || upstream_merged } {
+        // Checked here (HEAD or upstream, per root): `git branch -d` alone would
+        // refuse a branch merged into HEAD but not into its upstream.
+        return delete(true, model, cx);
     }
     let current = model.read(cx).refs().current_branch.clone().unwrap_or_else(|| "HEAD".into());
-    // Every root the branch is deleted from (synchronous branch control).
     let mut commits = Vec::new();
-    let roots = synced_roots(model, &reference.full_name, cx);
     if roots.len() > 1 {
-        for repo in &roots {
+        for repo in roots.iter().filter(|r| !merged_in(r)) {
             let own = crate::git::refs::unmerged_commits(repo, &reference.full_name, 20);
             let label = model.read(cx).root_label(repo.root());
             commits.extend(own.into_iter().map(|c| format!("{label}: {c}")));

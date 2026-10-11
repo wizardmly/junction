@@ -339,3 +339,37 @@ mod tests {
         assert!(remote_branches_containing(&t.repo, &local).is_empty());
     }
 }
+
+/// Tracking of branches deleted this session (repository, branch, tip) →
+/// `branch.<name>.remote` / `.merge`: git drops them with the branch, and
+/// the balloon's Restore sets them up again, as IntelliJ does.
+static DELETED_TRACKING: std::sync::Mutex<Vec<(std::path::PathBuf, String, String, String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Deletes a local branch (`-d`, or `-D` with `force`), remembering its
+/// tracking for `restore_branch`; returns the tip it pointed at.
+pub fn delete_branch(repository: &Repository, name: &str, force: bool) -> Result<String> {
+    let tip = repository.run(["rev-parse", &format!("refs/heads/{name}")])?.trim().to_owned();
+    let config = |key: &str| repository.run(["config", "--get", &format!("branch.{name}.{key}")]).map(|v| v.trim().to_owned()).ok();
+    let tracking = config("remote").zip(config("merge"));
+    repository.run(["branch", if force { "-D" } else { "-d" }, name])?;
+    if let Some((remote, merge)) = tracking {
+        if let Ok(mut deleted) = DELETED_TRACKING.lock() {
+            deleted.push((repository.root().to_path_buf(), name.to_owned(), tip.clone(), remote, merge));
+        }
+    }
+    Ok(tip)
+}
+
+/// The deleted branch back at `tip` (a short hash is fine), tracking what it tracked.
+pub fn restore_branch(repository: &Repository, name: &str, tip: &str) -> Result<()> {
+    repository.run(["branch", name, tip])?;
+    let full = repository.run(["rev-parse", &format!("refs/heads/{name}")])?.trim().to_owned();
+    let tracking = DELETED_TRACKING.lock().ok().and_then(|deleted| {
+        deleted.iter().rev().find(|(root, n, t, _, _)| root == repository.root() && n == name && *t == full).map(|(_, _, _, r, m)| (r.clone(), m.clone()))
+    });
+    if let Some((remote, merge)) = tracking {
+        repository.run(["config", &format!("branch.{name}.remote"), &remote])?;
+        repository.run(["config", &format!("branch.{name}.merge"), &merge])?;
+    }
+    Ok(())
+}

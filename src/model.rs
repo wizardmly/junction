@@ -295,10 +295,14 @@ fn log_sources(states: &[RootState], active: &Repository, filter: &LogFilter) ->
                     *b == "HEAD"
                         || if let Some((from, to)) = b.split_once("..") {
                             // A range (Compare with): every root that has both ends.
-                            let has = |r: &str| r.is_empty() || state.repository.run(["rev-parse", "--verify", "-q", r.trim_start_matches('.')]).is_ok();
+                            // (`^{commit}`: a full hash "verifies" even where no such object exists.)
+                            let has = |r: &str| {
+                                let r = r.trim_start_matches('.');
+                                r.is_empty() || state.repository.run(["rev-parse", "--verify", "-q", &format!("{r}^{{commit}}")]).is_ok()
+                            };
                             has(from) && has(to)
                         } else {
-                            state.repository.run(["rev-parse", "--verify", "-q", b.as_str()]).is_ok()
+                            state.repository.run(["rev-parse", "--verify", "-q", &format!("{b}^{{commit}}")]).is_ok()
                         }
                 })
                 .cloned()
