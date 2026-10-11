@@ -736,7 +736,8 @@ impl FindPopup {
                             move |mut menu, _, _| {
                                 for m in modules.iter() {
                                     let (entity, m2) = (entity.clone(), m.clone());
-                                    let label = if m.is_empty() { "<root>".to_owned() } else { format!("{}   {}", module_name(m), m) };
+                                    // The folder after the name only when it says more than the name.
+                                    let label = if m.is_empty() { "<root>".to_owned() } else if module_name(m) == *m { m.clone() } else { format!("{}   {}", module_name(m), m) };
                                     menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
                                         let m2 = m2.clone();
                                         entity.update(cx, |this, cx| this.toggle(|t| t.module = m2, cx))

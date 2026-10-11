@@ -1435,6 +1435,11 @@ impl RepoModel {
         cx.emit(RepoEvent::PrefillCommitMessage(message));
     }
 
+    /// Resolve Conflicts…: the Conflicts dialog.
+    pub fn show_conflicts(&mut self, cx: &mut Context<Self>) {
+        cx.emit(RepoEvent::ShowConflicts);
+    }
+
     pub fn compare(&mut self, old: String, new: Option<String>, cx: &mut Context<Self>) {
         cx.emit(RepoEvent::Compare { old, new });
     }

@@ -226,9 +226,16 @@ pub fn new_worktree(model: Entity<RepoModel>, window: &mut Window, cx: &mut App)
         let m = model.read(cx);
         let Some(repo) = m.repository() else { return };
         let refs = m.refs();
+        // A branch checked out in a worktree already can't be checked out again.
+        let taken: Vec<String> = repo
+            .run(["worktree", "list", "--porcelain"])
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.strip_prefix("branch refs/heads/").map(str::to_owned))
+            .collect();
         (
             repo.root().to_path_buf(),
-            refs.local_branches().map(|r| r.name.clone()).collect::<Vec<_>>(),
+            refs.local_branches().map(|r| r.name.clone()).filter(|b| !taken.contains(b)).collect::<Vec<_>>(),
             refs.current_branch.clone().unwrap_or_else(|| "HEAD".into()),
         )
     };

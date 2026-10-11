@@ -97,10 +97,10 @@ pub(super) fn main_menu(
                     }))
             })
     });
-    let f = focus.clone();
+    let (e, f) = (entity.clone(), focus.clone());
     let menu = menu.submenu("Navigate", window, cx, move |menu, _, _| {
         menu.action_context(f.clone())
-            .menu("Search Everywhere", Box::new(SearchEverywhere))
+            .item(crate::ui::file_menus::entry("Search Everywhere", "Double Shift").on_click(on(&e, |this, window, cx| this.open_search_everywhere(SeTab::All, window, cx))))
             .menu("Find Action…", Box::new(FindAction))
             .separator()
             .menu("Class…", Box::new(GotoClass))
@@ -173,7 +173,7 @@ pub(super) fn main_menu(
             .separator()
             .item(PopupMenuItem::new("Manage Remotes…").on_click(model_op(&e, remote_dialogs::manage_remotes)))
             .item(PopupMenuItem::new("New Worktree…").on_click(model_op(&e, crate::ui::worktree_view::new_worktree)))
-            .item(PopupMenuItem::new("Update Submodules").on_click(model_op(&e, |model, _, cx| {
+            .item(PopupMenuItem::new("Update Submodules").disabled(e.read(cx).model.read(cx).submodule_paths().is_empty()).on_click(model_op(&e, |model, _, cx| {
                 model.update(cx, |m, cx| {
                     m.run_operation("Update Submodules", |repo| {
                         crate::git::submodule::update(repo, &[])?;

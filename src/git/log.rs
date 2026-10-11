@@ -139,7 +139,11 @@ fn load(repository: &Repository, filter: &LogFilter, limit: Option<usize>, first
     args.push("--no-color".into());
     args.push(format!("--format={RECORD}%H{FIELD}%P{FIELD}%an{FIELD}%ae{FIELD}%at{FIELD}%s"));
     if filter.branches.is_empty() && first_page {
-        args.extend(["--branches".into(), "--remotes".into(), "HEAD".into()]);
+        args.extend(["--branches".into(), "--remotes".into()]);
+        // (An unborn HEAD, as in a clone of a repository whose default branch is gone, isn't listed.)
+        if repository.run(["rev-parse", "--verify", "-q", "HEAD"]).is_ok() {
+            args.push("HEAD".into());
+        }
     } else if filter.branches.is_empty() {
         // Stashes and shelves are listed separately, as in IntelliJ.
         // (`--exclude` only applies to the `--all` after it.)

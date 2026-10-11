@@ -134,6 +134,8 @@ pub(super) fn commit_menu(
     };
     let is_unversioned = |p: &String| this.kinds.get(p) == Some(&StatusKind::Unversioned);
     let unversioned: Vec<String> = paths.iter().filter(|p| is_unversioned(p)).cloned().collect();
+    // Conflicted files: Resolve Conflicts…, and Add marks them resolved.
+    let conflicted: Vec<String> = paths.iter().filter(|p| this.kinds.get(*p) == Some(&StatusKind::Conflicted)).cloned().collect();
     let tracked: Vec<String> = paths.iter().filter(|p| !is_unversioned(p)).cloned().collect();
     let staging = this.staging;
     let model = this.model.clone();
@@ -151,9 +153,17 @@ pub(super) fn commit_menu(
     let (e_diff, e_tab, d_diff, d_tab) = (entity.clone(), entity.clone(), diff_source.clone(), diff_source);
     let (e_source, p_source) = (entity.clone(), first.clone());
     let (a_delete, p_delete, r_delete) = (actions.clone(), paths.clone(), root);
-    let (m_add, p_add) = (model.clone(), unversioned.clone());
+    let (m_add, p_add) = (model.clone(), unversioned.iter().chain(&conflicted).cloned().collect::<Vec<_>>());
+    let m_resolve = model.clone();
+    let menu = if conflicted.is_empty() {
+        menu
+    } else {
+        menu.item(entry("Resolve Conflicts…", "").icon(Icon::new(icons::VCS_MERGE)).on_click(move |_, _, cx| m_resolve.update(cx, |m, cx| m.show_conflicts(cx))))
+            .separator()
+    };
+    let nothing = paths.is_empty();
     let menu = menu
-        .item(entry(commit_label, "").on_click(move |_, window, cx| {
+        .item(entry(commit_label, "").disabled(nothing).on_click(move |_, window, cx| {
             let paths = p_commit.clone();
             e_commit.update(cx, |this, cx| this.commit_only(paths, window, cx))
         }))
@@ -187,12 +197,12 @@ pub(super) fn commit_menu(
             }
         }))
         .separator()
-        .item(entry("Delete…", "Delete").on_click(move |_, window, cx| {
+        .item(entry("Delete…", "Delete").disabled(nothing).on_click(move |_, window, cx| {
             if let Some(root) = r_delete.clone() {
                 file_menus::delete_files(root, p_delete.clone(), a_delete.clone(), window, cx)
             }
         }))
-        .item(entry("Add to VCS", "Ctrl+Alt+A").disabled(unversioned.is_empty()).on_click(move |_, _, cx| file_menus::add_to_vcs(&m_add, p_add.clone(), cx)));
+        .item(entry("Add to VCS", "Ctrl+Alt+A").disabled(p_add.is_empty()).on_click(move |_, _, cx| file_menus::add_to_vcs(&m_add, p_add.clone(), cx)));
     let (m_ignore, p_ignore) = (model.clone(), unversioned.clone());
     // IntelliJ offers Add to .gitignore on unversioned files only.
     let menu = if unversioned.is_empty() {
@@ -215,7 +225,7 @@ pub(super) fn commit_menu(
             let source = crate::ui::patch_dialogs::PatchSource::Local { paths: p_patch.clone() };
             crate::ui::patch_dialogs::create_patch(m_patch.clone(), source, window, cx)
         }))
-        .item(entry("Copy as Patch to Clipboard", "").on_click(move |_, _, cx| {
+        .item(entry("Copy as Patch to Clipboard", "").disabled(nothing).on_click(move |_, _, cx| {
             let source = crate::ui::patch_dialogs::PatchSource::Local { paths: p_copy.clone() };
             crate::ui::patch_dialogs::copy_patch(m_copy.clone(), source, cx)
         }))

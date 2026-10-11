@@ -187,8 +187,10 @@ fn git_items(menu: PopupMenu, target: &GitTarget, cx: &mut Context<PopupMenu>) -
         let (actions, paths) = (actions.clone(), target.paths.clone());
         move |_, window, cx| actions(FileAction::CommitFiles(paths.clone()), window, cx)
     }))
-    .item(entry("Add", "Ctrl+Alt+A").disabled(unversioned.is_empty()).on_click({
-        let (model, paths) = (model.clone(), unversioned.clone());
+    // Add also marks conflicted files resolved, as in IntelliJ.
+    .item(entry("Add", "Ctrl+Alt+A").disabled(unversioned.is_empty() && !target.paths.iter().any(|p| kinds.get(p) == Some(&StatusKind::Conflicted))).on_click({
+        let conflicted = target.paths.iter().filter(|p| kinds.get(*p) == Some(&StatusKind::Conflicted)).cloned();
+        let (model, paths) = (model.clone(), unversioned.iter().cloned().chain(conflicted).collect::<Vec<_>>());
         move |_, _, cx| add_to_vcs(&model, paths.clone(), cx)
     }))
     .item(entry(".git/info/exclude", "").disabled(unversioned.is_empty()).on_click({

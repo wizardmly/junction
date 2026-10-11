@@ -399,8 +399,10 @@ impl Workspace {
                     .border_b_1()
                     .border_color(palette.border)
                     .child(div().flex_1().text_sm().font_weight(FontWeight::SEMIBOLD).child("Notifications"))
-                    .child(tool_button("notifications-clear", icons::DELETE, "Clear All").on_click(cx.listener(|this, _, _, cx| {
+                    .child(tool_button("notifications-clear", icons::DELETE, "Clear All").on_click(cx.listener(|this, _, window, cx| {
                         this.notifications.clear();
+                        // The balloons still showing go too.
+                        gpui_kit::component::WindowExt::clear_notifications(window, cx);
                         cx.notify();
                     })))
                     .child(tool_button("notifications-hide", icons::HIDE, "Hide").on_click(cx.listener(|this, _, _, cx| {
