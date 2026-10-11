@@ -52,6 +52,9 @@ pub enum RepoEvent {
     DetailsLoaded,
     /// An operation finished; shown as a balloon notification.
     Notify { title: String, message: String, error: bool },
+    /// Repositories under the project that aren't registered roots: IntelliJ's
+    /// "Unregistered VCS roots detected" balloon (Add Roots / Configure / Ignore).
+    UnregisteredRoots(Vec<PathBuf>),
     /// Show the files that differ between two revisions (the working tree when `new` is `None`).
     Compare { old: String, new: Option<String> },
     /// Open another Log tab (File History, Compare with Current, …).
@@ -99,6 +102,8 @@ pub struct RepoModel {
     /// The project is a folder holding repositories, not one itself (as
     /// IntelliJ opens a directory of sibling roots): every root is nested.
     folder_project: bool,
+    /// The "Unregistered VCS roots detected" balloon was shown for this project.
+    roots_offered: bool,
     roots: Vec<RootInfo>,
     /// Every root's repository, refs and changes in a multi-root project
     /// (empty with a single root), in the order of `roots`.
@@ -360,6 +365,8 @@ struct Snapshot {
     status: WorkingTreeStatus,
     state: RepositoryState,
     submodules: HashSet<String>,
+    /// Repositories found under the project but not registered (scanned with the roots).
+    unregistered: Vec<PathBuf>,
 }
 
 impl RepoModel {
@@ -387,6 +394,7 @@ impl RepoModel {
             submodule_paths: HashSet::new(),
             project_root: None,
             folder_project: false,
+            roots_offered: false,
             roots: Vec::new(),
             root_states: Arc::default(),
             project_status: Arc::default(),
@@ -450,6 +458,7 @@ impl RepoModel {
         crate::settings::remember_project(&project);
         self.project_root = Some(project);
         self.folder_project = folder;
+        self.roots_offered = false;
         self.roots.clear();
         self.root_states = Arc::default();
         self.user_email = repository.current_user().1;
@@ -827,6 +836,18 @@ impl RepoModel {
         &self.roots
     }
 
+    /// The balloon's Add Roots (registers them) or Ignore (stops offering them).
+    pub fn register_roots(&mut self, roots: Vec<PathBuf>, add: bool, cx: &mut Context<Self>) {
+        let Some(project) = self.project_root.clone() else { return };
+        if let Err(error) = git::roots::register(&project, &roots, add) {
+            cx.emit(RepoEvent::Notify { title: "Directory Mappings".into(), message: error.to_string(), error: true });
+            return;
+        }
+        if add {
+            self.rescan_roots(cx);
+        }
+    }
+
     /// Directory Mappings changed: scan for roots again.
     pub fn rescan_roots(&mut self, cx: &mut Context<Self>) {
         self.roots.clear();
@@ -1055,6 +1076,10 @@ impl RepoModel {
         self._reload_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
+                    let unregistered = match project_root.as_deref() {
+                        Some(project) if known_roots.is_empty() => git::roots::unregistered(project),
+                        _ => Vec::new(),
+                    };
                     let paths = if known_roots.is_empty() {
                         let mut paths = project_root.as_deref().map(git::roots::detect).unwrap_or_default();
                         if paths.is_empty() {
@@ -1108,7 +1133,7 @@ impl RepoModel {
                     } else {
                         root_states.iter().map(|s| RootInfo { path: s.path.clone(), branch: s.refs.current_branch.clone() }).collect()
                     };
-                    anyhow::Ok((Snapshot { roots, root_states, web, refs, log, status, state, submodules }, repository, filter, sources))
+                    anyhow::Ok((Snapshot { roots, root_states, web, refs, log, status, state, submodules, unregistered }, repository, filter, sources))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -1144,6 +1169,9 @@ impl RepoModel {
                         this.web_repo = snapshot.web;
                         this.error = log_error;
                         this.keep_selection(cx);
+                        if !snapshot.unregistered.is_empty() && !std::mem::replace(&mut this.roots_offered, true) {
+                            cx.emit(RepoEvent::UnregisteredRoots(snapshot.unregistered));
+                        }
                     }
                     Err(error) => {
                         this.error = Some(error.to_string());

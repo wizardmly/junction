@@ -278,7 +278,7 @@ impl Default for Settings {
             project: ProjectSettings::default(),
             commit_group_by_directory: true,
             commit_group_by_module: false,
-            commit_group_by_repository: false,
+            commit_group_by_repository: true,
             commit_show_ignored: false,
         }
     }
@@ -462,7 +462,7 @@ impl Settings {
                 }
                 "commit_group_by_directory" => settings.commit_group_by_directory = flag,
                 "commit_group_by_module" => settings.commit_group_by_module = flag,
-                "commit_group_by_repository" => settings.commit_group_by_repository = flag,
+                "commit_group_by_root" => settings.commit_group_by_repository = flag,
                 "commit_show_ignored" => settings.commit_show_ignored = flag,
                 "update_clean" => settings.update_shelve = value == "shelve",
                 "sync_branches" => settings.sync_branches = flag,
@@ -554,7 +554,7 @@ impl Settings {
         ));
         let [l, r, b] = self.tool_window_sizes;
         text.push_str(&format!(
-            "theme_dark={}\ncompact_mode={}\ntool_windows={}\ntool_window_sizes={l},{r},{b}\ncommit_group_by_module={}\ncommit_group_by_repository={}\n",
+            "theme_dark={}\ncompact_mode={}\ntool_windows={}\ntool_window_sizes={l},{r},{b}\ncommit_group_by_module={}\ncommit_group_by_root={}\n",
             self.dark, self.compact, self.tool_windows, self.commit_group_by_module, self.commit_group_by_repository
         ));
         for (lang, command) in &self.language_servers {

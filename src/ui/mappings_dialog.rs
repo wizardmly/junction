@@ -14,15 +14,18 @@ use gpui_kit::{
     div, prelude::FluentBuilder as _, px,
 };
 
-use crate::git::roots::{self, Mappings};
+use crate::git::roots;
 use crate::model::RepoModel;
 use crate::theme::ActivePalette as _;
 
 pub struct MappingsView {
     model: Entity<RepoModel>,
     project: PathBuf,
-    detected: Vec<PathBuf>,
-    mappings: Mappings,
+    /// Registered roots (the project's own repository first).
+    registered: Vec<PathBuf>,
+    /// Repositories under the project that aren't registered, and whether
+    /// each was ignored (the balloon no longer offers it).
+    unregistered: Vec<(PathBuf, bool)>,
     error: Option<String>,
 }
 
@@ -31,9 +34,22 @@ impl MappingsView {
         path.strip_prefix(&self.project).map(PathBuf::from).unwrap_or_else(|_| path.clone())
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
-        let result = roots::save_mappings(&self.project, &self.mappings);
-        self.error = result.err().map(|e| e.to_string());
+    fn scan(&mut self) {
+        self.registered = roots::detect(&self.project);
+        let offered = roots::unregistered(&self.project);
+        self.unregistered = roots::scan_nested(&self.project)
+            .into_iter()
+            .filter(|p| !self.registered.contains(p))
+            .map(|p| {
+                let ignored = !offered.contains(&p);
+                (p, ignored)
+            })
+            .collect();
+    }
+
+    fn set(&mut self, path: PathBuf, add: bool, cx: &mut Context<Self>) {
+        self.error = roots::register(&self.project, &[path], add).err().map(|e| e.to_string());
+        self.scan();
         self.model.update(cx, |m, cx| m.rescan_roots(cx));
         cx.notify();
     }
@@ -54,12 +70,9 @@ impl MappingsView {
                     cx.notify();
                     return;
                 }
-                let relative = this.relative(&path);
-                this.mappings.removed.retain(|p| *p != relative);
-                if !this.detected.contains(&path) && !this.mappings.added.contains(&relative) {
-                    this.mappings.added.push(relative);
+                if !this.registered.contains(&path) {
+                    this.set(path, true, cx);
                 }
-                this.save(cx);
             })
             .ok();
         })
@@ -70,57 +83,45 @@ impl MappingsView {
 impl Render for MappingsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
-        let mut rows = v_flex().gap_px();
-        let added: Vec<PathBuf> = self.mappings.added.iter().map(|p| self.project.join(p)).collect();
-        for (ix, path) in self.detected.iter().chain(added.iter()).enumerate() {
-            let relative = self.relative(path);
-            let is_project = *path == self.project;
-            let removed = self.mappings.removed.contains(&relative);
-            let source = if is_project { "Project" } else if ix < self.detected.len() { "Detected" } else { "Added" };
-            let toggle_relative = relative.clone();
-            let is_added = ix >= self.detected.len();
-            rows = rows.child(
-                h_flex()
-                    .h(px(28.))
-                    .px_2()
-                    .gap_2()
-                    .text_sm()
-                    .rounded(px(3.))
-                    .child(Icon::new(icons::MODULE).small().text_color(palette.text_secondary))
-                    .child(
-                        div()
-                            .flex_1()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .when(removed, |el| el.line_through().text_color(palette.text_secondary))
-                            .child(if is_project { "<Project>".to_owned() } else { relative.display().to_string() }),
+        let row = |ix: usize, label: String, note: &'static str, button: Option<(&'static str, PathBuf, bool)>, cx: &mut Context<Self>| {
+            h_flex()
+                .h(px(28.))
+                .px_2()
+                .gap_2()
+                .text_sm()
+                .rounded(px(3.))
+                .child(Icon::new(icons::MODULE).small().text_color(palette.text_secondary))
+                .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
+                .child(div().w(px(70.)).text_xs().text_color(palette.text_secondary).child(note))
+                .when_some(button, |el, (label, path, add)| {
+                    el.child(
+                        Button::new(("mapping-toggle", ix))
+                            .xsmall()
+                            .outline()
+                            .label(label)
+                            .on_click(cx.listener(move |this, _, _, cx| this.set(path.clone(), add, cx))),
                     )
-                    .child(div().w(px(70.)).text_xs().text_color(palette.text_secondary).child(source))
-                    .when(!is_project, |el| {
-                        el.child(
-                            Button::new(("mapping-toggle", ix))
-                                .xsmall()
-                                .outline()
-                                .label(if removed { "Restore" } else { "Remove" })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if is_added {
-                                        this.mappings.added.retain(|p| *p != toggle_relative);
-                                    } else if !this.mappings.removed.contains(&toggle_relative) {
-                                        this.mappings.removed.push(toggle_relative.clone());
-                                    } else {
-                                        this.mappings.removed.retain(|p| *p != toggle_relative);
-                                    }
-                                    this.save(cx);
-                                })),
-                        )
-                    }),
-            );
+                })
+        };
+        let mut registered = v_flex().gap_px();
+        for (ix, path) in self.registered.clone().into_iter().enumerate() {
+            let is_project = path == self.project;
+            let label = if is_project { "<Project>".to_owned() } else { self.relative(&path).display().to_string() };
+            registered = registered.child(row(ix, label, if is_project { "Project" } else { "Git" }, (!is_project).then(|| ("Remove", path.clone(), false)), cx));
+        }
+        let mut unregistered = v_flex().gap_px();
+        for (ix, (path, ignored)) in self.unregistered.clone().into_iter().enumerate() {
+            let label = self.relative(&path).display().to_string();
+            unregistered = unregistered.child(row(1000 + ix, label, if ignored { "Ignored" } else { "Unregistered" }, Some(("Add", path.clone(), true)), cx));
         }
         v_flex()
             .gap_2()
             .child(div().text_sm().text_color(palette.text_secondary).child(format!("Git roots of {}", self.project.display())))
-            .child(div().p_1().rounded(px(4.)).border_1().border_color(palette.border).child(rows))
+            .child(div().p_1().rounded(px(4.)).border_1().border_color(palette.border).child(registered))
+            .when(!self.unregistered.is_empty(), |el| {
+                el.child(div().text_sm().text_color(palette.text_secondary).child("Unregistered roots"))
+                    .child(div().p_1().rounded(px(4.)).border_1().border_color(palette.border).child(unregistered))
+            })
             .child(h_flex().child(Button::new("mapping-add").small().outline().icon(icons::ADD).label("Add Root…").on_click(cx.listener(|this, _, _, cx| this.add(cx)))))
             .when_some(self.error.clone(), |el, e| el.child(div().text_sm().text_color(palette.status_conflict).child(e)))
     }
@@ -130,11 +131,9 @@ impl MappingsView {
     /// The project's roots (Settings › Version Control › Directory Mappings).
     pub fn new(model: Entity<RepoModel>, cx: &App) -> Option<Self> {
         let project = model.read(cx).project_root().map(PathBuf::from)?;
-        // A folder of repositories has no root of its own.
-        let mut detected = if project.join(".git").exists() { vec![project.clone()] } else { Vec::new() };
-        detected.extend(roots::scan_nested(&project));
-        let mappings = roots::load_mappings(&project);
-        Some(MappingsView { model, project, detected, mappings, error: None })
+        let mut view = MappingsView { model, project, registered: Vec::new(), unregistered: Vec::new(), error: None };
+        view.scan();
+        Some(view)
     }
 }
 

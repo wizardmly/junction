@@ -166,8 +166,8 @@ pub struct CommitView {
     file_order: Vec<String>,
     /// HEAD at the last refresh; a new commit refreshes the diff preview.
     head: Option<String>,
-    /// Group By › Repository: each root's branch, by its path prefix.
-    repo_branches: HashMap<String, String>,
+    /// Group By › Repository: each root's branch and Log color index, by its path prefix.
+    repo_branches: HashMap<String, (String, usize)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -383,9 +383,9 @@ impl CommitView {
         self.repo_branches = {
             let model = self.model.read(cx);
             if !model.root_states().is_empty() {
-                model.root_states().iter().map(|r| (r.prefix.clone(), r.refs.current_branch.clone().unwrap_or_else(|| "HEAD".into()))).collect()
+                model.root_states().iter().enumerate().map(|(ix, r)| (r.prefix.clone(), (r.refs.current_branch.clone().unwrap_or_else(|| "HEAD".into()), ix))).collect()
             } else {
-                model.refs().current_branch.clone().map(|b| (String::new(), b)).into_iter().collect()
+                model.refs().current_branch.clone().map(|b| (String::new(), (b, 0))).into_iter().collect()
             }
         };
         self.modules.clear();
@@ -1312,6 +1312,7 @@ impl CommitView {
 
         let tree_palette = palette.clone();
         let repo_branches = self.repo_branches.clone();
+        let multi_root = self.repo_branches.len() > 1;
         div()
             .flex_1()
             .min_h_0()
@@ -1415,6 +1416,10 @@ impl CommitView {
                             )
                             },
                         )
+                        // A multi-root project's repository node: its Log root color, as IntelliJ shows it.
+                        .when_some(repo_branch.as_ref().filter(|_| multi_root).map(|(_, ix)| *ix), |el, ix| {
+                            el.child(div().size(px(10.)).rounded_sm().bg(common::root_color(ix)))
+                        })
                         .when(!is_group, |el| {
                             el.child(
                                 Icon::new(match &file {
@@ -1434,7 +1439,7 @@ impl CommitView {
                                 .when(is_active, |el| el.font_weight(gpui_kit::FontWeight::BOLD))
                                 .child(item.label.clone()),
                         )
-                        .when_some(repo_branch, |el, branch| el.child(div().text_xs().text_color(palette.text_secondary).child(branch)))
+                        .when_some(repo_branch, |el, (branch, _)| el.child(div().text_xs().text_color(palette.text_secondary).child(branch)))
                         .when_some(file.as_ref().filter(|_| !by_directory).and_then(|f| f.rsplit_once('/')).map(|(dir, _)| dir.to_owned()), |el, dir| {
                             el.child(div().text_xs().text_color(palette.text_secondary).child(dir))
                         })

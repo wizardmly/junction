@@ -290,12 +290,20 @@ impl LogView {
                         })
                     }));
                     if !roots.is_empty() {
-                        menu = menu.separator().label("Roots");
+                        // Each root with its Log color, as IntelliJ's Paths popup shows them.
+                        menu = menu.separator();
                         let all: Vec<std::path::PathBuf> = roots.iter().map(|(p, _)| p.clone()).collect();
-                        for (path, name) in &roots {
+                        for (ix, (path, name)) in roots.iter().enumerate() {
                             let shown = current_roots.is_empty() || current_roots.contains(path);
                             let (entity, path, all, current_roots) = (entity.clone(), path.clone(), all.clone(), current_roots.clone());
-                            menu = menu.item(PopupMenuItem::new(name.clone()).checked(shown).on_click(move |_, _, cx| {
+                            let name = name.clone();
+                            let item = PopupMenuItem::element(move |_, _| {
+                                gpui_kit::component::h_flex()
+                                    .gap_2()
+                                    .child(div().size(px(10.)).rounded_sm().bg(crate::ui::common::root_color(ix)))
+                                    .child(name.clone())
+                            });
+                            menu = menu.item(item.checked(shown).on_click(move |_, _, cx| {
                                 // Toggles the root; at least one stays shown.
                                 let mut shown: Vec<std::path::PathBuf> = if current_roots.is_empty() { all.clone() } else { current_roots.clone() };
                                 if let Some(ix) = shown.iter().position(|p| *p == path) {

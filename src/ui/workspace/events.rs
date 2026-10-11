@@ -42,6 +42,9 @@ impl Workspace {
             this.tools.open(ToolWindow::Changes);
             cx.notify();
         }
+        if let RepoEvent::UnregisteredRoots(roots) = event {
+            this.offer_unregistered_roots(roots.clone(), window, cx);
+        }
         if let RepoEvent::Notify { title, message, error } = event {
             // Quiet operations (Stage / Unstage) report only failures.
             if message.is_empty() && !*error {
@@ -241,5 +244,47 @@ impl Workspace {
                 this.unread_notifications += 1;
             }
         }
+    }
+
+    /// IntelliJ's "Unregistered VCS roots detected" balloon: Add Roots,
+    /// Configure (Directory Mappings) or Ignore.
+    fn offer_unregistered_roots(&mut self, roots: Vec<std::path::PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let model = self.model.clone();
+        let Some(project) = model.read(cx).project_root().map(|p| p.to_path_buf()) else { return };
+        let names: Vec<String> = roots.iter().map(|r| crate::git::roots::label(&project, r)).collect();
+        let message = if roots.len() == 1 {
+            format!("The directory {} is under Git, but is not registered in the Settings.", names[0])
+        } else {
+            format!("The following directories are roots of Git repositories, but they are not registered in the Settings: {}", names.join(", "))
+        };
+        let notification = Notification::info(message)
+            .title(if roots.len() == 1 { "Unregistered VCS root detected" } else { "Unregistered VCS roots detected" })
+            .autohide(false)
+            .content(move |_, _, cx| {
+                let palette = cx.palette().clone();
+                let note = cx.entity();
+                let link = |id: &'static str, label: &'static str| {
+                    div().id(id).text_sm().text_color(palette.link).cursor_pointer().child(label)
+                };
+                let (add_model, add_roots, add_note) = (model.clone(), roots.clone(), note.clone());
+                let (ignore_model, ignore_roots, ignore_note) = (model.clone(), roots.clone(), note.clone());
+                let (configure_model, configure_note) = (model.clone(), note.clone());
+                h_flex()
+                    .gap_4()
+                    .child(link("roots-add", if roots.len() == 1 { "Add Root" } else { "Add Roots" }).on_click(move |_, window, cx| {
+                        add_model.update(cx, |m, cx| m.register_roots(add_roots.clone(), true, cx));
+                        add_note.update(cx, |n, cx| n.dismiss(window, cx));
+                    }))
+                    .child(link("roots-configure", "Configure").on_click(move |_, window, cx| {
+                        configure_note.update(cx, |n, cx| n.dismiss(window, cx));
+                        crate::ui::mappings_dialog::directory_mappings(configure_model.clone(), window, cx);
+                    }))
+                    .child(link("roots-ignore", "Ignore").on_click(move |_, window, cx| {
+                        ignore_model.update(cx, |m, cx| m.register_roots(ignore_roots.clone(), false, cx));
+                        ignore_note.update(cx, |n, cx| n.dismiss(window, cx));
+                    }))
+                    .into_any_element()
+            });
+        window.push_notification(notification, cx);
     }
 }

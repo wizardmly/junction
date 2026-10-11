@@ -187,7 +187,14 @@ pub fn stat(path: &Path) -> Option<(u64, u64)> {
 /// repository itself (a folder of roots) adds its own loose files.
 pub fn list_files(root: &Path) -> Vec<String> {
     let mut files = git_files(root).unwrap_or_else(|| loose_files(root));
-    for nested in crate::git::roots::detect(root) {
+    // (Unregistered nested repositories are project files too.)
+    let mut nested_roots = crate::git::roots::detect(root);
+    for found in crate::git::roots::scan_nested(root) {
+        if !nested_roots.contains(&found) {
+            nested_roots.push(found);
+        }
+    }
+    for nested in nested_roots {
         let Ok(rel) = nested.strip_prefix(root) else { continue };
         if rel.as_os_str().is_empty() {
             continue;
@@ -616,6 +623,8 @@ mod tests {
         std::fs::write(dir.join("ws/README.md"), "x").unwrap();
         assert_eq!(list_files(&dir.join("proj")), vec![".gitignore", "a.kt", "libs/core/b.kt"]);
         assert_eq!(list_files(&dir.join("ws")), vec!["README.md", "app/c.kt", "lib/src/d.kt"]);
+        // (Opening the folder registered its repositories.)
+        let _ = std::fs::remove_file(crate::git::roots::mappings_file(&dir.join("ws")).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

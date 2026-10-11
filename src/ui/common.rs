@@ -285,11 +285,8 @@ pub fn grouped_file_tree(
                 })
                 .collect()
         }
-        Some(roots) => {
-            let name = roots.first().map(|(_, name)| name.as_str()).unwrap_or_default();
-            vec![TreeItem::new(format!("{scope}{REPO_PREFIX}"), name.to_owned()).expanded(expanded).children(by_module(paths))]
-        }
-        None => by_module(paths),
+        // One root: IntelliJ shows no repository node.
+        _ => by_module(paths),
     }
 }
 

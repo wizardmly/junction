@@ -12,8 +12,9 @@ use super::Repository;
 pub const SKIP: [&str; 8] = [".git", "node_modules", "target", "build", ".gradle", ".idea", "Pods", ".dart_tool"];
 const MAX_DEPTH: usize = 3;
 
-/// User edits to the detected roots, kept in `<gitdir>/junction/roots` as
-/// `+path` (added) and `-path` (removed) lines, paths relative to the project.
+/// The project's Directory Mappings, kept in `<gitdir>/junction/roots` as
+/// `+path` (registered) and `-path` (ignored, not offered again) lines,
+/// paths relative to the project.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Mappings {
     pub added: Vec<PathBuf>,
@@ -22,7 +23,7 @@ pub struct Mappings {
 
 /// Where a project's mappings live: in its repository, or (a folder that
 /// only holds repositories) in Junction's config folder, keyed by its path.
-fn mappings_file(project: &Path) -> Option<PathBuf> {
+pub(crate) fn mappings_file(project: &Path) -> Option<PathBuf> {
     match Repository::discover(project, Default::default()) {
         Ok(repository) if repository.root() == project => Some(repository.git_dir().join("junction").join("roots")),
         _ => {
@@ -90,28 +91,46 @@ pub fn scan_nested(root: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Every root of the project: the project's own repository first (unless
-/// the project is a folder that only holds repositories, as IntelliJ opens
-/// a directory of sibling roots), then the nested ones.
+/// Every registered root of the project: the project's own repository
+/// first (unless the project is a folder that only holds repositories),
+/// then the mapped ones. As in IntelliJ, a nested repository is used only
+/// once registered (see `unregistered`); a folder of repositories opened
+/// for the first time registers all of them.
 pub fn detect(project: &Path) -> Vec<PathBuf> {
     let root = project.to_path_buf();
-    let mappings = load_mappings(project);
-    let mut roots = if root.join(".git").exists() { vec![root.clone()] } else { Vec::new() };
-    let mut push = |p: PathBuf| {
-        if !roots.contains(&p) && !mappings.removed.iter().any(|r| root.join(r) == p) {
-            roots.push(p);
-        }
-    };
-    for path in scan_nested(&root) {
-        push(path);
+    let mut mappings = load_mappings(project);
+    if !root.join(".git").exists() && mappings_file(project).is_some_and(|f| !f.exists()) {
+        mappings.added = scan_nested(&root).iter().filter_map(|p| p.strip_prefix(&root).ok().map(PathBuf::from)).collect();
+        let _ = save_mappings(project, &mappings);
     }
+    let mut roots = if root.join(".git").exists() { vec![root.clone()] } else { Vec::new() };
     for added in &mappings.added {
         let p = if added.is_absolute() { added.clone() } else { root.join(added) };
-        if p.join(".git").exists() {
-            push(p);
+        if p.join(".git").exists() && !roots.contains(&p) {
+            roots.push(p);
         }
     }
     roots
+}
+
+/// Repositories under the project that are neither registered nor ignored:
+/// IntelliJ's "Unregistered VCS roots detected" balloon offers to add them.
+pub fn unregistered(project: &Path) -> Vec<PathBuf> {
+    let mappings = load_mappings(project);
+    let known = |p: &Path| mappings.added.iter().chain(&mappings.removed).any(|r| project.join(r) == p);
+    scan_nested(project).into_iter().filter(|p| !known(p)).collect()
+}
+
+/// Registers roots (Add Roots), or stops offering them (Ignore).
+pub fn register(project: &Path, roots: &[PathBuf], add: bool) -> Result<()> {
+    let mut mappings = load_mappings(project);
+    for root in roots {
+        let relative = root.strip_prefix(project).map(PathBuf::from).unwrap_or_else(|_| root.clone());
+        mappings.added.retain(|p| *p != relative);
+        mappings.removed.retain(|p| *p != relative);
+        if add { mappings.added.push(relative) } else { mappings.removed.push(relative) }
+    }
+    save_mappings(project, &mappings)
 }
 
 /// The short label IntelliJ shows for a root: its path relative to the
@@ -141,9 +160,14 @@ mod tests {
 
         let repo = Repository::discover(&dir, crate::git::GitConsole::default()).unwrap();
         save_mappings(repo.root(), &Mappings { added: vec![PathBuf::from("deep/one/two/three")], removed: vec![PathBuf::from("libs/b")] }).unwrap();
+        // Nested repositories are used once registered; the rest are offered.
+        assert_eq!(detect(repo.root()), vec![repo.root().to_path_buf(), repo.root().join("deep/one/two/three")]);
+        assert_eq!(unregistered(repo.root()), vec![repo.root().join("libs/a")]);
+        register(repo.root(), &[repo.root().join("libs/a")], true).unwrap();
         let roots = detect(repo.root());
-        assert_eq!(roots, vec![repo.root().to_path_buf(), repo.root().join("libs/a"), repo.root().join("deep/one/two/three")]);
-        assert_eq!(label(repo.root(), &roots[1]), "libs/a");
+        assert_eq!(roots, vec![repo.root().to_path_buf(), repo.root().join("deep/one/two/three"), repo.root().join("libs/a")]);
+        assert!(unregistered(repo.root()).is_empty());
+        assert_eq!(label(repo.root(), &roots[2]), "libs/a");
     }
 
     #[test]
@@ -156,10 +180,12 @@ mod tests {
             std::process::Command::new("git").args(["init", "-q"]).current_dir(&p).output().unwrap();
         }
         std::fs::create_dir_all(dir.join("plain")).unwrap();
+        // Opened the first time: every repository is registered.
         assert_eq!(detect(&dir), vec![dir.join("app"), dir.join("lib"), dir.join("docs/site")]);
-        save_mappings(&dir, &Mappings { added: Vec::new(), removed: vec![PathBuf::from("lib")] }).unwrap();
+        register(&dir, &[dir.join("lib")], false).unwrap();
         assert_eq!(detect(&dir), vec![dir.join("app"), dir.join("docs/site")]);
-        save_mappings(&dir, &Mappings::default()).unwrap();
+        assert!(unregistered(&dir).is_empty());
+        let _ = std::fs::remove_file(mappings_file(&dir).unwrap());
         assert_eq!(label(&dir, &dir.join("docs/site")), "docs/site");
         let _ = std::fs::remove_dir_all(&dir);
     }
