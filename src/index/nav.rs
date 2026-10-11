@@ -578,25 +578,7 @@ pub fn usages(index: &ProjectIndex, root: &Path, word: &str, lang: Option<Lang>)
     }
     // Each file's comments and string literals: text there isn't a usage.
     // Files are read and scanned on every core.
-    let usages_in = |path: &str, entry: &super::store::FileEntry, hits: &[(u32, usize, String)]| -> Vec<Usage> {
-        let source = std::fs::read_to_string(root.join(path)).unwrap_or_default();
-        let starts: Vec<usize> = std::iter::once(0).chain(source.match_indices('\n').map(|(i, _)| i + 1)).collect();
-        let skip = comments_and_strings(&source, entry.lang);
-        let mut out = Vec::new();
-        for (line0, byte_col, text) in hits {
-            if let Some(start) = starts.get(*line0 as usize) {
-                let at = start + byte_col;
-                if skip.binary_search_by(|r| if r.end <= at { std::cmp::Ordering::Less } else if r.start > at { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal }).is_ok() {
-                    continue;
-                }
-            }
-            let col = text.get(..*byte_col).map_or(0, |s| s.encode_utf16().count() as u32);
-            let is_decl = entry.symbols.iter().any(|s| s.line == *line0 && s.name == word);
-            let group = if is_decl { "Declarations".to_owned() } else { entry.lang.name().to_owned() };
-            out.push(Usage { path: path.to_owned(), line: *line0, col, text: text.trim().to_owned(), group });
-        }
-        out
-    };
+    let usages_in = |path: &str, entry: &super::store::FileEntry, hits: &[(u32, usize, String)]| usages_in_file(root, path, entry, hits, word);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8).min(groups.len().max(1));
     let mut per_file: Vec<(usize, Vec<Usage>)> = std::thread::scope(|scope| {
@@ -627,6 +609,68 @@ pub fn usages(index: &ProjectIndex, root: &Path, word: &str, lang: Option<Lang>)
     };
     out.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.group.cmp(&b.group)).then(a.path.cmp(&b.path)).then(a.line.cmp(&b.line)));
     out
+}
+
+/// The usages among `hits` (0-based line, byte column, line text) in one
+/// file: not in its comments or strings, its declarations marked.
+fn usages_in_file(root: &Path, path: &str, entry: &super::store::FileEntry, hits: &[(u32, usize, String)], word: &str) -> Vec<Usage> {
+    let source = std::fs::read_to_string(root.join(path)).unwrap_or_default();
+    let starts: Vec<usize> = std::iter::once(0).chain(source.match_indices('\n').map(|(i, _)| i + 1)).collect();
+    let skip = comments_and_strings(&source, entry.lang);
+    let mut out = Vec::new();
+    for (line0, byte_col, text) in hits {
+        if let Some(start) = starts.get(*line0 as usize) {
+            let at = start + byte_col;
+            if skip.binary_search_by(|r| if r.end <= at { std::cmp::Ordering::Less } else if r.start > at { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal }).is_ok() {
+                continue;
+            }
+        }
+        let col = text.get(..*byte_col).map_or(0, |s| s.encode_utf16().count() as u32);
+        let is_decl = entry.symbols.iter().any(|s| s.line == *line0 && s.name == word);
+        let group = if is_decl { "Declarations".to_owned() } else { entry.lang.name().to_owned() };
+        out.push(Usage { path: path.to_owned(), line: *line0, col, text: text.trim().to_owned(), group });
+    }
+    out
+}
+
+/// Usages of `word` in library files (absolute paths), as IntelliJ's
+/// "Project and Libraries" scope adds them when searching from a library.
+pub fn library_usages(index: &ProjectIndex, files: &[String], word: &str) -> Vec<Usage> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
+    let mut found: Vec<(usize, Vec<Usage>)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(path) = files.get(i) else { break };
+                        let Some(entry) = index.file(path) else { continue };
+                        let Ok(text) = std::fs::read_to_string(path) else { continue };
+                        if !text.contains(word) {
+                            continue;
+                        }
+                        let mut hits = Vec::new();
+                        for (n, line) in text.lines().enumerate() {
+                            for (at, _) in line.match_indices(word) {
+                                let before = line[..at].chars().next_back();
+                                let after = line[at + word.len()..].chars().next();
+                                if !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char) {
+                                    hits.push((n as u32, at, line.to_owned()));
+                                }
+                            }
+                        }
+                        done.push((i, usages_in_file(Path::new("/"), path, entry, &hits, word)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|w| w.join().unwrap_or_default()).collect()
+    });
+    found.sort_by_key(|(i, _)| *i);
+    found.into_iter().flat_map(|(_, u)| u).collect()
 }
 
 /// Byte ranges of the comments and string literals in `text`, in order.

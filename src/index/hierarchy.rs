@@ -38,21 +38,99 @@ pub struct GutterMark {
     pub kind: MarkKind,
     /// The declaration's name, for the popup title.
     pub name: String,
+    /// Its parameter types, "(Bundle?)", for a function; filled from the
+    /// file's text.
+    pub signature: String,
     /// Where the marker leads: implementations, or the super declaration.
     pub targets: Vec<Target>,
 }
 
 impl GutterMark {
-    /// IntelliJ's popup title.
-    pub fn title(&self) -> String {
+    /// IntelliJ's popup title, Kotlin's wording in a Kotlin file:
+    /// "Choose Implementation of onCreate(Bundle?) (6 found)".
+    pub fn title(&self, kotlin: bool) -> String {
         let types = self.targets.first().is_some_and(|t| t.label.split(' ').next().is_some_and(|k| k != "method" && k != "function" && k != "property" && k != "field"));
-        match self.kind {
-            MarkKind::Implemented => format!("Choose Implementation of {}", self.name),
-            MarkKind::Overridden if types => format!("Choose Subclass of {}", self.name),
-            MarkKind::Overridden => format!("Choose Overriding Method of {}", self.name),
-            MarkKind::Implementing | MarkKind::Overriding => format!("Choose Super Method of {}", self.name),
+        let name = format!("{}{}", self.name, self.signature);
+        let n = self.targets.len();
+        let what = match self.kind {
+            MarkKind::Implemented if types => "Choose Implementation of",
+            MarkKind::Overridden if types => "Choose Subclass of",
+            MarkKind::Implemented => "Choose Implementation of",
+            MarkKind::Overridden if kotlin => "Choose Implementation of",
+            MarkKind::Overridden => "Choose Overriding Method of",
+            MarkKind::Implementing | MarkKind::Overriding => "Choose Super Method of",
+        };
+        format!("{what} {name} ({n} found)")
+    }
+}
+
+/// "(Bundle?, Int)": the parameter types of the function named `name` whose
+/// declaration starts on `line`.
+pub fn signature(text: &str, line: u32, name: &str) -> String {
+    let Some(start) = (if line == 0 { Some(0) } else { text.match_indices('\n').nth(line as usize - 1).map(|(i, _)| i + 1) }) else { return String::new() };
+    let rest = &text[start..];
+    let Some(at) = rest.find(&format!("{name}(")).or_else(|| rest.find(&format!("{name} ("))).filter(|i| *i < rest.find('\n').unwrap_or(rest.len())) else { return String::new() };
+    let open = start + at + rest[at..].find('(').unwrap_or(0);
+    let bytes = text.as_bytes();
+    let (mut depth, mut end) = (0i32, open);
+    for (i, b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'(' | b'<' | b'[' | b'{' => depth += 1,
+            b')' | b'>' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+        if i - open > 2000 {
+            return String::new();
         }
     }
+    if end <= open {
+        return String::new();
+    }
+    // Split at top-level commas.
+    let inner = &text[open + 1..end];
+    let mut params = Vec::new();
+    let (mut depth, mut from) = (0i32, 0usize);
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' | '<' | '[' | '{' => depth += 1,
+            ')' | '>' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                params.push(&inner[from..i]);
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    params.push(&inner[from..]);
+    let types: Vec<String> = params
+        .iter()
+        .map(|p| p.split('=').next().unwrap_or(p).trim())
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            // Drop annotations.
+            let p = p.split_whitespace().filter(|w| !w.starts_with('@')).collect::<Vec<_>>().join(" ");
+            match p.split_once(':') {
+                // Kotlin / Swift / TS: `name: Type`.
+                Some((_, ty)) => ty.trim().to_owned(),
+                // Java / C: `final Type name`.
+                None => {
+                    let words: Vec<&str> = p.split_whitespace().filter(|w| !matches!(*w, "final" | "const" | "vararg")).collect();
+                    match words.len() {
+                        0 => String::new(),
+                        1 => words[0].to_owned(),
+                        n => words[..n - 1].join(" "),
+                    }
+                }
+            }
+        })
+        .collect();
+    format!("({})", types.join(", "))
 }
 
 const LIMIT: usize = 500;
@@ -112,10 +190,12 @@ fn subtypes<'a>(index: &'a ProjectIndex, name: &str) -> Vec<(&'a str, &'a FileEn
     out
 }
 
-/// As IntelliJ lists them: by class name, then location.
+/// As IntelliJ lists them: the project's before libraries', by class
+/// name, then location.
 fn sort(targets: &mut [Target]) {
     targets.sort_by(|a, b| {
-        let key = |t: &Target| (t.container.clone().unwrap_or_default(), t.name.clone(), t.path.clone(), t.line);
+        // The project's first, then libraries'.
+        let key = |t: &Target| (ProjectIndex::is_external(&t.path), t.container.clone().unwrap_or_default(), t.name.clone(), t.path.clone(), t.line);
         key(a).cmp(&key(b))
     });
 }
@@ -165,7 +245,7 @@ pub fn gutter_marks(index: &ProjectIndex, path: &str, symbols: &[Symbol]) -> Vec
             if !targets.is_empty() {
                 sort(&mut targets);
                 let kind = if is_abstract(s.kind) { MarkKind::Implemented } else { MarkKind::Overridden };
-                out.push(GutterMark { line: s.line, kind, name: s.name.clone(), targets });
+                out.push(GutterMark { line: s.line, kind, name: s.name.clone(), signature: String::new(), targets });
             }
             continue;
         }
@@ -199,7 +279,7 @@ pub fn gutter_marks(index: &ProjectIndex, path: &str, symbols: &[Symbol]) -> Vec
         if !targets.is_empty() {
             sort(&mut targets);
             let kind = if s.decl || abstract_owner { MarkKind::Implemented } else { MarkKind::Overridden };
-            out.push(GutterMark { line: s.line, kind, name: s.name.clone(), targets });
+            out.push(GutterMark { line: s.line, kind, name: s.name.clone(), signature: String::new(), targets });
         }
 
         // Up: the nearest supertype declaring the same member.
@@ -247,7 +327,7 @@ pub fn gutter_marks(index: &ProjectIndex, path: &str, symbols: &[Symbol]) -> Vec
         }
         if !found.is_empty() {
             let kind = if found.iter().any(|(_, implements)| *implements) { MarkKind::Implementing } else { MarkKind::Overriding };
-            out.push(GutterMark { line: s.line, kind, name: s.name.clone(), targets: found.into_iter().map(|(t, _)| t).collect() });
+            out.push(GutterMark { line: s.line, kind, name: s.name.clone(), signature: String::new(), targets: found.into_iter().map(|(t, _)| t).collect() });
         }
     }
     out

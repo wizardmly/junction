@@ -724,6 +724,7 @@ impl FileEditor {
         let this = cx.entity().downgrade();
         let dark = cx.palette().dark;
         let marks = self.hierarchy.clone();
+        let kotlin = self.path.ends_with(".kt") || self.path.ends_with(".kts");
         canvas(
             |_, _, _| {},
             move |bounds, _, window, cx| {
@@ -765,7 +766,7 @@ impl FileEditor {
                     let mark = &marks[i].2;
                     cx.stop_propagation();
                     // The popup's corner at the icon's bottom right, as IntelliJ's.
-                    let event = FileEditorEvent::ChooseTargets { title: mark.title(), targets: mark.targets.clone(), at: rect.bottom_right() };
+                    let event = FileEditorEvent::ChooseTargets { title: mark.title(kotlin), targets: mark.targets.clone(), at: rect.bottom_right() };
                     this.update(cx, |_, cx| cx.emit(event)).ok();
                     window.refresh();
                 });

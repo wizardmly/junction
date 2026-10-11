@@ -374,7 +374,12 @@ impl CodeIndex {
             }
             let mut found = {
                 let index = index.read().unwrap();
-                nav::usages(&index, &root, &word, lang)
+                let mut found = nav::usages(&index, &root, &word, lang);
+                // From a library's source: that library's usages too.
+                if let Some(library) = ProjectIndex::is_external(&path).then(|| index.external.library_of(&path)).flatten() {
+                    found.extend(nav::library_usages(&index, &library.files, &word));
+                }
+                found
             };
             // The server's references are exact; mark them and add any the
             // text search missed.
@@ -406,7 +411,13 @@ impl CodeIndex {
         let index = self.index.clone();
         cx.background_spawn(async move {
             let symbols = super::symbols::extract(lang, &text);
-            super::hierarchy::gutter_marks(&index.read().unwrap(), &path, &symbols)
+            let mut marks = super::hierarchy::gutter_marks(&index.read().unwrap(), &path, &symbols);
+            for mark in &mut marks {
+                if symbols.iter().any(|s| s.line == mark.line && s.name == mark.name && s.kind.is_callable()) {
+                    mark.signature = super::hierarchy::signature(&text, mark.line, &mark.name);
+                }
+            }
+            marks
         })
     }
 
@@ -527,7 +538,7 @@ pub enum Nav {
 fn symbol_declared_at(index: &ProjectIndex, path: &str, text: &str, offset: usize, prototypes: bool) -> bool {
     let Some((word, range)) = nav::word_at(text, offset) else { return false };
     let (line, col) = nav::position(text, range.start);
-    index.files.get(path).is_some_and(|e| {
+    index.file(path).is_some_and(|e| {
         let c_like = matches!(e.lang, Lang::C | Lang::Cpp | Lang::ObjC);
         e.symbols.iter().any(|s| s.line == line && s.col == col && s.name == word && (prototypes || !(c_like && s.decl)))
     })

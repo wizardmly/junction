@@ -86,7 +86,52 @@ pub fn choose_target(
         }
         None => 640.,
     };
-    open_picker(title, items, vec![0; n], locations, false, width, at, on_pick, window, cx);
+    let picker = Picker { title, items, indents: vec![0; n], locations, rich: Vec::new(), on_find: None, filterable: false, width, at };
+    open_picker(picker, on_pick, window, cx);
+}
+
+/// A row of IntelliJ's implementation choosers: "LeanbackActivity
+/// (top.demo.activities)" with the class and visibility icons, and the
+/// module or library on the right.
+#[derive(Clone)]
+pub struct SymbolRow {
+    pub name: String,
+    pub package: Option<String>,
+    pub icon: Icon,
+    pub visibility: Option<Icon>,
+    /// "My_TV.app.main", "Gradle: androidx.activity:activity:1.9.0@aar (classes.jar)".
+    pub location: String,
+    pub library: bool,
+}
+
+/// "Choose Implementation of …": the gutter markers' popup, as IntelliJ's,
+/// with a button that moves the list to the Find tool window.
+#[allow(clippy::too_many_arguments)]
+pub fn choose_symbol(
+    title: String,
+    targets: Vec<Target>,
+    rows: Vec<SymbolRow>,
+    at: Option<gpui_kit::Point<gpui_kit::Pixels>>,
+    on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>,
+    on_find: Rc<dyn Fn(&mut Window, &mut App)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let items: Vec<FoundItem> = targets
+        .into_iter()
+        .zip(&rows)
+        .map(|(t, r)| FoundItem { title: r.name.clone(), detail: r.package.clone().unwrap_or_default(), icon: r.icon.clone(), target: t })
+        .collect();
+    let n = items.len();
+    // As wide as the rows: the name and package in the editor font, the
+    // location in the UI's.
+    let width = rows
+        .iter()
+        .map(|r| (r.name.chars().count() + r.package.as_ref().map_or(0, |p| p.chars().count() + 3)) as f32 * 8.2 + r.location.chars().count().min(80) as f32 * 7. + 110.)
+        .fold(title.chars().count() as f32 * 7.8 + 90., f32::max)
+        .clamp(360., 980.);
+    let picker = Picker { title: title.into(), items, indents: vec![0; n], locations: Vec::new(), rich: rows, on_find: Some(on_find), filterable: false, width, at };
+    open_picker(picker, on_pick, window, cx);
 }
 
 /// A list popup: Choose Declaration, Show Usages, Recent Files (Ctrl+E),
@@ -103,6 +148,8 @@ pub struct ListPicker {
     indents: Vec<usize>,
     /// Right-aligned text per item (a location).
     locations: Vec<String>,
+    /// IntelliJ's symbol rows, when set (implementation choosers).
+    rich: Vec<SymbolRow>,
     scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -152,6 +199,38 @@ impl Render for ListPicker {
             let item = &self.items[i];
             let indent = if filtered { 0 } else { self.indents.get(i).copied().unwrap_or(0) };
             let location = self.locations.get(i).cloned().unwrap_or_default();
+            if let Some(rich) = self.rich.get(i) {
+                let mono = gpui_kit::component::ActiveTheme::theme(&**cx).mono_font_family.clone();
+                rows.push(
+                    h_flex()
+                        .id(("pick", row))
+                        .flex_none()
+                        .h(px(24.))
+                        .px(px(6.))
+                        .gap(px(4.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .when(row == self.selected, |el| el.bg(palette.selection))
+                        .when(row != self.selected, |el| el.hover(|el| el.bg(palette.hover)))
+                        .child(common::icon(rich.icon.clone()))
+                        .child(div().w(px(16.)).flex_none().when_some(rich.visibility.clone(), |el, v| el.child(common::icon(v))))
+                        .child(
+                            h_flex()
+                                .ml(px(2.))
+                                .flex_shrink_0()
+                                .whitespace_nowrap()
+                                .font_family(mono)
+                                .text_sm()
+                                .child(rich.name.clone())
+                                .when_some(rich.package.clone(), |el, p| el.child(div().ml(px(8.)).text_color(palette.text_secondary).child(format!("({p})")))),
+                        )
+                        .child(div().flex_1().min_w(px(16.)))
+                        .child(div().flex_shrink(1.).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().text_color(palette.text_secondary).child(rich.location.clone()))
+                        .child(common::icon(if rich.library { Icon::from(icons::LIBRARY_FOLDER) } else { Icon::from(icons::MODULE) }).flex_none())
+                        .on_click(cx.listener(move |this, _, window, cx| this.pick(row, window, cx))),
+                );
+                continue;
+            }
             rows.push(
                 h_flex()
                     .id(("pick", row))
@@ -203,22 +282,26 @@ pub fn pick_from_list(
     window: &mut Window,
     cx: &mut App,
 ) {
-    open_picker(title.into(), items, indents, Vec::new(), true, 560., None, on_pick, window, cx);
+    let picker = Picker { title: title.into(), items, indents, locations: Vec::new(), rich: Vec::new(), on_find: None, filterable: true, width: 560., at: None };
+    open_picker(picker, on_pick, window, cx);
 }
 
-#[allow(clippy::too_many_arguments)]
-fn open_picker(
+/// What a list popup shows.
+struct Picker {
     title: gpui_kit::SharedString,
     items: Vec<FoundItem>,
     indents: Vec<usize>,
     locations: Vec<String>,
+    rich: Vec<SymbolRow>,
+    /// The title bar's "Open in Find Tool Window", which replaces the close button.
+    on_find: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     filterable: bool,
     width: f32,
     at: Option<gpui_kit::Point<gpui_kit::Pixels>>,
-    on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>,
-    window: &mut Window,
-    cx: &mut App,
-) {
+}
+
+fn open_picker(picker: Picker, on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>, window: &mut Window, cx: &mut App) {
+    let Picker { title, items, indents, locations, rich, on_find, filterable, width, at } = picker;
     let view = cx.new(|cx| {
         let mut subscriptions = Vec::new();
         let input = filterable.then(|| {
@@ -231,14 +314,32 @@ fn open_picker(
             input
         });
         let shown = (0..items.len()).collect();
-        ListPicker { items, shown, input, focus: cx.focus_handle(), selected: 0, on_pick, indents, locations, scroll: ScrollHandle::new(), _subscriptions: subscriptions }
+        ListPicker { items, shown, input, focus: cx.focus_handle(), selected: 0, on_pick, indents, locations, rich, scroll: ScrollHandle::new(), _subscriptions: subscriptions }
     });
     // Enter reaches the dialog as its Confirm: open the selected row (the
     // pick closes the dialog itself, before the target opens and takes focus).
     let (confirm, shown) = (view.clone(), view.clone());
     window.open_dialog(cx, move |dialog, _, _| {
         let confirm = confirm.clone();
-        let dialog = dialog.title(title.clone()).w(px(width)).child(shown.clone()).on_ok(move |_, window, cx| {
+        let dialog = match on_find.clone() {
+            // IntelliJ's implementation chooser: a centered bold title, and
+            // "Open in Find Tool Window" where the close button would be.
+            Some(on_find) => dialog.close_button(false).title(
+                h_flex()
+                    .w_full()
+                    .relative()
+                    .justify_center()
+                    .child(div().text_sm().font_weight(gpui_kit::FontWeight::BOLD).child(title.clone()))
+                    .child(
+                        div().absolute().right_0().child(common::tool_button("open-in-find", icons::OPEN_IN_TOOL_WINDOW, "Open in Find Tool Window").on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            on_find(window, cx);
+                        })),
+                    ),
+            ),
+            None => dialog.title(title.clone()),
+        };
+        let dialog = dialog.w(px(width)).child(shown.clone()).on_ok(move |_, window, cx| {
             confirm.update(cx, |this, cx| this.pick(this.selected, window, cx));
             false
         });

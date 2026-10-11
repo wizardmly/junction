@@ -549,14 +549,7 @@ impl ProjectView {
                 };
                 let key = format!("{path}#{qualified}");
                 let nested = types.iter().any(|s| s.container.as_deref() == Some(qualified.as_str()));
-                let icon = match (symbol.kind, symbol.detail.as_deref()) {
-                    (_, Some("annotation")) => ClassIcon::Annotation,
-                    (_, Some("object")) => ClassIcon::Object,
-                    (_, Some("abstract")) => ClassIcon::Abstract,
-                    (SymbolKind::Interface | SymbolKind::Protocol | SymbolKind::Trait, _) => ClassIcon::Interface,
-                    (SymbolKind::Enum, _) => ClassIcon::Enum,
-                    _ => ClassIcon::Class,
-                };
+                let icon = class_kind(symbol);
                 out.push(Row {
                     leaf: !nested,
                     library: true,
@@ -1105,6 +1098,22 @@ fn file_type_icon(name: &str, palette: &crate::theme::Palette) -> gpui_kit::AnyE
             .child(Icon::new(common::file_icon(name)).size(px(14.)).text_color(k.gray)).into_any_element(),
     };
     as_icon(icon)
+}
+
+fn class_kind(symbol: &Symbol) -> ClassIcon {
+    match (symbol.kind, symbol.detail.as_deref()) {
+        (_, Some("annotation")) => ClassIcon::Annotation,
+        (_, Some("object")) => ClassIcon::Object,
+        (_, Some("abstract")) => ClassIcon::Abstract,
+        (SymbolKind::Interface | SymbolKind::Protocol | SymbolKind::Trait, _) => ClassIcon::Interface,
+        (SymbolKind::Enum, _) => ClassIcon::Enum,
+        _ => ClassIcon::Class,
+    }
+}
+
+/// A type's icon as the Project view draws it.
+pub fn type_icon(symbol: &Symbol, kotlin: bool) -> AsIcon {
+    class_icon(class_kind(symbol), kotlin)
 }
 
 /// Android Studio's class icons; Kotlin's carry its mark.

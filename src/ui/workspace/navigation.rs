@@ -50,6 +50,72 @@ impl Workspace {
         format!("{}:{line}", target.path)
     }
 
+    /// The implementation chooser's rows, as IntelliJ's: the class (a
+    /// member's owner), its package, visibility, and module or library.
+    pub(super) fn symbol_rows(&self, targets: &[crate::index::nav::Target], cx: &gpui_kit::App) -> Vec<crate::ui::navigate::SymbolRow> {
+        use crate::index::store::ProjectIndex;
+        let index = self.code_index.read(cx).index.clone();
+        let Ok(index) = index.read() else { return Vec::new() };
+        let root = index.root.clone();
+        let project = gradle_project_name(&root);
+        targets
+            .iter()
+            .map(|t| {
+                let member = t.container.is_some() && matches!(t.label.split(' ').next(), Some("method" | "function" | "property" | "field" | "constructor"));
+                let (name, outer) = match (&t.container, member) {
+                    (Some(c), true) => match c.rsplit_once('.') {
+                        Some((outer, owner)) => (owner.to_owned(), Some(outer.to_owned())),
+                        None => (c.clone(), None),
+                    },
+                    (c, _) => (t.name.clone(), c.clone()),
+                };
+                let file = if ProjectIndex::is_external(&t.path) { std::path::PathBuf::from(&t.path) } else { root.join(&t.path) };
+                let text = std::fs::read_to_string(&file).unwrap_or_default();
+                let kotlin = t.path.ends_with(".kt") || t.path.ends_with(".kts");
+                let jvm = kotlin || t.path.ends_with(".java");
+                let package = text.lines().take(200).map(str::trim).find_map(|l| l.strip_prefix("package ")).map(|p| p.trim().trim_end_matches(';').trim().to_owned());
+                let package = match (package, outer) {
+                    (Some(p), Some(o)) => Some(format!("{p}.{o}")),
+                    (p, o) => p.or(o),
+                };
+                let symbol = index.file(&t.path).and_then(|e| e.symbols.iter().find(|s| s.kind.is_type() && s.name == name && (member || s.line == t.line)).cloned());
+                let icon: gpui_kit::component::Icon = match &symbol {
+                    Some(s) => crate::ui::project_view::type_icon(s, kotlin).into(),
+                    None => crate::ui::navigate::symbol_icon(crate::index::symbols::SymbolKind::Class),
+                };
+                let visibility = jvm.then(|| {
+                    let line = text.lines().nth(t.line as usize).unwrap_or("");
+                    let words: Vec<&str> = line.split(|c: char| !c.is_alphanumeric()).collect();
+                    let has = |w: &str| words.contains(&w);
+                    let icon = if has("private") {
+                        crate::ui::as_icons::VISIBILITY_PRIVATE
+                    } else if has("protected") {
+                        crate::ui::as_icons::VISIBILITY_PROTECTED
+                    } else if has("internal") || !kotlin && !has("public") && !line.contains("interface") {
+                        crate::ui::as_icons::VISIBILITY_PACKAGE
+                    } else {
+                        crate::ui::as_icons::VISIBILITY_PUBLIC
+                    };
+                    gpui_kit::component::Icon::from(icon)
+                });
+                let library = ProjectIndex::is_external(&t.path);
+                let location = if library {
+                    index
+                        .external
+                        .library_of(&t.path)
+                        .map(|l| match &l.root_label {
+                            Some(label) => format!("{} ({label})", l.name),
+                            None => l.name.clone(),
+                        })
+                        .unwrap_or_else(|| t.path.clone())
+                } else {
+                    module_label(&root, &project, &t.path)
+                };
+                crate::ui::navigate::SymbolRow { name, package, icon, visibility, location, library }
+            })
+            .collect()
+    }
+
     /// Go to Declaration on a declaration: its usages, as IntelliJ's Show
     /// Usages popup (one usage jumps straight there).
     pub(super) fn show_usages_popup(&mut self, path: String, text: String, offset: usize, at: Option<gpui_kit::Point<gpui_kit::Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
@@ -252,4 +318,42 @@ impl Workspace {
             })
         });
     }
+}
+
+/// The root project's name as Gradle (and Android Studio) has it:
+/// settings.gradle's `rootProject.name`, else the folder's, spaces as `_`.
+fn gradle_project_name(root: &std::path::Path) -> String {
+    let declared = ["settings.gradle.kts", "settings.gradle"].iter().find_map(|f| {
+        let text = std::fs::read_to_string(root.join(f)).ok()?;
+        let line = text.lines().find(|l| l.trim_start().starts_with("rootProject.name"))?;
+        let value = line.split_once('=')?.1.trim();
+        Some(value.trim_matches(|c| c == '"' || c == '\'' || c == ';').to_owned())
+    });
+    let name = declared.unwrap_or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+    name.replace(' ', "_")
+}
+
+/// "My_TV.app.main": the project, the Gradle module holding `path`, and its
+/// source set, as Android Studio names modules.
+fn module_label(root: &std::path::Path, project: &str, path: &str) -> String {
+    let parts: Vec<&str> = path.split('/').collect();
+    let mut module: Vec<&str> = Vec::new();
+    let mut rest = &parts[..parts.len().saturating_sub(1)];
+    // The innermost folder with a build script.
+    for n in (1..parts.len()).rev() {
+        let dir = root.join(parts[..n].join("/"));
+        if dir.join("build.gradle.kts").is_file() || dir.join("build.gradle").is_file() {
+            module = parts[..n].to_vec();
+            rest = &parts[n..parts.len() - 1];
+            break;
+        }
+    }
+    let mut out = vec![project.to_owned()];
+    out.extend(module.iter().map(|m| m.to_string()));
+    if let Some(i) = rest.iter().position(|p| *p == "src") {
+        if let Some(set) = rest.get(i + 1) {
+            out.push(set.to_string());
+        }
+    }
+    out.join(".")
 }

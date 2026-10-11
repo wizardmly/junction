@@ -490,12 +490,14 @@ impl ProjectIndex {
         })
     }
 
-    /// The project's symbols that name `parent` as a supertype.
+    /// The symbols that name `parent` as a supertype: the project's, then the libraries'.
     pub fn subtypes_of<'a>(&'a self, parent: &str) -> impl Iterator<Item = (&'a str, &'a FileEntry, &'a Symbol)> + 'a {
-        self.subtypes.get(parent).into_iter().flatten().filter_map(|(path, i)| {
+        let project = self.subtypes.get(parent).into_iter().flatten().filter_map(|(path, i)| {
             let (path, entry) = self.files.get_key_value(&**path)?;
             Some((path.as_str(), entry, entry.symbols.get(*i as usize)?))
-        })
+        });
+        // Libraries' too, as IntelliJ lists them after the project's.
+        project.chain(self.external.subtypes_of(parent))
     }
 
     #[cfg(test)]

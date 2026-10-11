@@ -63,6 +63,8 @@ pub struct ExternalIndex {
     pub libraries: Vec<LibraryInfo>,
     pub files: HashMap<String, FileEntry>,
     names: HashMap<String, Vec<(Arc<str>, u32)>>,
+    /// The symbols naming each supertype, as the project's.
+    subtypes: HashMap<String, Vec<(Arc<str>, u32)>>,
     /// What built each library, to reuse it when nothing changed.
     built: Vec<(Library, Vec<String>)>,
     /// Discovery ran (a project may have no libraries).
@@ -95,6 +97,14 @@ impl ExternalIndex {
         })
     }
 
+    /// The library symbols that name `parent` as a supertype.
+    pub fn subtypes_of<'a>(&'a self, parent: &str) -> impl Iterator<Item = (&'a str, &'a FileEntry, &'a super::symbols::Symbol)> + 'a {
+        self.subtypes.get(parent).into_iter().flatten().filter_map(|(path, i)| {
+            let (path, entry) = self.files.get_key_value(&**path)?;
+            Some((path.as_str(), entry, entry.symbols.get(*i as usize)?))
+        })
+    }
+
     /// The library a file belongs to.
     pub fn library_of(&self, path: &str) -> Option<&LibraryInfo> {
         self.libraries.iter().find(|l| l.files.binary_search_by(|f| f.as_str().cmp(path)).is_ok())
@@ -102,10 +112,14 @@ impl ExternalIndex {
 
     fn rebuild_names(&mut self) {
         self.names.clear();
+        self.subtypes.clear();
         for (path, entry) in &self.files {
             let path: Arc<str> = Arc::from(path.as_str());
             for (i, s) in entry.symbols.iter().enumerate() {
                 self.names.entry(s.name.clone()).or_default().push((path.clone(), i as u32));
+                for parent in &s.supers {
+                    self.subtypes.entry(parent.clone()).or_default().push((path.clone(), i as u32));
+                }
             }
         }
     }

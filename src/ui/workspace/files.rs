@@ -39,8 +39,33 @@ impl Workspace {
                 if let [target] = targets.as_slice() {
                     self.go_to_target(target.clone(), window, cx);
                 } else {
-                    let locations = targets.iter().map(|t| self.location_label(t, cx)).collect();
-                    crate::ui::navigate::choose_target(title.clone(), targets.clone(), locations, Some(*at), self.picker_callback(cx), window, cx);
+                    let rows = self.symbol_rows(targets, cx);
+                    // "Open in Find Tool Window": the same list there.
+                    let items: Vec<crate::ui::find_view::FoundItem> = targets
+                        .iter()
+                        .zip(&rows)
+                        .map(|(t, r)| crate::ui::find_view::FoundItem {
+                            title: r.name.clone(),
+                            detail: [r.package.clone().map(|p| format!("({p})")), Some(r.location.clone())].into_iter().flatten().collect::<Vec<_>>().join("  "),
+                            icon: r.icon.clone(),
+                            target: t.clone(),
+                        })
+                        .collect();
+                    let workspace = cx.entity().downgrade();
+                    let find_title = title.split(" (").next().unwrap_or(title).trim_start_matches("Choose ").to_owned();
+                    let on_find: std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)> = std::rc::Rc::new(move |_, cx| {
+                        let items = items.clone();
+                        let find_title = find_title.clone();
+                        workspace
+                            .update(cx, |this, cx| {
+                                this.find.update(cx, |view, cx| view.show_items(find_title, items, cx));
+                                this.tools.open(ToolWindow::Git);
+                                this.bottom_tab = BottomTab::Find;
+                                cx.notify();
+                            })
+                            .ok();
+                    });
+                    crate::ui::navigate::choose_symbol(title.clone(), targets.clone(), rows, Some(*at), self.picker_callback(cx), on_find, window, cx);
                 }
             }
             FileEditorEvent::NoDeclaration { text, offset, at, declaration } => {

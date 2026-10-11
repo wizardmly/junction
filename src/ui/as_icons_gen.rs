@@ -134,6 +134,7 @@ pub const MOVE_UP: AsIcon = AsIcon { light: &[("as/move-up.l0.svg", 0x6c707eff)]
 pub const NEW_FOLDER: AsIcon = AsIcon { light: &[("as/new-folder.l0.svg", 0x3574f0ff), ("as/new-folder.l1.svg", 0xebecf0ff), ("as/new-folder.l2.svg", 0x6c707eff)], dark: &[("as/new-folder.d0.svg", 0x548af7ff), ("as/new-folder.d1.svg", 0x43454aff), ("as/new-folder.d2.svg", 0xced0d6ff)] };
 pub const NEW_LINE: AsIcon = AsIcon { light: &[("as/new-line.l0.svg", 0x6c707eff)], dark: &[("as/new-line.d0.svg", 0xced0d6ff)] };
 pub const OBJECT_KOTLIN: AsIcon = AsIcon { light: &[("as/object-kotlin.l0.svg", 0xfaf5ffff), ("as/object-kotlin.l1.svg", 0x834df0ff), ("as/object-kotlin.l2.svg", 0xfff4ebff), ("as/object-kotlin.l3.svg", 0xe66d17ff)], dark: &[("as/object-kotlin.d0.svg", 0x2f2936ff), ("as/object-kotlin.d1.svg", 0xa571e6ff), ("as/object-kotlin.d2.svg", 0x45322bff), ("as/object-kotlin.d3.svg", 0xc77d55ff)] };
+pub const OPEN_IN_TOOL_WINDOW: AsIcon = AsIcon { light: &[("as/open-in-tool-window.l0.svg", 0x6c707eff)], dark: &[("as/open-in-tool-window.d0.svg", 0xced0d6ff)] };
 pub const OPEN_NEW_TAB: AsIcon = AsIcon { light: &[("as/open-new-tab.l0.svg", 0x6c707eff)], dark: &[("as/open-new-tab.d0.svg", 0xced0d6ff)] };
 pub const PACKAGE: AsIcon = AsIcon { light: &[("as/package.l0.svg", 0xebecf0ff), ("as/package.l1.svg", 0x6c707eff)], dark: &[("as/package.d0.svg", 0x43454aff), ("as/package.d1.svg", 0xced0d6ff)] };
 pub const PASTE: AsIcon = AsIcon { light: &[("as/paste.l0.svg", 0x6c707eff)], dark: &[("as/paste.d0.svg", 0xced0d6ff)] };
@@ -222,6 +223,10 @@ pub const VCS_SHELVE: AsIcon = AsIcon { light: &[("as/vcs-shelve.l0.svg", 0x6c70
 pub const VCS_UNSHELVE: AsIcon = AsIcon { light: &[("as/vcs-unshelve.l0.svg", 0x6c707eff)], dark: &[("as/vcs-unshelve.d0.svg", 0xced0d6ff)] };
 pub const VCS_UNVERSIONED: AsIcon = AsIcon { light: &[("as/vcs-unversioned.l0.svg", 0x6c707eff), ("as/vcs-unversioned.l1.svg", 0xebecf0ff), ("as/vcs-unversioned.l2.svg", 0x6c707eff)], dark: &[("as/vcs-unversioned.d0.svg", 0xced0d6ff), ("as/vcs-unversioned.d1.svg", 0x43454aff), ("as/vcs-unversioned.d2.svg", 0xced0d6ff)] };
 pub const VCS_UPDATE: AsIcon = AsIcon { light: &[("as/vcs-update.l0.svg", 0x6c707eff)], dark: &[("as/vcs-update.d0.svg", 0xced0d6ff)] };
+pub const VISIBILITY_PACKAGE: AsIcon = AsIcon { light: &[("as/visibility-package.l0.svg", 0x9aa7b0cc)], dark: &[("as/visibility-package.d0.svg", 0x9aa7b0cc)] };
+pub const VISIBILITY_PRIVATE: AsIcon = AsIcon { light: &[("as/visibility-private.l0.svg", 0xf26522b2)], dark: &[("as/visibility-private.d0.svg", 0xf26522b2)] };
+pub const VISIBILITY_PROTECTED: AsIcon = AsIcon { light: &[("as/visibility-protected.l0.svg", 0x9aa7b0cc)], dark: &[("as/visibility-protected.d0.svg", 0x9aa7b0cc)] };
+pub const VISIBILITY_PUBLIC: AsIcon = AsIcon { light: &[("as/visibility-public.l0.svg", 0x62b543b2)], dark: &[("as/visibility-public.d0.svg", 0x62b543b2)] };
 pub const ZOOM_IN: AsIcon = AsIcon { light: &[("as/zoom-in.l0.svg", 0x6c707eff)], dark: &[("as/zoom-in.d0.svg", 0xced0d6ff)] };
 pub const ZOOM_OUT: AsIcon = AsIcon { light: &[("as/zoom-out.l0.svg", 0x6c707eff)], dark: &[("as/zoom-out.d0.svg", 0xced0d6ff)] };
 
@@ -677,6 +682,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/object-kotlin.d1.svg", include_bytes!("../../assets/as-icons/gen/object-kotlin.d1.svg")),
     ("as/object-kotlin.d2.svg", include_bytes!("../../assets/as-icons/gen/object-kotlin.d2.svg")),
     ("as/object-kotlin.d3.svg", include_bytes!("../../assets/as-icons/gen/object-kotlin.d3.svg")),
+    ("as/open-in-tool-window.l0.svg", include_bytes!("../../assets/as-icons/gen/open-in-tool-window.l0.svg")),
+    ("as/open-in-tool-window.d0.svg", include_bytes!("../../assets/as-icons/gen/open-in-tool-window.d0.svg")),
     ("as/open-new-tab.l0.svg", include_bytes!("../../assets/as-icons/gen/open-new-tab.l0.svg")),
     ("as/open-new-tab.d0.svg", include_bytes!("../../assets/as-icons/gen/open-new-tab.d0.svg")),
     ("as/package.l0.svg", include_bytes!("../../assets/as-icons/gen/package.l0.svg")),
@@ -909,6 +916,14 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/vcs-unversioned.d2.svg", include_bytes!("../../assets/as-icons/gen/vcs-unversioned.d2.svg")),
     ("as/vcs-update.l0.svg", include_bytes!("../../assets/as-icons/gen/vcs-update.l0.svg")),
     ("as/vcs-update.d0.svg", include_bytes!("../../assets/as-icons/gen/vcs-update.d0.svg")),
+    ("as/visibility-package.l0.svg", include_bytes!("../../assets/as-icons/gen/visibility-package.l0.svg")),
+    ("as/visibility-package.d0.svg", include_bytes!("../../assets/as-icons/gen/visibility-package.d0.svg")),
+    ("as/visibility-private.l0.svg", include_bytes!("../../assets/as-icons/gen/visibility-private.l0.svg")),
+    ("as/visibility-private.d0.svg", include_bytes!("../../assets/as-icons/gen/visibility-private.d0.svg")),
+    ("as/visibility-protected.l0.svg", include_bytes!("../../assets/as-icons/gen/visibility-protected.l0.svg")),
+    ("as/visibility-protected.d0.svg", include_bytes!("../../assets/as-icons/gen/visibility-protected.d0.svg")),
+    ("as/visibility-public.l0.svg", include_bytes!("../../assets/as-icons/gen/visibility-public.l0.svg")),
+    ("as/visibility-public.d0.svg", include_bytes!("../../assets/as-icons/gen/visibility-public.d0.svg")),
     ("as/zoom-in.l0.svg", include_bytes!("../../assets/as-icons/gen/zoom-in.l0.svg")),
     ("as/zoom-in.d0.svg", include_bytes!("../../assets/as-icons/gen/zoom-in.d0.svg")),
     ("as/zoom-out.l0.svg", include_bytes!("../../assets/as-icons/gen/zoom-out.l0.svg")),
