@@ -1277,7 +1277,7 @@ impl FileEditor {
         let text = self.text(cx);
         let range: Range<usize> = self.state.read(cx).selected_range();
         let content = if range.is_empty() { text } else { text.get(range).unwrap_or_default().to_owned() };
-        let name = self.path.rsplit('/').next().unwrap_or(&self.path).to_owned();
+        let name = self.path.rsplit(['/', '\\']).next().unwrap_or(&self.path).to_owned();
         cx.emit(FileEditorEvent::CreateGist { name, content });
     }
 

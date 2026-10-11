@@ -200,7 +200,9 @@ pub fn list_files(root: &Path) -> Vec<String> {
             continue;
         }
         let prefix = format!("{}/", rel.to_string_lossy().replace('\\', "/"));
-        let Some(inner) = git_files(&nested) else { continue };
+        // (A repository git refuses, say one owned by another user, still
+        // shows its files.)
+        let inner = git_files(&nested).unwrap_or_else(|| loose_files(&nested));
         files.retain(|f| !f.starts_with(&prefix));
         files.extend(inner.into_iter().map(|f| format!("{prefix}{f}")));
     }

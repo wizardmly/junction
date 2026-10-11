@@ -224,6 +224,8 @@ pub struct Workspace {
     /// Find / Replace in Files, kept between uses like IntelliJ's.
     find_popup: Option<(Entity<crate::ui::find_popup::FindPopup>, Subscription)>,
     show_find_popup: bool,
+    /// Find in Files… from a folder's menu: the folder to scope to.
+    find_in: Option<String>,
     /// Search Everywhere (Shift twice), kept between uses.
     search_everywhere: Option<(Entity<crate::ui::search_everywhere::SearchEverywhere>, Subscription)>,
     show_search_everywhere: bool,
@@ -455,6 +457,7 @@ impl Workspace {
             find,
             find_popup: None,
             show_find_popup: false,
+            find_in: None,
             search_everywhere: None,
             show_search_everywhere: false,
             recent_files: history::RecentPaths::with_limit(50),

@@ -350,7 +350,7 @@ impl SearchEverywhere {
                         .background_spawn(async move {
                             list.iter()
                                 .filter_map(|p| {
-                                    let file = p.rsplit('/').next().unwrap_or(p);
+                                    let file = p.rsplit(['/', '\\']).next().unwrap_or(p);
                                     fuzzy_score(&name2, file).map(|s| (p.clone(), s + 20))
                                 })
                                 .collect()
@@ -366,7 +366,7 @@ impl SearchEverywhere {
                     .map(|(path, _)| {
                         let file = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
                         let full = shown(&path);
-                        let dir = full.rsplit_once('/').map(|(d, _)| d.to_owned()).unwrap_or_default();
+                        let dir = full.rsplit_once(['/', '\\']).map(|(d, _)| d.to_owned()).unwrap_or_default();
                         Kind::Target {
                             title: file.clone(),
                             detail: dir,
@@ -688,7 +688,7 @@ impl Render for SearchEverywhere {
                                         .when(all, |el| el.child(group_label))
                                 }
                                 Kind::Text(m) => {
-                                    let file = m.path.rsplit('/').next().unwrap_or(&m.path).to_owned();
+                                    let file = m.path.rsplit(['/', '\\']).next().unwrap_or(&m.path).to_owned();
                                     base.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(highlighted(&m.text, &m.ranges, &palette)))
                                         .child(right(format!("{file} {}", m.line + 1)))
                                         .when(all, |el| el.child(group_label))

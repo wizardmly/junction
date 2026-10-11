@@ -243,7 +243,7 @@ impl FindPopup {
             self.module = data.modules.first().cloned().unwrap_or_default();
         }
         if self.directory.read(cx).value().is_empty() {
-            let dir = data.current_file.as_deref().and_then(|f| f.rsplit_once('/')).map(|(d, _)| d.to_owned()).unwrap_or_default();
+            let dir = data.current_file.as_deref().and_then(|f| f.rsplit_once(['/', '\\'])).map(|(d, _)| d.to_owned()).unwrap_or_default();
             self.directory.update(cx, |s, cx| s.set_value(dir, window, cx));
         }
         self.data = data;
@@ -254,6 +254,20 @@ impl FindPopup {
             s.focus(window, cx);
             s.select_all(window, cx);
         });
+        self.schedule_search(cx);
+        cx.notify();
+    }
+
+    /// Scopes the search to a folder (the Directory tab); the project root
+    /// is the whole project.
+    pub fn show_directory(&mut self, dir: String, window: &mut Window, cx: &mut Context<Self>) {
+        if dir.is_empty() {
+            self.tab = ScopeTab::Project;
+        } else {
+            self.tab = ScopeTab::Directory;
+            self.recursive = true;
+            self.directory.update(cx, |s, cx| s.set_value(dir, window, cx));
+        }
         self.schedule_search(cx);
         cx.notify();
     }
@@ -540,7 +554,7 @@ pub fn target_of(m: &TextMatch) -> Target {
 }
 
 pub fn module_name(dir: &str) -> String {
-    if dir.is_empty() { "<root>".into() } else { dir.rsplit('/').next().unwrap_or(dir).to_owned() }
+    if dir.is_empty() { "<root>".into() } else { dir.rsplit(['/', '\\']).next().unwrap_or(dir).to_owned() }
 }
 
 /// A result line with its occurrences highlighted, as IntelliJ shows them.
@@ -807,7 +821,7 @@ impl FindPopup {
                     range
                         .map(|ix| {
                             let m = &matches[ix];
-                            let name = m.path.rsplit('/').next().unwrap_or(&m.path).to_owned();
+                            let name = m.path.rsplit(['/', '\\']).next().unwrap_or(&m.path).to_owned();
                             h_flex()
                                 .id(ix)
                                 .w_full()

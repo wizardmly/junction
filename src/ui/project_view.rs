@@ -612,7 +612,7 @@ impl ProjectView {
     }
 
     fn open(&mut self, path: String, cx: &mut Context<Self>) {
-        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
         cx.emit(OpenTarget(Target { path, line: 0, col: 0, name, label: String::new(), container: None }));
     }
 
@@ -703,7 +703,7 @@ impl ProjectView {
     }
 
     fn tree_has(&mut self, path: &str) -> bool {
-        let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+        let (dir, name) = path.rsplit_once(['/', '\\']).unwrap_or(("", path));
         self.tree.get_mut(dir).is_some_and(|d| d.files.iter().any(|(f, _)| f == name))
     }
 

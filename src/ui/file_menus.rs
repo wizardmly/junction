@@ -44,6 +44,8 @@ pub enum FileAction {
     Unstash,
     /// Files were created, renamed or deleted on disk.
     FilesChanged,
+    /// Find / Replace in Files scoped to a project-relative folder.
+    FindInPath { dir: String, replace: bool },
 }
 
 pub type FileActions = Rc<dyn Fn(FileAction, &mut Window, &mut App)>;
@@ -119,7 +121,13 @@ pub fn stub_submenu(
 }
 
 pub fn local_history_submenu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
-    stub_submenu(menu, "Local History", &[("Show History", ""), ("Put Label…", "")], window, cx)
+    stub_submenu(
+        menu,
+        "Local History",
+        &[("Show History…", ""), ("Show Project History…", ""), ("Recent Changes", "Alt+Shift+C"), ("Put Label…", "")],
+        window,
+        cx,
+    )
 }
 
 /// The files a Git submenu acts on.
@@ -145,7 +153,8 @@ pub fn git_submenu(menu: PopupMenu, target: GitTarget, window: &mut Window, cx: 
 
 fn git_items(menu: PopupMenu, target: &GitTarget, cx: &mut Context<PopupMenu>) -> PopupMenu {
     // IntelliJ's Git actions here work on the clicked file's repository.
-    if let Some(path) = target.file.clone().or_else(|| target.paths.first().cloned()) {
+    // A folder acts in the repository that holds the folder itself.
+    if let Some(path) = target.file.clone().or_else(|| common_dir(&target.paths)) {
         target.model.update(cx, |m, cx| {
             m.focus_path(&path, cx);
         });
@@ -386,7 +395,15 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         .item(entry("Paste", "Ctrl+V").icon(Icon::new(icons::PASTE)).disabled(!has_clipboard).on_click(move |_, window, cx| paste(&t_paste, window, cx)))
         .separator()
         .item(entry("Find Usages", "Alt+F7").disabled(true))
-        .when(is_dir, |m| m.item(entry("Find in Files…", "Ctrl+Shift+F").disabled(true)).item(entry("Replace in Files…", "Ctrl+Shift+R").disabled(true)));
+        .when(is_dir, |m| {
+            let (t_find, t_replace) = (target.clone(), target.clone());
+            m.item(entry("Find in Files…", "Ctrl+Shift+F").on_click(move |_, window, cx| {
+                (t_find.actions)(FileAction::FindInPath { dir: t_find.path.clone(), replace: false }, window, cx)
+            }))
+            .item(entry("Replace in Files…", "Ctrl+Shift+R").on_click(move |_, window, cx| {
+                (t_replace.actions)(FileAction::FindInPath { dir: t_replace.path.clone(), replace: true }, window, cx)
+            }))
+        });
     let menu = stub_submenu(menu, "Analyze", &[("Inspect Code…", ""), ("Code Cleanup…", ""), ("Analyze Dependencies…", "")], window, cx);
     let t_rename = target.clone();
     let menu = menu
@@ -408,9 +425,11 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         .separator()
         .item(entry("Reformat Code", "Ctrl+Alt+L").icon(Icon::new(icons::FILE_TEXT)).disabled(true))
         .item(entry("Optimize Imports", "Ctrl+Alt+O").disabled(true))
-        .item(entry("Delete…", "Delete").disabled(target.path.is_empty()).on_click(move |_, window, cx| {
-            delete_files(t_delete.root.clone(), vec![t_delete.path.clone()], t_delete.actions.clone(), window, cx)
-        }))
+        .when(!target.path.is_empty(), |m| {
+            m.item(entry("Delete…", "Delete").on_click(move |_, window, cx| {
+                delete_files(t_delete.root.clone(), vec![t_delete.path.clone()], t_delete.actions.clone(), window, cx)
+            }))
+        })
         .when(!is_dir, |m| m.item(entry("Override File Type", "").disabled(true)))
         .separator();
     let t_split = target.clone();
@@ -443,9 +462,12 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         .item(entry("Compare With…", "Ctrl+D").icon(Icon::new(icons::VCS_DIFF)).disabled(is_dir).on_click(move |_, window, cx| {
             (t_compare.actions)(FileAction::CompareWithFile(t_compare.path.clone()), window, cx)
         }))
-        .item(entry("Compare with Clipboard", "").icon(Icon::new(icons::PASTE)).disabled(is_dir).on_click(move |_, window, cx| {
-            (t_clip.actions)(FileAction::CompareWithClipboard(t_clip.path.clone()), window, cx)
-        }))
+        .when(!is_dir, |m| {
+            m.item(entry("Compare with Clipboard", "").icon(Icon::new(icons::PASTE)).on_click(move |_, window, cx| {
+                (t_clip.actions)(FileAction::CompareWithClipboard(t_clip.path.clone()), window, cx)
+            }))
+        })
+        .when(target.path.is_empty(), |m| m.item(entry("Open Module Settings", "F4").disabled(true)))
         .separator();
     let menu = if is_dir {
         stub_submenu(menu, "Mark Directory As", &[("Sources Root", ""), ("Test Sources Root", ""), ("Resources Root", ""), ("Test Resources Root", ""), ("Excluded", "")], window, cx)
@@ -461,6 +483,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
                 .collect();
             crate::ui::github_dialogs::create_gist(t_gist.model.clone(), files, window, cx)
         }))
+        .when(is_dir, |m| m.item(entry("Analyze Dependencies…", "").disabled(true)))
 }
 
 pub fn new_entry(target: &ProjectTarget, directory: bool, window: &mut Window, cx: &mut App) {

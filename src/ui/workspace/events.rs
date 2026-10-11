@@ -42,6 +42,9 @@ impl Workspace {
             this.tools.open(ToolWindow::Changes);
             cx.notify();
         }
+        if let RepoEvent::UntrustedRoots(roots) = event {
+            this.offer_trust_roots(roots.clone(), window, cx);
+        }
         if let RepoEvent::InvalidRoots(roots) = event {
             this.report_invalid_roots(roots.clone(), window, cx);
         }
@@ -344,6 +347,36 @@ impl Workspace {
                 .on_click(move |_, window, cx| {
                     note.update(cx, |n, cx| n.dismiss(window, cx));
                     crate::ui::mappings_dialog::directory_mappings(model.clone(), window, cx);
+                })
+                .into_any_element()
+        });
+        window.push_notification(notification, cx);
+    }
+
+    /// Roots git refuses because another user owns them (common on Windows
+    /// for repositories on another drive): Trust adds them to safe.directory.
+    fn offer_trust_roots(&mut self, roots: Vec<std::path::PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let model = self.model.clone();
+        let project = model.read(cx).project_root().map(|p| p.to_path_buf()).unwrap_or_default();
+        let names: Vec<String> = roots.iter().map(|r| crate::git::roots::label(&project, r)).collect();
+        let message = format!(
+            "Git refuses to work with {} because the folder{} owned by another user. Trusting adds {} to safe.directory in your global Git config.",
+            names.join(", "),
+            if roots.len() == 1 { " is" } else { "s are" },
+            if roots.len() == 1 { "it" } else { "them" },
+        );
+        let notification = Notification::warning(message).title("Untrusted Git roots").autohide(false).content(move |_, _, cx| {
+            let palette = cx.palette().clone();
+            let (note, model, roots) = (cx.entity(), model.clone(), roots.clone());
+            div()
+                .id("roots-trust")
+                .text_sm()
+                .text_color(palette.link)
+                .cursor_pointer()
+                .child("Trust")
+                .on_click(move |_, window, cx| {
+                    note.update(cx, |n, cx| n.dismiss(window, cx));
+                    model.update(cx, |m, cx| m.trust_roots(roots.clone(), cx));
                 })
                 .into_any_element()
         });

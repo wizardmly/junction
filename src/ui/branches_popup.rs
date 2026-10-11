@@ -393,7 +393,7 @@ fn run_checkout(model: &Entity<RepoModel>, reference: RefName, mode: status::Che
                 Ok((outcome, done, failed))
             },
             move |model, result, cx| match result {
-                Ok((outcome, done, failed)) if !failed.is_empty() => {
+                Ok((_, done, failed)) if !failed.is_empty() => {
                     // IntelliJ: checked out in some roots only; Rollback puts them back.
                     let name = |p: &std::path::PathBuf| labels.get(p).cloned().unwrap_or_else(|| p.display().to_string());
                     let ok: Vec<String> = done.iter().map(|(p, _)| name(p)).collect();

@@ -192,7 +192,8 @@ fn load(repository: &Repository, filter: &LogFilter, limit: Option<usize>, first
                 }
             }
             args.push("--".into());
-            args.extend(filter.paths.iter().cloned());
+            // The repository's own folder ("" from the project root) is all of it.
+            args.extend(filter.paths.iter().map(|p| if p.is_empty() { ".".to_owned() } else { p.clone() }));
         }
     }
 

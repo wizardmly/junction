@@ -205,7 +205,7 @@ pub const BUILD_FILES: [&str; 12] = [
 /// The module a file belongs to: its nearest folder (inside `root`) holding
 /// a build file, "" for the root module. Folders are looked up once per call site.
 pub fn module_of(root: &std::path::Path, path: &str, cache: &mut std::collections::HashMap<String, bool>) -> String {
-    let mut dir = path.rsplit_once('/').map_or("", |(d, _)| d);
+    let mut dir = path.rsplit_once(['/', '\\']).map_or("", |(d, _)| d);
     while !dir.is_empty() {
         let is_module = *cache
             .entry(dir.to_owned())
@@ -213,7 +213,7 @@ pub fn module_of(root: &std::path::Path, path: &str, cache: &mut std::collection
         if is_module {
             return dir.to_owned();
         }
-        dir = dir.rsplit_once('/').map_or("", |(d, _)| d);
+        dir = dir.rsplit_once(['/', '\\']).map_or("", |(d, _)| d);
     }
     String::new()
 }
@@ -256,7 +256,7 @@ pub fn grouped_file_tree(
         groups
             .into_iter()
             .map(|(module, files)| {
-                let label = if module.is_empty() { root_name.to_owned() } else { module.rsplit('/').next().unwrap_or(&module).to_owned() };
+                let label = if module.is_empty() { root_name.to_owned() } else { module.rsplit(['/', '\\']).next().unwrap_or(&module).to_owned() };
                 TreeItem::new(format!("{scope}{MODULE_PREFIX}{module}"), label).expanded(expanded).children(leaves(files, &module))
             })
             .collect()
@@ -306,11 +306,11 @@ pub fn file_tree(paths: impl IntoIterator<Item = String>, scope: &str) -> Vec<Tr
 /// Files without directory nodes (Group By › Directory off).
 pub fn flat_file_list(paths: impl IntoIterator<Item = String>, scope: &str) -> Vec<TreeItem> {
     let mut paths: Vec<String> = paths.into_iter().collect();
-    paths.sort_by(|a, b| a.rsplit('/').next().cmp(&b.rsplit('/').next()).then(a.cmp(b)));
+    paths.sort_by(|a, b| a.rsplit(['/', '\\']).next().cmp(&b.rsplit(['/', '\\']).next()).then(a.cmp(b)));
     paths
         .into_iter()
         .map(|path| {
-            let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+            let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
             TreeItem::new(format!("{scope}{FILE_PREFIX}{path}"), name)
         })
         .collect()
@@ -350,7 +350,7 @@ fn build_items(node: &DirNode, prefix: &str, scope: &str, expanded: bool) -> Vec
         );
     }
     for file in &node.files {
-        let name = file.rsplit('/').next().unwrap_or(file);
+        let name = file.rsplit(['/', '\\']).next().unwrap_or(file);
         items.push(TreeItem::new(format!("{scope}{FILE_PREFIX}{file}"), name.to_owned()));
     }
     items

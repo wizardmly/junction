@@ -49,7 +49,14 @@ impl Workspace {
         let text = self.editor().and_then(|e| e.read(cx).search_text(cx));
         let data = self.scope_data(cx);
         if let Some((popup, _)) = &self.find_popup {
-            popup.update(cx, |p, cx| p.show(replace, text, data, window, cx));
+            let dir = self.find_in.take();
+            popup.update(cx, |p, cx| {
+                p.show(replace, text, data, window, cx);
+                // Find in Files… on a folder: the Directory tab on it.
+                if let Some(dir) = dir {
+                    p.show_directory(dir, window, cx);
+                }
+            });
         }
         self.show_find_popup = true;
         cx.notify();

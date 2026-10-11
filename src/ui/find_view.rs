@@ -227,7 +227,7 @@ impl FindView {
                 rows.push(Row::Root(format!("Found Occurrences in {}", request.scope_label)));
                 let mut by_dir: BTreeMap<String, Vec<(usize, &TextMatch)>> = BTreeMap::new();
                 for (i, m) in &visible {
-                    let dir = if self.group_by_directory { m.path.rsplit_once('/').map(|(d, _)| d.to_owned()).unwrap_or_default() } else { String::new() };
+                    let dir = if self.group_by_directory { m.path.rsplit_once(['/', '\\']).map(|(d, _)| d.to_owned()).unwrap_or_default() } else { String::new() };
                     by_dir.entry(dir).or_default().push((*i, m));
                 }
                 for (dir, hits) in by_dir {
@@ -566,7 +566,7 @@ impl Render for FindView {
         let mut names: std::collections::HashMap<&str, HashSet<&str>> = std::collections::HashMap::new();
         for row in rows.iter() {
             if let Row::File { path, .. } = row {
-                names.entry(path.rsplit('/').next().unwrap_or(path)).or_default().insert(path);
+                names.entry(path.rsplit(['/', '\\']).next().unwrap_or(path)).or_default().insert(path);
             }
         }
         let ambiguous: Rc<HashSet<String>> = Rc::new(names.into_iter().filter(|(_, p)| p.len() > 1).map(|(n, _)| n.to_owned()).collect());
@@ -616,7 +616,7 @@ impl Render for FindView {
                                 .child(if dir.is_empty() { "<root>".to_owned() } else { dir.clone() })
                                 .child(div().text_color(palette.text_secondary).child(plural(*count, "result"))),
                             Row::File { path, count, indent } => {
-                                let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+                                let (dir, name) = path.rsplit_once(['/', '\\']).unwrap_or(("", path));
                                 base.pl(pad(*indent))
                                     .child(chevron(!collapsed.contains(path)))
                                     .child(common::icon(common::file_icon(path)).text_color(palette.text_secondary))

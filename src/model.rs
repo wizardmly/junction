@@ -58,6 +58,9 @@ pub enum RepoEvent {
     /// Mapped folders that aren't Git repositories: IntelliJ's "VCS root
     /// configuration problems" balloon (Configure…).
     InvalidRoots(Vec<PathBuf>),
+    /// Roots git refuses because another user owns them: a balloon whose
+    /// Trust adds them to `safe.directory`, as IntelliJ offers.
+    UntrustedRoots(Vec<PathBuf>),
     /// Show the files that differ between two revisions (the working tree when `new` is `None`).
     Compare { old: String, new: Option<String> },
     /// Open another Log tab (File History, Compare with Current, …).
@@ -110,6 +113,8 @@ pub struct RepoModel {
     /// A synchronous checkout that failed in some roots: where the others
     /// were before, for the balloon's Rollback.
     checkout_rollback: Vec<(PathBuf, String)>,
+    /// The roots the "owned by another user" balloon was shown for.
+    untrusted_offered: Vec<PathBuf>,
     roots: Vec<RootInfo>,
     /// Every root's repository, refs and changes in a multi-root project
     /// (empty with a single root), in the order of `roots`.
@@ -169,11 +174,20 @@ pub struct RootState {
 }
 
 impl RootState {
-    fn load(path: &Path, project: Option<&Path>, console: &GitConsole) -> Option<Self> {
-        let repository = Repository::discover(path, console.clone()).ok()?;
+    /// `Err(Some(root))` when git refuses the repository (owned by another user).
+    fn load(path: &Path, project: Option<&Path>, console: &GitConsole) -> std::result::Result<Self, Option<PathBuf>> {
+        let repository = match Repository::discover(path, console.clone()) {
+            Ok(repository) => repository,
+            Err(error) => {
+                return Err(match error.downcast_ref::<git::OpenError>() {
+                    Some(git::OpenError::Unsafe(root)) => Some(root.clone()),
+                    _ => None,
+                });
+            }
+        };
         let root = repository.root().to_path_buf();
-        let refs = RepositoryRefs::load(&repository).ok()?;
-        let status = WorkingTreeStatus::load(&repository).ok()?;
+        let refs = RepositoryRefs::load(&repository).map_err(|_| None)?;
+        let status = WorkingTreeStatus::load(&repository).map_err(|_| None)?;
         let submodules = if root.join(".gitmodules").exists() {
             git::submodule::gitlink_paths(&repository).into_iter().collect()
         } else {
@@ -183,7 +197,7 @@ impl RootState {
             Some(rel) => rel.to_string_lossy().replace('\\', "/"),
             None => root.to_string_lossy().replace('\\', "/"),
         };
-        Some(Self {
+        Ok(Self {
             path: root,
             prefix,
             web: git::hosting::web_repo(&repository),
@@ -196,11 +210,20 @@ impl RootState {
         })
     }
 
-    /// Every root at once, each on its own thread; roots git can't read are left out.
-    fn load_all(paths: &[PathBuf], project: Option<&Path>, console: &GitConsole) -> Vec<Self> {
+    /// Every root at once, each on its own thread; roots git can't read are
+    /// left out, and the ones it refuses as another user's are returned too.
+    fn load_all(paths: &[PathBuf], project: Option<&Path>, console: &GitConsole) -> (Vec<Self>, Vec<PathBuf>) {
         std::thread::scope(|scope| {
             let jobs: Vec<_> = paths.iter().map(|path| scope.spawn(move || Self::load(path, project, console))).collect();
-            jobs.into_iter().filter_map(|job| job.join().ok().flatten()).collect()
+            let (mut states, mut untrusted) = (Vec::new(), Vec::new());
+            for job in jobs {
+                match job.join() {
+                    Ok(Ok(state)) => states.push(state),
+                    Ok(Err(Some(root))) => untrusted.push(root),
+                    _ => {}
+                }
+            }
+            (states, untrusted)
         })
     }
 }
@@ -375,6 +398,8 @@ struct Snapshot {
     unregistered: Vec<PathBuf>,
     /// Mapped folders that aren't repositories.
     invalid: Vec<PathBuf>,
+    /// Roots git refuses because another user owns them (`safe.directory`).
+    untrusted: Vec<PathBuf>,
 }
 
 impl RepoModel {
@@ -404,6 +429,7 @@ impl RepoModel {
             folder_project: false,
             roots_offered: false,
             checkout_rollback: Vec::new(),
+            untrusted_offered: Vec::new(),
             roots: Vec::new(),
             root_states: Arc::default(),
             project_status: Arc::default(),
@@ -845,6 +871,17 @@ impl RepoModel {
         &self.roots
     }
 
+    /// Trust: adds the refused roots to `safe.directory` and loads them.
+    pub fn trust_roots(&mut self, roots: Vec<PathBuf>, cx: &mut Context<Self>) {
+        for root in &roots {
+            if let Err(error) = git::trust_directory(root) {
+                self.notify("Trust Directory", error.to_string(), true, cx);
+                return;
+            }
+        }
+        self.rescan_roots(cx);
+    }
+
     pub fn set_checkout_rollback(&mut self, roots: Vec<(PathBuf, String)>) {
         self.checkout_rollback = roots;
     }
@@ -1125,8 +1162,8 @@ impl RepoModel {
                     };
                     // Several roots (or a folder of them): all of them load,
                     // the active one among them.
-                    let root_states =
-                        if paths.len() > 1 || folder { RootState::load_all(&paths, project_root.as_deref(), &console) } else { Vec::new() };
+                    let (root_states, untrusted) =
+                        if paths.len() > 1 || folder { RootState::load_all(&paths, project_root.as_deref(), &console) } else { (Vec::new(), Vec::new()) };
                     let active = root_states.iter().find(|s| s.path == repository.root()).cloned();
                     let (refs, status, submodules, web, state) = match &active {
                         Some(a) => ((*a.refs).clone(), (*a.status).clone(), a.submodules.clone(), a.web.clone(), a.state),
@@ -1167,7 +1204,7 @@ impl RepoModel {
                     } else {
                         root_states.iter().map(|s| RootInfo { path: s.path.clone(), branch: s.refs.current_branch.clone() }).collect()
                     };
-                    anyhow::Ok((Snapshot { roots, root_states, web, refs, log, status, state, submodules, unregistered, invalid }, repository, filter, sources))
+                    anyhow::Ok((Snapshot { roots, root_states, web, refs, log, status, state, submodules, unregistered, invalid, untrusted }, repository, filter, sources))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -1203,6 +1240,10 @@ impl RepoModel {
                         this.web_repo = snapshot.web;
                         this.error = log_error;
                         this.keep_selection(cx);
+                        if !snapshot.untrusted.is_empty() && this.untrusted_offered != snapshot.untrusted {
+                            this.untrusted_offered = snapshot.untrusted.clone();
+                            cx.emit(RepoEvent::UntrustedRoots(snapshot.untrusted));
+                        }
                         if (!snapshot.unregistered.is_empty() || !snapshot.invalid.is_empty()) && !std::mem::replace(&mut this.roots_offered, true) {
                             if !snapshot.invalid.is_empty() {
                                 cx.emit(RepoEvent::InvalidRoots(snapshot.invalid));

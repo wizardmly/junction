@@ -58,7 +58,7 @@ pub fn choose_target(
     let items: Vec<FoundItem> = targets
         .into_iter()
         .map(|t| {
-            let name = if t.name.is_empty() { t.path.rsplit('/').next().unwrap_or(&t.path).to_owned() } else { t.name.clone() };
+            let name = if t.name.is_empty() { t.path.rsplit(['/', '\\']).next().unwrap_or(&t.path).to_owned() } else { t.name.clone() };
             FoundItem {
                 title: match &t.container {
                     Some(c) => format!("{c}.{name}"),

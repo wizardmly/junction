@@ -96,7 +96,7 @@ impl Workspace {
             FileEditorEvent::Annotate { path, revision } => self.annotate(path.clone(), revision.clone(), window, cx),
             FileEditorEvent::ShowHistory(path) => self.show_history(path.clone(), cx),
             FileEditorEvent::SelectionHistory { path, lines } => {
-                let name = path.rsplit('/').next().unwrap_or(path);
+                let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
                 let filter = crate::git::LogFilter {
                     paths: vec![path.clone()],
                     lines: Some(*lines),
@@ -233,6 +233,10 @@ impl Workspace {
             FileAction::FilesChanged => {
                 self.code_index.update(cx, |index, cx| index.refresh(cx));
                 self.model.update(cx, |m, cx| m.reload(cx));
+            }
+            FileAction::FindInPath { dir, replace } => {
+                self.find_in = Some(dir);
+                self.open_find_popup(replace, window, cx);
             }
         }
     }

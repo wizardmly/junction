@@ -454,12 +454,12 @@ impl Workspace {
             Front::Editor(ix) => {
                 let editor = self.editors[ix].view.read(cx);
                 let path = editor.path();
-                let name = path.rsplit('/').next().unwrap_or(path);
+                let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
                 // Same names get their folder, as "build.gradle (app)".
-                let clash = self.editors.iter().enumerate().any(|(i, t)| i != ix && t.view.read(cx).path().rsplit('/').next() == Some(name));
+                let clash = self.editors.iter().enumerate().any(|(i, t)| i != ix && t.view.read(cx).path().rsplit(['/', '\\']).next() == Some(name));
                 let mut title = name.to_owned();
                 if clash {
-                    let parent = path.rsplit('/').nth(1).unwrap_or("");
+                    let parent = path.rsplit(['/', '\\']).nth(1).unwrap_or("");
                     if !parent.is_empty() {
                         title = format!("{title} ({parent})");
                     }
@@ -472,7 +472,7 @@ impl Workspace {
             Front::Diff => (self.diff.read(cx).title().unwrap_or_default(), gpui_kit::component::Icon::from(icons::VCS_DIFF), None),
             Front::Merge => {
                 let path = self.merge.as_ref().map(|(m, _)| m.read(cx).path().to_owned()).unwrap_or_default();
-                (format!("Merge: {}", path.rsplit('/').next().unwrap_or(&path)), gpui_kit::component::Icon::from(icons::VCS_MERGE), None)
+                (format!("Merge: {}", path.rsplit(['/', '\\']).next().unwrap_or(&path)), gpui_kit::component::Icon::from(icons::VCS_MERGE), None)
             }
             Front::Timeline => {
                 let title = self.timeline.as_ref().map(|t| t.read(cx).title()).unwrap_or_else(|| "Pull Request".to_owned());

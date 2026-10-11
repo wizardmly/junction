@@ -125,7 +125,11 @@ impl Workspace {
     }
 
     pub fn show_history(&mut self, path: String, cx: &mut Context<Self>) {
-        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        let mut name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        // The project's own folder: its name, and the whole project's history.
+        if path.is_empty() {
+            name = self.model.read(cx).project_root().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        }
         let filter = crate::git::LogFilter { paths: vec![path], ..Default::default() };
         self.open_log_tab(format!("History: {name}"), filter, cx);
     }

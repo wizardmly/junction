@@ -220,7 +220,7 @@ impl LogView {
                     }
                     cx.notify();
                 }
-                RepoEvent::Notify { .. } | RepoEvent::UnregisteredRoots(_) | RepoEvent::InvalidRoots(_) | RepoEvent::Compare { .. } | RepoEvent::PrefillCommitMessage(_) | RepoEvent::OpenLogTab { .. } | RepoEvent::ShowConflicts | RepoEvent::Cloned(_) => {}
+                RepoEvent::Notify { .. } | RepoEvent::UnregisteredRoots(_) | RepoEvent::InvalidRoots(_) | RepoEvent::UntrustedRoots(_) | RepoEvent::Compare { .. } | RepoEvent::PrefillCommitMessage(_) | RepoEvent::OpenLogTab { .. } | RepoEvent::ShowConflicts | RepoEvent::Cloned(_) => {}
             }),
             cx.subscribe_in(&search, window, |this, _, event, _, cx| match event {
                 InputEvent::Change => {
