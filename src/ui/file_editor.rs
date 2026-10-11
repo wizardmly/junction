@@ -653,7 +653,8 @@ impl FileEditor {
         // Ctrl+click: several targets, or a declaration's usages, list in a
         // popup where the mouse is (IntelliJ on Windows).
         let show: ShowDocumentHandler = Rc::new(move |_, window, cx| {
-            let at = Some(window.mouse_position() + point(px(0.), px(10.)));
+            // The popup's corner just right of and below the mouse.
+            let at = Some(window.mouse_position() + point(px(2.), px(12.)));
             let event = match declaration.borrow().clone() {
                 Some((text, offset)) => FileEditorEvent::NoDeclaration { text, offset, at },
                 None => FileEditorEvent::Navigate { targets: last.borrow().clone(), at },
@@ -764,7 +765,9 @@ impl FileEditor {
                     }
                     let Some((_, mark)) = hits.iter().find(|(r, _)| r.dilate(px(2.)).contains(&e.position)) else { return };
                     cx.stop_propagation();
-                    let event = FileEditorEvent::ChooseTargets { title: mark.title(), targets: mark.targets.clone(), at: e.position + point(px(0.), px(10.)) };
+                    // The popup's corner at the icon's bottom right, as IntelliJ's.
+                    let rect = hits.iter().find(|(r, _)| r.dilate(px(2.)).contains(&e.position)).map(|(r, _)| *r).unwrap_or_default();
+                    let event = FileEditorEvent::ChooseTargets { title: mark.title(), targets: mark.targets.clone(), at: rect.bottom_right() };
                     this.update(cx, |_, cx| cx.emit(event)).ok();
                     window.refresh();
                 });

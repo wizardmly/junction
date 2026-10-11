@@ -71,7 +71,22 @@ pub fn choose_target(
         })
         .collect();
     let n = items.len();
-    open_picker(title.into(), items, vec![0; n], locations, false, 640., at, on_pick, window, cx);
+    let title = title.into();
+    // A popup at an anchor is as wide as its rows, as IntelliJ's; centered
+    // choosers keep their width.
+    let width = match at {
+        Some(_) => {
+            let rows = items.iter().enumerate().map(|(i, it)| {
+                let loc = locations.get(i).map_or("", String::as_str);
+                // Title at the body size, detail and location smaller.
+                it.title.chars().count() as f32 * 7.5 + (it.detail.chars().count() + loc.chars().count().min(60)) as f32 * 6.5 + 100.
+            });
+            let head = title.chars().count() as f32 * 8. + 80.;
+            rows.fold(head, f32::max).clamp(320., 760.)
+        }
+        None => 640.,
+    };
+    open_picker(title, items, vec![0; n], locations, false, width, at, on_pick, window, cx);
 }
 
 /// A list popup: Choose Declaration, Show Usages, Recent Files (Ctrl+E),
