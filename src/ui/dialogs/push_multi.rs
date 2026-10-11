@@ -284,10 +284,19 @@ pub fn push_multi(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
         };
         let (ok_push, button_push, force_push) = (push.clone(), push.clone(), push);
         let (tags_state, tags_mode_state, hooks_state) = (state.clone(), state.clone(), state.clone());
-        let force_names: Vec<String> = {
+        let (force_names, force_targets): (Vec<String>, Vec<String>) = {
             let s = state.borrow();
-            s.roots.iter().filter(|r| r.checked).map(|r| format!("{} ({})", r.label, r.branch)).collect()
+            s.roots
+                .iter()
+                .filter(|r| r.checked)
+                .map(|r| {
+                    let remote = r.remotes.get(r.remote).cloned().unwrap_or_else(|| r.default_remote.clone());
+                    (format!("{} ({})", r.label, r.branch), format!("{remote}/{}", r.target.read(cx).value().trim()))
+                })
+                .unzip()
         };
+        // IntelliJ: no Force Push while a target is a protected branch.
+        let force_disabled = !protected.is_empty();
 
         dialog
             .title(format!("Push Commits to {project}"))
@@ -358,9 +367,9 @@ pub fn push_multi(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
                                 }
                             }))
                             .dropdown_menu(move |menu, _, _| {
-                                let (force_push, names) = (force_push.clone(), force_names.join(", "));
-                                menu.item(PopupMenuItem::new("Force Push").on_click(move |_, window, cx| {
-                                    super::push::confirm_force_push(&names, "their remote branches", force_push.clone(), window, cx)
+                                let (force_push, names, targets) = (force_push.clone(), force_names.join(", "), force_targets.join(", "));
+                                menu.item(PopupMenuItem::new("Force Push").disabled(force_disabled).on_click(move |_, window, cx| {
+                                    super::push::confirm_force_push(&names, &targets, force_push.clone(), window, cx)
                                 }))
                             }),
                     ),

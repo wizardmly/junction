@@ -441,7 +441,8 @@ pub(super) fn branch_menu(
     let remotes = branches_popup::remote_names(refs);
     // Multi-root: the ref's own repository (IntelliJ acts where the branch is).
     let current = model.update(cx, |m, cx| m.focus_ref_owner(&reference.full_name, cx));
-    let actions = branches_popup::branch_actions(&model, reference, current.as_deref(), &remotes);
+    let everywhere = branches_popup::current_everywhere(&model, reference, cx);
+    let actions = branches_popup::branch_actions_with(&model, reference, current.as_deref(), &remotes, everywhere);
     let mut menu = menu;
     for action in actions {
         let run = action.run.clone();

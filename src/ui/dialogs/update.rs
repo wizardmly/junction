@@ -105,9 +105,9 @@ fn run_update(model: Entity<RepoModel>, rebase: bool, clean: crate::git::ops::Cl
         }
         let groups = repositories.into_iter().map(|r| (r, ())).collect();
         model.run_in_groups_keep_going("Update Project", groups, move |repo, _| {
-            // (The View Commits range is one repository's; not with several.)
-            let message = crate::git::ops::update_project(repo, rebase, clean)?;
-            Ok(message.split('\u{1f}').next().unwrap_or_default().to_owned())
+            // Each line keeps its repository's ranges after U+001F: the
+            // balloon's View Files / View Commits cover every root.
+            crate::git::ops::update_project(repo, rebase, clean)
         }, cx)
     });
 }

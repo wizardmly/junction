@@ -252,13 +252,31 @@ pub fn checkout_revision(model: Entity<RepoModel>, window: &mut Window, cx: &mut
                 if revision.is_empty() {
                     return false;
                 }
+                let checkout = move |repo: &crate::git::Repository, revision: &str| -> anyhow::Result<String> {
+                    let commit = repo.run(["rev-parse", "--verify", "--quiet", &format!("{revision}^{{commit}}")])
+                        .map_err(|_| anyhow::anyhow!("Unknown revision: {revision}"))?;
+                    repo.run(["checkout", "--detach", commit.trim()])?;
+                    Ok(format!("Checked out {revision}"))
+                };
+                // Synchronous branch control: every root that has the tag or branch.
+                let roots: Vec<crate::git::Repository> = if Settings::get(cx).sync_branches && model.read(cx).is_multi_root() {
+                    let active = model.read(cx).repository().cloned();
+                    let active_root = active.as_ref().map(|a| a.root().to_path_buf());
+                    let mut roots: Vec<crate::git::Repository> = active.into_iter().collect();
+                    roots.extend(model.read(cx).repositories().into_iter().filter(|r| {
+                        active_root.as_deref() != Some(r.root())
+                            && r.run(["rev-parse", "--verify", "-q", &format!("{revision}^{{commit}}")]).is_ok()
+                    }));
+                    roots
+                } else {
+                    Vec::new()
+                };
                 model.update(cx, |model, cx| {
-                    model.run_operation("Checkout", move |repo| {
-                        let commit = repo.run(["rev-parse", "--verify", "--quiet", &format!("{revision}^{{commit}}")])
-                            .map_err(|_| anyhow::anyhow!("Unknown revision: {revision}"))?;
-                        repo.run(["checkout", "--detach", commit.trim()])?;
-                        Ok(format!("Checked out {revision}"))
-                    }, cx)
+                    if roots.len() > 1 {
+                        let groups = roots.into_iter().map(|r| (r, ())).collect();
+                        return model.run_in_groups_keep_going("Checkout", groups, move |repo, _| checkout(repo, &revision), cx);
+                    }
+                    model.run_operation("Checkout", move |repo| checkout(repo, &revision), cx)
                 });
                 true
             })

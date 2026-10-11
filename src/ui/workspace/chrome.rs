@@ -267,7 +267,7 @@ impl Workspace {
                         .dropdown_menu({
                             let entity = entity.clone();
                             move |menu, _, cx| {
-                                let current = entity.read(cx).model.read(cx).repository().map(|r| r.root().to_path_buf());
+                                let current = { let m = entity.read(cx).model.read(cx); m.project_root().map(std::path::Path::to_path_buf).or_else(|| m.repository().map(|r| r.root().to_path_buf())) };
                                 let mut menu = menu.label("Recent Projects");
                                 for path in crate::settings::recent_projects().into_iter().take(10) {
                                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

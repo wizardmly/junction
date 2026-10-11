@@ -154,7 +154,16 @@ pub fn unregistered(project: &Path) -> Vec<PathBuf> {
 
 /// Turns "Enable automatic mapping detection" on or off.
 pub fn set_auto(project: &Path, auto: bool) -> Result<()> {
+    // Turning detection off keeps the roots it found, as explicit mappings
+    // (IntelliJ's mappings stay; only new repositories are no longer added).
+    let detected = if auto { Vec::new() } else { detect(project) };
     let mut mappings = load_mappings(project);
+    for root in detected.into_iter().filter(|r| r != project) {
+        let relative = root.strip_prefix(project).map(PathBuf::from).unwrap_or(root);
+        if !mappings.added.contains(&relative) {
+            mappings.added.push(relative);
+        }
+    }
     mappings.auto = auto;
     save_mappings(project, &mappings)
 }
@@ -202,13 +211,18 @@ mod tests {
         assert_eq!(detect(repo.root()), vec![repo.root().to_path_buf(), repo.root().join("libs/a"), repo.root().join("deep/one/two/three")]);
         assert!(unregistered(repo.root()).is_empty());
         assert_eq!(invalid(repo.root()), vec![repo.root().join("gone")]);
-        // Off: they're used once registered; the rest are offered.
+        // Off: the roots found so far stay mapped; new ones are offered and
+        // used once registered.
         set_auto(repo.root(), false).unwrap();
-        assert_eq!(detect(repo.root()), vec![repo.root().to_path_buf(), repo.root().join("deep/one/two/three")]);
-        assert_eq!(unregistered(repo.root()), vec![repo.root().join("libs/a")]);
-        register(repo.root(), &[repo.root().join("libs/a")], true).unwrap();
+        assert_eq!(detect(repo.root()), vec![repo.root().to_path_buf(), repo.root().join("deep/one/two/three"), repo.root().join("libs/a")]);
+        assert!(unregistered(repo.root()).is_empty());
+        let c = repo.root().join("libs/c");
+        std::fs::create_dir_all(&c).unwrap();
+        std::process::Command::new("git").args(["init", "-q"]).current_dir(&c).output().unwrap();
+        assert_eq!(unregistered(repo.root()), vec![c.clone()]);
+        register(repo.root(), &[c.clone()], true).unwrap();
         let roots = detect(repo.root());
-        assert_eq!(roots, vec![repo.root().to_path_buf(), repo.root().join("deep/one/two/three"), repo.root().join("libs/a")]);
+        assert_eq!(roots, vec![repo.root().to_path_buf(), repo.root().join("deep/one/two/three"), repo.root().join("libs/a"), c]);
         assert!(unregistered(repo.root()).is_empty());
         assert_eq!(label(repo.root(), &roots[2]), "libs/a");
     }

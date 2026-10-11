@@ -31,7 +31,7 @@ pub(super) fn main_menu(
             .item(PopupMenuItem::new("Get from Version Control…").on_click(model_op(&e, clone_dialog::clone)))
             .item(PopupMenuItem::new("Create Git Repository…").on_click(model_op(&e, |model, _, cx| clone_dialog::init(model, cx))))
             .submenu("Recent Projects", window, cx, move |mut menu, _, cx| {
-                let current = e2.read(cx).model.read(cx).repository().map(|r| r.root().to_path_buf());
+                let current = { let m = e2.read(cx).model.read(cx); m.project_root().map(std::path::Path::to_path_buf).or_else(|| m.repository().map(|r| r.root().to_path_buf())) };
                 let recent = crate::settings::recent_projects();
                 if recent.is_empty() {
                     return menu.item(PopupMenuItem::new("No recent projects").disabled(true));

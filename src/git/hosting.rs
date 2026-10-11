@@ -94,19 +94,17 @@ impl WebRepo {
 }
 
 /// The web repository of the current branch's remote, else `origin`, else
-/// the first remote.
+/// any remote on a known host.
 pub fn web_repo(repository: &Repository) -> Option<WebRepo> {
-    let remote = repository
+    let upstream = repository
         .run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
         .ok()
-        .and_then(|u| u.trim().split_once('/').map(|(r, _)| r.to_owned()))
-        .or_else(|| {
-            let remotes = repository.run(["remote"]).ok()?;
-            let list: Vec<&str> = remotes.lines().collect();
-            list.iter().find(|r| **r == "origin").or(list.first()).map(|r| r.to_string())
-        })?;
-    let url = repository.run(["remote", "get-url", &remote]).ok()?;
-    parse_remote(&url)
+        .and_then(|u| u.trim().split_once('/').map(|(r, _)| r.to_owned()));
+    let remotes = repository.run(["remote"]).unwrap_or_default();
+    let mut order: Vec<String> = upstream.into_iter().collect();
+    order.extend(remotes.lines().filter(|r| *r == "origin").map(str::to_owned));
+    order.extend(remotes.lines().filter(|r| *r != "origin").map(str::to_owned));
+    order.into_iter().find_map(|remote| parse_remote(&repository.run(["remote", "get-url", &remote]).ok()?))
 }
 
 #[cfg(test)]

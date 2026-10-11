@@ -61,9 +61,23 @@ impl Workspace {
                 Some(rest) => (true, rest.to_owned()),
                 None => (false, message.clone()),
             };
-            let (message, updated_range) = match message.split_once('\u{1f}') {
-                Some((text, range)) => (text.to_owned(), Some(range.to_owned())),
-                None => (message.clone(), None),
+            // "text\u{1f}files-range commits-range", one such line per root
+            // after a multi-root update: the ranges of all of them.
+            let (message, updated_range) = if message.contains('\u{1f}') {
+                let mut text = Vec::new();
+                let mut ranges = Vec::new();
+                for line in message.lines() {
+                    match line.split_once('\u{1f}') {
+                        Some((t, r)) => {
+                            text.push(t.to_owned());
+                            ranges.push(r.to_owned());
+                        }
+                        None => text.push(line.to_owned()),
+                    }
+                }
+                (text.join("\n"), Some(ranges.join(" ")))
+            } else {
+                (message.clone(), None)
             };
             let message = &message;
             let title = &if warning { format!("{title} finished with errors") } else { title.clone() };
@@ -116,10 +130,12 @@ impl Workspace {
                         .cursor_pointer()
                         .child("View Files")
                         .on_click(move |_, _, cx| {
-                            let files = range.split(' ').next().unwrap_or_default();
-                            let Some((old, new)) = files.split_once("..") else { return };
-                            let (old, new) = (old.to_owned(), new.to_owned());
-                            entity.update(cx, |this, cx| this.model.update(cx, |m, cx| m.compare(old, Some(new), cx)));
+                            // Every root's updated files (the even tokens).
+                            for files in range.split(' ').step_by(2) {
+                                let Some((old, new)) = files.split_once("..") else { continue };
+                                let (old, new) = (old.to_owned(), new.to_owned());
+                                entity.update(cx, |this, cx| this.model.update(cx, |m, cx| m.compare(old, Some(new), cx)));
+                            }
                         })
                         .into_any_element()
                 });
@@ -127,23 +143,37 @@ impl Workspace {
                     let entity = entity.clone();
                     let range = range.clone();
                     Button::new("notify-view-commits").label("View Commits").small().outline().on_click(move |_, _, cx| {
-                        let commits = range.split(' ').last().unwrap_or_default().to_owned();
+                        // Every root's incoming commits (the odd tokens); each root keeps its own.
+                        let commits: Vec<String> = range.split(' ').skip(1).step_by(2).map(str::to_owned).collect();
                         entity.update(cx, |this, cx| {
-                            let filter = crate::git::LogFilter { branches: vec![commits], ..Default::default() };
+                            let filter = crate::git::LogFilter { branches: commits, ..Default::default() };
                             this.open_log_tab("Update Info".into(), filter, cx);
                         })
                     })
                 })
                 .autohide(true);
-            } else if let Some((name, tip)) = (title == "Delete Branch")
-                .then(|| message.strip_prefix("Deleted branch ")?.strip_suffix(')')?.split_once(" (was "))
-                .flatten()
+            } else if let Some(deleted) = (title == "Delete Branch").then(|| {
+                // "Deleted branch X (was T)", or one such line per root ("lib: Deleted …").
+                let model = this.model.read(cx);
+                let roots: Vec<(std::path::PathBuf, String)> = model.roots().iter().map(|r| (r.path.clone(), model.root_label(&r.path))).collect();
+                let parsed: Vec<(crate::git::Repository, String, String)> = message
+                    .lines()
+                    .filter_map(|line| {
+                        let (repo, rest) = match line.split_once(": Deleted branch ") {
+                            Some((label, rest)) => (model.repository_at(&roots.iter().find(|(_, l)| l == label)?.0)?, rest),
+                            None => (model.repository()?.clone(), line.strip_prefix("Deleted branch ")?),
+                        };
+                        let (name, tip) = rest.strip_suffix(')')?.split_once(" (was ")?;
+                        (!tip.is_empty()).then(|| (repo, name.to_owned(), tip.to_owned()))
+                    })
+                    .collect();
+                parsed
+            }).filter(|d| !d.is_empty())
             {
-                // IntelliJ's "Restore" link brings the deleted branch back.
-                let (name, tip) = (name.to_owned(), tip.to_owned());
+                // IntelliJ's "Restore" link brings the deleted branch back (in every root).
                 notification = notification.content(move |_, _, cx| {
                     let palette = cx.palette().clone();
-                    let (entity, name, tip) = (entity.clone(), name.clone(), tip.clone());
+                    let (entity, deleted) = (entity.clone(), deleted.clone());
                     div()
                         .id("notify-restore")
                         .text_sm()
@@ -151,14 +181,15 @@ impl Workspace {
                         .cursor_pointer()
                         .child("Restore")
                         .on_click(move |_, _, cx| {
-                            let (name, tip) = (name.clone(), tip.clone());
                             let model = entity.read(cx).model.clone();
-                            model.update(cx, |m, cx| {
-                                m.run_operation("Restore Branch", move |repo| {
-                                    repo.run(["branch", &name, &tip])?;
-                                    Ok(format!("Restored branch {name}"))
-                                }, cx)
-                            });
+                            for (repo, name, tip) in deleted.clone() {
+                                model.update(cx, |m, cx| {
+                                    m.run_operation_in(repo, "Restore Branch", move |repo| {
+                                        repo.run(["branch", &name, &tip])?;
+                                        Ok(format!("Restored branch {name}"))
+                                    }, cx)
+                                });
+                            }
                         })
                         .into_any_element()
                 });

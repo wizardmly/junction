@@ -173,8 +173,21 @@ fn action(label: impl Into<String>, enabled: bool, run: Run) -> BranchAction {
 
 /// The actions IntelliJ offers for a branch, in its order.
 pub(crate) fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, current: Option<&str>, remotes: &[String]) -> Vec<BranchAction> {
+    branch_actions_with(model, reference, current, remotes, None)
+}
+
+/// Synchronous branch control: whether a local branch is current in every
+/// root that has it (Checkout / Delete stay available while one isn't).
+pub(crate) fn current_everywhere(model: &Entity<RepoModel>, reference: &RefName, cx: &App) -> Option<bool> {
+    let roots = synced_roots(model, &reference.full_name, cx);
+    (roots.len() > 1 && reference.kind == RefKind::LocalBranch).then(|| {
+        roots.iter().all(|r| r.run(["symbolic-ref", "-q", "--short", "HEAD"]).is_ok_and(|b| b.trim() == reference.name))
+    })
+}
+
+pub(crate) fn branch_actions_with(model: &Entity<RepoModel>, reference: &RefName, current: Option<&str>, remotes: &[String], everywhere: Option<bool>) -> Vec<BranchAction> {
     let name = reference.name.clone();
-    let is_current = reference.kind == RefKind::LocalBranch && Some(name.as_str()) == current;
+    let is_current = reference.kind == RefKind::LocalBranch && Some(name.as_str()) == current && everywhere != Some(false);
     let current_name = current.unwrap_or("HEAD").to_owned();
     let mut actions = Vec::new();
 
@@ -254,14 +267,43 @@ pub(crate) fn branch_actions(model: &Entity<RepoModel>, reference: &RefName, cur
             ));
         }
         RefKind::LocalBranch => {
-            if let Some(upstream) = &reference.upstream {
-                let (remote, remote_branch) = upstream.split_once('/').unwrap_or(("origin", upstream.as_str()));
-                let args = if is_current {
-                    vec!["pull".into(), "--ff-only".into()]
-                } else {
-                    vec!["fetch".into(), remote.to_owned(), format!("{remote_branch}:{name}")]
+            if reference.upstream.is_some() {
+                // Each repository updates the branch from its own upstream:
+                // the current branch pulls, another one is fast-forwarded by fetch.
+                let (update_model, update_name, full) = (model.clone(), name.clone(), reference.full_name.clone());
+                let update = move |repo: &crate::git::Repository, name: &str| -> anyhow::Result<()> {
+                    let upstream = repo.run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", &format!("{name}@{{upstream}}")])?;
+                    let upstream = upstream.trim();
+                    let (remote, remote_branch) = upstream.split_once('/').unwrap_or(("origin", upstream));
+                    let current = repo.run(["symbolic-ref", "-q", "--short", "HEAD"]).map(|b| b.trim().to_owned()).unwrap_or_default();
+                    if current == name {
+                        repo.run(["pull", "--ff-only"])?;
+                    } else {
+                        repo.run(["fetch", remote, &format!("{remote_branch}:{name}")])?;
+                    }
+                    Ok(())
                 };
-                actions.push(action("Update", true, synced_op(model, "Update", args, format!("Updated {name}"), Some(reference.full_name.clone()))));
+                actions.push(action(
+                    "Update",
+                    true,
+                    Rc::new(move |_, cx| {
+                        let roots = synced_roots(&update_model, &full, cx);
+                        let (name, update) = (update_name.clone(), update.clone());
+                        update_model.update(cx, |model, cx| {
+                            if roots.len() > 1 {
+                                let groups = roots.into_iter().map(|r| (r, ())).collect();
+                                return model.run_in_groups_keep_going("Update", groups, move |repo, _| {
+                                    update(repo, &name)?;
+                                    Ok(format!("Updated {name}"))
+                                }, cx);
+                            }
+                            model.run_operation("Update", move |repo| {
+                                update(repo, &name)?;
+                                Ok(format!("Updated {name}"))
+                            }, cx)
+                        });
+                    }),
+                ));
             }
             let (push_model, push_name) = (model.clone(), name.clone());
             actions.push(action(
@@ -474,8 +516,10 @@ fn delete_branch(model: &Entity<RepoModel>, reference: &RefName, window: &mut Wi
             if roots.len() > 1 {
                 let groups = roots.into_iter().map(|r| (r, ())).collect();
                 return model.run_in_groups_keep_going("Delete Branch", groups, move |repo, _| {
+                    // Each root's own tip, for the balloon's Restore.
+                    let tip = repo.run(["rev-parse", &format!("refs/heads/{name}")]).map(|h| h.trim().to_owned()).unwrap_or_default();
                     repo.run(["branch", if force { "-D" } else { "-d" }, &name])?;
-                    Ok(format!("Deleted branch {name}"))
+                    Ok(format!("Deleted branch {name} (was {})", &tip[..tip.len().min(8)]))
                 }, cx);
             }
             model.run_operation("Delete Branch", move |repo| {
@@ -488,7 +532,18 @@ fn delete_branch(model: &Entity<RepoModel>, reference: &RefName, window: &mut Wi
         return delete(false, model, cx);
     }
     let current = model.read(cx).refs().current_branch.clone().unwrap_or_else(|| "HEAD".into());
-    let commits = crate::git::refs::unmerged_commits(&repository, &reference.full_name, 20);
+    // Every root the branch is deleted from (synchronous branch control).
+    let mut commits = Vec::new();
+    let roots = synced_roots(model, &reference.full_name, cx);
+    if roots.len() > 1 {
+        for repo in &roots {
+            let own = crate::git::refs::unmerged_commits(repo, &reference.full_name, 20);
+            let label = model.read(cx).root_label(repo.root());
+            commits.extend(own.into_iter().map(|c| format!("{label}: {c}")));
+        }
+    } else {
+        commits = crate::git::refs::unmerged_commits(&repository, &reference.full_name, 20);
+    }
     let model = model.clone();
     let delete = Rc::new(delete);
     dialogs::choose(
@@ -830,7 +885,8 @@ impl Render for BranchesPopup {
                         .into_any_element(),
                 );
                 if expanded {
-                    for (ix, branch_action) in branch_actions(&self.model, &reference, current.as_deref(), &remote_names).into_iter().enumerate() {
+                    let everywhere = current_everywhere(&self.model, &reference, cx);
+                    for (ix, branch_action) in branch_actions_with(&self.model, &reference, current.as_deref(), &remote_names, everywhere).into_iter().enumerate() {
                         let run = branch_action.run.clone();
                         let close_entity = entity.clone();
                         let nav_ix = nav.len();
@@ -953,7 +1009,7 @@ fn favorite_star(model: &Entity<RepoModel>, title: &str, full_name: &str, is_fav
         .id(SharedString::from(format!("star-{title}-{full_name}")))
         .px_0p5()
         .child(
-            Icon::new(if is_favorite { icons::STAR_EMPTY } else { icons::STAR })
+            Icon::new(if is_favorite { icons::STAR } else { icons::STAR_EMPTY })
                 .xsmall()
                 .text_color(palette.text_secondary),
         )
