@@ -114,6 +114,7 @@ impl Workspace {
                     // IntelliJ's new UI: 20px icons in 32px stripe buttons.
                     .icon(Icon::new(icon))
                     .icon_size(px(20.))
+                    .size(px(if Settings::get(cx).compact { 28. } else { 32. }))
                     .tooltip(tooltip)
                     .when(self.tools.is_open(window), |b| b.selected(true))
                     .on_click(cx.listener(move |this, _, w, cx| this.toggle_tool(window, w, cx))),
@@ -176,8 +177,10 @@ impl Workspace {
             .w(px(if compact { 32. } else { 40. }))
             .flex_shrink_0()
             .h_full()
+            // IntelliJ's new UI: stripe buttons about 40px apart.
             .py_1()
-            .gap_1()
+            .when(compact, |el| el.gap_1())
+            .when(!compact, |el| el.gap(px(10.)))
             .items_center()
             .when(right, |el| el.border_l_1())
             .when(!right, |el| el.border_r_1())
