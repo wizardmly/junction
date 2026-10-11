@@ -87,7 +87,7 @@ pub fn conflicts(model: Entity<RepoModel>, open_merge: OpenMerge, window: &mut W
                         }
                         window.refresh();
                     })
-                    .child(div().flex_1().text_color(palette.status_conflict).child(conflict.path.clone()))
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(palette.status_conflict).child(conflict.path.clone()))
                     .child(div().w(px(90.)).text_color(palette.text_secondary).child(yours))
                     .child(div().w(px(90.)).text_color(palette.text_secondary).child(theirs)),
             );
@@ -113,7 +113,7 @@ pub fn conflicts(model: Entity<RepoModel>, open_merge: OpenMerge, window: &mut W
         let merge_target = chosen.clone();
         dialog
             .title("Conflicts")
-            .w(px(620.))
+            .w(px(760.))
             .child(
                 v_flex()
                     .gap_2()
@@ -122,7 +122,7 @@ pub fn conflicts(model: Entity<RepoModel>, open_merge: OpenMerge, window: &mut W
                         h_flex()
                             .gap_3()
                             .items_start()
-                            .child(div().flex_1().child(list))
+                            .child(div().flex_1().min_w_0().child(list))
                             .child(
                                 v_flex()
                                     .w(px(130.))

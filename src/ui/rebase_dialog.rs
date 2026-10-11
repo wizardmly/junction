@@ -400,7 +400,7 @@ impl Render for RebaseEditor {
                                     .to_owned(),
                             ),
                     )
-                    .child(div().w(px(90.)).text_color(palette.text_secondary).child(entry.commit.author_name.to_string())),
+                    .child(div().w(px(120.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(palette.text_secondary).child(entry.commit.author_name.to_string())),
             );
         }
         let current = self.entries.get(selected).map(|e| e.action);
