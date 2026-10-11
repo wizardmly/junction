@@ -263,6 +263,13 @@ impl CodeIndex {
                 let name = nav::word_at(&text, offset).map(|(w, _)| w).unwrap_or_default();
                 return Nav::Targets(vec![Target { path, line, col, name, label: format!("local · {}", lang.name()), container: None }]);
             }
+            // `this`, `super`, `it`, `field`, a named argument.
+            if let Some(special) = super::special::classify(lang, &text, offset) {
+                let targets = super::special::targets(&index.read().unwrap(), &root, &path, lang, &text, offset, special);
+                if !targets.is_empty() {
+                    return Nav::Targets(targets);
+                }
+            }
             let local = {
                 let index = index.read().unwrap();
                 let bridged = nav::bridge_definitions(&index, &path, &text, offset);

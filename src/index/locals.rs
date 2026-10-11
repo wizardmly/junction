@@ -87,6 +87,11 @@ fn binds_whole_scope(binding: &str) -> bool {
     )
 }
 
+/// A node kind that declares a function's (or lambda's) parameter.
+pub fn is_parameter(kind: &str) -> bool {
+    binds_whole_scope(kind) && !matches!(kind, "formal_parameters" | "parameters" | "closure_parameters" | "lambda_parameters" | "inferred_parameters")
+}
+
 /// The declaration node an identifier names, when it declares a local.
 fn binding_of(node: Node) -> Option<Node> {
     let mut cur = node;
@@ -296,4 +301,5 @@ mod tests {
         assert_eq!(at(Lang::Python, py, "x", 1), Some((2, false, vec![3])));
     }
 }
+
 

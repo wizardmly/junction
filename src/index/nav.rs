@@ -57,7 +57,7 @@ pub fn position(text: &str, offset: usize) -> (u32, u32) {
     (line, before[line_start..].encode_utf16().count() as u32)
 }
 
-fn symbol_target(path: &str, lang: Lang, s: &super::symbols::Symbol) -> Target {
+pub fn symbol_target(path: &str, lang: Lang, s: &super::symbols::Symbol) -> Target {
     Target {
         path: path.to_owned(),
         line: s.line,
@@ -131,9 +131,23 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
         hints = included_hints(index, hints);
     }
     // `x.name`: the type of `x` picks among same-named members.
-    let receiver = receiver_type(index, lang, text, range.start, 0);
     let as_type = used_as_type(text, range.start, range.end);
     let call = text[range.end..].trim_start().starts_with('(');
+    // The receiver's type and its supertypes, nearest first.
+    let receivers: Vec<String> = match receiver_type(index, lang, text, range.start, 0) {
+        Some(receiver) => {
+            let supers: Vec<String> = index.symbols_named(&receiver).filter(|(_, _, s)| s.kind.is_type()).flat_map(|(_, _, s)| s.supers.clone()).collect();
+            std::iter::once(receiver).chain(super::special::super_chain(index, &supers)).collect()
+        }
+        None => match qualifier(text, range.start) {
+            // `this.x`, `super.x`, `self.x`.
+            Some((q, at)) if q.chars().all(is_word_char) && range.start - at <= q.len() + 3 => super::special::receivers(index, lang, text, &q, at),
+            Some(_) => Vec::new(),
+            // An unqualified member call: `this` is implied.
+            None if call && !as_type && word.starts_with(|c: char| c.is_lowercase()) => super::special::receivers(index, lang, text, "", range.start),
+            None => Vec::new(),
+        },
+    };
     let jvm = matches!(lang, Lang::Java | Lang::Kotlin);
     for (p, e, s) in index.symbols_named(&word) {
         if !family.contains(&e.lang) {
@@ -158,10 +172,9 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
                 score += 25;
             }
         }
-        if let Some(receiver) = &receiver {
-            if s.container.as_deref().and_then(|c| c.rsplit(['.', ':']).next()) == Some(receiver.as_str()) {
-                score += RECEIVER;
-            }
+        let owner = s.container.as_deref().and_then(|c| c.rsplit(['.', ':']).next());
+        if let Some(depth) = receivers.iter().position(|r| Some(r.as_str()) == owner) {
+            score += RECEIVER * (10 - depth.min(9) as i32);
         }
         if as_type && s.kind.is_type() {
             score += 15;
@@ -213,8 +226,9 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
         }
     }
     // Members of the receiver's type win over every other same-named member.
-    if candidates.iter().any(|(s, _)| *s >= RECEIVER) && receiver.is_some() {
-        candidates.retain(|(s, _)| *s >= RECEIVER);
+    // The nearest type in the receiver's hierarchy declaring it wins.
+    if let Some(tier) = candidates.iter().map(|(s, _)| s / RECEIVER).max().filter(|t| *t > 0) {
+        candidates.retain(|(s, _)| s / RECEIVER == tier);
     }
     // Unrelated library symbols only count when nothing better exists.
     let strong = candidates.iter().any(|(s, t)| !ProjectIndex::is_external(&t.path) || *s >= IMPORTED);

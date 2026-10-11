@@ -69,7 +69,7 @@ impl SymbolKind {
         )
     }
 
-    fn is_callable(self) -> bool {
+    pub fn is_callable(self) -> bool {
         matches!(self, SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor)
     }
 }
