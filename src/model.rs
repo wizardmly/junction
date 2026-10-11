@@ -600,7 +600,8 @@ impl RepoModel {
         cx: &mut Context<Self>,
     ) {
         let groups = self.route_all(&paths);
-        if self.root_states.is_empty() {
+        // No files (Amend of the message alone): the active root.
+        if self.root_states.is_empty() || groups.is_empty() {
             let own = groups.into_iter().next().map(|(_, own)| own).unwrap_or(paths);
             return self.run_operation(title, move |repo| operation(repo, own), cx);
         }
@@ -673,9 +674,11 @@ impl RepoModel {
                             Ok(message) if message.is_empty() => {}
                             Ok(message) => messages.push(if several { format!("{name}: {message}") } else { message }),
                             Err(error) => {
-                                conflicted |= !had_conflicts
+                                let stopped = !had_conflicts
                                     && repository.run(["diff", "--name-only", "--diff-filter=U"]).is_ok_and(|o| !o.trim().is_empty());
-                                failed.push(format!("{name}: {error}"));
+                                conflicted |= stopped;
+                                // The Conflicts dialog shows the rest (no git transcript).
+                                failed.push(if stopped { format!("{name}: stopped on conflicts") } else { format!("{name}: {error}") });
                                 if !keep_going {
                                     break;
                                 }
@@ -1333,8 +1336,14 @@ impl RepoModel {
         }
     }
 
+    /// The repository a Log commit is in (its root's, in a multi-root Log).
+    fn repository_of_commit(&self, hash: &str) -> Option<Repository> {
+        let root = self.row_of(hash).and_then(|row| self.commits.get(row)).map(|c| c.root as usize);
+        root.and_then(|ix| self.root_states.get(ix)).map(|s| s.repository.clone()).or_else(|| self.repository.clone())
+    }
+
     fn load_details(&mut self, hash: String, cx: &mut Context<Self>) {
-        let Some(repository) = self.repository.clone() else { return };
+        let Some(repository) = self.repository_of_commit(&hash) else { return };
         // Seen (or read ahead) before: shown at once.
         if let Some(details) = self.details_cache.get(&hash).cloned() {
             self.details = Some(details);
@@ -1401,7 +1410,7 @@ impl RepoModel {
     /// background, so moving through the Log with the arrow keys shows
     /// their details at once.
     fn read_ahead(&mut self, hash: &str, cx: &mut Context<Self>) {
-        let (Some(repository), Some(row)) = (self.repository.clone(), self.row_of(hash)) else { return };
+        let (Some(repository), Some(row)) = (self.repository_of_commit(hash), self.row_of(hash)) else { return };
         let next: Vec<String> = [row.checked_sub(1), Some(row + 1)]
             .into_iter()
             .flatten()

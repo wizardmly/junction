@@ -537,6 +537,8 @@ pub const PUSH_REJECTED: &str = "Push rejected:";
 /// doesn't, so merge or rebase onto them and push again.
 pub fn push_rejected(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
     let Some((root, request)) = REJECTED_PUSH.lock().unwrap().take() else { return };
+    // "… in lib", when one of several roots was rejected.
+    let where_ = root.as_deref().map(|r| format!(" in {}", model.read(cx).root_label(r))).unwrap_or_default();
     // (The root it was rejected in, for a multi-root push.)
     let repository = match root {
         Some(root) => model.read(cx).repository_at(&root),
@@ -563,7 +565,7 @@ pub fn push_rejected(model: Entity<RepoModel>, window: &mut Window, cx: &mut App
         options.reverse();
     }
     let message: SharedString = format!(
-        "Push of current branch {} was rejected. Remote changes need to be merged before pushing.",
+        "Push of current branch {}{where_} was rejected. Remote changes need to be merged before pushing.",
         request.branch
     )
     .into();

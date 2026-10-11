@@ -9,7 +9,7 @@ use anyhow::Result;
 use super::Repository;
 
 /// Folders never scanned for nested repositories.
-const SKIP: [&str; 8] = [".git", "node_modules", "target", "build", ".gradle", ".idea", "Pods", ".dart_tool"];
+pub const SKIP: [&str; 8] = [".git", "node_modules", "target", "build", ".gradle", ".idea", "Pods", ".dart_tool"];
 const MAX_DEPTH: usize = 3;
 
 /// User edits to the detected roots, kept in `<gitdir>/junction/roots` as

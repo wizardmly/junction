@@ -181,22 +181,76 @@ pub fn stat(path: &Path) -> Option<(u64, u64)> {
     Some((meta.len(), mtime))
 }
 
-/// Files git would show: tracked plus untracked, minus ignored.
+/// Files git would show: tracked plus untracked, minus ignored; with the
+/// files of every nested root (Directory Mappings) under their folder, as
+/// IntelliJ indexes all of a multi-root project. A folder that isn't a
+/// repository itself (a folder of roots) adds its own loose files.
 pub fn list_files(root: &Path) -> Vec<String> {
-    let output = crate::git::git_process()
-        .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
-        .current_dir(root)
-        .output();
-    let Ok(output) = output else { return Vec::new() };
-    let mut files: Vec<String> = output
-        .stdout
-        .split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
-        .map(|p| String::from_utf8_lossy(p).into_owned())
-        .collect();
+    let mut files = git_files(root).unwrap_or_else(|| loose_files(root));
+    for nested in crate::git::roots::detect(root) {
+        let Ok(rel) = nested.strip_prefix(root) else { continue };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let prefix = format!("{}/", rel.to_string_lossy().replace('\\', "/"));
+        let Some(inner) = git_files(&nested) else { continue };
+        files.retain(|f| !f.starts_with(&prefix));
+        files.extend(inner.into_iter().map(|f| format!("{prefix}{f}")));
+    }
     files.sort();
     files.dedup();
     files
+}
+
+/// `git ls-files` of a repository's folder; `None` outside a repository.
+/// (Nested repositories, listed as folders, are left out.)
+fn git_files(dir: &Path) -> Option<Vec<String>> {
+    let output = crate::git::git_process()
+        .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    Some(
+        output
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|p| !p.is_empty() && !p.ends_with(b"/"))
+            .map(|p| String::from_utf8_lossy(p).into_owned())
+            .collect(),
+    )
+}
+
+/// Files of a folder outside any repository, not descending into
+/// repositories (listed on their own) or build folders.
+fn loose_files(root: &Path) -> Vec<String> {
+    const CAP: usize = 200_000;
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => {
+                    let name = entry.file_name();
+                    if !crate::git::roots::SKIP.contains(&name.to_string_lossy().as_ref()) && !path.join(".git").exists() {
+                        stack.push(path);
+                    }
+                }
+                Ok(t) if t.is_file() => {
+                    if let Ok(rel) = path.strip_prefix(root) {
+                        out.push(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+                _ => {}
+            }
+            if out.len() >= CAP {
+                return out;
+            }
+        }
+    }
+    out
 }
 
 pub fn index_file(root: &Path, rel: &str) -> Option<FileEntry> {
@@ -543,6 +597,27 @@ impl ProjectIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_the_files_of_nested_and_sibling_roots() {
+        let dir = std::env::temp_dir().join(format!("junction-list-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let git = |at: &Path, args: &[&str]| {
+            std::process::Command::new("git").args(args).current_dir(at).output().unwrap();
+        };
+        // A project repository ignoring its nested one, and a folder of two repositories.
+        for (repo, file) in [("proj", "a.kt"), ("proj/libs/core", "b.kt"), ("ws/app", "c.kt"), ("ws/lib", "src/d.kt")] {
+            let at = dir.join(repo);
+            std::fs::create_dir_all(at.join(file).parent().unwrap()).unwrap();
+            std::fs::write(at.join(file), "x").unwrap();
+            git(&at, &["init", "-q"]);
+        }
+        std::fs::write(dir.join("proj/.gitignore"), "libs/\n").unwrap();
+        std::fs::write(dir.join("ws/README.md"), "x").unwrap();
+        assert_eq!(list_files(&dir.join("proj")), vec![".gitignore", "a.kt", "libs/core/b.kt"]);
+        assert_eq!(list_files(&dir.join("ws")), vec!["README.md", "app/c.kt", "lib/src/d.kt"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn rejects_old_and_corrupt_caches() {

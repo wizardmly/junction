@@ -233,13 +233,15 @@ pub fn push_multi(model: Entity<RepoModel>, window: &mut Window, cx: &mut App) {
         let hooks = s.hooks;
         // Something to send in a checked root (tags count too).
         let nothing = !s.roots.iter().any(|r| r.checked && (!r.out.commits.is_empty() || r.out.new_branch || tags.is_some()));
-        let protected: Vec<String> = s
+        let mut protected: Vec<String> = s
             .roots
             .iter()
             .filter(|r| r.checked)
             .map(|r| r.target.read(cx).value().trim().to_owned())
             .filter(|t| Settings::get(cx).is_protected(t))
             .collect();
+        protected.sort();
+        protected.dedup();
         drop(s);
 
         let push = {

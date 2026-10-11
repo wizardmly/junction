@@ -106,10 +106,11 @@ impl LogView {
         let details = model.details().cloned();
         let refs = model.log_refs().clone();
         // A multi-root project: which repository the commit is in.
+        // (The shown commit's own root: the active one may follow an editor tab.)
         let root = model.project_root().filter(|_| model.is_multi_root()).and_then(|project| {
-            let active = model.repository()?.root();
-            let ix = model.root_states().iter().position(|r| r.path == active)?;
-            Some((ix, crate::git::roots::label(project, active), active.display().to_string()))
+            let ix = model.selected_index().and_then(|row| model.commits().get(row)).map(|c| c.root as usize)?;
+            let path = &model.root_states().get(ix)?.path;
+            Some((ix, crate::git::roots::label(project, path), path.display().to_string()))
         });
         let kinds = self.change_kinds.clone();
         let counts = self.change_counts.clone();
