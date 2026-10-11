@@ -188,22 +188,51 @@ impl Workspace {
                         })
                         .into_any_element()
                 });
+            } else if warning && title.starts_with("Checkout") && this.model.read(cx).can_rollback_checkout() {
+                // A synchronous checkout that failed in some roots: IntelliJ's Rollback.
+                let rollback = entity.clone();
+                notification = notification.autohide(false).content(move |_, _, cx| {
+                    let palette = cx.palette().clone();
+                    let (note, entity) = (cx.entity(), rollback.clone());
+                    div()
+                        .id("notify-rollback")
+                        .text_sm()
+                        .text_color(palette.link)
+                        .cursor_pointer()
+                        .child("Rollback")
+                        .on_click(move |_, window, cx| {
+                            note.update(cx, |n, cx| n.dismiss(window, cx));
+                            entity.update(cx, |this, cx| this.model.update(cx, |m, cx| m.rollback_checkout(cx)));
+                        })
+                        .into_any_element()
+                });
             } else if title == "Commit" {
-                // The balloon's "Undo" link undoes exactly this commit.
-                // (Only for a commit to the active repository: a multi-root
-                // commit, one per root, has nothing single to undo.)
-                let short = message.rsplit(": ").next().unwrap_or_default().trim().to_owned();
-                let committed = this
-                    .model
-                    .read(cx)
-                    .repository()
-                    .and_then(|r| r.run(["rev-parse", "HEAD"]).ok())
-                    .map(|h| h.trim().to_owned())
-                    .filter(|h| !message.contains('\n') && !short.is_empty() && h.starts_with(&short));
+                // The balloon's "Undo" link undoes exactly this commit (each
+                // root's one, after a multi-root commit), while still HEAD.
+                let committed: Vec<(std::path::PathBuf, String)> = {
+                    let model = this.model.read(cx);
+                    let roots: Vec<(std::path::PathBuf, String)> = model.roots().iter().map(|r| (r.path.clone(), model.root_label(&r.path))).collect();
+                    message
+                        .lines()
+                        .filter_map(|line| {
+                            let short = line.rsplit(": ").next()?.trim();
+                            let (label, _) = line.split_once(": ")?;
+                            let repo = if label.ends_with("committed") {
+                                model.repository()?.clone()
+                            } else {
+                                let root = roots.iter().find(|(_, l)| l == label)?.0.clone();
+                                model.repository_at(&root)?
+                            };
+                            let head = repo.run(["rev-parse", "HEAD"]).ok()?.trim().to_owned();
+                            (!short.is_empty() && head.starts_with(short)).then(|| (repo.root().to_path_buf(), head))
+                        })
+                        .collect()
+                };
+                let committed = (!committed.is_empty() && committed.len() == message.lines().count()).then_some(committed);
                 let undo_entity = entity.clone();
                 notification = if committed.is_none() { notification } else { notification.content(move |_, _, cx| {
                     let palette = cx.palette().clone();
-                    let (entity, hash) = (undo_entity.clone(), committed.clone());
+                    let (entity, hash, note) = (undo_entity.clone(), committed.clone(), cx.entity());
                     v_flex()
                         .child(
                             div()
@@ -212,9 +241,10 @@ impl Workspace {
                                 .text_color(palette.link)
                                 .cursor_pointer()
                                 .child("Undo")
-                                .on_click(move |_, _, cx| {
-                                    let Some(hash) = hash.clone() else { return };
-                                    entity.update(cx, |this, cx| this.model.update(cx, |m, cx| m.undo_commit(hash, cx)));
+                                .on_click(move |_, window, cx| {
+                                    let Some(commits) = hash.clone() else { return };
+                                    note.update(cx, |n, cx| n.dismiss(window, cx));
+                                    entity.update(cx, |this, cx| this.model.update(cx, |m, cx| m.undo_commits(commits, cx)));
                                 }),
                         )
                         .into_any_element()

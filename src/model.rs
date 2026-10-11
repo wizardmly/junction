@@ -107,6 +107,9 @@ pub struct RepoModel {
     folder_project: bool,
     /// The "Unregistered VCS roots detected" balloon was shown for this project.
     roots_offered: bool,
+    /// A synchronous checkout that failed in some roots: where the others
+    /// were before, for the balloon's Rollback.
+    checkout_rollback: Vec<(PathBuf, String)>,
     roots: Vec<RootInfo>,
     /// Every root's repository, refs and changes in a multi-root project
     /// (empty with a single root), in the order of `roots`.
@@ -400,6 +403,7 @@ impl RepoModel {
             project_root: None,
             folder_project: false,
             roots_offered: false,
+            checkout_rollback: Vec::new(),
             roots: Vec::new(),
             root_states: Arc::default(),
             project_status: Arc::default(),
@@ -839,6 +843,31 @@ impl RepoModel {
     /// unless it has nested repositories or mapped directories.
     pub fn roots(&self) -> &[RootInfo] {
         &self.roots
+    }
+
+    pub fn set_checkout_rollback(&mut self, roots: Vec<(PathBuf, String)>) {
+        self.checkout_rollback = roots;
+    }
+
+    pub fn can_rollback_checkout(&self) -> bool {
+        !self.checkout_rollback.is_empty()
+    }
+
+    /// Rollback: checks the roots a partial synchronous checkout changed out
+    /// where they were before.
+    pub fn rollback_checkout(&mut self, cx: &mut Context<Self>) {
+        let roots = std::mem::take(&mut self.checkout_rollback);
+        let groups: Vec<(Repository, String)> = roots
+            .into_iter()
+            .filter_map(|(path, before)| Repository::discover(&path, self.console.clone()).ok().map(|r| (r, before)))
+            .collect();
+        if groups.is_empty() {
+            return;
+        }
+        self.run_in_groups_keep_going("Rollback", groups, |repo, before| {
+            repo.run(["checkout", &before])?;
+            Ok(format!("Checked out {before}"))
+        }, cx);
     }
 
     /// The balloon's Add Roots (registers them) or Ignore (stops offering them).
@@ -1314,16 +1343,30 @@ impl RepoModel {
 
     /// Undo Commit: `reset --soft` to the parent of `hash` if it is still
     /// HEAD, putting its message back into the commit message editor.
-    pub fn undo_commit(&mut self, hash: String, cx: &mut Context<Self>) {
-        let Some(repository) = self.repository.clone() else { return };
-        let head = repository.run(["rev-parse", "HEAD"]).unwrap_or_default();
-        if head.trim() != hash {
-            self.notify("Undo Commit", "The commit is no longer HEAD; use Reset or Revert from the Log", true, cx);
-            return;
+    /// Undo Commit from the Commit balloon: each root's commit (one per
+    /// root after a multi-root commit) goes back to the changes, while it is
+    /// still that root's HEAD.
+    pub fn undo_commits(&mut self, commits: Vec<(PathBuf, String)>, cx: &mut Context<Self>) {
+        let mut groups = Vec::new();
+        for (root, hash) in commits {
+            let Some(repository) = Repository::discover(&root, self.console.clone()).ok() else { continue };
+            let head = repository.run(["rev-parse", "HEAD"]).unwrap_or_default();
+            if head.trim() != hash {
+                self.notify("Undo Commit", "The commit is no longer HEAD; use Reset or Revert from the Log", true, cx);
+                return;
+            }
+            groups.push((repository, hash));
         }
-        let message = repository.run(["log", "-1", "--format=%B", &hash]).unwrap_or_default();
+        let Some((first, hash)) = groups.first() else { return };
+        let message = first.run(["log", "-1", "--format=%B", hash]).unwrap_or_default();
         self.prefill_commit_message(message.trim_end().to_owned(), cx);
-        self.run_operation("Undo Commit", |repo| {
+        if groups.len() == 1 {
+            return self.run_operation_in(groups.remove(0).0, "Undo Commit", |repo| {
+                repo.run(["reset", "--soft", "HEAD~1"])?;
+                Ok("Commit undone; changes kept".into())
+            }, cx);
+        }
+        self.run_in_groups("Undo Commit", groups, |repo, _| {
             repo.run(["reset", "--soft", "HEAD~1"])?;
             Ok("Commit undone; changes kept".into())
         }, cx);

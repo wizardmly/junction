@@ -356,23 +356,60 @@ pub(crate) fn checkout_branch(model: &Entity<RepoModel>, reference: RefName, win
 fn run_checkout(model: &Entity<RepoModel>, reference: RefName, mode: status::CheckoutMode, cx: &mut App) {
     // Synchronous branch control: the same branch in every root that has it.
     let others = if crate::settings::Settings::get(cx).sync_branches { model.read(cx).other_roots() } else { Vec::new() };
+    let labels: std::collections::HashMap<std::path::PathBuf, String> = {
+        let m = model.read(cx);
+        m.roots().iter().map(|r| (r.path.clone(), m.root_label(&r.path))).collect()
+    };
     let task_ref = reference.clone();
     let entity = model.clone();
     model.update(cx, |model, cx| {
         model.run_task(
             "Checkout",
             move |repo| {
+                // Where each root was, for Rollback when another one fails.
+                let head_of = |r: &crate::git::Repository| {
+                    r.run(["symbolic-ref", "--short", "-q", "HEAD"])
+                        .ok()
+                        .map(|b| b.trim().to_owned())
+                        .filter(|b| !b.is_empty())
+                        .or_else(|| r.run(["rev-parse", "HEAD"]).ok().map(|h| h.trim().to_owned()))
+                        .unwrap_or_default()
+                };
+                let before = head_of(repo);
                 let outcome = status::checkout_with(repo, &task_ref, mode)?;
-                let synced = sync_to_roots(repo, &others, |other| {
-                    other.run(["rev-parse", "--verify", "-q", &task_ref.full_name]).is_ok() && status::checkout(other, &task_ref).is_ok()
-                });
-                Ok((outcome, synced))
+                let mut done = vec![(repo.root().to_path_buf(), before)];
+                let mut failed = Vec::new();
+                for root in &others {
+                    let Ok(other) = repo.nested(&root.to_string_lossy()) else { continue };
+                    if other.run(["rev-parse", "--verify", "-q", &task_ref.full_name]).is_err() {
+                        continue;
+                    }
+                    let before = head_of(&other);
+                    match status::checkout(&other, &task_ref) {
+                        Ok(_) => done.push((root.clone(), before)),
+                        Err(error) => failed.push((root.clone(), error.to_string())),
+                    }
+                }
+                Ok((outcome, done, failed))
             },
             move |model, result, cx| match result {
-                Ok((outcome, synced)) => {
-                    let mut message = match synced {
-                        0 => format!("Checked out {}", reference.name),
-                        n => format!("Checked out {} in {} repositories", reference.name, n + 1),
+                Ok((outcome, done, failed)) if !failed.is_empty() => {
+                    // IntelliJ: checked out in some roots only; Rollback puts them back.
+                    let name = |p: &std::path::PathBuf| labels.get(p).cloned().unwrap_or_else(|| p.display().to_string());
+                    let ok: Vec<String> = done.iter().map(|(p, _)| name(p)).collect();
+                    let errors: Vec<String> = failed.iter().map(|(p, e)| format!("{}: {}", name(p), e.lines().find_map(|l| l.trim().strip_prefix("error: ")).or_else(|| e.lines().last()).unwrap_or_default())).collect();
+                    model.set_checkout_rollback(done);
+                    model.notify(
+                        "Checkout",
+                        format!("{}Checked out {} in {}, but not in:\n{}", crate::model::PARTIAL_FAILURE, reference.name, ok.join(", "), errors.join("\n")),
+                        false,
+                        cx,
+                    );
+                }
+                Ok((outcome, done, _)) => {
+                    let mut message = match done.len() {
+                        1 => format!("Checked out {}", reference.name),
+                        n => format!("Checked out {} in {} repositories", reference.name, n),
                     };
                     if outcome == status::CheckoutOutcome::RestoredWithConflicts {
                         message.push_str(
@@ -726,11 +763,6 @@ impl Render for BranchesPopup {
             push_top(&mut rows, "bp-checkout-rev", Icon::from(icons::TAG), "Checkout Tag or Revision…", Rc::new(move |window: &mut Window, cx: &mut App| {
                 dialogs::checkout_revision(revision_model.clone(), window, cx)
             }));
-            // Multi-root projects: pick the repository whose branches are listed
-            // (and that branch operations target), plus synchronous control.
-            if model.is_multi_root() {
-                rows.extend(self.repository_rows(&palette, cx));
-            }
         }
         drop(push_top);
 
@@ -836,6 +868,42 @@ impl Render for BranchesPopup {
                 .filter_map(|name| refs.find(&format!("refs/heads/{name}")).cloned())
                 .collect();
             add_group(&mut rows, &mut nav, "Recent", recent);
+        }
+        let multi_root = model.is_multi_root() && model.root_states().len() > 1;
+        if multi_root {
+            // IntelliJ's multi-root popup: with synchronous branch control,
+            // the branches every repository has (operations run in all of
+            // them); then the repositories, each with its own branches.
+            if crate::settings::Settings::get(cx).sync_branches {
+                let states = model.root_states();
+                let common = |kind: RefKind| -> Vec<RefName> {
+                    refs.refs
+                        .iter()
+                        .filter(|r| r.kind == kind && matches(&r.name))
+                        .filter(|r| states.iter().all(|s| s.refs.refs.iter().any(|o| o.full_name == r.full_name)))
+                        .cloned()
+                        .collect()
+                };
+                add_group(&mut rows, &mut nav, "Common Local Branches", common(RefKind::LocalBranch));
+                add_group(&mut rows, &mut nav, "Common Remote Branches", common(RefKind::RemoteBranch));
+            }
+            if !searching {
+                rows.extend(self.repository_rows(&palette, cx));
+            }
+            let project = model.project_root().map(std::path::Path::to_path_buf).unwrap_or_default();
+            let active = model.repository().map(|r| crate::git::roots::label(&project, r.root())).unwrap_or_default();
+            rows.push(
+                h_flex()
+                    .flex_shrink_0()
+                    .px_2()
+                    .pt_2()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(palette.text_secondary)
+                    .child(Icon::new(icons::MODULE).xsmall())
+                    .child(format!("Branches of {active}"))
+                    .into_any_element(),
+            );
         }
         add_group(&mut rows, &mut nav, "Local", refs.local_branches().filter(|r| matches(&r.name)).cloned().collect());
         add_group(&mut rows, &mut nav, "Remote", refs.remote_branches().filter(|r| matches(&r.name)).cloned().collect());
