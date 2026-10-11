@@ -137,6 +137,8 @@ pub struct FindPopup {
     /// New results came in: the preview moves to the selected match on the
     /// next render.
     preview_stale: bool,
+    /// Where its title bar dragged it (IntelliJ's popups move).
+    drag: gpui_kit::component::dialog::DialogDrag,
     cancel: Arc<AtomicBool>,
     scroll: gpui_kit::UniformListScrollHandle,
     focus: gpui_kit::FocusHandle,
@@ -176,11 +178,17 @@ impl FindPopup {
         subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
             let Some(this) = weak.upgrade() else { return };
             // Only while typing in the popup's own fields: an open menu keeps its keys.
-            let fields = {
+            let (fields, root, preview) = {
                 let p = this.read(cx);
-                [p.query.clone(), p.replacement.clone(), p.mask.clone(), p.directory.clone()]
+                ([p.query.clone(), p.replacement.clone(), p.mask.clone(), p.directory.clone()], p.focus.clone(), p.preview.as_ref().map(|(_, e)| e.clone()))
             };
             if !fields.iter().any(|f| gpui_kit::Focusable::focus_handle(f.read(cx), cx).contains_focused(window, cx)) {
+                // Esc closes the popup from its result list and preview too.
+                let in_preview = preview.is_some_and(|p| gpui_kit::Focusable::focus_handle(p.read(cx), cx).contains_focused(window, cx));
+                if crate::ui::common::is_plain_escape(&event.keystroke) && (root.is_focused(window) || in_preview) {
+                    this.update(cx, |_, cx| cx.emit(FindEvent::Close));
+                    cx.stop_propagation();
+                }
                 return;
             }
             let handled = this.update(cx, |this, cx| this.on_key(&event.keystroke, window, cx));
@@ -218,6 +226,7 @@ impl FindPopup {
             selected: 0,
             preview: None,
             preview_stale: false,
+            drag: Default::default(),
             cancel: Arc::new(AtomicBool::new(false)),
             scroll: gpui_kit::UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
@@ -585,8 +594,13 @@ impl Render for FindPopup {
 
         let footer = self.render_footer(has_query, cx);
 
+        let drag = self.drag.clone();
         v_flex()
             .id("find-popup")
+            .relative()
+            .left(drag.offset().x)
+            .top(drag.offset().y)
+            .child(drag.tracker())
             .key_context("FindPopup")
             .w(px(780.))
             .h(px(if self.replace_mode { 680. } else { 640. }))
@@ -618,8 +632,9 @@ impl FindPopup {
             .h(px(40.))
             .px_3()
             .gap_2()
-            .child(div().text_sm().font_weight(FontWeight::BOLD).child(title))
-            .child(div().flex_1())
+            // The title and the empty space move the popup.
+            .child(div().h_full().flex().items_center().text_sm().font_weight(FontWeight::BOLD).on_mouse_down(gpui_kit::MouseButton::Left, crate::ui::common::drag_start(&self.drag)).child(title))
+            .child(div().h_full().flex_1().on_mouse_down(gpui_kit::MouseButton::Left, crate::ui::common::drag_start(&self.drag)))
             .child(Checkbox::new("find-mask-on").label("File mask:").checked(self.mask_on).on_click(cx.listener(|this, checked: &bool, _, cx| {
                 let checked = *checked;
                 this.toggle(|this| this.mask_on = checked, cx)

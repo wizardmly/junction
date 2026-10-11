@@ -344,6 +344,16 @@ impl CodeIndex {
         })
     }
 
+    /// The editor gutter's implementation markers for a file's current text.
+    pub fn gutter_marks(&self, path: String, text: String, cx: &App) -> Task<Vec<super::hierarchy::GutterMark>> {
+        let Some(lang) = Self::lang_of(&path, &text) else { return Task::ready(Vec::new()) };
+        let index = self.index.clone();
+        cx.background_spawn(async move {
+            let symbols = super::symbols::extract(lang, &text);
+            super::hierarchy::gutter_marks(&index.read().unwrap(), &path, &symbols)
+        })
+    }
+
     pub fn search_symbols(&self, query: String, types_only: bool, libraries: bool, cx: &App) -> Task<Vec<nav::SymbolMatch>> {
         let index = self.index.clone();
         cx.background_spawn(async move { nav::search_symbols(&index.read().unwrap(), &query, types_only, libraries, 200) })
@@ -354,6 +364,20 @@ impl CodeIndex {
         let Some((word, range)) = nav::word_at(text, offset) else { return false };
         let (line, col) = nav::position(text, range.start);
         self.index.read().is_ok_and(|index| index.files.get(path).is_some_and(|e| e.symbols.iter().any(|s| s.line == line && s.col == col && s.name == word)))
+    }
+
+    /// On a declaration's name, where Go to Declaration shows its usages
+    /// instead, as IntelliJ does. A C / C++ / Objective-C prototype still
+    /// goes to its definition.
+    pub fn on_declaration(&self, path: &str, text: &str, offset: usize) -> bool {
+        let Some((word, range)) = nav::word_at(text, offset) else { return false };
+        let (line, col) = nav::position(text, range.start);
+        self.index.read().is_ok_and(|index| {
+            index.files.get(path).is_some_and(|e| {
+                let prototypes = matches!(e.lang, Lang::C | Lang::Cpp | Lang::ObjC);
+                e.symbols.iter().any(|s| s.line == line && s.col == col && s.name == word && !(prototypes && s.decl))
+            })
+        })
     }
 
     pub fn file_symbols(&self, path: &str) -> Vec<nav::SymbolMatch> {

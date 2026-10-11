@@ -34,11 +34,19 @@ impl Workspace {
                     self.remove_tab(ix, cx);
                 }
             }
-            FileEditorEvent::Navigate(targets) => self.navigate(targets.clone(), window, cx),
-            FileEditorEvent::NoDeclaration { text, offset } => {
+            FileEditorEvent::Navigate { targets, at } => self.navigate(targets.clone(), *at, window, cx),
+            FileEditorEvent::ChooseTargets { title, targets, at } => {
+                if let [target] = targets.as_slice() {
+                    self.go_to_target(target.clone(), window, cx);
+                } else {
+                    let locations = targets.iter().map(|t| self.location_label(t, cx)).collect();
+                    crate::ui::navigate::choose_target(title.clone(), targets.clone(), locations, Some(*at), self.picker_callback(cx), window, cx);
+                }
+            }
+            FileEditorEvent::NoDeclaration { text, offset, at } => {
                 let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
                 if self.code_index.read(cx).declared_at(&path, text, *offset) {
-                    self.show_usages_popup(path, text.clone(), *offset, window, cx);
+                    self.show_usages_popup(path, text.clone(), *offset, *at, window, cx);
                 } else {
                     Self::nav_hint("Cannot find declaration to go to", window, cx);
                 }

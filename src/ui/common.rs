@@ -455,3 +455,19 @@ pub fn cached<V: gpui_kit::Render>(view: &gpui_kit::Entity<V>) -> gpui_kit::AnyE
     use gpui_kit::{IntoElement as _, Styled as _};
     view.clone().cached(gpui_kit::StyleRefinement::default().size_full()).into_any_element()
 }
+
+/// Esc with no modifiers.
+pub fn is_plain_escape(keystroke: &gpui_kit::Keystroke) -> bool {
+    let m = &keystroke.modifiers;
+    keystroke.key == "escape" && !(m.control || m.alt || m.shift || m.platform)
+}
+
+/// A press on a popup's title bar starts moving it (IntelliJ's popups and
+/// dialogs all move with the mouse); `drag.tracker()` follows the mouse.
+pub fn drag_start(drag: &gpui_kit::component::dialog::DialogDrag) -> impl Fn(&gpui_kit::MouseDownEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static {
+    let drag = drag.clone();
+    move |e, window, _| {
+        drag.start(e.position);
+        window.refresh();
+    }
+}

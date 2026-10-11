@@ -433,6 +433,9 @@ pub struct InputBaseState<M: InputModeKind> {
     /// The unwrapped width of the longest line and what it was measured for.
     pub(super) longest_line_width: Cell<Option<(LongestLineKey, Pixels)>>,
     pub(super) editor_paddings: Edges<Pixels>,
+    /// Junction: room in the gutter between the line numbers and the fold
+    /// icons, where the host paints its own icons (IntelliJ's gutter icons).
+    pub(super) gutter_extra: Pixels,
     /// The style this state paints with: what was projected onto it, with
     /// every colour left unset resolved from the palette that is current. It
     /// is rebuilt at the top of every render, which is what keeps it current
@@ -767,6 +770,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             editor_scrollbar_snapshot: Cell::new(None),
             longest_line_width: Cell::new(None),
             editor_paddings: Edges::default(),
+            gutter_extra: px(0.),
             deferred_scroll_offset: None,
             placeholder: SharedString::default(),
             mask_pattern: MaskPattern::default(),
@@ -872,6 +876,22 @@ impl<M: InputModeKind> InputBaseState<M> {
     #[doc(hidden)]
     pub fn set_editor_paddings(&mut self, paddings: Edges<Pixels>) {
         self.editor_paddings = paddings;
+    }
+
+    /// Junction: the left edge of the room [`Self::set_gutter_extra`]
+    /// reserved, in window coordinates, as last laid out.
+    pub fn gutter_extra_left(&self) -> Option<Pixels> {
+        let layout = self.last_layout.as_ref()?;
+        let fold = if self.mode.is_folding() { super::element::FOLD_ICON_HITBOX_WIDTH } else { px(0.) };
+        Some(self.input_bounds.origin.x + layout.line_number_width - super::element::LINE_NUMBER_RIGHT_MARGIN - fold - self.gutter_extra)
+    }
+
+    /// Junction: reserves `width` in the gutter after the line numbers.
+    pub fn set_gutter_extra(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        if self.gutter_extra != width {
+            self.gutter_extra = width;
+            cx.notify();
+        }
     }
 
     pub fn apply_highlighter_fold_candidates(

@@ -16,7 +16,7 @@ use super::lang::Lang;
 use super::symbols::{self, Symbol};
 
 /// Bumped whenever extraction or the cache format changes, so stale caches are rebuilt.
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 /// Larger files are generated or vendored; skipping them keeps indexing fast.
 const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
 
@@ -46,6 +46,10 @@ pub struct ProjectIndex {
     names: HashMap<String, (u64, Vec<(Arc<str>, u32)>)>,
     #[serde(skip)]
     keys: HashMap<String, Vec<(Arc<str>, u32)>>,
+    /// The symbols naming each supertype (types extending or implementing
+    /// it, Rust trait methods), for the gutter's implementation markers.
+    #[serde(skip)]
+    subtypes: HashMap<String, Vec<(Arc<str>, u32)>>,
     /// Dependencies and SDKs ("External Libraries"), keyed by absolute path.
     #[serde(skip)]
     pub external: std::sync::Arc<ExternalIndex>,
@@ -278,6 +282,9 @@ impl ProjectIndex {
         let path: Arc<str> = path.into();
         for (i, s) in entry.symbols.iter().enumerate() {
             self.names.entry(s.name.clone()).or_insert_with(|| (char_mask(&s.name), Vec::new())).1.push((path.clone(), i as u32));
+            for parent in &s.supers {
+                self.subtypes.entry(parent.clone()).or_default().push((path.clone(), i as u32));
+            }
         }
         for (i, b) in entry.bridges.iter().enumerate() {
             self.keys.entry(b.key.clone()).or_default().push((path.clone(), i as u32));
@@ -290,6 +297,14 @@ impl ProjectIndex {
                 list.retain(|(p, _)| &**p != path);
                 if list.is_empty() {
                     self.names.remove(&s.name);
+                }
+            }
+            for parent in &s.supers {
+                if let Some(list) = self.subtypes.get_mut(parent) {
+                    list.retain(|(p, _)| &**p != path);
+                    if list.is_empty() {
+                        self.subtypes.remove(parent);
+                    }
                 }
             }
         }
@@ -306,6 +321,7 @@ impl ProjectIndex {
     fn rebuild_maps(&mut self) {
         self.names.clear();
         self.keys.clear();
+        self.subtypes.clear();
         let files = std::mem::take(&mut self.files);
         for (path, entry) in &files {
             self.map(path, entry);
@@ -327,6 +343,20 @@ impl ProjectIndex {
             let (path, entry) = self.files.get_key_value(&**path)?;
             Some((path.as_str(), entry, entry.symbols.get(*i as usize)?))
         })
+    }
+
+    /// The project's symbols that name `parent` as a supertype.
+    pub fn subtypes_of<'a>(&'a self, parent: &str) -> impl Iterator<Item = (&'a str, &'a FileEntry, &'a Symbol)> + 'a {
+        self.subtypes.get(parent).into_iter().flatten().filter_map(|(path, i)| {
+            let (path, entry) = self.files.get_key_value(&**path)?;
+            Some((path.as_str(), entry, entry.symbols.get(*i as usize)?))
+        })
+    }
+
+    #[cfg(test)]
+    pub fn insert_for_test(&mut self, path: &str, entry: FileEntry) {
+        self.map(path, &entry);
+        self.files.insert(path.to_owned(), entry);
     }
 
     /// A project or library file's entry.

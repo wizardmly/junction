@@ -18,7 +18,7 @@ use super::lang::Lang;
 use super::store::{self, FileEntry};
 
 /// Bumped whenever extraction changes, so stale caches are rebuilt.
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 /// Per library; bigger ones are cut (generated or vendored code).
 const MAX_LIBRARY_FILES: usize = 12_000;
 /// Headers reached through `#include` from the project.

@@ -50,7 +50,7 @@ const BOTTOM_MARGIN_ROWS: usize = 3;
 pub(super) const RIGHT_MARGIN: Pixels = px(10.);
 pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(6.);
 const FOLD_ICON_WIDTH: Pixels = px(14.);
-const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
+pub(super) const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
 const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
 const MIN_LINE_NUMBER_DIGITS: usize = 3;
 const MAX_LINE_NUMBER_DIGITS: usize = 7;
@@ -1120,6 +1120,11 @@ impl<M: InputModeKind> TextElement<M> {
         } else {
             px(0.)
         };
+
+        // Junction: the host's gutter icons.
+        if line_number_width > px(0.) {
+            line_number_width += state.gutter_extra;
+        }
 
         if state.mode.is_folding() {
             // Add extra space for fold icons

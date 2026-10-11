@@ -51,6 +51,8 @@ pub(crate) struct ActiveDialog {
     previous_focused_handle: Option<WeakFocusHandle>,
     selection_scope: TextSelectionScopeId,
     builder: Rc<dyn Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static>,
+    /// Junction: where the dialog was dragged by its title, kept while it is open.
+    drag: crate::dialog::DialogDrag,
 }
 
 impl ActiveDialog {
@@ -65,6 +67,7 @@ impl ActiveDialog {
             previous_focused_handle,
             selection_scope,
             builder: Rc::new(builder),
+            drag: Default::default(),
         }
     }
 }
@@ -205,6 +208,7 @@ impl WindowState {
                 // So we keep the focus handle in the `active_dialog`, this is owned by the `WindowState`.
                 dialog.focus_handle = active_dialog.focus_handle.clone();
                 dialog.selection_scope = active_dialog.selection_scope;
+                dialog.drag = active_dialog.drag.clone();
 
                 dialog.layer_ix = i;
                 // Find the dialog which one needs to show overlay.

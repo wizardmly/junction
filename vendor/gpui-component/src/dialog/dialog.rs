@@ -210,6 +210,80 @@ pub(crate) struct DialogProps {
     overlay_closable: bool,
     pub(crate) overlay_visible: bool,
     keyboard: bool,
+    /// Junction: the top-left corner in window coordinates, for a popup
+    /// shown where it was asked for (IntelliJ's Show Usages at the mouse).
+    position: Option<gpui::Point<Pixels>>,
+    /// Junction: whether the overlay darkens the window (popups don't).
+    dim: bool,
+}
+
+/// Junction: how far a dialog was dragged by its title bar, and the drag in
+/// progress: (mouse position, offset) when it started. IntelliJ's dialogs
+/// and popups all move with the mouse.
+#[derive(Clone, Default)]
+pub struct DialogDrag(Rc<std::cell::Cell<(gpui::Point<Pixels>, Option<(gpui::Point<Pixels>, gpui::Point<Pixels>)>)>>);
+
+impl DialogDrag {
+    pub fn offset(&self) -> gpui::Point<Pixels> {
+        self.0.get().0
+    }
+
+    pub fn start(&self, mouse: gpui::Point<Pixels>) {
+        let (offset, _) = self.0.get();
+        self.0.set((offset, Some((mouse, offset))));
+    }
+
+    pub fn dragging(&self) -> bool {
+        self.0.get().1.is_some()
+    }
+
+    /// Follows the mouse; false when no drag is in progress.
+    pub fn move_to(&self, mouse: gpui::Point<Pixels>) -> bool {
+        let (_, start) = self.0.get();
+        let Some((from, base)) = start else { return false };
+        self.0.set((base + (mouse - from), start));
+        true
+    }
+
+    pub fn stop(&self) {
+        let (offset, _) = self.0.get();
+        self.0.set((offset, None));
+    }
+
+    /// An invisible element that, while a drag is in progress, follows the
+    /// mouse anywhere in the window until the button is released.
+    pub fn tracker(&self) -> impl IntoElement {
+        let drag = self.clone();
+        gpui::canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                if !drag.dragging() {
+                    return;
+                }
+                let moving = drag.clone();
+                window.on_mouse_event(move |e: &gpui::MouseMoveEvent, phase, window, cx| {
+                    if phase == gpui::DispatchPhase::Capture && moving.move_to(e.position) {
+                        if e.pressed_button != Some(gpui::MouseButton::Left) {
+                            moving.stop();
+                        }
+                        cx.stop_propagation();
+                        window.refresh();
+                    }
+                });
+                let ending = drag.clone();
+                window.on_mouse_event(move |_: &gpui::MouseUpEvent, phase, window, _| {
+                    if phase == gpui::DispatchPhase::Capture && ending.dragging() {
+                        ending.stop();
+                        window.refresh();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    }
 }
 
 impl Default for DialogProps {
@@ -223,6 +297,8 @@ impl Default for DialogProps {
             overlay_visible: false,
             close_button: true,
             overlay_closable: true,
+            position: None,
+            dim: true,
         }
     }
 }
@@ -314,6 +390,8 @@ pub struct Dialog {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) layer_ix: usize,
     pub(crate) selection_scope: TextSelectionScopeId,
+    /// Junction: the open dialog's drag state, kept by the window state.
+    pub(crate) drag: DialogDrag,
 }
 
 pub(crate) fn overlay_color(overlay: bool, cx: &App) -> Hsla {
@@ -341,6 +419,7 @@ impl Dialog {
             layer_ix: 0,
             selection_scope: TextSelectionScopeId::default(),
             button_props: DialogButtonProps::default(),
+            drag: DialogDrag::default(),
         }
     }
 
@@ -468,6 +547,19 @@ impl Dialog {
         self
     }
 
+    /// Junction: shows the dialog with its top-left corner here (window
+    /// coordinates), kept inside the window, instead of centered.
+    pub fn position(mut self, position: gpui::Point<Pixels>) -> Self {
+        self.props.position = Some(position);
+        self
+    }
+
+    /// Junction: whether the window darkens behind the dialog, defaults to `true`.
+    pub fn dim(mut self, dim: bool) -> Self {
+        self.props.dim = dim;
+        self
+    }
+
     /// Set the overlay of the dialog, defaults to `true`.
     pub fn overlay(mut self, overlay: bool) -> Self {
         self.props.overlay = overlay;
@@ -578,7 +670,7 @@ impl RenderOnce for Dialog {
         // Junction: like the IntelliJ platform, a dialog opens centered in the
         // window (unless the caller asks for an explicit `margin_top`) and
         // appears in place, without the slide-down and fade-in.
-        let centered = self.props.margin_top.is_none();
+        let centered = self.props.margin_top.is_none() && self.props.position.is_none();
         let y = match self.props.margin_top {
             Some(top) => top + layer_offset,
             None => view_size.height / 2. + layer_offset,
@@ -589,6 +681,16 @@ impl RenderOnce for Dialog {
             .width
             .min((view_size.width - margin * 2.).max(px(0.)));
         let x = (view_size.width - width) / 2.;
+        // Junction: a positioned popup, and wherever the title bar dragged it.
+        let (x, y) = match self.props.position {
+            Some(at) => {
+                let at = at - point(window_paddings.left, window_paddings.top);
+                (at.x.min(view_size.width - width - margin).max(margin), at.y)
+            }
+            None => (x, y),
+        };
+        let drag = self.drag.clone();
+        let (x, y) = (x + drag.offset().x, y + drag.offset().y);
         let max_height = (view_size.height - margin * 2. - layer_offset).max(px(0.));
 
         let base_size = window.text_style().font_size;
@@ -629,6 +731,7 @@ impl RenderOnce for Dialog {
                     .occlude()
                     .w(view_size.width)
                     .h(view_size.height)
+                    .child(self.drag.tracker())
                     .child(
                         self.base
                             .take()
@@ -648,7 +751,7 @@ impl RenderOnce for Dialog {
                                         .absolute()
                                         .size_full()
                                         .window_control_area(WindowControlArea::Drag)
-                                        .when(self.props.overlay_visible, |overlay| {
+                                        .when(self.props.overlay_visible && self.props.dim, |overlay| {
                                             overlay.bg(overlay_color(true, cx))
                                         }),
                                 )
@@ -698,15 +801,24 @@ impl RenderOnce for Dialog {
                                                         div()
                                                             .pl(paddings.left)
                                                             .pr(paddings.right)
+                                                            .on_mouse_down(gpui::MouseButton::Left, drag_handle(&drag))
                                                             .child(header),
                                                     )
                                                 })
                                                 .when_some(self.title, |this, title| {
                                                     this.child(
-                                                        DialogTitle::new()
-                                                            .pl(paddings.left)
-                                                            .pr(paddings.right)
-                                                            .child(title),
+                                                        // Junction: the title bar moves the dialog,
+                                                        // reaching up over the top padding.
+                                                        div()
+                                                            .mt(-paddings.top)
+                                                            .pt(paddings.top)
+                                                            .on_mouse_down(gpui::MouseButton::Left, drag_handle(&drag))
+                                                            .child(
+                                                                DialogTitle::new()
+                                                                    .pl(paddings.left)
+                                                                    .pr(paddings.right)
+                                                                    .child(title),
+                                                            ),
                                                     )
                                                 })
                                                 .when_some(self.content_builder, |this, builder| {
@@ -787,6 +899,16 @@ impl RenderOnce for Dialog {
                     ),
             )
             .into_any_element()
+    }
+}
+
+/// Junction: a press on the title bar starts moving the dialog.
+fn drag_handle(drag: &DialogDrag) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static {
+    let drag = drag.clone();
+    move |e, window, cx| {
+        drag.start(e.position);
+        cx.stop_propagation();
+        window.refresh();
     }
 }
 

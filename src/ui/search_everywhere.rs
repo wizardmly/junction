@@ -122,6 +122,8 @@ pub struct SearchEverywhere {
     preview: Option<(String, Entity<EditorState>)>,
     scroll: gpui_kit::UniformListScrollHandle,
     focus: gpui_kit::FocusHandle,
+    /// Where its tab row dragged it (IntelliJ's popups move).
+    drag: gpui_kit::component::dialog::DialogDrag,
     cancel: Arc<AtomicBool>,
     _search: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -164,8 +166,17 @@ impl SearchEverywhere {
         let weak = cx.entity().downgrade();
         subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
             let Some(this) = weak.upgrade() else { return };
-            let input = this.read(cx).input.clone();
+            let (input, root, preview) = {
+                let p = this.read(cx);
+                (p.input.clone(), p.focus.clone(), p.preview.as_ref().map(|(_, e)| e.clone()))
+            };
             if !gpui_kit::Focusable::focus_handle(input.read(cx), cx).contains_focused(window, cx) {
+                // Esc closes the popup from its result list and preview too.
+                let in_preview = preview.is_some_and(|p| gpui_kit::Focusable::focus_handle(p.read(cx), cx).contains_focused(window, cx));
+                if crate::ui::common::is_plain_escape(&event.keystroke) && (root.is_focused(window) || in_preview) {
+                    this.update(cx, |_, cx| cx.emit(SeEvent::Close));
+                    cx.stop_propagation();
+                }
                 return;
             }
             if this.update(cx, |this, cx| this.on_key(&event.keystroke, window, cx)) {
@@ -188,6 +199,7 @@ impl SearchEverywhere {
             preview: None,
             scroll: gpui_kit::UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
+            drag: Default::default(),
             cancel: Arc::new(AtomicBool::new(false)),
             _search: None,
             _subscriptions: subscriptions,
@@ -599,7 +611,8 @@ impl Render for SearchEverywhere {
             .px_2()
             .gap_2()
             .child(tabs)
-            .child(div().flex_1())
+            // The empty space moves the popup.
+            .child(div().h_full().flex_1().on_mouse_down(gpui_kit::MouseButton::Left, common::drag_start(&self.drag)))
             .when(non_project, |el| {
                 el.child(Checkbox::new("se-non-project").label("Include non-project items").checked(self.include_non_project).on_click(cx.listener(
                     |this, checked: &bool, _, cx| {
@@ -704,10 +717,15 @@ impl Render for SearchEverywhere {
             v_flex().child(div().h(px(height)).border_t_1().border_color(palette.border).child(list)).children(preview).into_any_element()
         };
 
+        let drag = self.drag.clone();
         v_flex()
             .id("search-everywhere")
             .key_context("SearchEverywhere")
             .track_focus(&self.focus)
+            .relative()
+            .left(drag.offset().x)
+            .top(drag.offset().y)
+            .child(drag.tracker())
             .w(px(720.))
             .bg(gpui_kit::Hsla { a: 1.0, ..palette.panel })
             .border_1()

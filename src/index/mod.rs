@@ -8,6 +8,7 @@ pub mod bridge;
 pub mod store;
 pub mod libraries;
 pub mod nav;
+pub mod hierarchy;
 pub mod lsp;
 pub mod service;
 pub mod text_search;

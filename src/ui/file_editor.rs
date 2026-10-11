@@ -66,6 +66,11 @@ const POPUP_CONTEXT: &str = "ChangePopup";
 /// The change marker strip: its width, and the gap to the text.
 const MARKER_WIDTH: f32 = 3.;
 const MARKER_GAP: f32 = 4.;
+/// IntelliJ's gutter icons are 14px, one per 16px slot.
+const GUTTER_ICON: f32 = 14.;
+const GUTTER_ICON_SLOT: f32 = 16.;
+/// Space between the line numbers and the icons.
+const GUTTER_ICON_GAP: f32 = 4.;
 
 pub fn init(cx: &mut gpui_kit::App) {
     register_grammars();
@@ -111,11 +116,14 @@ pub enum FileEditorEvent {
     OpenDiff(DiffSource),
     FilesChanged,
     CreateGist { name: String, content: String },
-    /// Go to Declaration found these (one jumps, several ask).
-    Navigate(Vec<crate::index::nav::Target>),
+    /// Go to Declaration found these (one jumps, several ask in a popup at
+    /// `at`: the mouse for Ctrl+click, the caret for Ctrl+B).
+    Navigate { targets: Vec<crate::index::nav::Target>, at: Option<Point<Pixels>> },
     /// Go to Declaration found nothing for the identifier at this offset
     /// (on a declaration itself, IntelliJ shows its usages instead).
-    NoDeclaration { text: String, offset: usize },
+    NoDeclaration { text: String, offset: usize, at: Option<Point<Pixels>> },
+    /// A gutter implementation marker: its targets, chosen in a popup at `at`.
+    ChooseTargets { title: String, targets: Vec<crate::index::nav::Target>, at: Point<Pixels> },
     /// Find Usages of the identifier at a byte offset of this text.
     FindUsages { text: String, offset: usize },
     /// Saved: re-index this file.
@@ -324,6 +332,9 @@ pub struct FileEditor {
     hover_card: Option<(usize, Point<Pixels>)>,
     hover_task: Option<gpui_kit::Task<()>>,
     markers_task: Option<gpui_kit::Task<()>>,
+    /// The gutter's implementation markers (see `hierarchy_strip`).
+    hierarchy: Vec<crate::index::hierarchy::GutterMark>,
+    hierarchy_task: Option<gpui_kit::Task<()>>,
     _subscriptions: Vec<Subscription>,
     /// An image file, shown instead of the text (IntelliJ's image viewer).
     image: Option<ImageFile>,
@@ -338,6 +349,9 @@ struct IndexProvider {
     /// All targets of the last lookup: the editor follows only the first,
     /// the show-document hook hands the whole list on.
     last: Rc<RefCell<Vec<Target>>>,
+    /// The last lookup was on a declaration itself, at this offset of this
+    /// text: Ctrl+click shows its usages, as IntelliJ does.
+    declaration: Rc<RefCell<Option<(String, usize)>>>,
 }
 
 fn lsp_position(line: u32, col: u32) -> lsp_types::Position {
@@ -353,11 +367,21 @@ impl DefinitionProvider for IndexProvider {
             lsp_types::Range { start: lsp_position(sl, sc), end: lsp_position(el, ec) }
         });
         let root = self.index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
-        let task = self.index.read(cx).definitions(self.path.clone(), text, offset, cx);
-        let last = self.last.clone();
-        cx.spawn(async move |_| {
+        let on_declaration = self.index.read(cx).on_declaration(&self.path, &text, offset);
+        let task = if on_declaration { gpui_kit::Task::ready(Vec::new()) } else { self.index.read(cx).definitions(self.path.clone(), text.clone(), offset, cx) };
+        let (last, declaration, index, path) = (self.last.clone(), self.declaration.clone(), self.index.clone(), self.path.clone());
+        cx.spawn(async move |cx| {
             let targets = task.await;
             *last.borrow_mut() = targets.clone();
+            *declaration.borrow_mut() = None;
+            // On a declaration: a link to itself, so Ctrl+hover underlines it
+            // and Ctrl+click reaches the show-document hook (usages).
+            if targets.is_empty() && (on_declaration || cx.read_entity(&index, |index, _| index.declared_at(&path, &text, offset))) {
+                *declaration.borrow_mut() = Some((text.clone(), offset));
+                let uri = crate::index::lsp::path_to_uri(&root.join(&path)).parse::<lsp_types::Uri>()?;
+                let origin = origin.unwrap_or(lsp_types::Range::default());
+                return Ok(vec![lsp_types::LocationLink { origin_selection_range: Some(origin), target_uri: uri, target_range: origin, target_selection_range: origin }]);
+            }
             Ok(targets
                 .iter()
                 .filter_map(|t| {
@@ -519,6 +543,7 @@ impl FileEditor {
                 // IntelliJ closes the change popup on typing.
                 this.popup = None;
                 this.update_markers(cx);
+                this.update_hierarchy(true, cx);
                 // The annotations follow the edit (new lines: Not Committed Yet).
                 if this.annotation.is_some() {
                     this.load_annotations(true, cx);
@@ -553,6 +578,8 @@ impl FileEditor {
             hover_card: None,
             hover_task: None,
             markers_task: None,
+            hierarchy: Vec::new(),
+            hierarchy_task: None,
             image,
             zoom: None,
             _subscriptions: subscriptions,
@@ -620,11 +647,18 @@ impl FileEditor {
     /// Go to Declaration and Find Usages.
     pub fn attach_index(&mut self, index: Entity<CodeIndex>, cx: &mut Context<Self>) {
         let last: Rc<RefCell<Vec<Target>>> = Rc::default();
-        let provider = Rc::new(IndexProvider { index: index.clone(), path: self.path.clone(), last: last.clone() });
+        let declaration: Rc<RefCell<Option<(String, usize)>>> = Rc::default();
+        let provider = Rc::new(IndexProvider { index: index.clone(), path: self.path.clone(), last: last.clone(), declaration: declaration.clone() });
         let editor = cx.entity().downgrade();
-        let show: ShowDocumentHandler = Rc::new(move |_, _, cx| {
-            let targets = last.borrow().clone();
-            editor.update(cx, |_, cx| cx.emit(FileEditorEvent::Navigate(targets))).ok();
+        // Ctrl+click: several targets, or a declaration's usages, list in a
+        // popup where the mouse is (IntelliJ on Windows).
+        let show: ShowDocumentHandler = Rc::new(move |_, window, cx| {
+            let at = Some(window.mouse_position() + point(px(0.), px(10.)));
+            let event = match declaration.borrow().clone() {
+                Some((text, offset)) => FileEditorEvent::NoDeclaration { text, offset, at },
+                None => FileEditorEvent::Navigate { targets: last.borrow().clone(), at },
+            };
+            editor.update(cx, |_, cx| cx.emit(event)).ok();
             true
         });
         self.state.update(cx, |state, cx| {
@@ -638,7 +672,106 @@ impl FileEditor {
             let text = self.state.read(cx).value().to_string();
             index.read(cx).warm_up(&self.path, text, cx);
         }
+        self._subscriptions.push(cx.subscribe(&index, |this, _, event: &crate::index::service::IndexEvent, cx| {
+            if matches!(event, crate::index::service::IndexEvent::Changed) {
+                this.update_hierarchy(false, cx);
+            }
+        }));
         self.code_index = Some(index);
+        self.update_hierarchy(false, cx);
+    }
+
+    /// The gutter's implementation markers, recomputed from the text after
+    /// an edit (a moment later) or when the index changes.
+    fn update_hierarchy(&mut self, debounce: bool, cx: &mut Context<Self>) {
+        let Some(index) = self.code_index.clone() else { return };
+        if self.revision.is_some() || self.image.is_some() || crate::index::service::CodeIndex::lang_of(&self.path, "").is_none() {
+            return;
+        }
+        let path = self.path.clone();
+        self.hierarchy_task = Some(cx.spawn(async move |this, cx| {
+            if debounce {
+                cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
+            }
+            let Ok(task) = this.update(cx, |this, cx| index.read(cx).gutter_marks(path, this.text(cx), cx)) else { return };
+            let marks = task.await;
+            this.update(cx, |this, cx| {
+                // Room for two icons where a member both overrides and is overridden.
+                let mut per_line: std::collections::HashMap<u32, usize> = Default::default();
+                for m in &marks {
+                    *per_line.entry(m.line).or_default() += 1;
+                }
+                let slots = per_line.values().copied().max().unwrap_or(1).clamp(1, 2);
+                this.state.update(cx, |state, cx| state.set_gutter_extra(px(GUTTER_ICON_GAP + GUTTER_ICON_SLOT * slots as f32), cx));
+                this.hierarchy = marks;
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// IntelliJ's implementation markers (I↓ O↓ I↑ O↑) between the line
+    /// numbers and the fold icons; a click lists where they lead.
+    fn hierarchy_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let state = self.state.clone();
+        let this = cx.entity().downgrade();
+        let dark = cx.palette().dark;
+        // Two marks on one line keep the gutter order: up, then down.
+        let mut marks: Vec<(u32, usize, crate::index::hierarchy::GutterMark)> = Vec::new();
+        let mut sorted = self.hierarchy.clone();
+        sorted.sort_by_key(|m| (m.line, m.kind.goes_down()));
+        for m in sorted {
+            let slot = marks.iter().filter(|(l, _, _)| *l == m.line).count();
+            if slot < 2 {
+                marks.push((m.line, slot, m));
+            }
+        }
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| {
+                let state = state.read(cx);
+                let (Some(line_height), Some(visible), Some(left)) = (state.line_height(), state.visible_row_range(), state.gutter_extra_left()) else { return };
+                let rope = state.text();
+                let lines = rope.lines_len().max(1);
+                let mut hits: Vec<(Bounds<Pixels>, crate::index::hierarchy::GutterMark)> = Vec::new();
+                for (line, slot, mark) in &marks {
+                    let line = *line as usize;
+                    if line < visible.start || line > visible.end || line >= lines {
+                        continue;
+                    }
+                    let at = rope.line_start_offset(line);
+                    let Some(top) = state.range_to_bounds(&(at..at)).map(|b| b.top()) else { continue };
+                    let icon = px(GUTTER_ICON);
+                    let rect = Bounds::new(point(left + px(GUTTER_ICON_GAP + 1. + GUTTER_ICON_SLOT * *slot as f32), top + (line_height - icon) / 2.), size(icon, icon));
+                    if !bounds.contains(&rect.center()) {
+                        continue;
+                    }
+                    let icon = match mark.kind {
+                        crate::index::hierarchy::MarkKind::Implemented => icons::GUTTER_IMPLEMENTED_METHOD,
+                        crate::index::hierarchy::MarkKind::Overridden => icons::GUTTER_OVERRIDEN_METHOD,
+                        crate::index::hierarchy::MarkKind::Implementing => icons::GUTTER_IMPLEMENTING_METHOD,
+                        crate::index::hierarchy::MarkKind::Overriding => icons::GUTTER_OVERRIDING_METHOD,
+                    };
+                    for (path, rgba) in if dark { icon.dark } else { icon.light } {
+                        let color: gpui_kit::Hsla = gpui_kit::rgba(*rgba).into();
+                        window.paint_svg(rect, (*path).into(), None, gpui_kit::TransformationMatrix::unit(), color, cx).ok();
+                    }
+                    hits.push((rect, mark.clone()));
+                }
+                window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble || e.button != MouseButton::Left {
+                        return;
+                    }
+                    let Some((_, mark)) = hits.iter().find(|(r, _)| r.dilate(px(2.)).contains(&e.position)) else { return };
+                    cx.stop_propagation();
+                    let event = FileEditorEvent::ChooseTargets { title: mark.title(), targets: mark.targets.clone(), at: e.position + point(px(0.), px(10.)) };
+                    this.update(cx, |_, cx| cx.emit(event)).ok();
+                    window.refresh();
+                });
+            },
+        )
+        .absolute()
+        .inset_0()
     }
 
     /// Moves the cursor to a 0-based line and UTF-16 column. A line out of
@@ -677,11 +810,20 @@ impl FileEditor {
         let Some(index) = self.code_index.clone() else { return };
         let text = self.text(cx);
         let offset = self.state.read(cx).cursor();
-        let task = index.read(cx).definitions(self.path.clone(), text.clone(), offset, cx);
+        let task = if index.read(cx).on_declaration(&self.path, &text, offset) {
+            gpui_kit::Task::ready(Vec::new())
+        } else {
+            index.read(cx).definitions(self.path.clone(), text.clone(), offset, cx)
+        };
         cx.spawn(async move |this, cx| {
             let targets = task.await;
-            let event = if targets.is_empty() { FileEditorEvent::NoDeclaration { text, offset } } else { FileEditorEvent::Navigate(targets) };
-            this.update(cx, |_, cx| cx.emit(event)).ok();
+            this.update(cx, |this, cx| {
+                // Ctrl+B's popups open under the caret.
+                let at = this.state.read(cx).range_to_bounds(&(offset..offset)).map(|b| b.bottom_left() + point(px(0.), px(4.)));
+                let event = if targets.is_empty() { FileEditorEvent::NoDeclaration { text, offset, at } } else { FileEditorEvent::Navigate { targets, at } };
+                cx.emit(event)
+            })
+            .ok();
         })
         .detach();
     }
@@ -1494,6 +1636,7 @@ impl Render for FileEditor {
                 )))
                 .child(self.gutter_probe())
                 .when(!read_only, |el| el.child(self.marker_strip(cx)))
+                .when(!self.hierarchy.is_empty(), |el| el.child(self.hierarchy_strip(cx)))
                 .when_some(hover_card, |el, (at, card)| {
                     el.child(deferred(anchored().position(point(at.x + px(12.), at.y + px(16.))).child(card)).with_priority(1))
                 })

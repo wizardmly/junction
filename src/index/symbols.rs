@@ -90,6 +90,9 @@ pub struct Symbol {
     pub decl: bool,
     /// Extra text: an Objective-C selector, a Rust impl's trait.
     pub detail: Option<String>,
+    /// The types a type extends or implements, by simple name; for a method
+    /// in a Rust `impl Trait for T`, the trait.
+    pub supers: Vec<String>,
 }
 
 /// How a rule reads the declared name.
@@ -447,6 +450,13 @@ impl Walker<'_> {
             name = last.to_owned();
         }
         let decl = self.is_declaration(node, kind, rule);
+        let supers = if rule.container && kind != K::Namespace && kind != K::Module {
+            self.supertypes(node)
+        } else if kind.is_callable() {
+            self.impl_trait(node).into_iter().collect()
+        } else {
+            Vec::new()
+        };
         let detail = match rule.name {
             Selector => Some(selector(node, self.text)),
             _ if node.kind() == "impl_item" => node.child_by_field_name("trait").map(|t| format!("impl {}", self.text_of(t))),
@@ -462,7 +472,74 @@ impl Walker<'_> {
         if node.kind() == "impl_item" || (decl && matches!(node.kind(), "struct_specifier" | "union_specifier" | "enum_specifier" | "class_specifier")) {
             return;
         }
-        self.out.push(Symbol { name, kind, line: pos.row as u32, col, end_line: node.end_position().row as u32, container, decl, detail });
+        self.out.push(Symbol { name, kind, line: pos.row as u32, col, end_line: node.end_position().row as u32, container, decl, detail, supers });
+    }
+
+    /// The supertypes a type declaration names: `extends` / `implements`
+    /// clauses, Kotlin and Swift `:` lists, C++ base classes, Python bases.
+    fn supertypes(&self, node: Node) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let heritage = matches!(
+                child.kind(),
+                "superclass" | "super_interfaces" | "extends_interfaces" | "interfaces" | "mixins" | "delegation_specifier" | "delegation_specifiers"
+                    | "inheritance_specifier" | "base_class_clause" | "class_heritage" | "extends_type_clause" | "extends_clause"
+                    | "implements_clause" | "protocol_reference_list" | "parameterized_arguments" | "argument_list"
+            ) || (self.lang == Lang::ObjC && child.kind() == "identifier" && node.child_by_field_name("superclass") == Some(child));
+            if heritage {
+                self.type_refs(child, &mut out);
+            }
+        }
+        out.dedup();
+        out
+    }
+
+    /// The simple names of the types referred to under `node`, skipping
+    /// type arguments and constructor arguments.
+    fn type_refs(&self, node: Node, out: &mut Vec<String>) {
+        match node.kind() {
+            "type_identifier" | "identifier" | "simple_identifier" => {
+                let name = self.text_of(node);
+                if !name.is_empty() && !out.iter().any(|n| n == name) {
+                    out.push(name.to_owned());
+                }
+            }
+            "type_arguments" | "type_parameters" | "template_argument_list" | "value_arguments" | "arguments" | "keyword_argument"
+            | "access_specifier" | "type_projection" | "comment" => {}
+            // Dart parses `J<T>`'s argument as a `type` wrapping a `type`.
+            "type" if self.lang == Lang::Dart && node.named_child(0).is_some_and(|c| c.kind() == "type") => {}
+            // `a.b.C`: only C.
+            "scoped_type_identifier" | "qualified_identifier" | "user_type" | "nested_type_identifier" | "member_expression" | "attribute"
+            | "scoped_identifier" => {
+                let mut cursor = node.walk();
+                let last = node
+                    .named_children(&mut cursor)
+                    .filter(|c| !matches!(c.kind(), "type_arguments" | "template_argument_list"))
+                    .last();
+                if let Some(last) = last {
+                    self.type_refs(last, out);
+                }
+            }
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    self.type_refs(child, out);
+                }
+            }
+        }
+    }
+
+    /// The trait of the Rust `impl Trait for T` block a method is in.
+    fn impl_trait(&self, node: Node) -> Option<String> {
+        if self.lang != Lang::Rust {
+            return None;
+        }
+        let list = node.parent().filter(|p| p.kind() == "declaration_list")?;
+        let block = list.parent().filter(|p| p.kind() == "impl_item")?;
+        let mut names = Vec::new();
+        self.type_refs(block.child_by_field_name("trait")?, &mut names);
+        names.pop()
     }
 
     fn is_declaration(&self, node: Node, kind: SymbolKind, rule: Rule) -> bool {
@@ -770,3 +847,4 @@ mod kotlin_kinds {
         assert_eq!(got, ["interface:Map:", "enum:Mode:", "class:Exp:annotation", "class:Base:abstract", "class:Utils:object", "class:Plain:"]);
     }
 }
+

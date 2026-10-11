@@ -47,9 +47,10 @@ pub fn symbol_icon(kind: crate::index::symbols::SymbolKind) -> Icon {
 /// "Choose Declaration": several targets for one name. `locations` is what
 /// each row shows on the right (file and line, or library and path).
 pub fn choose_target(
-    title: &'static str,
+    title: impl Into<gpui_kit::SharedString>,
     targets: Vec<Target>,
     locations: Vec<String>,
+    at: Option<gpui_kit::Point<gpui_kit::Pixels>>,
     on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>,
     window: &mut Window,
     cx: &mut App,
@@ -70,7 +71,7 @@ pub fn choose_target(
         })
         .collect();
     let n = items.len();
-    open_picker(title, items, vec![0; n], locations, false, 640., on_pick, window, cx);
+    open_picker(title.into(), items, vec![0; n], locations, false, 640., at, on_pick, window, cx);
 }
 
 /// A list popup: Choose Declaration, Show Usages, Recent Files (Ctrl+E),
@@ -187,17 +188,18 @@ pub fn pick_from_list(
     window: &mut Window,
     cx: &mut App,
 ) {
-    open_picker(title, items, indents, Vec::new(), true, 560., on_pick, window, cx);
+    open_picker(title.into(), items, indents, Vec::new(), true, 560., None, on_pick, window, cx);
 }
 
 #[allow(clippy::too_many_arguments)]
 fn open_picker(
-    title: &'static str,
+    title: gpui_kit::SharedString,
     items: Vec<FoundItem>,
     indents: Vec<usize>,
     locations: Vec<String>,
     filterable: bool,
     width: f32,
+    at: Option<gpui_kit::Point<gpui_kit::Pixels>>,
     on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>,
     window: &mut Window,
     cx: &mut App,
@@ -221,10 +223,15 @@ fn open_picker(
     let (confirm, shown) = (view.clone(), view.clone());
     window.open_dialog(cx, move |dialog, _, _| {
         let confirm = confirm.clone();
-        dialog.title(title).w(px(width)).child(shown.clone()).on_ok(move |_, window, cx| {
+        let dialog = dialog.title(title.clone()).w(px(width)).child(shown.clone()).on_ok(move |_, window, cx| {
             confirm.update(cx, |this, cx| this.pick(this.selected, window, cx));
             false
-        })
+        });
+        // At the mouse (Ctrl+click) or the caret, as IntelliJ's popups.
+        match at {
+            Some(at) => dialog.position(at).dim(false),
+            None => dialog,
+        }
     });
     let (input, focus) = { let v = view.read(cx); (v.input.clone(), v.focus.clone()) };
     match input {

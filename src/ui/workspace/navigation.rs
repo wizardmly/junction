@@ -5,7 +5,7 @@ use super::*;
 
 impl Workspace {
     /// Go to Declaration's result: one target opens, several ask.
-    pub(super) fn navigate(&mut self, targets: Vec<crate::index::nav::Target>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn navigate(&mut self, targets: Vec<crate::index::nav::Target>, at: Option<gpui_kit::Point<gpui_kit::Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
         match targets.len() {
             0 => Self::nav_hint("Cannot find declaration to go to", window, cx),
             1 => self.go_to_target(targets.into_iter().next().unwrap(), window, cx),
@@ -16,6 +16,7 @@ impl Workspace {
                     "Choose Declaration",
                     targets,
                     locations,
+                    at,
                     Rc::new(move |target, window, cx| {
                         workspace.update(cx, |this, cx| this.go_to_target(target, window, cx)).ok();
                     }),
@@ -51,7 +52,7 @@ impl Workspace {
 
     /// Go to Declaration on a declaration: its usages, as IntelliJ's Show
     /// Usages popup (one usage jumps straight there).
-    pub(super) fn show_usages_popup(&mut self, path: String, text: String, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn show_usages_popup(&mut self, path: String, text: String, offset: usize, at: Option<gpui_kit::Point<gpui_kit::Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
         let task = self.code_index.read(cx).usages(path, text, offset, cx);
         cx.spawn_in(window, async move |this, cx| {
             let (word, usages) = task.await;
@@ -66,7 +67,8 @@ impl Workspace {
                     1 => this.go_to_target(targets.into_iter().next().unwrap(), window, cx),
                     _ => {
                         let locations = targets.iter().map(|t| this.location_label(t, cx)).collect();
-                        crate::ui::navigate::choose_target("Usages", targets, locations, this.picker_callback(cx), window, cx);
+                        let n = targets.len();
+                        crate::ui::navigate::choose_target(format!("Usages of {word}   {n} usages"), targets, locations, at, this.picker_callback(cx), window, cx);
                     }
                 }
             })

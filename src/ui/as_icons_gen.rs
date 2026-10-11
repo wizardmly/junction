@@ -96,6 +96,10 @@ pub const GREEN_CHECKMARK: AsIcon = AsIcon { light: &[("as/green-checkmark.l0.sv
 pub const GRID: AsIcon = AsIcon { light: &[("as/grid.l0.svg", 0x6c707eff)], dark: &[("as/grid.d0.svg", 0xced0d6ff)] };
 pub const GROUP_BY_MODULE: AsIcon = AsIcon { light: &[("as/group-by-module.l0.svg", 0x6c707eff), ("as/group-by-module.l1.svg", 0xedf3ffff), ("as/group-by-module.l2.svg", 0x3574f0ff)], dark: &[("as/group-by-module.d0.svg", 0xced0d6ff), ("as/group-by-module.d1.svg", 0x25324dff), ("as/group-by-module.d2.svg", 0x548af7ff)] };
 pub const GROUP_BY_PACKAGE: AsIcon = AsIcon { light: &[("as/group-by-package.l0.svg", 0x6c707eff), ("as/group-by-package.l1.svg", 0xebecf0ff), ("as/group-by-package.l2.svg", 0x6c707eff)], dark: &[("as/group-by-package.d0.svg", 0xced0d6ff), ("as/group-by-package.d1.svg", 0x43454aff), ("as/group-by-package.d2.svg", 0xced0d6ff)] };
+pub const GUTTER_IMPLEMENTED_METHOD: AsIcon = AsIcon { light: &[("as/gutter-implemented-method.l0.svg", 0xf2fcf3ff), ("as/gutter-implemented-method.l1.svg", 0x208a3cff), ("as/gutter-implemented-method.l2.svg", 0x6c707eff), ("as/gutter-implemented-method.l3.svg", 0x208a3cff)], dark: &[("as/gutter-implemented-method.d0.svg", 0x253627ff), ("as/gutter-implemented-method.d1.svg", 0x57965cff), ("as/gutter-implemented-method.d2.svg", 0xced0d6ff), ("as/gutter-implemented-method.d3.svg", 0x57965cff)] };
+pub const GUTTER_IMPLEMENTING_METHOD: AsIcon = AsIcon { light: &[("as/gutter-implementing-method.l0.svg", 0xf2fcf3ff), ("as/gutter-implementing-method.l1.svg", 0x208a3cff), ("as/gutter-implementing-method.l2.svg", 0xdb3b4bff), ("as/gutter-implementing-method.l3.svg", 0x208a3cff)], dark: &[("as/gutter-implementing-method.d0.svg", 0x253627ff), ("as/gutter-implementing-method.d1.svg", 0x57965cff), ("as/gutter-implementing-method.d2.svg", 0xdb5c5cff), ("as/gutter-implementing-method.d3.svg", 0x57965cff)] };
+pub const GUTTER_OVERRIDEN_METHOD: AsIcon = AsIcon { light: &[("as/gutter-overriden-method.l0.svg", 0xedf3ffff), ("as/gutter-overriden-method.l1.svg", 0x6c707eff), ("as/gutter-overriden-method.l2.svg", 0x3574f0ff)], dark: &[("as/gutter-overriden-method.d0.svg", 0x25324dff), ("as/gutter-overriden-method.d1.svg", 0xced0d6ff), ("as/gutter-overriden-method.d2.svg", 0x548af7ff)] };
+pub const GUTTER_OVERRIDING_METHOD: AsIcon = AsIcon { light: &[("as/gutter-overriding-method.l0.svg", 0xedf3ffff), ("as/gutter-overriding-method.l1.svg", 0x3574f0ff), ("as/gutter-overriding-method.l2.svg", 0xdb3b4bff), ("as/gutter-overriding-method.l3.svg", 0x3574f0ff)], dark: &[("as/gutter-overriding-method.d0.svg", 0x25324dff), ("as/gutter-overriding-method.d1.svg", 0x548af7ff), ("as/gutter-overriding-method.d2.svg", 0xdb5c5cff), ("as/gutter-overriding-method.d3.svg", 0x548af7ff)] };
 pub const HELP: AsIcon = AsIcon { light: &[("as/help.l0.svg", 0x6c707eff)], dark: &[("as/help.d0.svg", 0xced0d6ff)] };
 pub const HIDE: AsIcon = AsIcon { light: &[("as/hide.l0.svg", 0x6c707eff)], dark: &[("as/hide.d0.svg", 0xced0d6ff)] };
 pub const HIGHLIGHTING: AsIcon = AsIcon { light: &[("as/highlighting.l0.svg", 0xebecf0ff), ("as/highlighting.l1.svg", 0x6c707eff)], dark: &[("as/highlighting.d0.svg", 0x43454aff), ("as/highlighting.d1.svg", 0xced0d6ff)] };
@@ -517,6 +521,36 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/group-by-package.d0.svg", include_bytes!("../../assets/as-icons/gen/group-by-package.d0.svg")),
     ("as/group-by-package.d1.svg", include_bytes!("../../assets/as-icons/gen/group-by-package.d1.svg")),
     ("as/group-by-package.d2.svg", include_bytes!("../../assets/as-icons/gen/group-by-package.d2.svg")),
+    ("as/gutter-implemented-method.l0.svg", include_bytes!("../../assets/as-icons/gen/gutter-implemented-method.l0.svg")),
+    ("as/gutter-implemented-method.l1.svg", include_bytes!("../../assets/as-icons/gen/gutter-implemented-method.l1.svg")),
+    ("as/gutter-implemented-method.l2.svg", include_bytes!("../../assets/as-icons/gen/gutter-implemented-method.l2.svg")),
+    ("as/gutter-implemented-method.l3.svg", include_bytes!("../../assets/as-icons/gen/gutter-implemented-method.l3.svg")),
+    ("as/gutter-implemented-method.d0.svg", include_bytes!("../../assets/as-icons/gen/gutter-implemented-method.d0.svg")),
+    ("as/gutter-implemented-method.d1.svg", include_bytes!("../../assets/as-icons/gen/gutter-implemented-method.d1.svg")),
+    ("as/gutter-implemented-method.d2.svg", include_bytes!("../../assets/as-icons/gen/gutter-implemented-method.d2.svg")),
+    ("as/gutter-implemented-method.d3.svg", include_bytes!("../../assets/as-icons/gen/gutter-implemented-method.d3.svg")),
+    ("as/gutter-implementing-method.l0.svg", include_bytes!("../../assets/as-icons/gen/gutter-implementing-method.l0.svg")),
+    ("as/gutter-implementing-method.l1.svg", include_bytes!("../../assets/as-icons/gen/gutter-implementing-method.l1.svg")),
+    ("as/gutter-implementing-method.l2.svg", include_bytes!("../../assets/as-icons/gen/gutter-implementing-method.l2.svg")),
+    ("as/gutter-implementing-method.l3.svg", include_bytes!("../../assets/as-icons/gen/gutter-implementing-method.l3.svg")),
+    ("as/gutter-implementing-method.d0.svg", include_bytes!("../../assets/as-icons/gen/gutter-implementing-method.d0.svg")),
+    ("as/gutter-implementing-method.d1.svg", include_bytes!("../../assets/as-icons/gen/gutter-implementing-method.d1.svg")),
+    ("as/gutter-implementing-method.d2.svg", include_bytes!("../../assets/as-icons/gen/gutter-implementing-method.d2.svg")),
+    ("as/gutter-implementing-method.d3.svg", include_bytes!("../../assets/as-icons/gen/gutter-implementing-method.d3.svg")),
+    ("as/gutter-overriden-method.l0.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriden-method.l0.svg")),
+    ("as/gutter-overriden-method.l1.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriden-method.l1.svg")),
+    ("as/gutter-overriden-method.l2.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriden-method.l2.svg")),
+    ("as/gutter-overriden-method.d0.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriden-method.d0.svg")),
+    ("as/gutter-overriden-method.d1.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriden-method.d1.svg")),
+    ("as/gutter-overriden-method.d2.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriden-method.d2.svg")),
+    ("as/gutter-overriding-method.l0.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriding-method.l0.svg")),
+    ("as/gutter-overriding-method.l1.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriding-method.l1.svg")),
+    ("as/gutter-overriding-method.l2.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriding-method.l2.svg")),
+    ("as/gutter-overriding-method.l3.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriding-method.l3.svg")),
+    ("as/gutter-overriding-method.d0.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriding-method.d0.svg")),
+    ("as/gutter-overriding-method.d1.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriding-method.d1.svg")),
+    ("as/gutter-overriding-method.d2.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriding-method.d2.svg")),
+    ("as/gutter-overriding-method.d3.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriding-method.d3.svg")),
     ("as/help.l0.svg", include_bytes!("../../assets/as-icons/gen/help.l0.svg")),
     ("as/help.d0.svg", include_bytes!("../../assets/as-icons/gen/help.d0.svg")),
     ("as/hide.l0.svg", include_bytes!("../../assets/as-icons/gen/hide.l0.svg")),
