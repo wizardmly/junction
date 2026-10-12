@@ -556,7 +556,9 @@ impl Render for ChangesView {
             .when_some(message, |el, (text, color)| el.child(div().p_3().text_sm().text_color(color).child(text)))
             .child(
                 div().flex_1().min_h_0().child(
-                    tree(&self.tree, move |ix, entry, _, _, _| {
+                    tree(&self.tree, {
+            let tree_state = self.tree.clone();
+            move |ix, entry, _, _, _| {
                         let palette = &tree_palette;
                         let item = entry.item();
                         let id = item.id.to_string();
@@ -590,13 +592,7 @@ impl Render for ChangesView {
                                     .gap_1()
                                     .pl(px(entry.depth() as f32 * 14.))
                                     .text_sm()
-                                    .when(entry.is_folder(), |el| {
-                                        el.child(
-                                            Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT })
-                                                .xsmall()
-                                                .text_color(palette.text_secondary),
-                                        )
-                                    })
+                                    .when(entry.is_folder(), |el| el.child(common::tree_chevron(&tree_state, ix, entry, palette.text_secondary)))
                                     .child(
                                         Icon::new(match &path {
                                             Some(p) => common::file_icon(p),
@@ -617,7 +613,8 @@ impl Render for ChangesView {
                                     })
                                     .context_menu(move |menu, _, cx| Self::node_menu(menu, &menu_entity, &menu_id, cx)),
                             )
-                    })
+                    }
+        })
                     .size_full(),
                 ),
             )

@@ -642,6 +642,7 @@ impl LogView {
         window.open_dialog(cx, move |dialog, _, _| {
             let rows_checked = checked.clone();
             let palette = palette.clone();
+            let row_tree = tree_state.clone();
             let list = tree(&tree_state, move |ix, entry, _, _, _| {
                 let id = entry.item().id.to_string();
                 let path = id.strip_prefix(DIR_PREFIX).or_else(|| id.strip_prefix(FILE_PREFIX)).unwrap_or_default().to_owned();
@@ -656,13 +657,7 @@ impl LogView {
                         .gap_1()
                         .pl(px(entry.depth() as f32 * 14.))
                         .text_sm()
-                        .child(if entry.is_folder() {
-                            Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT })
-                                .xsmall()
-                                .text_color(palette.text_secondary)
-                        } else {
-                            Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black())
-                        })
+                        .child(common::tree_chevron(&row_tree, ix, entry, palette.text_secondary))
                         .child(
                             div().on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(
                                 gpui_kit::component::checkbox::Checkbox::new(SharedString::from(format!("path-{ix}")))

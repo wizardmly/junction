@@ -171,7 +171,12 @@ pub struct ProjectView {
     settings: ProjectSettings,
     tree: Dir,
     expanded: HashSet<String>,
+    /// The lead row: the one the keyboard moves from, the context menu's.
     selected: Option<String>,
+    /// Every selected row (Ctrl/Shift+click, Shift+arrows), the lead included.
+    selection: HashSet<String>,
+    /// Where a Shift+click or Shift+arrow range starts.
+    anchor: Option<String>,
     rows: Rc<Vec<Row>>,
     files: Rc<Vec<String>>,
     /// `git ls-files --ignored --directory`: folders end with '/'.
@@ -232,6 +237,20 @@ fn sort_siblings(rows: &mut Vec<Row>) {
 
 impl EventEmitter<OpenTarget> for ProjectView {}
 
+/// Rows dragged in the Project view (repository-relative paths).
+#[derive(Clone)]
+struct ProjectDrag {
+    paths: Vec<String>,
+    label: String,
+}
+
+impl Render for ProjectDrag {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        div().px_2().py_1().rounded(px(4.)).bg(palette.selection).border_1().border_color(palette.accent).text_sm().text_color(palette.text).child(self.label.clone())
+    }
+}
+
 /// Show a file in the editor's preview tab (a single click, Enable Preview Tab).
 pub struct PreviewFile(pub String);
 
@@ -276,6 +295,8 @@ impl ProjectView {
             tree: Dir::default(),
             expanded,
             selected: None,
+            selection: HashSet::new(),
+            anchor: None,
             rows: Rc::default(),
             files: Rc::default(),
             ignored: Rc::default(),
@@ -650,10 +671,76 @@ impl ProjectView {
     }
 
     fn select_row(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if let Some(row) = self.rows.get(ix) {
-            self.selected = Some(row.path.clone());
+        if let Some(path) = self.rows.get(ix).map(|r| r.path.clone()) {
+            self.select_only(path);
             self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
             cx.notify();
+        }
+    }
+
+    /// One row selected, the range anchor on it.
+    fn select_only(&mut self, path: String) {
+        self.selection.clear();
+        self.selection.insert(path.clone());
+        self.anchor = Some(path.clone());
+        self.selected = Some(path);
+    }
+
+    /// Shift+click / Shift+arrows: the rows from the anchor to `ix`
+    /// (added to the selection with Ctrl held), `ix` becoming the lead.
+    fn select_range(&mut self, ix: usize, add: bool) {
+        let Some(path) = self.rows.get(ix).map(|r| r.path.clone()) else { return };
+        let from = self.anchor.as_ref().and_then(|a| self.rows.iter().position(|r| &r.path == a)).unwrap_or(ix);
+        if !add {
+            self.selection.clear();
+        }
+        let (a, b) = (from.min(ix), from.max(ix));
+        self.selection.extend(self.rows[a..=b].iter().map(|r| r.path.clone()));
+        if self.anchor.is_none() {
+            self.anchor = Some(path.clone());
+        }
+        self.selected = Some(path);
+    }
+
+    /// Ctrl+click: adds the row to the selection, or takes it out.
+    fn toggle_selected(&mut self, path: String) {
+        if self.selection.remove(&path) {
+            if self.selected.as_ref() == Some(&path) {
+                self.selected = self.rows.iter().find(|r| self.selection.contains(&r.path)).map(|r| r.path.clone());
+            }
+        } else {
+            self.selection.insert(path.clone());
+            self.selected = Some(path.clone());
+        }
+        self.anchor = Some(path);
+    }
+
+    /// Shift+arrow keys: moves the lead, extending the selection from the anchor.
+    fn extend_to(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.select_range(ix, false);
+        self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    /// The selected rows that are shown, top to bottom.
+    fn selected_rows(&self) -> Vec<Row> {
+        let mut rows: Vec<Row> = self.rows.iter().filter(|r| self.selection.contains(&r.path)).cloned().collect();
+        if rows.is_empty() {
+            rows.extend(self.selected_ix().and_then(|ix| self.rows.get(ix).cloned()));
+        }
+        rows
+    }
+
+    /// After folding: rows that went out of sight leave the selection;
+    /// if the lead did, the folded row takes its place, as in IntelliJ.
+    fn prune_selection(&mut self, folded: &str) {
+        let shown: HashSet<&str> = self.rows.iter().map(|r| r.path.as_str()).collect();
+        let lead_hidden = self.selected.as_deref().is_some_and(|s| !shown.contains(s));
+        self.selection.retain(|p| shown.contains(p.as_str()));
+        if lead_hidden {
+            self.selection.insert(folded.to_owned());
+            self.selected = Some(folded.to_owned());
+            self.anchor = Some(folded.to_owned());
         }
     }
 
@@ -663,7 +750,8 @@ impl ProjectView {
     }
 
     fn toggle(&mut self, path: &str, cx: &mut Context<Self>) {
-        if !self.expanded.remove(path) {
+        let folding = self.expanded.remove(path);
+        if !folding {
             self.expanded.insert(path.to_owned());
             if let Some(root) = self.root(cx) {
                 self.load_dir(path, &root);
@@ -671,6 +759,9 @@ impl ProjectView {
             self.add_empty_dirs(&[path.to_owned()]);
         }
         self.flatten();
+        if folding {
+            self.prune_selection(path);
+        }
         cx.notify();
     }
 
@@ -694,21 +785,62 @@ impl ProjectView {
         }
     }
 
-    fn click(&mut self, ix: usize, count: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// IntelliJ's tree: a click selects (Ctrl adds or removes the row, Shift
+    /// selects the range from the last click), a double click opens a file
+    /// or folds a folder; the arrow folds on a single click.
+    fn click(&mut self, ix: usize, count: usize, modifiers: gpui_kit::Modifiers, window: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(ix).cloned() else { return };
         window.focus(&self.focus, cx);
         self.search = None;
-        self.selected = Some(row.path.clone());
+        if modifiers.shift {
+            self.select_range(ix, modifiers.secondary());
+            cx.notify();
+            return;
+        }
+        if modifiers.secondary() {
+            self.toggle_selected(row.path.clone());
+            cx.notify();
+            return;
+        }
+        self.select_only(row.path.clone());
         match row.kind {
             RowKind::File if count >= 2 => self.open(row.path, cx),
-            RowKind::File if self.settings.preview_tab => self.preview(row.path, cx),
-            RowKind::File if self.settings.single_click => self.open(row.path, cx),
+            RowKind::File if count == 1 && self.settings.preview_tab => self.preview(row.path, cx),
+            RowKind::File if count == 1 && self.settings.single_click => self.open(row.path, cx),
             // A class opens on a double click; its arrow folds nested classes.
             RowKind::Class if count >= 2 => self.open_row(&row, cx),
-            RowKind::Class if self.settings.single_click => self.open_row(&row, cx),
-            // Folders open on a single click; the second click of a double click is ignored.
-            _ if !row.leaf && row.kind != RowKind::Class && count == 1 => self.toggle(&row.path, cx),
+            RowKind::Class if count == 1 && self.settings.single_click => self.open_row(&row, cx),
+            // Folders fold on a double click (the third click of a triple click doesn't undo it).
+            _ if !row.leaf && row.kind != RowKind::Class && count == 2 => self.toggle(&row.path, cx),
             _ => {}
+        }
+        cx.notify();
+    }
+
+    /// The arrow in front of a folder: folds it without touching the selection.
+    fn chevron_click(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus, cx);
+        self.search = None;
+        self.toggle(path, cx);
+    }
+
+    /// Rows dropped on a folder: IntelliJ's Move (Copy with Ctrl held).
+    fn drop_on(&mut self, row: &Row, drag: &ProjectDrag, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.target(row, cx) else { return };
+        let target = ProjectTarget { items: vec![(row.path.clone(), true)], ..target };
+        let sources: Vec<PathBuf> = drag.paths.iter().filter(|p| !p.is_empty()).map(|p| target.root.join(p)).collect();
+        let copy = window.modifiers().secondary();
+        window.defer(cx, move |window, cx| crate::ui::file_menus::drop_items(&target, sources, copy, window, cx));
+    }
+
+    /// Right click: a row outside the selection becomes the selection;
+    /// one inside keeps it, so the menu acts on every selected row.
+    fn right_click(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus, cx);
+        if !self.selection.contains(path) {
+            self.select_only(path.to_owned());
+        } else {
+            self.selected = Some(path.to_owned());
         }
         cx.notify();
     }
@@ -730,7 +862,7 @@ impl ProjectView {
             prefix = if prefix.is_empty() { (*part).to_owned() } else { format!("{prefix}/{part}") };
             self.expanded.insert(prefix.clone());
         }
-        self.selected = Some(path.to_owned());
+        self.select_only(path.to_owned());
         self.flatten();
         if let Some(ix) = self.selected_ix() {
             self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
@@ -758,11 +890,13 @@ impl ProjectView {
                 self.expanded.insert(prefix.clone());
             }
         }
-        self.selected = Some(path.to_owned());
+        self.select_only(path.to_owned());
         self.flatten();
         if self.selected_ix().is_none() {
             // Shown as its classes: the first one stands for the file.
-            self.selected = self.rows.iter().find(|r| r.source.as_ref().is_some_and(|(f, _, _)| f == path)).map(|r| r.path.clone());
+            if let Some(first) = self.rows.iter().find(|r| r.source.as_ref().is_some_and(|(f, _, _)| f == path)).map(|r| r.path.clone()) {
+                self.select_only(first);
+            }
         }
         if let Some(ix) = self.selected_ix() {
             self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
@@ -813,9 +947,14 @@ impl ProjectView {
         if let Some(sel) = &self.selected {
             if !self.rows.iter().any(|r| &r.path == sel) {
                 let top = sel.split('/').next().unwrap_or_default().to_owned();
-                self.selected = self.rows.iter().find(|r| r.path == top || r.path.starts_with(&format!("{top}/"))).map(|r| r.path.clone());
+                match self.rows.iter().find(|r| r.path == top || r.path.starts_with(&format!("{top}/"))).map(|r| r.path.clone()) {
+                    Some(row) => self.select_only(row),
+                    None => self.selected = None,
+                }
             }
         }
+        let shown: HashSet<&str> = self.rows.iter().map(|r| r.path.as_str()).collect();
+        self.selection.retain(|p| shown.contains(p.as_str()));
         cx.notify();
     }
 
@@ -831,20 +970,46 @@ impl ProjectView {
         cx.notify();
     }
 
+    /// Library sources have no file actions (they're read-only).
+    fn has_actions(row: &Row) -> bool {
+        !(row.library || row.path.starts_with('\u{1}') || crate::index::store::ProjectIndex::is_external(&row.path))
+    }
+
+    /// The menu's target: `row`, with the rest of the selection when `row` is in it.
     fn target(&self, row: &Row, cx: &App) -> Option<ProjectTarget> {
-        // Library sources have no file actions (they're read-only).
-        if row.library || row.path.starts_with('\u{1}') || crate::index::store::ProjectIndex::is_external(&row.path) {
+        if !Self::has_actions(row) {
             return None;
         }
         let (model, actions, root) = (self.model.clone()?, self.actions.clone()?, self.root(cx)?);
         let is_dir = row.kind != RowKind::File;
-        let prefix = format!("{}/", row.path);
-        let files = match row.kind {
-            RowKind::Root => self.files.to_vec(),
-            RowKind::Dir => self.files.iter().filter(|f| f.starts_with(&prefix)).cloned().collect(),
-            _ => Vec::new(),
+        let mut items: Vec<Row> = if self.selection.contains(&row.path) {
+            self.selected_rows().into_iter().filter(Self::has_actions).collect()
+        } else {
+            Vec::new()
         };
-        Some(ProjectTarget { model, root, path: row.path.clone(), is_dir, files, actions, clipboard: self.clipboard.clone() })
+        if !items.iter().any(|r| r.path == row.path) {
+            items = vec![row.clone()];
+        }
+        // An item inside a selected folder goes with the folder.
+        let dirs: Vec<String> = items.iter().filter(|r| r.kind != RowKind::File).map(|r| r.path.clone()).collect();
+        let inside = |path: &str| dirs.iter().any(|d| d != path && (d.is_empty() || path.starts_with(&format!("{d}/"))));
+        items.retain(|r| r.path == row.path || !inside(&r.path));
+        let mut files: Vec<String> = Vec::new();
+        for item in &items {
+            let prefix = format!("{}/", item.path);
+            match item.kind {
+                RowKind::Root => files.extend(self.files.iter().cloned()),
+                RowKind::Dir => files.extend(self.files.iter().filter(|f| f.starts_with(&prefix)).cloned()),
+                RowKind::File if items.len() > 1 => files.push(item.path.clone()),
+                _ => {}
+            }
+        }
+        if items.len() > 1 {
+            files.sort();
+            files.dedup();
+        }
+        let items = items.iter().map(|r| (r.path.clone(), r.kind != RowKind::File)).collect();
+        Some(ProjectTarget { model, root, path: row.path.clone(), is_dir, files, items, actions, clipboard: self.clipboard.clone() })
     }
 
     /// New › File / Directory in the selected folder (the root when nothing is selected).
@@ -934,15 +1099,32 @@ impl ProjectView {
             return;
         }
         let last = self.rows.len().saturating_sub(1);
+        let to = match k.key.as_str() {
+            "down" => Some(ix.map_or(0, |i| (i + 1).min(last))),
+            "up" => Some(ix.map_or(0, |i| i.saturating_sub(1))),
+            "home" => Some(0),
+            "end" => Some(last),
+            "pagedown" => Some(ix.map_or(0, |i| (i + 20).min(last))),
+            "pageup" => Some(ix.map_or(0, |i| i.saturating_sub(20))),
+            _ => None,
+        };
+        if let Some(to) = to.filter(|_| !self.rows.is_empty() && !m.alt && !m.control && !m.platform) {
+            // Shift extends the selection from the anchor, as in IntelliJ.
+            if m.shift { self.extend_to(to, cx) } else { self.select_row(to, cx) }
+            cx.stop_propagation();
+            return;
+        }
+        if m.secondary() && !m.alt && !m.shift && k.key == "a" {
+            // Select All: every row shown.
+            self.selection = self.rows.iter().map(|r| r.path.clone()).collect();
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
         match k.key.as_str() {
-            "down" => self.select_row(ix.map_or(0, |i| (i + 1).min(last)), cx),
-            "up" => self.select_row(ix.map_or(0, |i| i.saturating_sub(1)), cx),
-            "home" => self.select_row(0, cx),
-            "end" => self.select_row(last, cx),
-            "pagedown" => self.select_row(ix.map_or(0, |i| (i + 20).min(last)), cx),
-            "pageup" => self.select_row(ix.map_or(0, |i| i.saturating_sub(20)), cx),
             "right" => {
                 let (Some(ix), Some(row)) = (ix, row) else { return };
+                self.select_only(row.path.clone());
                 if !row.leaf {
                     if self.expanded.contains(&row.path) {
                         if self.rows.get(ix + 1).is_some_and(|r| r.depth > row.depth) {
@@ -955,6 +1137,7 @@ impl ProjectView {
             }
             "left" => {
                 let (Some(ix), Some(row)) = (ix, row) else { return };
+                self.select_only(row.path.clone());
                 if !row.leaf && self.expanded.contains(&row.path) {
                     self.toggle(&row.path, cx);
                 } else if let Some(parent) = (0..ix).rev().find(|&i| self.rows[i].depth < row.depth) {
@@ -1217,7 +1400,11 @@ impl Render for ProjectView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let rows = self.rows.clone();
-        let selected = self.selected.clone();
+        let selection = self.selection.clone();
+        // What dragging a selected row carries: the selection (minus the root and classes).
+        let drag_paths: Rc<Vec<String>> = Rc::new(
+            self.selected_rows().into_iter().filter(|r| Self::has_actions(r) && !matches!(r.kind, RowKind::Root | RowKind::Class)).map(|r| r.path).collect(),
+        );
         let expanded = self.expanded.clone();
         let status = self.status.clone();
         let changed_dirs = self.changed_dirs.clone();
@@ -1235,7 +1422,7 @@ impl Render for ProjectView {
                         let is_dir = !row.leaf;
                         // Libraries and excluded folders sit on IntelliJ's yellow.
                         let yellow = row.library || (row.excluded && row.kind == RowKind::Dir);
-                        let is_selected = selected.as_deref() == Some(row.path.as_str());
+                        let is_selected = selection.contains(&row.path);
                         let open = expanded.contains(&row.path);
                         let color = if row.excluded {
                             Some(excluded_color(palette.dark))
@@ -1273,14 +1460,15 @@ impl Render for ProjectView {
                                     .w(px(14.))
                                     .flex_shrink_0()
                                     .when(is_dir, |el| el.child(Icon::from(if open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).size(px(16.))))
-                                    // A class opens on a double click, so its arrow alone folds nested classes.
-                                    .when(is_dir && row.kind == RowKind::Class, |el| {
+                                    // The arrow folds on a single click; the row itself needs a double click.
+                                    .when(is_dir, |el| {
                                         let path = row.path.clone();
-                                        el.on_click(cx.listener(move |this, _, _, cx| {
-                                            cx.stop_propagation();
-                                            this.selected = Some(path.clone());
-                                            this.toggle(&path, cx);
-                                        }))
+                                        el.on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation()).on_click(cx.listener(
+                                            move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.chevron_click(&path, window, cx);
+                                            },
+                                        ))
                                     }),
                             )
                             .child(row_icon(row, &palette))
@@ -1289,14 +1477,23 @@ impl Render for ProjectView {
                             .when(row.kind == RowKind::Root, |el| {
                                 el.child(div().ml_1().overflow_hidden().text_ellipsis().text_xs().text_color(palette.text_secondary).child(root_path.clone()))
                             })
-                            .on_click(cx.listener(move |this, e: &gpui_kit::ClickEvent, window, cx| this.click(ix, e.click_count(), window, cx)))
+                            .on_click(cx.listener(move |this, e: &gpui_kit::ClickEvent, window, cx| this.click(ix, e.click_count(), e.modifiers(), window, cx)))
                             .on_mouse_down(gpui_kit::MouseButton::Right, {
                                 let path = row.path.clone();
-                                cx.listener(move |this, _, window, cx| {
-                                    window.focus(&this.focus, cx);
-                                    this.selected = Some(path.clone());
-                                    cx.notify();
-                                })
+                                cx.listener(move |this, _, window, cx| this.right_click(&path, window, cx))
+                            })
+                            // Drag the selection (or this row) onto a folder: Move, or Copy with Ctrl.
+                            .when(ProjectView::has_actions(row) && row.kind != RowKind::Root && row.kind != RowKind::Class, |el| {
+                                let drag = ProjectDrag {
+                                    paths: if is_selected { drag_paths.to_vec() } else { vec![row.path.clone()] },
+                                    label: if is_selected && drag_paths.len() > 1 { format!("{} items", drag_paths.len()) } else { row.name.clone() },
+                                };
+                                el.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                            })
+                            .when(ProjectView::has_actions(row) && matches!(row.kind, RowKind::Dir | RowKind::Root), |el| {
+                                let (drop_row, drop_bg) = (row.clone(), palette.selection);
+                                el.drag_over::<ProjectDrag>(move |el, _, _, _| el.bg(drop_bg))
+                                    .on_drop(cx.listener(move |this, drag: &ProjectDrag, window, cx| this.drop_on(&drop_row, drag, window, cx)))
                             })
                             .context_menu({
                                 // Built when the menu opens: a folder's target lists

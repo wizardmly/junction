@@ -7,7 +7,7 @@ use chrono::{Local, TimeZone as _};
 use gpui_kit::component::{
     Icon, Sizable as _,
     button::{Button, ButtonVariants as _},
-    tree::TreeItem,
+    tree::{TreeEntry, TreeItem, TreeState},
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::Styled as _;
@@ -44,6 +44,26 @@ pub fn header_height() -> f32 {
 
 pub fn icon(name: impl Into<Icon>) -> Icon {
     Icon::new(name).small()
+}
+
+/// A tree row's fold arrow, as in IntelliJ: one click on it folds the
+/// folder, while the row itself needs a double click. A leaf gets the
+/// same width of empty space.
+pub fn tree_chevron(state: &gpui_kit::Entity<TreeState>, ix: usize, entry: &TreeEntry, color: Hsla) -> gpui_kit::AnyElement {
+    use gpui_kit::{InteractiveElement as _, IntoElement as _, ParentElement as _};
+    if !entry.is_folder() {
+        return Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black()).into_any_element();
+    }
+    let state = state.clone();
+    gpui_kit::div()
+        .flex()
+        .items_center()
+        .child(Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).xsmall().text_color(color))
+        .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, cx| {
+            cx.stop_propagation();
+            state.update(cx, |state, cx| state.toggle_expand_at(ix, cx));
+        })
+        .into_any_element()
 }
 
 /// A borderless icon button, as used on IntelliJ tool window toolbars.

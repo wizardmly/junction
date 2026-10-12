@@ -38,6 +38,8 @@ pub enum FileAction {
     CompareWithBranch(String),
     /// Compare With…: another file picked from disk.
     CompareWithFile(String),
+    /// Compare With… on two selected files: the first against the second.
+    CompareFiles { path: String, other: PathBuf },
     /// Compare with Clipboard: the clipboard's text against the file.
     CompareWithClipboard(String),
     /// Commit File(s)…: the Commit tool window with only these included.
@@ -341,8 +343,12 @@ pub struct ProjectTarget {
     /// Repository-relative; empty for the root folder.
     pub path: String,
     pub is_dir: bool,
-    /// Files under a folder (for Git, Create Gist).
+    /// Files under a folder (for Git, Create Gist); with several items
+    /// selected, the files of all of them.
     pub files: Vec<String>,
+    /// Every selected item, (path, is folder), the clicked one included:
+    /// what Cut, Copy, Delete and Git act on, as in IntelliJ.
+    pub items: Vec<(String, bool)>,
     pub actions: FileActions,
     pub clipboard: FileClipboard,
 }
@@ -360,6 +366,61 @@ impl ProjectTarget {
 
     fn name(&self) -> String {
         self.full().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    }
+
+    /// More than one item is selected.
+    fn multi(&self) -> bool {
+        self.items.len() > 1
+    }
+
+    fn item_full(&self, path: &str) -> PathBuf {
+        if path.is_empty() { self.root.clone() } else { self.root.join(path) }
+    }
+
+    /// The selected items on disk.
+    fn fulls(&self) -> Vec<PathBuf> {
+        self.items.iter().map(|(p, _)| self.item_full(p)).collect()
+    }
+
+    /// The selected items that can be cut or deleted (not the project root).
+    fn removable(&self) -> Vec<String> {
+        self.items.iter().map(|(p, _)| p.clone()).filter(|p| !p.is_empty()).collect()
+    }
+
+    /// The selected items' absolute paths, one per line (the system clipboard).
+    fn fulls_text(&self) -> String {
+        self.fulls().iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n")
+    }
+
+    /// Cut / Copy: the selected items (Cut leaves the project root out).
+    fn put_on_clipboard(&self, cut: bool, cx: &mut App) {
+        let fulls: Vec<PathBuf> = if cut { self.removable().iter().map(|p| self.item_full(p)).collect() } else { self.fulls() };
+        if fulls.is_empty() {
+            return;
+        }
+        let text = fulls.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n");
+        *self.clipboard.borrow_mut() = Some((fulls, cut));
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    /// Two files selected: Compare With… compares them with each other.
+    fn file_pair(&self) -> Option<(String, String)> {
+        match self.items.as_slice() {
+            [(a, false), (b, false)] => Some((a.clone(), b.clone())),
+            _ => None,
+        }
+    }
+
+    fn compare(&self, window: &mut Window, cx: &mut App) {
+        match self.file_pair() {
+            Some((a, b)) => {
+                // The clicked file on the left, the other one on the right.
+                let (path, other) = if b == self.path { (b, a) } else { (a, b) };
+                let other = self.item_full(&other);
+                (self.actions)(FileAction::CompareFiles { path, other }, window, cx)
+            }
+            None => (self.actions)(FileAction::CompareWithFile(self.path.clone()), window, cx),
+        }
     }
 }
 
@@ -384,18 +445,21 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
     let t = target.clone();
     let menu = menu
         .separator()
-        .item(entry("Cut", "Ctrl+X").icon(Icon::new(icons::CUT)).disabled(target.path.is_empty()).on_click(move |_, _, cx| {
-            *t_cut.clipboard.borrow_mut() = Some((vec![t_cut.full()], true));
-            cx.write_to_clipboard(ClipboardItem::new_string(t_cut.full().to_string_lossy().into_owned()));
-        }))
-        .item(entry("Copy", "Ctrl+C").icon(Icon::new(icons::COPY)).on_click(move |_, _, cx| {
-            *t_copy.clipboard.borrow_mut() = Some((vec![t_copy.full()], false));
-            cx.write_to_clipboard(ClipboardItem::new_string(t_copy.full().to_string_lossy().into_owned()));
-        }))
+        .item(entry("Cut", "Ctrl+X").icon(Icon::new(icons::CUT)).disabled(target.removable().is_empty()).on_click(move |_, _, cx| t_cut.put_on_clipboard(true, cx)))
+        .item(entry("Copy", "Ctrl+C").icon(Icon::new(icons::COPY)).on_click(move |_, _, cx| t_copy.put_on_clipboard(false, cx)))
         .submenu("Copy Path/Reference…", window, cx, move |m, _, cx| {
-            // Relative to the repository holding it (a nested root's own path).
-            let rel = t.model.read(cx).route(&t.path).map(|(_, own)| own).unwrap_or_else(|| t.path.clone());
-            let (abs, name) = (t.full().to_string_lossy().into_owned(), t.name());
+            // Relative to the repository holding it (a nested root's own path);
+            // one line per selected item.
+            let model = t.model.read(cx);
+            let rel = t
+                .items
+                .iter()
+                .map(|(p, _)| model.route(p).map(|(_, own)| own).unwrap_or_else(|| p.clone()))
+                .filter(|r| !r.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let abs = t.fulls_text();
+            let name = t.fulls().iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).collect::<Vec<_>>().join("\n");
             m.item(entry("Absolute Path", "Ctrl+Shift+C").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(abs.clone()))))
                 .item(entry("File Name", "").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone()))))
                 .item(entry("Path From Repository Root", "").disabled(rel.is_empty()).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(rel.clone()))))
@@ -416,15 +480,15 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
     let t_rename = target.clone();
     let menu = menu
         .separator()
-        .item(entry("Rename…", "Shift+F6").disabled(target.path.is_empty()).on_click(move |_, window, cx| rename(&t_rename, window, cx)));
+        .item(entry("Rename…", "Shift+F6").disabled(target.path.is_empty() || target.multi()).on_click(move |_, window, cx| rename(&t_rename, window, cx)));
     let t = target.clone();
     let menu = menu.submenu("Refactor", window, cx, move |m, _, _| {
         let (t_rename, t_delete) = (t.clone(), t.clone());
-        m.item(entry("Rename…", "Shift+F6").disabled(t.path.is_empty()).on_click(move |_, window, cx| rename(&t_rename, window, cx)))
+        m.item(entry("Rename…", "Shift+F6").disabled(t.path.is_empty() || t.multi()).on_click(move |_, window, cx| rename(&t_rename, window, cx)))
             .item(entry("Move…", "F6").disabled(true))
             .item(entry("Copy…", "F5").disabled(true))
-            .item(entry("Safe Delete…", "Alt+Delete").disabled(t.path.is_empty()).on_click(move |_, window, cx| {
-                delete_files(t_delete.root.clone(), vec![t_delete.path.clone()], t_delete.actions.clone(), window, cx)
+            .item(entry("Safe Delete…", "Alt+Delete").disabled(t.removable().is_empty()).on_click(move |_, window, cx| {
+                delete_files(t_delete.root.clone(), t_delete.removable(), t_delete.actions.clone(), window, cx)
             }))
     });
     let menu = stub_submenu(menu.separator(), "Bookmarks", &[("Toggle Bookmark", "F11"), ("Toggle Bookmark with Mnemonic", "Ctrl+F11"), ("Show All Bookmarks", "Shift+F11")], window, cx);
@@ -433,9 +497,9 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         .separator()
         .item(entry("Reformat Code", "Ctrl+Alt+L").icon(Icon::new(icons::FILE_TEXT)).disabled(true))
         .item(entry("Optimize Imports", "Ctrl+Alt+O").disabled(true))
-        .when(!target.path.is_empty(), |m| {
+        .when(!target.removable().is_empty(), |m| {
             m.item(entry("Delete…", "Delete").on_click(move |_, window, cx| {
-                delete_files(t_delete.root.clone(), vec![t_delete.path.clone()], t_delete.actions.clone(), window, cx)
+                delete_files(t_delete.root.clone(), t_delete.removable(), t_delete.actions.clone(), window, cx)
             }))
         })
         .when(!is_dir, |m| m.item(entry("Override File Type", "").disabled(true)))
@@ -456,8 +520,8 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
     let menu = local_history_submenu(menu.separator(), window, cx);
     let git = GitTarget {
         model: target.model.clone(),
-        paths: if is_dir { target.files.clone() } else { vec![target.path.clone()] },
-        file: (!is_dir).then(|| target.path.clone()),
+        paths: if is_dir || target.multi() { target.files.clone() } else { vec![target.path.clone()] },
+        file: (!is_dir && !target.multi()).then(|| target.path.clone()),
         actions: target.actions.clone(),
     };
     let menu = git_submenu(menu, git, window, cx);
@@ -467,10 +531,10 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
             (t_reload.actions)(FileAction::FilesChanged, window, cx)
         }))
         .separator()
-        .item(entry("Compare With…", "Ctrl+D").icon(Icon::new(icons::VCS_DIFF)).disabled(is_dir).on_click(move |_, window, cx| {
-            (t_compare.actions)(FileAction::CompareWithFile(t_compare.path.clone()), window, cx)
+        .item(entry("Compare With…", "Ctrl+D").icon(Icon::new(icons::VCS_DIFF)).disabled(if target.multi() { target.file_pair().is_none() } else { is_dir }).on_click(move |_, window, cx| {
+            t_compare.compare(window, cx)
         }))
-        .when(!is_dir, |m| {
+        .when(!is_dir && !target.multi(), |m| {
             m.item(entry("Compare with Clipboard", "").icon(Icon::new(icons::PASTE)).on_click(move |_, window, cx| {
                 (t_clip.actions)(FileAction::CompareWithClipboard(t_clip.path.clone()), window, cx)
             }))
@@ -483,7 +547,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         menu
     };
     menu.item(entry("Create Gist…", "").on_click(move |_, window, cx| {
-            let paths = if t_gist.is_dir { t_gist.files.clone() } else { vec![t_gist.path.clone()] };
+            let paths = if t_gist.is_dir || t_gist.multi() { t_gist.files.clone() } else { vec![t_gist.path.clone()] };
             let files: Vec<(String, String)> = paths
                 .iter()
                 .take(30)
@@ -546,28 +610,23 @@ pub fn project_shortcut(target: &ProjectTarget, keystroke: &gpui_kit::Keystroke)
     let m = keystroke.modifiers;
     let ctrl = m.control || m.platform;
     let root = target.path.is_empty();
+    let removable = !target.removable().is_empty();
     let t = target.clone();
-    let full = target.full().to_string_lossy().into_owned();
+    let full = target.fulls_text();
     let run: Box<dyn FnOnce(&mut Window, &mut App)> = match (ctrl, m.alt, m.shift, keystroke.key.as_str()) {
-        (true, false, false, "x") if !root => Box::new(move |_, cx| {
-            *t.clipboard.borrow_mut() = Some((vec![t.full()], true));
-            cx.write_to_clipboard(ClipboardItem::new_string(full));
-        }),
-        (true, false, false, "c") => Box::new(move |_, cx| {
-            *t.clipboard.borrow_mut() = Some((vec![t.full()], false));
-            cx.write_to_clipboard(ClipboardItem::new_string(full));
-        }),
+        (true, false, false, "x") if removable => Box::new(move |_, cx| t.put_on_clipboard(true, cx)),
+        (true, false, false, "c") => Box::new(move |_, cx| t.put_on_clipboard(false, cx)),
         (true, false, false, "v") if target.clipboard.borrow().is_some() => Box::new(move |window, cx| paste(&t, window, cx)),
         (true, false, true, "c") => Box::new(move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(full))),
-        (false, false, true, "f6") if !root => Box::new(move |window, cx| rename(&t, window, cx)),
-        (false, _, false, "delete") if !root => Box::new(move |window, cx| delete_files(t.root.clone(), vec![t.path.clone()], t.actions.clone(), window, cx)),
+        (false, false, true, "f6") if !root && !target.multi() => Box::new(move |window, cx| rename(&t, window, cx)),
+        (false, _, false, "delete") if removable => Box::new(move |window, cx| delete_files(t.root.clone(), t.removable(), t.actions.clone(), window, cx)),
         (false, false, true, "enter") if !target.is_dir => Box::new(move |window, cx| (t.actions)(FileAction::OpenInSplit(t.path.clone()), window, cx)),
         (true, false, true, "f" | "r") => {
             let replace = keystroke.key == "r";
             let dir = if target.is_dir { target.path.clone() } else { Path::new(&target.path).parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default() };
             Box::new(move |window, cx| (t.actions)(FileAction::FindInPath { dir, replace }, window, cx))
         }
-        (true, false, false, "d") if !target.is_dir => Box::new(move |window, cx| (t.actions)(FileAction::CompareWithFile(t.path.clone()), window, cx)),
+        (true, false, false, "d") if (!target.multi() && !target.is_dir) || target.file_pair().is_some() => Box::new(move |window, cx| t.compare(window, cx)),
         _ => return None,
     };
     Some(run)
@@ -575,8 +634,48 @@ pub fn project_shortcut(target: &ProjectTarget, keystroke: &gpui_kit::Keystroke)
 
 fn paste(target: &ProjectTarget, window: &mut Window, cx: &mut App) {
     let Some((sources, cut)) = target.clipboard.borrow().clone() else { return };
+    transfer(target, &sources, cut, window, cx);
+    if cut {
+        *target.clipboard.borrow_mut() = None;
+    }
+}
+
+/// Drag and drop in the Project view onto a folder: IntelliJ's Move dialog
+/// (Ctrl held: Copy) for the dragged items.
+pub fn drop_items(target: &ProjectTarget, sources: Vec<PathBuf>, copy: bool, window: &mut Window, cx: &mut App) {
     let folder = target.folder();
-    for source in &sources {
+    // Nothing to do when every item is already there (or is the folder itself).
+    let sources: Vec<PathBuf> = sources
+        .into_iter()
+        .filter(|s| copy || (s.parent() != Some(folder.as_path()) && !folder.starts_with(s)))
+        .collect();
+    // An item inside a dragged folder moves with the folder.
+    let sources: Vec<PathBuf> = sources.iter().filter(|s| !sources.iter().any(|o| o != *s && s.starts_with(o))).cloned().collect();
+    if sources.is_empty() {
+        return;
+    }
+    let what = match sources.as_slice() {
+        [one] => format!("\u{201c}{}\u{201d}", one.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+        many => format!("{} items", many.len()),
+    };
+    let to = folder.strip_prefix(&target.root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+    let to = if to.is_empty() { target.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() } else { to };
+    let (title, ok) = if copy { ("Copy", "Copy") } else { ("Move", "Refactor") };
+    let message = format!("{title} {what} to directory \u{201c}{to}\u{201d}?");
+    let (target, window_handle) = (target.clone(), window.window_handle());
+    dialogs::confirm(title, message, ok, move |cx| {
+        let (target, sources) = (target.clone(), sources.clone());
+        // The dialog's OK runs while its window is being updated; move once that's done.
+        cx.defer(move |cx| {
+            window_handle.update(cx, |_, window, cx| transfer(&target, &sources, !copy, window, cx)).ok();
+        });
+    }, window, cx);
+}
+
+/// Copies (or moves) `sources` into the target's folder.
+fn transfer(target: &ProjectTarget, sources: &[PathBuf], cut: bool, window: &mut Window, cx: &mut App) {
+    let folder = target.folder();
+    for source in sources {
         let Some(name) = source.file_name() else { continue };
         let mut dest = folder.join(name);
         if dest == *source && !cut {
@@ -607,9 +706,6 @@ fn paste(target: &ProjectTarget, window: &mut Window, cx: &mut App) {
         } else {
             let _ = copy_recursive(source, &dest);
         }
-    }
-    if cut {
-        *target.clipboard.borrow_mut() = None;
     }
     (target.actions)(FileAction::FilesChanged, window, cx);
 }

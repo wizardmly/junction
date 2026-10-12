@@ -10,7 +10,6 @@ use gpui_kit::component::{
     tree::{TreeState, tree},
     v_flex,
 };
-use gpui_kit::assets::IconName;
 use gpui_kit::{App, AppContext as _, Entity, ParentElement as _, SharedString, Styled as _, Window, div, px};
 
 use crate::model::RepoModel;
@@ -33,7 +32,9 @@ pub fn open(model: Entity<RepoModel>, revision: String, open_file: OpenFile, win
         let palette = cx.palette().clone();
         let open_file = open_file.clone();
         let revision = revision.clone();
-        let rows = tree(&state, move |ix, entry, _, _, _| {
+        let rows = tree(&state, {
+            let (tree_state, chevron_color) = (state.clone(), palette.text_secondary);
+            move |ix, entry, _, _, _| {
             let item = entry.item();
             let path = item.id.strip_prefix(FILE_PREFIX).map(str::to_owned);
             let (open_file, revision) = (open_file.clone(), revision.clone());
@@ -41,11 +42,7 @@ pub fn open(model: Entity<RepoModel>, revision: String, open_file: OpenFile, win
                 .gap_1()
                 .pl(px(entry.depth() as f32 * 14.))
                 .text_sm()
-                .child(if entry.is_folder() {
-                    Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).xsmall()
-                } else {
-                    Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black())
-                })
+                .child(common::tree_chevron(&tree_state, ix, entry, chevron_color))
                 .child(Icon::new(path.as_deref().map_or(Icon::from(icons::FOLDER), common::file_icon)).small())
                 .child(div().child(item.label.clone()));
             ListItem::new(ix).py_0().px_1().h(px(row_height())).child(row).on_click(move |event, window, cx| {
@@ -55,6 +52,7 @@ pub fn open(model: Entity<RepoModel>, revision: String, open_file: OpenFile, win
                     open_file(revision.clone(), path, window, cx);
                 }
             })
+        }
         });
         dialog
             .title(SharedString::from(format!("Repository at {short}")))

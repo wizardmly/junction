@@ -21,7 +21,6 @@ use gpui_kit::component::{
     tree::{TreeItem, TreeState, tree},
     v_flex,
 };
-use gpui_kit::assets::IconName;
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, StatefulInteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
@@ -1338,7 +1337,9 @@ impl CommitView {
             .on_action(cx.listener(Self::on_edit_source))
             .on_action(cx.listener(Self::on_move_to_changelist))
             .child(
-            tree(&self.tree, move |ix, entry, _, _, cx| {
+            tree(&self.tree, {
+            let tree_state = self.tree.clone();
+            move |ix, entry, _, _, cx| {
                 let palette = &tree_palette;
                 let item = entry.item();
                 let id = item.id.clone();
@@ -1375,13 +1376,7 @@ impl CommitView {
                         .group("commit-row")
                         .pl(px(entry.depth() as f32 * 14.))
                         .text_sm()
-                        .child(if entry.is_folder() {
-                            Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT })
-                                .xsmall()
-                                .text_color(palette.text_secondary)
-                        } else {
-                            Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black())
-                        })
+                        .child(common::tree_chevron(&tree_state, ix, entry, palette.text_secondary))
                         .when(
                             !staging
                                 && !id.starts_with(CONFLICTS_SCOPE)
@@ -1485,7 +1480,8 @@ impl CommitView {
                             menu::commit_menu(menu, &menu_entity, &menu_id, menu_file.clone(), group_list.clone(), window, cx)
                         }),
                 )
-            })
+            }
+        })
             .size_full(),
         )
         .when_some(self.search.clone(), |el, q| {

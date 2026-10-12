@@ -280,24 +280,31 @@ impl FindView {
         let Some(row) = rows.get(ix).cloned() else { return };
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         tab.selected = Some(ix);
-        match &row {
-            Row::File { path, .. } if !open => {
-                if !tab.collapsed.remove(path) {
-                    tab.collapsed.insert(path.clone());
-                }
-            }
-            Row::Dir(dir, _) => {
-                let key = format!("d:{dir}");
-                if !tab.collapsed.remove(&key) {
-                    tab.collapsed.insert(key);
-                }
-            }
-            _ => {}
+        // As in IntelliJ, a click selects; a double click folds a folder
+        // (its arrow folds on one click) or opens a file.
+        if open && matches!(row, Row::Dir(..)) {
+            self.fold(ix, cx);
+            return;
         }
         if open || matches!(row, Row::Usage(..) | Row::Text(..) | Row::Item(_)) {
             if let Some(target) = self.row_target(&row) {
                 cx.emit(OpenTarget(target));
             }
+        }
+        cx.notify();
+    }
+
+    /// Folds or unfolds a folder or file row (its arrow, or a double click on a folder).
+    fn fold(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let rows = self.rows();
+        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        let key = match rows.get(ix) {
+            Some(Row::File { path, .. }) => path.clone(),
+            Some(Row::Dir(dir, _)) => format!("d:{dir}"),
+            _ => return,
+        };
+        if !tab.collapsed.remove(&key) {
+            tab.collapsed.insert(key);
         }
         cx.notify();
     }
@@ -598,6 +605,17 @@ impl Render for FindView {
             cx.processor(move |_, range: Range<usize>, _, cx| {
                 let palette = cx.palette().clone();
                 let chevron = |open: bool| common::icon(if open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).text_color(palette.text_secondary);
+                // A folder's or file's arrow folds it on one click.
+                let fold = |ix: usize, open: bool, cx: &mut Context<Self>| {
+                    div()
+                        .id(("find-fold", ix))
+                        .child(chevron(open))
+                        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.fold(ix, cx);
+                        }))
+                };
                 range
                     .map(|ix| {
                         let base = h_flex()
@@ -623,14 +641,14 @@ impl Render for FindView {
                                 .child(div().text_color(palette.text_secondary).child(plural(*count, "usage"))),
                             Row::Dir(dir, count) => base
                                 .pl(pad(1))
-                                .child(chevron(!collapsed.contains(&format!("d:{dir}"))))
+                                .child(fold(ix, !collapsed.contains(&format!("d:{dir}")), cx))
                                 .child(common::icon(icons::FOLDER).text_color(palette.text_secondary))
                                 .child(if dir.is_empty() { "<root>".to_owned() } else { dir.clone() })
                                 .child(div().text_color(palette.text_secondary).child(plural(*count, "result"))),
                             Row::File { path, count, indent } => {
                                 let (dir, name) = path.rsplit_once(['/', '\\']).unwrap_or(("", path));
                                 base.pl(pad(*indent))
-                                    .child(chevron(!collapsed.contains(path)))
+                                    .child(fold(ix, !collapsed.contains(path), cx))
                                     .child(common::icon(common::file_icon(path)).text_color(palette.text_secondary))
                                     .child(name.to_owned())
                                     .when(ambiguous.contains(name) && !dir.is_empty(), |el| el.child(div().text_color(palette.text_secondary).child(dir.to_owned())))

@@ -341,7 +341,9 @@ impl LogView {
                         input.update(cx, |state, cx| state.focus(window, cx));
                     }))
                     .child(
-                    tree(&self.branches, move |ix, entry, _selected, _, _| {
+                    tree(&self.branches, {
+            let tree_state = self.branches.clone();
+            move |ix, entry, _selected, _, _| {
                         let item = entry.item();
                         let id = item.id.to_string();
                         let full_name = id.strip_prefix(BRANCH_PREFIX).map(str::to_owned);
@@ -389,13 +391,7 @@ impl LogView {
                                     .gap_1()
                                     .pl(px(entry.depth() as f32 * 14.))
                                     .text_sm()
-                                    .child(if entry.is_folder() {
-                                        Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT })
-                                            .xsmall()
-                                            .text_color(palette.text_secondary)
-                                    } else {
-                                        Icon::new(IconName::Circle).xsmall().text_color(gpui_kit::transparent_black())
-                                    })
+                                    .child(common::tree_chevron(&tree_state, ix, entry, palette.text_secondary))
                                     .child(Icon::new(icon_name).small().text_color(icon_color))
                                     .child(match label_match(&item.label, &query) {
                                         Some(range) => crate::ui::find_popup::highlighted(&item.label, &[range], &palette).into_any_element(),
@@ -420,6 +416,7 @@ impl LogView {
                                         branch_menu(menu, &menu_entity, &menu_refs, &reference, cx)
                                     }),
                             )
+                    }
                     })
                     .size_full(),
                 ),

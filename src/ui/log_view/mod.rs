@@ -18,7 +18,6 @@ use gpui_kit::component::{
     tree::{TreeItem, TreeState, tree},
     v_flex, v_resizable,
 };
-use gpui_kit::assets::IconName;
 use gpui_kit::{
     AnyElement, App, StatefulInteractiveElement as _, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, ScrollStrategy,

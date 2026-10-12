@@ -268,6 +268,7 @@ impl Workspace {
                 })
                 .detach();
             }
+            FileAction::CompareFiles { path, other } => self.open_diff(DiffSource::Files { path, other }, cx),
             FileAction::CommitFiles(paths) => {
                 self.show_left_tab(LeftTab::Commit, window, cx);
                 self.commit.update(cx, |commit, cx| commit.commit_only(paths, window, cx));

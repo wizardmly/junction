@@ -203,7 +203,9 @@ impl LogView {
             )
             .child(
                 div().flex_1().min_h_0().child(
-                    tree(&self.changes, move |ix, entry, _, _, _| {
+                    tree(&self.changes, {
+            let tree_state = self.changes.clone();
+            move |ix, entry, _, _, _| {
                         let palette = &tree_palette;
                         let item = entry.item();
                         let id = item.id.to_string();
@@ -236,13 +238,7 @@ impl LogView {
                                     .gap_1()
                                     .pl(px(entry.depth() as f32 * 14.))
                                     .text_sm()
-                                    .when(entry.is_folder(), |el| {
-                                        el.child(
-                                            Icon::new(if entry.is_expanded() { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT })
-                                                .xsmall()
-                                                .text_color(palette.text_secondary),
-                                        )
-                                    })
+                                    .when(entry.is_folder(), |el| el.child(common::tree_chevron(&tree_state, ix, entry, palette.text_secondary)))
                                     .child(
                                         Icon::new(match &path {
                                             Some(p) if submodules.contains(p.as_str()) => Icon::from(icons::MODULE),
@@ -277,7 +273,8 @@ impl LogView {
                                         None => menu,
                                     }),
                             )
-                    })
+                    }
+        })
                     .size_full(),
                 ),
             );

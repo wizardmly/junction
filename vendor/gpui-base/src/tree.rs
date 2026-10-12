@@ -438,9 +438,24 @@ impl TreeState {
         cx.notify();
     }
 
-    fn on_entry_click(&mut self, ix: usize, cx: &mut Context<Self>) {
+    // Junction: IntelliJ's trees select on a click and fold a folder on a
+    // double click (the arrow folds on one click, see `toggle_expand_at`).
+    fn on_entry_click(&mut self, ix: usize, click_count: usize, cx: &mut Context<Self>) {
         self.selected_ix = Some(ix);
+        if click_count == 2 {
+            self.toggle_expand(ix, cx);
+        }
+        cx.notify();
+    }
+
+    /// Junction: folds or unfolds the folder at `ix` (its arrow was clicked),
+    /// leaving the selection as it is.
+    pub fn toggle_expand_at(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let selected = self.selected_ix.and_then(|ix| self.entries.get(ix)).map(|e| e.item.id.clone());
         self.toggle_expand(ix, cx);
+        // The selected row keeps its selection when rows above it fold;
+        // when it goes out of sight, the folded folder takes it.
+        self.selected_ix = selected.and_then(|id| self.index_of(&id)).or_else(|| self.selected_ix.map(|_| ix));
         cx.notify();
     }
 }
@@ -470,8 +485,8 @@ impl Render for TreeState {
                             .when(!entry.is_disabled(), |this| {
                                 this.on_mouse_down(
                                     MouseButton::Left,
-                                    cx.listener(move |state, _, _, cx| {
-                                        state.on_entry_click(ix, cx);
+                                    cx.listener(move |state, event: &gpui::MouseDownEvent, _, cx| {
+                                        state.on_entry_click(ix, event.click_count, cx);
                                     }),
                                 )
                                 .on_mouse_down(

@@ -299,7 +299,9 @@ impl Render for StashView {
 
         let kinds = self.kinds.clone();
         let tree_palette = palette.clone();
-        let files = tree(&self.files, move |ix, entry, _, _, _| {
+        let files = tree(&self.files, {
+            let tree_state = self.files.clone();
+            move |ix, entry, _, _, _| {
             let palette = &tree_palette;
             let item = entry.item();
             let path = item.id.strip_prefix(FILE_PREFIX).map(str::to_owned);
@@ -309,6 +311,7 @@ impl Render for StashView {
                     .gap_1()
                     .pl(px(entry.depth() as f32 * 14.))
                     .text_sm()
+                    .when(entry.is_folder(), |el| el.child(common::tree_chevron(&tree_state, ix, entry, palette.text_secondary)))
                     .child(
                         Icon::new(match &path {
                             Some(p) => common::file_icon(p),
@@ -319,6 +322,7 @@ impl Render for StashView {
                     )
                     .child(div().text_color(color).child(item.label.clone())),
             )
+        }
         });
 
         v_flex()

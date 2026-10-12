@@ -243,6 +243,7 @@
 | Project 工具窗口（Alt+1）、Select in Project View（Alt+F1） | M7 | ✅ |
 | Project 窗口视图切换：Project（根节点带绝对路径）/ Project Files / Production / Tests / Open Files / Changed Files | M8 | ✅（Open Files 即当前打开的标签） |
 | Project 窗口头部：New（File / Directory）、Select Opened File（准星）、Expand All、Collapse All | M8 | ✅ |
+| Project 窗口选择与展开（与 AS 一致） | M9 | ✅（单击只选中，双击、点箭头、→ / ← 或 Enter 才展开/折叠；Ctrl·Cmd+单击增减、Shift+单击按范围选、Shift+↑↓/Home/End/PgUp/PgDn 扩展选区、Ctrl+A 全选；多选时右键菜单的 Cut / Copy / Copy Path / Delete / Git / Create Gist 作用于整个选区，Rename 置灰，选中两个文件时 Compare With…（Ctrl+D）直接比较这两个；把选中项拖到文件夹上弹出 Move（按住 Ctrl 为 Copy）。Commit、Changes、Log 的改动文件与分支树、Shelf、Stash、Find 结果、Repository at … 树同样改为单击选中、双击或点箭头展开） |
 | ⋮ › Behavior：Always Select Opened File、Open Files with Single Click（默认双击打开） | M8 | ✅（设置持久化） |
 | ⋮ › Appearance：Show Excluded Files（Git 忽略的文件橄榄色显示，展开时按需读盘）、Compact Middle Packages | M8 | ✅ |
 | ⋮ › Sort By：Name / Type / Modification Time、Folders Always on Top | M8 | ✅ |
