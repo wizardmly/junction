@@ -22,6 +22,7 @@ static SERVER: &[u8] = include_bytes!("../../assets/scrcpy/scrcpy-server");
 const DEVICE_PATH: &str = "/data/local/tmp/junction-scrcpy-server.jar";
 /// Longest clipboard text sent either way (Android Studio's default limit).
 pub const MAX_CLIPBOARD: usize = 5000;
+const LOST: &str = "Lost connection to the device";
 
 /// A decoded screen, BGRA as GPUI draws it.
 pub struct Frame {
@@ -31,8 +32,8 @@ pub struct Frame {
 }
 
 pub enum Event {
-    /// The stream is up; the device's name.
-    Connected(String),
+    /// The stream is up.
+    Connected,
     /// A new frame waits in [`Session::take_frame`].
     Frame,
     /// The device's clipboard changed.
@@ -91,7 +92,9 @@ impl Session {
                 let result = run(&adb, &serial, &shared, &port, &events);
                 if !shared.stop.load(Ordering::SeqCst) {
                     let message = match result {
-                        Ok(()) => "Lost connection to the device".to_owned(),
+                        // The stream broke after it started.
+                        Ok(()) => LOST.to_owned(),
+                        Err(error) if matches!(error.kind(), io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted | io::ErrorKind::BrokenPipe) => LOST.to_owned(),
                         Err(error) => error.to_string(),
                     };
                     let log = shared.log.lock().unwrap().trim().to_owned();
@@ -348,12 +351,10 @@ fn run(adb: &Adb, serial: &str, shared: &Arc<Shared>, port_slot: &Mutex<Option<u
     *shared.video.lock().unwrap() = Some(video.try_clone()?);
     *shared.control.lock().unwrap() = Some(control.try_clone()?);
 
-    let mut name = [0u8; 64];
-    video.read_exact(&mut name)?;
-    let name = String::from_utf8_lossy(&name[..name.iter().position(|&b| b == 0).unwrap_or(64)]).into_owned();
-    let mut codec = [0u8; 12];
-    video.read_exact(&mut codec)?;
-    let _ = events.unbounded_send(Event::Connected(name));
+    // The device's name (64 bytes), then the codec and the first size.
+    let mut meta = [0u8; 64 + 12];
+    video.read_exact(&mut meta)?;
+    let _ = events.unbounded_send(Event::Connected);
 
     {
         let events = events.clone();

@@ -15,8 +15,10 @@ pub const APPLY_NON_CONFLICTS_LEFT: AsIcon = AsIcon { light: &[("as/apply-non-co
 pub const APPLY_NON_CONFLICTS_RIGHT: AsIcon = AsIcon { light: &[("as/apply-non-conflicts-right.l0.svg", 0x6c707eff)], dark: &[("as/apply-non-conflicts-right.d0.svg", 0xced0d6ff)] };
 pub const AUTOSCROLL_FROM_SOURCE: AsIcon = AsIcon { light: &[("as/autoscroll-from-source.l0.svg", 0x6c707eff)], dark: &[("as/autoscroll-from-source.d0.svg", 0xced0d6ff)] };
 pub const AVD_RUN: AsIcon = AsIcon { light: &[("as/avd-run.l0.svg", 0x6c707eff)], dark: &[("as/avd-run.d0.svg", 0xced0d6ff)] };
+pub const AVD_START_MIRROR: AsIcon = AsIcon { light: &[("as/avd-start-mirror.l0.svg", 0x6c707eff)], dark: &[("as/avd-start-mirror.d0.svg", 0xced0d6ff)] };
 pub const AVD_STATUS_ONLINE: AsIcon = AsIcon { light: &[("as/avd-status-online.l0.svg", 0x55a76aff)], dark: &[("as/avd-status-online.d0.svg", 0x57965cff)] };
 pub const AVD_STOP: AsIcon = AsIcon { light: &[("as/avd-stop.l0.svg", 0xfff7f7ff), ("as/avd-stop.l1.svg", 0xdb3b4bff)], dark: &[("as/avd-stop.d0.svg", 0x402929ff), ("as/avd-stop.d1.svg", 0xdb5c5cff)] };
+pub const AVD_STOP_MIRROR: AsIcon = AsIcon { light: &[("as/avd-stop-mirror.l0.svg", 0x6c707eff)], dark: &[("as/avd-stop-mirror.d0.svg", 0xced0d6ff)] };
 pub const BALLOON: AsIcon = AsIcon { light: &[("as/balloon.l0.svg", 0xebecf0ff), ("as/balloon.l1.svg", 0x6c707eff)], dark: &[("as/balloon.d0.svg", 0x43454aff), ("as/balloon.d1.svg", 0xced0d6ff)] };
 pub const BRANCH: AsIcon = AsIcon { light: &[("as/branch.l0.svg", 0x6c707eff)], dark: &[("as/branch.d0.svg", 0xced0d6ff)] };
 pub const CHANGE_VIEW: AsIcon = AsIcon { light: &[("as/change-view.l0.svg", 0x6c707eff), ("as/change-view.l1.svg", 0xebecf0ff)], dark: &[("as/change-view.d0.svg", 0xced0d6ff), ("as/change-view.d1.svg", 0x43454aff)] };
@@ -59,6 +61,17 @@ pub const DRAG: AsIcon = AsIcon { light: &[("as/drag.l0.svg", 0xa8adbdff)], dark
 pub const DROPDOWN: AsIcon = AsIcon { light: &[("as/dropdown.l0.svg", 0x6c707eff)], dark: &[("as/dropdown.d0.svg", 0xced0d6ff)] };
 pub const EDIT: AsIcon = AsIcon { light: &[("as/edit.l0.svg", 0x6c707eff)], dark: &[("as/edit.d0.svg", 0xced0d6ff)] };
 pub const EDITOR_PREVIEW: AsIcon = AsIcon { light: &[("as/editor-preview.l0.svg", 0x6c707eff)], dark: &[("as/editor-preview.d0.svg", 0xced0d6ff)] };
+pub const EMULATOR_BACK: AsIcon = AsIcon { light: &[("as/emulator-back.l0.svg", 0x6c707eff)], dark: &[("as/emulator-back.d0.svg", 0xced0d6ff)] };
+pub const EMULATOR_HARDWARE_INPUT: AsIcon = AsIcon { light: &[("as/emulator-hardware-input.l0.svg", 0x6c707eff)], dark: &[("as/emulator-hardware-input.d0.svg", 0xced0d6ff)] };
+pub const EMULATOR_HOME: AsIcon = AsIcon { light: &[("as/emulator-home.l0.svg", 0x6c707eff)], dark: &[("as/emulator-home.d0.svg", 0xced0d6ff)] };
+pub const EMULATOR_OVERVIEW: AsIcon = AsIcon { light: &[("as/emulator-overview.l0.svg", 0x6c707eff)], dark: &[("as/emulator-overview.d0.svg", 0xced0d6ff)] };
+pub const EMULATOR_POWER: AsIcon = AsIcon { light: &[("as/emulator-power.l0.svg", 0x6c707eff)], dark: &[("as/emulator-power.d0.svg", 0xced0d6ff)] };
+pub const EMULATOR_ROTATE_LEFT: AsIcon = AsIcon { light: &[("as/emulator-rotate-left.l0.svg", 0x3574f0ff), ("as/emulator-rotate-left.l1.svg", 0x6c707eff)], dark: &[("as/emulator-rotate-left.d0.svg", 0x548af7ff), ("as/emulator-rotate-left.d1.svg", 0xced0d6ff)] };
+pub const EMULATOR_ROTATE_RIGHT: AsIcon = AsIcon { light: &[("as/emulator-rotate-right.l0.svg", 0x3574f0ff), ("as/emulator-rotate-right.l1.svg", 0x6c707eff)], dark: &[("as/emulator-rotate-right.d0.svg", 0x548af7ff), ("as/emulator-rotate-right.d1.svg", 0xced0d6ff)] };
+pub const EMULATOR_SCREEN_RECORD: AsIcon = AsIcon { light: &[("as/emulator-screen-record.l0.svg", 0x6c707eff), ("as/emulator-screen-record.l1.svg", 0xfff7f7ff), ("as/emulator-screen-record.l2.svg", 0xdb3b4bff)], dark: &[("as/emulator-screen-record.d0.svg", 0xced0d6ff), ("as/emulator-screen-record.d1.svg", 0x402929ff), ("as/emulator-screen-record.d2.svg", 0xdb5c5cff)] };
+pub const EMULATOR_SCREENSHOT: AsIcon = AsIcon { light: &[("as/emulator-screenshot.l0.svg", 0x6c707eff)], dark: &[("as/emulator-screenshot.d0.svg", 0xced0d6ff)] };
+pub const EMULATOR_VOLUME_DOWN: AsIcon = AsIcon { light: &[("as/emulator-volume-down.l0.svg", 0x6c707eff)], dark: &[("as/emulator-volume-down.d0.svg", 0xced0d6ff)] };
+pub const EMULATOR_VOLUME_UP: AsIcon = AsIcon { light: &[("as/emulator-volume-up.l0.svg", 0x6c707eff)], dark: &[("as/emulator-volume-up.d0.svg", 0xced0d6ff)] };
 pub const ENUM: AsIcon = AsIcon { light: &[("as/enum.l0.svg", 0xfaf5ffff), ("as/enum.l1.svg", 0x834df0ff)], dark: &[("as/enum.d0.svg", 0x2f2936ff), ("as/enum.d1.svg", 0xa571e6ff)] };
 pub const ENUM_KOTLIN: AsIcon = AsIcon { light: &[("as/enum-kotlin.l0.svg", 0xfaf5ffff), ("as/enum-kotlin.l1.svg", 0x834df0ff)], dark: &[("as/enum-kotlin.d0.svg", 0x2f2936ff), ("as/enum-kotlin.d1.svg", 0xa571e6ff)] };
 pub const EXACT_WORDS: AsIcon = AsIcon { light: &[("as/exact-words.l0.svg", 0x6c707eff)], dark: &[("as/exact-words.d0.svg", 0xced0d6ff)] };
@@ -211,6 +224,7 @@ pub const TW_NOTIFICATIONS: AsIcon = AsIcon { light: &[("as/tw-notifications.l0.
 pub const TW_PROBLEMS: AsIcon = AsIcon { light: &[("as/tw-problems.l0.svg", 0x6c707eff)], dark: &[("as/tw-problems.d0.svg", 0xced0d6ff)] };
 pub const TW_PROJECT: AsIcon = AsIcon { light: &[("as/tw-project.l0.svg", 0x6c707eff)], dark: &[("as/tw-project.d0.svg", 0xced0d6ff)] };
 pub const TW_RUN: AsIcon = AsIcon { light: &[("as/tw-run.l0.svg", 0x6c707eff)], dark: &[("as/tw-run.d0.svg", 0xced0d6ff)] };
+pub const TW_RUNNING_DEVICES: AsIcon = AsIcon { light: &[("as/tw-running-devices.l0.svg", 0x6c707eff)], dark: &[("as/tw-running-devices.d0.svg", 0xced0d6ff)] };
 pub const TW_STRUCTURE: AsIcon = AsIcon { light: &[("as/tw-structure.l0.svg", 0x6c707eff)], dark: &[("as/tw-structure.d0.svg", 0xced0d6ff)] };
 pub const TW_TERMINAL: AsIcon = AsIcon { light: &[("as/tw-terminal.l0.svg", 0x6c707eff)], dark: &[("as/tw-terminal.d0.svg", 0xced0d6ff)] };
 pub const TW_TODO: AsIcon = AsIcon { light: &[("as/tw-todo.l0.svg", 0x6c707eff)], dark: &[("as/tw-todo.d0.svg", 0xced0d6ff)] };
@@ -288,12 +302,16 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/autoscroll-from-source.d0.svg", include_bytes!("../../assets/as-icons/gen/autoscroll-from-source.d0.svg")),
     ("as/avd-run.l0.svg", include_bytes!("../../assets/as-icons/gen/avd-run.l0.svg")),
     ("as/avd-run.d0.svg", include_bytes!("../../assets/as-icons/gen/avd-run.d0.svg")),
+    ("as/avd-start-mirror.l0.svg", include_bytes!("../../assets/as-icons/gen/avd-start-mirror.l0.svg")),
+    ("as/avd-start-mirror.d0.svg", include_bytes!("../../assets/as-icons/gen/avd-start-mirror.d0.svg")),
     ("as/avd-status-online.l0.svg", include_bytes!("../../assets/as-icons/gen/avd-status-online.l0.svg")),
     ("as/avd-status-online.d0.svg", include_bytes!("../../assets/as-icons/gen/avd-status-online.d0.svg")),
     ("as/avd-stop.l0.svg", include_bytes!("../../assets/as-icons/gen/avd-stop.l0.svg")),
     ("as/avd-stop.l1.svg", include_bytes!("../../assets/as-icons/gen/avd-stop.l1.svg")),
     ("as/avd-stop.d0.svg", include_bytes!("../../assets/as-icons/gen/avd-stop.d0.svg")),
     ("as/avd-stop.d1.svg", include_bytes!("../../assets/as-icons/gen/avd-stop.d1.svg")),
+    ("as/avd-stop-mirror.l0.svg", include_bytes!("../../assets/as-icons/gen/avd-stop-mirror.l0.svg")),
+    ("as/avd-stop-mirror.d0.svg", include_bytes!("../../assets/as-icons/gen/avd-stop-mirror.d0.svg")),
     ("as/balloon.l0.svg", include_bytes!("../../assets/as-icons/gen/balloon.l0.svg")),
     ("as/balloon.l1.svg", include_bytes!("../../assets/as-icons/gen/balloon.l1.svg")),
     ("as/balloon.d0.svg", include_bytes!("../../assets/as-icons/gen/balloon.d0.svg")),
@@ -414,6 +432,36 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/edit.d0.svg", include_bytes!("../../assets/as-icons/gen/edit.d0.svg")),
     ("as/editor-preview.l0.svg", include_bytes!("../../assets/as-icons/gen/editor-preview.l0.svg")),
     ("as/editor-preview.d0.svg", include_bytes!("../../assets/as-icons/gen/editor-preview.d0.svg")),
+    ("as/emulator-back.l0.svg", include_bytes!("../../assets/as-icons/gen/emulator-back.l0.svg")),
+    ("as/emulator-back.d0.svg", include_bytes!("../../assets/as-icons/gen/emulator-back.d0.svg")),
+    ("as/emulator-hardware-input.l0.svg", include_bytes!("../../assets/as-icons/gen/emulator-hardware-input.l0.svg")),
+    ("as/emulator-hardware-input.d0.svg", include_bytes!("../../assets/as-icons/gen/emulator-hardware-input.d0.svg")),
+    ("as/emulator-home.l0.svg", include_bytes!("../../assets/as-icons/gen/emulator-home.l0.svg")),
+    ("as/emulator-home.d0.svg", include_bytes!("../../assets/as-icons/gen/emulator-home.d0.svg")),
+    ("as/emulator-overview.l0.svg", include_bytes!("../../assets/as-icons/gen/emulator-overview.l0.svg")),
+    ("as/emulator-overview.d0.svg", include_bytes!("../../assets/as-icons/gen/emulator-overview.d0.svg")),
+    ("as/emulator-power.l0.svg", include_bytes!("../../assets/as-icons/gen/emulator-power.l0.svg")),
+    ("as/emulator-power.d0.svg", include_bytes!("../../assets/as-icons/gen/emulator-power.d0.svg")),
+    ("as/emulator-rotate-left.l0.svg", include_bytes!("../../assets/as-icons/gen/emulator-rotate-left.l0.svg")),
+    ("as/emulator-rotate-left.l1.svg", include_bytes!("../../assets/as-icons/gen/emulator-rotate-left.l1.svg")),
+    ("as/emulator-rotate-left.d0.svg", include_bytes!("../../assets/as-icons/gen/emulator-rotate-left.d0.svg")),
+    ("as/emulator-rotate-left.d1.svg", include_bytes!("../../assets/as-icons/gen/emulator-rotate-left.d1.svg")),
+    ("as/emulator-rotate-right.l0.svg", include_bytes!("../../assets/as-icons/gen/emulator-rotate-right.l0.svg")),
+    ("as/emulator-rotate-right.l1.svg", include_bytes!("../../assets/as-icons/gen/emulator-rotate-right.l1.svg")),
+    ("as/emulator-rotate-right.d0.svg", include_bytes!("../../assets/as-icons/gen/emulator-rotate-right.d0.svg")),
+    ("as/emulator-rotate-right.d1.svg", include_bytes!("../../assets/as-icons/gen/emulator-rotate-right.d1.svg")),
+    ("as/emulator-screen-record.l0.svg", include_bytes!("../../assets/as-icons/gen/emulator-screen-record.l0.svg")),
+    ("as/emulator-screen-record.l1.svg", include_bytes!("../../assets/as-icons/gen/emulator-screen-record.l1.svg")),
+    ("as/emulator-screen-record.l2.svg", include_bytes!("../../assets/as-icons/gen/emulator-screen-record.l2.svg")),
+    ("as/emulator-screen-record.d0.svg", include_bytes!("../../assets/as-icons/gen/emulator-screen-record.d0.svg")),
+    ("as/emulator-screen-record.d1.svg", include_bytes!("../../assets/as-icons/gen/emulator-screen-record.d1.svg")),
+    ("as/emulator-screen-record.d2.svg", include_bytes!("../../assets/as-icons/gen/emulator-screen-record.d2.svg")),
+    ("as/emulator-screenshot.l0.svg", include_bytes!("../../assets/as-icons/gen/emulator-screenshot.l0.svg")),
+    ("as/emulator-screenshot.d0.svg", include_bytes!("../../assets/as-icons/gen/emulator-screenshot.d0.svg")),
+    ("as/emulator-volume-down.l0.svg", include_bytes!("../../assets/as-icons/gen/emulator-volume-down.l0.svg")),
+    ("as/emulator-volume-down.d0.svg", include_bytes!("../../assets/as-icons/gen/emulator-volume-down.d0.svg")),
+    ("as/emulator-volume-up.l0.svg", include_bytes!("../../assets/as-icons/gen/emulator-volume-up.l0.svg")),
+    ("as/emulator-volume-up.d0.svg", include_bytes!("../../assets/as-icons/gen/emulator-volume-up.d0.svg")),
     ("as/enum.l0.svg", include_bytes!("../../assets/as-icons/gen/enum.l0.svg")),
     ("as/enum.l1.svg", include_bytes!("../../assets/as-icons/gen/enum.l1.svg")),
     ("as/enum.d0.svg", include_bytes!("../../assets/as-icons/gen/enum.d0.svg")),
@@ -902,6 +950,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/tw-project.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-project.d0.svg")),
     ("as/tw-run.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-run.l0.svg")),
     ("as/tw-run.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-run.d0.svg")),
+    ("as/tw-running-devices.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-running-devices.l0.svg")),
+    ("as/tw-running-devices.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-running-devices.d0.svg")),
     ("as/tw-structure.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-structure.l0.svg")),
     ("as/tw-structure.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-structure.d0.svg")),
     ("as/tw-terminal.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-terminal.l0.svg")),

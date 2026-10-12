@@ -34,6 +34,8 @@ const POLL: Duration = Duration::from_secs(2);
 
 pub enum DeviceManagerEvent {
     Hide,
+    /// Start / Stop Mirroring a device in Running Devices.
+    Mirror { serial: String, title: String, start: bool },
     Notify { title: String, message: String, error: bool },
 }
 
@@ -92,6 +94,8 @@ pub struct DeviceManager {
     grouping: Grouping,
     collapsed: HashSet<&'static str>,
     details: Option<Details>,
+    /// The serials Running Devices mirrors.
+    mirrored: HashSet<String>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -115,6 +119,7 @@ impl DeviceManager {
             grouping: Grouping::None,
             collapsed: HashSet::new(),
             details: None,
+            mirrored: HashSet::new(),
             _tasks: Vec::new(),
         }
     }
@@ -155,6 +160,30 @@ impl DeviceManager {
                 this.update(cx, |this, _| this.poll = None).ok();
             }));
         }
+    }
+
+    pub fn devices(&self) -> &[Device] {
+        &self.devices
+    }
+
+    pub fn adb(&self) -> Option<android::adb::Adb> {
+        self.tools.adb.clone()
+    }
+
+    pub fn set_mirrored(&mut self, mirrored: HashSet<String>, cx: &mut Context<Self>) {
+        if self.mirrored != mirrored {
+            self.mirrored = mirrored;
+            cx.notify();
+        }
+    }
+
+    /// Starts an AVD (Running Devices' + menu).
+    pub fn launch(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.start(id, false, cx);
+    }
+
+    pub fn open_wifi_pairing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pair_over_wifi(window, cx);
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -556,6 +585,21 @@ impl DeviceManager {
                     }
                 }))
         });
+        // Physical devices: Start / Stop Mirroring, as Android Studio's row.
+        let mirroring = (device.kind == Kind::Physical && device.online).then(|| {
+            let serial = device.serial.clone().unwrap_or_default();
+            let active = self.mirrored.contains(&serial);
+            let title = crate::ui::running_devices::title_for(device);
+            Button::new(SharedString::from(format!("dm-mirror-{id}")))
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(if active { icons::AVD_STOP_MIRROR } else { icons::AVD_START_MIRROR }))
+                .tooltip(if active { "Stop Mirroring" } else { "Start Mirroring" })
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(DeviceManagerEvent::Mirror { serial: serial.clone(), title: title.clone(), start: !active });
+                }))
+        });
         h_flex()
             .id(SharedString::from(format!("dm-row-{id}")))
             .h(px(if crate::ui::common::compact() { 34. } else { 40. }))
@@ -605,6 +649,7 @@ impl DeviceManager {
                     .justify_end()
                     .pr_1()
                     .children(start_stop)
+                    .children(mirroring)
                     .child(
                         Button::new(SharedString::from(format!("dm-more-{id}")))
                             .ghost()

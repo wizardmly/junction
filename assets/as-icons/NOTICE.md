@@ -14,7 +14,7 @@ https://www.apache.org/licenses/LICENSE-2.0
 
 # Android Studio icons
 
-`tw-device-manager`, `avd-*`, `pair-over-wifi`, `group`, `overflow`,
+`tw-device-manager`, `tw-running-devices`, `emulator-*`, `avd-*`, `pair-over-wifi`, `group`, `overflow`,
 `success`, `clear`, `virtual-device-*` and `physical-device-*` (and their `_dark`
 variants) are Android Studio's, copied unchanged from JetBrains' android
 repository (https://github.com/JetBrains/android, artwork/resources/studio/icons).

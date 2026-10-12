@@ -66,6 +66,7 @@ actions!(
         ToggleFindWindow,
         ToggleTerminalWindow,
         ToggleDeviceManagerWindow,
+        ToggleRunningDevicesWindow,
         SelectInProject,
         FindInPath,
         ReplaceInPath,
@@ -228,6 +229,7 @@ pub struct Workspace {
     terminal: Entity<crate::ui::terminal_view::TerminalPanel>,
     /// The Device Manager tool window (Android devices and emulators).
     device_manager: Entity<crate::ui::device_manager::DeviceManager>,
+    running_devices: Entity<crate::ui::running_devices::RunningDevices>,
     /// Find / Replace in Files, kept between uses like IntelliJ's.
     find_popup: Option<(Entity<crate::ui::find_popup::FindPopup>, Subscription)>,
     show_find_popup: bool,
@@ -318,6 +320,7 @@ impl Workspace {
             };
             cx.new(|_| crate::ui::device_manager::DeviceManager::new(project))
         };
+        let running_devices = cx.new(|cx| crate::ui::running_devices::RunningDevices::new(device_manager.clone(), cx));
         let project = cx.new(|cx| crate::ui::project_view::ProjectView::new(code_index.clone(), cx));
         let weak = cx.entity().downgrade();
         branches_popup.update(cx, |popup, _| {
@@ -419,12 +422,40 @@ impl Workspace {
                     cx.notify();
                 }
             }),
-            cx.subscribe(&device_manager, |this, _, event: &crate::ui::device_manager::DeviceManagerEvent, cx| match event {
+            cx.subscribe_in(&device_manager, window, |this, _, event: &crate::ui::device_manager::DeviceManagerEvent, window, cx| match event {
                 crate::ui::device_manager::DeviceManagerEvent::Hide => {
                     this.tools.hide(ToolWindow::DeviceManager);
                     cx.notify();
                 }
+                crate::ui::device_manager::DeviceManagerEvent::Mirror { serial, title, start } => {
+                    let (serial, title, start) = (serial.clone(), title.clone(), *start);
+                    if start {
+                        this.tools.open(ToolWindow::RunningDevices);
+                        this.running_devices.update(cx, |r, cx| r.start(&serial, title, window, cx));
+                    } else {
+                        this.running_devices.update(cx, |r, cx| r.stop(&serial, cx));
+                    }
+                    cx.notify();
+                }
                 crate::ui::device_manager::DeviceManagerEvent::Notify { title, message, error } => {
+                    let (title, message, error) = (title.clone(), message.clone(), *error);
+                    this.model.update(cx, |m, cx| m.notify(title, message, error, cx));
+                }
+            }),
+            cx.subscribe(&running_devices, |this, _, event: &crate::ui::running_devices::RunningDevicesEvent, cx| match event {
+                crate::ui::running_devices::RunningDevicesEvent::Hide => {
+                    this.tools.hide(ToolWindow::RunningDevices);
+                    cx.notify();
+                }
+                crate::ui::running_devices::RunningDevicesEvent::ShowDeviceManager => {
+                    this.tools.open(ToolWindow::DeviceManager);
+                    cx.notify();
+                }
+                crate::ui::running_devices::RunningDevicesEvent::Mirroring(serials) => {
+                    let serials = serials.clone();
+                    this.device_manager.update(cx, |d, cx| d.set_mirrored(serials, cx));
+                }
+                crate::ui::running_devices::RunningDevicesEvent::Notify { title, message, error } => {
                     let (title, message, error) = (title.clone(), message.clone(), *error);
                     this.model.update(cx, |m, cx| m.notify(title, message, error, cx));
                 }
@@ -510,6 +541,7 @@ impl Workspace {
             find,
             terminal,
             device_manager,
+            running_devices,
             find_popup: None,
             show_find_popup: false,
             find_in: None,
@@ -571,8 +603,9 @@ impl Render for Workspace {
         if Settings::get(cx).non_modal_commit && matches!(self.bottom_tab, BottomTab::LocalChanges | BottomTab::Shelf | BottomTab::Stash) {
             self.bottom_tab = BottomTab::Log;
         }
-        // The Device Manager follows adb only while it shows.
-        let devices_shown = self.tools.is_open(ToolWindow::DeviceManager);
+        // The Device Manager follows adb only while it (or Running Devices,
+        // whose + lists the devices) shows.
+        let devices_shown = self.tools.is_open(ToolWindow::DeviceManager) || self.tools.is_open(ToolWindow::RunningDevices);
         self.device_manager.update(cx, |d, cx| d.set_shown(devices_shown, cx));
         let git_on_side = self.tools.side(ToolWindow::Git) != Side::Bottom;
         self.log.update(cx, |log, cx| log.set_details_below(git_on_side, cx));
@@ -697,6 +730,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_find))
             .on_action(cx.listener(|this, _: &ToggleTerminalWindow, window, cx| this.shortcut_tool(ToolWindow::Terminal, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleDeviceManagerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceManager, window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleRunningDevicesWindow, window, cx| this.shortcut_tool(ToolWindow::RunningDevices, window, cx)))
             .on_action(cx.listener(|this, _: &FindInPath, window, cx| this.open_find_popup(false, window, cx)))
             .on_action(cx.listener(|this, _: &ReplaceInPath, window, cx| this.open_find_popup(true, window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx)))
