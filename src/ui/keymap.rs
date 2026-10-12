@@ -48,6 +48,7 @@ pub const ENTRIES: &[Entry] = &[
     entry("Tool Windows", "Git", "workspace::ToggleGitWindow"),
     entry("Tool Windows", "Find", "workspace::ToggleFindWindow"),
     entry("Tool Windows", "Terminal", "workspace::ToggleTerminalWindow"),
+    entry("Tool Windows", "Device Manager", "workspace::ToggleDeviceManagerWindow"),
     entry("Tool Windows", "Hide All Tool Windows", "workspace::HideAllToolWindows"),
     entry("Tool Windows", "Hide Active Tool Window", "workspace::HideActiveToolWindow"),
     entry("Window", "Close Tab", "workspace::CloseTab"),

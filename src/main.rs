@@ -8,6 +8,7 @@
 mod bench;
 mod askpass;
 mod assets;
+mod android;
 mod crash;
 mod git;
 mod hosting;

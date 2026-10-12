@@ -58,6 +58,10 @@ bincode = "1.3.3"
 # (ConPTY on Windows), and the channel its events arrive on.
 alacritty_terminal = "0.26"
 futures = "0.3"
+# The Device Manager's Wi-Fi pairing: the QR code a device scans, and its
+# random service name and password.
+qrcode = { version = "0.14", default-features = false }
+rand = "0.8"
 
 [profile.dev]
 opt-level = 1

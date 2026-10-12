@@ -140,6 +140,7 @@ impl Workspace {
             ("Project", "Alt+1", op(|this, window, cx| this.toggle_project(&ToggleProjectWindow, window, cx))),
             ("Find", "Alt+3", op(|this, window, cx| this.toggle_find(&ToggleFindWindow, window, cx))),
             ("Terminal", "Alt+F12", op(|this, window, cx| this.shortcut_tool(ToolWindow::Terminal, window, cx))),
+            ("Device Manager", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::DeviceManager, window, cx))),
             ("Git", "Alt+9", op(|this, window, cx| this.on_toggle_git(&ToggleGitWindow, window, cx))),
             ("Commit", "Alt+0", op(|this, window, cx| this.show_left_tab(LeftTab::Commit, window, cx))),
             ("Refresh", "Ctrl+Alt+Y", op(|this, window, cx| this.on_refresh(&Refresh, window, cx))),

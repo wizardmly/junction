@@ -11,3 +11,13 @@ https://www.apache.org/licenses/LICENSE-2.0
 
 `tools/as_icons.py` splits each icon into one-color layers under `gen/`
 (generated, with `src/ui/as_icons_gen.rs`); rerun it after adding an icon.
+
+# Android Studio icons
+
+`tw-device-manager`, `avd-*`, `pair-over-wifi`, `group`, `overflow`,
+`success`, `clear`, `virtual-device-*` and `physical-device-*` (and their `_dark`
+variants) are Android Studio's, copied unchanged from JetBrains' android
+repository (https://github.com/JetBrains/android, artwork/resources/studio/icons).
+
+Copyright (C) The Android Open Source Project.
+Licensed under the Apache License, Version 2.0.

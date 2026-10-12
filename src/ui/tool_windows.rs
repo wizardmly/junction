@@ -18,6 +18,7 @@ pub enum ToolWindow {
     Terminal,
     Git,
     Notifications,
+    DeviceManager,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -56,7 +57,7 @@ impl Side {
 }
 
 impl ToolWindow {
-    pub const ALL: [ToolWindow; 8] = [
+    pub const ALL: [ToolWindow; 9] = [
         ToolWindow::Project,
         ToolWindow::Commit,
         ToolWindow::PullRequests,
@@ -65,6 +66,7 @@ impl ToolWindow {
         ToolWindow::Terminal,
         ToolWindow::Git,
         ToolWindow::Notifications,
+        ToolWindow::DeviceManager,
     ];
 
     fn key(self) -> &'static str {
@@ -77,14 +79,16 @@ impl ToolWindow {
             ToolWindow::Terminal => "terminal",
             ToolWindow::Git => "git",
             ToolWindow::Notifications => "notifications",
+            ToolWindow::DeviceManager => "devices",
         }
     }
 
     fn default_side(self) -> Side {
         match self {
             ToolWindow::Git | ToolWindow::Find | ToolWindow::Terminal => Side::Bottom,
-            // The new UI keeps Notifications on the right stripe.
-            ToolWindow::Notifications => Side::Right,
+            // The new UI keeps Notifications on the right stripe, and
+            // Android Studio its Device Manager below it.
+            ToolWindow::Notifications | ToolWindow::DeviceManager => Side::Right,
             _ => Side::Left,
         }
     }

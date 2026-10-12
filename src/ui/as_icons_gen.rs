@@ -14,6 +14,9 @@ pub const APPLY_NON_CONFLICTS: AsIcon = AsIcon { light: &[("as/apply-non-conflic
 pub const APPLY_NON_CONFLICTS_LEFT: AsIcon = AsIcon { light: &[("as/apply-non-conflicts-left.l0.svg", 0x6c707eff)], dark: &[("as/apply-non-conflicts-left.d0.svg", 0xced0d6ff)] };
 pub const APPLY_NON_CONFLICTS_RIGHT: AsIcon = AsIcon { light: &[("as/apply-non-conflicts-right.l0.svg", 0x6c707eff)], dark: &[("as/apply-non-conflicts-right.d0.svg", 0xced0d6ff)] };
 pub const AUTOSCROLL_FROM_SOURCE: AsIcon = AsIcon { light: &[("as/autoscroll-from-source.l0.svg", 0x6c707eff)], dark: &[("as/autoscroll-from-source.d0.svg", 0xced0d6ff)] };
+pub const AVD_RUN: AsIcon = AsIcon { light: &[("as/avd-run.l0.svg", 0x6c707eff)], dark: &[("as/avd-run.d0.svg", 0xced0d6ff)] };
+pub const AVD_STATUS_ONLINE: AsIcon = AsIcon { light: &[("as/avd-status-online.l0.svg", 0x55a76aff)], dark: &[("as/avd-status-online.d0.svg", 0x57965cff)] };
+pub const AVD_STOP: AsIcon = AsIcon { light: &[("as/avd-stop.l0.svg", 0xfff7f7ff), ("as/avd-stop.l1.svg", 0xdb3b4bff)], dark: &[("as/avd-stop.d0.svg", 0x402929ff), ("as/avd-stop.d1.svg", 0xdb5c5cff)] };
 pub const BALLOON: AsIcon = AsIcon { light: &[("as/balloon.l0.svg", 0xebecf0ff), ("as/balloon.l1.svg", 0x6c707eff)], dark: &[("as/balloon.d0.svg", 0x43454aff), ("as/balloon.d1.svg", 0xced0d6ff)] };
 pub const BRANCH: AsIcon = AsIcon { light: &[("as/branch.l0.svg", 0x6c707eff)], dark: &[("as/branch.d0.svg", 0xced0d6ff)] };
 pub const CHANGE_VIEW: AsIcon = AsIcon { light: &[("as/change-view.l0.svg", 0x6c707eff), ("as/change-view.l1.svg", 0xebecf0ff)], dark: &[("as/change-view.d0.svg", 0xced0d6ff), ("as/change-view.d1.svg", 0x43454aff)] };
@@ -26,6 +29,7 @@ pub const CLASS: AsIcon = AsIcon { light: &[("as/class.l0.svg", 0xe7effdff), ("a
 pub const CLASS_ABSTRACT: AsIcon = AsIcon { light: &[("as/class-abstract.l0.svg", 0xe7effdff), ("as/class-abstract.l1.svg", 0x3574f0ff)], dark: &[("as/class-abstract.d0.svg", 0x25324dff), ("as/class-abstract.d1.svg", 0x548af7ff)] };
 pub const CLASS_ABSTRACT_KOTLIN: AsIcon = AsIcon { light: &[("as/class-abstract-kotlin.l0.svg", 0xfaf5ffff), ("as/class-abstract-kotlin.l1.svg", 0x834df0ff), ("as/class-abstract-kotlin.l2.svg", 0xedf3ffff), ("as/class-abstract-kotlin.l3.svg", 0x3574f0ff)], dark: &[("as/class-abstract-kotlin.d0.svg", 0x2f2936ff), ("as/class-abstract-kotlin.d1.svg", 0xa571e6ff), ("as/class-abstract-kotlin.d2.svg", 0x25324dff), ("as/class-abstract-kotlin.d3.svg", 0x548af7ff)] };
 pub const CLASS_KOTLIN: AsIcon = AsIcon { light: &[("as/class-kotlin.l0.svg", 0xfaf5ffff), ("as/class-kotlin.l1.svg", 0x834df0ff), ("as/class-kotlin.l2.svg", 0xedf3ffff), ("as/class-kotlin.l3.svg", 0x3574f0ff)], dark: &[("as/class-kotlin.d0.svg", 0x2f2936ff), ("as/class-kotlin.d1.svg", 0xa571e6ff), ("as/class-kotlin.d2.svg", 0x25324dff), ("as/class-kotlin.d3.svg", 0x548af7ff)] };
+pub const CLEAR: AsIcon = AsIcon { light: &[("as/clear.l0.svg", 0x6c707eff)], dark: &[("as/clear.d0.svg", 0xced0d6ff)] };
 pub const CLOSE: AsIcon = AsIcon { light: &[("as/close.l0.svg", 0x6c707eff)], dark: &[("as/close.d0.svg", 0xced0d6ff)] };
 pub const CLOSE_SMALL: AsIcon = AsIcon { light: &[("as/close-small.l0.svg", 0xa8adbdff)], dark: &[("as/close-small.d0.svg", 0x6f737aff)] };
 pub const COLLAPSE_ALL: AsIcon = AsIcon { light: &[("as/collapse-all.l0.svg", 0x6c707eff)], dark: &[("as/collapse-all.d0.svg", 0xced0d6ff)] };
@@ -95,6 +99,7 @@ pub const GRADLE: AsIcon = AsIcon { light: &[("as/gradle.l0.svg", 0x6c707eff)], 
 pub const GRADLE_KOTLIN: AsIcon = AsIcon { light: &[("as/gradle-kotlin.l0.svg", 0x6c707eff), ("as/gradle-kotlin.l1.svg", 0xfaf5ffff), ("as/gradle-kotlin.l2.svg", 0x834df0ff)], dark: &[("as/gradle-kotlin.d0.svg", 0xced0d6ff), ("as/gradle-kotlin.d1.svg", 0x2f2936ff), ("as/gradle-kotlin.d2.svg", 0xa571e6ff)] };
 pub const GREEN_CHECKMARK: AsIcon = AsIcon { light: &[("as/green-checkmark.l0.svg", 0x369650ff)], dark: &[("as/green-checkmark.d0.svg", 0x57965cff)] };
 pub const GRID: AsIcon = AsIcon { light: &[("as/grid.l0.svg", 0x6c707eff)], dark: &[("as/grid.d0.svg", 0xced0d6ff)] };
+pub const GROUP: AsIcon = AsIcon { light: &[("as/group.l0.svg", 0x6c707eff)], dark: &[("as/group.d0.svg", 0xced0d6ff)] };
 pub const GROUP_BY_MODULE: AsIcon = AsIcon { light: &[("as/group-by-module.l0.svg", 0x6c707eff), ("as/group-by-module.l1.svg", 0xedf3ffff), ("as/group-by-module.l2.svg", 0x3574f0ff)], dark: &[("as/group-by-module.d0.svg", 0xced0d6ff), ("as/group-by-module.d1.svg", 0x25324dff), ("as/group-by-module.d2.svg", 0x548af7ff)] };
 pub const GROUP_BY_PACKAGE: AsIcon = AsIcon { light: &[("as/group-by-package.l0.svg", 0x6c707eff), ("as/group-by-package.l1.svg", 0xebecf0ff), ("as/group-by-package.l2.svg", 0x6c707eff)], dark: &[("as/group-by-package.d0.svg", 0xced0d6ff), ("as/group-by-package.d1.svg", 0x43454aff), ("as/group-by-package.d2.svg", 0xced0d6ff)] };
 pub const GUTTER_IMPLEMENTED_METHOD: AsIcon = AsIcon { light: &[("as/gutter-implemented-method.l0.svg", 0xf2fcf3ff), ("as/gutter-implemented-method.l1.svg", 0x208a3cff), ("as/gutter-implemented-method.l2.svg", 0x6c707eff), ("as/gutter-implemented-method.l3.svg", 0x208a3cff)], dark: &[("as/gutter-implemented-method.d0.svg", 0x253627ff), ("as/gutter-implemented-method.d1.svg", 0x57965cff), ("as/gutter-implemented-method.d2.svg", 0xced0d6ff), ("as/gutter-implemented-method.d3.svg", 0x57965cff)] };
@@ -137,9 +142,15 @@ pub const NEW_LINE: AsIcon = AsIcon { light: &[("as/new-line.l0.svg", 0x6c707eff
 pub const OBJECT_KOTLIN: AsIcon = AsIcon { light: &[("as/object-kotlin.l0.svg", 0xfaf5ffff), ("as/object-kotlin.l1.svg", 0x834df0ff), ("as/object-kotlin.l2.svg", 0xfff4ebff), ("as/object-kotlin.l3.svg", 0xe66d17ff)], dark: &[("as/object-kotlin.d0.svg", 0x2f2936ff), ("as/object-kotlin.d1.svg", 0xa571e6ff), ("as/object-kotlin.d2.svg", 0x45322bff), ("as/object-kotlin.d3.svg", 0xc77d55ff)] };
 pub const OPEN_IN_TOOL_WINDOW: AsIcon = AsIcon { light: &[("as/open-in-tool-window.l0.svg", 0x6c707eff)], dark: &[("as/open-in-tool-window.d0.svg", 0xced0d6ff)] };
 pub const OPEN_NEW_TAB: AsIcon = AsIcon { light: &[("as/open-new-tab.l0.svg", 0x6c707eff)], dark: &[("as/open-new-tab.d0.svg", 0xced0d6ff)] };
+pub const OVERFLOW: AsIcon = AsIcon { light: &[("as/overflow.l0.svg", 0x6c707eff)], dark: &[("as/overflow.d0.svg", 0xced0d6ff)] };
 pub const PACKAGE: AsIcon = AsIcon { light: &[("as/package.l0.svg", 0xebecf0ff), ("as/package.l1.svg", 0x6c707eff)], dark: &[("as/package.d0.svg", 0x43454aff), ("as/package.d1.svg", 0xced0d6ff)] };
+pub const PAIR_OVER_WIFI: AsIcon = AsIcon { light: &[("as/pair-over-wifi.l0.svg", 0x6c707eff), ("as/pair-over-wifi.l1.svg", 0x208a3cff)], dark: &[("as/pair-over-wifi.d0.svg", 0xced0d6ff), ("as/pair-over-wifi.d1.svg", 0x57965cff)] };
 pub const PASTE: AsIcon = AsIcon { light: &[("as/paste.l0.svg", 0x6c707eff)], dark: &[("as/paste.d0.svg", 0xced0d6ff)] };
 pub const PAUSE: AsIcon = AsIcon { light: &[("as/pause.l0.svg", 0x6c707eff)], dark: &[("as/pause.d0.svg", 0xced0d6ff)] };
+pub const PHYSICAL_DEVICE_CAR: AsIcon = AsIcon { light: &[("as/physical-device-car.l0.svg", 0x6c707eff)], dark: &[("as/physical-device-car.d0.svg", 0xced0d6ff)] };
+pub const PHYSICAL_DEVICE_PHONE: AsIcon = AsIcon { light: &[("as/physical-device-phone.l0.svg", 0x6c707eff)], dark: &[("as/physical-device-phone.d0.svg", 0xced0d6ff)] };
+pub const PHYSICAL_DEVICE_TV: AsIcon = AsIcon { light: &[("as/physical-device-tv.l0.svg", 0x6c707eff)], dark: &[("as/physical-device-tv.d0.svg", 0xced0d6ff)] };
+pub const PHYSICAL_DEVICE_WEAR: AsIcon = AsIcon { light: &[("as/physical-device-wear.l0.svg", 0x6c707eff)], dark: &[("as/physical-device-wear.d0.svg", 0xced0d6ff)] };
 pub const PIN: AsIcon = AsIcon { light: &[("as/pin.l0.svg", 0x6c707eff)], dark: &[("as/pin.d0.svg", 0xced0d6ff)] };
 pub const PRESERVE_CASE: AsIcon = AsIcon { light: &[("as/preserve-case.l0.svg", 0x6c707eff)], dark: &[("as/preserve-case.d0.svg", 0xced0d6ff)] };
 pub const PREVIEW: AsIcon = AsIcon { light: &[("as/preview.l0.svg", 0x6c707eff)], dark: &[("as/preview.d0.svg", 0xced0d6ff)] };
@@ -183,6 +194,7 @@ pub const STATUS_SUCCESS: AsIcon = AsIcon { light: &[("as/status-success.l0.svg"
 pub const STATUS_WARNING: AsIcon = AsIcon { light: &[("as/status-warning.l0.svg", 0xffaf0fff), ("as/status-warning.l1.svg", 0xffffffff)], dark: &[("as/status-warning.d0.svg", 0xf2c55cff), ("as/status-warning.d1.svg", 0x5e4d33ff)] };
 pub const STATUS_WARNING_OUTLINE: AsIcon = AsIcon { light: &[("as/status-warning-outline.l0.svg", 0x6c707eff)], dark: &[("as/status-warning-outline.d0.svg", 0xced0d6ff)] };
 pub const STOP: AsIcon = AsIcon { light: &[("as/stop.l0.svg", 0xfff7f7ff), ("as/stop.l1.svg", 0xdb3b4bff)], dark: &[("as/stop.d0.svg", 0x5e3838ff), ("as/stop.d1.svg", 0xdb5c5cff)] };
+pub const SUCCESS: AsIcon = AsIcon { light: &[("as/success.l0.svg", 0x55a76aff), ("as/success.l1.svg", 0xffffffff)], dark: &[("as/success.d0.svg", 0x57965cff), ("as/success.d1.svg", 0xffffffff)] };
 pub const SWAP_PANELS: AsIcon = AsIcon { light: &[("as/swap-panels.l0.svg", 0x6c707eff)], dark: &[("as/swap-panels.d0.svg", 0xced0d6ff)] };
 pub const SYNCHRONIZE_SCROLLING: AsIcon = AsIcon { light: &[("as/synchronize-scrolling.l0.svg", 0x3574f0ff), ("as/synchronize-scrolling.l1.svg", 0x6c707eff)], dark: &[("as/synchronize-scrolling.d0.svg", 0x548af7ff), ("as/synchronize-scrolling.d1.svg", 0xced0d6ff)] };
 pub const TAG: AsIcon = AsIcon { light: &[("as/tag.l0.svg", 0x6c707eff)], dark: &[("as/tag.d0.svg", 0xced0d6ff)] };
@@ -191,6 +203,7 @@ pub const TOGGLE_VISIBILITY: AsIcon = AsIcon { light: &[("as/toggle-visibility.l
 pub const TW_BOOKMARKS: AsIcon = AsIcon { light: &[("as/tw-bookmarks.l0.svg", 0x6c707eff)], dark: &[("as/tw-bookmarks.d0.svg", 0xced0d6ff)] };
 pub const TW_BUILD: AsIcon = AsIcon { light: &[("as/tw-build.l0.svg", 0x6c707eff)], dark: &[("as/tw-build.d0.svg", 0xced0d6ff)] };
 pub const TW_COMMIT: AsIcon = AsIcon { light: &[("as/tw-commit.l0.svg", 0x6c707eff)], dark: &[("as/tw-commit.d0.svg", 0xced0d6ff)] };
+pub const TW_DEVICE_MANAGER: AsIcon = AsIcon { light: &[("as/tw-device-manager.l0.svg", 0x6c707eff)], dark: &[("as/tw-device-manager.d0.svg", 0xced0d6ff)] };
 pub const TW_FIND: AsIcon = AsIcon { light: &[("as/tw-find.l0.svg", 0x6c707eff)], dark: &[("as/tw-find.d0.svg", 0xced0d6ff)] };
 pub const TW_HIERARCHY: AsIcon = AsIcon { light: &[("as/tw-hierarchy.l0.svg", 0x6c707eff)], dark: &[("as/tw-hierarchy.d0.svg", 0xced0d6ff)] };
 pub const TW_MESSAGES: AsIcon = AsIcon { light: &[("as/tw-messages.l0.svg", 0x6c707eff)], dark: &[("as/tw-messages.d0.svg", 0xced0d6ff)] };
@@ -225,6 +238,11 @@ pub const VCS_SHELVE: AsIcon = AsIcon { light: &[("as/vcs-shelve.l0.svg", 0x6c70
 pub const VCS_UNSHELVE: AsIcon = AsIcon { light: &[("as/vcs-unshelve.l0.svg", 0x6c707eff)], dark: &[("as/vcs-unshelve.d0.svg", 0xced0d6ff)] };
 pub const VCS_UNVERSIONED: AsIcon = AsIcon { light: &[("as/vcs-unversioned.l0.svg", 0x6c707eff), ("as/vcs-unversioned.l1.svg", 0xebecf0ff), ("as/vcs-unversioned.l2.svg", 0x6c707eff)], dark: &[("as/vcs-unversioned.d0.svg", 0xced0d6ff), ("as/vcs-unversioned.d1.svg", 0x43454aff), ("as/vcs-unversioned.d2.svg", 0xced0d6ff)] };
 pub const VCS_UPDATE: AsIcon = AsIcon { light: &[("as/vcs-update.l0.svg", 0x6c707eff)], dark: &[("as/vcs-update.d0.svg", 0xced0d6ff)] };
+pub const VIRTUAL_DEVICE_CAR: AsIcon = AsIcon { light: &[("as/virtual-device-car.l0.svg", 0x6c707eff), ("as/virtual-device-car.l1.svg", 0x834df0ff), ("as/virtual-device-car.l2.svg", 0x6c707eff)], dark: &[("as/virtual-device-car.d0.svg", 0xced0d6ff), ("as/virtual-device-car.d1.svg", 0xa571e6ff), ("as/virtual-device-car.d2.svg", 0xced0d6ff)] };
+pub const VIRTUAL_DEVICE_DESKTOP: AsIcon = AsIcon { light: &[("as/virtual-device-desktop.l0.svg", 0x834df0ff), ("as/virtual-device-desktop.l1.svg", 0x6c707eff)], dark: &[("as/virtual-device-desktop.d0.svg", 0xa571e6ff), ("as/virtual-device-desktop.d1.svg", 0xced0d6ff)] };
+pub const VIRTUAL_DEVICE_PHONE: AsIcon = AsIcon { light: &[("as/virtual-device-phone.l0.svg", 0x834df0ff), ("as/virtual-device-phone.l1.svg", 0x6c707eff)], dark: &[("as/virtual-device-phone.d0.svg", 0xa571e6ff), ("as/virtual-device-phone.d1.svg", 0xced0d6ff)] };
+pub const VIRTUAL_DEVICE_TV: AsIcon = AsIcon { light: &[("as/virtual-device-tv.l0.svg", 0x834df0ff), ("as/virtual-device-tv.l1.svg", 0x6c707eff)], dark: &[("as/virtual-device-tv.d0.svg", 0xa571e6ff), ("as/virtual-device-tv.d1.svg", 0xced0d6ff)] };
+pub const VIRTUAL_DEVICE_WEAR: AsIcon = AsIcon { light: &[("as/virtual-device-wear.l0.svg", 0x6c707eff), ("as/virtual-device-wear.l1.svg", 0x834df0ff), ("as/virtual-device-wear.l2.svg", 0x6c707eff)], dark: &[("as/virtual-device-wear.d0.svg", 0xced0d6ff), ("as/virtual-device-wear.d1.svg", 0xa571e6ff), ("as/virtual-device-wear.d2.svg", 0xced0d6ff)] };
 pub const VISIBILITY_PACKAGE: AsIcon = AsIcon { light: &[("as/visibility-package.l0.svg", 0x9aa7b0cc)], dark: &[("as/visibility-package.d0.svg", 0x9aa7b0cc)] };
 pub const VISIBILITY_PRIVATE: AsIcon = AsIcon { light: &[("as/visibility-private.l0.svg", 0xf26522b2)], dark: &[("as/visibility-private.d0.svg", 0xf26522b2)] };
 pub const VISIBILITY_PROTECTED: AsIcon = AsIcon { light: &[("as/visibility-protected.l0.svg", 0x9aa7b0cc)], dark: &[("as/visibility-protected.d0.svg", 0x9aa7b0cc)] };
@@ -268,6 +286,14 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/apply-non-conflicts-right.d0.svg", include_bytes!("../../assets/as-icons/gen/apply-non-conflicts-right.d0.svg")),
     ("as/autoscroll-from-source.l0.svg", include_bytes!("../../assets/as-icons/gen/autoscroll-from-source.l0.svg")),
     ("as/autoscroll-from-source.d0.svg", include_bytes!("../../assets/as-icons/gen/autoscroll-from-source.d0.svg")),
+    ("as/avd-run.l0.svg", include_bytes!("../../assets/as-icons/gen/avd-run.l0.svg")),
+    ("as/avd-run.d0.svg", include_bytes!("../../assets/as-icons/gen/avd-run.d0.svg")),
+    ("as/avd-status-online.l0.svg", include_bytes!("../../assets/as-icons/gen/avd-status-online.l0.svg")),
+    ("as/avd-status-online.d0.svg", include_bytes!("../../assets/as-icons/gen/avd-status-online.d0.svg")),
+    ("as/avd-stop.l0.svg", include_bytes!("../../assets/as-icons/gen/avd-stop.l0.svg")),
+    ("as/avd-stop.l1.svg", include_bytes!("../../assets/as-icons/gen/avd-stop.l1.svg")),
+    ("as/avd-stop.d0.svg", include_bytes!("../../assets/as-icons/gen/avd-stop.d0.svg")),
+    ("as/avd-stop.d1.svg", include_bytes!("../../assets/as-icons/gen/avd-stop.d1.svg")),
     ("as/balloon.l0.svg", include_bytes!("../../assets/as-icons/gen/balloon.l0.svg")),
     ("as/balloon.l1.svg", include_bytes!("../../assets/as-icons/gen/balloon.l1.svg")),
     ("as/balloon.d0.svg", include_bytes!("../../assets/as-icons/gen/balloon.d0.svg")),
@@ -312,6 +338,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/class-kotlin.d1.svg", include_bytes!("../../assets/as-icons/gen/class-kotlin.d1.svg")),
     ("as/class-kotlin.d2.svg", include_bytes!("../../assets/as-icons/gen/class-kotlin.d2.svg")),
     ("as/class-kotlin.d3.svg", include_bytes!("../../assets/as-icons/gen/class-kotlin.d3.svg")),
+    ("as/clear.l0.svg", include_bytes!("../../assets/as-icons/gen/clear.l0.svg")),
+    ("as/clear.d0.svg", include_bytes!("../../assets/as-icons/gen/clear.d0.svg")),
     ("as/close.l0.svg", include_bytes!("../../assets/as-icons/gen/close.l0.svg")),
     ("as/close.d0.svg", include_bytes!("../../assets/as-icons/gen/close.d0.svg")),
     ("as/close-small.l0.svg", include_bytes!("../../assets/as-icons/gen/close-small.l0.svg")),
@@ -518,6 +546,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/green-checkmark.d0.svg", include_bytes!("../../assets/as-icons/gen/green-checkmark.d0.svg")),
     ("as/grid.l0.svg", include_bytes!("../../assets/as-icons/gen/grid.l0.svg")),
     ("as/grid.d0.svg", include_bytes!("../../assets/as-icons/gen/grid.d0.svg")),
+    ("as/group.l0.svg", include_bytes!("../../assets/as-icons/gen/group.l0.svg")),
+    ("as/group.d0.svg", include_bytes!("../../assets/as-icons/gen/group.d0.svg")),
     ("as/group-by-module.l0.svg", include_bytes!("../../assets/as-icons/gen/group-by-module.l0.svg")),
     ("as/group-by-module.l1.svg", include_bytes!("../../assets/as-icons/gen/group-by-module.l1.svg")),
     ("as/group-by-module.l2.svg", include_bytes!("../../assets/as-icons/gen/group-by-module.l2.svg")),
@@ -690,14 +720,28 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/open-in-tool-window.d0.svg", include_bytes!("../../assets/as-icons/gen/open-in-tool-window.d0.svg")),
     ("as/open-new-tab.l0.svg", include_bytes!("../../assets/as-icons/gen/open-new-tab.l0.svg")),
     ("as/open-new-tab.d0.svg", include_bytes!("../../assets/as-icons/gen/open-new-tab.d0.svg")),
+    ("as/overflow.l0.svg", include_bytes!("../../assets/as-icons/gen/overflow.l0.svg")),
+    ("as/overflow.d0.svg", include_bytes!("../../assets/as-icons/gen/overflow.d0.svg")),
     ("as/package.l0.svg", include_bytes!("../../assets/as-icons/gen/package.l0.svg")),
     ("as/package.l1.svg", include_bytes!("../../assets/as-icons/gen/package.l1.svg")),
     ("as/package.d0.svg", include_bytes!("../../assets/as-icons/gen/package.d0.svg")),
     ("as/package.d1.svg", include_bytes!("../../assets/as-icons/gen/package.d1.svg")),
+    ("as/pair-over-wifi.l0.svg", include_bytes!("../../assets/as-icons/gen/pair-over-wifi.l0.svg")),
+    ("as/pair-over-wifi.l1.svg", include_bytes!("../../assets/as-icons/gen/pair-over-wifi.l1.svg")),
+    ("as/pair-over-wifi.d0.svg", include_bytes!("../../assets/as-icons/gen/pair-over-wifi.d0.svg")),
+    ("as/pair-over-wifi.d1.svg", include_bytes!("../../assets/as-icons/gen/pair-over-wifi.d1.svg")),
     ("as/paste.l0.svg", include_bytes!("../../assets/as-icons/gen/paste.l0.svg")),
     ("as/paste.d0.svg", include_bytes!("../../assets/as-icons/gen/paste.d0.svg")),
     ("as/pause.l0.svg", include_bytes!("../../assets/as-icons/gen/pause.l0.svg")),
     ("as/pause.d0.svg", include_bytes!("../../assets/as-icons/gen/pause.d0.svg")),
+    ("as/physical-device-car.l0.svg", include_bytes!("../../assets/as-icons/gen/physical-device-car.l0.svg")),
+    ("as/physical-device-car.d0.svg", include_bytes!("../../assets/as-icons/gen/physical-device-car.d0.svg")),
+    ("as/physical-device-phone.l0.svg", include_bytes!("../../assets/as-icons/gen/physical-device-phone.l0.svg")),
+    ("as/physical-device-phone.d0.svg", include_bytes!("../../assets/as-icons/gen/physical-device-phone.d0.svg")),
+    ("as/physical-device-tv.l0.svg", include_bytes!("../../assets/as-icons/gen/physical-device-tv.l0.svg")),
+    ("as/physical-device-tv.d0.svg", include_bytes!("../../assets/as-icons/gen/physical-device-tv.d0.svg")),
+    ("as/physical-device-wear.l0.svg", include_bytes!("../../assets/as-icons/gen/physical-device-wear.l0.svg")),
+    ("as/physical-device-wear.d0.svg", include_bytes!("../../assets/as-icons/gen/physical-device-wear.d0.svg")),
     ("as/pin.l0.svg", include_bytes!("../../assets/as-icons/gen/pin.l0.svg")),
     ("as/pin.d0.svg", include_bytes!("../../assets/as-icons/gen/pin.d0.svg")),
     ("as/preserve-case.l0.svg", include_bytes!("../../assets/as-icons/gen/preserve-case.l0.svg")),
@@ -818,6 +862,10 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/stop.l1.svg", include_bytes!("../../assets/as-icons/gen/stop.l1.svg")),
     ("as/stop.d0.svg", include_bytes!("../../assets/as-icons/gen/stop.d0.svg")),
     ("as/stop.d1.svg", include_bytes!("../../assets/as-icons/gen/stop.d1.svg")),
+    ("as/success.l0.svg", include_bytes!("../../assets/as-icons/gen/success.l0.svg")),
+    ("as/success.l1.svg", include_bytes!("../../assets/as-icons/gen/success.l1.svg")),
+    ("as/success.d0.svg", include_bytes!("../../assets/as-icons/gen/success.d0.svg")),
+    ("as/success.d1.svg", include_bytes!("../../assets/as-icons/gen/success.d1.svg")),
     ("as/swap-panels.l0.svg", include_bytes!("../../assets/as-icons/gen/swap-panels.l0.svg")),
     ("as/swap-panels.d0.svg", include_bytes!("../../assets/as-icons/gen/swap-panels.d0.svg")),
     ("as/synchronize-scrolling.l0.svg", include_bytes!("../../assets/as-icons/gen/synchronize-scrolling.l0.svg")),
@@ -838,6 +886,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/tw-build.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-build.d0.svg")),
     ("as/tw-commit.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-commit.l0.svg")),
     ("as/tw-commit.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-commit.d0.svg")),
+    ("as/tw-device-manager.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-device-manager.l0.svg")),
+    ("as/tw-device-manager.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-device-manager.d0.svg")),
     ("as/tw-find.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-find.l0.svg")),
     ("as/tw-find.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-find.d0.svg")),
     ("as/tw-hierarchy.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-hierarchy.l0.svg")),
@@ -922,6 +972,30 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/vcs-unversioned.d2.svg", include_bytes!("../../assets/as-icons/gen/vcs-unversioned.d2.svg")),
     ("as/vcs-update.l0.svg", include_bytes!("../../assets/as-icons/gen/vcs-update.l0.svg")),
     ("as/vcs-update.d0.svg", include_bytes!("../../assets/as-icons/gen/vcs-update.d0.svg")),
+    ("as/virtual-device-car.l0.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-car.l0.svg")),
+    ("as/virtual-device-car.l1.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-car.l1.svg")),
+    ("as/virtual-device-car.l2.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-car.l2.svg")),
+    ("as/virtual-device-car.d0.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-car.d0.svg")),
+    ("as/virtual-device-car.d1.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-car.d1.svg")),
+    ("as/virtual-device-car.d2.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-car.d2.svg")),
+    ("as/virtual-device-desktop.l0.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-desktop.l0.svg")),
+    ("as/virtual-device-desktop.l1.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-desktop.l1.svg")),
+    ("as/virtual-device-desktop.d0.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-desktop.d0.svg")),
+    ("as/virtual-device-desktop.d1.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-desktop.d1.svg")),
+    ("as/virtual-device-phone.l0.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-phone.l0.svg")),
+    ("as/virtual-device-phone.l1.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-phone.l1.svg")),
+    ("as/virtual-device-phone.d0.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-phone.d0.svg")),
+    ("as/virtual-device-phone.d1.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-phone.d1.svg")),
+    ("as/virtual-device-tv.l0.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-tv.l0.svg")),
+    ("as/virtual-device-tv.l1.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-tv.l1.svg")),
+    ("as/virtual-device-tv.d0.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-tv.d0.svg")),
+    ("as/virtual-device-tv.d1.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-tv.d1.svg")),
+    ("as/virtual-device-wear.l0.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-wear.l0.svg")),
+    ("as/virtual-device-wear.l1.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-wear.l1.svg")),
+    ("as/virtual-device-wear.l2.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-wear.l2.svg")),
+    ("as/virtual-device-wear.d0.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-wear.d0.svg")),
+    ("as/virtual-device-wear.d1.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-wear.d1.svg")),
+    ("as/virtual-device-wear.d2.svg", include_bytes!("../../assets/as-icons/gen/virtual-device-wear.d2.svg")),
     ("as/visibility-package.l0.svg", include_bytes!("../../assets/as-icons/gen/visibility-package.l0.svg")),
     ("as/visibility-package.d0.svg", include_bytes!("../../assets/as-icons/gen/visibility-package.d0.svg")),
     ("as/visibility-private.l0.svg", include_bytes!("../../assets/as-icons/gen/visibility-private.l0.svg")),
