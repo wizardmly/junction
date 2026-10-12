@@ -4,6 +4,7 @@
 
 pub mod adb;
 pub mod avd;
+pub mod mirror;
 pub mod pairing;
 pub mod process;
 pub mod sdk;

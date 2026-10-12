@@ -36,6 +36,12 @@ pub fn command(program: &Path) -> Command {
 
 /// Runs `program args`, killing it when it outlives `timeout`.
 pub fn run(program: &Path, args: &[&str], timeout: Duration) -> io::Result<Output> {
+    let (success, stdout, stderr) = run_bytes(program, args, timeout)?;
+    Ok(Output { success, stdout: String::from_utf8_lossy(&stdout).into_owned(), stderr })
+}
+
+/// [`run`] for a command that prints binary data (`adb exec-out screencap`).
+pub fn run_bytes(program: &Path, args: &[&str], timeout: Duration) -> io::Result<(bool, Vec<u8>, String)> {
     let mut child = command(program).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     // A daemon the command starts (adb's server) may keep the pipes open
     // after the command exits, so the output is collected with a deadline.
@@ -77,7 +83,7 @@ pub fn run(program: &Path, args: &[&str], timeout: Duration) -> io::Result<Outpu
         while let Ok(chunk) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
             text.extend(chunk);
         }
-        String::from_utf8_lossy(&text).into_owned()
+        text
     };
-    Ok(Output { success: status.success(), stdout: collect(stdout), stderr: collect(stderr) })
+    Ok((status.success(), collect(stdout), String::from_utf8_lossy(&collect(stderr)).into_owned()))
 }
