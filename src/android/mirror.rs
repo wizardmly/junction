@@ -7,7 +7,7 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -63,6 +63,9 @@ struct Shared {
     /// What the server printed: shown when it fails.
     log: Mutex<String>,
     sequence: AtomicU64,
+    /// Whether the keyboard composes typed Unicode (Ctrl+Shift+U): 0 not
+    /// known yet, 1 yes, 2 no.
+    unicode: AtomicU8,
 }
 
 /// One mirrored device. Dropping it stops the server.
@@ -84,8 +87,16 @@ impl Session {
             server: Mutex::new(None),
             log: Mutex::new(String::new()),
             sequence: AtomicU64::new(1),
+            unicode: AtomicU8::new(0),
         });
         let port = Arc::new(Mutex::new(None));
+        {
+            let (adb, serial, shared) = (adb.clone(), serial.clone(), shared.clone());
+            std::thread::spawn(move || {
+                let supported = unicode_composition_supported(&adb, &serial);
+                shared.unicode.store(if supported { 1 } else { 2 }, Ordering::SeqCst);
+            });
+        }
         {
             let (adb, serial, shared, port) = (adb.clone(), serial.clone(), shared.clone(), port.clone());
             std::thread::spawn(move || {
@@ -175,17 +186,54 @@ impl Session {
         self.send(&m);
     }
 
-    /// Types any text: ASCII as key events, the rest through the clipboard,
-    /// since the device's key map has no keys for it.
+    /// Types any text: ASCII as key events; other characters as Android
+    /// Studio types them, through Gboard's Unicode composition (Ctrl+Shift+U,
+    /// the hex code, Enter), which leaves the clipboard alone. Keyboards
+    /// without it get the rest pasted through the clipboard.
     pub fn type_text(&self, text: &str) {
-        if text.is_empty() {
-            return;
+        let compose = self.shared.unicode.load(Ordering::SeqCst) == 1;
+        let mut ascii = String::new();
+        for (ix, c) in text.char_indices() {
+            if c.is_ascii() && !c.is_ascii_control() {
+                ascii.push(c);
+                continue;
+            }
+            if !ascii.is_empty() {
+                self.text(&std::mem::take(&mut ascii));
+            }
+            if compose && (c as u32) <= 0xffff {
+                self.compose_unicode(c as u32);
+            } else {
+                self.set_clipboard(&text[ix..], true);
+                return;
+            }
         }
-        if text.chars().all(|c| c.is_ascii() && !c.is_ascii_control()) {
-            self.text(text);
-        } else {
-            self.set_clipboard(text, true);
+        if !ascii.is_empty() {
+            self.text(&ascii);
         }
+    }
+
+    /// One character through Gboard's Unicode composition, as Android
+    /// Studio's agent does it.
+    fn compose_unicode(&self, code: u32) {
+        const META_SHIFT_ON: u32 = 0x1;
+        const META_CTRL_ON: u32 = 0x1000;
+        const KEYCODE_CTRL_LEFT: u32 = 113;
+        const KEYCODE_SHIFT_LEFT: u32 = 59;
+        const KEYCODE_U: u32 = 49;
+        const KEYCODE_0: u32 = 7;
+        const KEYCODE_A: u32 = 29;
+        const KEYCODE_ENTER: u32 = 66;
+        self.key(ACTION_DOWN, KEYCODE_CTRL_LEFT, 0, META_CTRL_ON);
+        self.key(ACTION_DOWN, KEYCODE_SHIFT_LEFT, 0, META_CTRL_ON | META_SHIFT_ON);
+        self.press(KEYCODE_U, META_CTRL_ON | META_SHIFT_ON);
+        self.key(ACTION_UP, KEYCODE_SHIFT_LEFT, 0, META_CTRL_ON);
+        self.key(ACTION_UP, KEYCODE_CTRL_LEFT, 0, 0);
+        for digit in format!("{code:x}").chars() {
+            let d = digit.to_digit(16).unwrap_or(0);
+            self.press(if d < 10 { KEYCODE_0 + d } else { KEYCODE_A + d - 10 }, 0);
+        }
+        self.press(KEYCODE_ENTER, 0);
     }
 
     /// Rotates the screen a quarter turn (counterclockwise when `left`), as
@@ -440,6 +488,22 @@ fn cleanup(adb: &Adb, serial: &str, shared: &Shared, port: &Mutex<Option<u16>>) 
 }
 
 /// `adb exec-out screencap -p`: the screen as PNG.
+/// Gboard (versionCode 175733006 or newer) as the keyboard: it composes a
+/// character from Ctrl+Shift+U and its hex code, as Android Studio checks.
+fn unicode_composition_supported(adb: &Adb, serial: &str) -> bool {
+    let keyboard = adb.shell(serial, "settings get secure default_input_method").unwrap_or_default();
+    if !keyboard.trim().starts_with("com.google.android.inputmethod.latin") {
+        return false;
+    }
+    let package = adb.shell(serial, "dumpsys package com.google.android.inputmethod.latin | grep versionCode").unwrap_or_default();
+    gboard_version(&package).is_some_and(|v| v >= 175_733_006)
+}
+
+fn gboard_version(text: &str) -> Option<u64> {
+    let rest = &text[text.find("versionCode=")? + "versionCode=".len()..];
+    rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
 pub fn screenshot(adb: &Adb, serial: &str) -> io::Result<Vec<u8>> {
     let (ok, png, err) = process::run_bytes(&adb.path, &["-s", serial, "exec-out", "screencap", "-p"], Duration::from_secs(20))?;
     if !ok || !png.starts_with(b"\x89PNG") {
@@ -498,6 +562,12 @@ impl Recording {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gboard_versions() {
+        assert_eq!(gboard_version("    versionCode=176064538 minSdk=26 targetSdk=34\n"), Some(176_064_538));
+        assert_eq!(gboard_version("nothing"), None);
+    }
 
     #[test]
     fn messages_and_errors() {
