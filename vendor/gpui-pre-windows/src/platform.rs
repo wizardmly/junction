@@ -827,14 +827,27 @@ impl Platform for WindowsPlatform {
         if path.as_os_str().is_empty() {
             return;
         }
-        let path = path.to_path_buf();
-        self.background_executor()
-            .spawn(async move {
-                open_target_in_explorer(&path)
-                    .with_context(|| format!("Revealing path {} in explorer", path.display()))
-                    .log_err();
-            })
-            .detach();
+        // Junction: the shell's parser rejects forward slashes, and
+        // SHOpenFolderAndSelectItems needs COM on the calling thread; run it
+        // on its own STA thread (fast, reuses an open Explorer window like
+        // IntelliJ does) and fall back to `explorer /select` only on error.
+        let path = PathBuf::from(path.to_string_lossy().replace('/', "\\"));
+        std::thread::spawn(move || {
+            let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+            let result = open_target_in_explorer(&path);
+            if com {
+                unsafe { CoUninitialize() };
+            }
+            if result.is_err() {
+                use std::os::windows::process::CommandExt as _;
+                let _ = std::process::Command::new("explorer.exe")
+                    .raw_arg(format!("/select,\"{}\"", path.display()))
+                    .spawn();
+            }
+            result
+                .with_context(|| format!("Revealing path {} in explorer", path.display()))
+                .log_err();
+        });
     }
 
     fn open_with_system(&self, path: &Path) {

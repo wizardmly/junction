@@ -629,16 +629,6 @@ fn copy_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// Open In › Explorer / Finder / Files: the folder with the item selected.
 fn reveal(path: &Path, cx: &App) {
-    // Windows: gpui's shell call fails on paths with forward slashes (the
-    // project's own) and off the UI thread; Explorer's /select does it.
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt as _;
-        let _ = cx;
-        let native = path.to_string_lossy().replace('/', "\\");
-        let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{native}\"")).spawn();
-    }
-    #[cfg(not(target_os = "windows"))]
     cx.reveal_path(path);
 }
 
