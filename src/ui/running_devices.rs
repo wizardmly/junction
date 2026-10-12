@@ -56,6 +56,9 @@ enum State {
 }
 
 // Android KeyEvent codes.
+/// How long a hidden Running Devices window keeps its connections.
+const IDLE_DISCONNECT: Duration = Duration::from_secs(10 * 60);
+
 const KEYCODE_HOME: u32 = 3;
 const KEYCODE_BACK: u32 = 4;
 const KEYCODE_VOLUME_UP: u32 = 24;
@@ -161,6 +164,11 @@ pub struct MirrorView {
     zoom_controls: bool,
     _events: Option<Task<()>>,
     _clipboard_poll: Task<()>,
+    /// When the tool window was hidden, while it is.
+    hidden_since: Option<Instant>,
+    _idle: Option<Task<()>>,
+    /// The last "can't type" reason shown, to show each once.
+    typing_notice: Option<String>,
     _intercept: Subscription,
 }
 
@@ -225,6 +233,9 @@ impl MirrorView {
             zoom_controls: true,
             _events: None,
             _clipboard_poll: clipboard_poll,
+            hidden_since: None,
+            _idle: None,
+            typing_notice: None,
             _intercept: intercept,
         };
         this.connect(cx);
@@ -251,6 +262,7 @@ impl MirrorView {
                 self.state = State::Live;
                 self.zoom_label_until = Some(Instant::now() + Duration::from_secs(2));
             }
+            Event::Frame if self.hidden_since.is_some() => return,
             Event::Frame => {
                 let Some(frame) = self.session.as_ref().and_then(Session::take_frame) else { return };
                 let Some(buffer) = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra) else { return };
@@ -268,6 +280,13 @@ impl MirrorView {
                 if self.clipboard.as_ref() != Some(&text) {
                     self.clipboard = Some(text.clone());
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+                return;
+            }
+            Event::Typing(why) => {
+                if self.typing_notice.as_ref() != Some(&why) {
+                    self.typing_notice = Some(why.clone());
+                    cx.emit(MirrorEvent::Notify { title: format!("Could not type on {}", self.title), message: why, error: true });
                 }
                 return;
             }
@@ -521,16 +540,37 @@ impl MirrorView {
         cx.notify();
     }
 
-    /// Like AS, mirroring runs only while the tool window shows: hiding it
-    /// ends the device-side server, showing it again reconnects.
+    /// While the tool window is hidden the connection stays (showing it
+    /// again is instant) but frames aren't drawn; hidden for
+    /// [`IDLE_DISCONNECT`] it ends the device-side server, and showing the
+    /// window reconnects.
     fn set_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
-        if paused && self.session.is_some() {
-            self.session = None;
-            self._events = None;
-            self.pressed = false;
-            self.state = State::Connecting;
-        } else if !paused && self.session.is_none() && self.state == State::Connecting {
+        if paused {
+            if self.hidden_since.is_none() {
+                self.hidden_since = Some(Instant::now());
+                self.pressed = false;
+                self._idle = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(IDLE_DISCONNECT).await;
+                    let _ = this.update(cx, |this, _| {
+                        if this.hidden_since.is_some() && this.session.is_some() {
+                            this.session = None;
+                            this._events = None;
+                            this.state = State::Connecting;
+                        }
+                    });
+                }));
+            }
+            return;
+        }
+        if self.hidden_since.take().is_none() {
+            return;
+        }
+        self._idle = None;
+        if self.session.is_none() && self.state == State::Connecting {
             self.connect(cx);
+        } else {
+            // The newest frame waited while hidden.
+            self.on_event(Event::Frame, cx);
         }
     }
 

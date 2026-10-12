@@ -9,6 +9,7 @@ pub mod jdwp;
 pub mod mirror;
 pub mod pairing;
 pub mod process;
+pub mod text_input;
 pub mod sdk;
 
 use std::collections::HashMap;

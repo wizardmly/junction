@@ -7,7 +7,7 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,7 @@ use futures::channel::mpsc::UnboundedSender;
 
 use super::adb::Adb;
 use super::process;
+use super::text_input::TextInput;
 
 /// The server's version: the client must pass the exact same one.
 const SERVER_VERSION: &str = "3.3.3";
@@ -38,6 +39,8 @@ pub enum Event {
     Frame,
     /// The device's clipboard changed.
     Clipboard(String),
+    /// Typed text that could not be typed: why.
+    Typing(String),
     /// The session ended: why, unless it was stopped.
     Closed(Option<String>),
 }
@@ -63,9 +66,12 @@ struct Shared {
     /// What the server printed: shown when it fails.
     log: Mutex<String>,
     sequence: AtomicU64,
-    /// Whether the keyboard composes typed Unicode (Ctrl+Shift+U): 0 not
-    /// known yet, 1 yes, 2 no.
-    unicode: AtomicU8,
+}
+
+/// Keyboard input, sent in order by [`input_worker`].
+enum Input {
+    Message(Vec<u8>),
+    Text(String),
 }
 
 /// One mirrored device. Dropping it stops the server.
@@ -74,6 +80,7 @@ pub struct Session {
     adb: Adb,
     shared: Arc<Shared>,
     port: Arc<Mutex<Option<u16>>>,
+    input: std::sync::mpsc::Sender<Input>,
 }
 
 impl Session {
@@ -87,15 +94,12 @@ impl Session {
             server: Mutex::new(None),
             log: Mutex::new(String::new()),
             sequence: AtomicU64::new(1),
-            unicode: AtomicU8::new(0),
         });
         let port = Arc::new(Mutex::new(None));
+        let (input, queue) = std::sync::mpsc::channel();
         {
-            let (adb, serial, shared) = (adb.clone(), serial.clone(), shared.clone());
-            std::thread::spawn(move || {
-                let supported = unicode_composition_supported(&adb, &serial);
-                shared.unicode.store(if supported { 1 } else { 2 }, Ordering::SeqCst);
-            });
+            let (adb, serial, shared, events) = (adb.clone(), serial.clone(), shared.clone(), events.clone());
+            std::thread::spawn(move || input_worker(queue, &adb, &serial, &shared, &events));
         }
         {
             let (adb, serial, shared, port) = (adb.clone(), serial.clone(), shared.clone(), port.clone());
@@ -115,7 +119,7 @@ impl Session {
                 cleanup(&adb, &serial, &shared, &port);
             });
         }
-        Session { serial, adb, shared, port }
+        Session { serial, adb, shared, port, input }
     }
 
     /// The newest frame, once: frames that came in between are skipped.
@@ -124,17 +128,12 @@ impl Session {
     }
 
     fn send(&self, message: &[u8]) {
-        if let Some(stream) = self.shared.control.lock().unwrap().as_mut() {
-            let _ = stream.write_all(message);
-        }
+        send(&self.shared, message);
     }
 
     pub fn key(&self, action: u8, keycode: u32, repeat: u32, meta: u32) {
-        let mut m = vec![0u8, action];
-        m.extend(keycode.to_be_bytes());
-        m.extend(repeat.to_be_bytes());
-        m.extend(meta.to_be_bytes());
-        self.send(&m);
+        // In line with typed text, which may still be on its way.
+        let _ = self.input.send(Input::Message(key_message(action, keycode, repeat, meta)));
     }
 
     /// A key press and release.
@@ -143,14 +142,6 @@ impl Session {
         self.key(ACTION_UP, keycode, 0, meta);
     }
 
-    /// Text the device types character by character (ASCII; see [`Self::paste`]).
-    pub fn text(&self, text: &str) {
-        let bytes = &text.as_bytes()[..text.len().min(300)];
-        let mut m = vec![1u8];
-        m.extend((bytes.len() as u32).to_be_bytes());
-        m.extend(bytes);
-        self.send(&m);
-    }
 
     /// A finger at (`x`, `y`) of a `w`×`h` frame.
     pub fn touch(&self, action: u8, x: i32, y: i32, w: u32, h: u32) {
@@ -186,54 +177,13 @@ impl Session {
         self.send(&m);
     }
 
-    /// Types any text: ASCII as key events; other characters as Android
-    /// Studio types them, through Gboard's Unicode composition (Ctrl+Shift+U,
-    /// the hex code, Enter), which leaves the clipboard alone. Keyboards
-    /// without it get the rest pasted through the clipboard.
+    /// Types any text where the device's focus is: ASCII as key events,
+    /// the rest set into the field by [`TextInput`] (no keyboard, no
+    /// clipboard), or else through Gboard's Unicode composition as Android
+    /// Studio does. What can't be typed is dropped with an
+    /// [`Event::Typing`] saying why.
     pub fn type_text(&self, text: &str) {
-        let compose = self.shared.unicode.load(Ordering::SeqCst) == 1;
-        let mut ascii = String::new();
-        for (ix, c) in text.char_indices() {
-            if c.is_ascii() && !c.is_ascii_control() {
-                ascii.push(c);
-                continue;
-            }
-            if !ascii.is_empty() {
-                self.text(&std::mem::take(&mut ascii));
-            }
-            if compose && (c as u32) <= 0xffff {
-                self.compose_unicode(c as u32);
-            } else {
-                self.set_clipboard(&text[ix..], true);
-                return;
-            }
-        }
-        if !ascii.is_empty() {
-            self.text(&ascii);
-        }
-    }
-
-    /// One character through Gboard's Unicode composition, as Android
-    /// Studio's agent does it.
-    fn compose_unicode(&self, code: u32) {
-        const META_SHIFT_ON: u32 = 0x1;
-        const META_CTRL_ON: u32 = 0x1000;
-        const KEYCODE_CTRL_LEFT: u32 = 113;
-        const KEYCODE_SHIFT_LEFT: u32 = 59;
-        const KEYCODE_U: u32 = 49;
-        const KEYCODE_0: u32 = 7;
-        const KEYCODE_A: u32 = 29;
-        const KEYCODE_ENTER: u32 = 66;
-        self.key(ACTION_DOWN, KEYCODE_CTRL_LEFT, 0, META_CTRL_ON);
-        self.key(ACTION_DOWN, KEYCODE_SHIFT_LEFT, 0, META_CTRL_ON | META_SHIFT_ON);
-        self.press(KEYCODE_U, META_CTRL_ON | META_SHIFT_ON);
-        self.key(ACTION_UP, KEYCODE_SHIFT_LEFT, 0, META_CTRL_ON);
-        self.key(ACTION_UP, KEYCODE_CTRL_LEFT, 0, 0);
-        for digit in format!("{code:x}").chars() {
-            let d = digit.to_digit(16).unwrap_or(0);
-            self.press(if d < 10 { KEYCODE_0 + d } else { KEYCODE_A + d - 10 }, 0);
-        }
-        self.press(KEYCODE_ENTER, 0);
+        let _ = self.input.send(Input::Text(text.to_owned()));
     }
 
     /// Rotates the screen a quarter turn (counterclockwise when `left`), as
@@ -490,13 +440,157 @@ fn cleanup(adb: &Adb, serial: &str, shared: &Shared, port: &Mutex<Option<u16>>) 
 /// `adb exec-out screencap -p`: the screen as PNG.
 /// Gboard (versionCode 175733006 or newer) as the keyboard: it composes a
 /// character from Ctrl+Shift+U and its hex code, as Android Studio checks.
-fn unicode_composition_supported(adb: &Adb, serial: &str) -> bool {
-    let keyboard = adb.shell(serial, "settings get secure default_input_method").unwrap_or_default();
-    if !keyboard.trim().starts_with("com.google.android.inputmethod.latin") {
-        return false;
+const GBOARD: &str = "com.google.android.inputmethod.latin";
+
+fn send(shared: &Shared, message: &[u8]) {
+    if let Some(stream) = shared.control.lock().unwrap().as_mut() {
+        let _ = stream.write_all(message);
     }
-    let package = adb.shell(serial, "dumpsys package com.google.android.inputmethod.latin | grep versionCode").unwrap_or_default();
-    gboard_version(&package).is_some_and(|v| v >= 175_733_006)
+}
+
+fn key_message(action: u8, keycode: u32, repeat: u32, meta: u32) -> Vec<u8> {
+    let mut m = vec![0u8, action];
+    m.extend(keycode.to_be_bytes());
+    m.extend(repeat.to_be_bytes());
+    m.extend(meta.to_be_bytes());
+    m
+}
+
+/// ASCII the device types character by character.
+fn text_message(text: &str) -> Vec<u8> {
+    let bytes = &text.as_bytes()[..text.len().min(300)];
+    let mut m = vec![1u8];
+    m.extend((bytes.len() as u32).to_be_bytes());
+    m.extend(bytes);
+    m
+}
+
+/// One character through Gboard's Unicode composition (Ctrl+Shift+U, the
+/// hex code, Enter), as Android Studio's agent types it.
+fn compose_message(code: u32) -> Vec<u8> {
+    const KEYCODE_CTRL_LEFT: u32 = 113;
+    const KEYCODE_SHIFT_LEFT: u32 = 59;
+    const KEYCODE_U: u32 = 49;
+    const KEYCODE_0: u32 = 7;
+    const KEYCODE_A: u32 = 29;
+    const KEYCODE_ENTER: u32 = 66;
+    let press = |m: &mut Vec<u8>, keycode: u32, meta: u32| {
+        m.extend(key_message(ACTION_DOWN, keycode, 0, meta));
+        m.extend(key_message(ACTION_UP, keycode, 0, meta));
+    };
+    let mut m = key_message(ACTION_DOWN, KEYCODE_CTRL_LEFT, 0, META_CTRL_ON);
+    m.extend(key_message(ACTION_DOWN, KEYCODE_SHIFT_LEFT, 0, META_CTRL_ON | META_SHIFT_ON));
+    press(&mut m, KEYCODE_U, META_CTRL_ON | META_SHIFT_ON);
+    m.extend(key_message(ACTION_UP, KEYCODE_SHIFT_LEFT, 0, META_CTRL_ON));
+    m.extend(key_message(ACTION_UP, KEYCODE_CTRL_LEFT, 0, 0));
+    for digit in format!("{code:x}").chars() {
+        let d = digit.to_digit(16).unwrap_or(0);
+        press(&mut m, if d < 10 { KEYCODE_0 + d } else { KEYCODE_A + d - 10 }, 0);
+    }
+    press(&mut m, KEYCODE_ENTER, 0);
+    m
+}
+
+/// Sends keyboard input in order. Non-ASCII text goes to the device's
+/// [`TextInput`] helper (started on first use); when that can't set it,
+/// Gboard's Unicode composition types it; otherwise it is dropped and an
+/// [`Event::Typing`] says why.
+fn input_worker(queue: std::sync::mpsc::Receiver<Input>, adb: &Adb, serial: &str, shared: &Shared, events: &UnboundedSender<Event>) {
+    let mut helper: Option<TextInput> = None;
+    let mut helper_failed: Option<(Instant, String)> = None;
+    let mut keyboard: Option<(Instant, Result<(), String>)> = None;
+    for input in queue {
+        let text = match input {
+            Input::Message(m) => {
+                send(shared, &m);
+                continue;
+            }
+            Input::Text(text) => text,
+        };
+        for (ascii, run) in text_runs(&text) {
+            if ascii {
+                send(shared, &text_message(run));
+                continue;
+            }
+            if helper.is_none() && helper_failed.as_ref().is_none_or(|(t, _)| t.elapsed() > Duration::from_secs(60)) {
+                match TextInput::start(adb, serial) {
+                    Ok(started) => helper = Some(started),
+                    Err(error) => {
+                        eprintln!("text input helper on {serial}: {error}");
+                        helper_failed = Some((Instant::now(), error));
+                    }
+                }
+            }
+            let mut why = helper_failed.as_ref().filter(|_| helper.is_none()).map(|(_, e)| format!("The text input helper could not start on the device: {e}"));
+            if let Some(input) = helper.as_mut() {
+                match input.insert(run) {
+                    Ok(()) => continue,
+                    Err(error) => {
+                        if !input.alive() {
+                            helper = None;
+                        }
+                        why = Some(error);
+                    }
+                }
+            }
+            // The user may switch keyboards while mirroring: look again.
+            if keyboard.as_ref().is_none_or(|(t, _)| t.elapsed() > Duration::from_secs(3)) {
+                keyboard = Some((Instant::now(), unicode_composition(adb, serial)));
+            }
+            match keyboard.as_ref().map(|(_, k)| k) {
+                Some(Ok(())) if run.chars().all(|c| (c as u32) <= 0xffff) => {
+                    for c in run.chars() {
+                        send(shared, &compose_message(c as u32));
+                    }
+                    why = None;
+                }
+                Some(Ok(())) => why = Some(format!("Gboard can't compose \"{run}\".")),
+                Some(Err(error)) => why = Some(match why {
+                    Some(why) => format!("{why}\n{error}"),
+                    None => error.clone(),
+                }),
+                None => {}
+            }
+            if let Some(why) = why {
+                let _ = events.unbounded_send(Event::Typing(why));
+            }
+        }
+    }
+}
+
+/// `text` split into ASCII and non-ASCII runs (control characters go
+/// with the non-ASCII ones).
+fn text_runs(text: &str) -> Vec<(bool, &str)> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    let mut current = None;
+    for (ix, c) in text.char_indices() {
+        let ascii = c.is_ascii() && !c.is_ascii_control();
+        if current.is_some_and(|a| a != ascii) {
+            runs.push((current.unwrap(), &text[start..ix]));
+            start = ix;
+        }
+        current = Some(ascii);
+    }
+    if let Some(ascii) = current {
+        runs.push((ascii, &text[start..]));
+    }
+    runs
+}
+
+fn unicode_composition(adb: &Adb, serial: &str) -> Result<(), String> {
+    let keyboard = adb.shell(serial, "settings get secure default_input_method").map_err(|e| e.to_string())?;
+    let keyboard = keyboard.trim();
+    if !keyboard.starts_with(GBOARD) {
+        let name = keyboard.split('/').next().filter(|k| !k.is_empty() && *k != "null").unwrap_or("unknown");
+        return Err(format!("Typing non-ASCII characters needs Gboard as the device's default keyboard (now {name})."));
+    }
+    let package = adb.shell(serial, &format!("dumpsys package {GBOARD} | grep versionCode")).map_err(|e| e.to_string())?;
+    match gboard_version(&package) {
+        Some(v) if v >= 175_733_006 => Ok(()),
+        Some(v) => Err(format!("Typing non-ASCII characters needs a newer Gboard (version code {v}, needs 175733006 or later). Update Gboard on the device.")),
+        None => Err("Could not read the Gboard version on the device.".to_owned()),
+    }
 }
 
 fn gboard_version(text: &str) -> Option<u64> {
