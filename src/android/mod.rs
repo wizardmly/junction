@@ -96,16 +96,30 @@ pub struct Device {
     /// Why it can't be used (unauthorized, no permissions, offline).
     pub error: Option<String>,
     pub props: HashMap<String, String>,
+    /// A device advertising wireless debugging that adb isn't connected to
+    /// over Wi-Fi: its `adb-<serial>-…` connect service's host:port.
+    pub wifi: Option<String>,
 }
 
 impl Device {
-    /// The API column: `34`, or a preview's codename.
+    /// The API column: `34`, or a preview's codename; from API 36 (which
+    /// has minor SDK versions) with the minor one, `36.0`, as AS shows it.
     pub fn api_label(&self) -> String {
-        self.api.map(|a| a.to_string()).or_else(|| self.codename.clone()).unwrap_or_default()
+        match self.api {
+            Some(api) if api >= 36 => {
+                let full = self.props.get("ro.build.version.sdk_full").filter(|v| v.contains('.')).cloned();
+                full.unwrap_or_else(|| format!("{api}.{}", self.props.get("ro.build.version.sdk_minor").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0)))
+            }
+            Some(api) => api.to_string(),
+            None => self.codename.clone().unwrap_or_default(),
+        }
     }
 
     /// The second line under the name: `Android 14.0 ("UpsideDownCake") | x86_64`.
     pub fn version_label(&self) -> String {
+        if self.wifi.is_some() {
+            return "Available for Wi-Fi pairing".to_owned();
+        }
         let version = match (self.api, &self.codename) {
             (Some(api), _) => release_name(api),
             (None, Some(codename)) => format!("Android {codename} Preview"),
@@ -142,6 +156,7 @@ pub fn release_name(api: u32) -> String {
         34 => ("14.0", "UpsideDownCake"),
         35 => ("15.0", "VanillaIceCream"),
         36 => ("16.0", "Baklava"),
+        37 => ("17.0", "CinnamonBun"),
         _ => return format!("API {api}"),
     };
     format!("Android {version} (\"{codename}\")")
@@ -179,6 +194,54 @@ pub fn physical_name(props: &HashMap<String, String>, fallback: &str) -> String 
 pub struct ScanCache {
     props: HashMap<String, HashMap<String, String>>,
     avd_names: HashMap<String, String>,
+    /// Physical devices seen before, by hardware serial (`ro.serialno`):
+    /// names the ones that only advertise wireless debugging. Kept on disk.
+    known: Option<HashMap<String, HashMap<String, String>>>,
+}
+
+/// The properties a Device Manager row is made of.
+const KNOWN_PROPS: &[&str] = &[
+    "ro.product.model",
+    "ro.product.manufacturer",
+    "ro.build.version.sdk",
+    "ro.build.version.sdk_minor",
+    "ro.build.version.sdk_full",
+    "ro.product.cpu.abi",
+    "ro.build.characteristics",
+];
+
+fn known_devices_file() -> Option<PathBuf> {
+    crate::index::libraries::cache_dir().map(|d| d.join("known-devices.json"))
+}
+
+impl ScanCache {
+    fn known(&mut self) -> &mut HashMap<String, HashMap<String, String>> {
+        self.known.get_or_insert_with(|| {
+            known_devices_file().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        })
+    }
+
+    /// Remembers a physical device's row properties.
+    fn remember(&mut self, props: &HashMap<String, String>) {
+        let Some(serial) = props.get("ro.serialno").filter(|s| !s.is_empty()).cloned() else { return };
+        let kept: HashMap<String, String> = KNOWN_PROPS.iter().filter_map(|k| props.get(*k).map(|v| (k.to_string(), v.clone()))).collect();
+        if self.known().get(&serial) == Some(&kept) {
+            return;
+        }
+        self.known().insert(serial, kept);
+        if let (Some(file), Some(known)) = (known_devices_file(), &self.known) {
+            let _ = std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")));
+            if let Ok(json) = serde_json::to_vec_pretty(known) {
+                let _ = std::fs::write(file, json);
+            }
+        }
+    }
+}
+
+/// The hardware serial in an `adb-<serial>-<suffix>` service name.
+fn service_serial(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("adb-")?;
+    Some(rest.rsplit_once('-').map_or(rest, |(serial, _)| serial)).filter(|s| !s.is_empty())
 }
 
 /// The SDK tools a scan uses.
@@ -210,6 +273,19 @@ pub fn scan(tools: &Tools, cache: &mut ScanCache) -> (Vec<Device>, Option<String
     };
     cache.props.retain(|serial, _| adb_devices.iter().any(|d| &d.serial == serial));
     cache.avd_names.retain(|serial, _| adb_devices.iter().any(|d| &d.serial == serial));
+    // Devices advertising wireless debugging adb has no Wi-Fi connection
+    // to; adb's own connections are named after the service or address.
+    let services = tools.adb.as_ref().and_then(|adb| adb.mdns_services().ok()).unwrap_or_default();
+    let mut wifi: Vec<(String, String)> = Vec::new();
+    for service in services.iter().filter(|s| s.kind == adb::ServiceKind::Connect) {
+        let address = service.address();
+        let connected = adb_devices.iter().any(|d| d.serial.starts_with(&service.name) || d.serial == address);
+        if let Some(serial) = service_serial(&service.name).filter(|_| !connected) {
+            if !wifi.iter().any(|(s, _)| s == serial) {
+                wifi.push((serial.to_owned(), address));
+            }
+        }
+    }
     let mut by_avd: HashMap<String, (AdbDevice, HashMap<String, String>)> = HashMap::new();
     let mut physical = Vec::new();
     for device in adb_devices {
@@ -221,6 +297,9 @@ pub fn scan(tools: &Tools, cache: &mut ScanCache) -> (Vec<Device>, Option<String
                     // Kept once booted; a booting device is asked again.
                     if props.get("sys.boot_completed").is_some_and(|v| v == "1") {
                         cache.props.insert(device.serial.clone(), props.clone());
+                        if !device.is_emulator() {
+                            cache.remember(&props);
+                        }
                     }
                     props
                 }
@@ -271,6 +350,7 @@ pub fn scan(tools: &Tools, cache: &mut ScanCache) -> (Vec<Device>, Option<String
                 error: None,
                 props,
                 avd: Some(avd),
+                wifi: None,
             }
         })
         .collect();
@@ -297,6 +377,27 @@ pub fn scan(tools: &Tools, cache: &mut ScanCache) -> (Vec<Device>, Option<String
             serial: Some(device.serial),
             props,
             avd: None,
+            wifi: None,
+        });
+    }
+    for (serial, address) in wifi {
+        let props = cache.known().get(&serial).cloned().unwrap_or_default();
+        devices.push(Device {
+            id: format!("wifi:{serial}"),
+            // AS names these rows by the model alone.
+            name: props.get("ro.product.model").filter(|m| !m.trim().is_empty()).cloned().unwrap_or_else(|| serial.clone()),
+            kind: Kind::Physical,
+            form: FormFactor::from_characteristics(props.get("ro.build.characteristics").map_or("", String::as_str)),
+            api: props.get("ro.build.version.sdk").and_then(|v| v.parse().ok()),
+            codename: None,
+            abi: props.get("ro.product.cpu.abi").cloned(),
+            online: false,
+            booting: false,
+            error: None,
+            serial: None,
+            props,
+            avd: None,
+            wifi: Some(address),
         });
     }
     (devices, adb_error)
@@ -440,6 +541,9 @@ mod tests {
         assert_eq!(release_name(34), "Android 14.0 (\"UpsideDownCake\")");
         assert_eq!(cpu_arch("arm64-v8a"), "arm64");
         assert_eq!(FormFactor::from_characteristics("nosdcard,watch"), FormFactor::Wear);
+        assert_eq!(release_name(37), "Android 17.0 (\"CinnamonBun\")");
+        assert_eq!(service_serial("adb-4C091FDAQ000AB-vWgJpq"), Some("4C091FDAQ000AB"));
+        assert_eq!(service_serial("studio-abc"), None);
     }
 }
 

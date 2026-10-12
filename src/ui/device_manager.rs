@@ -61,6 +61,8 @@ enum Grouping {
 enum Transition {
     Starting,
     Stopping,
+    /// `adb connect` to a device available for Wi-Fi pairing.
+    Connecting,
 }
 
 impl Transition {
@@ -68,6 +70,7 @@ impl Transition {
         match self {
             Transition::Starting => "Starting up",
             Transition::Stopping => "Shutting down",
+            Transition::Connecting => "Connecting",
         }
     }
 }
@@ -203,6 +206,7 @@ impl DeviceManager {
             match transition {
                 Transition::Starting => device.is_some_and(|d| !d.online) && since.elapsed() < Duration::from_secs(600),
                 Transition::Stopping => device.is_some_and(|d| d.serial.is_some()) && since.elapsed() < Duration::from_secs(60),
+                Transition::Connecting => device.is_some() && since.elapsed() < Duration::from_secs(60),
             }
         });
         if self.selected.as_ref().is_some_and(|id| !devices.iter().any(|d| &d.id == id)) {
@@ -376,6 +380,38 @@ impl DeviceManager {
         crate::ui::wifi_pairing::open(cx.entity().downgrade(), self.tools.adb.clone(), window, cx);
     }
 
+    /// The Wi-Fi button of a device available for Wi-Fi pairing: connects
+    /// it when this computer paired with it before, else opens the pairing
+    /// dialog.
+    fn connect_wifi(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(device) = self.device(id).cloned() else { return };
+        let (Some(address), Some(adb)) = (device.wifi.clone(), self.tools.adb.clone()) else { return };
+        self.transitions.insert(device.id.clone(), (Transition::Connecting, Instant::now()));
+        cx.notify();
+        let window_handle = window.window_handle();
+        self._tasks.push(cx.spawn(async move |this, cx| {
+            let connected = cx
+                .background_spawn(async move {
+                    let out = adb.connect(&address).ok()?;
+                    let text = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+                    (out.success && text.contains("connected to") && !text.contains("failed") && !text.contains("unable")).then_some(())
+                })
+                .await
+                .is_some();
+            let _ = this.update(cx, |this, cx| {
+                this.transitions.remove(&device.id);
+                if connected {
+                    this.paired(device.name.clone(), cx);
+                }
+                cx.notify();
+            });
+            if !connected {
+                // Not paired with this computer yet.
+                let _ = window_handle.update(cx, |_, window, cx| this.update(cx, |this, cx| this.pair_over_wifi(window, cx)));
+            }
+        }));
+    }
+
     /// A Wi-Fi pairing finished: the balloon, and the new device in the list.
     pub(crate) fn paired(&mut self, name: String, cx: &mut Context<Self>) {
         cx.emit(DeviceManagerEvent::Notify { title: format!("{name} connected over Wi-Fi"), message: "The device is now available to use.".into(), error: false });
@@ -390,6 +426,11 @@ impl DeviceManager {
             move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| entity.update(cx, |this, cx| f(this, &id, window, cx))
         };
         let mut menu = menu;
+        if device.wifi.is_some() {
+            menu = menu
+                .item(PopupMenuItem::new("Pair device over Wi-Fi").icon(Icon::new(icons::PAIR_OVER_WIFI)).disabled(transitioning).on_click(action(Self::connect_wifi)))
+                .separator();
+        }
         // Open in Device Explorer: any device adb can reach.
         if let Some(serial) = device.serial.clone().filter(|_| device.online) {
             let entity = entity.clone();
@@ -611,6 +652,20 @@ impl DeviceManager {
                     cx.emit(DeviceManagerEvent::Mirror { serial: serial.clone(), title: title.clone(), start: !active });
                 }))
         });
+        // Available for Wi-Fi pairing: AS's Wi-Fi button.
+        let wifi = device.wifi.is_some().then(|| {
+            let id = id.clone();
+            Button::new(SharedString::from(format!("dm-wifi-{id}")))
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(icons::PAIR_OVER_WIFI))
+                .tooltip("Pair device over Wi-Fi")
+                .disabled(transition.is_some())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.connect_wifi(&id, window, cx);
+                }))
+        });
         h_flex()
             .id(SharedString::from(format!("dm-row-{id}")))
             .h(px(if crate::ui::common::compact() { 34. } else { 40. }))
@@ -661,6 +716,7 @@ impl DeviceManager {
                     .pr_1()
                     .children(start_stop)
                     .children(mirroring)
+                    .children(wifi)
                     .child(
                         Button::new(SharedString::from(format!("dm-more-{id}")))
                             .ghost()
