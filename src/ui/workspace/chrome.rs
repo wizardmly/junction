@@ -337,7 +337,10 @@ impl Workspace {
                 .when_some(busy, |el, busy| {
                     el.child(div().text_xs().text_color(palette.text_secondary).child(format!("{busy}…")))
                 })
-                .child(tool_button("tb-update", icons::VCS_UPDATE, if cfg!(target_os = "macos") { "Update Project…  ⌘T" } else { "Update Project…  Ctrl+T" }).on_click(cx.listener(
+                // (Windows: the title bar is the window's caption, where a press
+                // starts a window drag and the click never ends; the toolbar
+                // occludes it so its buttons get their clicks.)
+                .child(h_flex().occlude().gap_1().child(tool_button("tb-update", icons::VCS_UPDATE, if cfg!(target_os = "macos") { "Update Project…  ⌘T" } else { "Update Project…  Ctrl+T" }).on_click(cx.listener(
                     |this, _, window, cx| dialogs::update_project(this.model.clone(), window, cx),
                 )))
                 .child(tool_button("tb-commit", icons::CHECKED, if cfg!(target_os = "macos") { "Commit…  ⌘K" } else { "Commit…  Ctrl+K" }).on_click(cx.listener(
@@ -356,7 +359,7 @@ impl Workspace {
                 )))
                 .child(tool_button("tb-settings", icons::SETTINGS, if cfg!(target_os = "macos") { "Settings…  ⌘," } else { "Settings…  Ctrl+Alt+S" }).on_click(
                     cx.listener(|this, _, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx)),
-                )),
+                ))),
         )
     }
 

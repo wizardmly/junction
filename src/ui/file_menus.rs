@@ -449,9 +449,9 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
     let t = target.clone();
     let menu = menu.submenu("Open In", window, cx, move |m, _, _| {
         let (t_explorer, t_terminal, t_app) = (t.clone(), t.clone(), t.clone());
-        m.item(entry(EXPLORER, "").on_click(move |_, _, cx| cx.reveal_path(&t_explorer.full())))
+        m.item(entry(EXPLORER, "").on_click(move |_, _, cx| reveal(&t_explorer.full(), cx)))
             .item(entry("Terminal", "").on_click(move |_, _, _| open_terminal(&t_terminal.folder())))
-            .when(!t.is_dir, |m| m.item(entry("Associated Application", "").on_click(move |_, _, cx| cx.open_with_system(&t_app.full()))))
+            .when(!t.is_dir, |m| m.item(entry("Associated Application", "").on_click(move |_, _, cx| open_with_system(&t_app.full(), cx))))
     });
     let menu = local_history_submenu(menu.separator(), window, cx);
     let git = GitTarget {
@@ -625,6 +625,29 @@ fn copy_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
     } else {
         std::fs::copy(from, to).map(|_| ())
     }
+}
+
+/// Open In › Explorer / Finder / Files: the folder with the item selected.
+fn reveal(path: &Path, cx: &App) {
+    // Windows: gpui's shell call fails on paths with forward slashes (the
+    // project's own) and off the UI thread; Explorer's /select does it.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        let _ = cx;
+        let native = path.to_string_lossy().replace('/', "\\");
+        let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{native}\"")).spawn();
+    }
+    #[cfg(not(target_os = "windows"))]
+    cx.reveal_path(path);
+}
+
+/// Open In › Associated Application.
+fn open_with_system(path: &Path, cx: &App) {
+    #[cfg(target_os = "windows")]
+    cx.open_with_system(&PathBuf::from(path.to_string_lossy().replace('/', "\\")));
+    #[cfg(not(target_os = "windows"))]
+    cx.open_with_system(path);
 }
 
 fn open_terminal(dir: &Path) {
