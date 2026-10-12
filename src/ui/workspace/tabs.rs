@@ -135,6 +135,12 @@ impl Workspace {
     /// Unsplit: the other group's tabs join this one.
     fn unsplit(&mut self, cx: &mut Context<Self>) {
         let Some(split) = self.split.take() else { return };
+        // The tab that was active (in either group) stays active.
+        let active = match (self.active_group, split.front, self.front) {
+            (1, Front::Editor(ix), _) => split.editors.get(ix).map(|t| (t.view.read(cx).path().to_owned(), t.view.read(cx).revision().map(str::to_owned))),
+            (_, _, Front::Editor(ix)) => self.editors.get(ix).map(|t| (t.view.read(cx).path().to_owned(), t.view.read(cx).revision().map(str::to_owned))),
+            _ => None,
+        };
         for tab in split.editors {
             let (path, rev) = (tab.view.read(cx).path().to_owned(), tab.view.read(cx).revision().map(str::to_owned));
             if !self.editors.iter().any(|t| t.view.read(cx).path() == path && t.view.read(cx).revision() == rev.as_deref()) {
@@ -144,6 +150,9 @@ impl Workspace {
             }
         }
         self.active_group = 0;
+        if let Some(ix) = active.and_then(|(path, rev)| self.editors.iter().position(|t| t.view.read(cx).path() == path && t.view.read(cx).revision() == rev.as_deref())) {
+            self.front = Front::Editor(ix);
+        }
         self.fix_front(cx);
         cx.notify();
     }

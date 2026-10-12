@@ -136,8 +136,12 @@ impl Annotation {
                 // Where each visible line sits, from the editor's layout.
                 let (line_height, placed) = {
                     let state = state.read(cx);
-                    let Some(line_height) = state.line_height() else { return };
-                    let Some(visible) = state.visible_row_range() else { return };
+                    // (The editor isn't laid out yet in a new tab's first
+                    // frame: draw again in the next one.)
+                    let (Some(line_height), Some(visible)) = (state.line_height(), state.visible_row_range()) else {
+                        window.request_animation_frame();
+                        return;
+                    };
                     let rope = state.text();
                     let lines = rope.lines_len().max(1);
                     let placed: Vec<(usize, Pixels)> = (visible.start..visible.end.min(lines))
