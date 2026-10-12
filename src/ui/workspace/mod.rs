@@ -634,6 +634,8 @@ impl Render for Workspace {
         let devices_shown = self.tools.is_open(ToolWindow::DeviceManager) || self.tools.is_open(ToolWindow::RunningDevices) || explorer_shown;
         self.device_manager.update(cx, |d, cx| d.set_shown(devices_shown, cx));
         self.device_explorer.update(cx, |d, cx| d.set_shown(explorer_shown, cx));
+        let mirroring_shown = self.tools.is_open(ToolWindow::RunningDevices);
+        self.running_devices.update(cx, |d, cx| d.set_shown(mirroring_shown, cx));
         let git_on_side = self.tools.side(ToolWindow::Git) != Side::Bottom;
         self.log.update(cx, |log, cx| log.set_details_below(git_on_side, cx));
         let palette = cx.palette().clone();

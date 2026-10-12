@@ -521,6 +521,19 @@ impl MirrorView {
         cx.notify();
     }
 
+    /// Like AS, mirroring runs only while the tool window shows: hiding it
+    /// ends the device-side server, showing it again reconnects.
+    fn set_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
+        if paused && self.session.is_some() {
+            self.session = None;
+            self._events = None;
+            self.pressed = false;
+            self.state = State::Connecting;
+        } else if !paused && self.session.is_none() && self.state == State::Connecting {
+            self.connect(cx);
+        }
+    }
+
     fn stop(&mut self) {
         if let Some(recording) = self.recording.take() {
             let (adb, serial) = (self.adb.clone(), self.serial.clone());
@@ -936,6 +949,12 @@ impl RunningDevices {
     }
 
     /// Stop Mirroring: the device's tab closes.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        for tab in &self.tabs {
+            tab.update(cx, |t, cx| t.set_paused(!shown, cx));
+        }
+    }
+
     pub fn stop(&mut self, serial: &str, cx: &mut Context<Self>) {
         if let Some(ix) = self.tabs.iter().position(|t| t.read(cx).serial == serial) {
             self.close(ix, cx);
