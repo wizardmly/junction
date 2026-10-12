@@ -320,7 +320,16 @@ impl LogView {
                                     .when(!shown, |el| el.border_1().border_color(border));
                                 gpui_kit::component::h_flex().gap_2().child(check).child(name.clone())
                             });
-                            menu = menu.item(item.on_click(move |_, _, cx| {
+                            menu = menu.item(item.on_click(move |_, window, cx| {
+                                // Ctrl/Cmd+click shows only this root (again on
+                                // the only one shows all), like IntelliJ.
+                                // (The menu passes a default ClickEvent; read the live keys.)
+                                if window.modifiers().secondary() {
+                                    let only = current_roots.len() == 1 && current_roots[0] == path;
+                                    let roots = if only || all.len() == 1 { Vec::new() } else { vec![path.clone()] };
+                                    entity.update(cx, |this, cx| this.update_filter(cx, |f| f.roots = roots));
+                                    return;
+                                }
                                 // Toggles the root; at least one stays shown.
                                 let mut shown: Vec<std::path::PathBuf> = if current_roots.is_empty() { all.clone() } else { current_roots.clone() };
                                 if let Some(ix) = shown.iter().position(|p| *p == path) {
