@@ -435,6 +435,8 @@ impl Drop for LspClient {
 }
 
 enum Slot {
+    /// Launched; the initialize handshake hasn't finished.
+    Starting,
     Running(Arc<LspClient>),
     Failed(String),
 }
@@ -443,12 +445,12 @@ enum Slot {
 #[derive(Default)]
 pub struct LspManager {
     root: PathBuf,
-    slots: Mutex<HashMap<String, Slot>>,
+    slots: Arc<Mutex<HashMap<String, Slot>>>,
 }
 
 impl LspManager {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, slots: Mutex::default() }
+        Self { root, slots: Arc::default() }
     }
 
     /// The directory a server for `lang` should treat as its workspace when
@@ -479,32 +481,55 @@ impl LspManager {
         found.unwrap_or_else(|| self.root.clone())
     }
 
-    /// The running server for a language and file, starting it if needed.
-    /// Blocks while it starts; call off the main thread.
+    /// The running server for a language and file. One that isn't running
+    /// yet starts in the background and this returns `None` meanwhile, so
+    /// callers answer from the built-in index instead of waiting for it: a
+    /// big Rust or Gradle project keeps rust-analyzer or a JVM server in its
+    /// handshake for a long time.
     pub fn client(&self, lang: Lang, file: &Path) -> Option<Arc<LspClient>> {
         let command = command_for(lang)?;
         let root = self.workspace_for(lang, file);
         let key = format!("{command}\0{}", root.display());
-        // Start outside the lock so one slow server doesn't block others.
         {
-            let slots = self.slots.lock().ok()?;
+            let mut slots = self.slots.lock().ok()?;
             match slots.get(&key) {
                 Some(Slot::Running(client)) if client.is_alive() => return Some(client.clone()),
-                Some(Slot::Failed(_)) => return None,
+                Some(Slot::Failed(_) | Slot::Starting) => return None,
                 _ => {}
             }
+            slots.insert(key.clone(), Slot::Starting);
         }
-        let started = LspClient::start(&command, &root);
-        let mut slots = self.slots.lock().ok()?;
-        match started {
-            Ok(client) => {
-                slots.insert(key, Slot::Running(client.clone()));
-                Some(client)
+        let slots = self.slots.clone();
+        std::thread::Builder::new()
+            .name(format!("start {}", command.split_whitespace().next().unwrap_or("server")))
+            .spawn(move || {
+                let slot = match LspClient::start(&command, &root) {
+                    Ok(client) => Slot::Running(client),
+                    Err(error) => Slot::Failed(error.to_string()),
+                };
+                if let Ok(mut slots) = slots.lock() {
+                    slots.insert(key, slot);
+                }
+            })
+            .ok()?;
+        None
+    }
+
+    /// The server once it has started, waiting up to `timeout` for it.
+    pub fn client_within(&self, lang: Lang, file: &Path, timeout: Duration) -> Option<Arc<LspClient>> {
+        let until = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(client) = self.client(lang, file) {
+                return Some(client);
             }
-            Err(error) => {
-                slots.insert(key, Slot::Failed(error.to_string()));
-                None
+            let starting = {
+                let key = format!("{}\0{}", command_for(lang)?, self.workspace_for(lang, file).display());
+                matches!(self.slots.lock().ok()?.get(&key), Some(Slot::Starting))
+            };
+            if !starting || std::time::Instant::now() >= until {
+                return None;
             }
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 
@@ -523,6 +548,7 @@ impl LspManager {
                     }
                 }
                 let state = match slot {
+                    Slot::Starting => "starting".to_owned(),
                     Slot::Running(c) if !c.is_alive() => "stopped".to_owned(),
                     Slot::Running(c) => c.progress.lock().ok().and_then(|p| p.clone()).unwrap_or_else(|| "ready".into()),
                     Slot::Failed(e) => format!("failed: {e}"),

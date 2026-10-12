@@ -289,7 +289,17 @@ impl CodeIndex {
             // the index already has an answer, don't wait long for it.
             let patience = if local.is_empty() { Duration::from_secs(10) } else { Duration::from_millis(600) };
             let file = root.join(&path);
-            if let Some(client) = (!ProjectIndex::is_external(&path)).then(|| lsp.client(lang, &file)).flatten() {
+            // A server still starting doesn't hold up an answer the index
+            // has; without one, it gets the same patience to come up.
+            let client = match ProjectIndex::is_external(&path) {
+                true => None,
+                false if local.is_empty() => lsp.client_within(lang, &file, patience),
+                false => lsp.client(lang, &file),
+            };
+            // Nor does one still loading the project (rust-analyzer on a big
+            // workspace answers only once it has).
+            let loading = client.as_ref().is_some_and(|c| c.progress.lock().is_ok_and(|p| p.is_some()));
+            if let Some(client) = client.filter(|_| local.is_empty() || !loading) {
                 let (line, col) = nav::position(&text, offset);
                 if let Ok(locations) = client.definition(&file, lang, &text, line, col, patience) {
                     if !locations.is_empty() {
