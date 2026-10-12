@@ -113,6 +113,16 @@ pub struct LogSettings {
     pub changes_by_module: bool,
     /// Author, date and hash column widths (dragged at their left edge).
     pub columns: [u32; 3],
+    /// A file's History tab, as IntelliJ keeps its own UI properties for it:
+    /// the details under the table, the diff preview (below, or to the
+    /// right, IntelliJ's default), the Author / Date / Hash columns and the committer's time.
+    pub history_details: bool,
+    pub history_diff: bool,
+    pub history_diff_right: bool,
+    pub history_author: bool,
+    pub history_date: bool,
+    pub history_hash: bool,
+    pub history_commit_time: bool,
 }
 
 pub const TOOL_WINDOW_SIZES: [u32; 3] = [340, 340, 380];
@@ -137,6 +147,13 @@ impl Default for LogSettings {
             sort_by_date: false,
             changes_by_directory: true,
             changes_by_module: false,
+            history_details: false,
+            history_diff: true,
+            history_diff_right: true,
+            history_author: true,
+            history_date: true,
+            history_hash: false,
+            history_commit_time: false,
         }
     }
 }
@@ -221,7 +238,7 @@ impl DiffSettings {
 }
 
 impl LogSettings {
-    fn fields(&mut self) -> [(&'static str, &mut bool); 14] {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 21] {
         [
             ("log_changes_by_directory", &mut self.changes_by_directory),
             ("log_changes_by_module", &mut self.changes_by_module),
@@ -237,6 +254,13 @@ impl LogSettings {
             ("log_highlight_current_branch", &mut self.highlight_current_branch),
             ("log_highlight_not_merged", &mut self.highlight_not_merged),
             ("log_sort_by_date", &mut self.sort_by_date),
+            ("history_show_details", &mut self.history_details),
+            ("history_show_diff_preview", &mut self.history_diff),
+            ("history_diff_preview_right", &mut self.history_diff_right),
+            ("history_show_author", &mut self.history_author),
+            ("history_show_date", &mut self.history_date),
+            ("history_show_hash", &mut self.history_hash),
+            ("history_commit_time", &mut self.history_commit_time),
         ]
     }
 }

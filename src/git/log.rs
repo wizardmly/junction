@@ -550,6 +550,35 @@ pub fn file_revisions(repository: &Repository, path: &str) -> Vec<FileRevision> 
         .collect()
 }
 
+/// What a commit of a file's history did to the file, for the History tab.
+#[derive(Clone, Debug)]
+pub struct FileAt {
+    pub change: FileChange,
+    /// Unix seconds, the committer's (View Options › Commit Timestamp).
+    pub commit_time: i64,
+}
+
+/// Each commit of a file's history (following renames) on `branches`
+/// (empty: all refs): the file's path there and what the commit did to it.
+pub fn file_history_paths(repository: &Repository, path: &str, branches: &[String]) -> std::collections::HashMap<String, FileAt> {
+    let mut args: Vec<String> = ["log", "--follow", "--name-status", "-z", "--format=%x1e%H%x1f%ct%x1f"].map(str::to_owned).to_vec();
+    if branches.is_empty() {
+        args.push("--all".into());
+    } else {
+        args.extend(branches.iter().cloned());
+    }
+    args.extend(["--".into(), path.to_owned()]);
+    let Ok(out) = repository.run(&args) else { return Default::default() };
+    out.split(RECORD)
+        .filter_map(|record| {
+            let mut fields = record.splitn(3, FIELD);
+            let (hash, time, rest) = (fields.next()?.trim(), fields.next()?, fields.next().unwrap_or_default());
+            let change = parse_name_status(rest.trim_start_matches(['\n', '\0'])).into_iter().next()?;
+            Some((hash.to_owned(), FileAt { change, commit_time: time.trim().parse().unwrap_or(0) }))
+        })
+        .collect()
+}
+
 /// A pull request's default title and description from the commits in
 /// `range`: a single commit gives both; several give the first subject and
 /// a list of all subjects.
@@ -586,6 +615,22 @@ mod tests {
         assert_eq!(changes[1].kind, FileChangeKind::Renamed);
         assert_eq!(changes[1].old_path.as_deref(), Some("old.rs"));
         assert_eq!(changes[1].path, "new.rs");
+    }
+
+    #[test]
+    fn file_history_paths_follow_renames() {
+        let t = crate::git::test_support::TestRepo::new("log-file-history-paths");
+        t.commit("a.txt", "1\n2\n3\n4\n5\n", "grow");
+        t.git(&["mv", "a.txt", "b.txt"]);
+        t.git(&["commit", "-qm", "rename"]);
+        let head = t.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        let paths = file_history_paths(&t.repo, "b.txt", &["HEAD".into()]);
+        assert_eq!(paths.len(), 3);
+        let renamed = &paths[&head];
+        assert_eq!((renamed.change.path.as_str(), renamed.change.old_path.as_deref()), ("b.txt", Some("a.txt")));
+        assert!(renamed.commit_time > 0);
+        assert!(paths.values().filter(|at| at.change.path == "a.txt").count() == 2);
+        assert_eq!(file_history_paths(&t.repo, "b.txt", &[]).len(), 3);
     }
 
     #[test]

@@ -147,14 +147,6 @@ impl LogView {
         let palette = cx.palette().clone();
         let model = self.model.read(cx);
         let details = model.details().cloned();
-        let refs = model.log_refs().clone();
-        // A multi-root project: which repository the commit is in.
-        // (The shown commit's own root: the active one may follow an editor tab.)
-        let root = model.project_root().filter(|_| model.is_multi_root()).and_then(|project| {
-            let ix = model.selected_index().and_then(|row| model.commits().get(row)).map(|c| c.root as usize)?;
-            let path = &model.root_states().get(ix)?.path;
-            Some((ix, crate::git::roots::label(project, path), path.display().to_string()))
-        });
         let kinds = self.change_kinds.clone();
         let counts = self.change_counts.clone();
         let entity = cx.entity();
@@ -290,8 +282,32 @@ impl LogView {
                 ),
             );
 
+        let info = self.render_commit_info(cx);
+
+        v_resizable("log-details-split")
+            // Text measures itself unwrapped; out of the flow (absolute), a
+            // long message or path stays inside the pane instead of widening
+            // the window.
+            .child(resizable_panel().child(div().relative().size_full().child(div().absolute().inset_0().child(changes))))
+            .child(resizable_panel().size(px(220.)).child(div().relative().size_full().child(div().absolute().inset_0().child(info))))
+    }
+
+    /// The selected commit's message, hash, author, refs and branches (the
+    /// lower half of the details pane, and the File History's details).
+    pub(super) fn render_commit_info(&self, cx: &mut Context<Self>) -> AnyElement {
+        let palette = cx.palette().clone();
+        let model = self.model.read(cx);
+        let details = model.details().cloned();
+        let refs = model.log_refs().clone();
+        // A multi-root project: which repository the commit is in.
+        // (The shown commit's own root: the active one may follow an editor tab.)
+        let root = model.project_root().filter(|_| model.is_multi_root()).and_then(|project| {
+            let ix = model.selected_index().and_then(|row| model.commits().get(row)).map(|c| c.root as usize)?;
+            let path = &model.root_states().get(ix)?.path;
+            Some((ix, crate::git::roots::label(project, path), path.display().to_string()))
+        });
         let entity_for_links = cx.entity();
-        let info = div()
+        div()
             .id("commit-details")
             .size_full()
             .p_3()
@@ -387,14 +403,8 @@ impl LogView {
                             })
                         })),
                 )
-            });
-
-        v_resizable("log-details-split")
-            // Text measures itself unwrapped; out of the flow (absolute), a
-            // long message or path stays inside the pane instead of widening
-            // the window.
-            .child(resizable_panel().child(div().relative().size_full().child(div().absolute().inset_0().child(changes))))
-            .child(resizable_panel().size(px(220.)).child(div().relative().size_full().child(div().absolute().inset_0().child(info))))
+            })
+        .into_any_element()
     }
 }
 

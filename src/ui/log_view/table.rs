@@ -10,6 +10,7 @@ impl LogView {
         self.update_selection(ix, toggle, range, cx);
         // The details pane shows the selection's combined changes.
         self.rebuild_changes(cx);
+        self.update_history_preview(cx);
     }
 
     pub(super) fn update_selection(&mut self, ix: usize, toggle: bool, range: bool, cx: &mut Context<Self>) {
@@ -501,6 +502,7 @@ impl LogView {
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(Self::on_copy_revision))
             .on_action(cx.listener(Self::on_go_to_hash))
+            .on_action(cx.listener(Self::on_show_diff))
             .flex_1()
             .min_h_0()
             .relative()
@@ -516,7 +518,11 @@ impl LogView {
             })
             .when(!empty, |el| {
                 el.child(
-                    uniform_list("log-rows", count, cx.processor(Self::render_rows))
+                    if self.is_history() {
+                        uniform_list("history-rows", count, cx.processor(Self::render_history_rows))
+                    } else {
+                        uniform_list("log-rows", count, cx.processor(Self::render_rows))
+                    }
                         .track_scroll(&self.scroll)
                         .size_full(),
                 )

@@ -397,7 +397,7 @@ impl LogView {
     }
 
     /// Branch filter: laid out as IntelliJ's.
-    fn branch_filter_menu(&self, entity: &Entity<LogView>, refs: &std::sync::Arc<crate::git::RepositoryRefs>, filter: &LogFilter) -> impl Fn(gpui_kit::component::menu::PopupMenu, &mut Window, &mut Context<gpui_kit::component::menu::PopupMenu>) -> gpui_kit::component::menu::PopupMenu + 'static {
+    pub(super) fn branch_filter_menu(&self, entity: &Entity<LogView>, refs: &std::sync::Arc<crate::git::RepositoryRefs>, filter: &LogFilter) -> impl Fn(gpui_kit::component::menu::PopupMenu, &mut Window, &mut Context<gpui_kit::component::menu::PopupMenu>) -> gpui_kit::component::menu::PopupMenu + 'static {
         let entity = entity.clone();
         let refs = refs.clone();
         let selected = filter.branches.clone();

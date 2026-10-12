@@ -340,6 +340,13 @@ impl Workspace {
                         this.open_file(path, None, window, cx)
                     }
                     LogEvent::OpenFile { path, revision } => this.open_file(path.clone(), revision.clone(), window, cx),
+                    LogEvent::OpenDiffInNewTab(source) => this.open_diff_in_new_tab(source.clone(), window, cx),
+                    LogEvent::GoTo(target) => this.go_to_target(target.clone(), window, cx),
+                    LogEvent::ShowInLog(hash) => {
+                        this.switch_log_tab(0, cx);
+                        let hash = hash.clone();
+                        this.model.update(cx, |m, cx| m.select_hash(Some(hash), cx));
+                    }
                 }
             }),
             cx.subscribe_in(&changes, window, |this, _, event: &crate::ui::changes_view::ChangesEvent, _window, cx| {

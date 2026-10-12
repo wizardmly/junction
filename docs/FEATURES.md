@@ -173,7 +173,7 @@
 
 | 功能 | 阶段 | 状态 |
 |---|---|---|
-| 文件历史（Show History）：Log 标签页 + 该文件的 diff | M3 | ✅（Log 按路径过滤，--follow 跟踪重命名，History Up to Here） |
+| 文件历史（Show History）：Log 标签页 + 该文件的 diff | M3 | ✅（按 IntelliJ File History 布局：Branch: HEAD 过滤、无分支图的 作者/日期/提交信息 表格、tag/分支图标、工具栏 Refresh / Show Diff / Show All Affected Files / 视图选项（Commit Timestamp、Show Columns、Show Details、Show Diff Preview、Diff Preview Location）/ Open on GitHub / Show in Git Log、右侧 diff 预览、AS 的右键菜单；--follow 跟踪重命名，History Up to Here） |
 | 选中内容历史（Show History for Selection） | M4 | ✅（文件编辑器右键 Git → Show History for Selection，用 git log -L 打开 Log 标签页） |
 | Annotate with Git Blame：在编辑器 gutter 里逐行显示日期/作者（View 子菜单可加提交哈希），按时间着色，悬浮详情，跟随未保存的编辑；右键 Annotate Revision / Annotate Previous Revision（新增该文件的提交上置灰）/ Show Diff / Select in Git Log | M3 | ✅ |
 | 文件查看器里的变更标记（gutter）：点击看 diff、回滚 hunk、stage hunk | M4 | ✅（行号旁的 gutter 竖条：新增绿、修改蓝、删除处灰色楔形；点击弹出 AS 式变更弹窗：上一处 / 下一处（循环）、Rollback（可撤销）、Show Diff、Copy、Stage（只把这块写入 index，其它已暂存内容保留），下方显示 HEAD 里的原内容；Esc 或点外面关闭，打字时自动关闭；Rollback Lines（Ctrl+Alt+Z）；未版本控制的文件像 AS 一样没有变更标记；右键行号 gutter 是 gutter 菜单：Annotate with Git Blame / Close Annotations、Show Line Numbers） |

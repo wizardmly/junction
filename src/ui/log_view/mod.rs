@@ -42,6 +42,7 @@ mod commit_menu;
 mod details;
 mod filter_bar;
 mod go_to;
+mod history;
 mod table;
 
 use branches::*;
@@ -52,7 +53,7 @@ actions!(
     git_log,
     [
         SelectPrevious, SelectNext, SelectFirst, SelectLast, SelectPageUp, SelectPageDown, ExtendPrevious, ExtendNext, ExtendFirst,
-        ExtendLast, SelectAll, CopyRevision, GoToHash, BranchConfirm
+        ExtendLast, SelectAll, CopyRevision, GoToHash, BranchConfirm, ShowDiff
     ]
 );
 
@@ -74,6 +75,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-a", SelectAll, Some(CONTEXT)),
         KeyBinding::new("secondary-c", CopyRevision, Some(CONTEXT)),
         KeyBinding::new("secondary-f", GoToHash, Some(CONTEXT)),
+        KeyBinding::new("secondary-d", ShowDiff, Some(CONTEXT)),
         KeyBinding::new("enter", BranchConfirm, Some(BRANCHES_CONTEXT)),
     ]);
 }
@@ -84,6 +86,12 @@ pub enum LogEvent {
     Annotate { path: String, revision: Option<String> },
     /// Open Repository Version (`revision`) or Edit Source (`None`).
     OpenFile { path: String, revision: Option<String> },
+    /// Show Diff in a New Tab (a file's History).
+    OpenDiffInNewTab(DiffSource),
+    /// A place in the History's diff preview (Jump to Source).
+    GoTo(crate::index::nav::Target),
+    /// Show in Git Log: the commit in the main Log tab.
+    ShowInLog(String),
 }
 
 impl EventEmitter<LogEvent> for LogView {}
@@ -159,6 +167,8 @@ pub struct LogView {
     show_all_branches: bool,
     /// The Git window is docked left or right: details under the table.
     details_below: bool,
+    /// The tab shown is a file's History, laid out as IntelliJ's.
+    history: Option<history::FileHistory>,
     _search_debounce: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -210,6 +220,8 @@ impl LogView {
                         this.model.update(cx, |model, cx| model.select_hash(Some(hash), cx));
                     }
                     this.rebuild_branches(cx);
+                    this.load_history_revisions(cx);
+                    this.update_history_preview(cx);
                     cx.notify();
                 }
                 RepoEvent::SelectionChanged | RepoEvent::DetailsLoaded => {
@@ -217,6 +229,7 @@ impl LogView {
                         this.show_all_branches = false;
                     }
                     this.rebuild_changes(cx);
+                    this.update_history_preview(cx);
                     if let Some(ix) = this.model.read(cx).selected_index() {
                         this.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
                     }
@@ -324,6 +337,7 @@ impl LogView {
             columns: None,
             show_all_branches: false,
             details_below: false,
+            history: None,
             _search_debounce: None,
             _subscriptions: subscriptions,
         };
@@ -348,7 +362,7 @@ impl LogView {
             let prefix = model.repository().filter(|_| model.is_multi_root()).map(|r| model.prefix_of(r.root())).unwrap_or_default();
             if prefix.is_empty() { path } else { format!("{prefix}/{path}") }
         };
-        let filter = LogFilter { paths: vec![path], branches: from.into_iter().collect(), ..Default::default() };
+        let filter = LogFilter { paths: vec![path], branches: vec![from.unwrap_or_else(|| "HEAD".into())], ..Default::default() };
         self.model.update(cx, |m, cx| m.open_log_tab(format!("History: {name}"), filter, cx));
     }
 }
@@ -378,6 +392,9 @@ impl Render for LogView {
                 }),
                 cx,
             );
+        }
+        if self.is_history() {
+            return self.render_history(cx);
         }
         let table = v_flex()
             .size_full()

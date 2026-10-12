@@ -130,7 +130,8 @@ impl Workspace {
         if path.is_empty() {
             name = self.model.read(cx).project_root().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         }
-        let filter = crate::git::LogFilter { paths: vec![path], ..Default::default() };
+        // Like IntelliJ's File History, on the current branch (Branch: HEAD).
+        let filter = crate::git::LogFilter { paths: vec![path], branches: vec!["HEAD".into()], ..Default::default() };
         self.open_log_tab(format!("History: {name}"), filter, cx);
     }
 
@@ -143,7 +144,17 @@ impl Workspace {
         self.tools.open(ToolWindow::Git);
         self.bottom_tab = BottomTab::Log;
         self.model.update(cx, |m, cx| m.set_filter(filter, cx));
+        self.sync_log_history(cx);
         cx.notify();
+    }
+
+    /// A "History: name" tab of one path shows IntelliJ's File History
+    /// layout; the other tabs the Log's.
+    fn sync_log_history(&mut self, cx: &mut Context<Self>) {
+        let path = self.log_tabs.get(self.active_log).and_then(|tab| {
+            (tab.title.starts_with("History: ") && tab.filter.paths.len() == 1 && tab.filter.lines.is_none()).then(|| tab.filter.paths[0].clone())
+        });
+        self.log.update(cx, |log, cx| log.set_history(path, cx));
     }
 
     pub(super) fn save_log_tab(&mut self, cx: &mut Context<Self>) {
@@ -168,6 +179,7 @@ impl Workspace {
             m.set_filter(filter, cx);
             m.select_hash(selected, cx);
         });
+        self.sync_log_history(cx);
         cx.notify();
     }
 
@@ -184,6 +196,7 @@ impl Workspace {
         } else if ix < self.active_log {
             self.active_log -= 1;
         }
+        self.sync_log_history(cx);
         cx.notify();
     }
 

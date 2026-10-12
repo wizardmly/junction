@@ -90,6 +90,7 @@ pub const FIT_CONTENT: AsIcon = AsIcon { light: &[("as/fit-content.l0.svg", 0x6c
 pub const FOLDER: AsIcon = AsIcon { light: &[("as/folder.l0.svg", 0xebecf0ff), ("as/folder.l1.svg", 0x6c707eff)], dark: &[("as/folder.d0.svg", 0x43454aff), ("as/folder.d1.svg", 0xced0d6ff)] };
 pub const FORCE_REFRESH: AsIcon = AsIcon { light: &[("as/force-refresh.l0.svg", 0xdb3b4bff)], dark: &[("as/force-refresh.d0.svg", 0xdb5c5cff)] };
 pub const FUNCTION: AsIcon = AsIcon { light: &[("as/function.l0.svg", 0xfff7f7ff), ("as/function.l1.svg", 0xdb3b4bff)], dark: &[("as/function.d0.svg", 0x402929ff), ("as/function.d1.svg", 0xdb5c5cff)] };
+pub const GITHUB: AsIcon = AsIcon { light: &[("as/github.l0.svg", 0x161514ff)], dark: &[("as/github.d0.svg", 0xfffffeff)] };
 pub const GRADLE: AsIcon = AsIcon { light: &[("as/gradle.l0.svg", 0x6c707eff)], dark: &[("as/gradle.d0.svg", 0xced0d6ff)] };
 pub const GRADLE_KOTLIN: AsIcon = AsIcon { light: &[("as/gradle-kotlin.l0.svg", 0x6c707eff), ("as/gradle-kotlin.l1.svg", 0xfaf5ffff), ("as/gradle-kotlin.l2.svg", 0x834df0ff)], dark: &[("as/gradle-kotlin.d0.svg", 0xced0d6ff), ("as/gradle-kotlin.d1.svg", 0x2f2936ff), ("as/gradle-kotlin.d2.svg", 0xa571e6ff)] };
 pub const GREEN_CHECKMARK: AsIcon = AsIcon { light: &[("as/green-checkmark.l0.svg", 0x369650ff)], dark: &[("as/green-checkmark.d0.svg", 0x57965cff)] };
@@ -503,6 +504,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/function.l1.svg", include_bytes!("../../assets/as-icons/gen/function.l1.svg")),
     ("as/function.d0.svg", include_bytes!("../../assets/as-icons/gen/function.d0.svg")),
     ("as/function.d1.svg", include_bytes!("../../assets/as-icons/gen/function.d1.svg")),
+    ("as/github.l0.svg", include_bytes!("../../assets/as-icons/gen/github.l0.svg")),
+    ("as/github.d0.svg", include_bytes!("../../assets/as-icons/gen/github.d0.svg")),
     ("as/gradle.l0.svg", include_bytes!("../../assets/as-icons/gen/gradle.l0.svg")),
     ("as/gradle.d0.svg", include_bytes!("../../assets/as-icons/gen/gradle.d0.svg")),
     ("as/gradle-kotlin.l0.svg", include_bytes!("../../assets/as-icons/gen/gradle-kotlin.l0.svg")),
