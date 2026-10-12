@@ -66,6 +66,7 @@ pub(super) fn main_menu(
                     .menu("Commit", Box::new(ToggleCommitWindow))
                     .menu("Git", Box::new(ToggleGitWindow))
                     .menu("Find", Box::new(ToggleFindWindow))
+                    .menu("Terminal", Box::new(ToggleTerminalWindow))
                     .item(PopupMenuItem::new(prs_title).on_click(move |_, window, cx| {
                         e3.update(cx, |this, cx| this.toggle_tool(ToolWindow::PullRequests, window, cx))
                     }))

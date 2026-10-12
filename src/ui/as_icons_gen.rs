@@ -198,6 +198,7 @@ pub const TW_PROBLEMS: AsIcon = AsIcon { light: &[("as/tw-problems.l0.svg", 0x6c
 pub const TW_PROJECT: AsIcon = AsIcon { light: &[("as/tw-project.l0.svg", 0x6c707eff)], dark: &[("as/tw-project.d0.svg", 0xced0d6ff)] };
 pub const TW_RUN: AsIcon = AsIcon { light: &[("as/tw-run.l0.svg", 0x6c707eff)], dark: &[("as/tw-run.d0.svg", 0xced0d6ff)] };
 pub const TW_STRUCTURE: AsIcon = AsIcon { light: &[("as/tw-structure.l0.svg", 0x6c707eff)], dark: &[("as/tw-structure.d0.svg", 0xced0d6ff)] };
+pub const TW_TERMINAL: AsIcon = AsIcon { light: &[("as/tw-terminal.l0.svg", 0x6c707eff)], dark: &[("as/tw-terminal.d0.svg", 0xced0d6ff)] };
 pub const TW_TODO: AsIcon = AsIcon { light: &[("as/tw-todo.l0.svg", 0x6c707eff)], dark: &[("as/tw-todo.d0.svg", 0xced0d6ff)] };
 pub const TW_VCS: AsIcon = AsIcon { light: &[("as/tw-vcs.l0.svg", 0x6c707eff)], dark: &[("as/tw-vcs.d0.svg", 0xced0d6ff)] };
 pub const TYPE_ALIAS: AsIcon = AsIcon { light: &[("as/type-alias.l0.svg", 0xfaf5ffff), ("as/type-alias.l1.svg", 0x834df0ff), ("as/type-alias.l2.svg", 0xedf3ffff), ("as/type-alias.l3.svg", 0x3574f0ff)], dark: &[("as/type-alias.d0.svg", 0x2f2936ff), ("as/type-alias.d1.svg", 0xa571e6ff), ("as/type-alias.d2.svg", 0x25324dff), ("as/type-alias.d3.svg", 0x548af7ff)] };
@@ -850,6 +851,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/tw-run.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-run.d0.svg")),
     ("as/tw-structure.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-structure.l0.svg")),
     ("as/tw-structure.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-structure.d0.svg")),
+    ("as/tw-terminal.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-terminal.l0.svg")),
+    ("as/tw-terminal.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-terminal.d0.svg")),
     ("as/tw-todo.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-todo.l0.svg")),
     ("as/tw-todo.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-todo.d0.svg")),
     ("as/tw-vcs.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-vcs.l0.svg")),

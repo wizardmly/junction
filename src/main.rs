@@ -15,6 +15,7 @@ mod index;
 mod model;
 mod settings;
 mod spell;
+mod terminal;
 mod theme;
 mod ui;
 

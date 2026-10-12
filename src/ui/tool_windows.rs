@@ -14,6 +14,8 @@ pub enum ToolWindow {
     Commit,
     PullRequests,
     Changes,
+    Find,
+    Terminal,
     Git,
     Notifications,
 }
@@ -54,8 +56,16 @@ impl Side {
 }
 
 impl ToolWindow {
-    pub const ALL: [ToolWindow; 6] =
-        [ToolWindow::Project, ToolWindow::Commit, ToolWindow::PullRequests, ToolWindow::Changes, ToolWindow::Git, ToolWindow::Notifications];
+    pub const ALL: [ToolWindow; 8] = [
+        ToolWindow::Project,
+        ToolWindow::Commit,
+        ToolWindow::PullRequests,
+        ToolWindow::Changes,
+        ToolWindow::Find,
+        ToolWindow::Terminal,
+        ToolWindow::Git,
+        ToolWindow::Notifications,
+    ];
 
     fn key(self) -> &'static str {
         match self {
@@ -63,6 +73,8 @@ impl ToolWindow {
             ToolWindow::Commit => "commit",
             ToolWindow::PullRequests => "prs",
             ToolWindow::Changes => "changes",
+            ToolWindow::Find => "find",
+            ToolWindow::Terminal => "terminal",
             ToolWindow::Git => "git",
             ToolWindow::Notifications => "notifications",
         }
@@ -70,7 +82,7 @@ impl ToolWindow {
 
     fn default_side(self) -> Side {
         match self {
-            ToolWindow::Git => Side::Bottom,
+            ToolWindow::Git | ToolWindow::Find | ToolWindow::Terminal => Side::Bottom,
             // The new UI keeps Notifications on the right stripe.
             ToolWindow::Notifications => Side::Right,
             _ => Side::Left,
@@ -98,6 +110,18 @@ impl gpui_kit::Render for DraggedToolWindow {
     }
 }
 
+/// A window the saved layout doesn't know yet (one added in a later
+/// version) goes before the first window that follows it by default, so Find
+/// and Terminal sit above Git as in IntelliJ.
+fn add_missing(order: &mut Vec<(ToolWindow, Side)>) {
+    for (ix, window) in ToolWindow::ALL.into_iter().enumerate() {
+        if !order.iter().any(|(w, _)| *w == window) {
+            let at = ToolWindow::ALL[ix + 1..].iter().find_map(|next| order.iter().position(|(w, _)| w == next)).unwrap_or(order.len());
+            order.insert(at, (window, window.default_side()));
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolWindows {
     /// Every tool window with its side, in stripe order.
@@ -120,11 +144,7 @@ impl ToolWindows {
                 Some((window, side))
             })
             .collect();
-        for window in ToolWindow::ALL {
-            if !order.iter().any(|(w, _)| *w == window) {
-                order.push((window, window.default_side()));
-            }
-        }
+        add_missing(&mut order);
         order.dedup_by_key(|(w, _)| *w);
         let mut this = Self { order, open: [None; 3], hidden_all: None };
         this.open(ToolWindow::Commit);
@@ -224,5 +244,25 @@ mod tests {
         assert!(!t.is_open(ToolWindow::Project) && !t.is_open(ToolWindow::Git));
         t.toggle_all();
         assert!(t.is_open(ToolWindow::Project) && t.is_open(ToolWindow::Git));
+    }
+
+    #[test]
+    fn find_and_terminal_share_the_bottom_with_git() {
+        let mut t = layout();
+        assert_eq!(t.on_side(Side::Bottom), vec![ToolWindow::Find, ToolWindow::Terminal, ToolWindow::Git]);
+        t.open(ToolWindow::Terminal);
+        assert!(t.is_open(ToolWindow::Terminal) && !t.is_open(ToolWindow::Git));
+        t.open(ToolWindow::Find);
+        assert!(t.is_open(ToolWindow::Find) && !t.is_open(ToolWindow::Terminal));
+    }
+
+    #[test]
+    fn new_windows_join_an_old_layout_before_git() {
+        // A layout saved before Find and Terminal existed, Git moved left.
+        let mut order = vec![(ToolWindow::Project, Side::Left), (ToolWindow::Git, Side::Left), (ToolWindow::Notifications, Side::Right)];
+        add_missing(&mut order);
+        let names: Vec<ToolWindow> = order.iter().map(|(w, _)| *w).filter(|w| matches!(w, ToolWindow::Project | ToolWindow::Find | ToolWindow::Terminal | ToolWindow::Git)).collect();
+        assert_eq!(names, [ToolWindow::Project, ToolWindow::Find, ToolWindow::Terminal, ToolWindow::Git]);
+        assert!(order.iter().any(|(w, s)| *w == ToolWindow::Terminal && *s == Side::Bottom));
     }
 }

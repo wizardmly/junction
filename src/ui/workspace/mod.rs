@@ -64,6 +64,7 @@ actions!(
         NavigateForward,
         ToggleProjectWindow,
         ToggleFindWindow,
+        ToggleTerminalWindow,
         SelectInProject,
         FindInPath,
         ReplaceInPath,
@@ -144,6 +145,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("cmd-]", NavigateForward, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-1" } else { "alt-1" }, ToggleProjectWindow, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-3" } else { "alt-3" }, ToggleFindWindow, Some(CONTEXT)),
+        KeyBinding::new("alt-f12", ToggleTerminalWindow, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-0" } else { "alt-0" }, ToggleCommitWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-f12", HideAllToolWindows, Some(CONTEXT)),
         KeyBinding::new("shift-escape", HideActiveToolWindow, Some(CONTEXT)),
@@ -192,8 +194,6 @@ enum BottomTab {
     Log,
     Worktrees,
     Submodules,
-    /// Find Usages results.
-    Find,
     Console,
 }
 
@@ -223,6 +223,8 @@ pub struct Workspace {
     /// The code index, and the tool windows built on it.
     code_index: Entity<CodeIndex>,
     find: Entity<crate::ui::find_view::FindView>,
+    /// The Terminal tool window's sessions.
+    terminal: Entity<crate::ui::terminal_view::TerminalPanel>,
     /// Find / Replace in Files, kept between uses like IntelliJ's.
     find_popup: Option<(Entity<crate::ui::find_popup::FindPopup>, Subscription)>,
     show_find_popup: bool,
@@ -298,6 +300,14 @@ impl Workspace {
         let changes = cx.new(|cx| crate::ui::changes_view::ChangesView::new(model.clone(), cx));
         let code_index = cx.new(CodeIndex::new);
         let find = cx.new(|_| crate::ui::find_view::FindView::new(code_index.clone()));
+        let terminal = {
+            let model = model.clone();
+            let cwd: Rc<dyn Fn(&App) -> Option<std::path::PathBuf>> = Rc::new(move |cx| {
+                let m = model.read(cx);
+                m.project_root().map(std::path::Path::to_path_buf).or_else(|| m.repository().map(|r| r.root().to_path_buf()))
+            });
+            cx.new(|_| crate::ui::terminal_view::TerminalPanel::new(cwd))
+        };
         let project = cx.new(|cx| crate::ui::project_view::ProjectView::new(code_index.clone(), cx));
         let weak = cx.entity().downgrade();
         branches_popup.update(cx, |popup, _| {
@@ -385,8 +395,19 @@ impl Workspace {
             cx.subscribe_in(&find, window, |this, _, event: &crate::ui::navigate::OpenTarget, window, cx| {
                 this.go_to_target(event.0.clone(), window, cx)
             }),
+            cx.subscribe_in(&terminal, window, |this, _, event: &crate::ui::terminal_view::TerminalPanelEvent, window, cx| match event {
+                crate::ui::terminal_view::TerminalPanelEvent::Hide => {
+                    this.tools.hide(ToolWindow::Terminal);
+                    window.focus(&this.focus, cx);
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&find, window, |this, _, event: &crate::ui::find_view::FindViewEvent, window, cx| match event {
                 crate::ui::find_view::FindViewEvent::FilesChanged(paths) => this.files_changed(paths.clone(), window, cx),
+                crate::ui::find_view::FindViewEvent::Hide => {
+                    this.tools.hide(ToolWindow::Find);
+                    cx.notify();
+                }
             }),
             cx.subscribe_in(&project, window, |this, _, event: &crate::ui::navigate::OpenTarget, window, cx| {
                 this.go_to_target(event.0.clone(), window, cx)
@@ -460,6 +481,7 @@ impl Workspace {
             prs,
             code_index,
             find,
+            terminal,
             find_popup: None,
             show_find_popup: false,
             find_in: None,
@@ -542,7 +564,11 @@ impl Render for Workspace {
         // them; sizes are remembered (Settings.tool_window_sizes).
         let sizes = Settings::get(cx).tool_window_sizes;
         let panel_of = |side: Side, this: &Self, cx: &mut Context<Self>| {
-            this.tools.active(side).filter(|_| has_repo).filter(|w| *w != ToolWindow::Changes || !this.changes.read(cx).is_empty())
+            this.tools
+                .active(side)
+                .filter(|_| has_repo)
+                .filter(|w| *w != ToolWindow::Changes || !this.changes.read(cx).is_empty())
+                .filter(|w| *w != ToolWindow::Find || !this.find.read(cx).is_empty())
         };
         let (left, right, bottom) = (panel_of(Side::Left, self, cx), panel_of(Side::Right, self, cx), panel_of(Side::Bottom, self, cx));
         let left_content = left.map(|w| self.tool_window_content(w, cx));
@@ -638,6 +664,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &HideActiveToolWindow, window, cx| this.hide_active_tool_window(window, cx)))
             .on_action(cx.listener(Self::select_in_project))
             .on_action(cx.listener(Self::toggle_find))
+            .on_action(cx.listener(|this, _: &ToggleTerminalWindow, window, cx| this.shortcut_tool(ToolWindow::Terminal, window, cx)))
             .on_action(cx.listener(|this, _: &FindInPath, window, cx| this.open_find_popup(false, window, cx)))
             .on_action(cx.listener(|this, _: &ReplaceInPath, window, cx| this.open_find_popup(true, window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx)))

@@ -37,8 +37,7 @@ impl Workspace {
                     FindEvent::ShowInFindWindow(request) => {
                         let request = request.clone();
                         this.find.update(cx, |view, cx| view.find_text(request, cx));
-                        this.tools.open(ToolWindow::Git);
-                        this.bottom_tab = BottomTab::Find;
+                        this.show_find_window(cx);
                         cx.notify();
                     }
                     FindEvent::FilesChanged(paths) => this.files_changed(paths.clone(), window, cx),
@@ -140,6 +139,7 @@ impl Workspace {
         let windows: Vec<(&str, &str, VcsRun)> = vec![
             ("Project", "Alt+1", op(|this, window, cx| this.toggle_project(&ToggleProjectWindow, window, cx))),
             ("Find", "Alt+3", op(|this, window, cx| this.toggle_find(&ToggleFindWindow, window, cx))),
+            ("Terminal", "Alt+F12", op(|this, window, cx| this.shortcut_tool(ToolWindow::Terminal, window, cx))),
             ("Git", "Alt+9", op(|this, window, cx| this.on_toggle_git(&ToggleGitWindow, window, cx))),
             ("Commit", "Alt+0", op(|this, window, cx| this.show_left_tab(LeftTab::Commit, window, cx))),
             ("Refresh", "Ctrl+Alt+Y", op(|this, window, cx| this.on_refresh(&Refresh, window, cx))),
@@ -185,15 +185,13 @@ impl Workspace {
                     SeEvent::FindWindowText(request) => {
                         let request = request.clone();
                         this.find.update(cx, |view, cx| view.find_text(request, cx));
-                        this.tools.open(ToolWindow::Git);
-                        this.bottom_tab = BottomTab::Find;
+                        this.show_find_window(cx);
                         cx.notify();
                     }
                     SeEvent::FindWindowItems(title, items) => {
                         let (title, items) = (title.clone(), items.clone());
                         this.find.update(cx, |view, cx| view.show_items(title, items, cx));
-                        this.tools.open(ToolWindow::Git);
-                        this.bottom_tab = BottomTab::Find;
+                        this.show_find_window(cx);
                         cx.notify();
                     }
                 }

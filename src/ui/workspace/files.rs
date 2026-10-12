@@ -59,8 +59,7 @@ impl Workspace {
                         workspace
                             .update(cx, |this, cx| {
                                 this.find.update(cx, |view, cx| view.show_items(find_title, items, cx));
-                                this.tools.open(ToolWindow::Git);
-                                this.bottom_tab = BottomTab::Find;
+                                this.show_find_window(cx);
                                 cx.notify();
                             })
                             .ok();
@@ -81,8 +80,7 @@ impl Workspace {
                 let (index, text, offset) = (self.code_index.clone(), text.clone(), *offset);
                 let _ = index;
                 self.find.update(cx, |view, cx| view.find_usages(path, text, offset, cx));
-                self.tools.open(ToolWindow::Git);
-                self.bottom_tab = BottomTab::Find;
+                self.show_find_window(cx);
                 cx.notify();
             }
             FileEditorEvent::Saved(path) => {
@@ -207,13 +205,18 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn toggle_find(&mut self, _: &ToggleFindWindow, _: &mut Window, cx: &mut Context<Self>) {
-        if self.tools.is_open(ToolWindow::Git) && self.bottom_tab == BottomTab::Find {
-            self.tools.hide(ToolWindow::Git);
-        } else {
-            self.tools.open(ToolWindow::Git);
-            self.bottom_tab = BottomTab::Find;
+    /// Alt+3: the Find tool window, once a search has run (as in IntelliJ,
+    /// where it appears with the first search).
+    pub(super) fn toggle_find(&mut self, _: &ToggleFindWindow, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find.read(cx).is_empty() {
+            return;
         }
+        self.shortcut_tool(ToolWindow::Find, window, cx);
+    }
+
+    /// Shows search results: the Find tool window opens on its side.
+    pub(super) fn show_find_window(&mut self, cx: &mut Context<Self>) {
+        self.tools.open(ToolWindow::Find);
         cx.notify();
     }
 

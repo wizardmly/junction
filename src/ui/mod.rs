@@ -38,6 +38,7 @@ pub mod revision_browser;
 pub mod shelf_view;
 pub mod spell_overlay;
 pub mod status_bar;
+pub mod terminal_view;
 pub mod stash_view;
 pub mod ref_menu;
 pub mod workspace;

@@ -67,6 +67,10 @@ impl Workspace {
         let handle = match tool {
             ToolWindow::Git if self.bottom_tab == BottomTab::Log => gpui_kit::Focusable::focus_handle(self.log.read(cx), cx),
             ToolWindow::Project => gpui_kit::Focusable::focus_handle(self.project.read(cx), cx),
+            ToolWindow::Terminal => match self.terminal.update(cx, |t, cx| t.focus_handle(cx)) {
+                Some(handle) => handle,
+                None => return,
+            },
             _ => match self.tool_focus.get(&tool) {
                 Some(handle) => handle.clone(),
                 None => return,
@@ -81,6 +85,8 @@ impl Workspace {
             ToolWindow::Commit => (Icon::from(icons::TW_COMMIT), "Commit".into(), "Alt+0"),
             ToolWindow::PullRequests => (Icon::from(icons::PULL_REQUESTS), self.prs.read(cx).title().into(), ""),
             ToolWindow::Changes => (Icon::from(icons::VCS_DIFF), "Changes".into(), ""),
+            ToolWindow::Find => (Icon::from(icons::TW_FIND), "Find".into(), "Alt+3"),
+            ToolWindow::Terminal => (Icon::from(icons::TW_TERMINAL), "Terminal".into(), "Alt+F12"),
             ToolWindow::Git => (Icon::from(icons::TW_VCS), "Git".into(), "Alt+9"),
             ToolWindow::Notifications => {
                 (Icon::from(icons::TW_NOTIFICATIONS), "Notifications".into(), "")
@@ -152,6 +158,8 @@ impl Workspace {
         let non_modal = Settings::get(cx).non_modal_commit;
         let visible = |w: &ToolWindow| match w {
             ToolWindow::Changes => !self.changes.read(cx).is_empty(),
+            // As in IntelliJ, Find appears with the first search.
+            ToolWindow::Find => !self.find.read(cx).is_empty(),
             ToolWindow::Commit => non_modal,
             _ => true,
         };
@@ -249,6 +257,9 @@ impl Workspace {
             ToolWindow::Commit => self.render_left(cx).into_any_element(),
             ToolWindow::PullRequests => crate::ui::common::cached(&self.prs),
             ToolWindow::Changes => crate::ui::common::cached(&self.changes),
+            ToolWindow::Find => crate::ui::common::cached(&self.find),
+            // Not cached: the shell's output redraws it on its own.
+            ToolWindow::Terminal => self.terminal.clone().into_any_element(),
             ToolWindow::Git => self.render_bottom(cx).into_any_element(),
             ToolWindow::Notifications => self.render_notifications(cx).into_any_element(),
         }
@@ -432,12 +443,6 @@ impl Workspace {
                             },
                         )).child("Submodules"))
                     })
-                    .child(tab("tab-find", "Find", BottomTab::Find, current).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.bottom_tab = BottomTab::Find;
-                            cx.notify();
-                        },
-                    )).child("Find"))
                     .child(tab("tab-console", "Console", BottomTab::Console, current).on_click(cx.listener(
                         |this, _, _, cx| {
                             this.bottom_tab = BottomTab::Console;
@@ -463,7 +468,6 @@ impl Workspace {
                 BottomTab::Log => el.child(self.log.clone()),
                 BottomTab::Worktrees => el.child(crate::ui::common::cached(&self.worktrees)),
                 BottomTab::Submodules => el.child(crate::ui::common::cached(&self.submodules)),
-                BottomTab::Find => el.child(crate::ui::common::cached(&self.find)),
                 BottomTab::Console => el.child(self.render_console(cx)),
             }))
     }

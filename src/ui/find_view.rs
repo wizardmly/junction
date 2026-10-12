@@ -58,6 +58,8 @@ struct FindTab {
 
 pub enum FindViewEvent {
     FilesChanged(Vec<String>),
+    /// Hide, or the last tab closed: the tool window goes away.
+    Hide,
 }
 
 impl EventEmitter<OpenTarget> for FindView {}
@@ -192,6 +194,9 @@ impl FindView {
         if ix < self.tabs.len() {
             self.tabs.remove(ix);
             self.active = self.active.min(self.tabs.len().saturating_sub(1));
+            if self.tabs.is_empty() {
+                cx.emit(FindViewEvent::Hide);
+            }
             cx.notify();
         }
     }
@@ -298,6 +303,11 @@ impl FindView {
     }
 
     /// Whether the active tab has results to step through.
+    /// No search has run yet (or every tab is closed).
+    pub fn is_empty(&self) -> bool {
+        self.tabs.is_empty()
+    }
+
     pub fn has_occurrences(&self) -> bool {
         self.rows().iter().any(|r| matches!(r, Row::Usage(..) | Row::Text(..) | Row::Item(_)))
     }
@@ -487,6 +497,8 @@ impl FindView {
             .border_color(palette.border)
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Find:"))
             .child(tabs)
+            .child(div().flex_1())
+            .child(tool_button("find-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(FindViewEvent::Hide))))
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
