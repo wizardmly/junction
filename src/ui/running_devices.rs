@@ -659,14 +659,14 @@ fn zoomed_size(bounds: Bounds<Pixels>, fw: f32, fh: f32) -> bool {
 
 /// The file picked in the save dialog; without a file dialog (no portal on
 /// Linux) the default folder.
-fn chosen_path(answer: Result<anyhow::Result<Option<PathBuf>>, futures::channel::oneshot::Canceled>, name: &str) -> Option<PathBuf> {
+pub(crate) fn chosen_path(answer: Result<anyhow::Result<Option<PathBuf>>, futures::channel::oneshot::Canceled>, name: &str) -> Option<PathBuf> {
     match answer {
         Ok(Ok(path)) => path,
         _ => Some(default_save_dir().join(name)),
     }
 }
 
-fn default_save_dir() -> PathBuf {
+pub(crate) fn default_save_dir() -> PathBuf {
     let home = crate::android::sdk::home().unwrap_or_else(std::env::temp_dir);
     let desktop = home.join("Desktop");
     if desktop.is_dir() { desktop } else { home }

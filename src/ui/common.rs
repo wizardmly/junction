@@ -164,6 +164,12 @@ pub fn status_color(kind: StatusKind, palette: &Palette) -> Hsla {
 
 /// A file's icon by its type, as Android Studio draws it.
 pub fn file_icon(path: &str) -> Icon {
+    known_file_icon(path).unwrap_or_else(|| icons::FILE_TEXT.into())
+}
+
+/// [`file_icon`] for a type Android Studio knows; `None` for the rest
+/// (its "any type" icon, where text isn't assumed).
+pub fn known_file_icon(path: &str) -> Option<Icon> {
     let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_lowercase();
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     let icon = match ext {
@@ -173,7 +179,7 @@ pub fn file_icon(path: &str) -> Icon {
         "kts" => icons::KOTLIN_SCRIPT,
         "java" => icons::CLASS,
         // Markdown's "M↓" comes from a plugin whose icon isn't published.
-        "md" | "markdown" => return Icon::empty().path("junction/markdown.svg").text_color(gpui_kit::rgb(0x3574f0)),
+        "md" | "markdown" => return Some(Icon::empty().path("junction/markdown.svg").text_color(gpui_kit::rgb(0x3574f0))),
         "properties" => icons::FILE_PROPERTIES,
         "conf" | "cfg" | "ini" | "toml" => icons::FILE_CONFIG,
         "editorconfig" => icons::FILE_EDITOR_CONFIG,
@@ -193,11 +199,12 @@ pub fn file_icon(path: &str) -> Icon {
         "so" | "dll" | "exe" | "bin" | "class" | "dex" => icons::FILE_BINARY,
         // Languages Android Studio draws with plugin icons we don't have.
         "rs" | "c" | "h" | "cc" | "cpp" | "hpp" | "swift" | "dart" | "go" | "m" | "mm" | "v" | "py" => {
-            return Icon::new(IconName::FileCode).text_color(gpui_kit::rgb(0x6c707e));
+            return Some(Icon::new(IconName::FileCode).text_color(gpui_kit::rgb(0x6c707e)));
         }
-        _ => icons::FILE_TEXT,
+        "txt" | "log" | "text" => icons::FILE_TEXT,
+        _ => return None,
     };
-    icon.into()
+    Some(icon.into())
 }
 
 

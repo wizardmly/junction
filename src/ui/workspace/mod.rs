@@ -67,6 +67,7 @@ actions!(
         ToggleTerminalWindow,
         ToggleDeviceManagerWindow,
         ToggleRunningDevicesWindow,
+        ToggleDeviceExplorerWindow,
         SelectInProject,
         FindInPath,
         ReplaceInPath,
@@ -230,6 +231,7 @@ pub struct Workspace {
     /// The Device Manager tool window (Android devices and emulators).
     device_manager: Entity<crate::ui::device_manager::DeviceManager>,
     running_devices: Entity<crate::ui::running_devices::RunningDevices>,
+    device_explorer: Entity<crate::ui::device_explorer::DeviceExplorer>,
     /// Find / Replace in Files, kept between uses like IntelliJ's.
     find_popup: Option<(Entity<crate::ui::find_popup::FindPopup>, Subscription)>,
     show_find_popup: bool,
@@ -313,14 +315,13 @@ impl Workspace {
             });
             cx.new(|_| crate::ui::terminal_view::TerminalPanel::new(cwd))
         };
-        let device_manager = {
-            let project: Rc<dyn Fn(&App) -> Option<std::path::PathBuf>> = {
-                let model = model.clone();
-                Rc::new(move |cx| model.read(cx).project_root().map(std::path::Path::to_path_buf).or_else(|| model.read(cx).repository().map(|r| r.root().to_path_buf())))
-            };
-            cx.new(|_| crate::ui::device_manager::DeviceManager::new(project))
+        let android_project: Rc<dyn Fn(&App) -> Option<std::path::PathBuf>> = {
+            let model = model.clone();
+            Rc::new(move |cx| model.read(cx).project_root().map(std::path::Path::to_path_buf).or_else(|| model.read(cx).repository().map(|r| r.root().to_path_buf())))
         };
+        let device_manager = cx.new(|_| crate::ui::device_manager::DeviceManager::new(android_project.clone()));
         let running_devices = cx.new(|cx| crate::ui::running_devices::RunningDevices::new(device_manager.clone(), cx));
+        let device_explorer = cx.new(|cx| crate::ui::device_explorer::DeviceExplorer::new(device_manager.clone(), android_project, cx));
         let project = cx.new(|cx| crate::ui::project_view::ProjectView::new(code_index.clone(), cx));
         let weak = cx.entity().downgrade();
         branches_popup.update(cx, |popup, _| {
@@ -437,6 +438,15 @@ impl Workspace {
                     }
                     cx.notify();
                 }
+                crate::ui::device_manager::DeviceManagerEvent::Explore(serial) => {
+                    let serial = serial.clone();
+                    this.tools.open(ToolWindow::DeviceExplorer);
+                    this.device_explorer.update(cx, |d, cx| {
+                        d.set_shown(true, cx);
+                        d.show_device(&serial, cx)
+                    });
+                    cx.notify();
+                }
                 crate::ui::device_manager::DeviceManagerEvent::Notify { title, message, error } => {
                     let (title, message, error) = (title.clone(), message.clone(), *error);
                     this.model.update(cx, |m, cx| m.notify(title, message, error, cx));
@@ -458,6 +468,20 @@ impl Workspace {
                 crate::ui::running_devices::RunningDevicesEvent::Notify { title, message, error } => {
                     let (title, message, error) = (title.clone(), message.clone(), *error);
                     this.model.update(cx, |m, cx| m.notify(title, message, error, cx));
+                }
+            }),
+            cx.subscribe_in(&device_explorer, window, |this, _, event: &crate::ui::device_explorer::DeviceExplorerEvent, window, cx| match event {
+                crate::ui::device_explorer::DeviceExplorerEvent::Hide => {
+                    this.tools.hide(ToolWindow::DeviceExplorer);
+                    cx.notify();
+                }
+                crate::ui::device_explorer::DeviceExplorerEvent::Notify { title, message, error } => {
+                    let (title, message, error) = (title.clone(), message.clone(), *error);
+                    this.model.update(cx, |m, cx| m.notify(title, message, error, cx));
+                }
+                crate::ui::device_explorer::DeviceExplorerEvent::Open(path) => {
+                    let path = path.to_string_lossy().into_owned();
+                    this.open_file(path, None, window, cx);
                 }
             }),
             cx.subscribe_in(&find, window, |this, _, event: &crate::ui::find_view::FindViewEvent, window, cx| match event {
@@ -542,6 +566,7 @@ impl Workspace {
             terminal,
             device_manager,
             running_devices,
+            device_explorer,
             find_popup: None,
             show_find_popup: false,
             find_in: None,
@@ -605,8 +630,10 @@ impl Render for Workspace {
         }
         // The Device Manager follows adb only while it (or Running Devices,
         // whose + lists the devices) shows.
-        let devices_shown = self.tools.is_open(ToolWindow::DeviceManager) || self.tools.is_open(ToolWindow::RunningDevices);
+        let explorer_shown = self.tools.is_open(ToolWindow::DeviceExplorer);
+        let devices_shown = self.tools.is_open(ToolWindow::DeviceManager) || self.tools.is_open(ToolWindow::RunningDevices) || explorer_shown;
         self.device_manager.update(cx, |d, cx| d.set_shown(devices_shown, cx));
+        self.device_explorer.update(cx, |d, cx| d.set_shown(explorer_shown, cx));
         let git_on_side = self.tools.side(ToolWindow::Git) != Side::Bottom;
         self.log.update(cx, |log, cx| log.set_details_below(git_on_side, cx));
         let palette = cx.palette().clone();
@@ -731,6 +758,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleTerminalWindow, window, cx| this.shortcut_tool(ToolWindow::Terminal, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleDeviceManagerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceManager, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleRunningDevicesWindow, window, cx| this.shortcut_tool(ToolWindow::RunningDevices, window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleDeviceExplorerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceExplorer, window, cx)))
             .on_action(cx.listener(|this, _: &FindInPath, window, cx| this.open_find_popup(false, window, cx)))
             .on_action(cx.listener(|this, _: &ReplaceInPath, window, cx| this.open_find_popup(true, window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx)))

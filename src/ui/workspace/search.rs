@@ -142,6 +142,7 @@ impl Workspace {
             ("Terminal", "Alt+F12", op(|this, window, cx| this.shortcut_tool(ToolWindow::Terminal, window, cx))),
             ("Device Manager", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::DeviceManager, window, cx))),
             ("Running Devices", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::RunningDevices, window, cx))),
+            ("Device Explorer", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::DeviceExplorer, window, cx))),
             ("Git", "Alt+9", op(|this, window, cx| this.on_toggle_git(&ToggleGitWindow, window, cx))),
             ("Commit", "Alt+0", op(|this, window, cx| this.show_left_tab(LeftTab::Commit, window, cx))),
             ("Refresh", "Ctrl+Alt+Y", op(|this, window, cx| this.on_refresh(&Refresh, window, cx))),

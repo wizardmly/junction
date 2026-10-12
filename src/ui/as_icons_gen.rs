@@ -80,6 +80,7 @@ pub const EXPAND_ALL: AsIcon = AsIcon { light: &[("as/expand-all.l0.svg", 0x6c70
 pub const EXPORT: AsIcon = AsIcon { light: &[("as/export.l0.svg", 0x6c707eff)], dark: &[("as/export.d0.svg", 0xced0d6ff)] };
 pub const EXTERNAL_LINK: AsIcon = AsIcon { light: &[("as/external-link.l0.svg", 0x6c707eff)], dark: &[("as/external-link.d0.svg", 0xced0d6ff)] };
 pub const FIELD: AsIcon = AsIcon { light: &[("as/field.l0.svg", 0xfff4ebff), ("as/field.l1.svg", 0xe66d17ff)], dark: &[("as/field.d0.svg", 0x45322bff), ("as/field.d1.svg", 0xc77d55ff)] };
+pub const FILE_ANY: AsIcon = AsIcon { light: &[("as/file-any.l0.svg", 0x6c707eff), ("as/file-any.l1.svg", 0xebecf0ff)], dark: &[("as/file-any.d0.svg", 0xced0d6ff), ("as/file-any.d1.svg", 0x43454aff)] };
 pub const FILE_ARCHIVE: AsIcon = AsIcon { light: &[("as/file-archive.l0.svg", 0xe7effdff), ("as/file-archive.l1.svg", 0x3574f0ff)], dark: &[("as/file-archive.d0.svg", 0x25324dff), ("as/file-archive.d1.svg", 0x548af7ff)] };
 pub const FILE_BINARY: AsIcon = AsIcon { light: &[("as/file-binary.l0.svg", 0x6c707eff)], dark: &[("as/file-binary.d0.svg", 0xced0d6ff)] };
 pub const FILE_CONFIG: AsIcon = AsIcon { light: &[("as/file-config.l0.svg", 0x3574f0ff), ("as/file-config.l1.svg", 0xedf3ffff), ("as/file-config.l2.svg", 0xebecf0ff), ("as/file-config.l3.svg", 0x6c707eff)], dark: &[("as/file-config.d0.svg", 0x548af7ff), ("as/file-config.d1.svg", 0x25324dff), ("as/file-config.d2.svg", 0x43454aff), ("as/file-config.d3.svg", 0xced0d6ff)] };
@@ -131,6 +132,7 @@ pub const INLINE_REFRESH: AsIcon = AsIcon { light: &[("as/inline-refresh.l0.svg"
 pub const INTERFACE: AsIcon = AsIcon { light: &[("as/interface.l0.svg", 0xf2fcf3ff), ("as/interface.l1.svg", 0x208a3cff)], dark: &[("as/interface.d0.svg", 0x253627ff), ("as/interface.d1.svg", 0x57965cff)] };
 pub const INTERFACE_KOTLIN: AsIcon = AsIcon { light: &[("as/interface-kotlin.l0.svg", 0xf2fcf3ff), ("as/interface-kotlin.l1.svg", 0x208a3cff), ("as/interface-kotlin.l2.svg", 0xfaf5ffff), ("as/interface-kotlin.l3.svg", 0x834df0ff), ("as/interface-kotlin.l4.svg", 0x208a3cff)], dark: &[("as/interface-kotlin.d0.svg", 0x253627ff), ("as/interface-kotlin.d1.svg", 0x57965cff), ("as/interface-kotlin.d2.svg", 0x2f2936ff), ("as/interface-kotlin.d3.svg", 0xa571e6ff), ("as/interface-kotlin.d4.svg", 0x57965cff)] };
 pub const JDK: AsIcon = AsIcon { light: &[("as/jdk.l0.svg", 0xebecf0ff), ("as/jdk.l1.svg", 0x6c707eff), ("as/jdk.l2.svg", 0xe7effdff), ("as/jdk.l3.svg", 0x3574f0ff)], dark: &[("as/jdk.d0.svg", 0x43454aff), ("as/jdk.d1.svg", 0xced0d6ff), ("as/jdk.d2.svg", 0x25324dff), ("as/jdk.d3.svg", 0x548af7ff)] };
+pub const KILL_PROCESS: AsIcon = AsIcon { light: &[("as/kill-process.l0.svg", 0xdb3b4bff)], dark: &[("as/kill-process.d0.svg", 0xdb5c5cff)] };
 pub const KOTLIN: AsIcon = AsIcon { light: &[("as/kotlin.l0.svg", 0xfaf5ffff), ("as/kotlin.l1.svg", 0x834df0ff)], dark: &[("as/kotlin.d0.svg", 0x2f2936ff), ("as/kotlin.d1.svg", 0xa571e6ff)] };
 pub const KOTLIN_SCRIPT: AsIcon = AsIcon { light: &[("as/kotlin-script.l0.svg", 0x6c707eff), ("as/kotlin-script.l1.svg", 0xfaf5ffff), ("as/kotlin-script.l2.svg", 0x834df0ff)], dark: &[("as/kotlin-script.d0.svg", 0xced0d6ff), ("as/kotlin-script.d1.svg", 0x2f2936ff), ("as/kotlin-script.d2.svg", 0xa571e6ff)] };
 pub const LAYOUT: AsIcon = AsIcon { light: &[("as/layout.l0.svg", 0x6c707eff)], dark: &[("as/layout.d0.svg", 0xced0d6ff)] };
@@ -143,6 +145,7 @@ pub const LOCATE: AsIcon = AsIcon { light: &[("as/locate.l0.svg", 0x6c707eff)], 
 pub const LOCKED: AsIcon = AsIcon { light: &[("as/locked.l0.svg", 0x6c707eff)], dark: &[("as/locked.d0.svg", 0xced0d6ff)] };
 pub const MAGIC_RESOLVE: AsIcon = AsIcon { light: &[("as/magic-resolve.l0.svg", 0x6c707eff)], dark: &[("as/magic-resolve.d0.svg", 0xced0d6ff)] };
 pub const MATCH_CASE: AsIcon = AsIcon { light: &[("as/match-case.l0.svg", 0x6c707eff)], dark: &[("as/match-case.d0.svg", 0xced0d6ff)] };
+pub const MENU_OPEN: AsIcon = AsIcon { light: &[("as/menu-open.l0.svg", 0x6c707eff)], dark: &[("as/menu-open.d0.svg", 0xced0d6ff)] };
 pub const METHOD: AsIcon = AsIcon { light: &[("as/method.l0.svg", 0xfff7f7ff), ("as/method.l1.svg", 0xdb3b4bff)], dark: &[("as/method.d0.svg", 0x402929ff), ("as/method.d1.svg", 0xdb5c5cff)] };
 pub const MODULE: AsIcon = AsIcon { light: &[("as/module.l0.svg", 0xe7effdff), ("as/module.l1.svg", 0x3574f0ff), ("as/module.l2.svg", 0xebecf0ff), ("as/module.l3.svg", 0x6c707eff)], dark: &[("as/module.d0.svg", 0x25324dff), ("as/module.d1.svg", 0x548af7ff), ("as/module.d2.svg", 0x43454aff), ("as/module.d3.svg", 0xced0d6ff)] };
 pub const MODULE_ANDROID: AsIcon = AsIcon { light: &[("as/module-android.l0.svg", 0xe6f7e9ff), ("as/module-android.l1.svg", 0x3ddc84ff), ("as/module-android.l2.svg", 0xebecf0ff), ("as/module-android.l3.svg", 0x6c707eff)], dark: &[("as/module-android.d0.svg", 0x253627ff), ("as/module-android.d1.svg", 0x3ddc84ff), ("as/module-android.d2.svg", 0x43454aff), ("as/module-android.d3.svg", 0xced0d6ff)] };
@@ -207,8 +210,10 @@ pub const STATUS_SUCCESS: AsIcon = AsIcon { light: &[("as/status-success.l0.svg"
 pub const STATUS_WARNING: AsIcon = AsIcon { light: &[("as/status-warning.l0.svg", 0xffaf0fff), ("as/status-warning.l1.svg", 0xffffffff)], dark: &[("as/status-warning.d0.svg", 0xf2c55cff), ("as/status-warning.d1.svg", 0x5e4d33ff)] };
 pub const STATUS_WARNING_OUTLINE: AsIcon = AsIcon { light: &[("as/status-warning-outline.l0.svg", 0x6c707eff)], dark: &[("as/status-warning-outline.d0.svg", 0xced0d6ff)] };
 pub const STOP: AsIcon = AsIcon { light: &[("as/stop.l0.svg", 0xfff7f7ff), ("as/stop.l1.svg", 0xdb3b4bff)], dark: &[("as/stop.d0.svg", 0x5e3838ff), ("as/stop.d1.svg", 0xdb5c5cff)] };
+pub const STUDIO_REFRESH: AsIcon = AsIcon { light: &[("as/studio-refresh.l0.svg", 0x6c707eff)], dark: &[("as/studio-refresh.d0.svg", 0xced0d6ff)] };
 pub const SUCCESS: AsIcon = AsIcon { light: &[("as/success.l0.svg", 0x55a76aff), ("as/success.l1.svg", 0xffffffff)], dark: &[("as/success.d0.svg", 0x57965cff), ("as/success.d1.svg", 0xffffffff)] };
 pub const SWAP_PANELS: AsIcon = AsIcon { light: &[("as/swap-panels.l0.svg", 0x6c707eff)], dark: &[("as/swap-panels.d0.svg", 0xced0d6ff)] };
+pub const SYMLINK: AsIcon = AsIcon { light: &[("as/symlink.l0.svg", 0x6c707eff)], dark: &[("as/symlink.d0.svg", 0xced0d6ff)] };
 pub const SYNCHRONIZE_SCROLLING: AsIcon = AsIcon { light: &[("as/synchronize-scrolling.l0.svg", 0x3574f0ff), ("as/synchronize-scrolling.l1.svg", 0x6c707eff)], dark: &[("as/synchronize-scrolling.d0.svg", 0x548af7ff), ("as/synchronize-scrolling.d1.svg", 0xced0d6ff)] };
 pub const TAG: AsIcon = AsIcon { light: &[("as/tag.l0.svg", 0x6c707eff)], dark: &[("as/tag.d0.svg", 0xced0d6ff)] };
 pub const TEST_ROOT: AsIcon = AsIcon { light: &[("as/test-root.l0.svg", 0xf2fcf3ff), ("as/test-root.l1.svg", 0x208a3cff)], dark: &[("as/test-root.d0.svg", 0x253627ff), ("as/test-root.d1.svg", 0x57965cff)] };
@@ -216,6 +221,7 @@ pub const TOGGLE_VISIBILITY: AsIcon = AsIcon { light: &[("as/toggle-visibility.l
 pub const TW_BOOKMARKS: AsIcon = AsIcon { light: &[("as/tw-bookmarks.l0.svg", 0x6c707eff)], dark: &[("as/tw-bookmarks.d0.svg", 0xced0d6ff)] };
 pub const TW_BUILD: AsIcon = AsIcon { light: &[("as/tw-build.l0.svg", 0x6c707eff)], dark: &[("as/tw-build.d0.svg", 0xced0d6ff)] };
 pub const TW_COMMIT: AsIcon = AsIcon { light: &[("as/tw-commit.l0.svg", 0x6c707eff)], dark: &[("as/tw-commit.d0.svg", 0xced0d6ff)] };
+pub const TW_DEVICE_EXPLORER: AsIcon = AsIcon { light: &[("as/tw-device-explorer.l0.svg", 0x6c707eff)], dark: &[("as/tw-device-explorer.d0.svg", 0xced0d6ff)] };
 pub const TW_DEVICE_MANAGER: AsIcon = AsIcon { light: &[("as/tw-device-manager.l0.svg", 0x6c707eff)], dark: &[("as/tw-device-manager.d0.svg", 0xced0d6ff)] };
 pub const TW_FIND: AsIcon = AsIcon { light: &[("as/tw-find.l0.svg", 0x6c707eff)], dark: &[("as/tw-find.d0.svg", 0xced0d6ff)] };
 pub const TW_HIERARCHY: AsIcon = AsIcon { light: &[("as/tw-hierarchy.l0.svg", 0x6c707eff)], dark: &[("as/tw-hierarchy.d0.svg", 0xced0d6ff)] };
@@ -486,6 +492,10 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/field.l1.svg", include_bytes!("../../assets/as-icons/gen/field.l1.svg")),
     ("as/field.d0.svg", include_bytes!("../../assets/as-icons/gen/field.d0.svg")),
     ("as/field.d1.svg", include_bytes!("../../assets/as-icons/gen/field.d1.svg")),
+    ("as/file-any.l0.svg", include_bytes!("../../assets/as-icons/gen/file-any.l0.svg")),
+    ("as/file-any.l1.svg", include_bytes!("../../assets/as-icons/gen/file-any.l1.svg")),
+    ("as/file-any.d0.svg", include_bytes!("../../assets/as-icons/gen/file-any.d0.svg")),
+    ("as/file-any.d1.svg", include_bytes!("../../assets/as-icons/gen/file-any.d1.svg")),
     ("as/file-archive.l0.svg", include_bytes!("../../assets/as-icons/gen/file-archive.l0.svg")),
     ("as/file-archive.l1.svg", include_bytes!("../../assets/as-icons/gen/file-archive.l1.svg")),
     ("as/file-archive.d0.svg", include_bytes!("../../assets/as-icons/gen/file-archive.d0.svg")),
@@ -682,6 +692,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/jdk.d1.svg", include_bytes!("../../assets/as-icons/gen/jdk.d1.svg")),
     ("as/jdk.d2.svg", include_bytes!("../../assets/as-icons/gen/jdk.d2.svg")),
     ("as/jdk.d3.svg", include_bytes!("../../assets/as-icons/gen/jdk.d3.svg")),
+    ("as/kill-process.l0.svg", include_bytes!("../../assets/as-icons/gen/kill-process.l0.svg")),
+    ("as/kill-process.d0.svg", include_bytes!("../../assets/as-icons/gen/kill-process.d0.svg")),
     ("as/kotlin.l0.svg", include_bytes!("../../assets/as-icons/gen/kotlin.l0.svg")),
     ("as/kotlin.l1.svg", include_bytes!("../../assets/as-icons/gen/kotlin.l1.svg")),
     ("as/kotlin.d0.svg", include_bytes!("../../assets/as-icons/gen/kotlin.d0.svg")),
@@ -720,6 +732,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/magic-resolve.d0.svg", include_bytes!("../../assets/as-icons/gen/magic-resolve.d0.svg")),
     ("as/match-case.l0.svg", include_bytes!("../../assets/as-icons/gen/match-case.l0.svg")),
     ("as/match-case.d0.svg", include_bytes!("../../assets/as-icons/gen/match-case.d0.svg")),
+    ("as/menu-open.l0.svg", include_bytes!("../../assets/as-icons/gen/menu-open.l0.svg")),
+    ("as/menu-open.d0.svg", include_bytes!("../../assets/as-icons/gen/menu-open.d0.svg")),
     ("as/method.l0.svg", include_bytes!("../../assets/as-icons/gen/method.l0.svg")),
     ("as/method.l1.svg", include_bytes!("../../assets/as-icons/gen/method.l1.svg")),
     ("as/method.d0.svg", include_bytes!("../../assets/as-icons/gen/method.d0.svg")),
@@ -910,12 +924,16 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/stop.l1.svg", include_bytes!("../../assets/as-icons/gen/stop.l1.svg")),
     ("as/stop.d0.svg", include_bytes!("../../assets/as-icons/gen/stop.d0.svg")),
     ("as/stop.d1.svg", include_bytes!("../../assets/as-icons/gen/stop.d1.svg")),
+    ("as/studio-refresh.l0.svg", include_bytes!("../../assets/as-icons/gen/studio-refresh.l0.svg")),
+    ("as/studio-refresh.d0.svg", include_bytes!("../../assets/as-icons/gen/studio-refresh.d0.svg")),
     ("as/success.l0.svg", include_bytes!("../../assets/as-icons/gen/success.l0.svg")),
     ("as/success.l1.svg", include_bytes!("../../assets/as-icons/gen/success.l1.svg")),
     ("as/success.d0.svg", include_bytes!("../../assets/as-icons/gen/success.d0.svg")),
     ("as/success.d1.svg", include_bytes!("../../assets/as-icons/gen/success.d1.svg")),
     ("as/swap-panels.l0.svg", include_bytes!("../../assets/as-icons/gen/swap-panels.l0.svg")),
     ("as/swap-panels.d0.svg", include_bytes!("../../assets/as-icons/gen/swap-panels.d0.svg")),
+    ("as/symlink.l0.svg", include_bytes!("../../assets/as-icons/gen/symlink.l0.svg")),
+    ("as/symlink.d0.svg", include_bytes!("../../assets/as-icons/gen/symlink.d0.svg")),
     ("as/synchronize-scrolling.l0.svg", include_bytes!("../../assets/as-icons/gen/synchronize-scrolling.l0.svg")),
     ("as/synchronize-scrolling.l1.svg", include_bytes!("../../assets/as-icons/gen/synchronize-scrolling.l1.svg")),
     ("as/synchronize-scrolling.d0.svg", include_bytes!("../../assets/as-icons/gen/synchronize-scrolling.d0.svg")),
@@ -934,6 +952,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/tw-build.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-build.d0.svg")),
     ("as/tw-commit.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-commit.l0.svg")),
     ("as/tw-commit.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-commit.d0.svg")),
+    ("as/tw-device-explorer.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-device-explorer.l0.svg")),
+    ("as/tw-device-explorer.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-device-explorer.d0.svg")),
     ("as/tw-device-manager.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-device-manager.l0.svg")),
     ("as/tw-device-manager.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-device-manager.d0.svg")),
     ("as/tw-find.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-find.l0.svg")),

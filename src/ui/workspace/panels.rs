@@ -93,6 +93,7 @@ impl Workspace {
             }
             ToolWindow::DeviceManager => (Icon::from(icons::TW_DEVICE_MANAGER), "Device Manager".into(), ""),
             ToolWindow::RunningDevices => (Icon::from(icons::TW_RUNNING_DEVICES), "Running Devices".into(), ""),
+            ToolWindow::DeviceExplorer => (Icon::from(icons::TW_DEVICE_EXPLORER), "Device Explorer".into(), ""),
         }
     }
 
@@ -244,6 +245,7 @@ impl Workspace {
         redraw(&self.changes, cx);
         redraw(&self.device_manager, cx);
         redraw(&self.running_devices, cx);
+        redraw(&self.device_explorer, cx);
         for tab in &self.editors {
             redraw(&tab.view, cx);
         }
@@ -268,6 +270,7 @@ impl Workspace {
             ToolWindow::Notifications => self.render_notifications(cx).into_any_element(),
             ToolWindow::DeviceManager => crate::ui::common::cached(&self.device_manager),
             ToolWindow::RunningDevices => crate::ui::common::cached(&self.running_devices),
+            ToolWindow::DeviceExplorer => crate::ui::common::cached(&self.device_explorer),
         }
     }
 

@@ -11,6 +11,7 @@ pub mod dialogs;
 pub mod diff_panes;
 pub mod device_manager;
 pub mod running_devices;
+pub mod device_explorer;
 pub mod diff_view;
 pub mod text_buffer;
 pub mod text_panes;

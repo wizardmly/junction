@@ -4,6 +4,8 @@
 
 pub mod adb;
 pub mod avd;
+pub mod files;
+pub mod jdwp;
 pub mod mirror;
 pub mod pairing;
 pub mod process;
@@ -438,4 +440,46 @@ mod tests {
         assert_eq!(cpu_arch("arm64-v8a"), "arm64");
         assert_eq!(FormFactor::from_characteristics("nosdcard,watch"), FormFactor::Wear);
     }
+}
+
+/// The application IDs a project builds (Device Explorer's package
+/// filter): `applicationId` in its Gradle files, else the manifests'
+/// `package`.
+pub fn application_ids(project: &Path) -> Vec<String> {
+    use std::sync::LazyLock;
+    static GRADLE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"\bapplicationId\s*(?:=\s*)?\(?\s*["']([\w.]+)["']"#).unwrap());
+    static MANIFEST: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"<manifest[^>]*\spackage\s*=\s*"([\w.]+)""#).unwrap());
+    fn walk(dir: &Path, depth: usize, gradle: &mut Vec<PathBuf>, manifests: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if depth < 4 && !name.starts_with('.') && !matches!(name.as_str(), "build" | "node_modules" | "target" | "out") {
+                    walk(&path, depth + 1, gradle, manifests);
+                }
+            } else if name == "build.gradle" || name == "build.gradle.kts" {
+                gradle.push(path);
+            } else if name == "AndroidManifest.xml" {
+                manifests.push(path);
+            }
+        }
+    }
+    let (mut gradle, mut manifests) = (Vec::new(), Vec::new());
+    walk(project, 0, &mut gradle, &mut manifests);
+    let mut ids: Vec<String> = gradle
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .flat_map(|text| GRADLE.captures_iter(&text).map(|c| c[1].to_owned()).collect::<Vec<_>>())
+        .collect();
+    if ids.is_empty() {
+        ids = manifests
+            .iter()
+            .filter_map(|p| std::fs::read_to_string(p).ok())
+            .filter_map(|text| MANIFEST.captures(&text).map(|c| c[1].to_owned()))
+            .collect();
+    }
+    ids.sort();
+    ids.dedup();
+    ids
 }

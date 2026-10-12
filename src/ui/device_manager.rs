@@ -36,6 +36,8 @@ pub enum DeviceManagerEvent {
     Hide,
     /// Start / Stop Mirroring a device in Running Devices.
     Mirror { serial: String, title: String, start: bool },
+    /// Open in Device Explorer.
+    Explore(String),
     Notify { title: String, message: String, error: bool },
 }
 
@@ -388,6 +390,15 @@ impl DeviceManager {
             move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| entity.update(cx, |this, cx| f(this, &id, window, cx))
         };
         let mut menu = menu;
+        // Open in Device Explorer: any device adb can reach.
+        if let Some(serial) = device.serial.clone().filter(|_| device.online) {
+            let entity = entity.clone();
+            menu = menu
+                .item(PopupMenuItem::new("Open in Device Explorer").icon(Icon::new(icons::TW_DEVICE_EXPLORER)).on_click(move |_, _, cx| {
+                    entity.update(cx, |_, cx| cx.emit(DeviceManagerEvent::Explore(serial.clone())))
+                }))
+                .separator();
+        }
         if let Some(avd) = &device.avd {
             let offline = device.serial.is_none() && !transitioning;
             let dir = avd.dir.clone();
