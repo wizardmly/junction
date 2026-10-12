@@ -19,6 +19,8 @@ impl Workspace {
                 div()
                     .flex_1()
                     .min_h_0()
+                    // A wide toolbar (the diff's) stays inside its group.
+                    .overflow_hidden()
                     .when(focused && matches!(self.front, Front::Editor(_)), |el| el.key_context(TABS_CONTEXT))
                     .map(|el| {
                         if !has_repo {

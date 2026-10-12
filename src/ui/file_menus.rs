@@ -540,34 +540,37 @@ fn rename(target: &ProjectTarget, window: &mut Window, cx: &mut App) {
 }
 
 /// The Project view's keyboard shortcuts for the menu's items (the ones the
-/// menu shows on the right), on the selected row; true when one ran.
-pub fn project_shortcut(target: &ProjectTarget, keystroke: &gpui_kit::Keystroke, window: &mut Window, cx: &mut App) -> bool {
+/// menu shows on the right), on the selected row: what to run, if the key is one.
+/// (Run it outside the view's own update, as a menu click is.)
+pub fn project_shortcut(target: &ProjectTarget, keystroke: &gpui_kit::Keystroke) -> Option<Box<dyn FnOnce(&mut Window, &mut App)>> {
     let m = keystroke.modifiers;
     let ctrl = m.control || m.platform;
     let root = target.path.is_empty();
+    let t = target.clone();
     let full = target.full().to_string_lossy().into_owned();
-    match (ctrl, m.alt, m.shift, keystroke.key.as_str()) {
-        (true, false, false, "x") if !root => {
-            *target.clipboard.borrow_mut() = Some((vec![target.full()], true));
+    let run: Box<dyn FnOnce(&mut Window, &mut App)> = match (ctrl, m.alt, m.shift, keystroke.key.as_str()) {
+        (true, false, false, "x") if !root => Box::new(move |_, cx| {
+            *t.clipboard.borrow_mut() = Some((vec![t.full()], true));
             cx.write_to_clipboard(ClipboardItem::new_string(full));
-        }
-        (true, false, false, "c") => {
-            *target.clipboard.borrow_mut() = Some((vec![target.full()], false));
+        }),
+        (true, false, false, "c") => Box::new(move |_, cx| {
+            *t.clipboard.borrow_mut() = Some((vec![t.full()], false));
             cx.write_to_clipboard(ClipboardItem::new_string(full));
-        }
-        (true, false, false, "v") if target.clipboard.borrow().is_some() => paste(target, window, cx),
-        (true, false, true, "c") => cx.write_to_clipboard(ClipboardItem::new_string(full)),
-        (false, false, true, "f6") if !root => rename(target, window, cx),
-        (false, _, false, "delete") if !root => delete_files(target.root.clone(), vec![target.path.clone()], target.actions.clone(), window, cx),
-        (false, false, true, "enter") if !target.is_dir => (target.actions)(FileAction::OpenInSplit(target.path.clone()), window, cx),
+        }),
+        (true, false, false, "v") if target.clipboard.borrow().is_some() => Box::new(move |window, cx| paste(&t, window, cx)),
+        (true, false, true, "c") => Box::new(move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(full))),
+        (false, false, true, "f6") if !root => Box::new(move |window, cx| rename(&t, window, cx)),
+        (false, _, false, "delete") if !root => Box::new(move |window, cx| delete_files(t.root.clone(), vec![t.path.clone()], t.actions.clone(), window, cx)),
+        (false, false, true, "enter") if !target.is_dir => Box::new(move |window, cx| (t.actions)(FileAction::OpenInSplit(t.path.clone()), window, cx)),
         (true, false, true, "f" | "r") => {
+            let replace = keystroke.key == "r";
             let dir = if target.is_dir { target.path.clone() } else { Path::new(&target.path).parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default() };
-            (target.actions)(FileAction::FindInPath { dir, replace: keystroke.key == "r" }, window, cx)
+            Box::new(move |window, cx| (t.actions)(FileAction::FindInPath { dir, replace }, window, cx))
         }
-        (true, false, false, "d") if !target.is_dir => (target.actions)(FileAction::CompareWithFile(target.path.clone()), window, cx),
-        _ => return false,
-    }
-    true
+        (true, false, false, "d") if !target.is_dir => Box::new(move |window, cx| (t.actions)(FileAction::CompareWithFile(t.path.clone()), window, cx)),
+        _ => return None,
+    };
+    Some(run)
 }
 
 fn paste(target: &ProjectTarget, window: &mut Window, cx: &mut App) {

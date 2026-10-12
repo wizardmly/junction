@@ -928,11 +928,10 @@ impl ProjectView {
             return;
         }
         // The context menu's shortcuts (Cut, Copy, Paste, Rename, Delete…).
-        if let Some(target) = row.as_ref().and_then(|row| self.target(row, cx)) {
-            if crate::ui::file_menus::project_shortcut(&target, k, window, cx) {
-                cx.stop_propagation();
-                return;
-            }
+        if let Some(run) = row.as_ref().and_then(|row| self.target(row, cx)).and_then(|t| crate::ui::file_menus::project_shortcut(&t, k)) {
+            window.defer(cx, run);
+            cx.stop_propagation();
+            return;
         }
         let last = self.rows.len().saturating_sub(1);
         match k.key.as_str() {
