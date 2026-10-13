@@ -497,24 +497,16 @@ fn compose_message(code: u32) -> Vec<u8> {
 /// [`Event::Typing`] says why.
 /// How long after a failed start the helper is tried again.
 const HELPER_RETRY: Duration = Duration::from_secs(300);
-/// How long the helper stays connected without typing; it holds the
-/// device's one UI automation connection, which UI tests need too.
-const HELPER_IDLE: Duration = Duration::from_secs(300);
-
 fn input_worker(queue: std::sync::mpsc::Receiver<Input>, adb: &Adb, serial: &str, shared: &Shared, events: &UnboundedSender<Event>) {
-    use std::sync::mpsc::RecvTimeoutError;
-    let mut typer = Typer { adb, serial, shared, events, helper: Helper::None, keyboard: None, last: Instant::now() };
+    // The helper, once started, lives as long as the mirroring session.
+    let mut typer = Typer { adb, serial, shared, events, helper: Helper::None, keyboard: None };
     let mut pending: Option<Input> = None;
     loop {
         let input = match pending.take() {
             Some(input) => input,
-            None => match queue.recv_timeout(Duration::from_secs(30)) {
+            None => match queue.recv() {
                 Ok(input) => input,
-                Err(RecvTimeoutError::Timeout) => {
-                    typer.idle();
-                    continue;
-                }
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(_) => break,
             },
         };
         let mut text = match input {
@@ -553,12 +545,10 @@ struct Typer<'a> {
     events: &'a UnboundedSender<Event>,
     helper: Helper,
     keyboard: Option<(Instant, Result<(), String>)>,
-    last: Instant,
 }
 
 impl Typer<'_> {
     fn type_text(&mut self, text: &str) {
-        self.last = Instant::now();
         let ascii = text.chars().all(|c| c.is_ascii() && !c.is_ascii_control());
         // Start the helper in the background: ASCII never waits for it.
         if !ascii && (matches!(self.helper, Helper::None) || matches!(&self.helper, Helper::Failed(t, _) if t.elapsed() > HELPER_RETRY)) {
@@ -627,14 +617,6 @@ impl Typer<'_> {
             if let Some(why) = why {
                 let _ = self.events.unbounded_send(Event::Typing(why));
             }
-        }
-    }
-
-    /// Lets go of the device's UI automation connection after a while
-    /// without typing.
-    fn idle(&mut self) {
-        if matches!(self.helper, Helper::Ready(_)) && self.last.elapsed() > HELPER_IDLE {
-            self.helper = Helper::None;
         }
     }
 }
