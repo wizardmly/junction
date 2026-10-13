@@ -91,13 +91,11 @@ impl TextInput {
             other => {
                 let mut why = other.strip_prefix("fail ").unwrap_or(other).to_owned();
                 if why.starts_with("Another UI automation") {
-                    // Name what holds it, for the notification's details.
-                    let holders = adb
-                        .shell(serial, "ps -A -o PID,USER,ARGS 2>/dev/null | grep -i -E 'uiautomator|instrument|app_process|junction' | grep -v grep")
-                        .unwrap_or_default();
-                    let holders: Vec<&str> = holders.lines().map(str::trim).filter(|l| !l.is_empty()).take(5).collect();
+                    // Name what holds it: a running instrumentation or uiautomator.
+                    let ps = adb.shell(serial, "ps -A -o ARGS 2>/dev/null").unwrap_or_default();
+                    let holders = automation_holders(&ps);
                     if !holders.is_empty() {
-                        why.push_str(&format!(" Running on the device: {}", holders.join("; ")));
+                        why = format!("Another UI automation holds the device's accessibility connection: {}. Stop it to type here.", holders.join(", "));
                     }
                 }
                 Err(why)
@@ -157,6 +155,28 @@ fn helper_file() -> io::Result<PathBuf> {
     Ok(path)
 }
 
+/// The UI automations in `ps -A -o ARGS` output: the package of each
+/// running `am instrument`, and uiautomator.
+fn automation_holders(ps: &str) -> Vec<String> {
+    let mut holders: Vec<String> = Vec::new();
+    for line in ps.lines() {
+        let args: Vec<&str> = line.split_whitespace().collect();
+        let holder = if let Some(ix) = args.iter().position(|a| *a == "instrument") {
+            // `am instrument [options] <package>/<runner>`: the component is
+            // the first argument with a slash after the options.
+            args[ix + 1..].iter().rev().find(|a| a.contains('/') && !a.starts_with('-')).map(|c| c.split('/').next().unwrap_or(c).to_owned())
+        } else if args.iter().any(|a| a.ends_with("uiautomator") || *a == "com.android.commands.uiautomator.Launcher") {
+            Some("uiautomator".to_owned())
+        } else {
+            None
+        };
+        if let Some(holder) = holder.filter(|h| !h.is_empty() && !holders.contains(h)) {
+            holders.push(holder);
+        }
+    }
+    holders
+}
+
 fn base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -176,6 +196,17 @@ fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_automation_holders() {
+        let ps = "ARGS\n\
+            app_process /system/bin com.android.commands.am.Am instrument -w com.android.cli.interact.instrumentation/.InstrumentationServer\n\
+            com.android.cli.interact.instrumentation\n\
+            app_process /system/bin com.android.commands.am.Am instrument -w -m -e debug false -e class dev.mobile.maestro.MaestroDriverService#grpcServer -e port 7001 dev.mobile.maestro.test/androidx.test.runner.AndroidJUnitRunner\n\
+            app_process /data/local/tmp/.studio com.android.tools.screensharing.Main --socket=screen-sharing-agent-55058\n";
+        assert_eq!(automation_holders(ps), ["com.android.cli.interact.instrumentation", "dev.mobile.maestro.test"]);
+        assert!(automation_holders("app_process / com.genymobile.scrcpy.Server 3.3.3").is_empty());
+    }
 
     #[test]
     fn encodes_base64() {
