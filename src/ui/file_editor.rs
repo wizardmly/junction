@@ -57,7 +57,15 @@ actions!(
         CompareWithClipboard,
         DeleteLine,
         CloseFindBar,
-        ToggleLineNumbers
+        ToggleLineNumbers,
+        ToggleBookmark,
+        ToggleBookmarkWithMnemonic,
+        ToggleSoftWrap,
+        ToggleGutterIcons,
+        ToggleIndentGuides,
+        ToggleWhitespaces,
+        ConfigureSoftWraps,
+        ConfigureGutterIcons
     ]
 );
 
@@ -82,6 +90,9 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-alt-shift-down", NextChange, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-shift-up", PreviousChange, Some(CONTEXT)),
         KeyBinding::new("alt-f7", FindUsages, Some(CONTEXT)),
+        // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
+        KeyBinding::new(if cfg!(target_os = "macos") { "f3" } else { "f11" }, ToggleBookmark, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "alt-f3" } else { "ctrl-f11" }, ToggleBookmarkWithMnemonic, Some(CONTEXT)),
         // IntelliJ: Ctrl+R replaces (Ctrl+F finds, from the editor itself), F3 / Shift+F3 step.
         KeyBinding::new("secondary-f", OpenFind, Some(CONTEXT)),
         KeyBinding::new("secondary-r", OpenReplace, Some(CONTEXT)),
@@ -324,6 +335,11 @@ pub struct FileEditor {
     /// Whether the last right-click landed on the line-number gutter, which
     /// has its own menu (Annotate with Git Blame), as in IntelliJ.
     gutter_click: Rc<std::cell::Cell<bool>>,
+    /// The line the gutter was right-clicked on, for the menu's bookmark
+    /// items (F11 from the keyboard takes the caret's line).
+    gutter_line: Rc<std::cell::Cell<Option<usize>>>,
+    /// Icon slots the implementation markers take.
+    hierarchy_slots: usize,
     popup_focus: gpui_kit::FocusHandle,
     /// The file couldn't be read: no editing, saving or reloading.
     error: Option<String>,
@@ -539,10 +555,13 @@ impl FileEditor {
         });
         let settings_state = state.clone();
         let mut shown = view;
-        let settings = cx.observe_global_in::<crate::settings::Settings>(window, move |_, window, cx| {
+        let settings = cx.observe_global_in::<crate::settings::Settings>(window, move |this, window, cx| {
             let view = crate::settings::Settings::get(cx).diff.clone();
             if view == shown {
                 return;
+            }
+            if view.show_gutter_icons != shown.show_gutter_icons {
+                this.apply_gutter_extra(cx);
             }
             settings_state.update(cx, |state, cx| {
                 state.set_line_number(view.show_line_numbers, window, cx);
@@ -552,13 +571,18 @@ impl FileEditor {
             });
             shown = view;
         });
-        let subscriptions = vec![settings, cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
+        let bookmarks = cx.observe_global::<crate::bookmarks::Bookmarks>(|this, cx| {
+            this.apply_gutter_extra(cx);
+            cx.notify();
+        });
+        let subscriptions = vec![settings, bookmarks, cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 // IntelliJ closes the change popup on typing.
                 this.popup = None;
                 this.notice = None;
                 this.update_markers(cx);
                 this.update_hierarchy(true, cx);
+                this.follow_bookmarks(cx);
                 // The annotations follow the edit (new lines: Not Committed Yet).
                 if this.annotation.is_some() {
                     this.load_annotations(true, cx);
@@ -586,6 +610,8 @@ impl FileEditor {
             popup: None,
             popup_anchor: Rc::default(),
             gutter_click: Rc::default(),
+            gutter_line: Rc::default(),
+            hierarchy_slots: 0,
             popup_focus: cx.focus_handle(),
             error,
             notice: None,
@@ -602,6 +628,7 @@ impl FileEditor {
             _subscriptions: subscriptions,
         };
         this.update_markers(cx);
+        this.apply_gutter_extra(cx);
         this
     }
 
@@ -724,9 +751,9 @@ impl FileEditor {
                 for m in &marks {
                     *per_line.entry(m.line).or_default() += 1;
                 }
-                let slots = per_line.values().copied().max().unwrap_or(1).clamp(1, 2);
-                this.state.update(cx, |state, cx| state.set_gutter_extra(px(GUTTER_ICON_GAP + GUTTER_ICON_SLOT * slots as f32), cx));
+                this.hierarchy_slots = per_line.values().copied().max().unwrap_or(1).clamp(1, 2);
                 this.hierarchy = Rc::new(slotted(marks));
+                this.apply_gutter_extra(cx);
                 cx.notify();
             })
             .ok();
@@ -1384,13 +1411,17 @@ impl FileEditor {
     /// Tells a right-click on the line-number gutter (left of the text)
     /// from one on the text, for the context menu.
     fn gutter_probe(&self) -> impl IntoElement + use<> {
-        let (state, hit) = (self.state.clone(), self.gutter_click.clone());
+        let (state, hit, line) = (self.state.clone(), self.gutter_click.clone(), self.gutter_line.clone());
         canvas(
             |_, _, _| {},
             move |_, _, window, _| {
-                let (state, hit) = (state.clone(), hit.clone());
+                let (state, hit, line) = (state.clone(), hit.clone(), line.clone());
                 window.on_mouse_event(move |e: &MouseDownEvent, phase, _, cx| {
-                    if phase != DispatchPhase::Capture || e.button != MouseButton::Right {
+                    if phase != DispatchPhase::Capture {
+                        return;
+                    }
+                    if e.button != MouseButton::Right {
+                        line.set(None);
                         return;
                     }
                     let state = state.read(cx);
@@ -1400,9 +1431,20 @@ impl FileEditor {
                         let at = rope.line_start_offset(rows.start.min(rope.lines_len().saturating_sub(1)));
                         state.range_to_bounds(&(at..at)).map(|b| b.left())
                     });
-                    hit.set(text_left.is_some_and(|left| {
-                        input.contains(&e.position) && e.position.x >= input.left() && e.position.x < left
-                    }));
+                    let on_gutter = text_left.is_some_and(|left| input.contains(&e.position) && e.position.x >= input.left() && e.position.x < left);
+                    hit.set(on_gutter);
+                    // The line under the click: the last one starting above it.
+                    let clicked = on_gutter.then(|| state.visible_row_range()).flatten().and_then(|rows| {
+                        let rope = state.text();
+                        let lines = rope.lines_len().max(1);
+                        (rows.start..rows.end.min(lines))
+                            .take_while(|&l| {
+                                let at = rope.line_start_offset(l);
+                                state.range_to_bounds(&(at..at)).is_some_and(|b| b.top() <= e.position.y)
+                            })
+                            .last()
+                    });
+                    line.set(clicked);
                 });
             },
         )
@@ -1412,6 +1454,134 @@ impl FileEditor {
 
     pub fn annotation(&self) -> Option<&Annotation> {
         self.annotation.as_ref()
+    }
+
+    /// The file bookmarks are kept under: its absolute path (none for a
+    /// revision or an image).
+    pub fn bookmark_file(&self) -> Option<String> {
+        if self.revision.is_some() || self.image.is_some() {
+            return None;
+        }
+        let path = std::path::Path::new(&self.path);
+        Some(if path.is_absolute() { self.path.clone() } else { self.repository.root().join(&self.own).to_string_lossy().into_owned() })
+    }
+
+    /// The line a bookmark action is for: the right-clicked gutter line,
+    /// else the caret's.
+    fn bookmark_line(&self, cx: &gpui_kit::App) -> usize {
+        self.gutter_line.take().unwrap_or_else(|| self.state.read(cx).cursor_position().line as usize)
+    }
+
+    fn line_text(&self, line: usize, cx: &gpui_kit::App) -> String {
+        self.text(cx).lines().nth(line).unwrap_or_default().to_owned()
+    }
+
+    /// Toggle Bookmark (F11).
+    fn toggle_bookmark(&mut self, _: &ToggleBookmark, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.bookmark_file() else { return };
+        let line = self.bookmark_line(cx);
+        let text = self.line_text(line, cx);
+        crate::bookmarks::Bookmarks::update(cx, |b| b.toggle(&file, line as u32, &text));
+    }
+
+    /// Toggle Bookmark with Mnemonic (Ctrl+F11): the mnemonic chooser.
+    fn toggle_bookmark_with_mnemonic(&mut self, _: &ToggleBookmarkWithMnemonic, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.bookmark_file() else { return };
+        let line = self.bookmark_line(cx);
+        let text = self.line_text(line, cx);
+        crate::ui::bookmark_dialog::choose_mnemonic(file, line as u32, text, window, cx);
+    }
+
+    /// Room in the gutter for the implementation markers and bookmarks.
+    fn apply_gutter_extra(&mut self, cx: &mut Context<Self>) {
+        let shown = crate::settings::Settings::get(cx).diff.show_gutter_icons;
+        let bookmarked = self.bookmark_file().is_some_and(|f| crate::bookmarks::Bookmarks::get(cx).of_file(&f).next().is_some());
+        let slots = if shown { self.hierarchy_slots + bookmarked as usize } else { 0 };
+        let extra = if slots == 0 { px(0.) } else { px(GUTTER_ICON_GAP + GUTTER_ICON_SLOT * slots as f32) };
+        self.state.update(cx, |state, cx| state.set_gutter_extra(extra, cx));
+    }
+
+    /// The file's bookmarks in the gutter, after the implementation markers:
+    /// a bookmark icon, or a mnemonic's letter in a box, as IntelliJ's.
+    fn bookmark_strip(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let file = self.bookmark_file()?;
+        let marks: Vec<(u32, Option<char>)> = crate::bookmarks::Bookmarks::get(cx).of_file(&file).map(|b| (b.line, b.mnemonic)).collect();
+        if marks.is_empty() || !crate::settings::Settings::get(cx).diff.show_gutter_icons {
+            return None;
+        }
+        let state = self.state.clone();
+        let slot = self.hierarchy_slots;
+        let palette = cx.palette().clone();
+        let mono = gpui_kit::component::ActiveTheme::theme(&**cx).mono_font_family.clone();
+        Some(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, cx| {
+                    let placed: Vec<(Bounds<Pixels>, Option<char>)> = {
+                        let state = state.read(cx);
+                        let (Some(line_height), Some(visible), Some(left)) = (state.line_height(), state.visible_row_range(), state.gutter_extra_left()) else { return };
+                        let rope = state.text();
+                        let lines = rope.lines_len().max(1);
+                        marks
+                            .iter()
+                            .filter(|(line, _)| (*line as usize) >= visible.start && (*line as usize) <= visible.end && (*line as usize) < lines)
+                            .filter_map(|(line, mnemonic)| {
+                                let at = rope.line_start_offset(*line as usize);
+                                let top = state.range_to_bounds(&(at..at))?.top();
+                                let icon = px(GUTTER_ICON);
+                                let rect = Bounds::new(point(left + px(GUTTER_ICON_GAP + 1. + GUTTER_ICON_SLOT * slot as f32), top + (line_height - icon) / 2.), size(icon, icon));
+                                bounds.contains(&rect.center()).then_some((rect, *mnemonic))
+                            })
+                            .collect()
+                    };
+                    for (rect, mnemonic) in placed {
+                        match mnemonic {
+                            Some(c) => {
+                                window.paint_quad(gpui_kit::quad(rect, px(3.), palette.panel, px(1.), palette.text_secondary, Default::default()));
+                                let label: gpui_kit::SharedString = c.to_string().into();
+                                let run = gpui_kit::TextRun { len: label.len(), font: gpui_kit::font(mono.clone()), color: palette.text, background_color: None, underline: None, strikethrough: None };
+                                let shaped = window.text_system().shape_line(label, px(10.), &[run], None);
+                                let x = rect.left() + (rect.size.width - shaped.width) / 2.;
+                                let _ = shaped.paint(point(x, rect.top()), rect.size.height, gpui_kit::TextAlign::Left, None, window, cx);
+                            }
+                            None => {
+                                let bookmark = icons::TW_BOOKMARKS;
+                                for (path, rgba) in if palette.dark { bookmark.dark } else { bookmark.light } {
+                                    let color: gpui_kit::Hsla = gpui_kit::rgba(*rgba).into();
+                                    window.paint_svg(rect, (*path).into(), None, gpui_kit::TransformationMatrix::unit(), color, cx).ok();
+                                }
+                            }
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .inset_0(),
+        )
+    }
+
+    /// Moves the file's bookmarks along with their lines after an edit.
+    fn follow_bookmarks(&mut self, cx: &mut Context<Self>) {
+        let Some(file) = self.bookmark_file() else { return };
+        if crate::bookmarks::Bookmarks::get(cx).of_file(&file).next().is_none() {
+            return;
+        }
+        let text = self.text(cx);
+        let lines: Vec<&str> = text.lines().collect();
+        let moves = {
+            let mut probe = crate::bookmarks::Bookmarks { list: crate::bookmarks::Bookmarks::get(cx).list.clone() };
+            probe.follow(&file, &lines)
+        };
+        if moves {
+            crate::bookmarks::Bookmarks::update(cx, |b| {
+                b.follow(&file, &lines);
+            });
+        }
+    }
+
+    /// The gutter menu's view toggles (Settings › Editor › General).
+    fn toggle_view(&mut self, f: fn(&mut crate::settings::DiffSettings), cx: &mut Context<Self>) {
+        crate::settings::Settings::update(cx, |settings| f(&mut settings.diff));
     }
 
     /// Shows the blame annotations in the gutter (no-op when shown).
@@ -1545,6 +1715,10 @@ impl Render for FileEditor {
         let changes = self.hunks.len();
         let annotated = self.annotation.is_some();
         let gutter_click = self.gutter_click.clone();
+        let gutter_line = self.gutter_line.clone();
+        let bookmark_file = self.bookmark_file();
+        let bookmark_strip = self.bookmark_strip(cx);
+        let icons_shown = crate::settings::Settings::get(cx).diff.show_gutter_icons;
         let annotation_gutter = self
             .annotation
             .as_ref()
@@ -1582,6 +1756,14 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::show_selection_history))
             .on_action(cx.listener(Self::annotate))
             .on_action(cx.listener(Self::toggle_line_numbers))
+            .on_action(cx.listener(Self::toggle_bookmark))
+            .on_action(cx.listener(Self::toggle_bookmark_with_mnemonic))
+            .on_action(cx.listener(|this, _: &ToggleSoftWrap, _, cx| this.toggle_view(|d| d.soft_wrap = !d.soft_wrap, cx)))
+            .on_action(cx.listener(|this, _: &ToggleGutterIcons, _, cx| this.toggle_view(|d| d.show_gutter_icons = !d.show_gutter_icons, cx)))
+            .on_action(cx.listener(|this, _: &ToggleIndentGuides, _, cx| this.toggle_view(|d| d.show_indent_guides = !d.show_indent_guides, cx)))
+            .on_action(cx.listener(|this, _: &ToggleWhitespaces, _, cx| this.toggle_view(|d| d.show_whitespaces = !d.show_whitespaces, cx)))
+            .on_action(cx.listener(|_, _: &ConfigureSoftWraps, window, cx| crate::ui::settings_dialog::open_page(None, "General", window, cx)))
+            .on_action(cx.listener(|_, _: &ConfigureGutterIcons, window, cx| crate::ui::settings_dialog::open_page(None, "Gutter Icons", window, cx)))
             .on_action(cx.listener(Self::show_history))
             .on_action(cx.listener(Self::show_current_revision))
             .on_action(cx.listener(Self::show_diff))
@@ -1649,11 +1831,31 @@ impl Render for FileEditor {
                         .context_menu(move |menu: NativeMenu, _, cx| {
                             // The gutter has IntelliJ's gutter menu instead.
                             if gutter_click.replace(false) {
-                                let numbers = crate::settings::Settings::get(cx).diff.show_line_numbers;
+                                let view = crate::settings::Settings::get(cx).diff.clone();
+                                let appearance = NativeMenu::new()
+                                    .menu_with_check("Show Line Numbers", view.show_line_numbers, Box::new(ToggleLineNumbers))
+                                    .menu_with_check("Show Gutter Icons", view.show_gutter_icons, Box::new(ToggleGutterIcons))
+                                    .menu_with_check("Show Indent Guides", view.show_indent_guides, Box::new(ToggleIndentGuides))
+                                    .menu_with_check("Show Whitespaces", view.show_whitespaces, Box::new(ToggleWhitespaces));
+                                let bookmarked = bookmark_file
+                                    .as_ref()
+                                    .zip(gutter_line.get())
+                                    .and_then(|(f, l)| crate::bookmarks::Bookmarks::get(cx).at(f, l as u32).map(|b| b.mnemonic.is_some()));
                                 return menu
                                     .menu(if annotated { "Close Annotations" } else { "Annotate with Git Blame" }, Box::new(AnnotateFile))
                                     .separator()
-                                    .menu_with_check("Show Line Numbers", numbers, Box::new(ToggleLineNumbers));
+                                    .menu_with_disabled(if bookmarked.is_some() { "Remove Bookmark" } else { "Add Bookmark" }, bookmark_file.is_none(), Box::new(ToggleBookmark))
+                                    .menu_with_disabled(
+                                        if bookmarked == Some(true) { "Edit Mnemonic…" } else { "Add Mnemonic Bookmark…" },
+                                        bookmark_file.is_none(),
+                                        Box::new(ToggleBookmarkWithMnemonic),
+                                    )
+                                    .separator()
+                                    .menu_with_check("Soft-Wrap", view.soft_wrap, Box::new(ToggleSoftWrap))
+                                    .menu("Configure Soft Wraps…", Box::new(ConfigureSoftWraps))
+                                    .separator()
+                                    .submenu("Appearance", appearance)
+                                    .menu("Configure Gutter Icons…", Box::new(ConfigureGutterIcons));
                             }
                             let menu = menu
                                 .menu("Copy", Box::new(Copy))
@@ -1682,7 +1884,8 @@ impl Render for FileEditor {
                 )))
                 .child(self.gutter_probe())
                 .when(!read_only, |el| el.child(self.marker_strip(cx)))
-                .when(!self.hierarchy.is_empty(), |el| el.child(self.hierarchy_strip(cx)))
+                .when(!self.hierarchy.is_empty() && icons_shown, |el| el.child(self.hierarchy_strip(cx)))
+                .children(bookmark_strip)
                 .when_some(hover_card, |el, (at, card)| {
                     el.child(deferred(anchored().position(point(at.x + px(12.), at.y + px(16.))).child(card)).with_priority(1))
                 })

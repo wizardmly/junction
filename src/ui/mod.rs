@@ -2,6 +2,7 @@ pub mod accounts_dialog;
 pub mod annotation_gutter;
 pub mod as_icons;
 mod as_icons_gen;
+pub mod bookmark_dialog;
 pub mod branches_popup;
 pub mod changes_view;
 pub mod clone_dialog;

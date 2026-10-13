@@ -195,6 +195,56 @@ impl Workspace {
         })
     }
 
+    /// A bookmark's place: a project path for files in the project.
+    fn bookmark_target(&self, bookmark: &crate::bookmarks::Bookmark, cx: &gpui_kit::App) -> crate::index::nav::Target {
+        let file = std::path::Path::new(&bookmark.file);
+        let path = match self.model.read(cx).project_root().and_then(|root| file.strip_prefix(root).ok()) {
+            Some(own) => own.to_string_lossy().replace('\\', "/"),
+            None => bookmark.file.clone(),
+        };
+        let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        crate::index::nav::Target { path, line: bookmark.line, col: 0, name, label: String::new(), container: None }
+    }
+
+    /// Show All Bookmarks (Shift+F11): the project's bookmarks, mnemonic
+    /// ones first, as IntelliJ's list.
+    pub(super) fn show_bookmarks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self.model.read(cx).project_root().map(|r| r.to_path_buf());
+        let mut list: Vec<crate::bookmarks::Bookmark> = crate::bookmarks::Bookmarks::get(cx)
+            .list
+            .iter()
+            .filter(|b| root.as_ref().is_none_or(|r| std::path::Path::new(&b.file).starts_with(r) || crate::index::store::ProjectIndex::is_external(&b.file)))
+            .cloned()
+            .collect();
+        list.sort_by(|a, b| (a.mnemonic.is_none(), a.mnemonic, &a.file, a.line).cmp(&(b.mnemonic.is_none(), b.mnemonic, &b.file, b.line)));
+        if list.is_empty() {
+            Self::nav_hint("No bookmarks. Add one with F11 or the gutter menu", window, cx);
+            return;
+        }
+        let items: Vec<crate::ui::find_view::FoundItem> = list
+            .iter()
+            .map(|b| {
+                let target = self.bookmark_target(b, cx);
+                let prefix = b.mnemonic.map(|m| format!("{m}  ")).unwrap_or_default();
+                crate::ui::find_view::FoundItem {
+                    title: format!("{prefix}{}:{}", target.name, b.line + 1),
+                    detail: b.text.clone(),
+                    icon: gpui_kit::component::Icon::new(crate::ui::as_icons::TW_BOOKMARKS),
+                    target,
+                }
+            })
+            .collect();
+        let n = items.len();
+        crate::ui::navigate::pick_from_list("Bookmarks", items, vec![0; n], self.picker_callback(cx), window, cx);
+    }
+
+    /// Go to Bookmark 0–9 (Ctrl+digit).
+    pub(super) fn go_to_bookmark(&mut self, mnemonic: char, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(bookmark) = crate::bookmarks::Bookmarks::get(cx).with_mnemonic(mnemonic).cloned() else { return };
+        let target = self.bookmark_target(&bookmark, cx);
+        self.go_to_target(target, window, cx);
+    }
+
     /// Recent Files (Ctrl+E).
     pub(super) fn recent_files_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.editor().map(|e| e.read(cx).path().to_owned());

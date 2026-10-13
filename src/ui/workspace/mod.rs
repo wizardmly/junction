@@ -84,7 +84,18 @@ actions!(
         HideAllToolWindows,
         HideActiveToolWindow,
         NextOccurrence,
-        PreviousOccurrence
+        PreviousOccurrence,
+        ShowBookmarks,
+        GoToBookmark1,
+        GoToBookmark2,
+        GoToBookmark3,
+        GoToBookmark4,
+        GoToBookmark5,
+        GoToBookmark6,
+        GoToBookmark7,
+        GoToBookmark8,
+        GoToBookmark9,
+        GoToBookmark0
     ]
 );
 
@@ -160,6 +171,18 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("shift shift", SearchEverywhere, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-a", FindAction, Some(CONTEXT)),
         KeyBinding::new("secondary-e", RecentFiles, Some(CONTEXT)),
+        // Bookmarks: Show All (Shift+F11 / ⌘F3), Go to Bookmark 0–9 (Ctrl+digit).
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-f3" } else { "shift-f11" }, ShowBookmarks, Some(CONTEXT)),
+        KeyBinding::new("ctrl-1", GoToBookmark1, Some(CONTEXT)),
+        KeyBinding::new("ctrl-2", GoToBookmark2, Some(CONTEXT)),
+        KeyBinding::new("ctrl-3", GoToBookmark3, Some(CONTEXT)),
+        KeyBinding::new("ctrl-4", GoToBookmark4, Some(CONTEXT)),
+        KeyBinding::new("ctrl-5", GoToBookmark5, Some(CONTEXT)),
+        KeyBinding::new("ctrl-6", GoToBookmark6, Some(CONTEXT)),
+        KeyBinding::new("ctrl-7", GoToBookmark7, Some(CONTEXT)),
+        KeyBinding::new("ctrl-8", GoToBookmark8, Some(CONTEXT)),
+        KeyBinding::new("ctrl-9", GoToBookmark9, Some(CONTEXT)),
+        KeyBinding::new("ctrl-0", GoToBookmark0, Some(CONTEXT)),
         KeyBinding::new("secondary-f12", FileStructure, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-l" } else { "ctrl-g" }, GotoLine, Some(CONTEXT)),
         KeyBinding::new("alt-f1", SelectInProject, Some(CONTEXT)),
@@ -739,6 +762,17 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &SearchEverywhere, window, cx| this.open_search_everywhere(SeTab::All, window, cx)))
             .on_action(cx.listener(|this, _: &FindAction, window, cx| this.open_search_everywhere(SeTab::Actions, window, cx)))
             .on_action(cx.listener(|this, _: &RecentFiles, window, cx| this.recent_files_popup(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowBookmarks, window, cx| this.show_bookmarks(window, cx)))
+            .on_action(cx.listener(|this, _: &GoToBookmark1, window, cx| this.go_to_bookmark('1', window, cx)))
+            .on_action(cx.listener(|this, _: &GoToBookmark2, window, cx| this.go_to_bookmark('2', window, cx)))
+            .on_action(cx.listener(|this, _: &GoToBookmark3, window, cx| this.go_to_bookmark('3', window, cx)))
+            .on_action(cx.listener(|this, _: &GoToBookmark4, window, cx| this.go_to_bookmark('4', window, cx)))
+            .on_action(cx.listener(|this, _: &GoToBookmark5, window, cx| this.go_to_bookmark('5', window, cx)))
+            .on_action(cx.listener(|this, _: &GoToBookmark6, window, cx| this.go_to_bookmark('6', window, cx)))
+            .on_action(cx.listener(|this, _: &GoToBookmark7, window, cx| this.go_to_bookmark('7', window, cx)))
+            .on_action(cx.listener(|this, _: &GoToBookmark8, window, cx| this.go_to_bookmark('8', window, cx)))
+            .on_action(cx.listener(|this, _: &GoToBookmark9, window, cx| this.go_to_bookmark('9', window, cx)))
+            .on_action(cx.listener(|this, _: &GoToBookmark0, window, cx| this.go_to_bookmark('0', window, cx)))
             .on_action(cx.listener(|this, _: &CloseTab, _, cx| this.close_active_tab(cx)))
             .on_action(cx.listener(|this, _: &NextTab, window, cx| this.step_tab(1, window, cx)))
             .on_action(cx.listener(|this, _: &PreviousTab, window, cx| this.step_tab(-1, window, cx)))

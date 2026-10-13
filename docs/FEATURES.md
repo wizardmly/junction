@@ -181,7 +181,9 @@
 | Annotate with Git Blame：在编辑器 gutter 里逐行显示日期/作者（View 子菜单可加提交哈希），按时间着色，悬浮详情，跟随未保存的编辑；右键 Annotate Revision / Annotate Previous Revision（新增该文件的提交上置灰）/ Show Diff / Select in Git Log | M3 | ✅ |
 | Diff 里的 Annotate with Git Blame：右键行号 gutter 打开，左右两侧各自在行号旁显示 blame 列（左侧按旧版本、右侧按新版本或工作区当前文本，未提交行为 Not Committed Yet），悬停的提交在两侧同时高亮并显示提交详情，单击跳到 Git Log；右键 blame 列：Annotate Revision / Annotate Previous Revision / Show Diff / Select in Git Log / Copy Revision Number / View / Close Annotations；切换文件时保持开启，编辑后自动重新 blame；并排和统一视图都支持 | M3 | ✅ |
 | Diff 行号 gutter 右键菜单（与 AS 一致）：Annotate with Git Blame、Show Diff in Separate Window（独立窗口打开同一 diff）、Show Whitespaces、Show Line Numbers、Show Indent Guides、Soft-Wrap、Highlighting Level（All Problems / Syntax / None）、Breadcrumbs（Top / Bottom / Don't Show，每侧显示光标处的声明链，XML 显示标签链，可点击跳转）、Align Changes In Side-by-Side Diff | M4 | ✅ |
-| 文件查看器里的变更标记（gutter）：点击看 diff、回滚 hunk、stage hunk | M4 | ✅（行号旁的 gutter 竖条：新增绿、修改蓝、删除处灰色楔形；点击弹出 AS 式变更弹窗：上一处 / 下一处（循环）、Rollback（可撤销）、Show Diff、Copy、Stage（只把这块写入 index，其它已暂存内容保留），下方显示 HEAD 里的原内容；Esc 或点外面关闭，打字时自动关闭；Rollback Lines（Ctrl+Alt+Z）；未版本控制的文件像 AS 一样没有变更标记；右键行号 gutter 是 gutter 菜单：Annotate with Git Blame / Close Annotations、Show Line Numbers） |
+| 文件查看器里的变更标记（gutter）：点击看 diff、回滚 hunk、stage hunk | M4 | ✅（行号旁的 gutter 竖条：新增绿、修改蓝、删除处灰色楔形；点击弹出 AS 式变更弹窗：上一处 / 下一处（循环）、Rollback（可撤销）、Show Diff、Copy、Stage（只把这块写入 index，其它已暂存内容保留），下方显示 HEAD 里的原内容；Esc 或点外面关闭，打字时自动关闭；Rollback Lines（Ctrl+Alt+Z）；未版本控制的文件像 AS 一样没有变更标记；右键行号 gutter 的菜单见下一行） |
+| 编辑器行号 gutter 右键菜单（与 AS 一致）：Annotate with Git Blame / Close Annotations、Add / Remove Bookmark（F11）、Add Mnemonic Bookmark… / Edit Mnemonic…（Ctrl+F11）、Soft-Wrap、Configure Soft Wraps…、Appearance（Show Line Numbers / Gutter Icons / Indent Guides / Whitespaces）、Configure Gutter Icons…（Settings › Editor › Gutter Icons） | M4 | ✅ |
+| 书签：F11 切换、Ctrl+F11 选助记符（1–9、0、A–Z，被占用的会移过来）、Shift+F11 书签列表、Ctrl+数字跳到对应助记符书签；gutter 显示书签图标或助记符方框；编辑时书签跟着所在行移动；跨会话保存在 settings 目录 bookmarks.json | M4 | ✅ |
 | Show Current Revision | M4 | ✅（编辑器右键 Git → Show Current Revision，在 Log 中选中最后修改该文件的提交） |
 
 ## 8. 交互式 Rebase 及其他操作

@@ -217,6 +217,8 @@ pub struct DiffSettings {
     pub soft_wrap: bool,
     /// Lines kept around changes when unchanged fragments are collapsed.
     pub context_lines: usize,
+    /// The editor's gutter icons (implementation markers, bookmarks).
+    pub show_gutter_icons: bool,
     /// The gutter menu's Highlighting Level.
     pub highlighting: HighlightingLevel,
     /// The gutter menu's Breadcrumbs: where each pane shows them.
@@ -232,6 +234,7 @@ impl Default for DiffSettings {
             align_changes: false,
             soft_wrap: false,
             context_lines: 4,
+            show_gutter_icons: true,
             highlighting: HighlightingLevel::AllProblems,
             breadcrumbs: Breadcrumbs::Hidden,
         }
@@ -298,8 +301,9 @@ impl Breadcrumbs {
 }
 
 impl DiffSettings {
-    fn fields(&mut self) -> [(&'static str, &mut bool); 5] {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 6] {
         [
+            ("diff_show_gutter_icons", &mut self.show_gutter_icons),
             ("diff_soft_wrap", &mut self.soft_wrap),
             ("diff_show_line_numbers", &mut self.show_line_numbers),
             ("diff_show_whitespaces", &mut self.show_whitespaces),

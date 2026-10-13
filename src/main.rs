@@ -6,6 +6,7 @@
 
 #[cfg(test)]
 mod bench;
+mod bookmarks;
 mod askpass;
 mod assets;
 mod android;
@@ -57,6 +58,7 @@ fn main() {
         cx.set_global(settings);
         let dark = std::env::var("JUNCTION_THEME").map(|t| t != "light").unwrap_or_else(|_| theme::effective_dark(cx));
         cx.set_global(model::ExcludedHunks::default());
+        bookmarks::Bookmarks::init(cx);
         theme::apply(dark, cx);
 
         open_project_window(path.clone(), cx);

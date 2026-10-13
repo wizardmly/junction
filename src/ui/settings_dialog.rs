@@ -35,6 +35,7 @@ enum Page {
     Keymap,
     EditorGeneral,
     EditorFont,
+    GutterIcons,
     Commit,
     Mappings,
     Git,
@@ -47,7 +48,7 @@ enum Page {
 const TREE: &[(&str, Option<Page>, &[Page])] = &[
     ("Appearance & Behavior", None, &[Page::Appearance]),
     ("Keymap", Some(Page::Keymap), &[]),
-    ("Editor", None, &[Page::EditorGeneral, Page::EditorFont]),
+    ("Editor", None, &[Page::EditorGeneral, Page::EditorFont, Page::GutterIcons]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
     ("Languages & Frameworks", Some(Page::Languages), &[]),
 ];
@@ -59,6 +60,7 @@ impl Page {
             Page::Keymap => "Keymap",
             Page::EditorGeneral => "General",
             Page::EditorFont => "Font",
+            Page::GutterIcons => "Gutter Icons",
             Page::Commit => "Commit",
             Page::Mappings => "Directory Mappings",
             Page::Git => "Git",
@@ -82,6 +84,7 @@ impl Page {
             Page::Keymap => &["Shortcut", "Keyboard"],
             Page::EditorGeneral => &["Soft-wrap", "Show line numbers", "Show whitespaces", "Show indent guides", "Appearance", "Diff", "Merge"],
             Page::EditorFont => &["Font", "Size", "Line height"],
+            Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::Commit => &[
                 "Use non-modal commit interface",
                 "Limit subject line length",
@@ -423,6 +426,7 @@ impl Render for SettingsView {
                 Page::Keymap => self.keymap_page(&query, cx).into_any_element(),
                 Page::EditorGeneral => self.editor_general(&query, cx).into_any_element(),
                 Page::EditorFont => self.editor_font(&query, cx).into_any_element(),
+                Page::GutterIcons => self.gutter_icons(&query, cx).into_any_element(),
                 Page::Commit => self.commit_page(&query, cx).into_any_element(),
                 Page::Mappings => match &self.mappings {
                     Some(view) => view.clone().into_any_element(),
@@ -529,6 +533,14 @@ impl SettingsView {
             .child(self.check("settings-line-numbers", "Show line numbers", d.show_line_numbers, query, |s, v| s.diff.show_line_numbers = v, cx))
             .child(self.check("settings-whitespaces", "Show whitespaces", d.show_whitespaces, query, |s, v| s.diff.show_whitespaces = v, cx))
             .child(self.check("settings-indent-guides", "Show indent guides", d.show_indent_guides, query, |s, v| s.diff.show_indent_guides = v, cx))
+    }
+
+    fn gutter_icons(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let d = &self.draft.diff;
+        v_flex()
+            .gap_2()
+            .child(self.check("settings-gutter-icons", "Show gutter icons", d.show_gutter_icons, query, |s, v| s.diff.show_gutter_icons = v, cx))
+            .child(self.note("Implementing / implemented and overriding / overridden markers, and bookmarks", cx))
     }
 
     fn editor_font(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
@@ -847,7 +859,19 @@ impl SettingsView {
 
 /// Opens Settings; `model` gives the Directory Mappings page its project.
 pub fn open(model: Option<Entity<RepoModel>>, window: &mut Window, cx: &mut App) {
-    let view = cx.new(|cx| SettingsView::new(model, window, cx));
+    open_page(model, "", window, cx);
+}
+
+/// Opens Settings at the page named `page` (the editor's Configure Soft
+/// Wraps… / Configure Gutter Icons…).
+pub fn open_page(model: Option<Entity<RepoModel>>, page: &str, window: &mut Window, cx: &mut App) {
+    let view = cx.new(|cx| {
+        let mut view = SettingsView::new(model, window, cx);
+        if let Some(found) = all_pages().find(|p| p.name() == page) {
+            view.page = found;
+        }
+        view
+    });
     let focus = view.read(cx).search.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         let (apply_view, ok_view) = (view.clone(), view.clone());
