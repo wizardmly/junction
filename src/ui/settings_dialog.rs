@@ -36,6 +36,7 @@ enum Page {
     EditorGeneral,
     EditorFont,
     GutterIcons,
+    EditorTabs,
     Commit,
     Mappings,
     Git,
@@ -48,7 +49,7 @@ enum Page {
 const TREE: &[(&str, Option<Page>, &[Page])] = &[
     ("Appearance & Behavior", None, &[Page::Appearance]),
     ("Keymap", Some(Page::Keymap), &[]),
-    ("Editor", None, &[Page::EditorGeneral, Page::EditorFont, Page::GutterIcons]),
+    ("Editor", None, &[Page::EditorGeneral, Page::EditorFont, Page::GutterIcons, Page::EditorTabs]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
     ("Languages & Frameworks", Some(Page::Languages), &[]),
 ];
@@ -61,6 +62,7 @@ impl Page {
             Page::EditorGeneral => "General",
             Page::EditorFont => "Font",
             Page::GutterIcons => "Gutter Icons",
+            Page::EditorTabs => "Editor Tabs",
             Page::Commit => "Commit",
             Page::Mappings => "Directory Mappings",
             Page::Git => "Git",
@@ -85,6 +87,7 @@ impl Page {
             Page::EditorGeneral => &["Soft-wrap", "Show line numbers", "Show whitespaces", "Show indent guides", "Appearance", "Diff", "Merge"],
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
+            Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
             Page::Commit => &[
                 "Use non-modal commit interface",
                 "Limit subject line length",
@@ -145,6 +148,7 @@ pub struct SettingsView {
     fetch_interval: Entity<InputState>,
     git_path: Entity<InputState>,
     font_size: Entity<InputState>,
+    tab_limit: Entity<InputState>,
     large_file: Entity<InputState>,
     /// Languages & Frameworks: a server command per language, and what
     /// runs when it is left empty.
@@ -171,6 +175,7 @@ impl SettingsView {
         let margin = input(initial.commit_subject_limit.to_string(), window, cx);
         let fetch_interval = input(initial.fetch_interval_minutes.max(1).to_string(), window, cx);
         let font_size = input(format!("{}", initial.editor_font_size()), window, cx);
+        let tab_limit = input(initial.diff.tab_limit.to_string(), window, cx);
         let large_file = input(if initial.large_file_mb > 0 { initial.large_file_mb } else { 50 }.to_string(), window, cx);
         let git_path = cx.new(|cx| {
             InputState::new(window, cx)
@@ -224,6 +229,7 @@ impl SettingsView {
             fetch_interval,
             git_path,
             font_size,
+            tab_limit,
             large_file,
             servers,
             git_test: None,
@@ -262,6 +268,9 @@ impl SettingsView {
         }
         if next.large_file_mb > 0 {
             next.large_file_mb = self.large_file.read(cx).value().trim().parse::<u32>().unwrap_or(50).clamp(1, 100_000);
+        }
+        if let Ok(limit) = self.tab_limit.read(cx).value().trim().parse::<usize>() {
+            next.diff.tab_limit = limit.clamp(1, 100);
         }
         if let Ok(size) = self.font_size.read(cx).value().trim().parse::<f32>() {
             next.editor_font_tenths = (size.clamp(8., 32.) * 10.).round() as u32;
@@ -318,6 +327,11 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.diff.show_line_numbers = from.diff.show_line_numbers;
     to.diff.show_whitespaces = from.diff.show_whitespaces;
     to.diff.show_indent_guides = from.diff.show_indent_guides;
+    to.diff.show_gutter_icons = from.diff.show_gutter_icons;
+    to.diff.tab_close_button = from.diff.tab_close_button;
+    to.diff.tab_mark_modified = from.diff.tab_mark_modified;
+    to.diff.tab_limit = from.diff.tab_limit;
+    to.project.preview_tab = from.project.preview_tab;
 }
 
 /// A row of the page tree: a group (a page itself or not) or an indented page.
@@ -427,6 +441,7 @@ impl Render for SettingsView {
                 Page::EditorGeneral => self.editor_general(&query, cx).into_any_element(),
                 Page::EditorFont => self.editor_font(&query, cx).into_any_element(),
                 Page::GutterIcons => self.gutter_icons(&query, cx).into_any_element(),
+                Page::EditorTabs => self.editor_tabs(&query, cx).into_any_element(),
                 Page::Commit => self.commit_page(&query, cx).into_any_element(),
                 Page::Mappings => match &self.mappings {
                     Some(view) => view.clone().into_any_element(),
@@ -541,6 +556,20 @@ impl SettingsView {
             .gap_2()
             .child(self.check("settings-gutter-icons", "Show gutter icons", d.show_gutter_icons, query, |s, v| s.diff.show_gutter_icons = v, cx))
             .child(self.note("Implementing / implemented and overriding / overridden markers, and bookmarks", cx))
+    }
+
+    fn editor_tabs(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let d = &self.draft.diff;
+        v_flex()
+            .gap_2()
+            .child(self.section("Appearance", cx))
+            .child(self.check("settings-tab-close", "Show close button", d.tab_close_button, query, |s, v| s.diff.tab_close_button = v, cx))
+            .child(self.check("settings-tab-modified", "Mark modified (*)", d.tab_mark_modified, query, |s, v| s.diff.tab_mark_modified = v, cx))
+            .child(self.section("Opening Policy", cx))
+            .child(self.check("settings-preview-tab", "Enable preview tab", self.draft.project.preview_tab, query, |s, v| s.project.preview_tab = v, cx))
+            .child(self.section("Closing Policy", cx))
+            .child(self.row("Tab limit:", query, div().w(px(70.)).child(Input::new(&self.tab_limit).small()), cx))
+            .child(self.note("Past the limit the least recently used unpinned, unmodified tab closes", cx))
     }
 
     fn editor_font(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {

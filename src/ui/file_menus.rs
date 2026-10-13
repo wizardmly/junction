@@ -447,23 +447,11 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         .separator()
         .item(entry("Cut", "Ctrl+X").icon(Icon::new(icons::CUT)).disabled(target.removable().is_empty()).on_click(move |_, _, cx| t_cut.put_on_clipboard(true, cx)))
         .item(entry("Copy", "Ctrl+C").icon(Icon::new(icons::COPY)).on_click(move |_, _, cx| t_copy.put_on_clipboard(false, cx)))
-        .submenu("Copy Path/Reference…", window, cx, move |m, _, cx| {
-            // Relative to the repository holding it (a nested root's own path);
-            // one line per selected item.
-            let model = t.model.read(cx);
-            let rel = t
-                .items
-                .iter()
-                .map(|(p, _)| model.route(p).map(|(_, own)| own).unwrap_or_else(|| p.clone()))
-                .filter(|r| !r.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let abs = t.fulls_text();
-            let name = t.fulls().iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).collect::<Vec<_>>().join("\n");
-            m.item(entry("Absolute Path", "Ctrl+Shift+C").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(abs.clone()))))
-                .item(entry("File Name", "").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone()))))
-                .item(entry("Path From Repository Root", "").disabled(rel.is_empty()).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(rel.clone()))))
-        })
+        .item(entry("Copy Path/Reference…", "").on_click(move |_, window, cx| {
+            let paths: Vec<String> = t.items.iter().map(|(p, _)| p.clone()).collect();
+            let at = window.mouse_position();
+            crate::ui::copy_path::open_for(&t.model, paths, None, Some(at), window, cx);
+        }))
         .item(entry("Paste", "Ctrl+V").icon(Icon::new(icons::PASTE)).disabled(!has_clipboard).on_click(move |_, window, cx| paste(&t_paste, window, cx)))
         .separator()
         .item(entry("Find Usages", "Alt+F7").disabled(true))
@@ -491,7 +479,11 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
                 delete_files(t_delete.root.clone(), t_delete.removable(), t_delete.actions.clone(), window, cx)
             }))
     });
-    let menu = stub_submenu(menu.separator(), "Bookmarks", &[("Toggle Bookmark", "F11"), ("Toggle Bookmark with Mnemonic", "Ctrl+F11"), ("Show All Bookmarks", "Shift+F11")], window, cx);
+    let menu = if is_dir || target.multi() {
+        stub_submenu(menu.separator(), "Bookmarks", &[("Add Bookmark", "F11"), ("Add Mnemonic Bookmark…", "Ctrl+F11"), ("Show All Bookmarks", "Shift+F11")], window, cx)
+    } else {
+        bookmarks_submenu(menu.separator(), target.full().to_string_lossy().into_owned(), window, cx)
+    };
     let t_delete = target.clone();
     let menu = menu
         .separator()
@@ -510,13 +502,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
             (t_split.actions)(FileAction::OpenInSplit(t_split.path.clone()), window, cx)
         }))
     });
-    let t = target.clone();
-    let menu = menu.submenu("Open In", window, cx, move |m, _, _| {
-        let (t_explorer, t_terminal, t_app) = (t.clone(), t.clone(), t.clone());
-        m.item(entry(EXPLORER, "").on_click(move |_, _, cx| reveal(&t_explorer.full(), cx)))
-            .item(entry("Terminal", "").on_click(move |_, _, _| open_terminal(&t_terminal.folder())))
-            .when(!t.is_dir, |m| m.item(entry("Associated Application", "").on_click(move |_, _, cx| open_with_system(&t_app.full(), cx))))
-    });
+    let menu = open_in_submenu(menu, target.full(), is_dir, window, cx);
     let menu = local_history_submenu(menu.separator(), window, cx);
     let git = GitTarget {
         model: target.model.clone(),
@@ -558,6 +544,33 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         .when(is_dir, |m| m.item(entry("Analyze Dependencies…", "").disabled(true)))
 }
 
+/// Open In: the file manager, a terminal in the folder, the system's app for the file.
+pub fn open_in_submenu(menu: PopupMenu, full: PathBuf, is_dir: bool, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    menu.submenu("Open In", window, cx, move |m, _, _| {
+        let (explorer, app) = (full.clone(), full.clone());
+        let folder = if is_dir { full.clone() } else { full.parent().map(Path::to_path_buf).unwrap_or_else(|| full.clone()) };
+        m.item(entry(EXPLORER, "").on_click(move |_, _, cx| reveal(&explorer, cx)))
+            .item(entry("Terminal", "").on_click(move |_, _, _| open_terminal(&folder)))
+            .when(!is_dir, |m| m.item(entry("Associated Application", "").on_click(move |_, _, cx| open_with_system(&app, cx))))
+    })
+}
+
+/// Bookmarks on a file itself (the Project view, an editor tab), as IntelliJ's.
+pub fn bookmarks_submenu(menu: PopupMenu, file: String, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    menu.submenu("Bookmarks", window, cx, move |m, _, cx| {
+        let current = crate::bookmarks::Bookmarks::get(cx).at(&file, None).cloned();
+        let (f1, f2) = (file.clone(), file.clone());
+        let name = Path::new(&file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        m.item(entry(if current.is_some() { "Remove Bookmark" } else { "Add Bookmark" }, "F11").on_click(move |_, _, cx| {
+            crate::bookmarks::Bookmarks::update(cx, |b| b.toggle(&f1, None, ""));
+        }))
+        .item(entry(if current.as_ref().is_some_and(|b| b.mnemonic.is_some()) { "Edit Mnemonic…" } else { "Add Mnemonic Bookmark…" }, "Ctrl+F11").on_click(
+            move |_, window, cx| crate::ui::bookmark_dialog::choose_mnemonic(f2.clone(), None, name.clone(), window, cx),
+        ))
+        .item(entry("Show All Bookmarks", "Shift+F11").on_click(|_, window, cx| window.dispatch_action(Box::new(crate::ui::workspace::ShowBookmarks), cx)))
+    })
+}
+
 pub fn new_entry(target: &ProjectTarget, directory: bool, window: &mut Window, cx: &mut App) {
     let folder = target.folder();
     let (root, actions) = (target.root.clone(), target.actions.clone());
@@ -583,7 +596,7 @@ pub fn new_entry(target: &ProjectTarget, directory: bool, window: &mut Window, c
     }, window, cx);
 }
 
-fn rename(target: &ProjectTarget, window: &mut Window, cx: &mut App) {
+pub fn rename(target: &ProjectTarget, window: &mut Window, cx: &mut App) {
     let (root, path, actions, model) = (target.root.clone(), target.path.clone(), target.actions.clone(), target.model.clone());
     let title = if target.is_dir { "Rename Directory" } else { "Rename File" };
     prompt_name(title.into(), target.name(), "Refactor", move |name, window, cx| {

@@ -206,6 +206,13 @@ impl Workspace {
         crate::index::nav::Target { path, line: bookmark.line, col: 0, name, label: String::new(), container: None }
     }
 
+    /// A bookmark of this project's files or of library sources (which sit
+    /// in no other repository), not another project's.
+    fn in_project(bookmark: &crate::bookmarks::Bookmark, root: Option<&std::path::Path>) -> bool {
+        let file = std::path::Path::new(&bookmark.file);
+        root.is_none_or(|r| file.starts_with(r) || !file.ancestors().skip(1).any(|d| d.join(".git").exists()))
+    }
+
     /// Show All Bookmarks (Shift+F11): the project's bookmarks, mnemonic
     /// ones first, as IntelliJ's list.
     pub(super) fn show_bookmarks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -213,10 +220,10 @@ impl Workspace {
         let mut list: Vec<crate::bookmarks::Bookmark> = crate::bookmarks::Bookmarks::get(cx)
             .list
             .iter()
-            .filter(|b| root.as_ref().is_none_or(|r| std::path::Path::new(&b.file).starts_with(r) || crate::index::store::ProjectIndex::is_external(&b.file)))
+            .filter(|b| Self::in_project(b, root.as_deref()))
             .cloned()
             .collect();
-        list.sort_by(|a, b| (a.mnemonic.is_none(), a.mnemonic, &a.file, a.line).cmp(&(b.mnemonic.is_none(), b.mnemonic, &b.file, b.line)));
+        list.sort_by(|a, b| (a.mnemonic.is_none(), a.mnemonic, &a.file, a.place()).cmp(&(b.mnemonic.is_none(), b.mnemonic, &b.file, b.place())));
         if list.is_empty() {
             Self::nav_hint("No bookmarks. Add one with F11 or the gutter menu", window, cx);
             return;
@@ -227,7 +234,10 @@ impl Workspace {
                 let target = self.bookmark_target(b, cx);
                 let prefix = b.mnemonic.map(|m| format!("{m}  ")).unwrap_or_default();
                 crate::ui::find_view::FoundItem {
-                    title: format!("{prefix}{}:{}", target.name, b.line + 1),
+                    title: match b.place() {
+                        Some(line) => format!("{prefix}{}:{}", target.name, line + 1),
+                        None => format!("{prefix}{}", target.name),
+                    },
                     detail: b.text.clone(),
                     icon: gpui_kit::component::Icon::new(crate::ui::as_icons::TW_BOOKMARKS),
                     target,
@@ -240,7 +250,8 @@ impl Workspace {
 
     /// Go to Bookmark 0–9 (Ctrl+digit).
     pub(super) fn go_to_bookmark(&mut self, mnemonic: char, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(bookmark) = crate::bookmarks::Bookmarks::get(cx).with_mnemonic(mnemonic).cloned() else { return };
+        let root = self.model.read(cx).project_root().map(|r| r.to_path_buf());
+        let Some(bookmark) = crate::bookmarks::Bookmarks::get(cx).with_mnemonic(mnemonic).filter(|b| Self::in_project(b, root.as_deref())).cloned() else { return };
         let target = self.bookmark_target(&bookmark, cx);
         self.go_to_target(target, window, cx);
     }

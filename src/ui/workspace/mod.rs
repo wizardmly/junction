@@ -77,6 +77,7 @@ actions!(
         FileStructure,
         GotoLine,
         CloseTab,
+        OpenTabInNewWindow,
         NextTab,
         PreviousTab,
         ReopenClosedTab,
@@ -192,6 +193,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-alt-up", PreviousOccurrence, Some(CONTEXT)),
         // Editor tabs: Ctrl+F4 closes; Alt+Left / Alt+Right switch (Cmd+Shift+[ / ] on macOS).
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-w" } else { "ctrl-f4" }, CloseTab, Some(CONTEXT)),
+        KeyBinding::new("shift-f4", OpenTabInNewWindow, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("alt-left", PreviousTab, Some(TABS_CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -774,6 +776,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &GoToBookmark9, window, cx| this.go_to_bookmark('9', window, cx)))
             .on_action(cx.listener(|this, _: &GoToBookmark0, window, cx| this.go_to_bookmark('0', window, cx)))
             .on_action(cx.listener(|this, _: &CloseTab, _, cx| this.close_active_tab(cx)))
+            .on_action(cx.listener(|this, _: &OpenTabInNewWindow, window, cx| {
+                if let tabs::Front::Editor(ix) = this.front {
+                    this.open_tab_in_window(ix, window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &NextTab, window, cx| this.step_tab(1, window, cx)))
             .on_action(cx.listener(|this, _: &PreviousTab, window, cx| this.step_tab(-1, window, cx)))
             .on_action(cx.listener(|this, _: &ReopenClosedTab, window, cx| this.reopen_closed_tab(window, cx)))

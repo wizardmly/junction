@@ -13,13 +13,14 @@ use gpui_kit::{
 use crate::bookmarks::{Bookmarks, MNEMONICS};
 use crate::theme::ActivePalette as _;
 
-pub fn choose_mnemonic(file: String, line: u32, text: String, window: &mut Window, cx: &mut App) {
+/// `line`: `None` for a file bookmark.
+pub fn choose_mnemonic(file: String, line: Option<u32>, text: String, window: &mut Window, cx: &mut App) {
     let current = Bookmarks::get(cx).at(&file, line).cloned();
     let editing = current.as_ref().is_some_and(|b| b.mnemonic.is_some());
     let picked = Rc::new(Cell::new(current.as_ref().and_then(|b| b.mnemonic)));
     window.open_dialog(cx, move |dialog, _, cx| {
         let palette = cx.palette().clone();
-        let used: Vec<char> = Bookmarks::get(cx).list.iter().filter(|b| !(b.file == file && b.line == line)).filter_map(|b| b.mnemonic).collect();
+        let used: Vec<char> = Bookmarks::get(cx).list.iter().filter(|b| !(b.file == file && b.place() == line)).filter_map(|b| b.mnemonic).collect();
         let cell = |c: char| {
             let selected = picked.get() == Some(c);
             let taken = used.contains(&c);

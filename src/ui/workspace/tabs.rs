@@ -19,9 +19,6 @@ use crate::theme::ActivePalette as _;
 use crate::ui::common;
 use crate::ui::file_editor::FileEditor;
 
-/// IntelliJ's default "Tab limit".
-const TAB_LIMIT: usize = 10;
-
 pub(super) struct EditorTab {
     pub view: Entity<FileEditor>,
     pub _subscription: Subscription,
@@ -290,7 +287,8 @@ impl Workspace {
 
     /// Past the tab limit, closes the least recently used unpinned, unmodified tab.
     fn enforce_limit(&mut self, keep: usize, cx: &mut Context<Self>) {
-        while self.editors.len() > TAB_LIMIT {
+        let limit = crate::settings::Settings::get(cx).diff.tab_limit.max(1);
+        while self.editors.len() > limit {
             let victim = self
                 .editors
                 .iter()
@@ -459,6 +457,48 @@ impl Workspace {
         }
     }
 
+    /// Open Tab in New Window (Shift+F4): the tab moves to a window of its own.
+    pub(super) fn open_tab_in_window(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.editors.get(ix) else { return };
+        let view = tab.view.clone();
+        view.update(cx, |editor, cx| editor.save_now(cx));
+        let editor = view.read(cx);
+        let (repository, own) = editor.source();
+        let source = crate::ui::editor_window::EditorSource {
+            repository,
+            own,
+            path: editor.path().to_owned(),
+            revision: editor.revision().map(str::to_owned),
+            line: editor.caret_line(cx),
+        };
+        self.close_tabs(vec![ix], cx);
+        crate::ui::editor_window::open(source, self.code_index.clone(), cx.entity().downgrade(), window.window_handle(), cx);
+    }
+
+    /// The tab's file as a Project view menu target (Git, Rename, Open In,
+    /// Create Gist), for a file of the project.
+    fn tab_target(&self, ix: usize, weak: gpui_kit::WeakEntity<Workspace>, cx: &gpui_kit::App) -> Option<crate::ui::file_menus::ProjectTarget> {
+        let path = self.editors.get(ix)?.view.read(cx).path().to_owned();
+        if std::path::Path::new(&path).is_absolute() {
+            return None;
+        }
+        let model = self.model.read(cx);
+        let root = model.project_root().map(std::path::Path::to_path_buf).or_else(|| model.project_repository().map(|r| r.root().to_path_buf()))?;
+        let actions: crate::ui::file_menus::FileActions = std::rc::Rc::new(move |action, window, cx| {
+            weak.update(cx, |this, cx| this.file_action(action, window, cx)).ok();
+        });
+        Some(crate::ui::file_menus::ProjectTarget {
+            model: self.model.clone(),
+            root,
+            path: path.clone(),
+            is_dir: false,
+            files: Vec::new(),
+            items: vec![(path, false)],
+            actions,
+            clipboard: Default::default(),
+        })
+    }
+
     fn toggle_pin(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(tab) = self.editors.get_mut(ix) else { return };
         tab.pinned = !tab.pinned;
@@ -549,6 +589,11 @@ impl Workspace {
             self.model.read(cx).project_status().entries.iter().map(|e| (e.path.clone(), e.kind)).collect();
         let entity = cx.entity();
         let count = self.editors.len();
+        let tab_settings = crate::settings::Settings::get(cx).diff.clone();
+        let project_root = {
+            let model = self.model.read(cx);
+            model.project_root().map(std::path::Path::to_path_buf).or_else(|| model.project_repository().map(|r| r.root().to_path_buf()))
+        };
         // The diff / merge / PR tabs count as tabs to close too.
         let total = tabs.len();
         // As IntelliJ: the row scrolls sideways (the wheel scrolls it too) and
@@ -609,6 +654,15 @@ impl Workspace {
                 let dirty = editor_ix.is_some_and(|ix| self.editors[ix].view.read(cx).is_dirty(cx));
                 let color = path.as_ref().and_then(|p| status.get(p)).map(|k| common::status_color(*k, &palette));
                 let title_s: SharedString = title.clone().into();
+                // IntelliJ's tab tooltip: the file's full path.
+                let tooltip: Option<SharedString> = path.as_ref().map(|p| {
+                    let full = match &project_root {
+                        Some(root) if !std::path::Path::new(p).is_absolute() => root.join(p),
+                        _ => std::path::PathBuf::from(p),
+                    };
+                    let text = full.to_string_lossy().into_owned();
+                    (if cfg!(windows) { text.replace('/', "\\") } else { text }).into()
+                });
                 h_flex()
                     .id(("editor-tab", n))
                     .group(SharedString::from(format!("editor-tab-{group}")))
@@ -635,17 +689,40 @@ impl Workspace {
                             // Linux's default UI font has no italic face; Inter does.
                             .when(preview, |el| el.italic().when(cfg!(target_os = "linux"), |el| el.font_family("Inter")))
                             .when_some(color, |el, c| el.text_color(c))
-                            .child(if dirty { format!("{title} •") } else { title.clone() }),
+                            .child(if dirty && tab_settings.tab_mark_modified { format!("*{title}") } else { title.clone() }),
                     )
                     .when(pinned, |el| el.child(common::icon(icons::PIN).text_color(palette.text_secondary)))
-                    .child(
+                    .when_some(tooltip, |el, tip| el.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)))
+                    .when(tab_settings.tab_close_button, |el| el.child(
                         div()
                             .id(("editor-tab-close", n))
                             .p(px(2.))
                             .rounded(px(3.))
                             .hover(|el| el.bg(palette.hover))
-                            .when(!active, |el| el.invisible().group_hover(SharedString::from(format!("editor-tab-{group}")), |el| el.visible()))
-                            .child(common::icon(icons::CLOSE).text_color(palette.text_secondary))
+                            .when(!active && !dirty, |el| el.invisible().group_hover(SharedString::from(format!("editor-tab-{group}")), |el| el.visible()))
+                            .map(|el| {
+                                let close = common::icon(icons::CLOSE).text_color(palette.text_secondary);
+                                if !dirty {
+                                    return el.child(close);
+                                }
+                                // A modified file: a dot where the close button is, until hovered (IntelliJ's new UI).
+                                let hover = SharedString::from(format!("editor-tab-{group}"));
+                                el.child(
+                                    div()
+                                        .relative()
+                                        .child(div().invisible().group_hover(hover.clone(), |el| el.visible()).child(close))
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .inset_0()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .group_hover(hover, |el| el.invisible())
+                                                .child(div().size(px(7.)).rounded_full().bg(palette.text_secondary)),
+                                        ),
+                                )
+                            })
                             .on_click({
                                 let entity = entity.clone();
                                 move |_, _, cx| {
@@ -653,7 +730,7 @@ impl Workspace {
                                     grp(&entity, group, cx, |this, cx| this.close_front(front, cx));
                                 }
                             }),
-                    )
+                    ))
                     .on_click({
                         let entity = entity.clone();
                         move |event: &gpui_kit::ClickEvent, window, cx| {
@@ -692,8 +769,7 @@ impl Workspace {
                     })
                     .context_menu({
                         let entity = entity.clone();
-                        let path = path.clone();
-                        move |menu, _, _| {
+                        move |menu, window, cx| {
                             let close = |label: &'static str, enabled: bool, which: fn(usize, usize) -> bool| {
                                 let entity = entity.clone();
                                 PopupMenuItem::new(label).disabled(!enabled).on_click(move |_, _, cx| {
@@ -726,71 +802,121 @@ impl Workspace {
                                         })
                                     }));
                             };
-                            let (e1, e2, e3, e4) = (entity.clone(), entity.clone(), entity.clone(), entity.clone());
-                            let path = path.clone().unwrap_or_default();
-                            let (p1, p2) = (path.clone(), path.clone());
-                            let e5 = entity.clone();
-                            menu.item(close("Close", true, |i, ix| i == ix))
+                            let at = window.mouse_position();
+                            let ws = entity.read(cx);
+                            let any_pinned = ws.editors.iter().any(|t| t.pinned);
+                            let any_unmodified = ws.editors.iter().any(|t| !t.view.read(cx).is_dirty(cx));
+                            let read_only: Vec<usize> = (0..ws.editors.len()).filter(|&i| ws.editors[i].view.read(cx).read_only()).collect();
+                            let target = ws.tab_target(ix, entity.downgrade(), cx);
+                            let bookmark_file = ws.editors[ix].view.read(cx).bookmark_file();
+                            let entry = crate::ui::file_menus::entry;
+                            let run = |label: &'static str, shortcut: &'static str, f: Box<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>| {
+                                let entity = entity.clone();
+                                let f = std::rc::Rc::new(f);
+                                entry(label, shortcut).on_click(move |_, window, cx| {
+                                    let f = f.clone();
+                                    grp(&entity, group, cx, |this, cx| f(this, window, cx))
+                                })
+                            };
+                            let menu = menu
+                                .item(run("Close", "Ctrl+F4", Box::new(move |this, _, cx| this.close_front(front, cx))))
                                 .item(close("Close Other Tabs", total > 1, |i, ix| i != ix))
+                                .item(close("Close All Tabs", true, |_, _| true))
+                                .item(
+                                    run(
+                                        "Close Unmodified Tabs",
+                                        "",
+                                        Box::new(|this, _, cx| {
+                                            let tabs = (0..this.editors.len()).filter(|&i| !this.editors[i].pinned && !this.editors[i].view.read(cx).is_dirty(cx)).collect();
+                                            this.close_tabs(tabs, cx);
+                                        }),
+                                    )
+                                    .disabled(!any_unmodified),
+                                )
                                 .item(close("Close Tabs to the Left", ix > 0, |i, ix| i < ix))
                                 .item(close("Close Tabs to the Right", ix + 1 < total, |i, ix| i > ix))
-                                .item(close("Close All Tabs", true, |_, _| true))
                                 .item({
-                                    let entity = e4.clone();
-                                    PopupMenuItem::new("Close All but Pinned").on_click(move |_, _, cx| {
-                                        grp(&entity, group, cx, |this, cx| {
+                                    let tabs = read_only.clone();
+                                    run("Close All Read-Only", "", Box::new(move |this, _, cx| this.close_tabs(tabs.clone(), cx))).disabled(read_only.is_empty())
+                                })
+                                .when(any_pinned, |menu| {
+                                    menu.item(run(
+                                        "Close All but Pinned",
+                                        "",
+                                        Box::new(|this, _, cx| {
                                             let tabs = (0..this.editors.len()).filter(|&i| !this.editors[i].pinned).collect();
                                             this.close_tabs(tabs, cx);
                                             this.close_specials(None, cx);
-                                        })
-                                    })
+                                        }),
+                                    ))
                                 })
                                 .separator()
-                                .item(PopupMenuItem::new(if pinned { "Unpin Tab" } else { "Pin Tab" }).on_click(move |_, _, cx| grp(&e1, group, cx, |this, cx| this.toggle_pin(ix, cx))))
+                                .item({
+                                    let entity = entity.clone();
+                                    entry("Copy Path/Reference…", "").on_click(move |_, window, cx| {
+                                        let ws = entity.read(cx);
+                                        let Some(tab) = ws.editors.get(ix) else { return };
+                                        let editor = tab.view.read(cx);
+                                        let (path, lines) = (editor.path().to_owned(), editor.url_lines(cx));
+                                        let model = ws.model.clone();
+                                        crate::ui::copy_path::open_for(&model, vec![path], Some(lines), Some(at), window, cx);
+                                    })
+                                })
                                 .separator()
                                 .map(|menu| {
                                     let item = |label: &'static str, vertical: bool, move_it: bool, enabled: bool| {
                                         let entity = entity.clone();
-                                        PopupMenuItem::new(label).disabled(!enabled).on_click(move |_, window, cx| {
-                                            grp(&entity, group, cx, |this, cx| this.split_tab(ix, vertical, move_it, window, cx))
-                                        })
+                                        let icon = match (label, vertical) {
+                                            ("Split Right", _) => Some(icons::SPLIT_VERTICALLY),
+                                            ("Split Down", _) => Some(icons::SPLIT_HORIZONTALLY),
+                                            _ => None,
+                                        };
+                                        entry(label, "")
+                                            .when_some(icon, |e, icon| e.icon(gpui_kit::component::Icon::from(icon)))
+                                            .disabled(!enabled)
+                                            .on_click(move |_, window, cx| grp(&entity, group, cx, |this, cx| this.split_tab(ix, vertical, move_it, window, cx)))
                                     };
                                     match split {
                                         None => menu
                                             .item(item("Split Right", false, false, true))
-                                            .item(item("Split Down", true, false, true))
                                             .item(item("Split and Move Right", false, true, count > 1))
+                                            .item(item("Split Down", true, false, true))
                                             .item(item("Split and Move Down", true, true, count > 1)),
-                                        Some(vertical) => {
-                                            let entity = entity.clone();
-                                            menu.item(item("Open in Opposite Group", vertical, false, true))
-                                                .item(item("Move to Opposite Group", vertical, true, true))
-                                                .item(PopupMenuItem::new("Unsplit").on_click(move |_, _, cx| grp(&entity, group, cx, |this, cx| this.unsplit(cx))))
-                                        }
+                                        Some(vertical) => menu
+                                            .item(item("Open in Opposite Group", vertical, false, true))
+                                            .item(item("Move to Opposite Group", vertical, true, true))
+                                            .item(run("Unsplit", "", Box::new(|this, _, cx| this.unsplit(cx)))),
                                     }
                                 })
                                 .separator()
-                                .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {
-                                    let full = e2.read(cx).code_index.read(cx).root().map(|r| r.join(&p1).display().to_string()).unwrap_or(p1.clone());
-                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(full));
+                                .item(run(if pinned { "Unpin Tab" } else { "Pin Tab" }, "", Box::new(move |this, _, cx| this.toggle_pin(ix, cx))))
+                                .item(run("Open Tab in New Window", "Shift+F4", Box::new(move |this, window, cx| this.open_tab_in_window(ix, window, cx))))
+                                .item(entry("Configure Editor Tabs…", "").on_click(|_, window, cx| crate::ui::settings_dialog::open_page(None, "Editor Tabs", window, cx)))
+                                .separator();
+                            let menu = match bookmark_file {
+                                Some(file) => crate::ui::file_menus::bookmarks_submenu(menu, file, window, cx),
+                                None => crate::ui::file_menus::stub_submenu(menu, "Bookmarks", &[("Add Bookmark", "F11")], window, cx),
+                            };
+                            let menu = menu.separator().item(entry("Override File Type", "").disabled(true)).separator();
+                            let Some(target) = target else { return menu };
+                            let full = target.root.join(&target.path);
+                            let menu = crate::ui::file_menus::open_in_submenu(menu, full, false, window, cx);
+                            let menu = crate::ui::file_menus::local_history_submenu(menu.separator(), window, cx);
+                            let git = crate::ui::file_menus::GitTarget {
+                                model: target.model.clone(),
+                                paths: vec![target.path.clone()],
+                                file: Some(target.path.clone()),
+                                actions: target.actions.clone(),
+                            };
+                            let menu = crate::ui::file_menus::git_submenu(menu, git, window, cx);
+                            let (t_rename, t_gist) = (target.clone(), target.clone());
+                            menu.separator()
+                                .item(entry("Rename File…", "").on_click(move |_, window, cx| crate::ui::file_menus::rename(&t_rename, window, cx)))
+                                .item(entry("Create Gist…", "").icon(gpui_kit::component::Icon::from(icons::GITHUB)).on_click(move |_, window, cx| {
+                                    let name = t_gist.path.rsplit('/').next().unwrap_or(&t_gist.path).to_owned();
+                                    let content = std::fs::read_to_string(t_gist.root.join(&t_gist.path)).unwrap_or_default();
+                                    crate::ui::github_dialogs::create_gist(t_gist.model.clone(), vec![(name, content)], window, cx)
                                 }))
-                                .item(PopupMenuItem::new("Copy Path From Repository Root").on_click(move |_, _, cx| {
-                                    // A nested root's file: its path in that repository.
-                                    let model = e5.read(cx).model.clone();
-                                    let own = model.read(cx).route(&p2).map(|(_, own)| own).unwrap_or_else(|| p2.clone());
-                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(own))
-                                }))
-                                .item(PopupMenuItem::new("Select in Project View").on_click(move |_, window, cx| {
-                                    grp(&e3, group, cx, |this, cx| {
-                                        this.activate(front, window, cx);
-                                        this.select_in_project(&super::SelectInProject, window, cx);
-                                    })
-                                }))
-                                .separator()
-                                .item({
-                                    let entity = entity.clone();
-                                    PopupMenuItem::new("Reopen Closed Tab").on_click(move |_, window, cx| grp(&entity, group, cx, |this, cx| this.reopen_closed_tab(window, cx)))
-                                })
                         }
                     })
                     .into_any_element()

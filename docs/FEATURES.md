@@ -293,7 +293,9 @@
 | Diff、Merge、Pull Request 视图也作为标签显示，可切换、可关闭 | M8 | ✅ |
 | 新标签开在当前标签右侧；关闭后激活左侧标签；关闭时自动保存 | M8 | ✅ |
 | 标签上限 10 个，超出时关闭最久未用的、未固定且未修改的标签 | M8 | ✅ |
-| 右键：Close / Close Other Tabs / Close Tabs to the Left / Right / Close All Tabs / Close All but Pinned / Pin Tab / Copy Path / Copy Path From Repository Root / Select in Project View / Reopen Closed Tab | M8 | ✅ |
+| 右键（与 AS 一致）：Close（Ctrl+F4）/ Close Other Tabs / Close All Tabs / Close Unmodified Tabs / Close Tabs to the Left / Right / Close All Read-Only（有固定标签时多 Close All but Pinned）、Copy Path/Reference…、Split Right / Split and Move Right / Split Down / Split and Move Down、Pin Tab、Open Tab in New Window（Shift+F4，标签移到独立窗口）、Configure Editor Tabs…（Settings › Editor › Editor Tabs：关闭按钮、Mark modified (*)、预览标签、标签上限）、Bookmarks（文件书签）、Override File Type（未实现，置灰）、Open In、Local History（未实现）、Git、Rename File…、Create Gist… | M8 | ✅ |
+| 标签悬停显示文件完整路径；修改未保存的文件关闭按钮位置显示圆点，悬停变 × | M8 | ✅ |
+| Copy Path/Reference… 弹窗（标签、Project 视图、编辑器 Copy / Paste Special）：Absolute Path（Ctrl+Shift+C）、File Name、Path from Content Root、Path from Source Root、Path From Repository Root、GitHub / GitLab Repository URL（跟踪的远程分支，否则当前提交；编辑器里带选中行），每行右侧预览要复制的内容，↑↓ Enter 或点击复制 | M8 | ✅（内容根/源码根按 AS 的模块规则推断：Gradle source set 为 app/src/main，源码根为其下的 java、kotlin、res 等；Cargo、Dart、Swift Package、Go 模块也有对应规则） |
 | 固定标签排在最前并显示图钉；拖动标签调整顺序 | M8 | ✅ |
 | 中键关闭；Ctrl+F4 关闭；Alt+← / Alt+→ 切换（macOS 为 Cmd+Shift+[ / ]） | M8 | ✅ |
 | 分屏：Split Right / Down、Split and Move Right / Down、Open in / Move to Opposite Group、Unsplit；标签可拖到另一组；某组标签关完后自动合并 | M8 | ✅（两组；同一文件在两组各有一份编辑缓冲） |

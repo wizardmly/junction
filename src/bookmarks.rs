@@ -19,6 +19,20 @@ pub struct Bookmark {
     /// The line's text when it was last placed, to find it again.
     #[serde(default)]
     pub text: String,
+    /// A bookmark on the file itself (its tab, the Project view), not a line.
+    #[serde(default)]
+    pub whole_file: bool,
+}
+
+impl Bookmark {
+    /// The line, `None` for a file bookmark.
+    pub fn place(&self) -> Option<u32> {
+        (!self.whole_file).then_some(self.line)
+    }
+
+    fn is(&self, file: &str, line: Option<u32>) -> bool {
+        self.file == file && self.place() == line
+    }
 }
 
 /// The mnemonics IntelliJ offers, in its chooser's order.
@@ -63,12 +77,14 @@ impl Bookmarks {
         }
     }
 
+    /// The file's line bookmarks.
     pub fn of_file<'a>(&'a self, file: &'a str) -> impl Iterator<Item = &'a Bookmark> + 'a {
-        self.list.iter().filter(move |b| b.file == file)
+        self.list.iter().filter(move |b| b.file == file && !b.whole_file)
     }
 
-    pub fn at(&self, file: &str, line: u32) -> Option<&Bookmark> {
-        self.list.iter().find(|b| b.file == file && b.line == line)
+    /// The bookmark on a line, or with `None` on the file itself.
+    pub fn at(&self, file: &str, line: Option<u32>) -> Option<&Bookmark> {
+        self.list.iter().find(|b| b.is(file, line))
     }
 
     pub fn with_mnemonic(&self, mnemonic: char) -> Option<&Bookmark> {
@@ -76,28 +92,28 @@ impl Bookmarks {
     }
 
     /// Toggle Bookmark (F11): adds a plain bookmark, or removes the line's.
-    pub fn toggle(&mut self, file: &str, line: u32, text: &str) {
-        if let Some(i) = self.list.iter().position(|b| b.file == file && b.line == line) {
+    pub fn toggle(&mut self, file: &str, line: Option<u32>, text: &str) {
+        if let Some(i) = self.list.iter().position(|b| b.is(file, line)) {
             self.list.remove(i);
         } else {
-            self.list.push(Bookmark { file: file.to_owned(), line, mnemonic: None, text: text.trim().to_owned() });
+            self.list.push(Self::new_one(file, line, None, text));
         }
+    }
+
+    fn new_one(file: &str, line: Option<u32>, mnemonic: Option<char>, text: &str) -> Bookmark {
+        Bookmark { file: file.to_owned(), line: line.unwrap_or(0), mnemonic, text: text.trim().to_owned(), whole_file: line.is_none() }
     }
 
     /// Puts a bookmark with `mnemonic` on a line (`None`: a plain one);
     /// another bookmark with the same mnemonic gives it up, as in IntelliJ.
-    pub fn set(&mut self, file: &str, line: u32, text: &str, mnemonic: Option<char>) {
+    pub fn set(&mut self, file: &str, line: Option<u32>, text: &str, mnemonic: Option<char>) {
         if let Some(m) = mnemonic {
-            self.list.retain(|b| b.mnemonic != Some(m) || (b.file == file && b.line == line));
+            self.list.retain(|b| b.mnemonic != Some(m) || b.is(file, line));
         }
-        match self.list.iter_mut().find(|b| b.file == file && b.line == line) {
+        match self.list.iter_mut().find(|b| b.is(file, line)) {
             Some(b) => b.mnemonic = mnemonic,
-            None => self.list.push(Bookmark { file: file.to_owned(), line, mnemonic, text: text.trim().to_owned() }),
+            None => self.list.push(Self::new_one(file, line, mnemonic, text)),
         }
-    }
-
-    pub fn remove(&mut self, file: &str, line: u32) {
-        self.list.retain(|b| !(b.file == file && b.line == line));
     }
 
     /// After an edit: each of the file's bookmarks whose line no longer
@@ -105,7 +121,7 @@ impl Bookmarks {
     /// anything moved.
     pub fn follow(&mut self, file: &str, lines: &[&str]) -> bool {
         let mut moved = false;
-        for b in self.list.iter_mut().filter(|b| b.file == file && !b.text.is_empty()) {
+        for b in self.list.iter_mut().filter(|b| b.file == file && !b.whole_file && !b.text.is_empty()) {
             let at = b.line as usize;
             if lines.get(at).is_some_and(|l| l.trim() == b.text) {
                 continue;
@@ -137,16 +153,20 @@ mod tests {
     #[test]
     fn toggles_mnemonics_and_follows_lines() {
         let mut b = Bookmarks::default();
-        b.toggle("/a.kt", 2, "  val x = 1 ");
-        assert_eq!(b.at("/a.kt", 2).unwrap().text, "val x = 1");
-        b.toggle("/a.kt", 2, "");
-        assert!(b.at("/a.kt", 2).is_none());
-        b.set("/a.kt", 1, "fun a()", Some('1'));
-        b.set("/b.kt", 4, "fun b()", Some('1'));
+        b.toggle("/a.kt", Some(2), "  val x = 1 ");
+        assert_eq!(b.at("/a.kt", Some(2)).unwrap().text, "val x = 1");
+        b.toggle("/a.kt", Some(2), "");
+        assert!(b.at("/a.kt", Some(2)).is_none());
+        b.set("/a.kt", Some(1), "fun a()", Some('1'));
+        b.set("/b.kt", Some(4), "fun b()", Some('1'));
         assert_eq!(b.with_mnemonic('1').unwrap().file, "/b.kt");
         assert_eq!(b.list.len(), 1);
         // Two lines inserted above: the bookmark moves down with its line.
         assert!(b.follow("/b.kt", &["x", "y", "", "", "", "", "fun b()"]));
-        assert_eq!(b.at("/b.kt", 6).unwrap().mnemonic, Some('1'));
+        assert_eq!(b.at("/b.kt", Some(6)).unwrap().mnemonic, Some('1'));
+        // A file bookmark is apart from the file's line bookmarks.
+        b.toggle("/b.kt", None, "");
+        assert!(b.at("/b.kt", None).is_some_and(|m| m.whole_file));
+        assert_eq!(b.of_file("/b.kt").count(), 1);
     }
 }

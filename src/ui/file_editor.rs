@@ -65,7 +65,9 @@ actions!(
         ToggleIndentGuides,
         ToggleWhitespaces,
         ConfigureSoftWraps,
-        ConfigureGutterIcons
+        ConfigureGutterIcons,
+        CopyAbsolutePath,
+        CopyPathReference
     ]
 );
 
@@ -93,6 +95,8 @@ pub fn init(cx: &mut gpui_kit::App) {
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
         KeyBinding::new(if cfg!(target_os = "macos") { "f3" } else { "f11" }, ToggleBookmark, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "alt-f3" } else { "ctrl-f11" }, ToggleBookmarkWithMnemonic, Some(CONTEXT)),
+        // Copy Absolute Path: Ctrl+Shift+C (⇧⌘C).
+        KeyBinding::new("secondary-shift-c", CopyAbsolutePath, Some(CONTEXT)),
         // IntelliJ: Ctrl+R replaces (Ctrl+F finds, from the editor itself), F3 / Shift+F3 step.
         KeyBinding::new("secondary-f", OpenFind, Some(CONTEXT)),
         KeyBinding::new("secondary-r", OpenReplace, Some(CONTEXT)),
@@ -137,6 +141,8 @@ pub enum FileEditorEvent {
     ChooseTargets { title: String, targets: Vec<crate::index::nav::Target>, at: Point<Pixels> },
     /// Find Usages of the identifier at a byte offset of this text.
     FindUsages { text: String, offset: usize },
+    /// Copy Path/Reference…: the Copy popup for this file.
+    CopyPathReference,
     /// Saved: re-index this file.
     Saved(String),
     /// The text was edited (a preview tab becomes a normal one).
@@ -634,6 +640,21 @@ impl FileEditor {
 
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// The repository the file is read from, and its path there.
+    pub fn source(&self) -> (Repository, String) {
+        (self.repository.clone(), self.own.clone())
+    }
+
+    /// The caret's 0-based line.
+    pub fn caret_line(&self, cx: &gpui_kit::App) -> usize {
+        self.state.read(cx).cursor_position().line as usize
+    }
+
+    /// The selected lines (1-based) for a web URL.
+    pub fn url_lines(&self, cx: &gpui_kit::App) -> (usize, usize) {
+        self.selected_lines(cx)
     }
 
     /// Replaces the text (unsaved), e.g. a moved file's edits.
@@ -1481,7 +1502,7 @@ impl FileEditor {
         let Some(file) = self.bookmark_file() else { return };
         let line = self.bookmark_line(cx);
         let text = self.line_text(line, cx);
-        crate::bookmarks::Bookmarks::update(cx, |b| b.toggle(&file, line as u32, &text));
+        crate::bookmarks::Bookmarks::update(cx, |b| b.toggle(&file, Some(line as u32), &text));
     }
 
     /// Toggle Bookmark with Mnemonic (Ctrl+F11): the mnemonic chooser.
@@ -1489,7 +1510,7 @@ impl FileEditor {
         let Some(file) = self.bookmark_file() else { return };
         let line = self.bookmark_line(cx);
         let text = self.line_text(line, cx);
-        crate::ui::bookmark_dialog::choose_mnemonic(file, line as u32, text, window, cx);
+        crate::ui::bookmark_dialog::choose_mnemonic(file, Some(line as u32), text, window, cx);
     }
 
     /// Room in the gutter for the implementation markers and bookmarks.
@@ -1758,6 +1779,14 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::toggle_line_numbers))
             .on_action(cx.listener(Self::toggle_bookmark))
             .on_action(cx.listener(Self::toggle_bookmark_with_mnemonic))
+            .on_action(cx.listener(|this, _: &CopyAbsolutePath, _, cx| {
+                let path = std::path::Path::new(&this.path);
+                let full = if path.is_absolute() { path.to_path_buf() } else { this.repository.root().join(&this.own) };
+                let text = full.to_string_lossy().into_owned();
+                let text = if cfg!(windows) { text.replace('/', "\\") } else { text };
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+            }))
+            .on_action(cx.listener(|_, _: &CopyPathReference, _, cx| cx.emit(FileEditorEvent::CopyPathReference)))
             .on_action(cx.listener(|this, _: &ToggleSoftWrap, _, cx| this.toggle_view(|d| d.soft_wrap = !d.soft_wrap, cx)))
             .on_action(cx.listener(|this, _: &ToggleGutterIcons, _, cx| this.toggle_view(|d| d.show_gutter_icons = !d.show_gutter_icons, cx)))
             .on_action(cx.listener(|this, _: &ToggleIndentGuides, _, cx| this.toggle_view(|d| d.show_indent_guides = !d.show_indent_guides, cx)))
@@ -1840,7 +1869,7 @@ impl Render for FileEditor {
                                 let bookmarked = bookmark_file
                                     .as_ref()
                                     .zip(gutter_line.get())
-                                    .and_then(|(f, l)| crate::bookmarks::Bookmarks::get(cx).at(f, l as u32).map(|b| b.mnemonic.is_some()));
+                                    .and_then(|(f, l)| crate::bookmarks::Bookmarks::get(cx).at(f, Some(l as u32)).map(|b| b.mnemonic.is_some()));
                                 return menu
                                     .menu(if annotated { "Close Annotations" } else { "Annotate with Git Blame" }, Box::new(AnnotateFile))
                                     .separator()
@@ -1862,6 +1891,7 @@ impl Render for FileEditor {
                                 .menu_with_disabled("Cut", read_only, Box::new(Cut))
                                 .menu_with_disabled("Paste", read_only, Box::new(Paste))
                                 .menu("Select All", Box::new(SelectAll))
+                                .submenu("Copy / Paste Special", NativeMenu::new().menu("Copy Path/Reference…", Box::new(CopyPathReference)))
                                 .separator()
                                 .menu("Go to Declaration", Box::new(GotoDeclaration))
                                 .menu("Find Usages", Box::new(FindUsages))

@@ -223,6 +223,12 @@ pub struct DiffSettings {
     pub highlighting: HighlightingLevel,
     /// The gutter menu's Breadcrumbs: where each pane shows them.
     pub breadcrumbs: Breadcrumbs,
+    /// Settings › Editor › Editor Tabs: the close button on each tab.
+    pub tab_close_button: bool,
+    /// Editor Tabs: modified files' tabs get a "*".
+    pub tab_mark_modified: bool,
+    /// Editor Tabs: the least recently used tab closes past this many.
+    pub tab_limit: usize,
 }
 
 impl Default for DiffSettings {
@@ -237,6 +243,9 @@ impl Default for DiffSettings {
             show_gutter_icons: true,
             highlighting: HighlightingLevel::AllProblems,
             breadcrumbs: Breadcrumbs::Hidden,
+            tab_close_button: true,
+            tab_mark_modified: false,
+            tab_limit: 10,
         }
     }
 }
@@ -301,8 +310,10 @@ impl Breadcrumbs {
 }
 
 impl DiffSettings {
-    fn fields(&mut self) -> [(&'static str, &mut bool); 6] {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 8] {
         [
+            ("diff_tab_close_button", &mut self.tab_close_button),
+            ("diff_tab_mark_modified", &mut self.tab_mark_modified),
             ("diff_show_gutter_icons", &mut self.show_gutter_icons),
             ("diff_soft_wrap", &mut self.soft_wrap),
             ("diff_show_line_numbers", &mut self.show_line_numbers),
@@ -543,6 +554,11 @@ impl Settings {
                         settings.diff.context_lines = n;
                     }
                 }
+                "diff_tab_limit" => {
+                    if let Ok(n) = value.parse::<usize>() {
+                        settings.diff.tab_limit = n.clamp(1, 100);
+                    }
+                }
                 "diff_highlighting_level" => {
                     if let Some(level) = HighlightingLevel::ALL.into_iter().find(|l| l.key() == value) {
                         settings.diff.highlighting = level;
@@ -631,6 +647,7 @@ impl Settings {
             text.push_str(&format!("{k}={v}\n"));
         }
         text.push_str(&format!("diff_context_lines={}\n", self.diff.context_lines));
+        text.push_str(&format!("diff_tab_limit={}\n", self.diff.tab_limit));
         text.push_str(&format!("diff_highlighting_level={}\n", self.diff.highlighting.key()));
         text.push_str(&format!("diff_breadcrumbs={}\n", self.diff.breadcrumbs.key()));
         let [a, d, h] = self.log.columns;

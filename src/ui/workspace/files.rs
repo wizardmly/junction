@@ -25,9 +25,14 @@ impl Workspace {
         self.open_tab(path, revision, window, cx);
     }
 
-    pub(super) fn on_file_editor_event(&mut self, view: &Entity<FileEditor>, event: &FileEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_file_editor_event(&mut self, view: &Entity<FileEditor>, event: &FileEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             FileEditorEvent::Edited => self.keep_tab(view, cx),
+            FileEditorEvent::CopyPathReference => {
+                let editor = view.read(cx);
+                let (path, lines) = (editor.path().to_owned(), editor.url_lines(cx));
+                crate::ui::copy_path::open_for(&self.model, vec![path], Some(lines), None, window, cx);
+            }
             FileEditorEvent::Deleted => {
                 // Closed without saving: saving would bring the file back.
                 if let Some(ix) = self.editors.iter().position(|t| t.view == *view) {
