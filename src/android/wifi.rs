@@ -68,10 +68,20 @@ pub fn reconcile(adb: &Adb, mut devices: Vec<AdbDevice>, state: &mut WifiState) 
     // named after the service or the address. A device seen before was
     // probably paired with this computer: connect it as adb would on its
     // own, instead of waiting for a click.
+    // A device on USB as well is connected too: its USB serial is its
+    // hardware serial (or getprop said so). Connecting it over Wi-Fi again
+    // would list it twice.
+    let online_hardware: Vec<String> = devices
+        .iter()
+        .filter(|d| d.state == "device")
+        .flat_map(|d| [Some(d.serial.clone()), state.hardware.get(&d.serial).cloned()])
+        .flatten()
+        .collect();
     let mut available: Vec<(String, String)> = Vec::new();
     for service in &services {
         let address = service.address();
-        let connected = devices.iter().any(|d| d.serial.starts_with(&service.name) || d.serial == address);
+        let connected = devices.iter().any(|d| d.serial.starts_with(&service.name) || d.serial == address)
+            || service_serial(&service.name).is_some_and(|s| online_hardware.iter().any(|h| h == s));
         let Some(serial) = service_serial(&service.name).filter(|_| !connected && !moved.values().any(|a| a == &address)) else { continue };
         if state.known.get(serial).is_some() && due(&address, state) && connect(adb, &address) {
             reconnected = true;

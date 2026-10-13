@@ -340,6 +340,11 @@ pub fn scan(tools: &Tools, cache: &mut ScanCache) -> (Vec<Device>, Option<String
             wifi: pairing,
         });
     }
+    // A phone on both USB and Wi-Fi is one row, as in Android Studio: the
+    // USB connection's when it is online.
+    let hardware = |d: &Device| d.props.get("ro.serialno").filter(|h| !h.is_empty()).cloned().or_else(|| d.id.strip_prefix("wifi:").map(str::to_owned));
+    let usb_online: Vec<String> = devices.iter().filter(|d| d.kind == Kind::Physical && d.online && !d.id.starts_with("wifi:")).filter_map(hardware).collect();
+    devices.retain(|d| !(d.kind == Kind::Physical && d.id.starts_with("wifi:") && hardware(d).is_some_and(|h| usb_online.contains(&h))));
     for (serial, address) in available {
         let props = cache.wifi.known.get(&serial).cloned().unwrap_or_default();
         devices.push(Device {
