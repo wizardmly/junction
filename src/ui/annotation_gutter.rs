@@ -23,7 +23,6 @@ use crate::theme::ActivePalette as _;
 use crate::ui::common;
 use crate::ui::file_editor::FileEditor;
 
-const FONT_SIZE: f32 = 12.;
 const PADDING: f32 = 6.;
 /// Author names are cut to this many characters, as IntelliJ's column.
 const AUTHOR_CHARS: usize = 14;
@@ -123,27 +122,34 @@ impl Annotation {
             .unwrap_or(0)
     }
 
-    /// Characters the widest label takes, for the column's width: as
-    /// IntelliJ's, as wide as the longest author shown, no wider.
-    pub(crate) fn chars(&self) -> usize {
-        let columns = [(self.view.date, 10), (self.view.author, self.author_chars()), (self.view.hash, 8)];
-        let shown: Vec<usize> = columns.iter().filter(|(on, _)| *on).map(|(_, n)| *n).collect();
-        let width = shown.iter().sum::<usize>() + shown.len().saturating_sub(1);
-        // "Not Committed Yet" when every column is hidden but the line is new.
-        if self.blame.commits.iter().any(|c| blame::is_uncommitted(&c.hash)) { width.max(17) } else { width.max(1) }
+    /// The column's width with labels in `family` at `size`: the widest
+    /// label plus padding, as IntelliJ sizes it (its UI font, not monospace).
+    pub(crate) fn pixel_width(&self, family: SharedString, size: Pixels, window: &Window) -> Pixels {
+        let widest = self
+            .blame
+            .commits
+            .iter()
+            .map(|c| {
+                let label = self.label(c);
+                let run = TextRun { len: label.len(), font: font(family.clone()), color: gpui_kit::black(), background_color: None, underline: None, strikethrough: None };
+                window.text_system().shape_line(SharedString::from(label), size, &[run], None).width
+            })
+            .fold(px(0.), Pixels::max);
+        (widest + px(PADDING * 2.)).ceil()
     }
 
     /// The gutter column, painted beside the editor from its layout so it
     /// scrolls with the text.
     pub fn gutter(&self, state: Entity<gpui_kit::component::input::EditorState>, editor: WeakEntity<FileEditor>, window: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
         let palette = cx.palette().clone();
-        let mono = cx.theme().mono_font_family.clone();
+        // IntelliJ draws the annotations in its UI font at the editor's size.
+        let family = cx.theme().font_family.clone();
+        let font_size = px(crate::settings::Settings::get(cx).editor_font_size());
         let run = {
-            let (mono, color) = (mono.clone(), palette.text_secondary);
-            move |len: usize| TextRun { len, font: font(mono.clone()), color, background_color: None, underline: None, strikethrough: None }
+            let (family, color) = (family.clone(), palette.text_secondary);
+            move |len: usize| TextRun { len, font: font(family.clone()), color, background_color: None, underline: None, strikethrough: None }
         };
-        let char_width = window.text_system().shape_line("0".into(), px(FONT_SIZE), &[run(1)], None).width;
-        let width = char_width * self.chars() as f32 + px(PADDING * 2.);
+        let width = self.pixel_width(family, font_size, window);
         let labels: Rc<Vec<String>> = Rc::new(self.blame.commits.iter().map(|c| self.label(c)).collect());
         let blame_lines = self.blame.clone();
         let age = self.age.clone();
@@ -196,7 +202,7 @@ impl Annotation {
                     if hovered_commit == Some(blamed.commit) {
                         text_run.color = palette.text;
                     }
-                    let shaped = window.text_system().shape_line(SharedString::from(label.clone()), px(FONT_SIZE), &[text_run], None);
+                    let shaped = window.text_system().shape_line(SharedString::from(label.clone()), font_size, &[text_run], None);
                     let _ = shaped.paint(point(bounds.left() + px(PADDING), top), line_height, TextAlign::Left, None, window, cx);
                     rows.push((row, line));
                 }
@@ -358,7 +364,7 @@ fn ages(blame: &Blame) -> Vec<f32> {
 }
 
 fn short_date(unix_seconds: i64) -> String {
-    Local.timestamp_opt(unix_seconds, 0).single().map(|t| t.format("%Y/%m/%d").to_string()).unwrap_or_default()
+    Local.timestamp_opt(unix_seconds, 0).single().map(|t| t.format("%Y/%-m/%-d").to_string()).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -390,9 +396,7 @@ mod tests {
         annotation.view = AnnotationView { date: false, author: true, hash: true };
         assert_eq!(annotation.label(&annotation.blame.commits[0].clone()), "Alice aaaaaaaa");
         assert_eq!(annotation.label(&annotation.blame.commits[2].clone()), "Not Committed Yet");
-        // As wide as the longest author, not a fixed width.
-        assert_eq!(annotation.chars(), 17);
-        annotation.view = AnnotationView { date: true, author: true, hash: true };
-        assert_eq!(annotation.chars(), 10 + 1 + 5 + 1 + 8);
+        // Authors are padded to the longest one shown, not a fixed width.
+        assert_eq!(annotation.label(&annotation.blame.commits[1].clone()), "Bob   bbbbbbbb");
     }
 }

@@ -7,6 +7,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, ElementId, Entity, InteractiveElement as _, IntoElement, MouseButton,
@@ -178,9 +179,11 @@ impl DiffView {
     }
 
     /// The annotation column's width for a pane (0: none).
-    pub(super) fn annotation_width(&self, pane: usize) -> f32 {
+    pub(super) fn annotation_width(&self, pane: usize, window: &Window, cx: &App) -> f32 {
         match self.annotations.sides.get(pane).and_then(Option::as_ref) {
-            Some(a) if self.annotations.on && !a.loading => a.chars() as f32 * self.panes.char_width() + 2. * PADDING,
+            Some(a) if self.annotations.on && !a.loading => {
+                f32::from(a.pixel_width(cx.theme().font_family.clone(), px(crate::ui::diff_panes::font_size()), window))
+            }
             _ => 0.,
         }
     }
@@ -214,6 +217,7 @@ impl DiffView {
                 .id(ElementId::NamedInteger("diff-blame".into(), (pane * 10_000_000 + line) as u64))
                 .size_full()
                 .px(px(PADDING))
+                .font_family(cx.theme().font_family.clone())
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .bg(tint)

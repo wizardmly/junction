@@ -1221,7 +1221,7 @@ impl DiffView {
         ];
         self.panes.apply_settings(cx);
         for pane in 0..2 {
-            self.panes.layouts[pane].annotation = self.annotation_width(pane);
+            self.panes.layouts[pane].annotation = self.annotation_width(pane, window, cx);
         }
         // A review's comment buttons take the fixed-width number column.
         if self.review.is_some() {
@@ -1454,7 +1454,7 @@ impl DiffView {
         self.panes.apply_settings(cx);
         self.panes.layouts[1].double_numbers = true;
         // One column for both sides' lines.
-        self.panes.layouts[1].annotation = self.annotation_width(0).max(self.annotation_width(1));
+        self.panes.layouts[1].annotation = self.annotation_width(0, window, cx).max(self.annotation_width(1, window, cx));
         self.panes.primary = 1;
         // The hidden left pane must not catch clicks.
         self.panes.bounds_reset(0);
