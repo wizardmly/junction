@@ -96,8 +96,10 @@ impl Annotation {
             parts.push(short_date(commit.author_time));
         }
         if self.view.author {
+            // Padded to the longest author shown, so the hashes line up.
             let name: String = commit.author.chars().take(AUTHOR_CHARS).collect();
-            parts.push(format!("{name:<AUTHOR_CHARS$}"));
+            let width = self.author_chars();
+            parts.push(format!("{name:<width$}"));
         }
         if self.view.hash {
             parts.push(commit.hash[..commit.hash.len().min(8)].to_owned());
@@ -110,9 +112,21 @@ impl Annotation {
         self.age.get(commit).copied().unwrap_or(1.)
     }
 
-    /// Characters the widest label takes, for the column's width.
+    /// The longest author name of the blamed commits (at most AUTHOR_CHARS).
+    fn author_chars(&self) -> usize {
+        self.blame
+            .commits
+            .iter()
+            .filter(|c| !blame::is_uncommitted(&c.hash))
+            .map(|c| c.author.chars().count().min(AUTHOR_CHARS))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Characters the widest label takes, for the column's width: as
+    /// IntelliJ's, as wide as the longest author shown, no wider.
     pub(crate) fn chars(&self) -> usize {
-        let columns = [(self.view.date, 10), (self.view.author, AUTHOR_CHARS), (self.view.hash, 8)];
+        let columns = [(self.view.date, 10), (self.view.author, self.author_chars()), (self.view.hash, 8)];
         let shown: Vec<usize> = columns.iter().filter(|(on, _)| *on).map(|(_, n)| *n).collect();
         let width = shown.iter().sum::<usize>() + shown.len().saturating_sub(1);
         // "Not Committed Yet" when every column is hidden but the line is new.
@@ -374,8 +388,11 @@ mod tests {
         let mut annotation = Annotation::default();
         annotation.set_blame(blame);
         annotation.view = AnnotationView { date: false, author: true, hash: true };
-        assert_eq!(annotation.label(&annotation.blame.commits[0].clone()), format!("Alice{} aaaaaaaa", " ".repeat(AUTHOR_CHARS - 5)));
+        assert_eq!(annotation.label(&annotation.blame.commits[0].clone()), "Alice aaaaaaaa");
         assert_eq!(annotation.label(&annotation.blame.commits[2].clone()), "Not Committed Yet");
-        assert_eq!(annotation.chars(), AUTHOR_CHARS + 1 + 8);
+        // As wide as the longest author, not a fixed width.
+        assert_eq!(annotation.chars(), 17);
+        annotation.view = AnnotationView { date: true, author: true, hash: true };
+        assert_eq!(annotation.chars(), 10 + 1 + 5 + 1 + 8);
     }
 }
