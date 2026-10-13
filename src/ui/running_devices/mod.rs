@@ -93,6 +93,9 @@ pub struct MirrorView {
     /// Whether text goes straight into the device's focused field through
     /// the helper (it holds the device's UI automation connection).
     text_helper: bool,
+    /// The helper start last notified, so a retry failing the same way
+    /// stays quiet.
+    helper_notice: Option<Result<(), String>>,
     recording: Option<Recording>,
     /// The clipboard text both sides last agreed on.
     clipboard: Option<String>,

@@ -60,6 +60,7 @@ impl MirrorView {
             hidden_since: None,
             _idle: None,
             typing_notice: None,
+            helper_notice: None,
             _intercept: intercept,
         };
         this.connect(cx);
@@ -68,11 +69,8 @@ impl MirrorView {
 
     pub(super) fn connect(&mut self, cx: &mut Context<Self>) {
         let (tx, mut rx) = futures::channel::mpsc::unbounded();
-        let session = Session::start(self.adb.clone(), self.serial.clone(), tx);
-        if !self.text_helper {
-            session.set_text_helper(false);
-        }
-        self.session = Some(session);
+        self.helper_notice = None;
+        self.session = Some(Session::start(self.adb.clone(), self.serial.clone(), tx, self.text_helper));
         self.state = State::Connecting;
         self._events = Some(cx.spawn(async move |this, cx| {
             while let Some(event) = rx.next().await {
@@ -115,6 +113,26 @@ impl MirrorView {
                 if self.typing_notice.as_ref() != Some(&why) {
                     self.typing_notice = Some(why.clone());
                     cx.emit(MirrorEvent::Notify { title: format!("Could not type on {}", self.title), message: why, error: true });
+                }
+                return;
+            }
+            Event::Helper(result) => {
+                // Once per outcome: a retry that fails the same way stays quiet.
+                if self.helper_notice.as_ref() != Some(&result) {
+                    self.helper_notice = Some(result.clone());
+                    let (title, message, error) = match result {
+                        Ok(()) => (
+                            format!("Direct text input is on for {}", self.title),
+                            "Typed text goes straight into the device's focused field, with any keyboard.".to_owned(),
+                            false,
+                        ),
+                        Err(why) => (
+                            format!("Direct text input could not start on {}", self.title),
+                            format!("{why}\nNon-ASCII text can only be typed with Gboard as the device's keyboard until it starts."),
+                            true,
+                        ),
+                    };
+                    cx.emit(MirrorEvent::Notify { title, message, error });
                 }
                 return;
             }
@@ -276,6 +294,8 @@ impl MirrorView {
                 .selected(self.text_helper)
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.text_helper = !this.text_helper;
+                    this.helper_notice = None;
+                    this.typing_notice = None;
                     if let Some(session) = this.session.as_ref() {
                         session.set_text_helper(this.text_helper);
                     }

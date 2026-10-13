@@ -41,6 +41,8 @@ pub enum Event {
     Clipboard(String),
     /// Typed text that could not be typed: why.
     Typing(String),
+    /// The text input helper started, or why it couldn't.
+    Helper(Result<(), String>),
     /// The session ended: why, unless it was stopped.
     Closed(Option<String>),
 }
@@ -74,6 +76,8 @@ enum Input {
     Text(String),
     /// Whether the text input helper may run.
     Helper(bool),
+    /// A helper start of the given generation ended.
+    Started(u64, Result<TextInput, String>),
 }
 
 /// One mirrored device. Dropping it stops the server.
@@ -87,7 +91,8 @@ pub struct Session {
 
 impl Session {
     /// Starts mirroring in the background; `events` reports how it goes.
-    pub fn start(adb: Adb, serial: String, events: UnboundedSender<Event>) -> Self {
+    /// `text_helper`: whether to start the text input helper too.
+    pub fn start(adb: Adb, serial: String, events: UnboundedSender<Event>, text_helper: bool) -> Self {
         let shared = Arc::new(Shared {
             frame: Mutex::new(None),
             stop: AtomicBool::new(false),
@@ -100,8 +105,8 @@ impl Session {
         let port = Arc::new(Mutex::new(None));
         let (input, queue) = std::sync::mpsc::channel();
         {
-            let (adb, serial, shared, events) = (adb.clone(), serial.clone(), shared.clone(), events.clone());
-            std::thread::spawn(move || input_worker(queue, &adb, &serial, &shared, &events));
+            let (adb, serial, shared, events, input) = (adb.clone(), serial.clone(), shared.clone(), events.clone(), input.clone());
+            std::thread::spawn(move || input_worker(queue, input, text_helper, &adb, &serial, &shared, &events));
         }
         {
             let (adb, serial, shared, port) = (adb.clone(), serial.clone(), shared.clone(), port.clone());
@@ -503,39 +508,78 @@ fn compose_message(code: u32) -> Vec<u8> {
 /// [`TextInput`] helper (started on first use); when that can't set it,
 /// Gboard's Unicode composition types it; otherwise it is dropped and an
 /// [`Event::Typing`] says why.
-/// How long after a failed start the helper is tried again.
-const HELPER_RETRY: Duration = Duration::from_secs(300);
-fn input_worker(queue: std::sync::mpsc::Receiver<Input>, adb: &Adb, serial: &str, shared: &Shared, events: &UnboundedSender<Event>) {
-    // The helper, once started, lives as long as the mirroring session.
-    let mut typer = Typer { adb, serial, shared, events, helper: Helper::None, keyboard: None };
-    let mut pending: Option<Input> = None;
-    loop {
-        let input = match pending.take() {
-            Some(input) => input,
-            None => match queue.recv() {
-                Ok(input) => input,
-                Err(_) => break,
-            },
-        };
+/// How long after a failed start typing tries the helper again (in the
+/// background, so it costs nothing; the same failure stays quiet).
+const HELPER_RETRY: Duration = Duration::from_secs(30);
+fn input_worker(
+    queue: std::sync::mpsc::Receiver<Input>,
+    sender: std::sync::mpsc::Sender<Input>,
+    text_helper: bool,
+    adb: &Adb,
+    serial: &str,
+    shared: &Shared,
+    events: &UnboundedSender<Event>,
+) {
+    use std::collections::VecDeque;
+    // The helper lives as long as the mirroring session; it starts with it,
+    // so the user hears right away whether typing will work.
+    let mut typer = Typer { adb, serial, shared, events, sender, helper: Helper::Off, generation: 0, keyboard: None };
+    typer.set_on(text_helper);
+    // The queue has a sender of ours (for helper starts): it never closes,
+    // so the session's stop flag ends the loop.
+    let next = |backlog: &mut VecDeque<Input>| -> Option<Input> {
+        if let Some(input) = backlog.pop_front() {
+            return Some(input);
+        }
+        loop {
+            if shared.stop.load(Ordering::SeqCst) {
+                return None;
+            }
+            match queue.recv_timeout(Duration::from_millis(500)) {
+                Ok(input) => return Some(input),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(_) => return None,
+            }
+        }
+    };
+    let mut backlog: VecDeque<Input> = VecDeque::new();
+    while let Some(input) = next(&mut backlog) {
         let mut text = match input {
             Input::Message(m) => {
                 send(shared, &m);
                 continue;
             }
             Input::Helper(on) => {
-                typer.helper = if on { Helper::None } else { Helper::Off };
+                typer.set_on(on);
+                continue;
+            }
+            Input::Started(generation, result) => {
+                typer.started(generation, result);
                 continue;
             }
             Input::Text(text) => text,
         };
         // Text typed while the last one was on its way goes in one piece,
         // instead of character by character; keys after it wait their turn.
-        while let Ok(next) = queue.try_recv() {
-            match next {
-                Input::Text(more) => text.push_str(&more),
-                other => {
-                    pending = Some(other);
+        loop {
+            match backlog.pop_front().or_else(|| queue.try_recv().ok()) {
+                Some(Input::Text(more)) => text.push_str(&more),
+                Some(other) => {
+                    backlog.push_front(other);
                     break;
+                }
+                None => break,
+            }
+        }
+        // Non-ASCII text has no better way in than the helper: wait for its
+        // start, keeping what comes meanwhile in order.
+        if matches!(typer.helper, Helper::Starting) && !is_ascii(&text) {
+            while matches!(typer.helper, Helper::Starting) {
+                match queue.recv_timeout(Duration::from_millis(500)) {
+                    Ok(Input::Started(generation, result)) => typer.started(generation, result),
+                    Ok(other) => backlog.push_back(other),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !shared.stop.load(Ordering::SeqCst) => {}
+                    Err(_) => return,
                 }
             }
         }
@@ -543,11 +587,14 @@ fn input_worker(queue: std::sync::mpsc::Receiver<Input>, adb: &Adb, serial: &str
     }
 }
 
+fn is_ascii(text: &str) -> bool {
+    text.chars().all(|c| c.is_ascii() && !c.is_ascii_control())
+}
+
 enum Helper {
-    None,
     /// Turned off by the user.
     Off,
-    Starting(std::sync::mpsc::Receiver<Result<TextInput, String>>),
+    Starting,
     Ready(TextInput),
     Failed(Instant, String),
 }
@@ -557,51 +604,74 @@ struct Typer<'a> {
     serial: &'a str,
     shared: &'a Shared,
     events: &'a UnboundedSender<Event>,
+    /// The worker's own queue, for helper starts to report back.
+    sender: std::sync::mpsc::Sender<Input>,
     helper: Helper,
+    /// Of the latest helper start; older ones are dropped.
+    generation: u64,
     keyboard: Option<(Instant, Result<(), String>)>,
 }
 
 impl Typer<'_> {
-    fn type_text(&mut self, text: &str) {
-        let ascii = text.chars().all(|c| c.is_ascii() && !c.is_ascii_control());
-        // Start the helper in the background: ASCII never waits for it.
-        if !ascii && (matches!(self.helper, Helper::None) || matches!(&self.helper, Helper::Failed(t, _) if t.elapsed() > HELPER_RETRY)) {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let (adb, serial) = (self.adb.clone(), self.serial.to_owned());
-            std::thread::spawn(move || {
-                let _ = tx.send(TextInput::start(&adb, &serial));
-            });
-            self.helper = Helper::Starting(rx);
-        }
-        if let Helper::Starting(rx) = &self.helper {
-            // Non-ASCII text has no better way in: wait for it.
-            let result = if ascii { rx.try_recv().ok() } else { Some(rx.recv().unwrap_or_else(|_| Err("The helper did not start.".to_owned()))) };
-            match result {
-                Some(Ok(helper)) => self.helper = Helper::Ready(helper),
-                Some(Err(error)) => {
-                    eprintln!("text input helper on {}: {error}", self.serial);
-                    self.helper = Helper::Failed(Instant::now(), error);
-                }
-                None => {}
+    fn set_on(&mut self, on: bool) {
+        match (on, &self.helper) {
+            (false, _) => {
+                self.generation += 1;
+                self.helper = Helper::Off;
             }
+            (true, Helper::Off) => self.start(),
+            (true, _) => {}
+        }
+    }
+
+    /// Starts the helper in the background; its end comes back as
+    /// [`Input::Started`].
+    fn start(&mut self) {
+        self.generation += 1;
+        self.helper = Helper::Starting;
+        let (adb, serial, sender, generation) = (self.adb.clone(), self.serial.to_owned(), self.sender.clone(), self.generation);
+        std::thread::spawn(move || {
+            let _ = sender.send(Input::Started(generation, TextInput::start(&adb, &serial)));
+        });
+    }
+
+    fn started(&mut self, generation: u64, result: Result<TextInput, String>) {
+        if generation != self.generation || !matches!(self.helper, Helper::Starting) {
+            return;
+        }
+        let _ = self.events.unbounded_send(Event::Helper(result.as_ref().map(|_| ()).map_err(Clone::clone)));
+        self.helper = match result {
+            Ok(helper) => Helper::Ready(helper),
+            Err(error) => {
+                eprintln!("text input helper on {}: {error}", self.serial);
+                Helper::Failed(Instant::now(), error)
+            }
+        };
+    }
+
+    fn type_text(&mut self, text: &str) {
+        let ascii = is_ascii(text);
+        // A failed start is tried again now and then, in the background:
+        // nothing waits for it this time.
+        if !ascii && matches!(&self.helper, Helper::Failed(t, _) if t.elapsed() > HELPER_RETRY) {
+            self.start();
         }
         // The whole text at once, as a paste would put it.
-        let mut why = None;
-        if let Helper::Ready(helper) = &mut self.helper {
-            match helper.insert(text) {
+        let why = match &mut self.helper {
+            Helper::Ready(helper) => match helper.insert(text) {
                 Ok(()) => return,
                 Err(error) => {
                     if !helper.alive() {
-                        self.helper = Helper::None;
+                        // Ended on the device: start it again.
+                        self.start();
                     }
-                    why = Some(error);
+                    Some(error)
                 }
-            }
-        } else if let Helper::Failed(_, error) = &self.helper {
-            why = Some(format!("The text input helper could not start on the device: {error}"));
-        } else if let Helper::Off = self.helper {
-            why = Some("Direct text input is turned off in the Running Devices toolbar.".to_owned());
-        }
+            },
+            Helper::Failed(_, error) => Some(format!("The text input helper could not start on the device: {error}")),
+            Helper::Starting => Some("The text input helper is still starting on the device.".to_owned()),
+            Helper::Off => Some("Direct text input is turned off in the Running Devices toolbar.".to_owned()),
+        };
         for (ascii, run) in text_runs(text) {
             if ascii {
                 // scrcpy takes at most 300 bytes per message.
