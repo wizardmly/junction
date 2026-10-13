@@ -36,17 +36,19 @@ impl TextInput {
         if !push.success {
             return Err(push.message());
         }
+        // app_process takes its options after the class directory: before
+        // it they go to the VM, which then won't start.
         // Only one UiAutomation may connect: end a helper an earlier session
         // left behind (its adb went away without closing it).
         let _ = adb.shell(serial, KILL_HELPER);
         let mut child = process::command(&adb.path)
-            .args(["-s", serial, "shell", &format!("CLASSPATH={DEVICE_PATH} app_process --nice-name=junction-input / dev.junction.TextInput")])
+            .args(["-s", serial, "shell", &format!("CLASSPATH={DEVICE_PATH} app_process / --nice-name=junction-input dev.junction.TextInput")])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| e.to_string())?;
-        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let (Some(stdin), Some(stdout), Some(stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
             let _ = child.kill();
             return Err("No pipe to the helper".to_owned());
         };
@@ -59,9 +61,32 @@ impl TextInput {
                 }
             }
         });
+        // The last lines the helper (or the VM) wrote on stderr, to say why
+        // it stopped.
+        let errors = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        {
+            let errors = errors.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines() {
+                    let Ok(line) = line else { break };
+                    let mut errors = errors.lock().unwrap();
+                    errors.push(line.trim().to_owned());
+                    if errors.len() > 20 {
+                        errors.remove(0);
+                    }
+                }
+            });
+        }
         let input = TextInput { adb: adb.clone(), serial: serial.to_owned(), child, stdin, lines };
         // app_process plus the UiAutomation connection take a moment.
-        match input.answer(Duration::from_secs(20))?.as_str() {
+        let answer = input.answer(Duration::from_secs(20)).map_err(|e| {
+            // stderr may lag stdout's end a little.
+            std::thread::sleep(Duration::from_millis(300));
+            let errors = errors.lock().unwrap();
+            let errors: Vec<&str> = errors.iter().map(String::as_str).filter(|l| !l.is_empty()).collect();
+            if errors.is_empty() { e } else { format!("{e} {}", errors[errors.len().saturating_sub(5)..].join(" | ")) }
+        })?;
+        match answer.as_str() {
             "ready" => Ok(input),
             other => {
                 let mut why = other.strip_prefix("fail ").unwrap_or(other).to_owned();
