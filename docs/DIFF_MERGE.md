@@ -96,3 +96,4 @@ AS 的做法是「几个独立编辑器 + 中间画连接块 + 同步滚动」�
 2. ✅ **可编辑**：`DiffPane` 支持编辑，右栏工作区文件可直接改，实时重算并保存；语法高亮。
 3. ✅ **三栏 Merge**：用同一套部件重写，`>> × <<`、冲突配色、魔棒、Apply Non-Conflicting 三个按钮、结果栏直接编辑。
 4. ✅ **补齐细节**：Ctrl 切 Append、行级部分提交、右键菜单、齿轮菜单（行号、空白字符、缩进线、上下文行数、对齐变更、软换行）、空白/高亮的其余选项、跨文件导航、Merge 折叠、字级高亮、对齐和空白/高亮下拉、单栏可编辑、左栏可编辑时的 `<<`、Merge Compare Contents（与 Base 比较）、Compare with Clipboard（编辑器和 Project 右键菜单：左边剪贴板，右边文件可编辑）。
+5. ✅ **行号 gutter 右键菜单 + Blame**（2026-10-13）：右键行号区是 AS 的 gutter 菜单（Annotate with Git Blame、Show Diff in Separate Window、Show Whitespaces、Show Line Numbers、Show Indent Guides、Soft-Wrap、Highlighting Level、Breadcrumbs、Align Changes In Side-by-Side Diff），右键文本区仍是原来的编辑菜单。Blame 列在行号和分隔条之间（`PaneLayout.annotation`，`RowLook.annotation`），代码在 `diff_view/blame.rs`；面包屑在 `diff_view/crumbs.rs`；独立窗口在 `ui/diff_window.rs`。

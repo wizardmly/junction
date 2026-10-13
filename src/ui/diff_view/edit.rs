@@ -135,6 +135,8 @@ impl PaneHost for DiffView {
         let language = crate::ui::file_editor::language_for(self.source.as_ref().map(|s| s.path()).unwrap_or_default());
         self.panes.highlight(pane, language);
         self.rebuild_rows();
+        self.forget_scopes();
+        self.load_annotations(Some(Duration::from_millis(500)), cx);
         self.schedule_save(cx);
     }
 

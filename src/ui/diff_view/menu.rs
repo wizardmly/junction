@@ -114,9 +114,59 @@ impl DiffView {
         self.show(repository, source, cx);
     }
 
-    /// The panes' context menu.
-    pub(super) fn context_menu(entity: &Entity<Self>, menu: PopupMenu, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    /// The line-number gutter's menu, as IntelliJ's diff editor gutter:
+    /// Annotate with Git Blame, Show Diff in Separate Window, then the
+    /// editor's view options.
+    fn gutter_menu(entity: &Entity<Self>, menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+        use crate::settings::{Breadcrumbs, DiffSettings, HighlightingLevel, Settings};
         let view = entity.read(cx);
+        let (annotated, can_annotate, in_window) = (view.annotations.on, view.can_annotate(), view.in_window);
+        let settings = Settings::get(cx).diff.clone();
+        let toggle = |label: &'static str, on: bool, set: fn(&mut DiffSettings, bool)| {
+            PopupMenuItem::new(label).checked(on).on_click(move |_, _, cx| Settings::update(cx, |s| set(&mut s.diff, !on)))
+        };
+        let (annotate, open) = (entity.clone(), entity.clone());
+        let (level, crumbs) = (settings.highlighting, settings.breadcrumbs);
+        menu.item(
+            PopupMenuItem::new(if annotated { "Close Annotations" } else { "Annotate with Git Blame" })
+                .disabled(!annotated && !can_annotate)
+                .on_click(move |_, _, cx| annotate.update(cx, |this, cx| this.toggle_annotations(cx))),
+        )
+        .item(
+            PopupMenuItem::new("Show Diff in Separate Window")
+                .icon(crate::ui::as_icons::EXTERNAL_LINK)
+                .disabled(in_window)
+                .on_click(move |_, _, cx| open.update(cx, |_, cx| cx.emit(super::DiffEvent::OpenInWindow))),
+        )
+        .separator()
+        .item(toggle("Show Whitespaces", settings.show_whitespaces, |s, v| s.show_whitespaces = v))
+        .item(toggle("Show Line Numbers", settings.show_line_numbers, |s, v| s.show_line_numbers = v))
+        .item(toggle("Show Indent Guides", settings.show_indent_guides, |s, v| s.show_indent_guides = v))
+        .item(toggle("Soft-Wrap", settings.soft_wrap, |s, v| s.soft_wrap = v))
+        .submenu("Highlighting Level", window, cx, move |mut m, _, _| {
+            for option in HighlightingLevel::ALL {
+                m = m.item(PopupMenuItem::new(option.label()).checked(level == option).on_click(move |_, _, cx| Settings::update(cx, |s| s.diff.highlighting = option)));
+            }
+            m
+        })
+        .submenu("Breadcrumbs", window, cx, move |mut m, _, _| {
+            for option in Breadcrumbs::ALL {
+                m = m.item(PopupMenuItem::new(option.label()).checked(crumbs == option).on_click(move |_, _, cx| Settings::update(cx, |s| s.diff.breadcrumbs = option)));
+            }
+            m
+        })
+        .item(toggle("Align Changes In Side-by-Side Diff", settings.align_changes, |s, v| s.align_changes = v))
+    }
+
+    /// The panes' context menu (the gutter's own on the line numbers, the
+    /// annotations' on their column).
+    pub(super) fn context_menu(entity: &Entity<Self>, menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+        let view = entity.read(cx);
+        match view.panes.gutter_click {
+            Some(click) if click.annotation && view.annotations.on => return Self::annotation_menu(entity, click.line, menu, window, cx),
+            Some(_) => return Self::gutter_menu(entity, menu, window, cx),
+            None => {}
+        }
         let selected = !view.selected_changes().is_empty();
         let revert = view.editable() && selected;
         let partial = view.partial_path(cx).is_some() && selected;

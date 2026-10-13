@@ -87,7 +87,7 @@ impl Annotation {
         self.blame.lines.get(line).and_then(|l| self.blame.commits.get(l.commit))
     }
 
-    fn label(&self, commit: &BlameCommit) -> String {
+    pub(crate) fn label(&self, commit: &BlameCommit) -> String {
         if blame::is_uncommitted(&commit.hash) {
             return "Not Committed Yet".to_owned();
         }
@@ -105,8 +105,13 @@ impl Annotation {
         parts.join(" ").trim_end().to_owned()
     }
 
+    /// A commit's age: 0 for the oldest, 1 for the newest.
+    pub(crate) fn age_of(&self, commit: usize) -> f32 {
+        self.age.get(commit).copied().unwrap_or(1.)
+    }
+
     /// Characters the widest label takes, for the column's width.
-    fn chars(&self) -> usize {
+    pub(crate) fn chars(&self) -> usize {
         let columns = [(self.view.date, 10), (self.view.author, AUTHOR_CHARS), (self.view.hash, 8)];
         let shown: Vec<usize> = columns.iter().filter(|(on, _)| *on).map(|(_, n)| *n).collect();
         let width = shown.iter().sum::<usize>() + shown.len().saturating_sub(1);

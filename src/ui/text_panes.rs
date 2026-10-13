@@ -84,6 +84,8 @@ pub struct RowLook {
     /// The block's edge lines above and below the row (its first / last).
     pub top: Option<Hsla>,
     pub bottom: Option<Hsla>,
+    /// The Git Blame annotation cell, in the layout's `annotation` column.
+    pub annotation: Option<AnyElement>,
 }
 
 /// A pane's gutter: on the right of the text (`mirrored`, the left pane of
@@ -104,6 +106,9 @@ pub struct PaneLayout {
     /// Buttons drawn inside the number column on its text side (the
     /// diff's `>>`), so they take no column of their own.
     pub inline_buttons: f32,
+    /// Annotate with Git Blame: the annotation column between the line
+    /// numbers and the divider (0: none).
+    pub annotation: f32,
 }
 
 impl PaneLayout {
@@ -122,7 +127,7 @@ impl PaneLayout {
 
     /// Marker, line numbers and buttons.
     pub fn gutter_width(&self) -> f32 {
-        MARKER_WIDTH + self.numbers_width() + self.buttons
+        MARKER_WIDTH + self.annotation + self.numbers_width() + self.buttons
     }
 
     /// The pane-local x where text begins (before horizontal scrolling).
@@ -134,9 +139,29 @@ impl PaneLayout {
     /// or right (mirrored) edge. As in IntelliJ, the line numbers sit
     /// against the divider and the buttons between them and the text.
     pub fn buttons_offset(&self) -> f32 {
-        MARKER_WIDTH + self.numbers_width() - self.inline_buttons
+        MARKER_WIDTH + self.annotation + self.numbers_width() - self.inline_buttons
+    }
+
+    /// Whether a pane-local x (from the pane's left edge, in a pane `width`
+    /// wide) is in the gutter, and in its annotation column.
+    pub fn gutter_hit(&self, x: f32, width: f32) -> Option<bool> {
+        // Distance from the pane's edge at the divider.
+        let from_edge = if self.mirrored { width - x } else { x };
+        (from_edge >= 0. && from_edge < self.gutter_width()).then(|| from_edge >= MARKER_WIDTH && from_edge < MARKER_WIDTH + self.annotation)
     }
 }
+
+/// A right-click in a pane's gutter, for the gutter's own menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GutterClick {
+    pub pane: usize,
+    /// The buffer line on that row, if it shows one, as (its pane, line):
+    /// the unified viewer's deleted lines are the old pane's.
+    pub line: Option<(usize, usize)>,
+    /// On the annotation column (its own menu).
+    pub annotation: bool,
+}
+
 
 /// A line-level edit of the editable buffer: the lines `first..=old_last`
 /// became `first..=new_last`.
@@ -191,6 +216,11 @@ pub struct TextPanes<T = ()> {
     pub show_whitespace: bool,
     /// Gear menu › Show Indent Guides.
     pub indent_guides: bool,
+    /// Syntax colors (Highlighting Level None turns them off).
+    pub syntax: bool,
+    /// The last right-click was in a gutter (set on mouse down, read by the
+    /// context menu).
+    pub gutter_click: Option<GutterClick>,
     /// Each pane's share of the width (the dividers are draggable).
     weights: Vec<f32>,
     drag: Option<Drag>,
@@ -265,6 +295,8 @@ impl<T: Clone + Default> TextPanes<T> {
             restored: false,
             show_whitespace: false,
             indent_guides: true,
+            syntax: true,
+            gutter_click: None,
             weights: vec![1.; panes],
             drag: None,
             char_width: Rc::new(Cell::new(char_width_guess())),
@@ -736,6 +768,10 @@ impl<T: Clone + Default> TextPanes<T> {
     /// so the context menu acts on what was clicked.
     fn right_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut App) -> Outcome {
         window.focus(&self.focus, cx);
+        self.gutter_click = self.gutter_at(event.position);
+        if self.gutter_click.is_some() {
+            return Outcome::Ignored;
+        }
         let Some((pane, Ok(offset))) = self.hit(event.position, window, cx) else { return Outcome::Ignored };
         if let Some((p, sel)) = self.caret {
             if p == pane && !sel.is_empty() && sel.range().contains(&offset) {
@@ -746,6 +782,27 @@ impl<T: Clone + Default> TextPanes<T> {
         self.caret = Some((pane, Selection::caret(offset)));
         self.goal = None;
         Outcome::Moved
+    }
+
+    /// The font's advance, as last painted.
+    pub fn char_width(&self) -> f32 {
+        self.char_width.get()
+    }
+
+    /// The gutter under a window point, with the line on its row.
+    pub fn gutter_at(&self, position: gpui_kit::Point<Pixels>) -> Option<GutterClick> {
+        let bounds = self.bounds.borrow().clone();
+        let pane = (0..bounds.len()).find(|p| bounds[*p].contains(&position))?;
+        let b = bounds[pane];
+        let annotation = self.layouts.get(pane)?.gutter_hit(f32::from(position.x - b.origin.x), f32::from(b.size.width))?;
+        let y = f32::from(position.y - b.origin.y) + self.scroll[pane].1;
+        let rows = &self.rows[pane];
+        let line = (!rows.is_empty()).then(|| self.row_at(pane, y.max(0.))).and_then(|row| match rows[row] {
+            RowTarget::Line(line) => Some((pane, line)),
+            RowTarget::Other { pane, line } => Some((pane, line)),
+            _ => None,
+        });
+        Some(GutterClick { pane, line, annotation })
     }
 
     /// The caret pane's selected lines (the caret's line when nothing is
@@ -1403,7 +1460,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                         _ => continue,
                     };
                     let buffer = &self.buffers[source];
-                    let highlighter = self.highlighters[source].as_ref();
+                    let highlighter = self.highlighters[source].as_ref().filter(|_| self.syntax);
                     let line_range = buffer.line_range(line);
                     let text = buffer.line(line);
                     let syntax: Vec<(Range<usize>, HighlightStyle)> = highlighter
@@ -1470,6 +1527,7 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                     });
                     let marker = div().w(px(MARKER_WIDTH)).h_full().flex_shrink_0().when_some(look.marker, |el, c| el.bg(c));
                     let spacer = div().w(px(layout.buttons)).flex_shrink_0();
+                    let annotation = (layout.annotation > 0.).then(|| div().w(px(layout.annotation)).h_full().flex_shrink_0().children(look.annotation));
                     // The change color covers the text only, not the gutter.
                     let text_el = div().flex_1().min_w_0().h_full().flex().when_some(look.background, |el, bg| el.bg(bg)).child(text_el);
                     for (edge, at_top) in [(look.top, true), (look.bottom, false)] {
@@ -1483,9 +1541,9 @@ impl<T: Clone + Default + 'static> TextPanes<T> {
                             .when_some(look.gutter, |el, bg| el.bg(bg))
                             .map(|el| {
                                 if layout.mirrored {
-                                    el.child(text_el).child(spacer).child(number).child(marker)
+                                    el.child(text_el).child(spacer).child(number).children(annotation).child(marker)
                                 } else {
-                                    el.child(marker).child(number).child(spacer).child(text_el)
+                                    el.child(marker).children(annotation).child(number).child(spacer).child(text_el)
                                 }
                             })
                             .into_any_element(),
@@ -1808,6 +1866,7 @@ impl<T: Clone + Default> TextPanes<T> {
     /// indent guides).
     pub fn apply_settings(&mut self, cx: &App) {
         let settings = &crate::settings::Settings::get(cx).diff;
+        self.syntax = settings.highlighting != crate::settings::HighlightingLevel::None;
         self.show_whitespace = settings.show_whitespaces;
         self.indent_guides = settings.show_indent_guides;
         if self.soft_wrap != settings.soft_wrap {

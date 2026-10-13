@@ -28,6 +28,8 @@ use crate::ui::common::{self, tool_button};
 use crate::ui::diff_panes::{line_height, BlockColors, Connector, DIVIDER_WIDTH, PaneRow, TwoSide, fold_links, paint_divider};
 use crate::ui::text_panes::{BUTTON_WIDTH, GUTTER_WIDTH, PaneContent, PaneLayout, RowLook, RowTarget, STRIPE_WIDTH, TextPanes, pane_area};
 
+mod blame;
+mod crumbs;
 pub(crate) mod edit;
 mod files;
 mod menu;
@@ -158,6 +160,21 @@ pub struct CommentLine {
 }
 
 impl gpui_kit::EventEmitter<CommentLine> for DiffView {}
+
+/// What the diff asks its host to do (the annotation and gutter menus).
+#[derive(Clone, Debug)]
+pub enum DiffEvent {
+    /// Select in Git Log (or a click on an annotation).
+    SelectInLog(String),
+    /// Show Diff: a commit's change of a file.
+    OpenDiff(DiffSource),
+    /// Annotate Revision: the file at a revision, annotated in the editor.
+    Annotate { path: String, revision: Option<String> },
+    /// Show Diff in Separate Window.
+    OpenInWindow,
+}
+
+impl gpui_kit::EventEmitter<DiffEvent> for DiffView {}
 impl gpui_kit::EventEmitter<crate::ui::navigate::OpenTarget> for DiffView {}
 
 pub struct DiffView {
@@ -200,6 +217,12 @@ pub struct DiffView {
     edge: Option<files::Edge>,
     /// The file being loaded opens at its last change (Shift+F7 into it).
     arrive_at_end: bool,
+    /// Annotate with Git Blame.
+    annotations: blame::DiffAnnotations,
+    /// Each pane's declarations, for the breadcrumbs.
+    scopes: std::cell::RefCell<[Option<Rc<Vec<crumbs::Scope>>>; 2]>,
+    /// Shown in a window of its own (Show Diff in Separate Window).
+    in_window: bool,
 }
 
 impl DiffView {
@@ -231,7 +254,20 @@ impl DiffView {
             _files_task: None,
             edge: None,
             arrive_at_end: false,
+            annotations: Default::default(),
+            scopes: Default::default(),
+            in_window: false,
         }
+    }
+
+    /// What the diff shows.
+    pub fn source(&self) -> Option<&DiffSource> {
+        self.source.as_ref()
+    }
+
+    /// The diff is a window of its own: no Show Diff in Separate Window.
+    pub fn set_in_window(&mut self) {
+        self.in_window = true;
     }
 
     /// The editor tab's title: "name (Changes)" for the working tree, "name (abc12345)" for a commit.
@@ -281,6 +317,10 @@ impl DiffView {
         self.repository = Some(repository.clone());
         self.source = Some(source.clone());
         self.edge = None;
+        // Annotations stay on and follow the file shown.
+        self.annotations.sides = Default::default();
+        self.annotations.hovered = None;
+        self.annotations.error = None;
         self.load_files(&repository, &source, cx);
         self.review = None;
         self.error = None;
@@ -342,6 +382,8 @@ impl DiffView {
                         this.loaded = Some(loaded);
                         this.panes.editable = this.edit_pane();
                         this.set_diff(file_diff);
+                        this.forget_scopes();
+                        this.load_annotations(None, cx);
                         let last = this.diff.changes.saturating_sub(1);
                         let first = if std::mem::take(&mut this.arrive_at_end) { last } else { 0 };
                         this.go_to_change(first);
@@ -1151,7 +1193,8 @@ impl DiffView {
                     let same = |r: Option<&PaneRow>| matches!(r, Some(PaneRow::Line { change: c, .. }) if c == change);
                     let top = block.filter(|_| ix == 0 || !same(rows.get(ix - 1))).map(|k| border_color(k, palette));
                     let bottom = block.filter(|_| !same(rows.get(ix + 1))).map(|k| border_color(k, palette));
-                    RowLook { background, words, marker, number, gutter, top, bottom }
+                    let annotation = self.annotation_cell(pane, side.line - 1, palette, cx);
+                    RowLook { background, words, marker, number, gutter, top, bottom, annotation }
                 }
             })
             .collect()
@@ -1177,6 +1220,9 @@ impl DiffView {
             PaneLayout { mirrored: false, buttons: check_width, inline_buttons: right_inline, ..Default::default() },
         ];
         self.panes.apply_settings(cx);
+        for pane in 0..2 {
+            self.panes.layouts[pane].annotation = self.annotation_width(pane);
+        }
         // A review's comment buttons take the fixed-width number column.
         if self.review.is_some() {
             self.panes.layouts[1].digits = 0;
@@ -1311,7 +1357,7 @@ impl DiffView {
             .child(divider)
             .child(right)
             .child(self.panes.render_stripe(1, right_marks, thumb, cx))
-            .context_menu(move |menu, _, cx| DiffView::context_menu(&entity, menu, cx))
+            .context_menu(move |menu, window, cx| DiffView::context_menu(&entity, menu, window, cx))
             .into_any_element()
     }
 
@@ -1353,8 +1399,13 @@ impl DiffView {
                     _ => cell(right.as_ref().map(|s| s.line)).into_any_element(),
                 };
                 let number = (!hide).then(|| h_flex().h_full().child(cell(left.as_ref().map(|s| s.line))).child(new_number).into_any_element());
+                let annotation = match (left, right) {
+                    (_, Some(side)) => self.annotation_cell(1, side.line - 1, palette, cx),
+                    (Some(side), None) => self.annotation_cell(0, side.line - 1, palette, cx),
+                    _ => None,
+                };
                 let Some(change) = *change else {
-                    return RowLook { number, ..Default::default() };
+                    return RowLook { number, annotation, ..Default::default() };
                 };
                 let colors = side_colors(*kind, is_left, true, palette);
                 let faint = {
@@ -1379,7 +1430,7 @@ impl DiffView {
                 let top = block.filter(|_| ix == 0 || !same(rows.get(ix - 1)));
                 let bottom = block.filter(|_| !same(rows.get(ix + 1)));
                 let gutter = colors.filter(|_| highlight != HighlightMode::None).map(|c| c.0.opacity(faint));
-                RowLook { background, words, marker, number, gutter, top, bottom }
+                RowLook { background, words, marker, number, gutter, top, bottom, annotation }
             })
             .collect()
     }
@@ -1402,6 +1453,8 @@ impl DiffView {
         ];
         self.panes.apply_settings(cx);
         self.panes.layouts[1].double_numbers = true;
+        // One column for both sides' lines.
+        self.panes.layouts[1].annotation = self.annotation_width(0).max(self.annotation_width(1));
         self.panes.primary = 1;
         // The hidden left pane must not catch clicks.
         self.panes.bounds_reset(0);
@@ -1472,7 +1525,7 @@ impl DiffView {
         pane_area("diff-unified", &self.panes.focus, cx)
             .child(pane)
             .child(self.panes.render_stripe(1, marks, thumb, cx))
-            .context_menu(move |menu, _, cx| DiffView::context_menu(&entity, menu, cx))
+            .context_menu(move |menu, window, cx| DiffView::context_menu(&entity, menu, window, cx))
             .into_any_element()
     }
 
@@ -1649,10 +1702,18 @@ impl Render for DiffView {
                 )
             })
             .when_some(self.error.clone(), |el, error| el.child(div().p_3().text_color(palette.status_conflict).child(error)))
+            .when_some(self.annotations.error.clone(), |el, error| {
+                el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(format!("Cannot annotate: {error}")))
+            })
             .map(|el| match self.loaded.as_ref().and_then(|l| l.binary.as_ref()) {
                 Some(panes) => el.child(render_binary(panes, &palette)),
-                None if two_side => el.child(self.render_two_side(window, cx)),
-                None => el.child(self.render_unified(window, cx)),
+                None => {
+                    let crumbs = crate::settings::Settings::get(cx).diff.breadcrumbs;
+                    let body = if two_side { self.render_two_side(window, cx) } else { self.render_unified(window, cx) };
+                    let top = (crumbs == crate::settings::Breadcrumbs::Top).then(|| self.render_breadcrumbs(true, &palette, cx));
+                    let bottom = (crumbs == crate::settings::Breadcrumbs::Bottom).then(|| self.render_breadcrumbs(false, &palette, cx));
+                    el.children(top).child(body).children(bottom)
+                }
             })
             .into_any_element()
     }

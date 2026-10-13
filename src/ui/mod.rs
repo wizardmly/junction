@@ -13,6 +13,7 @@ pub mod device_manager;
 pub mod running_devices;
 pub mod device_explorer;
 pub mod diff_view;
+pub mod diff_window;
 pub mod text_buffer;
 pub mod text_panes;
 pub mod tool_windows;

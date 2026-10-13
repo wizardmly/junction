@@ -294,6 +294,54 @@ impl Workspace {
         }
     }
 
+    /// A diff's gutter and annotation actions.
+    pub fn on_diff_event(&mut self, diff: &Entity<DiffView>, event: &crate::ui::diff_view::DiffEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::diff_view::DiffEvent;
+        // The diff's paths are its repository's own (a nested root's).
+        let root = diff.read(cx).repository().map(|r| r.root().to_path_buf());
+        let project_path = |this: &Self, path: &str, cx: &App| match &root {
+            Some(root) => this.model.read(cx).project_path(root, path),
+            None => path.to_owned(),
+        };
+        match event {
+            DiffEvent::SelectInLog(hash) => {
+                window.activate_window();
+                self.tools.open(ToolWindow::Git);
+                self.bottom_tab = BottomTab::Log;
+                let hash = hash.clone();
+                self.model.update(cx, |m, cx| m.select_hash(Some(hash), cx));
+                cx.notify();
+            }
+            DiffEvent::OpenDiff(source) => {
+                window.activate_window();
+                self.open_diff(source.clone(), cx);
+            }
+            DiffEvent::Annotate { path, revision } => {
+                window.activate_window();
+                let path = project_path(self, path, cx);
+                self.annotate(path, revision.clone(), window, cx);
+            }
+            DiffEvent::OpenInWindow => {
+                let view = diff.read(cx);
+                let (Some(repository), Some(source)) = (view.repository().cloned(), view.source().cloned()) else { return };
+                crate::ui::diff_window::open(repository, source, cx.entity().downgrade(), window.window_handle(), cx);
+            }
+        }
+    }
+
+    /// Jump to Source from a diff in another window.
+    pub fn go_to_diff_target(&mut self, root: Option<std::path::PathBuf>, mut target: crate::index::nav::Target, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(root) = root {
+            target.path = self.model.read(cx).project_path(&root, &target.path);
+        }
+        self.go_to_target(target, window, cx)
+    }
+
+    /// Files changed outside the project window (a separate diff window saved).
+    pub fn reload_model(&mut self, cx: &mut Context<Self>) {
+        self.model.update(cx, |m, cx| m.reload(cx));
+    }
+
     /// Show Diff in a New Tab: the diff in a tab of its own, which later
     /// previews don't replace.
     pub(super) fn open_diff_in_new_tab(&mut self, source: crate::ui::diff_view::DiffSource, window: &mut Window, cx: &mut Context<Self>) {
@@ -311,6 +359,7 @@ impl Workspace {
             cx.subscribe(&view, |this, _, _: &crate::ui::diff_view::FilesChanged, cx| {
                 this.model.update(cx, |m, cx| m.reload(cx));
             }),
+            cx.subscribe_in(&view, window, |this, diff, event: &crate::ui::diff_view::DiffEvent, window, cx| this.on_diff_event(diff, event, window, cx)),
         ];
         view.update(cx, |diff, cx| diff.show(repository, source, cx));
         self.diff_tabs.push((view, subscriptions));

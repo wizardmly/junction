@@ -217,11 +217,83 @@ pub struct DiffSettings {
     pub soft_wrap: bool,
     /// Lines kept around changes when unchanged fragments are collapsed.
     pub context_lines: usize,
+    /// The gutter menu's Highlighting Level.
+    pub highlighting: HighlightingLevel,
+    /// The gutter menu's Breadcrumbs: where each pane shows them.
+    pub breadcrumbs: Breadcrumbs,
 }
 
 impl Default for DiffSettings {
     fn default() -> Self {
-        Self { show_line_numbers: true, show_whitespaces: false, show_indent_guides: true, align_changes: false, soft_wrap: false, context_lines: 4 }
+        Self {
+            show_line_numbers: true,
+            show_whitespaces: false,
+            show_indent_guides: true,
+            align_changes: false,
+            soft_wrap: false,
+            context_lines: 4,
+            highlighting: HighlightingLevel::AllProblems,
+            breadcrumbs: Breadcrumbs::Hidden,
+        }
+    }
+}
+
+/// IntelliJ's Highlighting Level: syntax colors stay on unless it is None
+/// (the diff runs no inspections).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HighlightingLevel {
+    #[default]
+    AllProblems,
+    Syntax,
+    None,
+}
+
+impl HighlightingLevel {
+    pub const ALL: [HighlightingLevel; 3] = [HighlightingLevel::AllProblems, HighlightingLevel::Syntax, HighlightingLevel::None];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HighlightingLevel::AllProblems => "All Problems",
+            HighlightingLevel::Syntax => "Syntax",
+            HighlightingLevel::None => "None",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            HighlightingLevel::AllProblems => "all",
+            HighlightingLevel::Syntax => "syntax",
+            HighlightingLevel::None => "none",
+        }
+    }
+}
+
+/// Where the diff's breadcrumbs go (IntelliJ's Top / Bottom / Don't Show).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Breadcrumbs {
+    Top,
+    Bottom,
+    #[default]
+    Hidden,
+}
+
+impl Breadcrumbs {
+    pub const ALL: [Breadcrumbs; 3] = [Breadcrumbs::Top, Breadcrumbs::Bottom, Breadcrumbs::Hidden];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Breadcrumbs::Top => "Top",
+            Breadcrumbs::Bottom => "Bottom",
+            Breadcrumbs::Hidden => "Don't Show",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Breadcrumbs::Top => "top",
+            Breadcrumbs::Bottom => "bottom",
+            Breadcrumbs::Hidden => "hide",
+        }
     }
 }
 
@@ -467,6 +539,16 @@ impl Settings {
                         settings.diff.context_lines = n;
                     }
                 }
+                "diff_highlighting_level" => {
+                    if let Some(level) = HighlightingLevel::ALL.into_iter().find(|l| l.key() == value) {
+                        settings.diff.highlighting = level;
+                    }
+                }
+                "diff_breadcrumbs" => {
+                    if let Some(place) = Breadcrumbs::ALL.into_iter().find(|b| b.key() == value) {
+                        settings.diff.breadcrumbs = place;
+                    }
+                }
                 key if key.starts_with("diff_") => {
                     if let Some((_, field)) = settings.diff.fields().into_iter().find(|(k, _)| *k == key) {
                         *field = flag;
@@ -545,6 +627,8 @@ impl Settings {
             text.push_str(&format!("{k}={v}\n"));
         }
         text.push_str(&format!("diff_context_lines={}\n", self.diff.context_lines));
+        text.push_str(&format!("diff_highlighting_level={}\n", self.diff.highlighting.key()));
+        text.push_str(&format!("diff_breadcrumbs={}\n", self.diff.breadcrumbs.key()));
         let [a, d, h] = self.log.columns;
         text.push_str(&format!("log_columns={a},{d},{h}\n"));
         let mut project = self.project.clone();
@@ -634,6 +718,8 @@ mod tests {
         let mut diff = Settings::default();
         diff.diff.show_whitespaces = true;
         diff.diff.context_lines = 8;
+        diff.diff.highlighting = HighlightingLevel::None;
+        diff.diff.breadcrumbs = Breadcrumbs::Top;
         diff.project.single_click = true;
         diff.project.sort = ProjectSort::Modified;
         assert_eq!(Settings::parse(&diff.serialize()), diff);

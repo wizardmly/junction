@@ -55,6 +55,7 @@ impl LogView {
                     cx.subscribe(&diff, |this, _, _: &crate::ui::diff_view::FilesChanged, cx| {
                         this.model.update(cx, |m, cx| m.reload(cx));
                     }),
+                    cx.subscribe(&diff, |_, diff, event: &crate::ui::diff_view::DiffEvent, cx| cx.emit(LogEvent::Diff(diff, event.clone()))),
                 ];
                 self.history = Some(FileHistory {
                     path,

@@ -356,6 +356,7 @@ impl Workspace {
                     LogEvent::OpenFile { path, revision } => this.open_file(path.clone(), revision.clone(), window, cx),
                     LogEvent::OpenDiffInNewTab(source) => this.open_diff_in_new_tab(source.clone(), window, cx),
                     LogEvent::GoTo(target) => this.go_to_target(target.clone(), window, cx),
+                    LogEvent::Diff(diff, event) => this.on_diff_event(diff, event, window, cx),
                     LogEvent::ShowInLog(hash) => {
                         this.switch_log_tab(0, cx);
                         let hash = hash.clone();
@@ -530,6 +531,7 @@ impl Workspace {
             cx.subscribe(&diff, |this, _, _: &crate::ui::diff_view::FilesChanged, cx| {
                 this.model.update(cx, |m, cx| m.reload(cx));
             }),
+            cx.subscribe_in(&diff, window, |this, diff, event: &crate::ui::diff_view::DiffEvent, window, cx| this.on_diff_event(diff, event, window, cx)),
             // Theme "Sync with OS" follows the system's light / dark switch.
             window.observe_window_appearance(|window, cx| {
                 crate::theme::refresh(cx);

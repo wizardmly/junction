@@ -91,6 +91,8 @@ pub enum LogEvent {
     GoTo(crate::index::nav::Target),
     /// Show in Git Log: the commit in the main Log tab.
     ShowInLog(String),
+    /// The History's diff preview's gutter and annotation actions.
+    Diff(Entity<crate::ui::diff_view::DiffView>, crate::ui::diff_view::DiffEvent),
 }
 
 impl EventEmitter<LogEvent> for LogView {}
