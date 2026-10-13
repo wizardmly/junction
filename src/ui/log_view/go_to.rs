@@ -144,7 +144,7 @@ impl Render for GoToSuggestions {
         for (row, &ix) in self.matches.iter().enumerate() {
             let (name, kind) = self.names[ix].clone();
             let (icon, color) = match kind {
-                RefKind::Tag => (icons::TAG, palette.ref_tag),
+                RefKind::Tag => (icons::BRANCH_LABEL, palette.ref_tag),
                 RefKind::RemoteBranch => (icons::BRANCH, palette.ref_remote),
                 RefKind::LocalBranch => (icons::BRANCH, palette.ref_local),
             };

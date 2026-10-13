@@ -869,7 +869,7 @@ impl Render for BranchesPopup {
                             Icon::new(if is_favorite {
                                 icons::STAR
                             } else if reference.kind == RefKind::Tag {
-                                icons::TAG
+                                icons::BRANCH_LABEL
                             } else {
                                 icons::BRANCH
                             })

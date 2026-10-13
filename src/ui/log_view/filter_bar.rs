@@ -38,6 +38,8 @@ impl LogView {
             remember(&mut self.recent_path_filters, &filter.paths);
         }
         self.model.update(cx, |model, cx| model.set_filter(filter, cx));
+        // The branches panel follows Paths › Roots at once, before the log loads.
+        self.rebuild_branches(cx);
     }
 
     /// Branch › Select…: several branches at once.

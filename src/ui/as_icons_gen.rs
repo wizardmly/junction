@@ -21,6 +21,7 @@ pub const AVD_STOP: AsIcon = AsIcon { light: &[("as/avd-stop.l0.svg", 0xfff7f7ff
 pub const AVD_STOP_MIRROR: AsIcon = AsIcon { light: &[("as/avd-stop-mirror.l0.svg", 0x6c707eff)], dark: &[("as/avd-stop-mirror.d0.svg", 0xced0d6ff)] };
 pub const BALLOON: AsIcon = AsIcon { light: &[("as/balloon.l0.svg", 0xebecf0ff), ("as/balloon.l1.svg", 0x6c707eff)], dark: &[("as/balloon.d0.svg", 0x43454aff), ("as/balloon.d1.svg", 0xced0d6ff)] };
 pub const BRANCH: AsIcon = AsIcon { light: &[("as/branch.l0.svg", 0x6c707eff)], dark: &[("as/branch.d0.svg", 0xced0d6ff)] };
+pub const BRANCH_LABEL: AsIcon = AsIcon { light: &[("as/branch-label.l0.svg", 0x6c707eff)], dark: &[("as/branch-label.d0.svg", 0xced0d6ff)] };
 pub const CHANGE_VIEW: AsIcon = AsIcon { light: &[("as/change-view.l0.svg", 0x6c707eff), ("as/change-view.l1.svg", 0xebecf0ff)], dark: &[("as/change-view.d0.svg", 0xced0d6ff), ("as/change-view.d1.svg", 0x43454aff)] };
 pub const CHECKED: AsIcon = AsIcon { light: &[("as/checked.l0.svg", 0x6c707eff)], dark: &[("as/checked.d0.svg", 0xced0d6ff)] };
 pub const CHEVRON_DOWN: AsIcon = AsIcon { light: &[("as/chevron-down.l0.svg", 0x818594ff)], dark: &[("as/chevron-down.d0.svg", 0xb4b8bfff)] };
@@ -41,6 +42,8 @@ pub const COMPARE3_MIDDLE_RIGHT: AsIcon = AsIcon { light: &[("as/compare3-middle
 pub const CONSTANT: AsIcon = AsIcon { light: &[("as/constant.l0.svg", 0xfff4ebff), ("as/constant.l1.svg", 0xe66d17ff)], dark: &[("as/constant.d0.svg", 0x45322bff), ("as/constant.d1.svg", 0xc77d55ff)] };
 pub const COPY: AsIcon = AsIcon { light: &[("as/copy.l0.svg", 0x6c707eff)], dark: &[("as/copy.d0.svg", 0xced0d6ff)] };
 pub const COPY_OF_FOLDER: AsIcon = AsIcon { light: &[("as/copy-of-folder.l0.svg", 0x6c707eff), ("as/copy-of-folder.l1.svg", 0xebecf0ff)], dark: &[("as/copy-of-folder.d0.svg", 0xced0d6ff), ("as/copy-of-folder.d1.svg", 0x43454aff)] };
+pub const CURRENT_BRANCH_FAVORITE_LABEL: AsIcon = AsIcon { light: &[("as/current-branch-favorite-label.l0.svg", 0xffaf0fff)], dark: &[("as/current-branch-favorite-label.d0.svg", 0xf2c55cff)] };
+pub const CURRENT_BRANCH_LABEL: AsIcon = AsIcon { light: &[("as/current-branch-label.l0.svg", 0xffaf0fff)], dark: &[("as/current-branch-label.d0.svg", 0xf2c55cff)] };
 pub const CUT: AsIcon = AsIcon { light: &[("as/cut.l0.svg", 0x6c707eff)], dark: &[("as/cut.d0.svg", 0xced0d6ff)] };
 pub const DELETE: AsIcon = AsIcon { light: &[("as/delete.l0.svg", 0x6c707eff)], dark: &[("as/delete.d0.svg", 0xced0d6ff)] };
 pub const DIALOG_ERROR: AsIcon = AsIcon { light: &[("as/dialog-error.l0.svg", 0xe55765ff), ("as/dialog-error.l1.svg", 0xffffffff)], dark: &[("as/dialog-error.d0.svg", 0xdb5c5cff), ("as/dialog-error.d1.svg", 0xffffffff)] };
@@ -324,6 +327,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/balloon.d1.svg", include_bytes!("../../assets/as-icons/gen/balloon.d1.svg")),
     ("as/branch.l0.svg", include_bytes!("../../assets/as-icons/gen/branch.l0.svg")),
     ("as/branch.d0.svg", include_bytes!("../../assets/as-icons/gen/branch.d0.svg")),
+    ("as/branch-label.l0.svg", include_bytes!("../../assets/as-icons/gen/branch-label.l0.svg")),
+    ("as/branch-label.d0.svg", include_bytes!("../../assets/as-icons/gen/branch-label.d0.svg")),
     ("as/change-view.l0.svg", include_bytes!("../../assets/as-icons/gen/change-view.l0.svg")),
     ("as/change-view.l1.svg", include_bytes!("../../assets/as-icons/gen/change-view.l1.svg")),
     ("as/change-view.d0.svg", include_bytes!("../../assets/as-icons/gen/change-view.d0.svg")),
@@ -386,6 +391,10 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/copy-of-folder.l1.svg", include_bytes!("../../assets/as-icons/gen/copy-of-folder.l1.svg")),
     ("as/copy-of-folder.d0.svg", include_bytes!("../../assets/as-icons/gen/copy-of-folder.d0.svg")),
     ("as/copy-of-folder.d1.svg", include_bytes!("../../assets/as-icons/gen/copy-of-folder.d1.svg")),
+    ("as/current-branch-favorite-label.l0.svg", include_bytes!("../../assets/as-icons/gen/current-branch-favorite-label.l0.svg")),
+    ("as/current-branch-favorite-label.d0.svg", include_bytes!("../../assets/as-icons/gen/current-branch-favorite-label.d0.svg")),
+    ("as/current-branch-label.l0.svg", include_bytes!("../../assets/as-icons/gen/current-branch-label.l0.svg")),
+    ("as/current-branch-label.d0.svg", include_bytes!("../../assets/as-icons/gen/current-branch-label.d0.svg")),
     ("as/cut.l0.svg", include_bytes!("../../assets/as-icons/gen/cut.l0.svg")),
     ("as/cut.d0.svg", include_bytes!("../../assets/as-icons/gen/cut.d0.svg")),
     ("as/delete.l0.svg", include_bytes!("../../assets/as-icons/gen/delete.l0.svg")),

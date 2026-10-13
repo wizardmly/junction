@@ -150,6 +150,8 @@ pub struct LogView {
     /// The branches tree as last built; its items share their expanded
     /// state with the tree, so a rebuild can keep what the user opened.
     branch_items: Vec<TreeItem>,
+    /// What the branches tree was last built from (see `BranchScope`).
+    branch_scope: Rc<branches::BranchScope>,
     /// Whether `branch_items` are speed search results (all folders open).
     branch_searching: bool,
     /// Open (true) or closed folders of the branches tree, by id.
@@ -330,6 +332,7 @@ impl LogView {
             my_branches: false,
             my_refs: None,
             branch_items: Vec::new(),
+            branch_scope: Rc::default(),
             branch_searching: false,
             branch_expansion: HashMap::new(),
             extra_selection: HashSet::new(),

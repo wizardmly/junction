@@ -3,7 +3,67 @@
 use super::*;
 use crate::ui::as_icons as icons;
 
+/// What the branches panel shows. In a multi-root project it follows the
+/// Log's Paths filter, as IntelliJ's does: only the shown roots' refs, a ref
+/// current where it is checked out in any of them, favorite where it is
+/// starred in any of them.
+#[derive(Default)]
+pub(super) struct BranchScope {
+    pub refs: std::sync::Arc<crate::git::RepositoryRefs>,
+    /// Full names of the branches checked out in a shown root.
+    pub current: HashSet<String>,
+    /// "(app, lib)": the repositories a ref is in, when not all of them.
+    pub owners: HashMap<String, String>,
+}
+
 impl LogView {
+    fn branch_scope(&self, cx: &App) -> BranchScope {
+        let model = self.model.read(cx);
+        let states = model.root_states();
+        if states.len() <= 1 {
+            let refs = model.log_refs().clone();
+            let current = refs.current_branch.iter().map(|b| format!("refs/heads/{b}")).collect();
+            return BranchScope { refs, current, owners: HashMap::new() };
+        }
+        let visible = model.log_visible_roots();
+        let shown: Vec<&crate::model::RootState> = visible.iter().filter_map(|&ix| states.get(ix)).collect();
+        let refs = if shown.len() == states.len() {
+            model.log_refs().clone()
+        } else if shown.is_empty() {
+            Default::default()
+        } else {
+            // The active root leads (its HEAD), else the first shown one.
+            let active = model.repository().map(|r| r.root().to_path_buf());
+            let lead = shown.iter().position(|s| Some(&s.path) == active.as_ref()).unwrap_or(0);
+            let others: Vec<&crate::git::RepositoryRefs> =
+                shown.iter().enumerate().filter(|(ix, _)| *ix != lead).map(|(_, s)| &*s.refs).collect();
+            std::sync::Arc::new(crate::git::RepositoryRefs::merged(&shown[lead].refs, &others))
+        };
+        let mut refs = refs;
+        let favorites: HashSet<String> = shown.iter().flat_map(|s| s.refs.favorites.iter().cloned()).collect();
+        if favorites != refs.favorites {
+            std::sync::Arc::make_mut(&mut refs).favorites = favorites;
+        }
+        let current = shown.iter().filter_map(|s| s.refs.current_branch.as_ref().map(|b| format!("refs/heads/{b}"))).collect();
+        // IntelliJ names the repositories unless a ref is in every one.
+        let mut by_ref: HashMap<String, Vec<String>> = HashMap::new();
+        for state in &shown {
+            let name = state.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            for reference in state.refs.refs.iter().filter(|r| r.kind != RefKind::Tag) {
+                by_ref.entry(reference.full_name.clone()).or_default().push(name.clone());
+            }
+        }
+        let owners = by_ref
+            .into_iter()
+            .filter(|(_, names)| names.len() < states.len())
+            .map(|(full, mut names)| {
+                names.sort_by_key(|n| n.to_lowercase());
+                (full, format!("({})", names.join(", ")))
+            })
+            .collect();
+        BranchScope { refs, current, owners }
+    }
+
     /// Runs the branch popup's action (matched by label) on the branch
     /// selected in the Branches panel, so the toolbar and menus agree.
     pub(super) fn run_selected_branch_action(&mut self, matches: fn(&str) -> bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -23,7 +83,9 @@ impl LogView {
         if !self.branch_searching {
             collect_expanded(&self.branch_items, &mut self.branch_expansion);
         }
-        let mut refs = (**self.model.read(cx).log_refs()).clone();
+        let scope = self.branch_scope(cx);
+        let mut refs = (*scope.refs).clone();
+        self.branch_scope = Rc::new(scope);
         // Speed search: keep matching refs only, with every folder open.
         let query = self.branch_search.read(cx).value().trim().to_lowercase();
         let searching = !query.is_empty();
@@ -216,30 +278,8 @@ impl LogView {
 
     pub(super) fn render_branches(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
-        let refs = self.model.read(cx).log_refs().clone();
-        // A multi-root project: the repositories each branch is in, as
-        // IntelliJ shows "main (lib, app)".
-        let owners: std::collections::HashMap<String, String> = {
-            let states = self.model.read(cx).root_states();
-            let mut by_ref: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-            if states.len() > 1 {
-                for state in states.iter() {
-                    let name = state.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    for reference in &state.refs.refs {
-                        if reference.kind != RefKind::Tag {
-                            by_ref.entry(reference.full_name.clone()).or_default().push(name.clone());
-                        }
-                    }
-                }
-            }
-            by_ref
-                .into_iter()
-                .map(|(full, mut names)| {
-                    names.sort_by_key(|n| n.to_lowercase());
-                    (full, format!("({})", names.join(", ")))
-                })
-                .collect()
-        };
+        let scope = self.branch_scope.clone();
+        let refs = scope.refs.clone();
         let query = self.branch_search.read(cx).value().trim().to_owned();
         let entity = cx.entity();
         v_flex()
@@ -348,31 +388,30 @@ impl LogView {
                         let id = item.id.to_string();
                         let full_name = id.strip_prefix(BRANCH_PREFIX).map(str::to_owned);
                         let reference = full_name.as_deref().and_then(|full| refs.find(full)).cloned();
-                        let is_current = reference.as_ref().is_some_and(|r| {
-                            r.kind == RefKind::LocalBranch && Some(&r.name) == refs.current_branch.as_ref()
-                        });
-                        let icon_name = if entry.is_folder() {
-                            if id.starts_with("group:") { icons::MODULE } else { icons::FOLDER }
-                        } else {
-                            match reference.as_ref().map(|r| r.kind) {
-                                Some(RefKind::Tag) => icons::TAG,
-                                _ => icons::BRANCH,
-                            }
-                        };
-                        let icon_color = match reference.as_ref().map(|r| r.kind) {
-                            _ if is_current || id == "head" => palette.ref_head,
-                            Some(RefKind::LocalBranch) => palette.ref_local,
-                            Some(RefKind::RemoteBranch) => palette.ref_remote,
-                            Some(RefKind::Tag) => palette.ref_tag,
-                            _ => palette.text_secondary,
-                        };
+                        let is_current = reference.as_ref().is_some_and(|r| r.kind == RefKind::LocalBranch && scope.current.contains(&r.full_name));
                         let is_favorite = full_name.as_ref().is_some_and(|f| refs.favorites.contains(f));
-                        let icon_name = if is_favorite && !entry.is_folder() { icons::STAR } else { icon_name };
+                        let is_head_row = id == "head" || item.label.starts_with("HEAD (");
+                        // IntelliJ's GitBranchesTreeIconProvider: the current branch is a
+                        // yellow label (filled when also a favorite), a favorite a star, a
+                        // tag a label; HEAD and the Local/Remote/Tags groups have none.
+                        let icon = if entry.is_folder() {
+                            (!matches!(id.as_str(), "group:local" | "group:remote" | "group:tags")).then_some(icons::FOLDER)
+                        } else if is_head_row {
+                            None
+                        } else if is_current {
+                            Some(if is_favorite { icons::CURRENT_BRANCH_FAVORITE_LABEL } else { icons::CURRENT_BRANCH_LABEL })
+                        } else if is_favorite {
+                            Some(icons::STAR)
+                        } else if reference.as_ref().is_some_and(|r| r.kind == RefKind::Tag) {
+                            Some(icons::BRANCH_LABEL)
+                        } else {
+                            Some(icons::BRANCH)
+                        };
                         let menu_reference = reference.clone();
                         let (menu_entity, menu_refs) = (entity.clone(), refs.clone());
                         let entity = entity.clone();
                         let double_click_name = reference.as_ref().map(|r| r.name.clone());
-                        let owner = full_name.as_ref().filter(|_| !item.label.starts_with("HEAD (")).and_then(|f| owners.get(f).cloned());
+                        let owner = full_name.as_ref().filter(|_| !is_head_row).and_then(|f| scope.owners.get(f).cloned());
                         ListItem::new(ix)
                             .py_0()
                             .px_1()
@@ -392,7 +431,7 @@ impl LogView {
                                     .pl(px(entry.depth() as f32 * 14.))
                                     .text_sm()
                                     .child(common::tree_chevron(&tree_state, ix, entry, palette.text_secondary))
-                                    .child(Icon::new(icon_name).small().text_color(icon_color))
+                                    .when_some(icon, |el, icon| el.child(Icon::new(icon).small()))
                                     .child(match label_match(&item.label, &query) {
                                         Some(range) => crate::ui::find_popup::highlighted(&item.label, &[range], &palette).into_any_element(),
                                         None => item.label.clone().into_any_element(),
@@ -541,7 +580,7 @@ pub(super) fn ref_label(reference: &RefName, current_branch: Option<&str>, palet
         _ if is_current => (icons::BRANCH, palette.ref_head),
         RefKind::LocalBranch => (icons::BRANCH, palette.ref_local),
         RefKind::RemoteBranch => (icons::BRANCH, palette.ref_remote),
-        RefKind::Tag => (icons::TAG, palette.ref_tag),
+        RefKind::Tag => (icons::BRANCH_LABEL, palette.ref_tag),
     };
     h_flex()
         .flex_shrink_0()

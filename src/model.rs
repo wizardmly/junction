@@ -646,6 +646,18 @@ impl RepoModel {
         if !self.root_states.is_empty() { &self.log_refs } else { &self.refs }
     }
 
+    /// The roots (indexes into `root_states`) the Log's Paths filter shows:
+    /// those picked under Roots and holding one of its paths, as IntelliJ's
+    /// `VcsLogUtil.getAllVisibleRoots`. All of them when nothing is picked.
+    pub fn log_visible_roots(&self) -> Vec<usize> {
+        let states = &self.root_states;
+        let filter = &self.filter;
+        (0..states.len())
+            .filter(|&ix| filter.roots.is_empty() || filter.roots.contains(&states[ix].path))
+            .filter(|&ix| filter.paths.is_empty() || filter.paths.iter().any(|p| route_path(states, p).is_some_and(|(root, _)| root == ix)))
+            .collect()
+    }
+
     /// Runs `operation` in each root holding some of `paths` (project
     /// paths), with that root's own paths, then reloads and reports the
     /// result: one commit per repository, as IntelliJ commits a

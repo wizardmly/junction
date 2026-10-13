@@ -486,7 +486,7 @@ impl LogView {
                         })
                         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(commit.subject.clone()))
                         .when(!branch_names.is_empty(), |el| el.child(label_icon("branches", icons::BRANCH, branch_names, palette.ref_local)))
-                        .when(!tag_names.is_empty(), |el| el.child(label_icon("tags", icons::TAG, tag_names, palette.text_secondary)))
+                        .when(!tag_names.is_empty(), |el| el.child(label_icon("tags", icons::BRANCH_LABEL, tag_names, palette.text_secondary)))
                         .into_any_element(),
                 )
             })
