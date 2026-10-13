@@ -1,7 +1,6 @@
 //! The commit table: rows, graph, columns and keyboard selection.
 
 use super::*;
-use crate::ui::as_icons as icons;
 
 impl LogView {
     /// Mouse selection: plain click selects one commit, Ctrl/Cmd-click
@@ -238,6 +237,7 @@ impl LogView {
         let graph = model.graph().clone();
         // Every shown root's branches and tags label its commits.
         let refs = model.log_refs().clone();
+        let heads = model.head_commits();
         let selected = model.selected_index();
         // A multi-root project: the Root column, a color per repository.
         let root_names: Option<Vec<SharedString>> = model.project_root().filter(|_| model.is_multi_root()).map(|project| {
@@ -292,7 +292,7 @@ impl LogView {
                 let commit = commits.get(ix)?;
                 let row = graph_rows.get(ix - range_start).cloned().unwrap_or_default();
                 let is_selected = selected == Some(ix) || extra[ix - range_start];
-                let is_head = refs.head_commit.as_deref() == Some(commit.hash.as_str());
+                let is_head = heads.contains(commit.hash.as_str());
                 let mine = log.highlight_mine && me.as_deref().is_some_and(|me| *me == *commit.author_email);
                 let labels = refs.for_commit(&commit.hash);
                 let is_merge = commit.parents.len() > 1;
@@ -312,20 +312,17 @@ impl LogView {
                     .child(graph_canvas(row, &palette, is_head, ix, &on_arrow));
                 let shown = if log.compact_refs { 1 } else { 4 };
                 let mut ref_labels = h_flex().flex_shrink_0();
-                // A detached HEAD gets its own label, as in IntelliJ.
-                if is_head && refs.current_branch.is_none() {
-                    ref_labels = ref_labels.child(
-                        h_flex()
-                            .flex_shrink_0()
-                            .gap_0p5()
-                            .mr_1p5()
-                            .text_xs()
-                            .child(Icon::new(icons::BRANCH).xsmall().text_color(palette.ref_head))
-                            .child(div().text_color(palette.ref_head).child("HEAD")),
-                    );
+                // HEAD: a yellow label before the branches it is on, or its
+                // own "HEAD" label when detached, as in IntelliJ.
+                if is_head {
+                    ref_labels = if labels.iter().any(|l| l.kind != RefKind::Tag) {
+                        ref_labels.child(div().flex_shrink_0().mr_0p5().child(ref_label_icon(palette.ref_head)))
+                    } else {
+                        ref_labels.child(head_label(palette.text_secondary, &palette))
+                    };
                 }
                 for label in labels.iter().take(shown) {
-                    ref_labels = ref_labels.child(ref_label(label, refs.current_branch.as_deref(), &palette));
+                    ref_labels = ref_labels.child(ref_label(label, palette.text_secondary, &palette));
                 }
                 if labels.len() > shown {
                     ref_labels = ref_labels.child(

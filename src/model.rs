@@ -646,6 +646,14 @@ impl RepoModel {
         if !self.root_states.is_empty() { &self.log_refs } else { &self.refs }
     }
 
+    /// The commits HEAD is on: each root's in a multi-root project.
+    pub fn head_commits(&self) -> HashSet<String> {
+        if self.root_states.is_empty() {
+            return self.refs.head_commit.iter().cloned().collect();
+        }
+        self.root_states.iter().filter_map(|s| s.refs.head_commit.clone()).collect()
+    }
+
     /// The roots (indexes into `root_states`) the Log's Paths filter shows:
     /// those picked under Roots and holding one of its paths, as IntelliJ's
     /// `VcsLogUtil.getAllVisibleRoots`. All of them when nothing is picked.

@@ -296,6 +296,7 @@ impl LogView {
         let model = self.model.read(cx);
         let details = model.details().cloned();
         let refs = model.log_refs().clone();
+        let heads = model.head_commits();
         // A multi-root project: which repository the commit is in.
         // (The shown commit's own root: the active one may follow an editor tab.)
         let root = model.project_root().filter(|_| model.is_multi_root()).and_then(|project| {
@@ -312,6 +313,7 @@ impl LogView {
             .overflow_y_scrollbar()
             .when_some(details, |el, d| {
                 let labels = refs.for_commit(&d.hash);
+                let is_head = heads.contains(d.hash.as_str());
                 el.child(
                     v_flex()
                         .gap_2()
@@ -359,10 +361,13 @@ impl LogView {
                                     .child(div().flex_1().min_w_0().child(selectable("commit-signature", 4, &signature.describe(), color))),
                             )
                         })
-                        .when(!labels.is_empty(), |el| {
+                        .when(!labels.is_empty() || is_head, |el| {
                             let mut row = h_flex().gap_1().flex_wrap();
+                            if is_head {
+                                row = row.child(head_label(palette.text, &palette));
+                            }
                             for label in labels {
-                                row = row.child(ref_label(label, refs.current_branch.as_deref(), &palette));
+                                row = row.child(ref_label(label, palette.text, &palette));
                             }
                             el.child(row)
                         })

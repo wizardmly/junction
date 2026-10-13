@@ -574,19 +574,27 @@ pub(super) fn group_branches(branches: &[&RefName], scope: &str, short: impl Fn(
     build(&root, "", scope)
 }
 
-pub(super) fn ref_label(reference: &RefName, current_branch: Option<&str>, palette: &crate::theme::Palette) -> impl IntoElement {
-    let is_current = reference.kind == RefKind::LocalBranch && Some(reference.name.as_str()) == current_branch;
-    let (icon, color) = match reference.kind {
-        _ if is_current => (icons::BRANCH, palette.ref_head),
-        RefKind::LocalBranch => (icons::BRANCH, palette.ref_local),
-        RefKind::RemoteBranch => (icons::BRANCH, palette.ref_remote),
-        RefKind::Tag => (icons::BRANCH_LABEL, palette.ref_tag),
+/// IntelliJ's ref label: a tag-shaped icon in the ref's color (HEAD
+/// yellow, local branches green, remote ones purple, tags grey) and its name.
+pub(super) fn ref_label(reference: &RefName, text: gpui_kit::Hsla, palette: &crate::theme::Palette) -> impl IntoElement {
+    let color = match reference.kind {
+        RefKind::LocalBranch => palette.ref_local,
+        RefKind::RemoteBranch => palette.ref_remote,
+        RefKind::Tag => palette.ref_tag,
     };
-    h_flex()
-        .flex_shrink_0()
-        .gap_0p5()
-        .mr_1p5()
-        .text_xs()
-        .child(Icon::new(icon).xsmall().text_color(color))
-        .child(div().text_color(color).child(reference.name.clone()))
+    named_label(reference.name.clone().into(), color, text)
+}
+
+/// The HEAD label, before the branches of the commit HEAD is on.
+pub(super) fn head_label(text: gpui_kit::Hsla, palette: &crate::theme::Palette) -> impl IntoElement {
+    named_label("HEAD".into(), palette.ref_head, text)
+}
+
+fn named_label(name: SharedString, color: gpui_kit::Hsla, text: gpui_kit::Hsla) -> impl IntoElement {
+    h_flex().flex_shrink_0().gap_0p5().mr_1p5().text_xs().child(ref_label_icon(color)).child(div().text_color(text).child(name))
+}
+
+/// The label shape alone, tinted.
+pub(super) fn ref_label_icon(color: gpui_kit::Hsla) -> impl IntoElement {
+    gpui_kit::svg().flex_shrink_0().size(px(14.)).path(icons::BRANCH_LABEL.light[0].0).text_color(color)
 }
