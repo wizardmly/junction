@@ -48,6 +48,7 @@ impl MirrorView {
             screen: Rc::new(Cell::new(Bounds::default())),
             pressed: false,
             hardware_input: false,
+            text_helper: true,
             recording: None,
             clipboard: None,
             marked: None,
@@ -67,7 +68,11 @@ impl MirrorView {
 
     pub(super) fn connect(&mut self, cx: &mut Context<Self>) {
         let (tx, mut rx) = futures::channel::mpsc::unbounded();
-        self.session = Some(Session::start(self.adb.clone(), self.serial.clone(), tx));
+        let session = Session::start(self.adb.clone(), self.serial.clone(), tx);
+        if !self.text_helper {
+            session.set_text_helper(false);
+        }
+        self.session = Some(session);
         self.state = State::Connecting;
         self._events = Some(cx.spawn(async move |this, cx| {
             while let Some(event) = rx.next().await {
@@ -253,6 +258,27 @@ impl MirrorView {
                 .selected(self.hardware_input)
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.hardware_input = !this.hardware_input;
+                    window.focus(&this.focus, cx);
+                    cx.notify();
+                })),
+            )
+            .child(
+                tool_button(
+                    "rd-text-helper",
+                    icons::EDIT,
+                    if self.text_helper {
+                        "Direct Text Input: On. Typed text goes straight into the device's focused field. Turn off to free the device's UI automation connection for UI tests"
+                    } else {
+                        "Direct Text Input: Off. Turn on to type non-ASCII text straight into the device's focused field"
+                    },
+                )
+                .disabled(!live)
+                .selected(self.text_helper)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.text_helper = !this.text_helper;
+                    if let Some(session) = this.session.as_ref() {
+                        session.set_text_helper(this.text_helper);
+                    }
                     window.focus(&this.focus, cx);
                     cx.notify();
                 })),

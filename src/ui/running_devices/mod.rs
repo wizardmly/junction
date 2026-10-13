@@ -90,6 +90,9 @@ pub struct MirrorView {
     screen: Rc<Cell<Bounds<Pixels>>>,
     pressed: bool,
     hardware_input: bool,
+    /// Whether text goes straight into the device's focused field through
+    /// the helper (it holds the device's UI automation connection).
+    text_helper: bool,
     recording: Option<Recording>,
     /// The clipboard text both sides last agreed on.
     clipboard: Option<String>,

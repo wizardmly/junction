@@ -72,6 +72,8 @@ struct Shared {
 enum Input {
     Message(Vec<u8>),
     Text(String),
+    /// Whether the text input helper may run.
+    Helper(bool),
 }
 
 /// One mirrored device. Dropping it stops the server.
@@ -184,6 +186,12 @@ impl Session {
     /// [`Event::Typing`] saying why.
     pub fn type_text(&self, text: &str) {
         let _ = self.input.send(Input::Text(text.to_owned()));
+    }
+
+    /// Turns the text input helper on or off; off ends it on the device,
+    /// which frees the device's UI automation connection for UI tests.
+    pub fn set_text_helper(&self, on: bool) {
+        let _ = self.input.send(Input::Helper(on));
     }
 
     /// Rotates the screen a quarter turn (counterclockwise when `left`), as
@@ -514,6 +522,10 @@ fn input_worker(queue: std::sync::mpsc::Receiver<Input>, adb: &Adb, serial: &str
                 send(shared, &m);
                 continue;
             }
+            Input::Helper(on) => {
+                typer.helper = if on { Helper::None } else { Helper::Off };
+                continue;
+            }
             Input::Text(text) => text,
         };
         // Text typed while the last one was on its way goes in one piece,
@@ -533,6 +545,8 @@ fn input_worker(queue: std::sync::mpsc::Receiver<Input>, adb: &Adb, serial: &str
 
 enum Helper {
     None,
+    /// Turned off by the user.
+    Off,
     Starting(std::sync::mpsc::Receiver<Result<TextInput, String>>),
     Ready(TextInput),
     Failed(Instant, String),
@@ -585,6 +599,8 @@ impl Typer<'_> {
             }
         } else if let Helper::Failed(_, error) = &self.helper {
             why = Some(format!("The text input helper could not start on the device: {error}"));
+        } else if let Helper::Off = self.helper {
+            why = Some("Direct text input is turned off in the Running Devices toolbar.".to_owned());
         }
         for (ascii, run) in text_runs(text) {
             if ascii {
