@@ -34,13 +34,21 @@ public final class TextInput {
     public static void main(String[] args) throws Exception {
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, "UTF-8"));
         PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8");
-        UiAutomation automation;
-        try {
-            automation = connect();
-        } catch (Throwable t) {
-            out.println("fail " + describe(t));
-            System.exit(1);
-            return;
+        UiAutomation automation = null;
+        // A helper ended just before may still hold the connection until the
+        // system sees it died: try again for a few seconds.
+        for (int attempt = 0; automation == null; attempt++) {
+            try {
+                automation = connect();
+            } catch (Throwable t) {
+                if (attempt < 10 && describe(t).startsWith("Another UI automation")) {
+                    Thread.sleep(500);
+                    continue;
+                }
+                out.println("fail " + describe(t));
+                System.exit(1);
+                return;
+            }
         }
         out.println("ready");
         String line;

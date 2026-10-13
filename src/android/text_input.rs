@@ -18,7 +18,7 @@ static HELPER: &[u8] = include_bytes!("../../assets/text-input/junction-text-inp
 const DEVICE_PATH: &str = "/data/local/tmp/junction-text-input.jar";
 
 /// Matches the helper's command line but not the pkill's own.
-const KILL_HELPER: &str = "pkill -f dev.junction.Text[I]nput";
+const KILL_HELPER: &str = "pkill -f dev.junction.Text[I]nput; pkill -x junction-input";
 
 pub struct TextInput {
     adb: Adb,
@@ -40,7 +40,7 @@ impl TextInput {
         // left behind (its adb went away without closing it).
         let _ = adb.shell(serial, KILL_HELPER);
         let mut child = process::command(&adb.path)
-            .args(["-s", serial, "shell", &format!("CLASSPATH={DEVICE_PATH} app_process / dev.junction.TextInput")])
+            .args(["-s", serial, "shell", &format!("CLASSPATH={DEVICE_PATH} app_process --nice-name=junction-input / dev.junction.TextInput")])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -61,9 +61,22 @@ impl TextInput {
         });
         let input = TextInput { adb: adb.clone(), serial: serial.to_owned(), child, stdin, lines };
         // app_process plus the UiAutomation connection take a moment.
-        match input.answer(Duration::from_secs(15))?.as_str() {
+        match input.answer(Duration::from_secs(20))?.as_str() {
             "ready" => Ok(input),
-            other => Err(other.strip_prefix("fail ").unwrap_or(other).to_owned()),
+            other => {
+                let mut why = other.strip_prefix("fail ").unwrap_or(other).to_owned();
+                if why.starts_with("Another UI automation") {
+                    // Name what holds it, for the notification's details.
+                    let holders = adb
+                        .shell(serial, "ps -A -o PID,USER,ARGS 2>/dev/null | grep -i -E 'uiautomator|instrument|app_process|junction' | grep -v grep")
+                        .unwrap_or_default();
+                    let holders: Vec<&str> = holders.lines().map(str::trim).filter(|l| !l.is_empty()).take(5).collect();
+                    if !holders.is_empty() {
+                        why.push_str(&format!(" Running on the device: {}", holders.join("; ")));
+                    }
+                }
+                Err(why)
+            }
         }
     }
 

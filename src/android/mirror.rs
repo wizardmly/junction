@@ -495,65 +495,146 @@ fn compose_message(code: u32) -> Vec<u8> {
 /// [`TextInput`] helper (started on first use); when that can't set it,
 /// Gboard's Unicode composition types it; otherwise it is dropped and an
 /// [`Event::Typing`] says why.
+/// How long after a failed start the helper is tried again.
+const HELPER_RETRY: Duration = Duration::from_secs(300);
+/// How long the helper stays connected without typing; it holds the
+/// device's one UI automation connection, which UI tests need too.
+const HELPER_IDLE: Duration = Duration::from_secs(300);
+
 fn input_worker(queue: std::sync::mpsc::Receiver<Input>, adb: &Adb, serial: &str, shared: &Shared, events: &UnboundedSender<Event>) {
-    let mut helper: Option<TextInput> = None;
-    let mut helper_failed: Option<(Instant, String)> = None;
-    let mut keyboard: Option<(Instant, Result<(), String>)> = None;
-    for input in queue {
-        let text = match input {
+    use std::sync::mpsc::RecvTimeoutError;
+    let mut typer = Typer { adb, serial, shared, events, helper: Helper::None, keyboard: None, last: Instant::now() };
+    let mut pending: Option<Input> = None;
+    loop {
+        let input = match pending.take() {
+            Some(input) => input,
+            None => match queue.recv_timeout(Duration::from_secs(30)) {
+                Ok(input) => input,
+                Err(RecvTimeoutError::Timeout) => {
+                    typer.idle();
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            },
+        };
+        let mut text = match input {
             Input::Message(m) => {
                 send(shared, &m);
                 continue;
             }
             Input::Text(text) => text,
         };
-        for (ascii, run) in text_runs(&text) {
+        // Text typed while the last one was on its way goes in one piece,
+        // instead of character by character; keys after it wait their turn.
+        while let Ok(next) = queue.try_recv() {
+            match next {
+                Input::Text(more) => text.push_str(&more),
+                other => {
+                    pending = Some(other);
+                    break;
+                }
+            }
+        }
+        typer.type_text(&text);
+    }
+}
+
+enum Helper {
+    None,
+    Starting(std::sync::mpsc::Receiver<Result<TextInput, String>>),
+    Ready(TextInput),
+    Failed(Instant, String),
+}
+
+struct Typer<'a> {
+    adb: &'a Adb,
+    serial: &'a str,
+    shared: &'a Shared,
+    events: &'a UnboundedSender<Event>,
+    helper: Helper,
+    keyboard: Option<(Instant, Result<(), String>)>,
+    last: Instant,
+}
+
+impl Typer<'_> {
+    fn type_text(&mut self, text: &str) {
+        self.last = Instant::now();
+        let ascii = text.chars().all(|c| c.is_ascii() && !c.is_ascii_control());
+        // Start the helper in the background: ASCII never waits for it.
+        if !ascii && (matches!(self.helper, Helper::None) || matches!(&self.helper, Helper::Failed(t, _) if t.elapsed() > HELPER_RETRY)) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (adb, serial) = (self.adb.clone(), self.serial.to_owned());
+            std::thread::spawn(move || {
+                let _ = tx.send(TextInput::start(&adb, &serial));
+            });
+            self.helper = Helper::Starting(rx);
+        }
+        if let Helper::Starting(rx) = &self.helper {
+            // Non-ASCII text has no better way in: wait for it.
+            let result = if ascii { rx.try_recv().ok() } else { Some(rx.recv().unwrap_or_else(|_| Err("The helper did not start.".to_owned()))) };
+            match result {
+                Some(Ok(helper)) => self.helper = Helper::Ready(helper),
+                Some(Err(error)) => {
+                    eprintln!("text input helper on {}: {error}", self.serial);
+                    self.helper = Helper::Failed(Instant::now(), error);
+                }
+                None => {}
+            }
+        }
+        // The whole text at once, as a paste would put it.
+        let mut why = None;
+        if let Helper::Ready(helper) = &mut self.helper {
+            match helper.insert(text) {
+                Ok(()) => return,
+                Err(error) => {
+                    if !helper.alive() {
+                        self.helper = Helper::None;
+                    }
+                    why = Some(error);
+                }
+            }
+        } else if let Helper::Failed(_, error) = &self.helper {
+            why = Some(format!("The text input helper could not start on the device: {error}"));
+        }
+        for (ascii, run) in text_runs(text) {
             if ascii {
-                send(shared, &text_message(run));
+                // scrcpy takes at most 300 bytes per message.
+                for chunk in run.as_bytes().chunks(300) {
+                    send(self.shared, &text_message(std::str::from_utf8(chunk).unwrap_or_default()));
+                }
                 continue;
             }
-            if helper.is_none() && helper_failed.as_ref().is_none_or(|(t, _)| t.elapsed() > Duration::from_secs(60)) {
-                match TextInput::start(adb, serial) {
-                    Ok(started) => helper = Some(started),
-                    Err(error) => {
-                        eprintln!("text input helper on {serial}: {error}");
-                        helper_failed = Some((Instant::now(), error));
-                    }
-                }
-            }
-            let mut why = helper_failed.as_ref().filter(|_| helper.is_none()).map(|(_, e)| format!("The text input helper could not start on the device: {e}"));
-            if let Some(input) = helper.as_mut() {
-                match input.insert(run) {
-                    Ok(()) => continue,
-                    Err(error) => {
-                        if !input.alive() {
-                            helper = None;
-                        }
-                        why = Some(error);
-                    }
-                }
-            }
             // The user may switch keyboards while mirroring: look again.
-            if keyboard.as_ref().is_none_or(|(t, _)| t.elapsed() > Duration::from_secs(3)) {
-                keyboard = Some((Instant::now(), unicode_composition(adb, serial)));
+            if self.keyboard.as_ref().is_none_or(|(t, _)| t.elapsed() > Duration::from_secs(3)) {
+                self.keyboard = Some((Instant::now(), unicode_composition(self.adb, self.serial)));
             }
-            match keyboard.as_ref().map(|(_, k)| k) {
+            let why = match self.keyboard.as_ref().map(|(_, k)| k) {
                 Some(Ok(())) if run.chars().all(|c| (c as u32) <= 0xffff) => {
+                    let mut m = Vec::new();
                     for c in run.chars() {
-                        send(shared, &compose_message(c as u32));
+                        m.extend(compose_message(c as u32));
                     }
-                    why = None;
+                    send(self.shared, &m);
+                    None
                 }
-                Some(Ok(())) => why = Some(format!("Gboard can't compose \"{run}\".")),
-                Some(Err(error)) => why = Some(match why {
+                Some(Ok(())) => Some(format!("Gboard can't compose \"{run}\".")),
+                Some(Err(error)) => Some(match &why {
                     Some(why) => format!("{why}\n{error}"),
                     None => error.clone(),
                 }),
-                None => {}
-            }
+                None => why.clone(),
+            };
             if let Some(why) = why {
-                let _ = events.unbounded_send(Event::Typing(why));
+                let _ = self.events.unbounded_send(Event::Typing(why));
             }
+        }
+    }
+
+    /// Lets go of the device's UI automation connection after a while
+    /// without typing.
+    fn idle(&mut self) {
+        if matches!(self.helper, Helper::Ready(_)) && self.last.elapsed() > HELPER_IDLE {
+            self.helper = Helper::None;
         }
     }
 }
