@@ -621,7 +621,9 @@ impl Typer<'_> {
                         m.extend(compose_message(c as u32));
                     }
                     send(self.shared, &m);
-                    None
+                    // Say why it came in character by character, unless
+                    // the user turned the helper off.
+                    why.as_ref().filter(|_| !matches!(self.helper, Helper::Off)).map(|why| format!("{why}\nTyped through Gboard instead, one character at a time."))
                 }
                 Some(Ok(())) => Some(format!("Gboard can't compose \"{run}\".")),
                 Some(Err(error)) => Some(match &why {
