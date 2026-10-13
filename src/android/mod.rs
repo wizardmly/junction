@@ -126,10 +126,23 @@ impl Device {
             (None, Some(codename)) => format!("Android {codename} Preview"),
             (None, None) => return String::new(),
         };
-        match self.abi.as_deref().map(cpu_arch) {
+        let label = match self.abi.as_deref().map(cpu_arch) {
             Some(arch) => format!("{version} | {arch}"),
             None => version,
+        };
+        // A phone can be on USB and Wi-Fi at once, as two adb devices and
+        // two rows: say which connection a row is, first so it shows in
+        // a narrow column.
+        match self.connection() {
+            Some(connection) => format!("{connection} | {label}"),
+            None => label,
         }
+    }
+
+    /// "USB" or "Wi-Fi" for a connected physical device.
+    pub fn connection(&self) -> Option<&'static str> {
+        let serial = self.serial.as_deref().filter(|_| self.kind == Kind::Physical)?;
+        Some(if wifi::wifi_identity(serial).is_some() { "Wi-Fi" } else { "USB" })
     }
 }
 
@@ -340,11 +353,6 @@ pub fn scan(tools: &Tools, cache: &mut ScanCache) -> (Vec<Device>, Option<String
             wifi: pairing,
         });
     }
-    // A phone on both USB and Wi-Fi is one row, as in Android Studio: the
-    // USB connection's when it is online.
-    let hardware = |d: &Device| d.props.get("ro.serialno").filter(|h| !h.is_empty()).cloned().or_else(|| d.id.strip_prefix("wifi:").map(str::to_owned));
-    let usb_online: Vec<String> = devices.iter().filter(|d| d.kind == Kind::Physical && d.online && !d.id.starts_with("wifi:")).filter_map(hardware).collect();
-    devices.retain(|d| !(d.kind == Kind::Physical && d.id.starts_with("wifi:") && hardware(d).is_some_and(|h| usb_online.contains(&h))));
     for (serial, address) in available {
         let props = cache.wifi.known.get(&serial).cloned().unwrap_or_default();
         devices.push(Device {
