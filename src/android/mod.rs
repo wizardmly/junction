@@ -197,6 +197,8 @@ pub struct ScanCache {
     /// Physical devices seen before, by hardware serial (`ro.serialno`):
     /// names the ones that only advertise wireless debugging. Kept on disk.
     known: Option<HashMap<String, HashMap<String, String>>>,
+    /// Wi-Fi addresses connected on their own, and when (once a while).
+    auto_connected: HashMap<String, std::time::Instant>,
 }
 
 /// The properties a Device Manager row is made of.
@@ -238,6 +240,18 @@ impl ScanCache {
     }
 }
 
+/// Which device an adb Wi-Fi connection is: the hardware serial of an
+/// `adb-<serial>-<suffix>._adb-tls-connect._tcp` connection, the host of a
+/// `host:port` one; None for USB and emulators.
+fn wifi_identity(serial: &str) -> Option<(Option<&str>, Option<&str>)> {
+    if let Some(name) = serial.split_once("._adb-tls-connect").map(|(n, _)| n) {
+        return Some((service_serial(name), None));
+    }
+    let (host, port) = serial.rsplit_once(':')?;
+    port.parse::<u16>().ok()?;
+    Some((None, Some(host)))
+}
+
 /// The hardware serial in an `adb-<serial>-<suffix>` service name.
 fn service_serial(name: &str) -> Option<&str> {
     let rest = name.strip_prefix("adb-")?;
@@ -276,14 +290,49 @@ pub fn scan(tools: &Tools, cache: &mut ScanCache) -> (Vec<Device>, Option<String
     // Devices advertising wireless debugging adb has no Wi-Fi connection
     // to; adb's own connections are named after the service or address.
     let services = tools.adb.as_ref().and_then(|adb| adb.mdns_services().ok()).unwrap_or_default();
+    let connect_services: Vec<&adb::MdnsService> = services.iter().filter(|s| s.kind == adb::ServiceKind::Connect).collect();
+    // Turning wireless debugging off and on again moves the device to a new
+    // port: adb keeps the old connection as offline next to the new one.
+    // That one is the same device and won't come back: let it go.
+    let mut adb_devices = adb_devices;
+    if let Some(adb) = &tools.adb {
+        adb_devices.retain(|d| {
+            if d.state == "device" {
+                return true;
+            }
+            let Some((hardware, host)) = wifi_identity(&d.serial) else { return true };
+            let moved = connect_services.iter().any(|s| {
+                s.address() != d.serial && !d.serial.starts_with(&s.name) && (hardware.is_some_and(|h| service_serial(&s.name) == Some(h)) || host.is_some_and(|h| s.host == h))
+            });
+            if moved {
+                let _ = adb.run(&["disconnect", &d.serial], std::time::Duration::from_secs(5));
+            }
+            !moved
+        });
+    }
     let mut wifi: Vec<(String, String)> = Vec::new();
-    for service in services.iter().filter(|s| s.kind == adb::ServiceKind::Connect) {
+    for service in &connect_services {
         let address = service.address();
         let connected = adb_devices.iter().any(|d| d.serial.starts_with(&service.name) || d.serial == address);
-        if let Some(serial) = service_serial(&service.name).filter(|_| !connected) {
-            if !wifi.iter().any(|(s, _)| s == serial) {
-                wifi.push((serial.to_owned(), address));
+        let Some(serial) = service_serial(&service.name).filter(|_| !connected) else { continue };
+        // A device seen before was probably paired with this computer: connect
+        // it as adb would on its own, instead of waiting for a click.
+        if let Some(adb) = &tools.adb {
+            let due = cache.auto_connected.get(&address).is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(30));
+            if due && cache.known().contains_key(serial) {
+                cache.auto_connected.insert(address.clone(), std::time::Instant::now());
+                let connected = adb.run(&["connect", &address], std::time::Duration::from_secs(5)).is_ok_and(|out| {
+                    let text = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+                    out.success && text.contains("connected to") && !text.contains("failed") && !text.contains("unable")
+                });
+                if connected {
+                    // It shows as connected on the next scan.
+                    continue;
+                }
             }
+        }
+        if !wifi.iter().any(|(s, _)| s == serial) {
+            wifi.push((serial.to_owned(), address));
         }
     }
     let mut by_avd: HashMap<String, (AdbDevice, HashMap<String, String>)> = HashMap::new();
@@ -544,6 +593,10 @@ mod tests {
         assert_eq!(release_name(37), "Android 17.0 (\"CinnamonBun\")");
         assert_eq!(service_serial("adb-4C091FDAQ000AB-vWgJpq"), Some("4C091FDAQ000AB"));
         assert_eq!(service_serial("studio-abc"), None);
+        assert_eq!(wifi_identity("adb-4C09-vWg._adb-tls-connect._tcp"), Some((Some("4C09"), None)));
+        assert_eq!(wifi_identity("192.168.1.5:41234"), Some((None, Some("192.168.1.5"))));
+        assert_eq!(wifi_identity("R58M12345"), None);
+        assert_eq!(wifi_identity("emulator-5554"), None);
     }
 }
 
