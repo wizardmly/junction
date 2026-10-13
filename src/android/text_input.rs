@@ -17,7 +17,12 @@ use super::process;
 static HELPER: &[u8] = include_bytes!("../../assets/text-input/junction-text-input.jar");
 const DEVICE_PATH: &str = "/data/local/tmp/junction-text-input.jar";
 
+/// Matches the helper's command line but not the pkill's own.
+const KILL_HELPER: &str = "pkill -f dev.junction.Text[I]nput";
+
 pub struct TextInput {
+    adb: Adb,
+    serial: String,
     child: Child,
     stdin: ChildStdin,
     lines: Receiver<String>,
@@ -31,6 +36,9 @@ impl TextInput {
         if !push.success {
             return Err(push.message());
         }
+        // Only one UiAutomation may connect: end a helper an earlier session
+        // left behind (its adb went away without closing it).
+        let _ = adb.shell(serial, KILL_HELPER);
         let mut child = process::command(&adb.path)
             .args(["-s", serial, "shell", &format!("CLASSPATH={DEVICE_PATH} app_process / dev.junction.TextInput")])
             .stdin(Stdio::piped())
@@ -51,7 +59,7 @@ impl TextInput {
                 }
             }
         });
-        let input = TextInput { child, stdin, lines };
+        let input = TextInput { adb: adb.clone(), serial: serial.to_owned(), child, stdin, lines };
         // app_process plus the UiAutomation connection take a moment.
         match input.answer(Duration::from_secs(15))?.as_str() {
             "ready" => Ok(input),
@@ -87,15 +95,22 @@ const STOPPED: &str = "The text input helper on the device stopped.";
 
 impl Drop for TextInput {
     fn drop(&mut self) {
-        // Closing stdin ends the helper on the device; the kill ends adb.
+        // Closing stdin ends the helper on the device; the kill ends adb,
+        // and the pkill the helper in case adb didn't pass the end on.
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let (adb, serial) = (self.adb.clone(), self.serial.clone());
+        std::thread::spawn(move || {
+            let _ = adb.shell(&serial, KILL_HELPER);
+        });
     }
 }
 
 /// The helper as a file adb can push, written once per build.
 fn helper_file() -> io::Result<PathBuf> {
-    let path = std::env::temp_dir().join(format!("junction-text-input-{}.jar", HELPER.len()));
+    // Named by content, so a new build never reuses an old copy.
+    let hash = HELPER.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100_0000_01b3));
+    let path = std::env::temp_dir().join(format!("junction-text-input-{hash:016x}.jar"));
     if std::fs::metadata(&path).map(|m| m.len() as usize) .ok() != Some(HELPER.len()) {
         let partial = path.with_extension("part");
         std::fs::write(&partial, HELPER)?;

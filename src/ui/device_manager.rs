@@ -391,13 +391,8 @@ impl DeviceManager {
         let window_handle = window.window_handle();
         self._tasks.push(cx.spawn(async move |this, cx| {
             let connected = cx
-                .background_spawn(async move {
-                    let out = adb.connect(&address).ok()?;
-                    let text = format!("{}{}", out.stdout, out.stderr).to_lowercase();
-                    (out.success && text.contains("connected to") && !text.contains("failed") && !text.contains("unable")).then_some(())
-                })
-                .await
-                .is_some();
+                .background_spawn(async move { android::wifi::connect(&adb, &address) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.transitions.remove(&device.id);
                 if connected {

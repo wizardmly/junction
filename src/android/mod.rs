@@ -10,6 +10,7 @@ pub mod mirror;
 pub mod pairing;
 pub mod process;
 pub mod text_input;
+pub mod wifi;
 pub mod sdk;
 
 use std::collections::HashMap;
@@ -194,68 +195,7 @@ pub fn physical_name(props: &HashMap<String, String>, fallback: &str) -> String 
 pub struct ScanCache {
     props: HashMap<String, HashMap<String, String>>,
     avd_names: HashMap<String, String>,
-    /// Physical devices seen before, by hardware serial (`ro.serialno`):
-    /// names the ones that only advertise wireless debugging. Kept on disk.
-    known: Option<HashMap<String, HashMap<String, String>>>,
-    /// Wi-Fi addresses connected on their own, and when (once a while).
-    auto_connected: HashMap<String, std::time::Instant>,
-}
-
-/// The properties a Device Manager row is made of.
-const KNOWN_PROPS: &[&str] = &[
-    "ro.product.model",
-    "ro.product.manufacturer",
-    "ro.build.version.sdk",
-    "ro.build.version.sdk_minor",
-    "ro.build.version.sdk_full",
-    "ro.product.cpu.abi",
-    "ro.build.characteristics",
-];
-
-fn known_devices_file() -> Option<PathBuf> {
-    crate::index::libraries::cache_dir().map(|d| d.join("known-devices.json"))
-}
-
-impl ScanCache {
-    fn known(&mut self) -> &mut HashMap<String, HashMap<String, String>> {
-        self.known.get_or_insert_with(|| {
-            known_devices_file().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
-        })
-    }
-
-    /// Remembers a physical device's row properties.
-    fn remember(&mut self, props: &HashMap<String, String>) {
-        let Some(serial) = props.get("ro.serialno").filter(|s| !s.is_empty()).cloned() else { return };
-        let kept: HashMap<String, String> = KNOWN_PROPS.iter().filter_map(|k| props.get(*k).map(|v| (k.to_string(), v.clone()))).collect();
-        if self.known().get(&serial) == Some(&kept) {
-            return;
-        }
-        self.known().insert(serial, kept);
-        if let (Some(file), Some(known)) = (known_devices_file(), &self.known) {
-            let _ = std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")));
-            if let Ok(json) = serde_json::to_vec_pretty(known) {
-                let _ = std::fs::write(file, json);
-            }
-        }
-    }
-}
-
-/// Which device an adb Wi-Fi connection is: the hardware serial of an
-/// `adb-<serial>-<suffix>._adb-tls-connect._tcp` connection, the host of a
-/// `host:port` one; None for USB and emulators.
-fn wifi_identity(serial: &str) -> Option<(Option<&str>, Option<&str>)> {
-    if let Some(name) = serial.split_once("._adb-tls-connect").map(|(n, _)| n) {
-        return Some((service_serial(name), None));
-    }
-    let (host, port) = serial.rsplit_once(':')?;
-    port.parse::<u16>().ok()?;
-    Some((None, Some(host)))
-}
-
-/// The hardware serial in an `adb-<serial>-<suffix>` service name.
-fn service_serial(name: &str) -> Option<&str> {
-    let rest = name.strip_prefix("adb-")?;
-    Some(rest.rsplit_once('-').map_or(rest, |(serial, _)| serial)).filter(|s| !s.is_empty())
+    wifi: wifi::WifiState,
 }
 
 /// The SDK tools a scan uses.
@@ -287,54 +227,11 @@ pub fn scan(tools: &Tools, cache: &mut ScanCache) -> (Vec<Device>, Option<String
     };
     cache.props.retain(|serial, _| adb_devices.iter().any(|d| &d.serial == serial));
     cache.avd_names.retain(|serial, _| adb_devices.iter().any(|d| &d.serial == serial));
-    // Devices advertising wireless debugging adb has no Wi-Fi connection
-    // to; adb's own connections are named after the service or address.
-    let services = tools.adb.as_ref().and_then(|adb| adb.mdns_services().ok()).unwrap_or_default();
-    let connect_services: Vec<&adb::MdnsService> = services.iter().filter(|s| s.kind == adb::ServiceKind::Connect).collect();
-    // Turning wireless debugging off and on again moves the device to a new
-    // port: adb keeps the old connection as offline next to the new one.
-    // That one is the same device and won't come back: let it go.
-    let mut adb_devices = adb_devices;
-    if let Some(adb) = &tools.adb {
-        adb_devices.retain(|d| {
-            if d.state == "device" {
-                return true;
-            }
-            let Some((hardware, host)) = wifi_identity(&d.serial) else { return true };
-            let moved = connect_services.iter().any(|s| {
-                s.address() != d.serial && !d.serial.starts_with(&s.name) && (hardware.is_some_and(|h| service_serial(&s.name) == Some(h)) || host.is_some_and(|h| s.host == h))
-            });
-            if moved {
-                let _ = adb.run(&["disconnect", &d.serial], std::time::Duration::from_secs(5));
-            }
-            !moved
-        });
-    }
-    let mut wifi: Vec<(String, String)> = Vec::new();
-    for service in &connect_services {
-        let address = service.address();
-        let connected = adb_devices.iter().any(|d| d.serial.starts_with(&service.name) || d.serial == address);
-        let Some(serial) = service_serial(&service.name).filter(|_| !connected) else { continue };
-        // A device seen before was probably paired with this computer: connect
-        // it as adb would on its own, instead of waiting for a click.
-        if let Some(adb) = &tools.adb {
-            let due = cache.auto_connected.get(&address).is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(30));
-            if due && cache.known().contains_key(serial) {
-                cache.auto_connected.insert(address.clone(), std::time::Instant::now());
-                let connected = adb.run(&["connect", &address], std::time::Duration::from_secs(5)).is_ok_and(|out| {
-                    let text = format!("{}{}", out.stdout, out.stderr).to_lowercase();
-                    out.success && text.contains("connected to") && !text.contains("failed") && !text.contains("unable")
-                });
-                if connected {
-                    // It shows as connected on the next scan.
-                    continue;
-                }
-            }
-        }
-        if !wifi.iter().any(|(s, _)| s == serial) {
-            wifi.push((serial.to_owned(), address));
-        }
-    }
+    cache.wifi.hardware.retain(|serial, _| adb_devices.iter().any(|d| &d.serial == serial));
+    let wifi::Reconciled { devices: adb_devices, moved, available } = match &tools.adb {
+        Some(adb) => wifi::reconcile(adb, adb_devices, &mut cache.wifi),
+        None => wifi::Reconciled { devices: adb_devices, ..Default::default() },
+    };
     let mut by_avd: HashMap<String, (AdbDevice, HashMap<String, String>)> = HashMap::new();
     let mut physical = Vec::new();
     for device in adb_devices {
@@ -344,10 +241,13 @@ pub fn scan(tools: &Tools, cache: &mut ScanCache) -> (Vec<Device>, Option<String
                 None => {
                     let props = adb.getprop(&device.serial).unwrap_or_default();
                     // Kept once booted; a booting device is asked again.
+                    if let Some(hardware) = props.get("ro.serialno").filter(|h| !h.is_empty()) {
+                        cache.wifi.hardware.insert(device.serial.clone(), hardware.clone());
+                    }
                     if props.get("sys.boot_completed").is_some_and(|v| v == "1") {
                         cache.props.insert(device.serial.clone(), props.clone());
                         if !device.is_emulator() {
-                            cache.remember(&props);
+                            cache.wifi.known.remember(&props);
                         }
                     }
                     props
@@ -411,26 +311,37 @@ pub fn scan(tools: &Tools, cache: &mut ScanCache) -> (Vec<Device>, Option<String
             "offline" => Some("Offline".to_owned()),
             other => Some(other.to_owned()),
         };
-        let fallback = device.model.clone().unwrap_or_else(|| device.serial.clone());
+        // A Wi-Fi connection's row is the device's, whatever port or state
+        // it is on, so the row updates in place.
+        let wifi_hardware = wifi::wifi_identity(&device.serial).map(|(hardware, _)| {
+            hardware.map(str::to_owned).or_else(|| props.get("ro.serialno").cloned()).or_else(|| cache.wifi.hardware.get(&device.serial).cloned()).unwrap_or_else(|| device.serial.clone())
+        });
+        let props = match &wifi_hardware {
+            Some(hardware) if props.is_empty() => cache.wifi.known.get(hardware).cloned().unwrap_or_default(),
+            _ => props,
+        };
+        let pairing = moved.get(&device.serial).cloned();
+        let error = if pairing.is_some() { None } else { error };
+        let fallback = device.model.clone().map(|m| m.replace('_', " ")).unwrap_or_else(|| device.serial.clone());
         devices.push(Device {
-            id: format!("adb:{}", device.serial),
+            id: wifi_hardware.map_or_else(|| format!("adb:{}", device.serial), |h| format!("wifi:{h}")),
             name: physical_name(&props, &fallback),
             kind: Kind::Physical,
             form: FormFactor::from_characteristics(props.get("ro.build.characteristics").map_or("", String::as_str)),
             api: props.get("ro.build.version.sdk").and_then(|v| v.parse().ok()),
             codename: None,
             abi: props.get("ro.product.cpu.abi").cloned(),
-            online: error.is_none(),
             booting: false,
+            online: error.is_none() && pairing.is_none(),
             error,
             serial: Some(device.serial),
             props,
             avd: None,
-            wifi: None,
+            wifi: pairing,
         });
     }
-    for (serial, address) in wifi {
-        let props = cache.known().get(&serial).cloned().unwrap_or_default();
+    for (serial, address) in available {
+        let props = cache.wifi.known.get(&serial).cloned().unwrap_or_default();
         devices.push(Device {
             id: format!("wifi:{serial}"),
             // AS names these rows by the model alone.
@@ -591,12 +502,6 @@ mod tests {
         assert_eq!(cpu_arch("arm64-v8a"), "arm64");
         assert_eq!(FormFactor::from_characteristics("nosdcard,watch"), FormFactor::Wear);
         assert_eq!(release_name(37), "Android 17.0 (\"CinnamonBun\")");
-        assert_eq!(service_serial("adb-4C091FDAQ000AB-vWgJpq"), Some("4C091FDAQ000AB"));
-        assert_eq!(service_serial("studio-abc"), None);
-        assert_eq!(wifi_identity("adb-4C09-vWg._adb-tls-connect._tcp"), Some((Some("4C09"), None)));
-        assert_eq!(wifi_identity("192.168.1.5:41234"), Some((None, Some("192.168.1.5"))));
-        assert_eq!(wifi_identity("R58M12345"), None);
-        assert_eq!(wifi_identity("emulator-5554"), None);
     }
 }
 

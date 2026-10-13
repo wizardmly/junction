@@ -143,12 +143,20 @@ public final class TextInput {
         return "ok";
     }
 
+    /** The exception the system service threw, in one line (a remote one's
+     *  cause is only its stack trace). */
     private static String describe(Throwable t) {
-        while (t.getCause() != null) {
+        while (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null) {
             t = t.getCause();
         }
         String message = t.getMessage();
-        return (t.getClass().getSimpleName() + (message == null ? "" : ": " + message)).replace('\n', ' ');
+        if (message != null) {
+            message = message.split("\n", 2)[0].trim();
+        }
+        if (message != null && message.contains("already registered")) {
+            return "Another UI automation (a running UI test, Appium, uiautomator) holds the device's accessibility connection.";
+        }
+        return t.getClass().getSimpleName() + (message == null || message.isEmpty() ? "" : ": " + message);
     }
 
     /** What UiAutomation(Context, ...) reads on Android versions without the Looper constructor. */
