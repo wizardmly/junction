@@ -181,6 +181,45 @@ fn collect<'t>(node: Node<'t>, word: &str, text: &str, out: &mut Vec<Node<'t>>) 
     }
 }
 
+/// The locals visible at `offset`, nearest scope first: (name, whether
+/// it is a parameter). For completion.
+pub fn visible(lang: Lang, text: &str, offset: usize) -> Vec<(String, bool)> {
+    let Some(tree) = symbols::parse(lang, text) else { return Vec::new() };
+    let mut idents: Vec<Node> = Vec::new();
+    collect_all(tree.root_node(), &mut idents);
+    // (scope size, name, parameter): smaller scopes are nearer.
+    let mut found: Vec<(usize, String, bool)> = Vec::new();
+    for ident in idents {
+        if ident.start_byte() <= offset && offset <= ident.end_byte() {
+            continue;
+        }
+        let Some(binding) = binding_of(ident) else { continue };
+        let Some(scope) = scope_of(binding) else { continue };
+        if !(scope.start_byte() <= offset && offset <= scope.end_byte()) || matches!(scope.kind(), "class_declaration" | "class_body") {
+            continue;
+        }
+        if ident.start_byte() > offset && !binds_whole_scope(binding.kind()) {
+            continue;
+        }
+        let Ok(name) = ident.utf8_text(text.as_bytes()) else { continue };
+        found.push((scope.end_byte() - scope.start_byte(), name.to_owned(), is_parameter(binding.kind())));
+    }
+    found.sort_by_key(|f| f.0);
+    let mut seen = std::collections::HashSet::new();
+    found.into_iter().filter(|f| seen.insert(f.1.clone())).map(|(_, name, param)| (name, param)).collect()
+}
+
+fn collect_all<'t>(node: Node<'t>, out: &mut Vec<Node<'t>>) {
+    if is_ident(node.kind()) {
+        out.push(node);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_all(child, out);
+    }
+}
+
 /// Resolves the identifier at `offset` to a local declaration.
 pub fn resolve(lang: Lang, text: &str, offset: usize) -> Option<Local> {
     let (word, range) = super::nav::word_at(text, offset)?;
@@ -235,6 +274,15 @@ pub fn resolve(lang: Lang, text: &str, offset: usize) -> Option<Local> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visible_locals() {
+        let text = "fun f(size: Int) {\n    val label = 1\n    run { x -> \n    }\n    \n    val later = 2\n}\nfun g(other: Int) {}\n";
+        let at = text.find("    \n    val later").unwrap() + 4;
+        let names: Vec<String> = visible(Lang::Kotlin, text, at).into_iter().map(|(n, _)| n).collect();
+        assert!(names.contains(&"size".to_owned()) && names.contains(&"label".to_owned()), "{names:?}");
+        assert!(!names.contains(&"later".to_owned()) && !names.contains(&"other".to_owned()) && !names.contains(&"x".to_owned()), "{names:?}");
+    }
 
     /// (declaration line, on it, use lines) for the `n`th occurrence of `word`.
     fn at(lang: Lang, text: &str, word: &str, n: usize) -> Option<(usize, bool, Vec<usize>)> {

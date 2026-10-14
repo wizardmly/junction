@@ -138,6 +138,17 @@ packaging/          macOS Info.plist 与打包脚本、Linux .desktop
 docs/               FEATURES.md、DIFF_MERGE.md、截图
 ```
 
+### 新功能的分层（Clean 架构，2026-10-14 起）
+
+新功能按四层写，依赖只能从外往里：`ui → usecase → domain ← infra`。
+
+- `src/domain/`：纯数据和规则，以及“端口” trait（`CodeModel`、`SyntaxChecker`、`BuildSystem`…）。不依赖 GPUI、进程、文件或索引的存储。
+- `src/usecase/`：一个功能一个用例（`complete_code`、`check_syntax`、`compile_on_save`），只通过 domain 的端口工作，用假的端口实现写单元测试。
+- `src/infra/`：端口的实现（`index_code_model` 包装现有索引，`tree_sitter_syntax`，`gradle` 调 gradlew 并解析编译器输出）。
+- `src/ui/`：界面和组装（`completion.rs` 是补全的 CompletionProvider，`compile_service.rs` 是保存后编译的全局服务）。
+
+现有的 `git/`、`index/`、`android/` 暂不迁移，新功能需要它们时在 `infra/` 里包一层适配器。行为不确定时查源码：编辑器、补全、Problems、Local History、测试、Debugger 看 intellij-community；Logcat、Build/Run、Gradle Sync、资源、设备相关看 AOSP `platform/tools/adt/idea`（都是 Apache 2.0）。
+
 ### 需要知道的约定和坑
 
 - **UI 目录拆分方式**：`workspace/`、`log_view/`、`dialogs/` 等目录里，子文件各写一个 `impl X` 块，方法是 `pub(super)`，开头 `use super::*`。新功能按这个方式加到对应子文件。
@@ -146,7 +157,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 - **缓存视图**：面板是 GPUI 的 cached view（`ui::common::cached`），`Workspace::redraw_panels` 在 model / index 变化时通知它们。**一个缓存面板如果 render 里读了新状态，必须 observe 它并 `cx.notify()`**，否则界面不刷新。
 - **索引缓存兼容**：`ProjectIndex` / `LibraryCache` 的**第一个字段必须是 `version: u32`**，一律通过 `index::store::read_cache` 读（先校验版本，再按文件大小限制 bincode 解码）。**改了缓存结构就把 `CACHE_VERSION` 加一**。曾经因为旧缓存被新结构解码，Windows 启动时申请了几 EB 内存直接崩溃。
 - 缓存位置：项目索引 `<gitdir>/junction/index.bin`；外部库索引 `~/.cache/Junction/libraries`（跨项目共享）；jar 源码解压到 `~/.cache/Junction/sources`。外部库文件以绝对路径作为键，只读打开。
-- **vendor 补丁**：`vendor/` 下的改动都标有 `Junction:` 注释（对话框居中不滑入、通知右下角堆叠且最旧在下、通知 10 秒自动消失、分层彩色图标、按钮尺寸和悬停色等）。升级 gpui-kit 时要从 registry 重新拷贝这些 crate，再把 `Junction:` 的改动补回去。
+- **vendor 补丁**：`vendor/` 下的改动都标有 `Junction:` 注释（对话框居中不滑入、通知右下角堆叠且最旧在下、通知 10 秒自动消失、分层彩色图标、按钮尺寸和悬停色、补全插入 import 和括号内光标、Ctrl+Space 手动补全 `trigger_completion`、导出 Diagnostic 等）。升级 gpui-kit 时要从 registry 重新拷贝这些 crate，再把 `Junction:` 的改动补回去。
 - **图标**：全部用 IntelliJ 官方新 UI SVG（Apache 2.0，见 `assets/as-icons/NOTICE.md`）。源文件放 `assets/as-icons/src/<名字>.svg` 和 `<名字>_dark.svg`（从 `JetBrains/intellij-community` 的 `platform/icons/src/expui/...` 取），然后 `python3 tools/as_icons.py` 重新生成 `assets/as-icons/gen` 和 `src/ui/as_icons_gen.rs`。代码里 `use crate::ui::as_icons as icons;`，直接传 `icons::X`。不要再引入别的图标库。
 - **语法高亮**：`src/ui/file_editor.rs` 的 `language_for(path)` 映射扩展名，`grammars()` 注册自己的查询覆盖工具包自带的（工具包里 Swift、CMake、proto、C# 等的查询是空的）。**`.v` 是 V 语言，不是 Verilog**。测试 `every_language_highlights` 检查每种语言的关键字颜色，加语言时要加样例。
 - **多仓库**：`model.rs` 里每个根一个 `RootState`；`route(path)` / `run_in_roots` 按文件所在的根执行 git；Log 合并各根历史（`git::log::merge_logs`）。判断提交属于哪个根要用 `rev-parse <hash>^{commit}`，因为 `rev-parse --verify <40位hex>` 对任意 40 位哈希都返回成功。macOS 上 `git rev-parse --show-toplevel` 返回真实路径，而 `RootState.path` 是拼出来的，有符号链接时路径比较会失败（疑似导致 mac 上切换仓库后 Project 树不刷新，未确认）。
@@ -197,7 +208,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 
 | # | 功能 | 现状 | 实现思路 |
 |---|---|---|---|
-| 1 | 编辑器语言智能：补全、实时报错、Alt+Enter 快速修复、自动 import、Reformat、参数提示 | `src/index/lsp.rs` 只用了 definition / references / hover | 接 LSP 的 completion / diagnostics / codeAction / formatting / signatureHelp。Kotlin 用 JetBrains 官方 kotlin-lsp，Java 用 jdtls，C/C++ clangd，Rust rust-analyzer |
+| 1 | 编辑器语言智能 | ✅ 2026-10-14 按“A+B”方案完成：索引补全 + 自动 import + 语法错误 + 保存后编译报错（FEATURES.md 第 14 节）。不常驻 Kotlin 语言服务（省 1–2 GB）；kotlin-lsp 以后可做成设置里的可选开关 | 剩 Alt+Enter 快速修复、Reformat、参数提示 |
 | 2 | Gradle Sync | 无；外部库靠扫 `~/.gradle/caches` 推断 | Gradle Tooling API 或 init script 导出模块 / 源集 / 依赖 classpath；只在 build 文件变化时同步，打开项目不同步 |
 | 3 | Build + Run | 无（设备选择已在 Device Manager） | 运行配置 = Gradle 任务 + `adb install` + `am start`；Build 工具窗口解析 Kotlin/Java/AAPT 错误并可点击跳源码；Build Variants |
 | 4 | Logcat | 无 | `adb logcat -v long` 流式解析；AS 的过滤语法（`package:mine level:error tag:...`）；虚拟列表；堆栈链接跳源码；多设备标签 |
@@ -244,5 +255,5 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 ## 8. 接手建议
 
 1. 先编译运行一次，打开一个 Android 项目和一个多仓库目录，对照 FEATURES.md 熟悉界面。
-2. 下一步最有价值的是 6.2 的 P0：**LSP 补全 / 诊断**（在现有 `src/index/lsp.rs` 上扩展）和 **Logcat**（复用 `src/android/adb.rs`），然后是 Build + Run 和 Gradle Sync。
+2. 下一步按维护者定的顺序做 6.2：轻量 Gradle Sync → Build + Run → Logcat → Problems / TODO / Local History → Android 资源 → Gradle 文件辅助 → 测试 → Debugger。新功能按第 4 节的 Clean 架构分层写。
 3. 动 `vendor/`、索引缓存结构、`release.yml` 之前，先读第 4 节对应的坑。

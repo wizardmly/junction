@@ -198,6 +198,42 @@ impl InputBaseState<EditorMode> {
             trigger_character: Some(query),
         };
 
+        self.request_completions(provider, new_offset, completion_context, window, cx);
+    }
+
+    /// Junction: asks for completions at the caret without typing (IntelliJ's
+    /// Ctrl+Space), for the word the caret ends.
+    pub fn trigger_completion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(provider) = self.extras.lsp.completion_provider.clone() else {
+            return;
+        };
+        let offset = self.cursor();
+        let before = self.text.slice(0..offset).to_string();
+        let start = before
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .last()
+            .map_or(offset, |(i, _)| i);
+        let query = before[start..].to_string();
+        let completion = &mut self.extras.context_menu_content.completion;
+        completion.trigger_start_offset = Some(start);
+        completion.query.clone_from(&query);
+        let context = CompletionContext {
+            trigger_kind: lsp_types::CompletionTriggerKind::INVOKED,
+            trigger_character: Some(query),
+        };
+        self.request_completions(provider, offset, context, window, cx);
+    }
+
+    fn request_completions(
+        &mut self,
+        provider: Rc<dyn CompletionProvider>,
+        new_offset: usize,
+        completion_context: CompletionContext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let provider_responses =
             provider.completions(&self.text, new_offset, completion_context, window, cx);
         self.extras.context_menu_task = cx.spawn_in(window, async move |editor, cx| {

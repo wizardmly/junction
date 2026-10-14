@@ -39,6 +39,8 @@ pub use gpui_base::input::{
     WrappingIndent,
 };
 pub use gpui_base::input::{EditorMode, InputMode, InputModeKind, TextareaMode};
+// Junction: the host highlights problems (syntax and compiler errors).
+pub use gpui_base::input::{Diagnostic, DiagnosticSeverity};
 #[doc(hidden)]
 mod editor;
 mod group;

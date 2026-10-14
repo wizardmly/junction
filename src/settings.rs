@@ -83,6 +83,10 @@ pub struct Settings {
     pub commit_show_ignored: bool,
     /// Languages & Frameworks: ask language servers first for navigation.
     pub use_language_servers: bool,
+    /// Build, Execution, Deployment › Compiler › "Compile on save": saving
+    /// a Kotlin or Java file compiles its Gradle module in the background
+    /// and marks the compiler's errors in the editor.
+    pub compile_on_save: bool,
     /// Per-language server command overrides (`rust` → `rust-analyzer`);
     /// "off" disables that language's server.
     pub language_servers: std::collections::BTreeMap<String, String>,
@@ -366,6 +370,7 @@ impl Default for Settings {
             sync_branches: true,
             update_dialog: true,
             use_language_servers: true,
+            compile_on_save: true,
             language_servers: Default::default(),
             auto_update_on_push_rejected: false,
             warn_crlf: true,
@@ -594,6 +599,7 @@ impl Settings {
                 "sync_branches" => settings.sync_branches = flag,
                 "update_dialog" => settings.update_dialog = flag,
                 "use_language_servers" => settings.use_language_servers = flag,
+                "compile_on_save" => settings.compile_on_save = flag,
                 key if key.starts_with("lsp_") => {
                     if !value.is_empty() {
                         settings.language_servers.insert(key["lsp_".len()..].to_owned(), value.to_owned());
@@ -673,6 +679,7 @@ impl Settings {
             self.update_dialog
         ));
         text.push_str(&format!("use_language_servers={}\nlarge_file_mb={}\n", self.use_language_servers, self.large_file_mb));
+        text.push_str(&format!("compile_on_save={}\n", self.compile_on_save));
         text.push_str(&format!(
             "non_modal_commit={}\ncherry_pick_suffix={}\ncommit_push_dialog={}\ncommit_push_dialog_protected_only={}\neditor_font_size={}\n",
             self.non_modal_commit,

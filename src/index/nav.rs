@@ -322,6 +322,18 @@ fn qualifier(text: &str, start: usize) -> Option<(String, usize)> {
     (!word.is_empty() && !word.starts_with(|c: char| c.is_ascii_digit())).then(|| (word.to_owned(), begin))
 }
 
+/// For completion at `start` (where the typed name begins): `None` when no
+/// member is being accessed, otherwise the receiver's type and its
+/// supertypes, nearest first (empty when unknown).
+pub fn member_receivers(index: &ProjectIndex, lang: Lang, text: &str, start: usize) -> Option<Vec<String>> {
+    let (q, at) = qualifier(text, start)?;
+    if let Some(receiver) = receiver_type(index, lang, text, start, 0) {
+        let supers: Vec<String> = index.symbols_named(&receiver).filter(|(_, _, s)| s.kind.is_type()).flat_map(|(_, _, s)| s.supers.clone()).collect();
+        return Some(std::iter::once(receiver).chain(super::special::super_chain(index, &supers)).collect());
+    }
+    Some(if q.chars().all(is_word_char) && start - at <= q.len() + 3 { super::special::receivers(index, lang, text, &q, at) } else { Vec::new() })
+}
+
 /// The declared type of the receiver of the member at `start`, from the
 /// file's own declarations or a member's declaration line. A best effort:
 /// the index has no types.

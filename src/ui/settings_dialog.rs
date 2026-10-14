@@ -43,6 +43,7 @@ enum Page {
     GitHub,
     GitLab,
     Languages,
+    Compiler,
 }
 
 /// The page tree: a group and its pages; a group with no pages is a page itself.
@@ -51,6 +52,7 @@ const TREE: &[(&str, Option<Page>, &[Page])] = &[
     ("Keymap", Some(Page::Keymap), &[]),
     ("Editor", None, &[Page::EditorGeneral, Page::EditorFont, Page::GutterIcons, Page::EditorTabs]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
+    ("Build, Execution, Deployment", None, &[Page::Compiler]),
     ("Languages & Frameworks", Some(Page::Languages), &[]),
 ];
 
@@ -69,6 +71,7 @@ impl Page {
             Page::GitHub => "GitHub",
             Page::GitLab => "GitLab",
             Page::Languages => "Languages & Frameworks",
+            Page::Compiler => "Compiler",
         }
     }
 
@@ -123,6 +126,7 @@ impl Page {
             Page::GitHub => &["Account", "Token", "Log In", "Pull Request"],
             Page::GitLab => &["Account", "Token", "Log In", "Merge Request"],
             Page::Languages => &["Language server", "LSP", "Code Navigation", "Go to Declaration"],
+            Page::Compiler => &["Compile on save", "Gradle", "Build", "Compiler errors"],
         }
     }
 
@@ -322,6 +326,7 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.git_executable = from.git_executable.clone();
     to.use_credential_helper = from.use_credential_helper;
     to.use_language_servers = from.use_language_servers;
+    to.compile_on_save = from.compile_on_save;
     to.language_servers = from.language_servers.clone();
     to.diff.soft_wrap = from.diff.soft_wrap;
     to.diff.show_line_numbers = from.diff.show_line_numbers;
@@ -451,6 +456,17 @@ impl Render for SettingsView {
                 Page::GitHub => self.github.clone().into_any_element(),
                 Page::GitLab => self.gitlab.clone().into_any_element(),
                 Page::Languages => self.languages(&query, cx).into_any_element(),
+                Page::Compiler => v_flex()
+                    .gap_2()
+                    .child(self.check(
+                        "settings-compile-on-save",
+                        "Compile on save (Kotlin and Java files: the Gradle module compiles in the background and its errors show in the editor)",
+                        self.draft.compile_on_save,
+                        &query,
+                        |s, v| s.compile_on_save = v,
+                        cx,
+                    ))
+                    .into_any_element(),
             }
         };
         h_flex()

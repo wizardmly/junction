@@ -302,6 +302,23 @@
 | 预览标签（Project 窗口 ⋮ › Behavior › Enable Preview Tab） | M8 | ✅（单击文件在一个斜体标签里预览，下一次预览替换它；编辑、双击文件或双击标签后变成普通标签） |
 | 多行标签、双击最大化编辑器 | — | ❌ 未做 |
 
+## 14. 编辑器代码分析（2026-10-14）
+
+不常驻 Kotlin 语言服务：补全来自自有索引，报错来自 tree-sitter 语法检查和保存后的真实编译。代码按 Clean 架构分层（`src/domain`、`src/usecase`、`src/infra`、`src/ui`）。
+
+| 功能 | 状态 |
+|---|---|
+| 自动弹出补全：输入标识符或 `.` 后弹出；Ctrl+Space 手动补全 | ✅（候选：局部变量和参数、当前类成员、文件内声明、项目和外部库的类/函数/常量、关键字；IntelliJ 驼峰匹配（`gTV` → `getTextView`），同等匹配下按 局部 > 成员 > 本文件 > 项目 > 库 排序） |
+| `x.` 后列出接收者类型及其父类型的成员 | ✅（类型来自声明 `val x: T` / `T x` / `x = T(`、`this.`、`super.`；推断不出类型时，输入字母后按名字列出所有成员） |
+| 自动 import（Kotlin / Java）：选中的类或 Kotlin 顶层函数未导入时，按字母顺序插入 import | ✅（已导入、同包、`java.lang` / `kotlin.*` 默认包、同名类已导入时不加） |
+| 函数补全插入 `name()`，光标放在括号内；后面已有 `(` 时只补名字 | ✅（索引没有参数信息，无参函数光标也在括号内） |
+| 语法错误红色波浪线，悬停显示原因（`'}' expected` 等），输入停顿 0.3 秒后更新 | ✅（tree-sitter 的 ERROR / MISSING 节点；类型错误等语义错误由下一行的编译给出） |
+| 保存 Kotlin / Java 文件后，后台编译所在 Gradle 模块，编译器的错误和警告标到编辑器（悬停看信息），修好再保存后消失 | ✅（Android 模块 `:m:compileDebugJavaWithJavac`，JVM 模块 `:m:classes`；用项目的 gradlew；状态栏显示 Compiling…；同一模块编译中再次保存会排队一次；Gradle 守护进程闲置 15 分钟退出；编译失败但没有编译器信息时（构建脚本错、没有 JDK）弹通知显示 Gradle 输出末尾。没有 JAVA_HOME 且 PATH 里没有 java 时，使用 Android Studio 自带的 jbr） |
+| Settings › Build, Execution, Deployment › Compiler › Compile on save | ✅（默认开） |
+| Problems 工具窗口、快速修复（Alt+Enter）、Reformat、参数提示 | ❌ 未做 |
+
+Linux 实测：mytv-android（补全、自动 import、语法错误），最小 Kotlin/JVM Gradle 项目（保存后编译：冷启动约 40 秒，热编译约 1.5 秒）。Windows / macOS 需真机验证。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。

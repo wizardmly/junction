@@ -7,6 +7,8 @@ pub mod branches_popup;
 pub mod changes_view;
 pub mod clone_dialog;
 pub mod commit_view;
+pub mod compile_service;
+pub mod completion;
 pub mod common;
 pub mod dialogs;
 pub mod diff_panes;

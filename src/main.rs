@@ -7,6 +7,9 @@
 #[cfg(test)]
 mod bench;
 mod bookmarks;
+mod domain;
+mod infra;
+mod usecase;
 mod askpass;
 mod assets;
 mod android;

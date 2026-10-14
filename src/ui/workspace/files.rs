@@ -92,6 +92,10 @@ impl Workspace {
                 let path = path.clone();
                 self.recently_changed.touch(&path);
                 self.code_index.update(cx, |index, cx| index.refresh_file(&path, cx));
+                if let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) {
+                    let file = if std::path::Path::new(&path).is_absolute() { std::path::PathBuf::from(&path) } else { root.join(&path) };
+                    crate::ui::compile_service::CompileService::global(cx).update(cx, |service, cx| service.file_saved(file, cx));
+                }
             }
             FileEditorEvent::CreateGist { name, content } => {
                 crate::ui::github_dialogs::create_gist(self.model.clone(), vec![(name.clone(), content.clone())], window, cx)

@@ -422,11 +422,12 @@ impl Workspace {
     /// caret, line separator, encoding, indent and the branch on the right.
     pub(super) fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
+        let compiling = crate::ui::compile_service::CompileService::global(cx).read(cx).status();
         let model = self.model.read(cx);
         let project = model.project_root().or_else(|| model.repository().map(|r| r.root())).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
         let file = self.editor().map(|e| e.read(cx).path().to_owned());
         let branch = branches_popup::branch_widget_label(model);
-        let task = model.busy().map(|b| format!("{b}…")).or_else(|| model.is_loading().then(|| "Refreshing VCS history…".to_owned()));
+        let task = model.busy().map(|b| format!("{b}…")).or_else(|| model.is_loading().then(|| "Refreshing VCS history…".to_owned())).or(compiling);
         let index = self.code_index.read(cx).summary();
         let compact = Settings::get(cx).compact;
         // Breadcrumbs: project › folders › file.

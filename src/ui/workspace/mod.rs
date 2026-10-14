@@ -363,6 +363,7 @@ impl Workspace {
         };
         project.update(cx, |p, cx| p.set_menu(model.clone(), file_actions.clone(), cx));
         commit.update(cx, |c, _| c.set_file_actions(file_actions));
+        let compile = crate::ui::compile_service::CompileService::global(cx);
         let mut subscriptions = vec![
             cx.subscribe_in(&log, window, |this, _, event: &LogEvent, window, cx| {
                 // The Log's paths are the selected commit's root's own.
@@ -526,6 +527,17 @@ impl Workspace {
                 }
             }),
             cx.subscribe(&code_index, |_, _, _: &IndexEvent, cx| cx.notify()),
+            // Compile on save: its status in the status bar, and a failure
+            // the compiler did not explain (a broken build script, no JDK).
+            cx.subscribe_in(&compile, window, |_, _, event, window, cx| {
+                use crate::ui::compile_service::CompileEvent;
+                match event {
+                    CompileEvent::Failed { module, output } => {
+                        window.push_notification(Notification::error(output.clone()).title(format!("Compilation of {module} failed")), cx)
+                    }
+                    CompileEvent::Status | CompileEvent::ProblemsChanged => cx.notify(),
+                }
+            }),
             cx.subscribe(&stash, |this, _, event: &StashEvent, cx| match event {
                 StashEvent::OpenDiff(source) => this.open_diff(source.clone(), cx),
             }),

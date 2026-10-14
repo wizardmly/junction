@@ -189,9 +189,35 @@ impl InputBaseState<EditorMode> {
             new_text.clone_from(insert_text);
             range = range.end..range.end;
         }
+        // Junction: also apply the item's additional edits (an auto-import),
+        // which all lie before the completed word, and keep the caret after it.
+        let extra: Vec<(Range<usize>, String)> = item
+            .additional_text_edits
+            .iter()
+            .flatten()
+            .map(|e| (self.text.position_to_offset(&e.range.start)..self.text.position_to_offset(&e.range.end), e.new_text.clone()))
+            .filter(|(r, _)| r.end <= range.start)
+            .collect();
+        // Junction: a snippet's `$0` marks where the caret goes (inside the
+        // parentheses of a completed call).
+        let caret = if item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET) {
+            new_text.find("$0").inspect(|_| new_text = new_text.replacen("$0", "", 1))
+        } else {
+            None
+        };
         self.completion_inserting = true;
-        let range = self.range_to_utf16(&range);
-        self.replace_text_in_range_silent(Some(range), &new_text, window, cx);
+        let end = range.start + caret.unwrap_or(new_text.len());
+        let utf16 = self.range_to_utf16(&range);
+        self.replace_text_in_range_silent(Some(utf16), &new_text, window, cx);
+        if !extra.is_empty() || caret.is_some() {
+            let mut shift = 0isize;
+            for (r, text) in extra.iter().rev() {
+                let utf16 = self.range_to_utf16(r);
+                self.replace_text_in_range_silent(Some(utf16), text, window, cx);
+                shift += text.len() as isize - r.len() as isize;
+            }
+            self.move_to((end as isize + shift) as usize, None, cx);
+        }
         self.completion_inserting = false;
         self.focus(window, cx);
     }

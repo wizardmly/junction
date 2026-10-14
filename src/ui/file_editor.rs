@@ -4,6 +4,8 @@
 //! actions: Show History for Selection, Annotate, Show Current Revision,
 //! Rollback Lines.
 
+mod problems;
+
 use std::cell::RefCell;
 use crate::ui::as_icons as icons;
 use std::ops::Range;
@@ -67,7 +69,8 @@ actions!(
         ConfigureSoftWraps,
         ConfigureGutterIcons,
         CopyAbsolutePath,
-        CopyPathReference
+        CopyPathReference,
+        TriggerCompletion
     ]
 );
 
@@ -95,6 +98,8 @@ pub fn init(cx: &mut gpui_kit::App) {
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
         KeyBinding::new(if cfg!(target_os = "macos") { "f3" } else { "f11" }, ToggleBookmark, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "alt-f3" } else { "ctrl-f11" }, ToggleBookmarkWithMnemonic, Some(CONTEXT)),
+        // Basic completion: Ctrl+Space (⌃Space).
+        KeyBinding::new("ctrl-space", TriggerCompletion, Some("FileEditor > Input")),
         // Copy Absolute Path: Ctrl+Shift+C (⇧⌘C).
         KeyBinding::new("secondary-shift-c", CopyAbsolutePath, Some(CONTEXT)),
         // IntelliJ: Ctrl+R replaces (Ctrl+F finds, from the editor itself), F3 / Shift+F3 step.
@@ -353,6 +358,11 @@ pub struct FileEditor {
     /// edit, without blocking the editor.
     notice: Option<String>,
     code_index: Option<Entity<CodeIndex>>,
+    /// Syntax errors of the current text, and the compiler's problems from
+    /// the last build (see `problems.rs`).
+    syntax_problems: Vec<crate::domain::diagnostics::Problem>,
+    compiler_problems: Vec<crate::domain::diagnostics::Problem>,
+    problems_task: Option<gpui_kit::Task<()>>,
     /// Annotate with Git Blame, shown in the gutter.
     annotation: Option<Annotation>,
     annotation_task: Option<gpui_kit::Task<()>>,
@@ -588,6 +598,7 @@ impl FileEditor {
                 this.notice = None;
                 this.update_markers(cx);
                 this.update_hierarchy(true, cx);
+                this.update_problems(true, cx);
                 this.follow_bookmarks(cx);
                 // The annotations follow the edit (new lines: Not Committed Yet).
                 if this.annotation.is_some() {
@@ -622,6 +633,9 @@ impl FileEditor {
             error,
             notice: None,
             code_index: None,
+            syntax_problems: Vec::new(),
+            compiler_problems: Vec::new(),
+            problems_task: None,
             annotation: None,
             annotation_task: None,
             hover_card: None,
@@ -732,11 +746,18 @@ impl FileEditor {
             editor.update(cx, |_, cx| cx.emit(event)).ok();
             true
         });
+        let editable = !self.read_only();
+        let completion = crate::ui::completion::IndexCompletion::new(index.clone(), self.path.clone());
         self.state.update(cx, |state, cx| {
             let lsp = state.lsp_mut();
             lsp.definition_provider = Some(provider.clone());
             lsp.hover_provider = Some(provider);
             lsp.show_document = Some(show);
+            if editable {
+                lsp.completion_provider = Some(completion);
+                // Room for the package at the right, as IntelliJ shows it.
+                lsp.completion_menu.max_width = px(560.);
+            }
             cx.notify();
         });
         if !self.read_only() {
@@ -750,6 +771,8 @@ impl FileEditor {
         }));
         self.code_index = Some(index);
         self.update_hierarchy(false, cx);
+        self.update_problems(false, cx);
+        self.attach_compiler(cx);
     }
 
     /// The gutter's implementation markers, recomputed from the text after
@@ -1759,6 +1782,11 @@ impl Render for FileEditor {
             .on_action(cx.listener(|this, _: &PreviousChange, window, cx| this.go_to_change(false, window, cx)))
             .on_action(cx.listener(Self::rollback_lines))
             .on_action(cx.listener(Self::delete_line))
+            .on_action(cx.listener(|this, _: &TriggerCompletion, window, cx| {
+                if !this.read_only() {
+                    this.state.update(cx, |state, cx| state.trigger_completion(window, cx));
+                }
+            }))
             .on_action(cx.listener(|this, _: &CloseFindBar, window, cx| {
                 if this.find.read(cx).open {
                     this.find.update(cx, |f, cx| f.close(window, cx));
