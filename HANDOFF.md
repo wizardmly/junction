@@ -164,21 +164,14 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | `JUNCTION_BENCH*`、`JUNCTION_PROBE*` | 基准和探针参数（见 `src/bench.rs`） |
 | `JUNCTION_ASKPASS`、`JUNCTION_REBASE_TODO` | 内部使用：git 凭据回调、交互式 rebase 编辑器 |
 
-## 5. 工作方式（维护者的要求）
+## 5. 参与贡献
 
-- **语言**：文档、报告、和维护者沟通用中文；代码注释和提交信息用英文（看 `git log` 的风格：一句话说清用户能看到的变化，常以 “… like Android Studio” 结尾）。
-- **对齐 AS 是第一原则**：维护者会拿 AS 截图逐项对比。新功能先查清 AS 的行为、文案、图标、快捷键，再实现。
-- **改完就提交并推到 master**（会自动发版）。推之前：`cargo build` 无新增警告、`cargo test` 全过、涉及的界面在 Xvfb 下截图核对过。
-- **提交作者**：仓库历史统一为 `wizardmly <2900429+wizardmly@users.noreply.github.com>`，不签名，**提交信息里不加任何 trailer**（不要 Co-Authored-By 之类）。新检出后先执行：
-
-  ```sh
-  git config user.name wizardmly
-  git config user.email 2900429+wizardmly@users.noreply.github.com
-  git config commit.gpgsign false
-  ```
-
+- **流程**：fork 仓库，从 master 拉分支开发，提 Pull Request 到 `wizardmly/junction` 的 master。用你自己的 git 身份提交即可。master 每次合入都会触发 GitHub Actions 自动发版，所以 PR 合入前要能编译、测试通过。
+- **提 PR 前自查**：`cargo build` 无新增警告、`cargo test` 全过；改了界面的，附上截图（和 AS 同一界面的截图放在一起对比最好）。
+- **对齐 AS 是第一原则**：新功能先查清 AS 的行为、文案、图标、快捷键，再实现；PR 里说明对照的是 AS 的哪个界面。
+- **语言**：文档用中文；代码注释和提交信息用英文（参考 `git log` 的风格：一句话说清用户能看到的变化，常以 “… like Android Studio” 结尾）。
 - 功能完成后同步更新 `docs/FEATURES.md` 对应行（✅ / 🟡 / ❌ 加括号说明细节），Diff/Merge 相关更新 `docs/DIFF_MERGE.md`。
-- 只在 Linux 测过的功能，在 FEATURES.md 里注明“Linux 实测，Windows 需真机验证”。
+- 只在部分平台测过的功能，在 FEATURES.md 里注明测过的平台，例如“Linux 实测，Windows 需真机验证”。
 
 ## 6. 还没做的事（待办清单）
 
