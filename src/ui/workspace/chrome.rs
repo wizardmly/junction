@@ -225,6 +225,7 @@ impl Workspace {
             .map(|r| (r.behind, r.ahead))
             .filter(|&(behind, ahead)| behind > 0 || ahead > 0);
         let busy = model.busy().map(str::to_owned);
+        let gradle = crate::ui::sync_service::SyncService::global(cx).read(cx).has_builds();
         let entity = cx.entity();
         let popup = self.branches_popup.clone();
         TitleBar::new().child(
@@ -352,6 +353,13 @@ impl Workspace {
                 .child(tool_button("tb-fetch", icons::VCS_FETCH, "Fetch").on_click(cx.listener(
                     |this, _, _, cx| this.model.update(cx, |m, cx| m.fetch_all(cx)),
                 )))
+                // Android Studio's, for Gradle projects.
+                .when(gradle, |el| {
+                    el.child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border)).child(
+                        tool_button("tb-gradle-sync", icons::GRADLE, if cfg!(target_os = "macos") { "Sync Project with Gradle Files  ⇧⌘O" } else { "Sync Project with Gradle Files  Ctrl+Shift+O" })
+                            .on_click(|_, _, cx| crate::ui::sync_service::SyncService::global(cx).update(cx, |s, cx| s.sync_all(cx))),
+                    )
+                })
                 // The new UI's right corner: Search Everywhere and Settings.
                 .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
                 .child(tool_button("tb-search", icons::SEARCH, "Search Everywhere  Double Shift").on_click(cx.listener(
@@ -423,11 +431,12 @@ impl Workspace {
     pub(super) fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let compiling = crate::ui::compile_service::CompileService::global(cx).read(cx).status();
+        let syncing = crate::ui::sync_service::SyncService::global(cx).read(cx).status();
         let model = self.model.read(cx);
         let project = model.project_root().or_else(|| model.repository().map(|r| r.root())).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
         let file = self.editor().map(|e| e.read(cx).path().to_owned());
         let branch = branches_popup::branch_widget_label(model);
-        let task = model.busy().map(|b| format!("{b}…")).or_else(|| model.is_loading().then(|| "Refreshing VCS history…".to_owned())).or(compiling);
+        let task = model.busy().map(|b| format!("{b}…")).or_else(|| model.is_loading().then(|| "Refreshing VCS history…".to_owned())).or(syncing).or(compiling);
         let index = self.code_index.read(cx).summary();
         let compact = Settings::get(cx).compact;
         // Breadcrumbs: project › folders › file.

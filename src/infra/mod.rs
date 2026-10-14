@@ -2,5 +2,6 @@
 //! code index, Gradle, adb.
 
 pub mod gradle;
+pub mod gradle_sync;
 pub mod index_code_model;
 pub mod tree_sitter_syntax;

@@ -319,6 +319,23 @@
 
 Linux 实测：mytv-android（补全、自动 import、语法错误），最小 Kotlin/JVM Gradle 项目（保存后编译：冷启动约 40 秒，热编译约 1.5 秒）。Windows / macOS 需真机验证。
 
+## 15. Gradle Sync（2026-10-14）
+
+Android Studio 的 Sync Project with Gradle Files，轻量版：只让 Gradle 解析各模块的编译 classpath（缺的依赖和源码包顺带下载），外部库按解析结果精确列出并只重新索引变了的库；不重建项目模型，打开项目不自动同步。代码：`src/domain/sync.rs`、`src/usecase/sync_project.rs`、`src/infra/gradle_sync.rs`、`src/ui/sync_service.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| Sync Project with Gradle Files：File 菜单、标题栏 Gradle 按钮（仅 Gradle 项目显示）、Ctrl+Shift+O（macOS ⇧⌘O） | ✅ |
+| 打开项目时：build 文件和上次同步时一样则什么都不做；变了（或从未同步过）弹 “Gradle files have changed since last project sync…” 通知，带 Sync Now / Ignore these changes | ✅ |
+| 项目打开期间 build 文件变了（切分支、pull、外部编辑后刷新）自动同步；同步失败后文件不再变化时不自动重试 | ✅（build 文件 = build.gradle(.kts)、settings.gradle(.kts)、gradle.properties、*.versions.toml、gradle-wrapper.properties） |
+| 解析范围：每个模块的 debug 变体 Compile / UnitTest / AndroidTest classpath，JVM 模块 compileClasspath / testCompileClasspath；同时请求源码包 | ✅（init script 加 `junctionSync` 任务，关闭 configuration cache 运行；included build 跟主 build 一起） |
+| 同步成功后 External Libraries 按解析结果精确列出（含传递依赖的确切版本），未同步过时仍用读 build 文件 + Gradle 缓存的推断 | ✅（记录在 `~/.cache/Junction/gradle-sync/`） |
+| 解析不到的依赖弹警告通知 “Failed to resolve: g:a:v”；同步失败弹错误通知并显示 Gradle 输出，保留上次的库列表 | ✅ |
+| 状态栏显示 Gradle sync running… | ✅ |
+| Build 工具窗口的 Sync 标签页、Build Variants 选变体、模块 / 源集模型 | ❌ 未做（变体固定 debug，Build Variants 随第 3 项做） |
+
+Linux 实测：最小 Kotlin/JVM 项目（okhttp、gson、一个不存在的依赖）：打开时提示、Sync Now 后库从 8 个变 10 个、切到加了 retrofit 的分支后自动同步变 11 个、build 脚本写坏时报错且库不变。热守护进程下同步 1–3 秒。Windows / macOS 和真实 Android 项目需真机验证。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。

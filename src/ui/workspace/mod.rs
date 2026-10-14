@@ -96,7 +96,8 @@ actions!(
         GoToBookmark7,
         GoToBookmark8,
         GoToBookmark9,
-        GoToBookmark0
+        GoToBookmark0,
+        SyncProjectWithGradleFiles
     ]
 );
 
@@ -161,6 +162,8 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-1" } else { "alt-1" }, ToggleProjectWindow, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-3" } else { "alt-3" }, ToggleFindWindow, Some(CONTEXT)),
         KeyBinding::new("alt-f12", ToggleTerminalWindow, Some(CONTEXT)),
+        // Android Studio's.
+        KeyBinding::new("secondary-shift-o", SyncProjectWithGradleFiles, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-0" } else { "alt-0" }, ToggleCommitWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-f12", HideAllToolWindows, Some(CONTEXT)),
         KeyBinding::new("shift-escape", HideActiveToolWindow, Some(CONTEXT)),
@@ -364,6 +367,7 @@ impl Workspace {
         project.update(cx, |p, cx| p.set_menu(model.clone(), file_actions.clone(), cx));
         commit.update(cx, |c, _| c.set_file_actions(file_actions));
         let compile = crate::ui::compile_service::CompileService::global(cx);
+        let sync = crate::ui::sync_service::SyncService::global(cx);
         let mut subscriptions = vec![
             cx.subscribe_in(&log, window, |this, _, event: &LogEvent, window, cx| {
                 // The Log's paths are the selected commit's root's own.
@@ -526,7 +530,19 @@ impl Workspace {
                     this.open_preview(event.0.clone(), window, cx);
                 }
             }),
-            cx.subscribe(&code_index, |_, _, _: &IndexEvent, cx| cx.notify()),
+            cx.subscribe(&code_index, |_, index, event: &IndexEvent, cx| {
+                if matches!(event, IndexEvent::Changed) {
+                    // Sync Project with Gradle Files follows the build files.
+                    let index = index.read(cx);
+                    if let Some(root) = index.root().map(std::path::Path::to_path_buf) {
+                        let files: Vec<String> = index.index.read().map(|i| i.all_files.iter().filter(|f| crate::domain::sync::is_build_file(f)).cloned().collect()).unwrap_or_default();
+                        let sync = crate::ui::sync_service::SyncService::global(cx);
+                        sync.update(cx, |s, cx| s.files_changed(root, files, cx));
+                    }
+                }
+                cx.notify()
+            }),
+            cx.subscribe_in(&sync, window, |this, _, event, window, cx| this.on_sync_event(event, window, cx)),
             // Compile on save: its status in the status bar, and a failure
             // the compiler did not explain (a broken build script, no JDK).
             cx.subscribe_in(&compile, window, |_, _, event, window, cx| {
@@ -813,6 +829,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::select_in_project))
             .on_action(cx.listener(Self::toggle_find))
             .on_action(cx.listener(|this, _: &ToggleTerminalWindow, window, cx| this.shortcut_tool(ToolWindow::Terminal, window, cx)))
+            .on_action(cx.listener(|_, _: &SyncProjectWithGradleFiles, _, cx| crate::ui::sync_service::SyncService::global(cx).update(cx, |s, cx| s.sync_all(cx))))
             .on_action(cx.listener(|this, _: &ToggleDeviceManagerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceManager, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleRunningDevicesWindow, window, cx| this.shortcut_tool(ToolWindow::RunningDevices, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleDeviceExplorerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceExplorer, window, cx)))

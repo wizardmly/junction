@@ -234,7 +234,7 @@ fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
 }
 
-fn stable_hash(text: &str) -> u64 {
+pub fn stable_hash(text: &str) -> u64 {
     // FNV-1a: stable across runs and builds, unlike std's hasher.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for b in text.bytes() {
@@ -429,6 +429,13 @@ pub fn inputs_stamp(root: &Path, files: &[String]) -> u64 {
             for side in ["Cargo.lock", ".dart_tool/package_config.json", "local.properties", "node_modules", ".build/checkouts", "Pods", "go.sum"] {
                 add(&dir.join(side));
             }
+        }
+    }
+    // A sync's record: the libraries follow it.
+    for file in files.iter().filter(|f| f.ends_with("settings.gradle") || f.ends_with("settings.gradle.kts")) {
+        let dir = root.join(file).parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf());
+        if let Some(record) = crate::infra::gradle_sync::record_path(&dir) {
+            add(&record);
         }
     }
     add(&root.join("compile_commands.json"));
@@ -932,10 +939,21 @@ fn gradle(ctx: &Project, out: &mut Vec<Library>) {
     if !files.is_dir() {
         return;
     }
-    let mut queue: VecDeque<(String, String, Option<String>)> = declared_coordinates(&texts).into();
-    if ctx.has(&[Lang::Kotlin]) {
-        queue.push_back(("org.jetbrains.kotlin".into(), "kotlin-stdlib".into(), kotlin_version(&texts)));
-    }
+    // After Sync Project with Gradle Files: exactly what Gradle resolved.
+    // Before: the coordinates in the build files and their dependencies'
+    // metadata in the cache.
+    let synced = synced_coordinates(ctx);
+    let follow = synced.is_none();
+    let mut queue: VecDeque<(String, String, Option<String>)> = match synced {
+        Some(list) => list.into(),
+        None => {
+            let mut queue: VecDeque<_> = declared_coordinates(&texts).into();
+            if ctx.has(&[Lang::Kotlin]) {
+                queue.push_back(("org.jetbrains.kotlin".into(), "kotlin-stdlib".into(), kotlin_version(&texts)));
+            }
+            queue
+        }
+    };
     let mut seen: HashSet<(String, String)> = HashSet::new();
     while let Some((group, artifact, version)) = queue.pop_front() {
         if seen.len() >= MAX_ARTIFACTS || !seen.insert((group.clone(), artifact.clone())) {
@@ -967,6 +985,9 @@ fn gradle(ctx: &Project, out: &mut Vec<Library>) {
                 out.push(Library { root_label: Some(jar), ..lib(format!("Gradle: {group}:{artifact}:{version}{suffix}"), "Gradle", root) });
             }
         }
+        if !follow {
+            continue;
+        }
         // Follow the dependencies: Gradle module metadata, else the POM.
         let deps = match named(".module") {
             Some(module) => module_dependencies(&read(&module)),
@@ -974,6 +995,21 @@ fn gradle(ctx: &Project, out: &mut Vec<Library>) {
         };
         queue.extend(deps);
     }
+}
+
+/// Every build's synced dependencies; none unless all builds were synced.
+fn synced_coordinates(ctx: &Project) -> Option<Vec<(String, String, Option<String>)>> {
+    use crate::domain::sync::ProjectSync as _;
+    let sync = crate::infra::gradle_sync::GradleSync;
+    let roots = sync.build_roots(ctx.root, ctx.files);
+    if roots.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for root in roots {
+        out.extend(sync.load(&root)?.dependencies.into_iter().map(|c| (c.group, c.artifact, Some(c.version))));
+    }
+    Some(out)
 }
 
 /// `group:artifact:version` strings in build files, and version-catalog libraries.

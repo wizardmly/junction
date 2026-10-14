@@ -54,3 +54,4 @@ pub mod workspace;
 pub mod wifi_pairing;
 pub mod worktree_view;
 pub mod submodule_view;
+pub mod sync_service;

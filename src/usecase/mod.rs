@@ -4,3 +4,4 @@
 pub mod check_syntax;
 pub mod compile_on_save;
 pub mod complete_code;
+pub mod sync_project;

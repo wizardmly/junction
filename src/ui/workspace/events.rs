@@ -314,6 +314,54 @@ impl Workspace {
         }
     }
 
+    /// Sync Project with Gradle Files: Android Studio's "Gradle files have
+    /// changed" offer, its failure and unresolved dependencies, and the
+    /// libraries re-indexed from a finished sync.
+    pub(super) fn on_sync_event(&mut self, event: &crate::ui::sync_service::SyncEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::sync_service::{SyncEvent, SyncService};
+        match event {
+            SyncEvent::Offer { root } => {
+                let root = root.clone();
+                let notification = Notification::warning("Gradle files have changed since last project sync. A project sync may be necessary for the IDE to work properly.")
+                    .title("Gradle Sync")
+                    .autohide(false)
+                    .content(move |_, _, cx| {
+                        let palette = cx.palette().clone();
+                        let note = cx.entity();
+                        let (sync_note, ignore_note, root) = (note.clone(), note, root.clone());
+                        let link = |id: &'static str, label: &'static str| div().id(id).text_sm().text_color(palette.link).cursor_pointer().child(label);
+                        h_flex()
+                            .gap_4()
+                            .child(link("sync-now", "Sync Now").on_click(move |_, window, cx| {
+                                let root = root.clone();
+                                SyncService::global(cx).update(cx, |s, cx| s.sync(root, cx));
+                                sync_note.update(cx, |n, cx| n.dismiss(window, cx));
+                            }))
+                            .child(link("sync-ignore", "Ignore these changes").on_click(move |_, window, cx| {
+                                ignore_note.update(cx, |n, cx| n.dismiss(window, cx));
+                            }))
+                            .into_any_element()
+                    });
+                window.push_notification(notification, cx);
+            }
+            SyncEvent::Status => cx.notify(),
+            SyncEvent::Finished { build, seconds, unresolved } => {
+                self.code_index.update(cx, |index, cx| index.refresh(cx));
+                if !unresolved.is_empty() {
+                    let mut message = unresolved.iter().take(8).cloned().collect::<Vec<_>>().join("\n");
+                    if unresolved.len() > 8 {
+                        message.push_str(&format!("\n… and {} more", unresolved.len() - 8));
+                    }
+                    window.push_notification(Notification::warning(message).title(format!("Gradle sync of {build} finished in {seconds} s with warnings")), cx);
+                }
+            }
+            SyncEvent::Failed { build, output } => {
+                let message = format!("Gradle project sync failed. Basic functionality (e.g. editing, debugging) will not work properly.\n{output}");
+                window.push_notification(Notification::error(message).title(format!("Gradle sync of {build} failed")).autohide(false), cx);
+            }
+        }
+    }
+
     /// IntelliJ's "Unregistered VCS roots detected" balloon: Add Roots,
     /// Configure (Directory Mappings) or Ignore.
     fn offer_unregistered_roots(&mut self, roots: Vec<std::path::PathBuf>, window: &mut Window, cx: &mut Context<Self>) {

@@ -25,22 +25,8 @@ impl BuildSystem for GradleBuild {
 
     fn compile(&self, module: &Module, variant: &str) -> CompileReport {
         let task = module.compile_task(variant);
-        let mut command = gradle_command(&module.build_root);
-        command
-            .arg(&task)
-            .arg("--console=plain")
-            .arg(format!("-Dorg.gradle.daemon.idletimeout={DAEMON_IDLE_MS}"))
-            .current_dir(&module.build_root);
-        if std::env::var_os("JAVA_HOME").is_none() {
-            if let Some(jbr) = studio_jbr() {
-                command.env("JAVA_HOME", jbr);
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
+        let mut command = gradle(&module.build_root);
+        command.arg(&task);
         match command.output() {
             Ok(out) => {
                 let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -64,6 +50,25 @@ fn is_android(dir: &Path) -> bool {
     }
     let text = ["build.gradle.kts", "build.gradle"].iter().find_map(|n| std::fs::read_to_string(dir.join(n)).ok()).unwrap_or_default();
     text.contains("com.android.") || text.contains("plugins.android.") || text.contains("android {")
+}
+
+/// Gradle for a build: its wrapper, plain output, the daemon's idle
+/// timeout, Android Studio's runtime when no Java is set up, no console
+/// window on Windows.
+pub fn gradle(build_root: &Path) -> Command {
+    let mut command = gradle_command(build_root);
+    command.arg("--console=plain").arg(format!("-Dorg.gradle.daemon.idletimeout={DAEMON_IDLE_MS}")).current_dir(build_root);
+    if std::env::var_os("JAVA_HOME").is_none() {
+        if let Some(jbr) = studio_jbr() {
+            command.env("JAVA_HOME", jbr);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
 }
 
 /// The wrapper in the build root, else `gradle` on the PATH.

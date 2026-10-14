@@ -49,6 +49,8 @@ pub(super) fn main_menu(
                 menu
             })
             .separator()
+            .menu("Sync Project with Gradle Files", Box::new(SyncProjectWithGradleFiles))
+            .separator()
             .menu("Settings…", Box::new(OpenSettings))
             .separator()
             .item(PopupMenuItem::new("Exit").on_click(|_, _, cx| cx.quit()))
