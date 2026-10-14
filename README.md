@@ -30,7 +30,7 @@ xattr -dr com.apple.quarantine "/Applications/Junction Studio.app"
 
 ## 功能
 
-完整对照表和进度见 [docs/FEATURES.md](docs/FEATURES.md)。
+完整对照表和进度见 [docs/FEATURES.md](docs/FEATURES.md)。接手开发请先读 [HANDOFF.md](HANDOFF.md)（交接文档：现状、编译测试、代码结构、约定和待办）。
 
 - **Git 工具窗口 › Log**：分支树（收藏、按 `/` 分组、搜索）、彩色提交图（长边折叠为箭头）、Branch / User / Date / Paths 过滤、提交详情与变更树、GPG/SSH 签名信息、完整的提交右键菜单（Cherry-Pick、Reset、Revert、Reword、Fixup、Squash、Drop、Interactively Rebase from Here、Push All up to Here…）。
 - **Commit 工具窗口**：非模态提交、Changelist 或暂存区模式、按 chunk / 按行部分提交、Amend、提交信息拼写检查和历史、Shelf 与 Stash。

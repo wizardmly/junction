@@ -30,7 +30,7 @@ You can also build it on your own Mac as described below; a locally built app do
 
 ## Features
 
-The full checklist with status is in [docs/FEATURES.md](docs/FEATURES.md) (Chinese).
+The full checklist with status is in [docs/FEATURES.md](docs/FEATURES.md) (Chinese). To pick up development, start with [HANDOFF.md](HANDOFF.md) (handoff notes in Chinese: status, build and test, code layout, conventions, open work).
 
 - **Git tool window › Log**: branch tree (favorites, `/` folders, speed search), colored commit graph with long edges collapsed into arrows, Branch / User / Date / Paths filters, commit details and changed-file tree, GPG/SSH signature status, and the full commit context menu (Cherry-Pick, Reset, Revert, Reword, Fixup, Squash, Drop, Interactively Rebase from Here, Push All up to Here…).
 - **Commit tool window**: non-modal commit, changelists or staging area, partial commits by chunk or by line, Amend, commit message spell check and history, Shelf and Stash.
