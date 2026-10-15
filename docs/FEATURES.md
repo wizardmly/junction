@@ -573,6 +573,19 @@ Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+
 
 Linux 实测（Xvfb）：Kotlin 函数体里输入 `iter` 按 Tab 得到 `for (i in iterable) {}`，`iterable` 加框；输入 `items`、Tab、输入 `n`、Tab 后光标进入循环体；`soutv` 展开后把 `expr` 改成 `n`，字符串里的副本同步变成 `n`。
 
+## 30. Generate（2026-10-15）
+
+| 功能 | 状态 |
+|---|---|
+| Kotlin / Java 类里 Alt+Insert（macOS ⌘N），或右键 Generate…、Find Action：AS 的 “Generate” 弹窗；Kotlin 列 equals() and hashCode()、toString()（`object` 只有 toString()；interface / enum / annotation 不可用），Java 列 Constructor、Getter、Setter、Getter and Setter、equals() and hashCode()、toString() | ✅ |
+| 选字段对话框（IntelliJ 的标题，默认全选，Select All / Select None）；Java 的 equals / toString / 构造函数不含 static 字段，Getter / Setter 只列还没有的（final 字段无 setter），没有可选时提示 IntelliJ 的 “No fields without getter were found” 等 | ✅ |
+| 生成代码照 IntelliJ 默认模板：Kotlin 的 singleExpr.vm（`"Person(name='$name', age=$age)"`，数组 `contentToString()`）、defaultEquals.vm / defaultHashcode.vm（`javaClass` 比较、`other as Person`、基本类型属性排前、数组 `contentEquals` / `contentHashCode`）；Java 的 DefaultConcatMember.vm、java.util.Objects 版 equals / hashCode（`Double.compare`、`Objects.deepEquals`、`Objects.hash`）、defaultGetter / defaultSetter（boolean 用 `is`）、构造函数 | ✅ |
+| 插在光标所在成员之后（否则类体开头），空行隔开；没有类体的 Kotlin 类补上 `{ }`；Java 需要的 `java.util.Objects` / `Arrays` import 自动加上 | ✅ |
+| 已有 toString() / equals() 时先问 IntelliJ 的 “… are already defined for class … Do you want to delete them and proceed?”，确认后替换 | ✅ |
+| Override / Implement Methods（需要父类成员）、Kotlin Secondary Constructor、Test…、equals 的父类 `super.equals`、toString 模板切换 | ❌ 未做 |
+
+Linux 实测（Xvfb）：Java 类 Alt+Insert → equals() and hashCode()，生成 Objects 版 equals / hashCode 并加上两个 import；toString() 生成后再生成一次，弹出 “Method 'String toString()' is already defined…”，确认后替换；Kotlin 类 `Point(val x: Int, val y: Int)` 生成与 IntelliJ 一致的 equals / hashCode。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。

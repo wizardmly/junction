@@ -12,6 +12,7 @@ pub mod debugger;
 pub mod dependency_versions;
 pub mod diagnostics;
 pub mod expression;
+pub mod generate;
 pub mod imports;
 pub mod introduce_variable;
 pub mod live_templates;

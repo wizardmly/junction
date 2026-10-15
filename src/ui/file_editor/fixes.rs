@@ -45,6 +45,8 @@ pub(super) enum Choice {
     /// An expression to introduce a variable or constant for (its text,
     /// one line).
     Expression(String, crate::ui::introduce_dialog::Introduce),
+    /// Generate: what to generate.
+    Generate(crate::domain::generate::Member),
     /// Surround With: the surrounder, numbered as in IntelliJ's popup;
     /// the range is the lines or the expression it wraps.
     Surround(crate::domain::surround::Surrounder, char, bool),
@@ -127,6 +129,16 @@ impl FileEditor {
         cx.notify();
     }
 
+    /// Generate's popup at the caret.
+    pub(super) fn choose_generate(&mut self, items: Vec<crate::domain::generate::Member>, window: &mut Window, cx: &mut Context<Self>) {
+        let cursor = self.state.read(cx).cursor();
+        let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
+        let items = items.into_iter().map(|m| (cursor..cursor, Choice::Generate(m))).collect();
+        self.context_actions = Some(ContextActions { items, title: Some("Generate"), selected: 0, at, caret: None });
+        window.focus(&self.context_focus, cx);
+        cx.notify();
+    }
+
     fn close_context_actions(&mut self, _: &CloseContextActions, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(caret) = self.context_actions.take().and_then(|p| p.caret) {
             self.state.update(cx, |state, cx| state.set_selected_range(caret, cx));
@@ -152,6 +164,7 @@ impl FileEditor {
                 state.replace(&fix.replacement, window, cx);
             }),
             Choice::Surround(surrounder, _, expression) => self.surround(surrounder, range, expression, window, cx),
+            Choice::Generate(member) => self.generate_member(member, window, cx),
             Choice::Expression(_, kind) => {
                 if let Some(caret) = popup.caret {
                     self.state.update(cx, |state, cx| state.set_selected_range(caret, cx));
@@ -196,6 +209,7 @@ impl FileEditor {
                 Choice::Fix(fix) => (Some(icons::INTENTION_BULB), fix.title.clone()),
                 Choice::Expression(text, _) => (None, text.clone()),
                 Choice::Surround(s, key, _) => (None, format!("{key}. {}", s.label())),
+                Choice::Generate(m) => (None, m.label().to_owned()),
             };
             h_flex()
                 .id(("context-action", ix))

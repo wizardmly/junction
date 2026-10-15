@@ -6,6 +6,7 @@
 
 mod breakpoints;
 mod fixes;
+mod generate;
 mod templates;
 pub use breakpoints::RunToCursor;
 mod previews;
@@ -60,6 +61,7 @@ actions!(
         IntroduceVariable,
         IntroduceConstant,
         SurroundWith,
+        Generate,
         FindNext,
         FindPrevious,
         CloseChangePopup,
@@ -114,6 +116,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-v" } else { "ctrl-alt-v" }, IntroduceVariable, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-c" } else { "ctrl-alt-c" }, IntroduceConstant, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-t" } else { "ctrl-alt-t" }, SurroundWith, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-n" } else { "alt-insert" }, Generate, Some(CONTEXT)),
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
         KeyBinding::new(if cfg!(target_os = "macos") { "f3" } else { "f11" }, ToggleBookmark, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "alt-f3" } else { "ctrl-f11" }, ToggleBookmarkWithMnemonic, Some(CONTEXT)),
@@ -2099,6 +2102,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::introduce_variable_action))
             .on_action(cx.listener(Self::introduce_constant_action))
             .on_action(cx.listener(Self::surround_with_action))
+            .on_action(cx.listener(|this, _: &Generate, window, cx| this.generate(window, cx)))
             .on_action(cx.listener(Self::find_next))
             .on_action(cx.listener(|this, _: &OpenFind, window, cx| this.open_find(false, window, cx)))
             .on_action(cx.listener(|this, _: &OpenReplace, window, cx| this.open_find(true, window, cx)))
@@ -2224,6 +2228,7 @@ impl Render for FileEditor {
                                 .separator()
                                 .menu("Go to Declaration", Box::new(GotoDeclaration))
                                 .menu("Find Usages", Box::new(FindUsages))
+                                .menu_with_disabled("Generate…", read_only, Box::new(Generate))
                                 .menu_with_disabled("Surround With…", read_only, Box::new(SurroundWith))
                                 .submenu(
                                     "Refactor",
