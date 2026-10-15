@@ -41,60 +41,69 @@ impl BuildSystem for GradleBuild {
 
 impl TaskRunner for GradleBuild {
     fn run_tasks(&self, build_root: &Path, tasks: &[String], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
-        use std::io::BufRead as _;
         let mut command = gradle(build_root);
-        command.args(tasks).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(e) => {
-                line(&format!("Could not run Gradle: {e}"));
-                return BuildResult::default();
-            }
-        };
-        // Both pipes, a line at a time, in the order they arrive.
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
-        let pipes: Vec<Box<dyn std::io::Read + Send>> = vec![Box::new(child.stdout.take().unwrap()), Box::new(child.stderr.take().unwrap())];
-        for pipe in pipes {
-            let tx = tx.clone();
-            std::thread::spawn(move || {
-                for l in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-                    if tx.send(l).is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-        drop(tx);
-        let mut output = String::new();
-        let mut stopped_at: Option<std::time::Instant> = None;
-        loop {
-            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(l) => {
-                    line(&l);
-                    output.push_str(&l);
-                    output.push('\n');
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            }
-            // Stopping the client cancels the build in the daemon.
-            if stopped_at.is_none() && cancelled() {
-                stopped_at = Some(std::time::Instant::now());
-                kill_tree(&mut child);
-            }
-            // Something it started may still hold the pipes.
-            if stopped_at.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(3)) {
-                break;
-            }
-        }
-        let was_cancelled = stopped_at.is_some();
-        let succeeded = child.wait().is_ok_and(|s| s.success()) && !was_cancelled;
+        command.args(tasks);
+        let (succeeded, was_cancelled, output) = stream(command, line, cancelled);
         BuildResult { succeeded, cancelled: was_cancelled, problems: parse_output(&output) }
     }
 
     fn apk_output(&self, module: &ModuleInfo, variant: &str) -> Option<ApkOutput> {
         apk_output(&module.dir.join("build/outputs/apk"), variant)
     }
+}
+
+/// Runs Gradle, passing its output (both pipes, in the order lines
+/// arrive) a line at a time; stops it when `cancelled` says so. Whether it
+/// succeeded, whether it was stopped, and the whole output.
+pub fn stream(mut command: Command, line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> (bool, bool, String) {
+    use std::io::BufRead as _;
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let message = format!("Could not run Gradle: {e}");
+            line(&message);
+            return (false, false, message);
+        }
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let pipes: Vec<Box<dyn std::io::Read + Send>> = vec![Box::new(child.stdout.take().unwrap()), Box::new(child.stderr.take().unwrap())];
+    for pipe in pipes {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for l in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+                if tx.send(l).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    drop(tx);
+    let mut output = String::new();
+    let mut stopped_at: Option<std::time::Instant> = None;
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(l) => {
+                line(&l);
+                output.push_str(&l);
+                output.push('\n');
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        // Stopping the client cancels the build in the daemon.
+        if stopped_at.is_none() && cancelled() {
+            stopped_at = Some(std::time::Instant::now());
+            kill_tree(&mut child);
+        }
+        // Something it started may still hold the pipes.
+        if stopped_at.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(3)) {
+            break;
+        }
+    }
+    let was_cancelled = stopped_at.is_some();
+    let succeeded = child.wait().is_ok_and(|s| s.success()) && !was_cancelled;
+    (succeeded, was_cancelled, output)
 }
 
 /// Kills Gradle's client: on Windows `cmd` and the wrapper's java under it.

@@ -123,6 +123,11 @@ pub const GUTTER_IMPLEMENTED_METHOD: AsIcon = AsIcon { light: &[("as/gutter-impl
 pub const GUTTER_IMPLEMENTING_METHOD: AsIcon = AsIcon { light: &[("as/gutter-implementing-method.l0.svg", 0xf2fcf3ff), ("as/gutter-implementing-method.l1.svg", 0x208a3cff), ("as/gutter-implementing-method.l2.svg", 0xdb3b4bff), ("as/gutter-implementing-method.l3.svg", 0x208a3cff)], dark: &[("as/gutter-implementing-method.d0.svg", 0x253627ff), ("as/gutter-implementing-method.d1.svg", 0x57965cff), ("as/gutter-implementing-method.d2.svg", 0xdb5c5cff), ("as/gutter-implementing-method.d3.svg", 0x57965cff)] };
 pub const GUTTER_OVERRIDEN_METHOD: AsIcon = AsIcon { light: &[("as/gutter-overriden-method.l0.svg", 0xedf3ffff), ("as/gutter-overriden-method.l1.svg", 0x6c707eff), ("as/gutter-overriden-method.l2.svg", 0x3574f0ff)], dark: &[("as/gutter-overriden-method.d0.svg", 0x25324dff), ("as/gutter-overriden-method.d1.svg", 0xced0d6ff), ("as/gutter-overriden-method.d2.svg", 0x548af7ff)] };
 pub const GUTTER_OVERRIDING_METHOD: AsIcon = AsIcon { light: &[("as/gutter-overriding-method.l0.svg", 0xedf3ffff), ("as/gutter-overriding-method.l1.svg", 0x3574f0ff), ("as/gutter-overriding-method.l2.svg", 0xdb3b4bff), ("as/gutter-overriding-method.l3.svg", 0x3574f0ff)], dark: &[("as/gutter-overriding-method.d0.svg", 0x25324dff), ("as/gutter-overriding-method.d1.svg", 0x548af7ff), ("as/gutter-overriding-method.d2.svg", 0xdb5c5cff), ("as/gutter-overriding-method.d3.svg", 0x548af7ff)] };
+pub const GUTTER_RUN: AsIcon = AsIcon { light: &[("as/gutter-run.l0.svg", 0xf2fcf3ff), ("as/gutter-run.l1.svg", 0x208a3cff)], dark: &[("as/gutter-run.d0.svg", 0x253627ff), ("as/gutter-run.d1.svg", 0x57965cff)] };
+pub const GUTTER_RUN_CLASS: AsIcon = AsIcon { light: &[("as/gutter-run-class.l0.svg", 0xf2fcf3ff), ("as/gutter-run-class.l1.svg", 0x208a3cff)], dark: &[("as/gutter-run-class.d0.svg", 0x253627ff), ("as/gutter-run-class.d1.svg", 0x57965cff)] };
+pub const GUTTER_RUN_ERROR: AsIcon = AsIcon { light: &[("as/gutter-run-error.l0.svg", 0xe55765ff), ("as/gutter-run-error.l1.svg", 0xffffffff), ("as/gutter-run-error.l2.svg", 0x208a3cff), ("as/gutter-run-error.l3.svg", 0xf2fcf3ff)], dark: &[("as/gutter-run-error.d0.svg", 0xe55765ff), ("as/gutter-run-error.d1.svg", 0xffffffff), ("as/gutter-run-error.d2.svg", 0x57965cff), ("as/gutter-run-error.d3.svg", 0x253627ff)] };
+pub const GUTTER_RUN_FAILED: AsIcon = AsIcon { light: &[("as/gutter-run-failed.l0.svg", 0xffaf0fff), ("as/gutter-run-failed.l1.svg", 0x208a3cff), ("as/gutter-run-failed.l2.svg", 0xf2fcf3ff), ("as/gutter-run-failed.l3.svg", 0xffffffff)], dark: &[("as/gutter-run-failed.d0.svg", 0xf2c55cff), ("as/gutter-run-failed.d1.svg", 0x57965cff), ("as/gutter-run-failed.d2.svg", 0x253627ff), ("as/gutter-run-failed.d3.svg", 0x2b2d30ff)] };
+pub const GUTTER_RUN_SUCCESS: AsIcon = AsIcon { light: &[("as/gutter-run-success.l0.svg", 0x55a76aff), ("as/gutter-run-success.l1.svg", 0xffffffff), ("as/gutter-run-success.l2.svg", 0x208a3cff), ("as/gutter-run-success.l3.svg", 0xf2fcf3ff)], dark: &[("as/gutter-run-success.d0.svg", 0x57965cff), ("as/gutter-run-success.d1.svg", 0xffffffff), ("as/gutter-run-success.d2.svg", 0x57965cff), ("as/gutter-run-success.d3.svg", 0x253627ff)] };
 pub const HELP: AsIcon = AsIcon { light: &[("as/help.l0.svg", 0x6c707eff)], dark: &[("as/help.d0.svg", 0xced0d6ff)] };
 pub const HIDE: AsIcon = AsIcon { light: &[("as/hide.l0.svg", 0x6c707eff)], dark: &[("as/hide.d0.svg", 0xced0d6ff)] };
 pub const HIGHLIGHTING: AsIcon = AsIcon { light: &[("as/highlighting.l0.svg", 0xebecf0ff), ("as/highlighting.l1.svg", 0x6c707eff)], dark: &[("as/highlighting.d0.svg", 0x43454aff), ("as/highlighting.d1.svg", 0xced0d6ff)] };
@@ -136,6 +141,7 @@ pub const INTENTION_BULB: AsIcon = AsIcon { light: &[("as/intention-bulb.l0.svg"
 pub const INTERFACE: AsIcon = AsIcon { light: &[("as/interface.l0.svg", 0xf2fcf3ff), ("as/interface.l1.svg", 0x208a3cff)], dark: &[("as/interface.d0.svg", 0x253627ff), ("as/interface.d1.svg", 0x57965cff)] };
 pub const INTERFACE_KOTLIN: AsIcon = AsIcon { light: &[("as/interface-kotlin.l0.svg", 0xf2fcf3ff), ("as/interface-kotlin.l1.svg", 0x208a3cff), ("as/interface-kotlin.l2.svg", 0xfaf5ffff), ("as/interface-kotlin.l3.svg", 0x834df0ff), ("as/interface-kotlin.l4.svg", 0x208a3cff)], dark: &[("as/interface-kotlin.d0.svg", 0x253627ff), ("as/interface-kotlin.d1.svg", 0x57965cff), ("as/interface-kotlin.d2.svg", 0x2f2936ff), ("as/interface-kotlin.d3.svg", 0xa571e6ff), ("as/interface-kotlin.d4.svg", 0x57965cff)] };
 pub const JDK: AsIcon = AsIcon { light: &[("as/jdk.l0.svg", 0xebecf0ff), ("as/jdk.l1.svg", 0x6c707eff), ("as/jdk.l2.svg", 0xe7effdff), ("as/jdk.l3.svg", 0x3574f0ff)], dark: &[("as/jdk.d0.svg", 0x43454aff), ("as/jdk.d1.svg", 0xced0d6ff), ("as/jdk.d2.svg", 0x25324dff), ("as/jdk.d3.svg", 0x548af7ff)] };
+pub const JUNIT: AsIcon = AsIcon { light: &[("as/junit.l0.svg", 0xfff7f7ff), ("as/junit.l1.svg", 0xdb3b4bff), ("as/junit.l2.svg", 0xf2fcf3ff), ("as/junit.l3.svg", 0x208a3cff)], dark: &[("as/junit.d0.svg", 0x5e3838ff), ("as/junit.d1.svg", 0xdb5c5cff), ("as/junit.d2.svg", 0x375239ff), ("as/junit.d3.svg", 0x57965cff)] };
 pub const KILL_PROCESS: AsIcon = AsIcon { light: &[("as/kill-process.l0.svg", 0xdb3b4bff)], dark: &[("as/kill-process.d0.svg", 0xdb5c5cff)] };
 pub const KOTLIN: AsIcon = AsIcon { light: &[("as/kotlin.l0.svg", 0xfaf5ffff), ("as/kotlin.l1.svg", 0x834df0ff)], dark: &[("as/kotlin.d0.svg", 0x2f2936ff), ("as/kotlin.d1.svg", 0xa571e6ff)] };
 pub const KOTLIN_SCRIPT: AsIcon = AsIcon { light: &[("as/kotlin-script.l0.svg", 0x6c707eff), ("as/kotlin-script.l1.svg", 0xfaf5ffff), ("as/kotlin-script.l2.svg", 0x834df0ff)], dark: &[("as/kotlin-script.d0.svg", 0xced0d6ff), ("as/kotlin-script.d1.svg", 0x2f2936ff), ("as/kotlin-script.d2.svg", 0xa571e6ff)] };
@@ -188,6 +194,7 @@ pub const RELATED: AsIcon = AsIcon { light: &[("as/related.l0.svg", 0x6c707eff)]
 pub const REMOVE: AsIcon = AsIcon { light: &[("as/remove.l0.svg", 0x6c707eff)], dark: &[("as/remove.d0.svg", 0xced0d6ff)] };
 pub const REPLACE: AsIcon = AsIcon { light: &[("as/replace.l0.svg", 0x6c707eff)], dark: &[("as/replace.d0.svg", 0xced0d6ff)] };
 pub const RERUN: AsIcon = AsIcon { light: &[("as/rerun.l0.svg", 0x208a3cff), ("as/rerun.l1.svg", 0xf2fcf3ff), ("as/rerun.l2.svg", 0x6c707eff)], dark: &[("as/rerun.d0.svg", 0x57965cff), ("as/rerun.d1.svg", 0x253627ff), ("as/rerun.d2.svg", 0xced0d6ff)] };
+pub const RERUN_FAILED_TESTS: AsIcon = AsIcon { light: &[("as/rerun-failed-tests.l0.svg", 0xe55765ff), ("as/rerun-failed-tests.l1.svg", 0xffffffff), ("as/rerun-failed-tests.l2.svg", 0x6c707eff)], dark: &[("as/rerun-failed-tests.d0.svg", 0xdb5c5cff), ("as/rerun-failed-tests.d1.svg", 0xffffffff), ("as/rerun-failed-tests.d2.svg", 0xced0d6ff)] };
 pub const RESET: AsIcon = AsIcon { light: &[("as/reset.l0.svg", 0x6c707eff)], dark: &[("as/reset.d0.svg", 0xced0d6ff)] };
 pub const RESOURCES_ROOT: AsIcon = AsIcon { light: &[("as/resources-root.l0.svg", 0xebecf0ff), ("as/resources-root.l1.svg", 0x6c707eff), ("as/resources-root.l2.svg", 0xe66d17ff)], dark: &[("as/resources-root.d0.svg", 0x43454aff), ("as/resources-root.d1.svg", 0xced0d6ff), ("as/resources-root.d2.svg", 0xf2c55cff)] };
 pub const RESUME: AsIcon = AsIcon { light: &[("as/resume.l0.svg", 0xf2fcf3ff), ("as/resume.l1.svg", 0x208a3cff), ("as/resume.l2.svg", 0xf2fcf3ff), ("as/resume.l3.svg", 0x208a3cff)], dark: &[("as/resume.d0.svg", 0x253627ff), ("as/resume.d1.svg", 0x57965cff), ("as/resume.d2.svg", 0x253627ff), ("as/resume.d3.svg", 0x57965cff)] };
@@ -199,7 +206,11 @@ pub const SELECT_ALL: AsIcon = AsIcon { light: &[("as/select-all.l0.svg", 0x6c70
 pub const SETTINGS: AsIcon = AsIcon { light: &[("as/settings.l0.svg", 0x6c707eff)], dark: &[("as/settings.d0.svg", 0xced0d6ff)] };
 pub const SHOW: AsIcon = AsIcon { light: &[("as/show.l0.svg", 0x6c707eff)], dark: &[("as/show.d0.svg", 0xced0d6ff)] };
 pub const SHOW_AS_TREE: AsIcon = AsIcon { light: &[("as/show-as-tree.l0.svg", 0x6c707eff)], dark: &[("as/show-as-tree.d0.svg", 0xced0d6ff)] };
+pub const SHOW_IGNORED: AsIcon = AsIcon { light: &[("as/show-ignored.l0.svg", 0x6c707eff)], dark: &[("as/show-ignored.d0.svg", 0xced0d6ff)] };
+pub const SHOW_PASSED: AsIcon = AsIcon { light: &[("as/show-passed.l0.svg", 0x6c707eff)], dark: &[("as/show-passed.d0.svg", 0xced0d6ff)] };
 pub const SOFT_WRAP: AsIcon = AsIcon { light: &[("as/soft-wrap.l0.svg", 0x6c707eff)], dark: &[("as/soft-wrap.d0.svg", 0xced0d6ff)] };
+pub const SORT_ALPHABETICALLY: AsIcon = AsIcon { light: &[("as/sort-alphabetically.l0.svg", 0x6c707eff)], dark: &[("as/sort-alphabetically.d0.svg", 0xced0d6ff)] };
+pub const SORT_BY_DURATION: AsIcon = AsIcon { light: &[("as/sort-by-duration.l0.svg", 0x6c707eff)], dark: &[("as/sort-by-duration.d0.svg", 0xced0d6ff)] };
 pub const SOURCE_ROOT: AsIcon = AsIcon { light: &[("as/source-root.l0.svg", 0xe7effdff), ("as/source-root.l1.svg", 0x3574f0ff)], dark: &[("as/source-root.d0.svg", 0x25324dff), ("as/source-root.d1.svg", 0x548af7ff)] };
 pub const SPLIT: AsIcon = AsIcon { light: &[("as/split.l0.svg", 0x6c707eff)], dark: &[("as/split.d0.svg", 0xced0d6ff)] };
 pub const SPLIT_HORIZONTALLY: AsIcon = AsIcon { light: &[("as/split-horizontally.l0.svg", 0x6c707eff)], dark: &[("as/split-horizontally.d0.svg", 0xced0d6ff)] };
@@ -220,7 +231,16 @@ pub const SWAP_PANELS: AsIcon = AsIcon { light: &[("as/swap-panels.l0.svg", 0x6c
 pub const SYMLINK: AsIcon = AsIcon { light: &[("as/symlink.l0.svg", 0x6c707eff)], dark: &[("as/symlink.d0.svg", 0xced0d6ff)] };
 pub const SYNCHRONIZE_SCROLLING: AsIcon = AsIcon { light: &[("as/synchronize-scrolling.l0.svg", 0x3574f0ff), ("as/synchronize-scrolling.l1.svg", 0x6c707eff)], dark: &[("as/synchronize-scrolling.d0.svg", 0x548af7ff), ("as/synchronize-scrolling.d1.svg", 0xced0d6ff)] };
 pub const TAG: AsIcon = AsIcon { light: &[("as/tag.l0.svg", 0x6c707eff)], dark: &[("as/tag.d0.svg", 0xced0d6ff)] };
+pub const TEST_ERROR: AsIcon = AsIcon { light: &[("as/test-error.l0.svg", 0xe55765ff)], dark: &[("as/test-error.d0.svg", 0xdb5c5cff)] };
+pub const TEST_FAILED: AsIcon = AsIcon { light: &[("as/test-failed.l0.svg", 0xffaf0fff)], dark: &[("as/test-failed.d0.svg", 0xf2c55cff)] };
+pub const TEST_IGNORED: AsIcon = AsIcon { light: &[("as/test-ignored.l0.svg", 0x818594ff)], dark: &[("as/test-ignored.d0.svg", 0xced0d6ff)] };
+pub const TEST_NOT_RUN: AsIcon = AsIcon { light: &[("as/test-not-run.l0.svg", 0x818594ff)], dark: &[("as/test-not-run.d0.svg", 0xced0d6ff)] };
+pub const TEST_PASSED: AsIcon = AsIcon { light: &[("as/test-passed.l0.svg", 0x55a76aff)], dark: &[("as/test-passed.d0.svg", 0x57965cff)] };
+pub const TEST_PAUSED: AsIcon = AsIcon { light: &[("as/test-paused.l0.svg", 0x818594ff)], dark: &[("as/test-paused.d0.svg", 0xced0d6ff)] };
 pub const TEST_ROOT: AsIcon = AsIcon { light: &[("as/test-root.l0.svg", 0xf2fcf3ff), ("as/test-root.l1.svg", 0x208a3cff)], dark: &[("as/test-root.d0.svg", 0x253627ff), ("as/test-root.d1.svg", 0x57965cff)] };
+pub const TEST_SKIPPED: AsIcon = AsIcon { light: &[("as/test-skipped.l0.svg", 0xffaf0fff)], dark: &[("as/test-skipped.d0.svg", 0xf2c55cff)] };
+pub const TEST_TERMINATED: AsIcon = AsIcon { light: &[("as/test-terminated.l0.svg", 0x818594ff)], dark: &[("as/test-terminated.d0.svg", 0xced0d6ff)] };
+pub const TEST_UNKNOWN: AsIcon = AsIcon { light: &[("as/test-unknown.l0.svg", 0x818594ff)], dark: &[("as/test-unknown.d0.svg", 0xced0d6ff)] };
 pub const TOGGLE_VISIBILITY: AsIcon = AsIcon { light: &[("as/toggle-visibility.l0.svg", 0x6c707eff)], dark: &[("as/toggle-visibility.d0.svg", 0xced0d6ff)] };
 pub const TW_BOOKMARKS: AsIcon = AsIcon { light: &[("as/tw-bookmarks.l0.svg", 0x6c707eff)], dark: &[("as/tw-bookmarks.d0.svg", 0xced0d6ff)] };
 pub const TW_BUILD: AsIcon = AsIcon { light: &[("as/tw-build.l0.svg", 0x6c707eff)], dark: &[("as/tw-build.d0.svg", 0xced0d6ff)] };
@@ -659,6 +679,38 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/gutter-overriding-method.d1.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriding-method.d1.svg")),
     ("as/gutter-overriding-method.d2.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriding-method.d2.svg")),
     ("as/gutter-overriding-method.d3.svg", include_bytes!("../../assets/as-icons/gen/gutter-overriding-method.d3.svg")),
+    ("as/gutter-run.l0.svg", include_bytes!("../../assets/as-icons/gen/gutter-run.l0.svg")),
+    ("as/gutter-run.l1.svg", include_bytes!("../../assets/as-icons/gen/gutter-run.l1.svg")),
+    ("as/gutter-run.d0.svg", include_bytes!("../../assets/as-icons/gen/gutter-run.d0.svg")),
+    ("as/gutter-run.d1.svg", include_bytes!("../../assets/as-icons/gen/gutter-run.d1.svg")),
+    ("as/gutter-run-class.l0.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-class.l0.svg")),
+    ("as/gutter-run-class.l1.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-class.l1.svg")),
+    ("as/gutter-run-class.d0.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-class.d0.svg")),
+    ("as/gutter-run-class.d1.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-class.d1.svg")),
+    ("as/gutter-run-error.l0.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-error.l0.svg")),
+    ("as/gutter-run-error.l1.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-error.l1.svg")),
+    ("as/gutter-run-error.l2.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-error.l2.svg")),
+    ("as/gutter-run-error.l3.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-error.l3.svg")),
+    ("as/gutter-run-error.d0.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-error.d0.svg")),
+    ("as/gutter-run-error.d1.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-error.d1.svg")),
+    ("as/gutter-run-error.d2.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-error.d2.svg")),
+    ("as/gutter-run-error.d3.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-error.d3.svg")),
+    ("as/gutter-run-failed.l0.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-failed.l0.svg")),
+    ("as/gutter-run-failed.l1.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-failed.l1.svg")),
+    ("as/gutter-run-failed.l2.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-failed.l2.svg")),
+    ("as/gutter-run-failed.l3.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-failed.l3.svg")),
+    ("as/gutter-run-failed.d0.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-failed.d0.svg")),
+    ("as/gutter-run-failed.d1.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-failed.d1.svg")),
+    ("as/gutter-run-failed.d2.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-failed.d2.svg")),
+    ("as/gutter-run-failed.d3.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-failed.d3.svg")),
+    ("as/gutter-run-success.l0.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-success.l0.svg")),
+    ("as/gutter-run-success.l1.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-success.l1.svg")),
+    ("as/gutter-run-success.l2.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-success.l2.svg")),
+    ("as/gutter-run-success.l3.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-success.l3.svg")),
+    ("as/gutter-run-success.d0.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-success.d0.svg")),
+    ("as/gutter-run-success.d1.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-success.d1.svg")),
+    ("as/gutter-run-success.d2.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-success.d2.svg")),
+    ("as/gutter-run-success.d3.svg", include_bytes!("../../assets/as-icons/gen/gutter-run-success.d3.svg")),
     ("as/help.l0.svg", include_bytes!("../../assets/as-icons/gen/help.l0.svg")),
     ("as/help.d0.svg", include_bytes!("../../assets/as-icons/gen/help.d0.svg")),
     ("as/hide.l0.svg", include_bytes!("../../assets/as-icons/gen/hide.l0.svg")),
@@ -707,6 +759,14 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/jdk.d1.svg", include_bytes!("../../assets/as-icons/gen/jdk.d1.svg")),
     ("as/jdk.d2.svg", include_bytes!("../../assets/as-icons/gen/jdk.d2.svg")),
     ("as/jdk.d3.svg", include_bytes!("../../assets/as-icons/gen/jdk.d3.svg")),
+    ("as/junit.l0.svg", include_bytes!("../../assets/as-icons/gen/junit.l0.svg")),
+    ("as/junit.l1.svg", include_bytes!("../../assets/as-icons/gen/junit.l1.svg")),
+    ("as/junit.l2.svg", include_bytes!("../../assets/as-icons/gen/junit.l2.svg")),
+    ("as/junit.l3.svg", include_bytes!("../../assets/as-icons/gen/junit.l3.svg")),
+    ("as/junit.d0.svg", include_bytes!("../../assets/as-icons/gen/junit.d0.svg")),
+    ("as/junit.d1.svg", include_bytes!("../../assets/as-icons/gen/junit.d1.svg")),
+    ("as/junit.d2.svg", include_bytes!("../../assets/as-icons/gen/junit.d2.svg")),
+    ("as/junit.d3.svg", include_bytes!("../../assets/as-icons/gen/junit.d3.svg")),
     ("as/kill-process.l0.svg", include_bytes!("../../assets/as-icons/gen/kill-process.l0.svg")),
     ("as/kill-process.d0.svg", include_bytes!("../../assets/as-icons/gen/kill-process.d0.svg")),
     ("as/kotlin.l0.svg", include_bytes!("../../assets/as-icons/gen/kotlin.l0.svg")),
@@ -863,6 +923,12 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/rerun.d0.svg", include_bytes!("../../assets/as-icons/gen/rerun.d0.svg")),
     ("as/rerun.d1.svg", include_bytes!("../../assets/as-icons/gen/rerun.d1.svg")),
     ("as/rerun.d2.svg", include_bytes!("../../assets/as-icons/gen/rerun.d2.svg")),
+    ("as/rerun-failed-tests.l0.svg", include_bytes!("../../assets/as-icons/gen/rerun-failed-tests.l0.svg")),
+    ("as/rerun-failed-tests.l1.svg", include_bytes!("../../assets/as-icons/gen/rerun-failed-tests.l1.svg")),
+    ("as/rerun-failed-tests.l2.svg", include_bytes!("../../assets/as-icons/gen/rerun-failed-tests.l2.svg")),
+    ("as/rerun-failed-tests.d0.svg", include_bytes!("../../assets/as-icons/gen/rerun-failed-tests.d0.svg")),
+    ("as/rerun-failed-tests.d1.svg", include_bytes!("../../assets/as-icons/gen/rerun-failed-tests.d1.svg")),
+    ("as/rerun-failed-tests.d2.svg", include_bytes!("../../assets/as-icons/gen/rerun-failed-tests.d2.svg")),
     ("as/reset.l0.svg", include_bytes!("../../assets/as-icons/gen/reset.l0.svg")),
     ("as/reset.d0.svg", include_bytes!("../../assets/as-icons/gen/reset.d0.svg")),
     ("as/resources-root.l0.svg", include_bytes!("../../assets/as-icons/gen/resources-root.l0.svg")),
@@ -897,8 +963,16 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/show.d0.svg", include_bytes!("../../assets/as-icons/gen/show.d0.svg")),
     ("as/show-as-tree.l0.svg", include_bytes!("../../assets/as-icons/gen/show-as-tree.l0.svg")),
     ("as/show-as-tree.d0.svg", include_bytes!("../../assets/as-icons/gen/show-as-tree.d0.svg")),
+    ("as/show-ignored.l0.svg", include_bytes!("../../assets/as-icons/gen/show-ignored.l0.svg")),
+    ("as/show-ignored.d0.svg", include_bytes!("../../assets/as-icons/gen/show-ignored.d0.svg")),
+    ("as/show-passed.l0.svg", include_bytes!("../../assets/as-icons/gen/show-passed.l0.svg")),
+    ("as/show-passed.d0.svg", include_bytes!("../../assets/as-icons/gen/show-passed.d0.svg")),
     ("as/soft-wrap.l0.svg", include_bytes!("../../assets/as-icons/gen/soft-wrap.l0.svg")),
     ("as/soft-wrap.d0.svg", include_bytes!("../../assets/as-icons/gen/soft-wrap.d0.svg")),
+    ("as/sort-alphabetically.l0.svg", include_bytes!("../../assets/as-icons/gen/sort-alphabetically.l0.svg")),
+    ("as/sort-alphabetically.d0.svg", include_bytes!("../../assets/as-icons/gen/sort-alphabetically.d0.svg")),
+    ("as/sort-by-duration.l0.svg", include_bytes!("../../assets/as-icons/gen/sort-by-duration.l0.svg")),
+    ("as/sort-by-duration.d0.svg", include_bytes!("../../assets/as-icons/gen/sort-by-duration.d0.svg")),
     ("as/source-root.l0.svg", include_bytes!("../../assets/as-icons/gen/source-root.l0.svg")),
     ("as/source-root.l1.svg", include_bytes!("../../assets/as-icons/gen/source-root.l1.svg")),
     ("as/source-root.d0.svg", include_bytes!("../../assets/as-icons/gen/source-root.d0.svg")),
@@ -955,10 +1029,28 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/synchronize-scrolling.d1.svg", include_bytes!("../../assets/as-icons/gen/synchronize-scrolling.d1.svg")),
     ("as/tag.l0.svg", include_bytes!("../../assets/as-icons/gen/tag.l0.svg")),
     ("as/tag.d0.svg", include_bytes!("../../assets/as-icons/gen/tag.d0.svg")),
+    ("as/test-error.l0.svg", include_bytes!("../../assets/as-icons/gen/test-error.l0.svg")),
+    ("as/test-error.d0.svg", include_bytes!("../../assets/as-icons/gen/test-error.d0.svg")),
+    ("as/test-failed.l0.svg", include_bytes!("../../assets/as-icons/gen/test-failed.l0.svg")),
+    ("as/test-failed.d0.svg", include_bytes!("../../assets/as-icons/gen/test-failed.d0.svg")),
+    ("as/test-ignored.l0.svg", include_bytes!("../../assets/as-icons/gen/test-ignored.l0.svg")),
+    ("as/test-ignored.d0.svg", include_bytes!("../../assets/as-icons/gen/test-ignored.d0.svg")),
+    ("as/test-not-run.l0.svg", include_bytes!("../../assets/as-icons/gen/test-not-run.l0.svg")),
+    ("as/test-not-run.d0.svg", include_bytes!("../../assets/as-icons/gen/test-not-run.d0.svg")),
+    ("as/test-passed.l0.svg", include_bytes!("../../assets/as-icons/gen/test-passed.l0.svg")),
+    ("as/test-passed.d0.svg", include_bytes!("../../assets/as-icons/gen/test-passed.d0.svg")),
+    ("as/test-paused.l0.svg", include_bytes!("../../assets/as-icons/gen/test-paused.l0.svg")),
+    ("as/test-paused.d0.svg", include_bytes!("../../assets/as-icons/gen/test-paused.d0.svg")),
     ("as/test-root.l0.svg", include_bytes!("../../assets/as-icons/gen/test-root.l0.svg")),
     ("as/test-root.l1.svg", include_bytes!("../../assets/as-icons/gen/test-root.l1.svg")),
     ("as/test-root.d0.svg", include_bytes!("../../assets/as-icons/gen/test-root.d0.svg")),
     ("as/test-root.d1.svg", include_bytes!("../../assets/as-icons/gen/test-root.d1.svg")),
+    ("as/test-skipped.l0.svg", include_bytes!("../../assets/as-icons/gen/test-skipped.l0.svg")),
+    ("as/test-skipped.d0.svg", include_bytes!("../../assets/as-icons/gen/test-skipped.d0.svg")),
+    ("as/test-terminated.l0.svg", include_bytes!("../../assets/as-icons/gen/test-terminated.l0.svg")),
+    ("as/test-terminated.d0.svg", include_bytes!("../../assets/as-icons/gen/test-terminated.d0.svg")),
+    ("as/test-unknown.l0.svg", include_bytes!("../../assets/as-icons/gen/test-unknown.l0.svg")),
+    ("as/test-unknown.d0.svg", include_bytes!("../../assets/as-icons/gen/test-unknown.d0.svg")),
     ("as/toggle-visibility.l0.svg", include_bytes!("../../assets/as-icons/gen/toggle-visibility.l0.svg")),
     ("as/toggle-visibility.d0.svg", include_bytes!("../../assets/as-icons/gen/toggle-visibility.d0.svg")),
     ("as/tw-bookmarks.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-bookmarks.l0.svg")),
