@@ -41,6 +41,7 @@ impl ResourceTable {
     }
 
     /// (resources, declarations, values) for benchmarks.
+    #[cfg(test)]
     pub fn stats(&self) -> (usize, usize, usize) {
         (self.by_ref.len(), self.all.len(), self.all.iter().filter(|d| d.value.is_some()).count())
     }
