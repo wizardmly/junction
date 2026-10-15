@@ -51,6 +51,8 @@ pub(super) fn main_menu(
             .separator()
             .menu("Sync Project with Gradle Files", Box::new(SyncProjectWithGradleFiles))
             .separator()
+            .submenu("Local History", window, cx, |menu, _, _| menu.menu("Show History", Box::new(ShowLocalHistory)).menu("Put Label…", Box::new(PutLocalHistoryLabel)))
+            .separator()
             .menu("Settings…", Box::new(OpenSettings))
             .separator()
             .item(PopupMenuItem::new("Exit").on_click(|_, _, cx| cx.quit()))

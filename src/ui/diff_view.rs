@@ -53,8 +53,8 @@ pub enum DiffSource {
     /// Two texts in memory (the merge tool's Compare … with Base), read-only.
     Texts { path: String, old: String, new: String, old_title: String, new_title: String },
     /// Compare with Clipboard: the clipboard on the left, the file (editable)
-    /// on the right.
-    Clipboard { path: String, text: String },
+    /// on the right; Local History's old version the same way.
+    Clipboard { path: String, text: String, title: String },
 }
 
 impl DiffSource {
@@ -80,7 +80,7 @@ impl DiffSource {
             DiffSource::Between { old, new, path, old_path } => Revisions::Between { old, new, path, old_path },
             DiffSource::Files { path, other } => Revisions::Files { path, other },
             DiffSource::Texts { path, old, new, old_title, new_title } => Revisions::Texts { path, old, new, old_title, new_title },
-            DiffSource::Clipboard { path, text } => Revisions::Clipboard { path, text },
+            DiffSource::Clipboard { path, text, title } => Revisions::Clipboard { path, text, title },
         }
     }
 }
@@ -282,7 +282,7 @@ impl DiffView {
             }
             DiffSource::Between { .. } => format!("{name} (Compare)"),
             DiffSource::Texts { old_title, new_title, .. } => format!("{name} ({old_title} vs {new_title})"),
-            DiffSource::Clipboard { .. } => format!("Clipboard vs {name}"),
+            DiffSource::Clipboard { title, .. } => format!("{title} vs {name}"),
             _ => format!("{name} (Changes)"),
         })
     }

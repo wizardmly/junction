@@ -373,6 +373,22 @@ Android Studio 的 Logcat 工具窗口（Alt+6 / ⌘6，底部）。代码：`sr
 
 Linux 实测（假 adb 模拟日志流和进程表）：打开窗口即显示 package:mine 的日志、启动和结束分隔行、崩溃堆栈；点 MainActivity.kt:7 打开文件并定位到第 7 行；level:warn 过滤、Compact、暂停提示条、Clear 发出 `logcat -c` 都正常。真机需在 Windows / macOS 上验证。截图：reports/Logcat-2026-10-15/。
 
+## 18. Problems、TODO、Local History（2026-10-15）
+
+代码：`src/ui/item_tree.rs`（按文件分组的树，Problems 和 TODO 共用）、`src/ui/problems_view.rs`、`src/domain/todo.rs`、`src/ui/todo_view.rs`、`src/domain/local_history.rs`、`src/infra/local_history_store.rs`、`src/usecase/local_history.rs`、`src/ui/local_history_window.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| Problems 工具窗口（底部）：File 标签页列出当前编辑器文件的问题（语法错误 + 保存后编译的错误和警告），Project Errors 标签页列出最近构建 / 编译报告的所有文件；文件节点显示目录和问题数，问题行显示图标、消息、行号 | ✅ |
+| Problems 工具栏：上一个 / 下一个问题（打开并定位）、全部展开 / 折叠、Autoscroll to Source、选项（Show Warnings、Sort by Severity）；双击或 Enter 跳到源码，方向键移动 | ✅ |
+| TODO 工具窗口（底部）：Project 和 Current File 标签页，找注释里的 `TODO` / `FIXME`（IntelliJ 默认模式，不区分大小写，只认注释），按文件分组，显示 “(行, 列) 文本” 并高亮 TODO 部分，顶部显示 “Found N TODO items in M files”；文件保存或变化后自动刷新 | ✅（模式不能自定义；没有按模块 / 包分组） |
+| Local History：每次保存记录一个版本，文件第一次打开时记录原始内容；内容去重存放在 `~/.cache/Junction/local-history/<项目>/`；保留最近 5 个有改动的日子（IntelliJ 默认），超出的在打开项目后第一次保存时清理 | ✅ |
+| Local History › Show History（File 菜单、编辑器右键、Find Action）：独立窗口，左边版本列表（时间到秒、标签），右边所选版本和当前文件的对比（当前文件可编辑）；Revert 把文件恢复到所选版本，打开的编辑器同步刷新 | ✅ |
+| Local History › Put Label…：给整个项目在此刻打标签，出现在每个文件的历史里 | ✅ |
+| 外部修改（Git 操作、其他程序）自动记版本、目录的历史、Show History for Selection、按内容搜索版本 | ❌ 未做 |
+
+Linux 实测：TODO 窗口找到 3 条（含未跟踪文件），双击跳到对应行；Make Project 后 Problems 的 File 和 Project Errors 都列出 Util.kt 的类型错误，双击跳到 2:18；保存三次加一个标签后 Show History 列出全部版本，Revert 到最早版本后磁盘内容恢复。截图：reports/Problems-TODO-LocalHistory-2026-10-15/。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。

@@ -93,6 +93,11 @@ impl Workspace {
                 self.recently_changed.touch(&path);
                 self.code_index.update(cx, |index, cx| index.refresh_file(&path, cx));
                 if let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) {
+                    if self.history_pruned.as_ref() != Some(&root) {
+                        self.history_pruned = Some(root.clone());
+                        crate::ui::local_history_window::prune(root.clone());
+                    }
+                    crate::ui::local_history_window::record_file(root.clone(), path.clone(), false);
                     let file = if std::path::Path::new(&path).is_absolute() { std::path::PathBuf::from(&path) } else { root.join(&path) };
                     crate::ui::compile_service::CompileService::global(cx).update(cx, |service, cx| service.file_saved(file, cx));
                 }
@@ -125,6 +130,24 @@ impl Workspace {
     }
 
     /// Files changed on disk by Replace: re-index, refresh VCS, reload an unmodified editor.
+    /// Files written outside the editors (Local History's Revert).
+    pub fn files_changed_on_disk(&mut self, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.files_changed(paths, window, cx);
+    }
+
+    /// Local History › Show History for the open file.
+    pub(super) fn show_local_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.editor().cloned() else { return };
+        let (path, (repository, own)) = { let e = editor.read(cx); (e.path().to_owned(), e.source()) };
+        let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+        crate::ui::local_history_window::open(root, path, repository, own, cx.entity().downgrade(), window.window_handle(), cx);
+    }
+
+    pub(super) fn put_local_history_label(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+        crate::ui::local_history_window::put_label(root, window, cx);
+    }
+
     pub(super) fn files_changed(&mut self, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         for path in &paths {
             self.recently_changed.touch(path);
@@ -266,7 +289,7 @@ impl Workspace {
             }
             FileAction::CompareWithClipboard(path) => {
                 let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
-                self.open_diff(DiffSource::Clipboard { path, text }, cx)
+                self.open_diff(DiffSource::Clipboard { path, text, title: "Clipboard".to_owned() }, cx)
             }
             FileAction::CompareWithFile(path) => {
                 let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Compare With".into()) });

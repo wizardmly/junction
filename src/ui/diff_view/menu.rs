@@ -100,7 +100,7 @@ impl DiffView {
         };
         let path = source.path().to_owned();
         let source = if selection.is_empty() && self.edit_pane() == Some(pane) {
-            DiffSource::Clipboard { path, text: clipboard }
+            DiffSource::Clipboard { path, text: clipboard, title: "Clipboard".to_owned() }
         } else {
             let text = &self.panes.buffers[pane].text();
             let title = match (&self.loaded, selection.is_empty()) {

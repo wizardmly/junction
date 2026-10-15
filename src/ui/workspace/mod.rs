@@ -103,6 +103,8 @@ actions!(
         StopApp,
         ToggleRunWindow,
         ToggleLogcatWindow,
+        ShowLocalHistory,
+        PutLocalHistoryLabel,
         ToggleProblemsWindow,
         ToggleTodoWindow,
         ToggleBuildWindow,
@@ -295,6 +297,8 @@ pub struct Workspace {
     recent_files: history::RecentPaths,
     /// Files saved or replaced this session, newest first.
     recently_changed: history::RecentPaths,
+    /// The project whose old Local History was dropped this session.
+    history_pruned: Option<std::path::PathBuf>,
     project: Entity<crate::ui::project_view::ProjectView>,
     /// Navigate › Back / Forward.
     nav: history::NavHistory,
@@ -675,6 +679,7 @@ impl Workspace {
             show_search_everywhere: false,
             recent_files: history::RecentPaths::with_limit(50),
             recently_changed: history::RecentPaths::default(),
+            history_pruned: None,
             project,
             nav: history::NavHistory::default(),
             changes,
@@ -892,6 +897,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &StopApp, _, cx| this.run.update(cx, |r, cx| r.stop(cx))))
             .on_action(cx.listener(|this, _: &ToggleRunWindow, window, cx| this.shortcut_tool(ToolWindow::Run, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleLogcatWindow, window, cx| this.shortcut_tool(ToolWindow::Logcat, window, cx)))
+            .on_action(cx.listener(|this, _: &ShowLocalHistory, window, cx| this.show_local_history(window, cx)))
+            .on_action(cx.listener(|this, _: &PutLocalHistoryLabel, window, cx| this.put_local_history_label(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleProblemsWindow, window, cx| this.shortcut_tool(ToolWindow::Problems, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleTodoWindow, window, cx| this.shortcut_tool(ToolWindow::Todo, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleBuildWindow, window, cx| this.shortcut_tool(ToolWindow::Build, window, cx)))

@@ -220,7 +220,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 7. Android 资源：`R.string.x` 跳到 xml、颜色/drawable gutter 预览、Translations Editor、Manifest 合并视图。索引里加资源表即可做跳转和预览。
 8. 测试：gutter ▶ 跑单个测试、结果树；Gradle test 任务 + 解析 JUnit XML。
 9. Gradle 文件辅助：`libs.versions.toml` 跳转、依赖新版本提示（依赖第 2 项）。
-10. Problems / TODO 工具窗口、Local History（现在是占位）。
+10. ✅ Problems / TODO 工具窗口、Local History（2026-10-15，FEATURES.md 第 18 节）。
 11. 代码生成：Alt+Insert、Live Templates、Surround With。
 
 **P2：重，可以长期留给 AS**
@@ -255,5 +255,5 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 ## 8. 接手建议
 
 1. 先编译运行一次，打开一个 Android 项目和一个多仓库目录，对照 FEATURES.md 熟悉界面。
-2. 下一步按维护者定的顺序做 6.2：Problems / TODO / Local History → Android 资源 → Gradle 文件辅助 → 测试 → Debugger。新功能按第 4 节的 Clean 架构分层写。
+2. 下一步按维护者定的顺序做 6.2：Android 资源 → Gradle 文件辅助 → 测试 → Debugger。新功能按第 4 节的 Clean 架构分层写。
 3. 动 `vendor/`、索引缓存结构、`release.yml` 之前，先读第 4 节对应的坑。

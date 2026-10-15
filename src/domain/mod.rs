@@ -9,6 +9,7 @@ pub mod build;
 pub mod completion;
 pub mod diagnostics;
 pub mod imports;
+pub mod local_history;
 pub mod logcat;
 pub mod run;
 pub mod todo;

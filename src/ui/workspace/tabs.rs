@@ -259,6 +259,12 @@ impl Workspace {
                 ix
             }
             None => {
+                // Local History keeps the text it opened with, so the first save can be compared.
+                if revision.is_none() {
+                    if let Some(root) = model.project_root() {
+                        crate::ui::local_history_window::record_file(root.to_path_buf(), path.clone(), true);
+                    }
+                }
                 let view = cx.new(|cx| FileEditor::new(repository, own, path, revision, window, cx));
                 let subscription = cx.subscribe_in(&view, window, Self::on_file_editor_event);
                 let index = self.code_index.clone();

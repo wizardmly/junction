@@ -145,6 +145,8 @@ impl Workspace {
             ("Device Explorer", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::DeviceExplorer, window, cx))),
             ("Build", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::Build, window, cx))),
             ("Run", "Alt+4", op(|this, window, cx| this.shortcut_tool(ToolWindow::Run, window, cx))),
+            ("Local History: Show History", "", op(|this, window, cx| this.show_local_history(window, cx))),
+            ("Local History: Put Label…", "", op(|this, window, cx| this.put_local_history_label(window, cx))),
             ("Logcat", "Alt+6", op(|this, window, cx| this.shortcut_tool(ToolWindow::Logcat, window, cx))),
             ("Problems", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::Problems, window, cx))),
             ("TODO", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::Todo, window, cx))),

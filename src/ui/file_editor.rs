@@ -1735,7 +1735,7 @@ impl FileEditor {
         }
         self.save(&SaveFile, window, cx);
         let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
-        cx.emit(FileEditorEvent::OpenDiff(DiffSource::Clipboard { path: self.path.clone(), text }));
+        cx.emit(FileEditorEvent::OpenDiff(DiffSource::Clipboard { path: self.path.clone(), text, title: "Clipboard".to_owned() }));
     }
 
     fn show_diff(&mut self, _: &ShowFileDiff, _: &mut Window, cx: &mut Context<Self>) {
@@ -1937,7 +1937,10 @@ impl Render for FileEditor {
                                 .separator()
                                 .menu("Open on GitHub / GitLab", Box::new(OpenOnHosting))
                                 .menu("Create Gist…", Box::new(CreateGist));
-                            menu.submenu("Git", git)
+                            menu.submenu("Git", git).submenu(
+                                "Local History",
+                                NativeMenu::new().menu("Show History", Box::new(crate::ui::workspace::ShowLocalHistory)).menu("Put Label…", Box::new(crate::ui::workspace::PutLocalHistoryLabel)),
+                            )
                         }),
                 )))
                 .child(self.gutter_probe())
