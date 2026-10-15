@@ -13,9 +13,6 @@ use crate::domain::diagnostics::{Problem, ProblemStore};
 use crate::infra::gradle::GradleBuild;
 use crate::usecase::compile_on_save;
 
-/// The variant compiled; Build Variants will pick it.
-const VARIANT: &str = "debug";
-
 pub enum CompileEvent {
     /// The compiler's problems changed (any file).
     ProblemsChanged,
@@ -54,6 +51,13 @@ impl CompileService {
         self.store.problems(file)
     }
 
+    /// A build's problems (Make, Run) replace what the last one said under
+    /// its directory.
+    pub fn set_build_problems(&mut self, dir: &Path, problems: Vec<crate::domain::diagnostics::FileProblem>, cx: &mut Context<Self>) {
+        self.store.replace_under(dir, problems);
+        cx.emit(CompileEvent::ProblemsChanged);
+    }
+
     /// "Compiling :app…" while a compile runs.
     pub fn status(&self) -> Option<String> {
         (!self.running.is_empty()).then(|| "Compiling…".to_owned())
@@ -68,13 +72,19 @@ impl CompileService {
         cx.spawn(async move |this, cx| {
             let module = cx.background_spawn(async move { compile_on_save::module_to_compile(&GradleBuild, &file) }).await;
             if let Some(module) = module {
-                this.update(cx, |this, cx| this.compile(module, cx)).ok();
+                this.update(cx, |this, cx| {
+                    // The variant picked in Build Variants.
+                    let sync = crate::ui::sync_service::SyncService::global(cx);
+                    let variant = sync.read(cx).module_at(&module.dir).map(|(build, m)| crate::ui::sync_service::variant_of(build, m, cx)).unwrap_or_else(|| "debug".into());
+                    this.compile(module, variant, cx)
+                })
+                .ok();
             }
         })
         .detach();
     }
 
-    fn compile(&mut self, module: Module, cx: &mut Context<Self>) {
+    fn compile(&mut self, module: Module, variant: String, cx: &mut Context<Self>) {
         if !self.running.insert(module.dir.clone()) {
             self.again.insert(module.dir.clone());
             return;
@@ -82,7 +92,8 @@ impl CompileService {
         cx.emit(CompileEvent::Status);
         cx.spawn(async move |this, cx| {
             let m = module.clone();
-            let report = cx.background_spawn(async move { compile_on_save::compile(&GradleBuild, &m, VARIANT) }).await;
+            let v = variant.clone();
+            let report = cx.background_spawn(async move { compile_on_save::compile(&GradleBuild, &m, &v) }).await;
             this.update(cx, |this, cx| {
                 this.running.remove(&module.dir);
                 let failed_quietly = !report.succeeded && report.problems.is_empty();
@@ -95,7 +106,7 @@ impl CompileService {
                 cx.emit(CompileEvent::ProblemsChanged);
                 cx.emit(CompileEvent::Status);
                 if this.again.remove(&module.dir) {
-                    this.compile(module, cx);
+                    this.compile(module, variant, cx);
                 }
             })
             .ok();

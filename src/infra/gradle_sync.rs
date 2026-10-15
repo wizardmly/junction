@@ -6,11 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::domain::run::{ModuleInfo, ModuleType};
 use crate::domain::sync::{self, Coordinate, ProjectSync, SyncRecord, SyncReport};
 use crate::index::libraries::{cache_dir, stable_hash};
-
-/// The variant whose classpath is resolved; Build Variants will pick it.
-const VARIANT: &str = "debug";
 
 const INIT_SCRIPT: &str = r#"// Written by Junction for Sync Project with Gradle Files.
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
@@ -22,7 +20,17 @@ import org.gradle.language.base.artifact.SourcesArtifact
 allprojects { p ->
     p.tasks.register("junctionSync") {
         doLast {
-            def variant = System.getProperty("junction.variant", "debug")
+            def has = { id -> p.pluginManager.hasPlugin(id) }
+            def androidLibrary = ["com.android.library", "com.android.dynamic-feature", "com.android.test", "com.android.kotlin.multiplatform.library"].any { has(it) }
+            def kind = has("com.android.application") ? "application" : (androidLibrary ? "library" : (has("java") ? "jvm" : "other"))
+            def variants = []
+            if (kind == "application" || kind == "library") {
+                variants = p.configurations.names.findAll { it.endsWith("RuntimeClasspath") }.collect { it - "RuntimeClasspath" }
+                    .findAll { it && !(it ==~ /.*(UnitTest|AndroidTest|TestFixtures|ScreenshotTest)$/) && it != "test" }.sort()
+            }
+            def chosen = System.getProperty("junction.variants", "").split(";").findAll { it.contains("=") }.collectEntries { def kv = it.split("=", 2); [(kv[0]): kv[1]] }
+            def variant = chosen[p.path] ?: (variants.contains("debug") ? "debug" : (variants.find { it.endsWith("Debug") } ?: (variants ? variants[0] : "debug")))
+            println "JUNCTION_MODULE ${p.path}\t${kind}\t${variants.join(',')}\t${p.projectDir}"
             def names = [variant + "CompileClasspath", variant + "UnitTestCompileClasspath", variant + "AndroidTestCompileClasspath", "compileClasspath", "testCompileClasspath"]
             def ids = new LinkedHashSet()
             names.each { name ->
@@ -87,7 +95,7 @@ impl ProjectSync for GradleSync {
         stable_hash(&text)
     }
 
-    fn sync(&self, build_root: &Path) -> SyncReport {
+    fn sync(&self, build_root: &Path, variants: &[(String, String)]) -> SyncReport {
         let Some(script) = init_script() else {
             return SyncReport { output: "Could not write the sync script to Junction's cache.".into(), ..Default::default() };
         };
@@ -96,7 +104,7 @@ impl ProjectSync for GradleSync {
             .arg("--init-script")
             .arg(&script)
             .arg("junctionSync")
-            .arg(format!("-Djunction.variant={VARIANT}"))
+            .arg(format!("-Djunction.variants={}", variants.iter().map(|(m, v)| format!("{m}={v}")).collect::<Vec<_>>().join(";")))
             // The task reads configurations as it runs.
             .arg("-Dorg.gradle.configuration-cache=false");
         match command.output() {
@@ -119,6 +127,9 @@ impl ProjectSync for GradleSync {
     fn save(&self, build_root: &Path, record: &SyncRecord) {
         let Some(path) = record_path(build_root) else { return };
         let mut text = format!("junction-sync 1\nstamp {}\n", record.stamp);
+        for m in &record.modules {
+            text.push_str(&format!("module\t{}\n", module_line(m)));
+        }
         for c in &record.dependencies {
             text.push_str(&format!("{c}\n"));
         }
@@ -148,7 +159,59 @@ pub fn load(build_root: &Path) -> Option<SyncRecord> {
         return None;
     }
     let stamp = lines.next()?.strip_prefix("stamp ")?.parse().ok()?;
-    Some(SyncRecord { stamp, dependencies: lines.filter_map(Coordinate::parse).collect() })
+    let mut record = SyncRecord { stamp, ..Default::default() };
+    for line in lines {
+        match line.strip_prefix("module\t") {
+            Some(m) => record.modules.extend(parse_module(m)),
+            None => record.dependencies.extend(Coordinate::parse(line)),
+        }
+    }
+    Some(record)
+}
+
+fn module_line(m: &ModuleInfo) -> String {
+    format!("{}\t{}\t{}\t{}", m.path, m.kind.key(), m.variants.join(","), m.dir.display())
+}
+
+/// `:app<TAB>application<TAB>debug,release<TAB>/p/app`.
+fn parse_module(text: &str) -> Option<ModuleInfo> {
+    let mut parts = text.splitn(4, '\t');
+    let (path, kind, variants, dir) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    Some(ModuleInfo {
+        path: path.to_owned(),
+        dir: PathBuf::from(dir.trim_end()),
+        kind: ModuleType::from_key(kind),
+        variants: variants.split(',').filter(|v| !v.is_empty()).map(str::to_owned).collect(),
+    })
+}
+
+/// The modules of a build that was never synced: each directory with a
+/// build file under the build root, typed by the plugins it names.
+pub fn guess_modules(root: &Path, build_root: &Path, files: &[String]) -> Vec<ModuleInfo> {
+    let mut out: Vec<ModuleInfo> = files
+        .iter()
+        .filter(|f| f.ends_with("build.gradle") || f.ends_with("build.gradle.kts"))
+        .filter_map(|f| {
+            let dir = root.join(f).parent()?.to_path_buf();
+            if !dir.starts_with(build_root) {
+                return None;
+            }
+            let text = std::fs::read_to_string(root.join(f)).unwrap_or_default();
+            let kind = if text.contains("com.android.application") || text.contains("android.application") {
+                ModuleType::Application
+            } else if text.contains("com.android.") || text.contains("android.library") {
+                ModuleType::AndroidLibrary
+            } else if text.contains("kotlin(\"jvm\")") || text.contains("java-library") || text.contains("kotlin.jvm") || text.contains("`java`") || text.contains("id 'java'") {
+                ModuleType::Jvm
+            } else {
+                ModuleType::Other
+            };
+            let variants = if kind.is_android() { vec!["debug".to_owned(), "release".to_owned()] } else { Vec::new() };
+            Some(ModuleInfo { path: crate::domain::build::project_path(build_root, &dir), dir, kind, variants })
+        })
+        .collect();
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
 }
 
 fn init_script() -> Option<PathBuf> {
@@ -164,7 +227,9 @@ fn init_script() -> Option<PathBuf> {
 pub fn parse_output(output: &str) -> SyncReport {
     let mut report = SyncReport::default();
     for line in output.lines().map(str::trim_end) {
-        if let Some(rest) = line.strip_prefix("JUNCTION_DEP ") {
+        if let Some(rest) = line.strip_prefix("JUNCTION_MODULE ") {
+            report.modules.extend(parse_module(rest));
+        } else if let Some(rest) = line.strip_prefix("JUNCTION_DEP ") {
             if let Some(c) = rest.split_once(' ').and_then(|(_, c)| Coordinate::parse(c)) {
                 report.dependencies.push(c);
             }
@@ -176,6 +241,8 @@ pub fn parse_output(output: &str) -> SyncReport {
             }
         }
     }
+    report.modules.sort_by(|a, b| a.path.cmp(&b.path));
+    report.modules.dedup_by(|a, b| a.path == b.path);
     report.dependencies.sort();
     report.dependencies.dedup();
     report
@@ -189,6 +256,7 @@ mod tests {
     fn reads_the_task_output() {
         let output = "\
 > Task :app:junctionSync
+JUNCTION_MODULE :app\tapplication\tdebug,release\t/p/app
 JUNCTION_UNRESOLVED :app does.not:exist:1.0
 JUNCTION_UNRESOLVED :app does.not:exist:1.0
 JUNCTION_DEP :app com.squareup.okhttp3:okhttp:4.12.0
@@ -201,6 +269,9 @@ BUILD SUCCESSFUL in 2s
         assert_eq!(r.dependencies.len(), 2);
         assert_eq!(r.dependencies[0].to_string(), "com.google.code.gson:gson:2.11.0");
         assert_eq!(r.unresolved, vec!["Failed to resolve: does.not:exist:1.0"]);
+        assert_eq!(r.modules.len(), 1);
+        assert_eq!((r.modules[0].kind, r.modules[0].variants.len()), (ModuleType::Application, 2));
+        assert_eq!(parse_module(&module_line(&r.modules[0])).as_ref(), Some(&r.modules[0]));
     }
 
     #[test]

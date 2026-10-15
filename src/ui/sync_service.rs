@@ -10,8 +10,9 @@ use std::time::Instant;
 
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global};
 
+use crate::domain::run::ModuleInfo;
 use crate::domain::sync::{self, ProjectSync as _};
-use crate::infra::gradle_sync::GradleSync;
+use crate::infra::gradle_sync::{self as gradle_sync, GradleSync};
 use crate::usecase::sync_project::{self, Next, Trigger};
 
 pub enum SyncEvent {
@@ -19,6 +20,8 @@ pub enum SyncEvent {
     Offer { root: PathBuf },
     /// A sync started or ended.
     Status,
+    /// The builds' modules changed (a sync, the project opened).
+    Modules,
     /// A sync finished; the libraries follow its record.
     Finished { build: String, seconds: u64, unresolved: Vec<String> },
     Failed { build: String, output: String },
@@ -32,6 +35,9 @@ pub struct SyncService {
     again: HashSet<PathBuf>,
     /// The project root and files the last look used.
     project: Option<(PathBuf, Vec<String>)>,
+    /// Each build and its modules: from its last sync, else guessed from
+    /// the build files.
+    builds: Vec<(PathBuf, Vec<ModuleInfo>)>,
 }
 
 impl EventEmitter<SyncEvent> for SyncService {}
@@ -49,8 +55,22 @@ impl SyncService {
         service
     }
 
+    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<GlobalSync>().map(|g| g.0.clone())
+    }
+
     pub fn status(&self) -> Option<String> {
         (!self.running.is_empty()).then(|| "Gradle sync running…".to_owned())
+    }
+
+    pub fn builds(&self) -> &[(PathBuf, Vec<ModuleInfo>)] {
+        &self.builds
+    }
+
+    /// The build and module a module directory belongs to.
+    pub fn module_at(&self, dir: &Path) -> Option<(&Path, &ModuleInfo)> {
+        let key = crate::domain::diagnostics::file_key(dir);
+        self.builds.iter().find_map(|(b, modules)| modules.iter().find(|m| crate::domain::diagnostics::file_key(&m.dir) == key).map(|m| (b.as_path(), m)))
     }
 
     /// Whether the project has a Gradle build to sync.
@@ -76,14 +96,21 @@ impl SyncService {
                         .map(|build| {
                             let stamp = GradleSync.stamp(&root, &build, &build_files);
                             let trigger = seen.get(&build).map_or(Trigger::Opened, |s| Trigger::Seen(*s));
-                            let next = sync_project::decide(GradleSync.load(&build).as_ref(), stamp, trigger);
-                            (build, stamp, next)
+                            let record = GradleSync.load(&build);
+                            let next = sync_project::decide(record.as_ref(), stamp, trigger);
+                            let modules = record.map(|r| r.modules).filter(|m| !m.is_empty()).unwrap_or_else(|| gradle_sync::guess_modules(&root, &build, &build_files));
+                            (build, stamp, next, modules)
                         })
                         .collect::<Vec<_>>()
                 })
                 .await;
             this.update(cx, |this, cx| {
-                for (build, stamp, next) in looks {
+                let builds: Vec<(PathBuf, Vec<ModuleInfo>)> = looks.iter().map(|(b, _, _, m)| (b.clone(), m.clone())).collect();
+                if builds != this.builds {
+                    this.builds = builds;
+                    cx.emit(SyncEvent::Modules);
+                }
+                for (build, stamp, next, _) in looks {
                     this.seen.insert(build.clone(), stamp);
                     match next {
                         Next::Nothing => {}
@@ -112,12 +139,13 @@ impl SyncService {
             return;
         }
         cx.emit(SyncEvent::Status);
+        let variants = self.variants(&build, cx);
         cx.spawn(async move |this, cx| {
             let started = Instant::now();
             let b = build.clone();
             let (report, stamp) = cx
                 .background_spawn(async move {
-                    let report = sync_project::sync(&GradleSync, &root, &b, &files);
+                    let report = sync_project::sync(&GradleSync, &root, &b, &files, &variants);
                     (report, GradleSync.stamp(&root, &b, &files))
                 })
                 .await;
@@ -126,6 +154,12 @@ impl SyncService {
                 this.seen.insert(build.clone(), stamp);
                 let name = build_name(&build);
                 if report.succeeded {
+                    if let Some(entry) = this.builds.iter_mut().find(|(b, _)| *b == build) {
+                        if !report.modules.is_empty() && entry.1 != report.modules {
+                            entry.1 = report.modules.clone();
+                            cx.emit(SyncEvent::Modules);
+                        }
+                    }
                     cx.emit(SyncEvent::Finished { build: name, seconds: started.elapsed().as_secs(), unresolved: report.unresolved });
                 } else {
                     // What went wrong, without Gradle's "* Try:" advice.
@@ -143,6 +177,25 @@ impl SyncService {
         })
         .detach();
     }
+}
+
+impl SyncService {
+    /// The variants picked in Build Variants for a build's modules.
+    fn variants(&self, build: &Path, cx: &App) -> Vec<(String, String)> {
+        let modules = self.builds.iter().find(|(b, _)| b == build).map(|(_, m)| m.as_slice()).unwrap_or_default();
+        modules.iter().filter(|m| m.kind.is_android()).map(|m| (m.path.clone(), variant_of(build, m, cx))).collect()
+    }
+}
+
+/// The variant a module builds: the one picked in Build Variants, else its
+/// default (the first debug one).
+pub fn variant_of(build: &Path, module: &ModuleInfo, cx: &App) -> String {
+    let picked = crate::settings::Settings::get(cx).build_variants.get(&variant_key(build, &module.path)).cloned();
+    picked.filter(|v| module.variants.is_empty() || module.variants.contains(v)).unwrap_or_else(|| module.default_variant())
+}
+
+pub fn variant_key(build: &Path, module: &str) -> String {
+    format!("{}|{module}", crate::domain::diagnostics::file_key(build))
 }
 
 fn build_name(build: &Path) -> String {

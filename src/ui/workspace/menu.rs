@@ -72,6 +72,9 @@ pub(super) fn main_menu(
                     .menu("Device Manager", Box::new(ToggleDeviceManagerWindow))
                     .menu("Running Devices", Box::new(ToggleRunningDevicesWindow))
                     .menu("Device Explorer", Box::new(ToggleDeviceExplorerWindow))
+                    .menu("Build", Box::new(ToggleBuildWindow))
+                    .menu("Run", Box::new(ToggleRunWindow))
+                    .menu("Build Variants", Box::new(ToggleBuildVariantsWindow))
                     .item(PopupMenuItem::new(prs_title).on_click(move |_, window, cx| {
                         e3.update(cx, |this, cx| this.toggle_tool(ToolWindow::PullRequests, window, cx))
                     }))
@@ -123,6 +126,24 @@ pub(super) fn main_menu(
             .separator()
             .menu("Find in Files…", Box::new(FindInPath))
             .menu("Replace in Files…", Box::new(ReplaceInPath))
+    });
+    // Android Studio's Build and Run menus.
+    let f = focus.clone();
+    let menu = menu.submenu("Build", window, cx, move |menu, _, _| {
+        menu.action_context(f.clone())
+            .menu("Make Project", Box::new(MakeProject))
+            .separator()
+            .menu("Sync Project with Gradle Files", Box::new(SyncProjectWithGradleFiles))
+            .menu("Select Build Variant…", Box::new(ToggleBuildVariantsWindow))
+    });
+    let (e, f) = (entity.clone(), focus.clone());
+    let menu = menu.submenu("Run", window, cx, move |menu, _, cx| {
+        let run = e.read(cx).run.clone();
+        let name = run.read(cx).configuration(cx).map(|c| c.name).unwrap_or_else(|| "app".into());
+        let can_stop = run.read(cx).can_stop();
+        menu.action_context(f.clone())
+            .menu(format!("Run '{name}'"), Box::new(RunApp))
+            .menu_with_disabled("Stop", Box::new(StopApp), !can_stop)
     });
     let (e, f) = (entity.clone(), focus.clone());
     let menu = menu.submenu("Git", window, cx, move |menu, window, cx| {

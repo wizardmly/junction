@@ -314,6 +314,36 @@ impl Workspace {
         }
     }
 
+    /// Build and Run: the Build window shows a build, the Run window a
+    /// launch, errors become balloons.
+    pub(super) fn on_run_event(&mut self, event: &crate::ui::run_service::RunEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::run_service::RunEvent;
+        match event {
+            RunEvent::ShowBuild => self.tools.open(ToolWindow::Build),
+            RunEvent::ShowRun => self.tools.open(ToolWindow::Run),
+            RunEvent::Error { title, message } => window.push_notification(Notification::error(message.clone()).title(title.clone()), cx),
+        }
+        cx.notify();
+    }
+
+    pub(super) fn on_run_view_event(&mut self, tool: ToolWindow, event: &crate::ui::run_views::RunViewEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::run_views::RunViewEvent;
+        match event {
+            RunViewEvent::OpenFile { path, line, col } => {
+                let root = self.model.read(cx).project_root().map(std::path::Path::to_path_buf);
+                let path = match root.as_deref().and_then(|r| path.strip_prefix(r).ok()) {
+                    Some(rel) => rel.to_string_lossy().replace('\\', "/"),
+                    None => path.to_string_lossy().into_owned(),
+                };
+                self.open_at(path, *line, *col, window, cx);
+            }
+            RunViewEvent::Hide => {
+                self.tools.hide(tool);
+                cx.notify();
+            }
+        }
+    }
+
     /// Sync Project with Gradle Files: Android Studio's "Gradle files have
     /// changed" offer, its failure and unresolved dependencies, and the
     /// libraries re-indexed from a finished sync.
@@ -344,7 +374,7 @@ impl Workspace {
                     });
                 window.push_notification(notification, cx);
             }
-            SyncEvent::Status => cx.notify(),
+            SyncEvent::Status | SyncEvent::Modules => cx.notify(),
             SyncEvent::Finished { build, seconds, unresolved } => {
                 self.code_index.update(cx, |index, cx| index.refresh(cx));
                 if !unresolved.is_empty() {

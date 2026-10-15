@@ -8,6 +8,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use super::run::ModuleInfo;
+
 /// A resolved external module: `group:artifact:version`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Coordinate {
@@ -42,6 +44,8 @@ pub struct SyncReport {
     pub dependencies: Vec<Coordinate>,
     /// "Failed to resolve: x:y:1.0", once each.
     pub unresolved: Vec<String>,
+    /// The build's modules, with their variants.
+    pub modules: Vec<ModuleInfo>,
     /// The build's output, to explain a failure.
     pub output: String,
 }
@@ -52,6 +56,7 @@ pub struct SyncRecord {
     /// [`ProjectSync::stamp`] of the build files it read.
     pub stamp: u64,
     pub dependencies: Vec<Coordinate>,
+    pub modules: Vec<ModuleInfo>,
 }
 
 /// Syncs builds and keeps their records. Implemented over Gradle.
@@ -61,7 +66,9 @@ pub trait ProjectSync {
     fn build_roots(&self, root: &Path, files: &[String]) -> Vec<PathBuf>;
     /// Changes whenever a build file of `build_root` does.
     fn stamp(&self, root: &Path, build_root: &Path, files: &[String]) -> u64;
-    fn sync(&self, build_root: &Path) -> SyncReport;
+    /// Resolves each module's classpaths for its variant (`variants`:
+    /// module path and variant, for the ones picked in Build Variants).
+    fn sync(&self, build_root: &Path, variants: &[(String, String)]) -> SyncReport;
     fn load(&self, build_root: &Path) -> Option<SyncRecord>;
     fn save(&self, build_root: &Path, record: &SyncRecord);
 }

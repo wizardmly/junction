@@ -94,6 +94,9 @@ impl Workspace {
             ToolWindow::DeviceManager => (Icon::from(icons::TW_DEVICE_MANAGER), "Device Manager".into(), ""),
             ToolWindow::RunningDevices => (Icon::from(icons::TW_RUNNING_DEVICES), "Running Devices".into(), ""),
             ToolWindow::DeviceExplorer => (Icon::from(icons::TW_DEVICE_EXPLORER), "Device Explorer".into(), ""),
+            ToolWindow::Build => (Icon::from(icons::TW_BUILD), "Build".into(), ""),
+            ToolWindow::Run => (Icon::from(icons::TW_RUN), "Run".into(), "Alt+4"),
+            ToolWindow::BuildVariants => (Icon::from(icons::MODULE_ANDROID), "Build Variants".into(), ""),
         }
     }
 
@@ -271,6 +274,10 @@ impl Workspace {
             ToolWindow::DeviceManager => crate::ui::common::cached(&self.device_manager),
             ToolWindow::RunningDevices => crate::ui::common::cached(&self.running_devices),
             ToolWindow::DeviceExplorer => crate::ui::common::cached(&self.device_explorer),
+            // Not cached: their logs grow on their own.
+            ToolWindow::Build => self.build_view.clone().into_any_element(),
+            ToolWindow::Run => self.run_view.clone().into_any_element(),
+            ToolWindow::BuildVariants => crate::ui::common::cached(&self.variants_view),
         }
     }
 

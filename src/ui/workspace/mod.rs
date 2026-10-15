@@ -97,7 +97,13 @@ actions!(
         GoToBookmark8,
         GoToBookmark9,
         GoToBookmark0,
-        SyncProjectWithGradleFiles
+        SyncProjectWithGradleFiles,
+        MakeProject,
+        RunApp,
+        StopApp,
+        ToggleRunWindow,
+        ToggleBuildWindow,
+        ToggleBuildVariantsWindow
     ]
 );
 
@@ -164,6 +170,10 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("alt-f12", ToggleTerminalWindow, Some(CONTEXT)),
         // Android Studio's.
         KeyBinding::new("secondary-shift-o", SyncProjectWithGradleFiles, Some(CONTEXT)),
+        KeyBinding::new("secondary-f9", MakeProject, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "ctrl-r" } else { "shift-f10" }, RunApp, Some(CONTEXT)),
+        KeyBinding::new("secondary-f2", StopApp, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-4" } else { "alt-4" }, ToggleRunWindow, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-0" } else { "alt-0" }, ToggleCommitWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-f12", HideAllToolWindows, Some(CONTEXT)),
         KeyBinding::new("shift-escape", HideActiveToolWindow, Some(CONTEXT)),
@@ -260,6 +270,12 @@ pub struct Workspace {
     device_manager: Entity<crate::ui::device_manager::DeviceManager>,
     running_devices: Entity<crate::ui::running_devices::RunningDevices>,
     device_explorer: Entity<crate::ui::device_explorer::DeviceExplorer>,
+    /// Build and Run: the toolbar's configuration and device, and the
+    /// Build, Run and Build Variants tool windows.
+    run: Entity<crate::ui::run_service::RunService>,
+    build_view: Entity<crate::ui::run_views::BuildView>,
+    run_view: Entity<crate::ui::run_views::RunView>,
+    variants_view: Entity<crate::ui::run_views::VariantsView>,
     /// Find / Replace in Files, kept between uses like IntelliJ's.
     find_popup: Option<(Entity<crate::ui::find_popup::FindPopup>, Subscription)>,
     show_find_popup: bool,
@@ -350,6 +366,10 @@ impl Workspace {
         let device_manager = cx.new(|_| crate::ui::device_manager::DeviceManager::new(android_project.clone()));
         let running_devices = cx.new(|cx| crate::ui::running_devices::RunningDevices::new(device_manager.clone(), cx));
         let device_explorer = cx.new(|cx| crate::ui::device_explorer::DeviceExplorer::new(device_manager.clone(), android_project, cx));
+        let run = cx.new(|_| crate::ui::run_service::RunService::new(device_manager.clone()));
+        let build_view = cx.new(|cx| crate::ui::run_views::BuildView::new(run.clone(), cx));
+        let run_view = cx.new(|cx| crate::ui::run_views::RunView::new(run.clone(), cx));
+        let variants_view = cx.new(crate::ui::run_views::VariantsView::new);
         let project = cx.new(|cx| crate::ui::project_view::ProjectView::new(code_index.clone(), cx));
         let weak = cx.entity().downgrade();
         branches_popup.update(cx, |popup, _| {
@@ -543,6 +563,11 @@ impl Workspace {
                 cx.notify()
             }),
             cx.subscribe_in(&sync, window, |this, _, event, window, cx| this.on_sync_event(event, window, cx)),
+            cx.subscribe_in(&run, window, |this, _, event, window, cx| this.on_run_event(event, window, cx)),
+            cx.subscribe_in(&build_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::Build, event, window, cx)),
+            cx.subscribe_in(&run_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::Run, event, window, cx)),
+            cx.subscribe_in(&variants_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::BuildVariants, event, window, cx)),
+            cx.observe(&run, |_, _, cx| cx.notify()),
             // Compile on save: its status in the status bar, and a failure
             // the compiler did not explain (a broken build script, no JDK).
             cx.subscribe_in(&compile, window, |_, _, event, window, cx| {
@@ -622,6 +647,10 @@ impl Workspace {
             device_manager,
             running_devices,
             device_explorer,
+            run,
+            build_view,
+            run_view,
+            variants_view,
             find_popup: None,
             show_find_popup: false,
             find_in: None,
@@ -686,7 +715,9 @@ impl Render for Workspace {
         // The Device Manager follows adb only while it (or Running Devices,
         // whose + lists the devices) shows.
         let explorer_shown = self.tools.is_open(ToolWindow::DeviceExplorer);
-        let devices_shown = self.tools.is_open(ToolWindow::DeviceManager) || self.tools.is_open(ToolWindow::RunningDevices) || explorer_shown;
+        // An Android project follows them too, for the toolbar's device list.
+        let android = crate::ui::sync_service::SyncService::global(cx).read(cx).builds().iter().any(|(_, m)| m.iter().any(|m| m.kind == crate::domain::run::ModuleType::Application));
+        let devices_shown = self.tools.is_open(ToolWindow::DeviceManager) || self.tools.is_open(ToolWindow::RunningDevices) || explorer_shown || android;
         self.device_manager.update(cx, |d, cx| d.set_shown(devices_shown, cx));
         self.device_explorer.update(cx, |d, cx| d.set_shown(explorer_shown, cx));
         let mirroring_shown = self.tools.is_open(ToolWindow::RunningDevices);
@@ -830,6 +861,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_find))
             .on_action(cx.listener(|this, _: &ToggleTerminalWindow, window, cx| this.shortcut_tool(ToolWindow::Terminal, window, cx)))
             .on_action(cx.listener(|_, _: &SyncProjectWithGradleFiles, _, cx| crate::ui::sync_service::SyncService::global(cx).update(cx, |s, cx| s.sync_all(cx))))
+            .on_action(cx.listener(|this, _: &MakeProject, _, cx| this.run.update(cx, |r, cx| r.make_project(cx))))
+            .on_action(cx.listener(|this, _: &RunApp, _, cx| this.run.update(cx, |r, cx| r.run(cx))))
+            .on_action(cx.listener(|this, _: &StopApp, _, cx| this.run.update(cx, |r, cx| r.stop(cx))))
+            .on_action(cx.listener(|this, _: &ToggleRunWindow, window, cx| this.shortcut_tool(ToolWindow::Run, window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleBuildWindow, window, cx| this.shortcut_tool(ToolWindow::Build, window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleBuildVariantsWindow, window, cx| this.shortcut_tool(ToolWindow::BuildVariants, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleDeviceManagerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceManager, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleRunningDevicesWindow, window, cx| this.shortcut_tool(ToolWindow::RunningDevices, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleDeviceExplorerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceExplorer, window, cx)))

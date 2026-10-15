@@ -87,6 +87,10 @@ pub struct Settings {
     /// a Kotlin or Java file compiles its Gradle module in the background
     /// and marks the compiler's errors in the editor.
     pub compile_on_save: bool,
+    /// Build Variants: the variant of each module, keyed `build root|:module`.
+    pub build_variants: std::collections::BTreeMap<String, String>,
+    /// The device the last run used (its Device Manager id).
+    pub run_device: String,
     /// Per-language server command overrides (`rust` → `rust-analyzer`);
     /// "off" disables that language's server.
     pub language_servers: std::collections::BTreeMap<String, String>,
@@ -371,6 +375,8 @@ impl Default for Settings {
             update_dialog: true,
             use_language_servers: true,
             compile_on_save: true,
+            build_variants: Default::default(),
+            run_device: String::new(),
             language_servers: Default::default(),
             auto_update_on_push_rejected: false,
             warn_crlf: true,
@@ -600,6 +606,10 @@ impl Settings {
                 "update_dialog" => settings.update_dialog = flag,
                 "use_language_servers" => settings.use_language_servers = flag,
                 "compile_on_save" => settings.compile_on_save = flag,
+                "run_device" => settings.run_device = value.to_owned(),
+                key if key.starts_with("variant_") => {
+                    settings.build_variants.insert(key["variant_".len()..].to_owned(), value.to_owned());
+                }
                 key if key.starts_with("lsp_") => {
                     if !value.is_empty() {
                         settings.language_servers.insert(key["lsp_".len()..].to_owned(), value.to_owned());
@@ -679,7 +689,10 @@ impl Settings {
             self.update_dialog
         ));
         text.push_str(&format!("use_language_servers={}\nlarge_file_mb={}\n", self.use_language_servers, self.large_file_mb));
-        text.push_str(&format!("compile_on_save={}\n", self.compile_on_save));
+        text.push_str(&format!("compile_on_save={}\nrun_device={}\n", self.compile_on_save, self.run_device));
+        for (module, variant) in &self.build_variants {
+            text.push_str(&format!("variant_{module}={variant}\n"));
+        }
         text.push_str(&format!(
             "non_modal_commit={}\ncherry_pick_suffix={}\ncommit_push_dialog={}\ncommit_push_dialog_protected_only={}\neditor_font_size={}\n",
             self.non_modal_commit,

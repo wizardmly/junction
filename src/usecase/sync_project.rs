@@ -38,11 +38,11 @@ pub fn decide(record: Option<&SyncRecord>, stamp: u64, trigger: Trigger) -> Next
 
 /// Syncs a build; a successful sync becomes its record (the libraries are
 /// then re-indexed from it), a failed one keeps the previous record.
-pub fn sync(port: &dyn ProjectSync, root: &Path, build_root: &Path, files: &[String]) -> SyncReport {
+pub fn sync(port: &dyn ProjectSync, root: &Path, build_root: &Path, files: &[String], variants: &[(String, String)]) -> SyncReport {
     let stamp = port.stamp(root, build_root, files);
-    let report = port.sync(build_root);
+    let report = port.sync(build_root, variants);
     if report.succeeded {
-        port.save(build_root, &SyncRecord { stamp, dependencies: report.dependencies.clone() });
+        port.save(build_root, &SyncRecord { stamp, dependencies: report.dependencies.clone(), modules: report.modules.clone() });
     }
     report
 }
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn when_to_sync() {
-        let record = SyncRecord { stamp: 7, dependencies: Vec::new() };
+        let record = SyncRecord { stamp: 7, ..Default::default() };
         assert_eq!(decide(Some(&record), 7, Trigger::Opened), Next::Nothing);
         assert_eq!(decide(Some(&record), 8, Trigger::Opened), Next::Offer);
         assert_eq!(decide(None, 8, Trigger::Opened), Next::Offer);
@@ -76,7 +76,7 @@ mod tests {
         fn stamp(&self, _: &Path, _: &Path, _: &[String]) -> u64 {
             3
         }
-        fn sync(&self, _: &Path) -> SyncReport {
+        fn sync(&self, _: &Path, _: &[(String, String)]) -> SyncReport {
             let dependencies = vec![crate::domain::sync::Coordinate::parse("a.b:c:1").unwrap()];
             SyncReport { succeeded: self.ok, dependencies, ..Default::default() }
         }
@@ -92,10 +92,10 @@ mod tests {
     fn only_a_successful_sync_is_kept() {
         let root = Path::new("/p");
         let failed = Fake { ok: false, saved: RefCell::new(None) };
-        sync(&failed, root, root, &[]);
+        sync(&failed, root, root, &[], &[]);
         assert!(failed.load(root).is_none());
         let ok = Fake { ok: true, saved: RefCell::new(None) };
-        sync(&ok, root, root, &[]);
+        sync(&ok, root, root, &[], &[]);
         assert_eq!(ok.load(root).unwrap().stamp, 3);
         assert_eq!(ok.load(root).unwrap().dependencies.len(), 1);
     }

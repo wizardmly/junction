@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 
 use crate::domain::build::{self, BuildSystem, CompileReport, Module, ModuleKind};
 use crate::domain::diagnostics::{FileProblem, Origin, Pos, Problem, Severity};
+use crate::domain::run::{ApkOutput, BuildResult, ModuleInfo, TaskRunner};
 
 /// How long an idle Gradle daemon stays up (IntelliJ leaves Gradle's 3
 /// hours; Junction lets it go sooner to give the memory back).
@@ -36,6 +37,100 @@ impl BuildSystem for GradleBuild {
             Err(e) => CompileReport { succeeded: false, problems: Vec::new(), output: format!("Could not run Gradle: {e}") },
         }
     }
+}
+
+impl TaskRunner for GradleBuild {
+    fn run_tasks(&self, build_root: &Path, tasks: &[String], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
+        use std::io::BufRead as _;
+        let mut command = gradle(build_root);
+        command.args(tasks).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                line(&format!("Could not run Gradle: {e}"));
+                return BuildResult::default();
+            }
+        };
+        // Both pipes, a line at a time, in the order they arrive.
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let pipes: Vec<Box<dyn std::io::Read + Send>> = vec![Box::new(child.stdout.take().unwrap()), Box::new(child.stderr.take().unwrap())];
+        for pipe in pipes {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for l in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+                    if tx.send(l).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(tx);
+        let mut output = String::new();
+        let mut stopped_at: Option<std::time::Instant> = None;
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(l) => {
+                    line(&l);
+                    output.push_str(&l);
+                    output.push('\n');
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            // Stopping the client cancels the build in the daemon.
+            if stopped_at.is_none() && cancelled() {
+                stopped_at = Some(std::time::Instant::now());
+                kill_tree(&mut child);
+            }
+            // Something it started may still hold the pipes.
+            if stopped_at.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(3)) {
+                break;
+            }
+        }
+        let was_cancelled = stopped_at.is_some();
+        let succeeded = child.wait().is_ok_and(|s| s.success()) && !was_cancelled;
+        BuildResult { succeeded, cancelled: was_cancelled, problems: parse_output(&output) }
+    }
+
+    fn apk_output(&self, module: &ModuleInfo, variant: &str) -> Option<ApkOutput> {
+        apk_output(&module.dir.join("build/outputs/apk"), variant)
+    }
+}
+
+/// Kills Gradle's client: on Windows `cmd` and the wrapper's java under it.
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        let _ = Command::new("taskkill").args(["/T", "/F", "/PID", &child.id().to_string()]).creation_flags(0x0800_0000).output();
+    }
+    let _ = child.kill();
+}
+
+/// The variant's `output-metadata.json` under `build/outputs/apk` (AGP
+/// 4.1+): its application ID and APK files.
+pub fn apk_output(apk_dir: &Path, variant: &str) -> Option<ApkOutput> {
+    fn find(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() && depth < 3 {
+                find(&path, depth + 1, out);
+            } else if path.file_name().is_some_and(|n| n == "output-metadata.json") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    find(apk_dir, 0, &mut files);
+    files.into_iter().find_map(|file| {
+        let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).ok()?).ok()?;
+        if json["variantName"].as_str() != Some(variant) {
+            return None;
+        }
+        let dir = file.parent()?;
+        let apks: Vec<PathBuf> = json["elements"].as_array()?.iter().filter_map(|e| e["outputFile"].as_str()).map(|f| dir.join(f)).filter(|p| p.is_file()).collect();
+        (!apks.is_empty()).then(|| ApkOutput { application_id: json["applicationId"].as_str().unwrap_or_default().to_owned(), apks })
+    })
 }
 
 fn has_any(dir: &Path, names: &[&str]) -> bool {
@@ -109,6 +204,7 @@ fn studio_jbr() -> Option<PathBuf> {
 }
 
 /// The compilers' messages in Gradle's output:
+/// - AAPT: `ERROR: /path/res/layout/a.xml:10: AAPT: error: message`,
 /// - Kotlin 2: `e: file:///path/A.kt:12:5 message` (`w:` for warnings),
 /// - Kotlin 1: `e: /path/A.kt: (12, 5): message`,
 /// - javac: `/path/A.java:12: error: message`, then the source line and a
@@ -120,6 +216,8 @@ pub fn parse_output(output: &str) -> Vec<FileProblem> {
     let kotlin = KOTLIN.get_or_init(|| regex::Regex::new(r"^([ew]): (?:file://)?(.+?\.kts?):(\d+):(\d+) (.*)$").unwrap());
     let kotlin_old = KOTLIN_OLD.get_or_init(|| regex::Regex::new(r"^([ew]): (.+?\.kts?): \((\d+), (\d+)\): (.*)$").unwrap());
     let java = JAVA.get_or_init(|| regex::Regex::new(r"^(.+?\.java):(\d+): (error|warning): (.*)$").unwrap());
+    static AAPT: OnceLock<regex::Regex> = OnceLock::new();
+    let aapt = AAPT.get_or_init(|| regex::Regex::new(r"^(?:ERROR|WARNING):\s*(.+?\.xml):(\d+):\s*AAPT: (error|warning): (.*)$").unwrap());
     let lines: Vec<&str> = output.lines().collect();
     let mut out: Vec<FileProblem> = Vec::new();
     let mut i = 0;
@@ -129,6 +227,10 @@ pub fn parse_output(output: &str) -> Vec<FileProblem> {
             let severity = if &c[1] == "e" { Severity::Error } else { Severity::Warning };
             let (row, col) = (c[3].parse::<u32>().unwrap_or(1).saturating_sub(1), c[4].parse::<u32>().unwrap_or(1).saturating_sub(1));
             out.push(problem(file_path(&c[2]), row, col, severity, c[5].trim().to_owned()));
+        } else if let Some(c) = aapt.captures(line) {
+            let severity = if &c[3] == "error" { Severity::Error } else { Severity::Warning };
+            let row = c[2].parse::<u32>().unwrap_or(1).saturating_sub(1);
+            out.push(problem(file_path(&c[1]), row, 0, severity, c[4].trim().to_owned()));
         } else if let Some(c) = java.captures(line) {
             let severity = if &c[3] == "error" { Severity::Error } else { Severity::Warning };
             let row = c[2].parse::<u32>().unwrap_or(1).saturating_sub(1);
@@ -183,11 +285,12 @@ e: /home/j/app/src/main/java/a/Old.kt: (7, 9): Type mismatch: inferred type is S
   symbol:   method bar()
   location: class B
 e: file:///C:/Users/j/app/A.kt:1:2 x
+ERROR: /home/j/app/src/main/res/layout/main.xml:10: AAPT: error: attribute android:foo not found.
 
 FAILURE: Build failed with an exception.
 ";
         let p = parse_output(output);
-        assert_eq!(p.len(), 5, "{p:?}");
+        assert_eq!(p.len(), 6, "{p:?}");
         assert_eq!(p[0].file, PathBuf::from("/home/j/app/src/main/java/a/Main.kt"));
         assert_eq!((p[0].problem.start.line, p[0].problem.start.col), (11, 4));
         assert_eq!(p[0].problem.message, "Unresolved reference 'foo'.");
@@ -196,6 +299,7 @@ FAILURE: Build failed with an exception.
         assert_eq!((p[3].problem.start.line, p[3].problem.start.col), (19, 8));
         assert_eq!(p[3].problem.message, "cannot find symbol\nsymbol:   method bar()\nlocation: class B");
         assert_eq!(p[4].file, PathBuf::from("C:/Users/j/app/A.kt"));
+        assert_eq!((p[5].problem.start.line, p[5].problem.message.as_str()), (9, "attribute android:foo not found."));
     }
 
     #[test]

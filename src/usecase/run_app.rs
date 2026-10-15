@@ -1,0 +1,170 @@
+//! Run 'app', as Android Studio runs an Android App configuration: assemble
+//! the module's selected variant, install its APKs on the device, stop the
+//! running app, start its launcher activity and report its process. The
+//! Run console gets Android Studio's lines; the build goes to the Build
+//! window.
+
+use std::time::{Duration, Instant};
+
+use crate::domain::run::{duration_label, BuildResult, DeviceBridge, RunConfiguration, TaskRunner};
+
+/// A line of the Run console.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConsoleLine {
+    Info(String),
+    Command(String),
+    Error(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// The app runs: its process, when found.
+    Running { application_id: String, pid: Option<u32> },
+    BuildFailed,
+    Cancelled,
+    Failed,
+}
+
+/// Make Project / Make Module: the tasks assembling every given module's
+/// selected variant.
+pub fn make(runner: &dyn TaskRunner, build_root: &std::path::Path, tasks: &[String], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
+    runner.run_tasks(build_root, tasks, line, cancelled)
+}
+
+pub struct Target<'a> {
+    pub serial: &'a str,
+    /// "Google Pixel 9a".
+    pub name: &'a str,
+}
+
+/// Builds and launches. `build_line` gets Gradle's output, `console` the
+/// Run console's lines.
+pub fn run(
+    runner: &dyn TaskRunner,
+    device: &dyn DeviceBridge,
+    config: &RunConfiguration,
+    variant: &str,
+    target: Target,
+    build_line: &mut dyn FnMut(&str),
+    console: &mut dyn FnMut(ConsoleLine),
+    cancelled: &dyn Fn() -> bool,
+) -> (RunOutcome, BuildResult) {
+    let build = runner.run_tasks(&config.build_root, &[config.module.assemble_task(variant)], build_line, cancelled);
+    if build.cancelled || cancelled() {
+        return (RunOutcome::Cancelled, build);
+    }
+    if !build.succeeded {
+        return (RunOutcome::BuildFailed, build);
+    }
+    let Some(output) = runner.apk_output(&config.module, variant) else {
+        console(ConsoleLine::Error(format!("Error running '{}': The APK file for the {variant} variant was not found. Was it built?", config.name)));
+        return (RunOutcome::Failed, build);
+    };
+    match device.install(target.serial, &output.apks) {
+        Ok(took) => console(ConsoleLine::Info(format!("Install successfully finished in {}.", duration_label(took)))),
+        Err(reason) => {
+            console(ConsoleLine::Error("Installation did not succeed.".into()));
+            console(ConsoleLine::Error(format!("The application could not be installed: {reason}")));
+            return (RunOutcome::Failed, build);
+        }
+    }
+    if cancelled() {
+        return (RunOutcome::Cancelled, build);
+    }
+    device.force_stop(target.serial, &output.application_id);
+    let Some(component) = device.launcher_activity(target.serial, &output.application_id) else {
+        console(ConsoleLine::Error("Could not identify launch activity: Default Activity not found".into()));
+        console(ConsoleLine::Error("Error while Launching activity".into()));
+        return (RunOutcome::Failed, build);
+    };
+    console(ConsoleLine::Command(format!("$ adb shell am start -n \"{component}\" -a android.intent.action.MAIN -c android.intent.category.LAUNCHER")));
+    if let Err(reason) = device.start(target.serial, &component) {
+        console(ConsoleLine::Error(reason));
+        console(ConsoleLine::Error("Error while Launching activity".into()));
+        return (RunOutcome::Failed, build);
+    }
+    // The process shows up once the activity starts.
+    let mut pid = None;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pid.is_none() && Instant::now() < deadline && !cancelled() {
+        pid = device.pid(target.serial, &output.application_id);
+        if pid.is_none() {
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    }
+    match pid {
+        Some(pid) => console(ConsoleLine::Info(format!("Connected to process {pid} on device '{}'.", target.name))),
+        None => console(ConsoleLine::Info(format!("The process of {} didn't start on '{}'.", output.application_id, target.name))),
+    }
+    (RunOutcome::Running { application_id: output.application_id, pid }, build)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::run::{ApkOutput, ModuleInfo, ModuleType};
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    struct Gradle {
+        ok: bool,
+        tasks: RefCell<Vec<String>>,
+    }
+    impl TaskRunner for Gradle {
+        fn run_tasks(&self, _: &Path, tasks: &[String], line: &mut dyn FnMut(&str), _: &dyn Fn() -> bool) -> BuildResult {
+            self.tasks.borrow_mut().extend(tasks.iter().cloned());
+            line("BUILD SUCCESSFUL in 1s");
+            BuildResult { succeeded: self.ok, ..Default::default() }
+        }
+        fn apk_output(&self, _: &ModuleInfo, _: &str) -> Option<ApkOutput> {
+            Some(ApkOutput { application_id: "com.example".into(), apks: vec![PathBuf::from("/p/app.apk")] })
+        }
+    }
+
+    struct Phone(RefCell<Vec<String>>);
+    impl DeviceBridge for Phone {
+        fn install(&self, _: &str, apks: &[PathBuf]) -> Result<Duration, String> {
+            self.0.borrow_mut().push(format!("install {}", apks.len()));
+            Ok(Duration::from_millis(1500))
+        }
+        fn force_stop(&self, _: &str, id: &str) {
+            self.0.borrow_mut().push(format!("stop {id}"));
+        }
+        fn launcher_activity(&self, _: &str, id: &str) -> Option<String> {
+            Some(format!("{id}/.MainActivity"))
+        }
+        fn start(&self, _: &str, component: &str) -> Result<(), String> {
+            self.0.borrow_mut().push(format!("start {component}"));
+            Ok(())
+        }
+        fn pid(&self, _: &str, _: &str) -> Option<u32> {
+            Some(4242)
+        }
+    }
+
+    fn config() -> RunConfiguration {
+        let module = ModuleInfo { path: ":app".into(), dir: "/p/app".into(), kind: ModuleType::Application, variants: vec!["debug".into()] };
+        RunConfiguration { name: "app".into(), build_root: "/p".into(), module }
+    }
+
+    #[test]
+    fn builds_installs_and_starts() {
+        let (gradle, phone) = (Gradle { ok: true, tasks: RefCell::default() }, Phone(RefCell::default()));
+        let mut lines = Vec::new();
+        let (outcome, _) = run(&gradle, &phone, &config(), "debug", Target { serial: "s", name: "Pixel" }, &mut |_| {}, &mut |l| lines.push(l), &|| false);
+        assert_eq!(outcome, RunOutcome::Running { application_id: "com.example".into(), pid: Some(4242) });
+        assert_eq!(gradle.tasks.borrow().as_slice(), [":app:assembleDebug"]);
+        assert_eq!(phone.0.borrow().as_slice(), ["install 1", "stop com.example", "start com.example/.MainActivity"]);
+        assert_eq!(lines[0], ConsoleLine::Info("Install successfully finished in 1 s 500 ms.".into()));
+        assert!(matches!(&lines[1], ConsoleLine::Command(c) if c.contains("am start -n \"com.example/.MainActivity\"")));
+        assert_eq!(lines[2], ConsoleLine::Info("Connected to process 4242 on device 'Pixel'.".into()));
+    }
+
+    #[test]
+    fn a_failed_build_installs_nothing() {
+        let (gradle, phone) = (Gradle { ok: false, tasks: RefCell::default() }, Phone(RefCell::default()));
+        let (outcome, _) = run(&gradle, &phone, &config(), "debug", Target { serial: "s", name: "Pixel" }, &mut |_| {}, &mut |_| {}, &|| false);
+        assert_eq!(outcome, RunOutcome::BuildFailed);
+        assert!(phone.0.borrow().is_empty());
+    }
+}

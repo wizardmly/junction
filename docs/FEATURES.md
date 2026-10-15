@@ -336,6 +336,24 @@ Android Studio 的 Sync Project with Gradle Files，轻量版：只让 Gradle �
 
 Linux 实测：最小 Kotlin/JVM 项目（okhttp、gson、一个不存在的依赖）：打开时提示、Sync Now 后库从 8 个变 10 个、切到加了 retrofit 的分支后自动同步变 11 个、build 脚本写坏时报错且库不变。热守护进程下同步 1–3 秒。Windows / macOS 和真实 Android 项目需真机验证。
 
+## 16. Build + Run（2026-10-15）
+
+Android Studio 的 Make Project、Run 'app'、Stop，以及 Build、Run、Build Variants 三个工具窗口。代码：`src/domain/run.rs`、`src/usecase/run_app.rs`、`src/infra/gradle.rs`（流式跑任务、读 `output-metadata.json`）、`src/infra/adb_device.rs`、`src/ui/run_service.rs`、`src/ui/run_views.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 标题栏（Gradle 项目才显示）：Make Project 锤子、设备下拉（在线设备 + 可启动的模拟器）、运行配置下拉（每个 application 模块一个，名字同 AS）、Run（运行中变 Rerun）、Stop（只在有东西可停时出现）、Sync | ✅（选的设备记住；选了没开的模拟器会先启动并等它上线） |
+| Make Project（Ctrl+F9 / ⌘F9）：所有模块按当前变体 `:m:assemble<Variant>`，JVM 模块 `:m:assemble` | ✅ |
+| Run 'app'（Shift+F10 / ⌃R）：`:app:assemble<Variant>` → 读 `build/outputs/apk/**/output-metadata.json` 得 applicationId 和 APK → `adb install -r -t`（多 APK 用 install-multiple）→ `am force-stop` → `cmd package resolve-activity` 找启动 Activity（TV 应用找 LEANBACK_LAUNCHER）→ `am start` → `pidof` | ✅ |
+| Run 窗口（Alt+4）：AS 的输出 “Launching 'app' on …”、“Install successfully finished in …”、`$ adb shell am start …`、“Connected to process … on device …”；安装失败显示 `INSTALL_FAILED_…` 原因；Rerun / Stop | ✅ |
+| Stop（Ctrl+F2 / ⌘F2）：取消构建（Windows 下杀整个进程树），停掉应用（`am force-stop`） | ✅ |
+| Build 窗口：首行 “Executing tasks: […]”，状态（运行中 / 成功 / 失败 / 取消、时长、错误和警告数），左侧问题列表点击跳到源码行列，右侧 Gradle 输出（虚拟列表、错误行标红、自动滚到底） | ✅（解析 Kotlin K1/K2、javac、AAPT 报错；构建的错误同时标到编辑器） |
+| Build Variants 窗口：每个 Android 模块的 Active Build Variant 下拉，选了后重新 Sync；Run、Make、保存后编译、Sync 都用所选变体 | ✅（变体来自 Sync 记录；没 Sync 过时按 build 文件猜模块，变体为 debug / release） |
+| 主菜单 Build（Make Project、Sync、Select Build Variant…）和 Run（Run 'app'、Stop）；View › Tool Windows 加 Build、Run、Build Variants；Find Action 可搜到 | ✅ |
+| Debug、Apply Changes、Edit Configurations 对话框、多设备同时运行 | ❌ 未做（Debug 随第 9 项） |
+
+Linux 实测（容器无法下载 Android SDK，用假 adb 和一个模拟 assembleDebug 的 Gradle 项目）：Run 走完构建、安装、启动、找到进程；Stop 发出 force-stop；Make Project 把 Kotlin 类型错误列在 Build 窗口，点击跳到 Util.kt 2:18 并在编辑器标红。真实 AGP 项目和真机需要在 Windows / macOS 上验证。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。

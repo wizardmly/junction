@@ -353,12 +353,15 @@ impl Workspace {
                 .child(tool_button("tb-fetch", icons::VCS_FETCH, "Fetch").on_click(cx.listener(
                     |this, _, _, cx| this.model.update(cx, |m, cx| m.fetch_all(cx)),
                 )))
-                // Android Studio's, for Gradle projects.
+                // Android Studio's, for Gradle projects: Make, the device and
+                // run configuration pickers, Run / Rerun, Stop, Sync.
                 .when(gradle, |el| {
-                    el.child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border)).child(
-                        tool_button("tb-gradle-sync", icons::GRADLE, if cfg!(target_os = "macos") { "Sync Project with Gradle Files  ⇧⌘O" } else { "Sync Project with Gradle Files  Ctrl+Shift+O" })
-                            .on_click(|_, _, cx| crate::ui::sync_service::SyncService::global(cx).update(cx, |s, cx| s.sync_all(cx))),
-                    )
+                    el.child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
+                        .child(self.render_run_widget(cx))
+                        .child(
+                            tool_button("tb-gradle-sync", icons::GRADLE, if cfg!(target_os = "macos") { "Sync Project with Gradle Files  ⇧⌘O" } else { "Sync Project with Gradle Files  Ctrl+Shift+O" })
+                                .on_click(|_, _, cx| crate::ui::sync_service::SyncService::global(cx).update(cx, |s, cx| s.sync_all(cx))),
+                        )
                 })
                 // The new UI's right corner: Search Everywhere and Settings.
                 .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
@@ -369,6 +372,92 @@ impl Workspace {
                     cx.listener(|this, _, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx)),
                 ))),
         )
+    }
+
+    /// Android Studio's run widget: Make Project, the target device, the run
+    /// configuration, Run (Rerun while it runs) and Stop.
+    fn render_run_widget(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let run = self.run.clone();
+        let service = run.read(cx);
+        let config = service.configuration(cx);
+        let configs = service.configurations(cx);
+        let device = service.device(cx);
+        let devices = service.devices(cx);
+        let (busy, can_stop) = (service.is_busy(), service.can_stop());
+        let running = service.console.as_ref().is_some_and(|c| c.active);
+        let device_label = device.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| "No Devices".into());
+        let device_icon = match device.as_ref() {
+            Some(d) if d.kind == crate::android::Kind::Virtual => icons::VIRTUAL_DEVICE_PHONE,
+            _ => icons::PHYSICAL_DEVICE_PHONE,
+        };
+        let config_name = config.as_ref().map(|c| c.name.clone());
+        let (make, pick_device, pick_config, start, stop) = (run.clone(), run.clone(), run.clone(), run.clone(), run.clone());
+        let selected_device = device.map(|d| d.id);
+        let selected_config = config.map(|c| (c.build_root, c.module.path));
+        h_flex()
+            .gap_1()
+            .child(
+                tool_button("tb-make", icons::TW_BUILD, if cfg!(target_os = "macos") { "Make Project  ⌘F9" } else { "Make Project  Ctrl+F9" })
+                    .disabled(busy)
+                    .on_click(move |_, _, cx| make.update(cx, |r, cx| r.make_project(cx))),
+            )
+            .child(
+                Button::new("tb-device")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(device_icon).small())
+                    .label(device_label)
+                    .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
+                    .tooltip("Available Devices")
+                    .dropdown_menu(move |mut menu, _, _| {
+                        if devices.is_empty() {
+                            return menu.item(PopupMenuItem::new("No devices").disabled(true));
+                        }
+                        let mut virtual_label = false;
+                        menu = menu.label("Running Devices");
+                        for d in &devices {
+                            if !d.online && !virtual_label {
+                                virtual_label = true;
+                                menu = menu.separator().label("Available Devices");
+                            }
+                            let (id, run) = (d.id.clone(), pick_device.clone());
+                            menu = menu.item(PopupMenuItem::new(d.name.clone()).checked(selected_device.as_deref() == Some(d.id.as_str())).on_click(move |_, _, cx| {
+                                let id = id.clone();
+                                run.update(cx, |r, cx| r.pick_device(id, cx))
+                            }));
+                        }
+                        menu
+                    }),
+            )
+            .child(
+                Button::new("tb-config")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(icons::MODULE_ANDROID).small())
+                    .label(config_name.clone().unwrap_or_else(|| "Add Configuration…".into()))
+                    .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
+                    .tooltip("Run / Debug Configurations")
+                    .dropdown_menu(move |mut menu, _, _| {
+                        if configs.is_empty() {
+                            return menu.item(PopupMenuItem::new("No application modules").disabled(true));
+                        }
+                        for c in &configs {
+                            let checked = selected_config.as_ref().is_some_and(|(b, m)| *b == c.build_root && *m == c.module.path);
+                            let (c2, run) = (c.clone(), pick_config.clone());
+                            menu = menu.item(PopupMenuItem::new(c.name.clone()).checked(checked).on_click(move |_, _, cx| {
+                                let c = c2.clone();
+                                run.update(cx, |r, cx| r.pick_configuration(&c, cx))
+                            }));
+                        }
+                        menu
+                    }),
+            )
+            .child(
+                tool_button("tb-run", if running { icons::RERUN } else { icons::RUN }, crate::ui::run_views::run_label(config_name.as_deref().unwrap_or("app")))
+                    .on_click(move |_, _, cx| start.update(cx, |r, cx| r.run(cx))),
+            )
+            // The new UI shows Stop only while something runs.
+            .when(can_stop, |el| el.child(tool_button("tb-stop", icons::STOP, crate::ui::run_views::stop_label()).on_click(move |_, _, cx| stop.update(cx, |r, cx| r.stop(cx)))))
     }
 
     /// The Notifications tool window: every balloon of this session, newest first.
