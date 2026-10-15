@@ -44,6 +44,7 @@ pub mod rebase_dialog;
 pub mod rollback_dialog;
 pub mod remote_dialogs;
 pub mod rename_dialog;
+pub mod introduce_dialog;
 pub mod revision_browser;
 pub mod shelf_view;
 pub mod spell_overlay;

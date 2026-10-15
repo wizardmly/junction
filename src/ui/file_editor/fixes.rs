@@ -1,6 +1,7 @@
 //! Alt+Enter (Show Context Actions) in the editor: the quick fixes of the
 //! problems at the caret, as IntelliJ's popup lists them ("Change to
-//! 1.13.1"). Enter or a click applies one; Escape closes it.
+//! 1.13.1"). Enter or a click applies one; Escape closes it. The same
+//! popup is Introduce Variable's "Expressions" chooser.
 
 use gpui_kit::component::{Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
@@ -29,9 +30,20 @@ pub fn init(cx: &mut gpui_kit::App) {
 
 pub(super) struct ContextActions {
     /// Each fix and the byte range it replaces.
-    items: Vec<(std::ops::Range<usize>, Fix)>,
+    items: Vec<(std::ops::Range<usize>, Choice)>,
+    /// "Expressions" over the list.
+    title: Option<&'static str>,
     selected: usize,
     at: Point<Pixels>,
+    /// The selection to put back when the popup closes unused.
+    caret: Option<std::ops::Range<usize>>,
+}
+
+#[derive(Clone)]
+pub(super) enum Choice {
+    Fix(Fix),
+    /// An expression to introduce a variable for (its text, one line).
+    Expression(String),
 }
 
 /// The byte offset of a line and character column.
@@ -49,7 +61,7 @@ impl FileEditor {
         let text = self.text(cx);
         let cursor = self.state.read(cx).cursor();
         let cursor_line = Pos::of(&text, cursor).line;
-        let mut items: Vec<(std::ops::Range<usize>, Fix)> = Vec::new();
+        let mut items: Vec<(std::ops::Range<usize>, Choice)> = Vec::new();
         // The problems under the caret first, then the rest of its line.
         let mut problems = self.problems();
         problems.sort_by_key(|p| {
@@ -58,20 +70,42 @@ impl FileEditor {
         });
         for p in problems.iter().filter(|p| p.start.line == cursor_line) {
             if let Some(fix) = &p.fix {
-                items.push((offset_of(&text, p.start)..offset_of(&text, p.end), fix.clone()));
+                items.push((offset_of(&text, p.start)..offset_of(&text, p.end), Choice::Fix(fix.clone())));
             }
         }
         if items.is_empty() {
             return;
         }
         let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
-        self.context_actions = Some(ContextActions { items, selected: 0, at });
+        self.context_actions = Some(ContextActions { items, title: None, selected: 0, at, caret: None });
         window.focus(&self.context_focus, cx);
         cx.notify();
     }
 
+    /// Introduce Variable's "Expressions" popup at the caret: the one
+    /// chosen is highlighted in the text as the list moves.
+    pub(super) fn choose_expression(&mut self, text: &str, ranges: Vec<std::ops::Range<usize>>, window: &mut Window, cx: &mut Context<Self>) {
+        let cursor = self.state.read(cx).cursor();
+        let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
+        let items = ranges
+            .into_iter()
+            .map(|r| {
+                let one_line = text[r.clone()].split_whitespace().collect::<Vec<_>>().join(" ");
+                let label = if one_line.chars().count() > 60 { format!("{}…", one_line.chars().take(60).collect::<String>()) } else { one_line };
+                (r, Choice::Expression(label))
+            })
+            .collect();
+        let caret = Some(self.state.read(cx).selected_range());
+        self.context_actions = Some(ContextActions { items, title: Some("Expressions"), selected: 0, at, caret });
+        window.focus(&self.context_focus, cx);
+        cx.notify();
+    }
+
+
     fn close_context_actions(&mut self, _: &CloseContextActions, window: &mut Window, cx: &mut Context<Self>) {
-        self.context_actions = None;
+        if let Some(caret) = self.context_actions.take().and_then(|p| p.caret) {
+            self.state.update(cx, |state, cx| state.set_selected_range(caret, cx));
+        }
         self.focus(window, cx);
         cx.notify();
     }
@@ -85,20 +119,57 @@ impl FileEditor {
 
     fn apply_context_action(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(popup) = self.context_actions.take() else { return };
-        let Some((range, fix)) = popup.items.get(ix).cloned() else { return };
+        let Some((range, choice)) = popup.items.get(ix).cloned() else { return };
         self.focus(window, cx);
-        self.state.update(cx, |state, cx| {
-            state.set_selected_range(range, cx);
-            state.replace(&fix.replacement, window, cx);
-        });
+        match choice {
+            Choice::Fix(fix) => self.state.update(cx, |state, cx| {
+                state.set_selected_range(range, cx);
+                state.replace(&fix.replacement, window, cx);
+            }),
+            Choice::Expression(_) => {
+                if let Some(caret) = popup.caret {
+                    self.state.update(cx, |state, cx| state.set_selected_range(caret, cx));
+                }
+                self.introduce_variable_for(range, window, cx);
+            }
+        }
         cx.notify();
+    }
+
+    /// The expression the "Expressions" popup has selected, highlighted
+    /// in the text as IntelliJ does: a box per line it spans.
+    pub(super) fn render_expression_highlight(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let popup = self.context_actions.as_ref()?;
+        let (range, Choice::Expression(_)) = popup.items.get(popup.selected)? else { return None };
+        let state = self.state.read(cx);
+        let text = state.value().to_string();
+        let mut boxes = Vec::new();
+        let mut line_start = range.start;
+        while line_start < range.end {
+            let line_end = text[line_start..range.end].find('\n').map_or(range.end, |i| line_start + i);
+            if let (Some(a), Some(b)) = (state.range_to_bounds(&(line_start..line_start)), state.range_to_bounds(&(line_end..line_end))) {
+                boxes.push((a.origin, b.left() - a.left(), a.size.height));
+            }
+            line_start = line_end + 1;
+        }
+        let color = cx.palette().selection.opacity(0.6);
+        Some(
+            deferred(div().children(boxes.into_iter().map(move |(origin, width, height)| {
+                anchored().position(origin).child(div().w(width.max(px(2.))).h(height).bg(color).rounded_sm())
+            })))
+            .with_priority(1),
+        )
     }
 
     pub(super) fn render_context_actions(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let popup = self.context_actions.as_ref()?;
         let palette = cx.palette().clone();
-        let rows = popup.items.iter().enumerate().map(|(ix, (_, fix))| {
+        let rows = popup.items.iter().enumerate().map(|(ix, (_, choice))| {
             let selected = ix == popup.selected;
+            let (icon, label) = match choice {
+                Choice::Fix(fix) => (Some(icons::INTENTION_BULB), fix.title.clone()),
+                Choice::Expression(text) => (None, text.clone()),
+            };
             h_flex()
                 .id(("context-action", ix))
                 .gap_1p5()
@@ -108,8 +179,8 @@ impl FileEditor {
                 .cursor_pointer()
                 .when(selected, |el| el.bg(palette.selection))
                 .when(!selected, |el| el.hover(|el| el.bg(palette.hover)))
-                .child(Icon::new(icons::INTENTION_BULB).xsmall())
-                .child(fix.title.clone())
+                .when_some(icon, |el, icon| el.child(Icon::new(icon).xsmall()))
+                .child(label)
                 .on_click(cx.listener(move |this, _, window, cx| this.apply_context_action(ix, window, cx)))
         });
         Some(
@@ -127,7 +198,9 @@ impl FileEditor {
                             this.apply_context_action(ix, window, cx);
                         }))
                         .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.context_actions = None;
+                            if let Some(caret) = this.context_actions.take().and_then(|p| p.caret) {
+                                this.state.update(cx, |state, cx| state.set_selected_range(caret, cx));
+                            }
                             cx.notify();
                         }))
                         .min_w(px(220.))
@@ -138,6 +211,9 @@ impl FileEditor {
                         .border_color(palette.border)
                         .rounded_md()
                         .shadow_lg()
+                        .when_some(popup.title, |el, title| {
+                            el.child(div().px_2().pb_1().text_xs().text_color(palette.text_secondary).child(title))
+                        })
                         .children(rows)
                         .child(div().h(px(0.))),
                 ),

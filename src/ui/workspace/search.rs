@@ -142,6 +142,11 @@ impl Workspace {
                     editor.update(cx, |e, cx| e.optimize_imports(window, cx));
                 }
             })),
+            ("Introduce Variable…", "Ctrl+Alt+V", op(|this, window, cx| {
+                if let Some(editor) = this.editor().cloned() {
+                    editor.update(cx, |e, cx| e.introduce_variable(window, cx));
+                }
+            })),
             ("Rename…", "Shift+F6", op(|this, _, cx| {
                 if let Some(editor) = this.editor().cloned() {
                     editor.update(cx, |e, cx| e.rename(cx));

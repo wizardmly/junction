@@ -10,6 +10,7 @@ pub mod libraries;
 pub mod nav;
 pub mod hierarchy;
 pub mod locals;
+pub mod introduce;
 pub mod special;
 pub mod lsp;
 pub mod service;

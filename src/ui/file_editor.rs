@@ -56,6 +56,7 @@ actions!(
         FindUsages,
         RenameElement,
         OptimizeImports,
+        IntroduceVariable,
         FindNext,
         FindPrevious,
         CloseChangePopup,
@@ -107,6 +108,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("alt-f7", FindUsages, Some(CONTEXT)),
         KeyBinding::new("shift-f6", RenameElement, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-o", OptimizeImports, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-v" } else { "ctrl-alt-v" }, IntroduceVariable, Some(CONTEXT)),
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
         KeyBinding::new(if cfg!(target_os = "macos") { "f3" } else { "f11" }, ToggleBookmark, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "alt-f3" } else { "ctrl-f11" }, ToggleBookmarkWithMnemonic, Some(CONTEXT)),
@@ -1009,10 +1011,7 @@ impl FileEditor {
         let style = crate::index::lang::Lang::from_path(&self.path).and_then(crate::infra::index_code_model::IndexCodeModel::import_style);
         let Some(style) = style.filter(|_| !self.read_only()) else { return };
         let text = self.text(cx);
-        let hint = |message: String, window: &mut Window, cx: &mut Context<Self>| {
-            use gpui_kit::component::{notification::Notification, WindowExt as _};
-            window.push_notification(Notification::info(message).title("Optimize Imports"), cx);
-        };
+        let hint = |message: String, window: &mut Window, cx: &mut Context<Self>| Self::hint("Optimize Imports", message, window, cx);
         let Some(edit) = crate::domain::imports::optimize(style, &text) else {
             hint("Unused imports not found".into(), window, cx);
             return;
@@ -1035,6 +1034,72 @@ impl FileEditor {
             n => format!("Removed {n} unused imports"),
         };
         hint(notice, window, cx);
+    }
+
+    /// A refactoring's result or why it can't run, as Android Studio's
+    /// hint shows it.
+    fn hint(title: &str, message: impl Into<String>, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::{notification::Notification, WindowExt as _};
+        window.push_notification(Notification::info(message.into()).title(title.to_owned()), cx);
+    }
+
+    /// The Java / Kotlin import style of this file, for refactorings.
+    fn jvm_style(&self) -> Option<(crate::index::lang::Lang, crate::domain::imports::ImportStyle)> {
+        let lang = crate::index::lang::Lang::from_path(&self.path)?;
+        Some((lang, crate::infra::index_code_model::IndexCodeModel::import_style(lang)?))
+    }
+
+    fn introduce_variable_action(&mut self, _: &IntroduceVariable, window: &mut Window, cx: &mut Context<Self>) {
+        self.introduce_variable(window, cx);
+    }
+
+    /// Refactor › Introduce Variable (Ctrl+Alt+V): the selected
+    /// expression, or with none the one chosen from those at the caret.
+    pub fn introduce_variable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((lang, _)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
+        let text = self.text(cx);
+        let selection = self.state.read(cx).selected_range();
+        match crate::index::introduce::expressions_at(lang, &text, selection) {
+            Err(message) => Self::hint("Introduce Variable", format!("Cannot perform refactoring.\n{message}"), window, cx),
+            Ok(ranges) if ranges.len() == 1 => self.introduce_variable_for(ranges[0].clone(), window, cx),
+            Ok(ranges) => self.choose_expression(&text, ranges, window, cx),
+        }
+    }
+
+    /// Introduce Variable for the expression at `range`: the dialog, then
+    /// the edit, the caret after the new name.
+    pub(super) fn introduce_variable_for(&mut self, range: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::introduce_variable::{introduce, suggest_names};
+        let Some((lang, style)) = self.jvm_style() else { return };
+        let text = self.text(cx);
+        let (extraction, taken) = match crate::index::introduce::extraction(lang, &text, range) {
+            Ok(found) => found,
+            Err(message) => return Self::hint("Introduce Variable", format!("Cannot perform refactoring.\n{message}"), window, cx),
+        };
+        if style == crate::domain::imports::ImportStyle::Java && extraction.java_type.is_none() {
+            return Self::hint("Introduce Variable", "Cannot perform refactoring.\nCannot perform refactoring without a type", window, cx);
+        }
+        let suggestions = suggest_names(style, &extraction.source, &|n| taken.iter().any(|t| t == n));
+        let occurrences = extraction.occurrences.len();
+        let editor = cx.entity().downgrade();
+        crate::ui::introduce_dialog::open(style, suggestions, occurrences, move |request, window, cx| {
+            editor
+                .update(cx, |this, cx| {
+                    let text = this.text(cx);
+                    match introduce(style, &text, &extraction, request.all, &request.name, request.modifier) {
+                        Err(message) => Self::hint("Introduce Variable", message, window, cx),
+                        Ok(done) => this.state.update(cx, |state, cx| {
+                            state.set_selected_range(done.range.clone(), cx);
+                            state.replace(&done.text, window, cx);
+                            // The caret after the new name, nothing selected: the
+                            // dialog already named it (typing over a selected name
+                            // would rename the declaration alone).
+                            state.set_selected_range(done.name_at.end..done.name_at.end, cx);
+                        }),
+                    }
+                })
+                .ok();
+        }, window, cx);
     }
 
     pub fn selected_text(&self, cx: &gpui_kit::App) -> Option<String> {
@@ -1927,6 +1992,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::find_usages))
             .on_action(cx.listener(Self::rename_element))
             .on_action(cx.listener(Self::optimize_imports_action))
+            .on_action(cx.listener(Self::introduce_variable_action))
             .on_action(cx.listener(Self::find_next))
             .on_action(cx.listener(|this, _: &OpenFind, window, cx| this.open_find(false, window, cx)))
             .on_action(cx.listener(|this, _: &OpenReplace, window, cx| this.open_find(true, window, cx)))
@@ -2052,7 +2118,12 @@ impl Render for FileEditor {
                                 .separator()
                                 .menu("Go to Declaration", Box::new(GotoDeclaration))
                                 .menu("Find Usages", Box::new(FindUsages))
-                                .submenu("Refactor", NativeMenu::new().menu_with_disabled("Rename…", read_only, Box::new(RenameElement)))
+                                .submenu(
+                                    "Refactor",
+                                    NativeMenu::new()
+                                        .menu_with_disabled("Rename…", read_only, Box::new(RenameElement))
+                                        .menu_with_disabled("Introduce Variable…", read_only, Box::new(IntroduceVariable)),
+                                )
                                 .menu("Select in Project View", Box::new(crate::ui::workspace::SelectInProject))
                                 .separator()
                                 .menu_with_disabled("Compare with Clipboard", read_only, Box::new(CompareWithClipboard))
@@ -2084,6 +2155,7 @@ impl Render for FileEditor {
                     el.child(deferred(anchored().position(point(at.x + px(12.), at.y + px(16.))).child(card)).with_priority(1))
                 })
                 .when_some(self.popup.zip(self.popup_anchor.get()), |el, (ix, at)| el.child(self.render_popup(ix, at, cx)))
+                .children(self.render_expression_highlight(cx))
                 .children(self.render_context_actions(cx))
                 .children(self.render_test_menu(cx))
                 .children(self.render_breakpoint_popup(cx)),

@@ -218,7 +218,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 **P1：每天会用，可暂时回 AS**
 
 5. 🟡 Debugger（2026-10-15，FEATURES.md 第 22 节）：JDWP 客户端、行断点（持久化、类加载后补设）、Debug JVM 单元测试、Debug 'app'（`am start -D` + adb `jdwp:<pid>`）、Device Explorer 的 Attach debugger、执行点、Debug 工具窗口（F9/F8/F7/Shift+F8/Alt+F9、Frames、Variables 树）。**Android 调试只在模拟 adb 下验证过，需真机 / 模拟器验证**。条件断点、求值输入框、Watches、toString / 集合显示已补上（2026-10-15）。剩日志断点、Alt+F8 对话框、lambda / new 等表达式、Detach。
-6. 🟡 符号级重构：✅ Rename（Shift+F6，2026-10-15，FEATURES.md 第 24 节）：局部变量按作用域，类 / 方法 / 属性按项目整词匹配并列出每处供取消勾选，注释和字符串可选，类改名连带文件 `git mv`。✅ Optimize Imports（Ctrl+Alt+O，FEATURES.md 第 25 节）。剩 Rename 的语义级精确匹配（可走 LSP rename）、Extract、Change Signature。
+6. 🟡 符号级重构：✅ Rename（Shift+F6，2026-10-15，FEATURES.md 第 24 节）：局部变量按作用域，类 / 方法 / 属性按项目整词匹配并列出每处供取消勾选，注释和字符串可选，类改名连带文件 `git mv`。✅ Optimize Imports（Ctrl+Alt+O，FEATURES.md 第 25 节）。✅ Introduce Variable（Ctrl+Alt+V，FEATURES.md 第 26 节，照 IntelliJ 的 KotlinIntroduceVariableHandler / KotlinNameSuggester）。剩 Rename 的语义级精确匹配（可走 LSP rename）、Extract Method / Constant / Parameter、Change Signature。
 7. ✅ Android 资源（2026-10-15，FEATURES.md 第 19 节）：`R.x.y` / `@x/y` 跳转、悬停显示值、Find Usages、颜色和图片 gutter 预览。剩 Translations Editor、Manifest 合并视图、vector drawable 预览。
 8. ✅ 测试（2026-10-15，FEATURES.md 第 21 节）：gutter ▶ / ▶▶ 和结果图标、Ctrl+Shift+F10、Gradle test 任务 + init script 实时事件 + JUnit XML、Run 窗口的测试标签页（结果树、状态行、Rerun Failed Tests、控制台）。剩覆盖率、Project 窗口右键运行目录、对比窗口、仪器测试真机验证（Debug 测试已随第 5 项完成）。
 9. ✅ Gradle 文件辅助（2026-10-15，FEATURES.md 第 20 节）：version catalog 跳转、悬停、Find Usages、`libs.` 补全，依赖和插件新版本警告 + Alt+Enter “Change to …”。剩 Project Structure 对话框、“改用 version catalog” 之类的迁移修复。
@@ -255,6 +255,8 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 更细的历史看 `git log`，每个提交的标题都写明了用户可见的变化。
 
 ## 8. 接手建议
+
+0. 行为拿不准时，去 IntelliJ IDEA / Android Studio 的开源代码里看它们怎么做（`git clone --filter=blob:none --sparse https://github.com/JetBrains/intellij-community`，按需 `git show HEAD:<路径>` 读单个文件）；Optimize Imports 的默认排序、Introduce Variable 的取名规则和提示文案都按那里核对过。
 
 1. 先编译运行一次，打开一个 Android 项目和一个多仓库目录，对照 FEATURES.md 熟悉界面。
 2. 下一步按维护者定的顺序做 6.2：测试 → Debugger。新功能按第 4 节的 Clean 架构分层写。

@@ -520,6 +520,21 @@ Linux 实测（Xvfb，示例 Gradle 项目）：类 `Calc` 改为 `Calculator`�
 
 Linux 实测（Xvfb）：`Shapes.kt` 里 7 条 import（含重复的 `java.io.File`、本包的 `Calc`、未用的 `File`）优化后剩 `java.util.UUID`、`kotlin.math.PI`、`kotlin.math.max` 三条，光标仍在原行，Ctrl+Z 一步恢复。
 
+## 26. Introduce Variable（2026-10-15）
+
+| 功能 | 状态 |
+|---|---|
+| Kotlin / Java 文件里 Ctrl+Alt+V，或右键 Refactor › Introduce Variable…、Find Action | ✅ |
+| 有选区时用选中的表达式（不是表达式时提示 “Selected block should represent an expression”）；没有选区时弹 AS 的 “Expressions” 列表，列出光标处由内到外的表达式，上下键移动时在代码里高亮对应表达式 | ✅ |
+| 名字建议照 IntelliJ 的 KotlinNameSuggester：调用名 / 属性名去掉 `get` / `is` / `set` 前缀再取驼峰后缀（`user.getName()` → `name`），字面量按类型（字符串 `string` / `str` / `s` / `text`，整数 `i` / `n`，布尔 `bool` / `b`），最后是 `value`；与函数里已声明的名字冲突时加数字；关键字转义（`class` → `klass`） | ✅ |
+| Introduce Variable 对话框：名字、建议名（点击即填入）、“Replace all occurrences (N occurrences)”（同一代码块里出现多次时，默认全部替换）、Kotlin 的 “Declare with var”、Java 的 “Declare final”；名字非法时提示并不能提交 | ✅ |
+| 声明插在第一个被替换处所在语句之前，沿用该语句的缩进；表达式本身就是一条语句（如单独一行的 `foo()`）时整条语句变成声明；一次 Ctrl+Z 撤销 | ✅ |
+| Java 的类型从表达式可见的信息推出：字面量、`new Foo<T>(…)`、强转、比较和逻辑运算（`boolean`）、含字符串的 `+`（`String`）；推不出时提示 “Cannot perform refactoring without a type” | ✅ |
+| 不在代码块里（类属性初始化、表达式体函数 `fun f() = …`）时提示 “Cannot refactor in this place” | ✅ |
+| AS 的就地模式（直接在代码里改名、各处同步）、“Specify type explicitly”、Java 方法调用结果的类型推断、把表达式体函数转成代码块 | ❌ 未做 |
+
+Linux 实测（Xvfb）：Kotlin 里光标在 `user.getName()` 上按 Ctrl+Alt+V，弹出 Expressions 列表（`user`、`user.getName()`、`"Hello " + user.getName()`、`println(…)`），选第二项时代码里对应高亮；对话框建议 `name`、`value`，3 处出现默认全部替换；Refactor 后在第一处语句前插入 `val name = user.getName()`，三处都换成 `name`。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。
