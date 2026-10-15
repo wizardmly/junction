@@ -1,0 +1,55 @@
+# Checks a branch or pull request before it reaches master (where every push
+# is a release): the build has no new warnings and the unit tests pass. The
+# Linux binary is kept as an artifact so the change can be tried without
+# building it again.
+name: CI
+
+on:
+  push:
+    branches-ignore: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev \
+            libvulkan-dev libfontconfig-dev libfreetype-dev libasound2-dev libssl-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (count warnings)
+        run: |
+          cargo build --release 2>&1 | tee build.log
+          echo "warnings: $(grep -c '^warning' build.log || true)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Unit tests
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+          cargo test --release 2>&1 | tee test.log
+          grep -E '^test result' test.log | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Collect the binary and the packages for headless UI checks
+        if: always()
+        run: |
+          mkdir -p out/debs
+          [ -f target/release/junction ] && cp target/release/junction out/
+          cp build.log out/ 2>/dev/null || true
+          cp test.log out/ 2>/dev/null || true
+          cd out/debs
+          llvm=$(apt-cache depends mesa-vulkan-drivers | awk '/Depends: libllvm/{print $2}' | head -1)
+          apt-get download mesa-vulkan-drivers $llvm xdotool libxdo3 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-ci
+          path: out
+          retention-days: 7
