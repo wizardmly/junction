@@ -506,6 +506,20 @@ Linux 实测：去掉 `JAVA_HOME`、PATH 中不含 `java` 启动（即用户截�
 
 Linux 实测（Xvfb，示例 Gradle 项目）：类 `Calc` 改为 `Calculator`，`Calc.java` 改名为 `Calculator.java`（Git 显示为重命名），测试里的 `Calc.add` 跟着改，勾选注释后 Javadoc 里的 `Calc` 也改了，标签页跟到新文件；局部变量 `sum` 改为 `total`，三处全改；方法 `add` 列出声明和两处调用；输入 `class` 时显示错误且不能提交。
 
+## 25. Optimize Imports（2026-10-15）
+
+| 功能 | 状态 |
+|---|---|
+| Java / Kotlin 文件里 Ctrl+Alt+O（Find Action 里也能找到 “Optimize Imports”），可 Ctrl+Z 一步撤销，光标留在原来的代码上 | ✅ |
+| 删掉文件里没用到的 import、重复的 import、本包的 import、Java 的 `java.lang.*` 单类 import；`*` 导入保留；Kotlin 运算符和委托函数（`getValue`、`setValue`、`plus`、`invoke`、`contains` 等）不写名字也会用到，保留；`import a.B as C` 按别名判断 | ✅ |
+| 按 IntelliJ 默认代码风格排序：Kotlin 为其他、`java.*`、`javax.*`、`kotlin.*`、别名导入，组间不空行；Java 为其他，空行，`javax.*` 与 `java.*`，空行，`import static` | ✅ |
+| 结果用提示显示：“Removed 3 unused imports”、“Rearranged imports”、“Unused imports not found” | ✅ |
+| import 块中间夹注释时不改动；Project 窗口对目录批量优化、保存时自动优化（Settings 里的 “Optimize imports on the fly”） | ❌ 未做 |
+
+“是否用到”按文件里出现的整词判断（注释里出现也算用到），不做类型解析：只在注释里提到的类，其 import 会被保留。
+
+Linux 实测（Xvfb）：`Shapes.kt` 里 7 条 import（含重复的 `java.io.File`、本包的 `Calc`、未用的 `File`）优化后剩 `java.util.UUID`、`kotlin.math.PI`、`kotlin.math.max` 三条，光标仍在原行，Ctrl+Z 一步恢复。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。

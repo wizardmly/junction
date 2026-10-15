@@ -55,6 +55,7 @@ actions!(
         GotoDeclaration,
         FindUsages,
         RenameElement,
+        OptimizeImports,
         FindNext,
         FindPrevious,
         CloseChangePopup,
@@ -105,6 +106,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-alt-shift-up", PreviousChange, Some(CONTEXT)),
         KeyBinding::new("alt-f7", FindUsages, Some(CONTEXT)),
         KeyBinding::new("shift-f6", RenameElement, Some(CONTEXT)),
+        KeyBinding::new("ctrl-alt-o", OptimizeImports, Some(CONTEXT)),
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
         KeyBinding::new(if cfg!(target_os = "macos") { "f3" } else { "f11" }, ToggleBookmark, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "alt-f3" } else { "ctrl-f11" }, ToggleBookmarkWithMnemonic, Some(CONTEXT)),
@@ -984,12 +986,55 @@ impl FileEditor {
     }
 
     fn rename_element(&mut self, _: &RenameElement, _: &mut Window, cx: &mut Context<Self>) {
+        self.rename(cx);
+    }
+
+    /// Refactor › Rename at the caret (Shift+F6).
+    pub fn rename(&mut self, cx: &mut Context<Self>) {
         if self.read_only() {
             return;
         }
         let text = self.text(cx);
         let offset = self.state.read(cx).cursor();
         cx.emit(FileEditorEvent::Rename { text, offset });
+    }
+
+    fn optimize_imports_action(&mut self, _: &OptimizeImports, window: &mut Window, cx: &mut Context<Self>) {
+        self.optimize_imports(window, cx);
+    }
+
+    /// Code › Optimize Imports (Ctrl+Alt+O) of a Java or Kotlin file, an
+    /// undoable edit, its result in a hint as Android Studio shows it.
+    pub fn optimize_imports(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let style = crate::index::lang::Lang::from_path(&self.path).and_then(crate::infra::index_code_model::IndexCodeModel::import_style);
+        let Some(style) = style.filter(|_| !self.read_only()) else { return };
+        let text = self.text(cx);
+        let hint = |message: String, window: &mut Window, cx: &mut Context<Self>| {
+            use gpui_kit::component::{notification::Notification, WindowExt as _};
+            window.push_notification(Notification::info(message).title("Optimize Imports"), cx);
+        };
+        let Some(edit) = crate::domain::imports::optimize(style, &text) else {
+            hint("Unused imports not found".into(), window, cx);
+            return;
+        };
+        let cursor = self.state.read(cx).cursor();
+        // The caret stays on its text: after the block it moves with it.
+        let cursor = if cursor >= edit.range.end {
+            cursor + edit.text.len() - edit.range.len()
+        } else {
+            cursor.min(edit.range.start)
+        };
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(edit.range.clone(), cx);
+            state.replace(&edit.text, window, cx);
+            state.set_selected_range(cursor..cursor, cx);
+        });
+        let notice = match edit.removed {
+            0 => "Rearranged imports".to_owned(),
+            1 => "Removed 1 unused import".to_owned(),
+            n => format!("Removed {n} unused imports"),
+        };
+        hint(notice, window, cx);
     }
 
     pub fn selected_text(&self, cx: &gpui_kit::App) -> Option<String> {
@@ -1881,6 +1926,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::goto_declaration))
             .on_action(cx.listener(Self::find_usages))
             .on_action(cx.listener(Self::rename_element))
+            .on_action(cx.listener(Self::optimize_imports_action))
             .on_action(cx.listener(Self::find_next))
             .on_action(cx.listener(|this, _: &OpenFind, window, cx| this.open_find(false, window, cx)))
             .on_action(cx.listener(|this, _: &OpenReplace, window, cx| this.open_find(true, window, cx)))

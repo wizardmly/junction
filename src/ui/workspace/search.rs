@@ -136,6 +136,21 @@ impl Workspace {
         for (name, shortcut, run) in navigate {
             add(name, shortcut, "Navigate", run);
         }
+        let code: Vec<(&str, &str, VcsRun)> = vec![
+            ("Optimize Imports", "Ctrl+Alt+O", op(|this, window, cx| {
+                if let Some(editor) = this.editor().cloned() {
+                    editor.update(cx, |e, cx| e.optimize_imports(window, cx));
+                }
+            })),
+            ("Rename…", "Shift+F6", op(|this, _, cx| {
+                if let Some(editor) = this.editor().cloned() {
+                    editor.update(cx, |e, cx| e.rename(cx));
+                }
+            })),
+        ];
+        for (name, shortcut, run) in code {
+            add(name, shortcut, "Code", run);
+        }
         let windows: Vec<(&str, &str, VcsRun)> = vec![
             ("Project", "Alt+1", op(|this, window, cx| this.toggle_project(&ToggleProjectWindow, window, cx))),
             ("Find", "Alt+3", op(|this, window, cx| this.toggle_find(&ToggleFindWindow, window, cx))),
