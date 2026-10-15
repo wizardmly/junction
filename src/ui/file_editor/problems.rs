@@ -60,9 +60,20 @@ impl FileEditor {
         }
     }
 
-    fn show_problems(&mut self, cx: &mut Context<Self>) {
+    /// What the editor marks: syntax errors and the compiler's problems, in order.
+    pub fn problems(&self) -> Vec<Problem> {
         let mut all: Vec<Problem> = self.syntax_problems.iter().chain(&self.compiler_problems).cloned().collect();
         all.sort_by_key(|p| (p.start, p.end));
+        all
+    }
+
+    /// The file on disk.
+    pub fn absolute_path(&self) -> std::path::PathBuf {
+        self.repository.root().join(&self.own)
+    }
+
+    fn show_problems(&mut self, cx: &mut Context<Self>) {
+        let all = self.problems();
         self.state.update(cx, |state, cx| {
             let text = state.text().clone();
             let Some(set) = state.diagnostics_mut() else { return };

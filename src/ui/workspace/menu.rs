@@ -75,6 +75,8 @@ pub(super) fn main_menu(
                     .menu("Build", Box::new(ToggleBuildWindow))
                     .menu("Run", Box::new(ToggleRunWindow))
                     .menu("Logcat", Box::new(ToggleLogcatWindow))
+                    .menu("Problems", Box::new(ToggleProblemsWindow))
+                    .menu("TODO", Box::new(ToggleTodoWindow))
                     .menu("Build Variants", Box::new(ToggleBuildVariantsWindow))
                     .item(PopupMenuItem::new(prs_title).on_click(move |_, window, cx| {
                         e3.update(cx, |this, cx| this.toggle_tool(ToolWindow::PullRequests, window, cx))

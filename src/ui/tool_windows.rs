@@ -24,6 +24,8 @@ pub enum ToolWindow {
     Build,
     Run,
     Logcat,
+    Problems,
+    Todo,
     BuildVariants,
 }
 
@@ -63,7 +65,7 @@ impl Side {
 }
 
 impl ToolWindow {
-    pub const ALL: [ToolWindow; 15] = [
+    pub const ALL: [ToolWindow; 17] = [
         ToolWindow::Project,
         ToolWindow::Commit,
         ToolWindow::PullRequests,
@@ -73,6 +75,8 @@ impl ToolWindow {
         ToolWindow::Build,
         ToolWindow::Run,
         ToolWindow::Logcat,
+        ToolWindow::Problems,
+        ToolWindow::Todo,
         ToolWindow::Terminal,
         ToolWindow::Git,
         ToolWindow::Notifications,
@@ -97,13 +101,15 @@ impl ToolWindow {
             ToolWindow::Build => "build",
             ToolWindow::Run => "run",
             ToolWindow::Logcat => "logcat",
+            ToolWindow::Problems => "problems",
+            ToolWindow::Todo => "todo",
             ToolWindow::BuildVariants => "variants",
         }
     }
 
     fn default_side(self) -> Side {
         match self {
-            ToolWindow::Git | ToolWindow::Find | ToolWindow::Terminal | ToolWindow::Build | ToolWindow::Run | ToolWindow::Logcat => Side::Bottom,
+            ToolWindow::Git | ToolWindow::Find | ToolWindow::Terminal | ToolWindow::Build | ToolWindow::Run | ToolWindow::Logcat | ToolWindow::Problems | ToolWindow::Todo => Side::Bottom,
             // The new UI keeps Notifications on the right stripe, and
             // Android Studio its Device Manager, Running Devices and Device
             // Explorer below it.
@@ -272,7 +278,7 @@ mod tests {
     #[test]
     fn find_and_terminal_share_the_bottom_with_git() {
         let mut t = layout();
-        assert_eq!(t.on_side(Side::Bottom), vec![ToolWindow::Find, ToolWindow::Build, ToolWindow::Run, ToolWindow::Logcat, ToolWindow::Terminal, ToolWindow::Git]);
+        assert_eq!(t.on_side(Side::Bottom), vec![ToolWindow::Find, ToolWindow::Build, ToolWindow::Run, ToolWindow::Logcat, ToolWindow::Problems, ToolWindow::Todo, ToolWindow::Terminal, ToolWindow::Git]);
         t.open(ToolWindow::Terminal);
         assert!(t.is_open(ToolWindow::Terminal) && !t.is_open(ToolWindow::Git));
         t.open(ToolWindow::Find);

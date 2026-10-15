@@ -103,6 +103,8 @@ actions!(
         StopApp,
         ToggleRunWindow,
         ToggleLogcatWindow,
+        ToggleProblemsWindow,
+        ToggleTodoWindow,
         ToggleBuildWindow,
         ToggleBuildVariantsWindow
     ]
@@ -278,6 +280,8 @@ pub struct Workspace {
     build_view: Entity<crate::ui::run_views::BuildView>,
     run_view: Entity<crate::ui::run_views::RunView>,
     logcat_view: Entity<crate::ui::logcat_view::LogcatView>,
+    problems_view: Entity<crate::ui::problems_view::ProblemsView>,
+    todo_view: Entity<crate::ui::todo_view::TodoView>,
     variants_view: Entity<crate::ui::run_views::VariantsView>,
     /// Find / Replace in Files, kept between uses like IntelliJ's.
     find_popup: Option<(Entity<crate::ui::find_popup::FindPopup>, Subscription)>,
@@ -367,6 +371,8 @@ impl Workspace {
             Rc::new(move |cx| model.read(cx).project_root().map(std::path::Path::to_path_buf).or_else(|| model.read(cx).repository().map(|r| r.root().to_path_buf())))
         };
         let logcat_project = android_project.clone();
+        let problems_view = cx.new(|cx| crate::ui::problems_view::ProblemsView::new(android_project.clone(), cx));
+        let todo_view = cx.new(|cx| crate::ui::todo_view::TodoView::new(code_index.clone(), android_project.clone(), cx));
         let device_manager = cx.new(|_| crate::ui::device_manager::DeviceManager::new(android_project.clone()));
         let running_devices = cx.new(|cx| crate::ui::running_devices::RunningDevices::new(device_manager.clone(), cx));
         let device_explorer = cx.new(|cx| crate::ui::device_explorer::DeviceExplorer::new(device_manager.clone(), android_project, cx));
@@ -571,6 +577,8 @@ impl Workspace {
             cx.subscribe_in(&run, window, |this, _, event, window, cx| this.on_run_event(event, window, cx)),
             cx.subscribe_in(&build_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::Build, event, window, cx)),
             cx.subscribe_in(&run_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::Run, event, window, cx)),
+            cx.subscribe_in(&problems_view, window, |this, _, event, window, cx| this.on_problems_event(event, window, cx)),
+            cx.subscribe_in(&todo_view, window, |this, _, event, window, cx| this.on_todo_event(event, window, cx)),
             cx.subscribe_in(&logcat_view, window, |this, _, event, window, cx| this.on_logcat_event(event, window, cx)),
             cx.subscribe_in(&variants_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::BuildVariants, event, window, cx)),
             cx.observe(&run, |_, _, cx| cx.notify()),
@@ -657,6 +665,8 @@ impl Workspace {
             build_view,
             run_view,
             logcat_view,
+            problems_view,
+            todo_view,
             variants_view,
             find_popup: None,
             show_find_popup: false,
@@ -712,6 +722,13 @@ impl Render for Workspace {
             self.window_title = title;
         }
         let active = self.editor().cloned();
+        self.problems_view.update(cx, |p, cx| p.set_editor(active.clone(), cx));
+        let todo_shown = self.tools.is_open(ToolWindow::Todo);
+        let current = active.as_ref().map(|e| e.read(cx).path().to_owned());
+        self.todo_view.update(cx, |t, cx| {
+            t.set_current_file(current, cx);
+            t.set_shown(todo_shown, cx);
+        });
         self.caret.update(cx, |caret, cx| caret.set_editor(active, cx));
         if !Settings::get(cx).non_modal_commit && self.tools.is_open(ToolWindow::Commit) {
             self.tools.hide(ToolWindow::Commit);
@@ -875,6 +892,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &StopApp, _, cx| this.run.update(cx, |r, cx| r.stop(cx))))
             .on_action(cx.listener(|this, _: &ToggleRunWindow, window, cx| this.shortcut_tool(ToolWindow::Run, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleLogcatWindow, window, cx| this.shortcut_tool(ToolWindow::Logcat, window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleProblemsWindow, window, cx| this.shortcut_tool(ToolWindow::Problems, window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleTodoWindow, window, cx| this.shortcut_tool(ToolWindow::Todo, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleBuildWindow, window, cx| this.shortcut_tool(ToolWindow::Build, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleBuildVariantsWindow, window, cx| this.shortcut_tool(ToolWindow::BuildVariants, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleDeviceManagerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceManager, window, cx)))

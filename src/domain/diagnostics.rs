@@ -63,7 +63,8 @@ pub trait SyntaxChecker {
 /// module's last build. A file key is normalized with [`file_key`].
 #[derive(Clone, Debug, Default)]
 pub struct ProblemStore {
-    by_file: std::collections::HashMap<String, Vec<Problem>>,
+    /// By file key: the file as reported, and its problems.
+    by_file: std::collections::HashMap<String, (PathBuf, Vec<Problem>)>,
 }
 
 impl ProblemStore {
@@ -72,12 +73,22 @@ impl ProblemStore {
         let prefix = format!("{}/", file_key(dir));
         self.by_file.retain(|file, _| !file.starts_with(&prefix));
         for p in problems {
-            self.by_file.entry(file_key(&p.file)).or_default().push(p.problem);
+            self.by_file.entry(file_key(&p.file)).or_insert_with(|| (p.file.clone(), Vec::new())).1.push(p.problem);
         }
     }
 
     pub fn problems(&self, file: &std::path::Path) -> Vec<Problem> {
-        self.by_file.get(&file_key(file)).cloned().unwrap_or_default()
+        self.by_file.get(&file_key(file)).map(|(_, p)| p.clone()).unwrap_or_default()
+    }
+
+    /// Every file with problems, by path, each file's problems in order.
+    pub fn all(&self) -> Vec<(PathBuf, Vec<Problem>)> {
+        let mut out: Vec<(PathBuf, Vec<Problem>)> = self.by_file.values().cloned().collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, problems) in &mut out {
+            problems.sort_by_key(|p| (p.start, p.end));
+        }
+        out
     }
 }
 

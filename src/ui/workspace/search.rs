@@ -146,6 +146,8 @@ impl Workspace {
             ("Build", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::Build, window, cx))),
             ("Run", "Alt+4", op(|this, window, cx| this.shortcut_tool(ToolWindow::Run, window, cx))),
             ("Logcat", "Alt+6", op(|this, window, cx| this.shortcut_tool(ToolWindow::Logcat, window, cx))),
+            ("Problems", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::Problems, window, cx))),
+            ("TODO", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::Todo, window, cx))),
             ("Build Variants", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::BuildVariants, window, cx))),
             ("Make Project", "Ctrl+F9", op(|this, _, cx| this.run.update(cx, |r, cx| r.make_project(cx)))),
             ("Run 'app'", "Shift+F10", op(|this, _, cx| this.run.update(cx, |r, cx| r.run(cx)))),

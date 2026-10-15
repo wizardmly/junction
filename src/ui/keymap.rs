@@ -59,6 +59,8 @@ pub const ENTRIES: &[Entry] = &[
     entry("Run", "Stop", "workspace::StopApp"),
     entry("Tool Windows", "Run", "workspace::ToggleRunWindow"),
     entry("Tool Windows", "Logcat", "workspace::ToggleLogcatWindow"),
+    entry("Tool Windows", "Problems", "workspace::ToggleProblemsWindow"),
+    entry("Tool Windows", "TODO", "workspace::ToggleTodoWindow"),
     entry("Window", "Close Tab", "workspace::CloseTab"),
     entry("Window", "Select Next Tab", "workspace::NextTab"),
     entry("Window", "Select Previous Tab", "workspace::PreviousTab"),

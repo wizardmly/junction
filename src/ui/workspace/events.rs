@@ -328,6 +328,39 @@ impl Workspace {
 
     /// Logcat: a stack frame opens its source (the project's first, then a
     /// library's), Hide hides the window.
+    /// Problems and TODO: an item opens its file at its place.
+    pub(super) fn on_problems_event(&mut self, event: &crate::ui::problems_view::ProblemsEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::problems_view::ProblemsEvent;
+        match event {
+            ProblemsEvent::OpenFile { path, line, col } => self.open_absolute(path, *line, *col, window, cx),
+            ProblemsEvent::Hide => {
+                self.tools.hide(ToolWindow::Problems);
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn on_todo_event(&mut self, event: &crate::ui::todo_view::TodoEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::todo_view::TodoEvent;
+        match event {
+            TodoEvent::OpenFile { path, line, col } => self.open_absolute(path, *line, *col, window, cx),
+            TodoEvent::Hide => {
+                self.tools.hide(ToolWindow::Todo);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Opens a file given on disk at a 0-based line and column.
+    fn open_absolute(&mut self, path: &std::path::Path, line: u32, col: u32, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self.model.read(cx).project_root().map(std::path::Path::to_path_buf);
+        let path = match root.as_deref().and_then(|r| path.strip_prefix(r).ok()) {
+            Some(rel) => rel.to_string_lossy().replace('\\', "/"),
+            None => path.to_string_lossy().into_owned(),
+        };
+        self.open_at(path, line, col, window, cx);
+    }
+
     pub(super) fn on_logcat_event(&mut self, event: &crate::ui::logcat_view::LogcatEvent, window: &mut Window, cx: &mut Context<Self>) {
         use crate::ui::logcat_view::LogcatEvent;
         match event {

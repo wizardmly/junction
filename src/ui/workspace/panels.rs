@@ -97,6 +97,8 @@ impl Workspace {
             ToolWindow::Build => (Icon::from(icons::TW_BUILD), "Build".into(), ""),
             ToolWindow::Run => (Icon::from(icons::TW_RUN), "Run".into(), "Alt+4"),
             ToolWindow::Logcat => (Icon::from(icons::TW_LOGCAT), "Logcat".into(), "Alt+6"),
+            ToolWindow::Problems => (Icon::from(icons::TW_PROBLEMS), "Problems".into(), ""),
+            ToolWindow::Todo => (Icon::from(icons::TW_TODO), "TODO".into(), ""),
             ToolWindow::BuildVariants => (Icon::from(icons::MODULE_ANDROID), "Build Variants".into(), ""),
         }
     }
@@ -279,6 +281,8 @@ impl Workspace {
             ToolWindow::Build => self.build_view.clone().into_any_element(),
             ToolWindow::Run => self.run_view.clone().into_any_element(),
             ToolWindow::Logcat => self.logcat_view.clone().into_any_element(),
+            ToolWindow::Problems => self.problems_view.clone().into_any_element(),
+            ToolWindow::Todo => self.todo_view.clone().into_any_element(),
             ToolWindow::BuildVariants => crate::ui::common::cached(&self.variants_view),
         }
     }

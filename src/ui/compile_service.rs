@@ -51,6 +51,12 @@ impl CompileService {
         self.store.problems(file)
     }
 
+    /// The Problems window's Project Errors: every file the last builds and
+    /// compiles reported.
+    pub fn all_problems(&self) -> Vec<(PathBuf, Vec<Problem>)> {
+        self.store.all()
+    }
+
     /// A build's problems (Make, Run) replace what the last one said under
     /// its directory.
     pub fn set_build_problems(&mut self, dir: &Path, problems: Vec<crate::domain::diagnostics::FileProblem>, cx: &mut Context<Self>) {
