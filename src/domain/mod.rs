@@ -13,6 +13,7 @@ pub mod dependency_versions;
 pub mod diagnostics;
 pub mod expression;
 pub mod imports;
+pub mod jdk;
 pub mod local_history;
 pub mod logcat;
 pub mod run;

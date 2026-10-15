@@ -479,10 +479,40 @@ impl Workspace {
                 }
             }
             SyncEvent::Failed { build, output } => {
+                if crate::domain::jdk::is_missing_jdk(output) {
+                    self.report_gradle_jdk(output, window, cx);
+                    return;
+                }
                 let message = format!("Gradle project sync failed. Basic functionality (e.g. editing, debugging) will not work properly.\n{output}");
                 window.push_notification(Notification::error(message).title(format!("Gradle sync of {build} failed")).autohide(false), cx);
             }
         }
+    }
+
+    /// Android Studio's "Invalid Gradle JDK configuration found", with
+    /// Open Gradle Settings (Build Tools › Gradle › Gradle JDK).
+    pub(super) fn report_gradle_jdk(&mut self, output: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let reason = output.lines().map(str::trim).find(|l| crate::domain::jdk::is_missing_jdk(l)).unwrap_or("Gradle could not find a JDK to run on.").trim_start_matches("ERROR: ").to_owned();
+        let model = self.model.clone();
+        let notification = Notification::error(reason)
+            .title("Invalid Gradle JDK configuration found")
+            .autohide(false)
+            .content(move |_, _, cx| {
+                let palette = cx.palette().clone();
+                let (note, model) = (cx.entity(), model.clone());
+                div()
+                    .id("gradle-jdk-settings")
+                    .text_sm()
+                    .text_color(palette.link)
+                    .cursor_pointer()
+                    .child("Open Gradle Settings")
+                    .on_click(move |_, window, cx| {
+                        note.update(cx, |n, cx| n.dismiss(window, cx));
+                        crate::ui::settings_dialog::open_page(Some(model.clone()), "Gradle", window, cx);
+                    })
+                    .into_any_element()
+            });
+        window.push_notification(notification, cx);
     }
 
     /// IntelliJ's "Unregistered VCS roots detected" balloon: Add Roots,

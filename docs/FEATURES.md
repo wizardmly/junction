@@ -475,6 +475,21 @@ Android 单元测试（`testDebugUnitTest`）和仪器测试未实测（容器�
 
 Linux 实测（Xvfb，JDK 21 + Gradle 8.14 的 calc 项目，未同步）：点第 12 行行号设断点 → `adds` 的 gutter 弹窗选 “Debug 'CalcTest.adds'” → 约 20 秒（含 Gradle 守护进程启动）后在第 12 行暂停，断点变为已验证，Debug 窗口自动打开，线程 `"Test worker"@1: SUSPENDED`，`this = {CalcTest@444}`；F8 到第 13 行；F9 结束，Console 显示 “Connected to the target VM, address: '127.0.0.1:…', transport: 'socket'” 和 “Disconnected from the target VM”，Run 窗口 “1 test passed”。再用 Ctrl+Shift+F9 调试、F7 步入 `Calc.add`：自动打开 Calc.java 第 4 行，变量 `a = 2`、`b = 2`，栈帧 `add:4, Calc` / `adds:12, CalcTest`。JDWP 客户端另有对真实 JVM 的集成测试（断点、局部变量、数组和对象展开、Step Into / Over / Out）。
 
+## 23. Gradle JDK（2026-10-15）
+
+代码：`src/domain/jdk.rs`（JDK、设置值、按 AS 规则选择、`release` 和 `.gradle/config.properties` 解析、识别“找不到 Java”的输出）、`src/infra/jdk_discovery.rs`（查找本机 JDK）、`src/infra/gradle.rs`（每次调用 Gradle 时设置 `JAVA_HOME`），设置页在 `src/ui/settings_dialog.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| Settings › Build, Execution, Deployment › Gradle：每个 Gradle 构建一个 “Gradle JDK” 下拉，选项照 AS：Detect automatically、`GRADLE_LOCAL_JAVA_HOME`、`JAVA_HOME`、找到的每个 JDK（`jbr-21  JetBrains Runtime version 21.0.3  /path`）、Add JDK…（选目录并校验）；按构建保存在 `settings.conf` 的 `gradle_jdk_<构建>`，值与 AS 的 `gradleJvm` 相同（`#GRADLE_LOCAL_JAVA_HOME` / `#JAVA_HOME` / 路径） | ✅ |
+| 自动选择：项目 `.gradle/config.properties` 的 `java.home`（AS 打开过的项目会写） → `JAVA_HOME` → AS 自带 JBR → 最新的 JDK 17+ → 最新的任何 JDK | ✅ |
+| 查找位置：Windows 的 `Program Files\Android\Android Studio*\jbr`、`%LOCALAPPDATA%\Programs\Android Studio*`、JetBrains Toolbox（`%LOCALAPPDATA%\JetBrains\Toolbox\apps\AndroidStudio\ch-*\*`）、`Program Files` 下 Java / Eclipse Adoptium / Microsoft / Zulu / Amazon Corretto / BellSoft / Semeru；macOS 的 `/Applications/Android Studio*.app`、Toolbox、`/Library/Java/JavaVirtualMachines`、Homebrew；Linux 的 `/opt/android-studio*`、`~/android-studio*`、snap、Toolbox、`/usr/lib/jvm`；各平台的 `~/.jdks`、sdkman 和 PATH 上的 `java`；同一 JDK 的多个符号链接只列一次 | ✅（Windows / macOS 未实测） |
+| Sync、Build、Run、测试、调试、保存后编译都用所选 JDK | ✅ |
+| Gradle 报找不到 Java（`JAVA_HOME is not set…`、`Android Gradle plugin requires Java 17` 等）时弹 AS 的 “Invalid Gradle JDK configuration found”，带 “Open Gradle Settings” 直达设置页 | ✅ |
+| Download JDK…、Gradle 版本 / Gradle user home / 离线模式设置、Project Structure 对话框（SDK Location 等） | ❌ 未做 |
+
+Linux 实测：去掉 `JAVA_HOME`、PATH 中不含 `java` 启动（即用户截图里的情况），Sync Now 成功，自动用了 `/usr/lib/jvm` 里的 JDK 21；设置页显示 “Detect automatically: java-1.21.0-openjdk-amd64 (21.0.12.1)”，下拉里三个指向同一 JDK 的符号链接只列一次；把 Gradle JDK 设成 `JAVA_HOME`（未设置）后同步，弹出 “Invalid Gradle JDK configuration found / JAVA_HOME is not set and no 'java' command could be found in your PATH. / Open Gradle Settings”，点链接直达 Gradle 设置页。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。

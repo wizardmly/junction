@@ -213,6 +213,8 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 3 | Build + Run | ✅ 2026-10-15 完成：标题栏 Make / 设备 / 运行配置 / Run / Stop，Build、Run、Build Variants 工具窗口（FEATURES.md 第 16 节） | 剩 Debug、Apply Changes、Edit Configurations 对话框、真机验证 |
 | 4 | Logcat | ✅ 2026-10-15 完成：Logcat 工具窗口（Alt+6），设备下拉、AS 过滤语法、AS 配色、PROCESS STARTED / ENDED、堆栈跳源码、Standard / Compact、暂停、清空、重启（FEATURES.md 第 17 节） | 剩过滤输入补全和历史、多个 Logcat 标签页、截屏录屏按钮、真机验证 |
 
+**工程配置**：✅ Gradle JDK（2026-10-15，FEATURES.md 第 23 节）：用户在 Windows 上遇到 “JAVA_HOME is not set and no 'java' command could be found”，现在按 AS 的规则自动找 JDK（含 Toolbox 安装的 AS），并有 Settings › Gradle 的 Gradle JDK 下拉。剩 Download JDK、Gradle 版本 / 离线模式、Project Structure 对话框。
+
 **P1：每天会用，可暂时回 AS**
 
 5. 🟡 Debugger（2026-10-15，FEATURES.md 第 22 节）：JDWP 客户端、行断点（持久化、类加载后补设）、Debug JVM 单元测试、Debug 'app'（`am start -D` + adb `jdwp:<pid>`）、Device Explorer 的 Attach debugger、执行点、Debug 工具窗口（F9/F8/F7/Shift+F8/Alt+F9、Frames、Variables 树）。**Android 调试只在模拟 adb 下验证过，需真机 / 模拟器验证**。条件断点、求值输入框、Watches、toString / 集合显示已补上（2026-10-15）。剩日志断点、Alt+F8 对话框、lambda / new 等表达式、Detach。

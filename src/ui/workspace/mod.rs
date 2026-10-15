@@ -619,9 +619,10 @@ impl Workspace {
             cx.observe(&run, |_, _, cx| cx.notify()),
             // Compile on save: its status in the status bar, and a failure
             // the compiler did not explain (a broken build script, no JDK).
-            cx.subscribe_in(&compile, window, |_, _, event, window, cx| {
+            cx.subscribe_in(&compile, window, |this, _, event, window, cx| {
                 use crate::ui::compile_service::CompileEvent;
                 match event {
+                    CompileEvent::Failed { output, .. } if crate::domain::jdk::is_missing_jdk(output) => this.report_gradle_jdk(output, window, cx),
                     CompileEvent::Failed { module, output } => {
                         window.push_notification(Notification::error(output.clone()).title(format!("Compilation of {module} failed")), cx)
                     }

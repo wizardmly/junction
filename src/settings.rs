@@ -89,6 +89,9 @@ pub struct Settings {
     pub compile_on_save: bool,
     /// Build Variants: the variant of each module, keyed `build root|:module`.
     pub build_variants: std::collections::BTreeMap<String, String>,
+    /// Build Tools › Gradle › Gradle JDK, keyed by build root: a
+    /// `domain::jdk::GradleJdk` key; none picks one as Android Studio would.
+    pub gradle_jdk: std::collections::BTreeMap<String, String>,
     /// The device the last run used (its Device Manager id).
     pub run_device: String,
     /// Per-language server command overrides (`rust` → `rust-analyzer`);
@@ -376,6 +379,7 @@ impl Default for Settings {
             use_language_servers: true,
             compile_on_save: true,
             build_variants: Default::default(),
+            gradle_jdk: Default::default(),
             run_device: String::new(),
             language_servers: Default::default(),
             auto_update_on_push_rejected: false,
@@ -610,6 +614,11 @@ impl Settings {
                 key if key.starts_with("variant_") => {
                     settings.build_variants.insert(key["variant_".len()..].to_owned(), value.to_owned());
                 }
+                key if key.starts_with("gradle_jdk_") => {
+                    if !value.is_empty() {
+                        settings.gradle_jdk.insert(key["gradle_jdk_".len()..].to_owned(), value.to_owned());
+                    }
+                }
                 key if key.starts_with("lsp_") => {
                     if !value.is_empty() {
                         settings.language_servers.insert(key["lsp_".len()..].to_owned(), value.to_owned());
@@ -693,6 +702,9 @@ impl Settings {
         for (module, variant) in &self.build_variants {
             text.push_str(&format!("variant_{module}={variant}\n"));
         }
+        for (build, jdk) in &self.gradle_jdk {
+            text.push_str(&format!("gradle_jdk_{build}={jdk}\n"));
+        }
         text.push_str(&format!(
             "non_modal_commit={}\ncherry_pick_suffix={}\ncommit_push_dialog={}\ncommit_push_dialog_protected_only={}\neditor_font_size={}\n",
             self.non_modal_commit,
@@ -735,6 +747,7 @@ impl Settings {
         crate::git::set_use_credential_helper(self.use_credential_helper);
         crate::index::lsp::configure(self.use_language_servers, self.language_servers.clone());
         crate::ui::diff_panes::set_font_size(self.editor_font_size());
+        crate::infra::gradle::set_jdk_settings(self.gradle_jdk.clone());
     }
 
     pub fn update(cx: &mut App, f: impl FnOnce(&mut Self)) {

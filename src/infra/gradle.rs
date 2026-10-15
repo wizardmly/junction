@@ -178,16 +178,31 @@ fn is_android(dir: &Path) -> bool {
     text.contains("com.android.") || text.contains("plugins.android.") || text.contains("android {")
 }
 
+/// Each build's Gradle JDK setting (Settings › Build Tools › Gradle), by
+/// build root key; the UI keeps it current.
+static JDK_SETTINGS: std::sync::RwLock<std::collections::BTreeMap<String, String>> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+pub fn set_jdk_settings(settings: std::collections::BTreeMap<String, String>) {
+    *JDK_SETTINGS.write().unwrap() = settings;
+}
+
+/// The JDK a build's Gradle runs on: its setting, else Android Studio's
+/// choice (see `domain::jdk::pick`).
+pub fn jdk_for(build_root: &Path) -> Option<crate::domain::jdk::Jdk> {
+    use crate::domain::jdk::{pick, GradleJdk};
+    let key = crate::domain::diagnostics::file_key(build_root);
+    let setting = JDK_SETTINGS.read().unwrap().get(&key).map(|k| GradleJdk::from_key(k)).unwrap_or_default();
+    let found = super::jdk_discovery::discover(&super::jdk_discovery::Env::current(), Some(build_root));
+    pick(&setting, &found).cloned()
+}
+
 /// Gradle for a build: its wrapper, plain output, the daemon's idle
-/// timeout, Android Studio's runtime when no Java is set up, no console
-/// window on Windows.
+/// timeout, the build's Gradle JDK, no console window on Windows.
 pub fn gradle(build_root: &Path) -> Command {
     let mut command = gradle_command(build_root);
     command.arg("--console=plain").arg(format!("-Dorg.gradle.daemon.idletimeout={DAEMON_IDLE_MS}")).current_dir(build_root);
-    if std::env::var_os("JAVA_HOME").is_none() {
-        if let Some(jbr) = studio_jbr() {
-            command.env("JAVA_HOME", jbr);
-        }
+    if let Some(jdk) = jdk_for(build_root) {
+        command.env("JAVA_HOME", &jdk.home);
     }
     #[cfg(windows)]
     {
@@ -209,29 +224,6 @@ fn gradle_command(root: &Path) -> Command {
         return Command::new(wrapper);
     }
     Command::new(if cfg!(windows) { "gradle.bat" } else { "gradle" })
-}
-
-/// Android Studio's bundled runtime, for machines with no JAVA_HOME: the
-/// one AS itself runs Gradle with.
-fn studio_jbr() -> Option<PathBuf> {
-    let candidates: Vec<PathBuf> = if cfg!(windows) {
-        let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\Program Files"));
-        let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-        let mut v = vec![program_files.join("Android\\Android Studio\\jbr")];
-        v.extend(local.map(|l| l.join("Programs\\Android Studio\\jbr")));
-        v
-    } else if cfg!(target_os = "macos") {
-        vec![PathBuf::from("/Applications/Android Studio.app/Contents/jbr/Contents/Home")]
-    } else {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        vec![PathBuf::from("/opt/android-studio/jbr"), home.join("android-studio/jbr"), PathBuf::from("/usr/local/android-studio/jbr")]
-    };
-    // Only when `java` isn't on the PATH either.
-    let on_path = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(if cfg!(windows) { "java.exe" } else { "java" }).is_file()));
-    if on_path {
-        return None;
-    }
-    candidates.into_iter().find(|c| c.join("bin").is_dir())
 }
 
 /// The compilers' messages in Gradle's output:

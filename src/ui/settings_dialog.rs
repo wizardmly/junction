@@ -6,8 +6,9 @@
 use std::collections::BTreeMap;
 
 use gpui_kit::component::{
-    Disableable as _, Sizable as _, WindowExt as _, h_flex,
+    Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
+    menu::{DropdownMenu as _, PopupMenuItem},
     checkbox::Checkbox,
     dialog::{DialogAction, DialogClose, DialogFooter},
     input::{Input, InputEvent, InputState},
@@ -16,7 +17,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, Keystroke, ParentElement as _,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, Keystroke, ParentElement as _,
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
@@ -26,6 +27,7 @@ use crate::model::RepoModel;
 use crate::settings::{Settings, UpdateMethod};
 use crate::theme::ActivePalette as _;
 use crate::ui::accounts_dialog::AccountsView;
+use crate::ui::as_icons as icons;
 use crate::ui::keymap;
 use crate::ui::mappings_dialog::MappingsView;
 
@@ -44,6 +46,7 @@ enum Page {
     GitLab,
     Languages,
     Compiler,
+    Gradle,
 }
 
 /// The page tree: a group and its pages; a group with no pages is a page itself.
@@ -52,7 +55,7 @@ const TREE: &[(&str, Option<Page>, &[Page])] = &[
     ("Keymap", Some(Page::Keymap), &[]),
     ("Editor", None, &[Page::EditorGeneral, Page::EditorFont, Page::GutterIcons, Page::EditorTabs]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
-    ("Build, Execution, Deployment", None, &[Page::Compiler]),
+    ("Build, Execution, Deployment", None, &[Page::Gradle, Page::Compiler]),
     ("Languages & Frameworks", Some(Page::Languages), &[]),
 ];
 
@@ -72,6 +75,7 @@ impl Page {
             Page::GitLab => "GitLab",
             Page::Languages => "Languages & Frameworks",
             Page::Compiler => "Compiler",
+            Page::Gradle => "Gradle",
         }
     }
 
@@ -127,6 +131,7 @@ impl Page {
             Page::GitLab => &["Account", "Token", "Log In", "Merge Request"],
             Page::Languages => &["Language server", "LSP", "Code Navigation", "Go to Declaration"],
             Page::Compiler => &["Compile on save", "Gradle", "Build", "Compiler errors"],
+            Page::Gradle => &["Gradle JDK", "JDK", "Java", "JAVA_HOME", "GRADLE_LOCAL_JAVA_HOME", "Build Tools"],
         }
     }
 
@@ -167,6 +172,10 @@ pub struct SettingsView {
     /// The action waiting for its new shortcut to be pressed.
     recording: Option<&'static str>,
     intercept: Option<Subscription>,
+    /// Build Tools › Gradle: the JDKs on this machine, and the project's
+    /// Gradle builds.
+    jdks: Vec<crate::domain::jdk::Jdk>,
+    gradle_builds: Vec<std::path::PathBuf>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -204,6 +213,13 @@ impl SettingsView {
             .collect::<Vec<_>>();
         let github = cx.new(|cx| AccountsView::new_for(Some(Service::GitHub), window, cx));
         let gitlab = cx.new(|cx| AccountsView::new_for(Some(Service::GitLab), window, cx));
+        let project_root = model.as_ref().and_then(|m| m.read(cx).project_root().map(std::path::Path::to_path_buf));
+        let mut gradle_builds: Vec<std::path::PathBuf> = crate::ui::sync_service::SyncService::try_global(cx).map(|s| s.read(cx).builds().iter().map(|(b, _)| b.clone()).collect()).unwrap_or_default();
+        if gradle_builds.is_empty() {
+            let gradle_file = |root: &std::path::Path| ["settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts"].iter().any(|f| root.join(f).is_file());
+            gradle_builds.extend(project_root.filter(|r| gradle_file(r)));
+        }
+        let jdks = crate::infra::jdk_discovery::discover(&crate::infra::jdk_discovery::Env::current(), None);
         let mappings = model.and_then(|model| MappingsView::new(model, cx)).map(|view| cx.new(|_| view));
         let mut subscriptions = vec![cx.subscribe(&search, |this: &mut Self, search, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -243,6 +259,8 @@ impl SettingsView {
             keymap: BTreeMap::new(),
             recording: None,
             intercept: None,
+            jdks,
+            gradle_builds,
             _subscriptions: subscriptions,
         }
     }
@@ -456,6 +474,7 @@ impl Render for SettingsView {
                 Page::GitHub => self.github.clone().into_any_element(),
                 Page::GitLab => self.gitlab.clone().into_any_element(),
                 Page::Languages => self.languages(&query, cx).into_any_element(),
+                Page::Gradle => self.gradle_page(&query, cx).into_any_element(),
                 Page::Compiler => v_flex()
                     .gap_2()
                     .child(self.check(
@@ -498,6 +517,109 @@ impl Render for SettingsView {
 
 // The pages.
 impl SettingsView {
+    /// Build Tools › Gradle: each build's Gradle JDK, as Android Studio's
+    /// dropdown offers them.
+    fn gradle_page(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::domain::jdk::{pick, GradleJdk, Jdk, JdkSource};
+        let palette = cx.palette().clone();
+        let mut page = v_flex().gap_3().text_sm();
+        if self.gradle_builds.is_empty() {
+            return page.child(div().text_color(palette.text_secondary).child("The project has no Gradle build."));
+        }
+        let env = crate::infra::jdk_discovery::Env::current();
+        for (ix, build) in self.gradle_builds.iter().enumerate() {
+            let key = crate::domain::diagnostics::file_key(build);
+            let setting = self.draft.gradle_jdk.get(&key).map(|k| GradleJdk::from_key(k)).unwrap_or_default();
+            // This build's choices: its own GRADLE_LOCAL_JAVA_HOME, then the machine's.
+            let found: Vec<Jdk> = crate::infra::jdk_discovery::discover(&env, Some(build));
+            let mut choices: Vec<Jdk> = found.clone();
+            for jdk in &self.jdks {
+                if !choices.iter().any(|c| c.home == jdk.home) {
+                    choices.push(jdk.clone());
+                }
+            }
+            let picked = pick(&setting, &choices).cloned();
+            let current = match (&setting, &picked) {
+                (GradleJdk::Auto, Some(jdk)) => format!("Detect automatically: {}", jdk.short_label()),
+                (GradleJdk::Auto, None) => "Detect automatically".into(),
+                (_, Some(jdk)) => jdk.short_label(),
+                (GradleJdk::Path(p), None) => format!("{}  (not found)", p.display()),
+                (other, None) => format!("{}  (not set)", other.key().trim_start_matches('#')),
+            };
+            let view = cx.entity();
+            let (menu_choices, menu_key, menu_setting) = (choices.clone(), key.clone(), setting.clone());
+            let picker = Button::new(("gradle-jdk", ix))
+                .outline()
+                .small()
+                .label(current)
+                .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
+                .dropdown_menu(move |mut menu, _, _| {
+                    let set = |value: GradleJdk| {
+                        let (view, key) = (view.clone(), menu_key.clone());
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            view.update(cx, |this, cx| {
+                                match &value {
+                                    GradleJdk::Auto => this.draft.gradle_jdk.remove(&key),
+                                    other => this.draft.gradle_jdk.insert(key.clone(), other.key()),
+                                };
+                                cx.notify();
+                            })
+                        }
+                    };
+                    menu = menu.item(PopupMenuItem::new("Detect automatically").checked(menu_setting == GradleJdk::Auto).on_click(set(GradleJdk::Auto)));
+                    for jdk in &menu_choices {
+                        let value = match jdk.source {
+                            JdkSource::ProjectLocal => GradleJdk::ProjectLocal,
+                            JdkSource::JavaHome => GradleJdk::JavaHome,
+                            _ => GradleJdk::Path(jdk.home.clone()),
+                        };
+                        let checked = value == menu_setting;
+                        menu = menu.item(PopupMenuItem::new(jdk.label()).checked(checked).on_click(set(value)));
+                    }
+                    let (view, key) = (view.clone(), menu_key.clone());
+                    menu.separator().item(PopupMenuItem::new("Add JDK…").on_click(move |_, window, cx| {
+                        let paths = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Select JDK Home".into()) });
+                        let (view, key) = (view.clone(), key.clone());
+                        window
+                            .spawn(cx, async move |cx| {
+                                let Ok(Ok(Some(paths))) = paths.await else { return };
+                                let Some(home) = paths.into_iter().next() else { return };
+                                let checked = crate::infra::jdk_discovery::check(&home);
+                                let _ = view.update(cx, |this, cx| {
+                                    match checked {
+                                        Ok(jdk) => {
+                                            this.draft.gradle_jdk.insert(key, jdk.home.to_string_lossy().into_owned());
+                                            if !this.jdks.iter().any(|j| j.home == jdk.home) {
+                                                this.jdks.push(jdk);
+                                            }
+                                        }
+                                        Err(e) => this.git_test = Some(Err(e)),
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                            .detach();
+                    }))
+                });
+            let name = build.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| build.display().to_string());
+            page = page.child(
+                v_flex()
+                    .gap_1()
+                    .child(self.section("Gradle Projects", cx).when(ix > 0, |el| el.invisible()))
+                    .child(h_flex().gap_2().child(div().font_weight(FontWeight::SEMIBOLD).child(name)).child(div().text_color(palette.text_secondary).child(build.display().to_string())))
+                    .child(self.row("Gradle JDK:", query, picker, cx))
+                    .children(picked.as_ref().map(|jdk| div().text_xs().text_color(palette.text_secondary).child(jdk.home.display().to_string())))
+                    .when(picked.is_none(), |el| {
+                        el.child(div().text_color(palette.status_conflict).child("No JDK found. Install Android Studio or a JDK 17 or newer, set JAVA_HOME, or choose Add JDK…"))
+                    }),
+            );
+        }
+        if let Some(Err(e)) = &self.git_test {
+            page = page.child(div().text_color(palette.status_conflict).child(e.clone()));
+        }
+        page
+    }
+
     fn section(&self, title: &'static str, cx: &App) -> gpui_kit::Div {
         div().pt_2().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(cx.palette().text).child(title)
     }
