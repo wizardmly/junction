@@ -29,6 +29,12 @@ allprojects {
     tasks.withType(Test).configureEach { t ->
         // Run again even when nothing changed, as Android Studio does.
         t.outputs.upToDateWhen { false }
+        // Debug: one test JVM, waiting for Junction's debugger.
+        def junctionDebugPort = t.project.findProperty("junction.debugPort")
+        if (junctionDebugPort) {
+            t.maxParallelForks = 1
+            t.jvmArgs("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:" + junctionDebugPort)
+        }
         t.beforeTest { d ->
             junctionEmit(["event": "started", "class": d.className, "name": junctionName(d), "id": d.name, "composite": d.composite])
         }

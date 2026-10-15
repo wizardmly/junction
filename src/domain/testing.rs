@@ -405,11 +405,13 @@ pub struct TestRequest {
     pub filters: Vec<(String, Option<String>)>,
     /// The run configuration's name.
     pub name: String,
+    /// Debug: the port the test JVM waits for the debugger on.
+    pub debug_port: Option<u16>,
 }
 
 impl TestRequest {
     pub fn of(kind: TestKind, mark: &TestMark) -> Self {
-        Self { kind, filters: vec![(mark.class.clone(), mark.method.clone())], name: mark.name() }
+        Self { kind, filters: vec![(mark.class.clone(), mark.method.clone())], name: mark.name(), debug_port: None }
     }
 }
 
@@ -443,6 +445,10 @@ pub fn plan(build_root: &Path, module: &ModuleInfo, variant: &str, request: &Tes
                 });
             }
             report_dir = module.dir.join("build/test-results").join(task);
+            // The init script makes the test JVM wait for a debugger there.
+            if let Some(port) = request.debug_port {
+                args.push(format!("-Pjunction.debugPort={port}"));
+            }
         }
         TestKind::Instrumented => {
             args.push(format!("{prefix}:connected{}AndroidTest", capitalize(variant)));
@@ -927,12 +933,14 @@ abstract class BaseTest {
         let p = plan(Path::new("/p"), &app, "demoDebug", &TestRequest::of(TestKind::Unit, &mark));
         assert_eq!(p.args, [":app:testDemoDebugUnitTest", "--tests", "a.ExampleTest.adds"]);
         assert_eq!(p.report_dir, PathBuf::from("/p/app/build/test-results/testDemoDebugUnitTest"));
-        let request = TestRequest { kind: TestKind::Instrumented, filters: vec![("a.ATest".into(), None), ("a.BTest".into(), Some("b".into()))], name: "x".into() };
+        let request = TestRequest { kind: TestKind::Instrumented, filters: vec![("a.ATest".into(), None), ("a.BTest".into(), Some("b".into()))], name: "x".into(), debug_port: None };
         let p = plan(Path::new("/p"), &app, "demoDebug", &request);
         assert_eq!(p.args, [":app:connectedDemoDebugAndroidTest", "-Pandroid.testInstrumentationRunnerArguments.class=a.ATest,a.BTest#b"]);
         let core = ModuleInfo { path: ":".into(), dir: "/p".into(), kind: ModuleType::Jvm, variants: vec![] };
-        let all = TestRequest { kind: TestKind::Unit, filters: vec![], name: "All".into() };
+        let mut all = TestRequest { kind: TestKind::Unit, filters: vec![], name: "All".into(), debug_port: None };
         assert_eq!(plan(Path::new("/p"), &core, "debug", &all).args, [":test"]);
+        all.debug_port = Some(5005);
+        assert_eq!(plan(Path::new("/p"), &core, "debug", &all).args, [":test", "-Pjunction.debugPort=5005"]);
     }
 
     #[test]

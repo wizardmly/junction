@@ -100,8 +100,13 @@ actions!(
         SyncProjectWithGradleFiles,
         MakeProject,
         RunApp,
+        DebugApp,
         StopApp,
         ToggleRunWindow,
+        ToggleDebugWindow,
+        DebugResume,
+        DebugStepOver,
+        DebugStepOut,
         ToggleLogcatWindow,
         ShowLocalHistory,
         PutLocalHistoryLabel,
@@ -177,8 +182,15 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-shift-o", SyncProjectWithGradleFiles, Some(CONTEXT)),
         KeyBinding::new("secondary-f9", MakeProject, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "ctrl-r" } else { "shift-f10" }, RunApp, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "ctrl-d" } else { "shift-f9" }, DebugApp, Some(CONTEXT)),
         KeyBinding::new("secondary-f2", StopApp, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-4" } else { "alt-4" }, ToggleRunWindow, Some(CONTEXT)),
+        // Debugger: Alt+5, F9 Resume, F8 Step Over, Shift+F8 Step Out (F7,
+        // Step Into, shares Next Difference's key).
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-5" } else { "alt-5" }, ToggleDebugWindow, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "alt-cmd-r" } else { "f9" }, DebugResume, Some(CONTEXT)),
+        KeyBinding::new("f8", DebugStepOver, Some(CONTEXT)),
+        KeyBinding::new("shift-f8", DebugStepOut, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-6" } else { "alt-6" }, ToggleLogcatWindow, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-0" } else { "alt-0" }, ToggleCommitWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-f12", HideAllToolWindows, Some(CONTEXT)),
@@ -282,6 +294,7 @@ pub struct Workspace {
     build_view: Entity<crate::ui::run_views::BuildView>,
     run_view: Entity<crate::ui::run_views::RunView>,
     logcat_view: Entity<crate::ui::logcat_view::LogcatView>,
+    debug_view: Entity<crate::ui::debug_view::DebugView>,
     problems_view: Entity<crate::ui::problems_view::ProblemsView>,
     todo_view: Entity<crate::ui::todo_view::TodoView>,
     variants_view: Entity<crate::ui::run_views::VariantsView>,
@@ -382,6 +395,20 @@ impl Workspace {
         let device_explorer = cx.new(|cx| crate::ui::device_explorer::DeviceExplorer::new(device_manager.clone(), android_project, cx));
         let run = cx.new(|_| crate::ui::run_service::RunService::new(device_manager.clone()));
         let tests = crate::ui::test_service::TestService::global(cx);
+        let debug = crate::ui::debug_service::DebugService::global(cx);
+        let debug_view = cx.new(crate::ui::debug_view::DebugView::new);
+        {
+            // A paused frame's source: the project file ending with its path.
+            let index = code_index.clone();
+            let resolver: crate::ui::debug_service::SourceResolver = Rc::new(move |suffix, cx| {
+                let index = index.read(cx);
+                let root = index.root()?.to_path_buf();
+                let files = index.index.read().ok()?;
+                let file = files.all_files.iter().find(|f| f.as_str() == suffix || f.ends_with(&format!("/{suffix}")))?;
+                Some(root.join(file))
+            });
+            debug.update(cx, |d, _| d.set_resolver(resolver));
+        }
         let build_view = cx.new(|cx| crate::ui::run_views::BuildView::new(run.clone(), cx));
         let run_view = cx.new(|cx| crate::ui::run_views::RunView::new(run.clone(), cx));
         let variants_view = cx.new(crate::ui::run_views::VariantsView::new);
@@ -580,6 +607,8 @@ impl Workspace {
             }),
             cx.subscribe_in(&sync, window, |this, _, event, window, cx| this.on_sync_event(event, window, cx)),
             cx.subscribe_in(&run, window, |this, _, event, window, cx| this.on_run_event(event, window, cx)),
+            cx.subscribe_in(&debug, window, |this, _, event, window, cx| this.on_debug_event(event, window, cx)),
+            cx.subscribe_in(&debug_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::Debug, event, window, cx)),
             cx.subscribe_in(&tests, window, |this, _, event, window, cx| this.on_test_event(event, window, cx)),
             cx.subscribe_in(&build_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::Build, event, window, cx)),
             cx.subscribe_in(&run_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::Run, event, window, cx)),
@@ -671,6 +700,7 @@ impl Workspace {
             build_view,
             run_view,
             logcat_view,
+            debug_view,
             problems_view,
             todo_view,
             variants_view,
@@ -896,7 +926,24 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &SyncProjectWithGradleFiles, _, cx| crate::ui::sync_service::SyncService::global(cx).update(cx, |s, cx| s.sync_all(cx))))
             .on_action(cx.listener(|this, _: &MakeProject, _, cx| this.run.update(cx, |r, cx| r.make_project(cx))))
             .on_action(cx.listener(|this, _: &RunApp, _, cx| this.run.update(cx, |r, cx| r.run(cx))))
-            .on_action(cx.listener(|this, _: &StopApp, _, cx| this.run.update(cx, |r, cx| r.stop(cx))))
+            .on_action(cx.listener(|this, _: &StopApp, _, cx| {
+                // Ctrl+F2 stops the debug session first, as the active one.
+                let debug = crate::ui::debug_service::DebugService::global(cx);
+                if debug.read(cx).is_active() {
+                    debug.update(cx, |d, cx| d.stop(cx));
+                } else {
+                    this.run.update(cx, |r, cx| r.stop(cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleDebugWindow, window, cx| this.shortcut_tool(ToolWindow::Debug, window, cx)))
+            .on_action(cx.listener(|this, _: &DebugApp, _, cx| this.run.update(cx, |r, cx| r.debug(cx))))
+            .on_action(cx.listener(|_, _: &DebugResume, _, cx| crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.resume(cx))))
+            .on_action(cx.listener(|_, _: &DebugStepOver, _, cx| {
+                crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.step(crate::domain::debugger::StepDepth::Over, cx))
+            }))
+            .on_action(cx.listener(|_, _: &DebugStepOut, _, cx| {
+                crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.step(crate::domain::debugger::StepDepth::Out, cx))
+            }))
             .on_action(cx.listener(|this, _: &ToggleRunWindow, window, cx| this.shortcut_tool(ToolWindow::Run, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleLogcatWindow, window, cx| this.shortcut_tool(ToolWindow::Logcat, window, cx)))
             .on_action(cx.listener(|this, _: &ShowLocalHistory, window, cx| this.show_local_history(window, cx)))
@@ -911,9 +958,17 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FindInPath, window, cx| this.open_find_popup(false, window, cx)))
             .on_action(cx.listener(|this, _: &ReplaceInPath, window, cx| this.open_find_popup(true, window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx)))
-            .on_action(cx.listener(|this, _: &NextDifference, _, cx| match this.front_merge() {
-                Some(merge) => merge.update(cx, |m, cx| m.next_difference(cx)),
-                None => this.diff.update(cx, |d, cx| d.next_difference(cx)),
+            .on_action(cx.listener(|this, _: &NextDifference, _, cx| {
+                // F7 is Step Into while the debugger is paused.
+                let debug = crate::ui::debug_service::DebugService::global(cx);
+                if debug.read(cx).is_paused() {
+                    debug.update(cx, |d, cx| d.step(crate::domain::debugger::StepDepth::Into, cx));
+                    return;
+                }
+                match this.front_merge() {
+                    Some(merge) => merge.update(cx, |m, cx| m.next_difference(cx)),
+                    None => this.diff.update(cx, |d, cx| d.next_difference(cx)),
+                }
             }))
             .on_action(cx.listener(|this, _: &PreviousDifference, _, cx| match this.front_merge() {
                 Some(merge) => merge.update(cx, |m, cx| m.previous_difference(cx)),

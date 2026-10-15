@@ -35,6 +35,8 @@ pub struct Target<'a> {
     pub serial: &'a str,
     /// "Google Pixel 9a".
     pub name: &'a str,
+    /// Debug 'app': the app waits for the debugger.
+    pub debug: bool,
 }
 
 /// Builds and launches. `build_line` gets Gradle's output, `console` the
@@ -77,8 +79,9 @@ pub fn run(
         console(ConsoleLine::Error("Error while Launching activity".into()));
         return (RunOutcome::Failed, build);
     };
-    console(ConsoleLine::Command(format!("$ adb shell am start -n \"{component}\" -a android.intent.action.MAIN -c android.intent.category.LAUNCHER")));
-    if let Err(reason) = device.start(target.serial, &component) {
+    let wait = if target.debug { " -D" } else { "" };
+    console(ConsoleLine::Command(format!("$ adb shell am start -n \"{component}\" -a android.intent.action.MAIN -c android.intent.category.LAUNCHER{wait}")));
+    if let Err(reason) = device.start(target.serial, &component, target.debug) {
         console(ConsoleLine::Error(reason));
         console(ConsoleLine::Error("Error while Launching activity".into()));
         return (RunOutcome::Failed, build);
@@ -93,6 +96,7 @@ pub fn run(
         }
     }
     match pid {
+        Some(_) if target.debug => console(ConsoleLine::Info(format!("Waiting for application to come online: {}", output.application_id))),
         Some(pid) => console(ConsoleLine::Info(format!("Connected to process {pid} on device '{}'.", target.name))),
         None => console(ConsoleLine::Info(format!("The process of {} didn't start on '{}'.", output.application_id, target.name))),
     }
@@ -133,8 +137,8 @@ mod tests {
         fn launcher_activity(&self, _: &str, id: &str) -> Option<String> {
             Some(format!("{id}/.MainActivity"))
         }
-        fn start(&self, _: &str, component: &str) -> Result<(), String> {
-            self.0.borrow_mut().push(format!("start {component}"));
+        fn start(&self, _: &str, component: &str, debug: bool) -> Result<(), String> {
+            self.0.borrow_mut().push(format!("start {component}{}", if debug { " -D" } else { "" }));
             Ok(())
         }
         fn pid(&self, _: &str, _: &str) -> Option<u32> {
@@ -151,7 +155,7 @@ mod tests {
     fn builds_installs_and_starts() {
         let (gradle, phone) = (Gradle { ok: true, tasks: RefCell::default() }, Phone(RefCell::default()));
         let mut lines = Vec::new();
-        let (outcome, _) = run(&gradle, &phone, &config(), "debug", Target { serial: "s", name: "Pixel" }, &mut |_| {}, &mut |l| lines.push(l), &|| false);
+        let (outcome, _) = run(&gradle, &phone, &config(), "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |l| lines.push(l), &|| false);
         assert_eq!(outcome, RunOutcome::Running { application_id: "com.example".into(), pid: Some(4242) });
         assert_eq!(gradle.tasks.borrow().as_slice(), [":app:assembleDebug"]);
         assert_eq!(phone.0.borrow().as_slice(), ["install 1", "stop com.example", "start com.example/.MainActivity"]);
@@ -163,8 +167,19 @@ mod tests {
     #[test]
     fn a_failed_build_installs_nothing() {
         let (gradle, phone) = (Gradle { ok: false, tasks: RefCell::default() }, Phone(RefCell::default()));
-        let (outcome, _) = run(&gradle, &phone, &config(), "debug", Target { serial: "s", name: "Pixel" }, &mut |_| {}, &mut |_| {}, &|| false);
+        let (outcome, _) = run(&gradle, &phone, &config(), "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |_| {}, &|| false);
         assert_eq!(outcome, RunOutcome::BuildFailed);
         assert!(phone.0.borrow().is_empty());
+    }
+
+    #[test]
+    fn debug_waits_for_the_debugger() {
+        let (gradle, phone) = (Gradle { ok: true, tasks: RefCell::default() }, Phone(RefCell::default()));
+        let mut lines = Vec::new();
+        let (outcome, _) = run(&gradle, &phone, &config(), "debug", Target { serial: "s", name: "Pixel", debug: true }, &mut |_| {}, &mut |l| lines.push(l), &|| false);
+        assert_eq!(outcome, RunOutcome::Running { application_id: "com.example".into(), pid: Some(4242) });
+        assert_eq!(phone.0.borrow().last().map(String::as_str), Some("start com.example/.MainActivity -D"));
+        assert!(matches!(&lines[1], ConsoleLine::Command(c) if c.ends_with("LAUNCHER -D")));
+        assert_eq!(lines[2], ConsoleLine::Info("Waiting for application to come online: com.example".into()));
     }
 }

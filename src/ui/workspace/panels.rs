@@ -96,6 +96,7 @@ impl Workspace {
             ToolWindow::DeviceExplorer => (Icon::from(icons::TW_DEVICE_EXPLORER), "Device Explorer".into(), ""),
             ToolWindow::Build => (Icon::from(icons::TW_BUILD), "Build".into(), ""),
             ToolWindow::Run => (Icon::from(icons::TW_RUN), "Run".into(), "Alt+4"),
+            ToolWindow::Debug => (Icon::from(icons::TW_DEBUG), "Debug".into(), "Alt+5"),
             ToolWindow::Logcat => (Icon::from(icons::TW_LOGCAT), "Logcat".into(), "Alt+6"),
             ToolWindow::Problems => (Icon::from(icons::TW_PROBLEMS), "Problems".into(), ""),
             ToolWindow::Todo => (Icon::from(icons::TW_TODO), "TODO".into(), ""),
@@ -280,6 +281,7 @@ impl Workspace {
             // Not cached: their logs grow on their own.
             ToolWindow::Build => self.build_view.clone().into_any_element(),
             ToolWindow::Run => self.run_view.clone().into_any_element(),
+            ToolWindow::Debug => self.debug_view.clone().into_any_element(),
             ToolWindow::Logcat => self.logcat_view.clone().into_any_element(),
             ToolWindow::Problems => self.problems_view.clone().into_any_element(),
             ToolWindow::Todo => self.todo_view.clone().into_any_element(),

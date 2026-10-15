@@ -8,6 +8,7 @@
 pub mod android_resources;
 pub mod build;
 pub mod completion;
+pub mod debugger;
 pub mod dependency_versions;
 pub mod diagnostics;
 pub mod imports;

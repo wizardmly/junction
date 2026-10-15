@@ -109,27 +109,31 @@ impl TestService {
         Some((path.clone(), mark.line))
     }
 
-    /// Runs one of a file's tests (a gutter icon, Ctrl+Shift+F10).
-    pub fn run_mark(&mut self, path: PathBuf, marks: Vec<TestMark>, mark: &TestMark, cx: &mut Context<Self>) {
+    /// Runs one of a file's tests (a gutter icon, Ctrl+Shift+F10); with a
+    /// port, its test JVM waits there for the debugger.
+    pub fn run_mark(&mut self, path: PathBuf, marks: Vec<TestMark>, mark: &TestMark, debug_port: Option<u16>, cx: &mut Context<Self>) -> bool {
         let name = mark.name();
         let Some(kind) = testing::test_kind(&path.to_string_lossy()) else {
             cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "The file is not in a test source set.".into() });
-            return;
+            return false;
         };
         let builds = SyncService::try_global(cx).map(|s| s.read(cx).builds().to_vec()).unwrap_or_default();
         // Before the first sync, the build files say where the module is.
         let found = testing::module_of(&path, &builds).map(|(b, m)| (b.to_path_buf(), m.clone())).or_else(|| crate::infra::gradle::module_from_files(&path));
         let Some((build_root, module)) = found else {
             cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "The file is not in a Gradle module.".into() });
-            return;
+            return false;
         };
-        let request = TestRequest::of(kind, mark);
+        let mut request = TestRequest::of(kind, mark);
+        request.debug_port = debug_port;
         self.start(Launch { build_root, module, request, source: Some((path, marks)) }, cx);
+        true
     }
 
     /// Rerun: the last run again.
     pub fn rerun(&mut self, cx: &mut Context<Self>) {
-        if let Some(launch) = self.last.clone() {
+        if let Some(mut launch) = self.last.clone() {
+            launch.request.debug_port = None;
             self.start(launch, cx);
         }
     }
@@ -137,6 +141,7 @@ impl TestService {
     /// Rerun Failed Tests: the last run's failed tests.
     pub fn rerun_failed(&mut self, cx: &mut Context<Self>) {
         let (Some(mut launch), Some(run)) = (self.last.clone(), self.run.as_ref()) else { return };
+        launch.request.debug_port = None;
         let failed = run.results.failed();
         if failed.is_empty() {
             return;

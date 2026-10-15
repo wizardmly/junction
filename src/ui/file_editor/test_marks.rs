@@ -70,11 +70,19 @@ impl FileEditor {
         self.run_test(mark, cx);
     }
 
+    /// Debug: the test with its JVM waiting for the debugger.
+    pub(super) fn debug_test(&mut self, mark: TestMark, cx: &mut Context<Self>) {
+        let Some(file) = self.bookmark_file() else { return };
+        let marks = self.test_marks.clone();
+        self.test_menu = None;
+        crate::ui::debug_service::DebugService::global(cx).update(cx, |s, cx| s.debug_test(file.into(), marks, &mark, cx));
+    }
+
     fn run_test(&mut self, mark: TestMark, cx: &mut Context<Self>) {
         let Some(file) = self.bookmark_file() else { return };
         let marks = self.test_marks.clone();
         self.test_menu = None;
-        TestService::global(cx).update(cx, |s, cx| s.run_mark(file.into(), marks, &mark, cx));
+        TestService::global(cx).update(cx, |s, cx| s.run_mark(file.into(), marks, &mark, None, cx));
     }
 
     /// The run icons' column, the gutter's last.
@@ -150,7 +158,7 @@ impl FileEditor {
     pub(super) fn render_test_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let (mark, at) = self.test_menu.clone()?;
         let palette = cx.palette().clone();
-        let run = mark.clone();
+        let (run, debug) = (mark.clone(), mark.clone());
         Some(
             deferred(
                 anchored().position(at).snap_to_window_with_margin(px(8.)).child(
@@ -181,6 +189,20 @@ impl FileEditor {
                                 .child(div().flex_1().child(format!("Run '{}'", mark.name())))
                                 .child(div().pl_4().text_xs().text_color(palette.text_secondary).child(run_shortcut()))
                                 .on_click(cx.listener(move |this, _, _, cx| this.run_test(run.clone(), cx))),
+                        )
+                        .child(
+                            h_flex()
+                                .id("test-debug-item")
+                                .gap_1p5()
+                                .px_2()
+                                .py_0p5()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .hover(|el| el.bg(palette.hover))
+                                .child(Icon::new(icons::DEBUG).xsmall())
+                                .child(div().flex_1().child(format!("Debug '{}'", mark.name())))
+                                .child(div().pl_4().text_xs().text_color(palette.text_secondary).child(super::breakpoints::debug_shortcut()))
+                                .on_click(cx.listener(move |this, _, _, cx| this.debug_test(debug.clone(), cx))),
                         ),
                 ),
             )

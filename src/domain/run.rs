@@ -132,7 +132,8 @@ pub trait DeviceBridge {
     /// The launcher activity, `pkg/.MainActivity` (TV apps: the Leanback one).
     fn launcher_activity(&self, serial: &str, application_id: &str) -> Option<String>;
     /// `am start`: the command as shown, or why it failed.
-    fn start(&self, serial: &str, component: &str) -> Result<(), String>;
+    /// With `debug`, the app waits for a debugger (`am start -D`).
+    fn start(&self, serial: &str, component: &str, debug: bool) -> Result<(), String>;
     fn pid(&self, serial: &str, application_id: &str) -> Option<u32>;
 }
 

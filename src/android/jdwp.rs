@@ -88,6 +88,29 @@ fn transport(adb: &Adb, serial: &str) -> io::Result<TcpStream> {
     Ok(stream)
 }
 
+/// A debugger's connection to a process's JDWP, through the adb server,
+/// before the JDWP handshake (Debug 'app', Attach Debugger).
+pub fn connect(adb: &Adb, serial: &str, pid: u32) -> io::Result<TcpStream> {
+    let stream = transport(adb, serial)?;
+    open_debugger(stream, pid)
+}
+
+/// The same through an adb server at `port`, for tests.
+#[cfg(test)]
+pub fn connect_via(port: u16, serial: &str, pid: u32) -> io::Result<TcpStream> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+    request(&mut stream, &format!("host:transport:{serial}"))?;
+    open_debugger(stream, pid)
+}
+
+fn open_debugger(mut stream: TcpStream, pid: u32) -> io::Result<TcpStream> {
+    request(&mut stream, &format!("jdwp:{pid}"))?;
+    // A debug session waits on the socket as long as it lasts.
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(None)?;
+    Ok(stream)
+}
+
 /// The PIDs of the device's debuggable processes.
 pub fn pids(adb: &Adb, serial: &str) -> io::Result<Vec<u32>> {
     let mut stream = transport(adb, serial)?;

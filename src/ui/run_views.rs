@@ -342,6 +342,10 @@ pub fn run_label(name: &str) -> String {
     format!("Run '{name}'  {}", if cfg!(target_os = "macos") { "⌃R" } else { "Shift+F10" })
 }
 
+pub fn debug_label(name: &str) -> String {
+    format!("Debug '{name}'  {}", if cfg!(target_os = "macos") { "⌃D" } else { "Shift+F9" })
+}
+
 fn rerun_label() -> &'static str {
     if cfg!(target_os = "macos") { "Rerun  ⌃R" } else { "Rerun  Shift+F10" }
 }

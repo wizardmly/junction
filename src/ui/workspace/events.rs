@@ -322,6 +322,30 @@ impl Workspace {
             RunEvent::ShowBuild => self.tools.open(ToolWindow::Build),
             RunEvent::ShowRun => self.tools.open(ToolWindow::Run),
             RunEvent::Error { title, message } => window.push_notification(Notification::error(message.clone()).title(title.clone()), cx),
+            RunEvent::Attach { name, serial, pid, adb } => {
+                let (name, serial, adb) = (name.clone(), serial.clone(), adb.clone());
+                let pid = *pid;
+                crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.attach_android(name, adb, serial, pid, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Debug: a session shows the Debug window, a pause the execution
+    /// point in the editor, errors become balloons.
+    pub(super) fn on_debug_event(&mut self, event: &crate::ui::debug_service::DebugServiceEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::debug_service::DebugServiceEvent;
+        match event {
+            DebugServiceEvent::Show => self.tools.open(ToolWindow::Debug),
+            DebugServiceEvent::Navigate { path, line } => {
+                let root = self.model.read(cx).project_root().map(std::path::Path::to_path_buf);
+                let path = match root.as_deref().and_then(|r| path.strip_prefix(r).ok()) {
+                    Some(rel) => rel.to_string_lossy().replace('\\', "/"),
+                    None => path.to_string_lossy().into_owned(),
+                };
+                self.open_at(path, *line, 0, window, cx);
+            }
+            DebugServiceEvent::Error { title, message } => window.push_notification(Notification::error(message.clone()).title(title.clone()), cx),
         }
         cx.notify();
     }

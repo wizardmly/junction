@@ -27,6 +27,8 @@ pub enum RunEvent {
     ShowRun,
     /// "Error running 'app'": a balloon.
     Error { title: String, message: String },
+    /// Debug 'app' started the app waiting for the debugger: attach.
+    Attach { name: String, serial: String, pid: u32, adb: crate::android::adb::Adb },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +156,15 @@ impl RunService {
 
     /// Run 'app': build, install, start; an AVD that isn't running starts first.
     pub fn run(&mut self, cx: &mut Context<Self>) {
+        self.launch(false, cx);
+    }
+
+    /// Debug 'app' (Shift+F9): as Run, the app waiting for the debugger.
+    pub fn debug(&mut self, cx: &mut Context<Self>) {
+        self.launch(true, cx);
+    }
+
+    fn launch(&mut self, debug: bool, cx: &mut Context<Self>) {
         if self.busy {
             self.stop(cx);
         }
@@ -198,6 +209,7 @@ impl RunService {
             let name = device.name.clone();
             let c = cancel.clone();
             let cfg = config.clone();
+            let attach_to = (serial.clone(), adb.clone());
             let (outcome, build) = cx
                 .background_spawn(async move {
                     let mut console_started = false;
@@ -208,7 +220,7 @@ impl RunService {
                         &bridge,
                         &cfg,
                         &variant,
-                        run_app::Target { serial: &serial, name: &name },
+                        run_app::Target { serial: &serial, name: &name, debug },
                         &mut |l| drop(send.send(Message::Build(l.to_owned()))),
                         &mut |l| {
                             if !console_started {
@@ -233,6 +245,11 @@ impl RunService {
                     }
                 }
                 match outcome {
+                    RunOutcome::Running { pid: Some(pid), .. } if debug => {
+                        cx.emit(RunEvent::ShowRun);
+                        let (serial, adb) = attach_to;
+                        cx.emit(RunEvent::Attach { name: config.name.clone(), serial, pid, adb });
+                    }
                     RunOutcome::Running { .. } | RunOutcome::Failed => cx.emit(RunEvent::ShowRun),
                     RunOutcome::BuildFailed if failed => {
                         cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: "Gradle build failed. See the Build window.".into() })

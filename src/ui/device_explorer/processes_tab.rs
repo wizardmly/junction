@@ -115,6 +115,17 @@ impl DeviceExplorer {
         .detach();
     }
 
+    /// Attach Debugger: a debug session on the process.
+    pub(super) fn attach_debugger(&mut self, cx: &mut Context<Self>) {
+        let selected = self.selected_processes();
+        let [process] = selected.as_slice() else { return };
+        let Some(adb) = self.adb(cx) else { return };
+        let Some(serial) = self.processes.as_ref().map(|p| p.serial.clone()) else { return };
+        let name = process.display_name();
+        let pid = process.pid;
+        crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.attach_android(name, adb, serial, pid, cx));
+    }
+
     pub(super) fn kill_processes(&mut self, cx: &mut Context<Self>) {
         self.process_action("kill process", |adb, serial, p| jdwp::kill(adb, serial, p.pid).map_err(|e| e.to_string()), cx);
     }
@@ -200,6 +211,9 @@ impl DeviceExplorer {
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| this.update(cx, |this, cx| f(this, cx))
         };
         let mut menu = menu;
+        if !many {
+            menu = menu.item(PopupMenuItem::new("Attach debugger").icon(Icon::new(icons::DEBUG)).on_click(act(Self::attach_debugger)));
+        }
         if known {
             menu = menu
                 .item(PopupMenuItem::new(if many { "Kill processes" } else { "Kill process" }).icon(Icon::new(icons::KILL_PROCESS)).on_click(act(Self::kill_processes)))

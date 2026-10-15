@@ -391,7 +391,7 @@ impl Workspace {
             _ => icons::PHYSICAL_DEVICE_PHONE,
         };
         let config_name = config.as_ref().map(|c| c.name.clone());
-        let (make, pick_device, pick_config, start, stop) = (run.clone(), run.clone(), run.clone(), run.clone(), run.clone());
+        let (make, pick_device, pick_config, start, stop, debug) = (run.clone(), run.clone(), run.clone(), run.clone(), run.clone(), run.clone());
         let selected_device = device.map(|d| d.id);
         let selected_config = config.map(|c| (c.build_root, c.module.path));
         h_flex()
@@ -455,6 +455,10 @@ impl Workspace {
             .child(
                 tool_button("tb-run", if running { icons::RERUN } else { icons::RUN }, crate::ui::run_views::run_label(config_name.as_deref().unwrap_or("app")))
                     .on_click(move |_, _, cx| start.update(cx, |r, cx| r.run(cx))),
+            )
+            .child(
+                tool_button("tb-debug", icons::DEBUG, crate::ui::run_views::debug_label(config_name.as_deref().unwrap_or("app")))
+                    .on_click(move |_, _, cx| debug.update(cx, |r, cx| r.debug(cx))),
             )
             // The new UI shows Stop only while something runs.
             .when(can_stop, |el| el.child(tool_button("tb-stop", icons::STOP, crate::ui::run_views::stop_label()).on_click(move |_, _, cx| stop.update(cx, |r, cx| r.stop(cx)))))
