@@ -16,6 +16,7 @@ pub mod imports;
 pub mod jdk;
 pub mod local_history;
 pub mod logcat;
+pub mod rename;
 pub mod run;
 pub mod testing;
 pub mod todo;

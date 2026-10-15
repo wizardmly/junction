@@ -88,6 +88,10 @@ impl Workspace {
                 self.show_find_window(cx);
                 cx.notify();
             }
+            FileEditorEvent::Rename { text, offset } => {
+                let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
+                self.rename_symbol(path, text.clone(), *offset, window, cx);
+            }
             FileEditorEvent::Saved(path) => {
                 let path = path.clone();
                 self.recently_changed.touch(&path);
@@ -146,6 +150,63 @@ impl Workspace {
     pub(super) fn put_local_history_label(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
         crate::ui::local_history_window::put_label(root, window, cx);
+    }
+
+    /// Refactor › Rename (Shift+F6), as Android Studio's: every open file
+    /// saved first, the dialog, then the occurrences renamed on disk and a
+    /// class's file renamed along with it, its open tabs following.
+    fn rename_symbol(&mut self, path: String, text: String, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let editors: Vec<_> = self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).collect();
+        for editor in editors {
+            editor.update(cx, |e, cx| e.save_now(cx));
+        }
+        let task = self.code_index.read(cx).rename_target(path, text, offset, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let target = task.await;
+            this.update_in(cx, |this, window, cx| match target {
+                Err(message) => window.push_notification(Notification::info(message).title("Rename"), cx),
+                Ok(target) => {
+                    let workspace = cx.entity().downgrade();
+                    let model = this.model.clone();
+                    crate::ui::rename_dialog::open(target, move |request, window, cx| {
+                        let model = model.read(cx);
+                        let Some(root) = model.project_root().map(|r| r.to_path_buf()) else { return };
+                        let files = crate::infra::project_files::DiskFiles { root, repository: model.project_repository().cloned() };
+                        let result = crate::usecase::rename_symbol::rename(&files, &request.occurrences, &request.old, &request.new, &request.declaration, request.rename_file);
+                        workspace
+                            .update(cx, |this, cx| match result {
+                                Err(message) => window.push_notification(Notification::error(message).title("Rename"), cx),
+                                Ok(renamed) => {
+                                    if let Some((from, to)) = &renamed.file {
+                                        this.retarget_tabs(from, to, window, cx);
+                                    }
+                                    let mut changed = renamed.changed;
+                                    if let Some((from, to)) = renamed.file {
+                                        changed.retain(|p| *p != from);
+                                        changed.push(to);
+                                    }
+                                    this.files_changed(changed, window, cx);
+                                    // The reloaded tab keeps the keyboard, as Android Studio's editor
+                                    // does: once the dialog has closed and given its focus back (to the
+                                    // replaced editor).
+                                    if let Some(editor) = this.editor().cloned() {
+                                        window
+                                            .spawn(cx, async move |cx| {
+                                                let closed = *gpui_kit::component::dialog::ANIMATION_DURATION + std::time::Duration::from_millis(50);
+                                                cx.background_executor().timer(closed).await;
+                                                cx.update(|window, cx| editor.update(cx, |e, cx| e.focus(window, cx))).ok();
+                                            })
+                                            .detach();
+                                    }
+                                }
+                            })
+                            .ok();
+                    }, window, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(super) fn files_changed(&mut self, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {

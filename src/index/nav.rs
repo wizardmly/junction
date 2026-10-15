@@ -645,6 +645,47 @@ fn usages_in_file(root: &Path, path: &str, entry: &super::store::FileEntry, hits
     out
 }
 
+/// Every whole-word occurrence of `word` in the project's indexed files,
+/// each marked as code or in a comment or string: what Rename changes.
+pub fn rename_hits(index: &ProjectIndex, root: &Path, word: &str) -> Vec<crate::domain::rename::Occurrence> {
+    let output = crate::git::git_process()
+        .args(["grep", "-l", "-w", "-I", "-F", "--untracked", "--exclude-standard", "-e", word])
+        .current_dir(root)
+        .output();
+    let stdout = output.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let mut out = Vec::new();
+    for path in stdout.lines() {
+        let Some(entry) = index.files.get(path) else { continue };
+        let Ok(text) = std::fs::read_to_string(root.join(path)) else { continue };
+        out.extend(occurrences_in(path, &text, entry.lang, word));
+    }
+    out
+}
+
+/// The whole-word occurrences of `word` in one file's text.
+pub fn occurrences_in(path: &str, text: &str, lang: Lang, word: &str) -> Vec<crate::domain::rename::Occurrence> {
+    let skip = comments_and_strings(text, lang);
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (n, line) in text.split('\n').enumerate() {
+        for (at, _) in line.match_indices(word) {
+            let before = line[..at].chars().next_back();
+            let after = line[at + word.len()..].chars().next();
+            // Kotlin's and Dart's `"$name"` template refers to it.
+            let template = before == Some('$') && matches!(lang, Lang::Kotlin | Lang::Dart);
+            if before.is_some_and(is_word_char) && !template || after.is_some_and(is_word_char) {
+                continue;
+            }
+            let offset = start + at;
+            let code = !skip.iter().any(|r| r.start <= offset && offset < r.end);
+            let col = line[..at].encode_utf16().count() as u32;
+            out.push(crate::domain::rename::Occurrence { path: path.to_owned(), line: n as u32, col, text: line.trim().to_owned(), code });
+        }
+        start += line.len() + 1;
+    }
+    out
+}
+
 /// Usages of `word` in library files (absolute paths), as IntelliJ's
 /// "Project and Libraries" scope adds them when searching from a library.
 pub fn library_usages(index: &ProjectIndex, files: &[String], word: &str) -> Vec<Usage> {
@@ -1077,6 +1118,13 @@ pub fn search_files(index: &ProjectIndex, query: &str, libraries: bool, limit: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_rename_occurrences() {
+        let text = "class Calc {\n  // Calc adds\n  fun make() = Calc() + \"Calc $Calc\" + Calcs\n}\n";
+        let found: Vec<(u32, u32, bool)> = occurrences_in("Calc.kt", text, Lang::Kotlin, "Calc").iter().map(|o| (o.line, o.col, o.code)).collect();
+        assert_eq!(found, [(0, 6, true), (1, 5, false), (2, 15, true), (2, 25, false), (2, 31, true)]);
+    }
 
     fn project(files: &[(&str, &str)]) -> (std::path::PathBuf, ProjectIndex) {
         let dir = std::env::temp_dir().join(format!("junction-nav-{}-{}", std::process::id(), files.len()));

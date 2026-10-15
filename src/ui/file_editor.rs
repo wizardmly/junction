@@ -54,6 +54,7 @@ actions!(
         CreateGist,
         GotoDeclaration,
         FindUsages,
+        RenameElement,
         FindNext,
         FindPrevious,
         CloseChangePopup,
@@ -103,6 +104,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-alt-shift-down", NextChange, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-shift-up", PreviousChange, Some(CONTEXT)),
         KeyBinding::new("alt-f7", FindUsages, Some(CONTEXT)),
+        KeyBinding::new("shift-f6", RenameElement, Some(CONTEXT)),
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
         KeyBinding::new(if cfg!(target_os = "macos") { "f3" } else { "f11" }, ToggleBookmark, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "alt-f3" } else { "ctrl-f11" }, ToggleBookmarkWithMnemonic, Some(CONTEXT)),
@@ -154,6 +156,8 @@ pub enum FileEditorEvent {
     ChooseTargets { title: String, targets: Vec<crate::index::nav::Target>, at: Point<Pixels> },
     /// Find Usages of the identifier at a byte offset of this text.
     FindUsages { text: String, offset: usize },
+    /// Refactor › Rename (Shift+F6) of the identifier at this offset.
+    Rename { text: String, offset: usize },
     /// Copy Path/Reference…: the Copy popup for this file.
     CopyPathReference,
     /// Saved: re-index this file.
@@ -977,6 +981,15 @@ impl FileEditor {
         let text = self.text(cx);
         let offset = self.state.read(cx).cursor();
         cx.emit(FileEditorEvent::FindUsages { text, offset });
+    }
+
+    fn rename_element(&mut self, _: &RenameElement, _: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only() {
+            return;
+        }
+        let text = self.text(cx);
+        let offset = self.state.read(cx).cursor();
+        cx.emit(FileEditorEvent::Rename { text, offset });
     }
 
     pub fn selected_text(&self, cx: &gpui_kit::App) -> Option<String> {
@@ -1867,6 +1880,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::create_gist))
             .on_action(cx.listener(Self::goto_declaration))
             .on_action(cx.listener(Self::find_usages))
+            .on_action(cx.listener(Self::rename_element))
             .on_action(cx.listener(Self::find_next))
             .on_action(cx.listener(|this, _: &OpenFind, window, cx| this.open_find(false, window, cx)))
             .on_action(cx.listener(|this, _: &OpenReplace, window, cx| this.open_find(true, window, cx)))
@@ -1992,6 +2006,7 @@ impl Render for FileEditor {
                                 .separator()
                                 .menu("Go to Declaration", Box::new(GotoDeclaration))
                                 .menu("Find Usages", Box::new(FindUsages))
+                                .submenu("Refactor", NativeMenu::new().menu_with_disabled("Rename…", read_only, Box::new(RenameElement)))
                                 .menu("Select in Project View", Box::new(crate::ui::workspace::SelectInProject))
                                 .separator()
                                 .menu_with_disabled("Compare with Clipboard", read_only, Box::new(CompareWithClipboard))

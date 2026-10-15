@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use gpui_kit::{App, AppContext as _, Context, EventEmitter, Task};
 
+use crate::domain::rename::Occurrence;
 use crate::domain::version_catalog::{Catalog, Entry};
 use super::lang::Lang;
 use super::lsp::LspManager;
@@ -473,6 +474,55 @@ impl CodeIndex {
         })
     }
 
+    /// What Rename (Shift+F6) at `offset` renames: a parameter or local's
+    /// uses in its scope, or the symbol's whole-word occurrences across the
+    /// project, as Android Studio's Rename dialog lists them. Files are
+    /// read from disk: save them first.
+    pub fn rename_target(&self, path: String, text: String, offset: usize, cx: &App) -> Task<Result<RenameTarget, String>> {
+        const NOT_A_NAME: &str = "Cannot perform refactoring.\nCaret should be positioned at the name of element to be refactored.";
+        if ProjectIndex::is_external(&path) {
+            return Task::ready(Err("Cannot perform refactoring.\nThe file is read-only.".into()));
+        }
+        let Some((word, _)) = nav::word_at(&text, offset) else { return Task::ready(Err(NOT_A_NAME.into())) };
+        let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(Err(NOT_A_NAME.into())) };
+        if let Some(local) = super::locals::resolve(lang, &text, offset).filter(|l| !l.member) {
+            let occurrences = std::iter::once(local.decl)
+                .chain(local.uses.iter().copied())
+                .map(|at| {
+                    let (line, col) = nav::position(&text, at);
+                    let line_text = text.split('\n').nth(line as usize).unwrap_or_default().trim().to_owned();
+                    Occurrence { path: path.clone(), line, col, text: line_text, code: true }
+                })
+                .collect();
+            return Task::ready(Ok(RenameTarget { name: word, kind: "variable".into(), declaration: path, occurrences }));
+        }
+        let go_to = self.go_to(path.clone(), text.clone(), offset, cx);
+        let index = self.index.clone();
+        cx.background_spawn(async move {
+            let (declaration, line) = match go_to.await {
+                Nav::Declaration => (path, nav::position(&text, offset).0),
+                Nav::Targets(targets) => {
+                    let Some(target) = targets.first() else { return Err(format!("Cannot perform refactoring.\nCannot find declaration of '{word}'.")) };
+                    if ProjectIndex::is_external(&target.path) {
+                        return Err(format!("Cannot perform refactoring.\n'{word}' is declared in a library."));
+                    }
+                    (target.path.clone(), target.line)
+                }
+            };
+            let index = index.read().unwrap();
+            let kind = index
+                .file(&declaration)
+                .and_then(|e| e.symbols.iter().find(|s| s.name == word && s.line == line))
+                .map_or("symbol", |s| s.kind.label())
+                .to_owned();
+            let occurrences = nav::rename_hits(&index, &root, &word);
+            if occurrences.is_empty() {
+                return Err(NOT_A_NAME.into());
+            }
+            Ok(RenameTarget { name: word, kind, declaration, occurrences })
+        })
+    }
+
     /// The editor gutter's implementation markers for a file's current text.
     pub fn gutter_marks(&self, path: String, text: String, cx: &App) -> Task<Vec<super::hierarchy::GutterMark>> {
         let Some(lang) = Self::lang_of(&path, &text) else { return Task::ready(Vec::new()) };
@@ -594,6 +644,17 @@ impl CodeIndex {
 }
 
 /// Where Go to Declaration leads.
+/// What a Rename renames.
+#[derive(Clone, Debug)]
+pub struct RenameTarget {
+    pub name: String,
+    /// "class", "method", "variable"…
+    pub kind: String,
+    /// The declaring file.
+    pub declaration: String,
+    pub occurrences: Vec<Occurrence>,
+}
+
 pub enum Nav {
     Targets(Vec<Target>),
     /// On a declaration: IntelliJ shows its usages.

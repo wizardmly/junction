@@ -490,6 +490,22 @@ Linux 实测（Xvfb，JDK 21 + Gradle 8.14 的 calc 项目，未同步）：点�
 
 Linux 实测：去掉 `JAVA_HOME`、PATH 中不含 `java` 启动（即用户截图里的情况），Sync Now 成功，自动用了 `/usr/lib/jvm` 里的 JDK 21；设置页显示 “Detect automatically: java-1.21.0-openjdk-amd64 (21.0.12.1)”，下拉里三个指向同一 JDK 的符号链接只列一次；把 Gradle JDK 设成 `JAVA_HOME`（未设置）后同步，弹出 “Invalid Gradle JDK configuration found / JAVA_HOME is not set and no 'java' command could be found in your PATH. / Open Gradle Settings”，点链接直达 Gradle 设置页。
 
+## 24. Rename（2026-10-15）
+
+| 功能 | 状态 |
+|---|---|
+| 编辑器里 Shift+F6，或右键 Refactor › Rename…：AS 的 Rename 对话框，标题 “Rename Class / Method / Variable…”，“Rename class 'Calc' and its usages to:” 加新名字输入框 | ✅ |
+| 参数和局部变量：只改所在作用域里的声明和使用 | ✅ |
+| 类、方法、属性等：先找到声明（本文件的声明或 Go to Declaration 的结果，库里的声明拒绝），再在项目所有已索引文件里找整词出现；注释和字符串里的出现默认不改，勾选 “Search in comments and strings” 后列出并一起改；Kotlin `"$name"` 模板里的算代码 | ✅ |
+| 对话框列出每一处出现（文件:行 + 该行文本），可逐条取消勾选；底部 “N occurrences in M files” | ✅ |
+| 新名字校验：Java / Kotlin 关键字、非法标识符时显示 AS 的 “'class' is not a valid identifier”，Refactor 不生效 | ✅ |
+| 类名与文件名相同（`Foo.kt` / `Foo.java`）时 “Rename file 'Foo.java'”，默认勾选，用 `git mv` 改名，打开的标签页跟着改 | ✅ |
+| 开始前保存所有编辑器，改完刷新索引、Git 状态，未修改的标签页从磁盘重载并保持光标 | ✅ |
+| 光标不在名字上时提示 AS 的 “Cannot perform refactoring. Caret should be positioned at the name of element to be refactored.” | ✅ |
+| 语义级精确匹配（同名的不同符号，例如别的类的 `add`）、Preview 窗口、Undo | ❌ 文本整词匹配，同名不同符号要在列表里手动取消勾选 |
+
+Linux 实测（Xvfb，示例 Gradle 项目）：类 `Calc` 改为 `Calculator`，`Calc.java` 改名为 `Calculator.java`（Git 显示为重命名），测试里的 `Calc.add` 跟着改，勾选注释后 Javadoc 里的 `Calc` 也改了，标签页跟到新文件；局部变量 `sum` 改为 `total`，三处全改；方法 `add` 列出声明和两处调用；输入 `class` 时显示错误且不能提交。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。
