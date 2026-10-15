@@ -326,6 +326,31 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Logcat: a stack frame opens its source (the project's first, then a
+    /// library's), Hide hides the window.
+    pub(super) fn on_logcat_event(&mut self, event: &crate::ui::logcat_view::LogcatEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::logcat_view::LogcatEvent;
+        match event {
+            LogcatEvent::OpenFrame { package, file, line } => {
+                let suffix = if package.is_empty() { file.clone() } else { format!("{package}/{file}") };
+                let task = self.code_index.read(cx).search_files(file.clone(), true, cx);
+                let line = line.saturating_sub(1);
+                cx.spawn_in(window, async move |this, cx| {
+                    let found = task.await;
+                    let path = found.iter().map(|(p, _)| p).find(|p| p.replace('\\', "/").ends_with(&format!("/{suffix}")) || **p == suffix).cloned();
+                    if let Some(path) = path {
+                        this.update_in(cx, |this, window, cx| this.open_at(path, line, 0, window, cx)).ok();
+                    }
+                })
+                .detach();
+            }
+            LogcatEvent::Hide => {
+                self.tools.hide(ToolWindow::Logcat);
+                cx.notify();
+            }
+        }
+    }
+
     pub(super) fn on_run_view_event(&mut self, tool: ToolWindow, event: &crate::ui::run_views::RunViewEvent, window: &mut Window, cx: &mut Context<Self>) {
         use crate::ui::run_views::RunViewEvent;
         match event {

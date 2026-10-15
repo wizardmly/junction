@@ -9,5 +9,6 @@ pub mod build;
 pub mod completion;
 pub mod diagnostics;
 pub mod imports;
+pub mod logcat;
 pub mod run;
 pub mod sync;

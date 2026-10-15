@@ -23,6 +23,7 @@ pub enum ToolWindow {
     DeviceExplorer,
     Build,
     Run,
+    Logcat,
     BuildVariants,
 }
 
@@ -62,7 +63,7 @@ impl Side {
 }
 
 impl ToolWindow {
-    pub const ALL: [ToolWindow; 14] = [
+    pub const ALL: [ToolWindow; 15] = [
         ToolWindow::Project,
         ToolWindow::Commit,
         ToolWindow::PullRequests,
@@ -71,6 +72,7 @@ impl ToolWindow {
         ToolWindow::Find,
         ToolWindow::Build,
         ToolWindow::Run,
+        ToolWindow::Logcat,
         ToolWindow::Terminal,
         ToolWindow::Git,
         ToolWindow::Notifications,
@@ -94,13 +96,14 @@ impl ToolWindow {
             ToolWindow::DeviceExplorer => "explorer",
             ToolWindow::Build => "build",
             ToolWindow::Run => "run",
+            ToolWindow::Logcat => "logcat",
             ToolWindow::BuildVariants => "variants",
         }
     }
 
     fn default_side(self) -> Side {
         match self {
-            ToolWindow::Git | ToolWindow::Find | ToolWindow::Terminal | ToolWindow::Build | ToolWindow::Run => Side::Bottom,
+            ToolWindow::Git | ToolWindow::Find | ToolWindow::Terminal | ToolWindow::Build | ToolWindow::Run | ToolWindow::Logcat => Side::Bottom,
             // The new UI keeps Notifications on the right stripe, and
             // Android Studio its Device Manager, Running Devices and Device
             // Explorer below it.
@@ -269,7 +272,7 @@ mod tests {
     #[test]
     fn find_and_terminal_share_the_bottom_with_git() {
         let mut t = layout();
-        assert_eq!(t.on_side(Side::Bottom), vec![ToolWindow::Find, ToolWindow::Build, ToolWindow::Run, ToolWindow::Terminal, ToolWindow::Git]);
+        assert_eq!(t.on_side(Side::Bottom), vec![ToolWindow::Find, ToolWindow::Build, ToolWindow::Run, ToolWindow::Logcat, ToolWindow::Terminal, ToolWindow::Git]);
         t.open(ToolWindow::Terminal);
         assert!(t.is_open(ToolWindow::Terminal) && !t.is_open(ToolWindow::Git));
         t.open(ToolWindow::Find);

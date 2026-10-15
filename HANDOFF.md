@@ -211,7 +211,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 1 | 编辑器语言智能 | ✅ 2026-10-14 按“A+B”方案完成：索引补全 + 自动 import + 语法错误 + 保存后编译报错（FEATURES.md 第 14 节）。不常驻 Kotlin 语言服务（省 1–2 GB）；kotlin-lsp 以后可做成设置里的可选开关 | 剩 Alt+Enter 快速修复、Reformat、参数提示 |
 | 2 | Gradle Sync | ✅ 2026-10-14 轻量版完成：init script 解析各模块 classpath 并下载缺的依赖和源码，外部库按结果精确列出；build 文件变化时自动同步，打开项目只提示不同步（FEATURES.md 第 15 节） | 剩 Build 窗口 Sync 标签页、Build Variants（随第 3 项） |
 | 3 | Build + Run | ✅ 2026-10-15 完成：标题栏 Make / 设备 / 运行配置 / Run / Stop，Build、Run、Build Variants 工具窗口（FEATURES.md 第 16 节） | 剩 Debug、Apply Changes、Edit Configurations 对话框、真机验证 |
-| 4 | Logcat | 无 | `adb logcat -v long` 流式解析；AS 的过滤语法（`package:mine level:error tag:...`）；虚拟列表；堆栈链接跳源码；多设备标签 |
+| 4 | Logcat | ✅ 2026-10-15 完成：Logcat 工具窗口（Alt+6），设备下拉、AS 过滤语法、AS 配色、PROCESS STARTED / ENDED、堆栈跳源码、Standard / Compact、暂停、清空、重启（FEATURES.md 第 17 节） | 剩过滤输入补全和历史、多个 Logcat 标签页、截屏录屏按钮、真机验证 |
 
 **P1：每天会用，可暂时回 AS**
 
@@ -255,5 +255,5 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 ## 8. 接手建议
 
 1. 先编译运行一次，打开一个 Android 项目和一个多仓库目录，对照 FEATURES.md 熟悉界面。
-2. 下一步按维护者定的顺序做 6.2：Logcat → Problems / TODO / Local History → Android 资源 → Gradle 文件辅助 → 测试 → Debugger。新功能按第 4 节的 Clean 架构分层写。
+2. 下一步按维护者定的顺序做 6.2：Problems / TODO / Local History → Android 资源 → Gradle 文件辅助 → 测试 → Debugger。新功能按第 4 节的 Clean 架构分层写。
 3. 动 `vendor/`、索引缓存结构、`release.yml` 之前，先读第 4 节对应的坑。

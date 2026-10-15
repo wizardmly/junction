@@ -56,4 +56,5 @@ pub mod worktree_view;
 pub mod submodule_view;
 pub mod sync_service;
 pub mod run_service;
+pub mod logcat_view;
 pub mod run_views;

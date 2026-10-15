@@ -228,6 +228,7 @@ pub const TW_DEVICE_EXPLORER: AsIcon = AsIcon { light: &[("as/tw-device-explorer
 pub const TW_DEVICE_MANAGER: AsIcon = AsIcon { light: &[("as/tw-device-manager.l0.svg", 0x6c707eff)], dark: &[("as/tw-device-manager.d0.svg", 0xced0d6ff)] };
 pub const TW_FIND: AsIcon = AsIcon { light: &[("as/tw-find.l0.svg", 0x6c707eff)], dark: &[("as/tw-find.d0.svg", 0xced0d6ff)] };
 pub const TW_HIERARCHY: AsIcon = AsIcon { light: &[("as/tw-hierarchy.l0.svg", 0x6c707eff)], dark: &[("as/tw-hierarchy.d0.svg", 0xced0d6ff)] };
+pub const TW_LOGCAT: AsIcon = AsIcon { light: &[("as/tw-logcat.l0.svg", 0x6c707eff)], dark: &[("as/tw-logcat.d0.svg", 0xced0d6ff)] };
 pub const TW_MESSAGES: AsIcon = AsIcon { light: &[("as/tw-messages.l0.svg", 0x6c707eff)], dark: &[("as/tw-messages.d0.svg", 0xced0d6ff)] };
 pub const TW_NOTIFICATIONS: AsIcon = AsIcon { light: &[("as/tw-notifications.l0.svg", 0x6c707eff)], dark: &[("as/tw-notifications.d0.svg", 0xced0d6ff)] };
 pub const TW_PROBLEMS: AsIcon = AsIcon { light: &[("as/tw-problems.l0.svg", 0x6c707eff)], dark: &[("as/tw-problems.d0.svg", 0xced0d6ff)] };
@@ -969,6 +970,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/tw-find.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-find.d0.svg")),
     ("as/tw-hierarchy.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-hierarchy.l0.svg")),
     ("as/tw-hierarchy.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-hierarchy.d0.svg")),
+    ("as/tw-logcat.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-logcat.l0.svg")),
+    ("as/tw-logcat.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-logcat.d0.svg")),
     ("as/tw-messages.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-messages.l0.svg")),
     ("as/tw-messages.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-messages.d0.svg")),
     ("as/tw-notifications.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-notifications.l0.svg")),

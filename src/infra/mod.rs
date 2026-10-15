@@ -2,6 +2,7 @@
 //! code index, Gradle, adb.
 
 pub mod adb_device;
+pub mod adb_logcat;
 pub mod gradle;
 pub mod gradle_sync;
 pub mod index_code_model;

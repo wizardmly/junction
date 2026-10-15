@@ -354,6 +354,25 @@ Android Studio 的 Make Project、Run 'app'、Stop，以及 Build、Run、Build 
 
 Linux 实测（容器无法下载 Android SDK，用假 adb 和一个模拟 assembleDebug 的 Gradle 项目）：Run 走完构建、安装、启动、找到进程；Stop 发出 force-stop；Make Project 把 Kotlin 类型错误列在 Build 窗口，点击跳到 Util.kt 2:18 并在编辑器标红。真实 AGP 项目和真机需要在 Windows / macOS 上验证。
 
+## 17. Logcat（2026-10-15）
+
+Android Studio 的 Logcat 工具窗口（Alt+6 / ⌘6，底部）。代码：`src/domain/logcat.rs`（解析 `threadtime`、过滤语法、堆栈帧）、`src/usecase/logcat.rs`（按进程表给每行配包名，插入 PROCESS STARTED / ENDED）、`src/infra/adb_logcat.rs`、`src/ui/logcat_view.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 设备下拉：在线设备，显示 “型号 Android 16, API 36”；默认跟随运行目标设备；设备断开保留日志并标 [OFFLINE]；没有设备时显示 No connected devices | ✅ |
+| 读取：`adb logcat -v threadtime -v year`（Android 7 以下自动去掉 `-v year`）；首次打开窗口才开始读，窗口隐藏时继续读；缓冲区同 AS 默认 1024 KB，超出丢最旧的 | ✅ |
+| 包名：`ps -A -o PID,NAME`（老设备用 `ps`）对应 pid，遇到新 pid 或 ActivityManager 报进程死亡时刷新；未知进程显示 `pid-N` | ✅ |
+| AS 的 `---- PROCESS STARTED (pid) for package x ----` / `PROCESS ENDED` 分隔行 | ✅ |
+| 过滤（默认 `package:mine`）：`tag:` `package:` `process:` `message:` `line:` `level:` `age:`（s/m/h/d）`is:crash` `is:stacktrace`，`-key:` 取反，`key=:` 精确、`key~:` 正则，引号值；同键 OR、不同键 AND；不带键的词匹配整行；`package:mine` = 项目 applicationId + 最近一次 Run 的 applicationId | ✅（没检测到项目包名时显示 AS 的提示条） |
+| 显示：Standard（日期时间、pid-tid、标签 23 列、包名 35 列、级别、消息）和 Compact（时间、级别、消息）；AS Default / Darcula 配色的级别徽标和消息颜色，标签按名字着色 | ✅ |
+| 堆栈帧 `at a.b.C.m(File.kt:42)` 的 `File.kt:42` 是链接，点击按包路径找到源码（项目优先，其次外部库）并跳到该行 | ✅ |
+| 左侧工具栏：Clear Logcat（同时 `logcat -c`）、Scroll to the End（滚到底自动跟随，往上滚停止跟随）、Soft-Wrap、Standard / Compact、Pause / Resume（显示 “Logcat is paused”）、Restart | ✅ |
+| 选中行（Shift 扩选）Ctrl+C 复制 | ✅ |
+| 过滤输入的补全和历史、收藏过滤、多个 Logcat 标签页 / 分屏、截屏和录屏按钮、导入导出日志文件、Proguard 反混淆 | ❌ 未做 |
+
+Linux 实测（假 adb 模拟日志流和进程表）：打开窗口即显示 package:mine 的日志、启动和结束分隔行、崩溃堆栈；点 MainActivity.kt:7 打开文件并定位到第 7 行；level:warn 过滤、Compact、暂停提示条、Clear 发出 `logcat -c` 都正常。真机需在 Windows / macOS 上验证。截图：reports/Logcat-2026-10-15/。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。
