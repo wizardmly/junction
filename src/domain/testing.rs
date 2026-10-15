@@ -377,6 +377,25 @@ pub fn test_at(marks: &[TestMark], line: u32) -> Option<&TestMark> {
 
 // --- Gradle --------------------------------------------------------------
 
+/// The build and module a file belongs to: the module whose directory
+/// holds it most closely (`app/` over the root project).
+pub fn module_of<'a>(file: &Path, builds: &'a [(PathBuf, Vec<ModuleInfo>)]) -> Option<(&'a Path, &'a ModuleInfo)> {
+    let key = |p: &Path| {
+        let s = p.to_string_lossy().replace('\\', "/");
+        let s = s.trim_end_matches('/');
+        if cfg!(windows) { s.to_lowercase() } else { s.to_owned() }
+    };
+    let file = key(file);
+    builds
+        .iter()
+        .flat_map(|(build, modules)| modules.iter().map(move |m| (build.as_path(), m)))
+        .filter(|(_, m)| {
+            let dir = key(&m.dir);
+            file.strip_prefix(&dir).is_some_and(|rest| rest.starts_with('/'))
+        })
+        .max_by_key(|(_, m)| key(&m.dir).len())
+}
+
 /// What to run: a class, a method, a list of methods (Rerun Failed Tests),
 /// or everything in the module.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -884,6 +903,17 @@ abstract class BaseTest {
         let core = ModuleInfo { path: ":".into(), dir: "/p".into(), kind: ModuleType::Jvm, variants: vec![] };
         let all = TestRequest { kind: TestKind::Unit, filters: vec![], name: "All".into() };
         assert_eq!(plan(Path::new("/p"), &core, "debug", &all).args, [":test"]);
+    }
+
+    #[test]
+    fn finds_a_files_module() {
+        let m = |path: &str, dir: &str| ModuleInfo { path: path.into(), dir: dir.into(), kind: ModuleType::Jvm, variants: vec![] };
+        let builds = vec![(PathBuf::from("/p"), vec![m(":", "/p"), m(":app", "/p/app"), m(":app2", "/p/app2")])];
+        let at = |f: &str| module_of(Path::new(f), &builds).map(|(_, m)| m.path.clone());
+        assert_eq!(at("/p/app/src/test/java/a/ATest.kt").as_deref(), Some(":app"));
+        assert_eq!(at("/p/app2/src/test/B.kt").as_deref(), Some(":app2"));
+        assert_eq!(at("/p/buildSrc/src/test/C.kt").as_deref(), Some(":"));
+        assert_eq!(at("/q/D.kt"), None);
     }
 
     fn finished(class: &str, name: &str, outcome: Outcome, ms: u64, failure: Option<&str>) -> TestEvent {
