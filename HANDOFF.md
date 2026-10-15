@@ -223,7 +223,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 8. ✅ 测试（2026-10-15，FEATURES.md 第 21 节）：gutter ▶ / ▶▶ 和结果图标、Ctrl+Shift+F10、Gradle test 任务 + init script 实时事件 + JUnit XML、Run 窗口的测试标签页（结果树、状态行、Rerun Failed Tests、控制台）。剩覆盖率、Project 窗口右键运行目录、对比窗口、仪器测试真机验证（Debug 测试已随第 5 项完成）。
 9. ✅ Gradle 文件辅助（2026-10-15，FEATURES.md 第 20 节）：version catalog 跳转、悬停、Find Usages、`libs.` 补全，依赖和插件新版本警告 + Alt+Enter “Change to …”。剩 Project Structure 对话框、“改用 version catalog” 之类的迁移修复。
 10. ✅ Problems / TODO 工具窗口、Local History（2026-10-15，FEATURES.md 第 18 节）。
-11. 🟡 代码生成：✅ Surround With（Ctrl+Alt+T，FEATURES.md 第 28 节，照 IntelliJ 的 Kotlin / Java surround descriptor）。剩 Alt+Insert（Generate）、Live Templates。
+11. 🟡 代码生成：✅ Surround With（Ctrl+Alt+T，FEATURES.md 第 28 节，照 IntelliJ 的 Kotlin / Java surround descriptor）。✅ Live Templates（Tab 展开、变量间跳转与同步，FEATURES.md 第 29 节，模板取自 IntelliJ 的 Kotlin.xml / Java.xml）。剩 Alt+Insert（Generate）、模板进补全列表、自定义模板。
 
 **P2：重，可以长期留给 AS**
 

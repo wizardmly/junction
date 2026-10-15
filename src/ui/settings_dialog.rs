@@ -39,6 +39,7 @@ enum Page {
     EditorFont,
     GutterIcons,
     EditorTabs,
+    LiveTemplates,
     Commit,
     Mappings,
     Git,
@@ -53,7 +54,7 @@ enum Page {
 const TREE: &[(&str, Option<Page>, &[Page])] = &[
     ("Appearance & Behavior", None, &[Page::Appearance]),
     ("Keymap", Some(Page::Keymap), &[]),
-    ("Editor", None, &[Page::EditorGeneral, Page::EditorFont, Page::GutterIcons, Page::EditorTabs]),
+    ("Editor", None, &[Page::EditorGeneral, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::LiveTemplates]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
     ("Build, Execution, Deployment", None, &[Page::Gradle, Page::Compiler]),
     ("Languages & Frameworks", Some(Page::Languages), &[]),
@@ -68,6 +69,7 @@ impl Page {
             Page::EditorFont => "Font",
             Page::GutterIcons => "Gutter Icons",
             Page::EditorTabs => "Editor Tabs",
+            Page::LiveTemplates => "Live Templates",
             Page::Commit => "Commit",
             Page::Mappings => "Directory Mappings",
             Page::Git => "Git",
@@ -95,6 +97,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
+            Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "sout", "fori", "iter", "main", "psvm"],
             Page::Commit => &[
                 "Use non-modal commit interface",
                 "Limit subject line length",
@@ -475,6 +478,7 @@ impl Render for SettingsView {
                 Page::GitLab => self.gitlab.clone().into_any_element(),
                 Page::Languages => self.languages(&query, cx).into_any_element(),
                 Page::Gradle => self.gradle_page(&query, cx).into_any_element(),
+                Page::LiveTemplates => self.live_templates_page(&query, cx).into_any_element(),
                 Page::Compiler => v_flex()
                     .gap_2()
                     .child(self.check(
@@ -616,6 +620,29 @@ impl SettingsView {
         }
         if let Some(Err(e)) = &self.git_test {
             page = page.child(div().text_color(palette.status_conflict).child(e.clone()));
+        }
+        page
+    }
+
+    /// Settings › Editor › Live Templates: the built-in templates by group
+    /// (Kotlin, Java), each abbreviation with its description, as Android
+    /// Studio's page lists them; Tab expands one in the editor.
+    fn live_templates_page(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::domain::live_templates::templates;
+        let palette = cx.palette().clone();
+        let mut page = v_flex().gap_1().text_sm().child(
+            div().text_color(palette.text_secondary).child("Type an abbreviation in a Kotlin or Java file and press Tab; Tab and Enter then move through the template's variables."),
+        );
+        for (group, kotlin) in [("Kotlin", true), ("Java", false)] {
+            page = page.child(self.section(group, cx));
+            for t in templates(kotlin) {
+                page = page.child(
+                    h_flex()
+                        .gap_3()
+                        .child(self.found(t.name, query, cx).w(px(90.)).font_family("monospace").child(t.name))
+                        .child(self.found(t.description, query, cx).text_color(palette.text_secondary).child(t.description)),
+                );
+            }
         }
         page
     }

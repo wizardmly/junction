@@ -559,6 +559,20 @@ Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+
 | 套用后光标停在模板要填的地方（`if (|)`、`for (|; ; )`）或选中占位内容（`true`、`Exception`、`item in items`）；一次 Ctrl+Z 撤销 | ✅ |
 | Live Template 式的占位跳转（Tab 到下一个）、把块内声明移到外面（MoveDeclarationsOutHelper）、按调用推断 catch 的异常类型、when / if 表达式等其余表达式模板、Surround with Live Template | ❌ 未做 |
 
+## 29. Live Templates（2026-10-15）
+
+| 功能 | 状态 |
+|---|---|
+| Kotlin / Java 文件里输入缩写按 Tab 展开（补全弹窗开着时 Tab 仍归补全）；模板照 IntelliJ 的 Kotlin.xml / Java.xml：Kotlin 的 main、maina、maino、sout、serr、soutv、iter、ifn、inn、void、fun0–2、interface、singleton、closure、anonymous / object、exfun、exval、exvar、psvm 系列；Java 的 sout、serr、souf、soutv、psvm、fori、itar、iter、ifn、inn、St、psf、prsf、psfi、psfs、thr、else-if | ✅ |
+| 适用位置照 IntelliJ 的上下文：语句、表达式、类成员、Kotlin 顶层和 `object` 体、Java 的 if 块之后（else-if）；注释和字符串里不展开 | ✅ |
+| 展开后按 IntelliJ 的变量顺序逐个停留：当前变量加框，Tab / Enter 到下一个、Shift+Tab 回上一个，最后停在 `$END$`；Escape 提前结束 | ✅ |
+| 同一变量的多处（`fori` 的 `i`、`soutv` 里的 `escapeString(EXPR)`、`closure` 的参数）随输入同步修改 | ✅ |
+| 展开时按当前行缩进和括号层级重新缩进（IntelliJ 的 toReformat） | ✅ |
+| Settings › Editor › Live Templates：按 Kotlin / Java 列出全部缩写和说明（可搜索） | ✅ |
+| IntelliJ 根据代码计算的变量（`kotlinVariable()`、`suggestIndexName()`、`iterableComponentType()` 等）用固定默认值（`i`、`iterable`、`Object`…）；soutp、soutf 等依赖这些计算的模板未收录；模板出现在补全列表里、自定义 / 编辑模板、Surround with Live Template | ❌ 未做 |
+
+Linux 实测（Xvfb）：Kotlin 函数体里输入 `iter` 按 Tab 得到 `for (i in iterable) {}`，`iterable` 加框；输入 `items`、Tab、输入 `n`、Tab 后光标进入循环体；`soutv` 展开后把 `expr` 改成 `n`，字符串里的副本同步变成 `n`。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。

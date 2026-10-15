@@ -285,6 +285,12 @@ impl InputBaseState<EditorMode> {
         cx.notify();
     }
 
+    /// Junction: whether the completion or code action menu is showing, so
+    /// the editor's Tab (live templates) can leave it its Tab and Enter.
+    pub fn is_completion_menu_open(&self, cx: &gpui::App) -> bool {
+        self.is_context_menu_open(cx)
+    }
+
     pub(crate) fn is_context_menu_open(&self, _cx: &gpui::App) -> bool {
         self.extras.context_menu_content.completion.open
             || self.extras.context_menu_content.code_action.open

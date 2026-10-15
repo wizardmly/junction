@@ -6,6 +6,7 @@
 
 mod breakpoints;
 mod fixes;
+mod templates;
 pub use breakpoints::RunToCursor;
 mod previews;
 mod problems;
@@ -388,6 +389,8 @@ pub struct FileEditor {
     inspections_task: Option<gpui_kit::Task<()>>,
     /// Alt+Enter's popup.
     context_actions: Option<fixes::ContextActions>,
+    /// A live template being filled in.
+    template: Option<templates::TemplateState>,
     context_focus: gpui_kit::FocusHandle,
     popup_focus: gpui_kit::FocusHandle,
     /// The file couldn't be read: no editing, saving or reloading.
@@ -651,6 +654,10 @@ impl FileEditor {
                 }
                 cx.notify();
             }
+        }), cx.subscribe_in(&state, window, |this, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.template_edited(window, cx);
+            }
         })];
         let read_only = revision.is_some() || external;
         let find = cx.new(|cx| crate::ui::find_bar::FindBar::new(state.clone(), read_only, window, cx));
@@ -681,6 +688,7 @@ impl FileEditor {
             inspection_problems: Vec::new(),
             inspections_task: None,
             context_actions: None,
+            template: None,
             context_focus: cx.focus_handle(),
             popup_focus: cx.focus_handle(),
             error,
@@ -2039,6 +2047,27 @@ impl Render for FileEditor {
         v_flex()
             .size_full()
             .key_context(CONTEXT)
+            // Live templates take Tab, Shift+Tab, Enter and Escape first.
+            .capture_action(cx.listener(|this, _: &gpui_kit::component::input::IndentInline, window, cx| {
+                if this.template_tab(true, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &gpui_kit::component::input::OutdentInline, window, cx| {
+                if this.template.is_some() && this.template_tab(false, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &gpui_kit::component::input::Enter, window, cx| {
+                if !this.state.read(cx).is_completion_menu_open(cx) && this.template_enter(window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, _, cx| {
+                if this.template_escape(cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::show_context_actions))
             .on_action(cx.listener(Self::run_test_at_caret))
@@ -2235,6 +2264,7 @@ impl Render for FileEditor {
                 })
                 .when_some(self.popup.zip(self.popup_anchor.get()), |el, (ix, at)| el.child(self.render_popup(ix, at, cx)))
                 .children(self.render_expression_highlight(cx))
+                .children(self.render_template_stops(cx))
                 .children(self.render_context_actions(cx))
                 .children(self.render_test_menu(cx))
                 .children(self.render_breakpoint_popup(cx)),

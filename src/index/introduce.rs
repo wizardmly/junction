@@ -490,6 +490,55 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
     Ok((plan, taken))
 }
 
+/// Where a live template's abbreviation starting at `offset` is, as
+/// IntelliJ's template contexts see it: a statement or expression in a
+/// body, a class (or Kotlin `object`) member, the Kotlin top level, or
+/// Java's place after an `if` block. None in comments and strings.
+pub fn template_contexts(lang: Lang, text: &str, offset: usize) -> Vec<crate::domain::live_templates::Context> {
+    use crate::domain::live_templates::Context;
+    let Some(tree) = symbols::parse(lang, text) else { return Vec::new() };
+    let Some(node) = tree.root_node().descendant_for_byte_range(offset, offset) else { return Vec::new() };
+    let line_start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
+    let before = text[line_start..offset].trim();
+    let statement_start = before.is_empty() || before.ends_with(['{', ';', '}']);
+    let mut n = Some(node);
+    while let Some(x) = n {
+        let kind = x.kind();
+        if kind.contains("comment") || kind.contains("string") {
+            return Vec::new();
+        }
+        match (lang, kind) {
+            // `object O { maino }` with nothing else in it parses as `object`
+            // infix `O` applied to a lambda: it is an object body.
+            (Lang::Kotlin, "statements" | "lambda_literal")
+                if [Some(x), x.parent()].into_iter().flatten().any(|l| {
+                    l.kind() == "lambda_literal"
+                        && l.parent().is_some_and(|p| p.kind() == "infix_expression" && p.named_child(0).is_some_and(|c| c.kind() == "object_literal"))
+                }) =>
+            {
+                return vec![Context::Class, Context::Object];
+            }
+            (Lang::Kotlin, "statements" | "function_body" | "lambda_literal" | "control_structure_body") | (Lang::Java, "block" | "switch_block_statement_group") => {
+                let mut out = vec![Context::Expression];
+                if statement_start {
+                    out.push(Context::Statement);
+                }
+                if lang == Lang::Java && text[..offset].trim_end().ends_with('}') {
+                    out.push(Context::Else);
+                }
+                return out;
+            }
+            (_, "class_body" | "interface_body" | "enum_body" | "enum_class_body") => {
+                let object = x.parent().is_some_and(|p| matches!(p.kind(), "object_declaration" | "companion_object"));
+                return if object { vec![Context::Class, Context::Object] } else { vec![Context::Class] };
+            }
+            _ => {}
+        }
+        n = x.parent();
+    }
+    if lang == Lang::Kotlin { vec![Context::TopLevel] } else { Vec::new() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,6 +561,23 @@ mod tests {
         // A selection must be an expression.
         assert_eq!(expressions_at(Lang::Kotlin, kt, at(kt, "p.getX() ")).unwrap(), vec![at(kt, "p.getX()")]);
         assert_eq!(expressions_at(Lang::Kotlin, kt, at(kt, "getX() +")), Err(NOT_AN_EXPRESSION.into()));
+    }
+
+    #[test]
+    fn finds_template_contexts() {
+        use crate::domain::live_templates::Context;
+        let kt = "fun f() {\n    sout\n    val x = ifn\n}\nclass A {\n    fun0\n}\nobject O {\n    maino\n}\nmain\n// sout\n";
+        let at = |w: &str| kt.find(w).unwrap();
+        assert_eq!(template_contexts(Lang::Kotlin, kt, at("sout")), vec![Context::Expression, Context::Statement]);
+        assert_eq!(template_contexts(Lang::Kotlin, kt, at("ifn")), vec![Context::Expression]);
+        assert_eq!(template_contexts(Lang::Kotlin, kt, at("fun0")), vec![Context::Class]);
+        assert_eq!(template_contexts(Lang::Kotlin, kt, at("maino")), vec![Context::Class, Context::Object]);
+        assert_eq!(template_contexts(Lang::Kotlin, kt, kt.rfind("main").unwrap() - 0), vec![Context::TopLevel]);
+        assert_eq!(template_contexts(Lang::Kotlin, kt, kt.rfind("sout").unwrap()), vec![]);
+        let java = "class A {\n  psvm\n  void f() {\n    if (a) {\n    } else-if\n    sout\n  }\n}\n";
+        assert_eq!(template_contexts(Lang::Java, java, java.find("psvm").unwrap()), vec![Context::Class]);
+        assert!(template_contexts(Lang::Java, java, java.find("else-if").unwrap()).contains(&Context::Else));
+        assert!(template_contexts(Lang::Java, java, java.find("sout").unwrap()).contains(&Context::Statement));
     }
 
     #[test]
