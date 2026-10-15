@@ -6,6 +6,7 @@ pub mod adb_logcat;
 pub mod catalog_files;
 pub mod gradle;
 pub mod gradle_sync;
+pub mod gradle_tests;
 pub mod local_history_store;
 pub mod maven_versions;
 pub mod resource_scanner;

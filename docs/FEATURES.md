@@ -421,6 +421,34 @@ Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 
 
 Linux 实测（容器访问不了 dl.google.com，androidx 和 AGP 用预先写入的缓存，其他是实际联网结果）：build.gradle.kts 里 Ctrl+B `libs.androidx.core.ktx` 跳到 toml 第 9 行；toml 里所有旧版本都有警告，Alt+Enter 选 “Change to 1.13.1” 后版本被替换；`version.ref` 跳到 `[versions]`；Alt+F7 列出 build 脚本里的用法；`libs.andr` → `androidx` → `core.` → `ktx` 逐段补全。截图：reports/Gradle文件辅助-2026-10-15/。
 
+## 21. 测试（2026-10-15）
+
+代码：`src/domain/testing.rs`（找测试类和方法、选 Gradle 任务、结果树、状态行和时长格式）、`src/usecase/run_tests.rs`、`src/infra/gradle_tests.rs`（init script 逐条报告测试事件，跑完读 JUnit XML 报告）、`src/infra/gradle.rs` 的 `module_from_files`（没同步过时按 build 文件找模块），界面 `src/ui/test_service.rs`、`src/ui/test_view.rs`、`src/ui/file_editor/test_marks.rs`，Run 工具窗口的标签页在 `src/ui/run_views.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| gutter 运行图标：`src/test*`、`src/androidTest*` 里的 Kotlin / Java 文件，测试类显示 ▶▶、`@Test`（及 JUnit 5 的 `@ParameterizedTest` 等）方法显示 ▶；抽象类、companion object 不显示；嵌套类按 `Outer$Inner` | ✅ |
+| 图标跟随上次结果：通过绿色对勾、断言失败黄色、异常红色（AS 的 `runSuccess` / `runFailed` / `runError`） | ✅ |
+| 点击图标弹出 “Run 'ExampleUnitTest.addition_isCorrect'  Ctrl+Shift+F10”；Ctrl+Shift+F10（macOS ⌃⇧R）运行光标所在的方法，不在方法里时运行所在类 | ✅（弹窗只有 Run；Debug、Coverage、Modify Run Configuration 未做） |
+| Gradle 任务：单元测试 `:app:testDebugUnitTest --tests a.ATest.method`（纯 JVM 模块 `:core:test`），仪器测试 `:app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=…`；变体跟随 Build Variants；没同步过时按最近的 build 脚本和 settings 脚本找模块 | ✅（仪器测试未在真机验证） |
+| Run 工具窗口标签页：应用的 “app” 和测试运行（运行中图标为 Rerun，结束后为 JUnit），开始测试自动打开 Run 窗口并切到测试标签 | ✅ |
+| 测试运行视图工具栏：Rerun、Rerun Failed Tests、Stop、Show Passed、Show Ignored、Sort Alphabetically、Sort by Duration、Expand All、Collapse All | ✅ |
+| 状态行（IntelliJ 文案和配色）：“1 test failed, 2 passed, 1 ignored” + 灰色 “4 tests total, 25 ms”；运行中显示进度；停止时 “Stopped. … 1 / 3 tests”；编译失败 “Test events were not received” | ✅ |
+| 结果树：Test Results › 测试类 › 测试，结果图标和时长（IntelliJ 的窄格式 “1 sec 234 ms”）；类可折叠；双击跳到源码 | ✅ |
+| 右侧控制台：根节点显示 Gradle 输出，类节点显示类的输出和各测试的输出 / 失败，测试节点显示它的 stdout / stderr、断言两侧（“Expected :4 / Actual :5”）和堆栈 | ✅（AS 的 `<Click to see difference>` 对比窗口未做） |
+| JUnit XML 报告：跑完读本次写入的 XML，补上事件里没有的测试（仪器测试只有 XML） | ✅ |
+| 编译失败：错误交给编辑器标红（同 Make Project），弹 “Error running '…'” 通知 | ✅ |
+| Project 窗口右键 “Run 'Tests in …'”、运行配置下拉里的测试配置、Debug 测试、覆盖率、测试历史 | ❌ 未做 |
+
+Linux 实测（Xvfb）：JDK 21 + Gradle 8.14 的纯 Java 多模块项目（`:core`，JUnit 4，通过 / 断言失败 / 异常 / `@Ignore` 各一个），未同步直接运行：
+- 打开 CalcTest.java，类上 ▶▶、三个 `@Test` 方法上 ▶；点类图标弹出 “Run 'CalcTest'  Ctrl+Shift+F10”，运行 `:core:test --tests com.example.calc.CalcTest`；
+- Run 窗口打开测试标签，结果树 adds ✓ 28 ms、later 忽略、throwsError 红色、addsWrong 黄色，状态行 “2 tests failed, 1 passed, 1 ignored  4 tests total, 32 ms”；gutter 图标随之变为对应结果；
+- 光标在 addsWrong 里按 Ctrl+Shift+F10 只跑这个方法，标签名 “CalcTest.addsWrong”；选中它，控制台从 “Expected :5 / Actual :4” 开始，堆栈截到 `CalcTest.addsWrong(CalcTest.java:17)`；
+- Rerun Failed Tests 只重跑两个失败的测试，adds 的 gutter 仍为绿色；结束后 Stop、（无失败时）Rerun Failed Tests 置灰；
+- 主代码有编译错误时：根节点错误图标、状态行 “Test events were not received”、控制台是 javac 报错，弹出 “Error running 'CalcTest.adds'” 通知。
+
+Android 单元测试（`testDebugUnitTest`）和仪器测试未实测（容器里没有 Android SDK 和设备）。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。

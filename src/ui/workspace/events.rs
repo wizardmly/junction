@@ -326,6 +326,17 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Tests: a test run shows the Run window, a failure to start one
+    /// becomes a balloon.
+    pub(super) fn on_test_event(&mut self, event: &crate::ui::test_service::TestServiceEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::test_service::TestServiceEvent;
+        match event {
+            TestServiceEvent::Show => self.tools.open(ToolWindow::Run),
+            TestServiceEvent::Error { title, message } => window.push_notification(Notification::error(message.clone()).title(title.clone()), cx),
+        }
+        cx.notify();
+    }
+
     /// Logcat: a stack frame opens its source (the project's first, then a
     /// library's), Hide hides the window.
     /// Problems and TODO: an item opens its file at its place.

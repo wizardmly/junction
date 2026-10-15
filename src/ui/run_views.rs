@@ -12,7 +12,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _,
     Styled as _, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 
@@ -20,12 +20,15 @@ use crate::domain::diagnostics::Severity;
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
-use crate::ui::run_service::{BuildStatus, RunService};
+use crate::ui::run_service::{BuildStatus, RunEvent, RunService};
+use crate::ui::test_service::{TestService, TestServiceEvent};
+use crate::ui::test_view::TestView;
 use crate::ui::sync_service::{self, SyncService};
 use crate::usecase::run_app::ConsoleLine;
 
 const ROW: f32 = 20.;
 
+#[derive(Clone)]
 pub enum RunViewEvent {
     /// Open a file at a 0-based line and column.
     OpenFile { path: std::path::PathBuf, line: u32, col: u32 },
@@ -196,19 +199,83 @@ fn count(n: usize, what: &str) -> String {
 
 // --- Run ---------------------------------------------------------------------
 
+/// The Run window's tabs, as Android Studio's: the app's launch, and the
+/// last test run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunTab {
+    App,
+    Tests,
+}
+
 pub struct RunView {
     service: Entity<RunService>,
+    tests: Entity<TestView>,
+    tab: RunTab,
     scroll: UniformListScrollHandle,
     shown: usize,
-    _observe: gpui_kit::Subscription,
+    _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
 impl EventEmitter<RunViewEvent> for RunView {}
 
 impl RunView {
     pub fn new(service: Entity<RunService>, cx: &mut Context<Self>) -> Self {
-        let _observe = cx.observe(&service, |_, _, cx| cx.notify());
-        Self { service, scroll: UniformListScrollHandle::new(), shown: 0, _observe }
+        let test_service = TestService::global(cx);
+        let tests = cx.new(|cx| TestView::new(test_service.clone(), cx));
+        let _subscriptions = vec![
+            cx.observe(&service, |_, _, cx| cx.notify()),
+            cx.observe(&test_service, |_, _, cx| cx.notify()),
+            // A launch shows its tab, a test run its own.
+            cx.subscribe(&service, |this, _, event: &RunEvent, cx| {
+                if matches!(event, RunEvent::ShowRun) {
+                    this.tab = RunTab::App;
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&test_service, |this, _, event: &TestServiceEvent, cx| {
+                if matches!(event, TestServiceEvent::Show) {
+                    this.tab = RunTab::Tests;
+                    this.tests.update(cx, |view, cx| view.reset(cx));
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&tests, |_, _, event: &RunViewEvent, cx| cx.emit(event.clone())),
+        ];
+        Self { service, tests, tab: RunTab::App, scroll: UniformListScrollHandle::new(), shown: 0, _subscriptions }
+    }
+
+    /// The tab strip, once a test has run: "app" and "ExampleUnitTest".
+    fn render_tabs(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (test_name, testing) = crate::ui::test_view::tab_title(cx)?;
+        let palette = cx.palette().clone();
+        let app_name = self.service.read(cx).console.as_ref().map(|c| c.name.clone());
+        let tab = |id: &'static str, icon: icons::AsIcon, label: String, active: bool| {
+            h_flex()
+                .id(id)
+                .h_full()
+                .px_2()
+                .gap_1()
+                .text_sm()
+                .cursor_pointer()
+                .border_b_2()
+                .border_color(if active { palette.accent } else { gpui_kit::transparent_black() })
+                .when(!active, |el| el.hover(|s| s.bg(palette.hover)))
+                .child(Icon::new(icon).xsmall())
+                .child(label)
+        };
+        let mut strip = h_flex().h(px(30.)).px_1().gap_0p5().border_b_1().border_color(palette.border).flex_none();
+        if let Some(name) = app_name {
+            strip = strip.child(tab("run-tab-app", icons::MODULE_ANDROID, name, self.tab == RunTab::App).on_click(cx.listener(|this, _, _, cx| {
+                this.tab = RunTab::App;
+                cx.notify();
+            })));
+        }
+        let test_icon = if testing { icons::RERUN } else { icons::JUNIT };
+        strip = strip.child(tab("run-tab-tests", test_icon, test_name, self.tab == RunTab::Tests).on_click(cx.listener(|this, _, _, cx| {
+            this.tab = RunTab::Tests;
+            cx.notify();
+        })));
+        Some(strip.child(div().flex_1()).child(tool_button("run-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(RunViewEvent::Hide)))).into_any_element())
     }
 
     fn render_lines(&mut self, range: Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -232,6 +299,11 @@ impl RunView {
 impl Render for RunView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
+        let tabs = self.render_tabs(cx);
+        let has_app = self.service.read(cx).console.is_some();
+        if tabs.is_some() && (self.tab == RunTab::Tests || !has_app) {
+            return v_flex().size_full().bg(palette.panel).children(tabs).child(div().flex_1().min_h_0().child(self.tests.clone())).into_any_element();
+        }
         let mono = { use gpui_kit::component::ActiveTheme as _; cx.theme().mono_font_family.clone() };
         let service = self.service.read(cx);
         let title = service.console.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| "Run".into());
@@ -242,6 +314,7 @@ impl Render for RunView {
         v_flex()
             .size_full()
             .bg(palette.panel)
+            .children(tabs)
             .child(
                 header(
                     h_flex().gap_1().text_sm().font_weight(FontWeight::SEMIBOLD).child(Icon::new(icons::MODULE_ANDROID).xsmall()).child(title),
@@ -261,6 +334,7 @@ impl Render for RunView {
                     .when(count == 0, |el| el.child(div().p_4().text_color(palette.text_secondary).child("Nothing has run yet. Run 'app' with Shift+F10.")))
                     .child(uniform_list("run-console", count, cx.processor(Self::render_lines)).track_scroll(&self.scroll).size_full()),
             )
+            .into_any_element()
     }
 }
 

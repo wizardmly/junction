@@ -62,3 +62,5 @@ pub mod logcat_view;
 pub mod problems_view;
 pub mod todo_view;
 pub mod run_views;
+pub mod test_service;
+pub mod test_view;

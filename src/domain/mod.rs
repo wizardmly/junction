@@ -14,6 +14,7 @@ pub mod imports;
 pub mod local_history;
 pub mod logcat;
 pub mod run;
+pub mod testing;
 pub mod todo;
 pub mod sync;
 pub mod version_catalog;

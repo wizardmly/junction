@@ -1,0 +1,265 @@
+//! Tests, as Android Studio runs them: a test class or method from the
+//! editor's gutter (or Ctrl+Shift+F10 at the caret) becomes a Gradle test
+//! run on its module; the results tree fills in as tests start and finish,
+//! and the Run window shows it. Rerun and Rerun Failed Tests repeat the
+//! last run. Remembers each test's last outcome for the gutter icons.
+//! Composition root of the run-tests use case over Gradle.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, SharedString, Task};
+
+use crate::domain::run::{BuildResult, ModuleInfo};
+use crate::domain::testing::{self, Outcome, TestEvent, TestMark, TestRequest, TestResults};
+use crate::infra::gradle_tests::GradleTests;
+use crate::ui::sync_service::{self, SyncService};
+use crate::usecase::run_tests;
+
+pub enum TestServiceEvent {
+    /// A test run started: the Run window shows its tab.
+    Show,
+    /// "Error running 'ExampleUnitTest'": a balloon.
+    Error { title: String, message: String },
+}
+
+/// What a test run is of, kept for Rerun.
+#[derive(Clone)]
+struct Launch {
+    build_root: PathBuf,
+    module: ModuleInfo,
+    request: TestRequest,
+    /// The file the run came from and its tests, to go to a test's source.
+    source: Option<(PathBuf, Vec<TestMark>)>,
+}
+
+/// The Run window's test tab: the last run.
+pub struct TestRun {
+    /// The run configuration's name: "ExampleUnitTest.addition_isCorrect".
+    pub name: String,
+    pub results: TestResults,
+    /// Gradle's other output, for the root's console.
+    pub lines: Vec<SharedString>,
+    pub running: bool,
+    pub started: Instant,
+    pub took: Option<Duration>,
+    /// The build itself failed (a compile error): no tests ran.
+    pub build_failed: bool,
+    pub cancelled: bool,
+}
+
+enum Message {
+    Event(TestEvent),
+    Line(String),
+}
+
+#[derive(Default)]
+pub struct TestService {
+    pub run: Option<TestRun>,
+    last: Option<Launch>,
+    /// Each test's (and class's) last outcome, for the gutter.
+    history: HashMap<(String, Option<String>), Outcome>,
+    cancel: Arc<AtomicBool>,
+    receiver: Option<std::sync::mpsc::Receiver<Message>>,
+    _task: Option<Task<()>>,
+}
+
+impl EventEmitter<TestServiceEvent> for TestService {}
+
+struct GlobalTests(Entity<TestService>);
+impl Global for GlobalTests {}
+
+impl TestService {
+    pub fn global(cx: &mut App) -> Entity<Self> {
+        if let Some(g) = cx.try_global::<GlobalTests>() {
+            return g.0.clone();
+        }
+        let service = cx.new(|_| Self::default());
+        cx.set_global(GlobalTests(service.clone()));
+        service
+    }
+
+    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<GlobalTests>().map(|g| g.0.clone())
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| r.running)
+    }
+
+    /// The last outcome of a test class or method, as the gutter shows it.
+    pub fn outcome_of(&self, class: &str, method: Option<&str>) -> Option<Outcome> {
+        if let Some(outcome) = self.run.as_ref().and_then(|r| r.results.outcome_of(class, method)) {
+            return Some(outcome);
+        }
+        self.history.get(&(class.to_owned(), method.map(str::to_owned))).copied()
+    }
+
+    /// Where a test's source is: its file and 0-based line, when the run
+    /// came from that file.
+    pub fn source_of(&self, class: &str, method: Option<&str>) -> Option<(PathBuf, u32)> {
+        let (path, marks) = self.last.as_ref()?.source.as_ref()?;
+        let mark = marks
+            .iter()
+            .find(|m| m.class == class && method.is_some() && m.method.as_deref() == method)
+            .or_else(|| marks.iter().find(|m| m.class == class && m.method.is_none()))?;
+        Some((path.clone(), mark.line))
+    }
+
+    /// Runs one of a file's tests (a gutter icon, Ctrl+Shift+F10).
+    pub fn run_mark(&mut self, path: PathBuf, marks: Vec<TestMark>, mark: &TestMark, cx: &mut Context<Self>) {
+        let name = mark.name();
+        let Some(kind) = testing::test_kind(&path.to_string_lossy()) else {
+            cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "The file is not in a test source set.".into() });
+            return;
+        };
+        let builds = SyncService::try_global(cx).map(|s| s.read(cx).builds().to_vec()).unwrap_or_default();
+        // Before the first sync, the build files say where the module is.
+        let found = testing::module_of(&path, &builds).map(|(b, m)| (b.to_path_buf(), m.clone())).or_else(|| crate::infra::gradle::module_from_files(&path));
+        let Some((build_root, module)) = found else {
+            cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "The file is not in a Gradle module.".into() });
+            return;
+        };
+        let request = TestRequest::of(kind, mark);
+        self.start(Launch { build_root, module, request, source: Some((path, marks)) }, cx);
+    }
+
+    /// Rerun: the last run again.
+    pub fn rerun(&mut self, cx: &mut Context<Self>) {
+        if let Some(launch) = self.last.clone() {
+            self.start(launch, cx);
+        }
+    }
+
+    /// Rerun Failed Tests: the last run's failed tests.
+    pub fn rerun_failed(&mut self, cx: &mut Context<Self>) {
+        let (Some(mut launch), Some(run)) = (self.last.clone(), self.run.as_ref()) else { return };
+        let failed = run.results.failed();
+        if failed.is_empty() {
+            return;
+        }
+        launch.request.filters = failed;
+        self.start(launch, cx);
+    }
+
+    pub fn has_failed(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| !r.running && r.results.counts().failed > 0)
+    }
+
+    pub fn stop(&mut self, cx: &mut Context<Self>) {
+        self.cancel.store(true, Ordering::Relaxed);
+        cx.notify();
+    }
+
+    // --- Internals ------------------------------------------------------
+
+    fn start(&mut self, launch: Launch, cx: &mut Context<Self>) {
+        if self.is_running() {
+            self.stop(cx);
+        }
+        let variant = sync_service::variant_of(&launch.build_root, &launch.module, cx);
+        let plan = testing::plan(&launch.build_root, &launch.module, &variant, &launch.request);
+        self.cancel = Arc::new(AtomicBool::new(false));
+        let first = format!("Executing tasks: [{}]", plan.args.iter().filter(|a| a.starts_with(':')).cloned().collect::<Vec<_>>().join(", "));
+        self.run = Some(TestRun {
+            name: launch.request.name.clone(),
+            results: TestResults::default(),
+            lines: vec![first.into()],
+            running: true,
+            started: Instant::now(),
+            took: None,
+            build_failed: false,
+            cancelled: false,
+        });
+        self.last = Some(launch.clone());
+        cx.emit(TestServiceEvent::Show);
+        cx.notify();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.receiver = Some(rx);
+        // What the run sends goes into the tree ten times a second.
+        self._task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(100)).await;
+                let Ok(more) = this.update(cx, |this, cx| {
+                    if this.drain() {
+                        cx.notify();
+                    }
+                    this.receiver.is_some()
+                }) else {
+                    break;
+                };
+                if !more {
+                    break;
+                }
+            }
+        }));
+        let cancel = self.cancel.clone();
+        let root = launch.build_root.clone();
+        let work = cx.background_spawn(async move {
+            let events = tx.clone();
+            run_tests::run(&GradleTests, &plan, &mut |e| drop(events.send(Message::Event(e.clone()))), &mut |l| drop(tx.send(Message::Line(l.to_owned()))), &|| cancel.load(Ordering::Relaxed))
+        });
+        cx.spawn(async move |this, cx| {
+            let (results, build) = work.await;
+            this.update(cx, |this, cx| this.finish(&root, results, build, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Applies what arrived; whether anything did.
+    fn drain(&mut self) -> bool {
+        let Some(rx) = &self.receiver else { return false };
+        let mut any = false;
+        loop {
+            match rx.try_recv() {
+                Ok(message) => {
+                    any = true;
+                    let Some(run) = self.run.as_mut() else { continue };
+                    match message {
+                        Message::Event(event) => run.results.apply(event),
+                        Message::Line(line) => run.lines.push(line.into()),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.receiver = None;
+                    break;
+                }
+            }
+        }
+        any
+    }
+
+    fn finish(&mut self, root: &Path, results: TestResults, build: BuildResult, cx: &mut Context<Self>) {
+        self.drain();
+        self.receiver = None;
+        let Some(run) = self.run.as_mut() else { return };
+        // The use case's tree has the XML reports merged in and the
+        // stopped tests terminated.
+        run.results = results;
+        run.running = false;
+        run.cancelled = build.cancelled;
+        run.took = Some(run.started.elapsed());
+        let counts = run.results.counts();
+        run.build_failed = !build.succeeded && !build.cancelled && counts.failed == 0;
+        for suite in &run.results.suites {
+            self.history.insert((suite.class.clone(), None), suite.outcome());
+            for test in &suite.tests {
+                if let Some(outcome) = run.results.outcome_of(&suite.class, Some(test.method())) {
+                    self.history.insert((suite.class.clone(), Some(test.method().to_owned())), outcome);
+                }
+            }
+        }
+        // The editors mark a failed build's errors, as after Make Project.
+        if run.build_failed {
+            let name = run.name.clone();
+            crate::ui::compile_service::CompileService::global(cx).update(cx, |c, cx| c.set_build_problems(root, build.problems, cx));
+            cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "Gradle build failed. See the Run window.".into() });
+        }
+        cx.notify();
+    }
+}

@@ -41,60 +41,69 @@ impl BuildSystem for GradleBuild {
 
 impl TaskRunner for GradleBuild {
     fn run_tasks(&self, build_root: &Path, tasks: &[String], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
-        use std::io::BufRead as _;
         let mut command = gradle(build_root);
-        command.args(tasks).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(e) => {
-                line(&format!("Could not run Gradle: {e}"));
-                return BuildResult::default();
-            }
-        };
-        // Both pipes, a line at a time, in the order they arrive.
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
-        let pipes: Vec<Box<dyn std::io::Read + Send>> = vec![Box::new(child.stdout.take().unwrap()), Box::new(child.stderr.take().unwrap())];
-        for pipe in pipes {
-            let tx = tx.clone();
-            std::thread::spawn(move || {
-                for l in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-                    if tx.send(l).is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-        drop(tx);
-        let mut output = String::new();
-        let mut stopped_at: Option<std::time::Instant> = None;
-        loop {
-            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(l) => {
-                    line(&l);
-                    output.push_str(&l);
-                    output.push('\n');
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            }
-            // Stopping the client cancels the build in the daemon.
-            if stopped_at.is_none() && cancelled() {
-                stopped_at = Some(std::time::Instant::now());
-                kill_tree(&mut child);
-            }
-            // Something it started may still hold the pipes.
-            if stopped_at.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(3)) {
-                break;
-            }
-        }
-        let was_cancelled = stopped_at.is_some();
-        let succeeded = child.wait().is_ok_and(|s| s.success()) && !was_cancelled;
+        command.args(tasks);
+        let (succeeded, was_cancelled, output) = stream(command, line, cancelled);
         BuildResult { succeeded, cancelled: was_cancelled, problems: parse_output(&output) }
     }
 
     fn apk_output(&self, module: &ModuleInfo, variant: &str) -> Option<ApkOutput> {
         apk_output(&module.dir.join("build/outputs/apk"), variant)
     }
+}
+
+/// Runs Gradle, passing its output (both pipes, in the order lines
+/// arrive) a line at a time; stops it when `cancelled` says so. Whether it
+/// succeeded, whether it was stopped, and the whole output.
+pub fn stream(mut command: Command, line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> (bool, bool, String) {
+    use std::io::BufRead as _;
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let message = format!("Could not run Gradle: {e}");
+            line(&message);
+            return (false, false, message);
+        }
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let pipes: Vec<Box<dyn std::io::Read + Send>> = vec![Box::new(child.stdout.take().unwrap()), Box::new(child.stderr.take().unwrap())];
+    for pipe in pipes {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for l in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+                if tx.send(l).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    drop(tx);
+    let mut output = String::new();
+    let mut stopped_at: Option<std::time::Instant> = None;
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(l) => {
+                line(&l);
+                output.push_str(&l);
+                output.push('\n');
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        // Stopping the client cancels the build in the daemon.
+        if stopped_at.is_none() && cancelled() {
+            stopped_at = Some(std::time::Instant::now());
+            kill_tree(&mut child);
+        }
+        // Something it started may still hold the pipes.
+        if stopped_at.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(3)) {
+            break;
+        }
+    }
+    let was_cancelled = stopped_at.is_some();
+    let succeeded = child.wait().is_ok_and(|s| s.success()) && !was_cancelled;
+    (succeeded, was_cancelled, output)
 }
 
 /// Kills Gradle's client: on Windows `cmd` and the wrapper's java under it.
@@ -131,6 +140,28 @@ pub fn apk_output(apk_dir: &Path, variant: &str) -> Option<ApkOutput> {
         let apks: Vec<PathBuf> = json["elements"].as_array()?.iter().filter_map(|e| e["outputFile"].as_str()).map(|f| dir.join(f)).filter(|p| p.is_file()).collect();
         (!apks.is_empty()).then(|| ApkOutput { application_id: json["applicationId"].as_str().unwrap_or_default().to_owned(), apks })
     })
+}
+
+/// The build and module of a file from the build files alone, for before
+/// the first sync: the nearest directory with a build script holds the
+/// module, the nearest with a settings script above it is the build.
+pub fn module_from_files(file: &Path) -> Option<(PathBuf, crate::domain::run::ModuleInfo)> {
+    use crate::domain::run::{ModuleInfo, ModuleType};
+    const BUILD: &[&str] = &["build.gradle.kts", "build.gradle"];
+    const SETTINGS: &[&str] = &["settings.gradle.kts", "settings.gradle"];
+    let module_dir = file.ancestors().skip(1).find(|d| has_any(d, BUILD) || has_any(d, SETTINGS))?;
+    let root = module_dir.ancestors().find(|d| has_any(d, SETTINGS)).unwrap_or(module_dir);
+    let rel = module_dir.strip_prefix(root).ok()?;
+    let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let path = format!(":{}", parts.join(":"));
+    let kind = if !is_android(module_dir) {
+        ModuleType::Jvm
+    } else if ["build.gradle.kts", "build.gradle"].iter().filter_map(|n| std::fs::read_to_string(module_dir.join(n)).ok()).any(|t| t.contains("com.android.application") || t.contains("android.application")) {
+        ModuleType::Application
+    } else {
+        ModuleType::AndroidLibrary
+    };
+    Some((root.to_path_buf(), ModuleInfo { path, dir: module_dir.to_path_buf(), kind, variants: Vec::new() }))
 }
 
 fn has_any(dir: &Path, names: &[&str]) -> bool {
@@ -271,6 +302,21 @@ fn file_path(raw: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_a_module_from_build_files() {
+        let dir = std::env::temp_dir().join(format!("junction-module-files-{}", std::process::id()));
+        let test = dir.join("feature/login/src/test/java/a");
+        std::fs::create_dir_all(&test).unwrap();
+        std::fs::write(dir.join("settings.gradle.kts"), "include(\":feature:login\")").unwrap();
+        std::fs::write(dir.join("feature/login/build.gradle.kts"), "plugins { id(\"com.android.library\") }").unwrap();
+        let (root, module) = module_from_files(&test.join("LoginTest.kt")).unwrap();
+        assert_eq!((root, module.path.as_str(), module.kind), (dir.clone(), ":feature:login", crate::domain::run::ModuleType::AndroidLibrary));
+        // A single-project build: the root module.
+        std::fs::remove_file(dir.join("feature/login/build.gradle.kts")).unwrap();
+        assert_eq!(module_from_files(&test.join("LoginTest.kt")).unwrap().1.path, ":");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn reads_kotlin_and_javac_messages() {

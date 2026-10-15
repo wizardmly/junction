@@ -3619,6 +3619,7 @@ dependencies = [
  "qrcode",
  "rand 0.8.8",
  "regex",
+ "roxmltree 0.21.1",
  "serde",
  "serde_json",
  "similar",

@@ -7,6 +7,7 @@
 mod fixes;
 mod previews;
 mod problems;
+mod test_marks;
 
 use std::cell::RefCell;
 use crate::ui::as_icons as icons;
@@ -90,6 +91,7 @@ const GUTTER_ICON_GAP: f32 = 4.;
 pub fn init(cx: &mut gpui_kit::App) {
     register_grammars();
     fixes::init(cx);
+    test_marks::init(cx);
     cx.bind_keys([
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" }, SaveFile, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-z", RollbackLines, Some(CONTEXT)),
@@ -357,6 +359,11 @@ pub struct FileEditor {
     /// Resource previews by line (color swatches, drawable thumbnails).
     previews: Vec<(u32, crate::usecase::android_resources::Preview)>,
     previews_task: Option<gpui_kit::Task<()>>,
+    /// The test classes and methods of a test file, for the gutter's run
+    /// icons, and the popup a click on one opens.
+    test_marks: Vec<crate::domain::testing::TestMark>,
+    test_marks_task: Option<gpui_kit::Task<()>>,
+    test_menu: Option<(crate::domain::testing::TestMark, Point<Pixels>)>,
     /// Inspections of the text (a newer dependency version in a Gradle file).
     inspection_problems: Vec<crate::domain::diagnostics::Problem>,
     inspections_task: Option<gpui_kit::Task<()>>,
@@ -613,6 +620,7 @@ impl FileEditor {
                 this.update_problems(true, cx);
                 this.update_inspections(true, cx);
                 this.update_previews(true, cx);
+                this.update_test_marks(true, cx);
                 this.follow_bookmarks(cx);
                 // The annotations follow the edit (new lines: Not Committed Yet).
                 if this.annotation.is_some() {
@@ -645,6 +653,9 @@ impl FileEditor {
             hierarchy_slots: 0,
             previews: Vec::new(),
             previews_task: None,
+            test_marks: Vec::new(),
+            test_marks_task: None,
+            test_menu: None,
             inspection_problems: Vec::new(),
             inspections_task: None,
             context_actions: None,
@@ -668,6 +679,12 @@ impl FileEditor {
             _subscriptions: subscriptions,
         };
         this.update_markers(cx);
+        this.update_test_marks(false, cx);
+        if this.bookmark_file().is_some_and(|f| crate::domain::testing::test_kind(&f).is_some()) {
+            // The run icons show the last run's outcomes.
+            let tests = crate::ui::test_service::TestService::global(cx);
+            this._subscriptions.push(cx.observe(&tests, |_, _, cx| cx.notify()));
+        }
         this.apply_gutter_extra(cx);
         this
     }
@@ -1563,7 +1580,7 @@ impl FileEditor {
     fn apply_gutter_extra(&mut self, cx: &mut Context<Self>) {
         let shown = crate::settings::Settings::get(cx).diff.show_gutter_icons;
         let bookmarked = self.bookmark_file().is_some_and(|f| crate::bookmarks::Bookmarks::get(cx).of_file(&f).next().is_some());
-        let slots = if shown { self.hierarchy_slots + bookmarked as usize + !self.previews.is_empty() as usize } else { 0 };
+        let slots = if shown { self.hierarchy_slots + bookmarked as usize + !self.previews.is_empty() as usize + !self.test_marks.is_empty() as usize } else { 0 };
         let extra = if slots == 0 { px(0.) } else { px(GUTTER_ICON_GAP + GUTTER_ICON_SLOT * slots as f32) };
         self.state.update(cx, |state, cx| state.set_gutter_extra(extra, cx));
     }
@@ -1785,11 +1802,12 @@ impl Render for FileEditor {
         let gutter_line = self.gutter_line.clone();
         let bookmark_file = self.bookmark_file();
         let bookmark_strip = self.bookmark_strip(cx);
-        let preview_strip = if crate::settings::Settings::get(cx).diff.show_gutter_icons {
+        let (preview_strip, test_strip) = if crate::settings::Settings::get(cx).diff.show_gutter_icons {
             let bookmarked = self.bookmark_file().is_some_and(|f| crate::bookmarks::Bookmarks::get(cx).of_file(&f).next().is_some());
-            self.preview_strip(self.hierarchy_slots + bookmarked as usize)
+            let slot = self.hierarchy_slots + bookmarked as usize;
+            (self.preview_strip(slot), self.test_strip(slot + !self.previews.is_empty() as usize, cx))
         } else {
-            None
+            (None, None)
         };
         let icons_shown = crate::settings::Settings::get(cx).diff.show_gutter_icons;
         let annotation_gutter = self
@@ -1808,6 +1826,7 @@ impl Render for FileEditor {
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::show_context_actions))
+            .on_action(cx.listener(Self::run_test_at_caret))
             .on_action(cx.listener(|this, _: &NextChange, window, cx| this.go_to_change(true, window, cx)))
             .on_action(cx.listener(|this, _: &PreviousChange, window, cx| this.go_to_change(false, window, cx)))
             .on_action(cx.listener(Self::rollback_lines))
@@ -1978,11 +1997,13 @@ impl Render for FileEditor {
                 .when(!self.hierarchy.is_empty() && icons_shown, |el| el.child(self.hierarchy_strip(cx)))
                 .children(bookmark_strip)
                 .children(preview_strip)
+                .children(test_strip)
                 .when_some(hover_card, |el, (at, card)| {
                     el.child(deferred(anchored().position(point(at.x + px(12.), at.y + px(16.))).child(card)).with_priority(1))
                 })
                 .when_some(self.popup.zip(self.popup_anchor.get()), |el, (ix, at)| el.child(self.render_popup(ix, at, cx)))
-                .children(self.render_context_actions(cx)),
+                .children(self.render_context_actions(cx))
+                .children(self.render_test_menu(cx)),
             ))
     }
 }

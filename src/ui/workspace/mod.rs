@@ -381,6 +381,7 @@ impl Workspace {
         let running_devices = cx.new(|cx| crate::ui::running_devices::RunningDevices::new(device_manager.clone(), cx));
         let device_explorer = cx.new(|cx| crate::ui::device_explorer::DeviceExplorer::new(device_manager.clone(), android_project, cx));
         let run = cx.new(|_| crate::ui::run_service::RunService::new(device_manager.clone()));
+        let tests = crate::ui::test_service::TestService::global(cx);
         let build_view = cx.new(|cx| crate::ui::run_views::BuildView::new(run.clone(), cx));
         let run_view = cx.new(|cx| crate::ui::run_views::RunView::new(run.clone(), cx));
         let variants_view = cx.new(crate::ui::run_views::VariantsView::new);
@@ -579,6 +580,7 @@ impl Workspace {
             }),
             cx.subscribe_in(&sync, window, |this, _, event, window, cx| this.on_sync_event(event, window, cx)),
             cx.subscribe_in(&run, window, |this, _, event, window, cx| this.on_run_event(event, window, cx)),
+            cx.subscribe_in(&tests, window, |this, _, event, window, cx| this.on_test_event(event, window, cx)),
             cx.subscribe_in(&build_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::Build, event, window, cx)),
             cx.subscribe_in(&run_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::Run, event, window, cx)),
             cx.subscribe_in(&problems_view, window, |this, _, event, window, cx| this.on_problems_event(event, window, cx)),

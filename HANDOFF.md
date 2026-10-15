@@ -218,7 +218,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 5. Debugger（断点、单步、变量、Evaluate、Attach）：Device Explorer 已经走 JDWP 列进程，有底层基础，UI 工作量最大。
 6. 符号级重构（跨文件 Rename、Extract、Change Signature、Optimize Imports）：走 LSP rename / codeAction。
 7. ✅ Android 资源（2026-10-15，FEATURES.md 第 19 节）：`R.x.y` / `@x/y` 跳转、悬停显示值、Find Usages、颜色和图片 gutter 预览。剩 Translations Editor、Manifest 合并视图、vector drawable 预览。
-8. 测试：gutter ▶ 跑单个测试、结果树；Gradle test 任务 + 解析 JUnit XML。
+8. ✅ 测试（2026-10-15，FEATURES.md 第 21 节）：gutter ▶ / ▶▶ 和结果图标、Ctrl+Shift+F10、Gradle test 任务 + init script 实时事件 + JUnit XML、Run 窗口的测试标签页（结果树、状态行、Rerun Failed Tests、控制台）。剩 Debug 测试、覆盖率、Project 窗口右键运行目录、对比窗口、仪器测试真机验证。
 9. ✅ Gradle 文件辅助（2026-10-15，FEATURES.md 第 20 节）：version catalog 跳转、悬停、Find Usages、`libs.` 补全，依赖和插件新版本警告 + Alt+Enter “Change to …”。剩 Project Structure 对话框、“改用 version catalog” 之类的迁移修复。
 10. ✅ Problems / TODO 工具窗口、Local History（2026-10-15，FEATURES.md 第 18 节）。
 11. 代码生成：Alt+Insert、Live Templates、Surround With。
