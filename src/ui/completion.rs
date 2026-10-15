@@ -32,6 +32,9 @@ impl IndexCompletion {
 impl CompletionProvider for IndexCompletion {
     fn completions(&self, rope: &Rope, offset: usize, trigger: CompletionContext, _: &mut Window, cx: &mut App) -> Task<anyhow::Result<CompletionResponse>> {
         let text = rope.to_string();
+        if let Some(items) = catalog_completions(&self.index.read(cx).catalogs.read().unwrap(), &self.path, &text, offset, rope) {
+            return Task::ready(Ok(CompletionResponse::Array(items)));
+        }
         let Some(lang) = CodeIndex::lang_of(&self.path, &text) else { return Task::ready(Ok(CompletionResponse::Array(Vec::new()))) };
         let explicit = trigger.trigger_kind == CompletionTriggerKind::INVOKED;
         let index = self.index.read(cx).index.clone();
@@ -106,4 +109,37 @@ fn kind_of(kind: CandidateKind) -> CompletionItemKind {
         CandidateKind::Module => CompletionItemKind::MODULE,
         CandidateKind::Macro => CompletionItemKind::FUNCTION,
     }
+}
+
+/// In a build script, after `libs.`: the version catalog's next accessor
+/// segments, as Gradle's generated accessors offer them.
+fn catalog_completions(catalogs: &[crate::domain::version_catalog::Catalog], path: &str, text: &str, offset: usize, rope: &Rope) -> Option<Vec<CompletionItem>> {
+    use crate::domain::version_catalog as vc;
+    if !vc::is_build_script(path) {
+        return None;
+    }
+    let (name, typed) = vc::completion_prefix(text, offset, catalogs.iter().map(|c| c.name.as_str()))?;
+    let catalog = catalogs.iter().find(|c| c.name == name)?;
+    let (done, word) = typed.rsplit_once('.').map_or(("", typed.as_str()), |(d, w)| (d, w));
+    let done = if done.is_empty() { String::new() } else { format!("{done}.") };
+    let start = offset - word.len();
+    let range = lsp_types::Range { start: rope.offset_to_position(start), end: rope.offset_to_position(offset) };
+    let mut segments: Vec<(i32, String, Option<&vc::Entry>)> = catalog
+        .next_segments(&done)
+        .into_iter()
+        .filter_map(|(segment, entry)| Some((crate::domain::completion::match_score(word, &segment)?, segment, entry)))
+        .collect();
+    segments.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let items = segments
+        .into_iter()
+        .map(|(_, segment, entry)| CompletionItem {
+            label: segment.clone(),
+            filter_text: Some(word.to_owned()),
+            kind: Some(if entry.is_some() { CompletionItemKind::PROPERTY } else { CompletionItemKind::MODULE }),
+            detail: entry.map(|e| catalog.describe(e)).filter(|d| !d.is_empty() && !d.contains('\n')),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: segment })),
+            ..Default::default()
+        })
+        .collect();
+    Some(items)
 }

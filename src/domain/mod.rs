@@ -8,6 +8,7 @@
 pub mod android_resources;
 pub mod build;
 pub mod completion;
+pub mod dependency_versions;
 pub mod diagnostics;
 pub mod imports;
 pub mod local_history;
@@ -15,3 +16,4 @@ pub mod logcat;
 pub mod run;
 pub mod todo;
 pub mod sync;
+pub mod version_catalog;

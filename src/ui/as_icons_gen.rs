@@ -132,6 +132,7 @@ pub const IMPORT: AsIcon = AsIcon { light: &[("as/import.l0.svg", 0x6c707eff)], 
 pub const IN_SELECTION: AsIcon = AsIcon { light: &[("as/in-selection.l0.svg", 0x6c707eff)], dark: &[("as/in-selection.d0.svg", 0xced0d6ff)] };
 pub const INLINE_CLOSE: AsIcon = AsIcon { light: &[("as/inline-close.l0.svg", 0xa8adbdff)], dark: &[("as/inline-close.d0.svg", 0x868a91ff)] };
 pub const INLINE_REFRESH: AsIcon = AsIcon { light: &[("as/inline-refresh.l0.svg", 0xa8adbdff)], dark: &[("as/inline-refresh.d0.svg", 0x868a91ff)] };
+pub const INTENTION_BULB: AsIcon = AsIcon { light: &[("as/intention-bulb.l0.svg", 0x6c707eff), ("as/intention-bulb.l1.svg", 0xffaf0fff)], dark: &[("as/intention-bulb.d0.svg", 0xced0d6ff), ("as/intention-bulb.d1.svg", 0xf2c55cff)] };
 pub const INTERFACE: AsIcon = AsIcon { light: &[("as/interface.l0.svg", 0xf2fcf3ff), ("as/interface.l1.svg", 0x208a3cff)], dark: &[("as/interface.d0.svg", 0x253627ff), ("as/interface.d1.svg", 0x57965cff)] };
 pub const INTERFACE_KOTLIN: AsIcon = AsIcon { light: &[("as/interface-kotlin.l0.svg", 0xf2fcf3ff), ("as/interface-kotlin.l1.svg", 0x208a3cff), ("as/interface-kotlin.l2.svg", 0xfaf5ffff), ("as/interface-kotlin.l3.svg", 0x834df0ff), ("as/interface-kotlin.l4.svg", 0x208a3cff)], dark: &[("as/interface-kotlin.d0.svg", 0x253627ff), ("as/interface-kotlin.d1.svg", 0x57965cff), ("as/interface-kotlin.d2.svg", 0x2f2936ff), ("as/interface-kotlin.d3.svg", 0xa571e6ff), ("as/interface-kotlin.d4.svg", 0x57965cff)] };
 pub const JDK: AsIcon = AsIcon { light: &[("as/jdk.l0.svg", 0xebecf0ff), ("as/jdk.l1.svg", 0x6c707eff), ("as/jdk.l2.svg", 0xe7effdff), ("as/jdk.l3.svg", 0x3574f0ff)], dark: &[("as/jdk.d0.svg", 0x43454aff), ("as/jdk.d1.svg", 0xced0d6ff), ("as/jdk.d2.svg", 0x25324dff), ("as/jdk.d3.svg", 0x548af7ff)] };
@@ -680,6 +681,10 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/inline-close.d0.svg", include_bytes!("../../assets/as-icons/gen/inline-close.d0.svg")),
     ("as/inline-refresh.l0.svg", include_bytes!("../../assets/as-icons/gen/inline-refresh.l0.svg")),
     ("as/inline-refresh.d0.svg", include_bytes!("../../assets/as-icons/gen/inline-refresh.d0.svg")),
+    ("as/intention-bulb.l0.svg", include_bytes!("../../assets/as-icons/gen/intention-bulb.l0.svg")),
+    ("as/intention-bulb.l1.svg", include_bytes!("../../assets/as-icons/gen/intention-bulb.l1.svg")),
+    ("as/intention-bulb.d0.svg", include_bytes!("../../assets/as-icons/gen/intention-bulb.d0.svg")),
+    ("as/intention-bulb.d1.svg", include_bytes!("../../assets/as-icons/gen/intention-bulb.d1.svg")),
     ("as/interface.l0.svg", include_bytes!("../../assets/as-icons/gen/interface.l0.svg")),
     ("as/interface.l1.svg", include_bytes!("../../assets/as-icons/gen/interface.l1.svg")),
     ("as/interface.d0.svg", include_bytes!("../../assets/as-icons/gen/interface.d0.svg")),

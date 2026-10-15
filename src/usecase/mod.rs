@@ -4,6 +4,7 @@
 pub mod android_resources;
 pub mod check_syntax;
 pub mod compile_on_save;
+pub mod dependency_updates;
 pub mod local_history;
 pub mod logcat;
 pub mod run_app;

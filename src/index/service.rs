@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use gpui_kit::{App, AppContext as _, Context, EventEmitter, Task};
 
+use crate::domain::version_catalog::{Catalog, Entry};
 use super::lang::Lang;
 use super::lsp::LspManager;
 use super::nav::{self, Target, Usage};
@@ -28,6 +29,8 @@ pub struct CodeIndex {
     pub lsp: Arc<LspManager>,
     /// The Android resources of the project's `res` folders.
     pub resources: Arc<RwLock<crate::usecase::android_resources::ResourceTable>>,
+    /// The Gradle version catalogs (`gradle/libs.versions.toml`).
+    pub catalogs: Arc<RwLock<Vec<Catalog>>>,
     /// (done, total) while files are being indexed.
     pub progress: Option<(usize, usize)>,
     updating: bool,
@@ -69,6 +72,7 @@ impl CodeIndex {
             index: Arc::default(),
             lsp: Arc::default(),
             resources: Arc::default(),
+            catalogs: Arc::default(),
             progress: None,
             updating: false,
             library_phase: Arc::default(),
@@ -92,6 +96,7 @@ impl CodeIndex {
         self.root = root.clone();
         self.index = Arc::default();
         self.resources = Arc::default();
+        self.catalogs = Arc::default();
         self.lsp = Arc::new(LspManager::new(root.clone().unwrap_or_default()));
         self.progress = None;
         self.updating = false;
@@ -112,6 +117,7 @@ impl CodeIndex {
         self.updating = true;
         let index = self.index.clone();
         let resources = self.resources.clone();
+        let catalogs = self.catalogs.clone();
         let phase = self.library_phase.clone();
         // Set when the work replaced part of the index, so views reload
         // the file list only then, not on every progress tick.
@@ -170,6 +176,7 @@ impl CodeIndex {
                     let index = index.read().unwrap();
                     (index.all_files.clone(), index.external.clone())
                 };
+                *catalogs.write().unwrap() = crate::infra::catalog_files::load(&root, &files);
                 let stamp = super::libraries::inputs_stamp(&root, &files);
                 if !previous.scanned || previous.stamp != stamp {
                     phase.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -227,10 +234,15 @@ impl CodeIndex {
         }
         let (index, rel) = (self.index.clone(), rel.to_owned());
         let (resources, root) = (self.resources.clone(), self.root.clone().unwrap_or_default());
+        let catalogs = self.catalogs.clone();
         cx.spawn(async move |this, cx| {
             cx.background_spawn(async move {
                 if let Ok(mut index) = index.write() {
                     index.refresh_file(&rel);
+                }
+                if rel.ends_with(".versions.toml") || rel.rsplit('/').next().is_some_and(|n| n.starts_with("settings.gradle")) {
+                    let files = index.read().map(|i| i.all_files.clone()).unwrap_or_default();
+                    *catalogs.write().unwrap() = crate::infra::catalog_files::load(&root, &files);
                 }
                 if rel.contains("/res/") || rel.starts_with("res/") {
                     let table = crate::usecase::android_resources::ResourceTable::build(&crate::infra::resource_scanner::ResFolders { root });
@@ -266,6 +278,10 @@ impl CodeIndex {
     /// its usages). Locals first, then bridges, the language server and the
     /// index. Off the main thread: it parses the file.
     pub fn go_to(&self, path: String, text: String, offset: usize, cx: &App) -> Task<Nav> {
+        // A version catalog entry: its line in the catalog.
+        if let Some(nav) = catalog_nav(&self.catalogs.read().unwrap(), &path, &text, offset) {
+            return Task::ready(nav);
+        }
         // An Android resource: its declarations in the res folders.
         if let Some(nav) = resource_nav(&self.resources.read().unwrap(), &path, &text, offset) {
             return Task::ready(nav);
@@ -345,6 +361,11 @@ impl CodeIndex {
 
     /// Quick Documentation: the server's hover, else the declaration line.
     pub fn hover(&self, path: String, text: String, offset: usize, cx: &App) -> Task<Option<String>> {
+        if let Some((catalog, entry, _)) = catalog_entry_at(&self.catalogs.read().unwrap(), &path, &text, offset) {
+            let value = catalog.describe(&entry);
+            let value = if value.is_empty() { String::new() } else { format!("\n\n```\n{value}\n```") };
+            return Task::ready(Some(format!("`{}`{value}\n\n{}", catalog.accessor_of(&entry), catalog.path)));
+        }
         if let Some((r, _)) = resource_at(&path, &text, offset) {
             let table = self.resources.read().unwrap();
             if let Some(first) = table.declarations(&r).first() {
@@ -385,6 +406,10 @@ impl CodeIndex {
     /// Find Usages of the identifier at `offset`.
     pub fn usages(&self, path: String, text: String, offset: usize, cx: &App) -> Task<(String, Vec<Usage>)> {
         let Some(root) = self.root.clone() else { return Task::ready((String::new(), Vec::new())) };
+        if let Some((catalog, entry, _)) = catalog_entry_at(&self.catalogs.read().unwrap(), &path, &text, offset) {
+            let catalogs = self.catalogs.read().unwrap().clone();
+            return cx.background_spawn(async move { catalog_usages(&root, &catalogs, &catalog, &entry) });
+        }
         if let Some((r, _)) = resource_at(&path, &text, offset) {
             let declarations = self.resources.read().unwrap().declarations(&r).to_vec();
             if !declarations.is_empty() {
@@ -679,4 +704,69 @@ fn resource_usages(root: &Path, r: &crate::domain::android_resources::ResourceRe
         }
     }
     (r.name.clone(), found)
+}
+
+/// The version catalog entry at `offset`: an accessor in a build script
+/// (`libs.androidx.core.ktx`), or in a catalog an entry's key (a
+/// declaration, `true`) or a reference to one (`version.ref`, a bundle
+/// member). A catalog being edited is read from its text.
+fn catalog_entry_at(catalogs: &[Catalog], path: &str, text: &str, offset: usize) -> Option<(Catalog, Entry, bool)> {
+    use crate::domain::version_catalog as vc;
+    if vc::is_build_script(path) {
+        let (name, accessor, _) = vc::accessor_at(text, offset, catalogs.iter().map(|c| c.name.as_str()))?;
+        let catalog = catalogs.iter().find(|c| c.name == name)?;
+        let entry = catalog.resolve(&accessor)?.clone();
+        return Some((catalog.clone(), entry, false));
+    }
+    let name = vc::name_of(path.rsplit('/').next()?)?;
+    let name = catalogs.iter().find(|c| c.path == path).map_or(name, |c| c.name.as_str());
+    let catalog = Catalog::parse(name, path, text);
+    let (entry, declaration) = catalog.reference_at(offset)?;
+    let entry = entry.clone();
+    Some((catalog, entry, declaration))
+}
+
+/// Go to Declaration on a catalog accessor or reference: the entry's key;
+/// on the key itself, its usages.
+fn catalog_nav(catalogs: &[Catalog], path: &str, text: &str, offset: usize) -> Option<Nav> {
+    let (catalog, entry, declaration) = catalog_entry_at(catalogs, path, text, offset)?;
+    if declaration {
+        return Some(Nav::Declaration);
+    }
+    let label = catalog.path.rsplit('/').next().unwrap_or(&catalog.path).to_owned();
+    Some(Nav::Targets(vec![Target { path: catalog.path.clone(), line: entry.line, col: entry.col, name: entry.key.clone(), label, container: None }]))
+}
+
+/// Find Usages of a catalog entry: its key, the references inside the
+/// catalog, and the build scripts' accessors.
+fn catalog_usages(root: &Path, catalogs: &[Catalog], catalog: &Catalog, entry: &Entry) -> (String, Vec<Usage>) {
+    use super::text_search::{SearchContext, TextQuery};
+    use crate::domain::version_catalog as vc;
+    let catalog_text = std::fs::read_to_string(root.join(&catalog.path)).unwrap_or_default();
+    let line_of = |text: &str, line: u32| text.lines().nth(line as usize).map(|l| l.trim().to_owned()).unwrap_or_default();
+    let mut found = vec![Usage { path: catalog.path.clone(), line: entry.line, col: entry.col, text: line_of(&catalog_text, entry.line), group: "Declarations".into() }];
+    // The saved catalog's references (the edited text may differ).
+    let saved = Catalog::parse(&catalog.name, &catalog.path, &catalog_text);
+    if let Some(target) = saved.by_key(entry.section, &entry.key) {
+        for range in saved.references_to(target) {
+            let p = crate::domain::diagnostics::Pos::of(&catalog_text, range.start);
+            found.push(Usage { path: catalog.path.clone(), line: p.line, col: p.col, text: line_of(&catalog_text, p.line), group: "Version catalog references".into() });
+        }
+    }
+    let accessor = catalog.accessor_of(entry);
+    let query = TextQuery { text: format!(r"\b{}\b", regex::escape(&accessor)), case_sensitive: true, whole_words: false, regex: true, mask: None, context: SearchContext::Anywhere };
+    if let Ok(re) = super::text_search::compile(&query) {
+        let files: Vec<String> = super::store::list_files(root).into_iter().filter(|f| vc::is_build_script(f)).collect();
+        let result = super::text_search::search(root, &files, &query, &re, 5000, &std::sync::atomic::AtomicBool::new(false));
+        for m in result.matches {
+            // `libs.androidx.core` also starts `libs.androidx.core.ktx`: keep the ones naming this entry.
+            let names = vc::accessor_at(&m.text, m.text.find(&accessor).unwrap_or(0), catalogs.iter().map(|c| c.name.as_str()));
+            let same = names.and_then(|(name, path, _)| catalogs.iter().find(|c| c.name == name)?.resolve(&path).map(|e| e.section == entry.section && e.key == entry.key));
+            if same != Some(true) {
+                continue;
+            }
+            found.push(Usage { path: m.path, line: m.line, col: m.col, text: m.text, group: "Build script references".into() });
+        }
+    }
+    (entry.key.clone(), found)
 }

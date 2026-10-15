@@ -39,7 +39,7 @@ fn collect(node: Node, text: &str, out: &mut Vec<Problem>) {
         let at = Pos::of(text, node.start_byte());
         let what = if hidden_missing { node.kind().trim_start_matches("simple_") } else { node.kind() };
         let message = if what.chars().all(|c| c.is_alphanumeric() || c == '_') { format!("{} expected", what.replace('_', " ")) } else { format!("'{what}' expected") };
-        out.push(Problem { start: at, end: Pos::new(at.line, at.col + 1), severity: Severity::Error, message, origin: Origin::Syntax });
+        out.push(Problem { start: at, end: Pos::new(at.line, at.col + 1), severity: Severity::Error, message, origin: Origin::Syntax, fix: None });
         return;
     }
     if node.is_error() {
@@ -53,7 +53,7 @@ fn collect(node: Node, text: &str, out: &mut Vec<Problem>) {
         if e == s {
             e.col += 1;
         }
-        out.push(Problem { start: s, end: e, severity: Severity::Error, message, origin: Origin::Syntax });
+        out.push(Problem { start: s, end: e, severity: Severity::Error, message, origin: Origin::Syntax, fix: None });
         return;
     }
     if !node.has_error() {

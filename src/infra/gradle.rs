@@ -255,7 +255,7 @@ pub fn parse_output(output: &str) -> Vec<FileProblem> {
 }
 
 fn problem(file: PathBuf, line: u32, col: u32, severity: Severity, message: String) -> FileProblem {
-    FileProblem { file, problem: Problem { start: Pos::new(line, col), end: Pos::new(line, col + 1), severity, message, origin: Origin::Compiler } }
+    FileProblem { file, problem: Problem { start: Pos::new(line, col), end: Pos::new(line, col + 1), severity, message, origin: Origin::Compiler, fix: None } }
 }
 
 /// A path from a `file://` URI or plain: `/C:/x` is `C:/x` on Windows.

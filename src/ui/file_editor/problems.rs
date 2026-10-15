@@ -10,7 +10,8 @@ use crate::domain::diagnostics::{Origin, Problem, Severity};
 use crate::index::service::CodeIndex;
 use crate::ui::compile_service::{CompileEvent, CompileService};
 use crate::infra::tree_sitter_syntax::TreeSitterSyntax;
-use crate::usecase::check_syntax;
+use crate::infra::maven_versions::MavenVersions;
+use crate::usecase::{check_syntax, dependency_updates};
 
 impl FileEditor {
     /// Re-checks the syntax (after a pause when `debounce`), then shows it
@@ -29,6 +30,36 @@ impl FileEditor {
             this.update(cx, |this, cx| {
                 this.syntax_problems = problems;
                 this.show_problems(cx);
+            })
+            .ok();
+        }));
+    }
+
+    /// Re-runs the inspections (after a pause when `debounce`): in a Gradle
+    /// file, the newer-version check, whose lookups are cached for a day.
+    pub(super) fn update_inspections(&mut self, debounce: bool, cx: &mut Context<Self>) {
+        if self.read_only() {
+            return;
+        }
+        let text = self.text(cx);
+        let sites = dependency_updates::sites(&self.path, &text);
+        if sites.is_empty() {
+            if !self.inspection_problems.is_empty() {
+                self.inspection_problems.clear();
+                self.show_problems(cx);
+            }
+            return;
+        }
+        self.inspections_task = Some(cx.spawn(async move |this, cx| {
+            if debounce {
+                cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
+            }
+            let problems = cx.background_spawn(async move { dependency_updates::check(&MavenVersions::new(), &text, &sites) }).await;
+            this.update(cx, |this, cx| {
+                if this.inspection_problems != problems {
+                    this.inspection_problems = problems;
+                    this.show_problems(cx);
+                }
             })
             .ok();
         }));
@@ -62,7 +93,7 @@ impl FileEditor {
 
     /// What the editor marks: syntax errors and the compiler's problems, in order.
     pub fn problems(&self) -> Vec<Problem> {
-        let mut all: Vec<Problem> = self.syntax_problems.iter().chain(&self.compiler_problems).cloned().collect();
+        let mut all: Vec<Problem> = self.syntax_problems.iter().chain(&self.compiler_problems).chain(&self.inspection_problems).cloned().collect();
         all.sort_by_key(|p| (p.start, p.end));
         all
     }

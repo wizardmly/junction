@@ -15,6 +15,8 @@ pub enum Severity {
 pub enum Origin {
     Syntax,
     Compiler,
+    /// An inspection of the file (a newer dependency version).
+    Inspection,
 }
 
 /// A 0-based line and column; the column counts characters.
@@ -45,6 +47,15 @@ pub struct Problem {
     pub severity: Severity,
     pub message: String,
     pub origin: Origin,
+    /// Alt+Enter's fix: replaces the problem's text.
+    pub fix: Option<Fix>,
+}
+
+/// A quick fix: "Change to 1.13.1".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fix {
+    pub title: String,
+    pub replacement: String,
 }
 
 /// A problem in a file of the project.
@@ -106,7 +117,7 @@ mod tests {
 
     #[test]
     fn store_replaces_a_module() {
-        let p = |file: &str| FileProblem { file: file.into(), problem: Problem { start: Pos::default(), end: Pos::new(0, 1), severity: Severity::Error, message: "x".into(), origin: Origin::Compiler } };
+        let p = |file: &str| FileProblem { file: file.into(), problem: Problem { start: Pos::default(), end: Pos::new(0, 1), severity: Severity::Error, message: "x".into(), origin: Origin::Compiler, fix: None } };
         let mut store = ProblemStore::default();
         store.replace_under(std::path::Path::new("/p/app"), vec![p("/p/app/A.kt"), p("/p/app/A.kt")]);
         store.replace_under(std::path::Path::new("/p/lib"), vec![p("/p/lib/B.kt")]);

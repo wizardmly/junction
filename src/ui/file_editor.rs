@@ -4,6 +4,7 @@
 //! actions: Show History for Selection, Annotate, Show Current Revision,
 //! Rollback Lines.
 
+mod fixes;
 mod previews;
 mod problems;
 
@@ -88,6 +89,7 @@ const GUTTER_ICON_GAP: f32 = 4.;
 
 pub fn init(cx: &mut gpui_kit::App) {
     register_grammars();
+    fixes::init(cx);
     cx.bind_keys([
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" }, SaveFile, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-z", RollbackLines, Some(CONTEXT)),
@@ -355,6 +357,12 @@ pub struct FileEditor {
     /// Resource previews by line (color swatches, drawable thumbnails).
     previews: Vec<(u32, crate::usecase::android_resources::Preview)>,
     previews_task: Option<gpui_kit::Task<()>>,
+    /// Inspections of the text (a newer dependency version in a Gradle file).
+    inspection_problems: Vec<crate::domain::diagnostics::Problem>,
+    inspections_task: Option<gpui_kit::Task<()>>,
+    /// Alt+Enter's popup.
+    context_actions: Option<fixes::ContextActions>,
+    context_focus: gpui_kit::FocusHandle,
     popup_focus: gpui_kit::FocusHandle,
     /// The file couldn't be read: no editing, saving or reloading.
     error: Option<String>,
@@ -603,6 +611,7 @@ impl FileEditor {
                 this.update_markers(cx);
                 this.update_hierarchy(true, cx);
                 this.update_problems(true, cx);
+                this.update_inspections(true, cx);
                 this.update_previews(true, cx);
                 this.follow_bookmarks(cx);
                 // The annotations follow the edit (new lines: Not Committed Yet).
@@ -636,6 +645,10 @@ impl FileEditor {
             hierarchy_slots: 0,
             previews: Vec::new(),
             previews_task: None,
+            inspection_problems: Vec::new(),
+            inspections_task: None,
+            context_actions: None,
+            context_focus: cx.focus_handle(),
             popup_focus: cx.focus_handle(),
             error,
             notice: None,
@@ -780,6 +793,7 @@ impl FileEditor {
         self.code_index = Some(index);
         self.update_hierarchy(false, cx);
         self.update_problems(false, cx);
+        self.update_inspections(false, cx);
         self.update_previews(false, cx);
         self.attach_compiler(cx);
     }
@@ -1793,6 +1807,7 @@ impl Render for FileEditor {
             .size_full()
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(Self::show_context_actions))
             .on_action(cx.listener(|this, _: &NextChange, window, cx| this.go_to_change(true, window, cx)))
             .on_action(cx.listener(|this, _: &PreviousChange, window, cx| this.go_to_change(false, window, cx)))
             .on_action(cx.listener(Self::rollback_lines))
@@ -1966,7 +1981,8 @@ impl Render for FileEditor {
                 .when_some(hover_card, |el, (at, card)| {
                     el.child(deferred(anchored().position(point(at.x + px(12.), at.y + px(16.))).child(card)).with_priority(1))
                 })
-                .when_some(self.popup.zip(self.popup_anchor.get()), |el, (ix, at)| el.child(self.render_popup(ix, at, cx))),
+                .when_some(self.popup.zip(self.popup_anchor.get()), |el, (ix, at)| el.child(self.render_popup(ix, at, cx)))
+                .children(self.render_context_actions(cx)),
             ))
     }
 }
