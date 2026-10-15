@@ -58,6 +58,7 @@ actions!(
         OptimizeImports,
         IntroduceVariable,
         IntroduceConstant,
+        SurroundWith,
         FindNext,
         FindPrevious,
         CloseChangePopup,
@@ -111,6 +112,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-alt-o", OptimizeImports, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-v" } else { "ctrl-alt-v" }, IntroduceVariable, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-c" } else { "ctrl-alt-c" }, IntroduceConstant, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-t" } else { "ctrl-alt-t" }, SurroundWith, Some(CONTEXT)),
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
         KeyBinding::new(if cfg!(target_os = "macos") { "f3" } else { "f11" }, ToggleBookmark, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "alt-f3" } else { "ctrl-f11" }, ToggleBookmarkWithMnemonic, Some(CONTEXT)),
@@ -1136,6 +1138,45 @@ impl FileEditor {
         }, window, cx);
     }
 
+    fn surround_with_action(&mut self, _: &SurroundWith, window: &mut Window, cx: &mut Context<Self>) {
+        self.surround_with(window, cx);
+    }
+
+    /// Code › Surround With (Ctrl+Alt+T): the popup of surrounders for the
+    /// selected lines (or the caret's), and an expression's when the
+    /// selection is part of a line.
+    pub fn surround_with(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
+        let text = self.text(cx);
+        let selection = self.state.read(cx).selected_range();
+        let lines = crate::domain::surround::lines_of(&text, selection.clone());
+        let line_text = &text[lines.clone()];
+        let selected = text[selection.clone()].trim();
+        // Part of one line selected: an expression too.
+        let expression = (!selected.is_empty() && !selected.contains('\n') && selected != line_text.trim()).then(|| {
+            let s = &text[selection.clone()];
+            let start = selection.start + (s.len() - s.trim_start().len());
+            start..start + selected.len()
+        });
+        if lines.is_empty() || line_text.trim().is_empty() && expression.is_none() {
+            return Self::hint("Surround With", "Cannot perform refactoring.\nNothing to surround", window, cx);
+        }
+        self.choose_surrounder(style, lines, expression, window, cx);
+    }
+
+    /// Applies a surrounder to the lines or the expression at `range`.
+    pub(super) fn surround(&mut self, surrounder: crate::domain::surround::Surrounder, range: Range<usize>, expression: bool, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::surround::{indent_unit, surround_expression, surround_lines};
+        let Some((_, style)) = self.jvm_style() else { return };
+        let text = self.text(cx);
+        let done = if expression { surround_expression(surrounder, &text, range) } else { surround_lines(style, surrounder, &text, range, &indent_unit(&text)) };
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(done.range.clone(), cx);
+            state.replace(&done.text, window, cx);
+            state.set_selected_range(done.select.clone(), cx);
+        });
+    }
+
     pub fn selected_text(&self, cx: &gpui_kit::App) -> Option<String> {
         Some(self.state.read(cx).selected_value().to_string()).filter(|s| !s.is_empty())
     }
@@ -2028,6 +2069,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::optimize_imports_action))
             .on_action(cx.listener(Self::introduce_variable_action))
             .on_action(cx.listener(Self::introduce_constant_action))
+            .on_action(cx.listener(Self::surround_with_action))
             .on_action(cx.listener(Self::find_next))
             .on_action(cx.listener(|this, _: &OpenFind, window, cx| this.open_find(false, window, cx)))
             .on_action(cx.listener(|this, _: &OpenReplace, window, cx| this.open_find(true, window, cx)))
@@ -2153,6 +2195,7 @@ impl Render for FileEditor {
                                 .separator()
                                 .menu("Go to Declaration", Box::new(GotoDeclaration))
                                 .menu("Find Usages", Box::new(FindUsages))
+                                .menu_with_disabled("Surround With…", read_only, Box::new(SurroundWith))
                                 .submenu(
                                     "Refactor",
                                     NativeMenu::new()

@@ -548,6 +548,17 @@ Linux 实测（Xvfb）：Kotlin 里光标在 `user.getName()` 上按 Ctrl+Alt+V�
 
 Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+Alt+C，建议 `HELLO_WORLD`，两处出现全部替换，`private const val HELLO_WORLD = "Hello, world"` 插在带 KDoc 的函数之前；选 `"Hello, world" + name` 时提示 “Can't introduce constant for non constant expression”；Ctrl+Z 一步恢复。
 
+## 28. Surround With（2026-10-15）
+
+| 功能 | 状态 |
+|---|---|
+| Kotlin / Java 文件里 Ctrl+Alt+T，或右键 Surround With…、Find Action：AS 的 “Surround With” 弹窗，按 IntelliJ 的顺序和名字编号列出（1–9、0、A…），按编号直接套用，上下键 + 回车也可以 | ✅ |
+| Kotlin 语句：if、if / else、run { }、try / finally、try / catch / finally、try / catch、while、do / while、for；Java 语句：if、if / else、while、do / while、for、try / catch、try / finally、try / catch / finally、synchronized、Runnable、{ } | ✅ |
+| 包住选中的整行（没有选区时是光标所在行），里面缩进一级（按文件的缩进单位）；catch 照 IntelliJ 的默认：Kotlin `catch (e: Exception) { throw e }`，Java `catch (Exception e) { throw new RuntimeException(e); }` | ✅ |
+| 选中一行中的一部分时，前面多出表达式项：Kotlin `!(expr)`、`"${expr}"`、`(expr)`，Java `(expr)`、`!(expr)` | ✅ |
+| 套用后光标停在模板要填的地方（`if (|)`、`for (|; ; )`）或选中占位内容（`true`、`Exception`、`item in items`）；一次 Ctrl+Z 撤销 | ✅ |
+| Live Template 式的占位跳转（Tab 到下一个）、把块内声明移到外面（MoveDeclarationsOutHelper）、按调用推断 catch 的异常类型、when / if 表达式等其余表达式模板、Surround with Live Template | ❌ 未做 |
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。

@@ -152,6 +152,11 @@ impl Workspace {
                     editor.update(cx, |e, cx| e.introduce(crate::ui::introduce_dialog::Introduce::Constant, window, cx));
                 }
             })),
+            ("Surround With…", "Ctrl+Alt+T", op(|this, window, cx| {
+                if let Some(editor) = this.editor().cloned() {
+                    editor.update(cx, |e, cx| e.surround_with(window, cx));
+                }
+            })),
             ("Rename…", "Shift+F6", op(|this, _, cx| {
                 if let Some(editor) = this.editor().cloned() {
                     editor.update(cx, |e, cx| e.rename(cx));

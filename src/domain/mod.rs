@@ -14,6 +14,7 @@ pub mod diagnostics;
 pub mod expression;
 pub mod imports;
 pub mod introduce_variable;
+pub mod surround;
 pub mod jdk;
 pub mod local_history;
 pub mod logcat;

@@ -45,6 +45,9 @@ pub(super) enum Choice {
     /// An expression to introduce a variable or constant for (its text,
     /// one line).
     Expression(String, crate::ui::introduce_dialog::Introduce),
+    /// Surround With: the surrounder, numbered as in IntelliJ's popup;
+    /// the range is the lines or the expression it wraps.
+    Surround(crate::domain::surround::Surrounder, char, bool),
 }
 
 /// The byte offset of a line and character column.
@@ -103,6 +106,27 @@ impl FileEditor {
     }
 
 
+    /// Surround With's popup at the caret: the statement surrounders for
+    /// the lines, then (for an expression selected within a line) the
+    /// expression ones, numbered; a number applies its item.
+    pub(super) fn choose_surrounder(&mut self, style: crate::domain::imports::ImportStyle, lines: std::ops::Range<usize>, expression: Option<std::ops::Range<usize>>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::surround::{expression_surrounders, mnemonic, statement_surrounders};
+        let mut items: Vec<(std::ops::Range<usize>, Choice)> = Vec::new();
+        if let Some(expr) = &expression {
+            for s in expression_surrounders(style) {
+                items.push((expr.clone(), Choice::Surround(*s, mnemonic(items.len()), true)));
+            }
+        }
+        for s in statement_surrounders(style) {
+            items.push((lines.clone(), Choice::Surround(*s, mnemonic(items.len()), false)));
+        }
+        let cursor = self.state.read(cx).cursor();
+        let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
+        self.context_actions = Some(ContextActions { items, title: Some("Surround With"), selected: 0, at, caret: None });
+        window.focus(&self.context_focus, cx);
+        cx.notify();
+    }
+
     fn close_context_actions(&mut self, _: &CloseContextActions, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(caret) = self.context_actions.take().and_then(|p| p.caret) {
             self.state.update(cx, |state, cx| state.set_selected_range(caret, cx));
@@ -127,6 +151,7 @@ impl FileEditor {
                 state.set_selected_range(range, cx);
                 state.replace(&fix.replacement, window, cx);
             }),
+            Choice::Surround(surrounder, _, expression) => self.surround(surrounder, range, expression, window, cx),
             Choice::Expression(_, kind) => {
                 if let Some(caret) = popup.caret {
                     self.state.update(cx, |state, cx| state.set_selected_range(caret, cx));
@@ -170,6 +195,7 @@ impl FileEditor {
             let (icon, label) = match choice {
                 Choice::Fix(fix) => (Some(icons::INTENTION_BULB), fix.title.clone()),
                 Choice::Expression(text, _) => (None, text.clone()),
+                Choice::Surround(s, key, _) => (None, format!("{key}. {}", s.label())),
             };
             h_flex()
                 .id(("context-action", ix))
@@ -197,6 +223,16 @@ impl FileEditor {
                         .on_action(cx.listener(|this, _: &ApplyContextAction, window, cx| {
                             let ix = this.context_actions.as_ref().map_or(0, |p| p.selected);
                             this.apply_context_action(ix, window, cx);
+                        }))
+                        .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                            // Surround With's numbers and letters choose an item.
+                            let Some(key) = e.keystroke.key.chars().next().filter(|_| e.keystroke.key.chars().count() == 1) else { return };
+                            let key = key.to_ascii_uppercase();
+                            let ix = this.context_actions.as_ref().and_then(|p| p.items.iter().position(|(_, c)| matches!(c, Choice::Surround(_, k, _) if *k == key)));
+                            if let Some(ix) = ix {
+                                cx.stop_propagation();
+                                this.apply_context_action(ix, window, cx);
+                            }
                         }))
                         .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                             if let Some(caret) = this.context_actions.take().and_then(|p| p.caret) {
