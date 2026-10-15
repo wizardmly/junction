@@ -11,9 +11,6 @@ on:
     branches: [master]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -59,13 +56,3 @@ jobs:
           name: linux-ci
           path: out
           retention-days: 7
-      # The same files under refs/ci/<branch> (not a branch), for machines
-      # that can reach GitHub over git but not the artifact storage.
-      - name: Publish to refs/ci
-        if: always() && github.event_name == 'push'
-        run: |
-          cd out
-          git init -q
-          git add -A
-          git -c user.name=ci -c user.email=ci@example.com commit -qm "CI ${GITHUB_SHA}"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" "HEAD:refs/ci/${GITHUB_REF_NAME}"
