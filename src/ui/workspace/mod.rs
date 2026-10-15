@@ -396,7 +396,7 @@ impl Workspace {
         let run = cx.new(|_| crate::ui::run_service::RunService::new(device_manager.clone()));
         let tests = crate::ui::test_service::TestService::global(cx);
         let debug = crate::ui::debug_service::DebugService::global(cx);
-        let debug_view = cx.new(crate::ui::debug_view::DebugView::new);
+        let debug_view = cx.new(|cx| crate::ui::debug_view::DebugView::new(window, cx));
         {
             // A paused frame's source: the project file ending with its path.
             let index = code_index.clone();

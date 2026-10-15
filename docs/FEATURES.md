@@ -455,16 +455,23 @@ Android 单元测试（`testDebugUnitTest`）和仪器测试未实测（容器�
 
 | 功能 | 状态 |
 |---|---|
-| 行断点：点行号或 Ctrl+F8（macOS ⌘F8）切换；红点画在行号位置（新 UI 样式），所在行淡红底；生效后变为带勾的 `breakpointValid`；跨会话保存在设置目录 `breakpoints.json`；编辑时随行移动 | ✅（条件断点、日志断点、禁用、Breakpoints 对话框未做） |
+| 行断点：点行号或 Ctrl+F8（macOS ⌘F8）切换；红点画在行号位置（新 UI 样式），所在行淡红底；生效后变为带勾的 `breakpointValid`；跨会话保存在设置目录 `breakpoints.json`；编辑时随行移动 | ✅ |
+| 断点属性弹窗：右键断点弹出 “CalcTest.java:34”，Enabled 勾选、Condition 输入框（回车或 Done 应用，点外面也应用）、Remove；禁用的断点为空心 `breakpointDisabled` 且行不着色，有条件的断点点上显示 “?” | ✅（日志断点、Suspend 选项、More / Breakpoints 对话框未做） |
+| 条件断点：命中时在该帧求值条件，为 false 就继续运行；条件出错时照 IntelliJ 停下，并提示 “Failed to evaluate breakpoint condition '…'. Reason: …” | ✅ |
 | 断点设到类上：已加载的类直接设；没加载的类用 ClassPrepare（`包名.*`）等它加载再设，并按 SourceFile 过滤；一行在多个方法里有代码（lambda、构造器）时每处都设 | ✅ |
 | Debug 测试：测试 gutter 弹窗 “Debug 'CalcTest.adds'  Ctrl+Shift+F9”（macOS ⌃⇧D），Ctrl+Shift+F9 调试光标处的测试；Gradle 的测试 JVM 带 JDWP 挂起等待，Junction 连上、设断点后放行；测试结果照常进 Run 窗口 | ✅ |
 | 执行点：暂停时打开源码并定位，所在行蓝底（IntelliJ 的 EXECUTIONPOINT 样式，无 gutter 箭头）；切换栈帧跟着跳 | ✅ |
 | Debug 工具窗口（Alt+5）：会话名和状态；工具栏 Resume（F9）、Pause、Stop（Ctrl+F2）、Step Over（F8）、Step Into（F7）、Step Out（Shift+F8）、Run to Cursor（Alt+F9）；“Threads & Variables” 和 “Console” 标签 | ✅（F7 在调试暂停时是 Step Into，否则仍是 Diff 的 Next Difference） |
 | Frames：线程下拉（`"Test worker"@1: SUSPENDED`，可切换线程）、栈帧 `adds:12, CalcTest (com.example.calc)`，JDK / JUnit / Gradle 帧灰显 | ✅ |
-| Variables：`this` 和可见局部变量（按槽位顺序），IntelliJ 的值格式（`4`、`'a' 97`、`"hello"`、`null`、`{CalcTest@444}`、`{int[3]@56}`）和图标；对象展开为实例字段（含父类，隐藏静态和合成字段），数组展开前 100 个元素 | ✅（toString 显示、集合 `size = 3` 摘要、Watches、Evaluate Expression 未做） |
+| Variables：`this` 和可见局部变量（按槽位顺序），IntelliJ 的值格式（`4`、`'a' 97`、`"hello"`、`null`、`{CalcTest@444}`、`{int[3]@56}`）和图标；对象展开为实例字段（含父类，隐藏静态和合成字段），数组展开前 100 个元素 | ✅ |
+| 值的描述：类覆盖了 `toString()` 的对象显示 `{Point@12} "Point(3)"`，java.util 集合显示 `size = 3` 并展开为元素（Map 展开为条目），包装类型显示值 `{Integer@447} 1` | ✅ |
+| 求值（新 UI 的 Variables 顶部输入框）：Enter 求值，结果作为第一行；Ctrl+Shift+Enter（macOS ⇧⌘↩）或 + 按钮加为 Watch；Watches 每次暂停 / 切帧重算，跨会话保存在 `watches.json`，行尾 × 删除 | ✅（Alt+F8 的独立 Evaluate 对话框、代码片段模式未做） |
+| 表达式：局部变量、`this` 的字段、当前类的静态字段、类名（`Math`、同包类、`java.util.Collections`）；字段和 Kotlin 属性（无字段时走 `getX()` / `isX()`）、数组下标和 `length`、实例 / 静态方法调用（按参数个数沿继承链找，参数自动拓宽和装箱）、`+ - * / %`、比较、`&& || !`、字符串拼接（对象调 `toString()`）、自动拆箱；错误信息照 IntelliJ（“Cannot find local variable 'y'”、“Method threw 'java.lang.NumberFormatException' exception.”） | ✅（lambda、new、类型转换、赋值、Kotlin 扩展函数未做） |
 | Debug 'app'：标题栏 Run 右边的 Debug 按钮、Shift+F9（macOS ⌃D）；构建、安装后以 `am start … -D` 启动（应用等调试器），通过 adb 的 `jdwp:<pid>` 连上进程，设断点后放行；Run 控制台显示 “Waiting for application to come online: …” | 🟡（只在模拟 adb 下验证：adb 服务端协议 + 真实 JVM，未在真机 / 模拟器验证） |
 | Attach debugger：Device Explorer 进程页右键 “Attach debugger”，附加到已在运行的可调试进程 | 🟡（同上） |
 | Detach、Attach Debugger to Android Process 对话框、Debug 'app' 时的 Logcat 联动 | ❌ 未做 |
+
+求值实测（同一项目的 `totals` 测试，循环 `sum += items.get(i)`）：右键第 34 行断点输入条件 `i == 2` 回车，断点显示 “?”；Debug 后只在第三次循环停下（`sum = 3`、`i = 2`），`items = {ArrayList@437} size = 3`，展开为 `[0] = {Integer@447} 1` 等；输入 `items.get(i) * 10` 回车得 `30`；Ctrl+Shift+Enter 加 Watch `sum + i = 5`、`items.contains(7) = false`，重启后 Watch 仍在。另有对真实 JVM 的求值集成测试（算术、字符串、字段、getter、集合、Map、静态方法、异常、拆箱、条件）。
 
 Linux 实测（Xvfb，JDK 21 + Gradle 8.14 的 calc 项目，未同步）：点第 12 行行号设断点 → `adds` 的 gutter 弹窗选 “Debug 'CalcTest.adds'” → 约 20 秒（含 Gradle 守护进程启动）后在第 12 行暂停，断点变为已验证，Debug 窗口自动打开，线程 `"Test worker"@1: SUSPENDED`，`this = {CalcTest@444}`；F8 到第 13 行；F9 结束，Console 显示 “Connected to the target VM, address: '127.0.0.1:…', transport: 'socket'” 和 “Disconnected from the target VM”，Run 窗口 “1 test passed”。再用 Ctrl+Shift+F9 调试、F7 步入 `Calc.add`：自动打开 Calc.java 第 4 行，变量 `a = 2`、`b = 2`，栈帧 `add:4, Calc` / `adds:12, CalcTest`。JDWP 客户端另有对真实 JVM 的集成测试（断点、局部变量、数组和对象展开、Step Into / Over / Out）。
 

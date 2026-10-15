@@ -24,6 +24,7 @@ pub struct MethodInfo {
     pub id: u64,
     pub name: String,
     pub signature: String,
+    pub is_static: bool,
     pub lines: Vec<(u64, u32)>,
 }
 
@@ -179,6 +180,24 @@ pub trait DebugVm: Send + Sync {
     /// An object's fields (all of its class and superclasses'), or an
     /// array's elements (the first `limit`).
     fn children(&self, object: u64, limit: usize) -> Result<Vec<Variable>, String>;
+    /// `VirtualMachine.ClassesBySignature`: a loaded class by Java name.
+    fn find_class(&self, name: &str) -> Result<Option<ClassRef>, String>;
+    /// An object's class.
+    fn class_of(&self, object: u64) -> Result<ClassRef, String>;
+    /// A class's Java name.
+    fn class_name(&self, class: u64) -> Result<String, String>;
+    /// A class's superclass; 0 for `Object`, interfaces and array types.
+    fn superclass(&self, class: u64) -> Result<u64, String>;
+    /// A field by name, up the class chain: an object's (`object`), else
+    /// a static one. `None` when there's no such field.
+    fn field(&self, class: u64, object: Option<u64>, name: &str) -> Result<Option<Value>, String>;
+    /// Calls a method on a thread suspended by an event, the other threads
+    /// staying suspended: a static one (`object` none) or an instance one.
+    /// A thrown exception is the error, as IntelliJ writes it.
+    fn invoke(&self, thread: u64, class: u64, object: Option<u64>, method: u64, args: &[Value]) -> Result<Value, String>;
+    /// A string in the VM, to pass to a method.
+    fn create_string(&self, text: &str) -> Result<Value, String>;
+    fn array_element(&self, array: u64, index: usize) -> Result<Value, String>;
     /// Waits for the VM's next events; `None` on timeout.
     fn next_events(&self, timeout: Duration) -> Result<Option<EventSet>, String>;
     /// Stop: `VirtualMachine.Exit`.
@@ -264,6 +283,12 @@ pub fn source_path(class: &str, source: &str) -> String {
 /// The ClassMatch pattern for the classes of a package.
 pub fn package_pattern(package: &str) -> String {
     if package.is_empty() { "*".into() } else { format!("{package}.*") }
+}
+
+/// The JNI signature of a Java class name: `com.example.Calc` →
+/// `Lcom/example/Calc;`.
+pub fn signature_of(class: &str) -> String {
+    format!("L{};", class.replace('.', "/"))
 }
 
 // --- Presentation -------------------------------------------------------------
@@ -364,7 +389,7 @@ mod tests {
     use super::*;
 
     fn method(id: u64, lines: &[(u64, u32)]) -> MethodInfo {
-        MethodInfo { id, name: format!("m{id}"), signature: "()V".into(), lines: lines.to_vec() }
+        MethodInfo { id, name: format!("m{id}"), signature: "()V".into(), is_static: false, lines: lines.to_vec() }
     }
 
     #[test]

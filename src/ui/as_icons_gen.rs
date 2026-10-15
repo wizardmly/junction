@@ -23,6 +23,7 @@ pub const BALLOON: AsIcon = AsIcon { light: &[("as/balloon.l0.svg", 0xebecf0ff),
 pub const BRANCH: AsIcon = AsIcon { light: &[("as/branch.l0.svg", 0x6c707eff)], dark: &[("as/branch.d0.svg", 0xced0d6ff)] };
 pub const BRANCH_LABEL: AsIcon = AsIcon { light: &[("as/branch-label.l0.svg", 0x6c707eff)], dark: &[("as/branch-label.d0.svg", 0xced0d6ff)] };
 pub const BREAKPOINT: AsIcon = AsIcon { light: &[("as/breakpoint.l0.svg", 0xe55765ff)], dark: &[("as/breakpoint.d0.svg", 0xdb5c5cff)] };
+pub const BREAKPOINT_DISABLED: AsIcon = AsIcon { light: &[("as/breakpoint-disabled.l0.svg", 0xdb3b4bff)], dark: &[("as/breakpoint-disabled.d0.svg", 0xdb5c5cff)] };
 pub const BREAKPOINT_INVALID: AsIcon = AsIcon { light: &[("as/breakpoint-invalid.l0.svg", 0x6c707eff)], dark: &[("as/breakpoint-invalid.d0.svg", 0xced0d6ff)] };
 pub const BREAKPOINT_MUTED: AsIcon = AsIcon { light: &[("as/breakpoint-muted.l0.svg", 0x6c707eff)], dark: &[("as/breakpoint-muted.d0.svg", 0xced0d6ff)] };
 pub const BREAKPOINT_VALID: AsIcon = AsIcon { light: &[("as/breakpoint-valid.l0.svg", 0xe55765ff), ("as/breakpoint-valid.l1.svg", 0x6c707eff)], dark: &[("as/breakpoint-valid.d0.svg", 0xdb5c5cff), ("as/breakpoint-valid.d1.svg", 0xced0d6ff)] };
@@ -85,6 +86,7 @@ pub const EMULATOR_VOLUME_DOWN: AsIcon = AsIcon { light: &[("as/emulator-volume-
 pub const EMULATOR_VOLUME_UP: AsIcon = AsIcon { light: &[("as/emulator-volume-up.l0.svg", 0x6c707eff)], dark: &[("as/emulator-volume-up.d0.svg", 0xced0d6ff)] };
 pub const ENUM: AsIcon = AsIcon { light: &[("as/enum.l0.svg", 0xfaf5ffff), ("as/enum.l1.svg", 0x834df0ff)], dark: &[("as/enum.d0.svg", 0x2f2936ff), ("as/enum.d1.svg", 0xa571e6ff)] };
 pub const ENUM_KOTLIN: AsIcon = AsIcon { light: &[("as/enum-kotlin.l0.svg", 0xfaf5ffff), ("as/enum-kotlin.l1.svg", 0x834df0ff)], dark: &[("as/enum-kotlin.d0.svg", 0x2f2936ff), ("as/enum-kotlin.d1.svg", 0xa571e6ff)] };
+pub const EVALUATION_RESULT: AsIcon = AsIcon { light: &[("as/evaluation-result.l0.svg", 0x6c707eff)], dark: &[("as/evaluation-result.d0.svg", 0xced0d6ff)] };
 pub const EXACT_WORDS: AsIcon = AsIcon { light: &[("as/exact-words.l0.svg", 0x6c707eff)], dark: &[("as/exact-words.d0.svg", 0xced0d6ff)] };
 pub const EXCLUDE_ROOT: AsIcon = AsIcon { light: &[("as/exclude-root.l0.svg", 0xfce9d9ff), ("as/exclude-root.l1.svg", 0xf28c35ff)], dark: &[("as/exclude-root.d0.svg", 0x45322bff), ("as/exclude-root.d1.svg", 0xc77d55ff)] };
 pub const EXPAND_ALL: AsIcon = AsIcon { light: &[("as/expand-all.l0.svg", 0x6c707eff)], dark: &[("as/expand-all.d0.svg", 0xced0d6ff)] };
@@ -313,6 +315,7 @@ pub const VISIBILITY_PACKAGE: AsIcon = AsIcon { light: &[("as/visibility-package
 pub const VISIBILITY_PRIVATE: AsIcon = AsIcon { light: &[("as/visibility-private.l0.svg", 0xf26522b2)], dark: &[("as/visibility-private.d0.svg", 0xf26522b2)] };
 pub const VISIBILITY_PROTECTED: AsIcon = AsIcon { light: &[("as/visibility-protected.l0.svg", 0x9aa7b0cc)], dark: &[("as/visibility-protected.d0.svg", 0x9aa7b0cc)] };
 pub const VISIBILITY_PUBLIC: AsIcon = AsIcon { light: &[("as/visibility-public.l0.svg", 0x62b543b2)], dark: &[("as/visibility-public.d0.svg", 0x62b543b2)] };
+pub const WATCH: AsIcon = AsIcon { light: &[("as/watch.l0.svg", 0x6c707eff)], dark: &[("as/watch.d0.svg", 0xced0d6ff)] };
 pub const ZOOM_IN: AsIcon = AsIcon { light: &[("as/zoom-in.l0.svg", 0x6c707eff)], dark: &[("as/zoom-in.d0.svg", 0xced0d6ff)] };
 pub const ZOOM_OUT: AsIcon = AsIcon { light: &[("as/zoom-out.l0.svg", 0x6c707eff)], dark: &[("as/zoom-out.d0.svg", 0xced0d6ff)] };
 
@@ -374,6 +377,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/branch-label.d0.svg", include_bytes!("../../assets/as-icons/gen/branch-label.d0.svg")),
     ("as/breakpoint.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint.l0.svg")),
     ("as/breakpoint.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint.d0.svg")),
+    ("as/breakpoint-disabled.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-disabled.l0.svg")),
+    ("as/breakpoint-disabled.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-disabled.d0.svg")),
     ("as/breakpoint-invalid.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-invalid.l0.svg")),
     ("as/breakpoint-invalid.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-invalid.d0.svg")),
     ("as/breakpoint-muted.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-muted.l0.svg")),
@@ -556,6 +561,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/enum-kotlin.l1.svg", include_bytes!("../../assets/as-icons/gen/enum-kotlin.l1.svg")),
     ("as/enum-kotlin.d0.svg", include_bytes!("../../assets/as-icons/gen/enum-kotlin.d0.svg")),
     ("as/enum-kotlin.d1.svg", include_bytes!("../../assets/as-icons/gen/enum-kotlin.d1.svg")),
+    ("as/evaluation-result.l0.svg", include_bytes!("../../assets/as-icons/gen/evaluation-result.l0.svg")),
+    ("as/evaluation-result.d0.svg", include_bytes!("../../assets/as-icons/gen/evaluation-result.d0.svg")),
     ("as/exact-words.l0.svg", include_bytes!("../../assets/as-icons/gen/exact-words.l0.svg")),
     ("as/exact-words.d0.svg", include_bytes!("../../assets/as-icons/gen/exact-words.d0.svg")),
     ("as/exclude-root.l0.svg", include_bytes!("../../assets/as-icons/gen/exclude-root.l0.svg")),
@@ -1290,6 +1297,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/visibility-protected.d0.svg", include_bytes!("../../assets/as-icons/gen/visibility-protected.d0.svg")),
     ("as/visibility-public.l0.svg", include_bytes!("../../assets/as-icons/gen/visibility-public.l0.svg")),
     ("as/visibility-public.d0.svg", include_bytes!("../../assets/as-icons/gen/visibility-public.d0.svg")),
+    ("as/watch.l0.svg", include_bytes!("../../assets/as-icons/gen/watch.l0.svg")),
+    ("as/watch.d0.svg", include_bytes!("../../assets/as-icons/gen/watch.d0.svg")),
     ("as/zoom-in.l0.svg", include_bytes!("../../assets/as-icons/gen/zoom-in.l0.svg")),
     ("as/zoom-in.d0.svg", include_bytes!("../../assets/as-icons/gen/zoom-in.d0.svg")),
     ("as/zoom-out.l0.svg", include_bytes!("../../assets/as-icons/gen/zoom-out.l0.svg")),

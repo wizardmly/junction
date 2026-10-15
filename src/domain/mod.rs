@@ -11,6 +11,7 @@ pub mod completion;
 pub mod debugger;
 pub mod dependency_versions;
 pub mod diagnostics;
+pub mod expression;
 pub mod imports;
 pub mod local_history;
 pub mod logcat;

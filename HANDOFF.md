@@ -215,7 +215,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 
 **P1：每天会用，可暂时回 AS**
 
-5. 🟡 Debugger（2026-10-15，FEATURES.md 第 22 节）：JDWP 客户端、行断点（持久化、类加载后补设）、Debug JVM 单元测试、Debug 'app'（`am start -D` + adb `jdwp:<pid>`）、Device Explorer 的 Attach debugger、执行点、Debug 工具窗口（F9/F8/F7/Shift+F8/Alt+F9、Frames、Variables 树）。**Android 调试只在模拟 adb 下验证过，需真机 / 模拟器验证**。剩条件断点、Evaluate、Watches、toString 显示、Detach。
+5. 🟡 Debugger（2026-10-15，FEATURES.md 第 22 节）：JDWP 客户端、行断点（持久化、类加载后补设）、Debug JVM 单元测试、Debug 'app'（`am start -D` + adb `jdwp:<pid>`）、Device Explorer 的 Attach debugger、执行点、Debug 工具窗口（F9/F8/F7/Shift+F8/Alt+F9、Frames、Variables 树）。**Android 调试只在模拟 adb 下验证过，需真机 / 模拟器验证**。条件断点、求值输入框、Watches、toString / 集合显示已补上（2026-10-15）。剩日志断点、Alt+F8 对话框、lambda / new 等表达式、Detach。
 6. 符号级重构（跨文件 Rename、Extract、Change Signature、Optimize Imports）：走 LSP rename / codeAction。
 7. ✅ Android 资源（2026-10-15，FEATURES.md 第 19 节）：`R.x.y` / `@x/y` 跳转、悬停显示值、Find Usages、颜色和图片 gutter 预览。剩 Translations Editor、Manifest 合并视图、vector drawable 预览。
 8. ✅ 测试（2026-10-15，FEATURES.md 第 21 节）：gutter ▶ / ▶▶ 和结果图标、Ctrl+Shift+F10、Gradle test 任务 + init script 实时事件 + JUnit XML、Run 窗口的测试标签页（结果树、状态行、Rerun Failed Tests、控制台）。剩 Debug 测试、覆盖率、Project 窗口右键运行目录、对比窗口、仪器测试真机验证。

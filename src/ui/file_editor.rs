@@ -367,6 +367,8 @@ pub struct FileEditor {
     test_marks: Vec<crate::domain::testing::TestMark>,
     test_marks_task: Option<gpui_kit::Task<()>>,
     test_menu: Option<(crate::domain::testing::TestMark, Point<Pixels>)>,
+    /// A breakpoint's properties popup (a right-click on it).
+    breakpoint_popup: Option<breakpoints::BreakpointPopup>,
     /// Lines before the last edit: breakpoints below it move along.
     line_count: usize,
     /// Inspections of the text (a newer dependency version in a Gradle file).
@@ -663,6 +665,7 @@ impl FileEditor {
             test_marks_task: None,
             test_menu: None,
             line_count: 0,
+            breakpoint_popup: None,
             inspection_problems: Vec::new(),
             inspections_task: None,
             context_actions: None,
@@ -2021,7 +2024,8 @@ impl Render for FileEditor {
                 })
                 .when_some(self.popup.zip(self.popup_anchor.get()), |el, (ix, at)| el.child(self.render_popup(ix, at, cx)))
                 .children(self.render_context_actions(cx))
-                .children(self.render_test_menu(cx)),
+                .children(self.render_test_menu(cx))
+                .children(self.render_breakpoint_popup(cx)),
             ))
     }
 }

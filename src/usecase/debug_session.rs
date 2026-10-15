@@ -7,10 +7,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::domain::debugger::{in_package, line_locations, package_pattern, DebugEvent, DebugVm, Frame, StepDepth, Suspend, ThreadInfo, Variable};
+use crate::domain::debugger::{in_package, line_locations, package_pattern, DebugEvent, DebugVm, Frame, StepDepth, Suspend, ThreadInfo, Value, Variable};
+use crate::usecase::evaluate::{self, Scope};
 
 /// A line breakpoint, as the editor's gutter sets it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,12 +24,14 @@ pub struct LineBreakpoint {
     pub package: String,
     /// 1-based.
     pub line: u32,
+    /// Stops only when this holds (IntelliJ's Condition).
+    pub condition: Option<String>,
 }
 
 impl LineBreakpoint {
     pub fn new(path: &Path, package: String, line: u32) -> Self {
         let source_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Self { path: path.to_path_buf(), source_name, package, line }
+        Self { path: path.to_path_buf(), source_name, package, line, condition: None }
     }
 }
 
@@ -49,6 +53,8 @@ pub enum SessionEvent {
     Resumed,
     /// A breakpoint now stops somewhere (IntelliJ's verified breakpoint).
     Verified { path: PathBuf, line: u32 },
+    /// A line for the Debug window's console: a condition that failed.
+    Message(String),
     /// The program ended, or was stopped or detached.
     Ended,
 }
@@ -73,11 +79,48 @@ struct State {
 pub struct DebugSession {
     vm: Arc<dyn DebugVm>,
     state: Mutex<State>,
+    /// Evaluations in progress: what their calls hit doesn't pause.
+    evaluating: AtomicUsize,
 }
 
 impl DebugSession {
     pub fn new(vm: Arc<dyn DebugVm>) -> Self {
-        Self { vm, state: Mutex::default() }
+        Self { vm, state: Mutex::default(), evaluating: AtomicUsize::new(0) }
+    }
+
+    /// Changes a breakpoint's condition (none: always stop).
+    pub fn set_condition(&self, path: &Path, line: u32, condition: Option<String>) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(placed) = state.breakpoints.iter_mut().find(|p| p.breakpoint.path == path && p.breakpoint.line == line) {
+            placed.breakpoint.condition = condition;
+        }
+    }
+
+    /// A frame of the paused thread by its depth, fetched now: a method
+    /// call on the thread (an evaluation, a `toString()`) invalidates the
+    /// frames' IDs taken before it.
+    fn frame_at(&self, thread: u64, depth: usize) -> Result<Frame, String> {
+        self.vm.frames(thread)?.into_iter().nth(depth).ok_or_else(|| "Frame is not available".to_string())
+    }
+
+    /// Evaluates an expression in a frame (by depth) of the paused thread
+    /// (Evaluate Expression, Watches).
+    pub fn evaluate(&self, thread: u64, depth: usize, text: &str) -> Result<Value, String> {
+        let frame = self.frame_at(thread, depth)?;
+        let locals = self.vm.locals(thread, &frame)?;
+        self.evaluating.fetch_add(1, Ordering::SeqCst);
+        let result = evaluate::evaluate(&Scope { vm: &*self.vm, thread, frame: &frame, locals: &locals }, text);
+        self.evaluating.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+
+    /// What the Variables view writes after an object: its `toString()`,
+    /// a collection's size.
+    pub fn describe(&self, thread: u64, value: &Value) -> Option<String> {
+        self.evaluating.fetch_add(1, Ordering::SeqCst);
+        let text = evaluate::describe(&*self.vm, thread, value);
+        self.evaluating.fetch_sub(1, Ordering::SeqCst);
+        text
     }
 
     pub fn is_ended(&self) -> bool {
@@ -192,24 +235,37 @@ impl DebugSession {
         self.vm.frames(thread)
     }
 
-    /// The Variables view of a frame.
-    pub fn locals(&self, thread: u64, frame: &Frame) -> Result<Vec<Variable>, String> {
-        self.vm.locals(thread, frame)
+    /// The Variables view of a frame (by depth).
+    pub fn locals(&self, thread: u64, depth: usize) -> Result<Vec<Variable>, String> {
+        let frame = self.frame_at(thread, depth)?;
+        self.vm.locals(thread, &frame)
     }
 
-    /// An expanded value's fields or elements (IntelliJ shows the first 100).
-    pub fn children(&self, object: u64) -> Result<Vec<Variable>, String> {
-        self.vm.children(object, 100)
+    /// An expanded value's fields or elements, a collection's items
+    /// (IntelliJ shows the first 100).
+    pub fn children(&self, thread: u64, value: &Value) -> Result<Vec<Variable>, String> {
+        self.evaluating.fetch_add(1, Ordering::SeqCst);
+        let children = evaluate::children(&*self.vm, thread, value, 100);
+        self.evaluating.fetch_sub(1, Ordering::SeqCst);
+        children
     }
 
     /// Waits a while for the VM, and handles what it reports: what the UI
     /// should show.
     pub fn poll(&self, timeout: Duration) -> Result<Vec<SessionEvent>, String> {
         let Some(set) = self.vm.next_events(timeout)? else { return Ok(Vec::new()) };
+        // A method an evaluation calls hit a breakpoint or a step ended in
+        // it: let it run on, as IntelliJ does.
+        let nested = set.events.iter().all(|e| matches!(e, DebugEvent::Breakpoint { .. } | DebugEvent::Step { .. }));
+        if nested && !set.events.is_empty() && self.evaluating.load(Ordering::SeqCst) > 0 {
+            self.vm.resume()?;
+            return Ok(Vec::new());
+        }
         let mut out = Vec::new();
         let mut state = self.state.lock().unwrap();
         let mut resume = false;
         let mut paused: Option<(u64, PauseReason)> = None;
+        let mut condition: Option<String> = None;
         for event in set.events {
             match event {
                 DebugEvent::VmDeath => {
@@ -234,12 +290,40 @@ impl DebugSession {
                 }
                 DebugEvent::Breakpoint { thread, request, .. } => {
                     let reason = if state.run_to.contains(&request) { PauseReason::Paused } else { PauseReason::Breakpoint };
+                    if reason == PauseReason::Breakpoint {
+                        condition = state.breakpoints.iter().find(|p| p.requests.contains(&request)).and_then(|p| p.breakpoint.condition.clone());
+                    }
                     paused = Some((thread, reason));
                 }
                 DebugEvent::Step { thread, .. } => paused = Some((thread, PauseReason::Step)),
                 // A VM launched to wait starts once the session calls start().
                 DebugEvent::VmStart { .. } | DebugEvent::ThreadStart { .. } | DebugEvent::ThreadDeath { .. } => {}
             }
+        }
+        if let (Some((thread, _)), Some(text)) = (paused, condition.as_deref()) {
+            // The condition, in the hit frame: false runs on.
+            drop(state);
+            let frames = self.vm.frames(thread)?;
+            let holds = match frames.first() {
+                Some(frame) => {
+                    let locals = self.vm.locals(thread, frame)?;
+                    self.evaluating.fetch_add(1, Ordering::SeqCst);
+                    let holds = evaluate::condition_holds(&Scope { vm: &*self.vm, thread, frame, locals: &locals }, text);
+                    self.evaluating.fetch_sub(1, Ordering::SeqCst);
+                    holds
+                }
+                None => Ok(true),
+            };
+            match holds {
+                Ok(false) => {
+                    self.vm.resume()?;
+                    return Ok(out);
+                }
+                Ok(true) => {}
+                // IntelliJ stops, and says why.
+                Err(e) => out.push(SessionEvent::Message(format!("Failed to evaluate breakpoint condition '{text}'. Reason: {e}"))),
+            }
+            state = self.state.lock().unwrap();
         }
         if let Some((thread, reason)) = paused {
             // A pause ends a step in progress and Run to Cursor's breakpoint.
@@ -345,6 +429,30 @@ mod tests {
         fn children(&self, _: u64, _: usize) -> Result<Vec<Variable>, String> {
             Ok(Vec::new())
         }
+        fn find_class(&self, _: &str) -> Result<Option<ClassRef>, String> {
+            Ok(None)
+        }
+        fn class_of(&self, _: u64) -> Result<ClassRef, String> {
+            Ok(ClassRef { id: 10, name: "a.CalcTest".into() })
+        }
+        fn class_name(&self, _: u64) -> Result<String, String> {
+            Ok("a.CalcTest".into())
+        }
+        fn superclass(&self, _: u64) -> Result<u64, String> {
+            Ok(0)
+        }
+        fn field(&self, _: u64, _: Option<u64>, _: &str) -> Result<Option<Value>, String> {
+            Ok(None)
+        }
+        fn invoke(&self, _: u64, _: u64, _: Option<u64>, _: u64, _: &[Value]) -> Result<Value, String> {
+            Err("not here".into())
+        }
+        fn create_string(&self, text: &str) -> Result<Value, String> {
+            Ok(Value::String { id: 1, text: text.into() })
+        }
+        fn array_element(&self, _: u64, _: usize) -> Result<Value, String> {
+            Ok(Value::Null)
+        }
         fn next_events(&self, _: Duration) -> Result<Option<EventSet>, String> {
             Ok(self.events.lock().unwrap().pop_front())
         }
@@ -354,7 +462,7 @@ mod tests {
     }
 
     fn vm() -> Arc<FakeVm> {
-        let method = |id, lines: &[(u64, u32)]| MethodInfo { id, name: format!("m{id}"), signature: "()V".into(), lines: lines.to_vec() };
+        let method = |id, lines: &[(u64, u32)]| MethodInfo { id, name: format!("m{id}"), signature: "()V".into(), is_static: false, lines: lines.to_vec() };
         let mut fake = FakeVm::default();
         // a.CalcTest from CalcTest.java; a.Other from Other.java; b.CalcTest elsewhere.
         fake.sources = HashMap::from([(10, "CalcTest.java".into()), (11, "Other.java".into()), (12, "CalcTest.java".into()), (13, "CalcTest.java".into())]);
@@ -411,6 +519,39 @@ mod tests {
     }
 
     #[test]
+    fn conditions_decide_whether_to_stop() {
+        let vm = vm();
+        vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
+        let session = DebugSession::new(vm.clone());
+        let mut breakpoint = breakpoint(5);
+        breakpoint.condition = Some("x > 5".into());
+        session.add_breakpoint(breakpoint.clone()).unwrap();
+        let request = *vm.next.lock().unwrap();
+        vm.take_log();
+        let hit = || vec![DebugEvent::Breakpoint { thread: 1, location: Location { class: 10, method: 1, index: 4 }, request }];
+        // x is 4: runs on.
+        vm.send(Suspend::All, hit());
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume"]);
+        // Changed in the popup: stops.
+        session.set_condition(&breakpoint.path, 5, Some("x == 4 && x + 1 > 4".into()));
+        vm.send(Suspend::All, hit());
+        assert!(matches!(session.poll(Duration::ZERO).unwrap()[..], [SessionEvent::Paused { reason: PauseReason::Breakpoint, .. }]));
+        // A condition that fails stops too, and says why.
+        session.set_condition(&breakpoint.path, 5, Some("missing > 1".into()));
+        vm.send(Suspend::All, hit());
+        let events = session.poll(Duration::ZERO).unwrap();
+        assert!(matches!(&events[0], SessionEvent::Message(m) if m.contains("'missing > 1'") && m.contains("Cannot find local variable 'missing'")), "{events:?}");
+        assert!(matches!(events[1], SessionEvent::Paused { .. }));
+        // An evaluation's own breakpoint hits don't pause.
+        session.evaluating.fetch_add(1, Ordering::SeqCst);
+        vm.take_log();
+        vm.send(Suspend::All, hit());
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume"]);
+    }
+
+    #[test]
     fn pauses_steps_and_ends() {
         let vm = vm();
         vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
@@ -422,7 +563,7 @@ mod tests {
         let events = session.poll(Duration::ZERO).unwrap();
         let [SessionEvent::Paused { thread: 1, frames, threads, reason: PauseReason::Breakpoint }] = events.as_slice() else { panic!("{events:?}") };
         assert_eq!((frames[0].line, threads.len()), (Some(5), 2));
-        assert_eq!(session.locals(1, &frames[0]).unwrap()[0].name, "x");
+        assert_eq!(session.locals(1, 0).unwrap()[0].name, "x");
         // Step Over: a step request, resumed; its end pauses again and clears it.
         assert_eq!(session.step(StepDepth::Over), Ok(SessionEvent::Resumed));
         assert_eq!(vm.take_log(), ["step 1 Over", "resume"]);

@@ -70,6 +70,8 @@ struct ClassCache {
     superclass: Option<u64>,
     /// Instance fields: (id, name).
     fields: Option<Vec<(u64, String)>>,
+    /// Every own field: (id, name, static).
+    all_fields: Option<Vec<(u64, String, bool)>>,
 }
 
 struct Inner {
@@ -173,7 +175,7 @@ impl JdwpVm {
 
     // --- Classes ------------------------------------------------------------
 
-    fn class_name(&self, class: u64) -> Result<String, String> {
+    fn name_of_class(&self, class: u64) -> Result<String, String> {
         if let Some(name) = self.inner.classes.lock().unwrap().get(&class).and_then(|c| c.name.clone()) {
             return Ok(name);
         }
@@ -183,7 +185,7 @@ impl JdwpVm {
         Ok(name)
     }
 
-    fn superclass(&self, class: u64) -> Result<u64, String> {
+    fn superclass_of(&self, class: u64) -> Result<u64, String> {
         if let Some(sup) = self.inner.classes.lock().unwrap().get(&class).and_then(|c| c.superclass) {
             return Ok(sup);
         }
@@ -228,9 +230,43 @@ impl JdwpVm {
             };
             // The class's own fields after its superclass's, as declared.
             all.splice(0..0, own);
-            at = self.superclass(at)?;
+            at = self.superclass_of(at)?;
         }
         Ok(all)
+    }
+
+    /// A class's own fields, statics included.
+    fn own_fields(&self, class: u64) -> Result<Vec<(u64, String, bool)>, String> {
+        if let Some(fields) = self.inner.classes.lock().unwrap().get(&class).and_then(|c| c.all_fields.clone()) {
+            return Ok(fields);
+        }
+        let data = self.command(REFERENCE_TYPE, 4, &self.out().reference_type(class).data)?;
+        let mut r = self.reader(&data);
+        let count = r.bytes.int().ok_or("bad Fields reply")?;
+        let mut fields = Vec::new();
+        for _ in 0..count {
+            let id = r.field().ok_or("bad Fields reply")?;
+            let name = r.string().ok_or("bad Fields reply")?;
+            let _signature = r.string();
+            let modifiers = r.bytes.int().ok_or("bad Fields reply")?;
+            fields.push((id, name, modifiers & 0x8 != 0));
+        }
+        self.inner.classes.lock().unwrap().entry(class).or_default().all_fields = Some(fields.clone());
+        Ok(fields)
+    }
+
+    /// The reply of an invoke: the returned value, or the thrown exception.
+    fn invoke_result(&self, data: &[u8]) -> Result<Value, String> {
+        let mut r = self.reader(data);
+        let tag = r.bytes.u8().ok_or("bad InvokeMethod reply")?;
+        let value = self.resolve(tag, &mut r)?;
+        let _exception_tag = r.bytes.u8();
+        let exception = r.object().unwrap_or(0);
+        if exception != 0 {
+            let class = self.class_of(exception).map(|c| c.name).unwrap_or_else(|_| "java.lang.Throwable".into());
+            return Err(format!("Method threw '{class}' exception."));
+        }
+        Ok(value)
     }
 
     fn method_info(&self, class: u64, method: u64) -> Result<Option<MethodInfo>, String> {
@@ -271,7 +307,7 @@ impl JdwpVm {
         let data = self.command(OBJECT_REFERENCE, 1, &self.out().object(id).data)?;
         let mut r = self.reader(&data);
         let _kind = r.bytes.u8();
-        let class = self.class_name(r.reference_type().ok_or("bad ReferenceType reply")?)?;
+        let class = self.name_of_class(r.reference_type().ok_or("bad ReferenceType reply")?)?;
         if tag == b'[' {
             let data = self.command(ARRAY_REFERENCE, 1, &self.out().object(id).data)?;
             let length = self.reader(&data).bytes.int().unwrap_or(0).max(0) as usize;
@@ -380,8 +416,8 @@ impl DebugVm for JdwpVm {
             let id = r.method().ok_or("bad Methods reply")?;
             let name = r.string().ok_or("bad Methods reply")?;
             let signature = r.string().ok_or("bad Methods reply")?;
-            let _modifiers = r.bytes.int();
-            methods.push(MethodInfo { id, name, signature, lines: Vec::new() });
+            let modifiers = r.bytes.int().unwrap_or(0);
+            methods.push(MethodInfo { id, name, signature, is_static: modifiers & 0x8 != 0, lines: Vec::new() });
         }
         for method in &mut methods {
             let mut out = self.out().reference_type(class);
@@ -498,7 +534,7 @@ impl DebugVm for JdwpVm {
         }
         raw.into_iter()
             .map(|(id, location)| {
-                let class = self.class_name(location.class)?;
+                let class = self.name_of_class(location.class)?;
                 let method = self.method_info(location.class, location.method)?;
                 let line = method.as_ref().and_then(|m| line_of(m, location.index));
                 let source = self.source_file(location.class)?;
@@ -591,6 +627,119 @@ impl DebugVm for JdwpVm {
             vars.push(Variable { name, value: self.resolve(tag, &mut r)? });
         }
         Ok(vars)
+    }
+
+    fn find_class(&self, name: &str) -> Result<Option<ClassRef>, String> {
+        let mut out = self.out();
+        out.string(&crate::domain::debugger::signature_of(name));
+        let data = self.command(VM, 2, &out.data)?;
+        let mut r = self.reader(&data);
+        let count = r.bytes.int().ok_or("bad ClassesBySignature reply")?;
+        if count < 1 {
+            return Ok(None);
+        }
+        let _kind = r.bytes.u8();
+        let id = r.reference_type().ok_or("bad ClassesBySignature reply")?;
+        Ok(Some(ClassRef { id, name: name.to_owned() }))
+    }
+
+    fn class_of(&self, object: u64) -> Result<ClassRef, String> {
+        let data = self.command(OBJECT_REFERENCE, 1, &self.out().object(object).data)?;
+        let mut r = self.reader(&data);
+        let _kind = r.bytes.u8();
+        let id = r.reference_type().ok_or("bad ReferenceType reply")?;
+        Ok(ClassRef { id, name: self.name_of_class(id)? })
+    }
+
+    fn superclass(&self, class: u64) -> Result<u64, String> {
+        self.superclass_of(class)
+    }
+
+    fn class_name(&self, class: u64) -> Result<String, String> {
+        self.name_of_class(class)
+    }
+
+    fn field(&self, class: u64, object: Option<u64>, name: &str) -> Result<Option<Value>, String> {
+        let mut at = class;
+        let mut depth = 0;
+        while at != 0 && depth < 32 {
+            depth += 1;
+            if let Some((id, _, is_static)) = self.own_fields(at)?.into_iter().find(|(_, n, _)| n == name) {
+                let data = match (is_static, object) {
+                    (false, Some(object)) => {
+                        let mut out = self.out().object(object);
+                        out.int(1).field_id(id);
+                        self.command(OBJECT_REFERENCE, 2, &out.data)?
+                    }
+                    (true, _) => {
+                        let mut out = self.out().reference_type(at);
+                        out.int(1).field_id(id);
+                        self.command(REFERENCE_TYPE, 6, &out.data)?
+                    }
+                    // An instance field without an instance.
+                    (false, None) => return Ok(None),
+                };
+                let mut r = self.reader(&data);
+                let _count = r.bytes.int();
+                let tag = r.bytes.u8().ok_or("bad GetValues reply")?;
+                return self.resolve(tag, &mut r).map(Some);
+            }
+            at = self.superclass_of(at)?;
+        }
+        Ok(None)
+    }
+
+    fn invoke(&self, thread: u64, class: u64, object: Option<u64>, method: u64, args: &[Value]) -> Result<Value, String> {
+        // INVOKE_SINGLE_THREADED: the other threads stay suspended.
+        const SINGLE_THREADED: i32 = 1;
+        let data = match object {
+            Some(object) => {
+                let mut out = self.out().object(object);
+                out.object_id(thread);
+                let size = out.sizes.reference_type;
+                out.id(class, size).method(method).int(args.len() as i32);
+                for arg in args {
+                    out.value(arg);
+                }
+                out.int(SINGLE_THREADED);
+                self.command(OBJECT_REFERENCE, 6, &out.data)?
+            }
+            None => {
+                let mut out = self.out().reference_type(class);
+                out.object_id(thread).method(method).int(args.len() as i32);
+                for arg in args {
+                    out.value(arg);
+                }
+                out.int(SINGLE_THREADED);
+                self.command(CLASS_TYPE, 3, &out.data)?
+            }
+        };
+        self.invoke_result(&data)
+    }
+
+    fn create_string(&self, text: &str) -> Result<Value, String> {
+        let mut out = self.out();
+        out.string(text);
+        let data = self.command(VM, 11, &out.data)?;
+        let id = self.reader(&data).object().ok_or("bad CreateString reply")?;
+        Ok(Value::String { id, text: text.to_owned() })
+    }
+
+    fn array_element(&self, array: u64, index: usize) -> Result<Value, String> {
+        let data = self.command(ARRAY_REFERENCE, 1, &self.out().object(array).data)?;
+        let length = self.reader(&data).bytes.int().unwrap_or(0).max(0) as usize;
+        if index >= length {
+            return Err(format!("Array index {index} out of bounds for length {length}"));
+        }
+        let mut out = self.out().object(array);
+        out.int(index as i32).int(1);
+        let data = self.command(ARRAY_REFERENCE, 2, &out.data)?;
+        let mut r = self.reader(&data);
+        let tag = r.bytes.u8().ok_or("bad GetValues reply")?;
+        let _n = r.bytes.int();
+        let primitive = matches!(tag, b'Z' | b'B' | b'C' | b'S' | b'I' | b'J' | b'F' | b'D');
+        let tag = if primitive { tag } else { r.bytes.u8().ok_or("bad GetValues reply")? };
+        self.resolve(tag, &mut r)
     }
 
     fn next_events(&self, timeout: Duration) -> Result<Option<EventSet>, String> {
@@ -804,6 +953,40 @@ impl Out {
         self
     }
 
+    /// A tagged value, as a method's argument.
+    fn value(&mut self, value: &Value) -> &mut Self {
+        match value {
+            Value::Void | Value::Null => self.u8(b'L').object_id(0),
+            Value::Boolean(b) => self.u8(b'Z').u8(*b as u8),
+            Value::Byte(n) => self.u8(b'B').u8(*n as u8),
+            Value::Char(c) => {
+                self.u8(b'C');
+                self.data.extend_from_slice(&c.to_be_bytes());
+                self
+            }
+            Value::Short(n) => {
+                self.u8(b'S');
+                self.data.extend_from_slice(&n.to_be_bytes());
+                self
+            }
+            Value::Int(n) => self.u8(b'I').int(*n),
+            Value::Long(n) => {
+                self.u8(b'J');
+                self.data.extend_from_slice(&n.to_be_bytes());
+                self
+            }
+            Value::Float(f) => self.u8(b'F').int(f.to_bits() as i32),
+            Value::Double(f) => {
+                self.u8(b'D');
+                self.data.extend_from_slice(&f.to_bits().to_be_bytes());
+                self
+            }
+            Value::String { id, .. } => self.u8(b's').object_id(*id),
+            Value::Array { id, .. } => self.u8(b'[').object_id(*id),
+            Value::Object { id, .. } => self.u8(b'L').object_id(*id),
+        }
+    }
+
     fn location(&mut self, location: Location) -> &mut Self {
         // Type tag 1: a class.
         self.u8(1);
@@ -965,6 +1148,109 @@ public class Main {
         let vm = JdwpVm::over(stream).unwrap();
         wait_for(&vm, |e| matches!(e, DebugEvent::VmStart { .. }));
         assert!(vm.all_classes().unwrap().iter().any(|c| c.name == "java.lang.String"));
+        vm.resume().unwrap();
+        wait_for(&vm, |e| matches!(e, DebugEvent::VmDeath));
+    }
+
+    const EVAL: &str = r#"package demo;
+
+import java.util.*;
+
+public class Main {
+    static int COUNT = 7;
+
+    static class Point {
+        int x = 3;
+        private String label = "p";
+        public String getLabel() { return label; }
+        @Override public String toString() { return "Point(" + x + ")"; }
+    }
+
+    static class Plain {
+        int y = 1;
+    }
+
+    static int twice(int n) { return n * 2; }
+
+    public static void main(String[] args) {
+        int a = 21;
+        long big = 3000000000L;
+        String s = "hello";
+        int[] numbers = {1, 2, 3};
+        Point p = new Point();
+        Plain plain = new Plain();
+        List<String> list = new ArrayList<>(List.of("x", "y"));
+        Map<String, Integer> map = new HashMap<>(Map.of("k", 5));
+        Integer boxed = 42;
+        Object nothing = null;
+        System.out.println(a + s + numbers.length + p + plain + list + map + boxed + nothing + big);
+    }
+}
+"#;
+
+    #[test]
+    fn evaluates_expressions() {
+        use crate::domain::debugger::value_text;
+        use crate::usecase::evaluate::{children, condition_holds, describe, evaluate, Scope};
+        let Some(java) = debuggee("eval", EVAL) else {
+            eprintln!("no JDK: skipped");
+            return;
+        };
+        let vm = JdwpVm::connect(&format!("127.0.0.1:{}", java.port)).unwrap();
+        wait_for(&vm, |e| matches!(e, DebugEvent::VmStart { .. }));
+        vm.watch_class_prepare("demo.*").unwrap();
+        vm.resume().unwrap();
+        let DebugEvent::ClassPrepare { class, .. } = wait_for(&vm, |e| matches!(e, DebugEvent::ClassPrepare { class, .. } if class.name == "demo.Main")) else { unreachable!() };
+        // The println line.
+        let location = line_locations(class.id, &vm.methods(class.id).unwrap(), 32)[0];
+        vm.set_breakpoint(location).unwrap();
+        vm.resume().unwrap();
+        let DebugEvent::Breakpoint { thread, .. } = wait_for(&vm, |e| matches!(e, DebugEvent::Breakpoint { .. })) else { unreachable!() };
+        let frames = vm.frames(thread).unwrap();
+        let locals = vm.locals(thread, &frames[0]).unwrap();
+        let scope = Scope { vm: &vm, thread, frame: &frames[0], locals: &locals };
+        let eval = |text: &str| evaluate(&scope, text).map(|v| value_text(&v));
+        assert_eq!(eval("a * 2 + 1"), Ok("43".into()));
+        assert_eq!(eval("a / 2.0"), Ok("10.5".into()));
+        assert_eq!(eval("big + 1"), Ok("3000000001".into()));
+        assert_eq!(eval("s + \" \" + a"), Ok("\"hello 21\"".into()));
+        assert_eq!(eval("s.length() + numbers.length"), Ok("8".into()));
+        assert_eq!(eval("numbers[1] * 10"), Ok("20".into()));
+        assert_eq!(eval("p.x"), Ok("3".into()));
+        // Kotlin-style property: the getter.
+        assert_eq!(eval("p.label"), Ok("\"p\"".into()));
+        assert_eq!(eval("\"at \" + p"), Ok("\"at Point(3)\"".into()));
+        assert_eq!(eval("list.size()"), Ok("2".into()));
+        assert_eq!(eval("list.get(1)"), Ok("\"y\"".into()));
+        assert_eq!(eval("list.contains(\"x\")"), Ok("true".into()));
+        assert_eq!(eval("map.get(\"k\") + 1"), Ok("6".into()));
+        assert_eq!(eval("boxed == 42"), Ok("true".into()));
+        assert_eq!(eval("twice(a)"), Ok("42".into()));
+        assert_eq!(eval("Main.twice(2)"), Ok("4".into()));
+        assert_eq!(eval("COUNT"), Ok("7".into()));
+        assert_eq!(eval("Math.max(a, 100)"), Ok("100".into()));
+        assert_eq!(eval("Integer.parseInt(\"12\") + 1"), Ok("13".into()));
+        assert_eq!(eval("nothing == null && a > 20"), Ok("true".into()));
+        assert_eq!(eval("y"), Err("Cannot find local variable 'y'".into()));
+        assert_eq!(eval("a / 0"), Err("java.lang.ArithmeticException: / by zero".into()));
+        assert_eq!(eval("Integer.parseInt(\"z\")"), Err("Method threw 'java.lang.NumberFormatException' exception.".into()));
+        assert_eq!(eval("nothing.toString()"), Err("java.lang.NullPointerException".into()));
+        assert_eq!(condition_holds(&scope, "a == 21"), Ok(true));
+        assert_eq!(condition_holds(&scope, "s.isEmpty()"), Ok(false));
+        assert!(condition_holds(&scope, "a + 1").is_err());
+
+        // The Variables view's descriptions and collection children.
+        let value = |name: &str| locals.iter().find(|v| v.name == name).unwrap().value.clone();
+        assert_eq!(describe(&vm, thread, &value("p")).as_deref(), Some("\"Point(3)\""));
+        assert_eq!(describe(&vm, thread, &value("plain")), None);
+        assert_eq!(describe(&vm, thread, &value("list")).as_deref(), Some("size = 2"));
+        assert_eq!(describe(&vm, thread, &value("map")).as_deref(), Some("size = 1"));
+        assert_eq!(describe(&vm, thread, &value("boxed")).as_deref(), Some("42"));
+        let items: Vec<String> = children(&vm, thread, &value("list"), 100).unwrap().iter().map(|v| format!("{} = {}", v.name, value_text(&v.value))).collect();
+        assert_eq!(items, ["[0] = \"x\"", "[1] = \"y\""]);
+        let entries = children(&vm, thread, &value("map"), 100).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(describe(&vm, thread, &entries[0].value).as_deref(), Some("\"k=5\""));
         vm.resume().unwrap();
         wait_for(&vm, |e| matches!(e, DebugEvent::VmDeath));
     }

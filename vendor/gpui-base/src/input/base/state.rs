@@ -176,6 +176,15 @@ pub(crate) fn init(cx: &mut App) {
             },
             Some(CONTEXT),
         ),
+        // Junction: Ctrl+Shift+Enter, the debugger's Add to Watches.
+        KeyBinding::new(
+            "secondary-shift-enter",
+            Enter {
+                secondary: true,
+                shift: true,
+            },
+            Some(CONTEXT),
+        ),
         KeyBinding::new("escape", Escape, Some(CONTEXT)),
         KeyBinding::new("up", MoveUp, Some(CONTEXT)),
         KeyBinding::new("down", MoveDown, Some(CONTEXT)),

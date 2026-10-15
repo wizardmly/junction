@@ -5,7 +5,13 @@
 //! Debug the test at the caret (Ctrl+Shift+F9) start here too.
 
 use gpui_kit::component::input::RopeExt as _;
-use gpui_kit::{Bounds, Context, DispatchPhase, IntoElement, KeyBinding, MouseButton, MouseDownEvent, Pixels, Styled as _, Window, actions, canvas, point, px, size};
+use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::{Sizable as _, button::{Button, ButtonVariants as _}, h_flex, v_flex};
+use gpui_kit::{
+    AppContext as _, Bounds, Context, DispatchPhase, Entity, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, Styled as _,
+    Subscription, Window, actions, anchored, canvas, deferred, div, point, px, size,
+};
 
 use super::FileEditor;
 use crate::domain::testing;
@@ -81,6 +87,7 @@ impl FileEditor {
             (s.breakpoints_of(&file), point)
         };
         let state = self.state.clone();
+        let editor = cx.entity().downgrade();
         let palette = cx.palette().clone();
         let dark = palette.dark;
         let background: gpui_kit::Hsla = gpui_kit::rgb(if dark { 0x1e1f22 } else { 0xffffff }).into();
@@ -111,14 +118,14 @@ impl FileEditor {
                             window.paint_quad(gpui_kit::fill(rect, color));
                         }
                     };
-                    for (line, _) in &marks {
-                        tint(*line, breakpoint_tint, window);
+                    for mark in marks.iter().filter(|m| m.enabled) {
+                        tint(mark.line, breakpoint_tint, window);
                     }
                     if let Some(line) = execution {
                         tint(line, point_tint, window);
                     }
-                    for (line, verified) in &marks {
-                        let Some((_, top)) = rows.iter().find(|(l, _)| l == line) else { continue };
+                    for mark in &marks {
+                        let Some((_, top)) = rows.iter().find(|(l, _)| *l == mark.line) else { continue };
                         // Over the line number, as the new UI draws it.
                         let cell = Bounds::new(point(column.0, *top), size(column.1 - column.0, line_height));
                         if !bounds.contains(&cell.center()) {
@@ -127,16 +134,30 @@ impl FileEditor {
                         window.paint_quad(gpui_kit::fill(cell, background));
                         let icon_size = px(14.);
                         let rect = Bounds::new(point(column.1 - icon_size - px(4.), *top + (line_height - icon_size) / 2.), size(icon_size, icon_size));
-                        let icon = if *verified { icons::BREAKPOINT_VALID } else { icons::BREAKPOINT };
+                        let icon = match (mark.enabled, mark.verified) {
+                            (false, _) => icons::BREAKPOINT_DISABLED,
+                            (true, true) => icons::BREAKPOINT_VALID,
+                            (true, false) => icons::BREAKPOINT,
+                        };
                         for (path, rgba) in if dark { icon.dark } else { icon.light } {
                             let color: gpui_kit::Hsla = gpui_kit::rgba(*rgba).into();
                             window.paint_svg(rect, (*path).into(), None, gpui_kit::TransformationMatrix::unit(), color, cx).ok();
                         }
+                        // A condition: a question mark on the dot.
+                        if mark.conditional && mark.enabled && !mark.verified {
+                            let label: gpui_kit::SharedString = "?".into();
+                            let run = gpui_kit::TextRun { len: 1, font: gpui_kit::font(".SystemUIFont"), color: gpui_kit::white(), background_color: None, underline: None, strikethrough: None };
+                            let shaped = window.text_system().shape_line(label, px(10.), &[run], None);
+                            let x = rect.left() + (rect.size.width - shaped.width) / 2.;
+                            let _ = shaped.paint(point(x, rect.top()), rect.size.height, gpui_kit::TextAlign::Left, None, window, cx);
+                        }
                     }
-                    // A click on a line number toggles its breakpoint.
-                    let (file, service) = (file.clone(), service.clone());
-                    window.on_mouse_event(move |e: &MouseDownEvent, phase, _, cx| {
-                        if phase != DispatchPhase::Capture || e.button != MouseButton::Left || e.click_count != 1 {
+                    // A click on a line number toggles its breakpoint; a
+                    // right-click on one opens its properties.
+                    let (file, service, editor) = (file.clone(), service.clone(), editor.clone());
+                    let lines: Vec<u32> = marks.iter().map(|m| m.line).collect();
+                    window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Capture || e.click_count != 1 || !matches!(e.button, MouseButton::Left | MouseButton::Right) {
                             return;
                         }
                         if e.position.x < column.0 || e.position.x >= column.1 || !bounds.contains(&e.position) {
@@ -146,14 +167,110 @@ impl FileEditor {
                         if e.position.y > rows.last().map_or(e.position.y, |(_, t)| *t + line_height) {
                             return;
                         }
-                        cx.stop_propagation();
                         let line = *line;
+                        if e.button == MouseButton::Right {
+                            if !lines.contains(&line) {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            let at = e.position;
+                            editor.update(cx, |this, cx| this.open_breakpoint_popup(line, at, window, cx)).ok();
+                            return;
+                        }
+                        cx.stop_propagation();
                         service.update(cx, |s, cx| s.toggle_breakpoint(&file, line, cx));
                     });
                 },
             )
             .absolute()
             .inset_0(),
+        )
+    }
+}
+
+/// The breakpoint popup, as IntelliJ's: Enabled, Condition, Remove, Done.
+pub(super) struct BreakpointPopup {
+    line: u32,
+    at: Point<Pixels>,
+    enabled: bool,
+    condition: Entity<InputState>,
+    _enter: Subscription,
+}
+
+impl FileEditor {
+    fn open_breakpoint_popup(&mut self, line: u32, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = self.breakpoint_file() else { return };
+        let Some(saved) = DebugService::global(cx).read(cx).breakpoint(&file, line) else { return };
+        let condition = cx.new(|cx| InputState::new(window, cx).default_value(saved.condition.clone().unwrap_or_default()).placeholder("Condition, e.g. i > 10"));
+        let _enter = cx.subscribe_in(&condition, window, |this, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.close_breakpoint_popup(true, window, cx);
+            }
+        });
+        condition.update(cx, |s, cx| s.focus(window, cx));
+        self.breakpoint_popup = Some(BreakpointPopup { line, at, enabled: saved.enabled, condition, _enter });
+        cx.notify();
+    }
+
+    /// Done applies the popup; a click outside does too, as IntelliJ's.
+    fn close_breakpoint_popup(&mut self, apply: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(popup) = self.breakpoint_popup.take() else { return };
+        if apply {
+            if let Some(file) = self.breakpoint_file() {
+                let condition = popup.condition.read(cx).value().to_string();
+                DebugService::global(cx).update(cx, |s, cx| s.set_breakpoint_properties(&file, popup.line, popup.enabled, Some(condition), cx));
+            }
+        }
+        self.focus(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn render_breakpoint_popup(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let popup = self.breakpoint_popup.as_ref()?;
+        let palette = cx.palette().clone();
+        let name = std::path::Path::new(&self.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let line = popup.line;
+        Some(
+            deferred(
+                anchored().position(popup.at).snap_to_window_with_margin(px(8.)).child(
+                    v_flex()
+                        .id("breakpoint-popup")
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close_breakpoint_popup(true, window, cx)))
+                        .w(px(320.))
+                        .p_2()
+                        .gap_2()
+                        .text_sm()
+                        .bg(gpui_kit::component::ActiveTheme::theme(&**cx).popover)
+                        .border_1()
+                        .border_color(palette.border)
+                        .rounded_md()
+                        .shadow_lg()
+                        .child(div().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(format!("{name}:{}", line + 1)))
+                        .child(Checkbox::new("breakpoint-enabled").label("Enabled").checked(popup.enabled).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            if let Some(popup) = this.breakpoint_popup.as_mut() {
+                                popup.enabled = *checked;
+                            }
+                            cx.notify();
+                        })))
+                        .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Condition:")).child(Input::new(&popup.condition).small()))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(div().flex_1())
+                                .child(Button::new("breakpoint-remove").ghost().small().label("Remove").on_click(cx.listener(move |this, _, window, cx| {
+                                    this.breakpoint_popup = None;
+                                    if let Some(file) = this.breakpoint_file() {
+                                        DebugService::global(cx).update(cx, |s, cx| s.toggle_breakpoint(&file, line, cx));
+                                    }
+                                    this.focus(window, cx);
+                                    cx.notify();
+                                })))
+                                .child(Button::new("breakpoint-done").primary().small().label("Done").on_click(cx.listener(|this, _, window, cx| this.close_breakpoint_popup(true, window, cx)))),
+                        ),
+                ),
+            )
+            .with_priority(2),
         )
     }
 }

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, SharedString, Task};
 
-use crate::domain::debugger::{self, Frame, StepDepth, ThreadInfo, Variable};
+use crate::domain::debugger::{self, Frame, StepDepth, ThreadInfo, Value, Variable};
 use crate::domain::testing::TestMark;
 use crate::infra::breakpoint_store::{self, SavedBreakpoint};
 use crate::infra::jdwp_client::JdwpVm;
@@ -40,20 +40,55 @@ pub enum DebugStatus {
     Ended,
 }
 
+/// What a root of the Variables tree is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeKind {
+    Variable,
+    /// A watch, by its index.
+    Watch(usize),
+    /// The evaluate field's result.
+    Evaluation,
+}
+
 /// A row of the Variables tree: a variable, and its children once
 /// expanded.
 #[derive(Clone, Debug)]
 pub struct VarNode {
     pub var: Variable,
+    pub kind: NodeKind,
+    /// After the value: its `toString()`, a collection's size.
+    pub detail: Option<String>,
+    /// A watch or evaluation that failed: why.
+    pub error: Option<String>,
     pub expanded: bool,
     /// Loaded on first expansion.
     pub children: Option<Vec<VarNode>>,
 }
 
 impl VarNode {
-    fn new(var: Variable) -> Self {
-        Self { var, expanded: false, children: None }
+    fn new((var, detail): (Variable, Option<String>)) -> Self {
+        Self { var, kind: NodeKind::Variable, detail, error: None, expanded: false, children: None }
     }
+
+    /// A watch's or an evaluation's row: its expression, and its value or
+    /// error.
+    fn expression(text: String, kind: NodeKind, result: Result<(Value, Option<String>), String>) -> Self {
+        let (value, detail, error) = match result {
+            Ok((value, detail)) => (value, detail, None),
+            Err(e) => (Value::Void, None, Some(e)),
+        };
+        Self { var: Variable { name: text, value }, kind, detail, error, expanded: false, children: None }
+    }
+}
+
+/// A breakpoint as the editor's gutter draws it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BreakpointMark {
+    /// 0-based.
+    pub line: u32,
+    pub verified: bool,
+    pub enabled: bool,
+    pub conditional: bool,
 }
 
 /// The Debug window's session.
@@ -68,6 +103,7 @@ pub struct DebugRun {
     pub frames: Vec<Frame>,
     /// The selected frame.
     pub frame: usize,
+    /// The evaluation's result, the watches, then the frame's variables.
     pub variables: Vec<VarNode>,
     pub variables_loading: bool,
     /// What the session printed about itself: "Connected to the target VM…".
@@ -81,6 +117,8 @@ pub type SourceResolver = Rc<dyn Fn(&str, &App) -> Option<PathBuf>>;
 #[derive(Default)]
 pub struct DebugService {
     breakpoints: Vec<SavedBreakpoint>,
+    /// The Watches' expressions.
+    pub watches: Vec<String>,
     /// Breakpoints that stop somewhere in the running session.
     verified: HashSet<(String, u32)>,
     pub run: Option<DebugRun>,
@@ -106,7 +144,7 @@ impl DebugService {
         if let Some(g) = cx.try_global::<GlobalDebug>() {
             return g.0.clone();
         }
-        let service = cx.new(|_| Self { breakpoints: breakpoint_store::load(), ..Default::default() });
+        let service = cx.new(|_| Self { breakpoints: breakpoint_store::load(), watches: breakpoint_store::load_watches(), ..Default::default() });
         cx.set_global(GlobalDebug(service.clone()));
         service
     }
@@ -117,10 +155,61 @@ impl DebugService {
 
     // --- Breakpoints ----------------------------------------------------------
 
-    /// A file's breakpoints: 0-based lines, and whether each stops somewhere
-    /// in the running session.
-    pub fn breakpoints_of(&self, file: &str) -> Vec<(u32, bool)> {
-        self.breakpoints.iter().filter(|b| b.file == file).map(|b| (b.line, self.verified.contains(&(b.file.clone(), b.line)))).collect()
+    /// A file's breakpoints, as the gutter draws them.
+    pub fn breakpoints_of(&self, file: &str) -> Vec<BreakpointMark> {
+        self.breakpoints
+            .iter()
+            .filter(|b| b.file == file)
+            .map(|b| BreakpointMark { line: b.line, verified: self.verified.contains(&(b.file.clone(), b.line)), enabled: b.enabled, conditional: b.condition.is_some() })
+            .collect()
+    }
+
+    /// The breakpoint on a line, for its properties popup.
+    pub fn breakpoint(&self, file: &str, line: u32) -> Option<SavedBreakpoint> {
+        self.breakpoints.iter().find(|b| b.file == file && b.line == line).cloned()
+    }
+
+    /// The breakpoint popup's Enabled and Condition.
+    pub fn set_breakpoint_properties(&mut self, file: &str, line: u32, enabled: bool, condition: Option<String>, cx: &mut Context<Self>) {
+        let condition = condition.map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
+        let Some(saved) = self.breakpoints.iter_mut().find(|b| b.file == file && b.line == line) else { return };
+        let was_enabled = saved.enabled;
+        saved.enabled = enabled;
+        saved.condition = condition.clone();
+        let breakpoint = saved.clone();
+        breakpoint_store::save(&self.breakpoints);
+        if let Some(session) = self.session.clone().filter(|s| !s.is_ended()) {
+            let path = PathBuf::from(file);
+            match (was_enabled, enabled) {
+                (true, false) => {
+                    self.verified.remove(&(file.to_owned(), line));
+                    cx.background_spawn(async move { session.remove_breakpoint(&path, line + 1) }).detach();
+                }
+                (false, true) => self.place_in_session(session, breakpoint, cx),
+                _ => session.set_condition(&path, line + 1, condition),
+            }
+        }
+        cx.notify();
+    }
+
+    /// Sets a breakpoint in the running session; verified once it stops
+    /// somewhere.
+    fn place_in_session(&mut self, session: Arc<DebugSession>, saved: SavedBreakpoint, cx: &mut Context<Self>) {
+        let generation = self.generation;
+        let (file, line) = (saved.file.clone(), saved.line);
+        let task = cx.background_spawn(async move { session.add_breakpoint(line_breakpoint(&saved)) });
+        cx.spawn(async move |this, cx| {
+            if let Ok(true) = task.await {
+                this.update(cx, |this, cx| {
+                    if this.generation == generation {
+                        this.verified.insert((file, line));
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     /// Toggle Line Breakpoint (Ctrl+F8, a click on the line number).
@@ -134,24 +223,10 @@ impl DebugService {
                 cx.background_spawn(async move { session.remove_breakpoint(&path, line + 1) }).detach();
             }
         } else {
-            self.breakpoints.push(SavedBreakpoint { file: file.to_owned(), line });
+            let saved = SavedBreakpoint::new(file, line);
+            self.breakpoints.push(saved.clone());
             if let Some(session) = session {
-                let breakpoint = line_breakpoint(file, line);
-                let generation = self.generation;
-                let task = cx.background_spawn(async move { session.add_breakpoint(breakpoint) });
-                let file = file.to_owned();
-                cx.spawn(async move |this, cx| {
-                    if let Ok(true) = task.await {
-                        this.update(cx, |this, cx| {
-                            if this.generation == generation {
-                                this.verified.insert((file, line));
-                                cx.notify();
-                            }
-                        })
-                        .ok();
-                    }
-                })
-                .detach();
+                self.place_in_session(session, saved, cx);
             }
         }
         breakpoint_store::save(&self.breakpoints);
@@ -310,6 +385,12 @@ impl DebugService {
             SessionEvent::Verified { path, line } => {
                 self.verified.insert((key(&path), line - 1));
             }
+            SessionEvent::Message(text) => {
+                if let Some(run) = self.run.as_mut() {
+                    run.console.push(text.clone().into());
+                }
+                cx.emit(DebugServiceEvent::Error { title: "Breakpoint condition".into(), message: text });
+            }
             SessionEvent::Ended => {}
         }
         cx.notify();
@@ -400,7 +481,7 @@ impl DebugService {
     /// Run to Cursor (Alt+F9).
     pub fn run_to_line(&mut self, file: &str, line: u32, cx: &mut Context<Self>) {
         if self.is_paused() {
-            let target = line_breakpoint(file, line);
+            let target = line_breakpoint(&SavedBreakpoint::new(file, line));
             self.command(move |s| s.run_to_line(&target), cx);
         }
     }
@@ -458,24 +539,60 @@ impl DebugService {
         .detach();
     }
 
+    /// The selected frame's watches and variables, each object described
+    /// (its `toString()`, a collection's size).
     fn load_variables(&mut self, cx: &mut Context<Self>) {
+        self.reload_variables(false, cx);
+    }
+
+    /// The variables again; a changed watch list keeps the evaluation's
+    /// result, a new pause or frame doesn't.
+    fn reload_variables(&mut self, keep_evaluation: bool, cx: &mut Context<Self>) {
         let (Some(session), Some(run)) = (self.session.clone(), self.run.as_mut()) else { return };
-        let (Some(thread), Some(frame)) = (run.thread, run.frames.get(run.frame).cloned()) else { return };
-        run.variables.clear();
+        let (Some(thread), true) = (run.thread, run.frame < run.frames.len()) else { return };
+        let depth = run.frame;
+        run.variables.retain(|n| keep_evaluation && n.kind == NodeKind::Evaluation);
         run.variables_loading = true;
         let generation = self.generation;
         let selected = run.frame;
-        let task = cx.background_spawn(async move { session.locals(thread, &frame) });
+        let watches = self.watches.clone();
+        let task = cx.background_spawn(async move {
+            let described = |value: Value| {
+                let detail = session.describe(thread, &value);
+                (value, detail)
+            };
+            let watches: Vec<VarNode> = watches
+                .into_iter()
+                .enumerate()
+                .map(|(ix, text)| {
+                    let result = session.evaluate(thread, depth, &text).map(described);
+                    VarNode::expression(text, NodeKind::Watch(ix), result)
+                })
+                .collect();
+            let locals = session.locals(thread, depth).map(|vars| {
+                vars.into_iter()
+                    .map(|v| {
+                        let detail = session.describe(thread, &v.value);
+                        VarNode::new((v, detail))
+                    })
+                    .collect::<Vec<_>>()
+            });
+            (watches, locals)
+        });
         cx.spawn(async move |this, cx| {
-            let result = task.await;
+            let (watches, locals) = task.await;
             this.update(cx, |this, cx| {
                 let Some(run) = this.run.as_mut().filter(|r| r.frame == selected) else { return };
                 if this.generation != generation {
                     return;
                 }
                 run.variables_loading = false;
-                match result {
-                    Ok(vars) => run.variables = vars.into_iter().map(VarNode::new).collect(),
+                // An evaluation's result stays on top.
+                let evaluation: Vec<VarNode> = run.variables.drain(..).filter(|n| n.kind == NodeKind::Evaluation).collect();
+                run.variables = evaluation;
+                run.variables.extend(watches);
+                match locals {
+                    Ok(locals) => run.variables.extend(locals),
                     Err(e) => run.console.push(format!("Variables are not available: {e}").into()),
                 }
                 cx.notify();
@@ -485,16 +602,92 @@ impl DebugService {
         .detach();
     }
 
+    /// The evaluate field (Enter): the expression's value on top of the
+    /// Variables view, in the selected frame.
+    pub fn evaluate(&mut self, text: String, cx: &mut Context<Self>) {
+        let (Some(session), Some(run)) = (self.session.clone(), self.run.as_ref()) else { return };
+        let (Some(thread), true) = (run.thread.filter(|_| run.status == DebugStatus::Paused), run.frame < run.frames.len()) else { return };
+        let depth = run.frame;
+        if text.trim().is_empty() {
+            return;
+        }
+        let generation = self.generation;
+        let expression = text.clone();
+        let task = cx.background_spawn(async move {
+            session.evaluate(thread, depth, &expression).map(|value| {
+                let detail = session.describe(thread, &value);
+                (value, detail)
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                let Some(run) = this.run.as_mut() else { return };
+                run.variables.retain(|n| n.kind != NodeKind::Evaluation);
+                run.variables.insert(0, VarNode::expression(text, NodeKind::Evaluation, result));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Add to Watches (Ctrl+Shift+Enter in the evaluate field, or New Watch).
+    pub fn add_watch(&mut self, text: String, cx: &mut Context<Self>) {
+        let text = text.trim().to_owned();
+        if text.is_empty() || self.watches.contains(&text) {
+            return;
+        }
+        self.watches.push(text);
+        breakpoint_store::save_watches(&self.watches);
+        self.reload_variables(true, cx);
+        cx.notify();
+    }
+
+    /// Remove Watch.
+    pub fn remove_watch(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix < self.watches.len() {
+            self.watches.remove(ix);
+            breakpoint_store::save_watches(&self.watches);
+            self.reload_variables(true, cx);
+            cx.notify();
+        }
+    }
+
+    /// Clears the evaluation's result row.
+    pub fn clear_evaluation(&mut self, cx: &mut Context<Self>) {
+        if let Some(run) = self.run.as_mut() {
+            run.variables.retain(|n| n.kind != NodeKind::Evaluation);
+            cx.notify();
+        }
+    }
+
     /// Expands or collapses a variable (its path of indexes in the tree);
-    /// the first expansion loads its fields or elements.
+    /// the first expansion loads its fields, elements or a collection's
+    /// items, each described.
     pub fn toggle_variable(&mut self, path: &[usize], cx: &mut Context<Self>) {
         let session = self.session.clone();
         let generation = self.generation;
+        let thread = self.run.as_ref().and_then(|r| r.thread);
         let Some(node) = self.run.as_mut().and_then(|r| node_at(&mut r.variables, path)) else { return };
         node.expanded = !node.expanded;
         if node.expanded && node.children.is_none() {
-            let (Some(session), Some(object)) = (session, node.var.value.object_id()) else { return };
-            let task = cx.background_spawn(async move { session.children(object) });
+            let (Some(session), Some(thread)) = (session, thread) else { return };
+            let value = node.var.value.clone();
+            let task = cx.background_spawn(async move {
+                session.children(thread, &value).map(|children| {
+                    children
+                        .into_iter()
+                        .map(|v| {
+                            let detail = session.describe(thread, &v.value);
+                            VarNode::new((v, detail))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            });
             let path = path.to_vec();
             cx.spawn(async move |this, cx| {
                 let result = task.await;
@@ -503,7 +696,7 @@ impl DebugService {
                         return;
                     }
                     if let Some(node) = this.run.as_mut().and_then(|r| node_at(&mut r.variables, &path)) {
-                        node.children = Some(result.unwrap_or_default().into_iter().map(VarNode::new).collect());
+                        node.children = Some(result.unwrap_or_default());
                     }
                     cx.notify();
                 })
@@ -551,8 +744,8 @@ async fn drive(this: gpui_kit::WeakEntity<DebugService>, cx: &mut gpui_kit::Asyn
     let (verified, started) = cx
         .background_spawn(async move {
             let mut verified = Vec::new();
-            for b in breakpoints {
-                if let Ok(true) = setup.add_breakpoint(line_breakpoint(&b.file, b.line)) {
+            for b in breakpoints.into_iter().filter(|b| b.enabled) {
+                if let Ok(true) = setup.add_breakpoint(line_breakpoint(&b)) {
                     verified.push((b.file, b.line));
                 }
             }
@@ -589,9 +782,11 @@ fn node_at<'a>(nodes: &'a mut [VarNode], path: &[usize]) -> Option<&'a mut VarNo
 }
 
 /// A saved breakpoint as the session sets it: the package from the file.
-fn line_breakpoint(file: &str, line: u32) -> LineBreakpoint {
-    let text = std::fs::read_to_string(file).unwrap_or_default();
-    LineBreakpoint::new(Path::new(file), debugger::package_of(&text), line + 1)
+fn line_breakpoint(saved: &SavedBreakpoint) -> LineBreakpoint {
+    let text = std::fs::read_to_string(&saved.file).unwrap_or_default();
+    let mut breakpoint = LineBreakpoint::new(Path::new(&saved.file), debugger::package_of(&text), saved.line + 1);
+    breakpoint.condition = saved.condition.clone();
+    breakpoint
 }
 
 fn free_port() -> Option<u16> {

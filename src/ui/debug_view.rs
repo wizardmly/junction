@@ -8,12 +8,13 @@ use std::ops::Range;
 
 use gpui_kit::component::{
     Disableable as _, Icon, Sizable as _, h_flex,
+    input::{Input, InputEvent, InputState},
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
     Styled as _, Subscription, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 
@@ -21,7 +22,7 @@ use crate::domain::debugger::{self, StepDepth, Value};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons::{self as icons, AsIcon};
 use crate::ui::common::tool_button;
-use crate::ui::debug_service::{DebugRun, DebugService, DebugStatus, VarNode};
+use crate::ui::debug_service::{DebugRun, DebugService, DebugStatus, NodeKind, VarNode};
 use crate::ui::run_views::{RunViewEvent, stop_label};
 
 const ROW: f32 = 22.;
@@ -36,8 +37,13 @@ enum Tab {
 struct VarRow {
     path: Vec<usize>,
     depth: usize,
+    kind: NodeKind,
     name: SharedString,
     value: SharedString,
+    /// The object's `toString()`, a collection's size.
+    detail: Option<SharedString>,
+    /// A watch or evaluation that failed.
+    error: Option<SharedString>,
     icon: AsIcon,
     expandable: bool,
     expanded: bool,
@@ -50,7 +56,9 @@ pub struct DebugView {
     rows: Vec<VarRow>,
     frames_scroll: UniformListScrollHandle,
     vars_scroll: UniformListScrollHandle,
-    _observe: Subscription,
+    /// The evaluate field over the Variables view.
+    expression: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<RunViewEvent> for DebugView {}
@@ -68,13 +76,21 @@ fn value_icon(value: &Value) -> AsIcon {
 fn flatten(nodes: &[VarNode], depth: usize, prefix: &mut Vec<usize>, out: &mut Vec<VarRow>) {
     for (ix, node) in nodes.iter().enumerate() {
         prefix.push(ix);
-        let expandable = node.var.value.object_id().is_some();
+        let expandable = node.error.is_none() && node.var.value.object_id().is_some();
+        let icon = match (depth, node.kind) {
+            (0, NodeKind::Watch(_)) => icons::WATCH,
+            (0, NodeKind::Evaluation) => icons::EVALUATION_RESULT,
+            _ => value_icon(&node.var.value),
+        };
         out.push(VarRow {
             path: prefix.clone(),
             depth,
+            kind: if depth == 0 { node.kind } else { NodeKind::Variable },
             name: node.var.name.clone().into(),
             value: debugger::value_text(&node.var.value).into(),
-            icon: value_icon(&node.var.value),
+            detail: node.detail.clone().map(Into::into),
+            error: node.error.clone().map(Into::into),
+            icon,
             expandable,
             expanded: node.expanded,
             loading: node.expanded && node.children.is_none(),
@@ -102,10 +118,28 @@ fn shortcut(action: &str) -> &'static str {
 }
 
 impl DebugView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let service = DebugService::global(cx);
-        let _observe = cx.observe(&service, |_, _, cx| cx.notify());
-        Self { service, tab: Tab::Variables, rows: Vec::new(), frames_scroll: UniformListScrollHandle::new(), vars_scroll: UniformListScrollHandle::new(), _observe }
+        let placeholder = if cfg!(target_os = "macos") { "Evaluate expression (↩) or add a watch (⇧⌘↩)" } else { "Evaluate expression (Enter) or add a watch (Ctrl+Shift+Enter)" };
+        let expression = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        let _subscriptions = vec![
+            cx.observe(&service, |_, _, cx| cx.notify()),
+            // Enter evaluates; Ctrl+Shift+Enter adds a watch, as IntelliJ's field.
+            cx.subscribe_in(&expression, window, |this, input, event: &InputEvent, window, cx| {
+                let InputEvent::PressEnter { secondary, shift } = event else { return };
+                let text = input.read(cx).value().to_string();
+                if text.trim().is_empty() {
+                    return;
+                }
+                if *secondary && *shift {
+                    this.service.update(cx, |s, cx| s.add_watch(text, cx));
+                    input.update(cx, |s, cx| s.set_value("", window, cx));
+                } else {
+                    this.service.update(cx, |s, cx| s.evaluate(text, cx));
+                }
+            }),
+        ];
+        Self { service, tab: Tab::Variables, rows: Vec::new(), frames_scroll: UniformListScrollHandle::new(), vars_scroll: UniformListScrollHandle::new(), expression, _subscriptions }
     }
 
     fn render_toolbar(&self, run: &DebugRun, cx: &Context<Self>) -> AnyElement {
@@ -252,7 +286,28 @@ impl DebugView {
                     .child(Icon::new(row.icon).xsmall())
                     .child(div().child(row.name.clone()))
                     .child(div().text_color(palette.text_secondary).child("="))
-                    .child(div().overflow_hidden().text_ellipsis().child(row.value.clone()))
+                    .map(|el| match &row.error {
+                        Some(error) => el.child(div().overflow_hidden().text_ellipsis().text_color(palette.status_conflict).child(error.clone())),
+                        None => el
+                            .child(div().flex_none().child(row.value.clone()))
+                            .children(row.detail.clone().map(|d| div().overflow_hidden().text_ellipsis().text_color(palette.text_secondary).child(d))),
+                    })
+                    .child(div().flex_1())
+                    .when_some(match row.kind {
+                        NodeKind::Watch(ix) => Some(ix),
+                        _ => None,
+                    }, |el, ix| {
+                        el.child(tool_button(("debug-remove-watch", ix), icons::CLOSE_SMALL, "Remove Watch").on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.service.update(cx, |s, cx| s.remove_watch(ix, cx));
+                        })))
+                    })
+                    .when(row.kind == NodeKind::Evaluation, |el| {
+                        el.child(tool_button("debug-clear-evaluation", icons::CLOSE_SMALL, "Clear").on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.service.update(cx, |s, cx| s.clear_evaluation(cx));
+                        })))
+                    })
                     .when(row.loading, |el| el.child(div().text_color(palette.text_secondary).child("Collecting data…")))
                     .when(row.expandable, |el| el.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.service.update(cx, |s, cx| s.toggle_variable(&path, cx)))))
                     .into_any_element()
@@ -297,7 +352,34 @@ impl DebugView {
                     .when(paused, |el| el.child(self.render_thread_picker(run, cx)))
                     .child(div().flex_1().min_h_0().child(frames)),
             )
-            .child(div().flex_1().min_w_0().h_full().child(variables))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    // The evaluate field, as the new UI puts it over the variables.
+                    .when(paused, |el| {
+                        el.child(
+                            h_flex()
+                                .h(px(30.))
+                                .px_1()
+                                .flex_none()
+                                .border_b_1()
+                                .border_color(palette.border)
+                                .child(Input::new(&self.expression).small().appearance(false).prefix(Icon::new(icons::EVALUATION_RESULT).xsmall()))
+                                .child(tool_button("debug-add-watch", icons::ADD, "New Watch").on_click(cx.listener(|this, _, window, cx| {
+                                    let text = this.expression.read(cx).value().to_string();
+                                    if text.trim().is_empty() {
+                                        this.expression.update(cx, |s, cx| s.focus(window, cx));
+                                        return;
+                                    }
+                                    this.service.update(cx, |s, cx| s.add_watch(text, cx));
+                                    this.expression.update(cx, |s, cx| s.set_value("", window, cx));
+                                }))),
+                        )
+                    })
+                    .child(div().flex_1().min_h_0().child(variables)),
+            )
             .into_any_element()
     }
 
