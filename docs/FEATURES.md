@@ -389,6 +389,21 @@ Linux 实测（假 adb 模拟日志流和进程表）：打开窗口即显示 pa
 
 Linux 实测：TODO 窗口找到 3 条（含未跟踪文件），双击跳到对应行；Make Project 后 Problems 的 File 和 Project Errors 都列出 Util.kt 的类型错误，双击跳到 2:18；保存三次加一个标签后 Show History 列出全部版本，Revert 到最早版本后磁盘内容恢复。截图：reports/Problems-TODO-LocalHistory-2026-10-15/。
 
+## 19. Android 资源（2026-10-15）
+
+代码：`src/domain/android_resources.rs`（资源引用、values 解析、颜色解析）、`src/infra/resource_scanner.rs`（扫描各模块 `src/<sourceSet>/res`）、`src/usecase/android_resources.rs`（资源表、值解析、gutter 预览），接入 `src/index/service.rs` 和 `src/ui/file_editor/previews.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 资源表：扫描所有模块所有 source set 的 `res/`，包括 values（string、color、dimen、bool、integer、style、array 等）、文件资源（drawable、mipmap、layout、menu、xml…）和布局里的 `@+id`；res 下文件保存或变化时增量更新 | ✅ |
+| Ctrl+B / Ctrl+点击：Kotlin / Java 里的 `R.string.app_name`、XML 里的 `@string/app_name`、`@color/x`、`@drawable/x`、`@id/x` 跳到声明；多个限定符目录（values、values-zh…）都有时弹 Choose Declaration，按 AS 的目录顺序排列 | ✅ |
+| 悬停：显示资源的值（跟随 `@color/a` → `@color/b` 引用链）和所在目录、文件 | ✅ |
+| Find Usages（Alt+F7）：分 Declarations、代码里的引用、XML 里的引用三组 | ✅ |
+| gutter 预览：代码和 XML 里引用颜色的行显示色块，引用 png / webp / jpg 图片的行显示缩略图（取最高密度目录的那张）；colors.xml 里每个颜色定义也显示色块 | ✅ |
+| vector drawable / shape 预览、点击色块打开取色器、字符串折叠显示值、Translations Editor、Manifest 合并视图、框架资源 `android.R` / `@android:` | ❌ 未做 |
+
+Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 values-zh 两个声明，悬停显示值；Ctrl+B `R.color.purple_500` 打开 colors.xml 第 2 行；Alt+F7 分组正确；MainActivity.kt 和 activity_main.xml 的 gutter 显示紫色、青色色块（`@color/accent` 跟随到 teal_200）和 ic_logo 缩略图。截图：reports/Android资源-2026-10-15/。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。

@@ -4,6 +4,7 @@
 //! actions: Show History for Selection, Annotate, Show Current Revision,
 //! Rollback Lines.
 
+mod previews;
 mod problems;
 
 use std::cell::RefCell;
@@ -351,6 +352,9 @@ pub struct FileEditor {
     gutter_line: Rc<std::cell::Cell<Option<usize>>>,
     /// Icon slots the implementation markers take.
     hierarchy_slots: usize,
+    /// Resource previews by line (color swatches, drawable thumbnails).
+    previews: Vec<(u32, crate::usecase::android_resources::Preview)>,
+    previews_task: Option<gpui_kit::Task<()>>,
     popup_focus: gpui_kit::FocusHandle,
     /// The file couldn't be read: no editing, saving or reloading.
     error: Option<String>,
@@ -599,6 +603,7 @@ impl FileEditor {
                 this.update_markers(cx);
                 this.update_hierarchy(true, cx);
                 this.update_problems(true, cx);
+                this.update_previews(true, cx);
                 this.follow_bookmarks(cx);
                 // The annotations follow the edit (new lines: Not Committed Yet).
                 if this.annotation.is_some() {
@@ -629,6 +634,8 @@ impl FileEditor {
             gutter_click: Rc::default(),
             gutter_line: Rc::default(),
             hierarchy_slots: 0,
+            previews: Vec::new(),
+            previews_task: None,
             popup_focus: cx.focus_handle(),
             error,
             notice: None,
@@ -767,11 +774,13 @@ impl FileEditor {
         self._subscriptions.push(cx.subscribe(&index, |this, _, event: &crate::index::service::IndexEvent, cx| {
             if matches!(event, crate::index::service::IndexEvent::Changed) {
                 this.update_hierarchy(false, cx);
+                this.update_previews(false, cx);
             }
         }));
         self.code_index = Some(index);
         self.update_hierarchy(false, cx);
         self.update_problems(false, cx);
+        self.update_previews(false, cx);
         self.attach_compiler(cx);
     }
 
@@ -1540,7 +1549,7 @@ impl FileEditor {
     fn apply_gutter_extra(&mut self, cx: &mut Context<Self>) {
         let shown = crate::settings::Settings::get(cx).diff.show_gutter_icons;
         let bookmarked = self.bookmark_file().is_some_and(|f| crate::bookmarks::Bookmarks::get(cx).of_file(&f).next().is_some());
-        let slots = if shown { self.hierarchy_slots + bookmarked as usize } else { 0 };
+        let slots = if shown { self.hierarchy_slots + bookmarked as usize + !self.previews.is_empty() as usize } else { 0 };
         let extra = if slots == 0 { px(0.) } else { px(GUTTER_ICON_GAP + GUTTER_ICON_SLOT * slots as f32) };
         self.state.update(cx, |state, cx| state.set_gutter_extra(extra, cx));
     }
@@ -1762,6 +1771,12 @@ impl Render for FileEditor {
         let gutter_line = self.gutter_line.clone();
         let bookmark_file = self.bookmark_file();
         let bookmark_strip = self.bookmark_strip(cx);
+        let preview_strip = if crate::settings::Settings::get(cx).diff.show_gutter_icons {
+            let bookmarked = self.bookmark_file().is_some_and(|f| crate::bookmarks::Bookmarks::get(cx).of_file(&f).next().is_some());
+            self.preview_strip(self.hierarchy_slots + bookmarked as usize)
+        } else {
+            None
+        };
         let icons_shown = crate::settings::Settings::get(cx).diff.show_gutter_icons;
         let annotation_gutter = self
             .annotation
@@ -1947,6 +1962,7 @@ impl Render for FileEditor {
                 .when(!read_only, |el| el.child(self.marker_strip(cx)))
                 .when(!self.hierarchy.is_empty() && icons_shown, |el| el.child(self.hierarchy_strip(cx)))
                 .children(bookmark_strip)
+                .children(preview_strip)
                 .when_some(hover_card, |el, (at, card)| {
                     el.child(deferred(anchored().position(point(at.x + px(12.), at.y + px(16.))).child(card)).with_priority(1))
                 })

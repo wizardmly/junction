@@ -26,6 +26,8 @@ pub struct CodeIndex {
     root: Option<PathBuf>,
     pub index: Arc<RwLock<ProjectIndex>>,
     pub lsp: Arc<LspManager>,
+    /// The Android resources of the project's `res` folders.
+    pub resources: Arc<RwLock<crate::usecase::android_resources::ResourceTable>>,
     /// (done, total) while files are being indexed.
     pub progress: Option<(usize, usize)>,
     updating: bool,
@@ -66,6 +68,7 @@ impl CodeIndex {
             root: None,
             index: Arc::default(),
             lsp: Arc::default(),
+            resources: Arc::default(),
             progress: None,
             updating: false,
             library_phase: Arc::default(),
@@ -88,6 +91,7 @@ impl CodeIndex {
         self.lsp.shutdown();
         self.root = root.clone();
         self.index = Arc::default();
+        self.resources = Arc::default();
         self.lsp = Arc::new(LspManager::new(root.clone().unwrap_or_default()));
         self.progress = None;
         self.updating = false;
@@ -107,6 +111,7 @@ impl CodeIndex {
         }
         self.updating = true;
         let index = self.index.clone();
+        let resources = self.resources.clone();
         let phase = self.library_phase.clone();
         // Set when the work replaced part of the index, so views reload
         // the file list only then, not on every progress tick.
@@ -159,6 +164,7 @@ impl CodeIndex {
                         index.save();
                     }
                 }
+                *resources.write().unwrap() = crate::usecase::android_resources::ResourceTable::build(&crate::infra::resource_scanner::ResFolders { root: root.clone() });
                 // Then the libraries, so project navigation is ready first.
                 let (files, previous) = {
                     let index = index.read().unwrap();
@@ -220,10 +226,15 @@ impl CodeIndex {
             return;
         }
         let (index, rel) = (self.index.clone(), rel.to_owned());
+        let (resources, root) = (self.resources.clone(), self.root.clone().unwrap_or_default());
         cx.spawn(async move |this, cx| {
             cx.background_spawn(async move {
                 if let Ok(mut index) = index.write() {
                     index.refresh_file(&rel);
+                }
+                if rel.contains("/res/") || rel.starts_with("res/") {
+                    let table = crate::usecase::android_resources::ResourceTable::build(&crate::infra::resource_scanner::ResFolders { root });
+                    *resources.write().unwrap() = table;
                 }
             })
             .await;
@@ -255,6 +266,10 @@ impl CodeIndex {
     /// its usages). Locals first, then bridges, the language server and the
     /// index. Off the main thread: it parses the file.
     pub fn go_to(&self, path: String, text: String, offset: usize, cx: &App) -> Task<Nav> {
+        // An Android resource: its declarations in the res folders.
+        if let Some(nav) = resource_nav(&self.resources.read().unwrap(), &path, &text, offset) {
+            return Task::ready(nav);
+        }
         let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(Nav::Targets(Vec::new())) };
         let (index, lsp) = (self.index.clone(), self.lsp.clone());
         cx.background_spawn(async move {
@@ -330,6 +345,13 @@ impl CodeIndex {
 
     /// Quick Documentation: the server's hover, else the declaration line.
     pub fn hover(&self, path: String, text: String, offset: usize, cx: &App) -> Task<Option<String>> {
+        if let Some((r, _)) = resource_at(&path, &text, offset) {
+            let table = self.resources.read().unwrap();
+            if let Some(first) = table.declarations(&r).first() {
+                let value = table.value(&r).map(|v| format!(" = {v}")).unwrap_or_default();
+                return Task::ready(Some(format!("`{}`{value}\n\n{} · {}", r.xml(), first.folder, first.path)));
+            }
+        }
         let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(None) };
         let (index, lsp) = (self.index.clone(), self.lsp.clone());
         cx.background_spawn(async move {
@@ -363,6 +385,12 @@ impl CodeIndex {
     /// Find Usages of the identifier at `offset`.
     pub fn usages(&self, path: String, text: String, offset: usize, cx: &App) -> Task<(String, Vec<Usage>)> {
         let Some(root) = self.root.clone() else { return Task::ready((String::new(), Vec::new())) };
+        if let Some((r, _)) = resource_at(&path, &text, offset) {
+            let declarations = self.resources.read().unwrap().declarations(&r).to_vec();
+            if !declarations.is_empty() {
+                return cx.background_spawn(async move { resource_usages(&root, &r, declarations) });
+            }
+        }
         let lang = Self::lang_of(&path, &text);
         let (index, lsp) = (self.index.clone(), self.lsp.clone());
         cx.background_spawn(async move {
@@ -599,4 +627,56 @@ fn walk(dir: &Path, cap: usize) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// The Android resource at `offset`: a reference in Kotlin / Java
+/// (`R.string.x`) or XML (`@string/x`), or a declaration's name in a values
+/// file. The bool tells a declaration (`<string name=…>`, `@+id/`).
+fn resource_at(path: &str, text: &str, offset: usize) -> Option<(crate::domain::android_resources::ResourceRef, bool)> {
+    use crate::domain::android_resources as res;
+    if path.ends_with(".kt") || path.ends_with(".java") || path.ends_with(".kts") {
+        return res::code_reference_at(text, offset).map(|r| (r, false));
+    }
+    if path.ends_with(".xml") {
+        if let Some(r) = res::declaration_at(path, text, offset) {
+            return Some((r, true));
+        }
+        return res::xml_reference_at(text, offset);
+    }
+    None
+}
+
+/// Go to Declaration on a resource: its declarations (a values entry, a
+/// file per folder); on a declaration, its usages.
+fn resource_nav(table: &crate::usecase::android_resources::ResourceTable, path: &str, text: &str, offset: usize) -> Option<Nav> {
+    let (r, declaration) = resource_at(path, text, offset)?;
+    let decls = table.declarations(&r);
+    if decls.is_empty() {
+        return None;
+    }
+    if declaration {
+        return Some(Nav::Declaration);
+    }
+    Some(Nav::Targets(decls.iter().map(|d| Target { path: d.path.clone(), line: d.line, col: d.col, name: r.name.clone(), label: d.folder.clone(), container: None }).collect()))
+}
+
+/// Find Usages of a resource: `R.type.name` in code and `@type/name` in
+/// XML across the project, after its declarations.
+fn resource_usages(root: &Path, r: &crate::domain::android_resources::ResourceRef, declarations: Vec<crate::domain::android_resources::Declaration>) -> (String, Vec<Usage>) {
+    use super::text_search::{SearchContext, TextQuery};
+    let line_of = |path: &str, line: u32| std::fs::read_to_string(root.join(path)).ok().and_then(|t| t.lines().nth(line as usize).map(|l| l.trim().to_owned())).unwrap_or_default();
+    let mut found: Vec<Usage> = declarations.iter().map(|d| Usage { path: d.path.clone(), line: d.line, col: d.col, text: line_of(&d.path, d.line), group: "Declarations".into() }).collect();
+    let query = TextQuery { text: crate::domain::android_resources::usage_pattern(r), case_sensitive: true, whole_words: false, regex: true, mask: None, context: SearchContext::Anywhere };
+    if let Ok(re) = super::text_search::compile(&query) {
+        let files = super::store::list_files(root);
+        let result = super::text_search::search(root, &files, &query, &re, 5000, &std::sync::atomic::AtomicBool::new(false));
+        for m in result.matches {
+            if found.iter().any(|u| u.path == m.path && u.line == m.line) {
+                continue;
+            }
+            let group = if m.path.ends_with(".xml") { "Resource references in XML" } else { "Resource references in code" };
+            found.push(Usage { path: m.path, line: m.line, col: m.col, text: m.text, group: group.into() });
+        }
+    }
+    (r.name.clone(), found)
 }

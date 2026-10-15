@@ -217,7 +217,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 
 5. Debugger（断点、单步、变量、Evaluate、Attach）：Device Explorer 已经走 JDWP 列进程，有底层基础，UI 工作量最大。
 6. 符号级重构（跨文件 Rename、Extract、Change Signature、Optimize Imports）：走 LSP rename / codeAction。
-7. Android 资源：`R.string.x` 跳到 xml、颜色/drawable gutter 预览、Translations Editor、Manifest 合并视图。索引里加资源表即可做跳转和预览。
+7. ✅ Android 资源（2026-10-15，FEATURES.md 第 19 节）：`R.x.y` / `@x/y` 跳转、悬停显示值、Find Usages、颜色和图片 gutter 预览。剩 Translations Editor、Manifest 合并视图、vector drawable 预览。
 8. 测试：gutter ▶ 跑单个测试、结果树；Gradle test 任务 + 解析 JUnit XML。
 9. Gradle 文件辅助：`libs.versions.toml` 跳转、依赖新版本提示（依赖第 2 项）。
 10. ✅ Problems / TODO 工具窗口、Local History（2026-10-15，FEATURES.md 第 18 节）。
@@ -255,5 +255,5 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 ## 8. 接手建议
 
 1. 先编译运行一次，打开一个 Android 项目和一个多仓库目录，对照 FEATURES.md 熟悉界面。
-2. 下一步按维护者定的顺序做 6.2：Android 资源 → Gradle 文件辅助 → 测试 → Debugger。新功能按第 4 节的 Clean 架构分层写。
+2. 下一步按维护者定的顺序做 6.2：Gradle 文件辅助 → 测试 → Debugger。新功能按第 4 节的 Clean 架构分层写。
 3. 动 `vendor/`、索引缓存结构、`release.yml` 之前，先读第 4 节对应的坑。

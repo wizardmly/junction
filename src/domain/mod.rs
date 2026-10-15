@@ -5,6 +5,7 @@
 //! Layers (dependencies point inward only):
 //! `ui` → `usecase` → `domain` ← `infra`.
 
+pub mod android_resources;
 pub mod build;
 pub mod completion;
 pub mod diagnostics;
