@@ -1,8 +1,11 @@
-//! Introduce Variable (Ctrl+Alt+V), as IntelliJ's: the names it suggests
-//! for an expression (KotlinNameSuggester's: the called or selected name
-//! without `get` / `is` / `set` and its camel-case tails, else one for
-//! the literal's type), and the edit declaring the variable before the
-//! statement and putting its name where the expression was.
+//! Introduce Variable (Ctrl+Alt+V) and Introduce Constant (Ctrl+Alt+C),
+//! as IntelliJ's: the names they suggest for an expression
+//! (KotlinNameSuggester's: the called or selected name without `get` /
+//! `is` / `set` and its camel-case tails, else one for the literal's type;
+//! a constant's in NameUtil.capitalizeAndUnderscore's `UPPER_CASE`), and
+//! the edits declaring it (a local before the statement, a constant at the
+//! top level or first in its class) and putting its name where the
+//! expression was.
 
 use std::ops::Range;
 
@@ -206,7 +209,99 @@ pub fn introduce(style: ImportStyle, text: &str, extraction: &Extraction, all: b
     for o in chosen.iter().skip(1) {
         edits.push((o.range.clone(), name.to_owned(), None));
     }
-    // An insertion at a line start goes before an occurrence there.
+    Ok(apply_edits(text, edits, name))
+}
+
+/// The words of a name or text: `userName` → [user, Name], `URLConnection`
+/// → [URL, Connection], `"Hello, world"` → [Hello, world].
+fn words(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for chunk in text.split(|c: char| !c.is_alphanumeric()).filter(|c| !c.is_empty()) {
+        let chars: Vec<char> = chunk.chars().collect();
+        let mut word = String::new();
+        for (i, &c) in chars.iter().enumerate() {
+            let prev = i.checked_sub(1).map(|j| chars[j]);
+            let next = chars.get(i + 1).copied();
+            let starts = c.is_uppercase()
+                && prev.is_some_and(|p| p.is_lowercase() || p.is_ascii_digit() || p.is_uppercase() && next.is_some_and(char::is_lowercase));
+            if starts && !word.is_empty() {
+                out.push(std::mem::take(&mut word));
+            }
+            word.push(c);
+        }
+        if !word.is_empty() {
+            out.push(word);
+        }
+    }
+    out
+}
+
+/// IntelliJ's NameUtil.capitalizeAndUnderscore: `userName` → `USER_NAME`.
+pub fn constant_name(text: &str) -> Option<String> {
+    let name = words(text).iter().map(|w| w.to_uppercase()).collect::<Vec<_>>().join("_");
+    match name.chars().next() {
+        None => None,
+        Some(c) if c.is_ascii_digit() => Some(format!("_{name}")),
+        Some(_) => Some(name),
+    }
+}
+
+/// A constant's names: a string's own words first (`"Hello"` →
+/// `HELLO`), then the variable names in upper case.
+pub fn suggest_constant_names(style: ImportStyle, source: &NameSource, string_content: Option<&str>, taken: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    // Long texts make poor names: their first few words.
+    let from_text = string_content.and_then(|t| constant_name(&words(t).into_iter().take(4).collect::<Vec<_>>().join(" ")));
+    for name in from_text.into_iter().chain(suggest_names(style, source, &|_| false).iter().filter_map(|n| constant_name(n))) {
+        let name = unique(&name, taken);
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// Where Introduce Constant puts the constant, and the expression's
+/// occurrences in the file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstantPlan {
+    pub occurrences: Vec<Range<usize>>,
+    pub selected: usize,
+    /// The start of the line the declaration goes before, and its
+    /// indentation.
+    pub insert_at: usize,
+    pub indent: String,
+    pub source: NameSource,
+    /// Java: the field's type.
+    pub java_type: Option<String>,
+    /// A string literal's text, for its name.
+    pub string_content: Option<String>,
+}
+
+/// Declares the constant (Kotlin `private const val` before the top-level
+/// declaration, Java `public static final` first in the class, a blank
+/// line after it) and puts its name at the occurrences replaced.
+pub fn introduce_constant(style: ImportStyle, text: &str, plan: &ConstantPlan, all: bool, name: &str) -> Result<Introduced, String> {
+    let chosen: Vec<&Range<usize>> = if all { plan.occurrences.iter().collect() } else { plan.occurrences.get(plan.selected).into_iter().collect() };
+    let first = *chosen.first().ok_or("Cannot find an expression to introduce")?;
+    let expression = &text[first.clone()];
+    let declaration = match style {
+        ImportStyle::Kotlin => format!("private const val {name} = {expression}"),
+        ImportStyle::Java => {
+            let ty = plan.java_type.as_deref().ok_or("Cannot perform refactoring without a type")?;
+            format!("public static final {ty} {name} = {expression};")
+        }
+    };
+    let name_in_decl = plan.indent.len() + declaration.find(&format!(" {name} ")).map_or(0, |i| i + 1);
+    let mut edits: Vec<(Range<usize>, String, Option<usize>)> = vec![(plan.insert_at..plan.insert_at, format!("{}{declaration}\n\n", plan.indent), Some(name_in_decl))];
+    edits.extend(chosen.iter().map(|r| ((*r).clone(), name.to_owned(), None)));
+    Ok(apply_edits(text, edits, name))
+}
+
+/// One edit covering `edits` (range, replacement, where the declared
+/// name is in the replacement); an insertion goes before a replacement
+/// at the same place.
+fn apply_edits(text: &str, mut edits: Vec<(Range<usize>, String, Option<usize>)>, name: &str) -> Introduced {
     edits.sort_by_key(|(r, _, decl)| (r.start, decl.is_none(), r.end));
     let start = edits.first().map_or(0, |(r, _, _)| r.start);
     let end = edits.iter().map(|(r, _, _)| r.end).max().unwrap_or(start);
@@ -223,7 +318,7 @@ pub fn introduce(style: ImportStyle, text: &str, extraction: &Extraction, all: b
         last = range.end;
     }
     out.push_str(&text[last..end]);
-    Ok(Introduced { range: start..end, text: out, name_at })
+    Introduced { range: start..end, text: out, name_at }
 }
 
 #[cfg(test)]
@@ -234,6 +329,54 @@ mod tests {
         let mut out = text.to_owned();
         out.replace_range(i.range.clone(), &i.text);
         out
+    }
+
+    #[test]
+    fn suggests_constant_names() {
+        assert_eq!(constant_name("userName").as_deref(), Some("USER_NAME"));
+        assert_eq!(constant_name("URLConnection").as_deref(), Some("URL_CONNECTION"));
+        assert_eq!(constant_name("Hello, world!").as_deref(), Some("HELLO_WORLD"));
+        assert_eq!(constant_name("2 items").as_deref(), Some("_2_ITEMS"));
+        assert_eq!(constant_name("..."), None);
+        let free = |_: &str| false;
+        assert_eq!(suggest_constant_names(ImportStyle::Kotlin, &NameSource::Literal(Literal::String), Some("Hello world"), &free), ["HELLO_WORLD", "STRING", "STR", "S", "TEXT", "VALUE"]);
+        assert_eq!(suggest_constant_names(ImportStyle::Kotlin, &NameSource::Literal(Literal::Int), None, &|n| n == "I"), ["I2", "N", "VALUE"]);
+    }
+
+    #[test]
+    fn introduces_constants() {
+        let text = "val a = 1\n\nfun foo(): Int {\n    val x = 2 + 3\n    return 2\n}\n";
+        let at = |nth: usize| { let i = text.match_indices('2').nth(nth).unwrap().0; i..i + 1 };
+        let plan = ConstantPlan {
+            occurrences: vec![at(0), at(1)],
+            selected: 1,
+            insert_at: text.find("fun foo").unwrap(),
+            indent: String::new(),
+            source: NameSource::Literal(Literal::Int),
+            java_type: None,
+            string_content: None,
+        };
+        let done = introduce_constant(ImportStyle::Kotlin, text, &plan, true, "I").unwrap();
+        let mut out = text.to_owned();
+        out.replace_range(done.range.clone(), &done.text);
+        // As IntelliJ's test data (introduceConstant/extractInteger.kt).
+        assert_eq!(out, "val a = 1\n\nprivate const val I = 2\n\nfun foo(): Int {\n    val x = I + 3\n    return I\n}\n");
+        assert_eq!(&out[done.name_at.clone()], "I");
+        let java = "class Test {\n\n  int get() {\n    return 42;\n  }\n}\n";
+        let i = java.find("42").unwrap();
+        let plan = ConstantPlan {
+            occurrences: vec![i..i + 2],
+            selected: 0,
+            insert_at: java.find("  int get").unwrap(),
+            indent: "  ".into(),
+            source: NameSource::Literal(Literal::Int),
+            java_type: Some("int".into()),
+            string_content: None,
+        };
+        let done = introduce_constant(ImportStyle::Java, java, &plan, false, "ANSWER").unwrap();
+        let mut out = java.to_owned();
+        out.replace_range(done.range.clone(), &done.text);
+        assert_eq!(out, "class Test {\n\n  public static final int ANSWER = 42;\n\n  int get() {\n    return ANSWER;\n  }\n}\n");
     }
 
     #[test]

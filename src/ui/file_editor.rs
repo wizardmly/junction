@@ -57,6 +57,7 @@ actions!(
         RenameElement,
         OptimizeImports,
         IntroduceVariable,
+        IntroduceConstant,
         FindNext,
         FindPrevious,
         CloseChangePopup,
@@ -109,6 +110,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("shift-f6", RenameElement, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-o", OptimizeImports, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-v" } else { "ctrl-alt-v" }, IntroduceVariable, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-c" } else { "ctrl-alt-c" }, IntroduceConstant, Some(CONTEXT)),
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
         KeyBinding::new(if cfg!(target_os = "macos") { "f3" } else { "f11" }, ToggleBookmark, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "alt-f3" } else { "ctrl-f11" }, ToggleBookmarkWithMnemonic, Some(CONTEXT)),
@@ -1050,44 +1052,76 @@ impl FileEditor {
     }
 
     fn introduce_variable_action(&mut self, _: &IntroduceVariable, window: &mut Window, cx: &mut Context<Self>) {
-        self.introduce_variable(window, cx);
+        self.introduce(crate::ui::introduce_dialog::Introduce::Variable, window, cx);
     }
 
-    /// Refactor › Introduce Variable (Ctrl+Alt+V): the selected
-    /// expression, or with none the one chosen from those at the caret.
-    pub fn introduce_variable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn introduce_constant_action(&mut self, _: &IntroduceConstant, window: &mut Window, cx: &mut Context<Self>) {
+        self.introduce(crate::ui::introduce_dialog::Introduce::Constant, window, cx);
+    }
+
+    /// Refactor › Introduce Variable (Ctrl+Alt+V) / Constant (Ctrl+Alt+C):
+    /// the selected expression, or with none the one chosen from those at
+    /// the caret.
+    pub fn introduce(&mut self, kind: crate::ui::introduce_dialog::Introduce, window: &mut Window, cx: &mut Context<Self>) {
         let Some((lang, _)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
         let text = self.text(cx);
         let selection = self.state.read(cx).selected_range();
         match crate::index::introduce::expressions_at(lang, &text, selection) {
-            Err(message) => Self::hint("Introduce Variable", format!("Cannot perform refactoring.\n{message}"), window, cx),
-            Ok(ranges) if ranges.len() == 1 => self.introduce_variable_for(ranges[0].clone(), window, cx),
-            Ok(ranges) => self.choose_expression(&text, ranges, window, cx),
+            Err(message) => Self::hint(Self::introduce_title(kind), format!("Cannot perform refactoring.\n{message}"), window, cx),
+            Ok(ranges) if ranges.len() == 1 => self.introduce_for(kind, ranges[0].clone(), window, cx),
+            Ok(ranges) => self.choose_expression(kind, &text, ranges, window, cx),
         }
     }
 
-    /// Introduce Variable for the expression at `range`: the dialog, then
-    /// the edit, the caret after the new name.
-    pub(super) fn introduce_variable_for(&mut self, range: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::domain::introduce_variable::{introduce, suggest_names};
-        let Some((lang, style)) = self.jvm_style() else { return };
-        let text = self.text(cx);
-        let (extraction, taken) = match crate::index::introduce::extraction(lang, &text, range) {
-            Ok(found) => found,
-            Err(message) => return Self::hint("Introduce Variable", format!("Cannot perform refactoring.\n{message}"), window, cx),
-        };
-        if style == crate::domain::imports::ImportStyle::Java && extraction.java_type.is_none() {
-            return Self::hint("Introduce Variable", "Cannot perform refactoring.\nCannot perform refactoring without a type", window, cx);
+    fn introduce_title(kind: crate::ui::introduce_dialog::Introduce) -> &'static str {
+        match kind {
+            crate::ui::introduce_dialog::Introduce::Variable => "Introduce Variable",
+            crate::ui::introduce_dialog::Introduce::Constant => "Introduce Constant",
         }
-        let suggestions = suggest_names(style, &extraction.source, &|n| taken.iter().any(|t| t == n));
-        let occurrences = extraction.occurrences.len();
+    }
+
+    /// Introduce Variable or Constant for the expression at `range`: the
+    /// dialog, then the edit, the caret after the new name.
+    pub(super) fn introduce_for(&mut self, kind: crate::ui::introduce_dialog::Introduce, range: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::imports::ImportStyle;
+        use crate::domain::introduce_variable::{introduce, introduce_constant, suggest_constant_names, suggest_names};
+        use crate::ui::introduce_dialog::Introduce;
+        let Some((lang, style)) = self.jvm_style() else { return };
+        let title = Self::introduce_title(kind);
+        let text = self.text(cx);
+        let fail = |message: String, window: &mut Window, cx: &mut Context<Self>| Self::hint(title, format!("Cannot perform refactoring.\n{message}"), window, cx);
+        // The plan, its names and occurrences, and the edit it makes.
+        type Edit = Box<dyn Fn(&str, bool, &str, bool) -> Result<crate::domain::introduce_variable::Introduced, String>>;
+        let (suggestions, occurrences, has_type, edit): (Vec<String>, usize, bool, Edit) = match kind {
+            Introduce::Variable => match crate::index::introduce::extraction(lang, &text, range) {
+                Err(message) => return fail(message, window, cx),
+                Ok((extraction, taken)) => (
+                    suggest_names(style, &extraction.source, &|n| taken.iter().any(|t| t == n)),
+                    extraction.occurrences.len(),
+                    extraction.java_type.is_some(),
+                    Box::new(move |text, all, name, modifier| introduce(style, text, &extraction, all, name, modifier)),
+                ),
+            },
+            Introduce::Constant => match crate::index::introduce::constant(lang, &text, range) {
+                Err(message) => return fail(message, window, cx),
+                Ok((plan, taken)) => (
+                    suggest_constant_names(style, &plan.source, plan.string_content.as_deref(), &|n| taken.iter().any(|t| t == n)),
+                    plan.occurrences.len(),
+                    plan.java_type.is_some(),
+                    Box::new(move |text, all, name, _| introduce_constant(style, text, &plan, all, name)),
+                ),
+            },
+        };
+        if style == ImportStyle::Java && !has_type {
+            return fail("Cannot perform refactoring without a type".into(), window, cx);
+        }
         let editor = cx.entity().downgrade();
-        crate::ui::introduce_dialog::open(style, suggestions, occurrences, move |request, window, cx| {
+        crate::ui::introduce_dialog::open(kind, style, suggestions, occurrences, move |request, window, cx| {
             editor
                 .update(cx, |this, cx| {
                     let text = this.text(cx);
-                    match introduce(style, &text, &extraction, request.all, &request.name, request.modifier) {
-                        Err(message) => Self::hint("Introduce Variable", message, window, cx),
+                    match edit(&text, request.all, &request.name, request.modifier) {
+                        Err(message) => Self::hint(title, message, window, cx),
                         Ok(done) => this.state.update(cx, |state, cx| {
                             state.set_selected_range(done.range.clone(), cx);
                             state.replace(&done.text, window, cx);
@@ -1993,6 +2027,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::rename_element))
             .on_action(cx.listener(Self::optimize_imports_action))
             .on_action(cx.listener(Self::introduce_variable_action))
+            .on_action(cx.listener(Self::introduce_constant_action))
             .on_action(cx.listener(Self::find_next))
             .on_action(cx.listener(|this, _: &OpenFind, window, cx| this.open_find(false, window, cx)))
             .on_action(cx.listener(|this, _: &OpenReplace, window, cx| this.open_find(true, window, cx)))
@@ -2122,7 +2157,8 @@ impl Render for FileEditor {
                                     "Refactor",
                                     NativeMenu::new()
                                         .menu_with_disabled("Rename…", read_only, Box::new(RenameElement))
-                                        .menu_with_disabled("Introduce Variable…", read_only, Box::new(IntroduceVariable)),
+                                        .menu_with_disabled("Introduce Variable…", read_only, Box::new(IntroduceVariable))
+                                        .menu_with_disabled("Introduce Constant…", read_only, Box::new(IntroduceConstant)),
                                 )
                                 .menu("Select in Project View", Box::new(crate::ui::workspace::SelectInProject))
                                 .separator()

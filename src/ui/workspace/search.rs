@@ -144,7 +144,12 @@ impl Workspace {
             })),
             ("Introduce Variable…", "Ctrl+Alt+V", op(|this, window, cx| {
                 if let Some(editor) = this.editor().cloned() {
-                    editor.update(cx, |e, cx| e.introduce_variable(window, cx));
+                    editor.update(cx, |e, cx| e.introduce(crate::ui::introduce_dialog::Introduce::Variable, window, cx));
+                }
+            })),
+            ("Introduce Constant…", "Ctrl+Alt+C", op(|this, window, cx| {
+                if let Some(editor) = this.editor().cloned() {
+                    editor.update(cx, |e, cx| e.introduce(crate::ui::introduce_dialog::Introduce::Constant, window, cx));
                 }
             })),
             ("Rename…", "Shift+F6", op(|this, _, cx| {

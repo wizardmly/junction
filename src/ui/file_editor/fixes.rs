@@ -42,8 +42,9 @@ pub(super) struct ContextActions {
 #[derive(Clone)]
 pub(super) enum Choice {
     Fix(Fix),
-    /// An expression to introduce a variable for (its text, one line).
-    Expression(String),
+    /// An expression to introduce a variable or constant for (its text,
+    /// one line).
+    Expression(String, crate::ui::introduce_dialog::Introduce),
 }
 
 /// The byte offset of a line and character column.
@@ -84,7 +85,7 @@ impl FileEditor {
 
     /// Introduce Variable's "Expressions" popup at the caret: the one
     /// chosen is highlighted in the text as the list moves.
-    pub(super) fn choose_expression(&mut self, text: &str, ranges: Vec<std::ops::Range<usize>>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn choose_expression(&mut self, kind: crate::ui::introduce_dialog::Introduce, text: &str, ranges: Vec<std::ops::Range<usize>>, window: &mut Window, cx: &mut Context<Self>) {
         let cursor = self.state.read(cx).cursor();
         let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
         let items = ranges
@@ -92,7 +93,7 @@ impl FileEditor {
             .map(|r| {
                 let one_line = text[r.clone()].split_whitespace().collect::<Vec<_>>().join(" ");
                 let label = if one_line.chars().count() > 60 { format!("{}…", one_line.chars().take(60).collect::<String>()) } else { one_line };
-                (r, Choice::Expression(label))
+                (r, Choice::Expression(label, kind))
             })
             .collect();
         let caret = Some(self.state.read(cx).selected_range());
@@ -126,11 +127,11 @@ impl FileEditor {
                 state.set_selected_range(range, cx);
                 state.replace(&fix.replacement, window, cx);
             }),
-            Choice::Expression(_) => {
+            Choice::Expression(_, kind) => {
                 if let Some(caret) = popup.caret {
                     self.state.update(cx, |state, cx| state.set_selected_range(caret, cx));
                 }
-                self.introduce_variable_for(range, window, cx);
+                self.introduce_for(kind, range, window, cx);
             }
         }
         cx.notify();
@@ -140,7 +141,7 @@ impl FileEditor {
     /// in the text as IntelliJ does: a box per line it spans.
     pub(super) fn render_expression_highlight(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let popup = self.context_actions.as_ref()?;
-        let (range, Choice::Expression(_)) = popup.items.get(popup.selected)? else { return None };
+        let (range, Choice::Expression(..)) = popup.items.get(popup.selected)? else { return None };
         let state = self.state.read(cx);
         let text = state.value().to_string();
         let mut boxes = Vec::new();
@@ -168,7 +169,7 @@ impl FileEditor {
             let selected = ix == popup.selected;
             let (icon, label) = match choice {
                 Choice::Fix(fix) => (Some(icons::INTENTION_BULB), fix.title.clone()),
-                Choice::Expression(text) => (None, text.clone()),
+                Choice::Expression(text, _) => (None, text.clone()),
             };
             h_flex()
                 .id(("context-action", ix))

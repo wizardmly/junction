@@ -1,7 +1,8 @@
-//! Android Studio's Introduce Variable dialog (Ctrl+Alt+V): the name, with
-//! the names IntelliJ suggests for the expression; "Replace all
-//! occurrences" when the expression is there more than once; "Declare
-//! with var" in Kotlin, "Declare final" in Java.
+//! Android Studio's Introduce Variable (Ctrl+Alt+V) and Introduce
+//! Constant (Ctrl+Alt+C) dialogs: the name, with the names IntelliJ
+//! suggests for the expression; "Replace all occurrences" when the
+//! expression is there more than once; for a variable "Declare with var"
+//! in Kotlin, "Declare final" in Java.
 
 use std::rc::Rc;
 
@@ -31,6 +32,8 @@ pub struct IntroduceRequest {
 
 pub struct IntroduceView {
     style: ImportStyle,
+    /// "Declare with var" / "Declare final"; none for a constant.
+    modifier_label: Option<&'static str>,
     name: Entity<InputState>,
     suggestions: Vec<String>,
     occurrences: usize,
@@ -72,7 +75,6 @@ impl Render for IntroduceView {
                     cx.notify();
                 }))
         });
-        let modifier_label = if self.style == ImportStyle::Java { "Declare final" } else { "Declare with var" };
         v_flex()
             .gap_2()
             .child(h_flex().gap_2().child(div().text_sm().child("Name:")).child(div().flex_1().child(Input::new(&self.name))))
@@ -93,15 +95,26 @@ impl Render for IntroduceView {
                         })),
                 )
             })
-            .child(Checkbox::new("introduce-modifier").label(modifier_label).checked(self.modifier).on_change(cx.listener(|this, v: &bool, _, cx| {
-                this.modifier = *v;
-                cx.notify();
-            })))
+            .when_some(self.modifier_label, |el, label| {
+                el.child(Checkbox::new("introduce-modifier").label(label).checked(self.modifier).on_change(cx.listener(|this, v: &bool, _, cx| {
+                    this.modifier = *v;
+                    cx.notify();
+                })))
+            })
     }
 }
 
-/// Opens Introduce Variable; Refactor hands the request to `on_ok`.
+/// Which dialog.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Introduce {
+    Variable,
+    Constant,
+}
+
+/// Opens Introduce Variable or Constant; Refactor hands the request to
+/// `on_ok`.
 pub fn open(
+    kind: Introduce,
     style: ImportStyle,
     suggestions: Vec<String>,
     occurrences: usize,
@@ -117,14 +130,21 @@ pub fn open(
                 cx.notify();
             }
         });
-        // Android Studio's default: replace all when there are several.
-        IntroduceView { style, name, suggestions, occurrences, all: occurrences > 1, modifier: false, _subscription }
+        let modifier_label = match (kind, style) {
+            (Introduce::Constant, _) => None,
+            (_, ImportStyle::Java) => Some("Declare final"),
+            _ => Some("Declare with var"),
+        };
+        // Android Studio's defaults: replace all, except a Java constant's
+        // (JavaRefactoringSettings.INTRODUCE_CONSTANT_REPLACE_ALL).
+        let all = occurrences > 1 && !(kind == Introduce::Constant && style == ImportStyle::Java);
+        IntroduceView { style, modifier_label, name, suggestions, occurrences, all, modifier: false, _subscription }
     });
     let focus = view.read(cx).name.clone();
     let on_ok = Rc::new(on_ok);
     window.open_dialog(cx, move |dialog, _, _| {
         let (view_ok, on_ok) = (view.clone(), on_ok.clone());
-        dialog.title("Introduce Variable").w(px(440.)).child(view.clone()).footer(dialogs::footer("Refactor")).on_ok(move |_, window, cx| {
+        dialog.title(if kind == Introduce::Constant { "Introduce Constant" } else { "Introduce Variable" }).w(px(440.)).child(view.clone()).footer(dialogs::footer("Refactor")).on_ok(move |_, window, cx| {
             let Ok(request) = view_ok.read(cx).request(cx) else { return false };
             on_ok(request, window, cx);
             true

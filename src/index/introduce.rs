@@ -10,7 +10,7 @@ use tree_sitter::Node;
 
 use super::lang::Lang;
 use super::symbols;
-use crate::domain::introduce_variable::{Extraction, Literal, NameSource, Occurrence};
+use crate::domain::introduce_variable::{ConstantPlan, Extraction, Literal, NameSource, Occurrence};
 
 const NO_EXPRESSION: &str = "Cannot find an expression to introduce";
 const NOT_AN_EXPRESSION: &str = "Selected block should represent an expression";
@@ -313,6 +313,183 @@ pub fn extraction(lang: Lang, text: &str, range: Range<usize>) -> Result<(Extrac
     Ok((extraction, declared_names(lang, node, text)))
 }
 
+const NON_CONSTANT_KOTLIN: &str = "Can't introduce constant for non constant expression";
+const NON_CONSTANT_JAVA: &str = "Selected expression cannot be a constant initializer";
+
+/// Kotlin conversions and operators a constant expression may call
+/// (`1.toByte()`, `0xFF.and(0x0F)`): Kotlin evaluates them at compile time.
+const KOTLIN_CONST_CALLS: &[&str] = &[
+    "toByte", "toShort", "toInt", "toLong", "toFloat", "toDouble", "toChar", "toUByte", "toUShort", "toUInt", "toULong", "and", "or", "xor", "inv", "shl", "shr",
+    "ushr", "plus", "minus", "times", "div", "rem", "compareTo", "equals", "not", "unaryMinus", "unaryPlus",
+];
+
+/// Kotlin's names declared `const val` in the file.
+fn kotlin_consts(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, _) in text.match_indices("const val ") {
+        if text[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let name: String = text[i + 10..].trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        if !name.is_empty() {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// Whether Kotlin can evaluate the expression at compile time (IntelliJ
+/// asks the compiler; this is the same rule on the syntax).
+fn kotlin_constant(node: Node, text: &str, consts: &[String]) -> bool {
+    let named: Vec<Node> = {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor).collect()
+    };
+    match node.kind() {
+        // Templates (`"$x"`) are not constant here.
+        "string_literal" => named.iter().all(|c| matches!(c.kind(), "string_content" | "escape_sequence" | "character_escape_seq")),
+        _ if literal(Lang::Kotlin, node, text).is_some() => true,
+        "simple_identifier" => consts.iter().any(|c| c == &text[node.byte_range()]),
+        "parenthesized_expression" | "prefix_expression" | "additive_expression" | "multiplicative_expression" | "comparison_expression"
+        | "equality_expression" | "conjunction_expression" | "disjunction_expression" => named.iter().all(|c| kotlin_constant(*c, text, consts)),
+        // `a shl 2`: its operator is a name.
+        "infix_expression" => named.len() == 3 && kotlin_constant(named[0], text, consts) && kotlin_constant(named[2], text, consts),
+        "call_expression" => {
+            let (Some(callee), Some(suffix)) = (named.first(), named.get(1)) else { return false };
+            if callee.kind() != "navigation_expression" {
+                return false;
+            }
+            let receiver = callee.named_child(0);
+            let method = text[callee.byte_range()].rsplit('.').next().unwrap_or_default().trim();
+            let mut args = Vec::new();
+            let mut stack = vec![*suffix];
+            while let Some(n) = stack.pop() {
+                if n.kind() == "value_argument" {
+                    args.extend(n.named_child((n.named_child_count() as u32).saturating_sub(1)));
+                    continue;
+                }
+                let mut cursor = n.walk();
+                stack.extend(n.named_children(&mut cursor));
+            }
+            KOTLIN_CONST_CALLS.contains(&method)
+                && receiver.is_some_and(|r| kotlin_constant(r, text, consts))
+                && args.iter().all(|a| kotlin_constant(*a, text, consts))
+        }
+        _ => false,
+    }
+}
+
+/// Whether a Java expression can initialize a static field: it uses no
+/// local, parameter, `this` or instance field (an unqualified lower-case
+/// name not declared static in the file).
+fn java_static_safe(node: Node, text: &str, locals: &[String]) -> bool {
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "this" | "super" => return false,
+            "identifier" => {
+                let parent = n.parent();
+                let named_part = parent.is_some_and(|p| {
+                    ["name", "field", "type"].iter().any(|f| p.child_by_field_name(f).is_some_and(|c| c.id() == n.id()))
+                });
+                let name = &text[n.byte_range()];
+                // Declared `static … name =` / `;` somewhere in the file.
+                let static_field = text.match_indices(name).any(|(i, _)| {
+                    let line_start = text[..i].rfind('\n').map_or(0, |j| j + 1);
+                    let line = &text[line_start..i];
+                    line.contains("static ") && !line.contains('(') && text[i + name.len()..].trim_start().starts_with(['=', ';'])
+                });
+                let class_like = name.chars().next().is_some_and(char::is_uppercase);
+                if !named_part && (locals.iter().any(|l| l == name) || !class_like && !static_field) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    true
+}
+
+/// Introduce Constant for the expression at `range`: whether it can be
+/// one, its occurrences in the file, and where the constant goes.
+pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(ConstantPlan, Vec<String>), String> {
+    let tree = symbols::parse(lang, text).ok_or(NO_EXPRESSION)?;
+    let root = tree.root_node();
+    let node = expression_node(lang, root, text, range).ok_or(NOT_AN_EXPRESSION)?;
+    match lang {
+        Lang::Kotlin if !kotlin_constant(node, text, &kotlin_consts(text)) => return Err(NON_CONSTANT_KOTLIN.into()),
+        Lang::Java if !java_static_safe(node, text, &declared_names(lang, node, text)) => return Err(NON_CONSTANT_JAVA.into()),
+        _ => {}
+    }
+    let line_start = |at: usize| text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let (insert_at, indent) = match lang {
+        Lang::Kotlin => {
+            // Before the top-level declaration holding it, its doc comment
+            // staying with it.
+            let mut top = node;
+            while let Some(p) = top.parent() {
+                if p.parent().is_none() {
+                    break;
+                }
+                top = p;
+            }
+            let mut start = top;
+            while let Some(prev) = start.prev_sibling().filter(|p| p.kind().contains("comment") && text[p.end_byte()..start.start_byte()].matches('\n').count() <= 1) {
+                start = prev;
+            }
+            (line_start(start.start_byte()), String::new())
+        }
+        _ => {
+            // First in the nearest class that can hold a static field.
+            let mut n = node;
+            let body = loop {
+                let p = n.parent().ok_or(NO_CONTAINER)?;
+                if p.kind() == "class_body" || p.kind() == "interface_body" || p.kind() == "enum_body" {
+                    let class = p.parent().ok_or(NO_CONTAINER)?;
+                    let top_level = class.parent().is_some_and(|g| g.kind() == "program");
+                    let is_static = class.named_child(0).is_some_and(|m| m.kind() == "modifiers" && text[m.byte_range()].split_whitespace().any(|w| w == "static"));
+                    if top_level || is_static || class.kind() != "class_declaration" {
+                        break p;
+                    }
+                }
+                n = p;
+            };
+            let first = body.named_child(0).ok_or(NO_CONTAINER)?;
+            let at = line_start(first.start_byte());
+            let indent: String = text[at..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            (at, indent)
+        }
+    };
+    let wanted = (node.kind(), normalized(&text[node.byte_range()]));
+    let mut found: Vec<Node> = Vec::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if n.kind() == wanted.0 && is_expression(lang, n, text) && normalized(&text[n.byte_range()]) == wanted.1 {
+            found.push(n);
+            continue;
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    found.sort_by_key(|n| n.start_byte());
+    let selected = found.iter().position(|n| n.id() == node.id()).unwrap_or(0);
+    let string_content = (node.kind() == "string_literal").then(|| text[node.byte_range()].trim_matches('"').to_owned());
+    let plan = ConstantPlan {
+        occurrences: found.iter().map(|n| n.byte_range()).collect(),
+        selected,
+        insert_at,
+        indent,
+        source: name_source(lang, node, text),
+        java_type: (lang == Lang::Java).then(|| java_type(node, text)).flatten(),
+        string_content,
+    };
+    // Every name in the file: a new constant must not shadow or clash.
+    let taken = text.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).map(str::to_owned).collect();
+    Ok((plan, taken))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +512,27 @@ mod tests {
         // A selection must be an expression.
         assert_eq!(expressions_at(Lang::Kotlin, kt, at(kt, "p.getX() ")).unwrap(), vec![at(kt, "p.getX()")]);
         assert_eq!(expressions_at(Lang::Kotlin, kt, at(kt, "getX() +")), Err(NOT_AN_EXPRESSION.into()));
+    }
+
+    #[test]
+    fn plans_constants() {
+        let kt = "val a = 1\n\n/** Doc. */\nfun foo(): Int {\n    val x = 2 + 3\n    println(\"Hi $a\")\n    return 2\n}\n\nconst val K = 4\nfun bar() = K * 2 + a\n";
+        let (plan, _) = constant(Lang::Kotlin, kt, at(kt, "2 + 3")).unwrap();
+        assert_eq!(plan.insert_at, kt.find("/** Doc.").unwrap());
+        let two = kt.find("return 2").unwrap() + 7;
+        let (plan, _) = constant(Lang::Kotlin, kt, two..two + 1).unwrap();
+        // Every `2` in the file: in `2 + 3`, `return 2` and `K * 2`.
+        assert_eq!(plan.occurrences.len(), 3);
+        assert_eq!(plan.selected, 1);
+        assert!(constant(Lang::Kotlin, kt, at(kt, "K * 2")).is_ok());
+        assert_eq!(constant(Lang::Kotlin, kt, at(kt, "K * 2 + a")).unwrap_err(), NON_CONSTANT_KOTLIN);
+        assert_eq!(constant(Lang::Kotlin, kt, at(kt, "\"Hi $a\"")).unwrap_err(), NON_CONSTANT_KOTLIN);
+        let java = "class Test {\n\n  int count;\n  static final int MAX = 3;\n\n  int get(int n) {\n    return Math.max(MAX, 4) + n + count;\n  }\n}\n";
+        let (plan, _) = constant(Lang::Java, java, at(java, "Math.max(MAX, 4)")).unwrap();
+        assert_eq!(plan.insert_at, java.find("  int count").unwrap());
+        assert_eq!(plan.indent, "  ");
+        assert_eq!(constant(Lang::Java, java, at(java, "Math.max(MAX, 4) + n")).unwrap_err(), NON_CONSTANT_JAVA);
+        assert_eq!(constant(Lang::Java, java, at(java, "Math.max(MAX, 4) + n + count")).unwrap_err(), NON_CONSTANT_JAVA);
     }
 
     #[test]

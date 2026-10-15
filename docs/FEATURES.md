@@ -535,6 +535,19 @@ Linux 实测（Xvfb）：`Shapes.kt` 里 7 条 import（含重复的 `java.io.Fi
 
 Linux 实测（Xvfb）：Kotlin 里光标在 `user.getName()` 上按 Ctrl+Alt+V，弹出 Expressions 列表（`user`、`user.getName()`、`"Hello " + user.getName()`、`println(…)`），选第二项时代码里对应高亮；对话框建议 `name`、`value`，3 处出现默认全部替换；Refactor 后在第一处语句前插入 `val name = user.getName()`，三处都换成 `name`。
 
+## 27. Introduce Constant（2026-10-15）
+
+| 功能 | 状态 |
+|---|---|
+| Kotlin / Java 文件里 Ctrl+Alt+C，或右键 Refactor › Introduce Constant…、Find Action；选表达式的方式与 Introduce Variable 相同（选区或 “Expressions” 列表） | ✅ |
+| Kotlin：只接受编译期常量（字面量、不含模板的字符串、它们的运算、`toInt()` / `shl` 等转换和位运算、本文件的 `const val`），否则提示 IntelliJ 的 “Can't introduce constant for non constant expression”；生成 `private const val NAME = …`，放在包含该表达式的顶层声明之前（KDoc 仍跟着原声明），后面空一行 | ✅ |
+| Java：表达式不能用到局部变量、参数、`this` 或实例字段，否则提示 “Selected expression cannot be a constant initializer”；生成 `public static final 类型 NAME = …;`，放在最近的可含静态成员的类的第一个成员之前（IntelliJ 默认可见性 public） | ✅ |
+| 名字照 IntelliJ：字符串常量先用其内容（`"Hello, world"` → `HELLO_WORLD`，NameUtil.capitalizeAndUnderscore），再是变量名建议的大写形式（`STRING`、`STR`、`I`…）；与文件中已有名字冲突时加数字 | ✅ |
+| 同一文件里相同的表达式全部列为可替换处；“Replace all occurrences” 默认值照 AS：Kotlin 勾选，Java 不勾选（INTRODUCE_CONSTANT_REPLACE_ALL） | ✅ |
+| 放进 `companion object` / 其他类、可见性选择、Java 前向引用时放到被引用字段之后、Kotlin 模板中的常量 | ❌ 未做 |
+
+Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+Alt+C，建议 `HELLO_WORLD`，两处出现全部替换，`private const val HELLO_WORLD = "Hello, world"` 插在带 KDoc 的函数之前；选 `"Hello, world" + name` 时提示 “Can't introduce constant for non constant expression”；Ctrl+Z 一步恢复。
+
 ## 阶段
 
 - **M1 骨架**：玻璃窗口、标题栏、工具窗口布局、Log（分支树 + 提交图 + 详情）、Commit 面板基础提交、分支弹窗基础、Console。
