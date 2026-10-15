@@ -11,6 +11,9 @@ on:
     branches: [master]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -29,21 +32,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build (count warnings)
         run: |
+          set -o pipefail
           cargo build --release 2>&1 | tee build.log
-          echo "warnings: $(grep -c '^warning' build.log || true)" | tee -a "$GITHUB_STEP_SUMMARY"
+          count=$(grep -c '^warning' build.log || true)
+          echo "warnings: $count" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Build::$count warnings"
       - name: Unit tests
         run: |
+          set -o pipefail
           git config --global user.name ci
           git config --global user.email ci@example.com
           cargo test --release 2>&1 | tee test.log
           grep -E '^test result' test.log | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Collect the binary and the packages for headless UI checks
+      - name: Collect the binary, the logs and the packages for headless UI checks
         if: always()
         run: |
           mkdir -p out/debs
-          [ -f target/release/junction ] && cp target/release/junction out/
-          cp build.log out/ 2>/dev/null || true
-          cp test.log out/ 2>/dev/null || true
+          if [ -f target/release/junction ]; then cp target/release/junction out/ && strip out/junction; fi
+          cp build.log test.log out/ 2>/dev/null || true
           cd out/debs
           llvm=$(apt-cache depends mesa-vulkan-drivers | awk '/Depends: libllvm/{print $2}' | head -1)
           apt-get download mesa-vulkan-drivers $llvm xdotool libxdo3 || true
@@ -53,3 +59,13 @@ jobs:
           name: linux-ci
           path: out
           retention-days: 7
+      # The same files under refs/ci/<branch> (not a branch), for machines
+      # that can reach GitHub over git but not the artifact storage.
+      - name: Publish to refs/ci
+        if: always() && github.event_name == 'push'
+        run: |
+          cd out
+          git init -q
+          git add -A
+          git -c user.name=ci -c user.email=ci@example.com commit -qm "CI ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" "HEAD:refs/ci/${GITHUB_REF_NAME}"
