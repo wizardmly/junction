@@ -11,14 +11,15 @@ use regex::Regex;
 /// A resource's `R` class: `string`, `color`, `drawable`, `id`…
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ResourceRef {
-    pub kind: String,
-    /// As `R` spells it: `Theme_App` for the style `Theme.App`.
-    pub name: String,
+    pub kind: std::sync::Arc<str>,
+    /// As `R` spells it: `Theme_App` for the style `Theme.App`. Shared:
+    /// a name is declared once per translation.
+    pub name: std::sync::Arc<str>,
 }
 
 impl ResourceRef {
     pub fn new(kind: &str, name: &str) -> Self {
-        Self { kind: normalize_kind(kind).to_owned(), name: field_name(name) }
+        Self { kind: normalize_kind(kind).into(), name: field_name(name).into() }
     }
 
     /// `@string/app_name`.
@@ -31,10 +32,10 @@ impl ResourceRef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Declaration {
     pub resource: ResourceRef,
-    /// Relative to the project root.
-    pub path: String,
+    /// Relative to the project root (shared by the file's declarations).
+    pub path: std::sync::Arc<str>,
     /// The folder: `values`, `values-zh-rCN`, `drawable-hdpi`.
-    pub folder: String,
+    pub folder: std::sync::Arc<str>,
     /// 0-based line and character column of the name (0, 0 for a file).
     pub line: u32,
     pub col: u32,
@@ -83,39 +84,66 @@ pub fn values_folder(path: &str) -> Option<String> {
     (parts.next()? == "res" && (folder == "values" || folder.starts_with("values-")) && file.ends_with(".xml")).then(|| folder.to_owned())
 }
 
-static TAG: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"<(string-array|integer-array|string|color|dimen|bool|integer|fraction|style|plurals|array|attr|declare-styleable|item|drawable)\b([^>]*?)(/?)>"#).unwrap()
-});
-static NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\bname\s*=\s*"([^"]+)""#).unwrap());
-static TYPE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\btype\s*=\s*"([^"]+)""#).unwrap());
+const VALUE_TAGS: [&str; 15] = ["string-array", "integer-array", "string", "color", "dimen", "bool", "integer", "fraction", "style", "plurals", "array", "attr", "declare-styleable", "item", "drawable"];
 static NEW_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"@\+id/([\w.]+)"#).unwrap());
 
+/// `attr="value"` in a tag's attributes: the value and its offset there.
+fn attribute<'a>(attrs: &'a str, attr: &str) -> Option<(&'a str, usize)> {
+    let bytes = attrs.as_bytes();
+    let mut from = 0;
+    while let Some(i) = attrs[from..].find(attr).map(|i| from + i) {
+        from = i + attr.len();
+        if i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b':' || bytes[i - 1] == b'_') {
+            continue;
+        }
+        let rest = attrs[from..].trim_start();
+        let Some(rest) = rest.strip_prefix('=') else { continue };
+        let rest = rest.trim_start();
+        let Some(value) = rest.strip_prefix('"') else { continue };
+        let at = attrs.len() - value.len();
+        return value.find('"').map(|end| (&value[..end], at));
+    }
+    None
+}
+
 /// The values a `res/values*/*.xml` declares, with the offset of each name.
+/// A plain scan over the tags: a translated strings.xml runs to 700 KB and
+/// a project has hundreds of them.
 pub fn parse_values(text: &str) -> Vec<(ResourceRef, usize, Option<String>)> {
     let mut out = Vec::new();
-    for m in TAG.captures_iter(text) {
-        let (tag, attrs) = (&m[1], m.get(2).unwrap());
-        let Some(name) = NAME.captures(attrs.as_str()) else { continue };
-        let name_at = attrs.start() + name.get(1).unwrap().start();
-        let name = &name[1];
-        let kind = match tag {
+    let mut from = 0;
+    while let Some(lt) = text[from..].find('<').map(|i| from + i) {
+        from = lt + 1;
+        let rest = &text[from..];
+        // Comments may hold markup; skip them whole.
+        if rest.starts_with("!--") {
+            from = rest.find("-->").map_or(text.len(), |i| from + i + 3);
+            continue;
+        }
+        let Some(tag) = VALUE_TAGS.iter().find(|t| rest.starts_with(**t) && rest.as_bytes().get(t.len()).is_some_and(|b| !(b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_'))) else { continue };
+        let attrs_start = from + tag.len();
+        let Some(gt) = text[attrs_start..].find('>').map(|i| attrs_start + i) else { break };
+        let self_closing = text.as_bytes()[gt - 1] == b'/';
+        let attrs = &text[attrs_start..if self_closing { gt - 1 } else { gt }];
+        from = gt + 1;
+        let Some((name, name_at)) = attribute(attrs, "name") else { continue };
+        let name_at = attrs_start + name_at;
+        let kind = match *tag {
             // An item is a resource only with a type (`<item type="id" name="x"/>`);
             // inside a style or an array it is not.
-            "item" => match TYPE.captures(attrs.as_str()) {
-                Some(t) => t[1].to_owned(),
+            "item" => match attribute(attrs, "type") {
+                Some((t, _)) => t,
                 None => continue,
             },
             // A framework attribute used in a styleable (`android:textColor`).
             "attr" if name.contains(':') => continue,
-            other => other.to_owned(),
+            other => other,
         };
-        let self_closing = &m[3] == "/";
-        let value = (!self_closing && matches!(kind.as_str(), "string" | "color" | "dimen" | "bool" | "integer" | "fraction" | "drawable")).then(|| {
-            let start = m.get(0).unwrap().end();
-            let end = text[start..].find("</").map_or(text.len(), |i| start + i);
-            unescape(text[start..end].trim())
+        let value = (!self_closing && matches!(kind, "string" | "color" | "dimen" | "bool" | "integer" | "fraction" | "drawable")).then(|| {
+            let end = text[from..].find("</").map_or(text.len(), |i| from + i);
+            unescape(text[from..end].trim())
         });
-        out.push((ResourceRef::new(&kind, name), name_at, value));
+        out.push((ResourceRef::new(kind, name), name_at, value));
     }
     out
 }
@@ -195,13 +223,13 @@ pub fn usage_pattern(r: &ResourceRef) -> String {
     // A style `Theme.App` is `Theme_App` in R but written with dots in XML.
     let xml_name = regex::escape(&r.name).replace('_', "[._]");
     let code = format!(r"\bR\.{}\.{}\b", regex::escape(&r.kind), regex::escape(&r.name));
-    let xml = match r.kind.as_str() {
+    let xml = match &*r.kind {
         "id" => format!(r"@\+?id/{xml_name}\b"),
         "attr" => format!(r#"\?(?:attr/)?{xml_name}\b|name="{xml_name}""#),
         kind => format!(r"@{kind}/{xml_name}\b"),
     };
     // A style's parent by name (`parent="Theme.App"`, `Theme.App.Dark`).
-    let style = if r.kind == "style" { format!(r#"|parent="{xml_name}""#) } else { String::new() };
+    let style = if &*r.kind == "style" { format!(r#"|parent="{xml_name}""#) } else { String::new() };
     format!("{code}|{xml}{style}")
 }
 
@@ -220,8 +248,8 @@ pub fn parse_color(value: &str) -> Option<u32> {
 }
 
 /// The folder Android uses when no qualifier matches comes first, then the rest by name.
-pub fn folder_order(folder: &str) -> (bool, String) {
-    (folder.contains('-'), folder.to_owned())
+pub fn folder_order(folder: &str) -> (bool, &str) {
+    (folder.contains('-'), folder)
 }
 
 #[cfg(test)]

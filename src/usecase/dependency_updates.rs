@@ -23,11 +23,19 @@ pub fn sites(path: &str, text: &str) -> Vec<VersionSite> {
 }
 
 /// Warnings for the sites with a newer version. Looks each module up once.
-pub fn check(source: &dyn VersionSource, text: &str, sites: &[VersionSite]) -> Vec<Problem> {
-    let mut known: HashMap<(String, bool), Option<Vec<String>>> = HashMap::new();
+pub fn check(source: &(dyn VersionSource + Sync), text: &str, sites: &[VersionSite]) -> Vec<Problem> {
+    // The lookups may go to the network: all modules at once, a few at a time.
+    let mut modules: Vec<(String, bool)> = sites.iter().map(|s| (s.module.clone(), s.plugin)).collect();
+    modules.sort();
+    modules.dedup();
+    let known: HashMap<(String, bool), Option<Vec<String>>> = std::thread::scope(|scope| {
+        let chunk = modules.len().div_ceil(8).max(1);
+        let workers: Vec<_> = modules.chunks(chunk).map(|part| scope.spawn(move || part.iter().map(|(m, p)| ((m.clone(), *p), source.versions(m, *p))).collect::<Vec<_>>())).collect();
+        workers.into_iter().flat_map(|w| w.join().unwrap_or_default()).collect()
+    });
     let mut out = Vec::new();
     for site in sites {
-        let available = known.entry((site.module.clone(), site.plugin)).or_insert_with(|| source.versions(&site.module, site.plugin));
+        let available = known.get(&(site.module.clone(), site.plugin)).cloned().flatten();
         let Some(newest) = available.as_deref().and_then(|a| versions::newer(&site.version, a)) else { continue };
         out.push(Problem {
             start: Pos::of(text, site.range.start),

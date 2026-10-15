@@ -54,7 +54,13 @@ impl FileEditor {
             if debounce {
                 cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
             }
-            let problems = cx.background_spawn(async move { dependency_updates::check(&MavenVersions::new(), &text, &sites) }).await;
+            // Its own thread: a lookup may wait on the network, which would
+            // hold up a background executor thread the index needs.
+            let (tx, rx) = futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(dependency_updates::check(&MavenVersions::new(), &text, &sites));
+            });
+            let Ok(problems) = rx.await else { return };
             this.update(cx, |this, cx| {
                 if this.inspection_problems != problems {
                     this.inspection_problems = problems;

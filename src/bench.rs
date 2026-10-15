@@ -259,3 +259,34 @@ fn bench_multi_root_log() {
     time("graph", || git::graph::GraphLayout::build(&merged));
     time("rows", || git::log::CommitRows::build(&merged));
 }
+
+/// The Android helpers that run as the project changes or a file is
+/// edited: the resource table, gutter previews, version catalogs and the
+/// newer-version sites. `JUNCTION_BENCH_FILE=rel/path` previews that file.
+#[test]
+#[ignore]
+fn bench_android() {
+    let root = PathBuf::from(std::env::var("JUNCTION_BENCH").expect("JUNCTION_BENCH"));
+    let source = crate::infra::resource_scanner::ResFolders { root: root.clone() };
+    time("resource stamp", || source.stamp());
+    let table = time("resource table build", || crate::usecase::android_resources::ResourceTable::build(&source));
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    unsafe { malloc_trim(0) };
+    println!("after trim: rss {}  decl size {}", rss(), std::mem::size_of::<crate::domain::android_resources::Declaration>());
+    println!("{:?}", table.stats());
+    let files = time("list files", || index::store::list_files(&root));
+    let query = index::text_search::TextQuery { text: crate::domain::todo::DEFAULT_PATTERN.into(), case_sensitive: false, whole_words: false, regex: true, mask: None, context: index::text_search::SearchContext::InComments };
+    let re = index::text_search::compile(&query).unwrap();
+    let found = time("TODO search", || index::text_search::search(&root, &files, &query, &re, 10_000, &std::sync::atomic::AtomicBool::new(false)).matches.len());
+    println!("  {found} TODO items in {} files", files.len());
+    time("catalogs load", || crate::infra::catalog_files::load(&root, &files));
+    if let Ok(rel) = std::env::var("JUNCTION_BENCH_FILE") {
+        let text = std::fs::read_to_string(root.join(&rel)).unwrap();
+        let n = time("previews", || crate::usecase::android_resources::previews(&table, &rel, &text).len());
+        println!("  {n} previews");
+        time("version sites", || crate::usecase::dependency_updates::sites(&rel, &text).len());
+    }
+}
+

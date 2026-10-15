@@ -31,6 +31,8 @@ pub struct CodeIndex {
     pub resources: Arc<RwLock<crate::usecase::android_resources::ResourceTable>>,
     /// The Gradle version catalogs (`gradle/libs.versions.toml`).
     pub catalogs: Arc<RwLock<Vec<Catalog>>>,
+    /// The res files' stamp the resource table was built from.
+    resources_stamp: Arc<std::sync::atomic::AtomicU64>,
     /// (done, total) while files are being indexed.
     pub progress: Option<(usize, usize)>,
     updating: bool,
@@ -73,6 +75,7 @@ impl CodeIndex {
             lsp: Arc::default(),
             resources: Arc::default(),
             catalogs: Arc::default(),
+            resources_stamp: Arc::default(),
             progress: None,
             updating: false,
             library_phase: Arc::default(),
@@ -97,6 +100,7 @@ impl CodeIndex {
         self.index = Arc::default();
         self.resources = Arc::default();
         self.catalogs = Arc::default();
+        self.resources_stamp = Arc::default();
         self.lsp = Arc::new(LspManager::new(root.clone().unwrap_or_default()));
         self.progress = None;
         self.updating = false;
@@ -118,6 +122,7 @@ impl CodeIndex {
         let index = self.index.clone();
         let resources = self.resources.clone();
         let catalogs = self.catalogs.clone();
+        let resources_stamp = self.resources_stamp.clone();
         let phase = self.library_phase.clone();
         // Set when the work replaced part of the index, so views reload
         // the file list only then, not on every progress tick.
@@ -170,7 +175,7 @@ impl CodeIndex {
                         index.save();
                     }
                 }
-                *resources.write().unwrap() = crate::usecase::android_resources::ResourceTable::build(&crate::infra::resource_scanner::ResFolders { root: root.clone() });
+                rebuild_resources(&root, &resources, &resources_stamp);
                 // Then the libraries, so project navigation is ready first.
                 let (files, previous) = {
                     let index = index.read().unwrap();
@@ -235,6 +240,7 @@ impl CodeIndex {
         let (index, rel) = (self.index.clone(), rel.to_owned());
         let (resources, root) = (self.resources.clone(), self.root.clone().unwrap_or_default());
         let catalogs = self.catalogs.clone();
+        let resources_stamp = self.resources_stamp.clone();
         cx.spawn(async move |this, cx| {
             cx.background_spawn(async move {
                 if let Ok(mut index) = index.write() {
@@ -245,8 +251,7 @@ impl CodeIndex {
                     *catalogs.write().unwrap() = crate::infra::catalog_files::load(&root, &files);
                 }
                 if rel.contains("/res/") || rel.starts_with("res/") {
-                    let table = crate::usecase::android_resources::ResourceTable::build(&crate::infra::resource_scanner::ResFolders { root });
-                    *resources.write().unwrap() = table;
+                    rebuild_resources(&root, &resources, &resources_stamp);
                 }
             })
             .await;
@@ -682,7 +687,7 @@ fn resource_nav(table: &crate::usecase::android_resources::ResourceTable, path: 
     if declaration {
         return Some(Nav::Declaration);
     }
-    Some(Nav::Targets(decls.iter().map(|d| Target { path: d.path.clone(), line: d.line, col: d.col, name: r.name.clone(), label: d.folder.clone(), container: None }).collect()))
+    Some(Nav::Targets(decls.iter().map(|d| Target { path: d.path.to_string(), line: d.line, col: d.col, name: r.name.to_string(), label: d.folder.to_string(), container: None }).collect()))
 }
 
 /// Find Usages of a resource: `R.type.name` in code and `@type/name` in
@@ -690,7 +695,7 @@ fn resource_nav(table: &crate::usecase::android_resources::ResourceTable, path: 
 fn resource_usages(root: &Path, r: &crate::domain::android_resources::ResourceRef, declarations: Vec<crate::domain::android_resources::Declaration>) -> (String, Vec<Usage>) {
     use super::text_search::{SearchContext, TextQuery};
     let line_of = |path: &str, line: u32| std::fs::read_to_string(root.join(path)).ok().and_then(|t| t.lines().nth(line as usize).map(|l| l.trim().to_owned())).unwrap_or_default();
-    let mut found: Vec<Usage> = declarations.iter().map(|d| Usage { path: d.path.clone(), line: d.line, col: d.col, text: line_of(&d.path, d.line), group: "Declarations".into() }).collect();
+    let mut found: Vec<Usage> = declarations.iter().map(|d| Usage { path: d.path.to_string(), line: d.line, col: d.col, text: line_of(&d.path, d.line), group: "Declarations".into() }).collect();
     let query = TextQuery { text: crate::domain::android_resources::usage_pattern(r), case_sensitive: true, whole_words: false, regex: true, mask: None, context: SearchContext::Anywhere };
     if let Ok(re) = super::text_search::compile(&query) {
         let files = super::store::list_files(root);
@@ -703,7 +708,7 @@ fn resource_usages(root: &Path, r: &crate::domain::android_resources::ResourceRe
             found.push(Usage { path: m.path, line: m.line, col: m.col, text: m.text, group: group.into() });
         }
     }
-    (r.name.clone(), found)
+    (r.name.to_string(), found)
 }
 
 /// The version catalog entry at `offset`: an accessor in a build script
@@ -769,4 +774,16 @@ fn catalog_usages(root: &Path, catalogs: &[Catalog], catalog: &Catalog, entry: &
         }
     }
     (entry.key.clone(), found)
+}
+
+/// Rebuilds the resource table when a res file changed since it was built
+/// (checking costs a directory walk; a big app's build, half a second).
+fn rebuild_resources(root: &Path, resources: &RwLock<crate::usecase::android_resources::ResourceTable>, built: &std::sync::atomic::AtomicU64) {
+    let folders = crate::infra::resource_scanner::ResFolders { root: root.to_path_buf() };
+    let stamp = folders.stamp();
+    if built.swap(stamp, std::sync::atomic::Ordering::Relaxed) == stamp && stamp != 0 {
+        return;
+    }
+    let table = crate::usecase::android_resources::ResourceTable::build(&folders);
+    *resources.write().unwrap() = table;
 }

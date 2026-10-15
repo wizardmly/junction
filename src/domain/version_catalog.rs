@@ -88,8 +88,8 @@ static QUOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([^"]*)""#).unw
 
 /// `name = "value"` inside an inline table: the value and its range in `line`.
 fn field(line: &str, name: &str) -> Option<(String, Range<usize>)> {
-    let re = Regex::new(&format!(r#"(?:^|[\s{{,])({})\s*=\s*"([^"]*)""#, regex::escape(name))).ok()?;
-    let c = re.captures(line)?;
+    static FIELD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?:^|[\s{,])([A-Za-z.]+)\s*=\s*"([^"]*)""#).unwrap());
+    let c = FIELD.captures_iter(line).find(|c| &c[1] == name)?;
     let m = c.get(2)?;
     Some((m.as_str().to_owned(), m.range()))
 }

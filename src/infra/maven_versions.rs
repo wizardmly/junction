@@ -5,8 +5,10 @@
 //! (a failed lookup for an hour), so files open without waiting on the
 //! network.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::domain::dependency_versions::VersionSource;
 
@@ -70,14 +72,32 @@ impl MavenVersions {
     }
 }
 
+/// Answers already read this run, so re-checking a file while typing
+/// touches neither the disk nor the network.
+type Remembered = HashMap<(String, bool), (Instant, Option<Vec<String>>)>;
+static MEMORY: LazyLock<Mutex<Remembered>> = LazyLock::new(Default::default);
+
 impl VersionSource for MavenVersions {
     fn versions(&self, module: &str, plugin: bool) -> Option<Vec<String>> {
-        if let Some(answer) = self.cached(module, plugin) {
-            return answer;
+        let key = (module.to_owned(), plugin);
+        if let Some((at, answer)) = MEMORY.lock().ok().and_then(|m| m.get(&key).cloned()) {
+            let fresh = if answer.is_some() { FRESH } else { RETRY };
+            if at.elapsed() < fresh {
+                return answer;
+            }
         }
-        let found = self.fetch(module, plugin);
-        self.store(module, plugin, &found);
-        (!found.is_empty()).then_some(found)
+        let answer = match self.cached(module, plugin) {
+            Some(answer) => answer,
+            None => {
+                let found = self.fetch(module, plugin);
+                self.store(module, plugin, &found);
+                (!found.is_empty()).then_some(found)
+            }
+        };
+        if let Ok(mut m) = MEMORY.lock() {
+            m.insert(key, (Instant::now(), answer.clone()));
+        }
+        answer
     }
 }
 

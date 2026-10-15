@@ -5,28 +5,49 @@ use std::collections::HashMap;
 
 use crate::domain::android_resources::{self as res, Declaration, ResourceRef, ResourceSource};
 
+/// All declarations in one block, grouped by resource (one allocation, so
+/// a big app's few hundred thousand don't fragment the heap), and where
+/// each resource's group is.
 #[derive(Default)]
 pub struct ResourceTable {
-    by_ref: HashMap<ResourceRef, Vec<Declaration>>,
+    all: Vec<Declaration>,
+    by_ref: HashMap<ResourceRef, (u32, u32)>,
 }
 
 impl ResourceTable {
     pub fn build(source: &dyn ResourceSource) -> Self {
-        let mut by_ref: HashMap<ResourceRef, Vec<Declaration>> = HashMap::new();
-        for d in source.scan() {
-            by_ref.entry(d.resource.clone()).or_default().push(d);
+        let mut all = source.scan();
+        // By resource, then the default folder's first.
+        all.sort_unstable_by(|a, b| {
+            (&a.resource, res::folder_order(&a.folder), &a.path, a.line).cmp(&(&b.resource, res::folder_order(&b.folder), &b.path, b.line))
+        });
+        // An id declared in several places of one file counts once per file.
+        all.dedup_by(|a, b| a.resource == b.resource && a.path == b.path && &*a.resource.kind == "id");
+        all.shrink_to_fit();
+        let mut by_ref: HashMap<ResourceRef, (u32, u32)> = HashMap::new();
+        let mut start = 0;
+        for i in 1..=all.len() {
+            if i == all.len() || all[i].resource != all[start].resource {
+                // One copy of each name for all its declarations.
+                let key = all[start].resource.clone();
+                for d in &mut all[start + 1..i] {
+                    d.resource = key.clone();
+                }
+                by_ref.insert(key, (start as u32, i as u32));
+                start = i;
+            }
         }
-        for decls in by_ref.values_mut() {
-            decls.sort_by_key(|d| (res::folder_order(&d.folder), d.path.clone(), d.line));
-            // An id declared in several places of one file counts once per file.
-            decls.dedup_by(|a, b| a.path == b.path && a.resource.kind == "id");
-        }
-        Self { by_ref }
+        Self { all, by_ref }
+    }
+
+    /// (resources, declarations, values) for benchmarks.
+    pub fn stats(&self) -> (usize, usize, usize) {
+        (self.by_ref.len(), self.all.len(), self.all.iter().filter(|d| d.value.is_some()).count())
     }
 
     /// Go to Declaration: every declaration, the default folder's first.
     pub fn declarations(&self, r: &ResourceRef) -> &[Declaration] {
-        self.by_ref.get(r).map_or(&[], Vec::as_slice)
+        self.by_ref.get(r).map_or(&[], |&(a, b)| &self.all[a as usize..b as usize])
     }
 
     /// The default value (the unqualified folder's), following references
@@ -50,7 +71,7 @@ impl ResourceTable {
 
     /// A drawable or mipmap's bitmap to preview (the densest PNG / WebP / JPG).
     pub fn image(&self, r: &ResourceRef) -> Option<&Declaration> {
-        if !matches!(r.kind.as_str(), "drawable" | "mipmap") {
+        if !matches!(&*r.kind, "drawable" | "mipmap") {
             return None;
         }
         let density = |folder: &str| ["xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi"].iter().position(|d| folder.contains(d)).unwrap_or(5);
@@ -70,7 +91,7 @@ mod tests {
     }
 
     fn decl(kind: &str, name: &str, folder: &str, value: Option<&str>) -> Declaration {
-        Declaration { resource: ResourceRef::new(kind, name), path: format!("app/src/main/res/{folder}/x.xml"), folder: folder.into(), line: 1, col: 1, value: value.map(Into::into) }
+        Declaration { resource: ResourceRef::new(kind, name), path: format!("app/src/main/res/{folder}/x.xml").into(), folder: folder.into(), line: 1, col: 1, value: value.map(Into::into) }
     }
 
     #[test]
@@ -82,7 +103,7 @@ mod tests {
             decl("color", "purple", "values", Some("#6200EE")),
         ]));
         let name = ResourceRef::new("string", "app_name");
-        assert_eq!(t.declarations(&name)[0].folder, "values");
+        assert_eq!(&*t.declarations(&name)[0].folder, "values");
         assert_eq!(t.value(&name).as_deref(), Some("App"));
         assert_eq!(t.color(&ResourceRef::new("color", "primary")), Some(0x6200EEFF));
         let marks = previews(&t, "a/Main.kt", "x\nval c = R.color.primary\nR.color.none");
@@ -121,7 +142,7 @@ pub fn previews(table: &ResourceTable, path: &str, text: &str) -> Vec<(u32, Prev
                 let r = ResourceRef::new(kind.as_str(), name.as_str());
                 match kind.as_str() {
                     "color" => table.color(&r).map(Preview::Color),
-                    _ => table.image(&r).map(|d| Preview::Image(d.path.clone())),
+                    _ => table.image(&r).map(|d| Preview::Image(d.path.to_string())),
                 }
             }
             _ => None,
