@@ -10,6 +10,7 @@ pub mod commit_view;
 pub mod compile_service;
 pub mod completion;
 pub mod common;
+pub mod console_view;
 pub mod dialogs;
 pub mod diff_panes;
 pub mod device_manager;

@@ -414,8 +414,8 @@ impl Workspace {
             });
             debug.update(cx, |d, _| d.set_resolver(resolver));
         }
-        let build_view = cx.new(|cx| crate::ui::run_views::BuildView::new(run.clone(), cx));
-        let run_view = cx.new(|cx| crate::ui::run_views::RunView::new(run.clone(), cx));
+        let build_view = cx.new(|cx| crate::ui::run_views::BuildView::new(run.clone(), window, cx));
+        let run_view = cx.new(|cx| crate::ui::run_views::RunView::new(run.clone(), window, cx));
         let variants_view = cx.new(crate::ui::run_views::VariantsView::new);
         let logcat_view = cx.new(|cx| crate::ui::logcat_view::LogcatTabs::new(device_manager.clone(), run.clone(), logcat_project, window, cx));
         let project = cx.new(|cx| crate::ui::project_view::ProjectView::new(code_index.clone(), cx));

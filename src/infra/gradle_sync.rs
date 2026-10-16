@@ -185,6 +185,12 @@ fn parse_module(text: &str) -> Option<ModuleInfo> {
     })
 }
 
+/// `id("com.android.application") apply false`, `alias(…) apply (false)`.
+fn is_unapplied_plugin(line: &str) -> bool {
+    let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("applyfalse") || compact.contains("apply(false)")
+}
+
 /// The modules of a build that was never synced: each directory with a
 /// build file under the build root, typed by the plugins it names.
 pub fn guess_modules(root: &Path, build_root: &Path, files: &[String]) -> Vec<ModuleInfo> {
@@ -197,6 +203,9 @@ pub fn guess_modules(root: &Path, build_root: &Path, files: &[String]) -> Vec<Mo
                 return None;
             }
             let text = std::fs::read_to_string(root.join(f)).unwrap_or_default();
+            // A root build file declares the plugins for its modules with
+            // `apply false`: those don't make it one.
+            let text: String = text.lines().filter(|l| !is_unapplied_plugin(l)).collect::<Vec<_>>().join("\n");
             let kind = if text.contains("com.android.application") || text.contains("android.application") {
                 ModuleType::Application
             } else if text.contains("com.android.") || text.contains("android.library") {
@@ -293,6 +302,19 @@ BUILD SUCCESSFUL in 2s
         assert_eq!(GradleSync.stamp(&dir, &dir, &files), before);
         std::fs::write(dir.join("app/build.gradle.kts"), "changed").unwrap();
         assert_ne!(GradleSync.stamp(&dir, &dir, &files), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_root_declaring_plugins_is_no_app() {
+        let dir = std::env::temp_dir().join(format!("junction-guess-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(dir.join("build.gradle.kts"), "plugins {\n    alias(libs.plugins.android.application) apply false\n    id(\"com.android.library\") apply (false)\n}\n").unwrap();
+        std::fs::write(dir.join("app/build.gradle.kts"), "plugins {\n    alias(libs.plugins.android.application)\n}\n").unwrap();
+        let files: Vec<String> = vec!["build.gradle.kts".into(), "app/build.gradle.kts".into()];
+        let modules = guess_modules(&dir, &dir, &files);
+        let apps: Vec<&str> = modules.iter().filter(|m| m.kind == ModuleType::Application).map(|m| m.path.as_str()).collect();
+        assert_eq!(apps, [":app"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

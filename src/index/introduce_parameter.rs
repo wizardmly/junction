@@ -121,17 +121,18 @@ pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<
             Lang::Kotlin if n.kind() == "call_expression" => {
                 let named = children(n);
                 let (Some(callee), Some(suffix)) = (named.first(), named.iter().find(|c| c.kind() == "call_suffix")) else { continue };
-                let (name, receiver) = match callee.kind() {
-                    "simple_identifier" => (text[callee.byte_range()].to_owned(), None),
+                let (name_node, receiver) = match callee.kind() {
+                    "simple_identifier" => (*callee, None),
                     "navigation_expression" => {
                         let parts = children(*callee);
                         let (Some(target), Some(last)) = (parts.first(), parts.last()) else { continue };
-                        let name = text[last.byte_range()].trim_start_matches(['.', '?']).trim().to_owned();
+                        let Some(id) = children(*last).into_iter().find(|c| c.kind() == "simple_identifier") else { continue };
                         let receiver = text[target.byte_range()].to_owned();
-                        (name, (receiver != "this").then_some(receiver))
+                        (id, (receiver != "this").then_some(receiver))
                     }
                     _ => continue,
                 };
+                let name = &text[name_node.byte_range()];
                 let Some(args) = children(*suffix).into_iter().find(|c| c.kind() == "value_arguments") else { continue };
                 let values: Vec<(Option<String>, String)> = children(args)
                     .into_iter()
@@ -143,13 +144,13 @@ pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<
                         (named, value)
                     })
                     .collect();
-                (name == function && values.len() <= params).then(|| CallSite { args_close: args.end_byte() - 1, args: values, receiver })
+                (name == function && values.len() <= params).then(|| CallSite { name_range: name_node.byte_range(), args_open: args.start_byte(), args_close: args.end_byte() - 1, args: values, receiver })
             }
             Lang::Java if n.kind() == "method_invocation" => {
                 let (Some(name), Some(args)) = (n.child_by_field_name("name"), n.child_by_field_name("arguments")) else { continue };
                 let receiver = n.child_by_field_name("object").map(|o| text[o.byte_range()].to_owned()).filter(|r| r != "this");
                 let values: Vec<(Option<String>, String)> = children(args).into_iter().filter(|a| !a.kind().ends_with("comment")).map(|a| (None, text[a.byte_range()].to_owned())).collect();
-                (&text[name.byte_range()] == function && values.len() == params).then(|| CallSite { args_close: args.end_byte() - 1, args: values, receiver })
+                (&text[name.byte_range()] == function && values.len() == params).then(|| CallSite { name_range: name.byte_range(), args_open: args.start_byte(), args_close: args.end_byte() - 1, args: values, receiver })
             }
             _ => None,
         };

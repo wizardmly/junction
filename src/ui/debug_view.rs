@@ -58,6 +58,8 @@ pub struct DebugView {
     vars_scroll: UniformListScrollHandle,
     /// The evaluate field over the Variables view.
     expression: Entity<InputState>,
+    /// The Console tab: the program's output and the debugger's messages.
+    console: Entity<crate::ui::console_view::ConsoleView>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -151,8 +153,16 @@ impl DebugView {
         let service = DebugService::global(cx);
         let placeholder = if cfg!(target_os = "macos") { "Evaluate expression (↩) or add a watch (⇧⌘↩)" } else { "Evaluate expression (Enter) or add a watch (Ctrl+Shift+Enter)" };
         let expression = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        let console = cx.new(|cx| crate::ui::console_view::ConsoleView::new(window, cx));
         let _subscriptions = vec![
-            cx.observe(&service, |_, _, cx| cx.notify()),
+            cx.observe_in(&service, window, |this: &mut Self, _, window, cx| {
+                this.sync_console(window, cx);
+                cx.notify();
+            }),
+            cx.subscribe(&console, |_, _, event: &crate::ui::console_view::ConsoleEvent, cx| {
+                let crate::ui::console_view::ConsoleEvent::OpenFile { path, line, col } = event;
+                cx.emit(RunViewEvent::OpenFile { path: path.clone(), line: *line, col: *col });
+            }),
             // Enter evaluates; Ctrl+Shift+Enter adds a watch, as IntelliJ's field.
             cx.subscribe_in(&expression, window, |this, input, event: &InputEvent, window, cx| {
                 let InputEvent::PressEnter { secondary, shift } = event else { return };
@@ -168,7 +178,12 @@ impl DebugView {
                 }
             }),
         ];
-        Self { service, tab: Tab::Variables, rows: Vec::new(), frames_scroll: UniformListScrollHandle::new(), vars_scroll: UniformListScrollHandle::new(), expression, _subscriptions }
+        Self { service, tab: Tab::Variables, rows: Vec::new(), frames_scroll: UniformListScrollHandle::new(), vars_scroll: UniformListScrollHandle::new(), expression, console, _subscriptions }
+    }
+
+    fn sync_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let lines: Vec<(SharedString, Option<gpui_kit::Hsla>)> = self.service.read(cx).run.as_ref().map_or_else(Vec::new, |run| run.console.iter().map(|l| (l.clone(), None)).collect());
+        self.console.update(cx, |c, cx| c.set_lines(&lines, window, cx));
     }
 
     fn render_toolbar(&self, run: &DebugRun, cx: &Context<Self>) -> AnyElement {
@@ -407,21 +422,8 @@ impl DebugView {
             .into_any_element()
     }
 
-    fn render_console(&self, run: &DebugRun, cx: &Context<Self>) -> AnyElement {
-        let mono = {
-            use gpui_kit::component::ActiveTheme as _;
-            cx.theme().mono_font_family.clone()
-        };
-        v_flex()
-            .id("debug-console")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .p_2()
-            .font_family(mono)
-            .text_xs()
-            .children(run.console.iter().map(|l| div().child(l.clone())))
-            .into_any_element()
+    fn render_console(&self, _: &DebugRun, _: &Context<Self>) -> AnyElement {
+        div().flex_1().min_h_0().child(self.console.clone()).into_any_element()
     }
 }
 

@@ -3,7 +3,6 @@
 //! and Gradle's output. Run: the launch's console with Rerun and Stop.
 //! Build Variants: each Android module's active variant.
 
-use std::ops::Range;
 
 use gpui_kit::component::{
     Icon, Sizable as _, h_flex,
@@ -12,8 +11,8 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _,
-    Styled as _, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, uniform_list,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::domain::diagnostics::Severity;
@@ -25,8 +24,7 @@ use crate::ui::test_service::{TestService, TestServiceEvent};
 use crate::ui::test_view::TestView;
 use crate::ui::sync_service::{self, SyncService};
 use crate::usecase::run_app::ConsoleLine;
-
-const ROW: f32 = 20.;
+use crate::ui::console_view::{ConsoleEvent, ConsoleView};
 
 #[derive(Clone)]
 pub enum RunViewEvent {
@@ -35,63 +33,63 @@ pub enum RunViewEvent {
     Hide,
 }
 
-/// Follows the end of a growing log unless scrolled up.
-fn follow(scroll: &UniformListScrollHandle, len: usize, last_len: &mut usize) {
-    if len != *last_len {
-        *last_len = len;
-        if len > 0 {
-            scroll.scroll_to_item(len - 1, gpui_kit::ScrollStrategy::Bottom);
-        }
-    }
-}
-
 fn header(title: impl IntoElement, cx: &gpui_kit::App) -> gpui_kit::Div {
     let palette = cx.palette().clone();
     h_flex().h(px(30.)).px_2().gap_1().border_b_1().border_color(palette.border).child(title)
+}
+
+/// A console's file link opens the file.
+fn forward_open<T: EventEmitter<RunViewEvent>>(_: &mut T, _: Entity<ConsoleView>, event: &ConsoleEvent, cx: &mut Context<T>) {
+    let ConsoleEvent::OpenFile { path, line, col } = event;
+    cx.emit(RunViewEvent::OpenFile { path: path.clone(), line: *line, col: *col });
 }
 
 // --- Build -------------------------------------------------------------------
 
 pub struct BuildView {
     service: Entity<RunService>,
-    scroll: UniformListScrollHandle,
-    shown: usize,
-    _observe: gpui_kit::Subscription,
+    console: Entity<ConsoleView>,
+    _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
 impl EventEmitter<RunViewEvent> for BuildView {}
 
 impl BuildView {
-    pub fn new(service: Entity<RunService>, cx: &mut Context<Self>) -> Self {
-        let _observe = cx.observe(&service, |_, _, cx| cx.notify());
-        Self { service, scroll: UniformListScrollHandle::new(), shown: 0, _observe }
+    pub fn new(service: Entity<RunService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let console = cx.new(|cx| ConsoleView::new(window, cx));
+        let _subscriptions = vec![
+            cx.observe_in(&service, window, |this, _, window, cx| {
+                this.sync(window, cx);
+                cx.notify();
+            }),
+            cx.subscribe(&console, forward_open),
+        ];
+        let mut this = Self { service, console, _subscriptions };
+        this.sync(window, cx);
+        this
     }
 
-    fn render_lines(&mut self, range: Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let palette = cx.palette().clone();
-        let service = self.service.read(cx);
-        let Some(build) = service.build.as_ref() else { return Vec::new() };
-        range
-            .filter_map(|ix| build.lines.get(ix).map(|l| (ix, l.clone())))
-            .map(|(ix, line)| {
-                let failed = line.starts_with("e: ") || line.contains(": error:") || line.starts_with("FAILURE") || line.contains("FAILED");
-                div()
-                    .id(ix)
-                    .h(px(ROW))
-                    .px_2()
-                    .whitespace_nowrap()
-                    .when(failed, |el| el.text_color(palette.status_conflict))
-                    .child(line)
-                    .into_any_element()
-            })
-            .collect()
+    /// Gradle's output into the console, failures red.
+    fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let red = cx.palette().status_conflict;
+        let lines: Vec<(SharedString, Option<Hsla>)> = self.service.read(cx).build.as_ref().map_or_else(Vec::new, |build| {
+            build
+                .lines
+                .iter()
+                .map(|line| {
+                    let failed = line.starts_with("e: ") || line.contains(": error:") || line.starts_with("FAILURE") || line.contains("FAILED");
+                    (SharedString::from(line.to_string()), failed.then_some(red))
+                })
+                .collect()
+        });
+        self.console.update(cx, |c, cx| c.set_lines(&lines, window, cx));
     }
+
 }
 
 impl Render for BuildView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
-        let mono = { use gpui_kit::component::ActiveTheme as _; cx.theme().mono_font_family.clone() };
         let service = self.service.read(cx);
         let Some(build) = service.build.as_ref() else {
             return v_flex()
@@ -151,9 +149,7 @@ impl Render for BuildView {
                     .on_click(cx.listener(move |_, _, _, cx| cx.emit(RunViewEvent::OpenFile { path: path.clone(), line, col }))),
             );
         }
-        let count = build.lines.len();
         let running = build.status == BuildStatus::Running;
-        follow(&self.scroll, count, &mut self.shown);
         let service = self.service.clone();
         v_flex()
             .size_full()
@@ -170,15 +166,7 @@ impl Render for BuildView {
                     .min_h_0()
                     .items_start()
                     .child(problems)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .font_family(mono)
-                            .text_xs()
-                            .child(uniform_list("build-output", count, cx.processor(Self::render_lines)).track_scroll(&self.scroll).size_full()),
-                    ),
+                    .child(div().flex_1().min_w_0().h_full().child(self.console.clone())),
             )
             .into_any_element()
     }
@@ -211,19 +199,23 @@ pub struct RunView {
     service: Entity<RunService>,
     tests: Entity<TestView>,
     tab: RunTab,
-    scroll: UniformListScrollHandle,
-    shown: usize,
+    console: Entity<ConsoleView>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
 impl EventEmitter<RunViewEvent> for RunView {}
 
 impl RunView {
-    pub fn new(service: Entity<RunService>, cx: &mut Context<Self>) -> Self {
+    pub fn new(service: Entity<RunService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let test_service = TestService::global(cx);
         let tests = cx.new(|cx| TestView::new(test_service.clone(), cx));
+        let console = cx.new(|cx| ConsoleView::new(window, cx));
         let _subscriptions = vec![
-            cx.observe(&service, |_, _, cx| cx.notify()),
+            cx.observe_in(&service, window, |this: &mut Self, _, window, cx| {
+                this.sync(window, cx);
+                cx.notify();
+            }),
+            cx.subscribe(&console, forward_open),
             cx.observe(&test_service, |_, _, cx| cx.notify()),
             // A launch shows its tab, a test run its own.
             cx.subscribe(&service, |this, _, event: &RunEvent, cx| {
@@ -241,7 +233,26 @@ impl RunView {
             }),
             cx.subscribe(&tests, |_, _, event: &RunViewEvent, cx| cx.emit(event.clone())),
         ];
-        Self { service, tests, tab: RunTab::App, scroll: UniformListScrollHandle::new(), shown: 0, _subscriptions }
+        let mut this = Self { service, tests, tab: RunTab::App, console, _subscriptions };
+        this.sync(window, cx);
+        this
+    }
+
+    /// The launch's output into the console: commands gray, errors red.
+    fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let palette = cx.palette().clone();
+        let lines: Vec<(SharedString, Option<Hsla>)> = self.service.read(cx).console.as_ref().map_or_else(Vec::new, |console| {
+            console
+                .lines
+                .iter()
+                .map(|line| match line {
+                    ConsoleLine::Info(t) => (SharedString::from(t.to_string()), None),
+                    ConsoleLine::Command(t) => (SharedString::from(t.to_string()), Some(palette.text_secondary)),
+                    ConsoleLine::Error(t) => (SharedString::from(t.to_string()), Some(palette.status_conflict)),
+                })
+                .collect()
+        });
+        self.console.update(cx, |c, cx| c.set_lines(&lines, window, cx));
     }
 
     /// The tab strip, once a test has run: "app" and "ExampleUnitTest".
@@ -278,22 +289,6 @@ impl RunView {
         Some(strip.child(div().flex_1()).child(tool_button("run-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(RunViewEvent::Hide)))).into_any_element())
     }
 
-    fn render_lines(&mut self, range: Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let palette = cx.palette().clone();
-        let service = self.service.read(cx);
-        let Some(console) = service.console.as_ref() else { return Vec::new() };
-        range
-            .filter_map(|ix| console.lines.get(ix).map(|l| (ix, l.clone())))
-            .map(|(ix, line)| {
-                let (text, color) = match line {
-                    ConsoleLine::Info(t) => (t, palette.text),
-                    ConsoleLine::Command(t) => (t, palette.text_secondary),
-                    ConsoleLine::Error(t) => (t, palette.status_conflict),
-                };
-                div().id(ix).h(px(ROW)).px_2().whitespace_nowrap().text_color(color).child(text).into_any_element()
-            })
-            .collect()
-    }
 }
 
 impl Render for RunView {
@@ -309,7 +304,6 @@ impl Render for RunView {
         let title = service.console.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| "Run".into());
         let count = service.console.as_ref().map_or(0, |c| c.lines.len());
         let can_stop = service.can_stop();
-        follow(&self.scroll, count, &mut self.shown);
         let (rerun, stop) = (self.service.clone(), self.service.clone());
         v_flex()
             .size_full()
@@ -332,7 +326,7 @@ impl Render for RunView {
                     .font_family(mono)
                     .text_xs()
                     .when(count == 0, |el| el.child(div().p_4().text_color(palette.text_secondary).child("Nothing has run yet. Run 'app' with Shift+F10.")))
-                    .child(uniform_list("run-console", count, cx.processor(Self::render_lines)).track_scroll(&self.scroll).size_full()),
+                    .when(count > 0, |el| el.child(self.console.clone())),
             )
             .into_any_element()
     }

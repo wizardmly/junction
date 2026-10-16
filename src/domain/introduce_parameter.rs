@@ -36,8 +36,12 @@ pub struct ParameterPlan {
 }
 
 /// A call of the function.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CallSite {
+    /// The function's name in it.
+    pub name_range: Range<usize>,
+    /// The `(` starting its arguments.
+    pub args_open: usize,
     /// The `)` ending its arguments.
     pub args_close: usize,
     /// Its arguments: Kotlin's name when named, and the value.
@@ -165,8 +169,8 @@ mod tests {
         let text = "fun total(price: Double): Double {\n    return price * rate\n}\nfun use() = total(2.0) + cart.total(base + 1)\n";
         let p = plan(text, "price * rate");
         let calls = [
-            CallSite { args_close: text.find("2.0)").unwrap() + 3, args: vec![(None, "2.0".into())], receiver: None },
-            CallSite { args_close: text.find("1)").unwrap() + 1, args: vec![(None, "base + 1".into())], receiver: Some("cart".into()) },
+            CallSite { args_close: text.find("2.0)").unwrap() + 3, args: vec![(None, "2.0".into())], receiver: None, ..Default::default() },
+            CallSite { args_close: text.find("1)").unwrap() + 1, args: vec![(None, "base + 1".into())], receiver: Some("cart".into()), ..Default::default() },
         ];
         let request = ParameterRequest { name: "amount".into(), ty: "Double".into(), replace_all: true, default_value: false };
         let out = apply(text, edits(ImportStyle::Kotlin, &p, &calls, &request).unwrap());
@@ -177,7 +181,7 @@ mod tests {
         assert!(out.starts_with("fun total(price: Double, amount: Double = price * rate): Double {") && out.contains("total(2.0) + cart.total(base + 1)"), "{out}");
         // A taken name; a call with named arguments gets a named one.
         assert!(check(ImportStyle::Kotlin, &p, &ParameterRequest { name: "price".into(), ty: "Double".into(), replace_all: true, default_value: false }).is_err());
-        let named = CallSite { args_close: 10, args: vec![(Some("price".into()), "4.0".into())], receiver: None };
+        let named = CallSite { args_close: 10, args: vec![(Some("price".into()), "4.0".into())], receiver: None, ..Default::default() };
         assert_eq!(call_edit(&p, &named, "amount"), Some((10..10, ", amount = 4.0 * rate".into())));
     }
 
@@ -186,7 +190,7 @@ mod tests {
         let text = "int total(int price) { return price * rate; }\nint use() { return total(3); }\n";
         let mut p = plan(text, "price * rate");
         p.ty = "int".into();
-        let calls = [CallSite { args_close: text.find("3)").unwrap() + 1, args: vec![(None, "3".into())], receiver: None }];
+        let calls = [CallSite { args_close: text.find("3)").unwrap() + 1, args: vec![(None, "3".into())], receiver: None, ..Default::default() }];
         let request = ParameterRequest { name: "amount".into(), ty: "int".into(), replace_all: false, default_value: true };
         let out = apply(text, edits(ImportStyle::Java, &p, &calls, &request).unwrap());
         assert_eq!(out, "int total(int price, int amount) { return amount; }\nint use() { return total(3, 3 * rate); }\n");

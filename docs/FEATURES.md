@@ -825,3 +825,20 @@ Linux 实测（Xvfb，calc 示例临时加 `static int calls = 0;` 和 `add` 里
 | 静音状态按项目持久化、Run 菜单里的 Mute Breakpoints 项 | ⬜ |
 
 Linux 实测（Xvfb，calc 示例）：在 `totals()` 循环体第 34 行设断点，调试后在 `i = 0` 停下；点 Mute Breakpoints，断点变灰，按 F9 后剩下两次循环不再停，测试直接跑完通过。
+
+## 46. 控制台：Build Output / Run / Debug Console（2026-10-16）
+
+照 IntelliJ 的 `ConsoleViewImpl`：控制台是一个只读编辑器，而不是一行行独立的文字。代码：`src/ui/console_view.rs`（控制台组件）、`src/domain/console_links.rs`（超链接识别，对应 IntelliJ 的 `UrlFilter` 和文件路径过滤器）。
+
+| 功能 | 状态 |
+|---|---|
+| 鼠标拖动跨行连续选中（和编辑器一样，行与行之间没有间隔），双击选词，Ctrl+A 全选、Ctrl+C 复制，Ctrl+F 在输出里查找 | ✅ |
+| 超链接：网址（`https://docs.gradle.org/…`，点击用浏览器打开）；源码路径带行列（`/src/Foo.kt:12:5`、Windows 的 `file:///C:/…/Foo.kt:12:5`、`Foo.kt: (12, 5)`、javac 的 `Foo.java:7: error`，以及 html / txt 报告），点击打开文件并跳到对应行；拖选时不算点击 | ✅ |
+| 颜色：Gradle 的失败行（`FAILURE`、`e: `、`: error:`、`FAILED`）为红色，Run 控制台的命令为灰色、错误为红色 | ✅ |
+| 跟随末尾：光标在最后一行时，新输出会自动滚到底部（光标停在行首，长行不会让视图横向滚动）；用户把光标或选区放到别处后不再跟随 | ✅ |
+| 用在 Build Output 的右侧、Run 的 app 控制台、Debug 的 Console 标签 | ✅ |
+| Logcat 的日志列表、ANSI 颜色、控制台里的 Clear All / Soft-Wrap / Scroll to End 按钮、超长输出的截断（`idea.cycle.buffer.size`） | ⬜ |
+
+同时修复：未同步过的 Gradle 工程，根目录 `build.gradle(.kts)` 里写了 `alias(libs.plugins.android.application) apply false`（只声明插件、不应用），会被误判成 Application 模块。运行配置因此变成以根工程命名（如 “mytv-android”），构建任务成了 `:assembleDebug`，Gradle 报 “Cannot locate tasks that match ':assembleDebug'”。现在判断模块类型时会忽略带 `apply false` / `apply(false)` 的行，运行配置是 `app`，任务是 `:app:assembleDebug`。
+
+Linux 实测（Xvfb，calc 示例，故意删掉一个分号）：Ctrl+F9 后 Build Output 右侧显示 Gradle 输出，失败行为红色，`Calc.java:4` 路径和 `file:///…/problems-report.html` 带下划线；点击 `Calc.java:4` 链接打开 `Calc.java` 并定位到第 4 行；跨 4 行拖选后 Ctrl+C，粘贴到 Commit Message 得到完整的多行文本。（Xvfb 没有窗口管理器，窗口不会被激活，编辑器不画选区高亮，这一点只能在桌面上看。）

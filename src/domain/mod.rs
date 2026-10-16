@@ -33,6 +33,7 @@ pub mod todo;
 pub mod sync;
 pub mod vector_drawable;
 pub mod drawable;
+pub mod console_links;
 pub mod extract_method;
 pub mod manifest_merge;
 pub mod jdk_feed;
