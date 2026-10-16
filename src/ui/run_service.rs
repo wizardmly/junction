@@ -88,13 +88,31 @@ impl RunService {
 
     /// One "Android App" configuration per application module.
     pub fn configurations(&self, cx: &App) -> Vec<RunConfiguration> {
-        SyncService::try_global(cx).map(|s| s.read(cx).builds().iter().flat_map(|(root, modules)| run::run_configurations(root, modules)).collect()).unwrap_or_default()
+        SyncService::try_global(cx).map(|s| s.read(cx).builds().iter().flat_map(|(root, modules)| run::run_configurations(root, modules, &crate::infra::run_config_store::load(root))).collect()).unwrap_or_default()
     }
 
     pub fn configuration(&self, cx: &App) -> Option<RunConfiguration> {
         let all = self.configurations(cx);
         let picked = self.config.as_ref().and_then(|key| all.iter().find(|c| config_key(c) == *key).cloned());
         picked.or_else(|| all.into_iter().next())
+    }
+
+    /// Run › Edit Configurations…: the dialog over this project's
+    /// configurations; OK saves them.
+    pub fn edit_configurations(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
+        let builds = SyncService::try_global(cx).map(|s| s.read(cx).builds().to_vec()).unwrap_or_default();
+        let modules: Vec<(std::path::PathBuf, run::ModuleInfo)> =
+            builds.iter().flat_map(|(root, modules)| modules.iter().filter(|m| m.kind == run::ModuleType::Application).map(move |m| (root.clone(), m.clone()))).collect();
+        let current: Vec<(std::path::PathBuf, run::SavedRunConfiguration)> = self
+            .configurations(cx)
+            .into_iter()
+            .map(|c| (c.build_root.clone(), run::SavedRunConfiguration { name: c.name, module: c.module.path, options: c.options }))
+            .collect();
+        let selected = self.configuration(cx).map(|c| c.name);
+        let this = cx.entity().downgrade();
+        crate::ui::run_config_dialog::open(modules, current, selected, move |_, cx| {
+            this.update(cx, |_, cx| cx.notify()).ok();
+        }, window, cx);
     }
 
     pub fn pick_configuration(&mut self, config: &RunConfiguration, cx: &mut Context<Self>) {
@@ -371,6 +389,7 @@ impl RunService {
     }
 }
 
+/// A configuration by its build, module and name (several can share a module).
 fn config_key(config: &RunConfiguration) -> String {
-    sync_service::variant_key(&config.build_root, &config.module.path)
+    format!("{}#{}", sync_service::variant_key(&config.build_root, &config.module.path), config.name)
 }

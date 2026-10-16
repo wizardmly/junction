@@ -92,12 +92,78 @@ pub fn capitalize(s: &str) -> String {
     chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
-/// An "Android App" run configuration: one per application module.
+/// An "Android App" run configuration: one per application module unless
+/// the user made their own (Edit Configurations).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunConfiguration {
     pub name: String,
     pub build_root: PathBuf,
     pub module: ModuleInfo,
+    pub options: LaunchOptions,
+}
+
+/// What Launch starts, as the configuration's Launch Options say.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LaunchTarget {
+    /// The launcher activity.
+    #[default]
+    DefaultActivity,
+    /// An activity by class name (`.SettingsActivity` or the full name).
+    Activity(String),
+    /// Install only.
+    Nothing,
+}
+
+/// The configuration's Installation and Launch Options.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LaunchOptions {
+    /// Deploy: "Default APK"; off, "Nothing".
+    #[serde(default = "yes")]
+    pub deploy: bool,
+    #[serde(default)]
+    pub launch: LaunchTarget,
+    /// Launch Flags: added to `am start` (`--es key value`, `-W`).
+    #[serde(default)]
+    pub flags: String,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for LaunchOptions {
+    fn default() -> Self {
+        Self { deploy: true, launch: LaunchTarget::DefaultActivity, flags: String::new() }
+    }
+}
+
+/// A configuration as the project keeps it: its module by Gradle path.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SavedRunConfiguration {
+    pub name: String,
+    /// ":app".
+    pub module: String,
+    #[serde(flatten)]
+    pub options: LaunchOptions,
+}
+
+/// The `am start` Android Studio runs: the component, as a launcher
+/// intent, waiting for the debugger with `-D`, then the Launch Flags.
+pub fn start_command(component: &str, debug: bool, flags: &str) -> String {
+    let wait = if debug { " -D" } else { "" };
+    let flags = if flags.trim().is_empty() { String::new() } else { format!(" {}", flags.trim()) };
+    format!("am start -n \"{component}\" -a android.intent.action.MAIN -c android.intent.category.LAUNCHER{wait}{flags}")
+}
+
+/// `pkg/.Activity` for a Specified Activity: a name starting with `.` is
+/// the package's, a name with `/` is a component already.
+pub fn activity_component(application_id: &str, activity: &str) -> String {
+    let activity = activity.trim();
+    if activity.contains('/') {
+        activity.to_owned()
+    } else {
+        format!("{application_id}/{activity}")
+    }
 }
 
 /// What a build left.
@@ -133,16 +199,27 @@ pub trait DeviceBridge {
     fn launcher_activity(&self, serial: &str, application_id: &str) -> Option<String>;
     /// `am start`: the command as shown, or why it failed.
     /// With `debug`, the app waits for a debugger (`am start -D`).
-    fn start(&self, serial: &str, component: &str, debug: bool) -> Result<(), String>;
+    /// `flags`: the configuration's Launch Flags, added to the command.
+    fn start(&self, serial: &str, component: &str, debug: bool, flags: &str) -> Result<(), String>;
     fn pid(&self, serial: &str, application_id: &str) -> Option<u32>;
 }
 
-/// The run configurations of a project's modules, by module path.
-pub fn run_configurations(build_root: &std::path::Path, modules: &[ModuleInfo]) -> Vec<RunConfiguration> {
+/// The run configurations of a build: the saved ones (whose module is
+/// still there), else one per application module by module path.
+pub fn run_configurations(build_root: &std::path::Path, modules: &[ModuleInfo], saved: &[SavedRunConfiguration]) -> Vec<RunConfiguration> {
+    if !saved.is_empty() {
+        return saved
+            .iter()
+            .filter_map(|s| {
+                let module = modules.iter().find(|m| m.path == s.module && m.kind == ModuleType::Application)?;
+                Some(RunConfiguration { name: s.name.clone(), build_root: build_root.to_path_buf(), module: module.clone(), options: s.options.clone() })
+            })
+            .collect();
+    }
     let mut out: Vec<RunConfiguration> = modules
         .iter()
         .filter(|m| m.kind == ModuleType::Application)
-        .map(|m| RunConfiguration { name: m.name(), build_root: build_root.to_path_buf(), module: m.clone() })
+        .map(|m| RunConfiguration { name: m.name(), build_root: build_root.to_path_buf(), module: m.clone(), options: LaunchOptions::default() })
         .collect();
     out.sort_by(|a, b| a.module.path.cmp(&b.module.path));
     out
@@ -173,8 +250,23 @@ mod tests {
         let flavored = m(":tv", ModuleType::Application, &["demoDebug", "demoRelease", "fullDebug"]);
         assert_eq!(flavored.default_variant(), "demoDebug");
         assert_eq!(m(":core", ModuleType::Jvm, &[]).assemble_task("debug"), ":core:assemble");
-        let configs = run_configurations(std::path::Path::new("/p"), &[flavored, m(":lib", ModuleType::AndroidLibrary, &["debug"]), app]);
+        let configs = run_configurations(std::path::Path::new("/p"), &[flavored, m(":lib", ModuleType::AndroidLibrary, &["debug"]), app], &[]);
         assert_eq!(configs.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["app", "tv"]);
+        // Saved ones instead, those whose module is gone left out.
+        let mut settings = LaunchOptions { launch: LaunchTarget::Activity(".SettingsActivity".into()), ..Default::default() };
+        settings.flags = "-W".into();
+        let saved = [
+            SavedRunConfiguration { name: "Settings".into(), module: ":app".into(), options: settings.clone() },
+            SavedRunConfiguration { name: "Old".into(), module: ":gone".into(), options: LaunchOptions::default() },
+        ];
+        let configs = run_configurations(std::path::Path::new("/p"), &[m(":app", ModuleType::Application, &["debug"])], &saved);
+        assert_eq!((configs.len(), configs[0].name.as_str(), &configs[0].options), (1, "Settings", &settings));
+        assert_eq!(activity_component("com.ex", ".SettingsActivity"), "com.ex/.SettingsActivity");
+        assert_eq!(activity_component("com.ex", "com.lib.Scan"), "com.ex/com.lib.Scan");
+        assert_eq!(activity_component("com.ex", "other/.Main"), "other/.Main");
+        // Saved before the options existed: deploy, default activity.
+        let read: SavedRunConfiguration = serde_json::from_str(r#"{"name":"a","module":":app"}"#).unwrap();
+        assert_eq!(read.options, LaunchOptions::default());
         assert_eq!(duration_label(Duration::from_millis(1230)), "1 s 230 ms");
         assert_eq!(duration_label(Duration::from_millis(95)), "95 ms");
     }

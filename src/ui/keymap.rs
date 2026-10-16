@@ -58,6 +58,7 @@ pub const ENTRIES: &[Entry] = &[
     entry("Run", "Run 'app'", "workspace::RunApp"),
     entry("Run", "Stop", "workspace::StopApp"),
     entry("Run", "View Breakpoints…", "workspace::ViewBreakpoints"),
+    entry("Run", "Edit Configurations…", "workspace::EditConfigurations"),
     entry("Tool Windows", "Run", "workspace::ToggleRunWindow"),
     entry("Tool Windows", "Logcat", "workspace::ToggleLogcatWindow"),
     entry("Tool Windows", "Problems", "workspace::ToggleProblemsWindow"),

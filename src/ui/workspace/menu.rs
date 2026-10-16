@@ -149,6 +149,7 @@ pub(super) fn main_menu(
         menu.action_context(f.clone())
             .menu(format!("Run '{name}'"), Box::new(RunApp))
             .menu_with_disabled("Stop", Box::new(StopApp), !can_stop)
+            .menu("Edit Configurations…", Box::new(EditConfigurations))
             .separator()
             .menu("View Breakpoints…", Box::new(ViewBreakpoints))
     });

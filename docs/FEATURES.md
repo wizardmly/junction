@@ -350,7 +350,8 @@ Android Studio 的 Make Project、Run 'app'、Stop，以及 Build、Run、Build 
 | Build 窗口：首行 “Executing tasks: […]”，状态（运行中 / 成功 / 失败 / 取消、时长、错误和警告数），左侧问题列表点击跳到源码行列，右侧 Gradle 输出（虚拟列表、错误行标红、自动滚到底） | ✅（解析 Kotlin K1/K2、javac、AAPT 报错；构建的错误同时标到编辑器） |
 | Build Variants 窗口：每个 Android 模块的 Active Build Variant 下拉，选了后重新 Sync；Run、Make、保存后编译、Sync 都用所选变体 | ✅（变体来自 Sync 记录；没 Sync 过时按 build 文件猜模块，变体为 debug / release） |
 | 主菜单 Build（Make Project、Sync、Select Build Variant…）和 Run（Run 'app'、Stop）；View › Tool Windows 加 Build、Run、Build Variants；Find Action 可搜到 | ✅ |
-| Debug、Apply Changes、Edit Configurations 对话框、多设备同时运行 | ❌ 未做（Debug 随第 9 项） |
+| Run/Debug Configurations 对话框（2026-10-16，`src/ui/run_config_dialog.rs`）：标题栏配置下拉顶部和 Run 菜单的 “Edit Configurations…”；左边 Android App 组的配置列表，+ 新建（“Unnamed”）、− 删除、复制（“app (1)”）；右边 Name、Module（项目的 application 模块）、Installation Options 的 Deploy（Default APK / Nothing）、Launch Options 的 Launch（Default Activity / Specified Activity + Activity / Nothing）和 Launch Flags；名称为空或重名、Specified Activity 没填时提示且不能确定。OK 后存到 `run-configurations.json`（按构建根目录），标题栏下拉列出它们；保存过就不再按模块自动生成。Run / Debug 照配置：Deploy Nothing 不安装，Specified Activity 用 `pkg/.SettingsActivity`（以 `.` 开头补包名，含 `/` 原样），Launch Nothing 只构建安装，Launch Flags 追加到 `am start` 命令行（控制台显示的命令同步） | ✅ |
+| Apply Changes、Before launch 任务列表、Gradle / JUnit 等其他配置类型、多设备同时运行 | ❌ 未做 |
 
 Linux 实测（容器无法下载 Android SDK，用假 adb 和一个模拟 assembleDebug 的 Gradle 项目）：Run 走完构建、安装、启动、找到进程；Stop 发出 force-stop；Make Project 把 Kotlin 类型错误列在 Build 窗口，点击跳到 Util.kt 2:18 并在编辑器标红。真实 AGP 项目和真机需要在 Windows / macOS 上验证。
 

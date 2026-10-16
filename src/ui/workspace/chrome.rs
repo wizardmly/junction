@@ -394,7 +394,8 @@ impl Workspace {
         let config_name = config.as_ref().map(|c| c.name.clone());
         let (make, pick_device, pick_config, start, stop, debug) = (run.clone(), run.clone(), run.clone(), run.clone(), run.clone(), run.clone());
         let selected_device = device.map(|d| d.id);
-        let selected_config = config.map(|c| (c.build_root, c.module.path));
+        let selected_config = config.map(|c| (c.build_root, c.name));
+        let edit_configs = run.clone();
         h_flex()
             .gap_1()
             .child(
@@ -439,11 +440,13 @@ impl Workspace {
                     .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
                     .tooltip("Run / Debug Configurations")
                     .dropdown_menu(move |mut menu, _, _| {
+                        let edit = edit_configs.clone();
+                        menu = menu.item(PopupMenuItem::new("Edit Configurations…").on_click(move |_, window, cx| edit.update(cx, |r, cx| r.edit_configurations(window, cx)))).separator();
                         if configs.is_empty() {
                             return menu.item(PopupMenuItem::new("No application modules").disabled(true));
                         }
                         for c in &configs {
-                            let checked = selected_config.as_ref().is_some_and(|(b, m)| *b == c.build_root && *m == c.module.path);
+                            let checked = selected_config.as_ref().is_some_and(|(b, n)| *b == c.build_root && *n == c.name);
                             let (c2, run) = (c.clone(), pick_config.clone());
                             menu = menu.item(PopupMenuItem::new(c.name.clone()).checked(checked).on_click(move |_, _, cx| {
                                 let c = c2.clone();

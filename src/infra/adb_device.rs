@@ -45,9 +45,8 @@ impl DeviceBridge for AdbDevice {
         })
     }
 
-    fn start(&self, serial: &str, component: &str, debug: bool) -> Result<(), String> {
-        let wait = if debug { " -D" } else { "" };
-        let out = self.shell(serial, &format!("am start -n \"{component}\" -a android.intent.action.MAIN -c android.intent.category.LAUNCHER{wait}"));
+    fn start(&self, serial: &str, component: &str, debug: bool, flags: &str) -> Result<(), String> {
+        let out = self.shell(serial, &crate::domain::run::start_command(component, debug, flags));
         match out.lines().find(|l| l.starts_with("Error") || l.contains("Exception")) {
             Some(error) => Err(error.trim().to_owned()),
             None => Ok(()),

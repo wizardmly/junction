@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::domain::run::{duration_label, BuildResult, DeviceBridge, RunConfiguration, TaskRunner};
+use crate::domain::run::{activity_component, duration_label, start_command, BuildResult, DeviceBridge, LaunchTarget, RunConfiguration, TaskRunner};
 
 /// A line of the Run console.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,26 +62,36 @@ pub fn run(
         console(ConsoleLine::Error(format!("Error running '{}': The APK file for the {variant} variant was not found. Was it built?", config.name)));
         return (RunOutcome::Failed, build);
     };
-    match device.install(target.serial, &output.apks) {
-        Ok(took) => console(ConsoleLine::Info(format!("Install successfully finished in {}.", duration_label(took)))),
-        Err(reason) => {
-            console(ConsoleLine::Error("Installation did not succeed.".into()));
-            console(ConsoleLine::Error(format!("The application could not be installed: {reason}")));
-            return (RunOutcome::Failed, build);
+    // Deploy: "Nothing" leaves what's installed.
+    if config.options.deploy {
+        match device.install(target.serial, &output.apks) {
+            Ok(took) => console(ConsoleLine::Info(format!("Install successfully finished in {}.", duration_label(took)))),
+            Err(reason) => {
+                console(ConsoleLine::Error("Installation did not succeed.".into()));
+                console(ConsoleLine::Error(format!("The application could not be installed: {reason}")));
+                return (RunOutcome::Failed, build);
+            }
         }
     }
     if cancelled() {
         return (RunOutcome::Cancelled, build);
     }
-    device.force_stop(target.serial, &output.application_id);
-    let Some(component) = device.launcher_activity(target.serial, &output.application_id) else {
-        console(ConsoleLine::Error("Could not identify launch activity: Default Activity not found".into()));
-        console(ConsoleLine::Error("Error while Launching activity".into()));
-        return (RunOutcome::Failed, build);
+    let component = match &config.options.launch {
+        // Launch: "Nothing".
+        LaunchTarget::Nothing => return (RunOutcome::Running { application_id: output.application_id, pid: None }, build),
+        LaunchTarget::Activity(name) => activity_component(&output.application_id, name),
+        LaunchTarget::DefaultActivity => match device.launcher_activity(target.serial, &output.application_id) {
+            Some(component) => component,
+            None => {
+                console(ConsoleLine::Error("Could not identify launch activity: Default Activity not found".into()));
+                console(ConsoleLine::Error("Error while Launching activity".into()));
+                return (RunOutcome::Failed, build);
+            }
+        },
     };
-    let wait = if target.debug { " -D" } else { "" };
-    console(ConsoleLine::Command(format!("$ adb shell am start -n \"{component}\" -a android.intent.action.MAIN -c android.intent.category.LAUNCHER{wait}")));
-    if let Err(reason) = device.start(target.serial, &component, target.debug) {
+    device.force_stop(target.serial, &output.application_id);
+    console(ConsoleLine::Command(format!("$ adb shell {}", start_command(&component, target.debug, &config.options.flags))));
+    if let Err(reason) = device.start(target.serial, &component, target.debug, &config.options.flags) {
         console(ConsoleLine::Error(reason));
         console(ConsoleLine::Error("Error while Launching activity".into()));
         return (RunOutcome::Failed, build);
@@ -137,8 +147,8 @@ mod tests {
         fn launcher_activity(&self, _: &str, id: &str) -> Option<String> {
             Some(format!("{id}/.MainActivity"))
         }
-        fn start(&self, _: &str, component: &str, debug: bool) -> Result<(), String> {
-            self.0.borrow_mut().push(format!("start {component}{}", if debug { " -D" } else { "" }));
+        fn start(&self, _: &str, component: &str, debug: bool, flags: &str) -> Result<(), String> {
+            self.0.borrow_mut().push(format!("start {component}{}{}", if debug { " -D" } else { "" }, if flags.is_empty() { String::new() } else { format!(" {flags}") }));
             Ok(())
         }
         fn pid(&self, _: &str, _: &str) -> Option<u32> {
@@ -148,7 +158,7 @@ mod tests {
 
     fn config() -> RunConfiguration {
         let module = ModuleInfo { path: ":app".into(), dir: "/p/app".into(), kind: ModuleType::Application, variants: vec!["debug".into()] };
-        RunConfiguration { name: "app".into(), build_root: "/p".into(), module }
+        RunConfiguration { name: "app".into(), build_root: "/p".into(), module, options: Default::default() }
     }
 
     #[test]
@@ -181,5 +191,24 @@ mod tests {
         assert_eq!(phone.0.borrow().last().map(String::as_str), Some("start com.example/.MainActivity -D"));
         assert!(matches!(&lines[1], ConsoleLine::Command(c) if c.ends_with("LAUNCHER -D")));
         assert_eq!(lines[2], ConsoleLine::Info("Waiting for application to come online: com.example".into()));
+    }
+
+    #[test]
+    fn follows_the_launch_options() {
+        use crate::domain::run::{LaunchOptions, LaunchTarget};
+        // A specified activity with launch flags.
+        let (gradle, phone) = (Gradle { ok: true, tasks: RefCell::default() }, Phone(RefCell::default()));
+        let mut config = config();
+        config.options = LaunchOptions { deploy: true, launch: LaunchTarget::Activity(".SettingsActivity".into()), flags: "--ez demo true".into() };
+        let mut lines = Vec::new();
+        run(&gradle, &phone, &config, "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |l| lines.push(l), &|| false);
+        assert_eq!(phone.0.borrow().as_slice(), ["install 1", "stop com.example", "start com.example/.SettingsActivity --ez demo true"]);
+        assert!(matches!(&lines[1], ConsoleLine::Command(c) if c.ends_with("LAUNCHER --ez demo true")));
+        // Deploy and Launch "Nothing": built only.
+        let phone = Phone(RefCell::default());
+        config.options = LaunchOptions { deploy: false, launch: LaunchTarget::Nothing, flags: String::new() };
+        let (outcome, _) = run(&gradle, &phone, &config, "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |_| {}, &|| false);
+        assert_eq!(outcome, RunOutcome::Running { application_id: "com.example".into(), pid: None });
+        assert!(phone.0.borrow().is_empty());
     }
 }

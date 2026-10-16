@@ -71,5 +71,6 @@ pub mod debug_service;
 pub mod debug_view;
 pub mod evaluate_dialog;
 pub mod extract_method_dialog;
+pub mod run_config_dialog;
 pub mod breakpoints_dialog;
 pub mod test_view;
