@@ -321,6 +321,8 @@ pub struct Workspace {
     changes: Entity<crate::ui::changes_view::ChangesView>,
     /// A pull request's timeline, shown in the editor area until closed.
     timeline: Option<Entity<crate::ui::pull_requests::PrTimelineView>>,
+    /// The Translations Editor of a res folder, shown in the editor area.
+    translations: Option<(Entity<crate::ui::translations_editor::TranslationsEditor>, Subscription)>,
     /// The merge tool, shown in the editor area instead of the diff.
     merge: Option<(Entity<MergeView>, Subscription)>,
     /// Git tool window Log tabs; the first is the main "Log".
@@ -717,6 +719,7 @@ impl Workspace {
             nav: history::NavHistory::default(),
             changes,
             timeline: None,
+            translations: None,
             merge: None,
             log_tabs: vec![LogTab { title: "Log".into(), filter: Default::default(), selected: None }],
             active_log: 0,

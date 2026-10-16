@@ -11,6 +11,7 @@ pub mod gradle_sync;
 pub mod gradle_tests;
 pub mod jdk_discovery;
 pub mod project_files;
+pub mod res_files;
 pub mod jdwp_client;
 pub mod local_history_store;
 pub mod maven_versions;

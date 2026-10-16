@@ -24,6 +24,7 @@ pub mod logcat_filter;
 pub mod rename;
 pub mod run;
 pub mod testing;
+pub mod translations;
 pub mod todo;
 pub mod sync;
 pub mod version_catalog;

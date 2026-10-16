@@ -62,6 +62,7 @@ pub mod run_service;
 pub mod item_tree;
 pub mod local_history_window;
 pub mod logcat_view;
+pub mod translations_editor;
 pub mod problems_view;
 pub mod todo_view;
 pub mod run_views;

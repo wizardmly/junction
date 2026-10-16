@@ -178,6 +178,9 @@ pub enum FileEditorEvent {
     Edited,
     /// The file is gone from disk (a checkout, say) and had no unsaved edits.
     Deleted,
+    /// The strings banner's Open editor: the Translations Editor of this
+    /// values file's res folder.
+    OpenTranslations(String),
 }
 
 impl EventEmitter<FileEditorEvent> for FileEditor {}
@@ -377,6 +380,8 @@ pub struct FileEditor {
     hierarchy_slots: usize,
     /// Resource previews by line (color swatches, drawable thumbnails).
     previews: Vec<(u32, crate::usecase::android_resources::Preview)>,
+    /// The strings banner's Hide notification.
+    strings_banner_hidden: bool,
     previews_task: Option<gpui_kit::Task<()>>,
     /// The test classes and methods of a test file, for the gutter's run
     /// icons, and the popup a click on one opens.
@@ -682,6 +687,7 @@ impl FileEditor {
             gutter_line: Rc::default(),
             hierarchy_slots: 0,
             previews: Vec::new(),
+            strings_banner_hidden: false,
             previews_task: None,
             test_marks: Vec::new(),
             test_marks_task: None,
@@ -2012,6 +2018,39 @@ impl FileEditor {
     }
 }
 
+impl FileEditor {
+    /// Android Studio's banner over a values file with strings: "Edit
+    /// translations for all locales in the translations editor."
+    fn strings_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        if self.strings_banner_hidden || self.revision.is_some() || !self.path.ends_with(".xml") {
+            return None;
+        }
+        let folder = std::path::Path::new(&self.path).parent()?.file_name()?.to_string_lossy().into_owned();
+        if !(folder == "values" || folder.starts_with("values-")) || !self.state.read(cx).value().contains("<string ") {
+            return None;
+        }
+        let palette = cx.palette().clone();
+        let link = |id: &'static str, label: &'static str| div().id(id).text_color(palette.link).cursor_pointer().child(label);
+        let path = self.path.clone();
+        Some(
+            h_flex()
+                .px_2()
+                .h(px(30.))
+                .gap_4()
+                .text_sm()
+                .bg(palette.toolbar)
+                .border_b_1()
+                .border_color(palette.border)
+                .child(div().flex_1().child("Edit translations for all locales in the translations editor."))
+                .child(link("strings-open-editor", "Open editor").on_click(cx.listener(move |_, _, _, cx| cx.emit(FileEditorEvent::OpenTranslations(path.clone())))))
+                .child(link("strings-hide", "Hide notification").on_click(cx.listener(|this, _, _, cx| {
+                    this.strings_banner_hidden = true;
+                    cx.notify();
+                }))),
+        )
+    }
+}
+
 impl Render for FileEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
@@ -2178,6 +2217,7 @@ impl Render for FileEditor {
             .when_some(self.error.clone().or_else(|| self.notice.clone()), |el, error| {
                 el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(error))
             })
+            .when_some(self.strings_banner(cx), |el, banner| el.child(banner))
             .child(self.find.clone())
             .when_some(self.annotation.as_ref().and_then(|a| a.error.clone()), |el, error| {
                 el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(format!("Cannot annotate: {error}")))

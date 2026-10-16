@@ -38,6 +38,7 @@ pub(super) enum Front {
     DiffTab(usize),
     Merge,
     Timeline,
+    Translations,
 }
 
 /// The tab group not focused, after Split Right / Down.
@@ -169,7 +170,7 @@ impl Workspace {
     }
 
     fn has_specials(&self, cx: &gpui_kit::App) -> bool {
-        self.diff.read(cx).title().is_some() || self.merge.is_some() || self.timeline.is_some()
+        self.diff.read(cx).title().is_some() || self.merge.is_some() || self.timeline.is_some() || self.translations.is_some()
     }
 
     /// The file editor the editor area shows, if it shows one.
@@ -201,6 +202,9 @@ impl Workspace {
         }
         if self.timeline.is_some() {
             tabs.push(Front::Timeline);
+        }
+        if self.translations.is_some() {
+            tabs.push(Front::Translations);
         }
         tabs
     }
@@ -394,6 +398,7 @@ impl Workspace {
             Front::DiffTab(ix) => ix < self.diff_tabs.len(),
             Front::Merge => self.merge.is_some(),
             Front::Timeline => self.timeline.is_some(),
+            Front::Translations => self.translations.is_some(),
         };
         if ok {
             return;
@@ -421,6 +426,7 @@ impl Workspace {
             }
             Front::Merge => self.merge = None,
             Front::Timeline => self.timeline = None,
+            Front::Translations => self.translations = None,
         }
         self.fix_front(cx);
         cx.notify();
@@ -578,6 +584,10 @@ impl Workspace {
             Front::Timeline => {
                 let title = self.timeline.as_ref().map(|t| t.read(cx).title()).unwrap_or_else(|| "Pull Request".to_owned());
                 (title, gpui_kit::component::Icon::from(icons::PULL_REQUESTS), None)
+            }
+            Front::Translations => {
+                let title = self.translations.as_ref().map(|(t, _)| t.read(cx).title()).unwrap_or_default();
+                (title, gpui_kit::component::Icon::from(icons::LANGUAGE), None)
             }
         }
     }

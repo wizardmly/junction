@@ -92,8 +92,13 @@ impl Workspace {
                 let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
                 self.rename_symbol(path, text.clone(), *offset, window, cx);
             }
+            FileEditorEvent::OpenTranslations(path) => {
+                let path = path.clone();
+                self.open_translations(&path, window, cx);
+            }
             FileEditorEvent::Saved(path) => {
                 let path = path.clone();
+                self.reload_translations(&path, cx);
                 self.recently_changed.touch(&path);
                 self.code_index.update(cx, |index, cx| index.refresh_file(&path, cx));
                 if let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) {
@@ -137,6 +142,50 @@ impl Workspace {
     /// Files written outside the editors (Local History's Revert).
     pub fn files_changed_on_disk(&mut self, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.files_changed(paths, window, cx);
+    }
+
+    /// Android Studio's Translations Editor of the res folder holding a
+    /// values file (a project path), else of the project's first module:
+    /// every open file saved first, as its edits go to disk.
+    pub(super) fn open_translations(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::translations_editor::{TranslationsEditor, TranslationsEvent, res_of};
+        let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+        let res = res_of(&root.join(path)).or_else(|| first_res(&root));
+        let Some(res) = res else {
+            window.push_notification(Notification::info("No string resources in this project").title("Translations Editor"), cx);
+            return;
+        };
+        let editors: Vec<_> = self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).collect();
+        for editor in editors {
+            editor.update(cx, |e, cx| e.save_now(cx));
+        }
+        match &self.translations {
+            Some((view, _)) if *view.read(cx).res() == res => view.update(cx, |v, cx| v.reload(cx)),
+            _ => {
+                let label = res.strip_prefix(&root).unwrap_or(&res).to_string_lossy().replace('\\', "/");
+                let view = cx.new(|cx| TranslationsEditor::new(res, label, window, cx));
+                let subscription = cx.subscribe_in(&view, window, move |this, _, event: &TranslationsEvent, window, cx| match event {
+                    TranslationsEvent::FilesChanged(paths) => {
+                        let Some(root) = this.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+                        let paths = paths.iter().filter_map(|p| p.strip_prefix(&root).ok()).map(|p| p.to_string_lossy().replace('\\', "/")).collect();
+                        this.files_changed(paths, window, cx);
+                    }
+                });
+                self.translations = Some((view, subscription));
+            }
+        }
+        self.focus_group(0, cx);
+        self.front = Front::Translations;
+        cx.notify();
+    }
+
+    /// A values file saved in an editor: the Translations Editor follows.
+    fn reload_translations(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some((view, _)) = &self.translations else { return };
+        let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+        if crate::ui::translations_editor::res_of(&root.join(path)).as_ref() == Some(view.read(cx).res()) {
+            view.update(cx, |v, cx| v.reload(cx));
+        }
     }
 
     /// Local History › Show History for the open file.
@@ -540,4 +589,12 @@ impl Workspace {
         })
         .detach();
     }
+}
+
+/// The project's first module `res` folder with strings: `app/src/main/res`.
+fn first_res(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let modules = std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_dir());
+    let mut found: Vec<std::path::PathBuf> = modules.map(|m| m.join("src/main/res")).filter(|r| r.join("values/strings.xml").is_file()).collect();
+    found.sort();
+    found.into_iter().next()
 }

@@ -404,7 +404,7 @@ Linux 实测：TODO 窗口找到 3 条（含未跟踪文件），双击跳到对
 | 悬停：显示资源的值（跟随 `@color/a` → `@color/b` 引用链）和所在目录、文件 | ✅ |
 | Find Usages（Alt+F7）：分 Declarations、代码里的引用、XML 里的引用三组 | ✅ |
 | gutter 预览：代码和 XML 里引用颜色的行显示色块，引用 png / webp / jpg 图片的行显示缩略图（取最高密度目录的那张）；colors.xml 里每个颜色定义也显示色块 | ✅ |
-| vector drawable / shape 预览、点击色块打开取色器、字符串折叠显示值、Translations Editor、Manifest 合并视图、框架资源 `android.R` / `@android:` | ❌ 未做 |
+| vector drawable / shape 预览、点击色块打开取色器、字符串折叠显示值、Manifest 合并视图、框架资源 `android.R` / `@android:` | ❌ 未做（Translations Editor 见第 31 节） |
 
 Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 values-zh 两个声明，悬停显示值；Ctrl+B `R.color.purple_500` 打开 colors.xml 第 2 行；Alt+F7 分组正确；MainActivity.kt 和 activity_main.xml 的 gutter 显示紫色、青色色块（`@color/accent` 跟随到 teal_200）和 ic_logo 缩略图。截图：reports/Android资源-2026-10-15/。
 
@@ -604,3 +604,17 @@ Linux 实测（Xvfb）：Java 类 Alt+Insert → equals() and hashCode()，生�
 - **M6 托管平台**：GitHub/GitLab Pull Requests。
 - **M7 代码索引**：多语言符号索引、跨语言桥接、LSP、Go to Declaration / Find Usages / Go to Symbol。
 - **M8 搜索**：Find / Replace in Files、Search Everywhere、Find Action、Recent Files、File Structure、Go to Line。
+
+## 31. Translations Editor（2026-10-16）
+
+Android Studio 的 Translations Editor。代码：`src/domain/translations.rs`（解析 `<string>`、Android 转义、`values-fr` / `values-zh-rCN` / `values-b+sr+Latn` 对应的语言区域和 AS 的列名、改 / 加 / 删字符串和 `translatable`）、`src/usecase/translations.rs`（汇总成表、各项编辑）、`src/infra/res_files.rs`（res 目录读写）、`src/ui/translations_editor.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 打开：values 目录下含 `<string>` 的 XML 顶部显示 AS 的横幅 “Edit translations for all locales in the translations editor.”，“Open editor” 打开、“Hide notification” 隐藏；Find Action “Open Translations Editor”（当前文件不在 values 目录时打开项目第一个模块的 `src/main/res`）；作为编辑区标签页 “Translations Editor”，打开前先保存所有编辑器 | ✅ |
+| 表格：Key、Resource Folder（`app/src/main/res`）、Untranslatable 勾选框、Default Value，每个语言一列（列名 “Chinese (zh) in China (CN)”、“French (fr)”，按名称排序）；值按 Android 规则反转义显示（`\'` → `'`、`&amp;` → `&`），带标签的值原样显示；缺翻译的单元格淡红底，缺翻译的键红字，不可翻译的键不算缺；`values-night` 等非语言目录不计；表格可横向滚动 | ✅ |
+| 编辑：点单元格选中，下方 Key / Default Value / Translation 显示内容，Translation 右侧注明语言；双击单元格直接编辑下方对应字段，回车或离开字段时写回 XML（转义 `'` `"` `&` `<`、开头的 `@` `?`，首尾空格加引号），清空某语言的翻译即删除该条；没有该语言目录时新建 `values-xx/strings.xml`；写入后打开的编辑器重新加载、重新索引；编辑器里保存 values 文件时表格跟着刷新 | ✅ |
+| 工具栏：+ Add Key（Key、Default Value、Resource Folder 对话框，照 AS 校验 “Key cannot be empty”、“Key 'x' already exists”、非法字符）、− Remove Keys（选中的键，Ctrl / Shift 点击多选，确认后从所有语言删除）、Add Locale（语言下拉，新建 `values-xx/strings.xml` 并放入 `app_name`，不可翻译时放第一个可翻译的键，同 AS 不留空目录）、Show All Keys / Show Translatable Keys / Show Keys Needing Translations 过滤、Reload | ✅ |
+| 多个 res 目录（flavor、多模块）合并显示、Key 列冻结、单元格内直接编辑、`plurals` / `string-array`、Order a translation、按语言过滤列、删除时查找引用（Safe Delete） | ❌ 未做 |
+
+Linux 实测（Xvfb，含 values、values-fr、values-zh-rCN、values-night 的示例项目）：打开 `values/strings.xml` 出现横幅，点 Open editor 打开表格，settings 的法语和 welcome 的中法两列标红；双击 settings 的法语格输入 `Parametres d'app` 回车，`values-fr/strings.xml` 写入 `Parametres d\'app`，该行恢复正常；Add Key 输入已存在的 `hello` 提示 “Key 'hello' already exists”，改为 `about` 后写入并选中；Show Keys Needing Translations 只剩 about、welcome；Remove Keys 确认后 about 从文件删除；Add Locale 选 German 新建 `values-de/strings.xml`，出现 “German (de)” 列，其余键变红；勾选 welcome 的 Untranslatable 写入 `translatable="false"`。

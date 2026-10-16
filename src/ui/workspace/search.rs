@@ -162,6 +162,10 @@ impl Workspace {
                     editor.update(cx, |e, cx| e.surround_with(window, cx));
                 }
             })),
+            ("Open Translations Editor", "", op(|this, window, cx| {
+                let path = this.editor().map(|e| e.read(cx).path().to_owned()).unwrap_or_default();
+                this.open_translations(&path, window, cx);
+            })),
             ("Rename…", "Shift+F6", op(|this, _, cx| {
                 if let Some(editor) = this.editor().cloned() {
                     editor.update(cx, |e, cx| e.rename(cx));

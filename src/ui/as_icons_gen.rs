@@ -160,6 +160,7 @@ pub const JUNIT: AsIcon = AsIcon { light: &[("as/junit.l0.svg", 0xfff7f7ff), ("a
 pub const KILL_PROCESS: AsIcon = AsIcon { light: &[("as/kill-process.l0.svg", 0xdb3b4bff)], dark: &[("as/kill-process.d0.svg", 0xdb5c5cff)] };
 pub const KOTLIN: AsIcon = AsIcon { light: &[("as/kotlin.l0.svg", 0xfaf5ffff), ("as/kotlin.l1.svg", 0x834df0ff)], dark: &[("as/kotlin.d0.svg", 0x2f2936ff), ("as/kotlin.d1.svg", 0xa571e6ff)] };
 pub const KOTLIN_SCRIPT: AsIcon = AsIcon { light: &[("as/kotlin-script.l0.svg", 0x6c707eff), ("as/kotlin-script.l1.svg", 0xfaf5ffff), ("as/kotlin-script.l2.svg", 0x834df0ff)], dark: &[("as/kotlin-script.d0.svg", 0xced0d6ff), ("as/kotlin-script.d1.svg", 0x2f2936ff), ("as/kotlin-script.d2.svg", 0xa571e6ff)] };
+pub const LANGUAGE: AsIcon = AsIcon { light: &[("as/language.l0.svg", 0x6c707eff)], dark: &[("as/language.d0.svg", 0xced0d6ff)] };
 pub const LAYOUT: AsIcon = AsIcon { light: &[("as/layout.l0.svg", 0x6c707eff)], dark: &[("as/layout.d0.svg", 0xced0d6ff)] };
 pub const LEFT: AsIcon = AsIcon { light: &[("as/left.l0.svg", 0x6c707eff)], dark: &[("as/left.d0.svg", 0xced0d6ff)] };
 pub const LIBRARY: AsIcon = AsIcon { light: &[("as/library.l0.svg", 0x6c707eff), ("as/library.l1.svg", 0xebecf0ff)], dark: &[("as/library.d0.svg", 0xced0d6ff), ("as/library.d1.svg", 0x43454aff)] };
@@ -855,6 +856,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/kotlin-script.d0.svg", include_bytes!("../../assets/as-icons/gen/kotlin-script.d0.svg")),
     ("as/kotlin-script.d1.svg", include_bytes!("../../assets/as-icons/gen/kotlin-script.d1.svg")),
     ("as/kotlin-script.d2.svg", include_bytes!("../../assets/as-icons/gen/kotlin-script.d2.svg")),
+    ("as/language.l0.svg", include_bytes!("../../assets/as-icons/gen/language.l0.svg")),
+    ("as/language.d0.svg", include_bytes!("../../assets/as-icons/gen/language.d0.svg")),
     ("as/layout.l0.svg", include_bytes!("../../assets/as-icons/gen/layout.l0.svg")),
     ("as/layout.d0.svg", include_bytes!("../../assets/as-icons/gen/layout.d0.svg")),
     ("as/left.l0.svg", include_bytes!("../../assets/as-icons/gen/left.l0.svg")),
