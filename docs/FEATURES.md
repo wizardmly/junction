@@ -315,7 +315,7 @@
 | 语法错误红色波浪线，悬停显示原因（`'}' expected` 等），输入停顿 0.3 秒后更新 | ✅（tree-sitter 的 ERROR / MISSING 节点；类型错误等语义错误由下一行的编译给出） |
 | 保存 Kotlin / Java 文件后，后台编译所在 Gradle 模块，编译器的错误和警告标到编辑器（悬停看信息），修好再保存后消失 | ✅（Android 模块 `:m:compileDebugJavaWithJavac`，JVM 模块 `:m:classes`；用项目的 gradlew；状态栏显示 Compiling…；同一模块编译中再次保存会排队一次；Gradle 守护进程闲置 15 分钟退出；编译失败但没有编译器信息时（构建脚本错、没有 JDK）弹通知显示 Gradle 输出末尾。没有 JAVA_HOME 且 PATH 里没有 java 时，使用 Android Studio 自带的 jbr） |
 | Settings › Build, Execution, Deployment › Compiler › Compile on save | ✅（默认开） |
-| Problems 工具窗口、快速修复（Alt+Enter）、Reformat、参数提示 | ❌ 未做 |
+| Problems 工具窗口、快速修复（Alt+Enter）、参数提示 | ❌ 未做（Reformat Code 见第 33 节） |
 
 Linux 实测：mytv-android（补全、自动 import、语法错误），最小 Kotlin/JVM Gradle 项目（保存后编译：冷启动约 40 秒，热编译约 1.5 秒）。Windows / macOS 需真机验证。
 
@@ -631,3 +631,17 @@ Android Studio 打开 `res/drawable*/`、`mipmap*/` 下的 vector XML 时的预�
 | shape / selector / layer-list / animated-vector 预览、trimPath、主题属性按真实主题解析、预览缩放和背景切换 | ❌ 未做 |
 
 Linux 实测（Xvfb）：打开 `drawable/ic_star.xml`（填充 `@color/accent` 的五角星，里面一个按 pivot 缩放 0.4 的白色圆），右侧显示橙色星和白色圆，注明 “24 × 24 dp”；把圆的 `#FFFFFF` 改成 `#D50000`，预览立即变红；点 Design 只显示预览、gutter 色块和改动标记不再显示；打开 `layout/main.xml`，`android:src="@drawable/ic_star"` 那一行的 gutter 出现星形图标。
+
+## 33. Reformat Code（2026-10-16）
+
+IntelliJ 的 Code › Reformat Code（Ctrl+Alt+L，macOS ⌘⌥L），Kotlin / Java。代码：`src/domain/reformat.rs`，编辑器入口 `FileEditor::reformat_code`；右键菜单和 Find Action 里也有。
+
+| 功能 | 状态 |
+|---|---|
+| 范围：有选区时只格式化选中的行，否则整个文件；一次可撤销的编辑，光标留在原来的代码上；提示 IntelliJ 的 “Formatted N lines” / “No lines changed: content is already properly formatted” | ✅ |
+| 缩进：按所在括号重新缩进（单位取文件已有的缩进，2 空格文件保持 2 空格，否则 4 空格，Tab 文件用 Tab）；Kotlin 官方风格的参数、链式调用、`=` 后表达式、`?:`、`when` 分支的 `->` 续一级，`&&` / `\|\|` 续两级，同一语句里并列的续行对齐，嵌套续行再深一级；属性的 `get()` / `set()` 在属性下一级；类头 `:` 后的父类列表续一级而类体按类缩进；Java 续行 8、`case` 体在标签下一级、方法声明多行参数与第一个参数对齐（IntelliJ 的 ALIGN_MULTILINE_PARAMETERS），方法体按声明行缩进 | ✅ |
+| 空格：`,` 后加空格；`if` / `for` / `while` / `when` / `catch` / `switch` 后加空格；`{` 前加空格（`){`、`else{`、`foo{`，数组初始化 `]{` 除外），`}else` / `}catch`；赋值、`==` / `!=` / `===`、`&&` / `\|\|` 两侧单个空格；比较 `<` `>` `<=` `>=` 两侧加空格（只在两边是数字或小写名字时，避免误伤泛型 `List<Int>`）；Kotlin 冒号 `name: Type`、`fun f(): Int`，父类 / 构造函数委托 / `object :` / 类型参数上界 `<E : Any>` 冒号前加空格；多个空格合成一个，行尾空格去掉 | ✅ |
+| 空行最多保留 2 行（IntelliJ 默认 KEEP_BLANK_LINES_IN_CODE = 2）；字符串、字符、注释、Kotlin 原始字符串 / Java 文本块、`${…}` 模板内容原样保留；块注释的 ` * ` 行跟着注释对齐 | ✅ |
+| 换行（WRAP_AS_NEEDED、右边界 120）、import 优化联动、Rearrange code、XML / Gradle 文件格式化、`${…}` 里的表达式加空格、代码风格设置页、`.editorconfig` | ❌ 未做 |
+
+验证：除单元测试外，用 intellij-community 的 82 个已格式化源文件（Kotlin 官方风格和 IntelliJ 自己的 2 空格 Java）做回归：69 个完全不变，剩下的差异基本是源文件里本来就没格式化的行（混入的 2 空格行、多余空格）和 IntelliJ 项目自定义的对齐（测试 `domain::reformat::corpus`，`JUNCTION_FMT_DIR=目录 cargo test corpus -- --ignored --nocapture`）。Linux 实测（Xvfb）：一个缩进混乱的 Kotlin 类按 Ctrl+Alt+L 后变为 4 空格缩进、`fun total(): Int {`、`if (i > 0 && i < 100) {`、`} else {`、`.filter { it > 1 }` 链在 `items` 下一级、多余空行减到 2 行，光标仍在原行。

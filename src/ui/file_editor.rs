@@ -59,6 +59,7 @@ actions!(
         FindUsages,
         RenameElement,
         OptimizeImports,
+        ReformatCode,
         IntroduceVariable,
         IntroduceConstant,
         SurroundWith,
@@ -114,6 +115,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("alt-f7", FindUsages, Some(CONTEXT)),
         KeyBinding::new("shift-f6", RenameElement, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-o", OptimizeImports, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-l" } else { "ctrl-alt-l" }, ReformatCode, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-v" } else { "ctrl-alt-v" }, IntroduceVariable, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-c" } else { "ctrl-alt-c" }, IntroduceConstant, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-t" } else { "ctrl-alt-t" }, SurroundWith, Some(CONTEXT)),
@@ -1064,6 +1066,72 @@ impl FileEditor {
             n => format!("Removed {n} unused imports"),
         };
         hint(notice, window, cx);
+    }
+
+    /// Code › Reformat Code (Ctrl+Alt+L), as IntelliJ's: the selected
+    /// lines, else the file, in IntelliJ's default code style, as one
+    /// undoable edit; the caret stays on its text.
+    pub fn reformat_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
+        let text = self.text(cx);
+        let (selection, cursor) = {
+            let state = self.state.read(cx);
+            (state.selected_range(), state.cursor())
+        };
+        let line_of = |offset: usize| text[..offset.min(text.len())].matches('\n').count();
+        let only = (!selection.is_empty()).then(|| {
+            // A selection ending at a line's start doesn't take that line.
+            let end = if selection.end > 0 && text[..selection.end].ends_with('\n') { selection.end - 1 } else { selection.end };
+            line_of(selection.start)..line_of(end) + 1
+        });
+        let new = crate::domain::reformat::reformat(style, &text, only);
+        let hint = |message: String, window: &mut Window, cx: &mut Context<Self>| Self::hint("Reformat Code", message, window, cx);
+        if new == text {
+            return hint("No lines changed: content is already properly formatted".into(), window, cx);
+        }
+        // Only blank lines go away: the n-th non-blank line is the same one.
+        let old_lines: Vec<&str> = text.split('\n').collect();
+        let new_lines: Vec<&str> = new.split('\n').collect();
+        let caret_line = line_of(cursor);
+        let line_start = text[..cursor].rfind('\n').map_or(0, |i| i + 1);
+        let old_line = old_lines.get(caret_line).copied().unwrap_or("");
+        let into_text = (cursor - line_start).saturating_sub(old_line.len() - old_line.trim_start().len());
+        let rank = old_lines[..caret_line].iter().filter(|l| !l.trim().is_empty()).count();
+        let target = new_lines.iter().enumerate().filter(|(_, l)| !l.trim().is_empty()).nth(rank).map(|(i, _)| i).unwrap_or(new_lines.len().saturating_sub(1));
+        let new_start: usize = new_lines[..target].iter().map(|l| l.len() + 1).sum();
+        let target_line = new_lines.get(target).copied().unwrap_or("");
+        let indent = target_line.len() - target_line.trim_start().len();
+        let mut caret = (new_start + indent + into_text).min(new_start + target_line.len());
+        while !new.is_char_boundary(caret) {
+            caret -= 1;
+        }
+        let changed = {
+            let mut count = 0;
+            let (mut a, mut b) = (old_lines.iter().filter(|l| !l.trim().is_empty()), new_lines.iter().filter(|l| !l.trim().is_empty()));
+            while let (Some(x), Some(y)) = (a.next(), b.next()) {
+                count += usize::from(x != y);
+            }
+            count + old_lines.len().abs_diff(new_lines.len())
+        };
+        // One edit: the changed span.
+        let prefix = text.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+        let suffix = text.bytes().rev().zip(new.bytes().rev()).take_while(|(a, b)| a == b).count().min(text.len().min(new.len()) - prefix);
+        let (mut start, mut old_end) = (prefix, text.len() - suffix);
+        while !text.is_char_boundary(start) || !new.is_char_boundary(start) {
+            start -= 1;
+        }
+        while !text.is_char_boundary(old_end) {
+            old_end += 1;
+        }
+        let new_end = new.len() - (text.len() - old_end);
+        let replacement = new[start..new_end].to_owned();
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(start..old_end, cx);
+            state.replace(replacement, window, cx);
+            state.set_selected_range(caret..caret, cx);
+        });
+        cx.notify();
+        hint(format!("Formatted {changed} {}", if changed == 1 { "line" } else { "lines" }), window, cx);
     }
 
     /// A refactoring's result or why it can't run, as Android Studio's
@@ -2150,6 +2218,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::find_usages))
             .on_action(cx.listener(Self::rename_element))
             .on_action(cx.listener(Self::optimize_imports_action))
+            .on_action(cx.listener(|this, _: &ReformatCode, window, cx| this.reformat_code(window, cx)))
             .on_action(cx.listener(Self::introduce_variable_action))
             .on_action(cx.listener(Self::introduce_constant_action))
             .on_action(cx.listener(Self::surround_with_action))
@@ -2283,6 +2352,7 @@ impl Render for FileEditor {
                                 .menu("Find Usages", Box::new(FindUsages))
                                 .menu_with_disabled("Generate…", read_only, Box::new(Generate))
                                 .menu_with_disabled("Surround With…", read_only, Box::new(SurroundWith))
+                                .menu_with_disabled("Reformat Code", read_only, Box::new(ReformatCode))
                                 .submenu(
                                     "Refactor",
                                     NativeMenu::new()
