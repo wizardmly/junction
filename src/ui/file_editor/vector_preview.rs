@@ -11,7 +11,7 @@ use gpui_kit::{AnyElement, Context, IntoElement, ParentElement as _, Styled as _
 
 use super::FileEditor;
 use crate::domain::android_resources::ResourceRef;
-use crate::domain::vector_drawable;
+use crate::domain::drawable::{self, Lookup};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
@@ -32,6 +32,33 @@ pub(super) struct VectorPreview {
     hash: u64,
     /// The picture and its size in dp, or why there's none.
     result: Result<(Arc<gpui_kit::Image>, f32, f32), String>,
+    /// A selector's items: their states and pictures.
+    states: Vec<(String, Arc<gpui_kit::Image>)>,
+}
+
+/// A selector item's picture, its longer side.
+const STATE: f32 = 48.;
+
+/// Color, value and drawable lookups in the project's resources, for
+/// `drawable::Lookup`.
+#[allow(clippy::type_complexity)]
+pub(super) fn resource_lookups(
+    table: Option<std::sync::Arc<std::sync::RwLock<crate::usecase::android_resources::ResourceTable>>>,
+    root: std::path::PathBuf,
+) -> (impl Fn(&str) -> Option<u32>, impl Fn(&str) -> Option<String>, impl Fn(&str) -> Option<String>) {
+    let reference = |value: &str| -> Option<ResourceRef> {
+        let (kind, name) = value.strip_prefix('@')?.split_once('/')?;
+        Some(ResourceRef::new(kind, name))
+    };
+    let (t1, t2, t3) = (table.clone(), table.clone(), table);
+    (
+        move |value: &str| t1.as_ref()?.read().ok()?.color(&reference(value)?),
+        move |value: &str| t2.as_ref()?.read().ok()?.value(&reference(value)?),
+        move |value: &str| {
+            let path = t3.as_ref()?.read().ok()?.drawable_xml(&reference(value)?)?.path.to_string();
+            std::fs::read_to_string(root.join(path)).ok()
+        },
+    )
 }
 
 impl FileEditor {
@@ -52,22 +79,26 @@ impl FileEditor {
         text.hash(&mut hasher);
         let hash = hasher.finish();
         if self.vector.as_ref().map(|v| v.hash) != Some(hash) {
-            if !text.contains("<vector") {
+            if !drawable::is_previewable(&text) {
                 self.vector = None;
                 return None;
             }
-            let table = self.code_index.as_ref().map(|i| i.read(cx).resources.clone());
-            let color = move |value: &str| -> Option<u32> {
-                let (kind, name) = value.strip_prefix('@')?.split_once('/')?;
-                table.as_ref()?.read().ok()?.color(&ResourceRef::new(kind, name))
-            };
+            let index = self.code_index.as_ref().map(|i| i.read(cx));
+            let table = index.as_ref().map(|i| i.resources.clone());
+            let root = index.and_then(|i| i.root().map(|r| r.to_path_buf())).unwrap_or_default();
+            let lookups = resource_lookups(table, root);
+            let lookup = Lookup { color: &lookups.0, value: &lookups.1, drawable: &lookups.2 };
             // Measure first, then draw at the preview's size.
-            let result = vector_drawable::to_svg(&text, 1., &color).and_then(|first| {
+            let result = drawable::render(&text, 1., &lookup).and_then(|first| {
                 let scale = PREVIEW / first.width.max(first.height).max(1.);
-                let image = vector_drawable::to_svg(&text, scale, &color)?;
+                let image = drawable::render(&text, scale, &lookup)?;
                 Ok((Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, image.svg.into_bytes())), image.width, image.height))
             });
-            self.vector = Some(VectorPreview { hash, result });
+            let states = drawable::states(&text, STATE, &lookup)
+                .into_iter()
+                .map(|(label, svg)| (label, Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, svg.into_bytes()))))
+                .collect();
+            self.vector = Some(VectorPreview { hash, result, states });
         }
         self.vector.as_ref()
     }
@@ -115,8 +146,19 @@ impl FileEditor {
                     .child(div().text_xs().text_color(palette.text_secondary).child(format!("{} × {} dp", trim(*w), trim(*h))))
                     .into_any_element()
             }
-            Err(e) => div().text_sm().text_color(palette.status_conflict).child(format!("Cannot render the vector: {e}")).into_any_element(),
+            Err(e) => div().text_sm().text_color(palette.status_conflict).child(format!("Cannot render the drawable: {e}")).into_any_element(),
         };
+        // A selector's state list under its default state.
+        let states = (!preview.states.is_empty()).then(|| {
+            h_flex().flex_wrap().justify_center().gap_3().pt_4().children(preview.states.iter().map(|(label, image)| {
+                v_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(gpui_kit::img(image.clone()).max_w(px(STATE)).max_h(px(STATE)).flex_none())
+                    .child(div().text_xs().text_color(palette.text_secondary).child(label.clone()))
+            }))
+        });
+        let body = v_flex().items_center().child(body).children(states).into_any_element();
         Some(
             div()
                 .when(design, |el| el.flex_1())

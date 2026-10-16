@@ -19,6 +19,7 @@ pub struct VectorImage {
 }
 
 /// Whether an XML file is a vector drawable (its root is `<vector>`).
+#[cfg(test)]
 pub fn is_vector(text: &str) -> bool {
     roxmltree::Document::parse(text).is_ok_and(|d| d.root_element().tag_name().name() == "vector")
 }
@@ -222,7 +223,7 @@ impl Writer<'_> {
 
 /// A color value: `#ARGB` forms, a reference the caller knows, or the
 /// framework's plain colors.
-fn resolve(value: &str, color: &dyn Fn(&str) -> Option<u32>) -> Option<u32> {
+pub(crate) fn resolve(value: &str, color: &dyn Fn(&str) -> Option<u32>) -> Option<u32> {
     let value = value.trim();
     if value.starts_with('#') {
         return parse_color(value);

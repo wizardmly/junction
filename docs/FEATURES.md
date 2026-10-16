@@ -719,3 +719,17 @@ Linux 实测（Xvfb，rust-analyzer 1.97）：Rust 项目里 Shift+F6 重命名�
 | 表达式框的代码补全和多行代码片段模式、异常断点 / 方法断点 / 字段监视点、Mute Breakpoints、按文件分组、Remove once hit、依赖断点 | ⬜ |
 
 Linux 实测（Xvfb，calc 示例的 JUnit 测试）：暂停在 `sum += items.get(i);`，光标放在 `get` 上按 Alt+F8，表达式框预填 `items.get(i)`，回车得到 `result = {Integer@447} 3`；求值 `items` 后展开得到 `[0] = {Integer@448} 1` 等三项；`items.get(1) * 10 + sum` 得 20；`nope + 1` 显示红字错误；历史列出三条；Add to Watches 后 Debug 窗口的 Watches 多了 `items.get(i)`。Breakpoints 对话框里列出 Calc.java:4（Shift+点行号加的黄色日志断点）和 CalcTest.java:34；给 CalcTest.java:34 填条件 `i == 2` 后切到另一项即保存到 breakpoints.json，再调试时停在 `i = 2`；列表里取消 Calc.java:4 的勾，gutter 立即变成空心；删除 Calc.java:4 后只剩一项；双击 CalcTest.java:34 打开该文件并跳到第 34 行。
+
+## 39. Shape / Selector / Layer List 等 drawable 预览（2026-10-16）
+
+第 32 节的 vector 预览扩展到 Android Studio 能预览的其他 drawable XML，同样是 Code / Split / Design 三种视图，编辑时重画；代码里和布局里引用它们的行（`@drawable/bg_button`、`R.drawable.badge`）在 gutter 显示缩略图。代码：`src/domain/drawable.rs`（按 `GradientDrawable`、`StateListDrawable`、`LayerDrawable` 的规则转成 SVG），`src/ui/file_editor/vector_preview.rs`、`src/ui/file_editor/previews.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| `<shape>`：rectangle（`<corners>` 的统一圆角或四角各自的半径，按 `min(w, h) / 2` 截断）、oval、line（只画描边，横穿中线）、ring（`innerRadius` / `thickness` 或按宽度的 `innerRadiusRatio` 9、`thicknessRatio` 3）；`<solid>` 或 `<gradient>`（linear 按 `angle` 的 45° 倍数，radial 带 `centerX/Y` 和 `gradientRadius`（dp 或 `50%`），`centerColor`）；`<stroke>`（宽度、颜色、`dashWidth` / `dashGap` 虚线），和 GradientDrawable 一样把形状内缩半个描边宽；`<size>` 为固有尺寸，没有时按 100 × 100 dp 画 | ✅ |
+| `<selector>`：画默认状态下会选中的那一项（View 默认是 enabled + window_focused，其他状态为 false，取第一个匹配项），预览下面列出每一项的缩略图和状态（“pressed”、“not enabled”、“default”）；`<level-list>` 同样取匹配项 | ✅ |
+| `<layer-list>`、`<ripple>`（不画 `@android:id/mask` 那一层）、`<transition>`：各层按 `left` / `top` / `right` / `bottom` 内缩，带 `width` / `height` 的层按 `gravity` 摆放（默认居中）；`<inset>`（`inset` 和四边）；`<color>` | ✅ |
+| 引用：`android:drawable="@drawable/…"` 读取并画出所引用的 drawable XML（vector 经第 32 节的转换嵌入，id 改成唯一的），`@color/…` 和 `@dimen/…` 从项目资源解析；互相引用成环时报错 | ✅ |
+| 位图（`<bitmap>`、PNG 引用、`.9.png`）在组合 drawable 里不画；sweep 渐变按 linear 画（SVG 没有锥形渐变）；`<animated-vector>`、`<animated-selector>`、`<clip>`、`<scale>`、`<rotate>`；按主题解析 `?attr/` | ⬜ |
+
+Linux 实测（Xvfb，trans 示例）：`bg_button.xml`（pressed 引用渐变 shape、not enabled 是内联灰色 shape、默认引用 `@color/accent` 填充加 2dp 绿色描边的圆角 shape）的 Split 视图画出默认状态的 120 × 48 dp 圆角按钮，下面三个缩略图依次为橙黄渐变、灰色、默认；`badge.xml`（径向渐变圆、内缩 16dp 的 `@drawable/ic_star` vector、带虚线描边的 ring）画成 64 × 64 dp 的徽章；`layout/main.xml` 里 `android:background="@drawable/bg_button"` 和 `android:foreground="@drawable/badge"` 两行的 gutter 显示这两个 drawable 的缩略图。修正过一处：嵌入 vector 时 `preserveAspectRatio` 重复导致整张 SVG 无法解析，测试现在检查每张输出都是合法 XML。

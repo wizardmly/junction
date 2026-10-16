@@ -1,13 +1,13 @@
 //! Android Studio's resource previews in the editor gutter: a color's
 //! swatch and a bitmap drawable's thumbnail on the lines that use them
-//! (`R.color.primary`, `@drawable/ic_logo`, `#FF6200EE`), a vector
-//! drawable drawn from its XML.
+//! (`R.color.primary`, `@drawable/ic_logo`, `#FF6200EE`), a drawable
+//! XML (vector, shape, selector, layer list) drawn from its XML.
 
 use gpui_kit::component::input::RopeExt as _;
 use gpui_kit::{AppContext as _, Bounds, Context, IntoElement, Pixels, Styled as _, canvas, point, px, size};
 
 use super::{FileEditor, GUTTER_ICON, GUTTER_ICON_GAP, GUTTER_ICON_SLOT};
-use crate::domain::vector_drawable;
+use crate::domain::drawable;
 use crate::usecase::android_resources::{self, Preview};
 
 impl FileEditor {
@@ -37,20 +37,30 @@ impl FileEditor {
                             other => (line, other),
                         })
                         .collect();
-                    // Vectors drawn for the gutter; other drawable XML has no icon.
+                    // Drawable XML (vectors, shapes, selectors…) drawn for the gutter.
                     let color = |value: &str| -> Option<u32> {
                         let (kind, name) = value.strip_prefix('@')?.split_once('/')?;
                         table.color(&crate::domain::android_resources::ResourceRef::new(kind, name))
                     };
+                    let value = |value: &str| -> Option<String> {
+                        let (kind, name) = value.strip_prefix('@')?.split_once('/')?;
+                        table.value(&crate::domain::android_resources::ResourceRef::new(kind, name))
+                    };
+                    let load = |value: &str| -> Option<String> {
+                        let (kind, name) = value.strip_prefix('@')?.split_once('/')?;
+                        let path = table.drawable_xml(&crate::domain::android_resources::ResourceRef::new(kind, name))?.path.to_string();
+                        std::fs::read_to_string(root.join(path)).ok()
+                    };
+                    let lookup = drawable::Lookup { color: &color, value: &value, drawable: &load };
                     let mut vectors = std::collections::HashMap::new();
                     for (_, p) in &marks {
                         let Preview::Vector(file) = p else { continue };
                         if vectors.contains_key(file) {
                             continue;
                         }
-                        let image = std::fs::read_to_string(file).ok().filter(|t| vector_drawable::is_vector(t)).and_then(|text| {
-                            let size = vector_drawable::to_svg(&text, 1., &color).ok()?;
-                            let svg = vector_drawable::to_svg(&text, 32. / size.width.max(size.height).max(1.), &color).ok()?.svg;
+                        let image = std::fs::read_to_string(file).ok().filter(|t| drawable::is_previewable(t)).and_then(|text| {
+                            let size = drawable::render(&text, 1., &lookup).ok()?;
+                            let svg = drawable::render(&text, 32. / size.width.max(size.height).max(1.), &lookup).ok()?.svg;
                             Some(std::sync::Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, svg.into_bytes())))
                         });
                         vectors.insert(file.clone(), image);
