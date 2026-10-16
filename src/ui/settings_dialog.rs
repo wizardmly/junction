@@ -179,6 +179,8 @@ pub struct SettingsView {
     /// Gradle builds.
     jdks: Vec<crate::domain::jdk::Jdk>,
     gradle_builds: Vec<std::path::PathBuf>,
+    /// "Download JDK…" open for a build (its key).
+    jdk_download: Option<(String, Entity<crate::ui::jdk_download_panel::JdkDownloadPanel>, Subscription)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -264,6 +266,7 @@ impl SettingsView {
             intercept: None,
             jdks,
             gradle_builds,
+            jdk_download: None,
             _subscriptions: subscriptions,
         }
     }
@@ -521,6 +524,28 @@ impl Render for SettingsView {
 
 // The pages.
 impl SettingsView {
+    /// The Gradle JDK dropdown's "Download JDK…": the panel under the
+    /// build's row; the JDK it installs becomes the build's Gradle JDK.
+    fn open_jdk_download(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::jdk_download_panel::{JdkDownloadEvent, JdkDownloadPanel};
+        let panel = cx.new(|cx| JdkDownloadPanel::new(window, cx));
+        let build_key = key.clone();
+        let subscription = cx.subscribe(&panel, move |this, _, event: &JdkDownloadEvent, cx| {
+            if let JdkDownloadEvent::Installed(home) = event {
+                if let Ok(jdk) = crate::infra::jdk_discovery::check(home) {
+                    this.draft.gradle_jdk.insert(build_key.clone(), jdk.home.to_string_lossy().into_owned());
+                    if !this.jdks.iter().any(|j| j.home == jdk.home) {
+                        this.jdks.push(jdk);
+                    }
+                }
+            }
+            this.jdk_download = None;
+            cx.notify();
+        });
+        self.jdk_download = Some((key, panel, subscription));
+        cx.notify();
+    }
+
     /// Build Tools › Gradle: each build's Gradle JDK, as Android Studio's
     /// dropdown offers them.
     fn gradle_page(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
@@ -580,8 +605,13 @@ impl SettingsView {
                         let checked = value == menu_setting;
                         menu = menu.item(PopupMenuItem::new(jdk.label()).checked(checked).on_click(set(value)));
                     }
+                    let (download_view, download_key) = (view.clone(), menu_key.clone());
+                    menu = menu.separator().item(PopupMenuItem::new("Download JDK…").on_click(move |_, window, cx| {
+                        let key = download_key.clone();
+                        download_view.update(cx, |this, cx| this.open_jdk_download(key, window, cx));
+                    }));
                     let (view, key) = (view.clone(), menu_key.clone());
-                    menu.separator().item(PopupMenuItem::new("Add JDK…").on_click(move |_, window, cx| {
+                    menu.item(PopupMenuItem::new("Add JDK…").on_click(move |_, window, cx| {
                         let paths = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Select JDK Home".into()) });
                         let (view, key) = (view.clone(), key.clone());
                         window
@@ -612,6 +642,7 @@ impl SettingsView {
                     .child(self.section("Gradle Projects", cx).when(ix > 0, |el| el.invisible()))
                     .child(h_flex().gap_2().child(div().font_weight(FontWeight::SEMIBOLD).child(name)).child(div().text_color(palette.text_secondary).child(build.display().to_string())))
                     .child(self.row("Gradle JDK:", query, picker, cx))
+                    .children(self.jdk_download.as_ref().filter(|(k, ..)| *k == key).map(|(_, panel, _)| panel.clone()))
                     .children(picked.as_ref().map(|jdk| div().text_xs().text_color(palette.text_secondary).child(jdk.home.display().to_string())))
                     .when(picked.is_none(), |el| {
                         el.child(div().text_color(palette.status_conflict).child("No JDK found. Install Android Studio or a JDK 17 or newer, set JAVA_HOME, or choose Add JDK…"))

@@ -4,6 +4,7 @@
 pub mod adb_device;
 pub mod breakpoint_store;
 pub mod run_config_store;
+pub mod jdk_download;
 pub mod adb_logcat;
 pub mod logcat_filter_store;
 pub mod catalog_files;

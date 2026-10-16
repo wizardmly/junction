@@ -20,7 +20,7 @@ anyhow = "1"
 chrono = "0.4"
 similar = { version = "2", features = ["inline", "unicode"] }
 # GitHub / GitLab REST APIs (accounts, pull requests, gists).
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "2", features = ["json", "native-certs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 roxmltree = "0.21"
@@ -65,6 +65,10 @@ qrcode = { version = "0.14", default-features = false }
 rand = "0.8"
 # Running Devices: decoding the mirrored screen (scrcpy's H.264 stream).
 openh264 = "0.9"
+lzma-rs = "0.3"
+tar = "0.4"
+flate2 = "1"
+sha2 = "0.10"
 
 [profile.dev]
 opt-level = 1

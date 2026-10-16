@@ -35,4 +35,5 @@ pub mod vector_drawable;
 pub mod drawable;
 pub mod extract_method;
 pub mod manifest_merge;
+pub mod jdk_feed;
 pub mod version_catalog;
