@@ -699,6 +699,8 @@ Linux 实测（Xvfb）：接口 `Shape`（`val label`、`fun area(scale: Double 
 | 应用：操作自带的编辑、`codeAction/resolve` 后的编辑、或执行其命令时服务器通过 `workspace/applyEdit` 发来的编辑；当前文件作为一次可撤销的编辑（光标随之移动），其他文件写盘后重新加载、重新索引 | ✅ |
 | 服务器诊断显示在编辑器和 Problems 里、补全改用服务器、Inline / Extract Method 等需要对话框的重构、文件创建 / 重命名类的 workspace edit、Code › Optimize Imports 走服务器 | ❌ 未做 |
 
-Kotlin 说明：Junction 默认不常驻 Kotlin 语言服务（省 1–2 GB 内存）；要语义 Rename 和类型相关的快速修复，安装 JetBrains 的 kotlin-lsp（github.com/Kotlin/kotlin-lsp）并让 `kotlin-lsp` 在 PATH 上，或在 Settings 的 Language Servers 里填它的启动命令。本环境的网络策略不允许下载 kotlin-lsp，所以用同样走 LSP 的 rust-analyzer 验证了这套机制。
+Kotlin 说明：Junction 默认不常驻 Kotlin 语言服务（省 1–2 GB 内存）；要语义 Rename 和类型相关的快速修复，安装 JetBrains 的 kotlin-lsp（github.com/Kotlin/kotlin-lsp，或 VS Code / Open VSX 上 “Kotlin by JetBrains” 扩展的 server-bundle.json 里给出的 kotlin-server 压缩包）并让 `kotlin-lsp` 或新版的启动器 `intellij-server`（压缩包里的 `bin/intellij-server`，`kotlin-lsp.sh` 已标为弃用）在 PATH 上，或在 Settings 的 Language Servers 里填它的启动命令。kotlin-lsp 先用 Gradle 导入工程（首次约 40 秒，要能下载 Gradle 和插件），导入前只认得当前文件，Rename 和快速修复会不完整；导入失败（如 AGP 插件下载不到）时文件不在任何模块里，没有诊断也没有 Import 修复。
+
+Linux 实测（Xvfb，kotlin-server 263.6379.0）：Kotlin/JVM Gradle 工程里 `val item = Item()`（`demo.a.Item` 和 `demo.b.Item` 两个同名类）上 Alt+Enter，在编辑器自己的 “Import class 'Item'” 之后列出服务器的 “Remove invocation”、“Import class 'Item' → demo.a.Item” / “→ demo.b.Item”、“Extract to local variable”、“Organize imports”，选 demo.b 后文件加上 `import demo.b.Item`；Shift+F6 重命名 `Shop.price` 为 `cost`，对话框列出 3 处（声明、`price(n)`、`Shop().price(3)`），`Other` 里的同名方法 `price()` 及其调用不在其中（整词匹配会列出 5 处），应用后只改这 3 处。
 
 Linux 实测（Xvfb，rust-analyzer 1.97）：Rust 项目里 Shift+F6 重命名函数 `compute`，对话框列出 main.rs 两处和 util.rs 的 `super::compute(x)`，而 util.rs 里另一个函数的同名参数 `compute` 没有列入（整词匹配会列入）；`BTreeMap::new()` 上 Alt+Enter 出现服务器的 “Import `std::collections::BTreeMap`” / “Qualify as …”，回车后文件顶部加上 `use std::collections::BTreeMap;`；`compute(2)` 的 `2` 上出现 “Extract into variable” 等重构，选中后（经 codeAction/resolve）生成 `let x = 2;` 并替换。

@@ -208,7 +208,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 
 | # | 功能 | 现状 | 实现思路 |
 |---|---|---|---|
-| 1 | 编辑器语言智能 | ✅ 2026-10-14 按“A+B”方案完成：索引补全 + 自动 import + 语法错误 + 保存后编译报错（FEATURES.md 第 14 节）。不常驻 Kotlin 语言服务（省 1–2 GB）；kotlin-lsp 以后可做成设置里的可选开关 | Reformat Code、Parameter Info、Alt+Enter 的 Import class 和意图操作已补上（2026-10-16，FEATURES.md 第 33–35 节）；剩需要类型信息的快速修复（随 kotlin-lsp） |
+| 1 | 编辑器语言智能 | ✅ 2026-10-14 按“A+B”方案完成：索引补全 + 自动 import + 语法错误 + 保存后编译报错（FEATURES.md 第 14 节）。不常驻 Kotlin 语言服务（省 1–2 GB）；kotlin-lsp 以后可做成设置里的可选开关 | Reformat Code、Parameter Info、Alt+Enter 的 Import class 和意图操作已补上（2026-10-16，FEATURES.md 第 33–35 节）；需要类型信息的快速修复随语言服务器（FEATURES.md 第 37 节，2026-10-16 已用 kotlin-lsp 实测） |
 | 2 | Gradle Sync | ✅ 2026-10-14 轻量版完成：init script 解析各模块 classpath 并下载缺的依赖和源码，外部库按结果精确列出；build 文件变化时自动同步，打开项目只提示不同步（FEATURES.md 第 15 节） | 剩 Build 窗口 Sync 标签页、Build Variants（随第 3 项） |
 | 3 | Build + Run | ✅ 2026-10-15 完成：标题栏 Make / 设备 / 运行配置 / Run / Stop，Build、Run、Build Variants 工具窗口（FEATURES.md 第 16 节） | 剩 Apply Changes、Edit Configurations 对话框、真机验证（Debug 见第 5 项） |
 | 4 | Logcat | ✅ 2026-10-15 完成：Logcat 工具窗口（Alt+6），设备下拉、AS 过滤语法、AS 配色、PROCESS STARTED / ENDED、堆栈跳源码、Standard / Compact、暂停、清空、重启（FEATURES.md 第 17 节） | 过滤输入补全、历史和收藏已补上（2026-10-16）；剩多个 Logcat 标签页、截屏录屏按钮、真机验证 |
@@ -218,7 +218,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 **P1：每天会用，可暂时回 AS**
 
 5. 🟡 Debugger（2026-10-15，FEATURES.md 第 22 节）：JDWP 客户端、行断点（持久化、类加载后补设）、Debug JVM 单元测试、Debug 'app'（`am start -D` + adb `jdwp:<pid>`）、Device Explorer 的 Attach debugger、执行点、Debug 工具窗口（F9/F8/F7/Shift+F8/Alt+F9、Frames、Variables 树）。**Android 调试只在模拟 adb 下验证过，需真机 / 模拟器验证**。条件断点、求值输入框、Watches、toString / 集合显示已补上（2026-10-15）。日志断点（Suspend execution、Log 选项、Shift+点行号）和 Disconnect（VirtualMachine.Dispose）已补上（2026-10-16）。剩 Alt+F8 对话框、lambda / new 等表达式、Breakpoints 对话框。
-6. 🟡 符号级重构：✅ Rename（Shift+F6，2026-10-15，FEATURES.md 第 24 节）：局部变量按作用域，类 / 方法 / 属性按项目整词匹配并列出每处供取消勾选，注释和字符串可选，类改名连带文件 `git mv`。✅ Optimize Imports（Ctrl+Alt+O，FEATURES.md 第 25 节）。✅ Introduce Variable（Ctrl+Alt+V，FEATURES.md 第 26 节，照 IntelliJ 的 KotlinIntroduceVariableHandler / KotlinNameSuggester）。✅ Introduce Constant（Ctrl+Alt+C，FEATURES.md 第 27 节，照 KotlinIntroduceConstantHandler 及其测试数据）。Rename 的语义匹配和 Alt+Enter 的服务器代码操作已接上语言服务器（2026-10-16，FEATURES.md 第 37 节；Kotlin 需安装 kotlin-lsp）。剩 Extract Method / Parameter、Change Signature。
+6. 🟡 符号级重构：✅ Rename（Shift+F6，2026-10-15，FEATURES.md 第 24 节）：局部变量按作用域，类 / 方法 / 属性按项目整词匹配并列出每处供取消勾选，注释和字符串可选，类改名连带文件 `git mv`。✅ Optimize Imports（Ctrl+Alt+O，FEATURES.md 第 25 节）。✅ Introduce Variable（Ctrl+Alt+V，FEATURES.md 第 26 节，照 IntelliJ 的 KotlinIntroduceVariableHandler / KotlinNameSuggester）。✅ Introduce Constant（Ctrl+Alt+C，FEATURES.md 第 27 节，照 KotlinIntroduceConstantHandler 及其测试数据）。Rename 的语义匹配和 Alt+Enter 的服务器代码操作已接上语言服务器（2026-10-16，FEATURES.md 第 37 节；Kotlin 需安装 kotlin-lsp，已在 Kotlin/JVM 工程上实测 Rename 和 Import 快速修复）。剩 Extract Method / Parameter、Change Signature。
 7. ✅ Android 资源（2026-10-15，FEATURES.md 第 19 节）：`R.x.y` / `@x/y` 跳转、悬停显示值、Find Usages、颜色和图片 gutter 预览。Translations Editor 已补上（2026-10-16，第 31 节，单个 res 目录）。vector drawable 预览已补上（2026-10-16，第 32 节）。剩 Manifest 合并视图、shape / selector 预览。
 8. ✅ 测试（2026-10-15，FEATURES.md 第 21 节）：gutter ▶ / ▶▶ 和结果图标、Ctrl+Shift+F10、Gradle test 任务 + init script 实时事件 + JUnit XML、Run 窗口的测试标签页（结果树、状态行、Rerun Failed Tests、控制台）。剩覆盖率、Project 窗口右键运行目录、对比窗口、仪器测试真机验证（Debug 测试已随第 5 项完成）。
 9. ✅ Gradle 文件辅助（2026-10-15，FEATURES.md 第 20 节）：version catalog 跳转、悬停、Find Usages、`libs.` 补全，依赖和插件新版本警告 + Alt+Enter “Change to …”。剩 Project Structure 对话框、“改用 version catalog” 之类的迁移修复。

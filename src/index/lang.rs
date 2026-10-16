@@ -178,7 +178,7 @@ impl Lang {
             Lang::Rust => &["rust-analyzer"],
             Lang::Go => &["gopls"],
             Lang::Java => &["jdtls"],
-            Lang::Kotlin => &["kotlin-lsp --stdio", "kotlin-language-server"],
+            Lang::Kotlin => &["kotlin-lsp --stdio", "intellij-server --stdio", "kotlin-language-server"],
             Lang::Swift => &["sourcekit-lsp"],
             Lang::Dart => &["dart language-server --protocol=lsp"],
             Lang::V => &["v-analyzer"],
