@@ -68,6 +68,7 @@ actions!(
         IntroduceConstant,
         ExtractMethod,
         IntroduceParameter,
+        ChangeSignature,
         SurroundWith,
         Generate,
         FindNext,
@@ -128,6 +129,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-c" } else { "ctrl-alt-c" }, IntroduceConstant, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-m" } else { "ctrl-alt-m" }, ExtractMethod, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-p" } else { "ctrl-alt-p" }, IntroduceParameter, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-f6" } else { "ctrl-f6" }, ChangeSignature, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-t" } else { "ctrl-alt-t" }, SurroundWith, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-n" } else { "alt-insert" }, Generate, Some(CONTEXT)),
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
@@ -1284,6 +1286,84 @@ impl FileEditor {
                                     if std::fs::write(path, new).is_ok() {
                                         written.push(rel.clone());
                                     }
+                                }
+                            }
+                            if !written.is_empty() {
+                                cx.emit(FileEditorEvent::FilesWritten(written));
+                            }
+                        })
+                        .ok();
+                }, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Change Signature (Ctrl+F6): the function at the caret's name, return
+    /// type and parameters through the dialog; the declaration, its body's
+    /// uses of renamed parameters and the calls in the project follow.
+    fn change_signature_action(&mut self, _: &ChangeSignature, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::change_signature::{call_edits, edits};
+        use crate::domain::imports::ImportStyle;
+        use crate::domain::introduce_parameter::apply;
+        use crate::index::introduce_parameter::call_sites;
+        use crate::index::lang::Lang;
+        const TITLE: &str = "Change Signature";
+        let Some((lang, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
+        let text = self.text(cx);
+        let offset = self.state.read(cx).cursor();
+        let signature = match crate::index::change_signature::signature_at(lang, &text, offset) {
+            Ok(s) => s,
+            Err(message) => return Self::hint(TITLE, message, window, cx),
+        };
+        let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(|r| r.to_path_buf()));
+        let own = self.path.clone();
+        let name = signature.name.clone();
+        let here = call_sites(lang, &text, &name, signature.params.len());
+        let params = signature.params.len();
+        let task = cx.background_spawn({
+            let name = name.clone();
+            async move {
+                let Some(root) = root else { return Vec::new() };
+                let needle = format!("{name}(");
+                crate::index::store::list_files(&root)
+                    .into_iter()
+                    .filter(|f| *f != own && (f.ends_with(".kt") || f.ends_with(".java")))
+                    .filter_map(|f| {
+                        let path = root.join(&f);
+                        let text = std::fs::read_to_string(&path).ok().filter(|t| t.contains(&needle))?;
+                        let lang = Lang::from_path(&f)?;
+                        let calls = call_sites(lang, &text, &name, params);
+                        (!calls.is_empty()).then_some((f, path, text, lang, calls))
+                    })
+                    .collect::<Vec<_>>()
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let elsewhere = task.await;
+            this.update_in(cx, |_, window, cx| {
+                let editor = cx.entity().downgrade();
+                let calls = here.len() + elsewhere.iter().map(|(.., c)| c.len()).sum::<usize>();
+                crate::ui::change_signature_dialog::open(style, signature.clone(), calls, move |request, window, cx| {
+                    editor
+                        .update(cx, |this, cx| {
+                            if this.text(cx) != text {
+                                return Self::hint(TITLE, "The file changed; try again", window, cx);
+                            }
+                            let changes = match edits(style, &text, &signature, &here, &request) {
+                                Ok(changes) => changes,
+                                Err(message) => return Self::hint(TITLE, message, window, cx),
+                            };
+                            let caret = signature.name_range.start;
+                            let new = apply(&text, changes);
+                            this.replace_text(&text, &new, caret.min(new.len()), window, cx);
+                            let mut written = Vec::new();
+                            for (rel, path, old, lang, calls) in &elsewhere {
+                                let file_style = if *lang == Lang::Java { ImportStyle::Java } else { ImportStyle::Kotlin };
+                                let new = apply(old, calls.iter().flat_map(|c| call_edits(file_style, &signature, &request, c)).collect());
+                                if std::fs::write(path, new).is_ok() {
+                                    written.push(rel.clone());
                                 }
                             }
                             if !written.is_empty() {
@@ -2464,6 +2544,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::introduce_constant_action))
             .on_action(cx.listener(Self::extract_method_action))
             .on_action(cx.listener(Self::introduce_parameter_action))
+            .on_action(cx.listener(Self::change_signature_action))
             .on_action(cx.listener(Self::surround_with_action))
             .on_action(cx.listener(|this, _: &Generate, window, cx| this.generate(window, cx)))
             .on_action(cx.listener(Self::find_next))
@@ -2604,6 +2685,7 @@ impl Render for FileEditor {
                                         .menu_with_disabled("Rename…", read_only, Box::new(RenameElement))
                                         .menu_with_disabled("Introduce Variable…", read_only, Box::new(IntroduceVariable))
                                         .menu_with_disabled("Introduce Constant…", read_only, Box::new(IntroduceConstant))
+                                        .menu_with_disabled("Change Signature…", read_only, Box::new(ChangeSignature))
                                         .menu_with_disabled("Introduce Parameter…", read_only, Box::new(IntroduceParameter))
                                         .menu_with_disabled(if java_file { "Extract Method…" } else { "Extract Function…" }, read_only, Box::new(ExtractMethod)),
                                 )

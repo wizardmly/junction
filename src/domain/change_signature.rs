@@ -62,6 +62,7 @@ pub struct SignatureRequest {
 
 impl SignatureRequest {
     /// The signature unchanged.
+    #[cfg(test)]
     pub fn of(signature: &Signature) -> Self {
         Self {
             name: signature.name.clone(),

@@ -857,3 +857,17 @@ Linux 实测（Xvfb，calc 示例，故意删掉一个分号）：Ctrl+F9 后 Bu
 | 解析 Kotlin 元数据得到真实的参数名、可空类型和泛型；Signature 属性里的 Java 泛型；一次下载所有库的源码（Gradle 的 “Download Sources” 任务）；打开源码后停在存根里光标所在的同一个成员上 | ⬜ |
 
 Linux 实测（Xvfb）：Kotlin 工程依赖 `com.google.code.gson:gson:2.11.0`（Gradle 缓存里只有 jar，没有源码包），`import com.google.gson.Gson` 后按住 Ctrl 点 `Gson()`，打开只读的 `Gson.java` 存根（面包屑显示 `Gradle: com.google.code.gson:gson:2.11.0`），光标停在构造方法 `public Gson() { /* compiled code */ }`，下面列出 `toJson(Object p0)` 等方法；顶部提示条点 Download Sources，`gson-2.11.0-sources.jar` 下载到 Gradle 缓存，约 20 秒后标签页换成带版权头和 import 的真正 `Gson.java`。
+
+## 48. Change Signature（Ctrl+F6，2026-10-16）
+
+照 IntelliJ 的 Refactor › Change Signature（Kotlin 的 `KotlinChangeSignatureHandler`、Java 的 `ChangeSignatureHandler`）：光标在函数名或函数体里按 Ctrl+F6（macOS ⌘F6），对话框里改名字、返回类型和参数（改名、改类型、增删、上下移动），函数声明、函数体里改名参数的用法以及项目里的调用一起改。代码：`src/domain/change_signature.rs`（声明、用法和每个调用的编辑）、`src/index/change_signature.rs`（语法树分析）、`src/ui/change_signature_dialog.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 分析：光标所在的最内层函数（Kotlin `fun`、Java 方法和构造方法），每个参数原样的文本、修饰符（`vararg`、`final`、注解）、类型、Kotlin 默认值，以及它在函数体里的用法（按作用域，同名的局部变量不算） | ✅ |
+| 对话框：Name、Return type（Kotlin 留空即去掉返回类型）、参数表（Name / Type / 新增参数的 Default value (for calls)），+ − ↑ ↓ 按钮，Signature Preview，将更新的调用数；名字非法、参数重名、缺类型、新参数缺默认值时显示原因（错误行始终占位，对话框不跳动）；新增参数时焦点放到新行 | ✅ |
+| 声明：没改的参数保持原文（修饰符、默认值、注解都在），改了的按语言重写；参数原本每行一个时保持每行一个；返回类型增删改 | ✅ |
+| 调用：按新顺序排列实参，删掉的参数去掉，新参数填默认值；Kotlin 调用里原本用命名实参、或者顺序变了又有命名实参、或者省略了有默认值的参数时，后面的实参写成命名实参；函数改名时调用处一起改；其他 .kt / .java 文件里的调用直接写盘并刷新 | ✅ |
+| 按名字和参数个数匹配调用（同名同参数个数的其他函数也会被改），Java 的 `new A(…)` 构造调用、方法引用 `::name`、Kotlin 的尾随 lambda、可见性、异常列表、覆盖方法一起改、委托旧签名 | ⬜ |
+
+Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int): Double` 按 Ctrl+F6，改名 `sum`，把 `count` 上移，新增 `tax: Double`（调用处默认值 `0.0`），Refactor 后声明是 `fun sum(count: Int, price: Double, tax: Double): Double`，同文件的 `total(1.0, 2)` 变成 `sum(2, 1.0, 0.0)`，Main.kt 的 `cart.total(10.0, 3)` 和 `cart.total(count = 1, price = 2.0)` 变成 `cart.sum(3, 10.0, 0.0)` 和 `cart.sum(count = 1, price = 2.0, tax = 0.0)`。
