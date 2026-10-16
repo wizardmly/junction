@@ -160,8 +160,9 @@ impl DebugView {
                 cx.notify();
             }),
             cx.subscribe(&console, |_, _, event: &crate::ui::console_view::ConsoleEvent, cx| {
-                let crate::ui::console_view::ConsoleEvent::OpenFile { path, line, col } = event;
-                cx.emit(RunViewEvent::OpenFile { path: path.clone(), line: *line, col: *col });
+                if let crate::ui::console_view::ConsoleEvent::OpenFile { path, line, col } = event {
+                    cx.emit(RunViewEvent::OpenFile { path: path.clone(), line: *line, col: *col });
+                }
             }),
             // Enter evaluates; Ctrl+Shift+Enter adds a watch, as IntelliJ's field.
             cx.subscribe_in(&expression, window, |this, input, event: &InputEvent, window, cx| {

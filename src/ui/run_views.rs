@@ -40,8 +40,9 @@ fn header(title: impl IntoElement, cx: &gpui_kit::App) -> gpui_kit::Div {
 
 /// A console's file link opens the file.
 fn forward_open<T: EventEmitter<RunViewEvent>>(_: &mut T, _: Entity<ConsoleView>, event: &ConsoleEvent, cx: &mut Context<T>) {
-    let ConsoleEvent::OpenFile { path, line, col } = event;
-    cx.emit(RunViewEvent::OpenFile { path: path.clone(), line: *line, col: *col });
+    if let ConsoleEvent::OpenFile { path, line, col } = event {
+        cx.emit(RunViewEvent::OpenFile { path: path.clone(), line: *line, col: *col });
+    }
 }
 
 // --- Build -------------------------------------------------------------------

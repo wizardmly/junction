@@ -13,6 +13,9 @@ pub enum ConsoleLink {
     Url(String),
     /// An absolute path; 1-based line and column.
     File { path: String, line: Option<u32>, col: Option<u32> },
+    /// A stack frame's `Foo.kt:42` (Logcat): the class's package, the file
+    /// and the 1-based line.
+    Frame { package: String, file: String, line: u32 },
 }
 
 fn url_re() -> &'static Regex {

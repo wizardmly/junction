@@ -25,8 +25,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FollowMode, FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ListAlignment, ListState, MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, list,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px,
 };
 
@@ -36,6 +35,7 @@ use crate::infra::adb_logcat::AdbLog;
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
+use crate::ui::console_view::{ConsoleEvent, ConsoleLine, ConsoleView};
 use crate::ui::device_manager::DeviceManager;
 use crate::ui::run_service::RunService;
 
@@ -71,12 +71,14 @@ pub struct LogcatView {
     skip_completion: bool,
     history: crate::domain::logcat_filter::History,
     history_open: bool,
-    list: ListState,
+    /// The entries shown, in a read-only editor (Android Studio's Logcat
+    /// is an editor too): a drag selects across lines, Ctrl+C copies.
+    console: Entity<ConsoleView>,
+    /// Bumped when what's shown is rebuilt (filter, format, clear).
+    generation: u64,
     compact: bool,
     wrap: bool,
     paused: bool,
-    /// Selected rows (ids), for Copy.
-    selected: Option<(u64, u64)>,
     focus: FocusHandle,
     stop: Arc<AtomicBool>,
     receiver: Option<std::sync::mpsc::Receiver<Entry>>,
@@ -100,9 +102,13 @@ impl Focusable for LogcatView {
 impl LogcatView {
     pub fn new(devices: Entity<DeviceManager>, run: Entity<RunService>, project: Rc<dyn Fn(&App) -> Option<PathBuf>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| InputState::new(window, cx).default_value("package:mine").placeholder("Filter: package:mine level:warn tag:MyTag -tag:Noisy is:crash age:5m"));
-        let list = ListState::new(0, ListAlignment::Top, px(400.));
-        list.set_follow_mode(FollowMode::Tail);
+        let console = cx.new(|cx| ConsoleView::new(window, cx));
         let subscriptions = vec![
+            cx.subscribe(&console, |_, _, event: &ConsoleEvent, cx| {
+                if let ConsoleEvent::OpenFrame { package, file, line } = event {
+                    cx.emit(LogcatEvent::OpenFrame { package: package.clone(), file: file.clone(), line: *line });
+                }
+            }),
             cx.subscribe_in(&query, window, |this, _, event: &InputEvent, _, cx| match event {
                 InputEvent::Change => this.query_changed(cx),
                 InputEvent::PressEnter { .. } => this.remember_filter(cx),
@@ -141,11 +147,11 @@ impl LogcatView {
             skip_completion: false,
             history: crate::infra::logcat_filter_store::load(),
             history_open: false,
-            list,
+            console,
+            generation: 1,
             compact: false,
             wrap: false,
             paused: false,
-            selected: None,
             focus: cx.focus_handle(),
             stop: Arc::default(),
             receiver: None,
@@ -287,8 +293,7 @@ impl LogcatView {
         self.entries.clear();
         self.shown.clear();
         self.bytes = 0;
-        self.selected = None;
-        self.list.reset(0);
+        self.generation += 1;
         let stop = Arc::new(AtomicBool::new(false));
         self.stop = stop.clone();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -336,25 +341,15 @@ impl LogcatView {
             }
             self.entries.push_back(entry);
         }
-        let mut dropped = 0;
         while self.bytes > BUFFER_BYTES {
             let Some(old) = self.entries.pop_front() else { break };
             self.bytes -= size_of(&old);
             self.first += 1;
             while self.shown.front().is_some_and(|id| *id < self.first) {
                 self.shown.pop_front();
-                dropped += 1;
             }
         }
-        if dropped > 0 {
-            // Dropped rows were counted before the new ones were added.
-            self.list.splice(0..dropped.min(self.list.item_count()), 0);
-        }
-        let count = self.list.item_count();
-        let fresh = self.shown.len().saturating_sub(count);
-        if fresh > 0 {
-            self.list.splice(count..count, fresh);
-        }
+        // The console catches up when drawn.
         cx.notify();
         alive
     }
@@ -368,15 +363,8 @@ impl LogcatView {
         }
         let now = self.entries.back().map_or(0, |e| e.millis);
         self.shown = self.entries.iter().enumerate().filter(|(_, e)| self.filter.matches(e, now)).map(|(i, _)| self.first + i as u64).collect();
-        self.list.reset(self.shown.len());
-        if self.list.is_following_tail() || self.selected.is_none() {
-            self.list.set_follow_mode(FollowMode::Tail);
-        }
+        self.generation += 1;
         cx.notify();
-    }
-
-    fn entry(&self, id: u64) -> Option<&Entry> {
-        self.entries.get(id.checked_sub(self.first)? as usize)
     }
 
     /// Clear Logcat: the device's buffers and the view.
@@ -385,8 +373,7 @@ impl LogcatView {
         self.entries.clear();
         self.shown.clear();
         self.bytes = 0;
-        self.selected = None;
-        self.list.reset(0);
+        self.generation += 1;
         if let (Some((_, serial)), Some(adb)) = (self.following.clone(), self.devices.read(cx).adb()) {
             cx.background_executor()
                 .spawn(async move {
@@ -415,8 +402,7 @@ impl LogcatView {
     }
 
     fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
-        self.list.set_follow_mode(FollowMode::Tail);
-        self.list.scroll_to_end();
+        self.console.update(cx, |c, cx| c.scroll_to_end(cx));
         cx.notify();
     }
 
@@ -424,94 +410,6 @@ impl LogcatView {
         self.picked = Some(id);
         self.following = None;
         self.follow_device(cx);
-    }
-
-    fn select(&mut self, id: u64, extend: bool, cx: &mut Context<Self>) {
-        self.selected = match (extend, self.selected) {
-            (true, Some((anchor, _))) => Some((anchor, id)),
-            _ => Some((id, id)),
-        };
-        self.list.pause_following_tail();
-        cx.notify();
-    }
-
-    fn is_selected(&self, id: u64) -> bool {
-        self.selected.is_some_and(|(a, b)| (a.min(b)..=a.max(b)).contains(&id))
-    }
-
-    fn copy(&self, cx: &mut Context<Self>) {
-        let Some((a, b)) = self.selected else { return };
-        let text: Vec<String> = self.shown.iter().filter(|id| (a.min(b)..=a.max(b)).contains(id)).filter_map(|id| self.entry(*id)).map(|e| format_line(e, self.compact)).collect();
-        if !text.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(text.join("\n")));
-        }
-    }
-
-    fn on_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let k = &event.keystroke;
-        if k.key == "c" && k.modifiers.secondary() {
-            self.copy(cx);
-            cx.stop_propagation();
-        }
-    }
-
-    fn render_row(&mut self, ix: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let palette = cx.palette().clone();
-        let Some(id) = self.shown.get(ix).copied() else { return div().into_any_element() };
-        let Some(e) = self.entry(id).cloned() else { return div().into_any_element() };
-        let selected = self.is_selected(id);
-        let mut row = h_flex()
-            .id(("logcat-row", ix))
-            .w_full()
-            .px_2()
-            .items_start()
-            .when(selected, |el| el.bg(palette.selection))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
-                    window.focus(&this.focus, cx);
-                    this.select(id, event.modifiers.shift, cx);
-                }),
-            );
-        if e.system {
-            return row.child(div().whitespace_nowrap().child(e.message)).into_any_element();
-        }
-        let dark = palette.dark;
-        let (badge_fg, badge_bg) = level_badge(e.level, dark);
-        let message_color = level_message(e.level, dark).unwrap_or(palette.text);
-        let time = if self.compact { e.time.get(11..).unwrap_or(&e.time).to_owned() } else { e.time.clone() };
-        let mut header = h_flex().flex_none().whitespace_nowrap().child(format!("{time} "));
-        if !self.compact {
-            header = header
-                .child(format!("{:>5}-{:<5} ", e.pid, e.tid))
-                .child(div().text_color(tag_color(&e.tag, dark)).child(pad(if e.tag.is_empty() { "<no-tag>" } else { &e.tag }, 23)))
-                .child(pad(&e.package, 35));
-        }
-        header = header.child(div().px(px(4.)).text_color(badge_fg).bg(badge_bg).child(e.level.letter().to_string())).child(" ");
-        let message = match logcat::stack_frame(&e.message) {
-            Some((package, file, line)) if file != "Unknown Source" => {
-                // "at com.example.Foo.bar(" + link "Foo.kt:42" + ")"
-                let open = e.message.find('(').unwrap_or(0) + 1;
-                let close = e.message.rfind(')').unwrap_or(e.message.len()).max(open);
-                let (before, link, after) = (e.message[..open].to_owned(), e.message[open..close].to_owned(), e.message[close..].to_owned());
-                h_flex()
-                    .child(before)
-                    .child(
-                        div()
-                            .id(("logcat-frame", ix))
-                            .text_color(palette.link)
-                            .underline()
-                            .cursor_pointer()
-                            .child(link)
-                            .on_click(cx.listener(move |_, _, _, cx| cx.emit(LogcatEvent::OpenFrame { package: package.clone(), file: file.clone(), line }))),
-                    )
-                    .child(after)
-                    .into_any_element()
-            }
-            _ => div().child(e.message).into_any_element(),
-        };
-        row = row.child(header).child(div().text_color(message_color).when(self.wrap, |el| el.flex_1().min_w_0().whitespace_normal()).when(!self.wrap, |el| el.whitespace_nowrap()).child(message));
-        row.into_any_element()
     }
 
     fn device_label(d: &Device) -> String {
@@ -541,7 +439,48 @@ fn pad(text: &str, width: usize) -> String {
     }
 }
 
+/// An entry as the console shows it: Android Studio's columns (the copy
+/// format), the level as a colored badge, the tag in its color, the
+/// message in the level's color, a stack frame's `Foo.kt:42` a link.
+fn console_line(e: &Entry, compact: bool, dark: bool, secondary: Hsla) -> ConsoleLine {
+    use gpui_kit::HighlightStyle;
+    if e.system {
+        return ConsoleLine::plain(e.message.clone(), Some(secondary));
+    }
+    let mut text = String::new();
+    let mut spans = Vec::new();
+    let time = if compact { e.time.get(11..).unwrap_or(&e.time) } else { &e.time };
+    text.push_str(time);
+    text.push(' ');
+    if !compact {
+        text.push_str(&format!("{:>5}-{:<5} ", e.pid, e.tid));
+        let start = text.len();
+        text.push_str(&pad(if e.tag.is_empty() { "<no-tag>" } else { &e.tag }, 23));
+        spans.push((start..text.len() - 1, HighlightStyle { color: Some(tag_color(&e.tag, dark)), ..Default::default() }));
+        text.push_str(&pad(&e.package, 35));
+    }
+    let (fg, bg) = level_badge(e.level, dark);
+    let start = text.len();
+    text.push_str(&format!(" {} ", e.level.letter()));
+    spans.push((start..text.len(), HighlightStyle { color: Some(fg), background_color: Some(bg), ..Default::default() }));
+    text.push(' ');
+    let message_at = text.len();
+    text.push_str(&e.message);
+    if let Some(color) = level_message(e.level, dark) {
+        spans.push((message_at..text.len(), HighlightStyle { color: Some(color), ..Default::default() }));
+    }
+    let mut links = Vec::new();
+    if let Some((package, file, line)) = logcat::stack_frame(&e.message).filter(|(_, file, _)| file != "Unknown Source") {
+        // "at com.example.Foo.bar(" + "Foo.kt:42" + ")"
+        let open = e.message.find('(').map_or(0, |i| i + 1);
+        let close = e.message.rfind(')').unwrap_or(e.message.len()).max(open);
+        links.push((message_at + open..message_at + close, crate::domain::console_links::ConsoleLink::Frame { package, file, line }));
+    }
+    ConsoleLine { text: text.into(), color: None, spans, links }
+}
+
 /// The line as Android Studio copies it.
+#[cfg(test)]
 fn format_line(e: &Entry, compact: bool) -> String {
     if e.system {
         return e.message.clone();
@@ -606,6 +545,13 @@ fn side_button(id: &'static str, icon: icons::AsIcon, tooltip: impl Into<SharedS
 impl Render for LogcatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
+        // The console catches up with what's shown.
+        {
+            let (entries, first, compact, dark, secondary) = (&self.entries, self.first, self.compact, palette.dark, palette.text_secondary);
+            let line = |id: u64| entries.get((id - first) as usize).map(|e| console_line(e, compact, dark, secondary)).unwrap_or_default();
+            let (shown, generation) = (&self.shown, self.generation);
+            self.console.update(cx, |c, cx| c.sync(shown, generation, &line, window, cx));
+        }
         let filter_field = self.render_filter(window, cx);
         let mono = {
             use gpui_kit::component::ActiveTheme as _;
@@ -654,6 +600,7 @@ impl Render for LogcatView {
                 menu.item(PopupMenuItem::new("Standard").checked(!format).on_click(move |_, _, cx| {
                     a.update(cx, |v, cx| {
                         v.compact = false;
+                        v.generation += 1;
                         cx.notify();
                     })
                     .ok();
@@ -661,6 +608,7 @@ impl Render for LogcatView {
                 .item(PopupMenuItem::new("Compact").checked(format).on_click(move |_, _, cx| {
                     b.update(cx, |v, cx| {
                         v.compact = true;
+                        v.generation += 1;
                         cx.notify();
                     })
                     .ok();
@@ -677,12 +625,13 @@ impl Render for LogcatView {
             .child(side_button("logcat-clear", icons::CLEAR, "Clear Logcat").on_click(cx.listener(|this, _, _, cx| this.clear(cx))))
             .child(
                 side_button("logcat-end", icons::DOWN, "Scroll to the End (clicking on a particular line stops scrolling and keeps that line visible)")
-                    .selected(self.list.is_following_tail())
+                    .selected(self.console.read(cx).is_following(cx))
                     .on_click(cx.listener(|this, _, _, cx| this.scroll_to_end(cx))),
             )
-            .child(side_button("logcat-wrap", icons::SOFT_WRAP, "Soft-Wrap").selected(self.wrap).on_click(cx.listener(|this, _, _, cx| {
+            .child(side_button("logcat-wrap", icons::SOFT_WRAP, "Soft-Wrap").selected(self.wrap).on_click(cx.listener(|this, _, window, cx| {
                 this.wrap = !this.wrap;
-                this.list.remeasure();
+                let wrap = this.wrap;
+                this.console.update(cx, |c, cx| c.set_soft_wrap(wrap, window, cx));
                 cx.notify();
             })))
             .child(format_button)
@@ -711,7 +660,6 @@ impl Render for LogcatView {
             .size_full()
             .bg(palette.panel)
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::on_key))
             .child(
                 h_flex()
                     .h(px(32.))
@@ -735,8 +683,8 @@ impl Render for LogcatView {
                         .font_family(mono)
                         .text_xs()
                         .font_weight(FontWeight::NORMAL)
-                        .when_some(empty_reason, |el, reason| el.child(div().p_4().text_color(palette.text_secondary).child(reason)))
-                        .child(list(self.list.clone(), cx.processor(Self::render_row)).size_full()),
+                        .when_some(empty_reason.clone(), |el, reason| el.child(div().p_4().text_color(palette.text_secondary).child(reason)))
+                        .when(empty_reason.is_none(), |el| el.child(self.console.clone())),
                 ),
             )
     }
