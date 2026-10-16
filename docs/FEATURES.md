@@ -356,7 +356,7 @@ Linux 实测（容器无法下载 Android SDK，用假 adb 和一个模拟 assem
 
 ## 17. Logcat（2026-10-15）
 
-Android Studio 的 Logcat 工具窗口（Alt+6 / ⌘6，底部）。代码：`src/domain/logcat.rs`（解析 `threadtime`、过滤语法、堆栈帧）、`src/usecase/logcat.rs`（按进程表给每行配包名，插入 PROCESS STARTED / ENDED）、`src/infra/adb_logcat.rs`、`src/ui/logcat_view.rs`。
+Android Studio 的 Logcat 工具窗口（Alt+6 / ⌘6，底部）。代码：`src/domain/logcat.rs`（解析 `threadtime`、过滤语法、堆栈帧）、`src/usecase/logcat.rs`（按进程表给每行配包名，插入 PROCESS STARTED / ENDED）、`src/infra/adb_logcat.rs`、`src/ui/logcat_view/`；过滤输入的补全和历史规则在 `src/domain/logcat_filter.rs`，持久化 `src/infra/logcat_filter_store.rs`，界面 `src/ui/logcat_view/filter.rs`。
 
 | 功能 | 状态 |
 |---|---|
@@ -369,7 +369,11 @@ Android Studio 的 Logcat 工具窗口（Alt+6 / ⌘6，底部）。代码：`sr
 | 堆栈帧 `at a.b.C.m(File.kt:42)` 的 `File.kt:42` 是链接，点击按包路径找到源码（项目优先，其次外部库）并跳到该行 | ✅ |
 | 左侧工具栏：Clear Logcat（同时 `logcat -c`）、Scroll to the End（滚到底自动跟随，往上滚停止跟随）、Soft-Wrap、Standard / Compact、Pause / Resume（显示 “Logcat is paused”）、Restart | ✅ |
 | 选中行（Shift 扩选）Ctrl+C 复制 | ✅ |
-| 过滤输入的补全和历史、收藏过滤、多个 Logcat 标签页 / 分屏、截屏和录屏按钮、导入导出日志文件、Proguard 反混淆 | ❌ 未做 |
+| 过滤输入的补全：输入时弹出（Ctrl+Space 也可），键按 AS 的变体列出（`tag:` `-tag:` `tag~:` `-tag~:` `tag=:` `-tag=:`，`level:` `age:` `is:` 等），输入 `tag:` / `package:`（含 `mine`）/ `process:` 后列出日志里出现过的值，`level:` 列级别、`is:` 列 crash / stacktrace；前缀匹配优先，其次包含匹配，已输入部分加粗；弹窗在当前词下方，↑↓ 选、Enter / Tab 填入（填入键后接着弹值）、Esc 关闭、点击填入 | ✅ |
+| 过滤历史和收藏：输入框左侧的历史按钮弹出 Favorites 和 History 两段，每条带匹配条数，点一条应用、× 删除；回车或离开输入框时记入历史（最近 20 条，同 AS）；右侧星标把当前过滤加入 / 移出收藏；跨会话保存在设置目录 `logcat-filters.json` | ✅ |
+| 多个 Logcat 标签页 / 分屏、截屏和录屏按钮、导入导出日志文件、Proguard 反混淆、过滤的 `name:` 键 | ❌ 未做 |
+
+过滤补全实测（假 adb）：清空后输入 `ta` 弹出 `tag:` `tag~:` `tag=:`，回车后弹出 ActivityManager / MainActivity / OkHttp / SystemUi，接着输入 `ma` 剩 MainActivity（前缀）和 ActivityManager（包含），Tab 填入；输入 ` level:` 列出级别，点 info 后过滤为三条 ActivityManager 的 I 级日志；点星标收藏，再输入 `is:crash` 回车；历史按钮弹出 Favorites “tag:ActivityManager level:info (3)” 和 History “is:crash (0)”，点收藏项恢复该过滤。空输入框 Ctrl+Space 列出全部键，↓ 超出可见范围时列表跟着滚动。
 
 Linux 实测（假 adb 模拟日志流和进程表）：打开窗口即显示 package:mine 的日志、启动和结束分隔行、崩溃堆栈；点 MainActivity.kt:7 打开文件并定位到第 7 行；level:warn 过滤、Compact、暂停提示条、Clear 发出 `logcat -c` 都正常。真机需在 Windows / macOS 上验证。截图：reports/Logcat-2026-10-15/。
 

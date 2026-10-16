@@ -20,6 +20,7 @@ pub mod surround;
 pub mod jdk;
 pub mod local_history;
 pub mod logcat;
+pub mod logcat_filter;
 pub mod rename;
 pub mod run;
 pub mod testing;

@@ -2,7 +2,10 @@
 //! filter query on top, the actions down the left (Clear, Scroll to the
 //! End, Soft-Wrap, Standard / Compact format, Pause, Restart), and the log
 //! with Android Studio's level colors, tag colors and PROCESS STARTED /
-//! ENDED lines. Stack trace frames link to the source.
+//! ENDED lines. Stack trace frames link to the source. The filter field
+//! completes keys and values and keeps a history (`filter`).
+
+mod filter;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -14,7 +17,7 @@ use std::time::Duration;
 use gpui_kit::component::{
     Icon, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
-    input::{Input, InputEvent, InputState},
+    input::{InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
@@ -60,6 +63,11 @@ pub struct LogcatView {
     shown: VecDeque<u64>,
     filter: Filter,
     query: Entity<InputState>,
+    completion: Option<filter::CompletionPopup>,
+    /// The next query change was a completed value: no popup for it.
+    skip_completion: bool,
+    history: crate::domain::logcat_filter::History,
+    history_open: bool,
     list: ListState,
     compact: bool,
     wrap: bool,
@@ -88,10 +96,15 @@ impl LogcatView {
         let list = ListState::new(0, ListAlignment::Top, px(400.));
         list.set_follow_mode(FollowMode::Tail);
         let subscriptions = vec![
-            cx.subscribe_in(&query, window, |this, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.refilter(cx);
+            cx.subscribe_in(&query, window, |this, _, event: &InputEvent, _, cx| match event {
+                InputEvent::Change => this.query_changed(cx),
+                InputEvent::PressEnter { .. } => this.remember_filter(cx),
+                InputEvent::Blur => {
+                    this.remember_filter(cx);
+                    this.completion = None;
+                    cx.notify();
                 }
+                InputEvent::Focus => {}
             }),
             cx.observe(&devices, |this, _, cx| this.follow_device(cx)),
             // A launch's application ID joins `package:mine` (a debug suffix
@@ -117,6 +130,10 @@ impl LogcatView {
             shown: VecDeque::new(),
             filter: Filter::default(),
             query,
+            completion: None,
+            skip_completion: false,
+            history: crate::infra::logcat_filter_store::load(),
+            history_open: false,
             list,
             compact: false,
             wrap: false,
@@ -507,8 +524,9 @@ fn side_button(id: &'static str, icon: icons::AsIcon, tooltip: impl Into<SharedS
 }
 
 impl Render for LogcatView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
+        let filter_field = self.render_filter(window, cx);
         let mono = {
             use gpui_kit::component::ActiveTheme as _;
             cx.theme().mono_font_family.clone()
@@ -616,7 +634,7 @@ impl Render for LogcatView {
                     .border_color(palette.border)
                     .child(div().px_1().text_sm().font_weight(FontWeight::SEMIBOLD).child("Logcat"))
                     .child(device_combo)
-                    .child(div().flex_1().min_w(px(120.)).child(Input::new(&self.query).small().cleanable(true).prefix(Icon::new(icons::FILTER).xsmall().text_color(palette.text_secondary))))
+                    .child(filter_field)
                     .child(tool_button("logcat-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(LogcatEvent::Hide)))),
             )
             .when(self.paused, |el| el.child(banner("Logcat is paused")))
