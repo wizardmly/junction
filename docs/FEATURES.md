@@ -853,6 +853,7 @@ Linux 实测（Xvfb，calc 示例，故意删掉一个分号）：Ctrl+F9 后 Bu
 | Kotlin 编译的类（带 `kotlin.Metadata`）生成 `.kt` 存根：文件门面类 `BoxKt` 变成顶层函数，`getX()` / `isX()` 变成 `val` / `var` 属性，带 `INSTANCE` 的类是 `object`，`$Companion` 是 `companion object`，以及 interface / enum class / annotation class / abstract / open；类型映射成 Kotlin 名字（`Int`、`String`、`IntArray`、`Array<T>`、`Function1<*>`） | ✅ |
 | 其他类生成 `.java` 存根：修饰符、extends / implements、字段、构造方法、方法（varargs 为 `T...`），嵌套类写在外层类里 | ✅ |
 | class 文件里没有参数名，参数写成 `p0`、`p1`…；Kotlin 的 `@InlineOnly` 函数（如 `println`）在字节码里是 private 的，存根里没有（IntelliJ 靠解析 Kotlin 元数据才能显示） | ⬜ |
-| 解析 Kotlin 元数据得到真实的参数名、可空类型和泛型；Signature 属性里的 Java 泛型；编辑器顶部的 “Decompiled .class file” 提示条和 Download Sources（从 Maven 仓库下载 `-sources.jar`） | ⬜ |
+| 编辑器顶部的提示条 “Decompiled .class file: no sources were found for group:artifact:version” 和 **Download Sources**：依次从 Google Maven、Maven Central 下载 `-sources.jar`，存进 Gradle 缓存里这个版本的目录，重新扫描库，源码解压出来后打开这个类的源码并关掉存根标签页（同 IntelliJ 用源码替换反编译视图）；下载失败时在提示条上写出原因 | ✅ |
+| 解析 Kotlin 元数据得到真实的参数名、可空类型和泛型；Signature 属性里的 Java 泛型；一次下载所有库的源码（Gradle 的 “Download Sources” 任务）；打开源码后停在存根里光标所在的同一个成员上 | ⬜ |
 
-Linux 实测（Xvfb）：Kotlin 工程依赖 `com.google.code.gson:gson:2.11.0`（Gradle 缓存里只有 jar，没有源码包），`import com.google.gson.Gson` 后按住 Ctrl 点 `Gson()`，打开只读的 `Gson.java` 存根（面包屑显示 `Gradle: com.google.code.gson:gson:2.11.0`），光标停在构造方法 `public Gson() { /* compiled code */ }`，下面列出 `toJson(Object p0)` 等方法。
+Linux 实测（Xvfb）：Kotlin 工程依赖 `com.google.code.gson:gson:2.11.0`（Gradle 缓存里只有 jar，没有源码包），`import com.google.gson.Gson` 后按住 Ctrl 点 `Gson()`，打开只读的 `Gson.java` 存根（面包屑显示 `Gradle: com.google.code.gson:gson:2.11.0`），光标停在构造方法 `public Gson() { /* compiled code */ }`，下面列出 `toJson(Object p0)` 等方法；顶部提示条点 Download Sources，`gson-2.11.0-sources.jar` 下载到 Gradle 缓存，约 20 秒后标签页换成带版权头和 import 的真正 `Gson.java`。

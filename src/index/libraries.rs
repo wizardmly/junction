@@ -984,7 +984,7 @@ fn gradle(ctx: &Project, out: &mut Vec<Library>) {
         // No sources: the classes, decompiled to stubs, as IntelliJ shows them.
         let root = sources.or_else(|| {
             let binary = named(".aar").or_else(|| named(&format!("{artifact}-{version}.jar")))?;
-            decompile_stubs(&binary, &format!("gradle/{group}/{artifact}-{version}"))
+            decompile_stubs(&binary, &format!("gradle/{group}/{artifact}-{version}"), &format!("{group}:{artifact}:{version}"))
         });
         if let Some(root) = root {
             out.push(Library { root_label: Some(label), ..lib(format!("Gradle: {group}:{artifact}:{version}{suffix}"), "Gradle", root) });
@@ -1139,12 +1139,15 @@ fn module_dependencies(module: &str) -> Vec<(String, String, Option<String>)> {
 
 /// The class files of a jar (or an .aar's classes.jar) as stub sources,
 /// once, into the cache (`domain::class_stub`).
-fn decompile_stubs(archive: &Path, name: &str) -> Option<PathBuf> {
+fn decompile_stubs(archive: &Path, name: &str, coordinate: &str) -> Option<PathBuf> {
     use std::io::Read as _;
     let dest = cache_dir()?.join("decompiled").join(name);
     let marker = dest.join(".junction-complete");
     let stamp = store::stat(archive).map(|(size, mtime)| format!("{size}:{mtime}"))?;
     if read(&marker) == stamp {
+        if read(&dest.join(COORDINATE_FILE)) != coordinate {
+            std::fs::write(dest.join(COORDINATE_FILE), coordinate).ok();
+        }
         return Some(dest);
     }
     std::fs::remove_dir_all(&dest).ok();
@@ -1185,8 +1188,17 @@ fn decompile_stubs(archive: &Path, name: &str) -> Option<PathBuf> {
         std::fs::write(&path, text).ok();
     }
     std::fs::create_dir_all(&dest).ok();
+    // For Download Sources.
+    std::fs::write(dest.join(COORDINATE_FILE), coordinate).ok();
     std::fs::write(&marker, stamp).ok();
     Some(dest)
+}
+
+const COORDINATE_FILE: &str = ".junction-coordinate";
+
+/// A decompiled stub's library: `group:artifact:version`, from its folder.
+pub fn decompiled_coordinate(path: &Path) -> Option<String> {
+    path.ancestors().skip(1).take(64).find_map(|dir| std::fs::read_to_string(dir.join(COORDINATE_FILE)).ok()).map(|s| s.trim().to_owned())
 }
 
 /// Unpacks the source files of a jar / zip once, into the cache.

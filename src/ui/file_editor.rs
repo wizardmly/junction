@@ -397,6 +397,8 @@ pub struct FileEditor {
     previews: Vec<(u32, crate::usecase::android_resources::Preview)>,
     /// The strings banner's Hide notification.
     strings_banner_hidden: bool,
+    /// Download Sources on a decompiled class: in progress, or why it failed.
+    sources_status: Option<(bool, String)>,
     /// The language server's code actions being asked for (Alt+Enter).
     server_actions_task: Option<gpui_kit::Task<()>>,
     /// A vector drawable's preview, and Code / Split / Design.
@@ -719,6 +721,7 @@ impl FileEditor {
             hierarchy_slots: 0,
             previews: Vec::new(),
             strings_banner_hidden: false,
+            sources_status: None,
             server_actions_task: None,
             vector: None,
             vector_mode: Default::default(),
@@ -2242,6 +2245,90 @@ impl FileEditor {
 impl FileEditor {
     /// Android Studio's banner over a values file with strings: "Edit
     /// translations for all locales in the translations editor."
+    /// IntelliJ's banner over a decompiled class, with Download Sources.
+    fn decompiled_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        if !self.path.replace('\\', "/").contains("/decompiled/gradle/") {
+            return None;
+        }
+        let coordinate = crate::index::libraries::decompiled_coordinate(std::path::Path::new(&self.path))?;
+        let palette = cx.palette().clone();
+        let status = self.sources_status.clone();
+        let busy = status.as_ref().is_some_and(|(busy, _)| *busy);
+        Some(
+            h_flex()
+                .px_2()
+                .h(px(30.))
+                .gap_4()
+                .text_sm()
+                .bg(palette.toolbar)
+                .border_b_1()
+                .border_color(palette.border)
+                .child(div().flex_1().child(format!("Decompiled .class file: no sources were found for {coordinate}")))
+                .when_some(status.map(|(_, text)| text), |el, text| el.child(div().text_color(palette.text_secondary).child(text)))
+                .when(!busy, |el| el.child(div().id("download-sources").text_color(palette.link).cursor_pointer().child("Download Sources").on_click(cx.listener(move |this, _, _, cx| this.download_sources(coordinate.clone(), cx))))),
+        )
+    }
+
+    /// Downloads the library's sources jar, rescans the libraries, then
+    /// opens this class's source in place of the stub.
+    fn download_sources(&mut self, coordinate: String, cx: &mut Context<Self>) {
+        let mut parts = coordinate.splitn(3, ':');
+        let (Some(group), Some(artifact), Some(version)) = (parts.next().map(str::to_owned), parts.next().map(str::to_owned), parts.next().map(str::to_owned)) else { return };
+        self.sources_status = Some((true, "Downloading sources…".into()));
+        cx.notify();
+        let task = cx.background_spawn(async move { crate::infra::sources_download::download(&group, &artifact, &version) });
+        // The source file the stub stands for, once the scan unpacks it.
+        let stub = self.path.replace('\\', "/");
+        let wanted: Vec<String> = ["kt", "java"]
+            .iter()
+            .filter_map(|ext| stub.rsplit_once('.').map(|(base, _)| format!("{}.{ext}", base.replacen("/decompiled/gradle/", "/sources/gradle/", 1))))
+            .collect();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let ok = this
+                .update(cx, |this, cx| match result {
+                    Err(e) => {
+                        this.sources_status = Some((false, e));
+                        cx.notify();
+                        false
+                    }
+                    Ok(_) => {
+                        this.sources_status = Some((true, "Indexing the sources…".into()));
+                        if let Some(index) = this.code_index.clone() {
+                            index.update(cx, |index, cx| index.rescan_libraries(cx));
+                        }
+                        cx.notify();
+                        true
+                    }
+                })
+                .unwrap_or(false);
+            if !ok {
+                return;
+            }
+            for _ in 0..240 {
+                cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
+                if let Some(found) = wanted.iter().find(|p| std::path::Path::new(p).is_file()).cloned() {
+                    this.update(cx, |this, cx| {
+                        this.sources_status = None;
+                        let name = found.rsplit('/').next().unwrap_or_default().to_owned();
+                        let target = crate::index::nav::Target { path: found, line: 0, col: 0, name, label: String::new(), container: None };
+                        cx.emit(FileEditorEvent::Navigate { targets: vec![target], at: None });
+                        // The source replaces the stub, as IntelliJ's.
+                        cx.emit(FileEditorEvent::Deleted);
+                    })
+                    .ok();
+                    return;
+                }
+            }
+            this.update(cx, |this, cx| {
+                this.sources_status = Some((false, "Sources downloaded; this class isn't in them".into()));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn strings_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         if self.strings_banner_hidden || self.revision.is_some() || !self.path.ends_with(".xml") {
             return None;
@@ -2456,6 +2543,7 @@ impl Render for FileEditor {
                 el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(error))
             })
             .when_some(self.strings_banner(cx), |el, banner| el.child(banner))
+            .when_some(self.decompiled_banner(cx), |el, banner| el.child(banner))
             .child(self.find.clone())
             .when_some(self.annotation.as_ref().and_then(|a| a.error.clone()), |el, error| {
                 el.child(div().px_2().py_1().text_sm().text_color(palette.status_conflict).child(format!("Cannot annotate: {error}")))

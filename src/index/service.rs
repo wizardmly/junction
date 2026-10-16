@@ -42,6 +42,8 @@ pub struct CodeIndex {
     library_phase: Arc<std::sync::atomic::AtomicBool>,
     /// Another refresh was asked for while one ran.
     again: bool,
+    /// The next refresh scans the libraries again (sources were downloaded).
+    rescan_libraries: Arc<std::sync::atomic::AtomicBool>,
     _task: Option<Task<()>>,
     _poll: Option<Task<()>>,
     /// "N files, M symbols indexed…", counted once per change rather than
@@ -82,6 +84,7 @@ impl CodeIndex {
             updating: false,
             library_phase: Arc::default(),
             again: false,
+            rescan_libraries: Arc::default(),
             _task: None,
             _poll: Some(poll),
             counts: Default::default(),
@@ -114,6 +117,12 @@ impl CodeIndex {
     }
 
     /// Re-indexes what changed since the last pass.
+    /// Scans the libraries again: their sources changed (Download Sources).
+    pub fn rescan_libraries(&mut self, cx: &mut Context<Self>) {
+        self.rescan_libraries.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.refresh(cx);
+    }
+
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(root) = self.root.clone() else { return };
         if self.updating {
@@ -126,6 +135,7 @@ impl CodeIndex {
         let catalogs = self.catalogs.clone();
         let resources_stamp = self.resources_stamp.clone();
         let phase = self.library_phase.clone();
+        let rescan = self.rescan_libraries.clone();
         // Set when the work replaced part of the index, so views reload
         // the file list only then, not on every progress tick.
         let changed_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -185,7 +195,7 @@ impl CodeIndex {
                 };
                 *catalogs.write().unwrap() = crate::infra::catalog_files::load(&root, &files);
                 let stamp = super::libraries::inputs_stamp(&root, &files);
-                if !previous.scanned || previous.stamp != stamp {
+                if rescan.swap(false, std::sync::atomic::Ordering::Relaxed) || !previous.scanned || previous.stamp != stamp {
                     phase.store(true, std::sync::atomic::Ordering::Relaxed);
                     tx.send((0, 0)).ok();
                     let libraries = super::libraries::discover(&root, &files);
