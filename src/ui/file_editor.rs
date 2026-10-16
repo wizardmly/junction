@@ -65,6 +65,7 @@ actions!(
         ParameterInfo,
         IntroduceVariable,
         IntroduceConstant,
+        ExtractMethod,
         SurroundWith,
         Generate,
         FindNext,
@@ -123,6 +124,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-p" } else { "ctrl-p" }, ParameterInfo, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-v" } else { "ctrl-alt-v" }, IntroduceVariable, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-c" } else { "ctrl-alt-c" }, IntroduceConstant, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-m" } else { "ctrl-alt-m" }, ExtractMethod, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-t" } else { "ctrl-alt-t" }, SurroundWith, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-n" } else { "alt-insert" }, Generate, Some(CONTEXT)),
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
@@ -1167,6 +1169,39 @@ impl FileEditor {
         self.introduce(crate::ui::introduce_dialog::Introduce::Variable, window, cx);
     }
 
+    /// Extract Method / Function (Ctrl+Alt+M): the selected statements or
+    /// expression into a new private method after this one, through the
+    /// dialog; the new method's name selected after.
+    fn extract_method_action(&mut self, _: &ExtractMethod, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::imports::ImportStyle;
+        let Some((lang, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
+        let title = if style == ImportStyle::Java { "Extract Method" } else { "Extract Function" };
+        let text = self.text(cx);
+        let selection = self.state.read(cx).selected_range();
+        let plan = match crate::index::extract_method::plan(lang, &text, selection) {
+            Ok(plan) => plan,
+            Err(message) => return Self::hint(title, format!("Cannot perform refactoring.\n{message}"), window, cx),
+        };
+        let editor = cx.entity().downgrade();
+        let dialog_plan = plan.clone();
+        crate::ui::extract_method_dialog::open(style, dialog_plan, move |request, window, cx| {
+            editor
+                .update(cx, |this, cx| {
+                    let text = this.text(cx);
+                    let unit = crate::domain::surround::indent_unit(&text);
+                    match crate::domain::extract_method::extract(style, &text, &plan, &request, &unit) {
+                        Err(message) => Self::hint(title, message, window, cx),
+                        Ok(done) => this.state.update(cx, |state, cx| {
+                            state.set_selected_range(done.range.clone(), cx);
+                            state.replace(&done.text, window, cx);
+                            state.set_selected_range(done.select.clone(), cx);
+                        }),
+                    }
+                })
+                .ok();
+        }, window, cx);
+    }
+
     fn introduce_constant_action(&mut self, _: &IntroduceConstant, window: &mut Window, cx: &mut Context<Self>) {
         self.introduce(crate::ui::introduce_dialog::Introduce::Constant, window, cx);
     }
@@ -2146,6 +2181,7 @@ impl FileEditor {
 
 impl Render for FileEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let java_file = self.path.ends_with(".java");
         let palette = cx.palette().clone();
         let dirty = self.is_dirty(cx);
         let read_only = self.read_only();
@@ -2243,6 +2279,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(|this, _: &ReformatCode, window, cx| this.reformat_code(window, cx)))
             .on_action(cx.listener(Self::introduce_variable_action))
             .on_action(cx.listener(Self::introduce_constant_action))
+            .on_action(cx.listener(Self::extract_method_action))
             .on_action(cx.listener(Self::surround_with_action))
             .on_action(cx.listener(|this, _: &Generate, window, cx| this.generate(window, cx)))
             .on_action(cx.listener(Self::find_next))
@@ -2335,6 +2372,7 @@ impl Render for FileEditor {
                         .bordered(false)
                         .readonly(read_only)
                         .context_menu(move |menu: NativeMenu, _, cx| {
+                            let java_file = java_file;
                             // The gutter has IntelliJ's gutter menu instead.
                             if gutter_click.replace(false) {
                                 let view = crate::settings::Settings::get(cx).diff.clone();
@@ -2380,7 +2418,8 @@ impl Render for FileEditor {
                                     NativeMenu::new()
                                         .menu_with_disabled("Rename…", read_only, Box::new(RenameElement))
                                         .menu_with_disabled("Introduce Variable…", read_only, Box::new(IntroduceVariable))
-                                        .menu_with_disabled("Introduce Constant…", read_only, Box::new(IntroduceConstant)),
+                                        .menu_with_disabled("Introduce Constant…", read_only, Box::new(IntroduceConstant))
+                                        .menu_with_disabled(if java_file { "Extract Method…" } else { "Extract Function…" }, read_only, Box::new(ExtractMethod)),
                                 )
                                 .menu("Select in Project View", Box::new(crate::ui::workspace::SelectInProject))
                                 .separator()

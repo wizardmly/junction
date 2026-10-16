@@ -33,4 +33,5 @@ pub mod todo;
 pub mod sync;
 pub mod vector_drawable;
 pub mod drawable;
+pub mod extract_method;
 pub mod version_catalog;

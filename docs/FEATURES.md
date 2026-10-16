@@ -734,3 +734,20 @@ Linux 实测（Xvfb，calc 示例的 JUnit 测试）：暂停在 `sum += items.g
 | 位图（`<bitmap>`、PNG 引用、`.9.png`）在组合 drawable 里不画；sweep 渐变按 linear 画（SVG 没有锥形渐变）；`<animated-vector>`、`<animated-selector>`、`<clip>`、`<scale>`、`<rotate>`；按主题解析 `?attr/` | ⬜ |
 
 Linux 实测（Xvfb，trans 示例）：`bg_button.xml`（pressed 引用渐变 shape、not enabled 是内联灰色 shape、默认引用 `@color/accent` 填充加 2dp 绿色描边的圆角 shape）的 Split 视图画出默认状态的 120 × 48 dp 圆角按钮，下面三个缩略图依次为橙黄渐变、灰色、默认；`badge.xml`（径向渐变圆、内缩 16dp 的 `@drawable/ic_star` vector、带虚线描边的 ring）画成 64 × 64 dp 的徽章；`layout/main.xml` 里 `android:background="@drawable/bg_button"` 和 `android:foreground="@drawable/badge"` 两行的 gutter 显示这两个 drawable 的缩略图。修正过一处：嵌入 vector 时 `preserveAspectRatio` 重复导致整张 SVG 无法解析，测试现在检查每张输出都是合法 XML。
+
+## 40. Extract Method / Extract Function（Ctrl+Alt+M，2026-10-16）
+
+照 IntelliJ 的 `ExtractMethodProcessor`（Java）和 Kotlin 的 Extract Function：选中的语句或表达式变成紧跟在所在方法之后的新私有方法，原处换成调用。代码：`src/index/extract_method.rs`（tree-sitter 分析）、`src/domain/extract_method.rs`（生成代码）、`src/ui/extract_method_dialog.rs`；编辑器右键 Refactor 菜单里也有。
+
+| 功能 | 状态 |
+|---|---|
+| 选区：同一代码块里的若干完整语句（前后空白不计），或一个完整表达式；只选了半条语句时提示 “Selected block should represent a set of statements or an expression” | ✅ |
+| 参数：选区里读到的、在选区之前声明的局部变量和参数，按首次出现的顺序；类型取声明处写的（Kotlin `n: Int`、Java `java.util.List<Integer> items`），Kotlin 未写类型时按初始化表达式推断（字面量、比较 / 逻辑运算为 Boolean、`Point(…)` 构造、算术里已知类型的变量、`for (i in 0..n)` 为 Int），推断不出时留空让用户在对话框填 | ✅ |
+| 结果：选区里声明、选区之后还用到的变量（调用处 `val b = extracted(n)` / `long b = extracted(n);`，新方法末尾 `return b`），或选区之前声明、在选区里赋值且之后还用到的变量（`s = add(s)`；Kotlin 参数是 val，新函数开头先 `var s = s`）；超过一个时提示 “There are multiple output values for the selected code fragment” | ✅ |
+| 跳转：选区以方法的最后一条 `return` 结束时调用处改成 `return extracted(…)`，新方法返回原方法的类型；中途的 return、目标循环在选区外的 break / continue 拒绝（lambda / 局部函数里的不算） | ✅ |
+| 表达式：Kotlin 生成表达式体 `private fun extracted(x: Int) = x * 3 + 1`（类型由编译器推断），Java 生成 `return …;`，类型看不出时对话框要求填 Return type | ✅ |
+| 对话框：Name（默认 “extracted”，被占用时 extracted1…）、Visibility（Kotlin private / internal / protected / public，Java 另有 package-private）、Java 的 Declare static（所在方法是 static 时固定勾选）、参数的名字和类型可改（改名会同步改新方法体里的用法）、Signature Preview；名字非法、参数重名或缺类型时显示原因且不能确定 | ✅ |
+| 一次编辑完成，Ctrl+Z 一步撤销；完成后选中新方法名 | ✅ |
+| 选区里的重复代码片段一并替换、参数顺序调整 / 去掉参数、Extract Parameter / Change Signature、Kotlin 的 receiver 和泛型参数、按语言服务器取类型 | ⬜ |
+
+Linux 实测（Xvfb）：calc 的 `CalcTest.totals()` 选中 `int sum = 0;` 到循环结束，Ctrl+Alt+M 弹出 Extract Method：参数 `items`（`java.util.List<Integer>`），预览 `private int extracted(java.util.List<Integer> items)`；改名 `sumOf` 后原处变成 `int sum = sumOf(items);`，后面是带 `return sum;` 的新方法；Ctrl+Z 一步还原。ktjvm 示例 `Shop.check` 的两条语句提取为 `private fun report(n: Int)`，原处是 `report(n)`。

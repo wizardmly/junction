@@ -86,7 +86,7 @@ fn is_expression(lang: Lang, node: Node, text: &str) -> bool {
 }
 
 /// The node spanning exactly `range` that is an expression.
-fn expression_node<'t>(lang: Lang, root: Node<'t>, text: &str, range: Range<usize>) -> Option<Node<'t>> {
+pub(crate) fn expression_node<'t>(lang: Lang, root: Node<'t>, text: &str, range: Range<usize>) -> Option<Node<'t>> {
     let mut node = root.descendant_for_byte_range(range.start, range.end)?;
     loop {
         if node.byte_range() == range && is_expression(lang, node, text) {
@@ -225,7 +225,7 @@ fn has_string(lang: Lang, node: Node, text: &str) -> bool {
     children.into_iter().any(|c| literal(lang, c, text) == Some(Literal::String) || boolean_or_string(lang, c, text) == Some(Literal::String))
 }
 
-fn java_type(node: Node, text: &str) -> Option<String> {
+pub(crate) fn java_type(node: Node, text: &str) -> Option<String> {
     if let Some(l) = literal(Lang::Java, node, text) {
         return Some(l.java_type().to_owned());
     }
