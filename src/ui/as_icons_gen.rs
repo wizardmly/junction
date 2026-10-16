@@ -24,6 +24,8 @@ pub const BRANCH: AsIcon = AsIcon { light: &[("as/branch.l0.svg", 0x6c707eff)], 
 pub const BRANCH_LABEL: AsIcon = AsIcon { light: &[("as/branch-label.l0.svg", 0x6c707eff)], dark: &[("as/branch-label.d0.svg", 0xced0d6ff)] };
 pub const BREAKPOINT: AsIcon = AsIcon { light: &[("as/breakpoint.l0.svg", 0xe55765ff)], dark: &[("as/breakpoint.d0.svg", 0xdb5c5cff)] };
 pub const BREAKPOINT_DISABLED: AsIcon = AsIcon { light: &[("as/breakpoint-disabled.l0.svg", 0xdb3b4bff)], dark: &[("as/breakpoint-disabled.d0.svg", 0xdb5c5cff)] };
+pub const BREAKPOINT_EXCEPTION: AsIcon = AsIcon { light: &[("as/breakpoint-exception.l0.svg", 0xe55765ff)], dark: &[("as/breakpoint-exception.d0.svg", 0xdb5c5cff)] };
+pub const BREAKPOINT_EXCEPTION_DISABLED: AsIcon = AsIcon { light: &[("as/breakpoint-exception-disabled.l0.svg", 0xe55765ff)], dark: &[("as/breakpoint-exception-disabled.d0.svg", 0xdb5c5cff)] };
 pub const BREAKPOINT_INVALID: AsIcon = AsIcon { light: &[("as/breakpoint-invalid.l0.svg", 0x6c707eff)], dark: &[("as/breakpoint-invalid.d0.svg", 0xced0d6ff)] };
 pub const BREAKPOINT_MUTED: AsIcon = AsIcon { light: &[("as/breakpoint-muted.l0.svg", 0x6c707eff)], dark: &[("as/breakpoint-muted.d0.svg", 0xced0d6ff)] };
 pub const BREAKPOINT_UNSUSPENDENT: AsIcon = AsIcon { light: &[("as/breakpoint-unsuspendent.l0.svg", 0xffaf0fff)], dark: &[("as/breakpoint-unsuspendent.d0.svg", 0xf2c55cff)] };
@@ -385,6 +387,10 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/breakpoint.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint.d0.svg")),
     ("as/breakpoint-disabled.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-disabled.l0.svg")),
     ("as/breakpoint-disabled.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-disabled.d0.svg")),
+    ("as/breakpoint-exception.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-exception.l0.svg")),
+    ("as/breakpoint-exception.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-exception.d0.svg")),
+    ("as/breakpoint-exception-disabled.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-exception-disabled.l0.svg")),
+    ("as/breakpoint-exception-disabled.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-exception-disabled.d0.svg")),
     ("as/breakpoint-invalid.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-invalid.l0.svg")),
     ("as/breakpoint-invalid.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-invalid.d0.svg")),
     ("as/breakpoint-muted.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-muted.l0.svg")),

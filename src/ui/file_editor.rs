@@ -414,6 +414,8 @@ pub struct FileEditor {
     breakpoint_popup: Option<breakpoints::BreakpointPopup>,
     /// Lines before the last edit: breakpoints below it move along.
     line_count: usize,
+    /// The text before the last edit, for breakpoints to follow it.
+    breakpoint_text: Option<String>,
     /// Inspections of the text (a newer dependency version in a Gradle file).
     inspection_problems: Vec<crate::domain::diagnostics::Problem>,
     inspections_task: Option<gpui_kit::Task<()>>,
@@ -722,6 +724,7 @@ impl FileEditor {
             test_marks_task: None,
             test_menu: None,
             line_count: 0,
+            breakpoint_text: None,
             breakpoint_popup: None,
             inspection_problems: Vec::new(),
             inspections_task: None,
@@ -748,6 +751,9 @@ impl FileEditor {
         };
         this.update_markers(cx);
         this.line_count = this.state.read(cx).text().lines_len();
+        if this.breakpoint_file().is_some() {
+            this.breakpoint_text = Some(this.text(cx));
+        }
         this.update_test_marks(false, cx);
         if this.breakpoint_file().is_some() {
             // Breakpoints and the execution point.

@@ -133,6 +133,9 @@ pub enum DebugEvent {
     Breakpoint { thread: u64, location: Location, request: u32 },
     /// A step ended.
     Step { thread: u64, location: Location, request: u32 },
+    /// An exception was thrown: the exception object, and whether
+    /// something catches it.
+    Exception { thread: u64, location: Location, exception: u64, caught: bool, request: u32 },
     ThreadStart { thread: u64 },
     ThreadDeath { thread: u64 },
 }
@@ -168,6 +171,10 @@ pub trait DebugVm: Send + Sync {
     /// A breakpoint suspending all threads, as IntelliJ's default.
     fn set_breakpoint(&self, location: Location) -> Result<u32, String>;
     fn clear_breakpoint(&self, request: u32) -> Result<(), String>;
+    /// An exception breakpoint suspending all threads: exceptions of the
+    /// class (and its subclasses), or any (`None`); caught, uncaught or both.
+    fn set_exception_breakpoint(&self, class: Option<u64>, caught: bool, uncaught: bool) -> Result<u32, String>;
+    fn clear_exception_breakpoint(&self, request: u32) -> Result<(), String>;
     /// A line step on a suspended thread; the next event of it ends it.
     fn step(&self, thread: u64, depth: StepDepth) -> Result<u32, String>;
     fn clear_step(&self, request: u32) -> Result<(), String>;
@@ -387,8 +394,68 @@ pub fn thread_text(thread: &ThreadInfo) -> String {
     format!("\"{}\"@{}: {status}", thread.name, thread.id)
 }
 
+/// Where breakpoints on `lines` (0-based) of `old` are in `new`, as
+/// IntelliJ's range markers follow an edit: unchanged lines keep their
+/// line, a changed or deleted line's breakpoint goes to where the change
+/// starts (the matching line of a replacement).
+pub fn follow_lines(old: &str, new: &str, lines: &[u32]) -> Vec<u32> {
+    use similar::{DiffOp, TextDiff};
+    let diff = TextDiff::from_lines(old, new);
+    let ops = diff.ops();
+    let (old_lines, new_lines): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    // New lines that aren't old ones kept: where a moved line went.
+    let mut added: Vec<usize> = Vec::new();
+    for op in ops {
+        match *op {
+            DiffOp::Insert { new_index, new_len, .. } | DiffOp::Replace { new_index, new_len, .. } => added.extend(new_index..new_index + new_len),
+            _ => {}
+        }
+    }
+    let mut claimed = vec![false; new_lines.len()];
+    lines
+        .iter()
+        .map(|&line| {
+            let line = line as usize;
+            // A deleted or replaced line that's identically elsewhere moved there.
+            let text = old_lines.get(line).map(|l| l.trim()).unwrap_or_default();
+            let kept = ops.iter().any(|op| matches!(*op, DiffOp::Equal { old_index, len, .. } if (old_index..old_index + len).contains(&line)));
+            if !kept && !text.is_empty() {
+                if let Some(&to) = added.iter().find(|&&n| !claimed[n] && new_lines.get(n).map(|l| l.trim()) == Some(text)) {
+                    claimed[to] = true;
+                    return to as u32;
+                }
+            }
+            for op in ops {
+                let (old_range, new_start, new_len) = match *op {
+                    DiffOp::Equal { old_index, new_index, len } => (old_index..old_index + len, new_index, len),
+                    DiffOp::Delete { old_index, old_len, new_index } => (old_index..old_index + old_len, new_index, 0),
+                    DiffOp::Replace { old_index, old_len, new_index, new_len } => (old_index..old_index + old_len, new_index, new_len),
+                    DiffOp::Insert { .. } => continue,
+                };
+                if old_range.contains(&line) {
+                    let offset = (line - old_range.start).min(new_len.saturating_sub(1));
+                    return (new_start + offset) as u32;
+                }
+            }
+            line as u32
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn breakpoints_follow_edits() {
+        let old = "a\nb\nc\nd\ne\n";
+        // Two lines inserted above c: c and below move down.
+        assert_eq!(super::follow_lines(old, "a\nb\nx\ny\nc\nd\ne\n", &[0, 2, 4]), [0, 4, 6]);
+        // b..d replaced by one line (Extract Method's call), e below it.
+        // Its lines follow into the new method; e, re-inserted, stays e.
+        assert_eq!(super::follow_lines(old, "a\ncall()\ne\nfun x() {\nb\nc\nd\n}\n", &[2, 4]), [5, 2]);
+        // Deleted: to where the deletion was.
+        assert_eq!(super::follow_lines(old, "a\ne\n", &[2, 4]), [1, 1]);
+    }
+
     use super::*;
 
     fn method(id: u64, lines: &[(u64, u32)]) -> MethodInfo {

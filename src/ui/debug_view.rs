@@ -447,7 +447,10 @@ impl Render for DebugView {
             .child(Icon::new(icons::DEBUG).xsmall())
             .child(div().font_weight(FontWeight::SEMIBOLD).child(run.name.clone()))
             .child(div().size(px(6.)).rounded_full().bg(dot))
-            .child(div().text_xs().text_color(palette.text_secondary).child(status));
+            .child(div().text_xs().text_color(palette.text_secondary).child(status))
+            .when_some(run.exception.clone().filter(|_| run.status == DebugStatus::Paused), |el, text| {
+                el.child(Icon::new(icons::BREAKPOINT_EXCEPTION).xsmall()).child(div().text_xs().text_color(palette.status_conflict).child(text))
+            });
         let toolbar = self.render_toolbar(&run, cx);
         let body = match self.tab {
             Tab::Variables => self.render_threads_and_variables(&run, cx),

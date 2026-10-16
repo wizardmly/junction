@@ -74,18 +74,22 @@ impl FileEditor {
         }
     }
 
-    /// Moves the breakpoints below an edit by the lines it added or removed.
+    /// Moves the breakpoints with an edit that added or removed lines,
+    /// by a line diff against the text before it.
     pub(super) fn follow_breakpoints(&mut self, cx: &mut Context<Self>) {
-        let (lines, caret) = {
-            let state = self.state.read(cx);
-            (state.text().lines_len(), state.cursor_position().line)
-        };
+        let lines = self.state.read(cx).text().lines_len();
         let delta = lines as i64 - self.line_count as i64;
         self.line_count = lines;
-        let Some(file) = self.breakpoint_file().filter(|_| delta != 0) else { return };
-        // Added lines end at the caret; removed ones were below it.
-        let at = if delta > 0 { caret.saturating_sub(delta as u32) } else { caret };
-        DebugService::global(cx).update(cx, |s, cx| s.shift_breakpoints(&file, at, delta, cx));
+        let Some(file) = self.breakpoint_file() else { return };
+        // The text before each edit, kept for the next one.
+        let new = self.text(cx);
+        let old = self.breakpoint_text.replace(new.clone());
+        if delta == 0 || DebugService::global(cx).read(cx).breakpoints_of(&file).is_empty() {
+            return;
+        }
+        if let Some(old) = old {
+            DebugService::global(cx).update(cx, |s, cx| s.follow_edit(&file, &old, &new, cx));
+        }
     }
 
     /// The file breakpoints are kept under: Kotlin and Java sources only.

@@ -36,6 +36,7 @@ const EVENT: u8 = 64;
 // Event kinds.
 const SINGLE_STEP: u8 = 1;
 const BREAKPOINT: u8 = 2;
+const EXCEPTION: u8 = 4;
 const THREAD_START: u8 = 6;
 const THREAD_DEATH: u8 = 7;
 const CLASS_PREPARE: u8 = 8;
@@ -465,6 +466,22 @@ impl DebugVm for JdwpVm {
         self.command(EVENT_REQUEST, 2, &out.data).map(drop)
     }
 
+    fn set_exception_breakpoint(&self, class: Option<u64>, caught: bool, uncaught: bool) -> Result<u32, String> {
+        let mut out = self.out();
+        out.u8(EXCEPTION).u8(SUSPEND_ALL).int(1);
+        // ExceptionOnly: the class (0 for any), caught, uncaught.
+        let size = out.sizes.reference_type;
+        out.u8(8).id(class.unwrap_or(0), size).u8(caught as u8).u8(uncaught as u8);
+        let data = self.command(EVENT_REQUEST, 1, &out.data)?;
+        self.reader(&data).bytes.int().map(|n| n as u32).ok_or_else(|| "bad Set reply".into())
+    }
+
+    fn clear_exception_breakpoint(&self, request: u32) -> Result<(), String> {
+        let mut out = self.out();
+        out.u8(EXCEPTION).int(request as i32);
+        self.command(EVENT_REQUEST, 2, &out.data).map(drop)
+    }
+
     fn step(&self, thread: u64, depth: StepDepth) -> Result<u32, String> {
         let mut out = self.out();
         out.u8(SINGLE_STEP).u8(SUSPEND_ALL).int(2);
@@ -784,6 +801,15 @@ fn parse_events(data: &[u8], sizes: IdSizes) -> Option<EventSet> {
             THREAD_DEATH => DebugEvent::ThreadDeath { thread: r.object()? },
             BREAKPOINT => DebugEvent::Breakpoint { thread: r.object()?, location: r.location()?, request },
             SINGLE_STEP => DebugEvent::Step { thread: r.object()?, location: r.location()?, request },
+            EXCEPTION => {
+                let thread = r.object()?;
+                let location = r.location()?;
+                // A tagged object, then where it's caught (all zero: nowhere).
+                let _tag = r.bytes.u8()?;
+                let exception = r.object()?;
+                let catch = r.location()?;
+                DebugEvent::Exception { thread, location, exception, caught: catch.class != 0, request }
+            }
             CLASS_PREPARE => {
                 let thread = r.object()?;
                 let _kind = r.bytes.u8()?;
@@ -1027,6 +1053,20 @@ mod tests {
         out.u8(0).int(1).u8(CLASS_PREPARE).int(9).object_id(1).u8(1).id(0x22, 4).string("Lcom/example/Calc;").int(7);
         let set = parse_events(&out.data, narrow).unwrap();
         assert_eq!(set.events, vec![DebugEvent::ClassPrepare { thread: 1, class: ClassRef { id: 0x22, name: "com.example.Calc".into() }, request: 9 }]);
+        // An exception, caught somewhere and not.
+        let mut out = Out { data: Vec::new(), sizes: SIZES };
+        let at = Location { class: 11, method: 12, index: 4 };
+        out.u8(2).int(2);
+        out.u8(EXCEPTION).int(5).object_id(7).location(at).u8(b'L').object_id(40).location(Location { class: 11, method: 13, index: 9 });
+        out.u8(EXCEPTION).int(5).object_id(7).location(at).u8(b'L').object_id(41).u8(0).id(0, 8).id(0, 8).id(0, 8);
+        let set = parse_events(&out.data, SIZES).unwrap();
+        assert_eq!(
+            set.events,
+            vec![
+                DebugEvent::Exception { thread: 7, location: at, exception: 40, caught: true, request: 5 },
+                DebugEvent::Exception { thread: 7, location: at, exception: 41, caught: false, request: 5 }
+            ]
+        );
     }
 
     /// A JVM waiting for a debugger, running `Main` compiled from `source`.

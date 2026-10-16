@@ -66,6 +66,24 @@ pub enum PauseReason {
     Step,
     /// Pause Program, or Run to Cursor's line.
     Paused,
+    /// An exception breakpoint: the console says which exception.
+    Exception,
+}
+
+/// IntelliJ's Java Exception Breakpoint: a class's exceptions (its
+/// subclasses' too), or any exception (`class` empty), caught, uncaught
+/// or both.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExceptionBreakpoint {
+    pub class: String,
+    pub caught: bool,
+    pub uncaught: bool,
+}
+
+struct PlacedException {
+    breakpoint: ExceptionBreakpoint,
+    /// None until its class loads.
+    request: Option<u32>,
 }
 
 /// What the UI shows of the session.
@@ -81,6 +99,8 @@ pub enum SessionEvent {
     Message(String),
     /// What a logging breakpoint printed, for the console only.
     Log(String),
+    /// An exception breakpoint stopped: which exception.
+    Exception(String),
     /// The program ended, or was stopped or detached.
     Ended,
 }
@@ -93,6 +113,7 @@ struct Placed {
 #[derive(Default)]
 struct State {
     breakpoints: Vec<Placed>,
+    exceptions: Vec<PlacedException>,
     /// Class prepare watches, by package pattern.
     watched: HashMap<String, u32>,
     step: Option<u32>,
@@ -194,6 +215,39 @@ impl DebugSession {
         let placed = state.breakpoints.remove(ix);
         for request in placed.requests {
             self.vm.clear_breakpoint(request)?;
+        }
+        Ok(())
+    }
+
+    /// Sets an exception breakpoint (replacing the class's): now, when
+    /// its class is loaded or it's for any exception; else once it loads.
+    /// Whether it's set already.
+    pub fn add_exception_breakpoint(&self, breakpoint: ExceptionBreakpoint) -> Result<bool, String> {
+        self.remove_exception_breakpoint(&breakpoint.class)?;
+        let mut state = self.state.lock().unwrap();
+        let request = if breakpoint.class.is_empty() {
+            Some(self.vm.set_exception_breakpoint(None, breakpoint.caught, breakpoint.uncaught)?)
+        } else {
+            match self.vm.find_class(&breakpoint.class)? {
+                Some(class) => Some(self.vm.set_exception_breakpoint(Some(class.id), breakpoint.caught, breakpoint.uncaught)?),
+                None => {
+                    if !state.watched.contains_key(&breakpoint.class) {
+                        let watch = self.vm.watch_class_prepare(&breakpoint.class)?;
+                        state.watched.insert(breakpoint.class.clone(), watch);
+                    }
+                    None
+                }
+            }
+        };
+        state.exceptions.push(PlacedException { breakpoint, request });
+        Ok(request.is_some())
+    }
+
+    pub fn remove_exception_breakpoint(&self, class: &str) -> Result<(), String> {
+        let mut state = self.state.lock().unwrap();
+        let Some(ix) = state.exceptions.iter().position(|p| p.breakpoint.class == class) else { return Ok(()) };
+        if let Some(request) = state.exceptions.remove(ix).request {
+            self.vm.clear_exception_breakpoint(request)?;
         }
         Ok(())
     }
@@ -300,7 +354,7 @@ impl DebugSession {
         let Some(set) = self.vm.next_events(timeout)? else { return Ok(Vec::new()) };
         // A method an evaluation calls hit a breakpoint or a step ended in
         // it: let it run on, as IntelliJ does.
-        let nested = set.events.iter().all(|e| matches!(e, DebugEvent::Breakpoint { .. } | DebugEvent::Step { .. }));
+        let nested = set.events.iter().all(|e| matches!(e, DebugEvent::Breakpoint { .. } | DebugEvent::Step { .. } | DebugEvent::Exception { .. }));
         if nested && !set.events.is_empty() && self.evaluating.load(Ordering::SeqCst) > 0 {
             self.vm.resume()?;
             return Ok(Vec::new());
@@ -330,6 +384,14 @@ impl DebugSession {
                         }
                         entry.requests.extend(placed);
                     }
+                    // An exception breakpoint waiting for its class.
+                    for ix in 0..state.exceptions.len() {
+                        let e = &state.exceptions[ix];
+                        if e.request.is_none() && e.breakpoint.class == class.name {
+                            let request = self.vm.set_exception_breakpoint(Some(class.id), e.breakpoint.caught, e.breakpoint.uncaught)?;
+                            state.exceptions[ix].request = Some(request);
+                        }
+                    }
                     resume = set.suspended != Suspend::None;
                 }
                 DebugEvent::Breakpoint { thread, request, .. } => {
@@ -340,6 +402,11 @@ impl DebugSession {
                     paused = Some((thread, reason));
                 }
                 DebugEvent::Step { thread, .. } => paused = Some((thread, PauseReason::Step)),
+                DebugEvent::Exception { thread, exception, caught, .. } => {
+                    let name = self.vm.class_of(exception).map(|c| c.name).unwrap_or_else(|_| "exception".into());
+                    out.push(SessionEvent::Exception(format!("Exception '{name}' {}", if caught { "occurred" } else { "was not caught" })));
+                    paused = Some((thread, PauseReason::Exception));
+                }
                 // A VM launched to wait starts once the session calls start().
                 DebugEvent::VmStart { .. } | DebugEvent::ThreadStart { .. } | DebugEvent::ThreadDeath { .. } => {}
             }
@@ -493,6 +560,13 @@ mod tests {
         }
         fn clear_breakpoint(&self, request: u32) -> Result<(), String> {
             self.log(format!("clear {request}"));
+            Ok(())
+        }
+        fn set_exception_breakpoint(&self, class: Option<u64>, caught: bool, uncaught: bool) -> Result<u32, String> {
+            Ok(self.log(format!("exception {class:?} {caught} {uncaught}")))
+        }
+        fn clear_exception_breakpoint(&self, request: u32) -> Result<(), String> {
+            self.log(format!("clear exception {request}"));
             Ok(())
         }
         fn step(&self, thread: u64, depth: StepDepth) -> Result<u32, String> {
@@ -683,6 +757,30 @@ mod tests {
         session.detach();
         assert!(session.is_ended());
         assert_eq!(vm.take_log(), ["resume", "dispose"]);
+    }
+
+    #[test]
+    fn exception_breakpoints() {
+        let vm = vm();
+        let session = DebugSession::new(vm.clone());
+        let any = ExceptionBreakpoint { class: String::new(), caught: true, uncaught: true };
+        assert_eq!(session.add_exception_breakpoint(any), Ok(true));
+        assert_eq!(vm.take_log(), ["exception None true true"]);
+        // A class not loaded yet waits for it.
+        let boom = ExceptionBreakpoint { class: "a.Boom".into(), caught: false, uncaught: true };
+        assert_eq!(session.add_exception_breakpoint(boom), Ok(false));
+        assert_eq!(vm.take_log(), ["watch a.Boom"]);
+        vm.send(Suspend::All, vec![DebugEvent::ClassPrepare { thread: 1, class: ClassRef { id: 30, name: "a.Boom".into() }, request: 2 }]);
+        session.poll(Duration::ZERO).unwrap();
+        assert_eq!(vm.take_log(), ["exception Some(30) false true", "resume"]);
+        // A hit: which exception, then paused.
+        vm.send(Suspend::All, vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, caught: false, request: 3 }]);
+        let events = session.poll(Duration::ZERO).unwrap();
+        assert_eq!(events[0], SessionEvent::Exception("Exception 'a.CalcTest' was not caught".into()));
+        assert!(matches!(events[1], SessionEvent::Paused { reason: PauseReason::Exception, .. }));
+        // Removed: its request cleared.
+        session.remove_exception_breakpoint("").unwrap();
+        assert_eq!(vm.take_log(), ["clear exception 1"]);
     }
 
     #[test]

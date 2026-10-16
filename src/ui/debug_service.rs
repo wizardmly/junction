@@ -112,6 +112,8 @@ pub struct DebugRun {
     pub console: Vec<SharedString>,
     /// "address: '127.0.0.1:5005', transport: 'socket'", once connected.
     pub target: Option<String>,
+    /// Paused by an exception breakpoint: which exception.
+    pub exception: Option<String>,
 }
 
 /// Finds a frame's source in the project: the path suffix
@@ -121,6 +123,8 @@ pub type SourceResolver = Rc<dyn Fn(&str, &App) -> Option<PathBuf>>;
 #[derive(Default)]
 pub struct DebugService {
     breakpoints: Vec<SavedBreakpoint>,
+    /// Java Exception Breakpoints, "Any exception" first.
+    exceptions: Vec<breakpoint_store::SavedExceptionBreakpoint>,
     /// The Watches' expressions.
     pub watches: Vec<String>,
     /// Evaluate Expression's history, the latest first.
@@ -150,7 +154,7 @@ impl DebugService {
         if let Some(g) = cx.try_global::<GlobalDebug>() {
             return g.0.clone();
         }
-        let service = cx.new(|_| Self { breakpoints: breakpoint_store::load(), watches: breakpoint_store::load_watches(), ..Default::default() });
+        let service = cx.new(|_| Self { breakpoints: breakpoint_store::load(), exceptions: breakpoint_store::load_exceptions(), watches: breakpoint_store::load_watches(), ..Default::default() });
         cx.set_global(GlobalDebug(service.clone()));
         service
     }
@@ -228,6 +232,46 @@ impl DebugService {
         self.breakpoints.iter().map(|b| (b.clone(), self.verified.contains(&(b.file.clone(), b.line)))).collect()
     }
 
+    /// The Java Exception Breakpoints, "Any exception" first.
+    pub fn exception_breakpoints(&self) -> Vec<breakpoint_store::SavedExceptionBreakpoint> {
+        self.exceptions.clone()
+    }
+
+    /// Adds or changes an exception breakpoint (by its class), in the
+    /// running session too.
+    pub fn set_exception_breakpoint(&mut self, updated: breakpoint_store::SavedExceptionBreakpoint, cx: &mut Context<Self>) {
+        match self.exceptions.iter_mut().find(|e| e.class == updated.class) {
+            Some(e) => *e = updated.clone(),
+            None => self.exceptions.push(updated.clone()),
+        }
+        breakpoint_store::save_exceptions(&self.exceptions);
+        if let Some(session) = self.session.clone().filter(|s| !s.is_ended()) {
+            cx.background_spawn(async move {
+                if updated.enabled {
+                    let _ = session.add_exception_breakpoint(exception_breakpoint(&updated));
+                } else {
+                    let _ = session.remove_exception_breakpoint(&updated.class);
+                }
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    /// Removes an exception breakpoint ("Any exception" stays).
+    pub fn remove_exception_breakpoint(&mut self, class: &str, cx: &mut Context<Self>) {
+        if class.is_empty() {
+            return;
+        }
+        self.exceptions.retain(|e| e.class != class);
+        breakpoint_store::save_exceptions(&self.exceptions);
+        if let Some(session) = self.session.clone().filter(|s| !s.is_ended()) {
+            let class = class.to_owned();
+            cx.background_spawn(async move { session.remove_exception_breakpoint(&class) }).detach();
+        }
+        cx.notify();
+    }
+
     /// The Breakpoints dialog's Remove.
     pub fn remove_breakpoint(&mut self, file: &str, line: u32, cx: &mut Context<Self>) {
         if self.breakpoint(file, line).is_some() {
@@ -272,14 +316,22 @@ impl DebugService {
         cx.notify();
     }
 
-    /// Moves a file's breakpoints when lines above them are added or
-    /// removed (an edit of `delta` lines at `at`).
-    pub fn shift_breakpoints(&mut self, file: &str, at: u32, delta: i64, cx: &mut Context<Self>) {
-        let mut changed = false;
-        for b in self.breakpoints.iter_mut().filter(|b| b.file == file && b.line > at) {
-            b.line = (b.line as i64 + delta).max(at as i64) as u32;
-            changed = true;
+    /// Moves a file's breakpoints with an edit of its text, line by line
+    /// (`debugger::follow_lines`).
+    pub fn follow_edit(&mut self, file: &str, old: &str, new: &str, cx: &mut Context<Self>) {
+        let lines: Vec<u32> = self.breakpoints.iter().filter(|b| b.file == file).map(|b| b.line).collect();
+        if lines.is_empty() {
+            return;
         }
+        let moved = debugger::follow_lines(old, new, &lines);
+        let mut changed = false;
+        for (b, line) in self.breakpoints.iter_mut().filter(|b| b.file == file).zip(moved) {
+            changed |= b.line != line;
+            b.line = line;
+        }
+        // Two on one line: the first stays.
+        let mut seen = HashSet::new();
+        self.breakpoints.retain(|b| b.file != file || seen.insert(b.line));
         if changed {
             breakpoint_store::save(&self.breakpoints);
             cx.notify();
@@ -359,6 +411,7 @@ impl DebugService {
             name,
             status: DebugStatus::Connecting,
             reason: None,
+            exception: None,
             threads: Vec::new(),
             thread: None,
             frames: Vec::new(),
@@ -418,12 +471,19 @@ impl DebugService {
                 if let Some(run) = self.run.as_mut() {
                     run.status = DebugStatus::Running;
                     run.reason = None;
+                    run.exception = None;
                     run.frames.clear();
                     run.variables.clear();
                 }
             }
             SessionEvent::Verified { path, line } => {
                 self.verified.insert((key(&path), line - 1));
+            }
+            SessionEvent::Exception(text) => {
+                if let Some(run) = self.run.as_mut() {
+                    run.console.push(text.clone().into());
+                    run.exception = Some(text);
+                }
             }
             SessionEvent::Message(text) => {
                 if let Some(run) = self.run.as_mut() {
@@ -823,10 +883,11 @@ async fn drive(this: gpui_kit::WeakEntity<DebugService>, cx: &mut gpui_kit::Asyn
             run.target = Some(target.clone());
         }
         cx.notify();
-        this.breakpoints.clone()
+        (this.breakpoints.clone(), this.exceptions.clone())
     }) else {
         return;
     };
+    let (breakpoints, exceptions) = breakpoints;
     let setup = session.clone();
     let (verified, started) = cx
         .background_spawn(async move {
@@ -835,6 +896,9 @@ async fn drive(this: gpui_kit::WeakEntity<DebugService>, cx: &mut gpui_kit::Asyn
                 if let Ok(true) = setup.add_breakpoint(line_breakpoint(&b)) {
                     verified.push((b.file, b.line));
                 }
+            }
+            for e in exceptions.iter().filter(|e| e.enabled) {
+                let _ = setup.add_exception_breakpoint(exception_breakpoint(e));
             }
             let started = setup.start();
             (verified, started)
@@ -883,4 +947,9 @@ fn actions(saved: &SavedBreakpoint) -> BreakpointActions {
 
 fn free_port() -> Option<u16> {
     std::net::TcpListener::bind("127.0.0.1:0").ok()?.local_addr().ok().map(|a| a.port())
+}
+
+/// A saved exception breakpoint as the session sets it.
+fn exception_breakpoint(saved: &breakpoint_store::SavedExceptionBreakpoint) -> crate::usecase::debug_session::ExceptionBreakpoint {
+    crate::usecase::debug_session::ExceptionBreakpoint { class: saved.class.clone(), caught: saved.caught, uncaught: saved.uncaught }
 }

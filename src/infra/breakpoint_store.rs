@@ -110,4 +110,73 @@ mod tests {
         assert_eq!(load_from(&path), vec![SavedBreakpoint::new("/p/C.kt", 1)]);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
+
+    #[test]
+    fn any_exception_comes_first() {
+        let mut list = vec![SavedExceptionBreakpoint::new("java.io.IOException")];
+        with_any(&mut list);
+        assert_eq!(list[0], SavedExceptionBreakpoint::any());
+        list.swap(0, 1);
+        with_any(&mut list);
+        assert_eq!((list[0].class.as_str(), list[1].class.as_str()), ("", "java.io.IOException"));
+        let read: SavedExceptionBreakpoint = serde_json::from_str(r#"{"class":"a.B"}"#).unwrap();
+        assert!(!read.enabled && read.caught && read.uncaught);
+    }
+}
+
+/// A Java Exception Breakpoint, as IntelliJ keeps it: the class (empty
+/// for "Any exception"), whether it's on, and which throws it stops at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedExceptionBreakpoint {
+    #[serde(default)]
+    pub class: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "enabled")]
+    pub caught: bool,
+    #[serde(default = "enabled")]
+    pub uncaught: bool,
+}
+
+impl SavedExceptionBreakpoint {
+    /// IntelliJ's "Any exception": there, off, caught and uncaught.
+    pub fn any() -> Self {
+        Self { class: String::new(), enabled: false, caught: true, uncaught: true }
+    }
+
+    pub fn new(class: &str) -> Self {
+        Self { class: class.to_owned(), enabled: true, caught: true, uncaught: true }
+    }
+}
+
+fn exceptions_path() -> Option<PathBuf> {
+    crate::settings::config_dir().map(|d| d.join("exception-breakpoints.json"))
+}
+
+/// The exception breakpoints, "Any exception" first.
+pub fn load_exceptions() -> Vec<SavedExceptionBreakpoint> {
+    let mut list: Vec<SavedExceptionBreakpoint> = exceptions_path().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    with_any(&mut list);
+    list
+}
+
+fn with_any(list: &mut Vec<SavedExceptionBreakpoint>) {
+    match list.iter().position(|e| e.class.is_empty()) {
+        Some(0) => {}
+        Some(ix) => {
+            let any = list.remove(ix);
+            list.insert(0, any);
+        }
+        None => list.insert(0, SavedExceptionBreakpoint::any()),
+    }
+}
+
+pub fn save_exceptions(list: &[SavedExceptionBreakpoint]) {
+    let Some(path) = exceptions_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(json) = serde_json::to_vec_pretty(list) {
+        let _ = std::fs::write(path, json);
+    }
 }
