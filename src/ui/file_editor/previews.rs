@@ -1,11 +1,13 @@
 //! Android Studio's resource previews in the editor gutter: a color's
 //! swatch and a bitmap drawable's thumbnail on the lines that use them
-//! (`R.color.primary`, `@drawable/ic_logo`, `#FF6200EE`).
+//! (`R.color.primary`, `@drawable/ic_logo`, `#FF6200EE`), a vector
+//! drawable drawn from its XML.
 
 use gpui_kit::component::input::RopeExt as _;
 use gpui_kit::{AppContext as _, Bounds, Context, IntoElement, Pixels, Styled as _, canvas, point, px, size};
 
 use super::{FileEditor, GUTTER_ICON, GUTTER_ICON_GAP, GUTTER_ICON_SLOT};
+use crate::domain::vector_drawable;
 use crate::usecase::android_resources::{self, Preview};
 
 impl FileEditor {
@@ -24,15 +26,40 @@ impl FileEditor {
             if debounce {
                 cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
             }
-            let marks = cx.background_spawn(async move { android_resources::previews(&table.read().unwrap(), &path, &text) }).await;
+            let (marks, vectors) = cx
+                .background_spawn(async move {
+                    let table = table.read().unwrap();
+                    let marks: Vec<(u32, Preview)> = android_resources::previews(&table, &path, &text)
+                        .into_iter()
+                        .map(|(line, p)| match p {
+                            Preview::Image(rel) => (line, Preview::Image(root.join(rel).to_string_lossy().into_owned())),
+                            Preview::Vector(rel) => (line, Preview::Vector(root.join(rel).to_string_lossy().into_owned())),
+                            other => (line, other),
+                        })
+                        .collect();
+                    // Vectors drawn for the gutter; other drawable XML has no icon.
+                    let color = |value: &str| -> Option<u32> {
+                        let (kind, name) = value.strip_prefix('@')?.split_once('/')?;
+                        table.color(&crate::domain::android_resources::ResourceRef::new(kind, name))
+                    };
+                    let mut vectors = std::collections::HashMap::new();
+                    for (_, p) in &marks {
+                        let Preview::Vector(file) = p else { continue };
+                        if vectors.contains_key(file) {
+                            continue;
+                        }
+                        let image = std::fs::read_to_string(file).ok().filter(|t| vector_drawable::is_vector(t)).and_then(|text| {
+                            let size = vector_drawable::to_svg(&text, 1., &color).ok()?;
+                            let svg = vector_drawable::to_svg(&text, 32. / size.width.max(size.height).max(1.), &color).ok()?.svg;
+                            Some(std::sync::Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, svg.into_bytes())))
+                        });
+                        vectors.insert(file.clone(), image);
+                    }
+                    (marks.into_iter().filter(|(_, p)| !matches!(p, Preview::Vector(f) if vectors.get(f).is_none_or(Option::is_none))).collect::<Vec<_>>(), vectors)
+                })
+                .await;
             this.update(cx, |this, cx| {
-                let marks: Vec<(u32, Preview)> = marks
-                    .into_iter()
-                    .map(|(line, p)| match p {
-                        Preview::Image(rel) => (line, Preview::Image(root.join(rel).to_string_lossy().into_owned())),
-                        other => (line, other),
-                    })
-                    .collect();
+                this.vector_icons = std::rc::Rc::new(vectors.into_iter().filter_map(|(k, v)| Some((k, v?))).collect());
                 if this.previews != marks {
                     this.previews = marks;
                     this.apply_gutter_extra(cx);
@@ -50,6 +77,7 @@ impl FileEditor {
         }
         let marks = self.previews.clone();
         let state = self.state.clone();
+        let vectors = self.vector_icons.clone();
         Some(
             canvas(
                 |_, _, _| {},
@@ -77,6 +105,11 @@ impl FileEditor {
                                 let color: gpui_kit::Hsla = gpui_kit::rgba(rgba).into();
                                 let border: gpui_kit::Hsla = gpui_kit::rgba(0x8080_80aa).into();
                                 window.paint_quad(gpui_kit::quad(rect, px(2.), color, px(1.), border, Default::default()));
+                            }
+                            Preview::Vector(path) => {
+                                if let Some(image) = vectors.get(&path).and_then(|i| i.clone().use_render_image(window, cx)) {
+                                    let _ = window.paint_image(rect, rect, Default::default(), image, 0, false);
+                                }
                             }
                             Preview::Image(path) => {
                                 let source = gpui_kit::Resource::Path(std::path::PathBuf::from(path).into());

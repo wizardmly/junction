@@ -70,6 +70,15 @@ impl ResourceTable {
         self.value(r).and_then(|v| res::parse_color(&v))
     }
 
+    /// A drawable or mipmap declared as XML (a vector, a shape…), the
+    /// unqualified folder's first.
+    pub fn drawable_xml(&self, r: &ResourceRef) -> Option<&Declaration> {
+        if !matches!(&*r.kind, "drawable" | "mipmap") {
+            return None;
+        }
+        self.declarations(r).iter().filter(|d| d.path.ends_with(".xml")).min_by_key(|d| res::folder_order(&d.folder))
+    }
+
     /// A drawable or mipmap's bitmap to preview (the densest PNG / WebP / JPG).
     pub fn image(&self, r: &ResourceRef) -> Option<&Declaration> {
         if !matches!(&*r.kind, "drawable" | "mipmap") {
@@ -122,6 +131,8 @@ pub enum Preview {
     Color(u32),
     /// The image, relative to the project.
     Image(String),
+    /// A drawable XML (a vector, once read), relative to the project.
+    Vector(String),
 }
 
 /// The first previewable resource of each line of a Kotlin, Java or XML file.
@@ -143,7 +154,7 @@ pub fn previews(table: &ResourceTable, path: &str, text: &str) -> Vec<(u32, Prev
                 let r = ResourceRef::new(kind.as_str(), name.as_str());
                 match kind.as_str() {
                     "color" => table.color(&r).map(Preview::Color),
-                    _ => table.image(&r).map(|d| Preview::Image(d.path.to_string())),
+                    _ => table.image(&r).map(|d| Preview::Image(d.path.to_string())).or_else(|| table.drawable_xml(&r).map(|d| Preview::Vector(d.path.to_string()))),
                 }
             }
             _ => None,

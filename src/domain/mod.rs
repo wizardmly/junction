@@ -27,4 +27,5 @@ pub mod testing;
 pub mod translations;
 pub mod todo;
 pub mod sync;
+pub mod vector_drawable;
 pub mod version_catalog;

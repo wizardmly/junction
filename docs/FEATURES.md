@@ -404,7 +404,7 @@ Linux 实测：TODO 窗口找到 3 条（含未跟踪文件），双击跳到对
 | 悬停：显示资源的值（跟随 `@color/a` → `@color/b` 引用链）和所在目录、文件 | ✅ |
 | Find Usages（Alt+F7）：分 Declarations、代码里的引用、XML 里的引用三组 | ✅ |
 | gutter 预览：代码和 XML 里引用颜色的行显示色块，引用 png / webp / jpg 图片的行显示缩略图（取最高密度目录的那张）；colors.xml 里每个颜色定义也显示色块 | ✅ |
-| vector drawable / shape 预览、点击色块打开取色器、字符串折叠显示值、Manifest 合并视图、框架资源 `android.R` / `@android:` | ❌ 未做（Translations Editor 见第 31 节） |
+| shape / selector 预览、点击色块打开取色器、字符串折叠显示值、Manifest 合并视图、框架资源 `android.R` / `@android:` | ❌ 未做（Translations Editor 见第 31 节，vector drawable 见第 32 节） |
 
 Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 values-zh 两个声明，悬停显示值；Ctrl+B `R.color.purple_500` 打开 colors.xml 第 2 行；Alt+F7 分组正确；MainActivity.kt 和 activity_main.xml 的 gutter 显示紫色、青色色块（`@color/accent` 跟随到 teal_200）和 ic_logo 缩略图。截图：reports/Android资源-2026-10-15/。
 
@@ -618,3 +618,16 @@ Android Studio 的 Translations Editor。代码：`src/domain/translations.rs`�
 | 多个 res 目录（flavor、多模块）合并显示、Key 列冻结、单元格内直接编辑、`plurals` / `string-array`、Order a translation、按语言过滤列、删除时查找引用（Safe Delete） | ❌ 未做 |
 
 Linux 实测（Xvfb，含 values、values-fr、values-zh-rCN、values-night 的示例项目）：打开 `values/strings.xml` 出现横幅，点 Open editor 打开表格，settings 的法语和 welcome 的中法两列标红；双击 settings 的法语格输入 `Parametres d'app` 回车，`values-fr/strings.xml` 写入 `Parametres d\'app`，该行恢复正常；Add Key 输入已存在的 `hello` 提示 “Key 'hello' already exists”，改为 `about` 后写入并选中；Show Keys Needing Translations 只剩 about、welcome；Remove Keys 确认后 about 从文件删除；Add Locale 选 German 新建 `values-de/strings.xml`，出现 “German (de)” 列，其余键变红；勾选 welcome 的 Untranslatable 写入 `translatable="false"`。
+
+## 32. Vector drawable 预览（2026-10-16）
+
+Android Studio 打开 `res/drawable*/`、`mipmap*/` 下的 vector XML 时的预览。代码：`src/domain/vector_drawable.rs`（VectorDrawable → SVG），界面 `src/ui/file_editor/vector_preview.rs`，gutter 图标在 `src/ui/file_editor/previews.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 编辑器右上角 Code / Split / Design 三个按钮（默认 Split）：Split 在 XML 右侧显示预览，Design 只显示预览（不显示 gutter），Code 只有 XML；预览按长边 256 px 缩放，下方注明 “24 × 24 dp”；编辑 XML 时即时重画；无法渲染时显示原因 | ✅ |
+| 转换：`pathData`（与 SVG 路径语法相同）、`fillColor` / `strokeColor`（`#RGB` `#ARGB` `#RRGGBB` `#AARRGGBB`、`@color/…` 按项目资源解析、`@android:color/white` 等、`?attr/…` 按默认主题近黑色）、`fillAlpha` / `strokeAlpha`、`strokeWidth`、`strokeLineCap` / `strokeLineJoin` / `strokeMiterLimit`、`fillType="evenOdd"`；`<group>` 的 pivot / rotation / scale / translate（Android 的变换顺序）、`<clip-path>`；`<aapt:attr>` 里的线性 / 径向渐变（`<item>` 或 start / center / endColor，sweep 用首色）；`<vector>` 的 `android:tint`、`android:alpha` | ✅ |
+| gutter 预览：布局 XML 的 `@drawable/ic_star`、代码里的 `R.drawable.ic_star` 指向 vector 时，行号旁画出缩略图（以前只有位图） | ✅ |
+| shape / selector / layer-list / animated-vector 预览、trimPath、主题属性按真实主题解析、预览缩放和背景切换 | ❌ 未做 |
+
+Linux 实测（Xvfb）：打开 `drawable/ic_star.xml`（填充 `@color/accent` 的五角星，里面一个按 pivot 缩放 0.4 的白色圆），右侧显示橙色星和白色圆，注明 “24 × 24 dp”；把圆的 `#FFFFFF` 改成 `#D50000`，预览立即变红；点 Design 只显示预览、gutter 色块和改动标记不再显示；打开 `layout/main.xml`，`android:src="@drawable/ic_star"` 那一行的 gutter 出现星形图标。

@@ -10,6 +10,7 @@ mod generate;
 mod templates;
 pub use breakpoints::RunToCursor;
 mod previews;
+mod vector_preview;
 mod problems;
 mod test_marks;
 
@@ -382,6 +383,11 @@ pub struct FileEditor {
     previews: Vec<(u32, crate::usecase::android_resources::Preview)>,
     /// The strings banner's Hide notification.
     strings_banner_hidden: bool,
+    /// A vector drawable's preview, and Code / Split / Design.
+    vector: Option<vector_preview::VectorPreview>,
+    vector_mode: vector_preview::VectorMode,
+    /// The gutter's vector drawable icons, by file.
+    vector_icons: Rc<std::collections::HashMap<String, std::sync::Arc<gpui_kit::Image>>>,
     previews_task: Option<gpui_kit::Task<()>>,
     /// The test classes and methods of a test file, for the gutter's run
     /// icons, and the popup a click on one opens.
@@ -688,6 +694,9 @@ impl FileEditor {
             hierarchy_slots: 0,
             previews: Vec::new(),
             strings_banner_hidden: false,
+            vector: None,
+            vector_mode: Default::default(),
+            vector_icons: Rc::default(),
             previews_task: None,
             test_marks: Vec::new(),
             test_marks_task: None,
@@ -2086,6 +2095,9 @@ impl Render for FileEditor {
         let has_image = self.image.is_some();
         let image_info = self.image.as_ref().map(ImageFile::info);
         let image_body = self.image.as_ref().map(|image| self.render_image(image, cx));
+        let vector_buttons = self.vector_mode_buttons(cx);
+        let vector_pane = self.vector_pane(cx);
+        let vector_design = self.vector_design_only();
         v_flex()
             .size_full()
             .key_context(CONTEXT)
@@ -2210,6 +2222,7 @@ impl Render for FileEditor {
                                 cx.notify();
                             })))
                     })
+                    .children(vector_buttons)
                     .when(!has_image, |el| el.child(tool_button("editor-diff", icons::VCS_DIFF, "Show Diff").on_click(cx.listener(
                         |this, _, window, cx| this.show_diff(&ShowFileDiff, window, cx),
                     ))))
@@ -2225,7 +2238,7 @@ impl Render for FileEditor {
             .when_some(image_body, |el, body| el.child(body))
             .when(!has_image, |el| el.child(
                 div().relative().flex_1().min_h_0().child(
-                    h_flex().size_full().children(annotation_gutter).child(div().flex_1().min_w_0().h_full().text_size(px(crate::ui::diff_panes::font_size())).child(
+                    h_flex().size_full().children(annotation_gutter).child(div().flex_1().min_w_0().h_full().when(vector_design, |el| el.flex_none().w(px(0.)).overflow_hidden()).text_size(px(crate::ui::diff_panes::font_size())).child(
                     Editor::new(&self.state)
                         .h_full()
                         .bordered(false)
@@ -2296,14 +2309,15 @@ impl Render for FileEditor {
                                 NativeMenu::new().menu("Show History", Box::new(crate::ui::workspace::ShowLocalHistory)).menu("Put Label…", Box::new(crate::ui::workspace::PutLocalHistoryLabel)),
                             )
                         }),
-                )))
+                )).children(vector_pane))
                 .child(self.gutter_probe())
-                .when(!read_only, |el| el.child(self.marker_strip(cx)))
-                .when(!self.hierarchy.is_empty() && icons_shown, |el| el.child(self.hierarchy_strip(cx)))
-                .children(bookmark_strip)
-                .children(preview_strip)
-                .children(test_strip)
-                .children(breakpoint_strip)
+                // Design shows the drawable alone: no gutter.
+                .when(!read_only && !vector_design, |el| el.child(self.marker_strip(cx)))
+                .when(!self.hierarchy.is_empty() && icons_shown && !vector_design, |el| el.child(self.hierarchy_strip(cx)))
+                .children(bookmark_strip.filter(|_| !vector_design))
+                .children(preview_strip.filter(|_| !vector_design))
+                .children(test_strip.filter(|_| !vector_design))
+                .children(breakpoint_strip.filter(|_| !vector_design))
                 .when_some(hover_card, |el, (at, card)| {
                     el.child(deferred(anchored().position(point(at.x + px(12.), at.y + px(16.))).child(card)).with_priority(1))
                 })
