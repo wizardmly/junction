@@ -11,6 +11,7 @@ mod templates;
 pub use breakpoints::RunToCursor;
 mod previews;
 mod vector_preview;
+mod merged_manifest;
 mod parameter_info;
 mod overrides;
 mod problems;
@@ -399,6 +400,9 @@ pub struct FileEditor {
     /// A vector drawable's preview, and Code / Split / Design.
     vector: Option<vector_preview::VectorPreview>,
     vector_mode: vector_preview::VectorMode,
+    /// The manifest editor's Merged Manifest tab is selected.
+    manifest_merged: bool,
+    merged: Option<merged_manifest::MergedManifest>,
     /// The gutter's vector drawable icons, by file.
     vector_icons: Rc<std::collections::HashMap<String, std::sync::Arc<gpui_kit::Image>>>,
     previews_task: Option<gpui_kit::Task<()>>,
@@ -716,6 +720,8 @@ impl FileEditor {
             server_actions_task: None,
             vector: None,
             vector_mode: Default::default(),
+            manifest_merged: false,
+            merged: None,
             vector_icons: Rc::default(),
             previews_task: None,
             parameter_info: None,
@@ -2223,7 +2229,10 @@ impl Render for FileEditor {
         let image_body = self.image.as_ref().map(|image| self.render_image(image, cx));
         let vector_buttons = self.vector_mode_buttons(cx);
         let vector_pane = self.vector_pane(cx);
-        let vector_design = self.vector_design_only();
+        let manifest_pane = self.manifest_pane(cx);
+        let manifest_tabs = self.manifest_tabs(cx);
+        // Design or the merged manifest shows instead of the text.
+        let vector_design = self.vector_design_only() || manifest_pane.is_some();
         v_flex()
             .size_full()
             .key_context(CONTEXT)
@@ -2446,7 +2455,7 @@ impl Render for FileEditor {
                                 NativeMenu::new().menu("Show History", Box::new(crate::ui::workspace::ShowLocalHistory)).menu("Put Label…", Box::new(crate::ui::workspace::PutLocalHistoryLabel)),
                             )
                         }),
-                )).children(vector_pane))
+                )).children(vector_pane).children(manifest_pane))
                 .child(self.gutter_probe())
                 // Design shows the drawable alone: no gutter.
                 .when(!read_only && !vector_design, |el| el.child(self.marker_strip(cx)))
@@ -2466,6 +2475,7 @@ impl Render for FileEditor {
                 .children(self.render_test_menu(cx))
                 .children(self.render_breakpoint_popup(cx)),
             ))
+            .children(manifest_tabs)
     }
 }
 

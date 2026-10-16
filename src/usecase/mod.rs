@@ -1,6 +1,7 @@
 //! Use cases: one per IDE feature, driving the domain through its ports.
 //! They know nothing about GPUI or how a port is implemented.
 
+pub mod merged_manifest;
 pub mod android_resources;
 pub mod import_class;
 pub mod translations;

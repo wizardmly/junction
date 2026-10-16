@@ -753,3 +753,17 @@ Linux 实测（Xvfb，trans 示例）：`bg_button.xml`（pressed 引用渐变 s
 | 选区里的重复代码片段一并替换、参数顺序调整 / 去掉参数、Extract Parameter / Change Signature、Kotlin 的 receiver 和泛型参数、按语言服务器取类型 | ⬜ |
 
 Linux 实测（Xvfb）：calc 的 `CalcTest.totals()` 选中 `int sum = 0;` 到循环结束，Ctrl+Alt+M 弹出 Extract Method：参数 `items`（`java.util.List<Integer>`），预览 `private int extracted(java.util.List<Integer> items)`；改名 `sumOf` 后原处变成 `int sum = sumOf(items);`，后面是带 `return sum;` 的新方法；Ctrl+Z 一步还原。ktjvm 示例 `Shop.check` 的两条语句提取为 `private fun report(n: Int)`，原处是 `report(n)`。
+
+## 41. Merged Manifest（2026-10-16）
+
+照 Android Studio 的清单编辑器：`AndroidManifest.xml` 下方有 “Text | Merged Manifest” 两个标签，Merged Manifest 是只读的合并结果，每一行按来源文件着色，右边是 “Manifest Sources”（来源文件和颜色）和 “Merging Errors”；随编辑实时重算（当前文件用编辑中的文本，其他读磁盘）。合并规则照 Gradle 插件的 ManifestMerger2。代码：`src/domain/manifest_merge.rs`（合并、注入、打印）、`src/usecase/merged_manifest.rs`（找来源、读 build 文件）、`src/ui/file_editor/merged_manifest.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 来源和优先级：构建类型的覆盖清单 `src/debug/AndroidManifest.xml`（打开的是其他源集时用那个）高于 `src/main`，再低是 build 文件里 `project(":lib")` 依赖的库模块的清单（逐层传递，去重）；以 main 的结构为底，覆盖清单并入，库新增的元素追加在后 | ✅ |
+| 元素按标签 + `android:name` 匹配（intent-filter 按内容），属性高优先级的赢；值不同且没有 `tools:replace` 时报 AS 原文格式的冲突 “Attribute application@android:theme value=(…) from … is also present at … value=(…). Suggestion: add 'tools:replace=…'”；`tools:node="remove" / "removeAll" / "replace"`、`tools:remove`；输出去掉 `tools:` 属性 | ✅ |
+| build 文件注入（Kotlin DSL 和 Groovy）：`applicationId`（或 `namespace`）为 `package`，`versionCode` / `versionName`，`minSdk` / `targetSdk` 写进（必要时新建的）`<uses-sdk>`；`manifestPlaceholders`（`["k"] = "v"`、`mapOf("k" to "v")`、`[k: "v"]`）和 `${applicationId}` 替换 | ✅ |
+| 打印成 AS 合并视图的样式：四空格缩进，多个属性时每个属性一行 | ✅ |
+| 远程依赖（AAR）的清单、产品风味 / 当前所选构建变体、隐式权限、`tools:overrideLibrary`、`tools:selector`、点击行跳到来源文件、合并日志（Merging Log）里每个元素的来源说明 | ⬜ |
+
+Linux 实测（Xvfb，示例工程 app + lib）：app 的 main 清单有 INTERNET 权限、MainActivity、`${mapsKey}` 的 meta-data 和标 `tools:node="remove"` 的 lib provider，debug 覆盖清单改 label（带 `tools:replace`）并加 `usesCleartextTraffic`，lib 有 CAMERA 权限、ScanActivity、provider 和自己的主题。Merged Manifest 依次显示：build.gradle.kts 着色的 `package="com.example.shop"`、versionCode 12 / versionName 2.1 和 `<uses-sdk minSdkVersion="24" targetSdkVersion="35">`，main 的 INTERNET 和 application（其中 `android:label="Shop (debug)"` 和 `usesCleartextTraffic` 两行是 debug 的颜色），`android:value="AIza-demo"`，lib 颜色的 ScanActivity、CAMERA 和 uses-feature，provider 已被移除；Merging Errors 列出 application 的 theme 在 app 和 lib 之间冲突。
