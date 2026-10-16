@@ -295,7 +295,7 @@ pub struct Workspace {
     run: Entity<crate::ui::run_service::RunService>,
     build_view: Entity<crate::ui::run_views::BuildView>,
     run_view: Entity<crate::ui::run_views::RunView>,
-    logcat_view: Entity<crate::ui::logcat_view::LogcatView>,
+    logcat_view: Entity<crate::ui::logcat_view::LogcatTabs>,
     debug_view: Entity<crate::ui::debug_view::DebugView>,
     problems_view: Entity<crate::ui::problems_view::ProblemsView>,
     todo_view: Entity<crate::ui::todo_view::TodoView>,
@@ -416,7 +416,7 @@ impl Workspace {
         let build_view = cx.new(|cx| crate::ui::run_views::BuildView::new(run.clone(), cx));
         let run_view = cx.new(|cx| crate::ui::run_views::RunView::new(run.clone(), cx));
         let variants_view = cx.new(crate::ui::run_views::VariantsView::new);
-        let logcat_view = cx.new(|cx| crate::ui::logcat_view::LogcatView::new(device_manager.clone(), run.clone(), logcat_project, window, cx));
+        let logcat_view = cx.new(|cx| crate::ui::logcat_view::LogcatTabs::new(device_manager.clone(), run.clone(), logcat_project, window, cx));
         let project = cx.new(|cx| crate::ui::project_view::ProjectView::new(code_index.clone(), cx));
         let weak = cx.entity().downgrade();
         branches_popup.update(cx, |popup, _| {

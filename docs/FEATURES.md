@@ -371,7 +371,8 @@ Android Studio 的 Logcat 工具窗口（Alt+6 / ⌘6，底部）。代码：`sr
 | 选中行（Shift 扩选）Ctrl+C 复制 | ✅ |
 | 过滤输入的补全：输入时弹出（Ctrl+Space 也可），键按 AS 的变体列出（`tag:` `-tag:` `tag~:` `-tag~:` `tag=:` `-tag=:`，`level:` `age:` `is:` 等），输入 `tag:` / `package:`（含 `mine`）/ `process:` 后列出日志里出现过的值，`level:` 列级别、`is:` 列 crash / stacktrace；前缀匹配优先，其次包含匹配，已输入部分加粗；弹窗在当前词下方，↑↓ 选、Enter / Tab 填入（填入键后接着弹值）、Esc 关闭、点击填入 | ✅ |
 | 过滤历史和收藏：输入框左侧的历史按钮弹出 Favorites 和 History 两段，每条带匹配条数，点一条应用、× 删除；回车或离开输入框时记入历史（最近 20 条，同 AS）；右侧星标把当前过滤加入 / 移出收藏；跨会话保存在设置目录 `logcat-filters.json` | ✅ |
-| 多个 Logcat 标签页 / 分屏、截屏和录屏按钮、导入导出日志文件、Proguard 反混淆、过滤的 `name:` 键 | ❌ 未做 |
+| 多个标签页（2026-10-16，`src/ui/logcat_view/tabs.rs`）：标题旁的标签条，+ 新建标签（命名照 AS 的 `UniqueNameGenerator`：“Logcat”、“Logcat (2)”…取第一个没用过的），每个标签各自的设备、过滤、暂停和日志，工具窗口隐藏时全部继续读；× 或中键关闭（只剩一个时不能关），关闭后停止读取；右键菜单 Rename Tab…（不能为空或与其他标签重名）、Close Tab、Close Other Tabs。实测（Xvfb，模拟 adb）：新建 “Logcat (2)” 设 `level:error` 只剩三条 E，切回 “Logcat” 仍是 `package:mine`；重命名为 “Errors”；关闭后 adb logcat 进程少一个 | ✅ |
+| 分屏、截屏和录屏按钮、导入导出日志文件、Proguard 反混淆、过滤的 `name:` 键、标签页在重启后恢复 | ❌ 未做 |
 
 过滤补全实测（假 adb）：清空后输入 `ta` 弹出 `tag:` `tag~:` `tag=:`，回车后弹出 ActivityManager / MainActivity / OkHttp / SystemUi，接着输入 `ma` 剩 MainActivity（前缀）和 ActivityManager（包含），Tab 填入；输入 ` level:` 列出级别，点 info 后过滤为三条 ActivityManager 的 I 级日志；点星标收藏，再输入 `is:crash` 回车；历史按钮弹出 Favorites “tag:ActivityManager level:info (3)” 和 History “is:crash (0)”，点收藏项恢复该过滤。空输入框 Ctrl+Space 列出全部键，↓ 超出可见范围时列表跟着滚动。
 

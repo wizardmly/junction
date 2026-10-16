@@ -6,6 +6,9 @@
 //! completes keys and values and keeps a history (`filter`).
 
 mod filter;
+mod tabs;
+
+pub use tabs::LogcatTabs;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -78,6 +81,8 @@ pub struct LogcatView {
     stop: Arc<AtomicBool>,
     receiver: Option<std::sync::mpsc::Receiver<Entry>>,
     open: bool,
+    /// In a tab of `LogcatTabs`: the title and Hide are the tab strip's.
+    embedded: bool,
     _pump: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -143,9 +148,17 @@ impl LogcatView {
             stop: Arc::default(),
             receiver: None,
             open: false,
+            embedded: false,
             _pump: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// A closed tab: its log stops being read.
+    pub fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.receiver = None;
+        self._pump = None;
     }
 
     /// The tool window showed or hid. Logcat starts reading when first
@@ -632,10 +645,10 @@ impl Render for LogcatView {
                     .gap_1()
                     .border_b_1()
                     .border_color(palette.border)
-                    .child(div().px_1().text_sm().font_weight(FontWeight::SEMIBOLD).child("Logcat"))
+                    .when(!self.embedded, |el| el.child(div().px_1().text_sm().font_weight(FontWeight::SEMIBOLD).child("Logcat")))
                     .child(device_combo)
                     .child(filter_field)
-                    .child(tool_button("logcat-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(LogcatEvent::Hide)))),
+                    .when(!self.embedded, |el| el.child(tool_button("logcat-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(LogcatEvent::Hide))))),
             )
             .when(self.paused, |el| el.child(banner("Logcat is paused")))
             .when(needs_ids, |el| el.child(banner("Could not detect project package names. Is the project synced?")))

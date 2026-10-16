@@ -329,8 +329,26 @@ pub trait LogSource: Send + Sync {
     fn clear(&self, serial: &str) -> Result<(), String>;
 }
 
+/// A new Logcat tab's name, as Android Studio's `UniqueNameGenerator`
+/// makes it: "Logcat", then "Logcat (2)", "Logcat (3)"… the first unused.
+pub fn tab_name(existing: &[String]) -> String {
+    if !existing.iter().any(|n| n == "Logcat") {
+        return "Logcat".into();
+    }
+    (2..).map(|n| format!("Logcat ({n})")).find(|name| !existing.contains(name)).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn names_tabs() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(super::tab_name(&[]), "Logcat");
+        assert_eq!(super::tab_name(&names(&["Logcat"])), "Logcat (2)");
+        assert_eq!(super::tab_name(&names(&["Logcat", "Logcat (3)"])), "Logcat (2)");
+        assert_eq!(super::tab_name(&names(&["Logcat (2)"])), "Logcat");
+    }
+
     use super::*;
 
     fn entry(level: Level, tag: &str, package: &str, message: &str) -> Entry {
