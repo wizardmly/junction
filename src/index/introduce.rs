@@ -169,7 +169,7 @@ fn normalized(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-fn name_source(lang: Lang, node: Node, text: &str) -> NameSource {
+pub(crate) fn name_source(lang: Lang, node: Node, text: &str) -> NameSource {
     let t = |n: Node| text[n.byte_range()].to_owned();
     if let Some(l) = literal(lang, node, text) {
         return NameSource::Literal(l);

@@ -21,22 +21,22 @@ const JUMP_OUTSIDE: &str = "The selection contains a break or continue whose loo
 
 /// A variable declared in the method.
 #[derive(Debug)]
-struct Decl {
-    name: String,
-    ty: String,
+pub(super) struct Decl {
+    pub(super) name: String,
+    pub(super) ty: String,
     /// The end of its name: references after it see it.
-    at: usize,
+    pub(super) at: usize,
     /// Where it's visible.
-    scope: Range<usize>,
-    mutable: bool,
+    pub(super) scope: Range<usize>,
+    pub(super) mutable: bool,
 }
 
-fn children<'t>(node: Node<'t>) -> Vec<Node<'t>> {
+pub(super) fn children<'t>(node: Node<'t>) -> Vec<Node<'t>> {
     let mut cursor = node.walk();
     node.named_children(&mut cursor).collect()
 }
 
-fn descendants<'t>(node: Node<'t>) -> Vec<Node<'t>> {
+pub(super) fn descendants<'t>(node: Node<'t>) -> Vec<Node<'t>> {
     let mut out = Vec::new();
     let mut stack = vec![node];
     while let Some(n) = stack.pop() {
@@ -46,11 +46,11 @@ fn descendants<'t>(node: Node<'t>) -> Vec<Node<'t>> {
     out
 }
 
-fn inside(inner: &Range<usize>, outer: &Range<usize>) -> bool {
+pub(super) fn inside(inner: &Range<usize>, outer: &Range<usize>) -> bool {
     inner.start >= outer.start && inner.end <= outer.end
 }
 
-fn is_function(lang: Lang, node: Node) -> bool {
+pub(super) fn is_function(lang: Lang, node: Node) -> bool {
     match lang {
         Lang::Kotlin => node.kind() == "function_declaration",
         _ => matches!(node.kind(), "method_declaration" | "constructor_declaration"),
@@ -66,7 +66,7 @@ fn is_nested_body(lang: Lang, node: Node) -> bool {
 }
 
 /// A Kotlin expression's type when it shows it.
-fn kotlin_type(node: Node, text: &str, known: &dyn Fn(&str) -> String) -> String {
+pub(super) fn kotlin_type(node: Node, text: &str, known: &dyn Fn(&str) -> String) -> String {
     let t = &text[node.byte_range()];
     match node.kind() {
         "integer_literal" | "hex_literal" | "bin_literal" => "Int",
@@ -108,7 +108,7 @@ fn kotlin_type(node: Node, text: &str, known: &dyn Fn(&str) -> String) -> String
 }
 
 /// The declarations in the method, Kotlin.
-fn kotlin_decls(function: Node, text: &str) -> Vec<Decl> {
+pub(super) fn kotlin_decls(function: Node, text: &str) -> Vec<Decl> {
     let mut out = Vec::new();
     fn name_of(n: Node) -> Option<Node> {
         children(n).into_iter().find(|c| c.kind() == "simple_identifier")
@@ -163,7 +163,7 @@ fn kotlin_decls(function: Node, text: &str) -> Vec<Decl> {
 }
 
 /// The declarations in the method, Java.
-fn java_decls(function: Node, text: &str) -> Vec<Decl> {
+pub(super) fn java_decls(function: Node, text: &str) -> Vec<Decl> {
     let mut out = Vec::new();
     let field = |n: Node, f: &str| n.child_by_field_name(f).map(|c| text[c.byte_range()].to_owned()).unwrap_or_default();
     for n in descendants(function) {
@@ -214,7 +214,7 @@ fn java_decls(function: Node, text: &str) -> Vec<Decl> {
 
 /// A name read or written as a variable (not a member after `.`, a
 /// method's name, a declared name, a named argument).
-fn is_reference(lang: Lang, node: Node, text: &str) -> bool {
+pub(super) fn is_reference(lang: Lang, node: Node, text: &str) -> bool {
     let Some(parent) = node.parent() else { return false };
     match lang {
         Lang::Kotlin => {
@@ -232,7 +232,7 @@ fn is_reference(lang: Lang, node: Node, text: &str) -> bool {
 }
 
 /// Whether the reference is written: assigned, incremented.
-fn is_assigned(lang: Lang, node: Node, text: &str) -> bool {
+pub(super) fn is_assigned(lang: Lang, node: Node, text: &str) -> bool {
     let Some(parent) = node.parent() else { return false };
     match lang {
         Lang::Kotlin => {

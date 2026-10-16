@@ -12,6 +12,7 @@ pub mod hierarchy;
 pub mod locals;
 pub mod introduce;
 pub mod extract_method;
+pub mod introduce_parameter;
 pub mod generate;
 pub mod overrides;
 pub mod special;

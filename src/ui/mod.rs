@@ -71,6 +71,7 @@ pub mod debug_service;
 pub mod debug_view;
 pub mod evaluate_dialog;
 pub mod extract_method_dialog;
+pub mod introduce_parameter_dialog;
 pub mod run_config_dialog;
 pub mod jdk_download_panel;
 pub mod breakpoints_dialog;

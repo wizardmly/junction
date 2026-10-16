@@ -67,6 +67,7 @@ actions!(
         IntroduceVariable,
         IntroduceConstant,
         ExtractMethod,
+        IntroduceParameter,
         SurroundWith,
         Generate,
         FindNext,
@@ -126,6 +127,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-v" } else { "ctrl-alt-v" }, IntroduceVariable, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-c" } else { "ctrl-alt-c" }, IntroduceConstant, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-m" } else { "ctrl-alt-m" }, ExtractMethod, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-p" } else { "ctrl-alt-p" }, IntroduceParameter, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-t" } else { "ctrl-alt-t" }, SurroundWith, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-n" } else { "alt-insert" }, Generate, Some(CONTEXT)),
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
@@ -1214,6 +1216,85 @@ impl FileEditor {
         }, window, cx);
     }
 
+    /// Introduce Parameter (Ctrl+Alt+P): the selected expression becomes
+    /// the function's new last parameter; its calls in the project pass
+    /// the expression (or, in Kotlin, it's the parameter's default value).
+    fn introduce_parameter_action(&mut self, _: &IntroduceParameter, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::introduce_parameter::{apply, call_edit, edits};
+        use crate::index::introduce_parameter::{call_sites, plan};
+        use crate::index::lang::Lang;
+        const TITLE: &str = "Introduce Parameter";
+        let Some((lang, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
+        let text = self.text(cx);
+        let selection = self.state.read(cx).selected_range();
+        let (plan, source) = match plan(lang, &text, selection) {
+            Ok(found) => found,
+            Err(message) => return Self::hint(TITLE, format!("Cannot perform refactoring.\n{message}"), window, cx),
+        };
+        let suggestions = crate::domain::introduce_variable::suggest_names(style, &source, &|n| plan.taken.iter().any(|t| t == n) || plan.params.iter().any(|p| p == n));
+        let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(|r| r.to_path_buf()));
+        let own = self.path.clone();
+        // The calls here (not inside what's replaced) and in the project's other Kotlin / Java files.
+        let in_occurrence = |c: &crate::domain::introduce_parameter::CallSite| plan.occurrences.iter().any(|o| o.start <= c.args_close && c.args_close < o.end);
+        let here: Vec<_> = call_sites(lang, &text, &plan.function, plan.params.len()).into_iter().filter(|c| !in_occurrence(c)).collect();
+        let (function, params) = (plan.function.clone(), plan.params.len());
+        let task = cx.background_spawn(async move {
+            let Some(root) = root else { return Vec::new() };
+            let needle = format!("{function}(");
+            crate::index::store::list_files(&root)
+                .into_iter()
+                .filter(|f| *f != own && (f.ends_with(".kt") || f.ends_with(".java")))
+                .filter_map(|f| {
+                    let path = root.join(&f);
+                    let text = std::fs::read_to_string(&path).ok().filter(|t| t.contains(&needle))?;
+                    let calls = call_sites(Lang::from_path(&f)?, &text, &function, params);
+                    (!calls.is_empty()).then_some((f, path, text, calls))
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let elsewhere = task.await;
+            this.update_in(cx, |_, window, cx| {
+                let editor = cx.entity().downgrade();
+                let calls = here.len() + elsewhere.iter().map(|(.., c)| c.len()).sum::<usize>();
+                let dialog_plan = plan.clone();
+                crate::ui::introduce_parameter_dialog::open(style, dialog_plan, suggestions, calls, move |request, window, cx| {
+                    editor
+                        .update(cx, |this, cx| {
+                            if this.text(cx) != text {
+                                return Self::hint(TITLE, "The file changed; try again", window, cx);
+                            }
+                            let changes = match edits(style, &plan, &here, &request) {
+                                Ok(changes) => changes,
+                                Err(message) => return Self::hint(TITLE, message, window, cx),
+                            };
+                            // The caret where the selected occurrence was.
+                            let at = plan.occurrences[plan.selected].start;
+                            let caret = changes.iter().filter(|(r, _)| r.start < at).fold(at as isize, |c, (r, s)| c + s.len() as isize - r.len() as isize) as usize;
+                            let new = apply(&text, changes);
+                            this.replace_text(&text, &new, caret, window, cx);
+                            // The other files' calls, unless the value is a default.
+                            let mut written = Vec::new();
+                            if !(request.default_value && style == crate::domain::imports::ImportStyle::Kotlin) {
+                                for (rel, path, old, calls) in &elsewhere {
+                                    let new = apply(old, calls.iter().filter_map(|c| call_edit(&plan, c, &request.name)).collect());
+                                    if std::fs::write(path, new).is_ok() {
+                                        written.push(rel.clone());
+                                    }
+                                }
+                            }
+                            if !written.is_empty() {
+                                cx.emit(FileEditorEvent::FilesWritten(written));
+                            }
+                        })
+                        .ok();
+                }, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn introduce_constant_action(&mut self, _: &IntroduceConstant, window: &mut Window, cx: &mut Context<Self>) {
         self.introduce(crate::ui::introduce_dialog::Introduce::Constant, window, cx);
     }
@@ -2295,6 +2376,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::introduce_variable_action))
             .on_action(cx.listener(Self::introduce_constant_action))
             .on_action(cx.listener(Self::extract_method_action))
+            .on_action(cx.listener(Self::introduce_parameter_action))
             .on_action(cx.listener(Self::surround_with_action))
             .on_action(cx.listener(|this, _: &Generate, window, cx| this.generate(window, cx)))
             .on_action(cx.listener(Self::find_next))
@@ -2434,6 +2516,7 @@ impl Render for FileEditor {
                                         .menu_with_disabled("Rename…", read_only, Box::new(RenameElement))
                                         .menu_with_disabled("Introduce Variable…", read_only, Box::new(IntroduceVariable))
                                         .menu_with_disabled("Introduce Constant…", read_only, Box::new(IntroduceConstant))
+                                        .menu_with_disabled("Introduce Parameter…", read_only, Box::new(IntroduceParameter))
                                         .menu_with_disabled(if java_file { "Extract Method…" } else { "Extract Function…" }, read_only, Box::new(ExtractMethod)),
                                 )
                                 .menu("Select in Project View", Box::new(crate::ui::workspace::SelectInProject))

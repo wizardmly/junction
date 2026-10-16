@@ -771,3 +771,18 @@ Linux 实测（Xvfb）：calc 的 `CalcTest.totals()` 选中 `int sum = 0;` 到�
 | 远程依赖（AAR）的清单、产品风味 / 当前所选构建变体、隐式权限、`tools:overrideLibrary`、`tools:selector`、合并日志（Merging Log）里每个元素的来源说明 | ⬜ |
 
 Linux 实测（Xvfb，示例工程 app + lib）：app 的 main 清单有 INTERNET 权限、MainActivity、`${mapsKey}` 的 meta-data 和标 `tools:node="remove"` 的 lib provider，debug 覆盖清单改 label（带 `tools:replace`）并加 `usesCleartextTraffic`，lib 有 CAMERA 权限、ScanActivity、provider 和自己的主题。Merged Manifest 依次显示：build.gradle.kts 着色的 `package="com.example.shop"`、versionCode 12 / versionName 2.1 和 `<uses-sdk minSdkVersion="24" targetSdkVersion="35">`，main 的 INTERNET 和 application（其中 `android:label="Shop (debug)"` 和 `usesCleartextTraffic` 两行是 debug 的颜色），`android:value="AIza-demo"`，lib 颜色的 ScanActivity、CAMERA 和 uses-feature，provider 已被移除；Merging Errors 列出 application 的 theme 在 app 和 lib 之间冲突。
+
+## 42. Introduce Parameter（Ctrl+Alt+P，2026-10-16）
+
+照 IntelliJ 的 Refactor › Introduce Parameter（Kotlin 的 `KotlinIntroduceParameterHandler`、Java 的 `IntroduceParameterHandler`）：选中函数里的一个表达式（不选时取光标处最内层的表达式），它变成函数新的最后一个参数，函数里的这处（或全部相同的几处）换成参数名，项目里对这个函数的调用都补上实参。代码：`src/domain/introduce_parameter.rs`（编辑和每个调用的实参）、`src/index/introduce_parameter.rs`（语法树分析、找调用）、`src/ui/introduce_parameter_dialog.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 分析：表达式所在的函数、它的参数；表达式里用到的函数参数和类成员（字段、方法）；用到函数里的局部变量时拒绝（“Cannot introduce parameter: the expression uses local variable '…'”）；不在函数里时提示 | ✅ |
+| 对话框：Name（按表达式建议，下拉可选其他建议，和已有参数 / 局部变量重名时报错）、Type（看得出时预填，否则要填）、“Replace all N occurrences”（函数里有多处相同表达式时）、Kotlin 的 “Introduce default value”；底部说明会改几处调用 | ✅ |
+| 调用处：实参是表达式本身，其中用到的参数换成这次调用传的实参（复杂实参加括号），类成员前加上调用的接收者（`cart.total(10.0, 3)` → `cart.total(10.0, 3, 10.0 * cart.rate)`）；用了命名实参或省略了默认参数的 Kotlin 调用补命名实参 `amount = …` | ✅ |
+| Kotlin 默认值：参数写成 `amount: Double = price * rate`，调用处都不改 | ✅ |
+| 范围：当前文件（编辑器里一步撤销）和项目里其他含 `name(` 的 .kt / .java 文件（直接写盘并刷新） | ✅ |
+| 按名字和实参个数匹配调用（同名的其他函数也可能被改），Java 的 Declare final / 通过重载委托 / 字段改 getter、Kotlin 扩展函数的接收者、Change Signature | ⬜ |
+
+Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int)` 的 `return price * rate * count + price * rate`，选中第一处 `price * rate` 按 Ctrl+Alt+P，对话框显示 “Replace all 2 occurrences”、“3 calls of total() get the new argument”；名字 amount、类型 Double，Refactor 后签名是 `total(price: Double, count: Int, amount: Double)`，函数体是 `return amount * count + amount`，同文件的 `total(1.0, 2)` 变成 `total(1.0, 2, 1.0 * rate)`，Main.kt 的 `cart.total(10.0, 3)` 和 `cart.total(count = 1, price = 2.0)` 分别变成 `cart.total(10.0, 3, 10.0 * cart.rate)` 和 `cart.total(count = 1, price = 2.0, amount = 2.0 * cart.rate)`。

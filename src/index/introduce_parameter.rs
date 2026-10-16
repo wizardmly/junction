@@ -1,0 +1,196 @@
+//! Introduce Parameter's view of the syntax tree (Kotlin and Java): the
+//! expression and the function it's in, the function's parameters and the
+//! members it uses (a local variable can't go along), its occurrences in
+//! the function, and the function's calls in a file.
+
+use std::ops::Range;
+
+use tree_sitter::Node;
+
+use super::extract_method::{children, descendants, inside, is_function, is_reference, java_decls, kotlin_decls, kotlin_type};
+use super::lang::Lang;
+use super::symbols;
+use crate::domain::introduce_parameter::{CallSite, ParameterPlan};
+use crate::domain::introduce_variable::NameSource;
+
+const NOT_AN_EXPRESSION: &str = "Selected block should represent an expression";
+const NO_FUNCTION: &str = "Cannot introduce parameter: the expression is not in a function";
+
+fn params_node<'t>(lang: Lang, function: Node<'t>) -> Option<Node<'t>> {
+    match lang {
+        Lang::Kotlin => children(function).into_iter().find(|c| c.kind() == "function_value_parameters"),
+        _ => function.child_by_field_name("parameters"),
+    }
+}
+
+fn function_name(lang: Lang, function: Node, text: &str) -> String {
+    match lang {
+        Lang::Kotlin => children(function).into_iter().find(|c| c.kind() == "simple_identifier").map(|c| text[c.byte_range()].to_owned()).unwrap_or_default(),
+        _ => function.child_by_field_name("name").map(|c| text[c.byte_range()].to_owned()).unwrap_or_default(),
+    }
+}
+
+fn normalized(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Introduce Parameter for the selection; the plan and where the name
+/// comes from.
+pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<(ParameterPlan, NameSource), String> {
+    if !matches!(lang, Lang::Kotlin | Lang::Java) {
+        return Err("Introduce Parameter works in Kotlin and Java files".into());
+    }
+    let tree = symbols::parse(lang, text).ok_or(NOT_AN_EXPRESSION)?;
+    let root = tree.root_node();
+    // The selected expression, or the innermost one at the caret.
+    let selected = &text[selection.clone()];
+    let range = if selected.trim().is_empty() {
+        super::introduce::expressions_at(lang, text, selection.clone())?.into_iter().next().ok_or(NOT_AN_EXPRESSION)?
+    } else {
+        let start = selection.start + (selected.len() - selected.trim_start().len());
+        start..selection.start + selected.trim_end().len()
+    };
+    let node = super::introduce::expression_node(lang, root, text, range).ok_or(NOT_AN_EXPRESSION)?;
+    let mut function = node;
+    while !is_function(lang, function) {
+        function = function.parent().ok_or(NO_FUNCTION)?;
+    }
+    let params_node = params_node(lang, function).ok_or(NO_FUNCTION)?;
+    if inside(&node.byte_range(), &params_node.byte_range()) {
+        return Err(NO_FUNCTION.into());
+    }
+    let decls = match lang {
+        Lang::Kotlin => kotlin_decls(function, text),
+        _ => java_decls(function, text),
+    };
+    // The function's own parameters, in order.
+    let is_param = |d: &super::extract_method::Decl| d.scope == function.byte_range() && inside(&(d.at..d.at), &params_node.byte_range());
+    let params: Vec<&super::extract_method::Decl> = decls.iter().filter(|d| is_param(d)).collect();
+    let resolve = |name: &str, at: usize| decls.iter().filter(|d| d.name == name && d.at <= at && inside(&(at..at), &d.scope)).max_by_key(|d| d.at);
+    let mut uses = Vec::new();
+    let mut members = Vec::new();
+    let base = node.start_byte();
+    for n in descendants(node).into_iter().filter(|n| is_reference(lang, *n, text)) {
+        let name = text[n.byte_range()].trim_start_matches('$');
+        let rel = n.start_byte() - base..n.end_byte() - base;
+        match resolve(name, n.start_byte()) {
+            Some(d) if is_param(d) => uses.push((rel, params.iter().position(|p| p.name == d.name).unwrap_or(0))),
+            Some(d) if !inside(&(d.at..d.at), &node.byte_range()) => return Err(format!("Cannot introduce parameter: the expression uses local variable '{}'", d.name)),
+            Some(_) => {}
+            // A member (a field, a method of the class); classes and constants are left alone.
+            None if name.starts_with(|c: char| c.is_lowercase()) => members.push(rel),
+            None => {}
+        }
+    }
+    // Its occurrences in the function body.
+    let wanted = (node.kind(), normalized(&text[node.byte_range()]));
+    let mut occurrences: Vec<Range<usize>> = descendants(function)
+        .into_iter()
+        .filter(|n| !inside(&n.byte_range(), &params_node.byte_range()) && n.kind() == wanted.0 && normalized(&text[n.byte_range()]) == wanted.1)
+        .map(|n| n.byte_range())
+        .collect();
+    occurrences.sort_by_key(|r| r.start);
+    occurrences.dedup_by(|a, b| inside(a, b));
+    let selected_ix = occurrences.iter().position(|r| *r == node.byte_range()).unwrap_or(0);
+    let ty = match lang {
+        Lang::Kotlin => kotlin_type(node, text, &|name| params.iter().find(|p| p.name == name).map(|p| p.ty.clone()).unwrap_or_default()),
+        _ => super::introduce::java_type(node, text).or_else(|| (uses.len() == 1 && node.kind() == "identifier").then(|| params[uses[0].1].ty.clone())).unwrap_or_default(),
+    };
+    let plan = ParameterPlan {
+        function: function_name(lang, function, text),
+        expression: text[node.byte_range()].to_owned(),
+        occurrences,
+        selected: selected_ix,
+        params_close: params_node.end_byte() - 1,
+        params: params.iter().map(|p| p.name.clone()).collect(),
+        uses,
+        members,
+        ty,
+        taken: decls.iter().map(|d| d.name.clone()).collect(),
+    };
+    Ok((plan, super::introduce::name_source(lang, node, text)))
+}
+
+/// The calls of `function` in a file, with `params` arguments (Kotlin's
+/// may leave defaults out).
+pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<CallSite> {
+    let Some(tree) = symbols::parse(lang, text) else { return Vec::new() };
+    let mut out = Vec::new();
+    for n in descendants(tree.root_node()) {
+        let site = match lang {
+            Lang::Kotlin if n.kind() == "call_expression" => {
+                let named = children(n);
+                let (Some(callee), Some(suffix)) = (named.first(), named.iter().find(|c| c.kind() == "call_suffix")) else { continue };
+                let (name, receiver) = match callee.kind() {
+                    "simple_identifier" => (text[callee.byte_range()].to_owned(), None),
+                    "navigation_expression" => {
+                        let parts = children(*callee);
+                        let (Some(target), Some(last)) = (parts.first(), parts.last()) else { continue };
+                        let name = text[last.byte_range()].trim_start_matches(['.', '?']).trim().to_owned();
+                        let receiver = text[target.byte_range()].to_owned();
+                        (name, (receiver != "this").then_some(receiver))
+                    }
+                    _ => continue,
+                };
+                let Some(args) = children(*suffix).into_iter().find(|c| c.kind() == "value_arguments") else { continue };
+                let values: Vec<(Option<String>, String)> = children(args)
+                    .into_iter()
+                    .filter(|a| a.kind() == "value_argument")
+                    .map(|a| {
+                        let parts = children(a);
+                        let named = parts.first().filter(|p| p.kind() == "simple_identifier" && p.next_sibling().is_some_and(|s| s.kind() == "=")).map(|p| text[p.byte_range()].to_owned());
+                        let value = parts.last().map(|p| text[p.byte_range()].to_owned()).unwrap_or_default();
+                        (named, value)
+                    })
+                    .collect();
+                (name == function && values.len() <= params).then(|| CallSite { args_close: args.end_byte() - 1, args: values, receiver })
+            }
+            Lang::Java if n.kind() == "method_invocation" => {
+                let (Some(name), Some(args)) = (n.child_by_field_name("name"), n.child_by_field_name("arguments")) else { continue };
+                let receiver = n.child_by_field_name("object").map(|o| text[o.byte_range()].to_owned()).filter(|r| r != "this");
+                let values: Vec<(Option<String>, String)> = children(args).into_iter().filter(|a| !a.kind().ends_with("comment")).map(|a| (None, text[a.byte_range()].to_owned())).collect();
+                (&text[name.byte_range()] == function && values.len() == params).then(|| CallSite { args_close: args.end_byte() - 1, args: values, receiver })
+            }
+            _ => None,
+        };
+        out.extend(site);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plans_kotlin() {
+        let text = "class Cart(val rate: Double) {\n    fun total(price: Double, count: Int): Double {\n        val tax = 2\n        return price * rate + price * rate\n    }\n    fun use() = total(1.0, 2) + Cart(1.0).total(count = 3, price = 4.0)\n}\n";
+        let at = text.find("price * rate").unwrap();
+        let (plan, _) = plan(Lang::Kotlin, text, at..at + 12).unwrap();
+        assert_eq!((plan.function.as_str(), plan.params.clone(), plan.occurrences.len(), plan.ty.as_str()), ("total", vec!["price".to_owned(), "count".into()], 2, ""));
+        assert_eq!((plan.uses.clone(), plan.members.clone()), (vec![(0..5, 0)], vec![8..12]));
+        assert_eq!(&text[plan.params_close..plan.params_close + 1], ")");
+        // A local can't go along.
+        let tax = text.find("tax").unwrap();
+        let line = text.find("price * rate + ").unwrap();
+        let with_local = text.replacen("price * rate + price", "price * tax + price", 1);
+        let at = with_local.find("price * tax").unwrap();
+        assert!(super::plan(Lang::Kotlin, &with_local, at..at + 11).unwrap_err().contains("local variable 'tax'"));
+        let _ = (tax, line);
+        // The calls: positional, and named on another object.
+        let calls = call_sites(Lang::Kotlin, text, "total", 2);
+        assert_eq!(calls.len(), 2);
+        assert_eq!((calls[0].args.len(), calls[0].receiver.clone()), (2, None));
+        assert_eq!((calls[1].args[1].0.as_deref(), calls[1].receiver.as_deref()), (Some("price"), Some("Cart(1.0)")));
+    }
+
+    #[test]
+    fn plans_java() {
+        let text = "class A {\n  int rate;\n  int total(int price) { return price * 2; }\n  int use() { return total(3) + other.total(4); }\n}\n";
+        let at = text.find("price * 2").unwrap();
+        let (plan, _) = plan(Lang::Java, text, at..at + 9).unwrap();
+        assert_eq!((plan.params.clone(), plan.uses.clone()), (vec!["price".to_owned()], vec![(0..5, 0)]));
+        let calls = call_sites(Lang::Java, text, "total", 1);
+        assert_eq!(calls.iter().map(|c| c.receiver.clone()).collect::<Vec<_>>(), [None, Some("other".to_owned())]);
+    }
+}
