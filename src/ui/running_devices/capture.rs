@@ -1,6 +1,7 @@
 //! Take Screenshot (the preview dialog) and Record Screen.
 
 use super::*;
+use std::rc::Rc;
 
 impl MirrorView {
     pub(super) fn take_screenshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -17,7 +18,13 @@ impl MirrorView {
             });
             let result = result.await;
             cx.update_window(window_handle, |_, window, cx| match result {
-                Ok(png) => screenshot_dialog(weak, png, window, cx),
+                Ok(png) => {
+                    let again = weak.clone();
+                    let recapture: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |window, cx| {
+                        again.update(cx, |this, cx| this.take_screenshot(window, cx)).ok();
+                    });
+                    screenshot_dialog(png, recapture, window, cx)
+                }
                 Err(e) => {
                     weak.update(cx, |_, cx| cx.emit(MirrorEvent::Notify { title: format!("Screenshot of {title} failed"), message: e.to_string(), error: true }))
                         .ok();
@@ -91,13 +98,14 @@ impl MirrorView {
     }
 }
 
-/// Take Screenshot: the image, Copy to Clipboard, and Save.
-pub(super) fn screenshot_dialog(view: WeakEntity<MirrorView>, png: Vec<u8>, window: &mut Window, cx: &mut App) {
+/// Take Screenshot: the image, Recapture, Copy to Clipboard, and Save
+/// (Running Devices and Logcat).
+pub(crate) fn screenshot_dialog(png: Vec<u8>, recapture: Rc<dyn Fn(&mut Window, &mut App)>, window: &mut Window, cx: &mut App) {
     use gpui_kit::component::dialog::DialogFooter;
     let image = Arc::new(Image::from_bytes(ImageFormat::Png, png.clone()));
     let png = Arc::new(png);
     window.open_dialog(cx, move |dialog, _, _| {
-        let (copy_image, save_png, recapture) = (image.clone(), png.clone(), view.clone());
+        let (copy_image, save_png, recapture) = (image.clone(), png.clone(), recapture.clone());
         dialog
             .title("Screenshot")
             .w(px(560.))
@@ -115,7 +123,7 @@ pub(super) fn screenshot_dialog(view: WeakEntity<MirrorView>, png: Vec<u8>, wind
                     .gap_2()
                     .child(Button::new("rd-shot-recapture").label("Recapture").outline().on_click(move |_, window, cx| {
                         window.close_dialog(cx);
-                        recapture.update(cx, |this, cx| this.take_screenshot(window, cx)).ok();
+                        recapture(window, cx);
                     }))
                     .child(Button::new("rd-shot-copy").label("Copy to Clipboard").outline().on_click(move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_image(&copy_image));

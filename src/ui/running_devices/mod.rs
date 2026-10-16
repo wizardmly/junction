@@ -24,7 +24,7 @@ use gpui_kit::{
     App, AppContext as _, Bounds, ClipboardItem, Context, Corners, ElementInputHandler, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
     Image, ImageFormat, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _,
     Pixels, Render, RenderImage, ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription, Task,
-    UTF16Selection, WeakEntity, Window, canvas, div, img, point, prelude::FluentBuilder as _, px, size,
+    UTF16Selection, Window, canvas, div, img, point, prelude::FluentBuilder as _, px, size,
 };
 
 use crate::android::adb::Adb;
@@ -34,7 +34,7 @@ use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
 use crate::ui::device_manager::DeviceManager;
 
-mod capture;
+pub(crate) mod capture;
 mod input;
 mod view;
 

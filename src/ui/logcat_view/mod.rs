@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gpui_kit::component::{
-    Icon, Selectable as _, Sizable as _, h_flex,
+    Disableable as _, Icon, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
     input::{InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -83,6 +83,8 @@ pub struct LogcatView {
     open: bool,
     /// In a tab of `LogcatTabs`: the title and Hide are the tab strip's.
     embedded: bool,
+    /// Screen Record in progress on the followed device.
+    recording: Option<crate::android::mirror::Recording>,
     _pump: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -149,9 +151,74 @@ impl LogcatView {
             receiver: None,
             open: false,
             embedded: false,
+            recording: None,
             _pump: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Screen Capture: the followed device's screen in the screenshot
+    /// dialog (Recapture, Copy to Clipboard, Save).
+    fn take_screenshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        let (Some((_, serial)), Some(adb)) = (self.following.clone(), self.devices.read(cx).adb()) else { return };
+        let weak = cx.entity().downgrade();
+        let handle = window.window_handle();
+        let task = cx.background_spawn(async move { crate::android::mirror::screenshot(&adb, &serial) });
+        cx.spawn(async move |_, cx| {
+            let result = task.await;
+            cx.update_window(handle, |_, window, cx| match result {
+                Ok(png) => {
+                    let recapture: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |window, cx| {
+                        weak.update(cx, |this, cx| this.take_screenshot(window, cx)).ok();
+                    });
+                    crate::ui::running_devices::capture::screenshot_dialog(png, recapture, window, cx);
+                }
+                Err(e) => window.push_notification(gpui_kit::component::notification::Notification::error(e.to_string()).title("Screen Capture failed"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Screen Record: starts recording the followed device; the second
+    /// click stops it and asks where to save the video.
+    fn toggle_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        let (Some((_, serial)), Some(adb)) = (self.following.clone(), self.devices.read(cx).adb()) else { return };
+        let Some(recording) = self.recording.take() else {
+            match crate::android::mirror::Recording::start(&adb, &serial) {
+                Ok(r) => self.recording = Some(r),
+                Err(e) => window.push_notification(gpui_kit::component::notification::Notification::error(e.to_string()).title("Cannot record the screen"), cx),
+            }
+            cx.notify();
+            return;
+        };
+        let name = format!("Screen_recording_{}.mp4", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+        let target = cx.prompt_for_new_path(&crate::ui::running_devices::default_save_dir(), Some(&name));
+        let handle = window.window_handle();
+        cx.notify();
+        cx.spawn(async move |_, cx| {
+            let target = crate::ui::running_devices::chosen_path(target.await, &name);
+            let result = cx
+                .background_spawn(async move {
+                    match target {
+                        Some(target) => recording.finish(&adb, &serial, &target).map(|_| Some(target)),
+                        None => {
+                            recording.cancel(&adb, &serial);
+                            Ok(None)
+                        }
+                    }
+                })
+                .await;
+            cx.update_window(handle, |_, window, cx| match result {
+                Ok(Some(path)) => window.push_notification(gpui_kit::component::notification::Notification::success(path.display().to_string()).title("Screen recording saved"), cx),
+                Ok(None) => {}
+                Err(e) => window.push_notification(gpui_kit::component::notification::Notification::error(e.to_string()).title("Screen recording failed"), cx),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// A closed tab: its log stops being read.
@@ -623,7 +690,14 @@ impl Render for LogcatView {
                 side_button("logcat-pause", if self.paused { icons::RESUME } else { icons::PAUSE }, if self.paused { "Resume Logcat" } else { "Pause Logcat" })
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx))),
             )
-            .child(side_button("logcat-restart", icons::RERUN, "Restart Logcat").on_click(cx.listener(|this, _, _, cx| this.restart(cx))));
+            .child(side_button("logcat-restart", icons::RERUN, "Restart Logcat").on_click(cx.listener(|this, _, _, cx| this.restart(cx))))
+            // Android Studio's Screen Capture and Screen Record, for the followed device.
+            .child(side_button("logcat-screenshot", icons::EMULATOR_SCREENSHOT, "Screen Capture").disabled(self.following.is_none()).on_click(cx.listener(|this, _, window, cx| this.take_screenshot(window, cx))))
+            .child(
+                side_button("logcat-record", if self.recording.is_some() { icons::STOP } else { icons::EMULATOR_SCREEN_RECORD }, if self.recording.is_some() { "Stop Recording" } else { "Screen Record" })
+                    .disabled(self.following.is_none())
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_recording(window, cx))),
+            );
         let empty_reason = if self.following.is_none() {
             Some(if self.devices(cx).is_empty() { "No connected devices" } else { "Select a device" }.to_owned())
         } else if self.shown.is_empty() && !self.entries.is_empty() {
