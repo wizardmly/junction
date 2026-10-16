@@ -40,6 +40,8 @@ const EXCEPTION: u8 = 4;
 const THREAD_START: u8 = 6;
 const THREAD_DEATH: u8 = 7;
 const CLASS_PREPARE: u8 = 8;
+const FIELD_ACCESS: u8 = 20;
+const FIELD_MODIFICATION: u8 = 21;
 const VM_START: u8 = 90;
 const VM_DEATH: u8 = 99;
 
@@ -482,6 +484,26 @@ impl DebugVm for JdwpVm {
         self.command(EVENT_REQUEST, 2, &out.data).map(drop)
     }
 
+    fn field_id(&self, class: u64, name: &str) -> Result<Option<u64>, String> {
+        Ok(self.own_fields(class)?.into_iter().find(|(_, n, _)| n == name).map(|(id, ..)| id))
+    }
+
+    fn set_field_watch(&self, class: u64, field: u64, access: bool) -> Result<u32, String> {
+        let mut out = self.out();
+        out.u8(if access { FIELD_ACCESS } else { FIELD_MODIFICATION }).u8(SUSPEND_ALL).int(1);
+        // FieldOnly: the class and the field.
+        let (class_size, field_size) = (out.sizes.reference_type, out.sizes.field);
+        out.u8(9).id(class, class_size).id(field, field_size);
+        let data = self.command(EVENT_REQUEST, 1, &out.data)?;
+        self.reader(&data).bytes.int().map(|n| n as u32).ok_or_else(|| "bad Set reply".into())
+    }
+
+    fn clear_field_watch(&self, request: u32, access: bool) -> Result<(), String> {
+        let mut out = self.out();
+        out.u8(if access { FIELD_ACCESS } else { FIELD_MODIFICATION }).int(request as i32);
+        self.command(EVENT_REQUEST, 2, &out.data).map(drop)
+    }
+
     fn step(&self, thread: u64, depth: StepDepth) -> Result<u32, String> {
         let mut out = self.out();
         out.u8(SINGLE_STEP).u8(SUSPEND_ALL).int(2);
@@ -810,6 +832,20 @@ fn parse_events(data: &[u8], sizes: IdSizes) -> Option<EventSet> {
                 let catch = r.location()?;
                 DebugEvent::Exception { thread, location, exception, caught: catch.class != 0, request }
             }
+            FIELD_ACCESS | FIELD_MODIFICATION => {
+                let thread = r.object()?;
+                let location = r.location()?;
+                // The field's class and id, the object (tagged), and the value to be.
+                let _tag = r.bytes.u8()?;
+                let _class = r.reference_type()?;
+                let _field = r.field()?;
+                let _tag = r.bytes.u8()?;
+                let _object = r.object()?;
+                if kind == FIELD_MODIFICATION {
+                    r.skip_value()?;
+                }
+                DebugEvent::Field { thread, location, access: kind == FIELD_ACCESS, request }
+            }
             CLASS_PREPARE => {
                 let thread = r.object()?;
                 let _kind = r.bytes.u8()?;
@@ -913,6 +949,19 @@ impl In<'_> {
 
     fn frame(&mut self) -> Option<u64> {
         self.bytes.id(self.sizes.frame)
+    }
+
+    /// A tagged value, unread.
+    fn skip_value(&mut self) -> Option<()> {
+        let size = match self.bytes.u8()? {
+            b'V' => 0,
+            b'B' | b'Z' => 1,
+            b'C' | b'S' => 2,
+            b'I' | b'F' => 4,
+            b'J' | b'D' => 8,
+            _ => self.sizes.object,
+        };
+        self.bytes.take(size).map(drop)
     }
 
     fn location(&mut self) -> Option<Location> {

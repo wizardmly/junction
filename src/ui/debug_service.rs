@@ -91,8 +91,8 @@ pub struct BreakpointMark {
     pub conditional: bool,
     /// Off: a logging breakpoint, drawn yellow.
     pub suspend: bool,
-    /// A method breakpoint, drawn as a diamond.
-    pub method: bool,
+    /// A method breakpoint (a diamond) or a field watchpoint (an eye).
+    pub kind: crate::ui::breakpoints_dialog::MarkKind,
 }
 
 /// The Debug window's session.
@@ -172,7 +172,7 @@ impl DebugService {
         self.breakpoints
             .iter()
             .filter(|b| b.file == file)
-            .map(|b| BreakpointMark { line: b.line, verified: self.verified.contains(&(b.file.clone(), b.line)), enabled: b.enabled, conditional: b.condition.is_some(), suspend: b.suspend, method: b.method.is_some() })
+            .map(|b| BreakpointMark { line: b.line, verified: self.verified.contains(&(b.file.clone(), b.line)), enabled: b.enabled, conditional: b.condition.is_some(), suspend: b.suspend, kind: crate::ui::breakpoints_dialog::MarkKind::of(b) })
             .collect()
     }
 
@@ -188,6 +188,7 @@ impl DebugService {
         let (file, line) = (updated.file.clone(), updated.line);
         let Some(saved) = self.breakpoints.iter_mut().find(|b| b.file == file && b.line == line) else { return };
         let was_enabled = saved.enabled;
+        let before = saved.clone();
         *saved = SavedBreakpoint { condition: trimmed(updated.condition), log_expression: trimmed(updated.log_expression), ..updated };
         let breakpoint = saved.clone();
         breakpoint_store::save(&self.breakpoints);
@@ -199,6 +200,22 @@ impl DebugService {
                     cx.background_spawn(async move { session.remove_breakpoint(&path, line + 1) }).detach();
                 }
                 (false, true) => self.place_in_session(session, breakpoint, cx),
+                // A watchpoint's access / modification changed: set again.
+                (true, true) if (before.field_access, before.field_modification) != (breakpoint.field_access, breakpoint.field_modification) => {
+                    self.verified.remove(&(file, line));
+                    let task = cx.background_spawn(async move { session.remove_breakpoint(&path, line + 1) });
+                    let generation = self.generation;
+                    cx.spawn(async move |this, cx| {
+                        task.await.ok();
+                        this.update(cx, |this, cx| {
+                            if let Some(session) = this.session.clone().filter(|s| this.generation == generation && !s.is_ended()) {
+                                this.place_in_session(session, breakpoint, cx);
+                            }
+                        })
+                        .ok();
+                    })
+                    .detach();
+                }
                 _ => {
                     session.set_condition(&path, line + 1, breakpoint.condition.clone());
                     session.set_actions(&path, line + 1, actions(&breakpoint));
@@ -281,11 +298,14 @@ impl DebugService {
         }
     }
 
-    /// The method breakpoint a click on a line sets, as IntelliJ's: on a
-    /// method's declaration line with none of its code.
-    fn method_on(file: &str, line: u32, text: Option<&str>) -> Option<String> {
-        let lang = crate::index::lang::Lang::from_path(file)?;
-        crate::index::method_breakpoint::method_header(lang, text?, line).map(|h| h.name)
+    /// The breakpoint a click on a line sets, as IntelliJ's: a method
+    /// breakpoint on a method's declaration line with none of its code, a
+    /// field watchpoint on a field's, else a line breakpoint.
+    fn kind_on(file: &str, line: u32, text: Option<&str>) -> SavedBreakpoint {
+        let new = SavedBreakpoint::new(file, line);
+        let (Some(lang), Some(text)) = (crate::index::lang::Lang::from_path(file), text) else { return new };
+        use crate::index::method_breakpoint::{field_at, method_header};
+        SavedBreakpoint { method: method_header(lang, text, line).map(|h| h.name), field: field_at(lang, text, line), ..new }
     }
 
     /// Opens a breakpoint's line in the editor.
@@ -297,13 +317,13 @@ impl DebugService {
     /// On a method's declaration line (`text` is the file's), a method
     /// breakpoint.
     pub fn toggle_breakpoint(&mut self, file: &str, line: u32, text: Option<&str>, cx: &mut Context<Self>) {
-        self.toggle(SavedBreakpoint { method: Self::method_on(file, line, text), ..SavedBreakpoint::new(file, line) }, cx);
+        self.toggle(Self::kind_on(file, line, text), cx);
     }
 
     /// Shift+click on a line number, as IntelliJ's: a breakpoint that
     /// doesn't suspend and logs its hits ("Breakpoint hit" message).
     pub fn toggle_logging_breakpoint(&mut self, file: &str, line: u32, text: Option<&str>, cx: &mut Context<Self>) {
-        self.toggle(SavedBreakpoint { suspend: false, log_message: true, method: Self::method_on(file, line, text), ..SavedBreakpoint::new(file, line) }, cx);
+        self.toggle(SavedBreakpoint { suspend: false, log_message: true, ..Self::kind_on(file, line, text) }, cx);
     }
 
     fn toggle(&mut self, new: SavedBreakpoint, cx: &mut Context<Self>) {
@@ -955,6 +975,7 @@ fn line_breakpoint(saved: &SavedBreakpoint) -> LineBreakpoint {
             .and_then(|lang| crate::index::method_breakpoint::method_header(lang, &text, saved.line))
             .unwrap_or(debugger::MethodHeader { name: name.clone(), line: saved.line + 1, end: saved.line + 1 })
     });
+    breakpoint.field = saved.field.as_ref().map(|name| debugger::FieldWatch { name: name.clone(), access: saved.field_access, modification: saved.field_modification });
     breakpoint
 }
 

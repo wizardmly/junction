@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::domain::debugger::{in_package, line_locations, method_entries, MethodHeader, package_pattern, DebugEvent, DebugVm, Frame, StepDepth, Suspend, ThreadInfo, Value, Variable};
+use crate::domain::debugger::{in_package, line_locations, method_entries, FieldWatch, MethodHeader, package_pattern, DebugEvent, DebugVm, Frame, StepDepth, Suspend, ThreadInfo, Value, Variable};
 use crate::usecase::evaluate::{self, Scope};
 
 /// A line breakpoint, as the editor's gutter sets it.
@@ -30,12 +30,15 @@ pub struct LineBreakpoint {
     /// A method breakpoint: it stops on entering the method declared on
     /// `line`.
     pub method: Option<MethodHeader>,
+    /// A field watchpoint: it stops where the field declared on `line` is
+    /// read or written.
+    pub field: Option<FieldWatch>,
 }
 
 impl LineBreakpoint {
     pub fn new(path: &Path, package: String, line: u32) -> Self {
         let source_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Self { path: path.to_path_buf(), source_name, package, line, condition: None, actions: BreakpointActions::default(), method: None }
+        Self { path: path.to_path_buf(), source_name, package, line, condition: None, actions: BreakpointActions::default(), method: None, field: None }
     }
 }
 
@@ -219,7 +222,13 @@ impl DebugSession {
         let Some(ix) = state.breakpoints.iter().position(|p| p.breakpoint.path == path && p.breakpoint.line == line) else { return Ok(()) };
         let placed = state.breakpoints.remove(ix);
         for request in placed.requests {
-            self.vm.clear_breakpoint(request)?;
+            if placed.breakpoint.field.is_some() {
+                // Either kind: clearing the other one does nothing.
+                self.vm.clear_field_watch(request, false)?;
+                self.vm.clear_field_watch(request, true)?;
+            } else {
+                self.vm.clear_breakpoint(request)?;
+            }
         }
         Ok(())
     }
@@ -262,6 +271,16 @@ impl DebugSession {
     fn place(&self, class: u64, breakpoint: &LineBreakpoint) -> Result<Vec<u32>, String> {
         if self.vm.source_file(class)?.as_deref() != Some(breakpoint.source_name.as_str()) {
             return Ok(Vec::new());
+        }
+        if let Some(watch) = &breakpoint.field {
+            let Some(field) = self.vm.field_id(class, &watch.name)? else { return Ok(Vec::new()) };
+            let mut requests = Vec::new();
+            for (on, access) in [(watch.modification, false), (watch.access, true)] {
+                if on {
+                    requests.push(self.vm.set_field_watch(class, field, access)?);
+                }
+            }
+            return Ok(requests);
         }
         let methods = self.vm.methods(class)?;
         let locations = match &breakpoint.method {
@@ -378,7 +397,7 @@ impl DebugSession {
         let Some(set) = self.vm.next_events(timeout)? else { return Ok(Vec::new()) };
         // A method an evaluation calls hit a breakpoint or a step ended in
         // it: let it run on, as IntelliJ does.
-        let nested = set.events.iter().all(|e| matches!(e, DebugEvent::Breakpoint { .. } | DebugEvent::Step { .. } | DebugEvent::Exception { .. }));
+        let nested = set.events.iter().all(|e| matches!(e, DebugEvent::Breakpoint { .. } | DebugEvent::Field { .. } | DebugEvent::Step { .. } | DebugEvent::Exception { .. }));
         if nested && !set.events.is_empty() && self.evaluating.load(Ordering::SeqCst) > 0 {
             self.vm.resume()?;
             return Ok(Vec::new());
@@ -425,6 +444,10 @@ impl DebugSession {
                         hit = state.breakpoints.iter().find(|p| p.requests.contains(&request)).map(|p| p.breakpoint.clone());
                     }
                     paused = Some((thread, reason));
+                }
+                DebugEvent::Field { thread, request, .. } => {
+                    hit = state.breakpoints.iter().find(|p| p.requests.contains(&request)).map(|p| p.breakpoint.clone());
+                    paused = Some((thread, PauseReason::Breakpoint));
                 }
                 DebugEvent::Step { thread, .. } => paused = Some((thread, PauseReason::Step)),
                 DebugEvent::Exception { thread, exception, caught, .. } => {
@@ -591,6 +614,16 @@ mod tests {
         fn set_exception_breakpoint(&self, class: Option<u64>, caught: bool, uncaught: bool) -> Result<u32, String> {
             Ok(self.log(format!("exception {class:?} {caught} {uncaught}")))
         }
+        fn field_id(&self, _: u64, name: &str) -> Result<Option<u64>, String> {
+            Ok((name == "total").then_some(77))
+        }
+        fn set_field_watch(&self, class: u64, field: u64, access: bool) -> Result<u32, String> {
+            Ok(self.log(format!("watch {class} {field} {access}")))
+        }
+        fn clear_field_watch(&self, request: u32, access: bool) -> Result<(), String> {
+            self.log(format!("unwatch {request} {access}"));
+            Ok(())
+        }
         fn clear_exception_breakpoint(&self, request: u32) -> Result<(), String> {
             self.log(format!("clear exception {request}"));
             Ok(())
@@ -704,6 +737,25 @@ mod tests {
         // Removing clears its requests.
         session.remove_breakpoint(Path::new("/p/src/test/java/a/CalcTest.java"), 9).unwrap();
         assert_eq!(vm.take_log().len(), 1);
+    }
+
+    #[test]
+    fn field_watchpoints_stop_where_the_field_changes() {
+        let vm = vm();
+        vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
+        let session = DebugSession::new(vm.clone());
+        let mut watch = breakpoint(3);
+        watch.field = Some(FieldWatch { name: "total".into(), access: true, modification: true });
+        assert_eq!(session.add_breakpoint(watch), Ok(true));
+        let log = vm.take_log();
+        assert_eq!(&log[1..], ["watch 10 77 false", "watch 10 77 true"]);
+        let request = vm.log("probe".into()) - 1;
+        vm.take_log();
+        vm.send(Suspend::All, vec![DebugEvent::Field { thread: 1, location: Location { class: 10, method: 1, index: 4 }, access: false, request }]);
+        let events = session.poll(Duration::ZERO).unwrap();
+        assert!(matches!(events.last(), Some(SessionEvent::Paused { reason: PauseReason::Breakpoint, .. })), "{events:?}");
+        session.remove_breakpoint(Path::new("/p/src/test/java/a/CalcTest.java"), 3).unwrap();
+        assert_eq!(vm.take_log().iter().filter(|l| l.starts_with("unwatch")).count(), 4);
     }
 
     #[test]

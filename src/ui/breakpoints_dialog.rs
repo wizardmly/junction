@@ -27,13 +27,34 @@ use crate::ui::debug_service::DebugService;
 
 /// IntelliJ's group for a file's breakpoints.
 fn group(b: &SavedBreakpoint) -> &'static str {
-    match (b.file.rsplit('.').next(), b.method.is_some()) {
-        (Some("java"), false) => "Java Line Breakpoints",
-        (Some("java"), true) => "Java Method Breakpoints",
-        (Some("kt" | "kts"), false) => "Kotlin Line Breakpoints",
-        (Some("kt" | "kts"), true) => "Kotlin Function Breakpoints",
-        (_, false) => "Line Breakpoints",
-        (_, true) => "Method Breakpoints",
+    let java = b.file.ends_with(".java");
+    match (java, b.method.is_some(), b.field.is_some()) {
+        (true, _, true) => "Java Field Watchpoints",
+        (false, _, true) => "Kotlin Field Watchpoints",
+        (true, true, _) => "Java Method Breakpoints",
+        (false, true, _) => "Kotlin Function Breakpoints",
+        (true, false, false) => "Java Line Breakpoints",
+        (false, false, false) => "Kotlin Line Breakpoints",
+    }
+}
+
+/// What kind a breakpoint is, for its icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkKind {
+    Line,
+    Method,
+    Field,
+}
+
+impl MarkKind {
+    pub fn of(b: &SavedBreakpoint) -> Self {
+        if b.field.is_some() {
+            MarkKind::Field
+        } else if b.method.is_some() {
+            MarkKind::Method
+        } else {
+            MarkKind::Line
+        }
     }
 }
 
@@ -41,17 +62,28 @@ fn group(b: &SavedBreakpoint) -> &'static str {
 /// "CalcTest.java:34 totals()".
 pub fn title(b: &SavedBreakpoint) -> String {
     let at = format!("{}:{}", b.file.rsplit(['/', '\\']).next().unwrap_or(&b.file), b.line + 1);
-    match &b.method {
-        Some(m) => format!("{at} {}()", if m == "<init>" { "constructor" } else { m }),
-        None => at,
+    match (&b.method, &b.field) {
+        (_, Some(f)) => format!("{at} {f}"),
+        (Some(m), _) => format!("{at} {}()", if m == "<init>" { "constructor" } else { m }),
+        _ => at,
     }
 }
 
 /// The gutter's icon for a breakpoint: red or, for a logging one, yellow;
 /// hollow when disabled, checked once it stops somewhere; a diamond for a
-/// method breakpoint.
-pub fn mark_icon(method: bool, enabled: bool, verified: bool, suspend: bool) -> AsIcon {
-    match (method, suspend, enabled, verified) {
+/// method breakpoint, an eye for a field watchpoint.
+pub fn mark_icon(kind: MarkKind, enabled: bool, verified: bool, suspend: bool) -> AsIcon {
+    if kind == MarkKind::Field {
+        return match (suspend, enabled, verified) {
+            (true, false, _) => icons::BREAKPOINT_FIELD_DISABLED,
+            (true, true, true) => icons::BREAKPOINT_FIELD_VALID,
+            (true, true, false) => icons::BREAKPOINT_FIELD,
+            (false, false, _) => icons::BREAKPOINT_FIELD_UNSUSPENDENT_DISABLED,
+            (false, true, true) => icons::BREAKPOINT_FIELD_UNSUSPENDENT_VALID,
+            (false, true, false) => icons::BREAKPOINT_FIELD_UNSUSPENDENT,
+        };
+    }
+    match (kind == MarkKind::Method, suspend, enabled, verified) {
         (false, true, false, _) => icons::BREAKPOINT_DISABLED,
         (false, true, true, true) => icons::BREAKPOINT_VALID,
         (false, true, true, false) => icons::BREAKPOINT,
@@ -68,7 +100,7 @@ pub fn mark_icon(method: bool, enabled: bool, verified: bool, suspend: bool) -> 
 }
 
 fn icon(b: &SavedBreakpoint, verified: bool) -> AsIcon {
-    mark_icon(b.method.is_some(), b.enabled, verified, b.suspend)
+    mark_icon(MarkKind::of(b), b.enabled, verified, b.suspend)
 }
 
 pub struct BreakpointsView {
@@ -243,7 +275,7 @@ impl BreakpointsView {
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
-                        .child(Icon::new(if b.method.is_some() { icons::BREAKPOINT_METHOD } else { icons::BREAKPOINT }).xsmall())
+                        .child(Icon::new(mark_icon(MarkKind::of(b), true, false, true)).xsmall())
                         .child(g),
                 );
             }
@@ -372,6 +404,18 @@ impl BreakpointsView {
                 let checked = *checked;
                 this.apply(|b| b.suspend = checked, cx);
             })))
+            // IntelliJ's watchpoint options: what stops it.
+            .when(b.field.is_some(), |el| {
+                el.child(label("Watch:"))
+                    .child(Checkbox::new("breakpoints-field-access").label("Field access").checked(b.field_access).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        this.apply(|b| b.field_access = checked, cx);
+                    })))
+                    .child(Checkbox::new("breakpoints-field-modification").label("Field modification").checked(b.field_modification).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        this.apply(|b| b.field_modification = checked, cx);
+                    })))
+            })
             .child(v_flex().gap_1().child(label("Condition:")).child(Input::new(&self.condition).small()))
             .child(
                 v_flex()

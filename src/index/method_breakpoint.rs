@@ -36,6 +36,34 @@ pub fn method_header(lang: Lang, text: &str, line: u32) -> Option<MethodHeader> 
     })
 }
 
+/// The field declared on a 0-based line: a Java field, or a Kotlin
+/// property of a class or file (its backing field has its name).
+pub fn field_at(lang: Lang, text: &str, line: u32) -> Option<String> {
+    if !matches!(lang, Lang::Kotlin | Lang::Java) {
+        return None;
+    }
+    let tree = symbols::parse(lang, text)?;
+    descendants(tree.root_node()).into_iter().find_map(|n| {
+        let name = match (lang, n.kind()) {
+            (Lang::Java, "field_declaration") => n.child_by_field_name("declarator")?.child_by_field_name("name")?,
+            (Lang::Kotlin, "property_declaration") => {
+                // Not a local variable: in a class body or at the top level.
+                let mut up = n.parent()?;
+                while up.kind() == "statements" {
+                    up = up.parent()?;
+                }
+                if !matches!(up.kind(), "class_body" | "source_file") {
+                    return None;
+                }
+                let decl = children(n).into_iter().find(|c| c.kind() == "variable_declaration")?;
+                children(decl).into_iter().find(|c| c.kind() == "simple_identifier")?
+            }
+            _ => return None,
+        };
+        (name.start_position().row as u32 == line).then(|| text[name.byte_range()].to_owned())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,5 +78,16 @@ mod tests {
         let java = "class A {\n  A() {\n    super();\n  }\n  int total(int p)\n  {\n    return p;\n  }\n}\n";
         assert_eq!(method_header(Lang::Java, java, 1).map(|h| h.name), Some("<init>".to_owned()));
         assert_eq!(method_header(Lang::Java, java, 4), Some(MethodHeader { name: "total".into(), line: 5, end: 8 }));
+    }
+
+    #[test]
+    fn finds_fields() {
+        let kt = "val top = 1\nclass Cart(val rate: Double) {\n    var total = 0.0\n    fun f() {\n        val local = 2\n    }\n}\n";
+        assert_eq!(field_at(Lang::Kotlin, kt, 0).as_deref(), Some("top"));
+        assert_eq!(field_at(Lang::Kotlin, kt, 2).as_deref(), Some("total"));
+        assert_eq!(field_at(Lang::Kotlin, kt, 4), None);
+        let java = "class A {\n  private int count = 0;\n  void f() { int x = 1; }\n}\n";
+        assert_eq!(field_at(Lang::Java, java, 1).as_deref(), Some("count"));
+        assert_eq!(field_at(Lang::Java, java, 2), None);
     }
 }

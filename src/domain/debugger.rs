@@ -136,6 +136,8 @@ pub enum DebugEvent {
     /// An exception was thrown: the exception object, and whether
     /// something catches it.
     Exception { thread: u64, location: Location, exception: u64, caught: bool, request: u32 },
+    /// A watched field was read (`access`) or is about to be written.
+    Field { thread: u64, location: Location, access: bool, request: u32 },
     ThreadStart { thread: u64 },
     ThreadDeath { thread: u64 },
 }
@@ -175,6 +177,12 @@ pub trait DebugVm: Send + Sync {
     /// class (and its subclasses), or any (`None`); caught, uncaught or both.
     fn set_exception_breakpoint(&self, class: Option<u64>, caught: bool, uncaught: bool) -> Result<u32, String>;
     fn clear_exception_breakpoint(&self, request: u32) -> Result<(), String>;
+    /// A class's own field by name (statics included).
+    fn field_id(&self, class: u64, name: &str) -> Result<Option<u64>, String>;
+    /// A field watchpoint suspending all threads: on the field's reads
+    /// (`access`) or writes.
+    fn set_field_watch(&self, class: u64, field: u64, access: bool) -> Result<u32, String>;
+    fn clear_field_watch(&self, request: u32, access: bool) -> Result<(), String>;
     /// A line step on a suspended thread; the next event of it ends it.
     fn step(&self, thread: u64, depth: StepDepth) -> Result<u32, String>;
     fn clear_step(&self, request: u32) -> Result<(), String>;
@@ -249,6 +257,15 @@ pub fn method_entries(class: u64, methods: &[MethodInfo], header: &MethodHeader)
             (header.line..=header.end).contains(&first).then(|| Location { class, method: m.id, index: m.lines.iter().map(|(ix, _)| *ix).min().unwrap_or(0) })
         })
         .collect()
+}
+
+/// A field watchpoint's field, from its declaration, and what it stops on
+/// (IntelliJ's Field access / Field modification).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldWatch {
+    pub name: String,
+    pub access: bool,
+    pub modification: bool,
 }
 
 /// The line of a location, from its method's line table: the entry with

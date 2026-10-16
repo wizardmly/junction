@@ -31,11 +31,20 @@ pub struct SavedBreakpoint {
     /// A method breakpoint: the method declared on the line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
+    /// A field watchpoint: the field declared on the line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// A field watchpoint's Field access (off by default) and Field
+    /// modification (on).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub field_access: bool,
+    #[serde(default = "enabled", skip_serializing_if = "is_true")]
+    pub field_modification: bool,
 }
 
 impl SavedBreakpoint {
     pub fn new(file: &str, line: u32) -> Self {
-        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None }
+        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None, field: None, field_access: false, field_modification: true }
     }
 }
 
