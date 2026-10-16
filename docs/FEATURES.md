@@ -842,3 +842,17 @@ Linux 实测（Xvfb，calc 示例）：在 `totals()` 循环体第 34 行设断�
 同时修复：未同步过的 Gradle 工程，根目录 `build.gradle(.kts)` 里写了 `alias(libs.plugins.android.application) apply false`（只声明插件、不应用），会被误判成 Application 模块。运行配置因此变成以根工程命名（如 “mytv-android”），构建任务成了 `:assembleDebug`，Gradle 报 “Cannot locate tasks that match ':assembleDebug'”。现在判断模块类型时会忽略带 `apply false` / `apply(false)` 的行，运行配置是 `app`，任务是 `:app:assembleDebug`。
 
 Linux 实测（Xvfb，calc 示例，故意删掉一个分号）：Ctrl+F9 后 Build Output 右侧显示 Gradle 输出，失败行为红色，`Calc.java:4` 路径和 `file:///…/problems-report.html` 带下划线；点击 `Calc.java:4` 链接打开 `Calc.java` 并定位到第 4 行；跨 4 行拖选后 Ctrl+C，粘贴到 Commit Message 得到完整的多行文本。（Xvfb 没有窗口管理器，窗口不会被激活，编辑器不画选区高亮，这一点只能在桌面上看。）
+
+## 47. 没有源码的库：反编译存根（2026-10-16）
+
+照 IntelliJ 打开没有源码的库时的 “Decompiled .class file”：Gradle 缓存里某个依赖没有 `-sources.jar` 时，读取它的 class 文件（`.aar` 里的 `classes.jar`，或者 `.jar`），生成方法体为 `{ /* compiled code */ }` 的存根源码，和源码一样建索引，Ctrl+点击、Go to Class、Find Usages 都能走到它（只读）。代码：`src/domain/class_stub.rs`（class 文件解析和存根生成）、`index::libraries::decompile_stubs`（按归档的大小和修改时间缓存到 `decompiled/` 下）。
+
+| 功能 | 状态 |
+|---|---|
+| 解析 class 文件：常量池、类名、父类和接口、public / protected 的字段和方法（跳过 synthetic、bridge 和 Kotlin 生成的 `$default`、`access$` 方法） | ✅ |
+| Kotlin 编译的类（带 `kotlin.Metadata`）生成 `.kt` 存根：文件门面类 `BoxKt` 变成顶层函数，`getX()` / `isX()` 变成 `val` / `var` 属性，带 `INSTANCE` 的类是 `object`，`$Companion` 是 `companion object`，以及 interface / enum class / annotation class / abstract / open；类型映射成 Kotlin 名字（`Int`、`String`、`IntArray`、`Array<T>`、`Function1<*>`） | ✅ |
+| 其他类生成 `.java` 存根：修饰符、extends / implements、字段、构造方法、方法（varargs 为 `T...`），嵌套类写在外层类里 | ✅ |
+| class 文件里没有参数名，参数写成 `p0`、`p1`…；Kotlin 的 `@InlineOnly` 函数（如 `println`）在字节码里是 private 的，存根里没有（IntelliJ 靠解析 Kotlin 元数据才能显示） | ⬜ |
+| 解析 Kotlin 元数据得到真实的参数名、可空类型和泛型；Signature 属性里的 Java 泛型；编辑器顶部的 “Decompiled .class file” 提示条和 Download Sources（从 Maven 仓库下载 `-sources.jar`） | ⬜ |
+
+Linux 实测（Xvfb）：Kotlin 工程依赖 `com.google.code.gson:gson:2.11.0`（Gradle 缓存里只有 jar，没有源码包），`import com.google.gson.Gson` 后按住 Ctrl 点 `Gson()`，打开只读的 `Gson.java` 存根（面包屑显示 `Gradle: com.google.code.gson:gson:2.11.0`），光标停在构造方法 `public Gson() { /* compiled code */ }`，下面列出 `toJson(Object p0)` 等方法。

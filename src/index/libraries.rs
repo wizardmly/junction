@@ -18,7 +18,7 @@ use super::lang::Lang;
 use super::store::{self, FileEntry};
 
 /// Bumped whenever extraction changes, so stale caches are rebuilt.
-const CACHE_VERSION: u32 = 5;
+const CACHE_VERSION: u32 = 6;
 /// Per library; bigger ones are cut (generated or vendored code).
 const MAX_LIBRARY_FILES: usize = 12_000;
 /// Headers reached through `#include` from the project.
@@ -974,16 +974,20 @@ fn gradle(ctx: &Project, out: &mut Vec<Library>) {
             .flat_map(|hash| std::fs::read_dir(hash.path()).into_iter().flatten().flatten().map(|f| f.path()))
             .collect();
         let named = |suffix: &str| artifacts.iter().find(|p| p.to_string_lossy().ends_with(suffix)).cloned();
-        if let Some(jar) = named("-sources.jar") {
-            if let Some(root) = extract_sources(&jar, &format!("gradle/{group}/{artifact}-{version}"), &|name| {
-                (name.ends_with(".java") || name.ends_with(".kt")).then(|| name.to_owned())
-            }) {
-                // Android libraries ship as .aar; IntelliJ names them "…@aar"
-                // and shows their classes.jar as the root.
-                let aar = named(".aar").is_some() || named(".pom").is_some_and(|pom| read(&pom).contains("<packaging>aar</packaging>"));
-                let (suffix, jar) = if aar { ("@aar", "classes.jar".to_owned()) } else { ("", format!("{artifact}-{version}.jar")) };
-                out.push(Library { root_label: Some(jar), ..lib(format!("Gradle: {group}:{artifact}:{version}{suffix}"), "Gradle", root) });
-            }
+        // Android libraries ship as .aar; IntelliJ names them "…@aar"
+        // and shows their classes.jar as the root.
+        let aar = named(".aar").is_some() || named(".pom").is_some_and(|pom| read(&pom).contains("<packaging>aar</packaging>"));
+        let (suffix, label) = if aar { ("@aar", "classes.jar".to_owned()) } else { ("", format!("{artifact}-{version}.jar")) };
+        let sources = named("-sources.jar").and_then(|jar| {
+            extract_sources(&jar, &format!("gradle/{group}/{artifact}-{version}"), &|name| (name.ends_with(".java") || name.ends_with(".kt")).then(|| name.to_owned()))
+        });
+        // No sources: the classes, decompiled to stubs, as IntelliJ shows them.
+        let root = sources.or_else(|| {
+            let binary = named(".aar").or_else(|| named(&format!("{artifact}-{version}.jar")))?;
+            decompile_stubs(&binary, &format!("gradle/{group}/{artifact}-{version}"))
+        });
+        if let Some(root) = root {
+            out.push(Library { root_label: Some(label), ..lib(format!("Gradle: {group}:{artifact}:{version}{suffix}"), "Gradle", root) });
         }
         if !follow {
             continue;
@@ -1131,6 +1135,58 @@ fn module_dependencies(module: &str) -> Vec<(String, String, Option<String>)> {
         }
     }
     out
+}
+
+/// The class files of a jar (or an .aar's classes.jar) as stub sources,
+/// once, into the cache (`domain::class_stub`).
+fn decompile_stubs(archive: &Path, name: &str) -> Option<PathBuf> {
+    use std::io::Read as _;
+    let dest = cache_dir()?.join("decompiled").join(name);
+    let marker = dest.join(".junction-complete");
+    let stamp = store::stat(archive).map(|(size, mtime)| format!("{size}:{mtime}"))?;
+    if read(&marker) == stamp {
+        return Some(dest);
+    }
+    std::fs::remove_dir_all(&dest).ok();
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(archive).ok()?).ok()?;
+    // An .aar holds its classes in classes.jar.
+    let jar: Vec<u8> = if archive.extension().is_some_and(|e| e == "aar") {
+        let mut entry = zip.by_name("classes.jar").ok()?;
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).ok()?;
+        bytes
+    } else {
+        std::fs::read(archive).ok()?
+    };
+    let mut classes = zip::ZipArchive::new(std::io::Cursor::new(jar)).ok()?;
+    let mut all = std::collections::BTreeMap::new();
+    for i in 0..classes.len() {
+        let Ok(mut entry) = classes.by_index(i) else { continue };
+        if !entry.name().ends_with(".class") || entry.name().starts_with("META-INF/") {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        if entry.read_to_end(&mut bytes).is_err() {
+            continue;
+        }
+        if let Some(class) = crate::domain::class_stub::parse(&bytes) {
+            all.insert(class.name.clone(), class);
+        }
+    }
+    for class in all.values() {
+        let Some((rel, text)) = crate::domain::class_stub::stub(class, &all) else { continue };
+        let path = dest.join(&rel);
+        if !path.starts_with(&dest) {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&path, text).ok();
+    }
+    std::fs::create_dir_all(&dest).ok();
+    std::fs::write(&marker, stamp).ok();
+    Some(dest)
 }
 
 /// Unpacks the source files of a jar / zip once, into the cache.
