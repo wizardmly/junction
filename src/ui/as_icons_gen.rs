@@ -28,6 +28,7 @@ pub const BREAKPOINT_EXCEPTION: AsIcon = AsIcon { light: &[("as/breakpoint-excep
 pub const BREAKPOINT_EXCEPTION_DISABLED: AsIcon = AsIcon { light: &[("as/breakpoint-exception-disabled.l0.svg", 0xe55765ff)], dark: &[("as/breakpoint-exception-disabled.d0.svg", 0xdb5c5cff)] };
 pub const BREAKPOINT_FIELD: AsIcon = AsIcon { light: &[("as/breakpoint-field.l0.svg", 0xe55765ff)], dark: &[("as/breakpoint-field.d0.svg", 0xdb5c5cff)] };
 pub const BREAKPOINT_FIELD_DISABLED: AsIcon = AsIcon { light: &[("as/breakpoint-field-disabled.l0.svg", 0xe55765ff)], dark: &[("as/breakpoint-field-disabled.d0.svg", 0xdb5c5cff)] };
+pub const BREAKPOINT_FIELD_MUTED: AsIcon = AsIcon { light: &[("as/breakpoint-field-muted.l0.svg", 0x6c707eff)], dark: &[("as/breakpoint-field-muted.d0.svg", 0xced0d6ff)] };
 pub const BREAKPOINT_FIELD_UNSUSPENDENT: AsIcon = AsIcon { light: &[("as/breakpoint-field-unsuspendent.l0.svg", 0xffaf0fff)], dark: &[("as/breakpoint-field-unsuspendent.d0.svg", 0xf2c55cff)] };
 pub const BREAKPOINT_FIELD_UNSUSPENDENT_DISABLED: AsIcon = AsIcon { light: &[("as/breakpoint-field-unsuspendent-disabled.l0.svg", 0xffaf0fff)], dark: &[("as/breakpoint-field-unsuspendent-disabled.d0.svg", 0xf2c55cff)] };
 pub const BREAKPOINT_FIELD_UNSUSPENDENT_VALID: AsIcon = AsIcon { light: &[("as/breakpoint-field-unsuspendent-valid.l0.svg", 0x6c707eff), ("as/breakpoint-field-unsuspendent-valid.l1.svg", 0xffaf0fff)], dark: &[("as/breakpoint-field-unsuspendent-valid.d0.svg", 0xced0d6ff), ("as/breakpoint-field-unsuspendent-valid.d1.svg", 0xf2c55cff)] };
@@ -35,6 +36,7 @@ pub const BREAKPOINT_FIELD_VALID: AsIcon = AsIcon { light: &[("as/breakpoint-fie
 pub const BREAKPOINT_INVALID: AsIcon = AsIcon { light: &[("as/breakpoint-invalid.l0.svg", 0x6c707eff)], dark: &[("as/breakpoint-invalid.d0.svg", 0xced0d6ff)] };
 pub const BREAKPOINT_METHOD: AsIcon = AsIcon { light: &[("as/breakpoint-method.l0.svg", 0xe55765ff)], dark: &[("as/breakpoint-method.d0.svg", 0xe55765ff)] };
 pub const BREAKPOINT_METHOD_DISABLED: AsIcon = AsIcon { light: &[("as/breakpoint-method-disabled.l0.svg", 0xe55765ff)], dark: &[("as/breakpoint-method-disabled.d0.svg", 0xdb5c5cff)] };
+pub const BREAKPOINT_METHOD_MUTED: AsIcon = AsIcon { light: &[("as/breakpoint-method-muted.l0.svg", 0x6c707eff)], dark: &[("as/breakpoint-method-muted.d0.svg", 0xced0d6ff)] };
 pub const BREAKPOINT_METHOD_UNSUSPENDENT: AsIcon = AsIcon { light: &[("as/breakpoint-method-unsuspendent.l0.svg", 0xffaf0fff)], dark: &[("as/breakpoint-method-unsuspendent.d0.svg", 0xf2c55cff)] };
 pub const BREAKPOINT_METHOD_UNSUSPENDENT_DISABLED: AsIcon = AsIcon { light: &[("as/breakpoint-method-unsuspendent-disabled.l0.svg", 0xffaf0fff)], dark: &[("as/breakpoint-method-unsuspendent-disabled.d0.svg", 0xf2c55cff)] };
 pub const BREAKPOINT_METHOD_UNSUSPENDENT_VALID: AsIcon = AsIcon { light: &[("as/breakpoint-method-unsuspendent-valid.l0.svg", 0xffaf0fff), ("as/breakpoint-method-unsuspendent-valid.l1.svg", 0x6c707eff)], dark: &[("as/breakpoint-method-unsuspendent-valid.d0.svg", 0xf2c55cff), ("as/breakpoint-method-unsuspendent-valid.d1.svg", 0xced0d6ff)] };
@@ -407,6 +409,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/breakpoint-field.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-field.d0.svg")),
     ("as/breakpoint-field-disabled.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-field-disabled.l0.svg")),
     ("as/breakpoint-field-disabled.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-field-disabled.d0.svg")),
+    ("as/breakpoint-field-muted.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-field-muted.l0.svg")),
+    ("as/breakpoint-field-muted.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-field-muted.d0.svg")),
     ("as/breakpoint-field-unsuspendent.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-field-unsuspendent.l0.svg")),
     ("as/breakpoint-field-unsuspendent.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-field-unsuspendent.d0.svg")),
     ("as/breakpoint-field-unsuspendent-disabled.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-field-unsuspendent-disabled.l0.svg")),
@@ -425,6 +429,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/breakpoint-method.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-method.d0.svg")),
     ("as/breakpoint-method-disabled.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-method-disabled.l0.svg")),
     ("as/breakpoint-method-disabled.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-method-disabled.d0.svg")),
+    ("as/breakpoint-method-muted.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-method-muted.l0.svg")),
+    ("as/breakpoint-method-muted.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-method-muted.d0.svg")),
     ("as/breakpoint-method-unsuspendent.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-method-unsuspendent.l0.svg")),
     ("as/breakpoint-method-unsuspendent.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-method-unsuspendent.d0.svg")),
     ("as/breakpoint-method-unsuspendent-disabled.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-method-unsuspendent-disabled.l0.svg")),

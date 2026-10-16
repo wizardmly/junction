@@ -139,7 +139,7 @@ impl FileEditor {
                             window.paint_quad(gpui_kit::fill(rect, color));
                         }
                     };
-                    for mark in marks.iter().filter(|m| m.enabled) {
+                    for mark in marks.iter().filter(|m| m.enabled && !m.muted) {
                         tint(mark.line, breakpoint_tint, window);
                     }
                     if let Some(line) = execution {
@@ -155,7 +155,7 @@ impl FileEditor {
                         window.paint_quad(gpui_kit::fill(cell, background));
                         let icon_size = px(14.);
                         let rect = Bounds::new(point(column.1 - icon_size - px(4.), *top + (line_height - icon_size) / 2.), size(icon_size, icon_size));
-                        let icon = crate::ui::breakpoints_dialog::mark_icon(mark.kind, mark.enabled, mark.verified, mark.suspend);
+                        let icon = crate::ui::breakpoints_dialog::mark_icon_muted(mark.kind, mark.enabled, mark.verified, mark.suspend, mark.muted);
                         for (path, rgba) in if dark { icon.dark } else { icon.light } {
                             let color: gpui_kit::Hsla = gpui_kit::rgba(*rgba).into();
                             window.paint_svg(rect, (*path).into(), None, gpui_kit::TransformationMatrix::unit(), color, cx).ok();

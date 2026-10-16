@@ -93,6 +93,8 @@ pub struct BreakpointMark {
     pub suspend: bool,
     /// A method breakpoint (a diamond) or a field watchpoint (an eye).
     pub kind: crate::ui::breakpoints_dialog::MarkKind,
+    /// Mute Breakpoints is on: drawn gray.
+    pub muted: bool,
 }
 
 /// The Debug window's session.
@@ -138,6 +140,8 @@ pub struct DebugService {
     resolver: Option<SourceResolver>,
     /// The session's generation: a new run makes the old one's tasks moot.
     generation: u64,
+    /// Mute Breakpoints, kept for the next sessions too.
+    muted: bool,
     _poll: Option<Task<()>>,
 }
 
@@ -172,7 +176,7 @@ impl DebugService {
         self.breakpoints
             .iter()
             .filter(|b| b.file == file)
-            .map(|b| BreakpointMark { line: b.line, verified: self.verified.contains(&(b.file.clone(), b.line)), enabled: b.enabled, conditional: b.condition.is_some(), suspend: b.suspend, kind: crate::ui::breakpoints_dialog::MarkKind::of(b) })
+            .map(|b| BreakpointMark { line: b.line, verified: self.verified.contains(&(b.file.clone(), b.line)), enabled: b.enabled, conditional: b.condition.is_some(), suspend: b.suspend, kind: crate::ui::breakpoints_dialog::MarkKind::of(b), muted: self.muted })
             .collect()
     }
 
@@ -287,6 +291,20 @@ impl DebugService {
         if let Some(session) = self.session.clone().filter(|s| !s.is_ended()) {
             let class = class.to_owned();
             cx.background_spawn(async move { session.remove_exception_breakpoint(&class) }).detach();
+        }
+        cx.notify();
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted
+    }
+
+    /// Mute Breakpoints (the Debug toolbar's toggle): breakpoints stay but
+    /// don't stop, in the running session and the next ones.
+    pub fn toggle_mute(&mut self, cx: &mut Context<Self>) {
+        self.muted = !self.muted;
+        if let Some(session) = &self.session {
+            session.set_muted(self.muted);
         }
         cx.notify();
     }
@@ -908,6 +926,7 @@ async fn drive(this: gpui_kit::WeakEntity<DebugService>, cx: &mut gpui_kit::Asyn
     let session = Arc::new(DebugSession::new(Arc::new(vm)));
     let Ok(breakpoints) = this.update(cx, |this, cx| {
         this.session = Some(session.clone());
+        session.set_muted(this.muted);
         if let Some(run) = this.run.as_mut() {
             run.status = DebugStatus::Running;
             run.console.push(format!("Connected to the target VM, {target}").into());

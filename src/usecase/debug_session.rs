@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -136,11 +136,13 @@ pub struct DebugSession {
     state: Mutex<State>,
     /// Evaluations in progress: what their calls hit doesn't pause.
     evaluating: AtomicUsize,
+    /// Mute Breakpoints: hits run on (Run to Cursor and steps still stop).
+    muted: AtomicBool,
 }
 
 impl DebugSession {
     pub fn new(vm: Arc<dyn DebugVm>) -> Self {
-        Self { vm, state: Mutex::default(), evaluating: AtomicUsize::new(0) }
+        Self { vm, state: Mutex::default(), evaluating: AtomicUsize::new(0), muted: AtomicBool::new(false) }
     }
 
     /// Changes a breakpoint's condition (none: always stop).
@@ -184,6 +186,12 @@ impl DebugSession {
         let text = evaluate::describe(&*self.vm, thread, value);
         self.evaluating.fetch_sub(1, Ordering::SeqCst);
         text
+    }
+
+    /// Mute Breakpoints, as IntelliJ's: line, method, field and exception
+    /// breakpoints stay set but don't stop or log.
+    pub fn set_muted(&self, muted: bool) {
+        self.muted.store(muted, Ordering::SeqCst);
     }
 
     pub fn is_ended(&self) -> bool {
@@ -407,6 +415,7 @@ impl DebugSession {
         let mut resume = false;
         let mut paused: Option<(u64, PauseReason)> = None;
         let mut hit: Option<LineBreakpoint> = None;
+        let muted = self.muted.load(Ordering::SeqCst);
         for event in set.events {
             match event {
                 DebugEvent::VmDeath => {
@@ -438,6 +447,10 @@ impl DebugSession {
                     }
                     resume = set.suspended != Suspend::None;
                 }
+                DebugEvent::Breakpoint { request, .. } | DebugEvent::Field { request, .. } if muted && !state.run_to.contains(&request) => {
+                    resume = set.suspended != Suspend::None;
+                }
+                DebugEvent::Exception { .. } if muted => resume = set.suspended != Suspend::None,
                 DebugEvent::Breakpoint { thread, request, .. } => {
                     let reason = if state.run_to.contains(&request) { PauseReason::Paused } else { PauseReason::Breakpoint };
                     if reason == PauseReason::Breakpoint {
@@ -756,6 +769,24 @@ mod tests {
         assert!(matches!(events.last(), Some(SessionEvent::Paused { reason: PauseReason::Breakpoint, .. })), "{events:?}");
         session.remove_breakpoint(Path::new("/p/src/test/java/a/CalcTest.java"), 3).unwrap();
         assert_eq!(vm.take_log().iter().filter(|l| l.starts_with("unwatch")).count(), 4);
+    }
+
+    #[test]
+    fn muted_breakpoints_run_on() {
+        let vm = vm();
+        vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
+        let session = DebugSession::new(vm.clone());
+        session.add_breakpoint(breakpoint(5)).unwrap();
+        let request = vm.log("probe".into()) - 1;
+        vm.take_log();
+        let hit = DebugEvent::Breakpoint { thread: 1, location: Location { class: 10, method: 1, index: 4 }, request };
+        session.set_muted(true);
+        vm.send(Suspend::All, vec![hit.clone()]);
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume"]);
+        session.set_muted(false);
+        vm.send(Suspend::All, vec![hit]);
+        assert!(matches!(session.poll(Duration::ZERO).unwrap().last(), Some(SessionEvent::Paused { .. })));
     }
 
     #[test]

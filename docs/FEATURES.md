@@ -722,7 +722,7 @@ Linux 实测（Xvfb，rust-analyzer 1.97）：Rust 项目里 Shift+F6 重命名�
 | 右边是选中断点的属性：Enabled、Suspend execution、Condition、Log（“Breakpoint hit” message、Stack trace、Evaluate and log），勾选立即生效，文本在离开输入框或回车时生效，运行中的调试会话同步更新；工具栏 − 删除（选中下一个）；View Source 或双击打开该行 | ✅ |
 | Java Exception Breakpoints（2026-10-16）：Breakpoints 对话框里的 “Java Exception Breakpoints” 组，固定有 IntelliJ 默认关闭的 “Any exception”；+ 输入异常类全名添加（如 `java.lang.IllegalStateException`，含其子类）；属性 Enabled 和 Notifications（Caught exception / Uncaught exception）；存到 `exception-breakpoints.json`，运行中的会话同步。JDWP 用 `EventRequest.Set`（EXCEPTION，`ExceptionOnly` 修饰符）；类还没加载时等它的 ClassPrepare 再设。停下时 Debug 窗口标题旁显示 “Exception 'java.lang.IllegalStateException' occurred”（未被捕获时 “was not caught”），控制台也记一行；照 IntelliJ 的 `JavaStackFrame.createExceptionNodes`，顶层帧的 Variables 第一项是抛出的异常 `Exception = {IllegalStateException@408} "java.lang.IllegalStateException: boom"`，可展开 | ✅ |
 | 断点跟随编辑（2026-10-16）：增删行的编辑按前后文本的逐行 diff（`debugger::follow_lines`）移动断点：不变的行保持，被改或删的行移到改动起点，移走后在别处原样出现的行跟过去（Extract Method 后断点随代码进新方法，Ctrl+Z 后回原处），同一行重复的只留一个。实测：CalcTest 第 34 行断点在提取后到第 39 行（新方法里同一句），撤销后回到第 34 行 | ✅ |
-| 表达式框的代码补全和多行代码片段模式、异常断点的类过滤和条件、Mute Breakpoints、按文件分组、Remove once hit、依赖断点 | ⬜ |
+| 表达式框的代码补全和多行代码片段模式、异常断点的类过滤和条件、按文件分组、Remove once hit、依赖断点 | ⬜ |
 
 Linux 实测（Xvfb，calc 示例的 JUnit 测试）：Breakpoints 对话框 + 添加 `java.lang.IllegalStateException`，调试 `throwsError` 停在第 22 行的 `throw`，标题旁显示 “Exception 'java.lang.IllegalStateException' occurred”。暂停在 `sum += items.get(i);`，光标放在 `get` 上按 Alt+F8，表达式框预填 `items.get(i)`，回车得到 `result = {Integer@447} 3`；求值 `items` 后展开得到 `[0] = {Integer@448} 1` 等三项；`items.get(1) * 10 + sum` 得 20；`nope + 1` 显示红字错误；历史列出三条；Add to Watches 后 Debug 窗口的 Watches 多了 `items.get(i)`。Breakpoints 对话框里列出 Calc.java:4（Shift+点行号加的黄色日志断点）和 CalcTest.java:34；给 CalcTest.java:34 填条件 `i == 2` 后切到另一项即保存到 breakpoints.json，再调试时停在 `i = 2`；列表里取消 Calc.java:4 的勾，gutter 立即变成空心；删除 Calc.java:4 后只剩一项；双击 CalcTest.java:34 打开该文件并跳到第 34 行。
 
@@ -813,3 +813,15 @@ Linux 实测（Xvfb，calc 示例）：在 `CalcTest.java` 第 30 行 `public vo
 | 命中时在控制台写出旧值 → 新值、实例过滤（Instance filters）、只监视某个对象、没有 backing field 的 Kotlin 属性（自定义 getter） | ⬜ |
 
 Linux 实测（Xvfb，calc 示例临时加 `static int calls = 0;` 和 `add` 里的 `calls++`）：在 `Calc.java` 第 4 行按 Ctrl+F8 出现眼睛图标；调试 `CalcTest.adds` 后图标带勾，先停在 `<clinit>:4`（静态初始化赋值），F9 后停在 `add:5`，Variables 显示 `a = 2`、`b = 2`；Breakpoints 对话框列在 “Java Field Watchpoints” 下，Field modification 默认勾选。
+
+## 45. Mute Breakpoints（2026-10-16）
+
+照 IntelliJ Debug 工具栏的 Mute Breakpoints（`XDebugSession.setBreakpointMuted`）：开关打开后，所有断点（行、方法、字段监视点、异常断点）都保留，但命中时不停也不打日志，程序直接继续；Run to Cursor 和单步照常。代码：`DebugSession::set_muted`（会话里命中的事件直接 resume）、`DebugService::toggle_mute`、Debug 工具栏的按钮。
+
+| 功能 | 状态 |
+|---|---|
+| Debug 工具栏的 Mute Breakpoints 开关（按下状态），调试中切换立即生效，之后新开的调试会话沿用 | ✅ |
+| 静音时 gutter 上启用的断点画成灰色（IntelliJ 的 breakpointMuted / breakpointMethodMuted / breakpointFieldMuted），行不再加红底；禁用的仍是空心 | ✅ |
+| 静音状态按项目持久化、Run 菜单里的 Mute Breakpoints 项 | ⬜ |
+
+Linux 实测（Xvfb，calc 示例）：在 `totals()` 循环体第 34 行设断点，调试后在 `i = 0` 停下；点 Mute Breakpoints，断点变灰，按 F9 后剩下两次循环不再停，测试直接跑完通过。

@@ -73,6 +73,18 @@ pub fn title(b: &SavedBreakpoint) -> String {
 /// hollow when disabled, checked once it stops somewhere; a diamond for a
 /// method breakpoint, an eye for a field watchpoint.
 pub fn mark_icon(kind: MarkKind, enabled: bool, verified: bool, suspend: bool) -> AsIcon {
+    mark_icon_muted(kind, enabled, verified, suspend, false)
+}
+
+/// The icon, gray while Mute Breakpoints is on.
+pub fn mark_icon_muted(kind: MarkKind, enabled: bool, verified: bool, suspend: bool, muted: bool) -> AsIcon {
+    if muted && enabled {
+        return match kind {
+            MarkKind::Line => icons::BREAKPOINT_MUTED,
+            MarkKind::Method => icons::BREAKPOINT_METHOD_MUTED,
+            MarkKind::Field => icons::BREAKPOINT_FIELD_MUTED,
+        };
+    }
     if kind == MarkKind::Field {
         return match (suspend, enabled, verified) {
             (true, false, _) => icons::BREAKPOINT_FIELD_DISABLED,

@@ -7,7 +7,7 @@
 use std::ops::Range;
 
 use gpui_kit::component::{
-    Disableable as _, Icon, Sizable as _, h_flex,
+    Disableable as _, Icon, Selectable as _, Sizable as _, h_flex,
     input::{Input, InputEvent, InputState},
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -203,6 +203,10 @@ impl DebugView {
                 ),
             )
             .child(div().w(px(1.)).h(px(16.)).mx_1().bg(cx.palette().border))
+            .child({
+                let (service, muted) = (self.service.clone(), self.service.read(cx).is_muted());
+                tool_button("debug-mute", icons::MUTE_BREAKPOINTS, "Mute Breakpoints").selected(muted).on_click(move |_, _, cx| service.update(cx, |s, cx| s.toggle_mute(cx)))
+            })
             .child(
                 div().when(!paused, |el| el.opacity(0.4)).child(
                     tool_button("debug-evaluate", icons::EVALUATE_EXPRESSION, format!("Evaluate Expression  {}", if cfg!(target_os = "macos") { "⌥F8" } else { "Alt+F8" }))
