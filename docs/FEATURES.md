@@ -872,3 +872,22 @@ Linux 实测（Xvfb）：Kotlin 工程依赖 `com.google.code.gson:gson:2.11.0`�
 | 按名字和参数个数匹配调用（同名同参数个数的其他函数也会被改），Java 的 `new A(…)` 构造调用、方法引用 `::name`、Kotlin 的尾随 lambda、可见性、异常列表、覆盖方法一起改、委托旧签名 | ⬜ |
 
 Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int): Double` 按 Ctrl+F6，改名 `sum`，把 `count` 上移，新增 `tax: Double`（调用处默认值 `0.0`），Refactor 后声明是 `fun sum(count: Int, price: Double, tax: Double): Double`，同文件的 `total(1.0, 2)` 变成 `sum(2, 1.0, 0.0)`，Main.kt 的 `cart.total(10.0, 3)` 和 `cart.total(count = 1, price = 2.0)` 变成 `cart.sum(3, 10.0, 0.0)` 和 `cart.sum(count = 1, price = 2.0, tax = 0.0)`。
+
+## 49. 基本编辑操作：复制行、注释、移动行、扩大选区…（2026-10-17）
+
+照 IntelliJ 默认键位（Default / macOS keymap）补上编辑器里最常用的一组操作，每个都是一次可撤销的修改。代码：`src/domain/line_edit.rs`（纯文本 + 选区的编辑）、`src/index/selection.rs`（按语法树扩大选区）、`src/ui/file_editor/editing.rs`。
+
+| 操作 | 键 | 状态 |
+|---|---|---|
+| Duplicate Line or Selection：没选中时复制当前行到下方（光标跟到新行），选中时在后面复制一份并选中它 | Ctrl+D / ⌘D | ✅ |
+| Comment with Line Comment：选中的各行（或当前行）在第一列加 `//`（Python、YAML、properties 用 `#`，SQL 用 `--`；XML 每行包成 `<!-- … -->`），全部已注释时去掉；没选中时光标移到下一行 | Ctrl+/ / ⌘/ | ✅ |
+| Comment with Block Comment：选区包成 `/* … */`（XML `<!-- … -->`），已是块注释时去掉；没选中时插入空注释、光标在中间 | Ctrl+Shift+/ / ⌥⌘/ | ✅ |
+| Move Line Up / Down：选中的行（或当前行）和上 / 下一行交换，选区跟着走 | Alt+Shift+↑/↓ | ✅ |
+| Extend Selection：单词 → 外层语法节点逐级扩大，括号 / 花括号先选内部内容再选整体，最后是全文；没有语法时按行、全文 | Ctrl+W / ⌥↑ | ✅ |
+| Shrink Selection：按扩大的步骤退回 | Ctrl+Shift+W / ⌥↓ | ✅ |
+| Join Lines：下一行（或选中的行）接到当前行末尾，去掉缩进、用一个空格连接（括号边不加空格） | Ctrl+Shift+J | ✅ |
+| Start New Line：在当前行下面开新行并缩进（行末是 `{` 时多缩进一级） | Shift+Enter | ✅ |
+| Toggle Case：选区（或光标处的单词）转大写，已全大写时转小写 | Ctrl+Shift+U / ⌘⇧U | ✅ |
+| Move Statement Up / Down（按语句移动）、多光标下的这些操作、注释时按代码风格设置决定 `//` 是否加在缩进后 | | ⬜ |
+
+Linux 实测（Xvfb，Kotlin 文件）：光标在 `return price * rate …` 行，Ctrl+D 复制出第 6 行，Ctrl+/ 把它注释成 `//        return …` 并把光标移到 `}`，Alt+Shift+↑ 把 `}` 移到注释行上面；三次 Ctrl+Z 逐个撤销。光标在 `rate` 上连按三次 Ctrl+W，选区依次是 `rate`、`price * rate`、`price * rate * count`。

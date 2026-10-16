@@ -5,6 +5,7 @@
 //! Rollback Lines.
 
 mod breakpoints;
+mod editing;
 mod fixes;
 mod generate;
 mod templates;
@@ -113,6 +114,7 @@ pub fn init(cx: &mut gpui_kit::App) {
     overrides::init(cx);
     test_marks::init(cx);
     breakpoints::init(cx);
+    editing::init(cx);
     cx.bind_keys([
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" }, SaveFile, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-z", RollbackLines, Some(CONTEXT)),
@@ -401,6 +403,8 @@ pub struct FileEditor {
     strings_banner_hidden: bool,
     /// Download Sources on a decompiled class: in progress, or why it failed.
     sources_status: Option<(bool, String)>,
+    /// Extend Selection's steps, for Shrink Selection.
+    selection_steps: Vec<std::ops::Range<usize>>,
     /// The language server's code actions being asked for (Alt+Enter).
     server_actions_task: Option<gpui_kit::Task<()>>,
     /// A vector drawable's preview, and Code / Split / Design.
@@ -724,6 +728,7 @@ impl FileEditor {
             previews: Vec::new(),
             strings_banner_hidden: false,
             sources_status: None,
+            selection_steps: Vec::new(),
             server_actions_task: None,
             vector: None,
             vector_mode: Default::default(),
@@ -2515,6 +2520,16 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::run_test_at_caret))
             .on_action(cx.listener(Self::debug_test_at_caret))
             .on_action(cx.listener(Self::toggle_line_breakpoint))
+            .on_action(cx.listener(Self::duplicate_line))
+            .on_action(cx.listener(Self::comment_line))
+            .on_action(cx.listener(Self::comment_block))
+            .on_action(cx.listener(Self::move_line_up))
+            .on_action(cx.listener(Self::move_line_down))
+            .on_action(cx.listener(Self::extend_selection))
+            .on_action(cx.listener(Self::shrink_selection))
+            .on_action(cx.listener(Self::join_lines))
+            .on_action(cx.listener(Self::start_new_line))
+            .on_action(cx.listener(Self::toggle_case))
             .on_action(cx.listener(Self::run_to_cursor))
             .on_action(cx.listener(Self::evaluate_expression))
             .on_action(cx.listener(|this, _: &NextChange, window, cx| this.go_to_change(true, window, cx)))
