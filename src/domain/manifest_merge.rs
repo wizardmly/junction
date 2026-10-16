@@ -39,6 +39,9 @@ pub struct BuildValues {
 pub struct MergedLine {
     pub text: String,
     pub source: usize,
+    /// The 0-based line in the source it came from (none for what the
+    /// build file injected).
+    pub line: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,6 +59,7 @@ struct Attr {
     name: String,
     value: String,
     source: usize,
+    line: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +68,7 @@ struct Element {
     attrs: Vec<Attr>,
     children: Vec<Element>,
     source: usize,
+    line: Option<u32>,
 }
 
 impl Element {
@@ -76,8 +81,9 @@ impl Element {
             Some(a) => {
                 a.value = value.to_owned();
                 a.source = source;
+                a.line = None;
             }
-            None => self.attrs.push(Attr { name: name.to_owned(), value: value.to_owned(), source }),
+            None => self.attrs.push(Attr { name: name.to_owned(), value: value.to_owned(), source, line: None }),
         }
     }
 
@@ -115,12 +121,14 @@ fn qualified(node: roxmltree::Node, namespace: Option<&str>, local: &str) -> Str
     }
 }
 
-fn element(node: roxmltree::Node, source: usize) -> Element {
+fn element(doc: &roxmltree::Document, node: roxmltree::Node, source: usize) -> Element {
+    let line = |pos: usize| Some(doc.text_pos_at(pos).row.saturating_sub(1));
     Element {
         tag: node.tag_name().name().to_owned(),
-        attrs: node.attributes().map(|a| Attr { name: qualified(node, a.namespace(), a.name()), value: a.value().to_owned(), source }).collect(),
-        children: node.children().filter(|c| c.is_element()).map(|c| element(c, source)).collect(),
+        attrs: node.attributes().map(|a| Attr { name: qualified(node, a.namespace(), a.name()), value: a.value().to_owned(), source, line: line(a.range().start) }).collect(),
+        children: node.children().filter(|c| c.is_element()).map(|c| element(doc, c, source)).collect(),
         source,
+        line: line(node.range().start),
     }
 }
 
@@ -240,20 +248,20 @@ fn print(element: &Element, depth: usize, out: &mut Vec<MergedLine>) {
     let attr_indent = format!("{indent}    ");
     let close = if element.children.is_empty() { " />" } else { " >" };
     if element.attrs.is_empty() {
-        out.push(MergedLine { text: format!("{indent}<{}{}", element.tag, close.trim_start()), source: element.source });
+        out.push(MergedLine { text: format!("{indent}<{}{}", element.tag, close.trim_start()), source: element.source, line: element.line });
     } else {
-        out.push(MergedLine { text: format!("{indent}<{}", element.tag), source: element.source });
+        out.push(MergedLine { text: format!("{indent}<{}", element.tag), source: element.source, line: element.line });
         let last = element.attrs.len() - 1;
         for (i, a) in element.attrs.iter().enumerate() {
             let end = if i == last { close } else { "" };
-            out.push(MergedLine { text: format!("{attr_indent}{}=\"{}\"{end}", a.name, escape(&a.value)), source: a.source });
+            out.push(MergedLine { text: format!("{attr_indent}{}=\"{}\"{end}", a.name, escape(&a.value)), source: a.source, line: a.line });
         }
     }
     if !element.children.is_empty() {
         for c in &element.children {
             print(c, depth + 1, out);
         }
-        out.push(MergedLine { text: format!("{indent}</{}>", element.tag), source: element.source });
+        out.push(MergedLine { text: format!("{indent}</{}>", element.tag), source: element.source, line: element.line });
     }
 }
 
@@ -271,7 +279,7 @@ pub fn merge(sources: &[ManifestSource], main: usize, build: &BuildValues, build
         if root.tag_name().name() != "manifest" {
             return Err(format!("{}: the root element is not <manifest>", s.label));
         }
-        trees.push(element(root, i));
+        trees.push(element(&doc, root, i));
     }
     if main >= trees.len() {
         return Err("No main manifest".into());
@@ -304,7 +312,7 @@ pub fn merge(sources: &[ManifestSource], main: usize, build: &BuildValues, build
             Some(ix) => ix,
             None => {
                 // The merger puts it first.
-                root.children.insert(0, Element { tag: "uses-sdk".into(), attrs: Vec::new(), children: Vec::new(), source: build_source });
+                root.children.insert(0, Element { tag: "uses-sdk".into(), attrs: Vec::new(), children: Vec::new(), source: build_source, line: None });
                 0
             }
         };
@@ -318,9 +326,9 @@ pub fn merge(sources: &[ManifestSource], main: usize, build: &BuildValues, build
     }
     substitute(&mut root, &placeholders);
     strip(&mut root);
-    root.attrs.insert(0, Attr { name: "xmlns:android".into(), value: ANDROID.into(), source: main });
+    root.attrs.insert(0, Attr { name: "xmlns:android".into(), value: ANDROID.into(), source: main, line: root.line });
     let mut lines = Vec::new();
-    lines.push(MergedLine { text: "<?xml version=\"1.0\" encoding=\"utf-8\"?>".into(), source: main });
+    lines.push(MergedLine { text: "<?xml version=\"1.0\" encoding=\"utf-8\"?>".into(), source: main, line: Some(0) });
     print(&root, 0, &mut lines);
     if !injected {
         labels.pop();
@@ -390,6 +398,9 @@ mod tests {
         assert_eq!(source_of("CAMERA"), "lib/src/main/AndroidManifest.xml");
         assert_eq!(source_of("minSdkVersion"), "app/build.gradle.kts");
         assert_eq!(source_of("App (debug)"), "app/src/debug/AndroidManifest.xml");
+        // Each line knows its line in the source; injected ones don't.
+        let line_of = |needle: &str| merged.lines.iter().find(|l| l.text.contains(needle)).unwrap().line;
+        assert_eq!((line_of("CAMERA"), line_of("minSdkVersion")), (Some(1), None));
         assert!(roxmltree::Document::parse(&joined).is_ok(), "{joined}");
     }
 

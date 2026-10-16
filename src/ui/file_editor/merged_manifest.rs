@@ -2,7 +2,7 @@
 //! under an `AndroidManifest.xml`. The merged manifest is read-only, each
 //! line tinted by the file it came from, with "Manifest Sources" (those
 //! files and their colors) and "Merging Errors" beside it; it follows the
-//! text as it's edited.
+//! text as it's edited. A double click on a line opens its source there.
 
 use std::hash::{Hash as _, Hasher as _};
 use std::path::Path;
@@ -108,8 +108,28 @@ impl FileEditor {
                 return Some(div().flex_1().p_4().text_sm().text_color(palette.status_conflict).child(format!("Cannot merge the manifest: {e}")).into_any_element());
             }
         };
-        let lines = v_flex().children(merged.lines.iter().map(|l| {
-            div().px_2().whitespace_nowrap().bg(tint(l.source, dark)).child(if l.text.is_empty() { " ".to_owned() } else { l.text.clone() })
+        // A double click opens the line's source there (the build file at its top).
+        let lines = v_flex().children(merged.lines.iter().enumerate().map(|(ix, l)| {
+            let target = merged.sources.get(l.source).map(|path| crate::index::nav::Target {
+                path: path.clone(),
+                line: l.line.unwrap_or(0),
+                col: 0,
+                name: path.rsplit('/').next().unwrap_or(path).to_owned(),
+                label: "Manifest source".into(),
+                container: None,
+            });
+            div()
+                .id(("merged-line", ix))
+                .px_2()
+                .whitespace_nowrap()
+                .bg(tint(l.source, dark))
+                .hover(|s| s.bg(palette.hover))
+                .child(if l.text.is_empty() { " ".to_owned() } else { l.text.clone() })
+                .on_click(cx.listener(move |_, event: &gpui_kit::ClickEvent, _, cx| {
+                    if let (2, Some(target)) = (event.click_count(), target.clone()) {
+                        cx.emit(super::FileEditorEvent::Navigate { targets: vec![target], at: None });
+                    }
+                }))
         }));
         let heading = |text: &'static str| div().px_2().py_1().text_sm().font_weight(FontWeight::SEMIBOLD).child(text);
         let sources = v_flex().gap_1().px_2().children(merged.sources.iter().enumerate().map(|(i, s)| {
