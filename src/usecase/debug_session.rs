@@ -120,6 +120,8 @@ struct State {
     /// Run to Cursor's breakpoint, removed at the next pause.
     run_to: Vec<u32>,
     paused: Option<u64>,
+    /// The exception an exception breakpoint stopped at, and its thread.
+    thrown: Option<(u64, Value)>,
     ended: bool,
 }
 
@@ -266,6 +268,7 @@ impl DebugSession {
     pub fn resume(&self) -> Result<SessionEvent, String> {
         let mut state = self.state.lock().unwrap();
         state.paused = None;
+        state.thrown = None;
         self.vm.resume()?;
         Ok(SessionEvent::Resumed)
     }
@@ -276,7 +279,11 @@ impl DebugSession {
         self.vm.suspend()?;
         let threads = self.vm.threads()?;
         let thread = threads.iter().find(|t| t.name == "main").or(threads.first()).map(|t| t.id).ok_or("No threads")?;
-        self.state.lock().unwrap().paused = Some(thread);
+        {
+            let mut state = self.state.lock().unwrap();
+            state.paused = Some(thread);
+            state.thrown = None;
+        }
         let frames = self.vm.frames(thread)?;
         Ok(SessionEvent::Paused { thread, frames, threads, reason: PauseReason::Paused })
     }
@@ -291,6 +298,7 @@ impl DebugSession {
         }
         state.step = Some(self.vm.step(thread, depth)?);
         state.paused = None;
+        state.thrown = None;
         self.vm.resume()?;
         Ok(SessionEvent::Resumed)
     }
@@ -308,6 +316,7 @@ impl DebugSession {
         let mut state = self.state.lock().unwrap();
         state.run_to.extend(requests);
         state.paused = None;
+        state.thrown = None;
         self.vm.resume()?;
         Ok(SessionEvent::Resumed)
     }
@@ -324,6 +333,7 @@ impl DebugSession {
         let mut state = self.state.lock().unwrap();
         state.ended = true;
         state.paused = None;
+        state.thrown = None;
         drop(state);
         self.vm.dispose();
     }
@@ -336,7 +346,14 @@ impl DebugSession {
     /// The Variables view of a frame (by depth).
     pub fn locals(&self, thread: u64, depth: usize) -> Result<Vec<Variable>, String> {
         let frame = self.frame_at(thread, depth)?;
-        self.vm.locals(thread, &frame)
+        let mut locals = self.vm.locals(thread, &frame)?;
+        // The top frame of a thread stopped at an exception shows it first,
+        // as IntelliJ's "Exception" node.
+        let thrown = self.state.lock().unwrap().thrown.clone();
+        if let Some((_, value)) = thrown.filter(|(t, _)| *t == thread && depth == 0) {
+            locals.insert(0, Variable { name: "Exception".into(), value });
+        }
+        Ok(locals)
     }
 
     /// An expanded value's fields or elements, a collection's items
@@ -369,6 +386,7 @@ impl DebugSession {
                 DebugEvent::VmDeath => {
                     state.ended = true;
                     state.paused = None;
+                    state.thrown = None;
                     out.push(SessionEvent::Ended);
                     return Ok(out);
                 }
@@ -404,6 +422,7 @@ impl DebugSession {
                 DebugEvent::Step { thread, .. } => paused = Some((thread, PauseReason::Step)),
                 DebugEvent::Exception { thread, exception, caught, .. } => {
                     let name = self.vm.class_of(exception).map(|c| c.name).unwrap_or_else(|_| "exception".into());
+                    state.thrown = Some((thread, Value::Object { id: exception, class: name.clone() }));
                     out.push(SessionEvent::Exception(format!("Exception '{name}' {}", if caught { "occurred" } else { "was not caught" })));
                     paused = Some((thread, PauseReason::Exception));
                 }
@@ -778,9 +797,13 @@ mod tests {
         let events = session.poll(Duration::ZERO).unwrap();
         assert_eq!(events[0], SessionEvent::Exception("Exception 'a.CalcTest' was not caught".into()));
         assert!(matches!(events[1], SessionEvent::Paused { reason: PauseReason::Exception, .. }));
+        // The exception first in the top frame's variables, until resumed.
+        assert_eq!(session.locals(1, 0).unwrap()[0], Variable { name: "Exception".into(), value: Value::Object { id: 50, class: "a.CalcTest".into() } });
+        session.resume().unwrap();
+        assert_eq!(session.locals(1, 0).unwrap()[0].name, "x");
         // Removed: its request cleared.
         session.remove_exception_breakpoint("").unwrap();
-        assert_eq!(vm.take_log(), ["clear exception 1"]);
+        assert_eq!(vm.take_log(), ["resume", "clear exception 1"]);
     }
 
     #[test]

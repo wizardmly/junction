@@ -80,6 +80,8 @@ pub(crate) fn flatten(nodes: &[VarNode], depth: usize, prefix: &mut Vec<usize>, 
         let icon = match (depth, node.kind) {
             (0, NodeKind::Watch(_)) => icons::WATCH,
             (0, NodeKind::Evaluation) => icons::EVALUATION_RESULT,
+            // The thrown exception at an exception breakpoint.
+            (0, NodeKind::Variable) if node.var.name == "Exception" => icons::BREAKPOINT_EXCEPTION,
             _ => value_icon(&node.var.value),
         };
         out.push(VarRow {
