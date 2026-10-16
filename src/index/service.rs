@@ -3,6 +3,7 @@
 //! bridges first, then the language server, then the built-in index.
 
 use std::future::Future;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -498,7 +499,10 @@ impl CodeIndex {
         }
         let go_to = self.go_to(path.clone(), text.clone(), offset, cx);
         let index = self.index.clone();
+        let lsp = self.lsp.clone();
         cx.background_spawn(async move {
+            // A language server's references are the symbol's, exactly.
+            let server_hits = server_references(&lsp, &root, lang, &path, &text, offset);
             let (declaration, line) = match go_to.await {
                 Nav::Declaration => (path, nav::position(&text, offset).0),
                 Nav::Targets(targets) => {
@@ -515,11 +519,45 @@ impl CodeIndex {
                 .and_then(|e| e.symbols.iter().find(|s| s.name == word && s.line == line))
                 .map_or("symbol", |s| s.kind.label())
                 .to_owned();
-            let occurrences = nav::rename_hits(&index, &root, &word);
+            let mut occurrences = nav::rename_hits(&index, &root, &word);
+            if let Some(hits) = server_hits.filter(|h| !h.is_empty()) {
+                // The server's for code; the index's in comments and strings.
+                occurrences.retain(|o| !o.code);
+                occurrences.extend(hits);
+                occurrences.sort_by(|a, b| (&a.path, a.line, a.col).cmp(&(&b.path, b.line, b.col)));
+            }
             if occurrences.is_empty() {
                 return Err(NOT_A_NAME.into());
             }
             Ok(RenameTarget { name: word, kind, declaration, occurrences })
+        })
+    }
+
+    /// A language server's code actions (quick fixes, refactorings) for a
+    /// range of the file; none without a running server.
+    pub fn code_actions(&self, path: String, text: String, range: std::ops::Range<usize>, cx: &App) -> Task<Vec<super::lsp::CodeAction>> {
+        let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(Vec::new()) };
+        if ProjectIndex::is_external(&path) {
+            return Task::ready(Vec::new());
+        }
+        let lsp = self.lsp.clone();
+        cx.background_spawn(async move {
+            let file = root.join(&path);
+            let Some(client) = lsp.client_within(lang, &file, Duration::from_secs(2)) else { return Vec::new() };
+            let start = nav::position(&text, range.start);
+            let end = nav::position(&text, range.end);
+            client.code_actions(&file, lang, &text, start, end, Duration::from_secs(3)).unwrap_or_default()
+        })
+    }
+
+    /// A code action's edits: its own, resolved, or its command's.
+    pub fn code_action_edits(&self, path: String, text: String, action: super::lsp::CodeAction, cx: &App) -> Task<Result<Vec<super::lsp::FileEdit>, String>> {
+        let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(Err("No language server".into())) };
+        let lsp = self.lsp.clone();
+        cx.background_spawn(async move {
+            let file = root.join(&path);
+            let client = lsp.client(lang, &file).ok_or("The language server has stopped")?;
+            client.code_action_edits(&action).map_err(|e| e.to_string())
         })
     }
 
@@ -659,6 +697,31 @@ pub enum Nav {
     Targets(Vec<Target>),
     /// On a declaration: IntelliJ shows its usages.
     Declaration,
+}
+
+/// The references a language server knows for the symbol at `offset`,
+/// as Rename's occurrences (project files only); none without a server.
+fn server_references(lsp: &LspManager, root: &Path, lang: Lang, path: &str, text: &str, offset: usize) -> Option<Vec<Occurrence>> {
+    let file = root.join(path);
+    let client = lsp.client_within(lang, &file, Duration::from_secs(10))?;
+    // A server still indexing answers with what it has so far.
+    let waited = std::time::Instant::now();
+    while client.progress.lock().is_ok_and(|p| p.is_some()) && waited.elapsed() < Duration::from_secs(20) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let (line, col) = nav::position(text, offset);
+    let locations = client.references(&file, lang, text, line, col).ok()?;
+    let mut sources: HashMap<PathBuf, String> = HashMap::new();
+    let out = locations
+        .into_iter()
+        .filter_map(|l| {
+            let rel = l.path.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/");
+            let source = if rel == path { text.to_owned() } else { sources.entry(l.path.clone()).or_insert_with(|| std::fs::read_to_string(&l.path).unwrap_or_default()).clone() };
+            let line_text = source.split('\n').nth(l.line as usize)?.trim().to_owned();
+            Some(Occurrence { path: rel, line: l.line, col: l.col, text: line_text, code: true })
+        })
+        .collect();
+    Some(out)
 }
 
 /// The identifier at `offset` is the name of a symbol the index has for

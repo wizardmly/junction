@@ -58,6 +58,8 @@ pub(super) enum Choice {
     Intention(crate::domain::intentions::Intention),
     /// Generate › Override Methods… (false) / Implement Methods… (true).
     Override(bool),
+    /// A language server's code action.
+    Server(crate::index::lsp::CodeAction),
 }
 
 /// The byte offset of a line and character column.
@@ -101,6 +103,8 @@ impl FileEditor {
                 items.push((intention.range.clone(), Choice::Intention(intention)));
             }
         }
+        // A language server's actions join the list when they arrive.
+        self.request_server_actions(&text, cursor, window, cx);
         if items.is_empty() {
             return;
         }
@@ -205,6 +209,7 @@ impl FileEditor {
             }
             Choice::Import(qualified) => self.import_class(&qualified, window, cx),
             Choice::Override(implement) => self.override_methods(implement, window, cx),
+            Choice::Server(action) => self.apply_server_action(action, window, cx),
             Choice::Intention(intention) => self.state.update(cx, |state, cx| {
                 state.set_selected_range(intention.range.clone(), cx);
                 state.replace(&intention.replacement, window, cx);
@@ -212,6 +217,115 @@ impl FileEditor {
             }),
         }
         cx.notify();
+    }
+
+    /// Asks the file's language server for its code actions at the caret
+    /// (the selection when there is one); they go after the editor's own,
+    /// or open the popup when there were none.
+    fn request_server_actions(&mut self, text: &str, cursor: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.code_index.clone() else { return };
+        let selection = self.state.read(cx).selected_range();
+        let range = if selection.is_empty() { cursor..cursor } else { selection };
+        let task = index.read(cx).code_actions(self.path.clone(), text.to_owned(), range, cx);
+        let version = text.len();
+        self.server_actions_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let actions = task.await;
+            if actions.is_empty() {
+                return;
+            }
+            this.update_in(cx, |this, window, cx| {
+                let state = this.state.read(cx);
+                // Moved on, or typed: they're for another place.
+                if state.cursor() != cursor || state.value().len() != version {
+                    return;
+                }
+                let mut actions = actions;
+                // Its preferred fix first, then quick fixes, then refactorings.
+                actions.sort_by_key(|a| (!a.preferred, !a.kind.as_deref().is_some_and(|k| k.starts_with("quickfix"))));
+                let new: Vec<_> = actions.into_iter().map(|a| (cursor..cursor, Choice::Server(a))).collect();
+                match this.context_actions.as_mut() {
+                    Some(popup) if popup.title.is_none() => popup.items.extend(new),
+                    Some(_) => {}
+                    None => {
+                        let at = this.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
+                        this.context_actions = Some(ContextActions { items: new, title: None, selected: 0, at, caret: None });
+                        window.focus(&this.context_focus, cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// A server action: its edits applied, in this file's text (one edit,
+    /// the caret staying on its text) and on disk for other files.
+    fn apply_server_action(&mut self, action: crate::index::lsp::CodeAction, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.code_index.clone() else { return };
+        let Some(root) = index.read(cx).root().map(|r| r.to_path_buf()) else { return };
+        let text = self.text(cx);
+        let title = action.title.clone();
+        let task = index.read(cx).code_action_edits(self.path.clone(), text, action, cx);
+        let own = root.join(&self.path);
+        cx.spawn_in(window, async move |this, cx| {
+            let edits = task.await;
+            this.update_in(cx, |this, window, cx| {
+                let edits = match edits {
+                    Ok(edits) => edits,
+                    Err(message) => return Self::hint(&title, message, window, cx),
+                };
+                let mut written = Vec::new();
+                for file in edits {
+                    if file.path == own {
+                        let text = this.text(cx);
+                        let caret = this.state.read(cx).cursor();
+                        let (new, caret) = apply_text_edits(&text, &file.edits, caret);
+                        this.replace_text(&text, &new, caret, window, cx);
+                    } else if let Ok(old) = std::fs::read_to_string(&file.path) {
+                        let (new, _) = apply_text_edits(&old, &file.edits, 0);
+                        if std::fs::write(&file.path, new).is_ok() {
+                            if let Ok(rel) = file.path.strip_prefix(&root) {
+                                written.push(rel.to_string_lossy().replace('\\', "/"));
+                            }
+                        }
+                    }
+                }
+                if !written.is_empty() {
+                    cx.emit(super::FileEditorEvent::FilesWritten(written));
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Replaces the text with `new` as one undoable edit (the changed span),
+    /// the caret at `caret`.
+    pub(super) fn replace_text(&mut self, old: &str, new: &str, caret: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if old == new {
+            return;
+        }
+        let prefix = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+        let suffix = old.bytes().rev().zip(new.bytes().rev()).take_while(|(a, b)| a == b).count().min(old.len().min(new.len()) - prefix);
+        let (mut start, mut old_end) = (prefix, old.len() - suffix);
+        while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+            start -= 1;
+        }
+        while !old.is_char_boundary(old_end) {
+            old_end += 1;
+        }
+        let new_end = new.len() - (old.len() - old_end);
+        let replacement = new[start..new_end].to_owned();
+        let mut caret = caret.min(new.len());
+        while !new.is_char_boundary(caret) {
+            caret -= 1;
+        }
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(start..old_end, cx);
+            state.replace(replacement, window, cx);
+            state.set_selected_range(caret..caret, cx);
+        });
     }
 
     /// Adds `import qualified` where IntelliJ puts it; the caret stays on
@@ -267,6 +381,7 @@ impl FileEditor {
                 Choice::ImportClass(name, _) => (Some(icons::INTENTION_BULB), format!("Import class '{name}'")),
                 Choice::Import(qualified) => (Some(icons::CLASS), qualified.clone()),
                 Choice::Intention(i) => (Some(icons::INTENTION_BULB), i.title.clone()),
+                Choice::Server(action) => (Some(icons::INTENTION_BULB), action.title.clone()),
                 Choice::Override(false) => (None, "Override Methods…".to_owned()),
                 Choice::Override(true) => (None, "Implement Methods…".to_owned()),
             };
@@ -341,5 +456,59 @@ mod tests {
         assert_eq!(super::offset_of(text, super::Pos::new(1, 2)), 5);
         assert_eq!(super::offset_of(text, super::Pos::new(1, 3)), 7);
         assert_eq!(super::offset_of(text, super::Pos::new(2, 1)), 9);
+    }
+}
+
+/// A language server's text edits applied to `text` (0-based lines,
+/// UTF-16 columns), and where `caret` moves with them.
+pub(super) fn apply_text_edits(text: &str, edits: &[crate::index::lsp::TextEdit], caret: usize) -> (String, usize) {
+    let offset = |(line, col): (u32, u32)| -> usize {
+        let start: usize = text.split_inclusive('\n').take(line as usize).map(str::len).sum();
+        let rest = &text[start.min(text.len())..];
+        let line_text = rest.split('\n').next().unwrap_or("");
+        let mut units = 0u32;
+        for (i, ch) in line_text.char_indices() {
+            if units >= col {
+                return start + i;
+            }
+            units += ch.len_utf16() as u32;
+        }
+        start + line_text.len()
+    };
+    let mut ranged: Vec<(usize, usize, &str)> = edits.iter().map(|e| (offset(e.start), offset(e.end), e.text.as_str())).collect();
+    // From the end, so earlier offsets stay valid.
+    ranged.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    let mut out = text.to_owned();
+    let mut caret = caret;
+    for (start, end, new) in ranged {
+        if start > end || end > out.len() {
+            continue;
+        }
+        out.replace_range(start..end, new);
+        if caret >= end {
+            caret = caret + new.len() - (end - start);
+        } else if caret > start {
+            caret = start + new.len();
+        }
+    }
+    (out, caret)
+}
+
+#[cfg(test)]
+mod server_edit_tests {
+    use super::*;
+    use crate::index::lsp::TextEdit;
+
+    #[test]
+    fn applies_server_edits() {
+        let text = "use a;\nfn f() { x }\n";
+        let edits = vec![
+            TextEdit { start: (0, 0), end: (0, 0), text: "use b;\n".into() },
+            TextEdit { start: (1, 9), end: (1, 10), text: "y.z".into() },
+        ];
+        let caret = text.find('}').unwrap();
+        let (out, caret) = apply_text_edits(text, &edits, caret);
+        assert_eq!(out, "use b;\nuse a;\nfn f() { y.z }\n");
+        assert_eq!(&out[caret..caret + 1], "}");
     }
 }

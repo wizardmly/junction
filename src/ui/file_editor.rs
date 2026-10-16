@@ -182,6 +182,8 @@ pub enum FileEditorEvent {
     CopyPathReference,
     /// Saved: re-index this file.
     Saved(String),
+    /// Other files written (a language server's code action): reload them.
+    FilesWritten(Vec<String>),
     /// The text was edited (a preview tab becomes a normal one).
     Edited,
     /// The file is gone from disk (a checkout, say) and had no unsaved edits.
@@ -390,6 +392,8 @@ pub struct FileEditor {
     previews: Vec<(u32, crate::usecase::android_resources::Preview)>,
     /// The strings banner's Hide notification.
     strings_banner_hidden: bool,
+    /// The language server's code actions being asked for (Alt+Enter).
+    server_actions_task: Option<gpui_kit::Task<()>>,
     /// A vector drawable's preview, and Code / Split / Design.
     vector: Option<vector_preview::VectorPreview>,
     vector_mode: vector_preview::VectorMode,
@@ -705,6 +709,7 @@ impl FileEditor {
             hierarchy_slots: 0,
             previews: Vec::new(),
             strings_banner_hidden: false,
+            server_actions_task: None,
             vector: None,
             vector_mode: Default::default(),
             vector_icons: Rc::default(),

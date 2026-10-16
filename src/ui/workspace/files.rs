@@ -92,6 +92,10 @@ impl Workspace {
                 let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
                 self.rename_symbol(path, text.clone(), *offset, window, cx);
             }
+            FileEditorEvent::FilesWritten(paths) => {
+                let paths = paths.clone();
+                self.files_changed(paths, window, cx);
+            }
             FileEditorEvent::OpenTranslations(path) => {
                 let path = path.clone();
                 self.open_translations(&path, window, cx);

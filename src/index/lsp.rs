@@ -152,6 +152,89 @@ pub struct LspClient {
     /// The server's work-done progress ("Indexing…"), if any.
     pub progress: Arc<Mutex<Option<String>>>,
     alive: Arc<std::sync::atomic::AtomicBool>,
+    /// Edits the server asked to apply (`workspace/applyEdit`) while one
+    /// of its commands ran.
+    applied: Arc<Mutex<Vec<FileEdit>>>,
+    /// The diagnostics it published, by URI, for code actions' context.
+    diagnostics: Arc<Mutex<HashMap<String, Value>>>,
+}
+
+/// A text edit a server answered with: 0-based line and UTF-16 column.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextEdit {
+    pub start: (u32, u32),
+    pub end: (u32, u32),
+    pub text: String,
+}
+
+/// A file's edits from a workspace edit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileEdit {
+    pub path: PathBuf,
+    pub edits: Vec<TextEdit>,
+}
+
+/// A code action a server offers: a quick fix, a refactoring.
+#[derive(Clone, Debug)]
+pub struct CodeAction {
+    pub title: String,
+    pub kind: Option<String>,
+    pub edit: Option<Vec<FileEdit>>,
+    pub command: Option<Value>,
+    /// The action as sent, for `codeAction/resolve`.
+    pub raw: Value,
+    pub preferred: bool,
+}
+
+fn parse_text_edits(value: &Value) -> Vec<TextEdit> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let range = e.get("range")?;
+            let pos = |p: &Value| Some((p.get("line")?.as_u64()? as u32, p.get("character")?.as_u64()? as u32));
+            Some(TextEdit { start: pos(range.get("start")?)?, end: pos(range.get("end")?)?, text: e.get("newText")?.as_str()?.to_owned() })
+        })
+        .collect()
+}
+
+/// A WorkspaceEdit's text edits (`changes` or `documentChanges`; file
+/// creations and renames aren't applied).
+pub fn parse_workspace_edit(value: &Value) -> Vec<FileEdit> {
+    let mut out = Vec::new();
+    if let Some(changes) = value.get("changes").and_then(Value::as_object) {
+        for (uri, edits) in changes {
+            if let Some(path) = uri_to_path(uri) {
+                out.push(FileEdit { path, edits: parse_text_edits(edits) });
+            }
+        }
+    }
+    for change in value.get("documentChanges").and_then(Value::as_array).into_iter().flatten() {
+        let Some(uri) = change.pointer("/textDocument/uri").and_then(Value::as_str) else { continue };
+        if let Some(path) = uri_to_path(uri) {
+            out.push(FileEdit { path, edits: parse_text_edits(change.get("edits").unwrap_or(&Value::Null)) });
+        }
+    }
+    out
+}
+
+fn parse_code_action(value: &Value) -> Option<CodeAction> {
+    // A bare Command, or a CodeAction.
+    if value.get("command").is_some_and(Value::is_string) {
+        return Some(CodeAction { title: value.get("title")?.as_str()?.to_owned(), kind: None, edit: None, command: Some(value.clone()), raw: value.clone(), preferred: false });
+    }
+    if value.get("disabled").is_some() {
+        return None;
+    }
+    Some(CodeAction {
+        title: value.get("title")?.as_str()?.to_owned(),
+        kind: value.get("kind").and_then(Value::as_str).map(str::to_owned),
+        edit: value.get("edit").map(parse_workspace_edit),
+        command: value.get("command").cloned(),
+        raw: value.clone(),
+        preferred: value.get("isPreferred").and_then(Value::as_bool).unwrap_or(false),
+    })
 }
 
 fn write_message(stdin: &mut ChildStdin, value: &Value) -> std::io::Result<()> {
@@ -206,6 +289,9 @@ impl LspClient {
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
         let pending: Pending = Arc::default();
         let progress: Arc<Mutex<Option<String>>> = Arc::default();
+        let applied: Arc<Mutex<Vec<FileEdit>>> = Arc::default();
+        let diagnostics: Arc<Mutex<HashMap<String, Value>>> = Arc::default();
+        let (applied_rx, diagnostics_rx) = (applied.clone(), diagnostics.clone());
         let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let client = Arc::new(Self {
             stdin: Mutex::new(stdin),
@@ -215,6 +301,8 @@ impl LspClient {
             docs: Mutex::default(),
             progress: progress.clone(),
             alive: alive.clone(),
+            applied,
+            diagnostics,
         });
         let weak = Arc::downgrade(&client);
         std::thread::Builder::new().name(format!("lsp {program}")).spawn(move || {
@@ -242,12 +330,23 @@ impl LspClient {
                                 Value::Array(vec![Value::Null; n])
                             }
                             "workspace/workspaceFolders" => Value::Null,
+                            // A command's edits: applied by whoever ran it.
+                            "workspace/applyEdit" => {
+                                let edit = message.pointer("/params/edit").cloned().unwrap_or(Value::Null);
+                                applied_rx.lock().unwrap().extend(parse_workspace_edit(&edit));
+                                json!({ "applied": true })
+                            }
                             _ => Value::Null,
                         };
                         if let Some(client) = weak.upgrade() {
                             if let Ok(mut stdin) = client.stdin.lock() {
                                 write_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": id, "result": result })).ok();
                             }
+                        }
+                    }
+                    (Some("textDocument/publishDiagnostics"), None) => {
+                        if let (Some(uri), Some(list)) = (message.pointer("/params/uri").and_then(Value::as_str), message.pointer("/params/diagnostics")) {
+                            diagnostics_rx.lock().unwrap().insert(uri.to_owned(), list.clone());
                         }
                     }
                     (Some("$/progress"), None) => {
@@ -296,7 +395,12 @@ impl LspClient {
                 "capabilities": {
                     "general": { "positionEncodings": ["utf-16"] },
                     "window": { "workDoneProgress": true },
-                    "workspace": { "workspaceFolders": true, "configuration": true },
+                    "workspace": {
+                        "workspaceFolders": true,
+                        "configuration": true,
+                        "applyEdit": true,
+                        "workspaceEdit": { "documentChanges": true }
+                    },
                     "textDocument": {
                         "synchronization": { "didSave": true, "dynamicRegistration": false },
                         "definition": { "linkSupport": true },
@@ -304,7 +408,15 @@ impl LspClient {
                         "implementation": { "linkSupport": true },
                         "references": {},
                         "hover": { "contentFormat": ["markdown", "plaintext"] },
-                        "documentSymbol": { "hierarchicalDocumentSymbolSupport": true }
+                        "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+                        "rename": { "prepareSupport": true },
+                        "publishDiagnostics": {},
+                        "codeAction": {
+                            "codeActionLiteralSupport": { "codeActionKind": { "valueSet": ["", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports"] } },
+                            "resolveSupport": { "properties": ["edit"] },
+                            "dataSupport": true,
+                            "isPreferredSupport": true
+                        }
                     }
                 }
             }),
@@ -410,6 +522,54 @@ impl LspClient {
             other => piece(other),
         };
         Ok((!text.trim().is_empty()).then_some(text))
+    }
+
+    /// The code actions for a range (0-based lines, UTF-16 columns), with
+    /// the server's own diagnostics there as their context.
+    pub fn code_actions(&self, path: &Path, lang: Lang, text: &str, start: (u32, u32), end: (u32, u32), timeout: Duration) -> Result<Vec<CodeAction>> {
+        let uri = self.sync(path, lang, text)?;
+        let range = json!({ "start": { "line": start.0, "character": start.1 }, "end": { "line": end.0, "character": end.1 } });
+        let diagnostics: Vec<Value> = self
+            .diagnostics
+            .lock()
+            .ok()
+            .and_then(|d| d.get(&uri).cloned())
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| {
+                let line = |p: &str| d.pointer(p).and_then(Value::as_u64).unwrap_or(0) as u32;
+                line("/range/start/line") <= end.0 && line("/range/end/line") >= start.0
+            })
+            .collect();
+        let params = json!({ "textDocument": { "uri": uri }, "range": range, "context": { "diagnostics": diagnostics, "triggerKind": 1 } });
+        let result = self.request("textDocument/codeAction", params, timeout)?;
+        Ok(result.as_array().into_iter().flatten().filter_map(parse_code_action).collect())
+    }
+
+    /// The edits of a code action: its own, resolved, or what its command
+    /// asked to apply.
+    pub fn code_action_edits(&self, action: &CodeAction) -> Result<Vec<FileEdit>> {
+        let mut edits = action.edit.clone().unwrap_or_default();
+        let mut command = action.command.clone();
+        if action.edit.is_none() && action.raw.get("data").is_some() {
+            let resolved = self.request("codeAction/resolve", action.raw.clone(), Duration::from_secs(10))?;
+            if let Some(edit) = resolved.get("edit") {
+                edits = parse_workspace_edit(edit);
+            }
+            command = resolved.get("command").cloned().or(command);
+        }
+        if let Some(command) = command {
+            // A Command, or a CodeAction's command field.
+            let (name, arguments) = match command.get("command") {
+                Some(Value::String(name)) => (name.clone(), command.get("arguments").cloned().unwrap_or(json!([]))),
+                _ => return Ok(edits),
+            };
+            self.applied.lock().map_err(|_| anyhow!("poisoned"))?.clear();
+            self.request("workspace/executeCommand", json!({ "command": name, "arguments": arguments }), Duration::from_secs(10))?;
+            edits.extend(std::mem::take(&mut *self.applied.lock().map_err(|_| anyhow!("poisoned"))?));
+        }
+        Ok(edits)
     }
 
     pub fn shutdown(&self) {

@@ -687,3 +687,18 @@ IntelliJ 的 Code › Override Methods（Ctrl+O）和 Implement Methods（Ctrl+I
 | 签名里类型的 import、同名不同参数的重载区分（按名字排除已有成员）、Kotlin `super<Interface>` 限定、Copy JavaDoc、按类分组的树形列表、Insert @Override 选项 | ❌ 未做 |
 
 Linux 实测（Xvfb）：接口 `Shape`（`val label`、`fun area(scale: Double = 1.0)`、有默认实现的 `describe()`）、抽象类 `Base<T> : Shape`（`abstract fun accept(item: T)`、`open fun reset()`）、`class Circle : Base<Int>()`；在 Circle 里 Ctrl+I 列出 `accept(item: Int) Base`、`label: String Shape`、`area(scale: Double): Double Shape` 且全选，确定后生成三段 `TODO("Not yet implemented")`；Ctrl+O 列出 `reset()`、`describe()`、`equals`、`hashCode`、`toString`，选 describe 和 toString 后生成 `return super.describe()` / `return super.toString()`。
+
+## 37. 语言服务器：语义 Rename 与 Alt+Enter 代码操作（2026-10-16）
+
+装了语言服务器的语言（Kotlin 的 JetBrains `kotlin-lsp`、Java 的 `jdtls`、Rust 的 `rust-analyzer` 等，按 Settings 里的 Language Servers 配置，默认在 PATH 上找到就用；可关闭或改命令）在跳转 / Find Usages / 悬停之外，补上了需要类型信息的两项。代码：`src/index/lsp.rs`（rename、codeAction、codeAction/resolve、executeCommand、workspace/applyEdit、publishDiagnostics）、`src/index/service.rs`（`server_references`、`code_actions`）、`src/ui/file_editor/fixes.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| Rename（Shift+F6）语义化：有语言服务器时，对话框里的代码出现位置改用服务器的 `textDocument/references`（只列这个符号，不再整词匹配同名的其他符号），注释和字符串里的仍由索引给出供勾选；服务器还在索引时最多等 20 秒；没有服务器时照旧按索引整词匹配 | ✅ |
+| Alt+Enter 加入服务器的代码操作：先显示编辑器自己的修复和意图，服务器的 `textDocument/codeAction`（快速修复、重构）返回后追加到列表（原本没有项时直接弹出）；服务器标记的首选修复和 quickfix 排在前面；请求带上服务器发布的该行诊断 | ✅ |
+| 应用：操作自带的编辑、`codeAction/resolve` 后的编辑、或执行其命令时服务器通过 `workspace/applyEdit` 发来的编辑；当前文件作为一次可撤销的编辑（光标随之移动），其他文件写盘后重新加载、重新索引 | ✅ |
+| 服务器诊断显示在编辑器和 Problems 里、补全改用服务器、Inline / Extract Method 等需要对话框的重构、文件创建 / 重命名类的 workspace edit、Code › Optimize Imports 走服务器 | ❌ 未做 |
+
+Kotlin 说明：Junction 默认不常驻 Kotlin 语言服务（省 1–2 GB 内存）；要语义 Rename 和类型相关的快速修复，安装 JetBrains 的 kotlin-lsp（github.com/Kotlin/kotlin-lsp）并让 `kotlin-lsp` 在 PATH 上，或在 Settings 的 Language Servers 里填它的启动命令。本环境的网络策略不允许下载 kotlin-lsp，所以用同样走 LSP 的 rust-analyzer 验证了这套机制。
+
+Linux 实测（Xvfb，rust-analyzer 1.97）：Rust 项目里 Shift+F6 重命名函数 `compute`，对话框列出 main.rs 两处和 util.rs 的 `super::compute(x)`，而 util.rs 里另一个函数的同名参数 `compute` 没有列入（整词匹配会列入）；`BTreeMap::new()` 上 Alt+Enter 出现服务器的 “Import `std::collections::BTreeMap`” / “Qualify as …”，回车后文件顶部加上 `use std::collections::BTreeMap;`；`compute(2)` 的 `2` 上出现 “Extract into variable” 等重构，选中后（经 codeAction/resolve）生成 `let x = 2;` 并替换。
