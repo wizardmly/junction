@@ -1,7 +1,7 @@
 //! Line breakpoints and watches kept across sessions, as IntelliJ keeps
 //! them in the workspace: `breakpoints.json` in the settings folder, each a
 //! file's absolute path, a 0-based line, whether it's enabled and its
-//! condition; `watches.json`, the Watches' expressions.
+//! condition and what a hit does; `watches.json`, the Watches' expressions.
 
 use std::path::{Path, PathBuf};
 
@@ -16,16 +16,36 @@ pub struct SavedBreakpoint {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
+    /// Suspend execution; off, a hit only logs.
+    #[serde(default = "enabled", skip_serializing_if = "is_true")]
+    pub suspend: bool,
+    /// "Breakpoint hit" message.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub log_message: bool,
+    /// Stack trace.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub log_stack: bool,
+    /// Evaluate and log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_expression: Option<String>,
 }
 
 impl SavedBreakpoint {
     pub fn new(file: &str, line: u32) -> Self {
-        Self { file: file.to_owned(), line, enabled: true, condition: None }
+        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None }
     }
 }
 
 fn enabled() -> bool {
     true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn store_path() -> Option<PathBuf> {
@@ -81,7 +101,8 @@ mod tests {
     fn round_trips() {
         let path = std::env::temp_dir().join(format!("junction-breakpoints-{}/breakpoints.json", std::process::id()));
         assert!(load_from(&path).is_empty());
-        let list = vec![SavedBreakpoint::new("/p/A.kt", 4), SavedBreakpoint { condition: Some("x > 1".into()), enabled: false, ..SavedBreakpoint::new("/p/B.kt", 2) }];
+        let logging = SavedBreakpoint { suspend: false, log_message: true, log_expression: Some("x".into()), ..SavedBreakpoint::new("/p/D.kt", 3) };
+        let list = vec![SavedBreakpoint::new("/p/A.kt", 4), SavedBreakpoint { condition: Some("x > 1".into()), enabled: false, ..SavedBreakpoint::new("/p/B.kt", 2) }, logging];
         save_to(&path, &list);
         assert_eq!(load_from(&path), list);
         // Saved before conditions existed: enabled, unconditional.

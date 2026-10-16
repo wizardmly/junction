@@ -1,7 +1,8 @@
 //! Line breakpoints and the execution point in the editor, as IntelliJ's
 //! new UI shows them: a click on a line number (or Ctrl+F8) toggles a
 //! breakpoint, drawn over the line number, its line tinted red; while
-//! paused, the frame's line is tinted blue. Run to Cursor (Alt+F9) and
+//! paused, the frame's line is tinted blue. Shift+click adds a logging
+//! breakpoint, drawn yellow: it prints its hits and doesn't suspend. Run to Cursor (Alt+F9) and
 //! Debug the test at the caret (Ctrl+Shift+F9) start here too.
 
 use gpui_kit::component::input::RopeExt as _;
@@ -15,6 +16,7 @@ use gpui_kit::{
 
 use super::FileEditor;
 use crate::domain::testing;
+use crate::infra::breakpoint_store::SavedBreakpoint;
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::debug_service::DebugService;
@@ -134,10 +136,13 @@ impl FileEditor {
                         window.paint_quad(gpui_kit::fill(cell, background));
                         let icon_size = px(14.);
                         let rect = Bounds::new(point(column.1 - icon_size - px(4.), *top + (line_height - icon_size) / 2.), size(icon_size, icon_size));
-                        let icon = match (mark.enabled, mark.verified) {
-                            (false, _) => icons::BREAKPOINT_DISABLED,
-                            (true, true) => icons::BREAKPOINT_VALID,
-                            (true, false) => icons::BREAKPOINT,
+                        let icon = match (mark.enabled, mark.verified, mark.suspend) {
+                            (false, _, true) => icons::BREAKPOINT_DISABLED,
+                            (true, true, true) => icons::BREAKPOINT_VALID,
+                            (true, false, true) => icons::BREAKPOINT,
+                            (false, _, false) => icons::BREAKPOINT_UNSUSPENDENT_DISABLED,
+                            (true, true, false) => icons::BREAKPOINT_UNSUSPENDENT_VALID,
+                            (true, false, false) => icons::BREAKPOINT_UNSUSPENDENT,
                         };
                         for (path, rgba) in if dark { icon.dark } else { icon.light } {
                             let color: gpui_kit::Hsla = gpui_kit::rgba(*rgba).into();
@@ -152,8 +157,9 @@ impl FileEditor {
                             let _ = shaped.paint(point(x, rect.top()), rect.size.height, gpui_kit::TextAlign::Left, None, window, cx);
                         }
                     }
-                    // A click on a line number toggles its breakpoint; a
-                    // right-click on one opens its properties.
+                    // A click on a line number toggles its breakpoint (with
+                    // Shift, a logging one); a right-click on one opens its
+                    // properties.
                     let (file, service, editor) = (file.clone(), service.clone(), editor.clone());
                     let lines: Vec<u32> = marks.iter().map(|m| m.line).collect();
                     window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
@@ -178,7 +184,11 @@ impl FileEditor {
                             return;
                         }
                         cx.stop_propagation();
-                        service.update(cx, |s, cx| s.toggle_breakpoint(&file, line, cx));
+                        if e.modifiers.shift {
+                            service.update(cx, |s, cx| s.toggle_logging_breakpoint(&file, line, cx));
+                        } else {
+                            service.update(cx, |s, cx| s.toggle_breakpoint(&file, line, cx));
+                        }
                     });
                 },
             )
@@ -188,13 +198,19 @@ impl FileEditor {
     }
 }
 
-/// The breakpoint popup, as IntelliJ's: Enabled, Condition, Remove, Done.
+/// The breakpoint popup, as IntelliJ's: Enabled, Suspend execution,
+/// Condition, what a hit logs, Remove, Done.
 pub(super) struct BreakpointPopup {
     line: u32,
     at: Point<Pixels>,
     enabled: bool,
+    suspend: bool,
+    log_message: bool,
+    log_stack: bool,
+    log_expression_on: bool,
     condition: Entity<InputState>,
-    _enter: Subscription,
+    log_expression: Entity<InputState>,
+    _enter: [Subscription; 2],
 }
 
 impl FileEditor {
@@ -202,13 +218,26 @@ impl FileEditor {
         let Some(file) = self.breakpoint_file() else { return };
         let Some(saved) = DebugService::global(cx).read(cx).breakpoint(&file, line) else { return };
         let condition = cx.new(|cx| InputState::new(window, cx).default_value(saved.condition.clone().unwrap_or_default()).placeholder("Condition, e.g. i > 10"));
-        let _enter = cx.subscribe_in(&condition, window, |this, _, event: &InputEvent, window, cx| {
+        let log_expression = cx.new(|cx| InputState::new(window, cx).default_value(saved.log_expression.clone().unwrap_or_default()).placeholder("Expression, e.g. \"x = \" + x"));
+        let enter = |this: &mut Self, _: &Entity<InputState>, event: &InputEvent, window: &mut Window, cx: &mut Context<Self>| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.close_breakpoint_popup(true, window, cx);
             }
-        });
+        };
+        let _enter = [cx.subscribe_in(&condition, window, enter), cx.subscribe_in(&log_expression, window, enter)];
         condition.update(cx, |s, cx| s.focus(window, cx));
-        self.breakpoint_popup = Some(BreakpointPopup { line, at, enabled: saved.enabled, condition, _enter });
+        self.breakpoint_popup = Some(BreakpointPopup {
+            line,
+            at,
+            enabled: saved.enabled,
+            suspend: saved.suspend,
+            log_message: saved.log_message,
+            log_stack: saved.log_stack,
+            log_expression_on: saved.log_expression.is_some(),
+            condition,
+            log_expression,
+            _enter,
+        });
         cx.notify();
     }
 
@@ -217,8 +246,17 @@ impl FileEditor {
         let Some(popup) = self.breakpoint_popup.take() else { return };
         if apply {
             if let Some(file) = self.breakpoint_file() {
-                let condition = popup.condition.read(cx).value().to_string();
-                DebugService::global(cx).update(cx, |s, cx| s.set_breakpoint_properties(&file, popup.line, popup.enabled, Some(condition), cx));
+                let expression = popup.log_expression.read(cx).value().to_string();
+                let updated = SavedBreakpoint {
+                    enabled: popup.enabled,
+                    condition: Some(popup.condition.read(cx).value().to_string()),
+                    suspend: popup.suspend,
+                    log_message: popup.log_message,
+                    log_stack: popup.log_stack,
+                    log_expression: popup.log_expression_on.then_some(expression),
+                    ..SavedBreakpoint::new(&file, popup.line)
+                };
+                DebugService::global(cx).update(cx, |s, cx| s.set_breakpoint_properties(updated, cx));
             }
         }
         self.focus(window, cx);
@@ -253,7 +291,40 @@ impl FileEditor {
                             }
                             cx.notify();
                         })))
+                        .child(Checkbox::new("breakpoint-suspend").label("Suspend execution").checked(popup.suspend).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            if let Some(popup) = this.breakpoint_popup.as_mut() {
+                                popup.suspend = *checked;
+                            }
+                            cx.notify();
+                        })))
                         .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Condition:")).child(Input::new(&popup.condition).small()))
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(div().text_color(palette.text_secondary).child("Log:"))
+                                .child(Checkbox::new("breakpoint-log-message").label("\"Breakpoint hit\" message").checked(popup.log_message).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    if let Some(popup) = this.breakpoint_popup.as_mut() {
+                                        popup.log_message = *checked;
+                                    }
+                                    cx.notify();
+                                })))
+                                .child(Checkbox::new("breakpoint-log-stack").label("Stack trace").checked(popup.log_stack).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    if let Some(popup) = this.breakpoint_popup.as_mut() {
+                                        popup.log_stack = *checked;
+                                    }
+                                    cx.notify();
+                                })))
+                                .child(Checkbox::new("breakpoint-log-expression").label("Evaluate and log:").checked(popup.log_expression_on).on_click(cx.listener(|this, checked: &bool, window, cx| {
+                                    if let Some(popup) = this.breakpoint_popup.as_mut() {
+                                        popup.log_expression_on = *checked;
+                                        if *checked {
+                                            popup.log_expression.update(cx, |s, cx| s.focus(window, cx));
+                                        }
+                                    }
+                                    cx.notify();
+                                })))
+                                .child(Input::new(&popup.log_expression).small().disabled(!popup.log_expression_on)),
+                        )
                         .child(
                             h_flex()
                                 .gap_2()

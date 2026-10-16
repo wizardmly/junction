@@ -26,6 +26,9 @@ pub const BREAKPOINT: AsIcon = AsIcon { light: &[("as/breakpoint.l0.svg", 0xe557
 pub const BREAKPOINT_DISABLED: AsIcon = AsIcon { light: &[("as/breakpoint-disabled.l0.svg", 0xdb3b4bff)], dark: &[("as/breakpoint-disabled.d0.svg", 0xdb5c5cff)] };
 pub const BREAKPOINT_INVALID: AsIcon = AsIcon { light: &[("as/breakpoint-invalid.l0.svg", 0x6c707eff)], dark: &[("as/breakpoint-invalid.d0.svg", 0xced0d6ff)] };
 pub const BREAKPOINT_MUTED: AsIcon = AsIcon { light: &[("as/breakpoint-muted.l0.svg", 0x6c707eff)], dark: &[("as/breakpoint-muted.d0.svg", 0xced0d6ff)] };
+pub const BREAKPOINT_UNSUSPENDENT: AsIcon = AsIcon { light: &[("as/breakpoint-unsuspendent.l0.svg", 0xffaf0fff)], dark: &[("as/breakpoint-unsuspendent.d0.svg", 0xf2c55cff)] };
+pub const BREAKPOINT_UNSUSPENDENT_DISABLED: AsIcon = AsIcon { light: &[("as/breakpoint-unsuspendent-disabled.l0.svg", 0xffaf0fff)], dark: &[("as/breakpoint-unsuspendent-disabled.d0.svg", 0xf2c55cff)] };
+pub const BREAKPOINT_UNSUSPENDENT_VALID: AsIcon = AsIcon { light: &[("as/breakpoint-unsuspendent-valid.l0.svg", 0xffaf0fff), ("as/breakpoint-unsuspendent-valid.l1.svg", 0x6c707eff)], dark: &[("as/breakpoint-unsuspendent-valid.d0.svg", 0xf2c55cff), ("as/breakpoint-unsuspendent-valid.d1.svg", 0xced0d6ff)] };
 pub const BREAKPOINT_VALID: AsIcon = AsIcon { light: &[("as/breakpoint-valid.l0.svg", 0xe55765ff), ("as/breakpoint-valid.l1.svg", 0x6c707eff)], dark: &[("as/breakpoint-valid.d0.svg", 0xdb5c5cff), ("as/breakpoint-valid.d1.svg", 0xced0d6ff)] };
 pub const CHANGE_VIEW: AsIcon = AsIcon { light: &[("as/change-view.l0.svg", 0x6c707eff), ("as/change-view.l1.svg", 0xebecf0ff)], dark: &[("as/change-view.d0.svg", 0xced0d6ff), ("as/change-view.d1.svg", 0x43454aff)] };
 pub const CHECKED: AsIcon = AsIcon { light: &[("as/checked.l0.svg", 0x6c707eff)], dark: &[("as/checked.d0.svg", 0xced0d6ff)] };
@@ -89,6 +92,7 @@ pub const ENUM_KOTLIN: AsIcon = AsIcon { light: &[("as/enum-kotlin.l0.svg", 0xfa
 pub const EVALUATION_RESULT: AsIcon = AsIcon { light: &[("as/evaluation-result.l0.svg", 0x6c707eff)], dark: &[("as/evaluation-result.d0.svg", 0xced0d6ff)] };
 pub const EXACT_WORDS: AsIcon = AsIcon { light: &[("as/exact-words.l0.svg", 0x6c707eff)], dark: &[("as/exact-words.d0.svg", 0xced0d6ff)] };
 pub const EXCLUDE_ROOT: AsIcon = AsIcon { light: &[("as/exclude-root.l0.svg", 0xfce9d9ff), ("as/exclude-root.l1.svg", 0xf28c35ff)], dark: &[("as/exclude-root.d0.svg", 0x45322bff), ("as/exclude-root.d1.svg", 0xc77d55ff)] };
+pub const EXIT: AsIcon = AsIcon { light: &[("as/exit.l0.svg", 0x6c707eff), ("as/exit.l1.svg", 0xdb3b4bff)], dark: &[("as/exit.d0.svg", 0xced0d6ff), ("as/exit.d1.svg", 0xdb5c5cff)] };
 pub const EXPAND_ALL: AsIcon = AsIcon { light: &[("as/expand-all.l0.svg", 0x6c707eff)], dark: &[("as/expand-all.d0.svg", 0xced0d6ff)] };
 pub const EXPORT: AsIcon = AsIcon { light: &[("as/export.l0.svg", 0x6c707eff)], dark: &[("as/export.d0.svg", 0xced0d6ff)] };
 pub const EXTERNAL_LINK: AsIcon = AsIcon { light: &[("as/external-link.l0.svg", 0x6c707eff)], dark: &[("as/external-link.d0.svg", 0xced0d6ff)] };
@@ -383,6 +387,14 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/breakpoint-invalid.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-invalid.d0.svg")),
     ("as/breakpoint-muted.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-muted.l0.svg")),
     ("as/breakpoint-muted.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-muted.d0.svg")),
+    ("as/breakpoint-unsuspendent.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-unsuspendent.l0.svg")),
+    ("as/breakpoint-unsuspendent.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-unsuspendent.d0.svg")),
+    ("as/breakpoint-unsuspendent-disabled.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-unsuspendent-disabled.l0.svg")),
+    ("as/breakpoint-unsuspendent-disabled.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-unsuspendent-disabled.d0.svg")),
+    ("as/breakpoint-unsuspendent-valid.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-unsuspendent-valid.l0.svg")),
+    ("as/breakpoint-unsuspendent-valid.l1.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-unsuspendent-valid.l1.svg")),
+    ("as/breakpoint-unsuspendent-valid.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-unsuspendent-valid.d0.svg")),
+    ("as/breakpoint-unsuspendent-valid.d1.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-unsuspendent-valid.d1.svg")),
     ("as/breakpoint-valid.l0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-valid.l0.svg")),
     ("as/breakpoint-valid.l1.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-valid.l1.svg")),
     ("as/breakpoint-valid.d0.svg", include_bytes!("../../assets/as-icons/gen/breakpoint-valid.d0.svg")),
@@ -569,6 +581,10 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/exclude-root.l1.svg", include_bytes!("../../assets/as-icons/gen/exclude-root.l1.svg")),
     ("as/exclude-root.d0.svg", include_bytes!("../../assets/as-icons/gen/exclude-root.d0.svg")),
     ("as/exclude-root.d1.svg", include_bytes!("../../assets/as-icons/gen/exclude-root.d1.svg")),
+    ("as/exit.l0.svg", include_bytes!("../../assets/as-icons/gen/exit.l0.svg")),
+    ("as/exit.l1.svg", include_bytes!("../../assets/as-icons/gen/exit.l1.svg")),
+    ("as/exit.d0.svg", include_bytes!("../../assets/as-icons/gen/exit.d0.svg")),
+    ("as/exit.d1.svg", include_bytes!("../../assets/as-icons/gen/exit.d1.svg")),
     ("as/expand-all.l0.svg", include_bytes!("../../assets/as-icons/gen/expand-all.l0.svg")),
     ("as/expand-all.d0.svg", include_bytes!("../../assets/as-icons/gen/expand-all.d0.svg")),
     ("as/export.l0.svg", include_bytes!("../../assets/as-icons/gen/export.l0.svg")),

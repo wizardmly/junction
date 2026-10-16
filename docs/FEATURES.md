@@ -456,7 +456,8 @@ Android 单元测试（`testDebugUnitTest`）和仪器测试未实测（容器�
 | 功能 | 状态 |
 |---|---|
 | 行断点：点行号或 Ctrl+F8（macOS ⌘F8）切换；红点画在行号位置（新 UI 样式），所在行淡红底；生效后变为带勾的 `breakpointValid`；跨会话保存在设置目录 `breakpoints.json`；编辑时随行移动 | ✅ |
-| 断点属性弹窗：右键断点弹出 “CalcTest.java:34”，Enabled 勾选、Condition 输入框（回车或 Done 应用，点外面也应用）、Remove；禁用的断点为空心 `breakpointDisabled` 且行不着色，有条件的断点点上显示 “?” | ✅（日志断点、Suspend 选项、More / Breakpoints 对话框未做） |
+| 断点属性弹窗：右键断点弹出 “CalcTest.java:34”，Enabled 勾选、Condition 输入框（回车或 Done 应用，点外面也应用）、Remove；禁用的断点为空心 `breakpointDisabled` 且行不着色，有条件的断点点上显示 “?” | ✅（More / Breakpoints 对话框、Suspend 的 All / Thread 选择未做） |
+| 日志断点：属性弹窗照 IntelliJ 加 “Suspend execution” 和 Log 区（“"Breakpoint hit" message”、“Stack trace”、“Evaluate and log:” 加表达式框）；Shift+点行号直接加一个不挂起、记录命中消息的断点；不挂起的断点画成黄点（expui 的 `breakpointUnsuspendent` 系列）。命中时（条件成立后）往 Debug 的 Console 打印 IntelliJ 的原文：“Breakpoint reached at com.example.calc.CalcTest.totals(CalcTest.java:34)”、“Breakpoint reached” 加每帧 `\tat …`、表达式的值（字符串原文、对象 `toString()`；出错为 “Unable to evaluate the expression "…" : …”），不挂起就接着跑；跨会话保存 | ✅ |
 | 条件断点：命中时在该帧求值条件，为 false 就继续运行；条件出错时照 IntelliJ 停下，并提示 “Failed to evaluate breakpoint condition '…'. Reason: …” | ✅ |
 | 断点设到类上：已加载的类直接设；没加载的类用 ClassPrepare（`包名.*`）等它加载再设，并按 SourceFile 过滤；一行在多个方法里有代码（lambda、构造器）时每处都设 | ✅ |
 | Debug 测试：测试 gutter 弹窗 “Debug 'CalcTest.adds'  Ctrl+Shift+F9”（macOS ⌃⇧D），Ctrl+Shift+F9 调试光标处的测试；Gradle 的测试 JVM 带 JDWP 挂起等待，Junction 连上、设断点后放行；测试结果照常进 Run 窗口 | ✅ |
@@ -469,9 +470,12 @@ Android 单元测试（`testDebugUnitTest`）和仪器测试未实测（容器�
 | 表达式：局部变量、`this` 的字段、当前类的静态字段、类名（`Math`、同包类、`java.util.Collections`）；字段和 Kotlin 属性（无字段时走 `getX()` / `isX()`）、数组下标和 `length`、实例 / 静态方法调用（按参数个数沿继承链找，参数自动拓宽和装箱）、`+ - * / %`、比较、`&& || !`、字符串拼接（对象调 `toString()`）、自动拆箱；错误信息照 IntelliJ（“Cannot find local variable 'y'”、“Method threw 'java.lang.NumberFormatException' exception.”） | ✅（lambda、new、类型转换、赋值、Kotlin 扩展函数未做） |
 | Debug 'app'：标题栏 Run 右边的 Debug 按钮、Shift+F9（macOS ⌃D）；构建、安装后以 `am start … -D` 启动（应用等调试器），通过 adb 的 `jdwp:<pid>` 连上进程，设断点后放行；Run 控制台显示 “Waiting for application to come online: …” | 🟡（只在模拟 adb 下验证：adb 服务端协议 + 真实 JVM，未在真机 / 模拟器验证） |
 | Attach debugger：Device Explorer 进程页右键 “Attach debugger”，附加到已在运行的可调试进程 | 🟡（同上） |
-| Detach、Attach Debugger to Android Process 对话框、Debug 'app' 时的 Logcat 联动 | ❌ 未做 |
+| Disconnect：Debug 工具栏 Stop 右边的按钮（expui `exit` 图标），JDWP `VirtualMachine.Dispose` 后断开，程序去掉断点继续运行（测试照常跑完出结果）；Console 显示 “Disconnected from the target VM, address: '127.0.0.1:…', transport: 'socket'” | ✅ |
+| Attach Debugger to Android Process 对话框、Debug 'app' 时的 Logcat 联动 | ❌ 未做 |
 
 求值实测（同一项目的 `totals` 测试，循环 `sum += items.get(i)`）：右键第 34 行断点输入条件 `i == 2` 回车，断点显示 “?”；Debug 后只在第三次循环停下（`sum = 3`、`i = 2`），`items = {ArrayList@437} size = 3`，展开为 `[0] = {Integer@447} 1` 等；输入 `items.get(i) * 10` 回车得 `30`；Ctrl+Shift+Enter 加 Watch `sum + i = 5`、`items.contains(7) = false`，重启后 Watch 仍在。另有对真实 JVM 的求值集成测试（算术、字符串、字段、getter、集合、Map、静态方法、异常、拆箱、条件）。
+
+日志断点和 Disconnect 实测（同一 `totals` 测试）：第 34 行设不挂起的日志断点，勾 “"Breakpoint hit" message”、Evaluate and log `"sum = " + sum`，第 36 行普通断点；Debug 后 Console 依次打印三遍 “Breakpoint reached at com.example.calc.CalcTest.totals(CalcTest.java:34)” 和 `sum = 0` / `sum = 1` / `sum = 3`，然后停在第 36 行（`sum = 6`）；点 Disconnect，Console 显示 “Disconnected from the target VM, address: '127.0.0.1:37657', transport: 'socket'”，测试跑完并通过。Shift+点第 32 行出现黄点，`breakpoints.json` 记下 `suspend: false`、`log_message: true`。
 
 Linux 实测（Xvfb，JDK 21 + Gradle 8.14 的 calc 项目，未同步）：点第 12 行行号设断点 → `adds` 的 gutter 弹窗选 “Debug 'CalcTest.adds'” → 约 20 秒（含 Gradle 守护进程启动）后在第 12 行暂停，断点变为已验证，Debug 窗口自动打开，线程 `"Test worker"@1: SUSPENDED`，`this = {CalcTest@444}`；F8 到第 13 行；F9 结束，Console 显示 “Connected to the target VM, address: '127.0.0.1:…', transport: 'socket'” 和 “Disconnected from the target VM”，Run 窗口 “1 test passed”。再用 Ctrl+Shift+F9 调试、F7 步入 `Calc.add`：自动打开 Calc.java 第 4 行，变量 `a = 2`、`b = 2`，栈帧 `add:4, Calc` / `adds:12, CalcTest`。JDWP 客户端另有对真实 JVM 的集成测试（断点、局部变量、数组和对象展开、Step Into / Over / Out）。
 

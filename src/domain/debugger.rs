@@ -202,6 +202,9 @@ pub trait DebugVm: Send + Sync {
     fn next_events(&self, timeout: Duration) -> Result<Option<EventSet>, String>;
     /// Stop: `VirtualMachine.Exit`.
     fn exit(&self, code: i32);
+    /// Detach: `VirtualMachine.Dispose`; the VM drops the debugger's
+    /// requests and resumes its threads.
+    fn dispose(&self);
 }
 
 // --- Rules --------------------------------------------------------------------

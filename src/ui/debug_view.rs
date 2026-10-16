@@ -1,5 +1,5 @@
 //! The Debug tool window, as Android Studio's (new UI): the session's tab,
-//! the toolbar (Resume, Pause, Stop; Step Over, Step Into, Step Out, Run
+//! the toolbar (Resume, Pause, Stop, Disconnect; Step Over, Step Into, Step Out, Run
 //! to Cursor), and the "Threads & Variables" tab: the thread list and the
 //! paused thread's frames on the left, the selected frame's variables as a
 //! tree on the right; the "Console" tab has what the session printed.
@@ -161,6 +161,7 @@ impl DebugView {
             .child(button("debug-resume", icons::RESUME, format!("Resume Program  {}", shortcut("resume")), paused, |s, cx| s.resume(cx)))
             .child(button("debug-pause", icons::PAUSE, "Pause Program".into(), running, |s, cx| s.pause(cx)))
             .child(button("debug-stop", icons::STOP, stop_label().into(), active, |s, cx| s.stop(cx)))
+            .child(button("debug-disconnect", icons::EXIT, "Disconnect: the program runs on without the debugger".into(), paused || running, |s, cx| s.detach(cx)))
             .child(div().w(px(1.)).h(px(16.)).mx_1().bg(cx.palette().border))
             .child(button("debug-step-over", icons::STEP_OVER, format!("Step Over  {}", shortcut("over")), paused, |s, cx| s.step(StepDepth::Over, cx)))
             .child(button("debug-step-into", icons::STEP_INTO, format!("Step Into  {}", shortcut("into")), paused, |s, cx| s.step(StepDepth::Into, cx)))

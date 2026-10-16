@@ -26,12 +26,36 @@ pub struct LineBreakpoint {
     pub line: u32,
     /// Stops only when this holds (IntelliJ's Condition).
     pub condition: Option<String>,
+    pub actions: BreakpointActions,
 }
 
 impl LineBreakpoint {
     pub fn new(path: &Path, package: String, line: u32) -> Self {
         let source_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Self { path: path.to_path_buf(), source_name, package, line, condition: None }
+        Self { path: path.to_path_buf(), source_name, package, line, condition: None, actions: BreakpointActions::default() }
+    }
+}
+
+/// What a hit does, as IntelliJ's breakpoint properties: Suspend
+/// execution, and logging to the console ("Breakpoint hit" message, Stack
+/// trace, Evaluate and log).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BreakpointActions {
+    pub suspend: bool,
+    pub log_message: bool,
+    pub log_stack: bool,
+    pub log_expression: Option<String>,
+}
+
+impl Default for BreakpointActions {
+    fn default() -> Self {
+        Self { suspend: true, log_message: false, log_stack: false, log_expression: None }
+    }
+}
+
+impl BreakpointActions {
+    pub fn logs(&self) -> bool {
+        self.log_message || self.log_stack || self.log_expression.is_some()
     }
 }
 
@@ -55,6 +79,8 @@ pub enum SessionEvent {
     Verified { path: PathBuf, line: u32 },
     /// A line for the Debug window's console: a condition that failed.
     Message(String),
+    /// What a logging breakpoint printed, for the console only.
+    Log(String),
     /// The program ended, or was stopped or detached.
     Ended,
 }
@@ -93,6 +119,14 @@ impl DebugSession {
         let mut state = self.state.lock().unwrap();
         if let Some(placed) = state.breakpoints.iter_mut().find(|p| p.breakpoint.path == path && p.breakpoint.line == line) {
             placed.breakpoint.condition = condition;
+        }
+    }
+
+    /// Changes what a breakpoint's hit does.
+    pub fn set_actions(&self, path: &Path, line: u32, actions: BreakpointActions) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(placed) = state.breakpoints.iter_mut().find(|p| p.breakpoint.path == path && p.breakpoint.line == line) {
+            placed.breakpoint.actions = actions;
         }
     }
 
@@ -230,6 +264,16 @@ impl DebugSession {
         self.vm.exit(1);
     }
 
+    /// Detach: the program runs on without the debugger, its breakpoints
+    /// gone (`VirtualMachine.Dispose`).
+    pub fn detach(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.ended = true;
+        state.paused = None;
+        drop(state);
+        self.vm.dispose();
+    }
+
     /// Another suspended thread's frames (the Frames view's thread list).
     pub fn frames(&self, thread: u64) -> Result<Vec<Frame>, String> {
         self.vm.frames(thread)
@@ -265,7 +309,7 @@ impl DebugSession {
         let mut state = self.state.lock().unwrap();
         let mut resume = false;
         let mut paused: Option<(u64, PauseReason)> = None;
-        let mut condition: Option<String> = None;
+        let mut hit: Option<LineBreakpoint> = None;
         for event in set.events {
             match event {
                 DebugEvent::VmDeath => {
@@ -291,7 +335,7 @@ impl DebugSession {
                 DebugEvent::Breakpoint { thread, request, .. } => {
                     let reason = if state.run_to.contains(&request) { PauseReason::Paused } else { PauseReason::Breakpoint };
                     if reason == PauseReason::Breakpoint {
-                        condition = state.breakpoints.iter().find(|p| p.requests.contains(&request)).and_then(|p| p.breakpoint.condition.clone());
+                        hit = state.breakpoints.iter().find(|p| p.requests.contains(&request)).map(|p| p.breakpoint.clone());
                     }
                     paused = Some((thread, reason));
                 }
@@ -300,28 +344,31 @@ impl DebugSession {
                 DebugEvent::VmStart { .. } | DebugEvent::ThreadStart { .. } | DebugEvent::ThreadDeath { .. } => {}
             }
         }
-        if let (Some((thread, _)), Some(text)) = (paused, condition.as_deref()) {
+        if let (Some((thread, PauseReason::Breakpoint)), Some(breakpoint)) = (paused, hit) {
             // The condition, in the hit frame: false runs on.
             drop(state);
             let frames = self.vm.frames(thread)?;
-            let holds = match frames.first() {
-                Some(frame) => {
-                    let locals = self.vm.locals(thread, frame)?;
-                    self.evaluating.fetch_add(1, Ordering::SeqCst);
-                    let holds = evaluate::condition_holds(&Scope { vm: &*self.vm, thread, frame, locals: &locals }, text);
-                    self.evaluating.fetch_sub(1, Ordering::SeqCst);
-                    holds
+            let mut stop = breakpoint.actions.suspend;
+            if let Some(text) = breakpoint.condition.as_deref() {
+                match self.in_frame(thread, frames.first(), |scope| evaluate::condition_holds(scope, text)) {
+                    Some(Ok(false)) => {
+                        self.vm.resume()?;
+                        return Ok(out);
+                    }
+                    Some(Ok(true)) | None => {}
+                    // IntelliJ stops, and says why.
+                    Some(Err(e)) => {
+                        out.push(SessionEvent::Message(format!("Failed to evaluate breakpoint condition '{text}'. Reason: {e}")));
+                        stop = true;
+                    }
                 }
-                None => Ok(true),
-            };
-            match holds {
-                Ok(false) => {
-                    self.vm.resume()?;
-                    return Ok(out);
-                }
-                Ok(true) => {}
-                // IntelliJ stops, and says why.
-                Err(e) => out.push(SessionEvent::Message(format!("Failed to evaluate breakpoint condition '{text}'. Reason: {e}"))),
+            }
+            if breakpoint.actions.logs() {
+                out.push(SessionEvent::Log(self.hit_log(thread, &frames, &breakpoint)));
+            }
+            if !stop {
+                self.vm.resume()?;
+                return Ok(out);
             }
             state = self.state.lock().unwrap();
         }
@@ -342,6 +389,55 @@ impl DebugSession {
             self.vm.resume()?;
         }
         Ok(out)
+    }
+
+    /// Runs an evaluation in a frame of the thread a hit suspended; none
+    /// without frames.
+    fn in_frame<T>(&self, thread: u64, frame: Option<&Frame>, f: impl FnOnce(&Scope) -> Result<T, String>) -> Option<Result<T, String>> {
+        let frame = frame?;
+        let locals = match self.vm.locals(thread, frame) {
+            Ok(locals) => locals,
+            Err(e) => return Some(Err(e)),
+        };
+        self.evaluating.fetch_add(1, Ordering::SeqCst);
+        let result = f(&Scope { vm: &*self.vm, thread, frame, locals: &locals });
+        self.evaluating.fetch_sub(1, Ordering::SeqCst);
+        Some(result)
+    }
+
+    /// What a logging breakpoint prints, in IntelliJ's words: "Breakpoint
+    /// reached at a.CalcTest.adds(CalcTest.java:12)", the stack, the
+    /// expression's value.
+    fn hit_log(&self, thread: u64, frames: &[Frame], breakpoint: &LineBreakpoint) -> String {
+        let location = |frame: &Frame| {
+            let source = frame.source.clone().unwrap_or_else(|| "Unknown Source".into());
+            match frame.line {
+                Some(line) => format!("{}.{}({source}:{line})", frame.class, frame.method),
+                None => format!("{}.{}({source})", frame.class, frame.method),
+            }
+        };
+        let actions = &breakpoint.actions;
+        let mut lines = Vec::new();
+        if actions.log_message {
+            let at = frames.first().map_or_else(|| format!("{}:{}", breakpoint.source_name, breakpoint.line), location);
+            lines.push(format!("Breakpoint reached at {at}"));
+        }
+        if actions.log_stack {
+            let mut trace = String::from("Breakpoint reached");
+            for frame in frames {
+                trace.push_str(&format!("\n\tat {}", location(frame)));
+            }
+            lines.push(trace);
+        }
+        if let Some(text) = actions.log_expression.as_deref() {
+            // Frames taken before the condition's calls are stale.
+            let frame = self.frame_at(thread, 0).ok();
+            let value = self
+                .in_frame(thread, frame.as_ref(), |scope| evaluate::evaluate(scope, text).and_then(|v| evaluate::as_string(scope.vm, thread, &v)))
+                .unwrap_or_else(|| Err("Frame is not available".into()));
+            lines.push(value.unwrap_or_else(|e| format!("Unable to evaluate the expression \"{text}\" : {e}")));
+        }
+        lines.join("\n")
     }
 }
 
@@ -459,6 +555,9 @@ mod tests {
         fn exit(&self, code: i32) {
             self.log(format!("exit {code}"));
         }
+        fn dispose(&self) {
+            self.log("dispose".into());
+        }
     }
 
     fn vm() -> Arc<FakeVm> {
@@ -549,6 +648,41 @@ mod tests {
         vm.send(Suspend::All, hit());
         assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
         assert_eq!(vm.take_log(), ["resume"]);
+    }
+
+    #[test]
+    fn logging_breakpoints_print_and_may_run_on() {
+        let vm = vm();
+        vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
+        let session = DebugSession::new(vm.clone());
+        let mut breakpoint = breakpoint(5);
+        breakpoint.actions = BreakpointActions { suspend: false, log_message: true, log_stack: true, log_expression: Some("x + 1".into()) };
+        session.add_breakpoint(breakpoint.clone()).unwrap();
+        let request = *vm.next.lock().unwrap();
+        vm.take_log();
+        let hit = || vec![DebugEvent::Breakpoint { thread: 1, location: Location { class: 10, method: 1, index: 4 }, request }];
+        // Not suspending: printed in IntelliJ's words, then runs on.
+        vm.send(Suspend::All, hit());
+        assert_eq!(
+            session.poll(Duration::ZERO),
+            Ok(vec![SessionEvent::Log("Breakpoint reached at a.CalcTest.on1(CalcTest.java:5)\nBreakpoint reached\n\tat a.CalcTest.on1(CalcTest.java:5)\n5".into())])
+        );
+        assert_eq!(vm.take_log(), ["resume"]);
+        // An expression that fails says so; suspending again, it pauses.
+        session.set_actions(&breakpoint.path, 5, BreakpointActions { log_expression: Some("missing".into()), ..BreakpointActions::default() });
+        vm.send(Suspend::All, hit());
+        let events = session.poll(Duration::ZERO).unwrap();
+        assert!(matches!(&events[0], SessionEvent::Log(m) if m.starts_with("Unable to evaluate the expression \"missing\" : ")), "{events:?}");
+        assert!(matches!(events[1], SessionEvent::Paused { reason: PauseReason::Breakpoint, .. }));
+        // A false condition neither logs nor stops.
+        session.set_condition(&breakpoint.path, 5, Some("x > 5".into()));
+        vm.take_log();
+        vm.send(Suspend::All, hit());
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        // Detach lets the program run on.
+        session.detach();
+        assert!(session.is_ended());
+        assert_eq!(vm.take_log(), ["resume", "dispose"]);
     }
 
     #[test]

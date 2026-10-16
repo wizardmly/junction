@@ -755,6 +755,12 @@ impl DebugVm for JdwpVm {
         let _ = self.command(VM, 10, &code.to_be_bytes());
     }
 
+    fn dispose(&self) {
+        let _ = self.command(VM, 6, &[]);
+        // The VM forgets the debugger; the connection ends with it.
+        let _ = self.inner.writer.lock().unwrap().shutdown(std::net::Shutdown::Both);
+    }
+
 }
 
 /// An `Event.Composite` packet. Events of kinds never requested end the

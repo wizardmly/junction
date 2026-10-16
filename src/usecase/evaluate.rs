@@ -517,6 +517,26 @@ pub fn describe(vm: &dyn DebugVm, thread: u64, value: &Value) -> Option<String> 
     }
 }
 
+/// A value as text, as IntelliJ's Evaluate and log prints it: a string's
+/// own text, a char itself, an object's `toString()`.
+pub fn as_string(vm: &dyn DebugVm, thread: u64, value: &Value) -> Result<String, String> {
+    let id = match value {
+        Value::String { text, .. } => return Ok(text.clone()),
+        Value::Char(c) => return Ok(char::from_u32(*c as u32).map(String::from).unwrap_or_default()),
+        Value::Object { id, .. } | Value::Array { id, .. } => *id,
+        other => return Ok(value_text(other)),
+    };
+    for (at, _) in chain(vm, vm.class_of(id)?.id)? {
+        if let Some(m) = vm.methods(at)?.into_iter().find(|m| m.name == "toString" && m.signature == "()Ljava/lang/String;" && !m.is_static) {
+            return match vm.invoke(thread, at, Some(id), m.id, &[])? {
+                Value::String { text, .. } => Ok(text),
+                other => Ok(value_text(&other)),
+            };
+        }
+    }
+    Ok(value_text(value))
+}
+
 /// An expanded value's children: a java.util collection's elements (its
 /// `toArray()`, a map's entries), else its fields or an array's elements.
 pub fn children(vm: &dyn DebugVm, thread: u64, value: &Value, limit: usize) -> Result<Vec<Variable>, String> {

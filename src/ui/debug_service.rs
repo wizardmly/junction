@@ -18,7 +18,7 @@ use crate::domain::testing::TestMark;
 use crate::infra::breakpoint_store::{self, SavedBreakpoint};
 use crate::infra::jdwp_client::JdwpVm;
 use crate::ui::test_service::TestService;
-use crate::usecase::debug_session::{DebugSession, LineBreakpoint, PauseReason, SessionEvent};
+use crate::usecase::debug_session::{BreakpointActions, DebugSession, LineBreakpoint, PauseReason, SessionEvent};
 
 /// How long Debug waits for the test JVM to listen (Gradle builds first).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -89,6 +89,8 @@ pub struct BreakpointMark {
     pub verified: bool,
     pub enabled: bool,
     pub conditional: bool,
+    /// Off: a logging breakpoint, drawn yellow.
+    pub suspend: bool,
 }
 
 /// The Debug window's session.
@@ -108,6 +110,8 @@ pub struct DebugRun {
     pub variables_loading: bool,
     /// What the session printed about itself: "Connected to the target VM…".
     pub console: Vec<SharedString>,
+    /// "address: '127.0.0.1:5005', transport: 'socket'", once connected.
+    pub target: Option<String>,
 }
 
 /// Finds a frame's source in the project: the path suffix
@@ -160,7 +164,7 @@ impl DebugService {
         self.breakpoints
             .iter()
             .filter(|b| b.file == file)
-            .map(|b| BreakpointMark { line: b.line, verified: self.verified.contains(&(b.file.clone(), b.line)), enabled: b.enabled, conditional: b.condition.is_some() })
+            .map(|b| BreakpointMark { line: b.line, verified: self.verified.contains(&(b.file.clone(), b.line)), enabled: b.enabled, conditional: b.condition.is_some(), suspend: b.suspend })
             .collect()
     }
 
@@ -169,24 +173,28 @@ impl DebugService {
         self.breakpoints.iter().find(|b| b.file == file && b.line == line).cloned()
     }
 
-    /// The breakpoint popup's Enabled and Condition.
-    pub fn set_breakpoint_properties(&mut self, file: &str, line: u32, enabled: bool, condition: Option<String>, cx: &mut Context<Self>) {
-        let condition = condition.map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
+    /// The breakpoint popup's properties: Enabled, Condition, Suspend
+    /// execution and what a hit logs.
+    pub fn set_breakpoint_properties(&mut self, updated: SavedBreakpoint, cx: &mut Context<Self>) {
+        let trimmed = |text: Option<String>| text.map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
+        let (file, line) = (updated.file.clone(), updated.line);
         let Some(saved) = self.breakpoints.iter_mut().find(|b| b.file == file && b.line == line) else { return };
         let was_enabled = saved.enabled;
-        saved.enabled = enabled;
-        saved.condition = condition.clone();
+        *saved = SavedBreakpoint { condition: trimmed(updated.condition), log_expression: trimmed(updated.log_expression), ..updated };
         let breakpoint = saved.clone();
         breakpoint_store::save(&self.breakpoints);
         if let Some(session) = self.session.clone().filter(|s| !s.is_ended()) {
-            let path = PathBuf::from(file);
-            match (was_enabled, enabled) {
+            let path = PathBuf::from(&file);
+            match (was_enabled, breakpoint.enabled) {
                 (true, false) => {
-                    self.verified.remove(&(file.to_owned(), line));
+                    self.verified.remove(&(file, line));
                     cx.background_spawn(async move { session.remove_breakpoint(&path, line + 1) }).detach();
                 }
                 (false, true) => self.place_in_session(session, breakpoint, cx),
-                _ => session.set_condition(&path, line + 1, condition),
+                _ => {
+                    session.set_condition(&path, line + 1, breakpoint.condition.clone());
+                    session.set_actions(&path, line + 1, actions(&breakpoint));
+                }
             }
         }
         cx.notify();
@@ -214,6 +222,17 @@ impl DebugService {
 
     /// Toggle Line Breakpoint (Ctrl+F8, a click on the line number).
     pub fn toggle_breakpoint(&mut self, file: &str, line: u32, cx: &mut Context<Self>) {
+        self.toggle(SavedBreakpoint::new(file, line), cx);
+    }
+
+    /// Shift+click on a line number, as IntelliJ's: a breakpoint that
+    /// doesn't suspend and logs its hits ("Breakpoint hit" message).
+    pub fn toggle_logging_breakpoint(&mut self, file: &str, line: u32, cx: &mut Context<Self>) {
+        self.toggle(SavedBreakpoint { suspend: false, log_message: true, ..SavedBreakpoint::new(file, line) }, cx);
+    }
+
+    fn toggle(&mut self, new: SavedBreakpoint, cx: &mut Context<Self>) {
+        let (file, line) = (new.file.as_str(), new.line);
         let session = self.session.clone().filter(|s| !s.is_ended());
         if let Some(ix) = self.breakpoints.iter().position(|b| b.file == file && b.line == line) {
             self.breakpoints.remove(ix);
@@ -223,7 +242,7 @@ impl DebugService {
                 cx.background_spawn(async move { session.remove_breakpoint(&path, line + 1) }).detach();
             }
         } else {
-            let saved = SavedBreakpoint::new(file, line);
+            let saved = new.clone();
             self.breakpoints.push(saved.clone());
             if let Some(session) = session {
                 self.place_in_session(session, saved, cx);
@@ -327,6 +346,7 @@ impl DebugService {
             variables: Vec::new(),
             variables_loading: false,
             console: vec![first_line.into()],
+            target: None,
         });
         cx.emit(DebugServiceEvent::Show);
         cx.notify();
@@ -391,6 +411,11 @@ impl DebugService {
                 }
                 cx.emit(DebugServiceEvent::Error { title: "Breakpoint condition".into(), message: text });
             }
+            SessionEvent::Log(text) => {
+                if let Some(run) = self.run.as_mut() {
+                    run.console.extend(text.lines().map(|l| SharedString::from(l.to_owned())));
+                }
+            }
             SessionEvent::Ended => {}
         }
         cx.notify();
@@ -413,7 +438,11 @@ impl DebugService {
                 if let Some(e) = error {
                     run.console.push(e.to_owned().into());
                 }
-                run.console.push("Disconnected from the target VM".into());
+                let disconnected = match &run.target {
+                    Some(target) => format!("Disconnected from the target VM, {target}"),
+                    None => "Disconnected from the target VM".into(),
+                };
+                run.console.push(disconnected.into());
                 run.status = DebugStatus::Ended;
                 run.frames.clear();
                 run.variables.clear();
@@ -496,6 +525,19 @@ impl DebugService {
         if connecting {
             TestService::global(cx).update(cx, |s, cx| s.stop(cx));
         }
+    }
+
+    /// Detach: the debugger lets go; the program runs on without it.
+    pub fn detach(&mut self, cx: &mut Context<Self>) {
+        if !self.run.as_ref().is_some_and(|r| matches!(r.status, DebugStatus::Running | DebugStatus::Paused)) {
+            return;
+        }
+        if let Some(session) = self.session.take() {
+            cx.background_spawn(async move { session.detach() }).detach();
+        }
+        let generation = self.generation;
+        self.ended(generation, None, cx);
+        self.generation += 1;
     }
 
     /// Selects a frame in the Frames view: its variables, its place in the
@@ -734,6 +776,7 @@ async fn drive(this: gpui_kit::WeakEntity<DebugService>, cx: &mut gpui_kit::Asyn
         if let Some(run) = this.run.as_mut() {
             run.status = DebugStatus::Running;
             run.console.push(format!("Connected to the target VM, {target}").into());
+            run.target = Some(target.clone());
         }
         cx.notify();
         this.breakpoints.clone()
@@ -786,7 +829,12 @@ fn line_breakpoint(saved: &SavedBreakpoint) -> LineBreakpoint {
     let text = std::fs::read_to_string(&saved.file).unwrap_or_default();
     let mut breakpoint = LineBreakpoint::new(Path::new(&saved.file), debugger::package_of(&text), saved.line + 1);
     breakpoint.condition = saved.condition.clone();
+    breakpoint.actions = actions(saved);
     breakpoint
+}
+
+fn actions(saved: &SavedBreakpoint) -> BreakpointActions {
+    BreakpointActions { suspend: saved.suspend, log_message: saved.log_message, log_stack: saved.log_stack, log_expression: saved.log_expression.clone() }
 }
 
 fn free_port() -> Option<u16> {
