@@ -26,30 +26,49 @@ use crate::ui::common::tool_button;
 use crate::ui::debug_service::DebugService;
 
 /// IntelliJ's group for a file's breakpoints.
-fn group(file: &str) -> &'static str {
-    match file.rsplit('.').next() {
-        Some("java") => "Java Line Breakpoints",
-        Some("kt" | "kts") => "Kotlin Line Breakpoints",
-        _ => "Line Breakpoints",
+fn group(b: &SavedBreakpoint) -> &'static str {
+    match (b.file.rsplit('.').next(), b.method.is_some()) {
+        (Some("java"), false) => "Java Line Breakpoints",
+        (Some("java"), true) => "Java Method Breakpoints",
+        (Some("kt" | "kts"), false) => "Kotlin Line Breakpoints",
+        (Some("kt" | "kts"), true) => "Kotlin Function Breakpoints",
+        (_, false) => "Line Breakpoints",
+        (_, true) => "Method Breakpoints",
     }
 }
 
-/// "CalcTest.java:34", the line 1-based.
+/// "CalcTest.java:34", the line 1-based; a method breakpoint's
+/// "CalcTest.java:34 totals()".
 pub fn title(b: &SavedBreakpoint) -> String {
-    format!("{}:{}", b.file.rsplit(['/', '\\']).next().unwrap_or(&b.file), b.line + 1)
+    let at = format!("{}:{}", b.file.rsplit(['/', '\\']).next().unwrap_or(&b.file), b.line + 1);
+    match &b.method {
+        Some(m) => format!("{at} {}()", if m == "<init>" { "constructor" } else { m }),
+        None => at,
+    }
 }
 
 /// The gutter's icon for a breakpoint: red or, for a logging one, yellow;
-/// hollow when disabled, checked once it stops somewhere.
-fn icon(b: &SavedBreakpoint, verified: bool) -> AsIcon {
-    match (b.suspend, b.enabled, verified) {
-        (true, false, _) => icons::BREAKPOINT_DISABLED,
-        (true, true, true) => icons::BREAKPOINT_VALID,
-        (true, true, false) => icons::BREAKPOINT,
-        (false, false, _) => icons::BREAKPOINT_UNSUSPENDENT_DISABLED,
-        (false, true, true) => icons::BREAKPOINT_UNSUSPENDENT_VALID,
-        (false, true, false) => icons::BREAKPOINT_UNSUSPENDENT,
+/// hollow when disabled, checked once it stops somewhere; a diamond for a
+/// method breakpoint.
+pub fn mark_icon(method: bool, enabled: bool, verified: bool, suspend: bool) -> AsIcon {
+    match (method, suspend, enabled, verified) {
+        (false, true, false, _) => icons::BREAKPOINT_DISABLED,
+        (false, true, true, true) => icons::BREAKPOINT_VALID,
+        (false, true, true, false) => icons::BREAKPOINT,
+        (false, false, false, _) => icons::BREAKPOINT_UNSUSPENDENT_DISABLED,
+        (false, false, true, true) => icons::BREAKPOINT_UNSUSPENDENT_VALID,
+        (false, false, true, false) => icons::BREAKPOINT_UNSUSPENDENT,
+        (true, true, false, _) => icons::BREAKPOINT_METHOD_DISABLED,
+        (true, true, true, true) => icons::BREAKPOINT_METHOD_VALID,
+        (true, true, true, false) => icons::BREAKPOINT_METHOD,
+        (true, false, false, _) => icons::BREAKPOINT_METHOD_UNSUSPENDENT_DISABLED,
+        (true, false, true, true) => icons::BREAKPOINT_METHOD_UNSUSPENDENT_VALID,
+        (true, false, true, false) => icons::BREAKPOINT_METHOD_UNSUSPENDENT,
     }
+}
+
+fn icon(b: &SavedBreakpoint, verified: bool) -> AsIcon {
+    mark_icon(b.method.is_some(), b.enabled, verified, b.suspend)
 }
 
 pub struct BreakpointsView {
@@ -84,7 +103,7 @@ impl BreakpointsView {
     fn refresh(&mut self, cx: &App) {
         let mut entries = self.service.read(cx).all_breakpoints();
         // Groups in IntelliJ's order, then by file and line.
-        entries.sort_by(|(a, _), (b, _)| (group(&a.file), title(a), a.line).cmp(&(group(&b.file), title(b), b.line)));
+        entries.sort_by(|(a, _), (b, _)| (group(a), title(a), a.line).cmp(&(group(b), title(b), b.line)));
         for (b, _) in &entries {
             self.sources.entry(b.file.clone()).or_insert_with(|| std::fs::read_to_string(&b.file).map(|t| t.lines().map(|l| l.trim().to_owned()).collect()).unwrap_or_default());
         }
@@ -213,7 +232,7 @@ impl BreakpointsView {
         let mut list = v_flex().id("breakpoints-list").flex_1().min_h_0().overflow_y_scroll().py_1();
         let mut last_group = "";
         for (ix, (b, verified)) in self.entries.iter().enumerate() {
-            let g = group(&b.file);
+            let g = group(b);
             if g != last_group {
                 last_group = g;
                 list = list.child(
@@ -224,7 +243,7 @@ impl BreakpointsView {
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
-                        .child(Icon::new(icons::BREAKPOINT).xsmall())
+                        .child(Icon::new(if b.method.is_some() { icons::BREAKPOINT_METHOD } else { icons::BREAKPOINT }).xsmall())
                         .child(g),
                 );
             }

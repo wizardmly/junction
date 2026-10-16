@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::domain::debugger::{in_package, line_locations, package_pattern, DebugEvent, DebugVm, Frame, StepDepth, Suspend, ThreadInfo, Value, Variable};
+use crate::domain::debugger::{in_package, line_locations, method_entries, MethodHeader, package_pattern, DebugEvent, DebugVm, Frame, StepDepth, Suspend, ThreadInfo, Value, Variable};
 use crate::usecase::evaluate::{self, Scope};
 
 /// A line breakpoint, as the editor's gutter sets it.
@@ -27,12 +27,15 @@ pub struct LineBreakpoint {
     /// Stops only when this holds (IntelliJ's Condition).
     pub condition: Option<String>,
     pub actions: BreakpointActions,
+    /// A method breakpoint: it stops on entering the method declared on
+    /// `line`.
+    pub method: Option<MethodHeader>,
 }
 
 impl LineBreakpoint {
     pub fn new(path: &Path, package: String, line: u32) -> Self {
         let source_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Self { path: path.to_path_buf(), source_name, package, line, condition: None, actions: BreakpointActions::default() }
+        Self { path: path.to_path_buf(), source_name, package, line, condition: None, actions: BreakpointActions::default(), method: None }
     }
 }
 
@@ -261,7 +264,11 @@ impl DebugSession {
             return Ok(Vec::new());
         }
         let methods = self.vm.methods(class)?;
-        line_locations(class, &methods, breakpoint.line).into_iter().map(|location| self.vm.set_breakpoint(location)).collect()
+        let locations = match &breakpoint.method {
+            Some(header) => method_entries(class, &methods, header),
+            None => line_locations(class, &methods, breakpoint.line),
+        };
+        locations.into_iter().map(|location| self.vm.set_breakpoint(location)).collect()
     }
 
     /// Resume Program (F9).

@@ -91,6 +91,8 @@ pub struct BreakpointMark {
     pub conditional: bool,
     /// Off: a logging breakpoint, drawn yellow.
     pub suspend: bool,
+    /// A method breakpoint, drawn as a diamond.
+    pub method: bool,
 }
 
 /// The Debug window's session.
@@ -170,7 +172,7 @@ impl DebugService {
         self.breakpoints
             .iter()
             .filter(|b| b.file == file)
-            .map(|b| BreakpointMark { line: b.line, verified: self.verified.contains(&(b.file.clone(), b.line)), enabled: b.enabled, conditional: b.condition.is_some(), suspend: b.suspend })
+            .map(|b| BreakpointMark { line: b.line, verified: self.verified.contains(&(b.file.clone(), b.line)), enabled: b.enabled, conditional: b.condition.is_some(), suspend: b.suspend, method: b.method.is_some() })
             .collect()
     }
 
@@ -279,20 +281,29 @@ impl DebugService {
         }
     }
 
+    /// The method breakpoint a click on a line sets, as IntelliJ's: on a
+    /// method's declaration line with none of its code.
+    fn method_on(file: &str, line: u32, text: Option<&str>) -> Option<String> {
+        let lang = crate::index::lang::Lang::from_path(file)?;
+        crate::index::method_breakpoint::method_header(lang, text?, line).map(|h| h.name)
+    }
+
     /// Opens a breakpoint's line in the editor.
     pub fn show_source(&mut self, file: &str, line: u32, cx: &mut Context<Self>) {
         cx.emit(DebugServiceEvent::Navigate { path: PathBuf::from(file), line });
     }
 
     /// Toggle Line Breakpoint (Ctrl+F8, a click on the line number).
-    pub fn toggle_breakpoint(&mut self, file: &str, line: u32, cx: &mut Context<Self>) {
-        self.toggle(SavedBreakpoint::new(file, line), cx);
+    /// On a method's declaration line (`text` is the file's), a method
+    /// breakpoint.
+    pub fn toggle_breakpoint(&mut self, file: &str, line: u32, text: Option<&str>, cx: &mut Context<Self>) {
+        self.toggle(SavedBreakpoint { method: Self::method_on(file, line, text), ..SavedBreakpoint::new(file, line) }, cx);
     }
 
     /// Shift+click on a line number, as IntelliJ's: a breakpoint that
     /// doesn't suspend and logs its hits ("Breakpoint hit" message).
-    pub fn toggle_logging_breakpoint(&mut self, file: &str, line: u32, cx: &mut Context<Self>) {
-        self.toggle(SavedBreakpoint { suspend: false, log_message: true, ..SavedBreakpoint::new(file, line) }, cx);
+    pub fn toggle_logging_breakpoint(&mut self, file: &str, line: u32, text: Option<&str>, cx: &mut Context<Self>) {
+        self.toggle(SavedBreakpoint { suspend: false, log_message: true, method: Self::method_on(file, line, text), ..SavedBreakpoint::new(file, line) }, cx);
     }
 
     fn toggle(&mut self, new: SavedBreakpoint, cx: &mut Context<Self>) {
@@ -938,6 +949,12 @@ fn line_breakpoint(saved: &SavedBreakpoint) -> LineBreakpoint {
     let mut breakpoint = LineBreakpoint::new(Path::new(&saved.file), debugger::package_of(&text), saved.line + 1);
     breakpoint.condition = saved.condition.clone();
     breakpoint.actions = actions(saved);
+    // A method breakpoint: the method as the file declares it now.
+    breakpoint.method = saved.method.as_ref().map(|name| {
+        crate::index::lang::Lang::from_path(&saved.file)
+            .and_then(|lang| crate::index::method_breakpoint::method_header(lang, &text, saved.line))
+            .unwrap_or(debugger::MethodHeader { name: name.clone(), line: saved.line + 1, end: saved.line + 1 })
+    });
     breakpoint
 }
 

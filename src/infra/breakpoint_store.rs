@@ -28,11 +28,14 @@ pub struct SavedBreakpoint {
     /// Evaluate and log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_expression: Option<String>,
+    /// A method breakpoint: the method declared on the line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
 }
 
 impl SavedBreakpoint {
     pub fn new(file: &str, line: u32) -> Self {
-        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None }
+        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None }
     }
 }
 

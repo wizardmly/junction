@@ -18,7 +18,6 @@ use super::FileEditor;
 use crate::domain::testing;
 use crate::infra::breakpoint_store::SavedBreakpoint;
 use crate::theme::ActivePalette as _;
-use crate::ui::as_icons as icons;
 use crate::ui::debug_service::DebugService;
 
 actions!(breakpoints, [ToggleLineBreakpoint, RunToCursor, DebugTestAtCaret, EvaluateExpression]);
@@ -42,7 +41,8 @@ impl FileEditor {
     pub(super) fn toggle_line_breakpoint(&mut self, _: &ToggleLineBreakpoint, _: &mut Window, cx: &mut Context<Self>) {
         let Some(file) = self.breakpoint_file() else { return };
         let line = self.state.read(cx).cursor_position().line;
-        DebugService::global(cx).update(cx, |s, cx| s.toggle_breakpoint(&file, line, cx));
+        let text = self.text(cx);
+        DebugService::global(cx).update(cx, |s, cx| s.toggle_breakpoint(&file, line, Some(&text), cx));
     }
 
     /// Alt+F9: the paused program runs to the caret's line.
@@ -155,14 +155,7 @@ impl FileEditor {
                         window.paint_quad(gpui_kit::fill(cell, background));
                         let icon_size = px(14.);
                         let rect = Bounds::new(point(column.1 - icon_size - px(4.), *top + (line_height - icon_size) / 2.), size(icon_size, icon_size));
-                        let icon = match (mark.enabled, mark.verified, mark.suspend) {
-                            (false, _, true) => icons::BREAKPOINT_DISABLED,
-                            (true, true, true) => icons::BREAKPOINT_VALID,
-                            (true, false, true) => icons::BREAKPOINT,
-                            (false, _, false) => icons::BREAKPOINT_UNSUSPENDENT_DISABLED,
-                            (true, true, false) => icons::BREAKPOINT_UNSUSPENDENT_VALID,
-                            (true, false, false) => icons::BREAKPOINT_UNSUSPENDENT,
-                        };
+                        let icon = crate::ui::breakpoints_dialog::mark_icon(mark.method, mark.enabled, mark.verified, mark.suspend);
                         for (path, rgba) in if dark { icon.dark } else { icon.light } {
                             let color: gpui_kit::Hsla = gpui_kit::rgba(*rgba).into();
                             window.paint_svg(rect, (*path).into(), None, gpui_kit::TransformationMatrix::unit(), color, cx).ok();
@@ -203,10 +196,11 @@ impl FileEditor {
                             return;
                         }
                         cx.stop_propagation();
+                        let text = editor.upgrade().map(|e| e.read(cx).text(cx));
                         if e.modifiers.shift {
-                            service.update(cx, |s, cx| s.toggle_logging_breakpoint(&file, line, cx));
+                            service.update(cx, |s, cx| s.toggle_logging_breakpoint(&file, line, text.as_deref(), cx));
                         } else {
-                            service.update(cx, |s, cx| s.toggle_breakpoint(&file, line, cx));
+                            service.update(cx, |s, cx| s.toggle_breakpoint(&file, line, text.as_deref(), cx));
                         }
                     });
                 },
@@ -357,7 +351,7 @@ impl FileEditor {
                                 .child(Button::new("breakpoint-remove").ghost().small().label("Remove").on_click(cx.listener(move |this, _, window, cx| {
                                     this.breakpoint_popup = None;
                                     if let Some(file) = this.breakpoint_file() {
-                                        DebugService::global(cx).update(cx, |s, cx| s.toggle_breakpoint(&file, line, cx));
+                                        DebugService::global(cx).update(cx, |s, cx| s.toggle_breakpoint(&file, line, None, cx));
                                     }
                                     this.focus(window, cx);
                                     cx.notify();

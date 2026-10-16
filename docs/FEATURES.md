@@ -722,7 +722,7 @@ Linux 实测（Xvfb，rust-analyzer 1.97）：Rust 项目里 Shift+F6 重命名�
 | 右边是选中断点的属性：Enabled、Suspend execution、Condition、Log（“Breakpoint hit” message、Stack trace、Evaluate and log），勾选立即生效，文本在离开输入框或回车时生效，运行中的调试会话同步更新；工具栏 − 删除（选中下一个）；View Source 或双击打开该行 | ✅ |
 | Java Exception Breakpoints（2026-10-16）：Breakpoints 对话框里的 “Java Exception Breakpoints” 组，固定有 IntelliJ 默认关闭的 “Any exception”；+ 输入异常类全名添加（如 `java.lang.IllegalStateException`，含其子类）；属性 Enabled 和 Notifications（Caught exception / Uncaught exception）；存到 `exception-breakpoints.json`，运行中的会话同步。JDWP 用 `EventRequest.Set`（EXCEPTION，`ExceptionOnly` 修饰符）；类还没加载时等它的 ClassPrepare 再设。停下时 Debug 窗口标题旁显示 “Exception 'java.lang.IllegalStateException' occurred”（未被捕获时 “was not caught”），控制台也记一行；照 IntelliJ 的 `JavaStackFrame.createExceptionNodes`，顶层帧的 Variables 第一项是抛出的异常 `Exception = {IllegalStateException@408} "java.lang.IllegalStateException: boom"`，可展开 | ✅ |
 | 断点跟随编辑（2026-10-16）：增删行的编辑按前后文本的逐行 diff（`debugger::follow_lines`）移动断点：不变的行保持，被改或删的行移到改动起点，移走后在别处原样出现的行跟过去（Extract Method 后断点随代码进新方法，Ctrl+Z 后回原处），同一行重复的只留一个。实测：CalcTest 第 34 行断点在提取后到第 39 行（新方法里同一句），撤销后回到第 34 行 | ✅ |
-| 表达式框的代码补全和多行代码片段模式、方法断点 / 字段监视点、异常断点的类过滤和条件、Mute Breakpoints、按文件分组、Remove once hit、依赖断点 | ⬜ |
+| 表达式框的代码补全和多行代码片段模式、字段监视点、异常断点的类过滤和条件、Mute Breakpoints、按文件分组、Remove once hit、依赖断点 | ⬜ |
 
 Linux 实测（Xvfb，calc 示例的 JUnit 测试）：Breakpoints 对话框 + 添加 `java.lang.IllegalStateException`，调试 `throwsError` 停在第 22 行的 `throw`，标题旁显示 “Exception 'java.lang.IllegalStateException' occurred”。暂停在 `sum += items.get(i);`，光标放在 `get` 上按 Alt+F8，表达式框预填 `items.get(i)`，回车得到 `result = {Integer@447} 3`；求值 `items` 后展开得到 `[0] = {Integer@448} 1` 等三项；`items.get(1) * 10 + sum` 得 20；`nope + 1` 显示红字错误；历史列出三条；Add to Watches 后 Debug 窗口的 Watches 多了 `items.get(i)`。Breakpoints 对话框里列出 Calc.java:4（Shift+点行号加的黄色日志断点）和 CalcTest.java:34；给 CalcTest.java:34 填条件 `i == 2` 后切到另一项即保存到 breakpoints.json，再调试时停在 `i = 2`；列表里取消 Calc.java:4 的勾，gutter 立即变成空心；删除 Calc.java:4 后只剩一项；双击 CalcTest.java:34 打开该文件并跳到第 34 行。
 
@@ -786,3 +786,16 @@ Linux 实测（Xvfb，示例工程 app + lib）：app 的 main 清单有 INTERNE
 | 按名字和实参个数匹配调用（同名的其他函数也可能被改），Java 的 Declare final / 通过重载委托 / 字段改 getter、Kotlin 扩展函数的接收者、Change Signature | ⬜ |
 
 Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int)` 的 `return price * rate * count + price * rate`，选中第一处 `price * rate` 按 Ctrl+Alt+P，对话框显示 “Replace all 2 occurrences”、“3 calls of total() get the new argument”；名字 amount、类型 Double，Refactor 后签名是 `total(price: Double, count: Int, amount: Double)`，函数体是 `return amount * count + amount`，同文件的 `total(1.0, 2)` 变成 `total(1.0, 2, 1.0 * rate)`，Main.kt 的 `cart.total(10.0, 3)` 和 `cart.total(count = 1, price = 2.0)` 分别变成 `cart.total(10.0, 3, 10.0 * cart.rate)` 和 `cart.total(count = 1, price = 2.0, amount = 2.0 * cart.rate)`。
+
+## 43. 方法断点（2026-10-16）
+
+照 IntelliJ 的 Java Method Breakpoint / Kotlin Function Breakpoint（默认的 emulated 方式，`JavaMethodBreakpoint` 不用很慢的 MethodEntry 事件，而是在方法的第一条代码上设断点）：在方法声明行点行号（或按 Ctrl+F8），如果这一行上没有方法体的代码，就设方法断点而不是行断点，gutter 上画成菱形。代码：`src/index/method_breakpoint.rs`（哪一行声明了哪个方法）、`domain::debugger::method_entries`、`usecase::debug_session` 的 `LineBreakpoint.method`。
+
+| 功能 | 状态 |
+|---|---|
+| 声明行判断：Kotlin `fun` / Java 方法、构造方法（`<init>`）的名字在这一行，方法体是 `{…}` 块且第一条代码在后面的行；表达式体 `fun f() = …` 和单行方法 `{ return a + b; }` 仍是行断点 | ✅ |
+| 设在哪：类加载后，类里同名方法中代码落在声明范围内的那个（区分重载、跳过 Kotlin 的 `name$default` 桥方法，认 internal 函数的 `name$module`），断点设在它第一条代码上；条件、Suspend、日志选项和行断点一样 | ✅ |
+| 图标：菱形，已验证带勾、禁用为空心、不挂起为黄色（IntelliJ 的 breakpointMethod 系列）；Breakpoints 对话框分为 “Java Method Breakpoints” / “Kotlin Function Breakpoints”，标题如 “CalcTest.java:30 totals()”；持久化在 breakpoints.json 的 `method` 字段 | ✅ |
+| 方法退出（Method exit）、接口 / 抽象方法上的断点（停在所有实现里）、按类名 + 方法名的通配方法断点、字段监视点 | ⬜ |
+
+Linux 实测（Xvfb，calc 示例）：在 `CalcTest.java` 第 30 行 `public void totals() {` 按 Ctrl+F8，gutter 出现菱形；Debug 'totals'（Ctrl+Shift+F9）后菱形带勾，程序停在 `totals:31`（方法第一行代码）；Ctrl+Shift+F8 的 Breakpoints 对话框列在 “Java Method Breakpoints” 下。

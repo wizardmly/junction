@@ -226,6 +226,31 @@ pub fn line_locations(class: u64, methods: &[MethodInfo], line: u32) -> Vec<Loca
         .collect()
 }
 
+/// A method breakpoint's method, from its declaration: the JVM name
+/// (`<init>` for a constructor) and the 1-based lines it spans.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MethodHeader {
+    pub name: String,
+    pub line: u32,
+    pub end: u32,
+}
+
+/// Where a method breakpoint stops in a class, as IntelliJ's emulated
+/// method breakpoint: the first code of each method with the name (Kotlin's
+/// `name$module` for an internal one, not its `name$default` bridge)
+/// whose code lies in the declaration's lines.
+pub fn method_entries(class: u64, methods: &[MethodInfo], header: &MethodHeader) -> Vec<Location> {
+    let named = |n: &str| n == header.name || n.strip_prefix(header.name.as_str()).is_some_and(|rest| rest.starts_with('$') && rest != "$default");
+    methods
+        .iter()
+        .filter(|m| named(&m.name))
+        .filter_map(|m| {
+            let first = m.lines.iter().map(|(_, l)| *l).min()?;
+            (header.line..=header.end).contains(&first).then(|| Location { class, method: m.id, index: m.lines.iter().map(|(ix, _)| *ix).min().unwrap_or(0) })
+        })
+        .collect()
+}
+
 /// The line of a location, from its method's line table: the entry with
 /// the greatest index not after it.
 pub fn line_of(method: &MethodInfo, index: u64) -> Option<u32> {
@@ -460,6 +485,16 @@ mod tests {
 
     fn method(id: u64, lines: &[(u64, u32)]) -> MethodInfo {
         MethodInfo { id, name: format!("m{id}"), signature: "()V".into(), is_static: false, lines: lines.to_vec() }
+    }
+
+    #[test]
+    fn method_breakpoints_stop_at_the_methods_entry() {
+        let header = MethodHeader { name: "total".into(), line: 10, end: 14 };
+        let mut methods = vec![method(1, &[(0, 11), (4, 12)]), method(2, &[(0, 20)]), method(3, &[(0, 11)])];
+        methods[0].name = "total".into();
+        methods[1].name = "total".into();
+        methods[2].name = "total$default".into();
+        assert_eq!(method_entries(7, &methods, &header), [Location { class: 7, method: 1, index: 0 }]);
     }
 
     #[test]
