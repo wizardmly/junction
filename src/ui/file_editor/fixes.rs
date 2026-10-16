@@ -50,6 +50,12 @@ pub(super) enum Choice {
     /// Surround With: the surrounder, numbered as in IntelliJ's popup;
     /// the range is the lines or the expression it wraps.
     Surround(crate::domain::surround::Surrounder, char, bool),
+    /// Import class 'Date': the classes of that name to choose from.
+    ImportClass(String, Vec<String>),
+    /// One class of the "Class to Import" chooser.
+    Import(String),
+    /// An intention: its edit.
+    Intention(crate::domain::intentions::Intention),
 }
 
 /// The byte offset of a line and character column.
@@ -77,6 +83,20 @@ impl FileEditor {
         for p in problems.iter().filter(|p| p.start.line == cursor_line) {
             if let Some(fix) = &p.fix {
                 items.push((offset_of(&text, p.start)..offset_of(&text, p.end), Choice::Fix(fix.clone())));
+            }
+        }
+        // Import class on a name the file doesn't see, then the intentions.
+        if let (Some((lang, style)), Some(index)) = (self.jvm_style(), self.code_index.clone()) {
+            let index = index.read(cx).index.clone();
+            let found = index.read().ok().and_then(|index| {
+                let model = crate::infra::index_code_model::IndexCodeModel::new(&index, lang, &self.path);
+                crate::usecase::import_class::candidates(&model, &text, cursor)
+            });
+            if let Some((name, classes)) = found {
+                items.push((cursor..cursor, Choice::ImportClass(name, classes)));
+            }
+            for intention in crate::domain::intentions::intentions(style, &text, cursor) {
+                items.push((intention.range.clone(), Choice::Intention(intention)));
             }
         }
         if items.is_empty() {
@@ -171,8 +191,36 @@ impl FileEditor {
                 }
                 self.introduce_for(kind, range, window, cx);
             }
+            Choice::ImportClass(_, classes) if classes.len() == 1 => self.import_class(&classes[0], window, cx),
+            Choice::ImportClass(_, classes) => {
+                // IntelliJ's "Class to Import" chooser, where the popup was.
+                let items = classes.into_iter().map(|q| (range.clone(), Choice::Import(q))).collect();
+                self.context_actions = Some(ContextActions { items, title: Some("Class to Import"), selected: 0, at: popup.at, caret: None });
+                window.focus(&self.context_focus, cx);
+            }
+            Choice::Import(qualified) => self.import_class(&qualified, window, cx),
+            Choice::Intention(intention) => self.state.update(cx, |state, cx| {
+                state.set_selected_range(intention.range.clone(), cx);
+                state.replace(&intention.replacement, window, cx);
+                state.set_selected_range(intention.caret..intention.caret, cx);
+            }),
         }
         cx.notify();
+    }
+
+    /// Adds `import qualified` where IntelliJ puts it; the caret stays on
+    /// its text.
+    fn import_class(&mut self, qualified: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, style)) = self.jvm_style() else { return };
+        let text = self.text(cx);
+        let (at, insert) = crate::domain::imports::import_edit(style, &text, qualified);
+        let cursor = self.state.read(cx).cursor();
+        let cursor = if cursor >= at { cursor + insert.len() } else { cursor };
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(at..at, cx);
+            state.replace(&insert, window, cx);
+            state.set_selected_range(cursor..cursor, cx);
+        });
     }
 
     /// The expression the "Expressions" popup has selected, highlighted
@@ -210,6 +258,9 @@ impl FileEditor {
                 Choice::Expression(text, _) => (None, text.clone()),
                 Choice::Surround(s, key, _) => (None, format!("{key}. {}", s.label())),
                 Choice::Generate(m) => (None, m.label().to_owned()),
+                Choice::ImportClass(name, _) => (Some(icons::INTENTION_BULB), format!("Import class '{name}'")),
+                Choice::Import(qualified) => (Some(icons::CLASS), qualified.clone()),
+                Choice::Intention(i) => (Some(icons::INTENTION_BULB), i.title.clone()),
             };
             h_flex()
                 .id(("context-action", ix))

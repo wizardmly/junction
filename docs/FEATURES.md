@@ -315,7 +315,7 @@
 | 语法错误红色波浪线，悬停显示原因（`'}' expected` 等），输入停顿 0.3 秒后更新 | ✅（tree-sitter 的 ERROR / MISSING 节点；类型错误等语义错误由下一行的编译给出） |
 | 保存 Kotlin / Java 文件后，后台编译所在 Gradle 模块，编译器的错误和警告标到编辑器（悬停看信息），修好再保存后消失 | ✅（Android 模块 `:m:compileDebugJavaWithJavac`，JVM 模块 `:m:classes`；用项目的 gradlew；状态栏显示 Compiling…；同一模块编译中再次保存会排队一次；Gradle 守护进程闲置 15 分钟退出；编译失败但没有编译器信息时（构建脚本错、没有 JDK）弹通知显示 Gradle 输出末尾。没有 JAVA_HOME 且 PATH 里没有 java 时，使用 Android Studio 自带的 jbr） |
 | Settings › Build, Execution, Deployment › Compiler › Compile on save | ✅（默认开） |
-| Problems 工具窗口、快速修复（Alt+Enter） | ❌ 未做（Reformat Code 见第 33 节，参数提示见第 34 节） |
+| 快速修复（Alt+Enter）、Reformat、参数提示 | ✅（见第 33–35 节；Problems 工具窗口见第 18 节） |
 
 Linux 实测：mytv-android（补全、自动 import、语法错误），最小 Kotlin/JVM Gradle 项目（保存后编译：冷启动约 40 秒，热编译约 1.5 秒）。Windows / macOS 需真机验证。
 
@@ -659,3 +659,17 @@ IntelliJ 的 View › Parameter Info（Ctrl+P，macOS ⌘P），Kotlin / Java。
 | 按实参类型选中最匹配的重载、文档注释、`super(` / `this(` 委托、Java `new` 匿名类的构造函数、注解参数 | ❌ 未做 |
 
 Linux 实测（Xvfb）：Kotlin 两个 `greet` 重载，光标在 `greet("a", true)` 的第二个实参上按 Ctrl+P，弹出两行，`times: Int = 1` 和 `loud: Boolean` 加粗；按 End 离开调用后关闭；新输入 `greet(` 后约 1 秒自动弹出。Java 的 `Calc.add(2, 2)` 显示 `int a, int b`；`assertEquals(` 显示 JUnit 源码里的 12 个重载。
+
+## 35. Alt+Enter：Import class 与意图操作（2026-10-16）
+
+IntelliJ 的 Show Context Actions（Alt+Enter）在问题修复之外，补上了 Import class 和不需要类型信息的意图操作（Kotlin / Java）。代码：`src/usecase/import_class.rs`、`src/domain/intentions.rs`，弹窗 `src/ui/file_editor/fixes.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| Import class 'Item'：光标在文件看不到的类名上（不在同包、没有 import、不是隐式导入的 `java.lang` / `kotlin` 等、不是文件自己的声明或局部变量、不是 `x.Name` 成员），从项目和外部库找同名类；只有一个时直接导入，多个时弹出 IntelliJ 的 “Class to Import” 选择列表；import 按 IntelliJ 的位置和顺序插入，光标留在原处 | ✅ |
+| Convert to block body / Convert to expression body（Kotlin）：`fun f(x: Int): Int = x * 2` ↔ `fun f(x: Int): Int {\n    return x * 2\n}`（`: Unit` 时不加 `return`）；没写返回类型时不提供转为块体（块体的类型会变成 Unit）；函数体有多条语句时不提供转为表达式体 | ✅ |
+| Add braces to 'if' / 'else' / 'for' / 'while' statement、Remove braces from … statement（Kotlin / Java）：语句体在同一行或下一行；同一行的 `if (a) b() else c()` 只给 `if` 部分加；只有一条语句且不是声明时才能去掉括号 | ✅ |
+| Put arguments / parameters on separate lines、Put arguments / parameters on one line（Kotlin）：至少两个实参或参数；每个一行，`)` 单独一行；字符串里的逗号不拆 | ✅ |
+| 需要类型的意图（Specify type explicitly、Add names to call arguments、Convert to string template 等）、Import function / 扩展函数、自动导入提示（“? java.util.Date? Alt+Enter”）、意图设置页 | ❌ 未做 |
+
+Linux 实测（Xvfb）：`com.example.a.Item` 和 `com.example.b.Item` 两个同名类，光标在 `Item()` 上 Alt+Enter 出现 “Import class 'Item'”，回车后弹出 “Class to Import” 两项，选第二个后插入 `import com.example.b.Item`；`if (n > 1) println(n)` 上 Alt+Enter → “Add braces to 'if' statement” 变为三行块；`fun price(n: Int): Int = n * 2` 上 → “Convert to block body” 变为 `return n * 2` 的块体。

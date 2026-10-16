@@ -208,7 +208,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 
 | # | 功能 | 现状 | 实现思路 |
 |---|---|---|---|
-| 1 | 编辑器语言智能 | ✅ 2026-10-14 按“A+B”方案完成：索引补全 + 自动 import + 语法错误 + 保存后编译报错（FEATURES.md 第 14 节）。不常驻 Kotlin 语言服务（省 1–2 GB）；kotlin-lsp 以后可做成设置里的可选开关 | Reformat Code、Parameter Info 已补上（2026-10-16，FEATURES.md 第 33、34 节）；剩 Alt+Enter 快速修复 |
+| 1 | 编辑器语言智能 | ✅ 2026-10-14 按“A+B”方案完成：索引补全 + 自动 import + 语法错误 + 保存后编译报错（FEATURES.md 第 14 节）。不常驻 Kotlin 语言服务（省 1–2 GB）；kotlin-lsp 以后可做成设置里的可选开关 | Reformat Code、Parameter Info、Alt+Enter 的 Import class 和意图操作已补上（2026-10-16，FEATURES.md 第 33–35 节）；剩需要类型信息的快速修复（随 kotlin-lsp） |
 | 2 | Gradle Sync | ✅ 2026-10-14 轻量版完成：init script 解析各模块 classpath 并下载缺的依赖和源码，外部库按结果精确列出；build 文件变化时自动同步，打开项目只提示不同步（FEATURES.md 第 15 节） | 剩 Build 窗口 Sync 标签页、Build Variants（随第 3 项） |
 | 3 | Build + Run | ✅ 2026-10-15 完成：标题栏 Make / 设备 / 运行配置 / Run / Stop，Build、Run、Build Variants 工具窗口（FEATURES.md 第 16 节） | 剩 Apply Changes、Edit Configurations 对话框、真机验证（Debug 见第 5 项） |
 | 4 | Logcat | ✅ 2026-10-15 完成：Logcat 工具窗口（Alt+6），设备下拉、AS 过滤语法、AS 配色、PROCESS STARTED / ENDED、堆栈跳源码、Standard / Compact、暂停、清空、重启（FEATURES.md 第 17 节） | 过滤输入补全、历史和收藏已补上（2026-10-16）；剩多个 Logcat 标签页、截屏录屏按钮、真机验证 |

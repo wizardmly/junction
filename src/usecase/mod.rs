@@ -2,6 +2,7 @@
 //! They know nothing about GPUI or how a port is implemented.
 
 pub mod android_resources;
+pub mod import_class;
 pub mod translations;
 pub mod check_syntax;
 pub mod compile_on_save;

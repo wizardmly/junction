@@ -14,6 +14,7 @@ pub mod diagnostics;
 pub mod expression;
 pub mod generate;
 pub mod imports;
+pub mod intentions;
 pub mod introduce_variable;
 pub mod live_templates;
 pub mod surround;
