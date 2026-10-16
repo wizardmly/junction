@@ -12,6 +12,7 @@ pub use breakpoints::RunToCursor;
 mod previews;
 mod vector_preview;
 mod parameter_info;
+mod overrides;
 mod problems;
 mod test_marks;
 
@@ -105,6 +106,7 @@ const GUTTER_ICON_GAP: f32 = 4.;
 pub fn init(cx: &mut gpui_kit::App) {
     register_grammars();
     fixes::init(cx);
+    overrides::init(cx);
     test_marks::init(cx);
     breakpoints::init(cx);
     cx.bind_keys([
@@ -2202,6 +2204,8 @@ impl Render for FileEditor {
                 }
             }))
             .on_action(cx.listener(|this, _: &ParameterInfo, window, cx| this.show_parameter_info(true, window, cx)))
+            .on_action(cx.listener(|this, _: &overrides::OverrideMethods, window, cx| this.override_methods(false, window, cx)))
+            .on_action(cx.listener(|this, _: &overrides::ImplementMethods, window, cx| this.override_methods(true, window, cx)))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::show_context_actions))
             .on_action(cx.listener(Self::run_test_at_caret))

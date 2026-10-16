@@ -12,6 +12,7 @@ pub mod hierarchy;
 pub mod locals;
 pub mod introduce;
 pub mod generate;
+pub mod overrides;
 pub mod special;
 pub mod lsp;
 pub mod service;

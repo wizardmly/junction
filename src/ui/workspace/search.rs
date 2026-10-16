@@ -162,6 +162,16 @@ impl Workspace {
                     editor.update(cx, |e, cx| e.generate(window, cx));
                 }
             })),
+            ("Override Methods…", "Ctrl+O", op(|this, window, cx| {
+                if let Some(editor) = this.editor().cloned() {
+                    editor.update(cx, |e, cx| e.override_methods(false, window, cx));
+                }
+            })),
+            ("Implement Methods…", "Ctrl+I", op(|this, window, cx| {
+                if let Some(editor) = this.editor().cloned() {
+                    editor.update(cx, |e, cx| e.override_methods(true, window, cx));
+                }
+            })),
             ("Surround With…", "Ctrl+Alt+T", op(|this, window, cx| {
                 if let Some(editor) = this.editor().cloned() {
                     editor.update(cx, |e, cx| e.surround_with(window, cx));

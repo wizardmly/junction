@@ -15,6 +15,8 @@ use crate::domain::generate::Field;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClassInfo {
     pub name: String,
+    /// The declaration up to its body: supertypes for Override Methods.
+    pub header: String,
     pub type_params: usize,
     /// Kotlin `object`: toString() only.
     pub is_object: bool,
@@ -188,6 +190,7 @@ pub fn class_at(lang: Lang, text: &str, offset: usize, unit: &str) -> Result<Cla
     let indent = format!("{class_indent}{unit}");
     let Some(body) = body else {
         return Ok(ClassInfo {
+            header: header.to_owned(),
             name,
             type_params,
             is_object: class.kind() == "object_declaration",
@@ -214,7 +217,7 @@ pub fn class_at(lang: Lang, text: &str, offset: usize, unit: &str) -> Result<Cla
         None if members.is_empty() => (body.start_byte() + 1, false, Some(body.byte_range())),
         None => (body.start_byte() + 1, false, None),
     };
-    Ok(ClassInfo { name, type_params, is_object: class.kind() == "object_declaration", fields, methods, method_ranges, insert_at, after_member, body: true, indent, class_indent, empty_body })
+    Ok(ClassInfo { header: header.to_owned(), name, type_params, is_object: class.kind() == "object_declaration", fields, methods, method_ranges, insert_at, after_member, body: true, indent, class_indent, empty_body })
 }
 
 /// The text to insert for generated members at `info`'s place.

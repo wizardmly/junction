@@ -55,7 +55,13 @@ impl Render for ChooserView {
 
 /// Opens the chooser; OK hands the checked fields to `on_ok`.
 pub fn choose(title: &'static str, fields: Vec<Field>, on_ok: impl Fn(Vec<Field>, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
-    let checked = vec![true; fields.len()];
+    choose_checked(title, fields, true, on_ok, window, cx);
+}
+
+/// `choose`, the items checked or not to start with (Override Methods
+/// starts with none, Implement Methods with all, as IntelliJ's).
+pub fn choose_checked(title: &'static str, fields: Vec<Field>, all_checked: bool, on_ok: impl Fn(Vec<Field>, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
+    let checked = vec![all_checked; fields.len()];
     let view = cx.new(|_| ChooserView { fields, checked });
     let on_ok = Rc::new(on_ok);
     window.open_dialog(cx, move |dialog, _, _| {

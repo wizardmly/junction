@@ -673,3 +673,17 @@ IntelliJ 的 Show Context Actions（Alt+Enter）在问题修复之外，补上�
 | 需要类型的意图（Specify type explicitly、Add names to call arguments、Convert to string template 等）、Import function / 扩展函数、自动导入提示（“? java.util.Date? Alt+Enter”）、意图设置页 | ❌ 未做 |
 
 Linux 实测（Xvfb）：`com.example.a.Item` 和 `com.example.b.Item` 两个同名类，光标在 `Item()` 上 Alt+Enter 出现 “Import class 'Item'”，回车后弹出 “Class to Import” 两项，选第二个后插入 `import com.example.b.Item`；`if (n > 1) println(n)` 上 Alt+Enter → “Add braces to 'if' statement” 变为三行块；`fun price(n: Int): Int = n * 2` 上 → “Convert to block body” 变为 `return n * 2` 的块体。
+
+## 36. Override / Implement Methods（2026-10-16）
+
+IntelliJ 的 Code › Override Methods（Ctrl+O）和 Implement Methods（Ctrl+I，macOS 同为 ⌃O / ⌃I），Kotlin / Java；Generate（Alt+Insert）弹窗末尾也有 “Override Methods…” / “Implement Methods…”，Find Action 里也能找到。代码：`src/domain/overrides.rs`（类头的父类型和类型实参、成员能否覆盖 / 是否抽象、按 IntelliJ 模板生成）、`src/index/overrides.rs`（沿继承层级收集成员）、`src/ui/file_editor/overrides.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 收集：从光标所在类的类头读父类型（Kotlin `:` 后、Java `extends` / `implements`），在项目和外部库源码里沿继承层级逐层找（近的优先，所以中间类已经覆盖的接口方法不再算抽象），类型参数换成实参（`Base<Int>` 里的 `accept(item: T)` 显示为 `accept(item: Int)`），最后加上 Kotlin `Any` / Java `Object` 的 equals、hashCode、toString（Java 还有 clone）；类里已有的同名成员不列 | ✅ |
+| 规则：Kotlin 类成员默认 final，只有 `open` / `abstract` / `override` 和接口成员可覆盖，接口里没有函数体（或属性没有初始值）的是抽象的；Java 排除 `private` / `static` / `final`，接口里非 `default` 的是抽象的；Implement 只列抽象成员，Override 只列有实现的 | ✅ |
+| 选择对话框：Kotlin “Implement Members” / “Override Members”，Java “Select Methods to Implement” / “Select Methods to Override”；每项显示签名（Kotlin `area(scale: Double): Double`、Java `compute(int, String):int`）和所属类，Implement 默认全选、Override 默认不选，Select All / Select None；没有可选时提示 “No members to implement have been found” 等 | ✅ |
+| 生成（IntelliJ 默认模板）：Kotlin 抽象成员 `override fun …` 里写 `TODO("Not yet implemented")`，有实现的写 `return super.f(…)`（Unit 不写 `return`，vararg 传 `*xs`），属性生成 `override val x: T` + `get() = …`（var 还有 `set(value)`），去掉参数默认值，保留 `suspend` / `operator` / `protected` 等修饰；Java 加 `@Override`，接口方法为 `public`，抽象的返回默认值（`return 0;` / `false` / `null`，void 为空），有实现的 `return super.f(…);`，保留 `throws`；插在光标所在成员之后，一次可撤销的编辑 | ✅ |
+| 签名里类型的 import、同名不同参数的重载区分（按名字排除已有成员）、Kotlin `super<Interface>` 限定、Copy JavaDoc、按类分组的树形列表、Insert @Override 选项 | ❌ 未做 |
+
+Linux 实测（Xvfb）：接口 `Shape`（`val label`、`fun area(scale: Double = 1.0)`、有默认实现的 `describe()`）、抽象类 `Base<T> : Shape`（`abstract fun accept(item: T)`、`open fun reset()`）、`class Circle : Base<Int>()`；在 Circle 里 Ctrl+I 列出 `accept(item: Int) Base`、`label: String Shape`、`area(scale: Double): Double Shape` 且全选，确定后生成三段 `TODO("Not yet implemented")`；Ctrl+O 列出 `reset()`、`describe()`、`equals`、`hashCode`、`toString`，选 describe 和 toString 后生成 `return super.describe()` / `return super.toString()`。

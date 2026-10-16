@@ -56,6 +56,8 @@ pub(super) enum Choice {
     Import(String),
     /// An intention: its edit.
     Intention(crate::domain::intentions::Intention),
+    /// Generate › Override Methods… (false) / Implement Methods… (true).
+    Override(bool),
 }
 
 /// The byte offset of a line and character column.
@@ -153,7 +155,10 @@ impl FileEditor {
     pub(super) fn choose_generate(&mut self, items: Vec<crate::domain::generate::Member>, window: &mut Window, cx: &mut Context<Self>) {
         let cursor = self.state.read(cx).cursor();
         let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
-        let items = items.into_iter().map(|m| (cursor..cursor, Choice::Generate(m))).collect();
+        let mut items: Vec<_> = items.into_iter().map(|m| (cursor..cursor, Choice::Generate(m))).collect();
+        // IntelliJ's Generate lists these after the members.
+        items.push((cursor..cursor, Choice::Override(false)));
+        items.push((cursor..cursor, Choice::Override(true)));
         self.context_actions = Some(ContextActions { items, title: Some("Generate"), selected: 0, at, caret: None });
         window.focus(&self.context_focus, cx);
         cx.notify();
@@ -199,6 +204,7 @@ impl FileEditor {
                 window.focus(&self.context_focus, cx);
             }
             Choice::Import(qualified) => self.import_class(&qualified, window, cx),
+            Choice::Override(implement) => self.override_methods(implement, window, cx),
             Choice::Intention(intention) => self.state.update(cx, |state, cx| {
                 state.set_selected_range(intention.range.clone(), cx);
                 state.replace(&intention.replacement, window, cx);
@@ -261,6 +267,8 @@ impl FileEditor {
                 Choice::ImportClass(name, _) => (Some(icons::INTENTION_BULB), format!("Import class '{name}'")),
                 Choice::Import(qualified) => (Some(icons::CLASS), qualified.clone()),
                 Choice::Intention(i) => (Some(icons::INTENTION_BULB), i.title.clone()),
+                Choice::Override(false) => (None, "Override Methods…".to_owned()),
+                Choice::Override(true) => (None, "Implement Methods…".to_owned()),
             };
             h_flex()
                 .id(("context-action", ix))
