@@ -11,6 +11,7 @@ mod templates;
 pub use breakpoints::RunToCursor;
 mod previews;
 mod vector_preview;
+mod parameter_info;
 mod problems;
 mod test_marks;
 
@@ -60,6 +61,7 @@ actions!(
         RenameElement,
         OptimizeImports,
         ReformatCode,
+        ParameterInfo,
         IntroduceVariable,
         IntroduceConstant,
         SurroundWith,
@@ -116,6 +118,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("shift-f6", RenameElement, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-o", OptimizeImports, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-l" } else { "ctrl-alt-l" }, ReformatCode, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-p" } else { "ctrl-p" }, ParameterInfo, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-v" } else { "ctrl-alt-v" }, IntroduceVariable, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-c" } else { "ctrl-alt-c" }, IntroduceConstant, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-t" } else { "ctrl-alt-t" }, SurroundWith, Some(CONTEXT)),
@@ -391,6 +394,9 @@ pub struct FileEditor {
     /// The gutter's vector drawable icons, by file.
     vector_icons: Rc<std::collections::HashMap<String, std::sync::Arc<gpui_kit::Image>>>,
     previews_task: Option<gpui_kit::Task<()>>,
+    /// Parameter Info (Ctrl+P) shown, and its lookup or autopopup.
+    parameter_info: Option<parameter_info::ParameterInfo>,
+    parameter_task: Option<gpui_kit::Task<()>>,
     /// The test classes and methods of a test file, for the gutter's run
     /// icons, and the popup a click on one opens.
     test_marks: Vec<crate::domain::testing::TestMark>,
@@ -673,6 +679,7 @@ impl FileEditor {
         }), cx.subscribe_in(&state, window, |this, _, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::Change) {
                 this.template_edited(window, cx);
+                this.parameter_info_autopopup(window, cx);
             }
         })];
         let read_only = revision.is_some() || external;
@@ -700,6 +707,8 @@ impl FileEditor {
             vector_mode: Default::default(),
             vector_icons: Rc::default(),
             previews_task: None,
+            parameter_info: None,
+            parameter_task: None,
             test_marks: Vec::new(),
             test_marks_task: None,
             test_menu: None,
@@ -2188,8 +2197,11 @@ impl Render for FileEditor {
             .capture_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, _, cx| {
                 if this.template_escape(cx) {
                     cx.stop_propagation();
+                } else if !this.state.read(cx).is_completion_menu_open(cx) && this.close_parameter_info(cx) {
+                    cx.stop_propagation();
                 }
             }))
+            .on_action(cx.listener(|this, _: &ParameterInfo, window, cx| this.show_parameter_info(true, window, cx)))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::show_context_actions))
             .on_action(cx.listener(Self::run_test_at_caret))
@@ -2394,6 +2406,7 @@ impl Render for FileEditor {
                 .when_some(self.popup.zip(self.popup_anchor.get()), |el, (ix, at)| el.child(self.render_popup(ix, at, cx)))
                 .children(self.render_expression_highlight(cx))
                 .children(self.render_template_stops(cx))
+                .children(self.render_parameter_info(cx))
                 .children(self.render_context_actions(cx))
                 .children(self.render_test_menu(cx))
                 .children(self.render_breakpoint_popup(cx)),

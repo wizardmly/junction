@@ -21,6 +21,7 @@ pub mod jdk;
 pub mod local_history;
 pub mod logcat;
 pub mod logcat_filter;
+pub mod parameter_info;
 pub mod reformat;
 pub mod rename;
 pub mod run;

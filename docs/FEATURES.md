@@ -315,7 +315,7 @@
 | 语法错误红色波浪线，悬停显示原因（`'}' expected` 等），输入停顿 0.3 秒后更新 | ✅（tree-sitter 的 ERROR / MISSING 节点；类型错误等语义错误由下一行的编译给出） |
 | 保存 Kotlin / Java 文件后，后台编译所在 Gradle 模块，编译器的错误和警告标到编辑器（悬停看信息），修好再保存后消失 | ✅（Android 模块 `:m:compileDebugJavaWithJavac`，JVM 模块 `:m:classes`；用项目的 gradlew；状态栏显示 Compiling…；同一模块编译中再次保存会排队一次；Gradle 守护进程闲置 15 分钟退出；编译失败但没有编译器信息时（构建脚本错、没有 JDK）弹通知显示 Gradle 输出末尾。没有 JAVA_HOME 且 PATH 里没有 java 时，使用 Android Studio 自带的 jbr） |
 | Settings › Build, Execution, Deployment › Compiler › Compile on save | ✅（默认开） |
-| Problems 工具窗口、快速修复（Alt+Enter）、参数提示 | ❌ 未做（Reformat Code 见第 33 节） |
+| Problems 工具窗口、快速修复（Alt+Enter） | ❌ 未做（Reformat Code 见第 33 节，参数提示见第 34 节） |
 
 Linux 实测：mytv-android（补全、自动 import、语法错误），最小 Kotlin/JVM Gradle 项目（保存后编译：冷启动约 40 秒，热编译约 1.5 秒）。Windows / macOS 需真机验证。
 
@@ -645,3 +645,17 @@ IntelliJ 的 Code › Reformat Code（Ctrl+Alt+L，macOS ⌘⌥L），Kotlin / J
 | 换行（WRAP_AS_NEEDED、右边界 120）、import 优化联动、Rearrange code、XML / Gradle 文件格式化、`${…}` 里的表达式加空格、代码风格设置页、`.editorconfig` | ❌ 未做 |
 
 验证：除单元测试外，用 intellij-community 的 82 个已格式化源文件（Kotlin 官方风格和 IntelliJ 自己的 2 空格 Java）做回归：69 个完全不变，剩下的差异基本是源文件里本来就没格式化的行（混入的 2 空格行、多余空格）和 IntelliJ 项目自定义的对齐（测试 `domain::reformat::corpus`，`JUNCTION_FMT_DIR=目录 cargo test corpus -- --ignored --nocapture`）。Linux 实测（Xvfb）：一个缩进混乱的 Kotlin 类按 Ctrl+Alt+L 后变为 4 空格缩进、`fun total(): Int {`、`if (i > 0 && i < 100) {`、`} else {`、`.filter { it > 1 }` 链在 `items` 下一级、多余空行减到 2 行，光标仍在原行。
+
+## 34. Parameter Info（2026-10-16）
+
+IntelliJ 的 View › Parameter Info（Ctrl+P，macOS ⌘P），Kotlin / Java。代码：`src/domain/parameter_info.rs`（找光标所在的调用和当前实参、从声明源码取参数列表、当前参数和不匹配的重载），界面 `src/ui/file_editor/parameter_info.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 光标在调用的括号里按 Ctrl+P：用 Go to Declaration 找到所有声明（重载、项目和外部库源码），弹窗显示在 `(` 上方，每个重载一行，参数照源码写法（Kotlin `name: String, times: Int = 1`、Java `int a, int b`，去掉 `val` / `var` / 可见性修饰），没有参数显示 `<no parameters>` | ✅ |
+| 当前参数加粗：按光标前的逗号数（跳过字符串、字符、注释、内层括号和 lambda），Kotlin 命名实参（`times = `）按名字，vararg 收下多余的实参；实参比参数多的重载灰显 | ✅ |
+| 跟随光标：移动或输入时更新加粗的参数，光标离开这次调用就关闭，Esc 关闭（补全菜单打开时 Esc 先关补全） | ✅ |
+| 自动弹出：在名字后输入 `(` 1 秒后（IntelliJ 的 Autopopup 默认 1000 ms）光标仍在这次调用里就自动显示 | ✅ |
+| 按实参类型选中最匹配的重载、文档注释、`super(` / `this(` 委托、Java `new` 匿名类的构造函数、注解参数 | ❌ 未做 |
+
+Linux 实测（Xvfb）：Kotlin 两个 `greet` 重载，光标在 `greet("a", true)` 的第二个实参上按 Ctrl+P，弹出两行，`times: Int = 1` 和 `loud: Boolean` 加粗；按 End 离开调用后关闭；新输入 `greet(` 后约 1 秒自动弹出。Java 的 `Calc.add(2, 2)` 显示 `int a, int b`；`assertEquals(` 显示 JUnit 源码里的 12 个重载。
