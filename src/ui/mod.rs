@@ -69,4 +69,6 @@ pub mod run_views;
 pub mod test_service;
 pub mod debug_service;
 pub mod debug_view;
+pub mod evaluate_dialog;
+pub mod breakpoints_dialog;
 pub mod test_view;

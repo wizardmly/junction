@@ -296,8 +296,113 @@ pub fn parse(text: &str) -> Result<Expr, String> {
     }
 }
 
+/// What Evaluate Expression (Alt+F8) starts with when nothing is
+/// selected, as IntelliJ's `getExpressionRangeAtOffset`: the reference at
+/// the caret with its qualifiers (`point.x` on `x`, `a.b` on `b`), a call
+/// with its arguments (`list.get(i)` on `get`), an element with its index.
+/// None off a name, or on a keyword other than `this`.
+pub fn expression_at(text: &str, offset: usize) -> Option<std::ops::Range<usize>> {
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let offset = offset.min(text.len());
+    // The word at the caret, or the one just before it.
+    let mut start = offset;
+    while let Some(c) = text[..start].chars().next_back().filter(|c| word(*c)) {
+        start -= c.len_utf8();
+    }
+    let mut end = offset;
+    while let Some(c) = text[end..].chars().next().filter(|c| word(*c)) {
+        end += c.len_utf8();
+    }
+    let name = &text[start..end];
+    const KEYWORDS: &[&str] = &[
+        "if", "else", "for", "while", "do", "when", "return", "val", "var", "fun", "class", "new", "true", "false", "null", "is", "in", "as", "try", "catch",
+        "throw", "public", "private", "protected", "static", "final", "void", "int", "long", "boolean", "double", "float", "char", "byte", "short",
+    ];
+    if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) || KEYWORDS.contains(&name) {
+        return None;
+    }
+    // Qualifiers: `a.`, `a?.`, `f(x).`, `a[i].` before the name.
+    loop {
+        let before = text[..start].trim_end_matches([' ', '\t']);
+        let Some(dot) = before.strip_suffix('.') else { break };
+        let dot = dot.strip_suffix('?').unwrap_or(dot);
+        let mut q = dot.trim_end_matches([' ', '\t']).len();
+        // Balanced groups after the qualifier's name.
+        while let Some(close) = text[..q].chars().next_back().filter(|c| *c == ')' || *c == ']') {
+            let open = if close == ')' { '(' } else { '[' };
+            let mut depth = 0;
+            let mut at = None;
+            for (j, c) in text[..q].char_indices().rev() {
+                if c == close {
+                    depth += 1;
+                } else if c == open {
+                    depth -= 1;
+                    if depth == 0 {
+                        at = Some(j);
+                        break;
+                    }
+                }
+            }
+            q = at?;
+        }
+        let mut s = q;
+        while let Some(c) = text[..s].chars().next_back().filter(|c| word(*c)) {
+            s -= c.len_utf8();
+        }
+        if s == q || text[s..q].starts_with(|c: char| c.is_ascii_digit()) {
+            break;
+        }
+        start = s;
+    }
+    // A call's arguments, an element's index after the name.
+    while let Some(open) = text[end..].chars().next().filter(|c| *c == '(' || *c == '[') {
+        let close = if open == '(' { ')' } else { ']' };
+        let mut depth = 0;
+        let mut at = None;
+        for (j, c) in text[end..].char_indices() {
+            if c == open {
+                depth += 1;
+            } else if c == close {
+                depth -= 1;
+                if depth == 0 {
+                    at = Some(end + j + 1);
+                    break;
+                }
+            }
+            if c == '\n' && depth > 0 && j > 200 {
+                break;
+            }
+        }
+        match at {
+            Some(e) => end = e,
+            None => break,
+        }
+    }
+    Some(start..end)
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn finds_the_expression_at_the_caret() {
+        let at = |text: &str, marker: &str| {
+            let offset = text.find(marker).unwrap();
+            expression_at(text, offset).map(|r| text[r].to_owned())
+        };
+        let text = "val d = point.x + list.get(i).size * a[2].length";
+        assert_eq!(at(text, "x +").as_deref(), Some("point.x"));
+        assert_eq!(at(text, "point").as_deref(), Some("point"));
+        assert_eq!(at(text, "get").as_deref(), Some("list.get(i)"));
+        assert_eq!(at(text, "size").as_deref(), Some("list.get(i).size"));
+        assert_eq!(at(text, "length").as_deref(), Some("a[2].length"));
+        assert_eq!(at("user?.name ?: \"\"", "name").as_deref(), Some("user?.name"));
+        assert_eq!(at("this.total += n", "total").as_deref(), Some("this.total"));
+        // Just after a name; on a keyword or a number.
+        assert_eq!(expression_at("count;", 5).map(|r| r.end), Some(5));
+        assert_eq!(at("return x", "return"), None);
+        assert_eq!(at("1.5 + y", "5"), None);
+    }
     use super::*;
 
     fn name(n: &str) -> Box<Expr> {

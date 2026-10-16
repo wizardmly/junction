@@ -89,6 +89,7 @@ pub const EMULATOR_VOLUME_DOWN: AsIcon = AsIcon { light: &[("as/emulator-volume-
 pub const EMULATOR_VOLUME_UP: AsIcon = AsIcon { light: &[("as/emulator-volume-up.l0.svg", 0x6c707eff)], dark: &[("as/emulator-volume-up.d0.svg", 0xced0d6ff)] };
 pub const ENUM: AsIcon = AsIcon { light: &[("as/enum.l0.svg", 0xfaf5ffff), ("as/enum.l1.svg", 0x834df0ff)], dark: &[("as/enum.d0.svg", 0x2f2936ff), ("as/enum.d1.svg", 0xa571e6ff)] };
 pub const ENUM_KOTLIN: AsIcon = AsIcon { light: &[("as/enum-kotlin.l0.svg", 0xfaf5ffff), ("as/enum-kotlin.l1.svg", 0x834df0ff)], dark: &[("as/enum-kotlin.d0.svg", 0x2f2936ff), ("as/enum-kotlin.d1.svg", 0xa571e6ff)] };
+pub const EVALUATE_EXPRESSION: AsIcon = AsIcon { light: &[("as/evaluate-expression.l0.svg", 0x6c707eff)], dark: &[("as/evaluate-expression.d0.svg", 0xced0d6ff)] };
 pub const EVALUATION_RESULT: AsIcon = AsIcon { light: &[("as/evaluation-result.l0.svg", 0x6c707eff)], dark: &[("as/evaluation-result.d0.svg", 0xced0d6ff)] };
 pub const EXACT_WORDS: AsIcon = AsIcon { light: &[("as/exact-words.l0.svg", 0x6c707eff)], dark: &[("as/exact-words.d0.svg", 0xced0d6ff)] };
 pub const EXCLUDE_ROOT: AsIcon = AsIcon { light: &[("as/exclude-root.l0.svg", 0xfce9d9ff), ("as/exclude-root.l1.svg", 0xf28c35ff)], dark: &[("as/exclude-root.d0.svg", 0x45322bff), ("as/exclude-root.d1.svg", 0xc77d55ff)] };
@@ -574,6 +575,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/enum-kotlin.l1.svg", include_bytes!("../../assets/as-icons/gen/enum-kotlin.l1.svg")),
     ("as/enum-kotlin.d0.svg", include_bytes!("../../assets/as-icons/gen/enum-kotlin.d0.svg")),
     ("as/enum-kotlin.d1.svg", include_bytes!("../../assets/as-icons/gen/enum-kotlin.d1.svg")),
+    ("as/evaluate-expression.l0.svg", include_bytes!("../../assets/as-icons/gen/evaluate-expression.l0.svg")),
+    ("as/evaluate-expression.d0.svg", include_bytes!("../../assets/as-icons/gen/evaluate-expression.d0.svg")),
     ("as/evaluation-result.l0.svg", include_bytes!("../../assets/as-icons/gen/evaluation-result.l0.svg")),
     ("as/evaluation-result.d0.svg", include_bytes!("../../assets/as-icons/gen/evaluation-result.d0.svg")),
     ("as/exact-words.l0.svg", include_bytes!("../../assets/as-icons/gen/exact-words.l0.svg")),

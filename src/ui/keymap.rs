@@ -57,6 +57,7 @@ pub const ENTRIES: &[Entry] = &[
     entry("Build", "Make Project", "workspace::MakeProject"),
     entry("Run", "Run 'app'", "workspace::RunApp"),
     entry("Run", "Stop", "workspace::StopApp"),
+    entry("Run", "View Breakpoints…", "workspace::ViewBreakpoints"),
     entry("Tool Windows", "Run", "workspace::ToggleRunWindow"),
     entry("Tool Windows", "Logcat", "workspace::ToggleLogcatWindow"),
     entry("Tool Windows", "Problems", "workspace::ToggleProblemsWindow"),

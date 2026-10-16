@@ -2217,6 +2217,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::debug_test_at_caret))
             .on_action(cx.listener(Self::toggle_line_breakpoint))
             .on_action(cx.listener(Self::run_to_cursor))
+            .on_action(cx.listener(Self::evaluate_expression))
             .on_action(cx.listener(|this, _: &NextChange, window, cx| this.go_to_change(true, window, cx)))
             .on_action(cx.listener(|this, _: &PreviousChange, window, cx| this.go_to_change(false, window, cx)))
             .on_action(cx.listener(Self::rollback_lines))

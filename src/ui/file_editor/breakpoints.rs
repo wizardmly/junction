@@ -21,13 +21,14 @@ use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::debug_service::DebugService;
 
-actions!(breakpoints, [ToggleLineBreakpoint, RunToCursor, DebugTestAtCaret]);
+actions!(breakpoints, [ToggleLineBreakpoint, RunToCursor, DebugTestAtCaret, EvaluateExpression]);
 
 pub fn init(cx: &mut gpui_kit::App) {
     let mac = cfg!(target_os = "macos");
     cx.bind_keys([
         KeyBinding::new(if mac { "cmd-f8" } else { "ctrl-f8" }, ToggleLineBreakpoint, Some(super::CONTEXT)),
         KeyBinding::new("alt-f9", RunToCursor, Some(super::CONTEXT)),
+        KeyBinding::new("alt-f8", EvaluateExpression, Some(super::CONTEXT)),
         KeyBinding::new(if mac { "ctrl-shift-d" } else { "ctrl-shift-f9" }, DebugTestAtCaret, Some(super::CONTEXT)),
     ]);
 }
@@ -49,6 +50,20 @@ impl FileEditor {
         let Some(file) = self.breakpoint_file() else { return };
         let line = self.state.read(cx).cursor_position().line;
         DebugService::global(cx).update(cx, |s, cx| s.run_to_line(&file, line, cx));
+    }
+
+    /// Alt+F8 while paused: Evaluate Expression with the selection, else
+    /// the expression at the caret.
+    pub(super) fn evaluate_expression(&mut self, _: &EvaluateExpression, window: &mut Window, cx: &mut Context<Self>) {
+        if !DebugService::global(cx).read(cx).is_paused() {
+            return;
+        }
+        let initial = self.selected_text(cx).unwrap_or_else(|| {
+            let text = self.text(cx);
+            let offset = self.state.read(cx).cursor();
+            crate::domain::expression::expression_at(&text, offset).map(|r| text[r].to_owned()).unwrap_or_default()
+        });
+        crate::ui::evaluate_dialog::open(initial, window, cx);
     }
 
     /// Ctrl+Shift+F9: debugs the test method at the caret, else its class.
@@ -328,6 +343,12 @@ impl FileEditor {
                         .child(
                             h_flex()
                                 .gap_2()
+                                // IntelliJ's link to the Breakpoints dialog, this one selected.
+                                .child(Button::new("breakpoint-more").ghost().small().label(format!("More ({})", if cfg!(target_os = "macos") { "⇧⌘F8" } else { "Ctrl+Shift+F8" })).on_click(cx.listener(move |this, _, window, cx| {
+                                    this.close_breakpoint_popup(true, window, cx);
+                                    let at = this.breakpoint_file().map(|file| (file, line));
+                                    crate::ui::breakpoints_dialog::open(at, window, cx);
+                                })))
                                 .child(div().flex_1())
                                 .child(Button::new("breakpoint-remove").ghost().small().label("Remove").on_click(cx.listener(move |this, _, window, cx| {
                                     this.breakpoint_popup = None;

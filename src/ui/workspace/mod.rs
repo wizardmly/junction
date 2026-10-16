@@ -107,6 +107,7 @@ actions!(
         DebugResume,
         DebugStepOver,
         DebugStepOut,
+        ViewBreakpoints,
         ToggleLogcatWindow,
         ShowLocalHistory,
         PutLocalHistoryLabel,
@@ -191,6 +192,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if cfg!(target_os = "macos") { "alt-cmd-r" } else { "f9" }, DebugResume, Some(CONTEXT)),
         KeyBinding::new("f8", DebugStepOver, Some(CONTEXT)),
         KeyBinding::new("shift-f8", DebugStepOut, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-f8", ViewBreakpoints, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-6" } else { "alt-6" }, ToggleLogcatWindow, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-0" } else { "alt-0" }, ToggleCommitWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-f12", HideAllToolWindows, Some(CONTEXT)),
@@ -948,6 +950,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &DebugStepOut, _, cx| {
                 crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.step(crate::domain::debugger::StepDepth::Out, cx))
             }))
+            .on_action(cx.listener(|_, _: &ViewBreakpoints, window, cx| crate::ui::breakpoints_dialog::open(None, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleRunWindow, window, cx| this.shortcut_tool(ToolWindow::Run, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleLogcatWindow, window, cx| this.shortcut_tool(ToolWindow::Logcat, window, cx)))
             .on_action(cx.listener(|this, _: &ShowLocalHistory, window, cx| this.show_local_history(window, cx)))

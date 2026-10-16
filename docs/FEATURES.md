@@ -704,3 +704,18 @@ Kotlin 说明：Junction 默认不常驻 Kotlin 语言服务（省 1–2 GB 内�
 Linux 实测（Xvfb，kotlin-server 263.6379.0）：Kotlin/JVM Gradle 工程里 `val item = Item()`（`demo.a.Item` 和 `demo.b.Item` 两个同名类）上 Alt+Enter，在编辑器自己的 “Import class 'Item'” 之后列出服务器的 “Remove invocation”、“Import class 'Item' → demo.a.Item” / “→ demo.b.Item”、“Extract to local variable”、“Organize imports”，选 demo.b 后文件加上 `import demo.b.Item`；Shift+F6 重命名 `Shop.price` 为 `cost`，对话框列出 3 处（声明、`price(n)`、`Shop().price(3)`），`Other` 里的同名方法 `price()` 及其调用不在其中（整词匹配会列出 5 处），应用后只改这 3 处。
 
 Linux 实测（Xvfb，rust-analyzer 1.97）：Rust 项目里 Shift+F6 重命名函数 `compute`，对话框列出 main.rs 两处和 util.rs 的 `super::compute(x)`，而 util.rs 里另一个函数的同名参数 `compute` 没有列入（整词匹配会列入）；`BTreeMap::new()` 上 Alt+Enter 出现服务器的 “Import `std::collections::BTreeMap`” / “Qualify as …”，回车后文件顶部加上 `use std::collections::BTreeMap;`；`compute(2)` 的 `2` 上出现 “Extract into variable” 等重构，选中后（经 codeAction/resolve）生成 `let x = 2;` 并替换。
+
+## 38. Debugger：Evaluate Expression 对话框与 Breakpoints 对话框（2026-10-16）
+
+照 IntelliJ 的 `XDebuggerEvaluationDialog` 和 `BreakpointsDialog`。代码：`src/ui/evaluate_dialog.rs`、`src/ui/breakpoints_dialog.rs`、`src/domain/expression.rs`（`expression_at`）、`src/ui/debug_service.rs`（`evaluate_task`、`children_task`、`all_breakpoints`、`remove_breakpoint`、`show_source`）；变量树的行由 `debug_view::var_row` 共用。
+
+| 功能 | 状态 |
+|---|---|
+| Evaluate（Alt+F8，暂停时在编辑器里；或 Debug 工具栏的计算器按钮，带上求值输入框里的内容）：表达式框预填选中文本，没有选中时取光标处的表达式（IntelliJ 的 `getExpressionRangeAtOffset`：`point.x` 在 `x` 上取整个限定引用，`list.get(i)` 在 `get` 上取整个调用连同参数，`a[2].length`、`user?.name` 同理；关键字和数字上不预填） | ✅ |
+| Evaluate（Enter 或按钮）在当前帧求值，对话框保持打开；Result 里是 `result = {ArrayList@445} size = 3` 这样的树，对象 / 数组 / 集合可逐层展开，错误显示为红字（“Cannot find local variable 'nope'”）；未暂停时提示 “The debugger is not paused” | ✅ |
+| 历史（时钟按钮）：本次运行求值过的表达式，最新的在前，最多 20 条，点选填回；Add to Watches 把表达式加进 Debug 窗口的 Watches | ✅ |
+| Breakpoints（Ctrl+Shift+F8 / ⇧⌘F8，Run › View Breakpoints…，或断点弹窗里的 “More (Ctrl+Shift+F8)”，后者选中该断点）：左边按语言分组（Java / Kotlin Line Breakpoints）列出所有行断点，每项有启用复选框、和编辑器 gutter 一致的图标（红 / 黄日志断点、禁用空心、已验证打勾）、`CalcTest.java:34` 和该行源码 | ✅ |
+| 右边是选中断点的属性：Enabled、Suspend execution、Condition、Log（“Breakpoint hit” message、Stack trace、Evaluate and log），勾选立即生效，文本在离开输入框或回车时生效，运行中的调试会话同步更新；工具栏 − 删除（选中下一个）；View Source 或双击打开该行 | ✅ |
+| 表达式框的代码补全和多行代码片段模式、异常断点 / 方法断点 / 字段监视点、Mute Breakpoints、按文件分组、Remove once hit、依赖断点 | ⬜ |
+
+Linux 实测（Xvfb，calc 示例的 JUnit 测试）：暂停在 `sum += items.get(i);`，光标放在 `get` 上按 Alt+F8，表达式框预填 `items.get(i)`，回车得到 `result = {Integer@447} 3`；求值 `items` 后展开得到 `[0] = {Integer@448} 1` 等三项；`items.get(1) * 10 + sum` 得 20；`nope + 1` 显示红字错误；历史列出三条；Add to Watches 后 Debug 窗口的 Watches 多了 `items.get(i)`。Breakpoints 对话框里列出 Calc.java:4（Shift+点行号加的黄色日志断点）和 CalcTest.java:34；给 CalcTest.java:34 填条件 `i == 2` 后切到另一项即保存到 breakpoints.json，再调试时停在 `i = 2`；列表里取消 Calc.java:4 的勾，gutter 立即变成空心；删除 Calc.java:4 后只剩一项；双击 CalcTest.java:34 打开该文件并跳到第 34 行。

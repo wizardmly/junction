@@ -72,7 +72,7 @@ impl VarNode {
 
     /// A watch's or an evaluation's row: its expression, and its value or
     /// error.
-    fn expression(text: String, kind: NodeKind, result: Result<(Value, Option<String>), String>) -> Self {
+    pub(crate) fn expression(text: String, kind: NodeKind, result: Result<(Value, Option<String>), String>) -> Self {
         let (value, detail, error) = match result {
             Ok((value, detail)) => (value, detail, None),
             Err(e) => (Value::Void, None, Some(e)),
@@ -123,6 +123,8 @@ pub struct DebugService {
     breakpoints: Vec<SavedBreakpoint>,
     /// The Watches' expressions.
     pub watches: Vec<String>,
+    /// Evaluate Expression's history, the latest first.
+    pub evaluated: Vec<String>,
     /// Breakpoints that stop somewhere in the running session.
     verified: HashSet<(String, u32)>,
     pub run: Option<DebugRun>,
@@ -218,6 +220,24 @@ impl DebugService {
             }
         })
         .detach();
+    }
+
+    /// Every breakpoint, in the order they were set, and whether it stops
+    /// somewhere in the running session (the Breakpoints dialog).
+    pub fn all_breakpoints(&self) -> Vec<(SavedBreakpoint, bool)> {
+        self.breakpoints.iter().map(|b| (b.clone(), self.verified.contains(&(b.file.clone(), b.line)))).collect()
+    }
+
+    /// The Breakpoints dialog's Remove.
+    pub fn remove_breakpoint(&mut self, file: &str, line: u32, cx: &mut Context<Self>) {
+        if self.breakpoint(file, line).is_some() {
+            self.toggle(SavedBreakpoint::new(file, line), cx);
+        }
+    }
+
+    /// Opens a breakpoint's line in the editor.
+    pub fn show_source(&mut self, file: &str, line: u32, cx: &mut Context<Self>) {
+        cx.emit(DebugServiceEvent::Navigate { path: PathBuf::from(file), line });
     }
 
     /// Toggle Line Breakpoint (Ctrl+F8, a click on the line number).
@@ -644,23 +664,60 @@ impl DebugService {
         .detach();
     }
 
-    /// The evaluate field (Enter): the expression's value on top of the
-    /// Variables view, in the selected frame.
-    pub fn evaluate(&mut self, text: String, cx: &mut Context<Self>) {
-        let (Some(session), Some(run)) = (self.session.clone(), self.run.as_ref()) else { return };
-        let (Some(thread), true) = (run.thread.filter(|_| run.status == DebugStatus::Paused), run.frame < run.frames.len()) else { return };
-        let depth = run.frame;
-        if text.trim().is_empty() {
-            return;
-        }
-        let generation = self.generation;
-        let expression = text.clone();
-        let task = cx.background_spawn(async move {
+    /// An expression's value and description in the selected frame, while
+    /// paused (Evaluate Expression's Evaluate).
+    pub fn evaluate_task(&self, text: &str, cx: &mut Context<Self>) -> Option<Task<Result<(Value, Option<String>), String>>> {
+        let (session, run) = (self.session.clone()?, self.run.as_ref()?);
+        let thread = run.thread.filter(|_| run.status == DebugStatus::Paused && run.frame < run.frames.len())?;
+        let (depth, expression) = (run.frame, text.to_owned());
+        Some(cx.background_spawn(async move {
             session.evaluate(thread, depth, &expression).map(|value| {
                 let detail = session.describe(thread, &value);
                 (value, detail)
             })
-        });
+        }))
+    }
+
+    /// A value's fields, elements or items, each described: a tree row's
+    /// children.
+    pub fn children_task(&self, value: Value, cx: &mut Context<Self>) -> Option<Task<Vec<VarNode>>> {
+        let (session, thread) = (self.session.clone()?, self.run.as_ref()?.thread?);
+        Some(cx.background_spawn(async move {
+            session
+                .children(thread, &value)
+                .map(|children| {
+                    children
+                        .into_iter()
+                        .map(|v| {
+                            let detail = session.describe(thread, &v.value);
+                            VarNode::new((v, detail))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }))
+    }
+
+    /// Remembers an evaluated expression, the latest first, as IntelliJ's
+    /// history (20 of them).
+    pub fn remember_evaluated(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        self.evaluated.retain(|e| e != text);
+        self.evaluated.insert(0, text.to_owned());
+        self.evaluated.truncate(20);
+    }
+
+    /// The evaluate field (Enter): the expression's value on top of the
+    /// Variables view, in the selected frame.
+    pub fn evaluate(&mut self, text: String, cx: &mut Context<Self>) {
+        if text.trim().is_empty() {
+            return;
+        }
+        let Some(task) = self.evaluate_task(&text, cx) else { return };
+        let generation = self.generation;
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
@@ -711,25 +768,12 @@ impl DebugService {
     /// the first expansion loads its fields, elements or a collection's
     /// items, each described.
     pub fn toggle_variable(&mut self, path: &[usize], cx: &mut Context<Self>) {
-        let session = self.session.clone();
         let generation = self.generation;
-        let thread = self.run.as_ref().and_then(|r| r.thread);
         let Some(node) = self.run.as_mut().and_then(|r| node_at(&mut r.variables, path)) else { return };
         node.expanded = !node.expanded;
-        if node.expanded && node.children.is_none() {
-            let (Some(session), Some(thread)) = (session, thread) else { return };
-            let value = node.var.value.clone();
-            let task = cx.background_spawn(async move {
-                session.children(thread, &value).map(|children| {
-                    children
-                        .into_iter()
-                        .map(|v| {
-                            let detail = session.describe(thread, &v.value);
-                            VarNode::new((v, detail))
-                        })
-                        .collect::<Vec<_>>()
-                })
-            });
+        let load = (node.expanded && node.children.is_none()).then(|| node.var.value.clone());
+        if let Some(value) = load {
+            let Some(task) = self.children_task(value, cx) else { return };
             let path = path.to_vec();
             cx.spawn(async move |this, cx| {
                 let result = task.await;
@@ -738,7 +782,7 @@ impl DebugService {
                         return;
                     }
                     if let Some(node) = this.run.as_mut().and_then(|r| node_at(&mut r.variables, &path)) {
-                        node.children = Some(result.unwrap_or_default());
+                        node.children = Some(result);
                     }
                     cx.notify();
                 })
@@ -815,7 +859,7 @@ async fn drive(this: gpui_kit::WeakEntity<DebugService>, cx: &mut gpui_kit::Asyn
 }
 
 /// The variable at a path of indexes in the tree.
-fn node_at<'a>(nodes: &'a mut [VarNode], path: &[usize]) -> Option<&'a mut VarNode> {
+pub(crate) fn node_at<'a>(nodes: &'a mut [VarNode], path: &[usize]) -> Option<&'a mut VarNode> {
     let (first, rest) = path.split_first()?;
     let node = nodes.get_mut(*first)?;
     if rest.is_empty() {

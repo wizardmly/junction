@@ -14,7 +14,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    AnyElement, AppContext as _, Context, Div, ElementId, Stateful, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
     Styled as _, Subscription, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 
@@ -34,10 +34,10 @@ enum Tab {
 }
 
 /// A visible row of the Variables tree.
-struct VarRow {
-    path: Vec<usize>,
+pub(crate) struct VarRow {
+    pub(crate) path: Vec<usize>,
     depth: usize,
-    kind: NodeKind,
+    pub(crate) kind: NodeKind,
     name: SharedString,
     value: SharedString,
     /// The object's `toString()`, a collection's size.
@@ -45,7 +45,7 @@ struct VarRow {
     /// A watch or evaluation that failed.
     error: Option<SharedString>,
     icon: AsIcon,
-    expandable: bool,
+    pub(crate) expandable: bool,
     expanded: bool,
     loading: bool,
 }
@@ -73,7 +73,7 @@ fn value_icon(value: &Value) -> AsIcon {
     }
 }
 
-fn flatten(nodes: &[VarNode], depth: usize, prefix: &mut Vec<usize>, out: &mut Vec<VarRow>) {
+pub(crate) fn flatten(nodes: &[VarNode], depth: usize, prefix: &mut Vec<usize>, out: &mut Vec<VarRow>) {
     for (ix, node) in nodes.iter().enumerate() {
         prefix.push(ix);
         let expandable = node.error.is_none() && node.var.value.object_id().is_some();
@@ -102,6 +102,33 @@ fn flatten(nodes: &[VarNode], depth: usize, prefix: &mut Vec<usize>, out: &mut V
         }
         prefix.pop();
     }
+}
+
+/// A Variables tree row as IntelliJ draws it: the chevron, the value's
+/// icon, `name = value` and its `toString()` greyed (or the error in red).
+pub(crate) fn var_row(id: impl Into<ElementId>, row: &VarRow, palette: &crate::theme::Palette) -> Stateful<Div> {
+    let chevron = row.expandable.then(|| Icon::new(if row.expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).xsmall());
+    h_flex()
+        .id(id)
+        .h(px(ROW))
+        .pl(px(6. + 16. * row.depth as f32))
+        .pr_2()
+        .gap_1()
+        .text_sm()
+        .whitespace_nowrap()
+        .hover(|s| s.bg(palette.hover))
+        .child(div().w(px(14.)).flex_none().children(chevron))
+        .child(Icon::new(row.icon).xsmall())
+        .child(div().child(row.name.clone()))
+        .child(div().text_color(palette.text_secondary).child("="))
+        .map(|el| match &row.error {
+            Some(error) => el.child(div().overflow_hidden().text_ellipsis().text_color(palette.status_conflict).child(error.clone())),
+            None => el
+                .child(div().flex_none().child(row.value.clone()))
+                .children(row.detail.clone().map(|d| div().overflow_hidden().text_ellipsis().text_color(palette.text_secondary).child(d))),
+        })
+        .when(row.loading, |el| el.child(div().text_color(palette.text_secondary).child("Collecting data…")))
+        .child(div().flex_1())
 }
 
 /// F9, F8, F7, Shift+F8, Alt+F9 (⌥⌘R, F8, F7, ⇧F8, ⌥F9 on macOS).
@@ -171,6 +198,17 @@ impl DebugView {
                     tool_button("debug-run-to-cursor", icons::RUN_TO_CURSOR, format!("Run to Cursor  {}", shortcut("cursor")))
                         .disabled(!paused)
                         .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::ui::file_editor::RunToCursor), cx))),
+                ),
+            )
+            .child(div().w(px(1.)).h(px(16.)).mx_1().bg(cx.palette().border))
+            .child(
+                div().when(!paused, |el| el.opacity(0.4)).child(
+                    tool_button("debug-evaluate", icons::EVALUATE_EXPRESSION, format!("Evaluate Expression  {}", if cfg!(target_os = "macos") { "⌥F8" } else { "Alt+F8" }))
+                        .disabled(!paused)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let text = this.expression.read(cx).value().to_string();
+                            crate::ui::evaluate_dialog::open(text, window, cx);
+                        })),
                 ),
             )
             .child(div().flex_1())
@@ -273,27 +311,7 @@ impl DebugView {
             .filter_map(|ix| self.rows.get(ix).map(|r| (ix, r)))
             .map(|(ix, row)| {
                 let path = row.path.clone();
-                let chevron = row.expandable.then(|| Icon::new(if row.expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).xsmall());
-                h_flex()
-                    .id(("debug-var", ix))
-                    .h(px(ROW))
-                    .pl(px(6. + 16. * row.depth as f32))
-                    .pr_2()
-                    .gap_1()
-                    .text_sm()
-                    .whitespace_nowrap()
-                    .hover(|s| s.bg(palette.hover))
-                    .child(div().w(px(14.)).flex_none().children(chevron))
-                    .child(Icon::new(row.icon).xsmall())
-                    .child(div().child(row.name.clone()))
-                    .child(div().text_color(palette.text_secondary).child("="))
-                    .map(|el| match &row.error {
-                        Some(error) => el.child(div().overflow_hidden().text_ellipsis().text_color(palette.status_conflict).child(error.clone())),
-                        None => el
-                            .child(div().flex_none().child(row.value.clone()))
-                            .children(row.detail.clone().map(|d| div().overflow_hidden().text_ellipsis().text_color(palette.text_secondary).child(d))),
-                    })
-                    .child(div().flex_1())
+                var_row(("debug-var", ix), row, &palette)
                     .when_some(match row.kind {
                         NodeKind::Watch(ix) => Some(ix),
                         _ => None,
@@ -309,7 +327,6 @@ impl DebugView {
                             this.service.update(cx, |s, cx| s.clear_evaluation(cx));
                         })))
                     })
-                    .when(row.loading, |el| el.child(div().text_color(palette.text_secondary).child("Collecting data…")))
                     .when(row.expandable, |el| el.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.service.update(cx, |s, cx| s.toggle_variable(&path, cx)))))
                     .into_any_element()
             })
