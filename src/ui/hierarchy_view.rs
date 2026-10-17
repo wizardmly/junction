@@ -17,7 +17,7 @@ use gpui_kit::{
     Task, Window, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::index::call_hierarchy::{caller_at, offset_of};
+use crate::index::call_hierarchy::{caller_at, calls_in, offset_of};
 use crate::index::hierarchy::{MethodMark, TypeNode, TypeView};
 use crate::index::lang::Lang;
 use crate::index::service::CodeIndex;
@@ -65,6 +65,9 @@ struct Types {
 pub struct HierarchyView {
     index: Entity<CodeIndex>,
     root: Option<Node>,
+    /// A Call Hierarchy's direction: what the function calls instead of
+    /// what calls it (IntelliJ's Callee Hierarchy).
+    callees: bool,
     types: Option<Types>,
     selected: Vec<usize>,
     _tasks: Vec<Task<()>>,
@@ -81,7 +84,7 @@ fn node_at<'a>(node: &'a mut Node, path: &[usize]) -> Option<&'a mut Node> {
 
 impl HierarchyView {
     pub fn new(index: Entity<CodeIndex>) -> Self {
-        Self { index, root: None, types: None, selected: Vec::new(), _tasks: Vec::new() }
+        Self { index, root: None, callees: false, types: None, selected: Vec::new(), _tasks: Vec::new() }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -180,6 +183,7 @@ impl HierarchyView {
     /// Call Hierarchy of the function at `offset` of this file.
     pub fn call_hierarchy(&mut self, path: String, text: String, offset: usize, cx: &mut Context<Self>) -> Result<(), String> {
         self.types = None;
+        self.callees = false;
         let lang = Lang::from_path(&path).ok_or("Call Hierarchy works in Kotlin and Java files")?;
         let file_name = path.rsplit('/').next().unwrap_or(&path).to_owned();
         let caller = caller_at(lang, &text, offset, &file_name).ok_or("No method at the caret")?;
@@ -225,6 +229,64 @@ impl HierarchyView {
             node.children = Some(Vec::new());
             return;
         };
+        if self.callees {
+            let lang = Lang::from_path(&node.path);
+            let offsets = lang.map(|lang| calls_in(lang, &text, node.offset)).unwrap_or_default();
+            let lines: Vec<(u32, u32)> = offsets
+                .iter()
+                .map(|&o| {
+                    let line_start = text[..o].rfind('\n').map_or(0, |i| i + 1);
+                    (text[..o].matches('\n').count() as u32, text[line_start..o].encode_utf16().count() as u32)
+                })
+                .collect();
+            let tasks: Vec<_> = offsets.iter().map(|&o| self.index.read(cx).definitions(node.path.clone(), text.clone(), o, cx)).collect();
+            self._tasks.push(cx.spawn(async move |this, cx| {
+                let mut targets = Vec::new();
+                for (task, call) in tasks.into_iter().zip(lines) {
+                    if let Some(t) = task.await.into_iter().next() {
+                        targets.push((t, call));
+                    }
+                }
+                let callees = cx
+                    .background_spawn(async move {
+                        let mut out: Vec<Node> = Vec::new();
+                        for (t, call) in targets {
+                            let Some(lang) = Lang::from_path(&t.path) else { continue };
+                            let file = if std::path::Path::new(&t.path).is_absolute() { PathBuf::from(&t.path) } else { root_dir.join(&t.path) };
+                            let Ok(text) = std::fs::read_to_string(&file) else { continue };
+                            let file_name = t.path.rsplit(['/', '\\']).next().unwrap_or(&t.path).to_owned();
+                            let Some(callee) = caller_at(lang, &text, offset_of(&text, t.line, t.col), &file_name) else { continue };
+                            match out.iter_mut().find(|n| n.path == t.path && n.offset == callee.offset) {
+                                Some(n) => n.calls.push(call),
+                                None => out.push(Node {
+                                    recursive: ancestors.contains(&callee.name),
+                                    name: callee.name,
+                                    path: t.path.clone(),
+                                    offset: callee.offset,
+                                    line: callee.line,
+                                    col: callee.col,
+                                    calls: vec![call],
+                                    children: None,
+                                    expanded: false,
+                                    loading: false,
+                                }),
+                            }
+                        }
+                        out
+                    })
+                    .await;
+                this.update(cx, |this, cx| {
+                    if let Some(node) = this.root.as_mut().and_then(|r| node_at(r, &at)) {
+                        node.loading = false;
+                        node.children = Some(callees);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }));
+            cx.notify();
+            return;
+        }
         let task = self.index.read(cx).usages(node.path.clone(), text, node.offset, cx);
         self._tasks.push(cx.spawn(async move |this, cx| {
             let (_, usages) = task.await;
@@ -271,6 +333,21 @@ impl HierarchyView {
         cx.notify();
     }
 
+    /// The toolbar's Caller / Callee Hierarchy: the same function, the
+    /// other direction.
+    fn set_callees(&mut self, callees: bool, cx: &mut Context<Self>) {
+        if self.callees == callees {
+            return;
+        }
+        self.callees = callees;
+        if let Some(root) = self.root.as_mut() {
+            root.children = None;
+            root.loading = false;
+            self.selected = Vec::new();
+            self.expand(Vec::new(), cx);
+        }
+    }
+
     fn toggle(&mut self, at: Vec<usize>, cx: &mut Context<Self>) {
         let expanded = self.root.as_mut().and_then(|r| node_at(r, &at)).map(|n| n.expanded).unwrap_or(false);
         if expanded {
@@ -286,7 +363,8 @@ impl HierarchyView {
     /// Opens a node's first call (the root: its declaration).
     fn open(&mut self, at: Vec<usize>, cx: &mut Context<Self>) {
         let Some(n) = self.root.as_mut().and_then(|r| node_at(r, &at)) else { return };
-        let (line, col) = n.calls.first().copied().unwrap_or((n.line, n.col));
+        // A caller: its call; a callee (its calls are in the parent): itself.
+        let (line, col) = if self.callees { (n.line, n.col) } else { n.calls.first().copied().unwrap_or((n.line, n.col)) };
         cx.emit(HierarchyEvent::Open { path: n.path.clone(), line, col });
     }
 
@@ -380,6 +458,7 @@ impl Render for HierarchyView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let title = match (&self.root, &self.types) {
+            (Some(r), _) if self.callees => format!("Callees of {}", r.name),
             (Some(r), _) => format!("Callers of {}", r.name),
             (None, Some(Types { method: Some(m), name, .. })) => format!("Method Hierarchy of {name}.{m}()"),
             (None, Some(t)) => match t.view {
@@ -462,6 +541,11 @@ impl Render for HierarchyView {
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Hierarchy"))
                     .child(div().text_sm().text_color(palette.text_secondary).child(title))
                     .child(div().flex_1())
+                    .when(self.root.is_some(), |el| {
+                        let callees = self.callees;
+                        el.child(tool_button("hierarchy-callers", icons::SUPERTYPES, "Caller Hierarchy").selected(!callees).on_click(cx.listener(|this, _, _, cx| this.set_callees(false, cx))))
+                            .child(tool_button("hierarchy-callees", icons::SUBTYPES, "Callee Hierarchy").selected(callees).on_click(cx.listener(|this, _, _, cx| this.set_callees(true, cx))))
+                    })
                     .when_some(type_view.filter(|_| views), |el, view| {
                         let button = |id: &'static str, icon, tip: &'static str, v: TypeView| {
                             tool_button(id, icon, tip).selected(view == v).on_click(cx.listener(move |this, _, _, cx| this.set_type_view(v, cx)))

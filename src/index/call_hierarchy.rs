@@ -66,6 +66,46 @@ pub fn caller_at(lang: Lang, text: &str, offset: usize, file_name: &str) -> Opti
     Some(Caller { name: display, offset: name.start_byte(), line: name.start_position().row as u32, col: name.start_position().column as u32 })
 }
 
+/// Callee Hierarchy's view of a function: the calls in the body of the
+/// function whose name is at `name_offset`, each as its callee name's
+/// offset, in order.
+pub fn calls_in(lang: Lang, text: &str, name_offset: usize) -> Vec<usize> {
+    let Some(tree) = symbols::parse(lang, text) else { return Vec::new() };
+    let root = tree.root_node();
+    let Some(function) = descendants(root)
+        .into_iter()
+        .filter(|n| is_function(lang, *n) && function_name(lang, *n).is_some_and(|name| name.start_byte() == name_offset))
+        .min_by_key(|n| n.end_byte() - n.start_byte())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for n in descendants(function) {
+        let callee = match (lang, n.kind()) {
+            (Lang::Kotlin, "call_expression") => n.child(0).and_then(|c| match c.kind() {
+                "simple_identifier" => Some(c),
+                // `a.b()`: b.
+                "navigation_expression" => descendants(c).into_iter().filter(|d| d.kind() == "simple_identifier").last(),
+                _ => None,
+            }),
+            (Lang::Kotlin, "constructor_invocation") => descendants(n).into_iter().find(|d| d.kind() == "type_identifier"),
+            (Lang::Java, "method_invocation") => n.child_by_field_name("name"),
+            (Lang::Java, "object_creation_expression") => n.child_by_field_name("type").map(|t| {
+                // `B<C>`: B; `a.B`: B.
+                let t = if t.kind() == "generic_type" { t.child(0).unwrap_or(t) } else { t };
+                children(t).into_iter().filter(|d| d.kind() == "type_identifier").last().unwrap_or(t)
+            }),
+            _ => None,
+        };
+        if let Some(c) = callee {
+            out.push(c.start_byte());
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// The type a Type Hierarchy (Ctrl+H) is for: the word at the caret when
 /// `is_type` says it names one, else the class around the caret.
 pub fn type_at(lang: Lang, text: &str, offset: usize, is_type: impl Fn(&str) -> bool) -> Option<String> {
@@ -102,6 +142,18 @@ mod tests {
         let java = "class A {\n  int x = f();\n  void g() { f(); }\n}\n";
         assert_eq!(caller_at(Lang::Java, java, java.find("f();").unwrap(), "A.java").unwrap().name, "A");
         assert_eq!(caller_at(Lang::Java, java, java.rfind("f()").unwrap(), "A.java").unwrap().name, "A.g");
+    }
+
+    #[test]
+    fn finds_the_calls() {
+        let text = "class Cart {\n    fun use() {\n        println(total(a.b(1)))\n        Item()\n    }\n    fun total(x: Int) = 1\n}\n";
+        let at = text.find("use").unwrap();
+        let names: Vec<&str> = calls_in(Lang::Kotlin, text, at).into_iter().map(|o| &text[o..o + text[o..].find(|c: char| !c.is_alphanumeric()).unwrap()]).collect();
+        assert_eq!(names, ["println", "total", "b", "Item"]);
+        let java = "class A {\n  void g() { f(); new B<C>(); x.h(); }\n}\n";
+        let at = java.find("g()").unwrap();
+        let names: Vec<&str> = calls_in(Lang::Java, java, at).into_iter().map(|o| &java[o..o + 1]).collect();
+        assert_eq!(names, ["f", "B", "h"]);
     }
 
     #[test]
