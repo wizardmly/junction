@@ -838,11 +838,12 @@ Linux 实测（Xvfb，calc 示例）：在 `totals()` 循环体第 34 行设断�
 | 跟随末尾：光标在最后一行时，新输出会自动滚到底部（光标停在行首，长行不会让视图横向滚动）；用户把光标或选区放到别处后不再跟随 | ✅ |
 | 用在 Build Output 的右侧、Run 的 app 控制台、Debug 的 Console 标签 | ✅ |
 | Logcat 的日志也在这种控制台里（Android Studio 的 Logcat 同样是编辑器）：拖选跨行复制、Ctrl+F 查找；列和以前一样（时间、pid-tid、按哈希着色的 tag、包名、带底色的等级标签、按等级着色的消息），网址和堆栈帧的 `Foo.kt:42` 是链接（点击打开项目里的源文件并跳到那一行）；新日志追加在末尾，缓冲区满时从开头丢弃旧行，而不是整体重绘；改过滤器、Standard / Compact、Clear 时整体重建；Soft-Wrap、Scroll to the End 按钮照常 | ✅ |
-| ANSI 颜色、控制台里的 Clear All / Soft-Wrap / Scroll to End 按钮、超长输出的截断（`idea.cycle.buffer.size`） | ⬜ |
+| 控制台左侧的竖工具条（照 AS 的 Run / Build 控制台）：Soft-Wrap（开关）、Scroll to the End、Clear All（Build Output 清掉输出文字、问题列表保留；Run 清掉 app 控制台）；Debug 的 Console 只有前两个 | ✅ |
+| ANSI 颜色、超长输出的截断（`idea.cycle.buffer.size`）、Print | ⬜ |
 
 同时修复：未同步过的 Gradle 工程，根目录 `build.gradle(.kts)` 里写了 `alias(libs.plugins.android.application) apply false`（只声明插件、不应用），会被误判成 Application 模块。运行配置因此变成以根工程命名（如 “mytv-android”），构建任务成了 `:assembleDebug`，Gradle 报 “Cannot locate tasks that match ':assembleDebug'”。现在判断模块类型时会忽略带 `apply false` / `apply(false)` 的行，运行配置是 `app`，任务是 `:app:assembleDebug`。
 
-Linux 实测（Xvfb，calc 示例，故意删掉一个分号）：Ctrl+F9 后 Build Output 右侧显示 Gradle 输出，失败行为红色，`Calc.java:4` 路径和 `file:///…/problems-report.html` 带下划线；点击 `Calc.java:4` 链接打开 `Calc.java` 并定位到第 4 行；跨 4 行拖选后 Ctrl+C，粘贴到 Commit Message 得到完整的多行文本。（Xvfb 没有窗口管理器，窗口不会被激活，编辑器不画选区高亮，这一点只能在桌面上看。）
+Linux 实测（Xvfb，calc 示例，故意删掉一个分号）：Ctrl+F9 后 Build Output 右侧显示 Gradle 输出，失败行为红色，`Calc.java:4` 路径和 `file:///…/problems-report.html` 带下划线；点击 `Calc.java:4` 链接打开 `Calc.java` 并定位到第 4 行；跨 4 行拖选后 Ctrl+C，粘贴到 Commit Message 得到完整的多行文本。（Xvfb 没有窗口管理器，窗口不会被激活，编辑器不画选区高亮，这一点只能在桌面上看。）calc 构建成功后，Build Output 控制台左侧有 Soft-Wrap / Scroll to the End / Clear All 三个按钮，点 Clear All 输出清空，左边的构建状态保留。
 
 ## 47. 没有源码的库：反编译存根（2026-10-16）
 

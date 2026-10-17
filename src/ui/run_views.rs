@@ -57,13 +57,18 @@ impl EventEmitter<RunViewEvent> for BuildView {}
 
 impl BuildView {
     pub fn new(service: Entity<RunService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let console = cx.new(|cx| ConsoleView::new(window, cx));
+        let console = cx.new(|cx| ConsoleView::new(window, cx).with_toolbar(true));
         let _subscriptions = vec![
             cx.observe_in(&service, window, |this, _, window, cx| {
                 this.sync(window, cx);
                 cx.notify();
             }),
             cx.subscribe(&console, forward_open),
+            cx.subscribe(&console, |this: &mut Self, _, event: &ConsoleEvent, cx| {
+                if let ConsoleEvent::ClearAll = event {
+                    this.service.update(cx, |s, cx| s.clear_build_output(cx));
+                }
+            }),
         ];
         let mut this = Self { service, console, _subscriptions };
         this.sync(window, cx);
@@ -210,13 +215,18 @@ impl RunView {
     pub fn new(service: Entity<RunService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let test_service = TestService::global(cx);
         let tests = cx.new(|cx| TestView::new(test_service.clone(), cx));
-        let console = cx.new(|cx| ConsoleView::new(window, cx));
+        let console = cx.new(|cx| ConsoleView::new(window, cx).with_toolbar(true));
         let _subscriptions = vec![
             cx.observe_in(&service, window, |this: &mut Self, _, window, cx| {
                 this.sync(window, cx);
                 cx.notify();
             }),
             cx.subscribe(&console, forward_open),
+            cx.subscribe(&console, |this: &mut Self, _, event: &ConsoleEvent, cx| {
+                if let ConsoleEvent::ClearAll = event {
+                    this.service.update(cx, |s, cx| s.clear_console(cx));
+                }
+            }),
             cx.observe(&test_service, |_, _, cx| cx.notify()),
             // A launch shows its tab, a test run its own.
             cx.subscribe(&service, |this, _, event: &RunEvent, cx| {
@@ -303,7 +313,6 @@ impl Render for RunView {
         let mono = { use gpui_kit::component::ActiveTheme as _; cx.theme().mono_font_family.clone() };
         let service = self.service.read(cx);
         let title = service.console.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| "Run".into());
-        let count = service.console.as_ref().map_or(0, |c| c.lines.len());
         let can_stop = service.can_stop();
         let (rerun, stop) = (self.service.clone(), self.service.clone());
         v_flex()
@@ -326,8 +335,8 @@ impl Render for RunView {
                     .min_h_0()
                     .font_family(mono)
                     .text_xs()
-                    .when(count == 0, |el| el.child(div().p_4().text_color(palette.text_secondary).child("Nothing has run yet. Run 'app' with Shift+F10.")))
-                    .when(count > 0, |el| el.child(self.console.clone())),
+                    .when(!has_app, |el| el.child(div().p_4().text_color(palette.text_secondary).child("Nothing has run yet. Run 'app' with Shift+F10.")))
+                    .when(has_app, |el| el.child(self.console.clone())),
             )
             .into_any_element()
     }

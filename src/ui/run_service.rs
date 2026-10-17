@@ -86,6 +86,22 @@ impl RunService {
         Self { devices, config: None, build: None, console: None, cancel: Arc::default(), busy: false, receiver: None, _task: None }
     }
 
+    /// The Build window's Clear All: its output text (the problems stay).
+    pub fn clear_build_output(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        if let Some(build) = self.build.as_mut() {
+            build.lines.clear();
+            cx.notify();
+        }
+    }
+
+    /// The Run console's Clear All.
+    pub fn clear_console(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        if let Some(console) = self.console.as_mut() {
+            console.lines.clear();
+            cx.notify();
+        }
+    }
+
     /// One "Android App" configuration per application module.
     pub fn configurations(&self, cx: &App) -> Vec<RunConfiguration> {
         SyncService::try_global(cx).map(|s| s.read(cx).builds().iter().flat_map(|(root, modules)| run::run_configurations(root, modules, &crate::infra::run_config_store::load(root))).collect()).unwrap_or_default()

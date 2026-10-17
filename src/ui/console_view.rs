@@ -13,7 +13,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui_kit::component::input::{Editor, EditorState, FoldRange, HighlightStyleResolver, InputEdit, InputHighlighter, Rope};
-use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, HighlightStyle, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString, Styled as _, UnderlineStyle, Window, div, px};
+use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, HighlightStyle, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString, Styled as _, UnderlineStyle, Window, div, prelude::FluentBuilder as _, px};
 
 use crate::domain::console_links::{self, ConsoleLink};
 use crate::theme::ActivePalette as _;
@@ -24,6 +24,8 @@ pub enum ConsoleEvent {
     /// A stack frame link (`at com.example.Foo.bar(Foo.kt:42)`): the
     /// class's package, the file and the 1-based line.
     OpenFrame { package: String, file: String, line: u32 },
+    /// The toolbar's Clear All: the owner empties what the console shows.
+    ClearAll,
 }
 
 /// A line to show, with its color, styled spans and links (in the line).
@@ -116,6 +118,10 @@ pub struct ConsoleView {
     /// scroll the view sideways).
     end: usize,
     tail: usize,
+    /// Android Studio's console toolbar on the left (Soft-Wrap, Scroll to
+    /// the End, and Clear All when `clearable`); Logcat has its own.
+    toolbar: Option<bool>,
+    wrap: bool,
     _observe: gpui_kit::Subscription,
 }
 
@@ -133,7 +139,14 @@ impl ConsoleView {
             state
         });
         let _observe = cx.observe(&state, |_, _, cx| cx.notify());
-        Self { state, painted, ids: VecDeque::new(), generation: 0, texts: Vec::new(), end: 0, tail: 0, _observe }
+        Self { state, painted, ids: VecDeque::new(), generation: 0, texts: Vec::new(), end: 0, tail: 0, toolbar: None, wrap: false, _observe }
+    }
+
+    /// With Android Studio's console toolbar; Clear All when `clearable`
+    /// (the owner handles [`ConsoleEvent::ClearAll`]).
+    pub fn with_toolbar(mut self, clearable: bool) -> Self {
+        self.toolbar = Some(clearable);
+        self
     }
 
     pub fn set_soft_wrap(&mut self, wrap: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -339,11 +352,36 @@ impl Render for ConsoleView {
             use gpui_kit::component::ActiveTheme as _;
             cx.theme().mono_font_family.clone()
         };
-        div()
-            .size_full()
+        let editor = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .font_family(mono)
             .text_size(px(13.))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.click(cx)))
-            .child(Editor::new(&self.state).bordered(false).h_full())
+            .child(Editor::new(&self.state).bordered(false).h_full());
+        let Some(clearable) = self.toolbar else { return gpui_kit::component::h_flex().size_full().child(editor) };
+        use crate::ui::as_icons as icons;
+        use crate::ui::common::tool_button;
+        use gpui_kit::component::Selectable as _;
+        let palette = cx.palette().clone();
+        let strip = gpui_kit::component::v_flex()
+            .flex_none()
+            .w(px(28.))
+            .h_full()
+            .py_1()
+            .gap_1()
+            .items_center()
+            .border_r_1()
+            .border_color(palette.border)
+            .child(tool_button("console-wrap", icons::SOFT_WRAP, "Soft-Wrap").selected(self.wrap).on_click(cx.listener(|this, _, window, cx| {
+                this.wrap = !this.wrap;
+                let wrap = this.wrap;
+                this.set_soft_wrap(wrap, window, cx);
+                cx.notify();
+            })))
+            .child(tool_button("console-end", icons::DOWN, "Scroll to the End").on_click(cx.listener(|this, _, _, cx| this.scroll_to_end(cx))))
+            .when(clearable, |el| el.child(tool_button("console-clear", icons::CLEAR, "Clear All").on_click(cx.listener(|_, _, _, cx| cx.emit(ConsoleEvent::ClearAll)))));
+        gpui_kit::component::h_flex().size_full().child(strip).child(editor)
     }
 }

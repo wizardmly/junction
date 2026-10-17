@@ -153,7 +153,7 @@ impl DebugView {
         let service = DebugService::global(cx);
         let placeholder = if cfg!(target_os = "macos") { "Evaluate expression (↩) or add a watch (⇧⌘↩)" } else { "Evaluate expression (Enter) or add a watch (Ctrl+Shift+Enter)" };
         let expression = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
-        let console = cx.new(|cx| crate::ui::console_view::ConsoleView::new(window, cx));
+        let console = cx.new(|cx| crate::ui::console_view::ConsoleView::new(window, cx).with_toolbar(false));
         let _subscriptions = vec![
             cx.observe_in(&service, window, |this: &mut Self, _, window, cx| {
                 this.sync_console(window, cx);
