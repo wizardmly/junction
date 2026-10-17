@@ -191,6 +191,8 @@ pub const MAGIC_RESOLVE: AsIcon = AsIcon { light: &[("as/magic-resolve.l0.svg", 
 pub const MATCH_CASE: AsIcon = AsIcon { light: &[("as/match-case.l0.svg", 0x6c707eff)], dark: &[("as/match-case.d0.svg", 0xced0d6ff)] };
 pub const MENU_OPEN: AsIcon = AsIcon { light: &[("as/menu-open.l0.svg", 0x6c707eff)], dark: &[("as/menu-open.d0.svg", 0xced0d6ff)] };
 pub const METHOD: AsIcon = AsIcon { light: &[("as/method.l0.svg", 0xfff7f7ff), ("as/method.l1.svg", 0xdb3b4bff)], dark: &[("as/method.d0.svg", 0x402929ff), ("as/method.d1.svg", 0xdb5c5cff)] };
+pub const METHOD_DEFINED: AsIcon = AsIcon { light: &[("as/method-defined.l0.svg", 0x59a869ff)], dark: &[("as/method-defined.d0.svg", 0x499c54ff)] };
+pub const METHOD_NOT_DEFINED: AsIcon = AsIcon { light: &[("as/method-not-defined.l0.svg", 0xdb5860ff)], dark: &[("as/method-not-defined.d0.svg", 0xc75450ff)] };
 pub const MODULE: AsIcon = AsIcon { light: &[("as/module.l0.svg", 0xe7effdff), ("as/module.l1.svg", 0x3574f0ff), ("as/module.l2.svg", 0xebecf0ff), ("as/module.l3.svg", 0x6c707eff)], dark: &[("as/module.d0.svg", 0x25324dff), ("as/module.d1.svg", 0x548af7ff), ("as/module.d2.svg", 0x43454aff), ("as/module.d3.svg", 0xced0d6ff)] };
 pub const MODULE_ANDROID: AsIcon = AsIcon { light: &[("as/module-android.l0.svg", 0xe6f7e9ff), ("as/module-android.l1.svg", 0x3ddc84ff), ("as/module-android.l2.svg", 0xebecf0ff), ("as/module-android.l3.svg", 0x6c707eff)], dark: &[("as/module-android.d0.svg", 0x253627ff), ("as/module-android.d1.svg", 0x3ddc84ff), ("as/module-android.d2.svg", 0x43454aff), ("as/module-android.d3.svg", 0xced0d6ff)] };
 pub const MORE_HORIZONTAL: AsIcon = AsIcon { light: &[("as/more-horizontal.l0.svg", 0x6c707eff)], dark: &[("as/more-horizontal.d0.svg", 0xced0d6ff)] };
@@ -241,6 +243,7 @@ pub const SEARCH: AsIcon = AsIcon { light: &[("as/search.l0.svg", 0x6c707eff)], 
 pub const SEARCH_HISTORY: AsIcon = AsIcon { light: &[("as/search-history.l0.svg", 0x6c707eff)], dark: &[("as/search-history.d0.svg", 0xced0d6ff)] };
 pub const SELECT_ALL: AsIcon = AsIcon { light: &[("as/select-all.l0.svg", 0x6c707eff)], dark: &[("as/select-all.d0.svg", 0xced0d6ff)] };
 pub const SETTINGS: AsIcon = AsIcon { light: &[("as/settings.l0.svg", 0x6c707eff)], dark: &[("as/settings.d0.svg", 0xced0d6ff)] };
+pub const SHOULD_DEFINE_METHOD: AsIcon = AsIcon { light: &[("as/should-define-method.l0.svg", 0xdb5860ff)], dark: &[("as/should-define-method.d0.svg", 0xc75450ff)] };
 pub const SHOW: AsIcon = AsIcon { light: &[("as/show.l0.svg", 0x6c707eff)], dark: &[("as/show.d0.svg", 0xced0d6ff)] };
 pub const SHOW_AS_TREE: AsIcon = AsIcon { light: &[("as/show-as-tree.l0.svg", 0x6c707eff)], dark: &[("as/show-as-tree.d0.svg", 0xced0d6ff)] };
 pub const SHOW_IGNORED: AsIcon = AsIcon { light: &[("as/show-ignored.l0.svg", 0x6c707eff)], dark: &[("as/show-ignored.d0.svg", 0xced0d6ff)] };
@@ -958,6 +961,10 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/method.l1.svg", include_bytes!("../../assets/as-icons/gen/method.l1.svg")),
     ("as/method.d0.svg", include_bytes!("../../assets/as-icons/gen/method.d0.svg")),
     ("as/method.d1.svg", include_bytes!("../../assets/as-icons/gen/method.d1.svg")),
+    ("as/method-defined.l0.svg", include_bytes!("../../assets/as-icons/gen/method-defined.l0.svg")),
+    ("as/method-defined.d0.svg", include_bytes!("../../assets/as-icons/gen/method-defined.d0.svg")),
+    ("as/method-not-defined.l0.svg", include_bytes!("../../assets/as-icons/gen/method-not-defined.l0.svg")),
+    ("as/method-not-defined.d0.svg", include_bytes!("../../assets/as-icons/gen/method-not-defined.d0.svg")),
     ("as/module.l0.svg", include_bytes!("../../assets/as-icons/gen/module.l0.svg")),
     ("as/module.l1.svg", include_bytes!("../../assets/as-icons/gen/module.l1.svg")),
     ("as/module.l2.svg", include_bytes!("../../assets/as-icons/gen/module.l2.svg")),
@@ -1120,6 +1127,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/select-all.d0.svg", include_bytes!("../../assets/as-icons/gen/select-all.d0.svg")),
     ("as/settings.l0.svg", include_bytes!("../../assets/as-icons/gen/settings.l0.svg")),
     ("as/settings.d0.svg", include_bytes!("../../assets/as-icons/gen/settings.d0.svg")),
+    ("as/should-define-method.l0.svg", include_bytes!("../../assets/as-icons/gen/should-define-method.l0.svg")),
+    ("as/should-define-method.d0.svg", include_bytes!("../../assets/as-icons/gen/should-define-method.d0.svg")),
     ("as/show.l0.svg", include_bytes!("../../assets/as-icons/gen/show.l0.svg")),
     ("as/show.d0.svg", include_bytes!("../../assets/as-icons/gen/show.d0.svg")),
     ("as/show-as-tree.l0.svg", include_bytes!("../../assets/as-icons/gen/show-as-tree.l0.svg")),

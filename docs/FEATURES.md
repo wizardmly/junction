@@ -917,6 +917,20 @@ Linux 实测（Xvfb，`ip` 工程）：光标在 `Cart.total` 上按 Ctrl+Alt+H�
 | Supertypes Hierarchy：当前类型继承 / 实现的全部类型，逐层向上；工程和库里找不到的类型灰色显示 | ✅ |
 | Subtypes Hierarchy：继承当前类型的全部类型，逐层向下（工程的在前，库的在后） | ✅ |
 | 类 / 抽象类 / 接口 / 枚举 / object 图标（Kotlin 带角标），名称后显示所在文件；双击打开声明，箭头折叠 / 展开 | ✅ |
-| 顶上的 `Any` / `Object`、按包显示位置、作用域过滤、Method Hierarchy（Ctrl+Shift+H） | ⬜ |
+| 顶上的 `Any` / `Object`、按包显示位置、作用域过滤 | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程里的 Shapes.kt：`Shape` ← `Base` ← `Square` ← `Tile`，`Disc : Base()`）：光标在 `Square` 类里按 Ctrl+H，显示 `Base › Square › Tile` 并选中 Square；Supertypes 显示 `Square › Base › Shape` 和灰色的 `Comparable`；Subtypes 显示 `Square › Tile`，双击 Tile 打开第 15 行。
+
+## 52. Method Hierarchy（Ctrl+Shift+H，2026-10-17）
+
+同一个 Hierarchy 工具窗口。光标所在方法的类往上找到最上层声明这个方法的类型（接口也算），从它开始列出全部子类型，每个类型前面照 IntelliJ 的图例标记（图标取自 intellij-community `hierarchy/`）：
+
+| 标记 | 含义 |
+|---|---|
+| 绿色 + | 这个类型定义了该方法；双击打开这个方法 |
+| 红色 − | 没有定义，从父类继承 |
+| 红色 ! | 没有定义但应该定义：上层是接口或抽象方法、到这里还没有实现、而这个类不是抽象的 |
+
+代码：`src/index/hierarchy.rs`（`method_hierarchy`）、`src/ui/hierarchy_view.rs`。右键菜单也有 Method Hierarchy。
+
+Linux 实测（Xvfb，Shapes.kt：`interface Shape { fun area() }`、`abstract class Base : Shape`、`Square : Base()` 实现 area、`Tile : Square()`、`Disc : Base()`）：光标在 `Square.area` 上按 Ctrl+Shift+H，显示 `+Shape › −Base › (!Disc, +Square › −Tile)`，选中 Square。

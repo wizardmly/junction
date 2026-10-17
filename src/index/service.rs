@@ -583,6 +583,11 @@ impl CodeIndex {
         cx.background_spawn(async move { super::hierarchy::type_hierarchy(&index.read().unwrap(), &name, view) })
     }
 
+    pub fn method_hierarchy(&self, owner: String, method: String, cx: &App) -> Task<super::hierarchy::TypeNode> {
+        let index = self.index.clone();
+        cx.background_spawn(async move { super::hierarchy::method_hierarchy(&index.read().unwrap(), &owner, &method) })
+    }
+
     /// The editor gutter's implementation markers for a file's current text.
     pub fn gutter_marks(&self, path: String, text: String, cx: &App) -> Task<Vec<super::hierarchy::GutterMark>> {
         let Some(lang) = Self::lang_of(&path, &text) else { return Task::ready(Vec::new()) };

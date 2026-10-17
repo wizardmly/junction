@@ -354,6 +354,20 @@ pub struct TypeNode {
     pub symbol: Option<Symbol>,
     pub kotlin: bool,
     pub children: Vec<TypeNode>,
+    /// In a Method Hierarchy: whether the type defines the method, and
+    /// where.
+    pub method: Option<(MethodMark, Option<Target>)>,
+}
+
+/// Method Hierarchy's (Ctrl+Shift+H) marks, IntelliJ's legend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MethodMark {
+    /// The type defines the method: +.
+    Defined,
+    /// It doesn't, and inherits it: −.
+    Inherited,
+    /// It doesn't, but should: a concrete class under an abstract one: !.
+    ShouldDefine,
 }
 
 /// A type's declaration: the project's first, then the libraries'.
@@ -369,6 +383,7 @@ fn type_node(index: &ProjectIndex, name: &str) -> TypeNode {
         symbol: decl.map(|(_, _, s)| s.clone()),
         kotlin: decl.is_some_and(|(_, e, _)| e.lang == super::lang::Lang::Kotlin),
         children: Vec::new(),
+        method: None,
     }
 }
 
@@ -386,7 +401,7 @@ fn subtype_tree(index: &ProjectIndex, name: &str, seen: &mut HashSet<String>, bu
             break;
         }
         *budget -= 1;
-        let mut node = TypeNode { name: s.name.clone(), target: Some(target(p, e, s)), symbol: Some(s.clone()), kotlin: e.lang == super::lang::Lang::Kotlin, children: Vec::new() };
+        let mut node = TypeNode { name: s.name.clone(), target: Some(target(p, e, s)), symbol: Some(s.clone()), kotlin: e.lang == super::lang::Lang::Kotlin, children: Vec::new(), method: None };
         if seen.insert(s.name.clone()) {
             node.children = subtype_tree(index, &s.name, seen, budget);
         }
@@ -444,6 +459,56 @@ pub fn type_hierarchy(index: &ProjectIndex, name: &str, view: TypeView) -> TypeN
             }
         }
     }
+    node
+}
+
+/// The member `method` of the type named `owner`.
+fn member_of<'a>(index: &'a ProjectIndex, owner: &str, method: &str) -> Option<(&'a str, &'a FileEntry, &'a Symbol)> {
+    index.symbols_named(method).find(|(_, _, m)| is_member(m.kind) && owner_of(m) == Some(owner))
+}
+
+fn mark_method(index: &ProjectIndex, node: &mut TypeNode, method: &str, must_define: bool) {
+    let concrete = node.symbol.as_ref().is_some_and(|s| !is_abstract(s.kind) && s.detail.as_deref() != Some("abstract"));
+    let (mark, must_define) = match member_of(index, &node.name, method) {
+        Some((p, e, m)) => {
+            node.method = Some((MethodMark::Defined, Some(target(p, e, m))));
+            // An interface's or abstract member: subclasses must define it.
+            let abstract_member = m.decl && !concrete;
+            return node.children.iter_mut().for_each(|c| mark_method(index, c, method, abstract_member));
+        }
+        None if must_define && concrete => (MethodMark::ShouldDefine, false),
+        None => (MethodMark::Inherited, must_define),
+    };
+    node.method = Some((mark, None));
+    for c in &mut node.children {
+        mark_method(index, c, method, must_define);
+    }
+}
+
+/// The Method Hierarchy of `method` in the type named `owner`: from the
+/// topmost supertype declaring it, every subtype, each marked.
+pub fn method_hierarchy(index: &ProjectIndex, owner: &str, method: &str) -> TypeNode {
+    let mut top = owner.to_owned();
+    let mut seen = HashSet::from([owner.to_owned()]);
+    'up: loop {
+        let mut queue: VecDeque<String> = declaration(index, &top).map(|(_, _, s)| s.supers.clone()).unwrap_or_default().into();
+        while let Some(parent) = queue.pop_front() {
+            if !seen.insert(parent.clone()) || seen.len() > 64 {
+                continue;
+            }
+            if member_of(index, &parent, method).is_some() {
+                top = parent;
+                continue 'up;
+            }
+            queue.extend(declaration(index, &parent).map(|(_, _, s)| s.supers.clone()).unwrap_or_default());
+        }
+        break;
+    }
+    let mut node = type_node(index, &top);
+    let mut seen = HashSet::from([top.clone()]);
+    let mut budget = LIMIT;
+    node.children = subtype_tree(index, &top, &mut seen, &mut budget);
+    mark_method(index, &mut node, method, false);
     node
 }
 
@@ -549,5 +614,27 @@ mod tests {
         let mut out = Vec::new();
         show(&type_hierarchy(&index, "Shape", TypeView::Type), 0, &mut out);
         assert_eq!(out, ["Shape", "  Base", "    Disc", "    Square", "      Tile"]);
+    }
+
+    #[test]
+    fn method_hierarchy_marks() {
+        let index = index_of(&[(
+            "Shape.kt",
+            Lang::Kotlin,
+            "interface Shape {\n    fun area(): Double\n}\nabstract class Base : Shape\nopen class Square : Base() {\n    override fun area() = 1.0\n}\nclass Tile : Square()\nclass Disc : Base()\n",
+        )]);
+        fn show(n: &TypeNode, out: &mut Vec<String>) {
+            let mark = match n.method {
+                Some((MethodMark::Defined, _)) => "+",
+                Some((MethodMark::Inherited, _)) => "-",
+                Some((MethodMark::ShouldDefine, _)) => "!",
+                None => "?",
+            };
+            out.push(format!("{mark}{}", n.name));
+            n.children.iter().for_each(|c| show(c, out));
+        }
+        let mut out = Vec::new();
+        show(&method_hierarchy(&index, "Square", "area"), &mut out);
+        assert_eq!(out, ["+Shape", "-Base", "!Disc", "+Square", "-Tile"]);
     }
 }

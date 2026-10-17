@@ -3,7 +3,10 @@
 //! callers' callers on expanding), each with how many times it calls, as
 //! "Callers of total". Type Hierarchy (Ctrl+H): the type's superclasses
 //! down to it and its subtypes, or (the toolbar) all its supertypes, or all
-//! its subtypes. A double click opens the call or the type.
+//! its subtypes. Method Hierarchy (Ctrl+Shift+H): the types from the
+//! topmost one declaring the method down, each marked + (defines it),
+//! − (inherits it) or ! (should define it). A double click opens the call,
+//! the type or the method.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -15,7 +18,7 @@ use gpui_kit::{
 };
 
 use crate::index::call_hierarchy::{caller_at, offset_of};
-use crate::index::hierarchy::{TypeNode, TypeView};
+use crate::index::hierarchy::{MethodMark, TypeNode, TypeView};
 use crate::index::lang::Lang;
 use crate::index::service::CodeIndex;
 use crate::theme::ActivePalette as _;
@@ -53,6 +56,8 @@ struct Node {
 struct Types {
     name: String,
     view: TypeView,
+    /// A Method Hierarchy's method; the views don't apply then.
+    method: Option<String>,
     tree: Option<TypeNode>,
     collapsed: HashSet<Vec<usize>>,
 }
@@ -86,8 +91,20 @@ impl HierarchyView {
     /// Type Hierarchy of the type named `name`.
     pub fn type_hierarchy(&mut self, name: String, cx: &mut Context<Self>) {
         self.root = None;
-        self.types = Some(Types { name, view: TypeView::Type, tree: None, collapsed: HashSet::new() });
+        self.types = Some(Types { name, view: TypeView::Type, method: None, tree: None, collapsed: HashSet::new() });
         self.load_types(cx);
+    }
+
+    /// Method Hierarchy of the function at `offset` of this file.
+    pub fn method_hierarchy(&mut self, path: &str, text: &str, offset: usize, cx: &mut Context<Self>) -> Result<(), String> {
+        let lang = Lang::from_path(path).ok_or("Method Hierarchy works in Kotlin and Java files")?;
+        let file_name = path.rsplit('/').next().unwrap_or(path);
+        let caller = caller_at(lang, text, offset, file_name).ok_or("No method at the caret")?;
+        let (owner, method) = caller.name.rsplit_once('.').ok_or("No method of a class at the caret")?;
+        self.root = None;
+        self.types = Some(Types { name: owner.to_owned(), view: TypeView::Type, method: Some(method.to_owned()), tree: None, collapsed: HashSet::new() });
+        self.load_types(cx);
+        Ok(())
     }
 
     fn set_type_view(&mut self, view: TypeView, cx: &mut Context<Self>) {
@@ -103,7 +120,10 @@ impl HierarchyView {
         types.tree = None;
         types.collapsed.clear();
         let (name, view) = (types.name.clone(), types.view);
-        let task = self.index.read(cx).type_hierarchy(name.clone(), view, cx);
+        let task = match types.method.clone() {
+            Some(method) => self.index.read(cx).method_hierarchy(name.clone(), method, cx),
+            None => self.index.read(cx).type_hierarchy(name.clone(), view, cx),
+        };
         self._tasks.push(cx.spawn(async move |this, cx| {
             let tree = task.await;
             this.update(cx, |this, cx| {
@@ -328,13 +348,23 @@ impl HierarchyView {
                     .when(selected, |el| el.bg(palette.selection))
                     .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
                     .child(chevron)
+                    .when_some(n.method.as_ref(), |el, (mark, _)| {
+                        let (badge, tip) = match mark {
+                            MethodMark::Defined => (icons::METHOD_DEFINED, "defines the method"),
+                            MethodMark::Inherited => (icons::METHOD_NOT_DEFINED, "inherits the method"),
+                            MethodMark::ShouldDefine => (icons::SHOULD_DEFINE_METHOD, "should define the method"),
+                        };
+                        el.child(div().id(("method-mark", id)).w(px(10.)).flex().justify_center().child(Icon::from(badge).size(px(8.))).tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(w, cx)))
+                    })
                     .child(icon.xsmall())
                     .child(div().when(n.target.is_none(), |el| el.text_color(palette.text_secondary)).child(n.name.clone()))
                     .when_some(place, |el, p| el.child(div().text_color(palette.text_secondary).child(format!("({p})"))))
                     .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
                         this.selected = at_click.clone();
                         if e.click_count() == 2 {
-                            if let Some(t) = this.type_node(&at_click).and_then(|n| n.target.clone()) {
+                            let node = this.type_node(&at_click);
+                            let method = node.and_then(|n| n.method.as_ref()).and_then(|(_, t)| t.clone());
+                            if let Some(t) = method.or_else(|| node.and_then(|n| n.target.clone())) {
                                 cx.emit(HierarchyEvent::Open { path: t.path, line: t.line, col: t.col });
                             }
                         }
@@ -351,6 +381,7 @@ impl Render for HierarchyView {
         let palette = cx.palette().clone();
         let title = match (&self.root, &self.types) {
             (Some(r), _) => format!("Callers of {}", r.name),
+            (None, Some(Types { method: Some(m), name, .. })) => format!("Method Hierarchy of {name}.{m}()"),
             (None, Some(t)) => match t.view {
                 TypeView::Type => format!("Type Hierarchy of {}", t.name),
                 TypeView::Supertypes => format!("Supertypes of {}", t.name),
@@ -359,6 +390,7 @@ impl Render for HierarchyView {
             _ => "Call Hierarchy".into(),
         };
         let type_view = self.types.as_ref().map(|t| t.view);
+        let views = self.types.as_ref().is_some_and(|t| t.method.is_none());
         let mut rows = Vec::new();
         if let Some(root) = &self.root {
             self.rows(root, Vec::new(), 0, &mut rows);
@@ -430,7 +462,7 @@ impl Render for HierarchyView {
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Hierarchy"))
                     .child(div().text_sm().text_color(palette.text_secondary).child(title))
                     .child(div().flex_1())
-                    .when_some(type_view, |el, view| {
+                    .when_some(type_view.filter(|_| views), |el, view| {
                         let button = |id: &'static str, icon, tip: &'static str, v: TypeView| {
                             tool_button(id, icon, tip).selected(view == v).on_click(cx.listener(move |this, _, _, cx| this.set_type_view(v, cx)))
                         };

@@ -108,6 +108,17 @@ impl Workspace {
                 }
                 cx.notify();
             }
+            FileEditorEvent::MethodHierarchy { text, offset } => {
+                let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
+                match self.hierarchy.update(cx, |view, cx| view.method_hierarchy(&path, text, *offset, cx)) {
+                    Ok(()) => self.tools.open(ToolWindow::Hierarchy),
+                    Err(message) => {
+                        use gpui_kit::component::WindowExt as _;
+                        window.push_notification(gpui_kit::component::notification::Notification::info(message).title("Method Hierarchy"), cx);
+                    }
+                }
+                cx.notify();
+            }
             FileEditorEvent::TypeHierarchy { text, offset } => {
                 let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
                 match self.code_index.read(cx).type_at(&path, text, *offset) {
