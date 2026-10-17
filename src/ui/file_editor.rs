@@ -2541,6 +2541,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::move_line_down))
             .on_action(cx.listener(Self::move_statement_up))
             .on_action(cx.listener(Self::inline))
+            .on_action(cx.listener(Self::unwrap_remove))
             .on_action(cx.listener(Self::move_element_left))
             .on_action(cx.listener(Self::move_element_right))
             .on_action(cx.listener(Self::move_statement_down))
@@ -2727,6 +2728,7 @@ impl Render for FileEditor {
                                 .menu("Call Hierarchy", Box::new(CallHierarchy))
                                 .menu_with_disabled("Generate…", read_only, Box::new(Generate))
                                 .menu_with_disabled("Surround With…", read_only, Box::new(SurroundWith))
+                                .menu_with_disabled("Unwrap/Remove…", read_only, Box::new(editing::UnwrapRemove))
                                 .menu_with_disabled("Reformat Code", read_only, Box::new(ReformatCode))
                                 .submenu(
                                     "Refactor",

@@ -13,7 +13,7 @@ use gpui_kit::{Context, KeyBinding, Window, actions};
 use super::FileEditor;
 use crate::domain::line_edit::{self, Edited};
 
-actions!(editing, [DuplicateLine, CommentLine, CommentBlock, MoveLineUp, MoveLineDown, MoveStatementUp, MoveStatementDown, MoveElementLeft, MoveElementRight, Inline, ExtendSelection, ShrinkSelection, JoinLines, StartNewLine, ToggleCase]);
+actions!(editing, [DuplicateLine, CommentLine, CommentBlock, MoveLineUp, MoveLineDown, MoveStatementUp, MoveStatementDown, MoveElementLeft, MoveElementRight, Inline, UnwrapRemove, ExtendSelection, ShrinkSelection, JoinLines, StartNewLine, ToggleCase]);
 
 /// In the editor's input, over the input's own bindings for these keys.
 const INPUT: &str = "FileEditor > Input";
@@ -27,6 +27,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if mac { "cmd-alt-n" } else { "ctrl-alt-n" }, Inline, Some(INPUT)),
         KeyBinding::new(if mac { "cmd-alt-shift-left" } else { "ctrl-alt-shift-left" }, MoveElementLeft, Some(INPUT)),
         KeyBinding::new(if mac { "cmd-alt-shift-right" } else { "ctrl-alt-shift-right" }, MoveElementRight, Some(INPUT)),
+        KeyBinding::new(if mac { "cmd-shift-delete" } else { "ctrl-shift-delete" }, UnwrapRemove, Some(INPUT)),
         KeyBinding::new("alt-shift-up", MoveLineUp, Some(INPUT)),
         KeyBinding::new("alt-shift-down", MoveLineDown, Some(INPUT)),
         KeyBinding::new(if mac { "cmd-shift-up" } else { "ctrl-shift-up" }, MoveStatementUp, Some(INPUT)),

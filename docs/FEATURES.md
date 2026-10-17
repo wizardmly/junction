@@ -965,3 +965,18 @@ Linux 实测（Xvfb，`ip` 工程）：在 Cart.kt 的 `use` 上 Ctrl+B 跳到 `
 | Inline Method / Function、Inline 字段与常量、预览（多处使用时） | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程 Main.kt）：光标在 `val cart = Cart(0.2)` 的 `cart` 上按 Ctrl+Alt+N，两处 `cart.total(…)` 变成 `Cart(0.2).total(…)`，声明行删除；再按一次弹出 "Cannot perform refactoring. Caret should be positioned at the name of element to be inlined."。
+
+## 55. Unwrap/Remove（Ctrl+Shift+Delete，2026-10-17）
+
+照 IntelliJ 的 Code › Unwrap/Remove：光标处由内向外列出能拆的语句，弹窗标题 "Choose the statement to unwrap/remove"，选中后一次可撤销的修改，光标停在留下的第一条语句。代码：`src/index/unwrap.rs`，弹窗沿用 Alt+Enter 的列表。
+
+| 选项 | 效果 | 状态 |
+|---|---|---|
+| Unwrap 'if...' | 光标在条件或 then 分支：then 分支的语句替换整个 `if`（去掉花括号、按原缩进） | ✅ |
+| Unwrap 'else...' / Remove 'else...' | 光标在 else 分支：用 else 的语句替换 `if`，或只删掉 else 分支 | ✅ |
+| Unwrap 'for...' / 'while...' / 'do...' | 循环体的语句替换循环 | ✅ |
+| Unwrap 'try...' | try 块的语句替换 `try`，`finally` 的语句接在后面，catch 去掉 | ✅ |
+| Kotlin 作为值的 `if`（`val x = if …`）不提供；右键菜单 Unwrap/Remove… | | ✅ |
+| 选中某项时高亮会受影响的代码、`when` / `switch`、Kotlin `run {}` / lambda、单独的花括号块 | | ⬜ |
+
+Linux 实测（Xvfb，`ip` 工程 Flow.kt：`for` 里套 `if / else`）：光标在 else 分支的 `println("small $i")` 上按 Ctrl+Shift+Delete，弹出 Unwrap 'else...'、Remove 'else...'、Unwrap 'for...'；选 Remove 'else...' 后只剩 `if (i > 2) { println("big $i") }`；光标在 `for` 体末尾时只有 Unwrap 'for...'，选中后 `if / else` 提到函数体一层、缩进少一级。

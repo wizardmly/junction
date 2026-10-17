@@ -60,6 +60,8 @@ pub(super) enum Choice {
     Override(bool),
     /// A language server's code action.
     Server(crate::index::lsp::CodeAction),
+    /// Unwrap/Remove: one way to take a statement apart.
+    Unwrap(crate::domain::intentions::Intention),
 }
 
 /// The byte offset of a line and character column.
@@ -155,6 +157,26 @@ impl FileEditor {
         cx.notify();
     }
 
+    /// Code › Unwrap/Remove (Ctrl+Shift+Delete): the popup of the
+    /// statements around the caret to take apart, innermost first.
+    pub(super) fn unwrap_remove(&mut self, _: &super::editing::UnwrapRemove, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only() {
+            return;
+        }
+        let Some(lang) = crate::index::lang::Lang::from_path(&self.path) else { return };
+        let text = self.text(cx);
+        let cursor = self.state.read(cx).cursor();
+        let options = crate::index::unwrap::unwrap_options(lang, &text, cursor);
+        if options.is_empty() {
+            return Self::hint("Unwrap/Remove", "Nothing to unwrap here", window, cx);
+        }
+        let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
+        let items = options.into_iter().map(|o| (o.range.clone(), Choice::Unwrap(o))).collect();
+        self.context_actions = Some(ContextActions { items, title: Some("Choose the statement to unwrap/remove"), selected: 0, at, caret: None });
+        window.focus(&self.context_focus, cx);
+        cx.notify();
+    }
+
     /// Generate's popup at the caret.
     pub(super) fn choose_generate(&mut self, items: Vec<crate::domain::generate::Member>, window: &mut Window, cx: &mut Context<Self>) {
         let cursor = self.state.read(cx).cursor();
@@ -210,7 +232,7 @@ impl FileEditor {
             Choice::Import(qualified) => self.import_class(&qualified, window, cx),
             Choice::Override(implement) => self.override_methods(implement, window, cx),
             Choice::Server(action) => self.apply_server_action(action, window, cx),
-            Choice::Intention(intention) => self.state.update(cx, |state, cx| {
+            Choice::Intention(intention) | Choice::Unwrap(intention) => self.state.update(cx, |state, cx| {
                 state.set_selected_range(intention.range.clone(), cx);
                 state.replace(&intention.replacement, window, cx);
                 state.set_selected_range(intention.caret..intention.caret, cx);
@@ -381,6 +403,7 @@ impl FileEditor {
                 Choice::ImportClass(name, _) => (Some(icons::INTENTION_BULB), format!("Import class '{name}'")),
                 Choice::Import(qualified) => (Some(icons::CLASS), qualified.clone()),
                 Choice::Intention(i) => (Some(icons::INTENTION_BULB), i.title.clone()),
+                Choice::Unwrap(i) => (None, i.title.clone()),
                 Choice::Server(action) => (Some(icons::INTENTION_BULB), action.title.clone()),
                 Choice::Override(false) => (None, "Override Methods…".to_owned()),
                 Choice::Override(true) => (None, "Implement Methods…".to_owned()),
