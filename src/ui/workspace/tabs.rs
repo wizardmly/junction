@@ -320,6 +320,8 @@ impl Workspace {
         self.schedule_session_save(cx);
         if view.read(cx).revision().is_none() {
             let path = view.read(cx).path().to_owned();
+            let count = view.read(cx).line_count(cx) as i64;
+            self.line_counts.entry(path.clone()).or_insert(count);
             let open = self.tab_paths(cx);
             self.project.update(cx, |project, cx| project.file_opened(&path, open, cx));
             // IntelliJ's current repository is the selected file's: the

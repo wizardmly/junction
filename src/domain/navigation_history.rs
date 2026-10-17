@@ -110,6 +110,15 @@ impl RecentPlaces {
         }
     }
 
+    /// Lines were added (`delta` > 0) or removed in `path` from `from` on:
+    /// the places below follow, as IntelliJ's markers move with the text;
+    /// places in removed lines go to where the removal was.
+    pub fn shift(&mut self, path: &str, from: u32, delta: i64) {
+        for p in self.places.iter_mut().filter(|p| p.path == path && p.line > from) {
+            p.line = (p.line as i64 + delta).max(from as i64) as u32;
+        }
+    }
+
     pub fn change(&mut self, (path, line, col): Position) {
         self.add(Place { path, line, col, changed: true });
     }
@@ -214,5 +223,19 @@ mod tests {
         assert_eq!(snippet(text, 2), (1, "val a = 1\nval b = 2\n".to_owned()));
         assert_eq!(snippet(text, 0), (0, "fun f() {\n    val a = 1".to_owned()));
         assert_eq!(snippet(text, 99), (4, "    g()\n}".to_owned()));
+    }
+
+    #[test]
+    fn places_follow_lines_added_and_removed() {
+        let mut places = RecentPlaces::default();
+        places.visit(at("a", 10));
+        places.visit(at("a", 2));
+        places.visit(at("b", 10));
+        places.shift("a", 5, 3);
+        let lines = |p: &RecentPlaces| p.iter().map(|p| (p.path.clone(), p.line)).collect::<Vec<_>>();
+        assert_eq!(lines(&places), [("b".into(), 10), ("a".into(), 2), ("a".into(), 13)]);
+        // Removing lines 6..=14 from line 5: the place inside goes to 5.
+        places.shift("a", 5, -9);
+        assert_eq!(lines(&places), [("b".into(), 10), ("a".into(), 2), ("a".into(), 5)]);
     }
 }

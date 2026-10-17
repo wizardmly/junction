@@ -322,6 +322,9 @@ pub struct Workspace {
     recently_changed: history::RecentPaths,
     /// Recent Locations' places.
     recent_places: history::RecentPlaces,
+    /// Each edited file's line count after its last edit, to move
+    /// recent places with lines added or removed.
+    line_counts: std::collections::HashMap<String, i64>,
     /// Last Edit Location's walk back: the edited places when it began,
     /// how far it got, and where that put the caret.
     edit_walk: Option<(Vec<history::Place>, usize, history::Position)>,
@@ -759,6 +762,7 @@ impl Workspace {
             recent_files: history::RecentPaths::with_limit(50),
             recently_changed: history::RecentPaths::default(),
             recent_places: history::RecentPlaces::default(),
+            line_counts: std::collections::HashMap::new(),
             edit_walk: None,
             session_root: None,
             session_save: None,

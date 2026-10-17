@@ -36,7 +36,17 @@ impl Workspace {
                 let editor = view.read(cx);
                 if editor.revision().is_none() {
                     let (line, col) = editor.cursor(cx);
-                    self.recent_places.change((editor.path().to_owned(), line, col));
+                    let path = editor.path().to_owned();
+                    // Lines added or removed: the places below move with them.
+                    let count = editor.line_count(cx) as i64;
+                    if let Some(before) = self.line_counts.insert(path.clone(), count) {
+                        let delta = count - before;
+                        if delta != 0 {
+                            let from = if delta > 0 { line as i64 - delta } else { line as i64 };
+                            self.recent_places.shift(&path, from.max(0) as u32, delta);
+                        }
+                    }
+                    self.recent_places.change((path, line, col));
                 }
                 self.schedule_session_save(cx);
             }

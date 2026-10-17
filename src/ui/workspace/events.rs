@@ -12,6 +12,13 @@ impl Workspace {
             for tab in &this.editors {
                 tab.view.update(cx, |editor, cx| editor.sync_with_disk(window, cx));
             }
+            // Text reloaded from disk has other lines: counted again from here.
+            for tab in &this.editors {
+                let editor = tab.view.read(cx);
+                if editor.revision().is_none() {
+                    this.line_counts.insert(editor.path().to_owned(), editor.line_count(cx) as i64);
+                }
+            }
             // Index the opened project; re-index what changed on disk.
             let root = this.model.read(cx).project_root().map(|p| p.to_path_buf());
             this.code_index.update(cx, |index, cx| {
