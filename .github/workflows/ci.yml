@@ -1,7 +1,8 @@
 # Checks a branch or pull request before it reaches master (where every push
 # is a release): the build has no new warnings and the unit tests pass. The
 # Linux binary is kept as an artifact so the change can be tried without
-# building it again.
+# building it again. Windows gets a `cargo check`, so code only Windows
+# compiles (`#[cfg(windows)]`) fails here rather than in the release.
 name: CI
 
 on:
@@ -56,3 +57,11 @@ jobs:
           name: linux-ci
           path: out
           retention-days: 7
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --release
