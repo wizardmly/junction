@@ -1377,6 +1377,73 @@ impl FileEditor {
         .detach();
     }
 
+    /// Inline Function: once confirmed, every call in the project becomes
+    /// the function's body and the declaration goes, as IntelliJ's "Inline
+    /// all and remove the function".
+    pub(super) fn inline_function(&mut self, lang: crate::index::lang::Lang, text: String, plan: crate::domain::introduce_parameter::ParameterPlan, declaration: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::inline_function::{edits, inline_calls};
+        use crate::domain::introduce_parameter::apply;
+        use crate::index::introduce_parameter::call_sites;
+        use crate::index::lang::Lang;
+        use crate::infra::project_files::DiskFiles;
+        use crate::usecase::update_calls;
+        const TITLE: &str = "Inline Function";
+        let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(|r| r.to_path_buf()));
+        let own = self.path.clone();
+        let (function, params) = (plan.function.clone(), plan.params.len());
+        let here = call_sites(lang, &text, &function, params);
+        let files = root.clone().map(|root| DiskFiles { root, repository: None });
+        let task = cx.background_spawn(async move {
+            let Some(root) = root else { return Vec::new() };
+            let files = DiskFiles { root, repository: None };
+            update_calls::find(&files, &own, &function, &|path, text| Lang::from_path(path).map(|lang| call_sites(lang, text, &function, params)).unwrap_or_default())
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let elsewhere = task.await;
+            this.update_in(cx, |_, window, cx| {
+                let calls = here.iter().filter(|c| !(declaration.start <= c.name_range.start && c.name_range.end <= declaration.end)).count() + elsewhere.iter().map(|f| f.calls.len()).sum::<usize>();
+                let message = format!("Inline all {calls} usages of {}() and remove the function?", plan.function);
+                let (editor, window_handle) = (cx.entity().downgrade(), window.window_handle());
+                crate::ui::dialogs::confirm(TITLE, message, "Inline", move |cx| {
+                    let (editor, plan, declaration, here, elsewhere, files, text) = (editor.clone(), plan.clone(), declaration.clone(), here.clone(), elsewhere.clone(), files.clone(), text.clone());
+                    // After the dialog's own handling, when the window is free.
+                    cx.defer(move |cx| {
+                        let files = files.as_ref();
+                        window_handle
+                            .update(cx, |_, window, cx| {
+                                editor
+                                    .update(cx, |this, cx| {
+                                        if this.text(cx) != text {
+                                            return Self::hint(TITLE, "The file changed; try again", window, cx);
+                                        }
+                                        // Every call must inline before anything is written.
+                                        let changes = match edits(&plan, &text, declaration.clone(), &here) {
+                                            Ok(changes) => changes,
+                                            Err(message) => return Self::hint(TITLE, message, window, cx),
+                                        };
+                                        if let Some(message) = elsewhere.iter().find_map(|f| inline_calls(&plan, &f.text, &f.calls).err()) {
+                                            return Self::hint(TITLE, message, window, cx);
+                                        }
+                                        let new = apply(&text, changes);
+                                        this.replace_text(&text, &new, declaration.start.min(new.len()), window, cx);
+                                        let written = files.map_or_else(Vec::new, |files| {
+                                            update_calls::rewrite(files, &elsewhere, &|f| f.calls.iter().filter_map(|c| crate::domain::inline_function::call_edit(&plan, &f.text, c).ok()).collect())
+                                        });
+                                        if !written.is_empty() {
+                                            cx.emit(FileEditorEvent::FilesWritten(written));
+                                        }
+                                    })
+                                    .ok();
+                            })
+                            .ok();
+                    });
+                }, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn introduce_constant_action(&mut self, _: &IntroduceConstant, window: &mut Window, cx: &mut Context<Self>) {
         self.introduce(crate::ui::introduce_dialog::Introduce::Constant, window, cx);
     }

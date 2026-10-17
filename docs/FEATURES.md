@@ -956,7 +956,7 @@ Linux 实测（Xvfb，Shapes.kt：`interface Shape { fun area() }`、`abstract c
 
 Linux 实测（Xvfb，`ip` 工程）：在 Cart.kt 的 `use` 上 Ctrl+B 跳到 `total`，打开 Main.kt 在第 6 行末尾输入 ` // hi`，再打开 Shapes.kt；Ctrl+Shift+E 列出 Shapes.kt（Tile）、Main.kt（main，changed，三行代码含 `// hi`）、Cart.kt（Cart.total）、Cart.kt（Cart.use）；再按 Ctrl+Shift+E 只剩 Main.kt；输入 `cart` 过滤出含 cart 的三项；↓ Enter 打开 Cart.kt 第 4 行第 9 列。Last Edit Location：在 Cart.kt 第 8 行、Main.kt 第 6 行各改一处后切到 Shapes.kt，连按 Ctrl+Shift+Backspace 依次到 Main.kt 6:53、Cart.kt 8:35，第三次提示没有更多。
 
-## 54. Inline Variable（Ctrl+Alt+N，2026-10-17）
+## 54. Inline Variable / Function（Ctrl+Alt+N，2026-10-17）
 
 照 IntelliJ 的 Inline（局部变量）：光标在 Kotlin / Java 局部变量的声明或任一使用上按 Ctrl+Alt+N（右键 Refactor › Inline…），每个使用换成它的初始值，声明（独占的行整行）删掉，一次可撤销的修改，光标停在第一个被替换的位置。代码：`src/index/inline.rs`。
 
@@ -966,9 +966,10 @@ Linux 实测（Xvfb，`ip` 工程）：在 Cart.kt 的 `use` 上 Ctrl+B 跳到 `
 | Kotlin 字符串模板：`"$x"` 换成 `"${a + 1}"`（初始值只是一个名字时 `"$size"`） | ✅ |
 | 拒绝并照 IntelliJ 的提示：不在变量名上、没有初始值、没有使用、声明后被赋值 / `++` | ✅ |
 | 顺带修正：局部变量的解析（Ctrl+点击、Find Usages、Rename）现在认得 Kotlin 字符串模板里的 `$x`，以前 Rename 局部变量会漏改模板里的使用 | ✅ |
-| Inline Method / Function、Inline 字段与常量、预览（多处使用时） | ⬜ |
+| Inline Function：光标在函数声明或本文件里的调用上（同一个 Ctrl+Alt+N，不是局部变量时）；函数体只有一个表达式（`= …` 或只有一条 `return …`）时，确认 "Inline all N usages of total() and remove the function?" 后，工程里每个调用都换成函数体（参数换成实参，具名实参按名字对应；类成员加上调用方的接收者，`cart.total(…)` 里的 `rate` 变成 `cart.rate`；外面有运算时加括号），然后删掉声明。其他文件经 `usecase::update_calls` 改写。不内联：多条语句、递归、调用省略了有默认值的参数 | ✅ |
+| Inline 字段与常量、只内联这一处（Inline this only）、预览 | ⬜ |
 
-Linux 实测（Xvfb，`ip` 工程 Main.kt）：光标在 `val cart = Cart(0.2)` 的 `cart` 上按 Ctrl+Alt+N，两处 `cart.total(…)` 变成 `Cart(0.2).total(…)`，声明行删除；再按一次弹出 "Cannot perform refactoring. Caret should be positioned at the name of element to be inlined."。
+Linux 实测（Xvfb，`ip` 工程 Main.kt）：光标在 `val cart = Cart(0.2)` 的 `cart` 上按 Ctrl+Alt+N，两处 `cart.total(…)` 变成 `Cart(0.2).total(…)`，声明行删除；再按一次弹出 "Cannot perform refactoring. Caret should be positioned at the name of element to be inlined."。Inline Function：Cart.kt 光标在 `total` 上按 Ctrl+Alt+N，确认 3 处后 `fun use() = 1.0 * rate * 2 + 1.0 * rate`，Main.kt 的两处变成 `10.0 * cart.rate * 3 + 10.0 * cart.rate` 和 `2.0 * cart.rate * 1 + 2.0 * cart.rate`（具名实参 `count = 1, price = 2.0` 对上了）。
 
 ## 55. Unwrap/Remove（Ctrl+Shift+Delete，2026-10-17）
 

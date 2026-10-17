@@ -108,7 +108,8 @@ impl FileEditor {
         self.edit_with(|t, s| crate::index::selection::move_element(lang, t, s, false), window, cx);
     }
 
-    /// Inline (Ctrl+Alt+N): a local variable into its uses.
+    /// Inline (Ctrl+Alt+N): a local variable into its uses, or a function
+    /// into its calls.
     pub(super) fn inline(&mut self, _: &Inline, window: &mut Window, cx: &mut Context<Self>) {
         if self.read_only() {
             return;
@@ -118,7 +119,12 @@ impl FileEditor {
         let offset = self.state.read(cx).cursor();
         match crate::index::inline::inline_variable(lang, &text, offset) {
             Ok(edited) => self.apply_edited(edited, window, cx),
-            Err(message) => Self::hint("Inline Variable", message, window, cx),
+            // Not a local variable: a function?
+            Err(variable) => match crate::index::inline_function::plan_at(lang, &text, offset) {
+                Ok((plan, declaration)) => self.inline_function(lang, text, plan, declaration, window, cx),
+                Err(_) if !variable.contains("Caret should be positioned") => Self::hint("Inline Variable", variable, window, cx),
+                Err(function) => Self::hint("Inline", function, window, cx),
+            },
         }
     }
 

@@ -44,4 +44,5 @@ pub mod extract_method;
 pub mod manifest_merge;
 pub mod jdk_feed;
 pub mod introduce_parameter;
+pub mod inline_function;
 pub mod version_catalog;

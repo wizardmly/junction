@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use crate::git::Repository;
 use crate::domain::project_files::ProjectFiles;
 
+#[derive(Clone)]
 pub struct DiskFiles {
     pub root: PathBuf,
     pub repository: Option<Repository>,
