@@ -66,8 +66,33 @@ pub trait BuildSystem {
     fn compile(&self, module: &Module, variant: &str) -> CompileReport;
 }
 
+/// Windows' STATUS_DLL_NOT_FOUND as exit values print it: a program the
+/// build started couldn't load a DLL it imports (the loader's "The code
+/// execution cannot proceed because … was not found").
+const DLL_NOT_FOUND: &[&str] = &["-1073741515", "3221225781", "0xC0000135", "0xc0000135"];
+
+/// What to say when a program the build ran exited for a missing DLL:
+/// Gradle's `Process 'command '…'' finished with non-zero exit value
+/// -1073741515` names it.
+pub fn missing_dll(output: &str) -> Option<String> {
+    let line = output.lines().find(|l| DLL_NOT_FOUND.iter().any(|c| l.contains(c)))?;
+    let program = line.split_once("'command '").and_then(|(_, rest)| rest.split_once("''")).map(|(cmd, _)| cmd.to_owned());
+    Some(match program {
+        Some(program) => format!("{program} could not start: a DLL it needs is missing (STATUS_DLL_NOT_FOUND, 0xC0000135)."),
+        None => "A program the build started could not start: a DLL it needs is missing (STATUS_DLL_NOT_FOUND, 0xC0000135). The line above names it.".to_owned(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn names_the_program_missing_a_dll() {
+        let out = "> Task :app:mergeDebugResources FAILED\nProcess 'command 'C:\\sdk\\aapt2.exe'' finished with non-zero exit value -1073741515\n";
+        assert_eq!(super::missing_dll(out).as_deref(), Some("C:\\sdk\\aapt2.exe could not start: a DLL it needs is missing (STATUS_DLL_NOT_FOUND, 0xC0000135)."));
+        assert!(super::missing_dll("exit code 0xC0000135").unwrap().contains("The line above"));
+        assert_eq!(super::missing_dll("BUILD FAILED"), None);
+    }
+
     use super::*;
 
     #[test]

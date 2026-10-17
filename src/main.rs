@@ -34,8 +34,22 @@ use gpui_kit::{AppContext as _, Bounds, WindowBackgroundAppearance, WindowBounds
 use crate::model::RepoModel;
 use crate::ui::workspace::Workspace;
 
+/// Windows: a program Junction starts (Gradle, aapt2, adb…) that can't
+/// load a DLL exits with STATUS_DLL_NOT_FOUND instead of showing the
+/// system's "was not found" box; the error mode passes to child processes,
+/// so the build output names the program (`build::missing_dll`).
+#[cfg(windows)]
+fn quiet_loader_errors() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX, SetErrorMode};
+    unsafe { SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX) };
+}
+
+#[cfg(not(windows))]
+fn quiet_loader_errors() {}
+
 fn main() {
     crash::install();
+    quiet_loader_errors();
     // Started by git as the interactive-rebase sequence editor.
     if git::rebase::handle_sequence_editor() {
         return;

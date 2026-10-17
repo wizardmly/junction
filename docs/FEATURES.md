@@ -1024,3 +1024,15 @@ Linux 实测（Xvfb，`ip` 工程）：打开 Cart.kt 并把光标放在第 8 �
 代码：`src/index/safe_delete.rs`（声明和要删的行）、`domain::line_edit::declaration_lines`（删声明时的空行规则，Inline Function 也用它）。
 
 Linux 实测（Xvfb，`ip` 工程 Cart.kt）：在 `total` 上按 Alt+Delete 弹出 Usages Detected，列出 Cart.kt:8、Main.kt:5、Main.kt:6；在 `use` 上按 Alt+Delete 弹出 "Delete function 'use'?"，Delete 后 `fun use()` 和它上面的空行一起删掉，类的 `}` 紧接在 `total` 后面。
+
+## 58. 构建环境和缺 DLL 诊断（2026-10-17）
+
+为了排查用户在 Windows 上编 APK 时弹出的“找不到 api-ms-win-eventing-consumer-l1-1-0.dll”：junction.exe、aapt2（8.7 / 8.13）、platform-tools、Temurin 17 / 21、JBR 21、Gradle 8.11 自带的原生库都查过导入表，没有一个依赖它，所以改成让程序自己报出是谁。
+
+| 功能 | 状态 |
+|---|---|
+| Build Output 第二行写出 Gradle 用的 JDK（来源、厂商、版本、路径），Windows 上还有系统版本（`RtlGetVersion`，如 `Windows 10.0.19045`） | ✅ |
+| Windows 上启动时 `SetErrorMode(SEM_FAILCRITICALERRORS)`，子进程继承：构建里缺 DLL 的程序不再弹系统框，而以 0xC0000135 退出 | ✅（Windows 未实测） |
+| 输出里出现 0xC0000135 / -1073741515 时追加一行，说明是哪个程序缺 DLL（取 Gradle 的 `Process 'command '…''`） | ✅ |
+
+Linux 实测（Xvfb，calc）：Make Project 的输出第二行是 `Gradle JDK: JAVA_HOME  Ubuntu version 21.0.12.1  /usr/lib/jvm/java-21-openjdk-amd64`。Windows 部分只单独交叉编译检查过。

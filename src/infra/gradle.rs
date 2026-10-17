@@ -41,9 +41,13 @@ impl BuildSystem for GradleBuild {
 
 impl TaskRunner for GradleBuild {
     fn run_tasks(&self, build_root: &Path, tasks: &[String], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
+        line(&environment(build_root));
         let mut command = gradle(build_root);
         command.args(tasks);
         let (succeeded, was_cancelled, output) = stream(command, line, cancelled);
+        if let Some(hint) = build::missing_dll(&output) {
+            line(&hint);
+        }
         BuildResult { succeeded, cancelled: was_cancelled, problems: parse_output(&output) }
     }
 
@@ -194,6 +198,42 @@ pub fn jdk_for(build_root: &Path) -> Option<crate::domain::jdk::Jdk> {
     let setting = JDK_SETTINGS.read().unwrap().get(&key).map(|k| GradleJdk::from_key(k)).unwrap_or_default();
     let found = super::jdk_discovery::discover(&super::jdk_discovery::Env::current(), Some(build_root));
     pick(&setting, &found).cloned()
+}
+
+/// The build's second line: the JDK Gradle runs on and, on Windows, the
+/// system's version, for reading a failure.
+fn environment(build_root: &Path) -> String {
+    let jdk = jdk_for(build_root).map(|j| j.label()).unwrap_or_else(|| "none found (Gradle uses java on the PATH)".into());
+    match os_version() {
+        Some(os) => format!("Gradle JDK: {jdk} · {os}"),
+        None => format!("Gradle JDK: {jdk}"),
+    }
+}
+
+/// `Windows 10.0.19045`, as the system reports it (`RtlGetVersion`, which
+/// unlike `GetVersionEx` doesn't depend on the program's manifest).
+#[cfg(windows)]
+fn os_version() -> Option<String> {
+    #[repr(C)]
+    struct OsVersionInfo {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform: u32,
+        service_pack: [u16; 128],
+    }
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfo) -> i32;
+    }
+    let mut info = OsVersionInfo { size: std::mem::size_of::<OsVersionInfo>() as u32, major: 0, minor: 0, build: 0, platform: 0, service_pack: [0; 128] };
+    (unsafe { RtlGetVersion(&mut info) } == 0).then(|| format!("Windows {}.{}.{}", info.major, info.minor, info.build))
+}
+
+#[cfg(not(windows))]
+fn os_version() -> Option<String> {
+    None
 }
 
 /// Gradle for a build: its wrapper, plain output, the daemon's idle
