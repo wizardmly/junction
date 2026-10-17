@@ -42,7 +42,7 @@ fn main() {
         askpass::run(prompt);
         return;
     }
-    let path = std::env::args().nth(1).map(PathBuf::from).or_else(startup_project);
+    let arg = std::env::args().nth(1).map(PathBuf::from);
 
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
@@ -64,20 +64,21 @@ fn main() {
         bookmarks::Bookmarks::init(cx);
         theme::apply(dark, cx);
 
-        open_project_window(path.clone(), cx);
+        let path = arg.clone().or_else(|| startup_project(settings::Settings::get(cx).reopen_projects));
+        open_project_window(path, cx);
         cx.activate(true);
     });
 }
 
 /// Without a folder to open: the folder it was started in when that's a
 /// repository (run from a terminal), else the last project, as IntelliJ
-/// reopens it on startup; else the Welcome screen.
-fn startup_project() -> Option<PathBuf> {
+/// reopens it on startup (unless turned off); else the Welcome screen.
+fn startup_project(reopen: bool) -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok();
     if cwd.as_ref().is_some_and(|d| d.ancestors().any(|a| a.join(".git").exists())) {
         return cwd;
     }
-    settings::recent_projects().into_iter().find(|p| p.is_dir())
+    settings::recent_projects().into_iter().find(|p| reopen && p.is_dir())
 }
 
 /// Opens a project window, as File › Open does in IntelliJ (also used for

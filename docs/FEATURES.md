@@ -997,6 +997,7 @@ Linux 实测（Xvfb，`ip` 工程 Flow.kt：`for` 里套 `if / else`）：光标
 | 固定（pin）的标签保持固定 | ✅ |
 | 同一窗口里换到另一个工程（标题栏工程菜单的 Recent Projects）：先存好旧工程的会话、关掉它的标签，再恢复新工程的；以前旧工程的标签会留在新工程里 | ✅ |
 | 启动时不带文件夹参数（开始菜单 / 快捷方式）：当前目录是仓库就开它（终端里运行），否则重新打开上一个工程，照 IntelliJ 默认的 Reopen projects on startup；以前会在欢迎页报 "Cannot open the folder … not inside a git repository" | ✅ |
-| Reopen projects on startup 的开关、分屏、不同 revision 的标签、工具窗口的布局 | ⬜ |
+| 开关：Settings › Appearance & Behavior › System Settings › Reopen projects on startup（默认开） | ✅ |
+| 分屏、不同 revision 的标签、工具窗口的布局 | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程）：打开 Cart.kt 并把光标放在第 8 行，再打开 Main.kt；等 3 秒后直接结束进程再启动，两个标签按原顺序回来、Main.kt 是活动标签，点 Cart.kt 光标在 8:14。从工程菜单换到 calc：ip 的标签关掉，calc 上次打开的 Calc.class 回来；再换回 ip，Cart.kt、Main.kt 回来。

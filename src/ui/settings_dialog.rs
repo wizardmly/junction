@@ -34,6 +34,7 @@ use crate::ui::mappings_dialog::MappingsView;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Page {
     Appearance,
+    System,
     Keymap,
     EditorGeneral,
     EditorFont,
@@ -52,7 +53,7 @@ enum Page {
 
 /// The page tree: a group and its pages; a group with no pages is a page itself.
 const TREE: &[(&str, Option<Page>, &[Page])] = &[
-    ("Appearance & Behavior", None, &[Page::Appearance]),
+    ("Appearance & Behavior", None, &[Page::Appearance, Page::System]),
     ("Keymap", Some(Page::Keymap), &[]),
     ("Editor", None, &[Page::EditorGeneral, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::LiveTemplates]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
@@ -64,6 +65,7 @@ impl Page {
     fn name(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance",
+            Page::System => "System Settings",
             Page::Keymap => "Keymap",
             Page::EditorGeneral => "General",
             Page::EditorFont => "Font",
@@ -92,6 +94,7 @@ impl Page {
     fn keywords(self) -> &'static [&'static str] {
         match self {
             Page::Appearance => &["Theme", "Dark", "Light", "Sync with OS", "Compact mode"],
+            Page::System => &["System", "Startup", "Reopen projects on startup"],
             Page::Keymap => &["Shortcut", "Keyboard"],
             Page::EditorGeneral => &["Soft-wrap", "Show line numbers", "Show whitespaces", "Show indent guides", "Appearance", "Diff", "Merge"],
             Page::EditorFont => &["Font", "Size", "Line height"],
@@ -327,6 +330,7 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.dark = from.dark;
     to.theme_follows_system = from.theme_follows_system;
     to.compact = from.compact;
+    to.reopen_projects = from.reopen_projects;
     to.staging_area = from.staging_area;
     to.update_method = from.update_method;
     to.update_shelve = from.update_shelve;
@@ -466,6 +470,7 @@ impl Render for SettingsView {
         } else {
             match self.page {
                 Page::Appearance => self.appearance(&query, cx).into_any_element(),
+                Page::System => self.system(&query, cx).into_any_element(),
                 Page::Keymap => self.keymap_page(&query, cx).into_any_element(),
                 Page::EditorGeneral => self.editor_general(&query, cx).into_any_element(),
                 Page::EditorFont => self.editor_font(&query, cx).into_any_element(),
@@ -732,6 +737,15 @@ impl SettingsView {
             ))
             .child(self.check("settings-compact", "Compact mode", d.compact, query, |s, v| s.compact = v, cx))
             .child(self.note("Smaller toolbars, tool window stripes and rows", cx))
+    }
+
+    /// Appearance & Behavior › System Settings: Startup.
+    fn system(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let d = &self.draft;
+        v_flex()
+            .gap_2()
+            .child(self.check("settings-reopen-projects", "Reopen projects on startup", d.reopen_projects, query, |s, v| s.reopen_projects = v, cx))
+            .child(self.note("Started without a folder, opens the last project and its editor tabs", cx))
     }
 
     fn editor_general(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
