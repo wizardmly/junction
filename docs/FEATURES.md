@@ -983,7 +983,8 @@ Linux 实测（Xvfb，`ip` 工程 Main.kt）：光标在 `val cart = Cart(0.2)` 
 | 选中某项时高亮会受影响的代码：整个语句，Remove 'else...' 只高亮要删的 else 部分 | | ✅ |
 | Unwrap 'run {...}'（Kotlin 语句位置上只带一个 lambda 的调用：`run`、`apply`、`with` 外的 `x.let` 等）：lambda 体的语句替换调用 | lambda 的参数（`it`）不改写 | ✅ |
 | Remove 'catch...' / Remove 'finally...'：光标在 catch / finally 里，只删掉这一段 | | ✅ |
-| `when` / `switch`、单独的花括号块 | | ⬜ |
+| Unwrap 'when...' / 'switch...'：光标所在分支的语句替换整个 `when` / `switch`（Java 的 `case:` 分组去掉结尾的 `break`，`case ->` 取箭头后的语句或块） | | ✅ |
+| 单独的花括号块、Remove 某个 when / case 分支 | | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程 Flow.kt：`for` 里套 `if / else`）：光标在 else 分支的 `println("small $i")` 上按 Ctrl+Shift+Delete，弹出 Unwrap 'else...'、Remove 'else...'、Unwrap 'for...'；选 Remove 'else...' 后只剩 `if (i > 2) { println("big $i") }`；光标在 `for` 体末尾时只有 Unwrap 'for...'，选中后 `if / else` 提到函数体一层、缩进少一级。
 

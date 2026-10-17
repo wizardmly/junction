@@ -24,7 +24,13 @@ pub struct Unwrapping {
 /// A body's statements: inside its braces, blank edge lines and their
 /// common indent removed.
 fn body_lines(text: &str, body: Node) -> Vec<String> {
-    let mut inner = &text[body.byte_range()];
+    lines_in(text, body.byte_range())
+}
+
+/// The statements in `range` (inside braces when it has them), blank edge
+/// lines and their common indent removed.
+fn lines_in(text: &str, range: Range<usize>) -> Vec<String> {
+    let mut inner = &text[range];
     if inner.starts_with('{') && inner.ends_with('}') && inner.len() >= 2 {
         inner = &inner[1..inner.len() - 1];
     }
@@ -76,9 +82,33 @@ pub fn unwrap_options(lang: Lang, text: &str, offset: usize) -> Vec<Unwrapping> 
     }
     let Some(tree) = symbols::parse(lang, text) else { return out };
     let mut node = tree.root_node().descendant_for_byte_range(offset, offset);
+    // The `when` / `switch` branch the caret is in, on the way up.
+    let mut branch: Option<Node> = None;
     while let Some(n) = node {
         node = n.parent();
         match n.kind() {
+            "when_entry" | "switch_block_statement_group" | "switch_rule" => branch = Some(n),
+            "when_expression" | "switch_expression" | "switch_statement" => {
+                let statement = n.parent().is_some_and(|p| matches!(p.kind(), "statements" | "control_structure_body" | "block" | "expression_statement"));
+                let Some(b) = branch.take().filter(|_| statement) else { continue };
+                let parts = children(b);
+                let lines = match b.kind() {
+                    // `case 1: a(); break;`: the statements after the labels, without the break.
+                    "switch_block_statement_group" => {
+                        let body: Vec<Node> = parts.iter().filter(|c| c.kind() != "switch_label" && c.kind() != ":" && c.is_named()).copied().collect();
+                        let body: Vec<Node> = body.iter().take(body.len() - usize::from(body.last().is_some_and(|l| l.kind() == "break_statement"))).copied().collect();
+                        match (body.first(), body.last()) {
+                            (Some(first), Some(last)) => lines_in(text, first.start_byte()..last.end_byte()),
+                            _ => Vec::new(),
+                        }
+                    }
+                    _ => parts.iter().rev().find(|c| c.is_named() && !matches!(c.kind(), "switch_label" | "when_condition")).map(|body| body_lines(text, *body)).unwrap_or_default(),
+                };
+                let keyword = if n.kind() == "when_expression" { "when" } else { "switch" };
+                // The parent may be the expression statement holding the switch.
+                let construct = if n.parent().is_some_and(|p| p.kind() == "expression_statement") { n.parent().unwrap_or(n) } else { n };
+                out.extend(replace_with(text, construct, &lines, format!("Unwrap '{keyword}...'")));
+            }
             "if_expression" | "if_statement" => {
                 // Kotlin's `val x = if …` is a value, not a statement.
                 if lang == Lang::Kotlin && !n.parent().is_some_and(|p| matches!(p.kind(), "statements" | "control_structure_body")) {
@@ -184,6 +214,21 @@ mod tests {
         assert_eq!(apply(text, &options[0]), "fun f() {\n    run {\n        a()\n    }\n    try {\n        b()\n    } finally {\n        d()\n    }\n}\n");
         let options = unwrap_options(Lang::Kotlin, text, text.find("d()").unwrap());
         assert_eq!(apply(text, &options[0]), "fun f() {\n    run {\n        a()\n    }\n    try {\n        b()\n    } catch (e: E) {\n        c()\n    }\n}\n");
+    }
+
+    #[test]
+    fn unwraps_when_and_switch() {
+        let text = "fun f() {\n    when (x) {\n        1 -> a()\n        else -> {\n            b()\n            c()\n        }\n    }\n}\n";
+        let options = unwrap_options(Lang::Kotlin, text, text.find("c()").unwrap());
+        assert_eq!(options[0].edit.title, "Unwrap 'when...'");
+        assert_eq!(apply(text, &options[0]), "fun f() {\n    b()\n    c()\n}\n");
+        assert_eq!(apply(text, &unwrap_options(Lang::Kotlin, text, text.find("a()").unwrap())[0]), "fun f() {\n    a()\n}\n");
+        let java = "class A {\n  void f() {\n    switch (x) {\n      case 1:\n        a();\n        break;\n      default:\n        b();\n    }\n  }\n}\n";
+        let options = unwrap_options(Lang::Java, java, java.find("a()").unwrap());
+        assert_eq!(options[0].edit.title, "Unwrap 'switch...'");
+        assert_eq!(apply(java, &options[0]), "class A {\n  void f() {\n    a();\n  }\n}\n");
+        let rules = "class A {\n  void f() {\n    switch (y) {\n      case 1 -> c();\n      default -> { d(); }\n    }\n  }\n}\n";
+        assert_eq!(apply(rules, &unwrap_options(Lang::Java, rules, rules.find("d()").unwrap())[0]), "class A {\n  void f() {\n    d();\n  }\n}\n");
     }
 
     #[test]
