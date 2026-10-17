@@ -21,6 +21,22 @@ pub fn line_end(text: &str, at: usize) -> usize {
     text[at..].find('\n').map_or(text.len(), |i| at + i)
 }
 
+/// What deleting a declaration at `range` removes: its whole lines, and
+/// the blank line after it when the line before is blank or opens the
+/// block, so no double blank line or blank line after `{` is left.
+pub fn declaration_lines(text: &str, range: Range<usize>) -> Range<usize> {
+    let mut start = line_start(text, range.start);
+    let mut end = (line_end(text, range.end.max(range.start + 1) - 1) + 1).min(text.len());
+    let before = text[..start.saturating_sub(1)].rsplit('\n').next().unwrap_or_default().trim();
+    if (before.is_empty() || before.ends_with('{')) && text[end..].starts_with('\n') {
+        end += 1;
+    } else if before.is_empty() && start > 0 && text[end..].trim_start_matches([' ', '\t']).starts_with('}') {
+        // The last member: the blank line above it goes, not one before `}`.
+        start = line_start(text, start - 1);
+    }
+    start..end
+}
+
 /// The whole lines a selection touches (a selection ending at a line's
 /// start doesn't take that line), without the last line break.
 fn lines_of(text: &str, sel: &Range<usize>) -> Range<usize> {
@@ -293,5 +309,14 @@ mod tests {
     fn toggles_case() {
         assert_eq!(toggle_case("val name = 1", 5..5).text, "val NAME = 1");
         assert_eq!(toggle_case("ABC", 0..3), Edited { text: "abc".into(), selection: 0..3 });
+    }
+
+    #[test]
+    fn declaration_lines_take_one_blank_line() {
+        let text = "class A {\n    fun a() = 1\n\n    fun b() = 2\n\n    fun c() = 3\n}\n";
+        let at = |s: &str| text.find(s).unwrap()..text.find(s).unwrap() + s.len();
+        assert_eq!(&text[declaration_lines(text, at("fun a() = 1"))], "    fun a() = 1\n\n");
+        assert_eq!(&text[declaration_lines(text, at("fun b() = 2"))], "    fun b() = 2\n\n");
+        assert_eq!(&text[declaration_lines(text, at("fun c() = 3"))], "\n    fun c() = 3\n");
     }
 }

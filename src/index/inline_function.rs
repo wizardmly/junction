@@ -11,7 +11,7 @@ use super::extract_method::{children, descendants, is_function};
 use super::lang::Lang;
 use super::symbols;
 use crate::domain::introduce_parameter::ParameterPlan;
-use crate::domain::line_edit::{line_end, line_start};
+use crate::domain::line_edit::declaration_lines;
 
 const NOT_HERE: &str = "Cannot perform refactoring. Caret should be positioned at the name of element to be inlined.";
 const NOT_ONE_EXPRESSION: &str = "Cannot perform refactoring. Only a function whose body is one expression or one return statement can be inlined.";
@@ -72,15 +72,7 @@ pub fn plan_at(lang: Lang, text: &str, offset: usize) -> Result<(ParameterPlan, 
         return Err(format!("Cannot perform refactoring. {word} is recursive"));
     }
     let (plan, _) = super::introduce_parameter::plan(lang, text, body.byte_range())?;
-    // The declaration's lines, and the blank line after it when the line
-    // before is blank or opens the block.
-    let start = line_start(text, function.start_byte());
-    let mut end = (line_end(text, function.end_byte()) + 1).min(text.len());
-    let before = text[..start.saturating_sub(1)].rsplit('\n').next().unwrap_or_default().trim();
-    if (before.is_empty() || before.ends_with('{')) && text[end..].starts_with('\n') {
-        end += 1;
-    }
-    Ok((plan, start..end))
+    Ok((plan, declaration_lines(text, function.byte_range())))
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ pub mod introduce;
 pub mod call_hierarchy;
 pub mod inline;
 pub mod inline_function;
+pub mod safe_delete;
 pub mod unwrap;
 pub mod change_signature;
 pub mod extract_method;

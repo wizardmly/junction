@@ -1008,3 +1008,17 @@ Linux 实测（Xvfb，`ip` 工程 Flow.kt：`for` 里套 `if / else`）：光标
 | 分屏、不同 revision 的标签、工具窗口的布局 | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程）：打开 Cart.kt 并把光标放在第 8 行，再打开 Main.kt；等 3 秒后直接结束进程再启动，两个标签按原顺序回来、Main.kt 是活动标签，点 Cart.kt 光标在 8:14。从工程菜单换到 calc：ip 的标签关掉，calc 上次打开的 Calc.class 回来；再换回 ip，Cart.kt、Main.kt 回来。
+
+## 57. Safe Delete（Alt+Delete，2026-10-17）
+
+照 IntelliJ 的 Safe Delete：光标在类、函数 / 方法、属性 / 字段或局部变量的声明名上按 Alt+Delete（macOS ⌘⌫，右键 Refactor › Safe Delete…）。先在后台查找用处（Find Usages 同一套索引，不算声明本身和它内部的递归调用）：
+
+| 情况 | 行为 | 状态 |
+|---|---|---|
+| 没有用处 | "Delete function 'use'?" → Delete：删掉声明的整行（连同紧挨在上面的文档注释），并处理空行：不留两个空行，也不在 `}` 前留空行；一次可撤销 | ✅ |
+| 有用处 | "Usages Detected：Function 'total' has 3 usages that are not safe to delete."，列出 `文件:行`，View Usages（默认，打开 Find 工具窗口）或 Delete Anyway | ✅ |
+| 同时删掉调用 / 引用处、搜索注释和字符串、删文件 | | ⬜ |
+
+代码：`src/index/safe_delete.rs`（声明和要删的行）、`domain::line_edit::declaration_lines`（删声明时的空行规则，Inline Function 也用它）。
+
+Linux 实测（Xvfb，`ip` 工程 Cart.kt）：在 `total` 上按 Alt+Delete 弹出 Usages Detected，列出 Cart.kt:8、Main.kt:5、Main.kt:6；在 `use` 上按 Alt+Delete 弹出 "Delete function 'use'?"，Delete 后 `fun use()` 和它上面的空行一起删掉，类的 `}` 紧接在 `total` 后面。

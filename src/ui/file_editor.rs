@@ -1458,6 +1458,67 @@ impl FileEditor {
         .detach();
     }
 
+    /// Safe Delete (Alt+Delete): the declaration at the caret goes when
+    /// nothing uses it; with usages, IntelliJ's "Usages Detected" offers to
+    /// view them or delete anyway.
+    fn safe_delete(&mut self, _: &editing::SafeDelete, window: &mut Window, cx: &mut Context<Self>) {
+        const TITLE: &str = "Safe Delete";
+        let Some(lang) = crate::index::lang::Lang::from_path(&self.path).filter(|_| !self.read_only()) else { return };
+        let text = self.text(cx);
+        let offset = self.state.read(cx).cursor();
+        let Some(decl) = crate::index::safe_delete::declaration_at(lang, &text, offset) else {
+            return Self::hint(TITLE, "Cannot perform refactoring. Caret should be positioned at the name of element to be deleted.", window, cx);
+        };
+        let Some(index) = self.code_index.clone() else { return };
+        let task = index.read(cx).usages(self.path.clone(), text.clone(), decl.name_offset, cx);
+        let path = self.path.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let (_, usages) = task.await;
+            // Uses outside the declaration itself (a recursive call isn't one).
+            let first = text[..decl.lines.start].matches('\n').count() as u32;
+            let last = first + text[decl.lines.clone()].trim_end_matches('\n').matches('\n').count() as u32;
+            let uses: Vec<String> = usages
+                .into_iter()
+                .filter(|u| u.group != "Declarations" && !(u.path == path && (first..=last).contains(&u.line)))
+                .map(|u| format!("{}:{}", u.path, u.line + 1))
+                .collect();
+            this.update_in(cx, |_, window, cx| {
+                let editor = cx.entity().downgrade();
+                let delete: std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)> = {
+                    let (editor, text, lines) = (editor.clone(), text.clone(), decl.lines.clone());
+                    std::rc::Rc::new(move |window, cx| {
+                        editor
+                            .update(cx, |this, cx| {
+                                if this.text(cx) != text {
+                                    return Self::hint(TITLE, "The file changed; try again", window, cx);
+                                }
+                                let mut new = text.clone();
+                                new.replace_range(lines.clone(), "");
+                                this.replace_text(&text, &new, lines.start.min(new.len()), window, cx);
+                            })
+                            .ok();
+                    })
+                };
+                let what = format!("{} '{}'", decl.kind.to_lowercase(), decl.name);
+                if uses.is_empty() {
+                    crate::ui::dialogs::choose(TITLE, format!("Delete {what}?"), Vec::new(), "Cancel", vec![("Delete", delete)], window, cx);
+                    return;
+                }
+                let n = uses.len();
+                let view: std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)> = {
+                    let (text, offset) = (text.clone(), decl.name_offset);
+                    std::rc::Rc::new(move |_, cx| {
+                        editor.update(cx, |_, cx| cx.emit(FileEditorEvent::FindUsages { text: text.clone(), offset })).ok();
+                    })
+                };
+                let message = format!("{} '{}' has {n} usage{} that {} not safe to delete.", decl.kind, decl.name, if n == 1 { "" } else { "s" }, if n == 1 { "is" } else { "are" });
+                crate::ui::dialogs::choose("Usages Detected", message, uses, "Cancel", vec![("Delete Anyway", delete), ("View Usages", view)], window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn introduce_constant_action(&mut self, _: &IntroduceConstant, window: &mut Window, cx: &mut Context<Self>) {
         self.introduce(crate::ui::introduce_dialog::Introduce::Constant, window, cx);
     }
@@ -2603,6 +2664,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::move_statement_up))
             .on_action(cx.listener(Self::inline))
             .on_action(cx.listener(Self::unwrap_remove))
+            .on_action(cx.listener(Self::safe_delete))
             .on_action(cx.listener(Self::move_element_left))
             .on_action(cx.listener(Self::move_element_right))
             .on_action(cx.listener(Self::move_statement_down))
@@ -2800,6 +2862,7 @@ impl Render for FileEditor {
                                         .menu_with_disabled("Change Signature…", read_only, Box::new(ChangeSignature))
                                         .menu_with_disabled("Introduce Parameter…", read_only, Box::new(IntroduceParameter))
                                         .menu_with_disabled("Inline…", read_only, Box::new(editing::Inline))
+                                        .menu_with_disabled("Safe Delete…", read_only, Box::new(editing::SafeDelete))
                                         .menu_with_disabled(if java_file { "Extract Method…" } else { "Extract Function…" }, read_only, Box::new(ExtractMethod)),
                                 )
                                 .menu("Select in Project View", Box::new(crate::ui::workspace::SelectInProject))
