@@ -934,3 +934,17 @@ Linux 实测（Xvfb，`ip` 工程里的 Shapes.kt：`Shape` ← `Base` ← `Squa
 代码：`src/index/hierarchy.rs`（`method_hierarchy`）、`src/ui/hierarchy_view.rs`。右键菜单也有 Method Hierarchy。
 
 Linux 实测（Xvfb，Shapes.kt：`interface Shape { fun area() }`、`abstract class Base : Shape`、`Square : Base()` 实现 area、`Tile : Square()`、`Disc : Base()`）：光标在 `Square.area` 上按 Ctrl+Shift+H，显示 `+Shape › −Base › (!Disc, +Square › −Tile)`，选中 Square。
+
+## 53. Recent Locations（Ctrl+Shift+E，2026-10-17）
+
+照 IntelliJ 的 Recent Locations 弹窗：最近到过和改过的位置，新的在前，每项显示文件名、所在的函数或类（`Cart.total`）、位置前后几行代码（去掉公共缩进、带行号、语法着色）。代码：`src/ui/workspace/history.rs`（`RecentPlaces`）、`src/ui/recent_locations.rs`、`src/ui/workspace/navigation.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 记录：跳转（Ctrl+B、Go to、Back / Forward、Ctrl+G）和切换文件时离开的位置，编辑时的位置（标 changed），打开弹窗时的当前位置；同一文件相距两行以内的合并成一个（保留 changed），最多 50 个 | ✅ |
+| 弹窗：输入过滤（文件名、所在函数、代码）；↑/↓ 选择，Enter / 单击跳到该位置；默认选中当前位置的上一个 | ✅ |
+| Show changed only 复选框，或在弹窗里再按 Ctrl+Shift+E 切换；标题随之变成 "Recently Changed Locations" | ✅ |
+| Navigate 菜单项、Keymap 设置里的条目 | ✅ |
+| 编辑后已记录位置的行号随文本移动、重启后保留、删除某一项 | ⬜ |
+
+Linux 实测（Xvfb，`ip` 工程）：在 Cart.kt 的 `use` 上 Ctrl+B 跳到 `total`，打开 Main.kt 在第 6 行末尾输入 ` // hi`，再打开 Shapes.kt；Ctrl+Shift+E 列出 Shapes.kt（Tile）、Main.kt（main，changed，三行代码含 `// hi`）、Cart.kt（Cart.total）、Cart.kt（Cart.use）；再按 Ctrl+Shift+E 只剩 Main.kt；输入 `cart` 过滤出含 cart 的三项；↓ Enter 打开 Cart.kt 第 4 行第 9 列。

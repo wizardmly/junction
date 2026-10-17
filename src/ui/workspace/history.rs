@@ -72,6 +72,60 @@ impl std::ops::Deref for RecentPaths {
     }
 }
 
+/// A place for Recent Locations (Ctrl+Shift+E): visited, or also changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub path: String,
+    pub line: u32,
+    pub col: u32,
+    pub changed: bool,
+}
+
+/// Recent Locations' places, newest first: a place near one already listed
+/// (a few lines apart in the same file) replaces it, as IntelliJ merges them.
+#[derive(Default)]
+pub struct RecentPlaces {
+    places: Vec<Place>,
+}
+
+impl RecentPlaces {
+    const LIMIT: usize = 50;
+    const NEAR: u32 = 2;
+
+    pub fn visit(&mut self, (path, line, col): Position) {
+        self.add(Place { path, line, col, changed: false });
+    }
+
+    /// A visit of `here`, if there is one.
+    pub fn extend_visit(&mut self, here: Option<Position>) {
+        if let Some(here) = here {
+            self.visit(here);
+        }
+    }
+
+    pub fn change(&mut self, (path, line, col): Position) {
+        self.add(Place { path, line, col, changed: true });
+    }
+
+    fn add(&mut self, mut place: Place) {
+        self.places.retain(|p| {
+            let near = p.path == place.path && p.line.abs_diff(place.line) <= Self::NEAR;
+            place.changed |= near && p.changed;
+            !near
+        });
+        self.places.insert(0, place);
+        self.places.truncate(Self::LIMIT);
+    }
+}
+
+impl std::ops::Deref for RecentPlaces {
+    type Target = [Place];
+
+    fn deref(&self) -> &[Place] {
+        &self.places
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +174,17 @@ mod tests {
             unlimited.touch(&i.to_string());
         }
         assert_eq!(unlimited.len(), 60);
+    }
+
+    #[test]
+    fn recent_places_merge_nearby() {
+        let mut places = RecentPlaces::default();
+        places.visit(at("a", 10));
+        places.change(at("b", 3));
+        places.visit(at("a", 11));
+        places.visit(at("b", 4));
+        places.visit(at("b", 20));
+        let got: Vec<(&str, u32, bool)> = places.iter().map(|p| (p.path.as_str(), p.line, p.changed)).collect();
+        assert_eq!(got, [("b", 20, false), ("b", 4, true), ("a", 11, false)]);
     }
 }

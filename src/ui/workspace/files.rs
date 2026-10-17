@@ -21,13 +21,24 @@ impl Workspace {
         }
         if revision.is_none() {
             self.recent_files.touch(&path);
+            // Leaving a file: where we were is a recent location.
+            if let Some(here) = self.current_position(cx).filter(|(p, _, _)| *p != path) {
+                self.recent_places.visit(here);
+            }
         }
         self.open_tab(path, revision, window, cx);
     }
 
     pub(crate) fn on_file_editor_event(&mut self, view: &Entity<FileEditor>, event: &FileEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            FileEditorEvent::Edited => self.keep_tab(view, cx),
+            FileEditorEvent::Edited => {
+                self.keep_tab(view, cx);
+                let editor = view.read(cx);
+                if editor.revision().is_none() {
+                    let (line, col) = editor.cursor(cx);
+                    self.recent_places.change((editor.path().to_owned(), line, col));
+                }
+            }
             FileEditorEvent::CopyPathReference => {
                 let editor = view.read(cx);
                 let (path, lines) = (editor.path().to_owned(), editor.url_lines(cx));

@@ -146,6 +146,7 @@ impl Workspace {
     /// Opens a file at a position, remembering where we were for Back.
     pub(super) fn go_to_target(&mut self, target: crate::index::nav::Target, window: &mut Window, cx: &mut Context<Self>) {
         let here = self.current_position(cx);
+        self.recent_places.extend_visit(here.clone());
         self.nav.jumped_from(here);
         self.open_at(target.path, target.line, target.col, window, cx);
     }
@@ -178,12 +179,14 @@ impl Workspace {
 
     pub(super) fn navigate_back(&mut self, _: &NavigateBack, window: &mut Window, cx: &mut Context<Self>) {
         let here = self.current_position(cx);
+        self.recent_places.extend_visit(here.clone());
         let Some((path, line, col)) = self.nav.back(here) else { return };
         self.open_at(path, line, col, window, cx);
     }
 
     pub(super) fn navigate_forward(&mut self, _: &NavigateForward, window: &mut Window, cx: &mut Context<Self>) {
         let here = self.current_position(cx);
+        self.recent_places.extend_visit(here.clone());
         let Some((path, line, col)) = self.nav.forward(here) else { return };
         self.open_at(path, line, col, window, cx);
     }
@@ -254,6 +257,39 @@ impl Workspace {
         let Some(bookmark) = crate::bookmarks::Bookmarks::get(cx).with_mnemonic(mnemonic).filter(|b| Self::in_project(b, root.as_deref())).cloned() else { return };
         let target = self.bookmark_target(&bookmark, cx);
         self.go_to_target(target, window, cx);
+    }
+
+    /// Recent Locations (Ctrl+Shift+E): the places visited and changed,
+    /// the current one first.
+    pub(super) fn recent_locations_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let here = self.current_position(cx);
+        self.recent_places.extend_visit(here);
+        let root = self.model.read(cx).project_root().map(|r| r.to_path_buf());
+        let dark = cx.palette().dark;
+        let mut texts: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+        let mut highlighters = std::collections::HashMap::new();
+        let mut locations = Vec::new();
+        for place in self.recent_places.iter() {
+            let text = texts.entry(place.path.clone()).or_insert_with(|| {
+                let open = self.editors.iter().find(|t| t.view.read(cx).path() == place.path && t.view.read(cx).revision().is_none());
+                match open {
+                    Some(tab) => Some(tab.view.read(cx).text(cx)),
+                    None => {
+                        let file = std::path::Path::new(&place.path);
+                        let file = if file.is_absolute() { file.to_path_buf() } else { root.as_ref().map(|r| r.join(file)).unwrap_or_default() };
+                        std::fs::read_to_string(file).ok()
+                    }
+                }
+            });
+            if let Some(text) = text {
+                locations.push(crate::ui::recent_locations::Location::new(place.path.clone(), place.line, place.col, place.changed, text, dark, &mut highlighters));
+            }
+        }
+        if locations.is_empty() {
+            Self::nav_hint("No recent locations", window, cx);
+            return;
+        }
+        crate::ui::recent_locations::RecentLocations::open(locations, self.picker_callback(cx), window, cx);
     }
 
     /// Recent Files (Ctrl+E).
@@ -338,6 +374,7 @@ impl Workspace {
                 workspace
                     .update(cx, |this, cx| {
                         this.nav.remember((path.clone(), here.0, here.1));
+                        this.recent_places.visit((path.clone(), here.0, here.1));
                         editor.update(cx, |e, cx| e.go_to(target_line, col.saturating_sub(1), window, cx));
                     })
                     .ok();

@@ -123,6 +123,7 @@ pub(super) fn main_menu(
             .menu("Line/Column…", Box::new(GotoLine))
             .separator()
             .menu("Recent Files", Box::new(RecentFiles))
+            .menu("Recent Locations", Box::new(RecentLocations))
             .menu("File Structure", Box::new(FileStructure))
             .separator()
             .menu("Back", Box::new(NavigateBack))
