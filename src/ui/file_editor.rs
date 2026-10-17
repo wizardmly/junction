@@ -2541,6 +2541,8 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::move_line_down))
             .on_action(cx.listener(Self::move_statement_up))
             .on_action(cx.listener(Self::inline))
+            .on_action(cx.listener(Self::move_element_left))
+            .on_action(cx.listener(Self::move_element_right))
             .on_action(cx.listener(Self::move_statement_down))
             .on_action(cx.listener(Self::extend_selection))
             .on_action(cx.listener(Self::shrink_selection))

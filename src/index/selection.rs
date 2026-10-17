@@ -96,6 +96,51 @@ pub fn move_statement(lang: Option<Lang>, text: &str, sel: Range<usize>, up: boo
     Some(crate::domain::line_edit::Edited { text: out, selection: shift(sel.start)..shift(sel.end) })
 }
 
+/// Move Element Left / Right (Ctrl+Alt+Shift+←/→), as IntelliJ's: the
+/// argument, parameter or list item at the caret swaps with the one before
+/// or after it, in the nearest comma-separated list around the caret.
+pub fn move_element(lang: Option<Lang>, text: &str, sel: Range<usize>, left: bool) -> Option<crate::domain::line_edit::Edited> {
+    let tree = symbols::parse(lang?, text)?;
+    let mut node = tree.root_node().descendant_for_byte_range(sel.start, sel.end);
+    while let Some(list) = node {
+        node = list.parent();
+        let mut cursor = list.walk();
+        let children: Vec<tree_sitter::Node> = list.children(&mut cursor).collect();
+        if !children.iter().any(|c| c.kind() == ",") {
+            continue;
+        }
+        // The elements: the runs between commas, without the brackets.
+        let mut elements: Vec<Range<usize>> = Vec::new();
+        let mut run: Option<Range<usize>> = None;
+        for (i, c) in children.iter().enumerate() {
+            let bracket = !c.is_named() && (i == 0 || i == children.len() - 1) && matches!(c.kind(), "(" | ")" | "[" | "]" | "{" | "}" | "<" | ">");
+            if c.kind() == "," || bracket {
+                elements.extend(run.take());
+                continue;
+            }
+            run = Some(match run {
+                Some(r) => r.start..c.end_byte(),
+                None => c.start_byte()..c.end_byte(),
+            });
+        }
+        elements.extend(run);
+        let Some(at) = elements.iter().position(|r| r.start <= sel.start && sel.end <= r.end) else { continue };
+        let other = if left { at.checked_sub(1)? } else { at + 1 };
+        let (mine, theirs) = (elements[at].clone(), elements.get(other)?.clone());
+        let (a, b) = if left { (theirs, mine.clone()) } else { (mine.clone(), theirs) };
+        let mut out = String::with_capacity(text.len());
+        out.push_str(&text[..a.start]);
+        out.push_str(&text[b.clone()]);
+        out.push_str(&text[a.end..b.start]);
+        out.push_str(&text[a.clone()]);
+        out.push_str(&text[b.end..]);
+        let new_start = if left { a.start } else { b.end - mine.len() };
+        let shift = |at: usize| at - mine.start + new_start;
+        return Some(crate::domain::line_edit::Edited { text: out, selection: shift(sel.start)..shift(sel.end) });
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +184,24 @@ mod tests {
         let at = body.find("int x").unwrap();
         let down = move_statement(Some(Lang::Java), body, at..at, false).unwrap();
         assert_eq!(down.text, "void m() {\n    foo(x,\n        2);\n    int x = 1;\n    bar();\n}\n");
+    }
+
+    #[test]
+    fn moves_list_elements() {
+        let text = "fun f(a: Int, b: String = \"x\") = g(one, h(2, 3), last)\n";
+        let at = text.find("h(").unwrap();
+        let right = move_element(Some(Lang::Kotlin), text, at..at, false).unwrap();
+        assert_eq!(right.text, "fun f(a: Int, b: String = \"x\") = g(one, last, h(2, 3))\n");
+        assert_eq!(&right.text[right.selection.start..right.selection.start + 2], "h(");
+        let inner = text.find("3)").unwrap();
+        assert_eq!(move_element(Some(Lang::Kotlin), text, inner..inner, true).unwrap().text, "fun f(a: Int, b: String = \"x\") = g(one, h(3, 2), last)\n");
+        let param = text.find("b: S").unwrap();
+        assert_eq!(move_element(Some(Lang::Kotlin), text, param..param, true).unwrap().text, "fun f(b: String = \"x\", a: Int) = g(one, h(2, 3), last)\n");
+        // At the end: nothing.
+        let last = text.find("last").unwrap();
+        assert!(move_element(Some(Lang::Kotlin), text, last..last, false).is_none());
+        let java = "class A { void m(int x, long y) { m(1, 2L); } }";
+        let at = java.find("int x").unwrap();
+        assert_eq!(move_element(Some(Lang::Java), java, at..at, false).unwrap().text, "class A { void m(long y, int x) { m(1, 2L); } }");
     }
 }
