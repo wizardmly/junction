@@ -160,7 +160,7 @@ impl DebugService {
         if let Some(g) = cx.try_global::<GlobalDebug>() {
             return g.0.clone();
         }
-        let service = cx.new(|_| Self { breakpoints: breakpoint_store::load(), exceptions: breakpoint_store::load_exceptions(), watches: breakpoint_store::load_watches(), ..Default::default() });
+        let service = cx.new(|_| Self { breakpoints: breakpoint_store::load(), exceptions: breakpoint_store::load_exceptions(), watches: breakpoint_store::load_watches(), muted: breakpoint_store::load_muted(), ..Default::default() });
         cx.set_global(GlobalDebug(service.clone()));
         service
     }
@@ -303,6 +303,7 @@ impl DebugService {
     /// don't stop, in the running session and the next ones.
     pub fn toggle_mute(&mut self, cx: &mut Context<Self>) {
         self.muted = !self.muted;
+        breakpoint_store::save_muted(self.muted);
         if let Some(session) = &self.session {
             session.set_muted(self.muted);
         }

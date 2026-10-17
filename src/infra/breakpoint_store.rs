@@ -1,7 +1,8 @@
 //! Line breakpoints and watches kept across sessions, as IntelliJ keeps
 //! them in the workspace: `breakpoints.json` in the settings folder, each a
 //! file's absolute path, a 0-based line, whether it's enabled and its
-//! condition and what a hit does; `watches.json`, the Watches' expressions.
+//! condition and what a hit does; `watches.json`, the Watches' expressions;
+//! `breakpoints-muted`, there while Mute Breakpoints is on.
 
 use std::path::{Path, PathBuf};
 
@@ -190,5 +191,26 @@ pub fn save_exceptions(list: &[SavedExceptionBreakpoint]) {
     }
     if let Ok(json) = serde_json::to_vec_pretty(list) {
         let _ = std::fs::write(path, json);
+    }
+}
+
+fn muted_path() -> Option<PathBuf> {
+    crate::settings::config_dir().map(|d| d.join("breakpoints-muted"))
+}
+
+/// Whether Mute Breakpoints was left on.
+pub fn load_muted() -> bool {
+    muted_path().is_some_and(|p| p.exists())
+}
+
+pub fn save_muted(muted: bool) {
+    let Some(path) = muted_path() else { return };
+    if muted {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, "");
+    } else {
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -111,6 +111,7 @@ actions!(
         DebugStepOver,
         DebugStepOut,
         ViewBreakpoints,
+        MuteBreakpoints,
         EditConfigurations,
         ToggleLogcatWindow,
         ShowLocalHistory,
@@ -1005,6 +1006,10 @@ impl Render for Workspace {
                 crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.step(crate::domain::debugger::StepDepth::Out, cx))
             }))
             .on_action(cx.listener(|_, _: &ViewBreakpoints, window, cx| crate::ui::breakpoints_dialog::open(None, window, cx)))
+            .on_action(cx.listener(|_, _: &MuteBreakpoints, _, cx| {
+                let service = crate::ui::debug_service::DebugService::global(cx);
+                service.update(cx, |s, cx| s.toggle_mute(cx));
+            }))
             .on_action(cx.listener(|this, _: &EditConfigurations, window, cx| this.run.update(cx, |r, cx| r.edit_configurations(window, cx))))
             .on_action(cx.listener(|this, _: &ToggleRunWindow, window, cx| this.shortcut_tool(ToolWindow::Run, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleLogcatWindow, window, cx| this.shortcut_tool(ToolWindow::Logcat, window, cx)))

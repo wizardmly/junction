@@ -149,12 +149,14 @@ pub(super) fn main_menu(
         let run = e.read(cx).run.clone();
         let name = run.read(cx).configuration(cx).map(|c| c.name).unwrap_or_else(|| "app".into());
         let can_stop = run.read(cx).can_stop();
+        let muted = crate::ui::debug_service::DebugService::global(cx).read(cx).is_muted();
         menu.action_context(f.clone())
             .menu(format!("Run '{name}'"), Box::new(RunApp))
             .menu_with_disabled("Stop", Box::new(StopApp), !can_stop)
             .menu("Edit Configurations…", Box::new(EditConfigurations))
             .separator()
             .menu("View Breakpoints…", Box::new(ViewBreakpoints))
+            .menu_with_check("Mute Breakpoints", muted, Box::new(MuteBreakpoints))
     });
     let (e, f) = (entity.clone(), focus.clone());
     let menu = menu.submenu("Git", window, cx, move |menu, window, cx| {

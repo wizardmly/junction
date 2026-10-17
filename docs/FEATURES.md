@@ -822,7 +822,7 @@ Linux 实测（Xvfb，calc 示例临时加 `static int calls = 0;` 和 `add` 里
 |---|---|
 | Debug 工具栏的 Mute Breakpoints 开关（按下状态），调试中切换立即生效，之后新开的调试会话沿用 | ✅ |
 | 静音时 gutter 上启用的断点画成灰色（IntelliJ 的 breakpointMuted / breakpointMethodMuted / breakpointFieldMuted），行不再加红底；禁用的仍是空心 | ✅ |
-| 静音状态按项目持久化、Run 菜单里的 Mute Breakpoints 项 | ⬜ |
+| Run 菜单里的 Mute Breakpoints 勾选项（和工具栏按钮同步）；静音状态跨重启保留（设置目录下的 `breakpoints-muted`；断点本身是全局保存的，静音也跟着全局，不按项目分） | ✅ |
 
 Linux 实测（Xvfb，calc 示例）：在 `totals()` 循环体第 34 行设断点，调试后在 `i = 0` 停下；点 Mute Breakpoints，断点变灰，按 F9 后剩下两次循环不再停，测试直接跑完通过。
 
