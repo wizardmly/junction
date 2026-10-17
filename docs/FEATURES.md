@@ -978,6 +978,8 @@ Linux 实测（Xvfb，`ip` 工程 Main.kt）：光标在 `val cart = Cart(0.2)` 
 | Unwrap 'try...' | try 块的语句替换 `try`，`finally` 的语句接在后面，catch 去掉 | ✅ |
 | Kotlin 作为值的 `if`（`val x = if …`）不提供；右键菜单 Unwrap/Remove… | | ✅ |
 | 选中某项时高亮会受影响的代码：整个语句，Remove 'else...' 只高亮要删的 else 部分 | | ✅ |
-| `when` / `switch`、Kotlin `run {}` / lambda、单独的花括号块 | | ⬜ |
+| Unwrap 'run {...}'（Kotlin 语句位置上只带一个 lambda 的调用：`run`、`apply`、`with` 外的 `x.let` 等）：lambda 体的语句替换调用 | lambda 的参数（`it`）不改写 | ✅ |
+| Remove 'catch...' / Remove 'finally...'：光标在 catch / finally 里，只删掉这一段 | | ✅ |
+| `when` / `switch`、单独的花括号块 | | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程 Flow.kt：`for` 里套 `if / else`）：光标在 else 分支的 `println("small $i")` 上按 Ctrl+Shift+Delete，弹出 Unwrap 'else...'、Remove 'else...'、Unwrap 'for...'；选 Remove 'else...' 后只剩 `if (i > 2) { println("big $i") }`；光标在 `for` 体末尾时只有 Unwrap 'for...'，选中后 `if / else` 提到函数体一层、缩进少一级。

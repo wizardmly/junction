@@ -103,7 +103,25 @@ pub fn unwrap_options(lang: Lang, text: &str, offset: usize) -> Vec<Intention> {
                 }
                 out.extend(replace_with(text, n, &lines, "Unwrap 'try...'".into()));
             }
-            "function_declaration" | "method_declaration" | "class_body" | "lambda_literal" | "lambda_expression" => break,
+            "catch_block" | "catch_clause" | "finally_block" | "finally_clause" => {
+                // From the end of what's before it, so the try stays tidy.
+                let Some(prev) = n.prev_sibling() else { continue };
+                let what = if n.kind().starts_with("catch") { "catch" } else { "finally" };
+                out.push(Intention { title: format!("Remove '{what}...'"), range: prev.end_byte()..n.end_byte(), replacement: String::new(), caret: prev.end_byte() });
+            }
+            // Kotlin's `run { … }`, `apply { … }`: a call of just a lambda.
+            "call_expression" if lang == Lang::Kotlin && n.parent().is_some_and(|p| matches!(p.kind(), "statements" | "control_structure_body")) => {
+                let parts = children(n);
+                let Some(suffix) = parts.iter().find(|c| c.kind() == "call_suffix") else { continue };
+                let suffix_parts = children(*suffix);
+                let no_args = suffix_parts.iter().all(|c| c.kind() != "value_arguments" || children(*c).iter().all(|a| a.kind() != "value_argument"));
+                let lambda = suffix_parts.iter().find(|c| c.kind() == "annotated_lambda").and_then(|l| children(*l).into_iter().find(|c| c.kind() == "lambda_literal"));
+                let (true, Some(lambda)) = (no_args, lambda) else { continue };
+                let name = text[parts[0].byte_range()].rsplit('.').next().unwrap_or_default().trim().to_owned();
+                let lines = children(lambda).into_iter().find(|c| c.kind() == "statements").map(|b| body_lines(text, b)).unwrap_or_default();
+                out.extend(replace_with(text, n, &lines, format!("Unwrap '{name} {{...}}'")));
+            }
+            "function_declaration" | "method_declaration" | "class_body" => break,
             _ => {}
         }
     }
@@ -140,6 +158,19 @@ mod tests {
         assert_eq!(options.iter().map(|o| o.title.as_str()).collect::<Vec<_>>(), ["Unwrap 'try...'", "Unwrap 'for...'"]);
         assert_eq!(apply(text, &options[0]), "fun g() {\n    for (i in l) {\n        q(i)\n        s()\n    }\n}\n");
         assert_eq!(apply(text, &options[1]), "fun g() {\n    try { q(i) } finally { s() }\n}\n");
+    }
+
+    #[test]
+    fn unwraps_lambdas_and_removes_catch() {
+        let text = "fun f() {\n    run {\n        a()\n    }\n    try {\n        b()\n    } catch (e: E) {\n        c()\n    } finally {\n        d()\n    }\n}\n";
+        let options = unwrap_options(Lang::Kotlin, text, text.find("a()").unwrap());
+        assert_eq!(options[0].title, "Unwrap 'run {...}'");
+        assert_eq!(apply(text, &options[0])[..30], *"fun f() {\n    a()\n    try {\n  ");
+        let options = unwrap_options(Lang::Kotlin, text, text.find("c()").unwrap());
+        assert_eq!(options.iter().map(|o| o.title.as_str()).collect::<Vec<_>>(), ["Remove 'catch...'", "Unwrap 'try...'"]);
+        assert_eq!(apply(text, &options[0]), "fun f() {\n    run {\n        a()\n    }\n    try {\n        b()\n    } finally {\n        d()\n    }\n}\n");
+        let options = unwrap_options(Lang::Kotlin, text, text.find("d()").unwrap());
+        assert_eq!(apply(text, &options[0]), "fun f() {\n    run {\n        a()\n    }\n    try {\n        b()\n    } catch (e: E) {\n        c()\n    }\n}\n");
     }
 
     #[test]
