@@ -14,6 +14,12 @@ pub struct SessionTab {
     pub path: String,
     pub line: u32,
     pub col: u32,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,7 +82,7 @@ mod tests {
     #[test]
     fn reads_old_and_partial_sessions() {
         let read: EditorSession = serde_json::from_str(r#"{"tabs":[{"path":"a.kt","line":3,"col":1}]}"#).unwrap();
-        assert_eq!(read.tabs[0], SessionTab { path: "a.kt".into(), line: 3, col: 1 });
+        assert_eq!(read.tabs[0], SessionTab { path: "a.kt".into(), line: 3, col: 1, pinned: false });
         assert!(read.active.is_none() && read.places.is_empty());
         let session = EditorSession { active: Some("a.kt".into()), places: vec![SessionPlace { path: "b.kt".into(), line: 1, col: 0, changed: true }], ..read };
         let back: EditorSession = serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();

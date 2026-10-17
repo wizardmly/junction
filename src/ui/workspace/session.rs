@@ -11,11 +11,11 @@ impl Workspace {
         let tabs = self
             .editors
             .iter()
-            .map(|t| t.view.read(cx))
-            .filter(|e| e.revision().is_none())
-            .map(|e| {
+            .filter(|t| t.view.read(cx).revision().is_none())
+            .map(|t| {
+                let e = t.view.read(cx);
                 let (line, col) = e.cursor(cx);
-                SessionTab { path: e.path().to_owned(), line, col }
+                SessionTab { path: e.path().to_owned(), line, col, pinned: t.pinned }
             })
             .collect();
         let active = self.editor().map(|e| e.read(cx)).filter(|e| e.revision().is_none()).map(|e| e.path().to_owned());
@@ -52,6 +52,15 @@ impl Workspace {
         if self.session_root.as_ref() == Some(&root) {
             return;
         }
+        // Another project in this window: its tabs give way to this one's,
+        // as IntelliJ's project replaces the one before.
+        if let Some(old) = self.session_root.clone() {
+            store::save(&old, &self.session(cx));
+            let all: Vec<usize> = (0..self.editors.len()).collect();
+            self.close_tabs(all, cx);
+            self.closed_tabs.clear();
+            self.edit_walk = None;
+        }
         let session = store::load(&root);
         self.session_root = Some(root.clone());
         let places = history::RecentPlaces::restore(session.places.into_iter().map(|p| history::Place { path: p.path, line: p.line, col: p.col, changed: p.changed }).collect());
@@ -62,6 +71,11 @@ impl Workspace {
         let exists = |path: &str| root.join(path).is_file();
         for tab in session.tabs.iter().filter(|t| exists(&t.path)) {
             self.open_at(tab.path.clone(), tab.line, tab.col, window, cx);
+            if tab.pinned {
+                if let Some(open) = self.editors.iter_mut().find(|t| t.view.read(cx).path() == tab.path) {
+                    open.pinned = true;
+                }
+            }
         }
         if let Some(active) = session.active.and_then(|a| session.tabs.iter().find(|t| t.path == a).cloned()).filter(|t| exists(&t.path)) {
             self.open_at(active.path, active.line, active.col, window, cx);
