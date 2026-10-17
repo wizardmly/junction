@@ -75,6 +75,7 @@ actions!(
         FindAction,
         RecentFiles,
         RecentLocations,
+        LastEditLocation,
         FileStructure,
         GotoLine,
         CloseTab,
@@ -208,6 +209,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-shift-a", FindAction, Some(CONTEXT)),
         KeyBinding::new("secondary-e", RecentFiles, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-e", RecentLocations, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-backspace", LastEditLocation, Some(CONTEXT)),
         // Bookmarks: Show All (Shift+F11 / ⌘F3), Go to Bookmark 0–9 (Ctrl+digit).
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-f3" } else { "shift-f11" }, ShowBookmarks, Some(CONTEXT)),
         KeyBinding::new("ctrl-1", GoToBookmark1, Some(CONTEXT)),
@@ -318,6 +320,9 @@ pub struct Workspace {
     recently_changed: history::RecentPaths,
     /// Recent Locations' places.
     recent_places: history::RecentPlaces,
+    /// Last Edit Location's walk back: the edited places when it began,
+    /// how far it got, and where that put the caret.
+    edit_walk: Option<(Vec<history::Place>, usize, history::Position)>,
     /// The project whose old Local History was dropped this session.
     history_pruned: Option<std::path::PathBuf>,
     project: Entity<crate::ui::project_view::ProjectView>,
@@ -732,6 +737,7 @@ impl Workspace {
             recent_files: history::RecentPaths::with_limit(50),
             recently_changed: history::RecentPaths::default(),
             recent_places: history::RecentPlaces::default(),
+            edit_walk: None,
             history_pruned: None,
             project,
             nav: history::NavHistory::default(),
@@ -909,6 +915,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FindAction, window, cx| this.open_search_everywhere(SeTab::Actions, window, cx)))
             .on_action(cx.listener(|this, _: &RecentFiles, window, cx| this.recent_files_popup(window, cx)))
             .on_action(cx.listener(|this, _: &RecentLocations, window, cx| this.recent_locations_popup(window, cx)))
+            .on_action(cx.listener(|this, _: &LastEditLocation, window, cx| this.last_edit_location(window, cx)))
             .on_action(cx.listener(|this, _: &ShowBookmarks, window, cx| this.show_bookmarks(window, cx)))
             .on_action(cx.listener(|this, _: &GoToBookmark1, window, cx| this.go_to_bookmark('1', window, cx)))
             .on_action(cx.listener(|this, _: &GoToBookmark2, window, cx| this.go_to_bookmark('2', window, cx)))

@@ -36,6 +36,7 @@ pub const ENTRIES: &[Entry] = &[
     entry("Navigate", "Forward", "workspace::NavigateForward"),
     entry("Navigate", "Recent Files", "workspace::RecentFiles"),
     entry("Navigate", "Recent Locations", "workspace::RecentLocations"),
+    entry("Navigate", "Last Edit Location", "workspace::LastEditLocation"),
     entry("Navigate", "File Structure", "workspace::FileStructure"),
     entry("Navigate", "Select in Project View", "workspace::SelectInProject"),
     entry("Navigate", "Search Everywhere", "workspace::SearchEverywhere"),

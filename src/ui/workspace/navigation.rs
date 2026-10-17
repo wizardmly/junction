@@ -286,10 +286,37 @@ impl Workspace {
             }
         }
         if locations.is_empty() {
-            Self::nav_hint("No recent locations", window, cx);
+            window.push_notification(Notification::info("No recent locations").title("Recent Locations"), cx);
             return;
         }
         crate::ui::recent_locations::RecentLocations::open(locations, self.picker_callback(cx), window, cx);
+    }
+
+    /// Navigate › Last Edit Location (Ctrl+Shift+Backspace): the latest
+    /// place edited; pressed again from there, the one before, and so on.
+    pub(super) fn last_edit_location(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let here = self.current_position(cx);
+        let near = |p: &history::Place| here.as_ref().is_some_and(|(path, line, _)| *path == p.path && line.abs_diff(p.line) <= 2);
+        let (places, mut next) = match self.edit_walk.take() {
+            Some((places, i, at)) if Some(&at) == here.as_ref() => (places, i + 1),
+            _ => {
+                let places: Vec<history::Place> = self.recent_places.iter().filter(|p| p.changed).cloned().collect();
+                // Already at the latest edit: the one before it.
+                let skip = places.first().is_some_and(near) as usize;
+                (places, skip)
+            }
+        };
+        while places.get(next).is_some_and(|p| near(p) && next > 0) {
+            next += 1;
+        }
+        let Some(place) = places.get(next).cloned() else {
+            window.push_notification(Notification::info("No more edit locations").title("Last Edit Location"), cx);
+            return;
+        };
+        self.nav.jumped_from(here);
+        self.open_at(place.path.clone(), place.line, place.col, window, cx);
+        let at = self.current_position(cx).unwrap_or((place.path.clone(), place.line, place.col));
+        self.edit_walk = Some((places, next, at));
     }
 
     /// Recent Files (Ctrl+E).

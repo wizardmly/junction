@@ -948,9 +948,10 @@ Linux 实测（Xvfb，Shapes.kt：`interface Shape { fun area() }`、`abstract c
 | 弹窗：输入过滤（文件名、所在函数、代码）；↑/↓ 选择，Enter / 单击跳到该位置；默认选中当前位置的上一个 | ✅ |
 | Show changed only 复选框，或在弹窗里再按 Ctrl+Shift+E 切换；标题随之变成 "Recently Changed Locations" | ✅ |
 | Navigate 菜单项、Keymap 设置里的条目 | ✅ |
+| Navigate › Last Edit Location（Ctrl+Shift+Backspace / ⌘⇧⌫）：跳到最近一次编辑的位置，在那里再按就往前一个编辑位置，到头提示 "No more edit locations" | ✅ |
 | 编辑后已记录位置的行号随文本移动、重启后保留、删除某一项 | ⬜ |
 
-Linux 实测（Xvfb，`ip` 工程）：在 Cart.kt 的 `use` 上 Ctrl+B 跳到 `total`，打开 Main.kt 在第 6 行末尾输入 ` // hi`，再打开 Shapes.kt；Ctrl+Shift+E 列出 Shapes.kt（Tile）、Main.kt（main，changed，三行代码含 `// hi`）、Cart.kt（Cart.total）、Cart.kt（Cart.use）；再按 Ctrl+Shift+E 只剩 Main.kt；输入 `cart` 过滤出含 cart 的三项；↓ Enter 打开 Cart.kt 第 4 行第 9 列。
+Linux 实测（Xvfb，`ip` 工程）：在 Cart.kt 的 `use` 上 Ctrl+B 跳到 `total`，打开 Main.kt 在第 6 行末尾输入 ` // hi`，再打开 Shapes.kt；Ctrl+Shift+E 列出 Shapes.kt（Tile）、Main.kt（main，changed，三行代码含 `// hi`）、Cart.kt（Cart.total）、Cart.kt（Cart.use）；再按 Ctrl+Shift+E 只剩 Main.kt；输入 `cart` 过滤出含 cart 的三项；↓ Enter 打开 Cart.kt 第 4 行第 9 列。Last Edit Location：在 Cart.kt 第 8 行、Main.kt 第 6 行各改一处后切到 Shapes.kt，连按 Ctrl+Shift+Backspace 依次到 Main.kt 6:53、Cart.kt 8:35，第三次提示没有更多。
 
 ## 54. Inline Variable（Ctrl+Alt+N，2026-10-17）
 
