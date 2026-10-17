@@ -457,6 +457,15 @@ pub fn type_hierarchy(index: &ProjectIndex, name: &str, view: TypeView) -> TypeN
                 node = up;
                 at = parent;
             }
+            // A class's chain starts at Any (Kotlin) / Object (Java), as
+            // IntelliJ shows it; an interface's doesn't.
+            let class = node.symbol.as_ref().is_some_and(|s| !is_abstract(s.kind) && s.kind != SymbolKind::Enum);
+            let root = if node.kotlin { "Any" } else { "Object" };
+            if class && node.name != root && !seen.contains(root) {
+                let mut top = type_node(index, root);
+                top.children = vec![node];
+                node = top;
+            }
         }
     }
     node
@@ -608,7 +617,7 @@ mod tests {
             show(&type_hierarchy(&index, "Square", view), 0, &mut out);
             out
         };
-        assert_eq!(lines(TypeView::Type), ["Base", "  Square", "    Tile"]);
+        assert_eq!(lines(TypeView::Type), ["Any?", "  Base", "    Square", "      Tile"]);
         assert_eq!(lines(TypeView::Supertypes), ["Square", "  Base", "    Shape", "  Comparable?"]);
         assert_eq!(lines(TypeView::Subtypes), ["Square", "  Tile"]);
         let mut out = Vec::new();
