@@ -571,6 +571,18 @@ impl CodeIndex {
         })
     }
 
+    /// The type a Type Hierarchy (Ctrl+H) at `offset` is for.
+    pub fn type_at(&self, path: &str, text: &str, offset: usize) -> Option<String> {
+        let lang = Self::lang_of(path, text)?;
+        let index = self.index.read().ok()?;
+        super::call_hierarchy::type_at(lang, text, offset, |w| index.symbols_named(w).any(|(_, _, s)| s.kind.is_type()))
+    }
+
+    pub fn type_hierarchy(&self, name: String, view: super::hierarchy::TypeView, cx: &App) -> Task<super::hierarchy::TypeNode> {
+        let index = self.index.clone();
+        cx.background_spawn(async move { super::hierarchy::type_hierarchy(&index.read().unwrap(), &name, view) })
+    }
+
     /// The editor gutter's implementation markers for a file's current text.
     pub fn gutter_marks(&self, path: String, text: String, cx: &App) -> Task<Vec<super::hierarchy::GutterMark>> {
         let Some(lang) = Self::lang_of(&path, &text) else { return Task::ready(Vec::new()) };

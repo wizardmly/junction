@@ -71,6 +71,7 @@ actions!(
         IntroduceParameter,
         ChangeSignature,
         CallHierarchy,
+        TypeHierarchy,
         SurroundWith,
         Generate,
         FindNext,
@@ -134,6 +135,9 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-p" } else { "ctrl-alt-p" }, IntroduceParameter, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-f6" } else { "ctrl-f6" }, ChangeSignature, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-h", CallHierarchy, Some(CONTEXT)),
+        KeyBinding::new("ctrl-h", TypeHierarchy, Some(CONTEXT)),
+        // Over the input's own Ctrl+H (Replace, which is Ctrl+R here).
+        KeyBinding::new("ctrl-h", TypeHierarchy, Some("FileEditor > Input")),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-t" } else { "ctrl-alt-t" }, SurroundWith, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-n" } else { "alt-insert" }, Generate, Some(CONTEXT)),
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
@@ -201,6 +205,8 @@ pub enum FileEditorEvent {
     Deleted,
     /// Call Hierarchy (Ctrl+Alt+H) of the function at this offset.
     CallHierarchy { text: String, offset: usize },
+    /// Type Hierarchy (Ctrl+H) of the type at this offset.
+    TypeHierarchy { text: String, offset: usize },
     /// The strings banner's Open editor: the Translations Editor of this
     /// values file's res folder.
     OpenTranslations(String),
@@ -2568,6 +2574,10 @@ impl Render for FileEditor {
                 let (text, offset) = (this.text(cx), this.state.read(cx).cursor());
                 cx.emit(FileEditorEvent::CallHierarchy { text, offset });
             }))
+            .on_action(cx.listener(|this, _: &TypeHierarchy, _, cx| {
+                let (text, offset) = (this.text(cx), this.state.read(cx).cursor());
+                cx.emit(FileEditorEvent::TypeHierarchy { text, offset });
+            }))
             .on_action(cx.listener(Self::surround_with_action))
             .on_action(cx.listener(|this, _: &Generate, window, cx| this.generate(window, cx)))
             .on_action(cx.listener(Self::find_next))
@@ -2699,6 +2709,7 @@ impl Render for FileEditor {
                                 .separator()
                                 .menu("Go to Declaration", Box::new(GotoDeclaration))
                                 .menu("Find Usages", Box::new(FindUsages))
+                                .menu("Type Hierarchy", Box::new(TypeHierarchy))
                                 .menu("Call Hierarchy", Box::new(CallHierarchy))
                                 .menu_with_disabled("Generate…", read_only, Box::new(Generate))
                                 .menu_with_disabled("Surround With…", read_only, Box::new(SurroundWith))

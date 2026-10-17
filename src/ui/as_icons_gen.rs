@@ -55,6 +55,7 @@ pub const CHEVRON_UP: AsIcon = AsIcon { light: &[("as/chevron-up.l0.svg", 0x8185
 pub const CLASS: AsIcon = AsIcon { light: &[("as/class.l0.svg", 0xe7effdff), ("as/class.l1.svg", 0x3574f0ff)], dark: &[("as/class.d0.svg", 0x25324dff), ("as/class.d1.svg", 0x548af7ff)] };
 pub const CLASS_ABSTRACT: AsIcon = AsIcon { light: &[("as/class-abstract.l0.svg", 0xe7effdff), ("as/class-abstract.l1.svg", 0x3574f0ff)], dark: &[("as/class-abstract.d0.svg", 0x25324dff), ("as/class-abstract.d1.svg", 0x548af7ff)] };
 pub const CLASS_ABSTRACT_KOTLIN: AsIcon = AsIcon { light: &[("as/class-abstract-kotlin.l0.svg", 0xfaf5ffff), ("as/class-abstract-kotlin.l1.svg", 0x834df0ff), ("as/class-abstract-kotlin.l2.svg", 0xedf3ffff), ("as/class-abstract-kotlin.l3.svg", 0x3574f0ff)], dark: &[("as/class-abstract-kotlin.d0.svg", 0x2f2936ff), ("as/class-abstract-kotlin.d1.svg", 0xa571e6ff), ("as/class-abstract-kotlin.d2.svg", 0x25324dff), ("as/class-abstract-kotlin.d3.svg", 0x548af7ff)] };
+pub const CLASS_HIERARCHY: AsIcon = AsIcon { light: &[("as/class-hierarchy.l0.svg", 0xebecf0ff), ("as/class-hierarchy.l1.svg", 0x6c707eff)], dark: &[("as/class-hierarchy.d0.svg", 0x43454aff), ("as/class-hierarchy.d1.svg", 0xced0d6ff)] };
 pub const CLASS_KOTLIN: AsIcon = AsIcon { light: &[("as/class-kotlin.l0.svg", 0xfaf5ffff), ("as/class-kotlin.l1.svg", 0x834df0ff), ("as/class-kotlin.l2.svg", 0xedf3ffff), ("as/class-kotlin.l3.svg", 0x3574f0ff)], dark: &[("as/class-kotlin.d0.svg", 0x2f2936ff), ("as/class-kotlin.d1.svg", 0xa571e6ff), ("as/class-kotlin.d2.svg", 0x25324dff), ("as/class-kotlin.d3.svg", 0x548af7ff)] };
 pub const CLEAR: AsIcon = AsIcon { light: &[("as/clear.l0.svg", 0x6c707eff)], dark: &[("as/clear.d0.svg", 0xced0d6ff)] };
 pub const CLOSE: AsIcon = AsIcon { light: &[("as/close.l0.svg", 0x6c707eff)], dark: &[("as/close.d0.svg", 0xced0d6ff)] };
@@ -265,7 +266,9 @@ pub const STEP_OUT: AsIcon = AsIcon { light: &[("as/step-out.l0.svg", 0x6c707eff
 pub const STEP_OVER: AsIcon = AsIcon { light: &[("as/step-over.l0.svg", 0x6c707eff)], dark: &[("as/step-over.d0.svg", 0xced0d6ff)] };
 pub const STOP: AsIcon = AsIcon { light: &[("as/stop.l0.svg", 0xfff7f7ff), ("as/stop.l1.svg", 0xdb3b4bff)], dark: &[("as/stop.d0.svg", 0x5e3838ff), ("as/stop.d1.svg", 0xdb5c5cff)] };
 pub const STUDIO_REFRESH: AsIcon = AsIcon { light: &[("as/studio-refresh.l0.svg", 0x6c707eff)], dark: &[("as/studio-refresh.d0.svg", 0xced0d6ff)] };
+pub const SUBTYPES: AsIcon = AsIcon { light: &[("as/subtypes.l0.svg", 0xebecf0ff), ("as/subtypes.l1.svg", 0x6c707eff)], dark: &[("as/subtypes.d0.svg", 0x43454aff), ("as/subtypes.d1.svg", 0xced0d6ff)] };
 pub const SUCCESS: AsIcon = AsIcon { light: &[("as/success.l0.svg", 0x55a76aff), ("as/success.l1.svg", 0xffffffff)], dark: &[("as/success.d0.svg", 0x57965cff), ("as/success.d1.svg", 0xffffffff)] };
+pub const SUPERTYPES: AsIcon = AsIcon { light: &[("as/supertypes.l0.svg", 0xebecf0ff), ("as/supertypes.l1.svg", 0x6c707eff)], dark: &[("as/supertypes.d0.svg", 0x43454aff), ("as/supertypes.d1.svg", 0xced0d6ff)] };
 pub const SWAP_PANELS: AsIcon = AsIcon { light: &[("as/swap-panels.l0.svg", 0x6c707eff)], dark: &[("as/swap-panels.d0.svg", 0xced0d6ff)] };
 pub const SYMLINK: AsIcon = AsIcon { light: &[("as/symlink.l0.svg", 0x6c707eff)], dark: &[("as/symlink.d0.svg", 0xced0d6ff)] };
 pub const SYNCHRONIZE_SCROLLING: AsIcon = AsIcon { light: &[("as/synchronize-scrolling.l0.svg", 0x3574f0ff), ("as/synchronize-scrolling.l1.svg", 0x6c707eff)], dark: &[("as/synchronize-scrolling.d0.svg", 0x548af7ff), ("as/synchronize-scrolling.d1.svg", 0xced0d6ff)] };
@@ -487,6 +490,10 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/class-abstract-kotlin.d1.svg", include_bytes!("../../assets/as-icons/gen/class-abstract-kotlin.d1.svg")),
     ("as/class-abstract-kotlin.d2.svg", include_bytes!("../../assets/as-icons/gen/class-abstract-kotlin.d2.svg")),
     ("as/class-abstract-kotlin.d3.svg", include_bytes!("../../assets/as-icons/gen/class-abstract-kotlin.d3.svg")),
+    ("as/class-hierarchy.l0.svg", include_bytes!("../../assets/as-icons/gen/class-hierarchy.l0.svg")),
+    ("as/class-hierarchy.l1.svg", include_bytes!("../../assets/as-icons/gen/class-hierarchy.l1.svg")),
+    ("as/class-hierarchy.d0.svg", include_bytes!("../../assets/as-icons/gen/class-hierarchy.d0.svg")),
+    ("as/class-hierarchy.d1.svg", include_bytes!("../../assets/as-icons/gen/class-hierarchy.d1.svg")),
     ("as/class-kotlin.l0.svg", include_bytes!("../../assets/as-icons/gen/class-kotlin.l0.svg")),
     ("as/class-kotlin.l1.svg", include_bytes!("../../assets/as-icons/gen/class-kotlin.l1.svg")),
     ("as/class-kotlin.l2.svg", include_bytes!("../../assets/as-icons/gen/class-kotlin.l2.svg")),
@@ -1175,10 +1182,18 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/stop.d1.svg", include_bytes!("../../assets/as-icons/gen/stop.d1.svg")),
     ("as/studio-refresh.l0.svg", include_bytes!("../../assets/as-icons/gen/studio-refresh.l0.svg")),
     ("as/studio-refresh.d0.svg", include_bytes!("../../assets/as-icons/gen/studio-refresh.d0.svg")),
+    ("as/subtypes.l0.svg", include_bytes!("../../assets/as-icons/gen/subtypes.l0.svg")),
+    ("as/subtypes.l1.svg", include_bytes!("../../assets/as-icons/gen/subtypes.l1.svg")),
+    ("as/subtypes.d0.svg", include_bytes!("../../assets/as-icons/gen/subtypes.d0.svg")),
+    ("as/subtypes.d1.svg", include_bytes!("../../assets/as-icons/gen/subtypes.d1.svg")),
     ("as/success.l0.svg", include_bytes!("../../assets/as-icons/gen/success.l0.svg")),
     ("as/success.l1.svg", include_bytes!("../../assets/as-icons/gen/success.l1.svg")),
     ("as/success.d0.svg", include_bytes!("../../assets/as-icons/gen/success.d0.svg")),
     ("as/success.d1.svg", include_bytes!("../../assets/as-icons/gen/success.d1.svg")),
+    ("as/supertypes.l0.svg", include_bytes!("../../assets/as-icons/gen/supertypes.l0.svg")),
+    ("as/supertypes.l1.svg", include_bytes!("../../assets/as-icons/gen/supertypes.l1.svg")),
+    ("as/supertypes.d0.svg", include_bytes!("../../assets/as-icons/gen/supertypes.d0.svg")),
+    ("as/supertypes.d1.svg", include_bytes!("../../assets/as-icons/gen/supertypes.d1.svg")),
     ("as/swap-panels.l0.svg", include_bytes!("../../assets/as-icons/gen/swap-panels.l0.svg")),
     ("as/swap-panels.d0.svg", include_bytes!("../../assets/as-icons/gen/swap-panels.d0.svg")),
     ("as/symlink.l0.svg", include_bytes!("../../assets/as-icons/gen/symlink.l0.svg")),

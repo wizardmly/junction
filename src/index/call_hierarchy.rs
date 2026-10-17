@@ -66,6 +66,27 @@ pub fn caller_at(lang: Lang, text: &str, offset: usize, file_name: &str) -> Opti
     Some(Caller { name: display, offset: name.start_byte(), line: name.start_position().row as u32, col: name.start_position().column as u32 })
 }
 
+/// The type a Type Hierarchy (Ctrl+H) is for: the word at the caret when
+/// `is_type` says it names one, else the class around the caret.
+pub fn type_at(lang: Lang, text: &str, offset: usize, is_type: impl Fn(&str) -> bool) -> Option<String> {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let offset = offset.min(text.len());
+    let start = text[..offset].char_indices().rev().take_while(|(_, c)| is_word(*c)).last().map_or(offset, |(i, _)| i);
+    let end = text[offset..].char_indices().find(|(_, c)| !is_word(*c)).map_or(text.len(), |(i, _)| offset + i);
+    let word = &text[start..end];
+    if !word.is_empty() && is_type(word) {
+        return Some(word.to_owned());
+    }
+    let tree = symbols::parse(lang, text)?;
+    let leaf = tree.root_node().descendant_for_byte_range(offset, offset)?;
+    // The caret on a class's own name: that class.
+    let own = leaf.parent().filter(|p| matches!(p.kind(), "class_declaration" | "object_declaration" | "interface_declaration" | "enum_declaration" | "record_declaration"));
+    match own {
+        Some(_) if !word.is_empty() => Some(word.to_owned()),
+        _ => class_of(lang, leaf, text),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +102,16 @@ mod tests {
         let java = "class A {\n  int x = f();\n  void g() { f(); }\n}\n";
         assert_eq!(caller_at(Lang::Java, java, java.find("f();").unwrap(), "A.java").unwrap().name, "A");
         assert_eq!(caller_at(Lang::Java, java, java.rfind("f()").unwrap(), "A.java").unwrap().name, "A.g");
+    }
+
+    #[test]
+    fn finds_the_type() {
+        let text = "class Cart : Base() {\n    fun f(x: Item) = 1\n}\n";
+        let is_type = |w: &str| w == "Base" || w == "Item";
+        assert_eq!(type_at(Lang::Kotlin, text, text.find("Item").unwrap() + 1, is_type).as_deref(), Some("Item"));
+        assert_eq!(type_at(Lang::Kotlin, text, text.find("fun").unwrap(), is_type).as_deref(), Some("Cart"));
+        assert_eq!(type_at(Lang::Kotlin, text, text.find("Cart").unwrap(), |_| false).as_deref(), Some("Cart"));
+        assert_eq!(type_at(Lang::Kotlin, text, text.len(), is_type), None);
     }
 }
 

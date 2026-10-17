@@ -108,6 +108,20 @@ impl Workspace {
                 }
                 cx.notify();
             }
+            FileEditorEvent::TypeHierarchy { text, offset } => {
+                let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
+                match self.code_index.read(cx).type_at(&path, text, *offset) {
+                    Some(name) => {
+                        self.hierarchy.update(cx, |view, cx| view.type_hierarchy(name, cx));
+                        self.tools.open(ToolWindow::Hierarchy);
+                    }
+                    None => {
+                        use gpui_kit::component::WindowExt as _;
+                        window.push_notification(gpui_kit::component::notification::Notification::info("No type at the caret").title("Type Hierarchy"), cx);
+                    }
+                }
+                cx.notify();
+            }
             FileEditorEvent::OpenTranslations(path) => {
                 let path = path.clone();
                 self.open_translations(&path, window, cx);

@@ -333,6 +333,120 @@ pub fn gutter_marks(index: &ProjectIndex, path: &str, symbols: &[Symbol]) -> Vec
     out
 }
 
+/// Type Hierarchy's (Ctrl+H) three views, as IntelliJ's toolbar switches
+/// them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeView {
+    /// The superclass chain down to the type, then its subtypes.
+    Type,
+    /// The type, and everything it extends or implements.
+    Supertypes,
+    /// The type, and everything extending it.
+    Subtypes,
+}
+
+/// A type in the hierarchy: its declaration (none for a type outside the
+/// project and its libraries) and the types under it.
+#[derive(Clone, Debug)]
+pub struct TypeNode {
+    pub name: String,
+    pub target: Option<Target>,
+    pub symbol: Option<Symbol>,
+    pub kotlin: bool,
+    pub children: Vec<TypeNode>,
+}
+
+/// A type's declaration: the project's first, then the libraries'.
+fn declaration<'a>(index: &'a ProjectIndex, name: &str) -> Option<(&'a str, &'a FileEntry, &'a Symbol)> {
+    index.symbols_named(name).find(|(_, _, s)| is_class_like(s.kind))
+}
+
+fn type_node(index: &ProjectIndex, name: &str) -> TypeNode {
+    let decl = declaration(index, name);
+    TypeNode {
+        name: name.to_owned(),
+        target: decl.map(|(p, e, s)| target(p, e, s)),
+        symbol: decl.map(|(_, _, s)| s.clone()),
+        kotlin: decl.is_some_and(|(_, e, _)| e.lang == super::lang::Lang::Kotlin),
+        children: Vec::new(),
+    }
+}
+
+fn subtype_tree(index: &ProjectIndex, name: &str, seen: &mut HashSet<String>, budget: &mut usize) -> Vec<TypeNode> {
+    let mut found: Vec<(&str, &FileEntry, &Symbol)> = Vec::new();
+    for (p, e, s) in index.subtypes_of(name) {
+        if is_class_like(s.kind) && !found.iter().any(|(fp, _, fs)| *fp == p && fs.line == s.line) {
+            found.push((p, e, s));
+        }
+    }
+    found.sort_by(|a, b| (ProjectIndex::is_external(a.0), &a.2.name).cmp(&(ProjectIndex::is_external(b.0), &b.2.name)));
+    let mut out = Vec::new();
+    for (p, e, s) in found {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+        let mut node = TypeNode { name: s.name.clone(), target: Some(target(p, e, s)), symbol: Some(s.clone()), kotlin: e.lang == super::lang::Lang::Kotlin, children: Vec::new() };
+        if seen.insert(s.name.clone()) {
+            node.children = subtype_tree(index, &s.name, seen, budget);
+        }
+        out.push(node);
+    }
+    out
+}
+
+fn supertype_tree(index: &ProjectIndex, name: &str, seen: &mut HashSet<String>, budget: &mut usize) -> Vec<TypeNode> {
+    let supers = declaration(index, name).map(|(_, _, s)| s.supers.clone()).unwrap_or_default();
+    let mut out = Vec::new();
+    for parent in supers {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+        let mut node = type_node(index, &parent);
+        if seen.insert(parent.clone()) {
+            node.children = supertype_tree(index, &parent, seen, budget);
+        }
+        out.push(node);
+    }
+    out
+}
+
+/// A type's superclass: the first supertype that isn't an interface (one
+/// not found counts, as Kotlin lists the class first).
+fn superclass(index: &ProjectIndex, name: &str) -> Option<String> {
+    let (_, _, s) = declaration(index, name)?;
+    if is_abstract(s.kind) {
+        return None;
+    }
+    s.supers.iter().find(|p| declaration(index, p).is_none_or(|(_, _, d)| !is_abstract(d.kind))).cloned()
+}
+
+/// The hierarchy of the type named `name`, in one of the three views.
+pub fn type_hierarchy(index: &ProjectIndex, name: &str, view: TypeView) -> TypeNode {
+    let mut seen = HashSet::from([name.to_owned()]);
+    let mut budget = LIMIT;
+    let mut node = type_node(index, name);
+    match view {
+        TypeView::Supertypes => node.children = supertype_tree(index, name, &mut seen, &mut budget),
+        TypeView::Subtypes => node.children = subtype_tree(index, name, &mut seen, &mut budget),
+        TypeView::Type => {
+            node.children = subtype_tree(index, name, &mut seen, &mut budget);
+            let mut at = name.to_owned();
+            while let Some(parent) = superclass(index, &at) {
+                if !seen.insert(parent.clone()) {
+                    break;
+                }
+                let mut up = type_node(index, &parent);
+                up.children = vec![node];
+                node = up;
+                at = parent;
+            }
+        }
+    }
+    node
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +525,29 @@ mod tests {
         let objc = index_of(&[("a.m", Lang::ObjC, "@interface A : NSObject <P, Q>\n@end\n@protocol P <R>\n@end\n")]);
         assert_eq!(objc.files["a.m"].symbols.iter().find(|s| s.name == "A").unwrap().supers, ["NSObject", "P", "Q"]);
         assert_eq!(objc.files["a.m"].symbols.iter().find(|s| s.name == "P").unwrap().supers, ["R"]);
+    }
+
+    #[test]
+    fn type_hierarchy_views() {
+        let index = index_of(&[
+            ("Shape.kt", Lang::Kotlin, "interface Shape\nopen class Base : Shape\nopen class Square : Base(), Comparable<Square>\nclass Tile : Square()\nclass Disc : Base()\n"),
+        ]);
+        fn show(n: &TypeNode, depth: usize, out: &mut Vec<String>) {
+            out.push(format!("{}{}{}", "  ".repeat(depth), n.name, if n.target.is_some() { "" } else { "?" }));
+            for c in &n.children {
+                show(c, depth + 1, out);
+            }
+        }
+        let lines = |view| {
+            let mut out = Vec::new();
+            show(&type_hierarchy(&index, "Square", view), 0, &mut out);
+            out
+        };
+        assert_eq!(lines(TypeView::Type), ["Base", "  Square", "    Tile"]);
+        assert_eq!(lines(TypeView::Supertypes), ["Square", "  Base", "    Shape", "  Comparable?"]);
+        assert_eq!(lines(TypeView::Subtypes), ["Square", "  Tile"]);
+        let mut out = Vec::new();
+        show(&type_hierarchy(&index, "Shape", TypeView::Type), 0, &mut out);
+        assert_eq!(out, ["Shape", "  Base", "    Disc", "    Square", "      Tile"]);
     }
 }
