@@ -117,6 +117,45 @@ pub fn confirm(title: impl Into<SharedString>, message: impl Into<SharedString>,
     });
 }
 
+/// File › Exit (and closing the window) with "Confirm before exiting" on:
+/// IntelliJ's "Are you sure you want to exit?" with Do not ask again,
+/// which turns the setting off.
+pub fn confirm_exit(window: &mut Window, cx: &mut App) {
+    let ask_again = Rc::new(std::cell::Cell::new(true));
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (toggle, on_exit) = (ask_again.clone(), ask_again.clone());
+        dialog
+            .title("Confirm Exit")
+            .w(px(420.))
+            .child(
+                v_flex()
+                    .gap_3()
+                    .child(div().text_sm().child("Are you sure you want to exit Junction?"))
+                    .child(gpui_kit::component::checkbox::Checkbox::new("exit-do-not-ask").label("Do not ask again").checked(!ask_again.get()).on_click(move |checked: &bool, window, _| {
+                        toggle.set(!*checked);
+                        window.refresh();
+                    })),
+            )
+            .footer(footer("Exit"))
+            .on_ok(move |_, _, cx| {
+                if !on_exit.get() {
+                    crate::settings::Settings::update(cx, |s| s.confirm_exit = false);
+                }
+                cx.quit();
+                true
+            })
+    });
+}
+
+/// Exit, asking first when "Confirm before exiting" is on.
+pub fn exit(window: &mut Window, cx: &mut App) {
+    if crate::settings::Settings::get(cx).confirm_exit {
+        confirm_exit(window, cx);
+    } else {
+        cx.quit();
+    }
+}
+
 /// A branch name input with a dropdown of local and remote branches.
 pub(super) fn branch_picker(id: &'static str, input: &Entity<InputState>, model: &Entity<RepoModel>, cx: &App) -> impl gpui_kit::IntoElement {
     use gpui_kit::component::{h_flex, menu::{DropdownMenu as _, PopupMenuItem}};

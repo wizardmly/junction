@@ -21,6 +21,8 @@ pub struct Settings {
     pub compact: bool,
     /// System Settings › "Reopen projects on startup".
     pub reopen_projects: bool,
+    /// System Settings › "Confirm before exiting the IDE".
+    pub confirm_exit: bool,
     /// Tool window layout, `name:side` in stripe order (see ui::tool_windows).
     pub tool_windows: String,
     /// Left, right and bottom tool window sizes.
@@ -372,6 +374,7 @@ impl Default for Settings {
             theme_follows_system: false,
             compact: false,
             reopen_projects: true,
+            confirm_exit: true,
             tool_windows: String::new(),
             tool_window_sizes: TOOL_WINDOW_SIZES,
             staging_area: false,
@@ -525,6 +528,7 @@ impl Settings {
                 "theme_dark" => settings.dark = flag,
                 "compact_mode" => settings.compact = flag,
                 "reopen_projects" => settings.reopen_projects = flag,
+                "confirm_exit" => settings.confirm_exit = flag,
                 "tool_windows" => settings.tool_windows = value.to_owned(),
                 "tool_window_sizes" => {
                     let sizes: Vec<u32> = value.split(',').filter_map(|w| w.trim().parse().ok()).collect();
@@ -719,8 +723,8 @@ impl Settings {
         ));
         let [l, r, b] = self.tool_window_sizes;
         text.push_str(&format!(
-            "theme_dark={}\ncompact_mode={}\nreopen_projects={}\ntool_windows={}\ntool_window_sizes={l},{r},{b}\ncommit_group_by_module={}\ncommit_group_by_root={}\n",
-            self.dark, self.compact, self.reopen_projects, self.tool_windows, self.commit_group_by_module, self.commit_group_by_repository
+            "theme_dark={}\ncompact_mode={}\nreopen_projects={}\nconfirm_exit={}\ntool_windows={}\ntool_window_sizes={l},{r},{b}\ncommit_group_by_module={}\ncommit_group_by_root={}\n",
+            self.dark, self.compact, self.reopen_projects, self.confirm_exit, self.tool_windows, self.commit_group_by_module, self.commit_group_by_repository
         ));
         for (lang, command) in &self.language_servers {
             text.push_str(&format!("lsp_{lang}={command}\n"));

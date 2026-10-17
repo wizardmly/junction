@@ -94,7 +94,7 @@ impl Page {
     fn keywords(self) -> &'static [&'static str] {
         match self {
             Page::Appearance => &["Theme", "Dark", "Light", "Sync with OS", "Compact mode"],
-            Page::System => &["System", "Startup", "Reopen projects on startup"],
+            Page::System => &["System", "Startup", "Reopen projects on startup", "Confirm before exiting", "Exit"],
             Page::Keymap => &["Shortcut", "Keyboard"],
             Page::EditorGeneral => &["Soft-wrap", "Show line numbers", "Show whitespaces", "Show indent guides", "Appearance", "Diff", "Merge"],
             Page::EditorFont => &["Font", "Size", "Line height"],
@@ -331,6 +331,7 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.theme_follows_system = from.theme_follows_system;
     to.compact = from.compact;
     to.reopen_projects = from.reopen_projects;
+    to.confirm_exit = from.confirm_exit;
     to.staging_area = from.staging_area;
     to.update_method = from.update_method;
     to.update_shelve = from.update_shelve;
@@ -746,6 +747,7 @@ impl SettingsView {
             .gap_2()
             .child(self.check("settings-reopen-projects", "Reopen projects on startup", d.reopen_projects, query, |s, v| s.reopen_projects = v, cx))
             .child(self.note("Started without a folder, opens the last project and its editor tabs", cx))
+            .child(self.check("settings-confirm-exit", "Confirm before exiting the IDE", d.confirm_exit, query, |s, v| s.confirm_exit = v, cx))
     }
 
     fn editor_general(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {

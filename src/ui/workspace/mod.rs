@@ -711,8 +711,13 @@ impl Workspace {
             async {}
         }));
         let closing = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |_, cx| {
+        window.on_window_should_close(cx, move |window, cx| {
             closing.update(cx, |this, cx| this.save_session(cx)).ok();
+            // Closing the window asks first too, as IntelliJ's exit does.
+            if crate::settings::Settings::get(cx).confirm_exit && !window.has_active_dialog(cx) {
+                crate::ui::dialogs::confirm_exit(window, cx);
+                return false;
+            }
             true
         });
         let tool_focus = ToolWindow::ALL.into_iter().map(|w| (w, cx.focus_handle())).collect();

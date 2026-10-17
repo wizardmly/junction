@@ -55,7 +55,7 @@ pub(super) fn main_menu(
             .separator()
             .menu("Settings…", Box::new(OpenSettings))
             .separator()
-            .item(PopupMenuItem::new("Exit").on_click(|_, _, cx| cx.quit()))
+            .item(PopupMenuItem::new("Exit").on_click(|_, window, cx| crate::ui::dialogs::exit(window, cx)))
     });
     let (e, f) = (entity.clone(), focus.clone());
     let menu = menu.submenu("View", window, cx, move |menu, window, cx| {
