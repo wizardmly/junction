@@ -28,6 +28,7 @@ pub mod file_menus;
 pub mod find_bar;
 pub mod find_popup;
 pub mod find_view;
+pub mod hierarchy_view;
 pub mod keymap;
 pub mod search_everywhere;
 pub mod settings_dialog;

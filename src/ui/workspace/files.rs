@@ -96,6 +96,18 @@ impl Workspace {
                 let paths = paths.clone();
                 self.files_changed(paths, window, cx);
             }
+            FileEditorEvent::CallHierarchy { text, offset } => {
+                let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
+                let (text, offset) = (text.clone(), *offset);
+                match self.hierarchy.update(cx, |view, cx| view.call_hierarchy(path, text, offset, cx)) {
+                    Ok(()) => self.tools.open(ToolWindow::Hierarchy),
+                    Err(message) => {
+                        use gpui_kit::component::WindowExt as _;
+                        window.push_notification(gpui_kit::component::notification::Notification::info(message).title("Call Hierarchy"), cx);
+                    }
+                }
+                cx.notify();
+            }
             FileEditorEvent::OpenTranslations(path) => {
                 let path = path.clone();
                 self.open_translations(&path, window, cx);

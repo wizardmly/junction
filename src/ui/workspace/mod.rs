@@ -285,6 +285,7 @@ pub struct Workspace {
     /// The code index, and the tool windows built on it.
     code_index: Entity<CodeIndex>,
     find: Entity<crate::ui::find_view::FindView>,
+    hierarchy: Entity<crate::ui::hierarchy_view::HierarchyView>,
     /// The Terminal tool window's sessions.
     terminal: Entity<crate::ui::terminal_view::TerminalPanel>,
     /// The Device Manager tool window (Android devices and emulators).
@@ -380,6 +381,7 @@ impl Workspace {
         let changes = cx.new(|cx| crate::ui::changes_view::ChangesView::new(model.clone(), cx));
         let code_index = cx.new(CodeIndex::new);
         let find = cx.new(|_| crate::ui::find_view::FindView::new(code_index.clone()));
+        let hierarchy = cx.new(|_| crate::ui::hierarchy_view::HierarchyView::new(code_index.clone()));
         let terminal = {
             let model = model.clone();
             let cwd: Rc<dyn Fn(&App) -> Option<std::path::PathBuf>> = Rc::new(move |cx| {
@@ -583,6 +585,13 @@ impl Workspace {
                     this.open_file(path, None, window, cx);
                 }
             }),
+            cx.subscribe_in(&hierarchy, window, |this, _, event: &crate::ui::hierarchy_view::HierarchyEvent, window, cx| match event {
+                crate::ui::hierarchy_view::HierarchyEvent::Open { path, line, col } => this.open_at(path.clone(), *line, *col, window, cx),
+                crate::ui::hierarchy_view::HierarchyEvent::Hide => {
+                    this.tools.hide(ToolWindow::Hierarchy);
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&find, window, |this, _, event: &crate::ui::find_view::FindViewEvent, window, cx| match event {
                 crate::ui::find_view::FindViewEvent::FilesChanged(paths) => this.files_changed(paths.clone(), window, cx),
                 crate::ui::find_view::FindViewEvent::Hide => {
@@ -698,6 +707,7 @@ impl Workspace {
             prs,
             code_index,
             find,
+            hierarchy,
             terminal,
             device_manager,
             running_devices,

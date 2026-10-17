@@ -101,6 +101,7 @@ impl Workspace {
             ToolWindow::Problems => (Icon::from(icons::TW_PROBLEMS), "Problems".into(), ""),
             ToolWindow::Todo => (Icon::from(icons::TW_TODO), "TODO".into(), ""),
             ToolWindow::BuildVariants => (Icon::from(icons::MODULE_ANDROID), "Build Variants".into(), ""),
+            ToolWindow::Hierarchy => (Icon::from(icons::TW_HIERARCHY), "Hierarchy".into(), ""),
         }
     }
 
@@ -170,6 +171,8 @@ impl Workspace {
             ToolWindow::Changes => !self.changes.read(cx).is_empty(),
             // As in IntelliJ, Find appears with the first search.
             ToolWindow::Find => !self.find.read(cx).is_empty(),
+            // Hierarchy too, with the first Call Hierarchy.
+            ToolWindow::Hierarchy => !self.hierarchy.read(cx).is_empty(),
             ToolWindow::Commit => non_modal,
             _ => true,
         };
@@ -289,6 +292,7 @@ impl Workspace {
             ToolWindow::Problems => self.problems_view.clone().into_any_element(),
             ToolWindow::Todo => self.todo_view.clone().into_any_element(),
             ToolWindow::BuildVariants => crate::ui::common::cached(&self.variants_view),
+            ToolWindow::Hierarchy => crate::ui::common::cached(&self.hierarchy),
         }
     }
 

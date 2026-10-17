@@ -28,6 +28,8 @@ pub enum ToolWindow {
     Problems,
     Todo,
     BuildVariants,
+    /// Call Hierarchy (Ctrl+Alt+H).
+    Hierarchy,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -66,7 +68,7 @@ impl Side {
 }
 
 impl ToolWindow {
-    pub const ALL: [ToolWindow; 18] = [
+    pub const ALL: [ToolWindow; 19] = [
         ToolWindow::Project,
         ToolWindow::Commit,
         ToolWindow::PullRequests,
@@ -85,6 +87,7 @@ impl ToolWindow {
         ToolWindow::DeviceManager,
         ToolWindow::RunningDevices,
         ToolWindow::DeviceExplorer,
+        ToolWindow::Hierarchy,
     ];
 
     fn key(self) -> &'static str {
@@ -107,6 +110,7 @@ impl ToolWindow {
             ToolWindow::Problems => "problems",
             ToolWindow::Todo => "todo",
             ToolWindow::BuildVariants => "variants",
+            ToolWindow::Hierarchy => "hierarchy",
         }
     }
 
@@ -116,7 +120,7 @@ impl ToolWindow {
             // The new UI keeps Notifications on the right stripe, and
             // Android Studio its Device Manager, Running Devices and Device
             // Explorer below it.
-            ToolWindow::Notifications | ToolWindow::DeviceManager | ToolWindow::RunningDevices | ToolWindow::DeviceExplorer => Side::Right,
+            ToolWindow::Notifications | ToolWindow::DeviceManager | ToolWindow::RunningDevices | ToolWindow::DeviceExplorer | ToolWindow::Hierarchy => Side::Right,
             _ => Side::Left,
         }
     }

@@ -11,6 +11,7 @@ pub mod nav;
 pub mod hierarchy;
 pub mod locals;
 pub mod introduce;
+pub mod call_hierarchy;
 pub mod change_signature;
 pub mod extract_method;
 pub mod introduce_parameter;

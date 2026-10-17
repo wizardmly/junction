@@ -891,3 +891,17 @@ Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int)
 | Move Statement Up / Down（按语句移动）、多光标下的这些操作、注释时按代码风格设置决定 `//` 是否加在缩进后 | | ⬜ |
 
 Linux 实测（Xvfb，Kotlin 文件）：光标在 `return price * rate …` 行，Ctrl+D 复制出第 6 行，Ctrl+/ 把它注释成 `//        return …` 并把光标移到 `}`，Alt+Shift+↑ 把 `}` 移到注释行上面；三次 Ctrl+Z 逐个撤销。光标在 `rate` 上连按三次 Ctrl+W，选区依次是 `rate`、`price * rate`、`price * rate * count`。
+
+## 50. Call Hierarchy（Ctrl+Alt+H，2026-10-17）
+
+照 IntelliJ 的 Hierarchy 工具窗口（右侧）做调用层级：光标所在的函数作根，下面是调用它的函数（"Callers of Cart.total"），每层点开再查它的调用者。代码：`src/index/call_hierarchy.rs`（调用点所在的函数 / 类 / 文件）、`src/ui/hierarchy_view.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| Ctrl+Alt+H / 右键菜单 Call Hierarchy：光标所在函数的调用者树（Kotlin、Java） | ✅ |
+| 调用者按所在函数分组，显示为 `类.函数()`，多处调用显示 `(N usages)`；不在函数里的调用（字段初始化、顶层）归到类或文件 | ✅ |
+| 逐层展开（按需查找），递归调用标 "recursive call" 不再展开；查不到调用者时去掉展开箭头 | ✅ |
+| 双击打开调用位置（根节点打开声明） | ✅ |
+| Callee Hierarchy（被调用者方向）、Type Hierarchy（Ctrl+H）、Method Hierarchy、作用域过滤 | ⬜ |
+
+Linux 实测（Xvfb，`ip` 工程）：光标在 `Cart.total` 上按 Ctrl+Alt+H，右侧显示 `Cart.total()` 下的 `Cart.use()` 和 `main() (2 usages) (Main.kt)`；展开 `Cart.use()` 没有调用者，箭头消失；双击 `main()` 打开 Main.kt 第 5 行 18 列的 `total`。
