@@ -888,9 +888,10 @@ Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int)
 | Join Lines：下一行（或选中的行）接到当前行末尾，去掉缩进、用一个空格连接（括号边不加空格） | Ctrl+Shift+J | ✅ |
 | Start New Line：在当前行下面开新行并缩进（行末是 `{` 时多缩进一级） | Shift+Enter | ✅ |
 | Toggle Case：选区（或光标处的单词）转大写，已全大写时转小写 | Ctrl+Shift+U / ⌘⇧U | ✅ |
-| Move Statement Up / Down（按语句移动）、多光标下的这些操作、注释时按代码风格设置决定 `//` 是否加在缩进后 | | ⬜ |
+| Move Statement Up / Down：光标所在行开始的整个语句 / 声明（多行的函数、类一起）和同一块里的上 / 下一个交换，中间的空行留在原处；到块的边上不动；没有语法的文件按行移动（`src/index/selection.rs::move_statement`） | Ctrl+Shift+↑/↓ / ⌘⇧↑/↓ | ✅ |
+| 多光标下的这些操作、注释时按代码风格设置决定 `//` 是否加在缩进后、Move Statement 移进 / 移出块 | | ⬜ |
 
-Linux 实测（Xvfb，Kotlin 文件）：光标在 `return price * rate …` 行，Ctrl+D 复制出第 6 行，Ctrl+/ 把它注释成 `//        return …` 并把光标移到 `}`，Alt+Shift+↑ 把 `}` 移到注释行上面；三次 Ctrl+Z 逐个撤销。光标在 `rate` 上连按三次 Ctrl+W，选区依次是 `rate`、`price * rate`、`price * rate * count`。
+Linux 实测（Xvfb，Kotlin 文件）：光标在 `return price * rate …` 行，Ctrl+D 复制出第 6 行，Ctrl+/ 把它注释成 `//        return …` 并把光标移到 `}`，Alt+Shift+↑ 把 `}` 移到注释行上面；三次 Ctrl+Z 逐个撤销。Shapes.kt 里光标在 `class Tile : Square()` 上按 Ctrl+Shift+↑，它整个跳到四行的 `open class Square … { … }` 前面；再按两次 Ctrl+Shift+↓，依次越过 Square 和 `class Disc`。光标在 `rate` 上连按三次 Ctrl+W，选区依次是 `rate`、`price * rate`、`price * rate * count`。
 
 ## 50. Call Hierarchy（Ctrl+Alt+H，2026-10-17）
 

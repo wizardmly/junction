@@ -1,7 +1,8 @@
 //! IntelliJ's basic editing actions in the editor: Duplicate Line or
 //! Selection (Ctrl+D), Comment with Line / Block Comment (Ctrl+/,
 //! Ctrl+Shift+/), Move Line Up / Down (Alt+Shift+↑/↓), Extend / Shrink
-//! Selection (Ctrl+W, Ctrl+Shift+W), Join Lines (Ctrl+Shift+J), Start New
+//! Selection (Ctrl+W, Ctrl+Shift+W), Move Statement Up / Down
+//! (Ctrl+Shift+↑/↓), Join Lines (Ctrl+Shift+J), Start New
 //! Line (Shift+Enter) and Toggle Case (Ctrl+Shift+U). The edits are
 //! `domain::line_edit`'s; each is one undoable change.
 
@@ -12,7 +13,7 @@ use gpui_kit::{Context, KeyBinding, Window, actions};
 use super::FileEditor;
 use crate::domain::line_edit::{self, Edited};
 
-actions!(editing, [DuplicateLine, CommentLine, CommentBlock, MoveLineUp, MoveLineDown, ExtendSelection, ShrinkSelection, JoinLines, StartNewLine, ToggleCase]);
+actions!(editing, [DuplicateLine, CommentLine, CommentBlock, MoveLineUp, MoveLineDown, MoveStatementUp, MoveStatementDown, ExtendSelection, ShrinkSelection, JoinLines, StartNewLine, ToggleCase]);
 
 /// In the editor's input, over the input's own bindings for these keys.
 const INPUT: &str = "FileEditor > Input";
@@ -25,6 +26,8 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if mac { "cmd-alt-/" } else { "ctrl-shift-/" }, CommentBlock, Some(INPUT)),
         KeyBinding::new("alt-shift-up", MoveLineUp, Some(INPUT)),
         KeyBinding::new("alt-shift-down", MoveLineDown, Some(INPUT)),
+        KeyBinding::new(if mac { "cmd-shift-up" } else { "ctrl-shift-up" }, MoveStatementUp, Some(INPUT)),
+        KeyBinding::new(if mac { "cmd-shift-down" } else { "ctrl-shift-down" }, MoveStatementDown, Some(INPUT)),
         KeyBinding::new(if mac { "alt-up" } else { "ctrl-w" }, ExtendSelection, Some(INPUT)),
         KeyBinding::new(if mac { "alt-down" } else { "ctrl-shift-w" }, ShrinkSelection, Some(INPUT)),
         KeyBinding::new("ctrl-shift-j", JoinLines, Some(INPUT)),
@@ -79,6 +82,16 @@ impl FileEditor {
 
     pub(super) fn move_line_down(&mut self, _: &MoveLineDown, window: &mut Window, cx: &mut Context<Self>) {
         self.edit_with(|t, s| line_edit::move_lines(t, s, false), window, cx);
+    }
+
+    pub(super) fn move_statement_up(&mut self, _: &MoveStatementUp, window: &mut Window, cx: &mut Context<Self>) {
+        let lang = crate::index::lang::Lang::from_path(&self.path);
+        self.edit_with(|t, s| crate::index::selection::move_statement(lang, t, s, true), window, cx);
+    }
+
+    pub(super) fn move_statement_down(&mut self, _: &MoveStatementDown, window: &mut Window, cx: &mut Context<Self>) {
+        let lang = crate::index::lang::Lang::from_path(&self.path);
+        self.edit_with(|t, s| crate::index::selection::move_statement(lang, t, s, false), window, cx);
     }
 
     pub(super) fn join_lines(&mut self, _: &JoinLines, window: &mut Window, cx: &mut Context<Self>) {

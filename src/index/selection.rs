@@ -43,6 +43,59 @@ pub fn extend(lang: Option<Lang>, text: &str, sel: Range<usize>) -> Option<Range
     [line, 0..text.len()].into_iter().find(grows)
 }
 
+fn line_start(text: &str, at: usize) -> usize {
+    text[..at].rfind('\n').map_or(0, |i| i + 1)
+}
+
+fn line_end(text: &str, at: usize) -> usize {
+    text[at..].find('\n').map_or(text.len(), |i| at + i)
+}
+
+/// Move Statement Up / Down (Ctrl+Shift+↑/↓), as IntelliJ's: the statement
+/// or declaration starting on the caret's line (all of its lines) swaps
+/// with the one before or after it in the same block, the lines between
+/// them staying; at the block's edge nothing moves. Without syntax, the
+/// lines move.
+pub fn move_statement(lang: Option<Lang>, text: &str, sel: Range<usize>, up: bool) -> Option<crate::domain::line_edit::Edited> {
+    let Some(tree) = lang.and_then(|lang| symbols::parse(lang, text)) else { return crate::domain::line_edit::move_lines(text, sel, up) };
+    let first = line_start(text, sel.start);
+    let code = first + text[first..].len() - text[first..].trim_start_matches([' ', '\t']).len();
+    if code >= text.len() || text[code..].starts_with('\n') {
+        return crate::domain::line_edit::move_lines(text, sel, up);
+    }
+    // The outermost node starting on this line, below the file itself.
+    let mut node = tree.root_node().descendant_for_byte_range(code, code)?;
+    while let Some(parent) = node.parent() {
+        if parent.parent().is_none() || parent.start_byte() < first {
+            break;
+        }
+        node = parent;
+    }
+    if node.start_byte() < first || node.parent().is_none() {
+        return None;
+    }
+    let lines_of = |n: tree_sitter::Node| line_start(text, n.start_byte())..line_end(text, n.end_byte().max(n.start_byte() + 1) - 1);
+    let mine = lines_of(node);
+    let mine = mine.start..mine.end.max(line_end(text, sel.end.max(sel.start)));
+    let mut other = if up { node.prev_named_sibling() } else { node.next_named_sibling() }?;
+    // A sibling on the same line (`a; b`) isn't a line of its own.
+    while if up { other.end_byte() > mine.start } else { other.start_byte() < mine.end } {
+        other = if up { other.prev_named_sibling() } else { other.next_named_sibling() }?;
+    }
+    let theirs = lines_of(other);
+    let (a, b) = if up { (theirs.clone(), mine.clone()) } else { (mine.clone(), theirs.clone()) };
+    let gap = &text[a.end..b.start];
+    let mut out = String::with_capacity(text.len());
+    out.push_str(&text[..a.start]);
+    out.push_str(&text[b.clone()]);
+    out.push_str(gap);
+    out.push_str(&text[a.clone()]);
+    out.push_str(&text[b.end..]);
+    // The selection moves with its statement.
+    let shift = |at: usize| if up { at - mine.start + a.start } else { at - mine.start + a.start + b.len() + gap.len() };
+    Some(crate::domain::line_edit::Edited { text: out, selection: shift(sel.start)..shift(sel.end) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +118,26 @@ mod tests {
         assert!(steps.contains(&"val x = foo(a + b)".to_owned()), "{steps:?}");
         assert_eq!(steps.last().unwrap(), text);
         assert_eq!(extend(None, "one\ntwo", 5..6), Some(4..7));
+    }
+
+    #[test]
+    fn moves_whole_statements() {
+        let text = "class A {\n    fun f() {\n        a()\n    }\n\n    fun g() = 1\n}\n";
+        let at = text.find("fun g").unwrap();
+        let up = move_statement(Some(Lang::Kotlin), text, at..at, true).unwrap();
+        assert_eq!(up.text, "class A {\n    fun g() = 1\n\n    fun f() {\n        a()\n    }\n}\n");
+        assert_eq!(&up.text[up.selection.start..up.selection.start + 5], "fun g");
+        // And back down past the whole function.
+        let down = move_statement(Some(Lang::Kotlin), &up.text, up.selection.clone(), false).unwrap();
+        assert_eq!(down.text, text);
+        assert_eq!(down.selection, at..at);
+        // At the block's edge: nothing.
+        let f = text.find("fun f").unwrap();
+        assert!(move_statement(Some(Lang::Kotlin), text, f..f, true).is_none());
+        // Statements in a body.
+        let body = "void m() {\n    int x = 1;\n    foo(x,\n        2);\n    bar();\n}\n";
+        let at = body.find("int x").unwrap();
+        let down = move_statement(Some(Lang::Java), body, at..at, false).unwrap();
+        assert_eq!(down.text, "void m() {\n    foo(x,\n        2);\n    int x = 1;\n    bar();\n}\n");
     }
 }
