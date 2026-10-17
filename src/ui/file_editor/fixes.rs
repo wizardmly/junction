@@ -171,7 +171,19 @@ impl FileEditor {
             return Self::hint("Unwrap/Remove", "Nothing to unwrap here", window, cx);
         }
         let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
-        let items = options.into_iter().map(|o| (o.range.clone(), Choice::Unwrap(o))).collect();
+        // Highlighted while chosen: the statement, or the else branch that goes.
+        let items = options
+            .into_iter()
+            .map(|o| {
+                let original = &text[o.range.clone()];
+                let shown = if o.title.starts_with("Remove") && original.starts_with(&o.replacement) {
+                    o.range.start + o.replacement.len()..o.range.end
+                } else {
+                    o.range.start + (original.len() - original.trim_start().len())..o.range.end
+                };
+                (shown, Choice::Unwrap(o))
+            })
+            .collect();
         self.context_actions = Some(ContextActions { items, title: Some("Choose the statement to unwrap/remove"), selected: 0, at, caret: None });
         window.focus(&self.context_focus, cx);
         cx.notify();
@@ -369,7 +381,7 @@ impl FileEditor {
     /// in the text as IntelliJ does: a box per line it spans.
     pub(super) fn render_expression_highlight(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let popup = self.context_actions.as_ref()?;
-        let (range, Choice::Expression(..)) = popup.items.get(popup.selected)? else { return None };
+        let (range, Choice::Expression(..) | Choice::Unwrap(_)) = popup.items.get(popup.selected)? else { return None };
         let state = self.state.read(cx);
         let text = state.value().to_string();
         let mut boxes = Vec::new();
