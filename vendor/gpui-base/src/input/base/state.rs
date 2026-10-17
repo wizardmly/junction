@@ -10857,6 +10857,34 @@ impl InputBaseState<crate::input::EditorMode> {
         cx.notify();
     }
 
+    /// Junction: IntelliJ's Collapse (Ctrl+-) / Expand (Ctrl+=): the
+    /// innermost foldable range around `line` that isn't already in that
+    /// state (Collapse again folds the next one out). Returns the start
+    /// line of the one changed.
+    pub fn fold_at_line(&mut self, line: usize, folded: bool, cx: &mut Context<Self>) -> Option<usize> {
+        let target = self
+            .display_map
+            .fold_candidates()
+            .iter()
+            .filter(|f| f.start_line <= line && line <= f.end_line && self.display_map.is_folded_at(f.start_line) != folded)
+            // Collapse: the innermost; Expand: the outermost folded one.
+            .min_by_key(|f| if folded { f.end_line - f.start_line } else { usize::MAX - (f.end_line - f.start_line) })
+            .map(|f| f.start_line);
+        let start_line = target?;
+        self.display_map.set_folded(start_line, folded);
+        cx.notify();
+        Some(start_line)
+    }
+
+    /// Junction: Collapse All (Ctrl+Shift+-) / Expand All (Ctrl+Shift+=).
+    pub fn fold_all(&mut self, folded: bool, cx: &mut Context<Self>) {
+        let starts: Vec<usize> = self.display_map.fold_candidates().iter().map(|f| f.start_line).collect();
+        for start_line in starts {
+            self.display_map.set_folded(start_line, folded);
+        }
+        cx.notify();
+    }
+
     /// Unfold any folded ranges that hide the given position.
     ///
     /// Use this to reveal a position before acting on it (e.g. before

@@ -8,12 +8,13 @@
 
 use std::ops::Range;
 
+use gpui_kit::component::input::RopeExt as _;
 use gpui_kit::{Context, KeyBinding, Window, actions};
 
 use super::FileEditor;
 use crate::domain::line_edit::{self, Edited};
 
-actions!(editing, [DuplicateLine, CommentLine, CommentBlock, MoveLineUp, MoveLineDown, MoveStatementUp, MoveStatementDown, MoveElementLeft, MoveElementRight, Inline, UnwrapRemove, SafeDelete, ExtendSelection, ShrinkSelection, JoinLines, StartNewLine, ToggleCase]);
+actions!(editing, [DuplicateLine, CommentLine, CommentBlock, MoveLineUp, MoveLineDown, MoveStatementUp, MoveStatementDown, MoveElementLeft, MoveElementRight, Inline, UnwrapRemove, SafeDelete, CollapseRegion, ExpandRegion, CollapseAllRegions, ExpandAllRegions, ExtendSelection, ShrinkSelection, JoinLines, StartNewLine, ToggleCase]);
 
 /// In the editor's input, over the input's own bindings for these keys.
 const INPUT: &str = "FileEditor > Input";
@@ -29,6 +30,15 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if mac { "cmd-alt-shift-right" } else { "ctrl-alt-shift-right" }, MoveElementRight, Some(INPUT)),
         KeyBinding::new(if mac { "cmd-shift-delete" } else { "ctrl-shift-delete" }, UnwrapRemove, Some(INPUT)),
         KeyBinding::new(if mac { "cmd-delete" } else { "alt-delete" }, SafeDelete, Some(INPUT)),
+        // Folding: Ctrl+- / Ctrl+=, with Shift for all (Shift+= arrives as
+        // `+`, Shift+- as `_` on most layouts).
+        KeyBinding::new(if mac { "cmd--" } else { "ctrl--" }, CollapseRegion, Some(INPUT)),
+        KeyBinding::new(if mac { "cmd-=" } else { "ctrl-=" }, ExpandRegion, Some(INPUT)),
+        KeyBinding::new(if mac { "cmd-+" } else { "ctrl-+" }, ExpandAllRegions, Some(INPUT)),
+        KeyBinding::new(if mac { "cmd-shift--" } else { "ctrl-shift--" }, CollapseAllRegions, Some(INPUT)),
+        KeyBinding::new(if mac { "cmd-_" } else { "ctrl-_" }, CollapseAllRegions, Some(INPUT)),
+        KeyBinding::new(if mac { "cmd-shift-=" } else { "ctrl-shift-=" }, ExpandAllRegions, Some(INPUT)),
+        KeyBinding::new(if mac { "cmd-shift-+" } else { "ctrl-shift-+" }, ExpandAllRegions, Some(INPUT)),
         KeyBinding::new("alt-shift-up", MoveLineUp, Some(INPUT)),
         KeyBinding::new("alt-shift-down", MoveLineDown, Some(INPUT)),
         KeyBinding::new(if mac { "cmd-shift-up" } else { "ctrl-shift-up" }, MoveStatementUp, Some(INPUT)),
@@ -107,6 +117,37 @@ impl FileEditor {
     pub(super) fn move_element_right(&mut self, _: &MoveElementRight, window: &mut Window, cx: &mut Context<Self>) {
         let lang = crate::index::lang::Lang::from_path(&self.path);
         self.edit_with(|t, s| crate::index::selection::move_element(lang, t, s, false), window, cx);
+    }
+
+    /// Code › Folding › Collapse (Ctrl+-): the innermost open region at the
+    /// caret, again for the next one out; the caret goes to its first line,
+    /// as IntelliJ keeps it visible.
+    pub(super) fn collapse_region(&mut self, _: &CollapseRegion, _: &mut Window, cx: &mut Context<Self>) {
+        let (line, _) = self.cursor(cx);
+        self.state.update(cx, |state, cx| {
+            if let Some(start) = state.fold_at_line(line as usize, true, cx) {
+                if start < line as usize {
+                    let at = state.text().line_start_offset(start);
+                    state.set_selected_range(at..at, cx);
+                }
+            }
+        });
+    }
+
+    /// Expand (Ctrl+=): the folded region at the caret.
+    pub(super) fn expand_region(&mut self, _: &ExpandRegion, _: &mut Window, cx: &mut Context<Self>) {
+        let (line, _) = self.cursor(cx);
+        self.state.update(cx, |state, cx| {
+            state.fold_at_line(line as usize, false, cx);
+        });
+    }
+
+    pub(super) fn collapse_all_regions(&mut self, _: &CollapseAllRegions, _: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.fold_all(true, cx));
+    }
+
+    pub(super) fn expand_all_regions(&mut self, _: &ExpandAllRegions, _: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.fold_all(false, cx));
     }
 
     /// Inline (Ctrl+Alt+N): a local variable into its uses, or a function

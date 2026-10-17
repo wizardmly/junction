@@ -164,6 +164,12 @@ impl DisplayMap {
         self.fold_map.folded_ranges()
     }
 
+    /// Junction: the foldable ranges, by start line.
+    #[inline]
+    pub fn fold_candidates(&self) -> &[FoldRange] {
+        self.fold_map.candidates()
+    }
+
     /// Clear all folds
     pub fn clear_folds(&mut self) {
         self.fold_map.clear_folds();
