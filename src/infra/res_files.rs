@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::usecase::translations::ResFiles;
+use crate::domain::translations::ResFiles;
 
 pub struct DiskRes {
     pub res: PathBuf,

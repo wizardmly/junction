@@ -312,6 +312,15 @@ pub fn check_key(key: &str, existing: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// The values files of one `res` folder.
+pub trait ResFiles {
+    /// Each `values*` folder's XML files: (folder, file name).
+    fn values_files(&self) -> Vec<(String, String)>;
+    fn read(&self, folder: &str, file: &str) -> Option<String>;
+    /// Writes a file, creating its folder.
+    fn write(&self, folder: &str, file: &str, text: &str) -> Result<(), String>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

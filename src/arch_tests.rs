@@ -85,7 +85,7 @@ fn use_cases_know_only_the_domain() {
 }
 
 #[test]
-fn infra_never_reaches_the_ui() {
-    let found = violations("infra", &["gpui", "crate::ui"]);
-    assert!(found.is_empty(), "infra depends on the UI:\n{}", found.join("\n"));
+fn infra_implements_domain_ports_only() {
+    let found = violations("infra", &["gpui", "crate::ui", "crate::usecase"]);
+    assert!(found.is_empty(), "infra depends on the UI or use cases:\n{}", found.join("\n"));
 }
