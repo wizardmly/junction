@@ -519,6 +519,27 @@ impl RepoModel {
         self.reload(cx);
     }
 
+    /// File › Close Project: back to the Welcome screen.
+    pub fn close_project(&mut self, cx: &mut Context<Self>) {
+        self.repository = None;
+        self.project_root = None;
+        self.folder_project = false;
+        self.roots.clear();
+        self.root_states = Arc::default();
+        self.refs = Arc::default();
+        self.log_refs = Arc::default();
+        self.status = WorkingTreeStatus::default();
+        self.project_status = Arc::default();
+        self.selected = None;
+        self.details = None;
+        self.error = None;
+        self.open_problem = None;
+        self.failed_path = None;
+        self.forget_repository_filters();
+        cx.emit(RepoEvent::Reloaded);
+        cx.notify();
+    }
+
     /// What the Welcome screen can offer for the last failed open.
     pub fn open_problem(&self) -> Option<&OpenProblem> {
         self.open_problem.as_ref()

@@ -48,6 +48,7 @@ pub(super) fn main_menu(
                 }
                 menu
             })
+            .menu("Close Project", Box::new(CloseProject))
             .separator()
             .menu("Sync Project with Gradle Files", Box::new(SyncProjectWithGradleFiles))
             .separator()

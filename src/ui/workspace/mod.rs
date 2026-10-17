@@ -75,6 +75,7 @@ actions!(
         FindAction,
         RecentFiles,
         RecentLocations,
+        CloseProject,
         LastEditLocation,
         FileStructure,
         GotoLine,
@@ -937,6 +938,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FindAction, window, cx| this.open_search_everywhere(SeTab::Actions, window, cx)))
             .on_action(cx.listener(|this, _: &RecentFiles, window, cx| this.recent_files_popup(window, cx)))
             .on_action(cx.listener(|this, _: &RecentLocations, window, cx| this.recent_locations_popup(window, cx)))
+            .on_action(cx.listener(|this, _: &CloseProject, _, cx| this.close_project(cx)))
             .on_action(cx.listener(|this, _: &LastEditLocation, window, cx| this.last_edit_location(window, cx)))
             .on_action(cx.listener(|this, _: &ShowBookmarks, window, cx| this.show_bookmarks(window, cx)))
             .on_action(cx.listener(|this, _: &GoToBookmark1, window, cx| this.go_to_bookmark('1', window, cx)))

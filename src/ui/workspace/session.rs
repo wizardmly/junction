@@ -46,6 +46,24 @@ impl Workspace {
         }));
     }
 
+    /// File › Close Project: its session saved and its tabs closed, then
+    /// the Welcome screen.
+    pub(super) fn close_project(&mut self, cx: &mut Context<Self>) {
+        if self.model.read(cx).repository().is_none() {
+            return;
+        }
+        self.save_session(cx);
+        let all: Vec<usize> = (0..self.editors.len()).collect();
+        self.close_tabs(all, cx);
+        self.closed_tabs.clear();
+        self.edit_walk = None;
+        self.session_root = None;
+        self.session_save = None;
+        self.recent_places = history::RecentPlaces::default();
+        self.model.update(cx, |model, cx| model.close_project(cx));
+        cx.notify();
+    }
+
     /// Reopens a project's tabs and carets and its Recent Locations, once
     /// per opening.
     pub(super) fn restore_session(&mut self, root: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
