@@ -123,7 +123,7 @@ actions!(
 );
 
 mod tabs;
-mod history;
+use crate::domain::navigation_history as history;
 mod chrome;
 mod events;
 mod files;
@@ -329,6 +329,7 @@ pub struct Workspace {
     /// on its way.
     session_root: Option<std::path::PathBuf>,
     session_save: Option<gpui_kit::Task<()>>,
+    sessions: std::rc::Rc<dyn crate::domain::editor_session::SessionStore>,
     /// The project whose old Local History was dropped this session.
     history_pruned: Option<std::path::PathBuf>,
     project: Entity<crate::ui::project_view::ProjectView>,
@@ -761,6 +762,7 @@ impl Workspace {
             edit_walk: None,
             session_root: None,
             session_save: None,
+            sessions: std::rc::Rc::new(crate::infra::editor_session_store::JsonSessions),
             history_pruned: None,
             project,
             nav: history::NavHistory::default(),

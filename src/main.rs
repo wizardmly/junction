@@ -23,6 +23,8 @@ mod spell;
 mod terminal;
 mod theme;
 mod ui;
+#[cfg(test)]
+mod arch_tests;
 
 use std::path::PathBuf;
 

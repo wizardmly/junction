@@ -6,13 +6,7 @@ use std::collections::BTreeMap;
 
 use crate::domain::rename::{apply, check_name, renamed_file, Occurrence};
 
-/// The project's files, by project-relative path.
-pub trait ProjectFiles {
-    fn read(&self, path: &str) -> Result<String, String>;
-    fn write(&self, path: &str, text: &str) -> Result<(), String>;
-    /// Renames a file; fails when the new one exists.
-    fn rename(&self, from: &str, to: &str) -> Result<(), String>;
-}
+pub use crate::domain::project_files::ProjectFiles;
 
 /// What a rename changed.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -81,6 +75,9 @@ mod tests {
             let text = files.remove(from).ok_or("missing")?;
             files.insert(to.into(), text);
             Ok(())
+        }
+        fn list(&self) -> Vec<String> {
+            self.0.borrow().keys().cloned().collect()
         }
     }
 

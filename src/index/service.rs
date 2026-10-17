@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use gpui_kit::{App, AppContext as _, Context, EventEmitter, Task};
+use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 
 use crate::domain::rename::Occurrence;
 use crate::domain::version_catalog::{Catalog, Entry};
@@ -568,6 +568,55 @@ impl CodeIndex {
             let file = root.join(&path);
             let client = lsp.client(lang, &file).ok_or("The language server has stopped")?;
             client.code_action_edits(&action).map_err(|e| e.to_string())
+        })
+    }
+
+    /// A file's text, its own path or one relative to the project.
+    fn read_file(root: Option<&Path>, path: &str) -> Option<String> {
+        let file = Path::new(path);
+        let file = if file.is_absolute() { file.to_path_buf() } else { root?.join(file) };
+        std::fs::read_to_string(file).ok()
+    }
+
+    /// Call Hierarchy: the functions calling the one named at `offset` of
+    /// `path`, by name. Off the main thread: it reads the files.
+    pub fn callers_of(this: &Entity<Self>, path: String, offset: usize, ancestors: Vec<String>, cx: &mut App) -> Task<Vec<super::call_hierarchy::CallNode>> {
+        let root = this.read(cx).root.clone();
+        let this = this.clone();
+        cx.spawn(async move |cx| {
+            let read_root = root.clone();
+            let file = path.clone();
+            let Some(text) = cx.background_spawn(async move { Self::read_file(read_root.as_deref(), &file) }).await else { return Vec::new() };
+            let usages = this.read_with(cx, |index, cx| index.usages(path, text, offset, cx));
+            let (_, usages) = usages.await;
+            cx.background_spawn(async move {
+                let places = usages.into_iter().filter(|u| u.group != "Declarations").map(|u| (u.path, u.line, u.col, (u.line, u.col))).collect();
+                let mut nodes = super::call_hierarchy::group_by_function(places, &ancestors, &|p| Self::read_file(root.as_deref(), p));
+                nodes.sort_by(|a, b| a.name.cmp(&b.name));
+                nodes
+            })
+            .await
+        })
+    }
+
+    /// Callee Hierarchy: the functions the one named at `offset` of `path`
+    /// calls, in order, each resolved to its declaration.
+    pub fn callees_of(this: &Entity<Self>, path: String, offset: usize, ancestors: Vec<String>, cx: &mut App) -> Task<Vec<super::call_hierarchy::CallNode>> {
+        let root = this.read(cx).root.clone();
+        let this = this.clone();
+        cx.spawn(async move |cx| {
+            let (read_root, file) = (root.clone(), path.clone());
+            let Some(text) = cx.background_spawn(async move { Self::read_file(read_root.as_deref(), &file) }).await else { return Vec::new() };
+            let lang = Lang::from_path(&path);
+            let calls: Vec<usize> = lang.map(|lang| super::call_hierarchy::calls_in(lang, &text, offset)).unwrap_or_default();
+            let tasks: Vec<_> = this.read_with(cx, |index, cx| calls.iter().map(|&o| index.definitions(path.clone(), text.clone(), o, cx)).collect());
+            let mut places = Vec::new();
+            for (task, &call) in tasks.into_iter().zip(&calls) {
+                if let Some(t) = task.await.into_iter().next() {
+                    places.push((t.path, t.line, t.col, super::call_hierarchy::position_of(&text, call)));
+                }
+            }
+            cx.background_spawn(async move { super::call_hierarchy::group_by_function(places, &ancestors, &|p| Self::read_file(root.as_deref(), p)) }).await
         })
     }
 

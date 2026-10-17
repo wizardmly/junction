@@ -6,6 +6,7 @@ use std::ops::Range;
 
 use super::lang::Lang;
 use super::symbols;
+use crate::domain::line_edit::{line_end, line_start};
 
 /// The next larger selection around `sel`; none at the whole text.
 pub fn extend(lang: Option<Lang>, text: &str, sel: Range<usize>) -> Option<Range<usize>> {
@@ -41,14 +42,6 @@ pub fn extend(lang: Option<Lang>, text: &str, sel: Range<usize>) -> Option<Range
     // No syntax: the line, then everything.
     let line = text[..sel.start].rfind('\n').map_or(0, |i| i + 1)..text[sel.end..].find('\n').map_or(text.len(), |i| sel.end + i);
     [line, 0..text.len()].into_iter().find(grows)
-}
-
-fn line_start(text: &str, at: usize) -> usize {
-    text[..at].rfind('\n').map_or(0, |i| i + 1)
-}
-
-fn line_end(text: &str, at: usize) -> usize {
-    text[at..].find('\n').map_or(text.len(), |i| at + i)
 }
 
 /// Move Statement Up / Down (Ctrl+Shift+↑/↓), as IntelliJ's: the statement

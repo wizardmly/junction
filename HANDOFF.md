@@ -124,7 +124,7 @@ src/spell.rs        提交信息拼写检查（assets/dict）
 src/bookmarks.rs    书签（~/.config/Junction/bookmarks.json）
 src/bench.rs        基准与探针
 src/ui/             界面
-  workspace/        主窗口：tabs、navigation、search、files、panels、chrome、menu、vcs、events、history
+  workspace/        主窗口：tabs、navigation、search、files、panels、chrome、menu、vcs、events、session
   log_view/         Git Log：filter_bar、branches、table、details、go_to、commit_menu
   commit_view*      Commit 工具窗口
   diff_view*, text_panes.rs, diff_panes.rs, merge_view.rs   Diff / Merge（共用 TextPanes）
@@ -147,7 +147,13 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 - `src/infra/`：端口的实现（`index_code_model` 包装现有索引，`tree_sitter_syntax`，`gradle` 调 gradlew 并解析编译器输出）。
 - `src/ui/`：界面和组装（`completion.rs` 是补全的 CompletionProvider，`compile_service.rs` 是保存后编译的全局服务）。
 
-现有的 `git/`、`index/`、`android/` 暂不迁移，新功能需要它们时在 `infra/` 里包一层适配器。行为不确定时查源码：编辑器、补全、Problems、Local History、测试、Debugger 看 intellij-community；Logcat、Build/Run、Gradle Sync、资源、设备相关看 AOSP `platform/tools/adt/idea`（都是 Apache 2.0）。
+现有的 `git/`、`index/`、`android/` 暂不迁移，新功能需要它们时在 `infra/` 里包一层适配器。
+
+- 依赖规则由 `src/arch_tests.rs` 检查（`cargo test` 里跑）：`domain` 不能用 GPUI、文件 / 进程 / 网络和外层模块；`usecase` 不能用 GPUI、`ui`、`infra`；`infra` 不能用 GPUI、`ui`。`#[cfg(test)]` 的部分不算。
+- 端口放在 `domain`：例如 `domain::project_files::ProjectFiles`（Rename、Introduce Parameter、Change Signature 改其他文件都经过它，实现是 `infra::project_files::DiskFiles`）、`domain::editor_session::SessionStore`（实现 `infra::editor_session_store::JsonSessions`）。跨文件改调用点的流程在 `usecase::update_calls`。
+- 导航历史（Back / Forward、Recent Files、Recent Locations 的位置和代码片段）是 `domain::navigation_history`，编辑器会话的数据是 `domain::editor_session`，`ui/workspace/session.rs` 只做组装。
+- 读文件不要放在 UI 线程：Call Hierarchy 的分组和读文件在 `index::call_hierarchy::group_by_function`，由 `CodeIndex::callers_of` / `callees_of` 在后台做；Recent Locations 在后台读没打开的文件。
+- 还没迁移的旧依赖（新代码不要照抄）：`usecase::translations::ResFiles`、`usecase::rename_symbol` 以外的个别端口还定义在 `usecase`（infra 因此引用 usecase）；`index/service.rs`、`index/libraries.rs` 直接调用 `infra::gradle_sync`、`infra::catalog_files`、`usecase::android_resources`；部分 UI（断点、Gradle 下载）直接调用 `infra` 的存储函数。行为不确定时查源码：编辑器、补全、Problems、Local History、测试、Debugger 看 intellij-community；Logcat、Build/Run、Gradle Sync、资源、设备相关看 AOSP `platform/tools/adt/idea`（都是 Apache 2.0）。
 
 ### 需要知道的约定和坑
 

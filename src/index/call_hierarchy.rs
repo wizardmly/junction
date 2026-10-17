@@ -66,6 +66,54 @@ pub fn caller_at(lang: Lang, text: &str, offset: usize, file_name: &str) -> Opti
     Some(Caller { name: display, offset: name.start_byte(), line: name.start_position().row as u32, col: name.start_position().column as u32 })
 }
 
+/// A function in a Call Hierarchy: its name, file and name's position,
+/// its calls of the function above it (callers) or the parent's calls of
+/// it (callees) as 0-based (line, UTF-16 column), and whether it's an
+/// ancestor already (recursion, not expanded again).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallNode {
+    pub name: String,
+    pub path: String,
+    pub offset: usize,
+    pub line: u32,
+    pub col: u32,
+    pub calls: Vec<(u32, u32)>,
+    pub recursive: bool,
+}
+
+/// The 0-based line and UTF-16 column of a byte offset.
+pub fn position_of(text: &str, offset: usize) -> (u32, u32) {
+    let line_start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
+    (text[..offset].matches('\n').count() as u32, text[line_start..offset].encode_utf16().count() as u32)
+}
+
+/// The functions some places are in, one node each with its calls: each
+/// place is a file's (path, line, col) and the call to list for it. `read`
+/// gives a file's text; `ancestors` are the names above, for recursion.
+pub fn group_by_function(places: Vec<(String, u32, u32, (u32, u32))>, ancestors: &[String], read: &dyn Fn(&str) -> Option<String>) -> Vec<CallNode> {
+    let mut texts: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+    let mut out: Vec<CallNode> = Vec::new();
+    for (path, line, col, call) in places {
+        let Some(lang) = Lang::from_path(&path) else { continue };
+        let Some(text) = texts.entry(path.clone()).or_insert_with(|| read(&path)).as_deref() else { continue };
+        let file_name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+        let Some(function) = caller_at(lang, text, offset_of(text, line, col), &file_name) else { continue };
+        match out.iter_mut().find(|n| n.path == path && n.offset == function.offset) {
+            Some(n) => n.calls.push(call),
+            None => out.push(CallNode {
+                recursive: ancestors.contains(&function.name),
+                name: function.name,
+                path,
+                offset: function.offset,
+                line: function.line,
+                col: function.col,
+                calls: vec![call],
+            }),
+        }
+    }
+    out
+}
+
 /// Callee Hierarchy's view of a function: the calls in the body of the
 /// function whose name is at `name_offset`, each as its callee name's
 /// offset, in order.
@@ -154,6 +202,18 @@ mod tests {
         let at = java.find("g()").unwrap();
         let names: Vec<&str> = calls_in(Lang::Java, java, at).into_iter().map(|o| &java[o..o + 1]).collect();
         assert_eq!(names, ["f", "B", "h"]);
+    }
+
+    #[test]
+    fn groups_calls_by_function() {
+        let cart = "class Cart {\n    fun total() = 1\n    fun use() {\n        total()\n        total()\n    }\n}\n";
+        let main = "fun main() {\n    Cart().total()\n}\n";
+        let read = |p: &str| Some(if p == "Cart.kt" { cart } else { main }.to_owned());
+        let places = vec![("Cart.kt".to_owned(), 3, 8, (3, 8)), ("Main.kt".to_owned(), 1, 11, (1, 11)), ("Cart.kt".to_owned(), 4, 8, (4, 8))];
+        let nodes = group_by_function(places, &["main".to_owned()], &read);
+        let got: Vec<(&str, usize, bool)> = nodes.iter().map(|n| (n.name.as_str(), n.calls.len(), n.recursive)).collect();
+        assert_eq!(got, [("Cart.use", 2, false), ("main", 1, true)]);
+        assert_eq!(position_of("ab\ncé!", 6), (1, 2));
     }
 
     #[test]

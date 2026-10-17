@@ -4,7 +4,7 @@
 //! window closes; restored when the project opens.
 
 use super::*;
-use crate::infra::editor_session_store::{self as store, EditorSession, SessionPlace, SessionTab};
+use crate::domain::editor_session::{EditorSession, SessionTab};
 
 impl Workspace {
     fn session(&self, cx: &gpui_kit::App) -> EditorSession {
@@ -19,8 +19,7 @@ impl Workspace {
             })
             .collect();
         let active = self.editor().map(|e| e.read(cx)).filter(|e| e.revision().is_none()).map(|e| e.path().to_owned());
-        let places = self.recent_places.iter().map(|p| SessionPlace { path: p.path.clone(), line: p.line, col: p.col, changed: p.changed }).collect();
-        EditorSession { tabs, active, places }
+        EditorSession { tabs, active, places: self.recent_places.to_vec() }
     }
 
     /// Saves the session of the project whose session is showing.
@@ -32,7 +31,7 @@ impl Workspace {
         if root != *shown {
             return;
         }
-        store::save(&root, &self.session(cx));
+        self.sessions.save(&root, &self.session(cx));
     }
 
     /// Saves the session in a moment (once for a burst of changes).
@@ -46,6 +45,17 @@ impl Workspace {
         }));
     }
 
+    /// Closes the editor tabs and forgets the session's state (its places,
+    /// the edit walk, the closed tabs), before another session or none.
+    fn close_session(&mut self, cx: &mut Context<Self>) {
+        let all: Vec<usize> = (0..self.editors.len()).collect();
+        self.close_tabs(all, cx);
+        self.closed_tabs.clear();
+        self.edit_walk = None;
+        self.session_save = None;
+        self.recent_places = history::RecentPlaces::default();
+    }
+
     /// File › Close Project: its session saved and its tabs closed, then
     /// the Welcome screen.
     pub(super) fn close_project(&mut self, cx: &mut Context<Self>) {
@@ -53,13 +63,8 @@ impl Workspace {
             return;
         }
         self.save_session(cx);
-        let all: Vec<usize> = (0..self.editors.len()).collect();
-        self.close_tabs(all, cx);
-        self.closed_tabs.clear();
-        self.edit_walk = None;
+        self.close_session(cx);
         self.session_root = None;
-        self.session_save = None;
-        self.recent_places = history::RecentPlaces::default();
         self.model.update(cx, |model, cx| model.close_project(cx));
         cx.notify();
     }
@@ -73,30 +78,25 @@ impl Workspace {
         // Another project in this window: its tabs give way to this one's,
         // as IntelliJ's project replaces the one before.
         if let Some(old) = self.session_root.clone() {
-            store::save(&old, &self.session(cx));
-            let all: Vec<usize> = (0..self.editors.len()).collect();
-            self.close_tabs(all, cx);
-            self.closed_tabs.clear();
-            self.edit_walk = None;
+            self.sessions.save(&old, &self.session(cx));
+            self.close_session(cx);
         }
-        let session = store::load(&root);
+        let session = self.sessions.load(&root);
         self.session_root = Some(root.clone());
-        let places = history::RecentPlaces::restore(session.places.into_iter().map(|p| history::Place { path: p.path, line: p.line, col: p.col, changed: p.changed }).collect());
-        if !self.editors.is_empty() {
-            self.recent_places = places;
-            return;
-        }
-        let exists = |path: &str| root.join(path).is_file();
-        for tab in session.tabs.iter().filter(|t| exists(&t.path)) {
-            self.open_at(tab.path.clone(), tab.line, tab.col, window, cx);
-            if tab.pinned {
-                if let Some(open) = self.editors.iter_mut().find(|t| t.view.read(cx).path() == tab.path) {
-                    open.pinned = true;
+        let places = history::RecentPlaces::restore(session.places.clone());
+        if self.editors.is_empty() {
+            let (tabs, active) = session.reopenable(|path| root.join(path).is_file());
+            for tab in &tabs {
+                self.open_at(tab.path.clone(), tab.line, tab.col, window, cx);
+                if tab.pinned {
+                    if let Some(open) = self.editors.iter_mut().find(|t| t.view.read(cx).path() == tab.path) {
+                        open.pinned = true;
+                    }
                 }
             }
-        }
-        if let Some(active) = session.active.and_then(|a| session.tabs.iter().find(|t| t.path == a).cloned()).filter(|t| exists(&t.path)) {
-            self.open_at(active.path, active.line, active.col, window, cx);
+            if let Some(active) = active {
+                self.open_at(active.path, active.line, active.col, window, cx);
+            }
         }
         // Reopening isn't a visit: the places stay as they were.
         self.recent_places = places;

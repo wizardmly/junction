@@ -4,12 +4,22 @@
 //! 'else...'" drops the else branch, and loops and `try` give up their
 //! bodies the same way (a `try` keeps its `finally` code after).
 
+use std::ops::Range;
+
 use tree_sitter::Node;
 
 use super::extract_method::children;
 use super::lang::Lang;
 use super::symbols;
 use crate::domain::intentions::Intention;
+
+/// One way to take a statement apart: its edit, and the code it affects
+/// (highlighted while it's chosen).
+#[derive(Clone, Debug)]
+pub struct Unwrapping {
+    pub edit: Intention,
+    pub affected: Range<usize>,
+}
 
 /// A body's statements: inside its braces, blank edge lines and their
 /// common indent removed.
@@ -34,7 +44,7 @@ fn body_lines(text: &str, body: Node) -> Vec<String> {
 
 /// `construct` replaced by `lines`, indented as it was; the caret at the
 /// first one.
-fn replace_with(text: &str, construct: Node, lines: &[String], title: String) -> Option<Intention> {
+fn replace_with(text: &str, construct: Node, lines: &[String], title: String) -> Option<Unwrapping> {
     let line_start = text[..construct.start_byte()].rfind('\n').map_or(0, |i| i + 1);
     let indent = &text[line_start..construct.start_byte()];
     if !indent.trim().is_empty() {
@@ -51,7 +61,7 @@ fn replace_with(text: &str, construct: Node, lines: &[String], title: String) ->
     // Nothing left: the construct's whole line goes.
     let (range, replacement) = if lines.is_empty() { (line_start..(end + 1).min(text.len()), replacement) } else { (line_start..end, replacement) };
     let caret = range.start + replacement.len() - replacement.trim_start().len();
-    Some(Intention { title, range, replacement, caret })
+    Some(Unwrapping { edit: Intention { title, range, replacement, caret }, affected: construct.byte_range() })
 }
 
 fn contains(node: Node, at: usize) -> bool {
@@ -59,7 +69,7 @@ fn contains(node: Node, at: usize) -> bool {
 }
 
 /// The Unwrap/Remove choices at `offset`, innermost first.
-pub fn unwrap_options(lang: Lang, text: &str, offset: usize) -> Vec<Intention> {
+pub fn unwrap_options(lang: Lang, text: &str, offset: usize) -> Vec<Unwrapping> {
     let mut out = Vec::new();
     if !matches!(lang, Lang::Kotlin | Lang::Java) {
         return out;
@@ -81,7 +91,8 @@ pub fn unwrap_options(lang: Lang, text: &str, offset: usize) -> Vec<Intention> {
                         // Up to the end of the then branch.
                         let kept = &text[n.start_byte()..then.end_byte()];
                         let end = n.end_byte();
-                        out.push(Intention { title: "Remove 'else...'".into(), range: n.start_byte()..end, replacement: kept.to_owned(), caret: n.start_byte() });
+                        let edit = Intention { title: "Remove 'else...'".into(), range: n.start_byte()..end, replacement: kept.to_owned(), caret: n.start_byte() };
+                        out.push(Unwrapping { edit, affected: then.end_byte()..end });
                     }
                     _ => out.extend(replace_with(text, n, &body_lines(text, then), "Unwrap 'if...'".into())),
                 }
@@ -107,7 +118,8 @@ pub fn unwrap_options(lang: Lang, text: &str, offset: usize) -> Vec<Intention> {
                 // From the end of what's before it, so the try stays tidy.
                 let Some(prev) = n.prev_sibling() else { continue };
                 let what = if n.kind().starts_with("catch") { "catch" } else { "finally" };
-                out.push(Intention { title: format!("Remove '{what}...'"), range: prev.end_byte()..n.end_byte(), replacement: String::new(), caret: prev.end_byte() });
+                let edit = Intention { title: format!("Remove '{what}...'"), range: prev.end_byte()..n.end_byte(), replacement: String::new(), caret: prev.end_byte() };
+                out.push(Unwrapping { edit, affected: n.byte_range() });
             }
             // Kotlin's `run { … }`, `apply { … }`: a call of just a lambda.
             "call_expression" if lang == Lang::Kotlin && n.parent().is_some_and(|p| matches!(p.kind(), "statements" | "control_structure_body")) => {
@@ -130,9 +142,9 @@ pub fn unwrap_options(lang: Lang, text: &str, offset: usize) -> Vec<Intention> {
 
 /// The text after applying a choice (tests).
 #[cfg(test)]
-fn apply(text: &str, i: &Intention) -> String {
+fn apply(text: &str, u: &Unwrapping) -> String {
     let mut out = text.to_owned();
-    out.replace_range(i.range.clone(), &i.replacement);
+    out.replace_range(u.edit.range.clone(), &u.edit.replacement);
     out
 }
 
@@ -145,17 +157,18 @@ mod tests {
         let text = "fun f() {\n    if (a) {\n        x()\n        y()\n    } else {\n        z()\n    }\n    done()\n}\n";
         let at = text.find("y()").unwrap();
         let options = unwrap_options(Lang::Kotlin, text, at);
-        assert_eq!(options.iter().map(|o| o.title.as_str()).collect::<Vec<_>>(), ["Unwrap 'if...'"]);
+        assert_eq!(options.iter().map(|o| o.edit.title.as_str()).collect::<Vec<_>>(), ["Unwrap 'if...'"]);
         assert_eq!(apply(text, &options[0]), "fun f() {\n    x()\n    y()\n    done()\n}\n");
         let at = text.find("z()").unwrap();
         let options = unwrap_options(Lang::Kotlin, text, at);
-        assert_eq!(options.iter().map(|o| o.title.as_str()).collect::<Vec<_>>(), ["Unwrap 'else...'", "Remove 'else...'"]);
+        assert_eq!(options.iter().map(|o| o.edit.title.as_str()).collect::<Vec<_>>(), ["Unwrap 'else...'", "Remove 'else...'"]);
         assert_eq!(apply(text, &options[0]), "fun f() {\n    z()\n    done()\n}\n");
         assert_eq!(apply(text, &options[1]), "fun f() {\n    if (a) {\n        x()\n        y()\n    }\n    done()\n}\n");
+        assert_eq!(&text[options[1].affected.clone()], " else {\n        z()\n    }");
         // Nested: innermost first; try keeps finally's code.
         let text = "fun g() {\n    for (i in l) {\n        try { q(i) } finally { s() }\n    }\n}\n";
         let options = unwrap_options(Lang::Kotlin, text, text.find("q(").unwrap());
-        assert_eq!(options.iter().map(|o| o.title.as_str()).collect::<Vec<_>>(), ["Unwrap 'try...'", "Unwrap 'for...'"]);
+        assert_eq!(options.iter().map(|o| o.edit.title.as_str()).collect::<Vec<_>>(), ["Unwrap 'try...'", "Unwrap 'for...'"]);
         assert_eq!(apply(text, &options[0]), "fun g() {\n    for (i in l) {\n        q(i)\n        s()\n    }\n}\n");
         assert_eq!(apply(text, &options[1]), "fun g() {\n    try { q(i) } finally { s() }\n}\n");
     }
@@ -164,10 +177,10 @@ mod tests {
     fn unwraps_lambdas_and_removes_catch() {
         let text = "fun f() {\n    run {\n        a()\n    }\n    try {\n        b()\n    } catch (e: E) {\n        c()\n    } finally {\n        d()\n    }\n}\n";
         let options = unwrap_options(Lang::Kotlin, text, text.find("a()").unwrap());
-        assert_eq!(options[0].title, "Unwrap 'run {...}'");
+        assert_eq!(options[0].edit.title, "Unwrap 'run {...}'");
         assert_eq!(apply(text, &options[0])[..30], *"fun f() {\n    a()\n    try {\n  ");
         let options = unwrap_options(Lang::Kotlin, text, text.find("c()").unwrap());
-        assert_eq!(options.iter().map(|o| o.title.as_str()).collect::<Vec<_>>(), ["Remove 'catch...'", "Unwrap 'try...'"]);
+        assert_eq!(options.iter().map(|o| o.edit.title.as_str()).collect::<Vec<_>>(), ["Remove 'catch...'", "Unwrap 'try...'"]);
         assert_eq!(apply(text, &options[0]), "fun f() {\n    run {\n        a()\n    }\n    try {\n        b()\n    } finally {\n        d()\n    }\n}\n");
         let options = unwrap_options(Lang::Kotlin, text, text.find("d()").unwrap());
         assert_eq!(apply(text, &options[0]), "fun f() {\n    run {\n        a()\n    }\n    try {\n        b()\n    } catch (e: E) {\n        c()\n    }\n}\n");

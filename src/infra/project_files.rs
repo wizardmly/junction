@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use crate::git::Repository;
-use crate::usecase::rename_symbol::ProjectFiles;
+use crate::domain::project_files::ProjectFiles;
 
 pub struct DiskFiles {
     pub root: PathBuf,
@@ -27,5 +27,9 @@ impl ProjectFiles for DiskFiles {
         }
         crate::git::ops::rename_path(self.repository.as_ref(), from, &source, &dest);
         if dest.exists() { Ok(()) } else { Err(format!("Cannot rename {from}")) }
+    }
+
+    fn list(&self) -> Vec<String> {
+        crate::index::store::list_files(&self.root)
     }
 }

@@ -13,11 +13,11 @@ pub struct Edited {
     pub selection: Range<usize>,
 }
 
-fn line_start(text: &str, at: usize) -> usize {
+pub fn line_start(text: &str, at: usize) -> usize {
     text[..at].rfind('\n').map_or(0, |i| i + 1)
 }
 
-fn line_end(text: &str, at: usize) -> usize {
+pub fn line_end(text: &str, at: usize) -> usize {
     text[at..].find('\n').map_or(text.len(), |i| at + i)
 }
 

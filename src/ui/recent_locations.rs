@@ -39,12 +39,7 @@ pub struct Location {
 impl Location {
     /// A place in a file's text, with its snippet colored.
     pub fn new(path: String, line: u32, col: u32, changed: bool, text: &str, dark: bool, highlighters: &mut HashMap<&'static str, gpui_kit::component::highlighter::SyntaxHighlighter>) -> Self {
-        let lines: Vec<&str> = text.lines().collect();
-        let at = (line as usize).min(lines.len().saturating_sub(1));
-        let (from, to) = (at.saturating_sub(1), (at + 2).min(lines.len()));
-        let chunk = lines.get(from..to).unwrap_or_default();
-        let indent = chunk.iter().filter(|l| !l.trim().is_empty()).map(|l| l.len() - l.trim_start().len()).min().unwrap_or(0);
-        let snippet = chunk.iter().map(|l| l.get(indent..).unwrap_or(l.trim_start())).collect::<Vec<_>>().join("\n");
+        let (first_line, snippet) = crate::domain::navigation_history::snippet(text, line);
         let file_name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
         let crumb = Lang::from_path(&path)
             .and_then(|lang| {
@@ -58,7 +53,7 @@ impl Location {
         let highlighter = highlighters.entry(language).or_insert_with(|| gpui_kit::component::highlighter::SyntaxHighlighter::new(language));
         highlighter.update(None, &gpui_kit::component::Rope::from_str(&snippet), None);
         let styles = highlighter.styles(&(0..snippet.len()), &crate::theme::editor_colors(dark));
-        Self { path, line, col, changed, crumb, snippet, first_line: from as u32, styles }
+        Self { path, line, col, changed, crumb, snippet, first_line, styles }
     }
 
     fn file_name(&self) -> &str {

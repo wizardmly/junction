@@ -1247,6 +1247,8 @@ impl FileEditor {
         use crate::domain::introduce_parameter::{apply, call_edit, edits};
         use crate::index::introduce_parameter::{call_sites, plan};
         use crate::index::lang::Lang;
+        use crate::infra::project_files::DiskFiles;
+        use crate::usecase::update_calls;
         const TITLE: &str = "Introduce Parameter";
         let Some((lang, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
         let text = self.text(cx);
@@ -1262,25 +1264,17 @@ impl FileEditor {
         let in_occurrence = |c: &crate::domain::introduce_parameter::CallSite| plan.occurrences.iter().any(|o| o.start <= c.args_close && c.args_close < o.end);
         let here: Vec<_> = call_sites(lang, &text, &plan.function, plan.params.len()).into_iter().filter(|c| !in_occurrence(c)).collect();
         let (function, params) = (plan.function.clone(), plan.params.len());
+        let files = root.clone().map(|root| DiskFiles { root, repository: None });
         let task = cx.background_spawn(async move {
             let Some(root) = root else { return Vec::new() };
-            let needle = format!("{function}(");
-            crate::index::store::list_files(&root)
-                .into_iter()
-                .filter(|f| *f != own && (f.ends_with(".kt") || f.ends_with(".java")))
-                .filter_map(|f| {
-                    let path = root.join(&f);
-                    let text = std::fs::read_to_string(&path).ok().filter(|t| t.contains(&needle))?;
-                    let calls = call_sites(Lang::from_path(&f)?, &text, &function, params);
-                    (!calls.is_empty()).then_some((f, path, text, calls))
-                })
-                .collect::<Vec<_>>()
+            let files = DiskFiles { root, repository: None };
+            update_calls::find(&files, &own, &function, &|path, text| Lang::from_path(path).map(|lang| call_sites(lang, text, &function, params)).unwrap_or_default())
         });
         cx.spawn_in(window, async move |this, cx| {
             let elsewhere = task.await;
             this.update_in(cx, |_, window, cx| {
                 let editor = cx.entity().downgrade();
-                let calls = here.len() + elsewhere.iter().map(|(.., c)| c.len()).sum::<usize>();
+                let calls = here.len() + elsewhere.iter().map(|f| f.calls.len()).sum::<usize>();
                 let dialog_plan = plan.clone();
                 crate::ui::introduce_parameter_dialog::open(style, dialog_plan, suggestions, calls, move |request, window, cx| {
                     editor
@@ -1298,15 +1292,10 @@ impl FileEditor {
                             let new = apply(&text, changes);
                             this.replace_text(&text, &new, caret, window, cx);
                             // The other files' calls, unless the value is a default.
-                            let mut written = Vec::new();
-                            if !(request.default_value && style == crate::domain::imports::ImportStyle::Kotlin) {
-                                for (rel, path, old, calls) in &elsewhere {
-                                    let new = apply(old, calls.iter().filter_map(|c| call_edit(&plan, c, &request.name)).collect());
-                                    if std::fs::write(path, new).is_ok() {
-                                        written.push(rel.clone());
-                                    }
-                                }
-                            }
+                            let written = match (&files, request.default_value && style == crate::domain::imports::ImportStyle::Kotlin) {
+                                (Some(files), false) => update_calls::rewrite(files, &elsewhere, &|f| f.calls.iter().filter_map(|c| call_edit(&plan, c, &request.name)).collect()),
+                                _ => Vec::new(),
+                            };
                             if !written.is_empty() {
                                 cx.emit(FileEditorEvent::FilesWritten(written));
                             }
@@ -1328,6 +1317,8 @@ impl FileEditor {
         use crate::domain::introduce_parameter::apply;
         use crate::index::introduce_parameter::call_sites;
         use crate::index::lang::Lang;
+        use crate::infra::project_files::DiskFiles;
+        use crate::usecase::update_calls;
         const TITLE: &str = "Change Signature";
         let Some((lang, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
         let text = self.text(cx);
@@ -1341,29 +1332,20 @@ impl FileEditor {
         let name = signature.name.clone();
         let here = call_sites(lang, &text, &name, signature.params.len());
         let params = signature.params.len();
+        let files = root.clone().map(|root| DiskFiles { root, repository: None });
         let task = cx.background_spawn({
             let name = name.clone();
             async move {
                 let Some(root) = root else { return Vec::new() };
-                let needle = format!("{name}(");
-                crate::index::store::list_files(&root)
-                    .into_iter()
-                    .filter(|f| *f != own && (f.ends_with(".kt") || f.ends_with(".java")))
-                    .filter_map(|f| {
-                        let path = root.join(&f);
-                        let text = std::fs::read_to_string(&path).ok().filter(|t| t.contains(&needle))?;
-                        let lang = Lang::from_path(&f)?;
-                        let calls = call_sites(lang, &text, &name, params);
-                        (!calls.is_empty()).then_some((f, path, text, lang, calls))
-                    })
-                    .collect::<Vec<_>>()
+                let files = DiskFiles { root, repository: None };
+                update_calls::find(&files, &own, &name, &|path, text| Lang::from_path(path).map(|lang| call_sites(lang, text, &name, params)).unwrap_or_default())
             }
         });
         cx.spawn_in(window, async move |this, cx| {
             let elsewhere = task.await;
             this.update_in(cx, |_, window, cx| {
                 let editor = cx.entity().downgrade();
-                let calls = here.len() + elsewhere.iter().map(|(.., c)| c.len()).sum::<usize>();
+                let calls = here.len() + elsewhere.iter().map(|f| f.calls.len()).sum::<usize>();
                 crate::ui::change_signature_dialog::open(style, signature.clone(), calls, move |request, window, cx| {
                     editor
                         .update(cx, |this, cx| {
@@ -1377,14 +1359,12 @@ impl FileEditor {
                             let caret = signature.name_range.start;
                             let new = apply(&text, changes);
                             this.replace_text(&text, &new, caret.min(new.len()), window, cx);
-                            let mut written = Vec::new();
-                            for (rel, path, old, lang, calls) in &elsewhere {
-                                let file_style = if *lang == Lang::Java { ImportStyle::Java } else { ImportStyle::Kotlin };
-                                let new = apply(old, calls.iter().flat_map(|c| call_edits(file_style, &signature, &request, c)).collect());
-                                if std::fs::write(path, new).is_ok() {
-                                    written.push(rel.clone());
-                                }
-                            }
+                            let written = files.as_ref().map_or_else(Vec::new, |files| {
+                                update_calls::rewrite(files, &elsewhere, &|f| {
+                                    let file_style = if f.path.ends_with(".java") { ImportStyle::Java } else { ImportStyle::Kotlin };
+                                    f.calls.iter().flat_map(|c| call_edits(file_style, &signature, &request, c)).collect()
+                                })
+                            });
                             if !written.is_empty() {
                                 cx.emit(FileEditorEvent::FilesWritten(written));
                             }

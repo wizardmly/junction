@@ -264,32 +264,54 @@ impl Workspace {
     pub(super) fn recent_locations_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let here = self.current_position(cx);
         self.recent_places.extend_visit(here);
-        let root = self.model.read(cx).project_root().map(|r| r.to_path_buf());
-        let dark = cx.palette().dark;
-        let mut texts: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
-        let mut highlighters = std::collections::HashMap::new();
-        let mut locations = Vec::new();
-        for place in self.recent_places.iter() {
-            let text = texts.entry(place.path.clone()).or_insert_with(|| {
-                let open = self.editors.iter().find(|t| t.view.read(cx).path() == place.path && t.view.read(cx).revision().is_none());
-                match open {
-                    Some(tab) => Some(tab.view.read(cx).text(cx)),
-                    None => {
-                        let file = std::path::Path::new(&place.path);
-                        let file = if file.is_absolute() { file.to_path_buf() } else { root.as_ref().map(|r| r.join(file)).unwrap_or_default() };
-                        std::fs::read_to_string(file).ok()
-                    }
-                }
-            });
-            if let Some(text) = text {
-                locations.push(crate::ui::recent_locations::Location::new(place.path.clone(), place.line, place.col, place.changed, text, dark, &mut highlighters));
-            }
-        }
-        if locations.is_empty() {
+        let places = self.recent_places.to_vec();
+        if places.is_empty() {
             window.push_notification(Notification::info("No recent locations").title("Recent Locations"), cx);
             return;
         }
-        crate::ui::recent_locations::RecentLocations::open(locations, self.picker_callback(cx), window, cx);
+        // Open files' current text; the others read off the main thread.
+        let mut texts: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+        for tab in &self.editors {
+            let editor = tab.view.read(cx);
+            if editor.revision().is_none() && places.iter().any(|p| p.path == editor.path()) {
+                texts.insert(editor.path().to_owned(), Some(editor.text(cx)));
+            }
+        }
+        let root = self.model.read(cx).project_root().map(|r| r.to_path_buf());
+        let unread: Vec<String> = places.iter().map(|p| p.path.clone()).filter(|p| !texts.contains_key(p)).collect();
+        let read = cx.background_spawn(async move {
+            unread
+                .into_iter()
+                .map(|path| {
+                    let file = std::path::Path::new(&path);
+                    let file = if file.is_absolute() { Some(file.to_path_buf()) } else { root.as_ref().map(|r| r.join(file)) };
+                    let text = file.and_then(|f| std::fs::read_to_string(f).ok());
+                    (path, text)
+                })
+                .collect::<Vec<_>>()
+        });
+        let on_pick = self.picker_callback(cx);
+        cx.spawn_in(window, async move |_, cx| {
+            texts.extend(read.await);
+            cx.update(|window, cx| {
+                let dark = cx.palette().dark;
+                let mut highlighters = std::collections::HashMap::new();
+                let locations: Vec<_> = places
+                    .iter()
+                    .filter_map(|p| {
+                        let text = texts.get(&p.path)?.as_deref()?;
+                        Some(crate::ui::recent_locations::Location::new(p.path.clone(), p.line, p.col, p.changed, text, dark, &mut highlighters))
+                    })
+                    .collect();
+                if locations.is_empty() {
+                    window.push_notification(Notification::info("No recent locations").title("Recent Locations"), cx);
+                } else {
+                    crate::ui::recent_locations::RecentLocations::open(locations, on_pick, window, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Navigate › Last Edit Location (Ctrl+Shift+Backspace): the latest

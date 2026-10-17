@@ -1,5 +1,5 @@
-//! Navigation history and recent-file lists, kept free of UI types so they
-//! can be tested on their own.
+//! Navigation history, as IntelliJ's IdeDocumentHistory keeps it: Back /
+//! Forward, recent files, and Recent Locations' visited and changed places.
 
 /// A place in a file: (path, line, column).
 pub type Position = (String, u32, u32);
@@ -73,11 +73,12 @@ impl std::ops::Deref for RecentPaths {
 }
 
 /// A place for Recent Locations (Ctrl+Shift+E): visited, or also changed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Place {
     pub path: String,
     pub line: u32,
     pub col: u32,
+    #[serde(default)]
     pub changed: bool,
 }
 
@@ -130,6 +131,19 @@ impl std::ops::Deref for RecentPlaces {
     fn deref(&self) -> &[Place] {
         &self.places
     }
+}
+
+/// Recent Locations' code around a place: the line with one before and
+/// one after, their common indent removed, and the first one's 0-based
+/// number.
+pub fn snippet(text: &str, line: u32) -> (u32, String) {
+    let lines: Vec<&str> = text.lines().collect();
+    let at = (line as usize).min(lines.len().saturating_sub(1));
+    let (from, to) = (at.saturating_sub(1), (at + 2).min(lines.len()));
+    let chunk = lines.get(from..to).unwrap_or_default();
+    let indent = chunk.iter().filter(|l| !l.trim().is_empty()).map(|l| l.len() - l.trim_start().len()).min().unwrap_or(0);
+    let lines: Vec<&str> = chunk.iter().map(|l| l.get(indent..).unwrap_or(l.trim_start())).collect();
+    (from as u32, lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -192,5 +206,13 @@ mod tests {
         places.visit(at("b", 20));
         let got: Vec<(&str, u32, bool)> = places.iter().map(|p| (p.path.as_str(), p.line, p.changed)).collect();
         assert_eq!(got, [("b", 20, false), ("b", 4, true), ("a", 11, false)]);
+    }
+
+    #[test]
+    fn snippets_around_a_line() {
+        let text = "fun f() {\n    val a = 1\n    val b = 2\n\n    g()\n}\n";
+        assert_eq!(snippet(text, 2), (1, "val a = 1\nval b = 2\n".to_owned()));
+        assert_eq!(snippet(text, 0), (0, "fun f() {\n    val a = 1".to_owned()));
+        assert_eq!(snippet(text, 99), (4, "    g()\n}".to_owned()));
     }
 }

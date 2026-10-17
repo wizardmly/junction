@@ -9,15 +9,14 @@
 //! the type or the method.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use gpui_kit::component::{Icon, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AppContext as _, ClickEvent, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
+    ClickEvent, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
     Task, Window, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::index::call_hierarchy::{caller_at, calls_in, offset_of};
+use crate::index::call_hierarchy::{CallNode, caller_at};
 use crate::index::hierarchy::{MethodMark, TypeNode, TypeView};
 use crate::index::lang::Lang;
 use crate::index::service::CodeIndex;
@@ -74,6 +73,12 @@ pub struct HierarchyView {
 }
 
 impl EventEmitter<HierarchyEvent> for HierarchyView {}
+
+impl From<CallNode> for Node {
+    fn from(n: CallNode) -> Self {
+        Self { name: n.name, path: n.path, offset: n.offset, line: n.line, col: n.col, calls: n.calls, children: None, expanded: false, loading: false, recursive: n.recursive }
+    }
+}
 
 fn node_at<'a>(node: &'a mut Node, path: &[usize]) -> Option<&'a mut Node> {
     match path.split_first() {
@@ -206,7 +211,6 @@ impl HierarchyView {
 
     /// Looks up a node's callers.
     fn expand(&mut self, at: Vec<usize>, cx: &mut Context<Self>) {
-        let Some(root_dir) = self.index.read(cx).root().map(|r| r.to_path_buf()) else { return };
         let Some(root) = self.root.as_mut() else { return };
         // The names on the way down, to stop at recursion.
         let mut ancestors = vec![root.name.clone()];
@@ -223,108 +227,18 @@ impl HierarchyView {
             return;
         }
         node.loading = true;
-        let file = root_dir.join(&node.path);
-        let Ok(text) = std::fs::read_to_string(&file) else {
-            node.loading = false;
-            node.children = Some(Vec::new());
-            return;
+        let (path, offset) = (node.path.clone(), node.offset);
+        let task = if self.callees {
+            CodeIndex::callees_of(&self.index, path, offset, ancestors, cx)
+        } else {
+            CodeIndex::callers_of(&self.index, path, offset, ancestors, cx)
         };
-        if self.callees {
-            let lang = Lang::from_path(&node.path);
-            let offsets = lang.map(|lang| calls_in(lang, &text, node.offset)).unwrap_or_default();
-            let lines: Vec<(u32, u32)> = offsets
-                .iter()
-                .map(|&o| {
-                    let line_start = text[..o].rfind('\n').map_or(0, |i| i + 1);
-                    (text[..o].matches('\n').count() as u32, text[line_start..o].encode_utf16().count() as u32)
-                })
-                .collect();
-            let tasks: Vec<_> = offsets.iter().map(|&o| self.index.read(cx).definitions(node.path.clone(), text.clone(), o, cx)).collect();
-            self._tasks.push(cx.spawn(async move |this, cx| {
-                let mut targets = Vec::new();
-                for (task, call) in tasks.into_iter().zip(lines) {
-                    if let Some(t) = task.await.into_iter().next() {
-                        targets.push((t, call));
-                    }
-                }
-                let callees = cx
-                    .background_spawn(async move {
-                        let mut out: Vec<Node> = Vec::new();
-                        for (t, call) in targets {
-                            let Some(lang) = Lang::from_path(&t.path) else { continue };
-                            let file = if std::path::Path::new(&t.path).is_absolute() { PathBuf::from(&t.path) } else { root_dir.join(&t.path) };
-                            let Ok(text) = std::fs::read_to_string(&file) else { continue };
-                            let file_name = t.path.rsplit(['/', '\\']).next().unwrap_or(&t.path).to_owned();
-                            let Some(callee) = caller_at(lang, &text, offset_of(&text, t.line, t.col), &file_name) else { continue };
-                            match out.iter_mut().find(|n| n.path == t.path && n.offset == callee.offset) {
-                                Some(n) => n.calls.push(call),
-                                None => out.push(Node {
-                                    recursive: ancestors.contains(&callee.name),
-                                    name: callee.name,
-                                    path: t.path.clone(),
-                                    offset: callee.offset,
-                                    line: callee.line,
-                                    col: callee.col,
-                                    calls: vec![call],
-                                    children: None,
-                                    expanded: false,
-                                    loading: false,
-                                }),
-                            }
-                        }
-                        out
-                    })
-                    .await;
-                this.update(cx, |this, cx| {
-                    if let Some(node) = this.root.as_mut().and_then(|r| node_at(r, &at)) {
-                        node.loading = false;
-                        node.children = Some(callees);
-                    }
-                    cx.notify();
-                })
-                .ok();
-            }));
-            cx.notify();
-            return;
-        }
-        let task = self.index.read(cx).usages(node.path.clone(), text, node.offset, cx);
         self._tasks.push(cx.spawn(async move |this, cx| {
-            let (_, usages) = task.await;
-            // Group the calls by the function they're in.
-            let callers = cx
-                .background_spawn(async move {
-                    let mut out: Vec<Node> = Vec::new();
-                    for u in usages.into_iter().filter(|u| u.group != "Declarations") {
-                        let Some(lang) = Lang::from_path(&u.path) else { continue };
-                        let path: PathBuf = if std::path::Path::new(&u.path).is_absolute() { PathBuf::from(&u.path) } else { root_dir.join(&u.path) };
-                        let Ok(text) = std::fs::read_to_string(&path) else { continue };
-                        let offset = offset_of(&text, u.line, u.col);
-                        let file_name = u.path.rsplit('/').next().unwrap_or(&u.path).to_owned();
-                        let Some(caller) = caller_at(lang, &text, offset, &file_name) else { continue };
-                        match out.iter_mut().find(|n| n.path == u.path && n.offset == caller.offset) {
-                            Some(n) => n.calls.push((u.line, u.col)),
-                            None => out.push(Node {
-                                recursive: ancestors.contains(&caller.name),
-                                name: caller.name,
-                                path: u.path.clone(),
-                                offset: caller.offset,
-                                line: caller.line,
-                                col: caller.col,
-                                calls: vec![(u.line, u.col)],
-                                children: None,
-                                expanded: false,
-                                loading: false,
-                            }),
-                        }
-                    }
-                    out.sort_by(|a, b| a.name.cmp(&b.name));
-                    out
-                })
-                .await;
+            let found = task.await;
             this.update(cx, |this, cx| {
                 if let Some(node) = this.root.as_mut().and_then(|r| node_at(r, &at)) {
                     node.loading = false;
-                    node.children = Some(callers);
+                    node.children = Some(found.into_iter().map(Node::from).collect());
                 }
                 cx.notify();
             })
