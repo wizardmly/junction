@@ -950,3 +950,17 @@ Linux 实测（Xvfb，Shapes.kt：`interface Shape { fun area() }`、`abstract c
 | 编辑后已记录位置的行号随文本移动、重启后保留、删除某一项 | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程）：在 Cart.kt 的 `use` 上 Ctrl+B 跳到 `total`，打开 Main.kt 在第 6 行末尾输入 ` // hi`，再打开 Shapes.kt；Ctrl+Shift+E 列出 Shapes.kt（Tile）、Main.kt（main，changed，三行代码含 `// hi`）、Cart.kt（Cart.total）、Cart.kt（Cart.use）；再按 Ctrl+Shift+E 只剩 Main.kt；输入 `cart` 过滤出含 cart 的三项；↓ Enter 打开 Cart.kt 第 4 行第 9 列。
+
+## 54. Inline Variable（Ctrl+Alt+N，2026-10-17）
+
+照 IntelliJ 的 Inline（局部变量）：光标在 Kotlin / Java 局部变量的声明或任一使用上按 Ctrl+Alt+N（右键 Refactor › Inline…），每个使用换成它的初始值，声明（独占的行整行）删掉，一次可撤销的修改，光标停在第一个被替换的位置。代码：`src/index/inline.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 初始值是带运算符的表达式、而使用处外面还有运算时加括号（`(a - 1) * (a - 1)`）；作为参数、返回值、赋值右边时不加 | ✅ |
+| Kotlin 字符串模板：`"$x"` 换成 `"${a + 1}"`（初始值只是一个名字时 `"$size"`） | ✅ |
+| 拒绝并照 IntelliJ 的提示：不在变量名上、没有初始值、没有使用、声明后被赋值 / `++` | ✅ |
+| 顺带修正：局部变量的解析（Ctrl+点击、Find Usages、Rename）现在认得 Kotlin 字符串模板里的 `$x`，以前 Rename 局部变量会漏改模板里的使用 | ✅ |
+| Inline Method / Function、Inline 字段与常量、预览（多处使用时） | ⬜ |
+
+Linux 实测（Xvfb，`ip` 工程 Main.kt）：光标在 `val cart = Cart(0.2)` 的 `cart` 上按 Ctrl+Alt+N，两处 `cart.total(…)` 变成 `Cart(0.2).total(…)`，声明行删除；再按一次弹出 "Cannot perform refactoring. Caret should be positioned at the name of element to be inlined."。

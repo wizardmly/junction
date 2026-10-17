@@ -2540,6 +2540,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::move_line_up))
             .on_action(cx.listener(Self::move_line_down))
             .on_action(cx.listener(Self::move_statement_up))
+            .on_action(cx.listener(Self::inline))
             .on_action(cx.listener(Self::move_statement_down))
             .on_action(cx.listener(Self::extend_selection))
             .on_action(cx.listener(Self::shrink_selection))
@@ -2733,6 +2734,7 @@ impl Render for FileEditor {
                                         .menu_with_disabled("Introduce Constant…", read_only, Box::new(IntroduceConstant))
                                         .menu_with_disabled("Change Signature…", read_only, Box::new(ChangeSignature))
                                         .menu_with_disabled("Introduce Parameter…", read_only, Box::new(IntroduceParameter))
+                                        .menu_with_disabled("Inline…", read_only, Box::new(editing::Inline))
                                         .menu_with_disabled(if java_file { "Extract Method…" } else { "Extract Function…" }, read_only, Box::new(ExtractMethod)),
                                 )
                                 .menu("Select in Project View", Box::new(crate::ui::workspace::SelectInProject))

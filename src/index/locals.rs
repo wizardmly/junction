@@ -26,7 +26,8 @@ pub struct Local {
 
 /// Identifier node kinds that can name a local.
 fn is_ident(kind: &str) -> bool {
-    matches!(kind, "identifier" | "simple_identifier" | "shorthand_property_identifier_pattern")
+    // Kotlin's `"$x"`: a use in a string template.
+    matches!(kind, "identifier" | "simple_identifier" | "shorthand_property_identifier_pattern" | "interpolated_identifier")
 }
 
 /// Nodes wrapping a declared name on its way up to the declaration
@@ -222,7 +223,12 @@ fn collect_all<'t>(node: Node<'t>, out: &mut Vec<Node<'t>>) {
 
 /// Resolves the identifier at `offset` to a local declaration.
 pub fn resolve(lang: Lang, text: &str, offset: usize) -> Option<Local> {
-    let (word, range) = super::nav::word_at(text, offset)?;
+    let (mut word, mut range) = super::nav::word_at(text, offset)?;
+    // Kotlin's `"$x"`: x.
+    if lang == Lang::Kotlin && word.len() > 1 && word.starts_with('$') {
+        word.remove(0);
+        range.start += 1;
+    }
     if is_member_access(text, range.start) {
         return None;
     }
@@ -274,6 +280,16 @@ pub fn resolve(lang: Lang, text: &str, offset: usize) -> Option<Local> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn string_template_uses() {
+        let text = "fun f() {\n    val n = 1\n    log(\"$n and ${n}\")\n}\n";
+        let local = resolve(Lang::Kotlin, text, text.find("n =").unwrap()).unwrap();
+        let uses: Vec<usize> = local.uses.clone();
+        assert_eq!(uses, [text.find("$n").unwrap() + 1, text.find("{n}").unwrap() + 1]);
+        // And back from the template.
+        assert_eq!(resolve(Lang::Kotlin, text, text.find("$n").unwrap() + 1).unwrap().decl, text.find("n =").unwrap());
+    }
 
     #[test]
     fn visible_locals() {

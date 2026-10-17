@@ -13,7 +13,7 @@ use gpui_kit::{Context, KeyBinding, Window, actions};
 use super::FileEditor;
 use crate::domain::line_edit::{self, Edited};
 
-actions!(editing, [DuplicateLine, CommentLine, CommentBlock, MoveLineUp, MoveLineDown, MoveStatementUp, MoveStatementDown, ExtendSelection, ShrinkSelection, JoinLines, StartNewLine, ToggleCase]);
+actions!(editing, [DuplicateLine, CommentLine, CommentBlock, MoveLineUp, MoveLineDown, MoveStatementUp, MoveStatementDown, Inline, ExtendSelection, ShrinkSelection, JoinLines, StartNewLine, ToggleCase]);
 
 /// In the editor's input, over the input's own bindings for these keys.
 const INPUT: &str = "FileEditor > Input";
@@ -24,6 +24,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if mac { "cmd-d" } else { "ctrl-d" }, DuplicateLine, Some(INPUT)),
         KeyBinding::new(if mac { "cmd-/" } else { "ctrl-/" }, CommentLine, Some(INPUT)),
         KeyBinding::new(if mac { "cmd-alt-/" } else { "ctrl-shift-/" }, CommentBlock, Some(INPUT)),
+        KeyBinding::new(if mac { "cmd-alt-n" } else { "ctrl-alt-n" }, Inline, Some(INPUT)),
         KeyBinding::new("alt-shift-up", MoveLineUp, Some(INPUT)),
         KeyBinding::new("alt-shift-down", MoveLineDown, Some(INPUT)),
         KeyBinding::new(if mac { "cmd-shift-up" } else { "ctrl-shift-up" }, MoveStatementUp, Some(INPUT)),
@@ -92,6 +93,20 @@ impl FileEditor {
     pub(super) fn move_statement_down(&mut self, _: &MoveStatementDown, window: &mut Window, cx: &mut Context<Self>) {
         let lang = crate::index::lang::Lang::from_path(&self.path);
         self.edit_with(|t, s| crate::index::selection::move_statement(lang, t, s, false), window, cx);
+    }
+
+    /// Inline (Ctrl+Alt+N): a local variable into its uses.
+    pub(super) fn inline(&mut self, _: &Inline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only() {
+            return;
+        }
+        let Some(lang) = crate::index::lang::Lang::from_path(&self.path) else { return };
+        let text = self.text(cx);
+        let offset = self.state.read(cx).cursor();
+        match crate::index::inline::inline_variable(lang, &text, offset) {
+            Ok(edited) => self.apply_edited(edited, window, cx),
+            Err(message) => Self::hint("Inline Variable", message, window, cx),
+        }
     }
 
     pub(super) fn join_lines(&mut self, _: &JoinLines, window: &mut Window, cx: &mut Context<Self>) {
