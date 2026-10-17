@@ -4,8 +4,6 @@
 //! 'else...'" drops the else branch, and loops and `try` give up their
 //! bodies the same way (a `try` keeps its `finally` code after).
 
-use std::ops::Range;
-
 use tree_sitter::Node;
 
 use super::extract_method::children;
