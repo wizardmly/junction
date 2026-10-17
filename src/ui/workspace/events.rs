@@ -16,11 +16,15 @@ impl Workspace {
             let root = this.model.read(cx).project_root().map(|p| p.to_path_buf());
             this.code_index.update(cx, |index, cx| {
                 if index.root() != root.as_deref() {
-                    index.set_root(root, cx);
+                    index.set_root(root.clone(), cx);
                 } else {
                     index.refresh(cx);
                 }
             });
+            // The project's tabs as they were when it was last open.
+            if let Some(root) = root {
+                this.restore_session(root, window, cx);
+            }
         }
         if let RepoEvent::OpenLogTab { title, filter } = event {
             this.open_log_tab(title.clone(), filter.clone(), cx);

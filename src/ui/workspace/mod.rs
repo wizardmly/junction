@@ -130,6 +130,7 @@ mod menu;
 mod navigation;
 mod panels;
 mod search;
+mod session;
 mod vcs;
 use tabs::{EditorTab, Front};
 
@@ -323,6 +324,10 @@ pub struct Workspace {
     /// Last Edit Location's walk back: the edited places when it began,
     /// how far it got, and where that put the caret.
     edit_walk: Option<(Vec<history::Place>, usize, history::Position)>,
+    /// The project whose editor session is open (restored), and a save
+    /// on its way.
+    session_root: Option<std::path::PathBuf>,
+    session_save: Option<gpui_kit::Task<()>>,
     /// The project whose old Local History was dropped this session.
     history_pruned: Option<std::path::PathBuf>,
     project: Entity<crate::ui::project_view::ProjectView>,
@@ -700,6 +705,16 @@ impl Workspace {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         subscriptions.push(cx.on_focus_lost(window, |this, window, cx| window.focus(&this.focus, cx)));
+        // The editor session is kept when the app quits or the window closes.
+        subscriptions.push(cx.on_app_quit(|this, cx| {
+            this.save_session(cx);
+            async {}
+        }));
+        let closing = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |_, cx| {
+            closing.update(cx, |this, cx| this.save_session(cx)).ok();
+            true
+        });
         let tool_focus = ToolWindow::ALL.into_iter().map(|w| (w, cx.focus_handle())).collect();
         Self {
             model,
@@ -738,6 +753,8 @@ impl Workspace {
             recently_changed: history::RecentPaths::default(),
             recent_places: history::RecentPlaces::default(),
             edit_walk: None,
+            session_root: None,
+            session_save: None,
             history_pruned: None,
             project,
             nav: history::NavHistory::default(),

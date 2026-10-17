@@ -3,6 +3,7 @@
 
 pub mod adb_device;
 pub mod breakpoint_store;
+pub mod editor_session_store;
 pub mod run_config_store;
 pub mod jdk_download;
 pub mod sources_download;

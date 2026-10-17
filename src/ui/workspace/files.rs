@@ -38,6 +38,7 @@ impl Workspace {
                     let (line, col) = editor.cursor(cx);
                     self.recent_places.change((editor.path().to_owned(), line, col));
                 }
+                self.schedule_session_save(cx);
             }
             FileEditorEvent::CopyPathReference => {
                 let editor = view.read(cx);

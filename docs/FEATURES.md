@@ -949,7 +949,8 @@ Linux 实测（Xvfb，Shapes.kt：`interface Shape { fun area() }`、`abstract c
 | Show changed only 复选框，或在弹窗里再按 Ctrl+Shift+E 切换；标题随之变成 "Recently Changed Locations" | ✅ |
 | Navigate 菜单项、Keymap 设置里的条目 | ✅ |
 | Navigate › Last Edit Location（Ctrl+Shift+Backspace / ⌘⇧⌫）：跳到最近一次编辑的位置，在那里再按就往前一个编辑位置，到头提示 "No more edit locations" | ✅ |
-| 编辑后已记录位置的行号随文本移动、重启后保留、删除某一项 | ⬜ |
+| 重启后保留（随编辑器会话一起存，见 §56） | ✅ |
+| 编辑后已记录位置的行号随文本移动、删除某一项 | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程）：在 Cart.kt 的 `use` 上 Ctrl+B 跳到 `total`，打开 Main.kt 在第 6 行末尾输入 ` // hi`，再打开 Shapes.kt；Ctrl+Shift+E 列出 Shapes.kt（Tile）、Main.kt（main，changed，三行代码含 `// hi`）、Cart.kt（Cart.total）、Cart.kt（Cart.use）；再按 Ctrl+Shift+E 只剩 Main.kt；输入 `cart` 过滤出含 cart 的三项；↓ Enter 打开 Cart.kt 第 4 行第 9 列。Last Edit Location：在 Cart.kt 第 8 行、Main.kt 第 6 行各改一处后切到 Shapes.kt，连按 Ctrl+Shift+Backspace 依次到 Main.kt 6:53、Cart.kt 8:35，第三次提示没有更多。
 
@@ -984,3 +985,15 @@ Linux 实测（Xvfb，`ip` 工程 Main.kt）：光标在 `val cart = Cart(0.2)` 
 | `when` / `switch`、单独的花括号块 | | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程 Flow.kt：`for` 里套 `if / else`）：光标在 else 分支的 `println("small $i")` 上按 Ctrl+Shift+Delete，弹出 Unwrap 'else...'、Remove 'else...'、Unwrap 'for...'；选 Remove 'else...' 后只剩 `if (i > 2) { println("big $i") }`；光标在 `for` 体末尾时只有 Unwrap 'for...'，选中后 `if / else` 提到函数体一层、缩进少一级。
+
+## 56. 重新打开工程时恢复编辑器（2026-10-17）
+
+照 IntelliJ 重新打开工程的样子：上次打开的标签页（按原顺序）、每个标签的光标位置、当时活动的标签，以及 Recent Locations 的位置列表，都在工程再打开时恢复。存于设置目录的 `editor-sessions.json`，按工程根目录分开。代码：`src/infra/editor_session_store.rs`、`src/ui/workspace/session.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| 保存时机：切换 / 打开 / 关闭标签、编辑后约 2 秒（合并连续的变化），以及退出（Exit）和关闭窗口时 | ✅ |
+| 恢复：工程打开后一次；已删除的文件跳过；恢复不算一次访问，Recent Locations 的顺序不变 | ✅ |
+| 固定（pin）的标签、分屏、不同 revision 的标签、工具窗口的布局 | ⬜ |
+
+Linux 实测（Xvfb，`ip` 工程）：打开 Cart.kt 并把光标放在第 8 行，再打开 Main.kt；等 3 秒后直接结束进程再启动，两个标签按原顺序回来、Main.kt 是活动标签，点 Cart.kt 光标在 8:14。

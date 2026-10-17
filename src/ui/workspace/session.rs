@@ -1,0 +1,73 @@
+//! The editor session kept across restarts, as IntelliJ reopens a project:
+//! its tabs with their carets, the active one, and Recent Locations. Saved
+//! a moment after tabs or text change, and when the app quits or the
+//! window closes; restored when the project opens.
+
+use super::*;
+use crate::infra::editor_session_store::{self as store, EditorSession, SessionPlace, SessionTab};
+
+impl Workspace {
+    fn session(&self, cx: &gpui_kit::App) -> EditorSession {
+        let tabs = self
+            .editors
+            .iter()
+            .map(|t| t.view.read(cx))
+            .filter(|e| e.revision().is_none())
+            .map(|e| {
+                let (line, col) = e.cursor(cx);
+                SessionTab { path: e.path().to_owned(), line, col }
+            })
+            .collect();
+        let active = self.editor().map(|e| e.read(cx)).filter(|e| e.revision().is_none()).map(|e| e.path().to_owned());
+        let places = self.recent_places.iter().map(|p| SessionPlace { path: p.path.clone(), line: p.line, col: p.col, changed: p.changed }).collect();
+        EditorSession { tabs, active, places }
+    }
+
+    /// Saves the session of the project whose session is showing.
+    pub(super) fn save_session(&mut self, cx: &mut Context<Self>) {
+        self.session_save = None;
+        let root = self.model.read(cx).project_root().map(|r| r.to_path_buf());
+        // Not before it was restored: that would save it empty.
+        let (Some(root), Some(shown)) = (root, self.session_root.as_ref()) else { return };
+        if root != *shown {
+            return;
+        }
+        store::save(&root, &self.session(cx));
+    }
+
+    /// Saves the session in a moment (once for a burst of changes).
+    pub(super) fn schedule_session_save(&mut self, cx: &mut Context<Self>) {
+        if self.session_save.is_some() || self.session_root.is_none() {
+            return;
+        }
+        self.session_save = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+            this.update(cx, |this, cx| this.save_session(cx)).ok();
+        }));
+    }
+
+    /// Reopens a project's tabs and carets and its Recent Locations, once
+    /// per opening.
+    pub(super) fn restore_session(&mut self, root: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session_root.as_ref() == Some(&root) {
+            return;
+        }
+        let session = store::load(&root);
+        self.session_root = Some(root.clone());
+        let places = history::RecentPlaces::restore(session.places.into_iter().map(|p| history::Place { path: p.path, line: p.line, col: p.col, changed: p.changed }).collect());
+        if !self.editors.is_empty() {
+            self.recent_places = places;
+            return;
+        }
+        let exists = |path: &str| root.join(path).is_file();
+        for tab in session.tabs.iter().filter(|t| exists(&t.path)) {
+            self.open_at(tab.path.clone(), tab.line, tab.col, window, cx);
+        }
+        if let Some(active) = session.active.and_then(|a| session.tabs.iter().find(|t| t.path == a).cloned()).filter(|t| exists(&t.path)) {
+            self.open_at(active.path, active.line, active.col, window, cx);
+        }
+        // Reopening isn't a visit: the places stay as they were.
+        self.recent_places = places;
+        cx.notify();
+    }
+}

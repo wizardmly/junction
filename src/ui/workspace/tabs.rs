@@ -317,6 +317,7 @@ impl Workspace {
         tab.used = self.tab_clock;
         self.front = Front::Editor(ix);
         let view = tab.view.clone();
+        self.schedule_session_save(cx);
         if view.read(cx).revision().is_none() {
             let path = view.read(cx).path().to_owned();
             let open = self.tab_paths(cx);
@@ -369,6 +370,7 @@ impl Workspace {
         }
         let open = self.tab_paths(cx);
         self.project.update(cx, |project, cx| project.set_open_files(open, cx));
+        self.schedule_session_save(cx);
     }
 
     /// Closes tabs (saving their text first, as IntelliJ's autosave does).

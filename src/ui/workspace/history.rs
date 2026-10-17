@@ -92,6 +92,12 @@ impl RecentPlaces {
     const LIMIT: usize = 50;
     const NEAR: u32 = 2;
 
+    /// Places read back from a saved session, newest first.
+    pub fn restore(mut places: Vec<Place>) -> Self {
+        places.truncate(Self::LIMIT);
+        Self { places }
+    }
+
     pub fn visit(&mut self, (path, line, col): Position) {
         self.add(Place { path, line, col, changed: false });
     }
