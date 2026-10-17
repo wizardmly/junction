@@ -121,7 +121,7 @@ impl FileEditor {
             Ok(edited) => self.apply_edited(edited, window, cx),
             // Not a local variable: a function?
             Err(variable) => match crate::index::inline_function::plan_at(lang, &text, offset) {
-                Ok((plan, declaration)) => self.inline_function(lang, text, plan, declaration, window, cx),
+                Ok((plan, declaration)) => self.inline_function(lang, text, offset, plan, declaration, window, cx),
                 Err(_) if !variable.contains("Caret should be positioned") => Self::hint("Inline Variable", variable, window, cx),
                 Err(function) => Self::hint("Inline", function, window, cx),
             },

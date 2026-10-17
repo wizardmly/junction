@@ -1377,11 +1377,11 @@ impl FileEditor {
         .detach();
     }
 
-    /// Inline Function: once confirmed, every call in the project becomes
-    /// the function's body and the declaration goes, as IntelliJ's "Inline
-    /// all and remove the function".
-    pub(super) fn inline_function(&mut self, lang: crate::index::lang::Lang, text: String, plan: crate::domain::introduce_parameter::ParameterPlan, declaration: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::domain::inline_function::{edits, inline_calls};
+    /// Inline Function, as IntelliJ's dialog: Inline All and Remove (every
+    /// call in the project becomes the function's body, the declaration
+    /// goes) or, invoked on a call, Inline This Only.
+    pub(super) fn inline_function(&mut self, lang: crate::index::lang::Lang, text: String, offset: usize, plan: crate::domain::introduce_parameter::ParameterPlan, declaration: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::inline_function::{call_edit, edits, inline_calls};
         use crate::domain::introduce_parameter::apply;
         use crate::index::introduce_parameter::call_sites;
         use crate::index::lang::Lang;
@@ -1392,6 +1392,8 @@ impl FileEditor {
         let own = self.path.clone();
         let (function, params) = (plan.function.clone(), plan.params.len());
         let here = call_sites(lang, &text, &function, params);
+        // Invoked on a call (not the declaration): that one can go alone.
+        let this_call = here.iter().find(|c| c.name_range.start <= offset && offset <= c.name_range.end && !declaration.contains(&offset)).cloned();
         let files = root.clone().map(|root| DiskFiles { root, repository: None });
         let task = cx.background_spawn(async move {
             let Some(root) = root else { return Vec::new() };
@@ -1402,42 +1404,54 @@ impl FileEditor {
             let elsewhere = task.await;
             this.update_in(cx, |_, window, cx| {
                 let calls = here.iter().filter(|c| !(declaration.start <= c.name_range.start && c.name_range.end <= declaration.end)).count() + elsewhere.iter().map(|f| f.calls.len()).sum::<usize>();
-                let message = format!("Inline all {calls} usages of {}() and remove the function?", plan.function);
-                let (editor, window_handle) = (cx.entity().downgrade(), window.window_handle());
-                crate::ui::dialogs::confirm(TITLE, message, "Inline", move |cx| {
-                    let (editor, plan, declaration, here, elsewhere, files, text) = (editor.clone(), plan.clone(), declaration.clone(), here.clone(), elsewhere.clone(), files.clone(), text.clone());
-                    // After the dialog's own handling, when the window is free.
-                    cx.defer(move |cx| {
-                        let files = files.as_ref();
-                        window_handle
-                            .update(cx, |_, window, cx| {
-                                editor
-                                    .update(cx, |this, cx| {
-                                        if this.text(cx) != text {
-                                            return Self::hint(TITLE, "The file changed; try again", window, cx);
-                                        }
-                                        // Every call must inline before anything is written.
-                                        let changes = match edits(&plan, &text, declaration.clone(), &here) {
-                                            Ok(changes) => changes,
-                                            Err(message) => return Self::hint(TITLE, message, window, cx),
-                                        };
-                                        if let Some(message) = elsewhere.iter().find_map(|f| inline_calls(&plan, &f.text, &f.calls).err()) {
-                                            return Self::hint(TITLE, message, window, cx);
-                                        }
-                                        let new = apply(&text, changes);
-                                        this.replace_text(&text, &new, declaration.start.min(new.len()), window, cx);
-                                        let written = files.map_or_else(Vec::new, |files| {
-                                            update_calls::rewrite(files, &elsewhere, &|f| f.calls.iter().filter_map(|c| crate::domain::inline_function::call_edit(&plan, &f.text, c).ok()).collect())
-                                        });
-                                        if !written.is_empty() {
-                                            cx.emit(FileEditorEvent::FilesWritten(written));
-                                        }
-                                    })
-                                    .ok();
+                let editor = cx.entity().downgrade();
+                let message = format!("Function {}() has {calls} usages.", plan.function);
+                let mut options: Vec<(&'static str, std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)>)> = Vec::new();
+                if let Some(call) = this_call {
+                    let (editor, plan, text) = (editor.clone(), plan.clone(), text.clone());
+                    options.push(("Inline This Only", std::rc::Rc::new(move |window, cx| {
+                        editor
+                            .update(cx, |this, cx| {
+                                if this.text(cx) != text {
+                                    return Self::hint(TITLE, "The file changed; try again", window, cx);
+                                }
+                                match call_edit(&plan, &text, &call) {
+                                    Ok((range, body)) => {
+                                        let new = apply(&text, vec![(range.clone(), body)]);
+                                        this.replace_text(&text, &new, range.start, window, cx);
+                                    }
+                                    Err(message) => Self::hint(TITLE, message, window, cx),
+                                }
                             })
                             .ok();
-                    });
-                }, window, cx);
+                    })));
+                }
+                options.push(("Inline All and Remove", std::rc::Rc::new(move |window, cx| {
+                    editor
+                        .update(cx, |this, cx| {
+                            if this.text(cx) != text {
+                                return Self::hint(TITLE, "The file changed; try again", window, cx);
+                            }
+                            // Every call must inline before anything is written.
+                            let changes = match edits(&plan, &text, declaration.clone(), &here) {
+                                Ok(changes) => changes,
+                                Err(message) => return Self::hint(TITLE, message, window, cx),
+                            };
+                            if let Some(message) = elsewhere.iter().find_map(|f| inline_calls(&plan, &f.text, &f.calls).err()) {
+                                return Self::hint(TITLE, message, window, cx);
+                            }
+                            let new = apply(&text, changes);
+                            this.replace_text(&text, &new, declaration.start.min(new.len()), window, cx);
+                            let written = files.as_ref().map_or_else(Vec::new, |files| {
+                                update_calls::rewrite(files, &elsewhere, &|f| f.calls.iter().filter_map(|c| call_edit(&plan, &f.text, c).ok()).collect())
+                            });
+                            if !written.is_empty() {
+                                cx.emit(FileEditorEvent::FilesWritten(written));
+                            }
+                        })
+                        .ok();
+                })));
+                crate::ui::dialogs::choose(TITLE, message, Vec::new(), "Cancel", options, window, cx);
             })
             .ok();
         })
