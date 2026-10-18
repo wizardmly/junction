@@ -3027,6 +3027,15 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.scroll_handle.offset()
     }
 
+    /// Junction: whether the viewport shows the end of the text (a pending
+    /// offset counts as applied), as IntelliJ's console asks before
+    /// following new output.
+    pub fn scrolled_to_end(&self) -> bool {
+        let y = self.deferred_scroll_offset.map_or_else(|| self.scroll_handle.offset().y, |o| o.y);
+        let bottom = (self.input_bounds.size.height - self.scroll_size.height).min(px(0.));
+        y <= bottom + px(2.)
+    }
+
     /// Set scroll offset of the editor viewport.
     ///
     /// The offset will be clamped to the valid range, and applied after the next layout.
