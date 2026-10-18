@@ -46,7 +46,7 @@ mod tests {
             self.args.borrow_mut().extend(plan.args.iter().cloned());
             line("> Task :app:testDebugUnitTest");
             self.events.iter().cloned().for_each(event);
-            let build = BuildResult { succeeded: !self.cancelled, cancelled: self.cancelled, problems: Vec::new() };
+            let build = BuildResult { succeeded: !self.cancelled, cancelled: self.cancelled, problems: Vec::new(), failure: None };
             TestRunReport { build, reported: self.reported.clone() }
         }
     }

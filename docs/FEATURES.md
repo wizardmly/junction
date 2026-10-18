@@ -1034,5 +1034,6 @@ Linux 实测（Xvfb，`ip` 工程 Cart.kt）：在 `total` 上按 Alt+Delete 弹
 | Build Output 第二行写出 Gradle 用的 JDK（来源、厂商、版本、路径），Windows 上还有系统版本（`RtlGetVersion`，如 `Windows 10.0.19045`） | ✅ |
 | Windows 上启动时 `SetErrorMode(SEM_FAILCRITICALERRORS)`，子进程继承：构建里缺 DLL 的程序不再弹系统框，而以 0xC0000135 退出 | ✅（Windows 未实测） |
 | 输出里出现 0xC0000135 / -1073741515 时追加一行，说明是哪个程序缺 DLL（取 Gradle 的 `Process 'command '…''`） | ✅ |
+| Build 窗口左侧列出 Gradle 的 “What went wrong”（Android Studio 的失败节点）：不是编译错误的失败（签名文件不存在、任务配置错误）也能一眼看到原因 | ✅ |
 
 Linux 实测（Xvfb，calc）：Make Project 的输出第二行是 `Gradle JDK: JAVA_HOME  Ubuntu version 21.0.12.1  /usr/lib/jvm/java-21-openjdk-amd64`。Windows 部分只单独交叉编译检查过。

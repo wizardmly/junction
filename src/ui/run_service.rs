@@ -45,6 +45,8 @@ pub struct BuildLog {
     pub title: String,
     pub lines: Vec<SharedString>,
     pub problems: Vec<FileProblem>,
+    /// Gradle's "What went wrong" when it failed.
+    pub failure: Option<String>,
     pub status: BuildStatus,
     pub started: chrono::DateTime<chrono::Local>,
     pub took: Option<Duration>,
@@ -319,7 +321,7 @@ impl RunService {
         self.busy = true;
         // Android Studio's first line.
         let first = format!("Executing tasks: [{}]", tasks.join(", "));
-        self.build = Some(BuildLog { title, lines: vec![first.into()], problems: Vec::new(), status: BuildStatus::Running, started: chrono::Local::now(), took: None });
+        self.build = Some(BuildLog { title, lines: vec![first.into()], problems: Vec::new(), failure: None, status: BuildStatus::Running, started: chrono::Local::now(), took: None });
         cx.emit(RunEvent::ShowBuild);
         cx.notify();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -396,6 +398,7 @@ impl RunService {
             };
             b.took = Some((chrono::Local::now() - b.started).to_std().unwrap_or_default());
             b.problems = result.problems.clone();
+            b.failure = result.failure.clone();
         }
         // The editors mark the build's errors, as after a compile on save.
         if !result.cancelled {

@@ -48,7 +48,8 @@ impl TaskRunner for GradleBuild {
         if let Some(hint) = build::missing_dll(&output) {
             line(&hint);
         }
-        BuildResult { succeeded, cancelled: was_cancelled, problems: parse_output(&output) }
+        let failure = if succeeded || was_cancelled { None } else { build::failure_summary(&output) };
+        BuildResult { succeeded, cancelled: was_cancelled, problems: parse_output(&output), failure }
     }
 
     fn apk_output(&self, module: &ModuleInfo, variant: &str) -> Option<ApkOutput> {

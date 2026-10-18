@@ -133,6 +133,21 @@ impl Render for BuildView {
                     el.child(div().text_xs().text_color(palette.text_secondary).child(format!("{}, {}", count(errors, "error"), count(warnings, "warning"))))
                 }),
         );
+        // Gradle's "What went wrong": Android Studio's failure node.
+        if let Some(failure) = &build.failure {
+            let mut lines = failure.lines();
+            let first = lines.next().unwrap_or_default().to_owned();
+            let rest: Vec<&str> = lines.map(str::trim).filter(|l| !l.is_empty()).take(8).collect();
+            problems = problems.child(
+                v_flex()
+                    .id("build-failure")
+                    .px_2()
+                    .py_0p5()
+                    .pl(px(24.))
+                    .child(h_flex().items_start().gap_1().child(Icon::new(icons::STATUS_ERROR).xsmall().text_color(palette.status_conflict)).child(div().flex_1().min_w_0().child(first)))
+                    .when(!rest.is_empty(), |el| el.child(div().pl(px(20.)).text_xs().text_color(palette.text_secondary).child(rest.join("\n")))),
+            );
+        }
         for (ix, p) in build.problems.iter().enumerate() {
             let name = p.file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let (path, line, col) = (p.file.clone(), p.problem.start.line, p.problem.start.col);

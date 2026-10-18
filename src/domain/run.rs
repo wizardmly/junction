@@ -173,6 +173,9 @@ pub struct BuildResult {
     /// Stopped by the user.
     pub cancelled: bool,
     pub problems: Vec<FileProblem>,
+    /// Gradle's "What went wrong" when the build failed: Android Studio's
+    /// failure node in the Build window.
+    pub failure: Option<String>,
 }
 
 /// The APKs a variant's build produced.

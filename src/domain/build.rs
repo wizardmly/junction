@@ -83,8 +83,30 @@ pub fn missing_dll(output: &str) -> Option<String> {
     })
 }
 
+/// Gradle's "* What went wrong:" section, its indent taken off; none when
+/// the output has none.
+pub fn failure_summary(output: &str) -> Option<String> {
+    let (_, rest) = output.split_once("* What went wrong:")?;
+    let section = rest.split("\n* ").next().unwrap_or(rest);
+    let lines: Vec<&str> = section.lines().map(str::trim_end).skip_while(|l| l.trim().is_empty()).collect();
+    let indent = lines.iter().filter(|l| !l.trim().is_empty()).map(|l| l.len() - l.trim_start().len()).min().unwrap_or(0);
+    let text = lines.iter().map(|l| l.get(indent..).unwrap_or("").to_owned()).collect::<Vec<_>>().join("\n");
+    let text = text.trim().to_owned();
+    (!text.is_empty()).then_some(text)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reads_what_went_wrong() {
+        let out = "> Task :app:packageRelease FAILED\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nA problem was found with the configuration of task ':app:packageRelease'.\n  - Property 'storeFile' specifies file 'D:\\app\\keystore.jks' which doesn't exist.\n    \n* Try:\n> Run with --stacktrace\n";
+        assert_eq!(
+            super::failure_summary(out).as_deref(),
+            Some("A problem was found with the configuration of task ':app:packageRelease'.\n  - Property 'storeFile' specifies file 'D:\\app\\keystore.jks' which doesn't exist.")
+        );
+        assert_eq!(super::failure_summary("BUILD SUCCESSFUL"), None);
+    }
+
     #[test]
     fn names_the_program_missing_a_dll() {
         let out = "> Task :app:mergeDebugResources FAILED\nProcess 'command 'C:\\sdk\\aapt2.exe'' finished with non-zero exit value -1073741515\n";
