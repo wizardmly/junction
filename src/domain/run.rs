@@ -173,6 +173,9 @@ pub struct BuildResult {
     /// Stopped by the user.
     pub cancelled: bool,
     pub problems: Vec<FileProblem>,
+    /// Gradle's "What went wrong" when the build failed: Android Studio's
+    /// failure node in the Build window.
+    pub failure: Option<String>,
 }
 
 /// The APKs a variant's build produced.
@@ -184,7 +187,8 @@ pub struct ApkOutput {
 
 /// Runs Gradle tasks, streaming the output a line at a time.
 pub trait TaskRunner {
-    fn run_tasks(&self, build_root: &std::path::Path, tasks: &[String], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult;
+    /// Runs the tasks with Gradle properties (`-Pname=value`) set.
+    fn run_tasks(&self, build_root: &std::path::Path, tasks: &[String], properties: &[(String, String)], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult;
     /// The APKs of a module's variant, after it was assembled.
     fn apk_output(&self, module: &ModuleInfo, variant: &str) -> Option<ApkOutput>;
 }

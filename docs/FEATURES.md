@@ -1034,5 +1034,22 @@ Linux 实测（Xvfb，`ip` 工程 Cart.kt）：在 `total` 上按 Alt+Delete 弹
 | Build Output 第二行写出 Gradle 用的 JDK（来源、厂商、版本、路径），Windows 上还有系统版本（`RtlGetVersion`，如 `Windows 10.0.19045`） | ✅ |
 | Windows 上启动时 `SetErrorMode(SEM_FAILCRITICALERRORS)`，子进程继承：构建里缺 DLL 的程序不再弹系统框，而以 0xC0000135 退出 | ✅（Windows 未实测） |
 | 输出里出现 0xC0000135 / -1073741515 时追加一行，说明是哪个程序缺 DLL（取 Gradle 的 `Process 'command '…''`） | ✅ |
+| Build 窗口左侧列出 Gradle 的 “What went wrong”（Android Studio 的失败节点）：不是编译错误的失败（签名文件不存在、任务配置错误）也能一眼看到原因 | ✅ |
 
 Linux 实测（Xvfb，calc）：Make Project 的输出第二行是 `Gradle JDK: JAVA_HOME  Ubuntu version 21.0.12.1  /usr/lib/jvm/java-21-openjdk-amd64`。Windows 部分只单独交叉编译检查过。
+
+## 59. Generate Signed Bundle / APK（2026-10-18）
+
+照 Android Studio 的 Build › Generate Signed Bundle / APK…（`GenerateSignedApkAction`、`GradleSignStep`）：签名信息通过 `android.injected.signing.store.file / store.password / key.alias / key.password` 这几个 Gradle 属性交给构建，覆盖模块自己的 signingConfig。项目没带 `keystore.jks` 也能出签名包。
+
+| 功能 | 状态 |
+|---|---|
+| Build 菜单项，对话框：App Bundle / APK、应用模块、构建变体（默认 release）、keystore 路径（Choose existing…）、keystore 密码、key 别名、key 密码（密码框可切换显示） | ✅ |
+| 校验和 AS 的提示一致（Key store path is not specified 等），改动输入后提示消失 | ✅ |
+| 每个模块记住 keystore 路径和别名（设置目录 `signing.json`），密码不保存 | ✅ |
+| 构建 `:app:bundleRelease` / `:app:assembleRelease`，成功后弹 “APK(s) generated successfully…” 通知，Locate 打开输出目录 | ✅ |
+| Windows 上直接运行 `gradlew.bat`（不再套 `cmd /C`），由 Rust 按 cmd 规则转义参数，密码里的 `&`、`^`、`%`、引号不会被 cmd 解释 | ✅（Windows 未实测） |
+| Create new… 打开 New Key Store（AS 的 `NewKeyStoreDialog`）：keystore 路径和密码、key 别名（默认 key0）、密码、有效期（默认 25 年）、证书六项；校验与 AS 一致（密码至少 6 位、两次一致、证书至少填一项）；用 Gradle JDK 的 `keytool -genkeypair` 生成 RSA 2048 密钥，密码走环境变量（`-storepass:env`），不上命令行；成功后回填到签名对话框 | ✅ |
+| Remember passwords、指定输出目录 | ⬜ |
+
+Linux 实测（Xvfb，假 Android 工程 `droid`）：对话框能列出 app / release；空字段提示正确；填入密码 `p&a^s% w"d` 后构建，Gradle 端 `providers.gradleProperty` 读到的密码和别名与输入完全一致，成功后弹出带 Locate 的通知。

@@ -143,6 +143,8 @@ pub(super) fn main_menu(
             .separator()
             .menu("Sync Project with Gradle Files", Box::new(SyncProjectWithGradleFiles))
             .menu("Select Build Variant…", Box::new(ToggleBuildVariantsWindow))
+            .separator()
+            .menu("Generate Signed Bundle / APK…", Box::new(GenerateSignedApk))
     });
     let (e, f) = (entity.clone(), focus.clone());
     let menu = menu.submenu("Run", window, cx, move |menu, _, cx| {

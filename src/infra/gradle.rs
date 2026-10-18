@@ -40,15 +40,17 @@ impl BuildSystem for GradleBuild {
 }
 
 impl TaskRunner for GradleBuild {
-    fn run_tasks(&self, build_root: &Path, tasks: &[String], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
+    fn run_tasks(&self, build_root: &Path, tasks: &[String], properties: &[(String, String)], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
         line(&environment(build_root));
         let mut command = gradle(build_root);
         command.args(tasks);
+        command.args(properties.iter().map(|(name, value)| format!("-P{name}={value}")));
         let (succeeded, was_cancelled, output) = stream(command, line, cancelled);
         if let Some(hint) = build::missing_dll(&output) {
             line(&hint);
         }
-        BuildResult { succeeded, cancelled: was_cancelled, problems: parse_output(&output) }
+        let failure = if succeeded || was_cancelled { None } else { build::failure_summary(&output) };
+        BuildResult { succeeded, cancelled: was_cancelled, problems: parse_output(&output), failure }
     }
 
     fn apk_output(&self, module: &ModuleInfo, variant: &str) -> Option<ApkOutput> {
@@ -252,15 +254,12 @@ pub fn gradle(build_root: &Path) -> Command {
     command
 }
 
-/// The wrapper in the build root, else `gradle` on the PATH.
+/// The wrapper in the build root, else `gradle` on the PATH. On Windows the
+/// batch file is run as it is: Rust quotes its arguments for cmd, so a
+/// signing password with `&`, `^` or `%` reaches Gradle unchanged.
 fn gradle_command(root: &Path) -> Command {
     let wrapper = root.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
     if wrapper.is_file() {
-        if cfg!(windows) {
-            let mut c = Command::new("cmd");
-            c.arg("/C").arg(wrapper);
-            return c;
-        }
         return Command::new(wrapper);
     }
     Command::new(if cfg!(windows) { "gradle.bat" } else { "gradle" })

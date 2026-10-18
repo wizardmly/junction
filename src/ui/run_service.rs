@@ -27,6 +27,9 @@ pub enum RunEvent {
     ShowRun,
     /// "Error running 'app'": a balloon.
     Error { title: String, message: String },
+    /// Generate Signed Bundle / APK finished: Android Studio's balloon,
+    /// whose link shows the folder.
+    Generated { title: String, message: String, folder: PathBuf },
     /// Debug 'app' started the app waiting for the debugger: attach.
     Attach { name: String, serial: String, pid: u32, adb: crate::android::adb::Adb },
 }
@@ -45,6 +48,8 @@ pub struct BuildLog {
     pub title: String,
     pub lines: Vec<SharedString>,
     pub problems: Vec<FileProblem>,
+    /// Gradle's "What went wrong" when it failed.
+    pub failure: Option<String>,
     pub status: BuildStatus,
     pub started: chrono::DateTime<chrono::Local>,
     pub took: Option<Duration>,
@@ -188,6 +193,42 @@ impl RunService {
         self.finish_build_when(root, work, cx);
     }
 
+    /// Generate Signed Bundle / APK: the module's variant built and signed
+    /// with the request's key.
+    pub fn generate_signed(&mut self, root: PathBuf, module: run::ModuleInfo, variant: String, request: crate::domain::signing::SigningRequest, cx: &mut Context<Self>) {
+        use crate::domain::signing;
+        if self.busy {
+            return;
+        }
+        let format = request.format;
+        let task = signing::task(&module, &variant, format);
+        let title = format.title();
+        let (send, cancel) = self.start_build(title.into(), vec![task.clone()], cx);
+        let r = root.clone();
+        let work = cx.background_spawn(async move {
+            run_app::build_signed(&GradleBuild, &r, &task, &request, &mut |l| drop(send.send(Message::Build(l.to_owned()))), &|| cancel.load(Ordering::Relaxed))
+        });
+        let folder = signing::output_dir(&module, &variant, format);
+        let what = match format {
+            signing::PackageFormat::Bundle => "App bundle(s)",
+            signing::PackageFormat::Apk => "APK(s)",
+        };
+        let message = format!("{what} generated successfully for module '{}' with 1 build variant: Build variant '{variant}'.", module.name());
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            this.update(cx, |this, cx| {
+                this.drain();
+                let succeeded = result.succeeded;
+                this.end_build(&root, result, cx);
+                if succeeded {
+                    cx.emit(RunEvent::Generated { title: title.into(), message, folder });
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Run 'app': build, install, start; an AVD that isn't running starts first.
     pub fn run(&mut self, cx: &mut Context<Self>) {
         self.launch(false, cx);
@@ -319,7 +360,7 @@ impl RunService {
         self.busy = true;
         // Android Studio's first line.
         let first = format!("Executing tasks: [{}]", tasks.join(", "));
-        self.build = Some(BuildLog { title, lines: vec![first.into()], problems: Vec::new(), status: BuildStatus::Running, started: chrono::Local::now(), took: None });
+        self.build = Some(BuildLog { title, lines: vec![first.into()], problems: Vec::new(), failure: None, status: BuildStatus::Running, started: chrono::Local::now(), took: None });
         cx.emit(RunEvent::ShowBuild);
         cx.notify();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -396,6 +437,7 @@ impl RunService {
             };
             b.took = Some((chrono::Local::now() - b.started).to_std().unwrap_or_default());
             b.problems = result.problems.clone();
+            b.failure = result.failure.clone();
         }
         // The editors mark the build's errors, as after a compile on save.
         if !result.cancelled {

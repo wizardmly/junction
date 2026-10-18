@@ -28,7 +28,13 @@ pub enum RunOutcome {
 /// Make Project / Make Module: the tasks assembling every given module's
 /// selected variant.
 pub fn make(runner: &dyn TaskRunner, build_root: &std::path::Path, tasks: &[String], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
-    runner.run_tasks(build_root, tasks, line, cancelled)
+    runner.run_tasks(build_root, tasks, &[], line, cancelled)
+}
+
+/// Generate Signed Bundle / APK: the module's release package, signed with
+/// the request's key.
+pub fn build_signed(runner: &dyn TaskRunner, build_root: &std::path::Path, task: &str, request: &crate::domain::signing::SigningRequest, line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
+    runner.run_tasks(build_root, &[task.to_owned()], &crate::domain::signing::properties(request), line, cancelled)
 }
 
 pub struct Target<'a> {
@@ -51,7 +57,7 @@ pub fn run(
     console: &mut dyn FnMut(ConsoleLine),
     cancelled: &dyn Fn() -> bool,
 ) -> (RunOutcome, BuildResult) {
-    let build = runner.run_tasks(&config.build_root, &[config.module.assemble_task(variant)], build_line, cancelled);
+    let build = runner.run_tasks(&config.build_root, &[config.module.assemble_task(variant)], &[], build_line, cancelled);
     if build.cancelled || cancelled() {
         return (RunOutcome::Cancelled, build);
     }
@@ -125,7 +131,7 @@ mod tests {
         tasks: RefCell<Vec<String>>,
     }
     impl TaskRunner for Gradle {
-        fn run_tasks(&self, _: &Path, tasks: &[String], line: &mut dyn FnMut(&str), _: &dyn Fn() -> bool) -> BuildResult {
+        fn run_tasks(&self, _: &Path, tasks: &[String], _: &[(String, String)], line: &mut dyn FnMut(&str), _: &dyn Fn() -> bool) -> BuildResult {
             self.tasks.borrow_mut().extend(tasks.iter().cloned());
             line("BUILD SUCCESSFUL in 1s");
             BuildResult { succeeded: self.ok, ..Default::default() }

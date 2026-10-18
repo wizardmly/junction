@@ -3,7 +3,8 @@
 //! Ctrl+F finds; lines can be colored (errors red, commands gray) and carry
 //! styled spans (Logcat's level badge, tag colors), and the hyperlinks its
 //! filters add (web addresses, `File.kt:12:5`, a stack frame) open with a
-//! click. It follows the end while the caret is there; lines can be added
+//! click. It follows new output while scrolled to the end, as IntelliJ's
+//! sticks to the end: scrolled up, it stays put; lines can be added
 //! at the end and dropped from the start (a log's buffer) without redoing
 //! the rest.
 
@@ -153,12 +154,10 @@ impl ConsoleView {
         self.state.update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
     }
 
-    /// Whether the view follows the end (the caret is on the last line).
+    /// Whether the view follows new output: it shows the end
+    /// (`ConsoleViewImpl.isStickingToEnd`).
     pub fn is_following(&self, cx: &gpui_kit::App) -> bool {
-        let state = self.state.read(cx);
-        let origin = self.painted.borrow().origin;
-        let range = state.selected_range();
-        range.is_empty() && range.start + origin >= self.tail
+        self.state.read(cx).scrolled_to_end()
     }
 
     /// Scroll to End: the caret to the last line, following it.
@@ -226,13 +225,13 @@ impl ConsoleView {
         let text = self.add(lines);
         let tail = self.tail - origin;
         self.state.update(cx, |state, cx| {
-            let selection = state.selected_range();
+            let (selection, offset) = (state.selected_range(), state.scroll_offset());
             state.set_selected_range(len..len, cx);
             state.insert(text, window, cx);
+            // Following: to the new end. Scrolled up: where it was, the
+            // insert's scroll to the caret undone.
             state.set_selected_range(if follow { tail..tail } else { selection }, cx);
-            if follow {
-                state.set_scroll_offset(gpui_kit::point(px(0.), px(-1.0e7)), cx);
-            }
+            state.set_scroll_offset(if follow { gpui_kit::point(px(0.), px(-1.0e7)) } else { offset }, cx);
         });
         cx.notify();
     }
@@ -260,12 +259,18 @@ impl ConsoleView {
             p.origin = new_origin;
             removed
         };
+        let follow = self.is_following(cx);
         self.state.update(cx, |state, cx| {
-            let selection = state.selected_range();
+            let (selection, offset) = (state.selected_range(), state.scroll_offset());
             state.set_selected_range(0..removed, cx);
             state.replace("", window, cx);
             let shift = |o: usize| o.saturating_sub(removed);
             state.set_selected_range(shift(selection.start)..shift(selection.end), cx);
+            // The lines left above: the view keeps showing the same lines
+            // (the end, when following).
+            let gone = state.line_height().unwrap_or_default() * n as f32;
+            let y = if follow { px(-1.0e7) } else { (offset.y + gone).min(px(0.)) };
+            state.set_scroll_offset(gpui_kit::point(offset.x, y), cx);
         });
         cx.notify();
     }

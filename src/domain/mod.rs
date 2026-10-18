@@ -31,6 +31,7 @@ pub mod parameter_info;
 pub mod reformat;
 pub mod rename;
 pub mod run;
+pub mod signing;
 pub mod testing;
 pub mod translations;
 pub mod todo;

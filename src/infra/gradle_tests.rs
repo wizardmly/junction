@@ -92,7 +92,7 @@ impl TestRunner for GradleTests {
         let (succeeded, was_cancelled, output) = gradle::stream(command, &mut dispatch, cancelled);
         let since = started.checked_sub(Duration::from_secs(2)).unwrap_or(started);
         let reported = report_files(&plan.report_dir, since).iter().filter_map(|f| std::fs::read_to_string(f).ok()).flat_map(|xml| parse_report(&xml)).collect();
-        TestRunReport { build: BuildResult { succeeded, cancelled: was_cancelled, problems: gradle::parse_output(&output) }, reported }
+        TestRunReport { build: BuildResult { succeeded, cancelled: was_cancelled, problems: gradle::parse_output(&output), failure: None }, reported }
     }
 }
 
