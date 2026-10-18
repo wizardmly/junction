@@ -102,6 +102,7 @@ actions!(
         GoToBookmark0,
         SyncProjectWithGradleFiles,
         MakeProject,
+        GenerateSignedApk,
         RunApp,
         DebugApp,
         StopApp,
@@ -986,6 +987,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleTerminalWindow, window, cx| this.shortcut_tool(ToolWindow::Terminal, window, cx)))
             .on_action(cx.listener(|_, _: &SyncProjectWithGradleFiles, _, cx| crate::ui::sync_service::SyncService::global(cx).update(cx, |s, cx| s.sync_all(cx))))
             .on_action(cx.listener(|this, _: &MakeProject, _, cx| this.run.update(cx, |r, cx| r.make_project(cx))))
+            .on_action(cx.listener(|this, _: &GenerateSignedApk, window, cx| {
+                let modules = crate::ui::signed_apk_dialog::application_modules(crate::ui::sync_service::SyncService::global(cx).read(cx).builds());
+                let store: std::rc::Rc<dyn crate::domain::signing::SigningStore> = std::rc::Rc::new(crate::infra::signing_store::JsonSigning);
+                crate::ui::signed_apk_dialog::open(modules, store, this.run.clone(), window, cx);
+            }))
             .on_action(cx.listener(|this, _: &RunApp, _, cx| this.run.update(cx, |r, cx| r.run(cx))))
             .on_action(cx.listener(|this, _: &StopApp, _, cx| {
                 // Ctrl+F2 stops the debug session first, as the active one.

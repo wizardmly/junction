@@ -27,6 +27,9 @@ pub enum RunEvent {
     ShowRun,
     /// "Error running 'app'": a balloon.
     Error { title: String, message: String },
+    /// Generate Signed Bundle / APK finished: Android Studio's balloon,
+    /// whose link shows the folder.
+    Generated { title: String, message: String, folder: PathBuf },
     /// Debug 'app' started the app waiting for the debugger: attach.
     Attach { name: String, serial: String, pid: u32, adb: crate::android::adb::Adb },
 }
@@ -188,6 +191,42 @@ impl RunService {
             run_app::make(&GradleBuild, &r, &tasks, &mut |l| drop(send.send(Message::Build(l.to_owned()))), &|| cancel.load(Ordering::Relaxed))
         });
         self.finish_build_when(root, work, cx);
+    }
+
+    /// Generate Signed Bundle / APK: the module's variant built and signed
+    /// with the request's key.
+    pub fn generate_signed(&mut self, root: PathBuf, module: run::ModuleInfo, variant: String, request: crate::domain::signing::SigningRequest, cx: &mut Context<Self>) {
+        use crate::domain::signing;
+        if self.busy {
+            return;
+        }
+        let format = request.format;
+        let task = signing::task(&module, &variant, format);
+        let title = format.title();
+        let (send, cancel) = self.start_build(title.into(), vec![task.clone()], cx);
+        let r = root.clone();
+        let work = cx.background_spawn(async move {
+            run_app::build_signed(&GradleBuild, &r, &task, &request, &mut |l| drop(send.send(Message::Build(l.to_owned()))), &|| cancel.load(Ordering::Relaxed))
+        });
+        let folder = signing::output_dir(&module, &variant, format);
+        let what = match format {
+            signing::PackageFormat::Bundle => "App bundle(s)",
+            signing::PackageFormat::Apk => "APK(s)",
+        };
+        let message = format!("{what} generated successfully for module '{}' with 1 build variant: Build variant '{variant}'.", module.name());
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            this.update(cx, |this, cx| {
+                this.drain();
+                let succeeded = result.succeeded;
+                this.end_build(&root, result, cx);
+                if succeeded {
+                    cx.emit(RunEvent::Generated { title: title.into(), message, folder });
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Run 'app': build, install, start; an AVD that isn't running starts first.

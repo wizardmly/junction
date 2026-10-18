@@ -333,6 +333,14 @@ impl Workspace {
             RunEvent::ShowBuild => self.tools.open(ToolWindow::Build),
             RunEvent::ShowRun => self.tools.open(ToolWindow::Run),
             RunEvent::Error { title, message } => window.push_notification(Notification::error(message.clone()).title(title.clone()), cx),
+            RunEvent::Generated { title, message, folder } => {
+                let folder = folder.clone();
+                let notification = Notification::success(message.clone()).title(title.clone()).action(move |_, _, _| {
+                    let folder = folder.clone();
+                    gpui_kit::component::button::Button::new("generated-locate").label("Locate").small().outline().on_click(move |_, _, cx| cx.reveal_path(&folder))
+                });
+                window.push_notification(notification, cx);
+            }
             RunEvent::Attach { name, serial, pid, adb } => {
                 let (name, serial, adb) = (name.clone(), serial.clone(), adb.clone());
                 let pid = *pid;

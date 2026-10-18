@@ -62,6 +62,7 @@ pub mod worktree_view;
 pub mod submodule_view;
 pub mod sync_service;
 pub mod run_service;
+pub mod signed_apk_dialog;
 pub mod item_tree;
 pub mod local_history_window;
 pub mod logcat_view;
