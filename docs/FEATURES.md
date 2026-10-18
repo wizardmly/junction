@@ -1049,6 +1049,7 @@ Linux 实测（Xvfb，calc）：Make Project 的输出第二行是 `Gradle JDK: 
 | 每个模块记住 keystore 路径和别名（设置目录 `signing.json`），密码不保存 | ✅ |
 | 构建 `:app:bundleRelease` / `:app:assembleRelease`，成功后弹 “APK(s) generated successfully…” 通知，Locate 打开输出目录 | ✅ |
 | Windows 上直接运行 `gradlew.bat`（不再套 `cmd /C`），由 Rust 按 cmd 规则转义参数，密码里的 `&`、`^`、`%`、引号不会被 cmd 解释 | ✅（Windows 未实测） |
-| Create new… 新建 keystore（keytool）、Remember passwords、指定输出目录 | ⬜ |
+| Create new… 打开 New Key Store（AS 的 `NewKeyStoreDialog`）：keystore 路径和密码、key 别名（默认 key0）、密码、有效期（默认 25 年）、证书六项；校验与 AS 一致（密码至少 6 位、两次一致、证书至少填一项）；用 Gradle JDK 的 `keytool -genkeypair` 生成 RSA 2048 密钥，密码走环境变量（`-storepass:env`），不上命令行；成功后回填到签名对话框 | ✅ |
+| Remember passwords、指定输出目录 | ⬜ |
 
 Linux 实测（Xvfb，假 Android 工程 `droid`）：对话框能列出 app / release；空字段提示正确；填入密码 `p&a^s% w"d` 后构建，Gradle 端 `providers.gradleProperty` 读到的密码和别名与输入完全一致，成功后弹出带 Locate 的通知。

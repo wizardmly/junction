@@ -131,8 +131,107 @@ pub fn output_dir(module: &ModuleInfo, variant: &str, format: PackageFormat) -> 
     }
 }
 
+/// Android Studio's New Key Store dialog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewKeystore {
+    pub store_file: PathBuf,
+    pub store_password: String,
+    pub store_confirm: String,
+    pub key_alias: String,
+    pub key_password: String,
+    pub key_confirm: String,
+    pub validity_years: String,
+    /// First and Last Name, Organizational Unit, Organization, City or
+    /// Locality, State or Province, Country Code.
+    pub certificate: [String; 6],
+}
+
+impl Default for NewKeystore {
+    fn default() -> Self {
+        Self {
+            store_file: PathBuf::new(),
+            store_password: String::new(),
+            store_confirm: String::new(),
+            key_alias: "key0".into(),
+            key_password: String::new(),
+            key_confirm: String::new(),
+            validity_years: "25".into(),
+            certificate: Default::default(),
+        }
+    }
+}
+
+/// The certificate fields' labels, in `NewKeystore::certificate`'s order.
+pub const CERTIFICATE_FIELDS: [&str; 6] = ["First and Last Name:", "Organizational Unit:", "Organization:", "City or Locality:", "State or Province:", "Country Code (XX):"];
+const DN_KEYS: [&str; 6] = ["CN", "OU", "O", "L", "ST", "C"];
+
+/// The New Key Store dialog's checks, with Android Studio's messages.
+pub fn check_new(new: &NewKeystore) -> Result<u32, &'static str> {
+    if new.store_file.as_os_str().is_empty() {
+        return Err("Key store path is not specified.");
+    }
+    if new.store_password.chars().count() < 6 {
+        return Err("Key store password must be at least 6 characters.");
+    }
+    if new.store_password != new.store_confirm {
+        return Err("Key store passwords do not match.");
+    }
+    if new.key_alias.trim().is_empty() {
+        return Err("Key alias is not specified.");
+    }
+    if new.key_password.chars().count() < 6 {
+        return Err("Key password must be at least 6 characters.");
+    }
+    if new.key_password != new.key_confirm {
+        return Err("Key passwords do not match.");
+    }
+    let years = new.validity_years.trim().parse::<u32>().ok().filter(|y| (1..=1000).contains(y)).ok_or("Validity must be a number of years from 1 to 1000.")?;
+    if new.certificate.iter().all(|f| f.trim().is_empty()) {
+        return Err("At least one Certificate issuer field is required to be non-empty.");
+    }
+    Ok(years)
+}
+
+/// The certificate's distinguished name, `CN=Ann Lee, O=Example`: the
+/// fields given, escaped as RFC 2253 asks.
+pub fn distinguished_name(certificate: &[String; 6]) -> String {
+    let escape = |value: &str| {
+        let mut out = String::new();
+        for (i, c) in value.chars().enumerate() {
+            if matches!(c, ',' | '+' | '"' | '\\' | '<' | '>' | ';' | '=') || (i == 0 && matches!(c, '#' | ' ')) {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out
+    };
+    certificate.iter().zip(DN_KEYS).filter(|(v, _)| !v.trim().is_empty()).map(|(v, k)| format!("{k}={}", escape(v.trim()))).collect::<Vec<_>>().join(", ")
+}
+
+/// Creates a keystore with one key. Implemented over the JDK's keytool.
+pub trait KeyTool {
+    fn create(&self, new: &NewKeystore, validity_days: u32) -> Result<(), String>;
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn checks_a_new_keystore() {
+        let mut new = NewKeystore { store_file: "/k/new.jks".into(), store_password: "secret1".into(), store_confirm: "secret1".into(), key_password: "secret2".into(), key_confirm: "secret2".into(), ..Default::default() };
+        assert_eq!(check_new(&new), Err("At least one Certificate issuer field is required to be non-empty."));
+        new.certificate[0] = "Ann Lee".into();
+        assert_eq!(check_new(&new), Ok(25));
+        assert_eq!(check_new(&NewKeystore { store_confirm: "x".into(), ..new.clone() }), Err("Key store passwords do not match."));
+        assert_eq!(check_new(&NewKeystore { key_password: "12345".into(), ..new.clone() }), Err("Key password must be at least 6 characters."));
+        assert_eq!(check_new(&NewKeystore { validity_years: "0".into(), ..new }), Err("Validity must be a number of years from 1 to 1000."));
+    }
+
+    #[test]
+    fn writes_the_distinguished_name() {
+        let cert = ["Ann Lee".to_owned(), String::new(), "Acme, Inc.".into(), String::new(), String::new(), "CN".into()];
+        assert_eq!(distinguished_name(&cert), "CN=Ann Lee, O=Acme\\, Inc., C=CN");
+    }
+
     use super::*;
     use crate::domain::run::ModuleType;
 

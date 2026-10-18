@@ -1,7 +1,8 @@
 //! Build › Generate Signed Bundle / APK…, Android Studio's wizard in one
 //! dialog: the package (App Bundle or APK), the application module and its
 //! variant, the keystore and the key. The keystore path and the key alias
-//! come back next time for the module; the passwords don't.
+//! come back next time for the module; the passwords don't. Create new…
+//! opens New Key Store, which makes one with the JDK's keytool.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -17,7 +18,7 @@ use gpui_kit::component::{
 use gpui_kit::{App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px};
 
 use crate::domain::run::{ModuleInfo, ModuleType};
-use crate::domain::signing::{self, PackageFormat, RememberedKey, SigningRequest, SigningStore};
+use crate::domain::signing::{self, KeyTool, NewKeystore, PackageFormat, RememberedKey, SigningRequest, SigningStore};
 use crate::theme::ActivePalette as _;
 use crate::ui::dialogs::{focus_input, footer_enabled};
 use crate::ui::run_service::RunService;
@@ -35,11 +36,16 @@ pub struct SignedApkDialog {
     error: Option<&'static str>,
     store: Rc<dyn SigningStore>,
     run: Entity<RunService>,
+    /// The keytool for a build root.
+    keytool: KeyToolFor,
     _subscriptions: Vec<Subscription>,
 }
 
+/// Makes the keytool of a build's JDK.
+pub type KeyToolFor = Rc<dyn Fn(PathBuf) -> Box<dyn KeyTool + Send>>;
+
 impl SignedApkDialog {
-    fn new(modules: Vec<(PathBuf, ModuleInfo)>, store: Rc<dyn SigningStore>, run: Entity<RunService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(modules: Vec<(PathBuf, ModuleInfo)>, store: Rc<dyn SigningStore>, run: Entity<RunService>, keytool: KeyToolFor, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store_file = cx.new(|cx| InputState::new(window, cx).placeholder("Path to the .jks or .keystore file"));
         let store_password = cx.new(|cx| InputState::new(window, cx).masked(true));
         let key_alias = cx.new(|cx| InputState::new(window, cx));
@@ -67,6 +73,7 @@ impl SignedApkDialog {
             error: None,
             store,
             run,
+            keytool,
             _subscriptions: subscriptions,
         };
         this.select_module(0, window, cx);
@@ -109,6 +116,24 @@ impl SignedApkDialog {
             });
         })
         .detach();
+    }
+
+    /// Create new…: New Key Store over this dialog; the keystore made fills
+    /// the fields.
+    fn create_keystore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((root, _)) = self.modules.get(self.module) else { return };
+        let keytool = (self.keytool)(root.clone());
+        let parent = cx.entity();
+        NewKeystoreDialog::open(keytool, parent, window, cx);
+    }
+
+    fn fill(&mut self, new: &NewKeystore, window: &mut Window, cx: &mut Context<Self>) {
+        self.store_file.update(cx, |s, cx| s.set_value(new.store_file.display().to_string(), window, cx));
+        self.store_password.update(cx, |s, cx| s.set_value(new.store_password.clone(), window, cx));
+        self.key_alias.update(cx, |s, cx| s.set_value(new.key_alias.trim().to_owned(), window, cx));
+        self.key_password.update(cx, |s, cx| s.set_value(new.key_password.clone(), window, cx));
+        self.error = None;
+        cx.notify();
     }
 
     /// Create: checks the fields, remembers the keystore and alias, and
@@ -181,6 +206,7 @@ impl Render for SignedApkDialog {
                     .gap_2()
                     .child(label("Key store path:"))
                     .child(div().flex_1().child(Input::new(&self.store_file).small()))
+                    .child(Button::new("signed-create").small().label("Create new…").on_click(cx.listener(|this, _, window, cx| this.create_keystore(window, cx))))
                     .child(Button::new("signed-browse").small().label("Choose existing…").on_click(cx.listener(|this, _, _, cx| this.browse(cx)))),
             )
             .child(row("Key store password:", Input::new(&self.store_password).small().mask_toggle().into_any_element()))
@@ -196,7 +222,7 @@ pub fn application_modules(builds: &[(PathBuf, Vec<ModuleInfo>)]) -> Vec<(PathBu
     builds.iter().flat_map(|(root, modules)| modules.iter().filter(|m| m.kind == ModuleType::Application).map(move |m| (root.clone(), m.clone()))).collect()
 }
 
-pub fn open(modules: Vec<(PathBuf, ModuleInfo)>, store: Rc<dyn SigningStore>, run: Entity<RunService>, window: &mut Window, cx: &mut App) {
+pub fn open(modules: Vec<(PathBuf, ModuleInfo)>, store: Rc<dyn SigningStore>, run: Entity<RunService>, keytool: KeyToolFor, window: &mut Window, cx: &mut App) {
     if modules.is_empty() {
         window.push_notification(
             gpui_kit::component::notification::Notification::error("The project has no Android application module. Sync the project with its Gradle files first.").title("Generate Signed Bundle / APK"),
@@ -204,7 +230,7 @@ pub fn open(modules: Vec<(PathBuf, ModuleInfo)>, store: Rc<dyn SigningStore>, ru
         );
         return;
     }
-    let view = cx.new(|cx| SignedApkDialog::new(modules, store, run.clone(), window, cx));
+    let view = cx.new(|cx| SignedApkDialog::new(modules, store, run.clone(), keytool, window, cx));
     let focus = view.read(cx).store_password.clone();
     window.open_dialog(cx, move |dialog, _, cx| {
         let busy = run.read(cx).is_busy();
@@ -217,4 +243,177 @@ pub fn open(modules: Vec<(PathBuf, ModuleInfo)>, store: Rc<dyn SigningStore>, ru
             .footer(footer_enabled("Create", !busy))
     });
     focus_input(&focus, window, cx);
+}
+
+/// New Key Store: the keystore, its key and the key's certificate.
+pub struct NewKeystoreDialog {
+    store_file: Entity<InputState>,
+    store_password: Entity<InputState>,
+    store_confirm: Entity<InputState>,
+    key_alias: Entity<InputState>,
+    key_password: Entity<InputState>,
+    key_confirm: Entity<InputState>,
+    validity: Entity<InputState>,
+    certificate: Vec<Entity<InputState>>,
+    error: Option<String>,
+    creating: bool,
+    keytool: Option<Box<dyn KeyTool + Send>>,
+    parent: Entity<SignedApkDialog>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl NewKeystoreDialog {
+    fn open(keytool: Box<dyn KeyTool + Send>, parent: Entity<SignedApkDialog>, window: &mut Window, cx: &mut App) {
+        let view = cx.new(|cx| {
+            let defaults = NewKeystore::default();
+            let input = |value: &str, masked: bool, window: &mut Window, cx: &mut Context<Self>| cx.new(|cx| InputState::new(window, cx).masked(masked).default_value(value.to_owned()));
+            let store_file = input("", false, window, cx);
+            let store_password = input("", true, window, cx);
+            let store_confirm = input("", true, window, cx);
+            let key_alias = input(&defaults.key_alias, false, window, cx);
+            let key_password = input("", true, window, cx);
+            let key_confirm = input("", true, window, cx);
+            let validity = input(&defaults.validity_years, false, window, cx);
+            let certificate: Vec<_> = (0..6).map(|_| input("", false, window, cx)).collect();
+            let subscriptions = [&store_file, &store_password, &store_confirm, &key_alias, &key_password, &key_confirm, &validity]
+                .into_iter()
+                .chain(certificate.iter())
+                .map(|input| {
+                    cx.subscribe(input, |this: &mut Self, _, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) && this.error.take().is_some() {
+                            cx.notify();
+                        }
+                    })
+                })
+                .collect();
+            Self { store_file, store_password, store_confirm, key_alias, key_password, key_confirm, validity, certificate, error: None, creating: false, keytool: Some(keytool), parent, _subscriptions: subscriptions }
+        });
+        let focus = view.read(cx).store_file.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let view_ok = view.clone();
+            let creating = view.read(cx).creating;
+            dialog
+                .title("New Key Store")
+                .w(px(520.))
+                .child(view.clone())
+                .on_ok(move |_, window, cx| {
+                    view_ok.update(cx, |this, cx| this.create(window, cx));
+                    false
+                })
+                .footer(footer_enabled("OK", !creating))
+        });
+        focus_input(&focus, window, cx);
+    }
+
+    fn request(&self, cx: &App) -> NewKeystore {
+        let text = |input: &Entity<InputState>| input.read(cx).value().to_string();
+        NewKeystore {
+            store_file: PathBuf::from(text(&self.store_file).trim()),
+            store_password: text(&self.store_password),
+            store_confirm: text(&self.store_confirm),
+            key_alias: text(&self.key_alias),
+            key_password: text(&self.key_password),
+            key_confirm: text(&self.key_confirm),
+            validity_years: text(&self.validity),
+            certificate: std::array::from_fn(|i| text(&self.certificate[i])),
+        }
+    }
+
+    fn browse(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Key Store Folder".into()) });
+        let input = self.store_file.clone();
+        cx.spawn(async move |_, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else { return };
+            let Some(dir) = paths.into_iter().next() else { return };
+            cx.update(|cx| {
+                if let Some(window) = cx.active_window() {
+                    let path = dir.join("upload-keystore.jks");
+                    window.update(cx, |_, window, cx| input.update(cx, |s, cx| s.set_value(path.display().to_string(), window, cx))).ok();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// OK: checks, then keytool in the background; done, the fields of
+    /// Generate Signed Bundle or APK take the new key and this closes.
+    fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.creating {
+            return;
+        }
+        let new = self.request(cx);
+        let years = match signing::check_new(&new) {
+            Ok(years) => years,
+            Err(error) => {
+                self.error = Some(error.into());
+                cx.notify();
+                return;
+            }
+        };
+        if new.store_file.exists() {
+            self.error = Some(format!("{} already exists.", new.store_file.display()));
+            cx.notify();
+            return;
+        }
+        let Some(keytool) = self.keytool.take() else { return };
+        self.creating = true;
+        cx.notify();
+        let handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let (keytool, result) = cx
+                .background_spawn({
+                    let new = new.clone();
+                    async move {
+                        let result = keytool.create(&new, years * 365);
+                        (keytool, result)
+                    }
+                })
+                .await;
+            let _ = handle.update(cx, |_, window, cx| {
+                this.update(cx, |this, cx| {
+                    this.creating = false;
+                    this.keytool = Some(keytool);
+                    match result {
+                        Ok(()) => {
+                            this.parent.update(cx, |p, cx| p.fill(&new, window, cx));
+                            window.close_dialog(cx);
+                        }
+                        Err(error) => this.error = Some(error),
+                    }
+                    cx.notify();
+                })
+                .ok();
+            });
+        })
+        .detach();
+    }
+}
+
+impl Render for NewKeystoreDialog {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let label = |text: &'static str| div().w(px(150.)).flex_none().text_sm().child(text);
+        let row = |name: &'static str, input: &Entity<InputState>| h_flex().gap_2().child(label(name)).child(div().flex_1().child(Input::new(input).small()));
+        let heading = |text: &'static str| div().pt_1().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(text);
+        v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(label("Key store path:"))
+                    .child(div().flex_1().child(Input::new(&self.store_file).small()))
+                    .child(Button::new("keystore-browse").small().label("…").on_click(cx.listener(|this, _, _, cx| this.browse(cx)))),
+            )
+            .child(row("Password:", &self.store_password))
+            .child(row("Confirm:", &self.store_confirm))
+            .child(heading("Key"))
+            .child(row("Alias:", &self.key_alias))
+            .child(row("Password:", &self.key_password))
+            .child(row("Confirm:", &self.key_confirm))
+            .child(row("Validity (years):", &self.validity))
+            .child(heading("Certificate"))
+            .children(signing::CERTIFICATE_FIELDS.iter().zip(&self.certificate).map(|(name, input)| row(name, input)))
+            .when(self.creating, |el| el.child(div().text_xs().text_color(palette.text_secondary).child("Creating the key store…")))
+            .when_some(self.error.clone(), |el, error| el.child(div().text_xs().text_color(palette.status_conflict).child(error)))
+    }
 }
