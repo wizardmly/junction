@@ -16,6 +16,7 @@ use std::rc::Rc;
 use gpui_kit::component::input::{Editor, EditorState, FoldRange, HighlightStyleResolver, InputEdit, InputHighlighter, Rope};
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, HighlightStyle, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString, Styled as _, UnderlineStyle, Window, div, prelude::FluentBuilder as _, px};
 
+use crate::domain::ansi::{self, AnsiColor, AnsiStyle};
 use crate::domain::console_links::{self, ConsoleLink};
 use crate::theme::ActivePalette as _;
 
@@ -42,6 +43,55 @@ pub struct ConsoleLine {
 impl ConsoleLine {
     pub fn plain(text: impl Into<SharedString>, color: Option<Hsla>) -> Self {
         Self { text: text.into(), color, ..Default::default() }
+    }
+
+    /// A line of program output: its ANSI escape codes become styles
+    /// (`state` carries them from line to line).
+    pub fn ansi(text: &SharedString, color: Option<Hsla>, state: &mut AnsiStyle, dark: bool) -> Self {
+        if !ansi::has_escapes(text) && state.is_plain() {
+            return Self::plain(text.clone(), color);
+        }
+        let (plain, styled) = ansi::decode(text, state);
+        let spans = styled.into_iter().map(|(range, style)| (range, ansi_highlight(&style, dark))).collect();
+        Self { text: plain.into(), color, spans, links: Vec::new() }
+    }
+}
+
+/// The console's ANSI colors: Darcula's and IntelliJ Light's.
+fn ansi_rgb(color: AnsiColor, dark: bool) -> Hsla {
+    const DARK: [u32; 16] = [0x7f7f7f, 0xff6b68, 0xa8c023, 0xd6bf55, 0x5394ec, 0xae8abe, 0x299999, 0xbbbbbb, 0x999999, 0xff8785, 0xc2d64f, 0xf2d55e, 0x7eaef1, 0xc794d2, 0x6cc4c4, 0xffffff];
+    const LIGHT: [u32; 16] = [0x000000, 0xc91b00, 0x00a600, 0x8e7700, 0x0225c7, 0xb22fb2, 0x00838f, 0x808080, 0x686868, 0xff3b30, 0x1f9e1f, 0xa68a0d, 0x3b6ef5, 0xd22fd2, 0x00a6b2, 0x1e1e1e];
+    let value = match color {
+        AnsiColor::Named(n) => (if dark { DARK } else { LIGHT })[n as usize % 16],
+        AnsiColor::Indexed(n) => {
+            let (r, g, b) = ansi::indexed_rgb(n);
+            (r as u32) << 16 | (g as u32) << 8 | b as u32
+        }
+        AnsiColor::Rgb(r, g, b) => (r as u32) << 16 | (g as u32) << 8 | b as u32,
+    };
+    gpui_kit::Rgba::from(gpui_kit::rgb(value)).into()
+}
+
+fn ansi_highlight(style: &AnsiStyle, dark: bool) -> HighlightStyle {
+    let hex = |value: u32| -> Hsla { gpui_kit::Rgba::from(gpui_kit::rgb(value)).into() };
+    // The console's own text and background, for inverse and dim.
+    let (text, back) = if dark { (hex(0xbbbbbb), hex(0x1e1f22)) } else { (hex(0x1e1e1e), hex(0xffffff)) };
+    let (mut fg, mut bg) = (style.fg.map(|c| ansi_rgb(c, dark)), style.bg.map(|c| ansi_rgb(c, dark)));
+    if style.inverse {
+        (fg, bg) = (Some(bg.unwrap_or(back)), Some(fg.unwrap_or(text)));
+    }
+    if style.dim {
+        // Halfway to the background (the editor paints text opaque).
+        let c = fg.unwrap_or(text);
+        fg = Some(Hsla { l: c.l + (back.l - c.l) * 0.45, ..c });
+    }
+    HighlightStyle {
+        color: fg,
+        background_color: bg,
+        font_weight: style.bold.then_some(gpui_kit::FontWeight::BOLD),
+        font_style: style.italic.then_some(gpui_kit::FontStyle::Italic),
+        underline: style.underline.then(|| UnderlineStyle { thickness: px(1.), color: fg, wavy: false }),
+        ..Default::default()
     }
 }
 
@@ -91,6 +141,8 @@ impl InputHighlighter for ConsoleHighlighter {
                     style.color = s.color.or(style.color);
                     style.background_color = s.background_color.or(style.background_color);
                     style.font_weight = s.font_weight.or(style.font_weight);
+                    style.font_style = s.font_style.or(style.font_style);
+                    style.underline = s.underline.or(style.underline);
                 }
                 if links.iter().any(|r| r.start <= a && b <= r.end) {
                     style.color = Some(p.link_color);
@@ -105,6 +157,9 @@ impl InputHighlighter for ConsoleHighlighter {
         Vec::new()
     }
 }
+
+/// How much text a console keeps, as IntelliJ's default cycle buffer.
+const CYCLE_BUFFER: usize = 1024 * 1024;
 
 pub struct ConsoleView {
     state: Entity<EditorState>,
@@ -123,6 +178,8 @@ pub struct ConsoleView {
     /// the End, and Clear All when `clearable`); Logcat has its own.
     toolbar: Option<bool>,
     wrap: bool,
+    /// The ANSI style the next appended line starts with.
+    ansi: AnsiStyle,
     _observe: gpui_kit::Subscription,
 }
 
@@ -140,7 +197,7 @@ impl ConsoleView {
             state
         });
         let _observe = cx.observe(&state, |_, _, cx| cx.notify());
-        Self { state, painted, ids: VecDeque::new(), generation: 0, texts: Vec::new(), end: 0, tail: 0, toolbar: None, wrap: false, _observe }
+        Self { state, painted, ids: VecDeque::new(), generation: 0, texts: Vec::new(), end: 0, tail: 0, toolbar: None, wrap: false, ansi: AnsiStyle::default(), _observe }
     }
 
     /// With Android Studio's console toolbar; Clear All when `clearable`
@@ -314,19 +371,36 @@ impl ConsoleView {
     }
 
     /// Shows these lines: appends when they extend what's shown, else
-    /// starts over.
+    /// starts over. Past IntelliJ's cycle buffer (`idea.cycle.buffer.size`,
+    /// 1024 KB) the oldest lines go.
     pub fn set_lines(&mut self, lines: &[(SharedString, Option<Hsla>)], window: &mut Window, cx: &mut Context<Self>) {
         let extends = lines.len() >= self.texts.len() && self.texts.iter().zip(lines).all(|(a, b)| a.0 == b.0);
         if extends && lines.len() == self.texts.len() {
             return;
         }
-        let as_lines = |l: &[(SharedString, Option<Hsla>)]| l.iter().map(|(t, c)| ConsoleLine::plain(t.clone(), *c)).collect::<Vec<_>>();
+        let dark = cx.palette().dark;
+        let as_lines = |l: &[(SharedString, Option<Hsla>)], state: &mut AnsiStyle| l.iter().map(|(t, c)| ConsoleLine::ansi(t, *c, state, dark)).collect::<Vec<_>>();
         if extends && !self.texts.is_empty() {
-            self.push(&as_lines(&lines[self.texts.len()..]), window, cx);
+            let mut state = self.ansi;
+            let fresh = as_lines(&lines[self.texts.len()..], &mut state);
+            self.ansi = state;
+            self.push(&fresh, window, cx);
         } else {
-            self.reset(&as_lines(lines), window, cx);
+            let mut state = AnsiStyle::default();
+            let all = as_lines(lines, &mut state);
+            self.ansi = state;
+            self.reset(&all, window, cx);
         }
         self.texts = lines.to_vec();
+        if self.end - self.painted.borrow().origin > CYCLE_BUFFER {
+            let n = {
+                let p = self.painted.borrow();
+                let cut = self.end - CYCLE_BUFFER;
+                // The first line starting at or past the cut stays.
+                p.lines.partition_point(|(start, _)| *start < cut).max(1)
+            };
+            self.drop_front(n, window, cx);
+        }
     }
 
     /// A click (not a drag) on a link follows it.
