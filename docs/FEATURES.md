@@ -840,7 +840,8 @@ Linux 实测（Xvfb，calc 示例）：在 `totals()` 循环体第 34 行设断�
 | Logcat 的日志也在这种控制台里（Android Studio 的 Logcat 同样是编辑器）：拖选跨行复制、Ctrl+F 查找；列和以前一样（时间、pid-tid、按哈希着色的 tag、包名、带底色的等级标签、按等级着色的消息），网址和堆栈帧的 `Foo.kt:42` 是链接（点击打开项目里的源文件并跳到那一行）；新日志追加在末尾，缓冲区满时从开头丢弃旧行，而不是整体重绘；改过滤器、Standard / Compact、Clear 时整体重建；Soft-Wrap、Scroll to the End 按钮照常 | ✅ |
 | 控制台左侧的竖工具条（照 AS 的 Run / Build 控制台）：Soft-Wrap（开关）、Scroll to the End、Clear All（Build Output 清掉输出文字、问题列表保留；Run 清掉 app 控制台）；Debug 的 Console 只有前两个 | ✅ |
 | ANSI 转义码（照 `AnsiEscapeDecoder`）：SGR 的 16 色（Darcula / Light 两套配色）、256 色、24 位真彩色，粗体、暗淡、斜体、下划线、反色，样式跨行延续；其他控制序列（光标移动、清行、OSC 标题）去掉；`\r` 回车覆盖本行（进度条只留最后一次）。代码：`src/domain/ansi.rs` | ✅ |
-| 超长输出的截断（`idea.cycle.buffer.size`）、Print、OSC 8 超链接 | ⬜ |
+| 输出上限（照 IntelliJ 的 cycle buffer，`idea.cycle.buffer.size` 默认 1024 KB）：Build / Run / Debug 控制台超过 1 MB 时从开头丢弃最旧的行（Logcat 有自己的缓冲区） | ✅ |
+| Print、OSC 8 超链接、可设置的缓冲区大小 | ⬜ |
 
 同时修复：未同步过的 Gradle 工程，根目录 `build.gradle(.kts)` 里写了 `alias(libs.plugins.android.application) apply false`（只声明插件、不应用），会被误判成 Application 模块。运行配置因此变成以根工程命名（如 “mytv-android”），构建任务成了 `:assembleDebug`，Gradle 报 “Cannot locate tasks that match ':assembleDebug'”。现在判断模块类型时会忽略带 `apply false` / `apply(false)` 的行，运行配置是 `app`，任务是 `:app:assembleDebug`。
 
