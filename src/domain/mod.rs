@@ -6,6 +6,7 @@
 //! `ui` → `usecase` → `domain` ← `infra`.
 
 pub mod android_resources;
+pub mod ansi;
 pub mod build;
 pub mod completion;
 pub mod debugger;

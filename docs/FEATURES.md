@@ -835,11 +835,12 @@ Linux 实测（Xvfb，calc 示例）：在 `totals()` 循环体第 34 行设断�
 | 鼠标拖动跨行连续选中（和编辑器一样，行与行之间没有间隔），双击选词，Ctrl+A 全选、Ctrl+C 复制，Ctrl+F 在输出里查找 | ✅ |
 | 超链接：网址（`https://docs.gradle.org/…`，点击用浏览器打开）；源码路径带行列（`/src/Foo.kt:12:5`、Windows 的 `file:///C:/…/Foo.kt:12:5`、`Foo.kt: (12, 5)`、javac 的 `Foo.java:7: error`，以及 html / txt 报告），点击打开文件并跳到对应行；拖选时不算点击 | ✅ |
 | 颜色：Gradle 的失败行（`FAILURE`、`e: `、`: error:`、`FAILED`）为红色，Run 控制台的命令为灰色、错误为红色 | ✅ |
-| 跟随末尾：光标在最后一行时，新输出会自动滚到底部（光标停在行首，长行不会让视图横向滚动）；用户把光标或选区放到别处后不再跟随 | ✅ |
+| 跟随末尾（照 `ConsoleViewImpl.isStickingToEnd`）：视图在最底部时新输出自动跟随；往上滚了就停在原处，滚回最底部或点 Scroll to the End 恢复跟随；Logcat 从开头丢弃旧行时视图停在同样的行上 | ✅ |
 | 用在 Build Output 的右侧、Run 的 app 控制台、Debug 的 Console 标签 | ✅ |
 | Logcat 的日志也在这种控制台里（Android Studio 的 Logcat 同样是编辑器）：拖选跨行复制、Ctrl+F 查找；列和以前一样（时间、pid-tid、按哈希着色的 tag、包名、带底色的等级标签、按等级着色的消息），网址和堆栈帧的 `Foo.kt:42` 是链接（点击打开项目里的源文件并跳到那一行）；新日志追加在末尾，缓冲区满时从开头丢弃旧行，而不是整体重绘；改过滤器、Standard / Compact、Clear 时整体重建；Soft-Wrap、Scroll to the End 按钮照常 | ✅ |
 | 控制台左侧的竖工具条（照 AS 的 Run / Build 控制台）：Soft-Wrap（开关）、Scroll to the End、Clear All（Build Output 清掉输出文字、问题列表保留；Run 清掉 app 控制台）；Debug 的 Console 只有前两个 | ✅ |
-| ANSI 颜色、超长输出的截断（`idea.cycle.buffer.size`）、Print | ⬜ |
+| ANSI 转义码（照 `AnsiEscapeDecoder`）：SGR 的 16 色（Darcula / Light 两套配色）、256 色、24 位真彩色，粗体、暗淡、斜体、下划线、反色，样式跨行延续；其他控制序列（光标移动、清行、OSC 标题）去掉；`\r` 回车覆盖本行（进度条只留最后一次）。代码：`src/domain/ansi.rs` | ✅ |
+| 超长输出的截断（`idea.cycle.buffer.size`）、Print、OSC 8 超链接 | ⬜ |
 
 同时修复：未同步过的 Gradle 工程，根目录 `build.gradle(.kts)` 里写了 `alias(libs.plugins.android.application) apply false`（只声明插件、不应用），会被误判成 Application 模块。运行配置因此变成以根工程命名（如 “mytv-android”），构建任务成了 `:assembleDebug`，Gradle 报 “Cannot locate tasks that match ':assembleDebug'”。现在判断模块类型时会忽略带 `apply false` / `apply(false)` 的行，运行配置是 `app`，任务是 `:app:assembleDebug`。
 
