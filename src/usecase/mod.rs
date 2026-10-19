@@ -15,6 +15,7 @@ pub mod logcat;
 pub mod run_app;
 pub mod rename_symbol;
 pub mod update_calls;
+pub mod project_edits;
 pub mod run_tests;
 pub mod complete_code;
 pub mod sync_project;

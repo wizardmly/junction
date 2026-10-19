@@ -11,7 +11,7 @@ use super::{locals, symbols};
 use crate::domain::line_edit::Edited;
 
 /// Expressions that stay one operand wherever they go.
-fn is_atom(kind: &str) -> bool {
+pub(super) fn is_atom(kind: &str) -> bool {
     matches!(
         kind,
         "simple_identifier" | "identifier" | "call_expression" | "navigation_expression" | "parenthesized_expression" | "string_literal" | "line_string_literal"
@@ -23,7 +23,7 @@ fn is_atom(kind: &str) -> bool {
 }
 
 /// Places where any expression fits without parentheses.
-fn takes_any(kind: &str) -> bool {
+pub(super) fn takes_any(kind: &str) -> bool {
     matches!(
         kind,
         "value_argument" | "value_arguments" | "argument_list" | "parenthesized_expression" | "jump_expression" | "return_statement" | "statements"
@@ -37,7 +37,12 @@ fn declaration<'t>(lang: Lang, name: Node<'t>) -> Option<(Node<'t>, Option<Node<
     let mut at = name.parent();
     while let Some(n) = at {
         match (lang, n.kind()) {
+            // A local: a member is Inline Property's (its references may be
+            // in other files).
             (Lang::Kotlin, "property_declaration") => {
+                if !n.parent().is_some_and(|p| p.kind() == "statements") {
+                    return None;
+                }
                 let mut cursor = n.walk();
                 let children: Vec<Node> = n.children(&mut cursor).collect();
                 let eq = children.iter().position(|c| c.kind() == "=");
@@ -55,7 +60,7 @@ fn declaration<'t>(lang: Lang, name: Node<'t>) -> Option<(Node<'t>, Option<Node<
 }
 
 /// Whether a use is written to: `x = …`, `x += …`, `x++`.
-fn is_written(lang: Lang, use_node: Node) -> bool {
+pub(super) fn is_written(lang: Lang, use_node: Node) -> bool {
     let Some(parent) = use_node.parent() else { return false };
     match lang {
         Lang::Kotlin => {
@@ -144,6 +149,9 @@ mod tests {
         let text = "fun g() {\n    val n = size\n    use(n, n)\n}\n";
         let out = inline_variable(Lang::Kotlin, text, text.rfind("n)").unwrap()).unwrap();
         assert_eq!(out.text, "fun g() {\n    use(size, size)\n}\n");
+        // A member isn't a local.
+        let text = "object O {\n    const val MAX = 1\n    fun f() = MAX\n}\n";
+        assert!(inline_variable(Lang::Kotlin, text, text.find("MAX").unwrap()).unwrap_err().contains("Caret should be positioned"));
         // Written later: refused.
         let text = "fun h() {\n    var i = 0\n    i = 2\n    use(i)\n}\n";
         assert!(inline_variable(Lang::Kotlin, text, text.find("i =").unwrap()).unwrap_err().contains("accessed for writing"));

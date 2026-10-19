@@ -13,6 +13,7 @@ pub mod locals;
 pub mod introduce;
 pub mod call_hierarchy;
 pub mod inline;
+pub mod inline_field;
 pub mod inline_function;
 pub mod safe_delete;
 pub mod unwrap;
