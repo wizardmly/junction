@@ -25,7 +25,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px,
 };
 
@@ -46,6 +46,11 @@ pub enum LogcatEvent {
     /// A stack frame was clicked: find `file` under `package` ("com/example") and open it at the 1-based line.
     OpenFrame { package: String, file: String, line: u32 },
     Hide,
+    /// Split Panels › Split Right (`down` false) / Split Down: a new panel
+    /// beside this one.
+    Split { down: bool },
+    /// Split Panels › Close: this panel goes, its neighbour takes its place.
+    ClosePanel,
 }
 
 pub struct LogcatView {
@@ -614,7 +619,11 @@ impl Render for LogcatView {
                     .ok();
                 }))
             });
+        let split = cx.entity().downgrade();
+        // Scrolls when a split panel is too short for all of it.
         let toolbar = v_flex()
+            .id("logcat-side-toolbar")
+            .overflow_y_scroll()
             .w(px(30.))
             .flex_none()
             .items_center()
@@ -646,7 +655,22 @@ impl Render for LogcatView {
                 side_button("logcat-record", if self.recording.is_some() { icons::STOP } else { icons::EMULATOR_SCREEN_RECORD }, if self.recording.is_some() { "Stop Recording" } else { "Screen Record" })
                     .disabled(self.following.is_none())
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_recording(window, cx))),
-            );
+            )
+            // Android Studio's Split Panels (`LogcatSplitterActions`).
+            .when(self.embedded, |el| {
+                el.child(Button::new("logcat-split").ghost().xsmall().icon(Icon::new(icons::SPLIT_VERTICALLY)).tooltip("Split Panels").dropdown_menu(move |menu, _, _| {
+                    let (right, down, close) = (split.clone(), split.clone(), split.clone());
+                    menu.item(PopupMenuItem::new("Split Right").icon(icons::SPLIT_VERTICALLY).on_click(move |_, _, cx| {
+                        right.update(cx, |_, cx| cx.emit(LogcatEvent::Split { down: false })).ok();
+                    }))
+                    .item(PopupMenuItem::new("Split Down").icon(icons::SPLIT_HORIZONTALLY).on_click(move |_, _, cx| {
+                        down.update(cx, |_, cx| cx.emit(LogcatEvent::Split { down: true })).ok();
+                    }))
+                    .item(PopupMenuItem::new("Close").icon(icons::CLOSE).on_click(move |_, _, cx| {
+                        close.update(cx, |_, cx| cx.emit(LogcatEvent::ClosePanel)).ok();
+                    }))
+                }))
+            });
         let empty_reason = if self.following.is_none() {
             Some(if self.devices(cx).is_empty() { "No connected devices" } else { "Select a device" }.to_owned())
         } else if self.shown.is_empty() && !self.entries.is_empty() {
