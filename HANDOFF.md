@@ -230,7 +230,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | # | 功能 | 现状 | 实现思路 |
 |---|---|---|---|
 | 1 | 编辑器语言智能 | ✅ 2026-10-14 按“A+B”方案完成：索引补全 + 自动 import + 语法错误 + 保存后编译报错（FEATURES.md 第 14 节）。不常驻 Kotlin 语言服务（省 1–2 GB）；kotlin-lsp 以后可做成设置里的可选开关 | Reformat Code、Parameter Info、Alt+Enter 的 Import class 和意图操作已补上（2026-10-16，FEATURES.md 第 33–35 节）；需要类型信息的快速修复随语言服务器（FEATURES.md 第 37 节，2026-10-16 已用 kotlin-lsp 实测） |
-| 2 | Gradle Sync | ✅ 2026-10-14 轻量版完成：init script 解析各模块 classpath 并下载缺的依赖和源码，外部库按结果精确列出；build 文件变化时自动同步，打开项目只提示不同步（FEATURES.md 第 15 节） | 剩 Build 窗口 Sync 标签页、Build Variants（随第 3 项） |
+| 2 | Gradle Sync | ✅ 2026-10-14 轻量版完成：init script 解析各模块 classpath 并下载缺的依赖和源码，外部库按结果精确列出；build 文件变化时自动同步，打开项目只提示不同步（FEATURES.md 第 15 节） | Build 窗口 Sync 标签页已补上（2026-10-20）；Build Variants 随第 3 项完成 |
 | 3 | Build + Run | ✅ 2026-10-15 完成：标题栏 Make / 设备 / 运行配置 / Run / Stop，Build、Run、Build Variants 工具窗口（FEATURES.md 第 16 节） | Edit Configurations 对话框已补上（2026-10-16，FEATURES.md 第 16 节）；剩 Apply Changes、真机验证（Debug 见第 5 项） |
 | 4 | Logcat | ✅ 2026-10-15 完成：Logcat 工具窗口（Alt+6），设备下拉、AS 过滤语法、AS 配色、PROCESS STARTED / ENDED、堆栈跳源码、Standard / Compact、暂停、清空、重启（FEATURES.md 第 17 节） | 过滤输入补全、历史和收藏已补上（2026-10-16）；多个 Logcat 标签页已补上（2026-10-16）；截屏录屏按钮已补上（2026-10-16）；剩分屏、真机验证 |
 
@@ -278,7 +278,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 2026-10-17 | Call / Type / Method Hierarchy、Recent Locations、Inline Variable / Function、Unwrap、Safe Delete、会话恢复；架构复查（`arch_tests`）；缺 DLL 诊断；CI 加 Windows 检查 |
 | 2026-10-18 | Generate Signed Bundle / APK 和新建 keystore；Build 窗口列出 Gradle 的 “What went wrong”；控制台往上滚不再被拉回底部；改为分支 + PR 合入 master |
 | 2026-10-19 | 控制台 ANSI 颜色和 1 MB 输出上限；Inline Property / Field（顺带修了 Inline Variable 把成员属性当局部变量的 bug） |
-| 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release；签名打包的 Remember passwords（系统密码库）和 Destination Folder；Live Templates 进补全列表 |
+| 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release；签名打包的 Remember passwords（系统密码库）和 Destination Folder；Live Templates 进补全列表；Build 窗口 Sync 标签页 |
 
 更细的历史看 `git log`，每个提交的标题都写明了用户可见的变化。
 

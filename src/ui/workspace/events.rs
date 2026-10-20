@@ -486,7 +486,7 @@ impl Workspace {
                     });
                 window.push_notification(notification, cx);
             }
-            SyncEvent::Status | SyncEvent::Modules => cx.notify(),
+            SyncEvent::Status | SyncEvent::Modules | SyncEvent::Started => cx.notify(),
             SyncEvent::Finished { build, seconds, unresolved } => {
                 self.code_index.update(cx, |index, cx| index.refresh(cx));
                 if !unresolved.is_empty() {
@@ -502,6 +502,8 @@ impl Workspace {
                     self.report_gradle_jdk(output, window, cx);
                     return;
                 }
+                // Android Studio shows the Build window's Sync tab on a failure.
+                self.tools.open(ToolWindow::Build);
                 let message = format!("Gradle project sync failed. Basic functionality (e.g. editing, debugging) will not work properly.\n{output}");
                 window.push_notification(Notification::error(message).title(format!("Gradle sync of {build} failed")).autohide(false), cx);
             }

@@ -95,7 +95,7 @@ impl ProjectSync for GradleSync {
         stable_hash(&text)
     }
 
-    fn sync(&self, build_root: &Path, variants: &[(String, String)]) -> SyncReport {
+    fn sync(&self, build_root: &Path, variants: &[(String, String)], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> SyncReport {
         let Some(script) = init_script() else {
             return SyncReport { output: "Could not write the sync script to Junction's cache.".into(), ..Default::default() };
         };
@@ -107,17 +107,14 @@ impl ProjectSync for GradleSync {
             .arg(format!("-Djunction.variants={}", variants.iter().map(|(m, v)| format!("{m}={v}")).collect::<Vec<_>>().join(";")))
             // The task reads configurations as it runs.
             .arg("-Dorg.gradle.configuration-cache=false");
-        match command.output() {
-            Ok(out) => {
-                let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
-                output.push_str(&String::from_utf8_lossy(&out.stderr));
-                let mut report = parse_output(&output);
-                report.succeeded = out.status.success();
-                report.output = output;
-                report
-            }
-            Err(e) => SyncReport { output: format!("Could not run Gradle: {e}"), ..Default::default() },
-        }
+        line(&super::gradle::environment(build_root));
+        // The task's own lines (the classpath it reports) aren't for people.
+        let (succeeded, was_cancelled, output) = super::gradle::stream(command, &mut |l| if !l.starts_with("JUNCTION_") { line(l) }, cancelled);
+        let mut report = parse_output(&output);
+        report.succeeded = succeeded;
+        report.cancelled = was_cancelled;
+        report.output = output;
+        report
     }
 
     fn load(&self, build_root: &Path) -> Option<SyncRecord> {

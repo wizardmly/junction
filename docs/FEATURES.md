@@ -332,7 +332,9 @@ Android Studio 的 Sync Project with Gradle Files，轻量版：只让 Gradle �
 | 同步成功后 External Libraries 按解析结果精确列出（含传递依赖的确切版本），未同步过时仍用读 build 文件 + Gradle 缓存的推断 | ✅（记录在 `~/.cache/Junction/gradle-sync/`） |
 | 解析不到的依赖弹警告通知 “Failed to resolve: g:a:v”；同步失败弹错误通知并显示 Gradle 输出，保留上次的库列表 | ✅ |
 | 状态栏显示 Gradle sync running… | ✅ |
-| Build 工具窗口的 Sync 标签页、Build Variants 选变体、模块 / 源集模型 | ❌ 未做（变体固定 debug，Build Variants 随第 3 项做） |
+| Build 工具窗口的 Sync 标签页：Gradle 输出流式显示在右侧控制台，左侧树是「项目: finished at … 用时 — N errors, M warnings」，下面列每个没解析到的依赖（Failed to resolve）和失败原因；同步中显示 syncing… 并可 Stop；同步开始时自动切到 Sync 标签，失败时自动打开 Build 窗口 | ✅（2026-10-20） |
+| Build Variants 选变体 | ✅（见第 16 节） |
+| 模块 / 源集模型 | ❌ 未做 |
 
 Linux 实测：最小 Kotlin/JVM 项目（okhttp、gson、一个不存在的依赖）：打开时提示、Sync Now 后库从 8 个变 10 个、切到加了 retrofit 的分支后自动同步变 11 个、build 脚本写坏时报错且库不变。热守护进程下同步 1–3 秒。Windows / macOS 和真实 Android 项目需真机验证。
 

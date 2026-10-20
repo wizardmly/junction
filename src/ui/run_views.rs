@@ -1,6 +1,6 @@
 //! The Build, Run and Build Variants tool windows, over [`RunService`].
-//! Build: the last build's status, its problems (click opens the source)
-//! and Gradle's output. Run: the launch's console with Rerun and Stop.
+//! Build: Android Studio's Sync and Build Output tabs, each with the last
+//! run's status, its problems (click opens the source) and Gradle's output. Run: the launch's console with Rerun and Stop.
 //! Build Variants: each Android module's active variant.
 
 
@@ -19,7 +19,7 @@ use crate::domain::diagnostics::Severity;
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
-use crate::ui::run_service::{BuildStatus, RunEvent, RunService};
+use crate::ui::run_service::{BuildLog, BuildStatus, RunEvent, RunService};
 use crate::ui::test_service::{TestService, TestServiceEvent};
 use crate::ui::test_view::TestView;
 use crate::ui::sync_service::{self, SyncService};
@@ -47,9 +47,19 @@ fn forward_open<T: EventEmitter<RunViewEvent>>(_: &mut T, _: Entity<ConsoleView>
 
 // --- Build -------------------------------------------------------------------
 
+/// The Build window's tabs, as Android Studio's.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BuildTab {
+    Sync,
+    Build,
+}
+
 pub struct BuildView {
     service: Entity<RunService>,
+    sync: Entity<SyncService>,
+    tab: BuildTab,
     console: Entity<ConsoleView>,
+    sync_console: Entity<ConsoleView>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -58,69 +68,123 @@ impl EventEmitter<RunViewEvent> for BuildView {}
 impl BuildView {
     pub fn new(service: Entity<RunService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let console = cx.new(|cx| ConsoleView::new(window, cx).with_toolbar(true));
+        let sync_console = cx.new(|cx| ConsoleView::new(window, cx).with_toolbar(true));
+        let sync = SyncService::global(cx);
         let _subscriptions = vec![
             cx.observe_in(&service, window, |this, _, window, cx| {
-                this.sync(window, cx);
+                this.show_lines(BuildTab::Build, window, cx);
                 cx.notify();
             }),
+            // A build that starts brings its tab forward, a sync its own.
+            cx.subscribe(&service, |this: &mut Self, _, event: &RunEvent, cx| {
+                if let RunEvent::ShowBuild = event {
+                    this.tab = BuildTab::Build;
+                    cx.notify();
+                }
+            }),
+            cx.observe_in(&sync, window, |this, _, window, cx| {
+                this.show_lines(BuildTab::Sync, window, cx);
+                cx.notify();
+            }),
+            cx.subscribe(&sync, |this: &mut Self, _, event: &sync_service::SyncEvent, cx| {
+                if let sync_service::SyncEvent::Started = event {
+                    this.tab = BuildTab::Sync;
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&console, forward_open),
+            cx.subscribe(&sync_console, forward_open),
             cx.subscribe(&console, |this: &mut Self, _, event: &ConsoleEvent, cx| {
                 if let ConsoleEvent::ClearAll = event {
                     this.service.update(cx, |s, cx| s.clear_build_output(cx));
                 }
             }),
+            cx.subscribe(&sync_console, |this: &mut Self, _, event: &ConsoleEvent, cx| {
+                if let ConsoleEvent::ClearAll = event {
+                    this.sync.update(cx, |s, cx| s.clear_output(cx));
+                }
+            }),
         ];
-        let mut this = Self { service, console, _subscriptions };
-        this.sync(window, cx);
+        let tab = if service.read(cx).build.is_none() && sync.read(cx).log.is_some() { BuildTab::Sync } else { BuildTab::Build };
+        let mut this = Self { service, sync, tab, console, sync_console, _subscriptions };
+        this.show_lines(BuildTab::Build, window, cx);
+        this.show_lines(BuildTab::Sync, window, cx);
         this
     }
 
-    /// Gradle's output into the console, failures red.
-    fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn log<'a>(&self, tab: BuildTab, cx: &'a gpui_kit::App) -> Option<&'a BuildLog> {
+        match tab {
+            BuildTab::Build => self.service.read(cx).build.as_ref(),
+            BuildTab::Sync => self.sync.read(cx).log.as_ref(),
+        }
+    }
+
+    /// Gradle's output into the tab's console, failures red.
+    fn show_lines(&mut self, tab: BuildTab, window: &mut Window, cx: &mut Context<Self>) {
         let red = cx.palette().status_conflict;
-        let lines: Vec<(SharedString, Option<Hsla>)> = self.service.read(cx).build.as_ref().map_or_else(Vec::new, |build| {
+        let lines: Vec<(SharedString, Option<Hsla>)> = self.log(tab, cx).map_or_else(Vec::new, |build| {
             build
                 .lines
                 .iter()
                 .map(|line| {
                     let failed = line.starts_with("e: ") || line.contains(": error:") || line.starts_with("FAILURE") || line.contains("FAILED");
-                    (SharedString::from(line.to_string()), failed.then_some(red))
+                    (line.clone(), failed.then_some(red))
                 })
                 .collect()
         });
-        self.console.update(cx, |c, cx| c.set_lines(&lines, window, cx));
+        let console = if tab == BuildTab::Sync { &self.sync_console } else { &self.console };
+        console.update(cx, |c, cx| c.set_lines(&lines, window, cx));
     }
 
-}
-
-impl Render for BuildView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The tabs at the window's top, Android Studio's "Sync" and "Build
+    /// Output".
+    fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = cx.palette().clone();
-        let service = self.service.read(cx);
-        let Some(build) = service.build.as_ref() else {
-            return v_flex()
-                .size_full()
-                .bg(palette.panel)
-                .child(header(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Build Output"), cx))
-                .child(div().p_4().text_sm().text_color(palette.text_secondary).child("No builds yet. Make Project (Ctrl+F9) or Run (Shift+F10)."))
-                .into_any_element();
+        let tab = |id: &'static str, label: &'static str, which: BuildTab, cx: &mut Context<Self>| {
+            let active = self.tab == which;
+            div()
+                .id(id)
+                .h_full()
+                .px_2()
+                .flex()
+                .items_center()
+                .text_sm()
+                .cursor_pointer()
+                .when(active, |el| el.font_weight(FontWeight::SEMIBOLD).border_b_2().border_color(palette.accent))
+                .when(!active, |el| el.text_color(palette.text_secondary).hover(|s| s.text_color(palette.text)))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.tab = which;
+                    cx.notify();
+                }))
         };
+        h_flex().h_full().child(tab("build-tab-sync", "Sync", BuildTab::Sync, cx)).child(tab("build-tab-output", "Build Output", BuildTab::Build, cx)).into_any_element()
+    }
+
+    /// The tree at the left: the run's status line, Gradle's "What went
+    /// wrong", a sync's warnings and the build's problems.
+    fn render_tree(&self, build: &BuildLog, cx: &mut Context<Self>) -> AnyElement {
+        let palette = cx.palette().clone();
         let (icon, color) = match build.status {
             BuildStatus::Running => (icons::RERUN, palette.text_secondary),
+            BuildStatus::Succeeded if !build.warnings.is_empty() => (icons::STATUS_WARNING, palette.ref_head),
             BuildStatus::Succeeded => (icons::STATUS_SUCCESS, palette.status_added),
             BuildStatus::Failed => (icons::STATUS_ERROR, palette.status_conflict),
             BuildStatus::Cancelled => (icons::STATUS_WARNING, palette.ref_head),
         };
         let when = build.started.format("%H:%M").to_string();
+        let what = build.title.clone();
         let summary = match (build.status, build.took) {
-            (BuildStatus::Running, _) => format!("{}: running…", build.title),
-            (BuildStatus::Succeeded, Some(t)) => format!("{}: finished at {when}  {}", build.title, seconds(t)),
-            (BuildStatus::Failed, Some(t)) => format!("{}: failed at {when}  {}", build.title, seconds(t)),
-            (BuildStatus::Cancelled, _) => format!("{}: cancelled at {when}", build.title),
-            _ => build.title.clone(),
+            // Android Studio's sync node: "app: syncing…".
+            (BuildStatus::Running, _) if self.tab == BuildTab::Sync => format!("{what}: syncing…"),
+            (BuildStatus::Running, _) => format!("{what}: running…"),
+            (BuildStatus::Succeeded, Some(t)) => format!("{what}: finished at {when}  {}", seconds(t)),
+            (BuildStatus::Failed, Some(t)) => format!("{what}: failed at {when}  {}", seconds(t)),
+            (BuildStatus::Cancelled, _) => format!("{what}: cancelled at {when}"),
+            _ => what,
         };
         let errors = build.problems.iter().filter(|p| p.problem.severity == Severity::Error).count();
-        let warnings = build.problems.len() - errors;
+        let warnings = build.problems.len() - errors + build.warnings.len();
         let mut problems = v_flex().id("build-problems").w(px(380.)).flex_none().h_full().overflow_y_scroll().border_r_1().border_color(palette.border).text_sm();
         problems = problems.child(
             h_flex()
@@ -148,6 +212,18 @@ impl Render for BuildView {
                     .when(!rest.is_empty(), |el| el.child(div().pl(px(20.)).text_xs().text_color(palette.text_secondary).child(rest.join("\n")))),
             );
         }
+        for (ix, warning) in build.warnings.iter().enumerate() {
+            problems = problems.child(
+                h_flex()
+                    .id(("sync-warning", ix))
+                    .px_2()
+                    .py_0p5()
+                    .pl(px(24.))
+                    .gap_1()
+                    .child(Icon::new(icons::STATUS_WARNING).xsmall().text_color(palette.ref_head))
+                    .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().child(warning.clone())),
+            );
+        }
         for (ix, p) in build.problems.iter().enumerate() {
             let name = p.file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let (path, line, col) = (p.file.clone(), p.problem.start.line, p.problem.start.col);
@@ -170,25 +246,41 @@ impl Render for BuildView {
                     .on_click(cx.listener(move |_, _, _, cx| cx.emit(RunViewEvent::OpenFile { path: path.clone(), line, col }))),
             );
         }
-        let running = build.status == BuildStatus::Running;
-        let service = self.service.clone();
+        problems.into_any_element()
+    }
+}
+
+impl Render for BuildView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let tabs = self.render_tabs(cx);
+        let running = self.log(self.tab, cx).is_some_and(|b| b.status == BuildStatus::Running);
+        let (service, sync, tab) = (self.service.clone(), self.sync.clone(), self.tab);
+        let top = header(tabs, cx)
+            .child(div().flex_1())
+            .when(running, |el| {
+                el.child(tool_button("build-stop", icons::STOP, "Stop").on_click(move |_, _, cx| match tab {
+                    BuildTab::Build => service.update(cx, |s, cx| s.stop(cx)),
+                    BuildTab::Sync => sync.update(cx, |s, cx| s.stop(cx)),
+                }))
+            })
+            .child(tool_button("build-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(RunViewEvent::Hide))));
+        let Some(log) = self.log(self.tab, cx) else {
+            let empty = match self.tab {
+                BuildTab::Build => "No builds yet. Make Project (Ctrl+F9) or Run (Shift+F10).",
+                BuildTab::Sync => "No syncs yet. Sync Project with Gradle Files (Ctrl+Shift+O).",
+            };
+            return v_flex().size_full().bg(palette.panel).child(top).child(div().p_4().text_sm().text_color(palette.text_secondary).child(empty)).into_any_element();
+        };
+        // The tree borrows the service; it is drawn from a copy of the log's head.
+        let log = BuildLog { title: log.title.clone(), lines: Vec::new(), problems: log.problems.clone(), failure: log.failure.clone(), status: log.status, started: log.started, took: log.took, warnings: log.warnings.clone() };
+        let tree = self.render_tree(&log, cx);
+        let console = if self.tab == BuildTab::Sync { self.sync_console.clone() } else { self.console.clone() };
         v_flex()
             .size_full()
             .bg(palette.panel)
-            .child(
-                header(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Build Output"), cx)
-                    .child(div().flex_1())
-                    .when(running, |el| el.child(tool_button("build-stop", icons::STOP, "Stop").on_click(move |_, _, cx| service.update(cx, |s, cx| s.stop(cx)))))
-                    .child(tool_button("build-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(RunViewEvent::Hide)))),
-            )
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .items_start()
-                    .child(problems)
-                    .child(div().flex_1().min_w_0().h_full().child(self.console.clone())),
-            )
+            .child(top)
+            .child(h_flex().flex_1().min_h_0().items_start().child(tree).child(div().flex_1().min_w_0().h_full().child(console)))
             .into_any_element()
     }
 }
