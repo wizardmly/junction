@@ -202,13 +202,13 @@ impl RunService {
         }
         let format = request.format;
         let task = signing::task(&module, &variant, format);
+        let folder = signing::output_dir(&variant, &request.destination);
         let title = format.title();
         let (send, cancel) = self.start_build(title.into(), vec![task.clone()], cx);
         let r = root.clone();
         let work = cx.background_spawn(async move {
             run_app::build_signed(&GradleBuild, &r, &task, &request, &mut |l| drop(send.send(Message::Build(l.to_owned()))), &|| cancel.load(Ordering::Relaxed))
         });
-        let folder = signing::output_dir(&module, &variant, format);
         let what = match format {
             signing::PackageFormat::Bundle => "App bundle(s)",
             signing::PackageFormat::Apk => "APK(s)",

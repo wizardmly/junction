@@ -2,8 +2,9 @@
 //! the release build runs with the keystore and key given to Gradle as the
 //! `android.injected.signing.*` properties, which take the place of the
 //! module's own signing config (a `keystore.jks` the project doesn't ship
-//! included). The keystore's path and the key's alias are remembered per
-//! module; the passwords aren't.
+//! included). The keystore's path, the key's alias and the destination
+//! folder are remembered per module; the passwords only with Remember
+//! passwords, in the system's password safe.
 
 use std::path::{Path, PathBuf};
 
@@ -42,6 +43,9 @@ pub struct SigningRequest {
     pub store_password: String,
     pub key_alias: String,
     pub key_password: String,
+    /// Destination Folder: the package lands in its variant's folder there
+    /// (`app/release/app-release.apk`), as Android Studio has it.
+    pub destination: PathBuf,
 }
 
 /// What the dialog remembers for a module.
@@ -49,6 +53,49 @@ pub struct SigningRequest {
 pub struct RememberedKey {
     pub store_file: PathBuf,
     pub key_alias: String,
+    #[serde(default)]
+    pub remember_passwords: bool,
+    #[serde(default)]
+    pub apk: bool,
+    #[serde(default)]
+    pub apk_destination: Option<PathBuf>,
+    #[serde(default)]
+    pub bundle_destination: Option<PathBuf>,
+}
+
+impl RememberedKey {
+    /// The format's destination: the last one chosen, else the module's
+    /// folder, Android Studio's `GradleSignStep.getInitialPath`.
+    pub fn destination(&self, format: PackageFormat, module_dir: &Path) -> PathBuf {
+        let last = match format {
+            PackageFormat::Apk => &self.apk_destination,
+            PackageFormat::Bundle => &self.bundle_destination,
+        };
+        last.clone().filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| module_dir.to_owned())
+    }
+
+    pub fn format(&self) -> PackageFormat {
+        if self.apk { PackageFormat::Apk } else { PackageFormat::Bundle }
+    }
+
+    /// Remembers what a request used.
+    pub fn record(&mut self, request: &SigningRequest, remember_passwords: bool) {
+        self.store_file = request.store_file.clone();
+        self.key_alias = request.key_alias.clone();
+        self.remember_passwords = remember_passwords;
+        self.apk = request.format == PackageFormat::Apk;
+        match request.format {
+            PackageFormat::Apk => self.apk_destination = Some(request.destination.clone()),
+            PackageFormat::Bundle => self.bundle_destination = Some(request.destination.clone()),
+        }
+    }
+}
+
+/// The password safe's keys of the keystore's password and the key's,
+/// Android Studio's `KeystoreStep.makePasswordKey`.
+pub fn password_keys(store_file: &Path, key_alias: &str) -> (String, String) {
+    let path = store_file.to_string_lossy();
+    (format!("KEY_STORE_PASSWORD__{path}"), format!("KEY_PASSWORD__{path}__{}", key_alias.trim()))
 }
 
 /// Where the keystore paths and key aliases are kept, by module folder.
@@ -78,6 +125,21 @@ pub fn check(request: &SigningRequest, exists: bool) -> Result<(), &'static str>
     Ok(())
 }
 
+/// The destination folder's check, with Android Studio's messages;
+/// `writable` says whether it is a folder the build can write to.
+pub fn check_destination(request: &SigningRequest, writable: bool) -> Result<(), &'static str> {
+    if request.destination.as_os_str().is_empty() {
+        return Err(match request.format {
+            PackageFormat::Apk => "Please specify destination folder for the signed apk",
+            PackageFormat::Bundle => "Please specify destination folder for the signed bundle",
+        });
+    }
+    if !writable {
+        return Err("The destination folder does not exist or is not writeable");
+    }
+    Ok(())
+}
+
 /// The task: `:app:bundleRelease`, `:app:assembleRelease`.
 pub fn task(module: &ModuleInfo, variant: &str, format: PackageFormat) -> String {
     match format {
@@ -96,6 +158,7 @@ pub fn properties(request: &SigningRequest) -> Vec<(String, String)> {
         ("android.injected.signing.store.password".into(), request.store_password.clone()),
         ("android.injected.signing.key.alias".into(), request.key_alias.trim().to_owned()),
         ("android.injected.signing.key.password".into(), request.key_password.clone()),
+        ("android.injected.apk.location".into(), request.destination.to_string_lossy().into_owned()),
     ]
 }
 
@@ -111,23 +174,18 @@ pub fn default_variant(module: &ModuleInfo) -> String {
         .unwrap_or_else(|| "release".into())
 }
 
-/// Where the build leaves the package: `app/build/outputs/bundle/release`,
-/// `app/build/outputs/apk/release` (a flavored variant's APKs one level
-/// down, `apk/demo/release`).
-pub fn output_dir(module: &ModuleInfo, variant: &str, format: PackageFormat) -> PathBuf {
-    let outputs = module.dir.join("build").join("outputs");
-    match format {
-        PackageFormat::Bundle => outputs.join("bundle").join(variant),
-        PackageFormat::Apk => {
-            let build_type = variant.rfind(|c: char| c.is_uppercase()).map(|i| &variant[i..]).unwrap_or(variant);
-            if build_type.len() == variant.len() {
-                outputs.join("apk").join(variant)
-            } else {
-                let mut flavor = variant[..variant.len() - build_type.len()].to_owned();
-                flavor.get_mut(..1).map(|f| f.make_ascii_lowercase());
-                outputs.join("apk").join(flavor).join(build_type.to_lowercase())
-            }
-        }
+/// Where the build leaves the package: the variant's folder in the
+/// destination, `app/release`, a flavored variant's one level down,
+/// `app/demo/release` (Android Gradle plugin's `dirName` under
+/// `android.injected.apk.location`).
+pub fn output_dir(variant: &str, destination: &Path) -> PathBuf {
+    let build_type = variant.rfind(|c: char| c.is_uppercase()).map(|i| &variant[i..]).unwrap_or(variant);
+    if build_type.len() == variant.len() {
+        destination.join(variant)
+    } else {
+        let mut flavor = variant[..variant.len() - build_type.len()].to_owned();
+        flavor.get_mut(..1).map(|f| f.make_ascii_lowercase());
+        destination.join(flavor).join(build_type.to_lowercase())
     }
 }
 
@@ -245,21 +303,42 @@ mod tests {
         assert_eq!(default_variant(&m), "release");
         assert_eq!(task(&m, "release", PackageFormat::Bundle), ":app:bundleRelease");
         assert_eq!(task(&m, "release", PackageFormat::Apk), ":app:assembleRelease");
-        let request = SigningRequest { format: PackageFormat::Apk, store_file: "/k/my.jks".into(), store_password: "s".into(), key_alias: " key0 ".into(), key_password: "k".into() };
+        let request = SigningRequest { format: PackageFormat::Apk, store_file: "/k/my.jks".into(), store_password: "s".into(), key_alias: " key0 ".into(), key_password: "k".into(), destination: "/p/app".into() };
         assert_eq!(check(&request, true), Ok(()));
         assert_eq!(check(&request, false), Err("Key store file not found."));
         assert_eq!(check(&SigningRequest { key_alias: "".into(), ..request.clone() }, true), Err("Key alias is not specified."));
         let props = properties(&request);
         assert_eq!(props[0], ("android.injected.signing.store.file".to_owned(), "/k/my.jks".to_owned()));
         assert_eq!(props[2].1, "key0");
+        assert_eq!(props[4], ("android.injected.apk.location".to_owned(), "/p/app".to_owned()));
+        assert_eq!(check_destination(&request, true), Ok(()));
+        assert_eq!(check_destination(&request, false), Err("The destination folder does not exist or is not writeable"));
+        assert_eq!(check_destination(&SigningRequest { destination: "".into(), ..request }, true), Err("Please specify destination folder for the signed apk"));
+    }
+
+    #[test]
+    fn remembers_destinations_and_passwords_choice() {
+        let dir = Path::new("/p/app");
+        let mut key = RememberedKey::default();
+        assert_eq!(key.destination(PackageFormat::Apk, dir), dir);
+        assert_eq!(key.format(), PackageFormat::Bundle);
+        let request = SigningRequest { format: PackageFormat::Apk, store_file: "/k/my.jks".into(), key_alias: "key0".into(), destination: "/out".into(), ..Default::default() };
+        key.record(&request, true);
+        assert!(key.remember_passwords);
+        assert_eq!(key.format(), PackageFormat::Apk);
+        assert_eq!(key.destination(PackageFormat::Apk, dir), PathBuf::from("/out"));
+        assert_eq!(key.destination(PackageFormat::Bundle, dir), dir);
+        // Files written before these fields were added still read.
+        let old: RememberedKey = serde_json::from_str(r#"{"store_file":"/k/my.jks","key_alias":"key0"}"#).unwrap();
+        assert!(!old.remember_passwords);
+        assert_eq!(password_keys(Path::new("/k/my.jks"), " key0"), ("KEY_STORE_PASSWORD__/k/my.jks".to_owned(), "KEY_PASSWORD__/k/my.jks__key0".to_owned()));
     }
 
     #[test]
     fn finds_the_output_folder() {
         let m = app();
-        assert_eq!(output_dir(&m, "release", PackageFormat::Bundle), PathBuf::from("/p/app/build/outputs/bundle/release"));
-        assert_eq!(output_dir(&m, "release", PackageFormat::Apk), PathBuf::from("/p/app/build/outputs/apk/release"));
-        assert_eq!(output_dir(&m, "demoRelease", PackageFormat::Apk), PathBuf::from("/p/app/build/outputs/apk/demo/release"));
+        assert_eq!(output_dir("release", &m.dir), PathBuf::from("/p/app/release"));
+        assert_eq!(output_dir("demoRelease", Path::new("/out")), PathBuf::from("/out/demo/release"));
         let flavored = ModuleInfo { variants: vec!["demoDebug".into(), "demoRelease".into()], ..m };
         assert_eq!(default_variant(&flavored), "demoRelease");
     }

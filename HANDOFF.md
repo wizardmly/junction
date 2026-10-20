@@ -42,7 +42,7 @@
 
 - 2026-10-09 做过一次全量回归（358 项对照 AS），之后全部修复并复测：旧问题 127/135 通过，0 崩溃。
 - 2026-10-12 做过一次“所有右键菜单 / 弹出菜单 / 主菜单每一项”的回归：首轮 518 项通过、42 个问题，已全部修复并复测两轮。
-- `cargo test` 当前 438 个单元测试通过（另有 15 个 `#[ignore]` 的基准、探针和需要外部工具的测试，如调用 keytool 的 `creates_a_keystore`）。
+- `cargo test` 当前 440 个单元测试通过（另有 15 个 `#[ignore]` 的基准、探针和需要外部工具的测试，如调用 keytool 的 `creates_a_keystore`）。
 - 绝大多数功能**只在 Linux（Xvfb）下测过**。Windows 上验证过的：启动、任务栏点击最小化、旧索引缓存崩溃修复、Device Manager 的 Wi-Fi 自动连接，以及维护者在 Windows 11（10.0.26200，Gradle JDK 用 AS 自带的 JBR 21.0.9）上编译 mytv-android 的 APK。macOS 基本未在真机验证。
 - CI 每次推分支都在 `windows-latest` 上跑一次 `cargo check --release`，只在 Windows 下编译的代码（`#[cfg(windows)]`）在合并前就能发现编译错误，但不等于在 Windows 上跑过。
 
@@ -183,6 +183,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 - **Windows 上运行 Gradle**：直接 `Command::new("gradlew.bat")`，不要再套 `cmd /C`。Rust 标准库会按 cmd 的规则给 .bat 的参数转义，签名密码里的 `&`、`^`、`%`、引号才能原样传到 Gradle。Gradle 不认名字里带点的 `ORG_GRADLE_PROJECT_*` 环境变量，所以签名属性只能走 `-P`（AS 也是这样）。
 - **缺 DLL 的诊断**：`main.rs` 启动时 `SetErrorMode(SEM_FAILCRITICALERRORS)`，子进程继承，缺 DLL 的程序不再弹系统框而是以 0xC0000135 退出；`domain::build::missing_dll` 认出 Gradle 输出里的这个退出码并说明是哪个程序。每次构建的第二行写 Gradle JDK 和 Windows 版本（`infra::gradle::environment`）。维护者报过的 `api-ms-win-eventing-consumer-l1-1-0.dll` 弹框：已排查 junction.exe、aapt2、platform-tools、Temurin 17/21、JBR 21.0.8/21.0.9、Gradle 8.11 的原生库，都不依赖它；加了上面的诊断后，维护者贴出的一次 release 构建输出里没有缺 DLL 的提示（那次构建因签名文件不存在失败）；弹框是否还会出现、是哪个程序，都还没确认。
 - **控制台**（`ui/console_view.rs`）：按滚动位置决定是否跟随新输出（vendor 编辑器加了 `scrolled_to_end`），往上滚就停住；插入文本前后要恢复滚动位置，否则编辑器会滚到光标处。Build / Run / Debug 走 `set_lines`（ANSI 解码、1 MB cycle buffer 在这里），Logcat 走 `sync`，有自己的缓冲区。
+- **密码库**（`domain::password_safe::PasswordSafe`，实现 `infra::password_safe::SystemPasswordSafe`，对应 IntelliJ 的 `PasswordSafe`）：macOS 钥匙串（`security-framework`）；Linux 先用 `secret-tool`（Secret Service，密码走 stdin），没有 D-Bus / 钥匙环时退回设置目录的 `passwords.json`（0600）；Windows 用 `passwords.json`，值用 DPAPI 加密。读写可能弹出解锁框，**一律放在后台线程**。目前只有签名对话框的 Remember passwords 在用；GitHub / GitLab token 仍是明文 `accounts.json`，以后可以迁过来。
 - **Inline**（Ctrl+Alt+N）的顺序：局部变量（`index::inline`，只认函数体里的属性）→ 成员属性 / 字段（`index::inline_field`，没有类型解析，只跟随不会认错的引用，遇到 `other.x` 就拒绝）→ 函数（`index::inline_function`）。
 
 ### 环境变量
@@ -249,14 +250,14 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 
 12. Compose Preview / Layout Editor（依赖 layoutlib，成本极高，建议用投屏替代）。
 13. Profiler、Layout Inspector、App Inspection。
-14. APK Analyzer、SDK Manager、Lint 视图。（Generate Signed Bundle / APK 已做，2026-10-18，FEATURES.md 第 59 节：注入 `android.injected.signing.*`，项目没带 keystore 也能出签名包；Create new… 用 keytool 新建 keystore。剩 Remember passwords、指定输出目录。）
+14. APK Analyzer、SDK Manager、Lint 视图。（Generate Signed Bundle / APK 已做，2026-10-18，FEATURES.md 第 59 节：注入 `android.injected.signing.*`，项目没带 keystore 也能出签名包；Create new… 用 keytool 新建 keystore。Remember passwords 和 Destination Folder 已补上，2026-10-20。）
 
 **内存实测（Linux 容器，软件渲染）**：Junction 打开一个 104 个 .kt 文件的 Android 项目约 241 MB；打开 junction 仓库（含 Cargo 依赖源码）首次建索引峰值 674 MB、约 20 秒，再次启动读缓存 396 MB、CPU 约 2 秒。作为对比，最小 Kotlin/JVM 项目的 Gradle Daemon 669 MB + Kotlin Compile Daemon 378 MB。结论：Rust 能省掉 IDE 自身的内存和启动扫描，但 Gradle Sync / 构建 / AS 级 Kotlin 语言服务本身是 JVM，省不掉，只能做到按需启动、少同步。
 
 ### 6.3 尚未在真机验证
 
-- Windows：Terminal（PowerShell / ConPTY）、Running Devices 和 Device Explorer 的完整流程、双击 Shift、大部分 2026-10-12 之后的功能。2026-10-17 之后只在 Windows 编译检查过、没在 Windows 上跑过的：直接运行 `gradlew.bat`（参数转义）、`SetErrorMode` 和缺 DLL 提示、`RtlGetVersion` 取系统版本（这一项维护者的构建输出里已经看到了）、keytool.exe 新建 keystore。
-- macOS：.app 能否正常运行、macOS keymap、打包脚本、符号链接路径下的多仓库行为。
+- Windows：签名对话框的 Remember passwords（DPAPI）；Terminal（PowerShell / ConPTY）、Running Devices 和 Device Explorer 的完整流程、双击 Shift、大部分 2026-10-12 之后的功能。2026-10-17 之后只在 Windows 编译检查过、没在 Windows 上跑过的：直接运行 `gradlew.bat`（参数转义）、`SetErrorMode` 和缺 DLL 提示、`RtlGetVersion` 取系统版本（这一项维护者的构建输出里已经看到了）、keytool.exe 新建 keystore。
+- macOS：钥匙串保存签名密码；.app 能否正常运行、macOS keymap、打包脚本、符号链接路径下的多仓库行为。
 - 容器里测不了：跟随系统主题、GPG 密钥列表、原生文件选择框、外部修改后自动刷新。
 
 ## 7. 时间线（关键节点）
@@ -277,7 +278,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 2026-10-17 | Call / Type / Method Hierarchy、Recent Locations、Inline Variable / Function、Unwrap、Safe Delete、会话恢复；架构复查（`arch_tests`）；缺 DLL 诊断；CI 加 Windows 检查 |
 | 2026-10-18 | Generate Signed Bundle / APK 和新建 keystore；Build 窗口列出 Gradle 的 “What went wrong”；控制台往上滚不再被拉回底部；改为分支 + PR 合入 master |
 | 2026-10-19 | 控制台 ANSI 颜色和 1 MB 输出上限；Inline Property / Field（顺带修了 Inline Variable 把成员属性当局部变量的 bug） |
-| 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release |
+| 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release；签名打包的 Remember passwords（系统密码库）和 Destination Folder |
 
 更细的历史看 `git log`，每个提交的标题都写明了用户可见的变化。
 

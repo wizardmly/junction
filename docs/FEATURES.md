@@ -1055,6 +1055,10 @@ Linux 实测（Xvfb，calc）：Make Project 的输出第二行是 `Gradle JDK: 
 | 构建 `:app:bundleRelease` / `:app:assembleRelease`，成功后弹 “APK(s) generated successfully…” 通知，Locate 打开输出目录 | ✅ |
 | Windows 上直接运行 `gradlew.bat`（不再套 `cmd /C`），由 Rust 按 cmd 规则转义参数，密码里的 `&`、`^`、`%`、引号不会被 cmd 解释 | ✅（Windows 未实测） |
 | Create new… 打开 New Key Store（AS 的 `NewKeyStoreDialog`）：keystore 路径和密码、key 别名（默认 key0）、密码、有效期（默认 25 年）、证书六项；校验与 AS 一致（密码至少 6 位、两次一致、证书至少填一项）；用 Gradle JDK 的 `keytool -genkeypair` 生成 RSA 2048 密钥，密码走环境变量（`-storepass:env`），不上命令行；成功后回填到签名对话框 | ✅ |
-| Remember passwords、指定输出目录 | ⬜ |
+| Destination Folder（AS 的 `GradleSignStep`）：默认是模块目录，每个模块按 APK / Bundle 分别记住上次的目录；通过 `android.injected.apk.location` 交给 Gradle，包落在 `app/release/`（有风味时 `app/demo/release/`），通知的 Locate 打开这里；为空、不存在或不可写时给出 AS 的提示 | ✅ |
+| Remember passwords（AS 的 `KeystoreStep`）：勾选后两个密码存进系统的密码库，键名同 AS（`KEY_STORE_PASSWORD__<路径>`、`KEY_PASSWORD__<路径>__<别名>`）；不勾选时删掉已存的；打开对话框或选了 keystore 后在后台读出密码，只填空着的密码框。也记住上次选的 App Bundle / APK | ✅ |
+| 密码库：macOS 钥匙串；Linux 用 Secret Service（`secret-tool`），没有时退回设置目录的 `passwords.json`（仅本人可读）；Windows 用 `passwords.json`，内容用 DPAPI（`CryptProtectData`，当前 Windows 用户）加密 | ✅（Linux 实测文件退回；Windows、macOS 需真机验证） |
 
 Linux 实测（Xvfb，假 Android 工程 `droid`）：对话框能列出 app / release；空字段提示正确；填入密码 `p&a^s% w"d` 后构建，Gradle 端 `providers.gradleProperty` 读到的密码和别名与输入完全一致，成功后弹出带 Locate 的通知。
+
+2026-10-20 Linux 实测 Remember passwords 和 Destination Folder：不存在的目录给出 “The destination folder does not exist or is not writeable”；选 `/tmp/…/out` 构建，Gradle 收到 `android.injected.apk.location=/tmp/…/out`，假任务写出 `out/release/app-release.apk`；gnome-keyring 弹出新建钥匙环的框，之后两个密码以 AS 的键名存进 Secret Service；重开对话框时 APK、目标目录、两个密码都回来了；切到 App Bundle 目录变回模块目录；取消勾选再构建后钥匙环里的两条被删掉；`secret-tool` 不可用时写进 `passwords.json`，权限 0600。
