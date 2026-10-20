@@ -130,6 +130,29 @@ impl TestService {
         true
     }
 
+    /// What Run on a Project window folder runs there (`Tests in
+    /// 'com.example'`), with the build and module; none outside tests.
+    pub fn folder_tests(dir: &std::path::Path, cx: &App) -> Option<(PathBuf, crate::domain::run::ModuleInfo, TestRequest)> {
+        let builds = SyncService::try_global(cx).map(|s| s.read(cx).builds().to_vec()).unwrap_or_default();
+        let (build_root, module) = testing::module_of(dir, &builds).map(|(b, m)| (b.to_path_buf(), m.clone())).or_else(|| crate::infra::gradle::module_from_files(&dir.join("x")))?;
+        let rel = dir.strip_prefix(&module.dir).ok()?.to_string_lossy().into_owned();
+        let request = testing::folder_request(&rel, &module)?;
+        // `src` and the module's folder offer it only with unit tests there.
+        if rel.is_empty() || rel == "src" {
+            let sets = std::fs::read_dir(module.dir.join("src")).ok()?;
+            if !sets.flatten().any(|e| testing::test_kind(&format!("src/{}/", e.file_name().to_string_lossy())) == Some(testing::TestKind::Unit)) {
+                return None;
+            }
+        }
+        Some((build_root, module, request))
+    }
+
+    /// Runs a folder's tests (Project window › Run 'Tests in …').
+    pub fn run_folder(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, mut request: TestRequest, debug_port: Option<u16>, cx: &mut Context<Self>) {
+        request.debug_port = debug_port;
+        self.start(Launch { build_root, module, request, source: None }, cx);
+    }
+
     /// Rerun: the last run again.
     pub fn rerun(&mut self, cx: &mut Context<Self>) {
         if let Some(mut launch) = self.last.clone() {

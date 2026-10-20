@@ -391,7 +391,7 @@ pub fn module_of<'a>(file: &Path, builds: &'a [(PathBuf, Vec<ModuleInfo>)]) -> O
         .flat_map(|(build, modules)| modules.iter().map(move |m| (build.as_path(), m)))
         .filter(|(_, m)| {
             let dir = key(&m.dir);
-            file.strip_prefix(&dir).is_some_and(|rest| rest.starts_with('/'))
+            file.strip_prefix(&dir).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
         })
         .max_by_key(|(_, m)| key(&m.dir).len())
 }
@@ -412,6 +412,31 @@ pub struct TestRequest {
 impl TestRequest {
     pub fn of(kind: TestKind, mark: &TestMark) -> Self {
         Self { kind, filters: vec![(mark.class.clone(), mark.method.clone())], name: mark.name(), debug_port: None }
+    }
+}
+
+/// What Run on a folder of the Project window runs, as IntelliJ's
+/// AllInPackage and AllInDirectory producers: a package of a test source
+/// set (`Tests in 'com.example'`, `--tests 'com.example.*'`), or a whole
+/// source set, its source root, `src` or the module's folder (`Tests in
+/// 'app'`; for `src` and the module, the unit tests). `rel` is the folder
+/// relative to the module's; none outside test sources.
+pub fn folder_request(rel: &str, module: &ModuleInfo) -> Option<TestRequest> {
+    let parts: Vec<&str> = rel.split(['/', '\\']).filter(|p| !p.is_empty() && *p != ".").collect();
+    let whole = |kind| Some(TestRequest { kind, filters: Vec::new(), name: format!("Tests in '{}'", module.name()), debug_port: None });
+    match parts.as_slice() {
+        [] | ["src"] => whole(TestKind::Unit),
+        ["src", set, rest @ ..] => {
+            let kind = test_kind(&format!("src/{set}/"))?;
+            match rest {
+                [] | [_] => whole(kind),
+                [_, package @ ..] => {
+                    let package = package.join(".");
+                    Some(TestRequest { kind, filters: vec![(format!("{package}.*"), None)], name: format!("Tests in '{package}'"), debug_port: None })
+                }
+            }
+        }
+        _ => None,
     }
 }
 
@@ -452,9 +477,10 @@ pub fn plan(build_root: &Path, module: &ModuleInfo, variant: &str, request: &Tes
         }
         TestKind::Instrumented => {
             args.push(format!("{prefix}:connected{}AndroidTest", capitalize(variant)));
-            if !request.filters.is_empty() {
-                let classes: Vec<String> = request
-                    .filters
+            // A package (`com.example.*`) is the runner's `package` argument.
+            let (packages, classes): (Vec<_>, Vec<_>) = request.filters.iter().partition(|(class, method)| method.is_none() && class.ends_with(".*"));
+            if !classes.is_empty() {
+                let classes: Vec<String> = classes
                     .iter()
                     .map(|(class, method)| match method {
                         Some(m) => format!("{class}#{m}"),
@@ -462,6 +488,10 @@ pub fn plan(build_root: &Path, module: &ModuleInfo, variant: &str, request: &Tes
                     })
                     .collect();
                 args.push(format!("-Pandroid.testInstrumentationRunnerArguments.class={}", classes.join(",")));
+            }
+            if !packages.is_empty() {
+                let packages: Vec<&str> = packages.iter().map(|(p, _)| p.trim_end_matches(".*")).collect();
+                args.push(format!("-Pandroid.testInstrumentationRunnerArguments.package={}", packages.join(",")));
             }
             report_dir = module.dir.join("build/outputs/androidTest-results/connected");
         }
@@ -952,6 +982,25 @@ abstract class BaseTest {
         assert_eq!(at("/p/app2/src/test/B.kt").as_deref(), Some(":app2"));
         assert_eq!(at("/p/buildSrc/src/test/C.kt").as_deref(), Some(":"));
         assert_eq!(at("/q/D.kt"), None);
+        assert_eq!(at("/p/app").as_deref(), Some(":app"));
+    }
+
+    #[test]
+    fn runs_a_folders_tests() {
+        let app = ModuleInfo { path: ":app".into(), dir: "/p/app".into(), kind: ModuleType::Application, variants: vec!["debug".into()] };
+        let req = |rel: &str| folder_request(rel, &app).map(|r| (r.kind, r.filters, r.name));
+        let whole = |kind| Some((kind, vec![], "Tests in 'app'".to_string()));
+        assert_eq!(req(""), whole(TestKind::Unit));
+        assert_eq!(req("src"), whole(TestKind::Unit));
+        assert_eq!(req("src/test/java"), whole(TestKind::Unit));
+        assert_eq!(req("src/androidTest"), whole(TestKind::Instrumented));
+        assert_eq!(req("src/test/kotlin/com/example"), Some((TestKind::Unit, vec![("com.example.*".into(), None)], "Tests in 'com.example'".into())));
+        assert_eq!(req("src/main/java/com"), None);
+        assert_eq!(req("build"), None);
+        let package = folder_request("src/androidTest/java/com/example", &app).unwrap();
+        assert_eq!(plan(Path::new("/p"), &app, "debug", &package).args, [":app:connectedDebugAndroidTest", "-Pandroid.testInstrumentationRunnerArguments.package=com.example"]);
+        let unit = folder_request("src/test/java/com/example", &app).unwrap();
+        assert_eq!(plan(Path::new("/p"), &app, "debug", &unit).args, [":app:testDebugUnitTest", "--tests", "com.example.*"]);
     }
 
     fn finished(class: &str, name: &str, outcome: Outcome, ms: u64, failure: Option<&str>) -> TestEvent {

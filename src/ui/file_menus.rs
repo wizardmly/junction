@@ -431,6 +431,50 @@ const EXPLORER: &str = "Finder";
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 const EXPLORER: &str = "Files";
 
+/// Run / Debug 'Tests in …' for a folder of tests (a package, a test
+/// source set, a module), Run / Debug 'ExampleTest' for a test file, as
+/// Android Studio's context run configurations; nothing elsewhere.
+fn run_tests_items(menu: PopupMenu, target: &ProjectTarget, cx: &App) -> PopupMenu {
+    use crate::domain::testing;
+    use crate::ui::{debug_service::DebugService, test_service::TestService};
+    if target.multi() {
+        return menu;
+    }
+    let full = target.full();
+    if target.is_dir {
+        let Some((build_root, module, request)) = TestService::folder_tests(&full, cx) else { return menu };
+        let name = request.name.clone();
+        let debug = (build_root.clone(), module.clone(), request.clone());
+        return menu
+            .item(entry(format!("Run '{name}'"), "Ctrl+Shift+F10").icon(Icon::new(icons::RUN)).on_click(move |_, _, cx| {
+                let (build_root, module, request) = (build_root.clone(), module.clone(), request.clone());
+                TestService::global(cx).update(cx, |s, cx| s.run_folder(build_root, module, request, None, cx));
+            }))
+            .item(entry(format!("Debug '{name}'"), "").icon(Icon::new(icons::DEBUG)).on_click(move |_, _, cx| {
+                let (build_root, module, request) = debug.clone();
+                DebugService::global(cx).update(cx, |s, cx| s.debug_folder(build_root, module, request, cx));
+            }))
+            .separator();
+    }
+    if testing::test_kind(&full.to_string_lossy()).is_none() || !matches!(full.extension().and_then(|e| e.to_str()), Some("kt" | "java")) {
+        return menu;
+    }
+    let Ok(text) = std::fs::read_to_string(&full) else { return menu };
+    let marks = testing::find_tests(&text);
+    let Some(mark) = marks.iter().find(|m| m.method.is_none()).cloned() else { return menu };
+    let name = mark.name();
+    let (run, debug) = ((full.clone(), marks.clone(), mark.clone()), (full, marks, mark));
+    menu.item(entry(format!("Run '{name}'"), "Ctrl+Shift+F10").icon(Icon::new(icons::RUN)).on_click(move |_, _, cx| {
+        let (path, marks, mark) = run.clone();
+        TestService::global(cx).update(cx, |s, cx| s.run_mark(path, marks, &mark, None, cx));
+    }))
+    .item(entry(format!("Debug '{name}'"), "").icon(Icon::new(icons::DEBUG)).on_click(move |_, _, cx| {
+        let (path, marks, mark) = debug.clone();
+        DebugService::global(cx).update(cx, |s, cx| s.debug_test(path, marks, &mark, cx));
+    }))
+    .separator()
+}
+
 /// Project view: right-click on a file or a folder.
 pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
     let is_dir = target.is_dir;
@@ -496,6 +540,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         })
         .when(!is_dir, |m| m.item(entry("Override File Type", "").disabled(true)))
         .separator();
+    let menu = run_tests_items(menu, &target, cx);
     let t_split = target.clone();
     let menu = menu.when(!is_dir, |m| {
         m.item(entry("Open in Right Split", "Shift+Enter").icon(Icon::new(icons::SPLIT_VERTICALLY)).on_click(move |_, window, cx| {
