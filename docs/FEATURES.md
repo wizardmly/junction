@@ -425,10 +425,11 @@ Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 
 | Find Usages（Alt+F7，在 toml 的键上）：分 Declarations、catalog 内引用、build 脚本引用三组；`libs.androidx.core` 不会误算成 `libs.androidx.core.ktx` 的用法 | ✅ |
 | `libs.` 补全：在 build 脚本里逐段补全 catalog 访问器，条目显示坐标或版本 | ✅ |
 | 新版本警告（AS 的 GradleDependency 检查）：build 脚本的 `"g:a:v"` 和 `id("x") version "v"`、catalog 的版本（`[versions]` 和内联版本）有更新时黄色波浪线，提示 “A newer version of g:a than v is available: w”；稳定版只推荐稳定版，预览版可推荐更新的预览版；动态版本不提示 | ✅ |
-| Alt+Enter（Show Context Actions）：弹出所在行的快速修复，“Change to w” 直接改版本 | ✅（目前只有这一种修复） |
+| Alt+Enter（Show Context Actions）：弹出所在行的快速修复，“Change to w” 直接改版本 | ✅ |
 | 版本来源：androidx、com.android、com.google.android、Firebase 等查 Google Maven，其他查 Maven Central，插件查 Gradle Plugin Portal；结果缓存在 `~/.cache/Junction/maven-versions/`，一天后重查，失败一小时后重试 | ✅ |
 | Project Structure 对话框（见第 61 节） | ✅ |
-| 迁移到 version catalog、`buildSrc` 常量、Groovy 脚本里的 catalog 补全 | ❌ 未做 |
+| Alt+Enter “Replace with new library catalog declaration for x”（AS 的 UseTomlInstead）：build 脚本里写死的 `"g:a:v"` 依赖和 `id("x") version "v"` 插件改成 `libs.x` / `alias(libs.plugins.x)`，同时在 `libs.versions.toml` 加 `[versions]` 和 `[libraries]`/`[plugins]` 条目（缺的段按 Gradle 顺序新建）；catalog 已有同坐标条目时改为 “Replace with existing version catalog reference 'x'” | ✅ |
+| `buildSrc` 常量、Groovy 脚本里的 catalog 补全 | ❌ 未做 |
 
 Linux 实测（容器访问不了 dl.google.com，androidx 和 AGP 用预先写入的缓存，其他是实际联网结果）：build.gradle.kts 里 Ctrl+B `libs.androidx.core.ktx` 跳到 toml 第 9 行；toml 里所有旧版本都有警告，Alt+Enter 选 “Change to 1.13.1” 后版本被替换；`version.ref` 跳到 `[versions]`；Alt+F7 列出 build 脚本里的用法；`libs.andr` → `androidx` → `core.` → `ktx` 逐段补全。截图：reports/Gradle文件辅助-2026-10-15/。
 

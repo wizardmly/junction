@@ -23,6 +23,7 @@ pub mod editor_session;
 pub mod intentions;
 pub mod introduce_variable;
 pub mod live_templates;
+pub mod catalog_migration;
 pub mod surround;
 pub mod jdk;
 pub mod local_history;
