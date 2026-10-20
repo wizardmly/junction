@@ -224,6 +224,8 @@ pub trait DebugVm: Send + Sync {
     fn new_instance(&self, thread: u64, class: u64, constructor: u64, args: &[Value]) -> Result<Value, String>;
     /// A class's directly implemented interfaces.
     fn interfaces(&self, class: u64) -> Result<Vec<u64>, String>;
+    /// `ReferenceType.ClassObject`: the `java.lang.Class` of a class.
+    fn class_object(&self, class: u64) -> Result<Value, String>;
     /// A visible local's JNI type (`I`, `Ljava/lang/String;`); none when
     /// the frame has no such local.
     fn variable_type(&self, thread: u64, frame: &Frame, name: &str) -> Result<Option<String>, String>;

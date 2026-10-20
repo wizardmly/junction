@@ -846,6 +846,12 @@ impl DebugVm for JdwpVm {
         (0..count).map(|_| r.reference_type().ok_or_else(|| "bad Interfaces reply".to_string())).collect()
     }
 
+    fn class_object(&self, class: u64) -> Result<Value, String> {
+        let data = self.command(REFERENCE_TYPE, 11, &self.out().reference_type(class).data)?;
+        let id = self.reader(&data).object().ok_or("bad ClassObject reply")?;
+        self.object_value(b'c', id)
+    }
+
     fn variable_type(&self, _thread: u64, frame: &Frame, name: &str) -> Result<Option<String>, String> {
         Ok(self.visible_locals(frame)?.into_iter().find(|(_, n, _)| n == name).map(|(_, _, t)| t))
     }
@@ -1521,6 +1527,16 @@ public class Main {
         let scope = Scope { vm: &vm, thread, frame: &frames[0], locals: &locals };
         let eval = |text: &str| evaluate(&scope, text).map(|v| value_text(&v));
         assert_eq!(eval("a + p.x + COUNT + numbers[0] + big"), Ok("141".into()));
+        // Arrays.
+        assert_eq!(eval("new int[4].length"), Ok("4".into()));
+        assert_eq!(eval("java.util.Arrays.toString(new int[] {1, 'b', a})"), Ok("\"[1, 98, 5]\"".into()));
+        assert_eq!(eval("java.util.Arrays.deepToString(new String[][] {{s}, {}, null})"), Ok("\"[[hello], [], null]\"".into()));
+        assert_eq!(eval("new long[2][3][1].length"), Ok("2".into()));
+        assert_eq!(eval("java.util.Arrays.deepToString(new int[2][1])"), Ok("\"[[0], [0]]\"".into()));
+        assert_eq!(eval("new String[2][].length + new Point[1].length"), Ok("3".into()));
+        assert_eq!(eval("java.util.Arrays.toString(intArrayOf(5, 6))"), Ok("\"[5, 6]\"".into()));
+        assert_eq!(eval("new int[-1]"), Err("java.lang.NegativeArraySizeException: -1".into()));
+        assert!(eval("new int[] {s}").unwrap_err().starts_with("Incompatible types"));
         vm.resume().unwrap();
         wait_for(&vm, |e| matches!(e, DebugEvent::VmDeath));
     }

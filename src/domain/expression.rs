@@ -36,7 +36,26 @@ pub enum Expr {
     InstanceOf(Box<Expr>, String),
     /// `target = value`: a local, a field or an array element.
     Assign(Box<Expr>, Box<Expr>),
+    /// `new int[n][m]`, `new String[] {a, b}`, Kotlin's `intArrayOf(1, 2)`:
+    /// the element type, the lengths given, the number of dimensions, and
+    /// the initializer's elements (`{…}` nested for each dimension).
+    NewArray { ty: String, dims: Vec<Expr>, rank: usize, init: Option<Vec<Expr>> },
+    /// A nested `{a, b}` in an array initializer.
+    ArrayInit(Vec<Expr>),
 }
+
+/// Kotlin's array factory functions and the element type they make.
+const KOTLIN_ARRAYS: &[(&str, &str)] = &[
+    ("intArrayOf", "int"),
+    ("longArrayOf", "long"),
+    ("doubleArrayOf", "double"),
+    ("floatArrayOf", "float"),
+    ("shortArrayOf", "short"),
+    ("byteArrayOf", "byte"),
+    ("charArrayOf", "char"),
+    ("booleanArrayOf", "boolean"),
+    ("arrayOf", "java.lang.Object"),
+];
 
 /// Java's primitive types, as casts name them, with their JNI letters.
 pub const PRIMITIVES: &[(&str, &str)] = &[("int", "I"), ("long", "J"), ("double", "D"), ("float", "F"), ("short", "S"), ("byte", "B"), ("char", "C"), ("boolean", "Z")];
@@ -74,7 +93,7 @@ enum Tok {
     Op(&'static str),
 }
 
-const OPS: &[&str] = &["&&", "||", "==", "!=", "<=", ">=", "+", "-", "*", "/", "%", "<", ">", "!", "(", ")", "[", "]", ".", ",", "?", "="];
+const OPS: &[&str] = &["&&", "||", "==", "!=", "<=", ">=", "+", "-", "*", "/", "%", "<", ">", "!", "(", ")", "[", "]", "{", "}", ".", ",", "?", "="];
 
 fn lex(text: &str) -> Result<Vec<Tok>, String> {
     let chars: Vec<char> = text.chars().collect();
@@ -250,6 +269,48 @@ impl Parser {
         Ok(name)
     }
 
+    /// The rest of `new T[…]` after its type: lengths then empty `[]`,
+    /// or only `[]` and an initializer.
+    fn new_array(&mut self, ty: String) -> Result<Expr, String> {
+        let mut rank = ty.matches("[]").count();
+        let ty = ty.trim_end_matches("[]").to_owned();
+        let mut dims = Vec::new();
+        while self.eat("[") {
+            if self.eat("]") {
+                rank += 1;
+                continue;
+            }
+            if rank > dims.len() {
+                return Err("']' expected".into());
+            }
+            dims.push(self.expression()?);
+            self.expect("]")?;
+            rank += 1;
+        }
+        let init = if dims.is_empty() {
+            if !self.eat("{") {
+                return Err("Array initializer expected".into());
+            }
+            Some(self.initializer()?)
+        } else {
+            None
+        };
+        Ok(Expr::NewArray { ty, dims, rank, init })
+    }
+
+    /// An array initializer's elements after its `{`, through its `}`.
+    fn initializer(&mut self) -> Result<Vec<Expr>, String> {
+        let mut items = Vec::new();
+        while !self.eat("}") {
+            items.push(if self.eat("{") { Expr::ArrayInit(self.initializer()?) } else { self.expression()? });
+            if !self.eat(",") {
+                self.expect("}")?;
+                break;
+            }
+        }
+        Ok(items)
+    }
+
     /// `(Type) operand` ahead, as Java tells a cast from a parenthesized
     /// expression: a type in parentheses followed by an operand (or, for a
     /// primitive type, a sign).
@@ -376,12 +437,15 @@ impl Parser {
                 "new" if matches!(self.peek(), Some(Tok::Ident(_))) => {
                     let ty = self.type_name()?;
                     if ty.ends_with("[]") || matches!(self.peek(), Some(Tok::Op("["))) {
-                        return Err("Array creation is not supported".into());
+                        return self.new_array(ty);
                     }
                     self.expect("(")?;
                     Expr::New(ty, self.args()?)
                 }
-                _ if self.eat("(") => Expr::Call(None, word, self.args()?),
+                _ if self.eat("(") => match KOTLIN_ARRAYS.iter().find(|(f, _)| *f == word) {
+                    Some((_, ty)) => Expr::NewArray { ty: (*ty).into(), dims: Vec::new(), rank: 1, init: Some(self.args()?) },
+                    None => Expr::Call(None, word, self.args()?),
+                },
                 _ => Expr::Name(word),
             },
             Tok::Op("(") if self.cast_ahead() => {
@@ -423,7 +487,8 @@ pub fn assigns(text: &str) -> bool {
             Expr::Field(t, _) | Expr::Unary(_, t) | Expr::Cast(_, t) | Expr::InstanceOf(t, _) => walk(t),
             Expr::Index(a, b) | Expr::Binary(_, a, b) => walk(a) || walk(b),
             Expr::Call(t, _, args) => t.as_deref().is_some_and(walk) || args.iter().any(walk),
-            Expr::New(_, args) => args.iter().any(walk),
+            Expr::New(_, args) | Expr::ArrayInit(args) => args.iter().any(walk),
+            Expr::NewArray { dims, init, .. } => dims.iter().chain(init.iter().flatten()).any(walk),
             _ => false,
         }
     }
@@ -586,6 +651,15 @@ mod tests {
     #[test]
     fn parses_new_casts_and_assignments() {
         assert_eq!(parse("new java.util.ArrayList()").unwrap(), Expr::New("java.util.ArrayList".into(), vec![]));
+        let array = |ty: &str, dims: Vec<Expr>, rank, init| Expr::NewArray { ty: ty.into(), dims, rank, init };
+        assert_eq!(parse("new int[3]").unwrap(), array("int", vec![Expr::Int(3)], 1, None));
+        assert_eq!(parse("new String[n][]").unwrap(), array("String", vec![Expr::Name("n".into())], 2, None));
+        assert_eq!(parse("new int[] {1, 2,}").unwrap(), array("int", vec![], 1, Some(vec![Expr::Int(1), Expr::Int(2)])));
+        assert_eq!(parse("new int[][] {{1}, {}}").unwrap(), array("int", vec![], 2, Some(vec![Expr::ArrayInit(vec![Expr::Int(1)]), Expr::ArrayInit(vec![])])));
+        assert_eq!(parse("intArrayOf(1, 2)").unwrap(), array("int", vec![], 1, Some(vec![Expr::Int(1), Expr::Int(2)])));
+        assert_eq!(parse("new int[][3]"), Err("']' expected".into()));
+        assert_eq!(parse("new int[]"), Err("Array initializer expected".into()));
+        assert!(assigns("new int[] {x = 1}"));
         assert_eq!(parse("new Point(1, x)").unwrap(), Expr::New("Point".into(), vec![Expr::Int(1), Expr::Name("x".into())]));
         assert_eq!(parse("(int) d * 2").unwrap(), Expr::Binary(BinaryOp::Mul, Box::new(Expr::Cast("int".into(), name("d"))), Box::new(Expr::Int(2))));
         assert_eq!(parse("(long) -1").unwrap(), Expr::Cast("long".into(), Box::new(Expr::Int(-1))));
@@ -601,7 +675,6 @@ mod tests {
         assert_eq!(parse("a[i] == 1").unwrap(), Expr::Binary(BinaryOp::Eq, Box::new(Expr::Index(name("a"), name("i"))), Box::new(Expr::Int(1))));
         assert_eq!(parse("1 = 2"), Err("Variable expected".into()));
         assert!(assigns("f(x = 1)") && !assigns("x == 1"));
-        assert_eq!(parse("new int[3]"), Err("Array creation is not supported".into()));
     }
 
     #[test]
