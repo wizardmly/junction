@@ -4,6 +4,7 @@
 pub mod adb_device;
 pub mod password_safe;
 pub mod breakpoint_store;
+pub mod class_files;
 pub mod editor_session_store;
 pub mod run_config_store;
 pub mod signing_store;

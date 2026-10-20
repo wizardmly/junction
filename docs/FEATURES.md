@@ -1065,3 +1065,19 @@ Linux 实测（Xvfb，calc）：Make Project 的输出第二行是 `Gradle JDK: 
 Linux 实测（Xvfb，假 Android 工程 `droid`）：对话框能列出 app / release；空字段提示正确；填入密码 `p&a^s% w"d` 后构建，Gradle 端 `providers.gradleProperty` 读到的密码和别名与输入完全一致，成功后弹出带 Locate 的通知。
 
 2026-10-20 Linux 实测 Remember passwords 和 Destination Folder：不存在的目录给出 “The destination folder does not exist or is not writeable”；选 `/tmp/…/out` 构建，Gradle 收到 `android.injected.apk.location=/tmp/…/out`，假任务写出 `out/release/app-release.apk`；gnome-keyring 弹出新建钥匙环的框，之后两个密码以 AS 的键名存进 Secret Service；重开对话框时 APK、目标目录、两个密码都回来了；切到 App Bundle 目录变回模块目录；取消勾选再构建后钥匙环里的两条被删掉；`secret-tool` 不可用时写进 `passwords.json`，权限 0600。
+
+## 60. HotSwap / Apply Code Changes（2026-10-20）
+
+照 IntelliJ 的 HotSwap（`HotSwapManager`、`ReloadClassesWorker`、编辑器右上角的浮动工具条 `HotSwapFloatingToolbarProvider`）：调试会话中改了代码，把这次会话以来新编译出的类通过 JDWP `RedefineClasses` 换进正在运行的 VM，不用重启。代码：`src/domain/hotswap.rs`、`src/usecase/hot_swap.rs`、`DebugSession::hot_swap`、`src/infra/class_files.rs`（扫描类文件、d8）、`src/infra/jdwp_client.rs`（`CapabilitiesNew`、`RedefineClasses`）。
+
+| 功能 | 状态 |
+|---|---|
+| 调试会话中保存 .kt / .java 后，编辑器右上角出现 “Code changed: [Apply HotSwap] ×”；进行中显示 “Reloading classes…”，成功后 “Code has been reloaded ✓”，Hide 只是收起，改动留到下次 | ✅ |
+| Apply HotSwap：先用 Gradle 编译改过的源码所在模块（main 用 `classes` / `compileDebugJavaWithJavac`，测试源码用 `testClasses` / `compileDebugUnitTestJavaWithJavac`，变体跟随 Build Variants），再找出上次重载以来写出的类文件（Gradle 和 AGP 的 Java、Kotlin 输出目录），只换 VM 已加载的类 | ✅ |
+| 结果用 IntelliJ 的文案：“1 class reloaded”、“Loaded classes are up to date. Nothing to reload.”；失败时 “HotSwap failed” 通知，原因按 JDI 的说法（如 “Operation not supported by VM: add method not implemented”）；编译失败时编译错误进 Problems；Debug 窗口的控制台也记一行 | ✅ |
+| 重载后，断在这些类里的行断点重新下（旧代码上的断点随旧代码失效） | ✅ |
+| Run 菜单：Apply Changes and Restart Activity（Ctrl+F10）、Apply Code Changes（Ctrl+Alt+F10）、Debugging Actions › Reload Changed Classes | ✅ |
+| Android：调试中的应用（Debug 'app' 或 Attach debugger）走同一条路，类文件先用 SDK build-tools 里的 d8（`--file-per-class`，每个类一个 dex）转成 dex 再交给 ART | ✅（未在真机验证） |
+| AS 不调试时也能 Apply Changes（靠它自己的部署代理 `installer` / `agent.so` 换代码）；Junction 没有这个代理，所以没挂调试器时 Apply Changes 提示后重新安装并重启应用；Restart Activity 也不做（调试中只换代码） | ⚠️ 差异 |
+
+Linux 实测（Xvfb，Java + JUnit 4 工程）：在 `CalcTest.adds` 第 10 行断住（`first = 3` 已算出），把 `Calc.add` 改成 `a + b + 10` 并保存，浮条出现；点 Apply HotSwap 后显示 “Code has been reloaded”，控制台 “HotSwap: 1 class reloaded”；继续运行后测试输出 `first=3 second=13`。再给 `Calc` 加一个方法后 Apply，得到 “Operation not supported by VM: add method not implemented”，浮条回到 “Code changed:”。

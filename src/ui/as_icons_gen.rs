@@ -74,6 +74,7 @@ pub const DB_ARRAY: AsIcon = AsIcon { light: &[("as/db-array.l0.svg", 0xedf3ffff
 pub const DB_OBJECT: AsIcon = AsIcon { light: &[("as/db-object.l0.svg", 0x3574f0ff)], dark: &[("as/db-object.d0.svg", 0x548af7ff)] };
 pub const DB_PRIMITIVE: AsIcon = AsIcon { light: &[("as/db-primitive.l0.svg", 0x6c707eff)], dark: &[("as/db-primitive.d0.svg", 0xced0d6ff)] };
 pub const DEBUG: AsIcon = AsIcon { light: &[("as/debug.l0.svg", 0x208a3cff), ("as/debug.l1.svg", 0xf2fcf3ff)], dark: &[("as/debug.d0.svg", 0x57965cff), ("as/debug.d1.svg", 0x253627ff)] };
+pub const DEBUGGER_SYNC: AsIcon = AsIcon { light: &[("as/debugger-sync.l0.svg", 0x3574f0ff), ("as/debugger-sync.l1.svg", 0x6c707eff)], dark: &[("as/debugger-sync.d0.svg", 0x548af7ff), ("as/debugger-sync.d1.svg", 0xced0d6ff)] };
 pub const DELETE: AsIcon = AsIcon { light: &[("as/delete.l0.svg", 0x6c707eff)], dark: &[("as/delete.d0.svg", 0xced0d6ff)] };
 pub const DIALOG_ERROR: AsIcon = AsIcon { light: &[("as/dialog-error.l0.svg", 0xe55765ff), ("as/dialog-error.l1.svg", 0xffffffff)], dark: &[("as/dialog-error.d0.svg", 0xdb5c5cff), ("as/dialog-error.d1.svg", 0xffffffff)] };
 pub const DIALOG_INFO: AsIcon = AsIcon { light: &[("as/dialog-info.l0.svg", 0x4682faff), ("as/dialog-info.l1.svg", 0xffffffff)], dark: &[("as/dialog-info.d0.svg", 0x548af7ff), ("as/dialog-info.d1.svg", 0xffffffff)] };
@@ -553,6 +554,10 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/debug.l1.svg", include_bytes!("../../assets/as-icons/gen/debug.l1.svg")),
     ("as/debug.d0.svg", include_bytes!("../../assets/as-icons/gen/debug.d0.svg")),
     ("as/debug.d1.svg", include_bytes!("../../assets/as-icons/gen/debug.d1.svg")),
+    ("as/debugger-sync.l0.svg", include_bytes!("../../assets/as-icons/gen/debugger-sync.l0.svg")),
+    ("as/debugger-sync.l1.svg", include_bytes!("../../assets/as-icons/gen/debugger-sync.l1.svg")),
+    ("as/debugger-sync.d0.svg", include_bytes!("../../assets/as-icons/gen/debugger-sync.d0.svg")),
+    ("as/debugger-sync.d1.svg", include_bytes!("../../assets/as-icons/gen/debugger-sync.d1.svg")),
     ("as/delete.l0.svg", include_bytes!("../../assets/as-icons/gen/delete.l0.svg")),
     ("as/delete.d0.svg", include_bytes!("../../assets/as-icons/gen/delete.d0.svg")),
     ("as/dialog-error.l0.svg", include_bytes!("../../assets/as-icons/gen/dialog-error.l0.svg")),

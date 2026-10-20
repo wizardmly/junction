@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, SharedString, Task};
 
@@ -29,6 +29,21 @@ pub enum DebugServiceEvent {
     /// Paused: the editor goes to the execution point.
     Navigate { path: PathBuf, line: u32 },
     Error { title: String, message: String },
+    /// HotSwap finished: IntelliJ's notification.
+    HotSwap { message: String, failed: bool },
+}
+
+/// The editor's HotSwap toolbar (IntelliJ's "Code changed:").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HotSwapStatus {
+    /// Nothing changed since the last reload.
+    #[default]
+    Hidden,
+    /// Sources were saved during the session: "Code changed: Apply HotSwap".
+    Offered,
+    Running,
+    /// "Code has been reloaded", until the next change.
+    Reloaded,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +157,13 @@ pub struct DebugService {
     generation: u64,
     /// Mute Breakpoints, kept for the next sessions too.
     muted: bool,
+    /// HotSwap: the sources saved during the session, when classes were
+    /// last reloaded (the session's start first), whether the VM is an
+    /// Android app's (it takes dex).
+    changed_sources: Vec<PathBuf>,
+    swapped_at: Option<SystemTime>,
+    android: bool,
+    pub hot_swap: HotSwapStatus,
     _poll: Option<Task<()>>,
 }
 
@@ -390,6 +412,107 @@ impl DebugService {
 
     // --- Sessions -------------------------------------------------------------
 
+    /// A source was saved: during a session, IntelliJ's editor offers
+    /// HotSwap.
+    pub fn source_saved(&mut self, file: PathBuf, cx: &mut Context<Self>) {
+        if self.session.is_none() || !crate::usecase::compile_on_save::compiles(&file) {
+            return;
+        }
+        if !self.changed_sources.contains(&file) {
+            self.changed_sources.push(file);
+        }
+        if self.hot_swap != HotSwapStatus::Running {
+            self.hot_swap = HotSwapStatus::Offered;
+        }
+        cx.notify();
+    }
+
+    /// The toolbar's Hide: the changes stay to reload later.
+    pub fn hide_hot_swap(&mut self, cx: &mut Context<Self>) {
+        if self.hot_swap != HotSwapStatus::Running {
+            self.hot_swap = HotSwapStatus::Hidden;
+            cx.notify();
+        }
+    }
+
+    /// Apply HotSwap / Reload Changed Classes / Apply Code Changes while
+    /// debugging: compiles the saved sources' modules, then reloads the
+    /// classes written since the last reload.
+    pub fn apply_hot_swap(&mut self, cx: &mut Context<Self>) {
+        let (Some(session), Some(since)) = (self.session.clone(), self.swapped_at) else {
+            cx.emit(DebugServiceEvent::HotSwap { message: "No debug session is running.".into(), failed: true });
+            return;
+        };
+        if self.hot_swap == HotSwapStatus::Running {
+            return;
+        }
+        self.hot_swap = HotSwapStatus::Running;
+        cx.notify();
+        let sources = self.changed_sources.clone();
+        let android = self.android;
+        let generation = self.generation;
+        cx.spawn(async move |this, cx| {
+            let found = sources.clone();
+            let targets = cx.background_spawn(async move { crate::usecase::hot_swap::targets(&crate::infra::gradle::GradleBuild, &found) }).await;
+            // Each module's variant, as Build Variants picked it.
+            let targets: Vec<_> = cx.update(|cx| {
+                let sync = crate::ui::sync_service::SyncService::global(cx);
+                targets
+                    .into_iter()
+                    .map(|(module, test)| {
+                        let variant = sync.read(cx).module_at(&module.dir).map(|(build, m)| crate::ui::sync_service::variant_of(build, m, cx)).unwrap_or_else(|| "debug".into());
+                        (module, test, variant)
+                    })
+                    .collect()
+            });
+            let applied = cx
+                .background_spawn(async move {
+                    let dexer = if android {
+                        let sdk = crate::android::sdk::locate(targets.first().map(|(m, _, _)| m.build_root.as_path()));
+                        match sdk.as_deref().and_then(crate::infra::class_files::D8::locate) {
+                            Some(d8) => Some(d8),
+                            None => {
+                                let outcome = crate::domain::hotswap::HotSwapOutcome::Failed("Android SDK build-tools not found: d8 turns the classes into the dex the app's VM reloads.".into());
+                                return (crate::usecase::hot_swap::Applied { outcome, problems: Vec::new() }, SystemTime::now());
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let files = crate::infra::class_files::DiskClassFiles;
+                    let applied = crate::usecase::hot_swap::apply(&crate::infra::gradle::GradleBuild, &targets, &session, &files, since, dexer.as_ref().map(|d| d as &dyn crate::domain::hotswap::Dexer));
+                    (applied, SystemTime::now())
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                let (applied, finished) = applied;
+                let failed = matches!(applied.outcome, crate::domain::hotswap::HotSwapOutcome::Failed(_));
+                if !failed {
+                    this.swapped_at = Some(finished);
+                    this.changed_sources.retain(|f| !sources.contains(f));
+                }
+                if !applied.problems.is_empty() {
+                    use crate::domain::build::BuildSystem as _;
+                    if let Some(root) = sources.first().and_then(|f| crate::infra::gradle::GradleBuild.module_of(f)).map(|m| m.build_root) {
+                        crate::ui::compile_service::CompileService::global(cx).update(cx, |c, cx| c.set_build_problems(&root, applied.problems, cx));
+                    }
+                }
+                let message = applied.outcome.message();
+                if let Some(run) = this.run.as_mut() {
+                    run.console.push(format!("HotSwap: {message}").into());
+                }
+                this.hot_swap = if failed { HotSwapStatus::Offered } else { HotSwapStatus::Reloaded };
+                cx.emit(DebugServiceEvent::HotSwap { message, failed });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     pub fn is_active(&self) -> bool {
         self.run.as_ref().is_some_and(|r| r.status != DebugStatus::Ended)
     }
@@ -441,6 +564,7 @@ impl DebugService {
     pub fn attach_android(&mut self, name: String, adb: crate::android::adb::Adb, serial: String, pid: u32, cx: &mut Context<Self>) {
         self.end_session(cx);
         let generation = self.begin(name, format!("Connecting to process {pid} on {serial}…"), cx);
+        self.android = true;
         self._poll = Some(cx.spawn(async move |this, cx| {
             let target = serial.clone();
             let vm = cx.background_spawn(async move { crate::android::jdwp::connect(&adb, &target, pid).and_then(JdwpVm::over) }).await;
@@ -457,6 +581,10 @@ impl DebugService {
     /// A new session in the Debug window, waiting for its VM.
     fn begin(&mut self, name: String, first_line: String, cx: &mut Context<Self>) -> u64 {
         self.generation += 1;
+        self.android = false;
+        self.changed_sources.clear();
+        self.swapped_at = None;
+        self.hot_swap = HotSwapStatus::Hidden;
         self.run = Some(DebugRun {
             name,
             status: DebugStatus::Connecting,
@@ -581,6 +709,7 @@ impl DebugService {
         }
         self.session = None;
         self.verified.clear();
+        self.hot_swap = HotSwapStatus::Hidden;
         cx.notify();
     }
 
@@ -927,6 +1056,8 @@ async fn drive(this: gpui_kit::WeakEntity<DebugService>, cx: &mut gpui_kit::Asyn
     let session = Arc::new(DebugSession::new(Arc::new(vm)));
     let Ok(breakpoints) = this.update(cx, |this, cx| {
         this.session = Some(session.clone());
+        // What was compiled before the VM started is what it loads.
+        this.swapped_at = Some(SystemTime::now());
         session.set_muted(this.muted);
         if let Some(run) = this.run.as_mut() {
             run.status = DebugStatus::Running;

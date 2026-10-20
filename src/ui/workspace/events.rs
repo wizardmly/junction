@@ -352,6 +352,25 @@ impl Workspace {
 
     /// Debug: a session shows the Debug window, a pause the execution
     /// point in the editor, errors become balloons.
+    /// Apply Changes (Ctrl+F10) / Apply Code Changes (Ctrl+Alt+F10).
+    /// Android Studio swaps code through its deploy agent; Junction has
+    /// none, so with the app under the debugger the edited classes reload
+    /// over JDWP (HotSwap), and otherwise the app reinstalls and restarts.
+    pub(super) fn apply_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let debug = crate::ui::debug_service::DebugService::global(cx);
+        if debug.read(cx).is_active() {
+            debug.update(cx, |d, cx| d.apply_hot_swap(cx));
+        } else if self.run.read(cx).can_stop() {
+            window.push_notification(
+                Notification::info("Without the debugger attached, the changes are applied by reinstalling and restarting the app. Debug it (Shift+F9) to reload code in place.").title("Apply Changes"),
+                cx,
+            );
+            self.run.update(cx, |r, cx| r.run(cx));
+        } else {
+            window.push_notification(Notification::warning("Apply Changes needs a running app: Run (Shift+F10) or Debug (Shift+F9) it first.").title("Apply Changes"), cx);
+        }
+    }
+
     pub(super) fn on_debug_event(&mut self, event: &crate::ui::debug_service::DebugServiceEvent, window: &mut Window, cx: &mut Context<Self>) {
         use crate::ui::debug_service::DebugServiceEvent;
         match event {
@@ -365,6 +384,8 @@ impl Workspace {
                 self.open_at(path, *line, 0, window, cx);
             }
             DebugServiceEvent::Error { title, message } => window.push_notification(Notification::error(message.clone()).title(title.clone()), cx),
+            DebugServiceEvent::HotSwap { message, failed: true } => window.push_notification(Notification::error(message.clone()).title("HotSwap failed"), cx),
+            DebugServiceEvent::HotSwap { message, failed: false } => window.push_notification(Notification::success(message.clone()).title("HotSwap"), cx),
         }
         cx.notify();
     }

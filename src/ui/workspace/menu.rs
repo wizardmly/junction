@@ -147,16 +147,20 @@ pub(super) fn main_menu(
             .menu("Generate Signed Bundle / APK…", Box::new(GenerateSignedApk))
     });
     let (e, f) = (entity.clone(), focus.clone());
-    let menu = menu.submenu("Run", window, cx, move |menu, _, cx| {
+    let menu = menu.submenu("Run", window, cx, move |menu, window, cx| {
         let run = e.read(cx).run.clone();
         let name = run.read(cx).configuration(cx).map(|c| c.name).unwrap_or_else(|| "app".into());
         let can_stop = run.read(cx).can_stop();
         let muted = crate::ui::debug_service::DebugService::global(cx).read(cx).is_muted();
+        let debugging = crate::ui::debug_service::DebugService::global(cx).read(cx).is_active();
         menu.action_context(f.clone())
             .menu(format!("Run '{name}'"), Box::new(RunApp))
             .menu_with_disabled("Stop", Box::new(StopApp), !can_stop)
+            .menu("Apply Changes and Restart Activity", Box::new(ApplyChanges))
+            .menu("Apply Code Changes", Box::new(ApplyCodeChanges))
             .menu("Edit Configurations…", Box::new(EditConfigurations))
             .separator()
+            .submenu("Debugging Actions", window, cx, move |menu, _, _| menu.menu_with_disabled("Reload Changed Classes", Box::new(ReloadChangedClasses), !debugging))
             .menu("View Breakpoints…", Box::new(ViewBreakpoints))
             .menu_with_check("Mute Breakpoints", muted, Box::new(MuteBreakpoints))
     });
