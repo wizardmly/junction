@@ -501,9 +501,14 @@ Linux 实测（Xvfb，JDK 21 + Gradle 8.14 的 calc 项目，未同步）：点�
 | Sync、Build、Run、测试、调试、保存后编译都用所选 JDK | ✅ |
 | Gradle 报找不到 Java（`JAVA_HOME is not set…`、`Android Gradle plugin requires Java 17` 等）时弹 AS 的 “Invalid Gradle JDK configuration found”，带 “Open Gradle Settings” 直达设置页 | ✅ |
 | Download JDK…（2026-10-16，照 IntelliJ 的 `JdkList.kt` / `JdkInstaller`；`src/domain/jdk_feed.rs`、`src/infra/jdk_download.rs`、`src/ui/jdk_download_panel.rs`）：Gradle JDK 下拉里的 “Download JDK…” 在该构建下展开面板：从 JetBrains 的 JDK 列表（`download.jetbrains.com/jdk/feed/v1/jdks.json.xz`，xz 解压）取本机系统和架构可用的版本（不含 Early-Access），Version 下拉（新到旧）、Vendor 下拉（该版本的厂商，Oracle OpenJDK 在前）、Location（默认 `~/.jdks/<名字>`，同 IntelliJ）；Download 显示 “Downloading… 135 of 215 MB (62%)”，下载后校验 SHA-256，tar.gz 保留文件权限、zip 在 Unix 上按条目设权限，去掉压缩包的根目录，检查 `bin/java`，失败时清理；装好后自动选为该构建的 Gradle JDK（OK 后保存）。HTTPS 改用系统证书库（ureq 的 native-certs），公司代理的自签证书也能用。实测（Xvfb）：下载 Oracle OpenJDK 27（215 MB）到 `~/.jdks/openjdk-27`，`java -version` 正常，Gradle JDK 变成 “openjdk-27 (27)” | ✅ |
-| Gradle 版本 / Gradle user home / 离线模式设置、Project Structure 对话框（SDK Location 等） | ❌ 未做 |
+| General Settings（2026-10-20）：Gradle user home（设置后作为 `GRADLE_USER_HOME` 传给每次 Gradle 调用，空着时占位显示当前生效的目录）；Offline work（每次 Gradle 调用加 `--offline`，Sync 控制台第一行显示 “· offline”） | ✅ |
+| 每个构建的 Distribution（IntelliJ 的 “Gradle from”，2026-10-20）：Wrapper（显示 `gradle-wrapper.properties` 里 `distributionUrl` 的版本，如 “Wrapper (Gradle 8.14.3)”；没有 wrapper 时用 PATH 上的 gradle）或 Specified location（填 Gradle 安装目录，跑它的 `bin/gradle`，目录里没有时提示）；空着等于 Wrapper；Sync 控制台第一行显示 “· Gradle: /opt/gradle” | ✅ |
+| 修复（2026-10-20）：设置页改的 Gradle JDK 点 Apply / OK 后没有保存（应用设置时漏拷了这一项） | ✅ |
+| 修改 wrapper 的 Gradle 版本、Project Structure 对话框（SDK Location、AGP 版本等） | ❌ 未做 |
 
 Linux 实测：去掉 `JAVA_HOME`、PATH 中不含 `java` 启动（即用户截图里的情况），Sync Now 成功，自动用了 `/usr/lib/jvm` 里的 JDK 21；设置页显示 “Detect automatically: java-1.21.0-openjdk-amd64 (21.0.12.1)”，下拉里三个指向同一 JDK 的符号链接只列一次；把 Gradle JDK 设成 `JAVA_HOME`（未设置）后同步，弹出 “Invalid Gradle JDK configuration found / JAVA_HOME is not set and no 'java' command could be found in your PATH. / Open Gradle Settings”，点链接直达 Gradle 设置页。
+
+2026-10-20 Linux 实测：设置页搜 “offline” 直达 Gradle 页；勾 Offline work，Distribution 选 Specified location 填 `/opt/gradle`，Gradle JDK 选 `JAVA_HOME`，OK 后 `settings.conf` 里三项都在；Sync 的控制台第一行 “Gradle JDK: JAVA_HOME … · Gradle: /opt/gradle · offline”，同步成功。
 
 ## 24. Rename（2026-10-15）
 

@@ -95,8 +95,36 @@ pub fn failure_summary(output: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// The Gradle version a wrapper downloads: `distributionUrl` in
+/// `gradle/wrapper/gradle-wrapper.properties`
+/// (`…/gradle-8.14.3-bin.zip` is 8.14.3).
+pub fn wrapper_version(properties: &str) -> Option<String> {
+    let url = properties.lines().find_map(|l| l.trim().strip_prefix("distributionUrl")?.trim_start().strip_prefix('=').map(str::trim))?;
+    let file = url.rsplit('/').next()?;
+    let version = file.strip_prefix("gradle-")?.strip_suffix(".zip")?;
+    let version = version.strip_suffix("-bin").or_else(|| version.strip_suffix("-all")).unwrap_or(version);
+    (!version.is_empty()).then(|| version.to_owned())
+}
+
+/// How a build's Gradle is run (IntelliJ's "Distribution"): its wrapper,
+/// or a Gradle installed in a folder ("Specified location").
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum GradleDistribution {
+    #[default]
+    Wrapper,
+    Local(PathBuf),
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reads_the_wrappers_version() {
+        let text = "distributionBase=GRADLE_USER_HOME\ndistributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-bin.zip\n";
+        assert_eq!(super::wrapper_version(text).as_deref(), Some("8.14.3"));
+        assert_eq!(super::wrapper_version("distributionUrl = https://x/gradle-9.0-rc-1-all.zip").as_deref(), Some("9.0-rc-1"));
+        assert_eq!(super::wrapper_version("zipStoreBase=GRADLE_USER_HOME"), None);
+    }
+
     #[test]
     fn reads_what_went_wrong() {
         let out = "> Task :app:packageRelease FAILED\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nA problem was found with the configuration of task ':app:packageRelease'.\n  - Property 'storeFile' specifies file 'D:\\app\\keystore.jks' which doesn't exist.\n    \n* Try:\n> Run with --stacktrace\n";

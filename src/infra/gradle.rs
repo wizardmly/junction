@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-use crate::domain::build::{self, BuildSystem, CompileReport, Module, ModuleKind};
+use crate::domain::build::{self, BuildSystem, CompileReport, GradleDistribution, Module, ModuleKind};
 use crate::domain::diagnostics::{FileProblem, Origin, Pos, Problem, Severity};
 use crate::domain::run::{ApkOutput, BuildResult, ModuleInfo, TaskRunner};
 
@@ -184,12 +184,49 @@ fn is_android(dir: &Path) -> bool {
     text.contains("com.android.") || text.contains("plugins.android.") || text.contains("android {")
 }
 
-/// Each build's Gradle JDK setting (Settings › Build Tools › Gradle), by
-/// build root key; the UI keeps it current.
-static JDK_SETTINGS: std::sync::RwLock<std::collections::BTreeMap<String, String>> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+/// Settings › Build Tools › Gradle, as every Gradle run uses them; the UI
+/// keeps them current.
+#[derive(Clone, Debug, Default)]
+pub struct GradleOptions {
+    /// Each build's Gradle JDK setting, by build root key.
+    pub jdk: std::collections::BTreeMap<String, String>,
+    /// Each build's Gradle installation ("Specified location"), by build
+    /// root key; none runs the wrapper.
+    pub distribution: std::collections::BTreeMap<String, String>,
+    /// Gradle user home (`GRADLE_USER_HOME`); empty is Gradle's own.
+    pub user_home: String,
+    /// Offline work: `--offline`.
+    pub offline: bool,
+}
 
-pub fn set_jdk_settings(settings: std::collections::BTreeMap<String, String>) {
-    *JDK_SETTINGS.write().unwrap() = settings;
+static OPTIONS: std::sync::RwLock<Option<GradleOptions>> = std::sync::RwLock::new(None);
+
+pub fn set_options(options: GradleOptions) {
+    *OPTIONS.write().unwrap() = Some(options);
+}
+
+fn options() -> GradleOptions {
+    OPTIONS.read().unwrap().clone().unwrap_or_default()
+}
+
+/// How a build runs Gradle: its setting, else the wrapper.
+pub fn distribution_for(build_root: &Path) -> GradleDistribution {
+    let key = crate::domain::diagnostics::file_key(build_root);
+    match options().distribution.get(&key) {
+        Some(home) if !home.is_empty() => GradleDistribution::Local(PathBuf::from(home)),
+        _ => GradleDistribution::Wrapper,
+    }
+}
+
+/// A Gradle installation's launcher: `bin/gradle` (`gradle.bat`).
+pub fn local_gradle(home: &Path) -> PathBuf {
+    home.join("bin").join(if cfg!(windows) { "gradle.bat" } else { "gradle" })
+}
+
+/// The version the build's wrapper downloads, if it has one.
+pub fn wrapper_version(build_root: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(build_root.join("gradle/wrapper/gradle-wrapper.properties")).ok()?;
+    build::wrapper_version(&text)
 }
 
 /// The JDK a build's Gradle runs on: its setting, else Android Studio's
@@ -197,7 +234,7 @@ pub fn set_jdk_settings(settings: std::collections::BTreeMap<String, String>) {
 pub fn jdk_for(build_root: &Path) -> Option<crate::domain::jdk::Jdk> {
     use crate::domain::jdk::{pick, GradleJdk};
     let key = crate::domain::diagnostics::file_key(build_root);
-    let setting = JDK_SETTINGS.read().unwrap().get(&key).map(|k| GradleJdk::from_key(k)).unwrap_or_default();
+    let setting = options().jdk.get(&key).map(|k| GradleJdk::from_key(k)).unwrap_or_default();
     let found = super::jdk_discovery::discover(&super::jdk_discovery::Env::current(), Some(build_root));
     pick(&setting, &found).cloned()
 }
@@ -206,10 +243,17 @@ pub fn jdk_for(build_root: &Path) -> Option<crate::domain::jdk::Jdk> {
 /// system's version, for reading a failure.
 pub fn environment(build_root: &Path) -> String {
     let jdk = jdk_for(build_root).map(|j| j.label()).unwrap_or_else(|| "none found (Gradle uses java on the PATH)".into());
-    match os_version() {
-        Some(os) => format!("Gradle JDK: {jdk} · {os}"),
-        None => format!("Gradle JDK: {jdk}"),
+    let mut line = format!("Gradle JDK: {jdk}");
+    if let GradleDistribution::Local(home) = distribution_for(build_root) {
+        line.push_str(&format!(" · Gradle: {}", home.display()));
     }
+    if options().offline {
+        line.push_str(" · offline");
+    }
+    if let Some(os) = os_version() {
+        line.push_str(&format!(" · {os}"));
+    }
+    line
 }
 
 /// `Windows 10.0.19045`, as the system reports it (`RtlGetVersion`, which
@@ -241,8 +285,18 @@ fn os_version() -> Option<String> {
 /// Gradle for a build: its wrapper, plain output, the daemon's idle
 /// timeout, the build's Gradle JDK, no console window on Windows.
 pub fn gradle(build_root: &Path) -> Command {
-    let mut command = gradle_command(build_root);
+    let options = options();
+    let mut command = match distribution_for(build_root) {
+        GradleDistribution::Local(home) => Command::new(local_gradle(&home)),
+        GradleDistribution::Wrapper => gradle_command(build_root),
+    };
     command.arg("--console=plain").arg(format!("-Dorg.gradle.daemon.idletimeout={DAEMON_IDLE_MS}")).current_dir(build_root);
+    if options.offline {
+        command.arg("--offline");
+    }
+    if !options.user_home.is_empty() {
+        command.env("GRADLE_USER_HOME", &options.user_home);
+    }
     if let Some(jdk) = jdk_for(build_root) {
         command.env("JAVA_HOME", &jdk.home);
     }

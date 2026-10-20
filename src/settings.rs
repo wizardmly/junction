@@ -96,6 +96,14 @@ pub struct Settings {
     /// Build Tools › Gradle › Gradle JDK, keyed by build root: a
     /// `domain::jdk::GradleJdk` key; none picks one as Android Studio would.
     pub gradle_jdk: std::collections::BTreeMap<String, String>,
+    /// Build Tools › Gradle › Distribution, keyed by build root: a Gradle
+    /// installation folder ("Specified location"); none runs the wrapper.
+    pub gradle_distribution: std::collections::BTreeMap<String, String>,
+    /// Build Tools › Gradle › Gradle user home; empty is Gradle's own
+    /// (`GRADLE_USER_HOME`, else ~/.gradle).
+    pub gradle_user_home: String,
+    /// Offline work: Gradle runs with `--offline`.
+    pub gradle_offline: bool,
     /// The device the last run used (its Device Manager id).
     pub run_device: String,
     /// Per-language server command overrides (`rust` → `rust-analyzer`);
@@ -386,6 +394,9 @@ impl Default for Settings {
             compile_on_save: true,
             build_variants: Default::default(),
             gradle_jdk: Default::default(),
+            gradle_distribution: Default::default(),
+            gradle_user_home: String::new(),
+            gradle_offline: false,
             run_device: String::new(),
             language_servers: Default::default(),
             auto_update_on_push_rejected: false,
@@ -622,6 +633,13 @@ impl Settings {
                 key if key.starts_with("variant_") => {
                     settings.build_variants.insert(key["variant_".len()..].to_owned(), value.to_owned());
                 }
+                key if key.starts_with("gradle_dist_") => {
+                    if !value.is_empty() {
+                        settings.gradle_distribution.insert(key["gradle_dist_".len()..].to_owned(), value.to_owned());
+                    }
+                }
+                "gradle_user_home" => settings.gradle_user_home = value.to_owned(),
+                "gradle_offline" => settings.gradle_offline = flag,
                 key if key.starts_with("gradle_jdk_") => {
                     if !value.is_empty() {
                         settings.gradle_jdk.insert(key["gradle_jdk_".len()..].to_owned(), value.to_owned());
@@ -713,6 +731,10 @@ impl Settings {
         for (build, jdk) in &self.gradle_jdk {
             text.push_str(&format!("gradle_jdk_{build}={jdk}\n"));
         }
+        for (build, home) in &self.gradle_distribution {
+            text.push_str(&format!("gradle_dist_{build}={home}\n"));
+        }
+        text.push_str(&format!("gradle_user_home={}\ngradle_offline={}\n", self.gradle_user_home, self.gradle_offline));
         text.push_str(&format!(
             "non_modal_commit={}\ncherry_pick_suffix={}\ncommit_push_dialog={}\ncommit_push_dialog_protected_only={}\neditor_font_size={}\n",
             self.non_modal_commit,
@@ -755,7 +777,12 @@ impl Settings {
         crate::git::set_use_credential_helper(self.use_credential_helper);
         crate::index::lsp::configure(self.use_language_servers, self.language_servers.clone());
         crate::ui::diff_panes::set_font_size(self.editor_font_size());
-        crate::infra::gradle::set_jdk_settings(self.gradle_jdk.clone());
+        crate::infra::gradle::set_options(crate::infra::gradle::GradleOptions {
+            jdk: self.gradle_jdk.clone(),
+            distribution: self.gradle_distribution.clone(),
+            user_home: self.gradle_user_home.clone(),
+            offline: self.gradle_offline,
+        });
     }
 
     pub fn update(cx: &mut App, f: impl FnOnce(&mut Self)) {
@@ -794,6 +821,9 @@ mod tests {
             cherry_pick_suffix: false,
             commit_push_dialog_protected_only: true,
             editor_font_tenths: 140,
+            gradle_distribution: [("/p".to_owned(), "/opt/gradle".to_owned())].into(),
+            gradle_user_home: "/data/gradle".into(),
+            gradle_offline: true,
             ..Default::default()
         };
         assert_eq!(Settings::parse(&custom.serialize()), custom);
