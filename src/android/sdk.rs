@@ -21,24 +21,7 @@ fn is_sdk(dir: &Path) -> bool {
 
 /// `sdk.dir` from a Gradle project's local.properties (`C\:\\Users\\…`).
 pub fn sdk_dir_from_local_properties(text: &str) -> Option<PathBuf> {
-    text.lines().find_map(|line| {
-        let (key, value) = line.split_once('=')?;
-        if key.trim() != "sdk.dir" {
-            return None;
-        }
-        let mut out = String::new();
-        let mut chars = value.trim().chars();
-        while let Some(c) = chars.next() {
-            if c == '\\' {
-                if let Some(next) = chars.next() {
-                    out.push(next);
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        (!out.is_empty()).then(|| PathBuf::from(out))
-    })
+    crate::domain::project_structure::sdk_dir(text).map(PathBuf::from)
 }
 
 /// The default SDK folder Android Studio installs to.

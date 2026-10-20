@@ -55,6 +55,7 @@ pub(super) fn main_menu(
             .submenu("Local History", window, cx, |menu, _, _| menu.menu("Show History", Box::new(ShowLocalHistory)).menu("Put Label…", Box::new(PutLocalHistoryLabel)))
             .separator()
             .menu("Settings…", Box::new(OpenSettings))
+            .menu("Project Structure…", Box::new(ProjectStructure))
             .separator()
             .item(PopupMenuItem::new("Exit").on_click(|_, window, cx| crate::ui::dialogs::exit(window, cx)))
     });

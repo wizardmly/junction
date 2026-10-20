@@ -78,6 +78,7 @@ pub mod change_signature_dialog;
 pub mod extract_method_dialog;
 pub mod introduce_parameter_dialog;
 pub mod run_config_dialog;
+pub mod project_structure_dialog;
 pub mod jdk_download_panel;
 pub mod breakpoints_dialog;
 pub mod test_view;

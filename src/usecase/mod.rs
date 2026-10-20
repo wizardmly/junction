@@ -20,3 +20,4 @@ pub mod project_edits;
 pub mod run_tests;
 pub mod complete_code;
 pub mod sync_project;
+pub mod project_structure;

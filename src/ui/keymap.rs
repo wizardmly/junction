@@ -72,6 +72,7 @@ pub const ENTRIES: &[Entry] = &[
     entry("Window", "Select Next Tab", "workspace::NextTab"),
     entry("Window", "Select Previous Tab", "workspace::PreviousTab"),
     entry("Window", "Settings…", "workspace::OpenSettings"),
+    entry("Window", "Project Structure…", "workspace::ProjectStructure"),
 ];
 
 /// The default shortcuts (as bound at startup) and the user's changes.
