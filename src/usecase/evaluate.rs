@@ -3,12 +3,15 @@
 //! locals, then `this`'s fields, then the class's statics, then classes;
 //! fields fall back to Kotlin getters; methods are found up the class
 //! chain and called on the thread; arithmetic promotes and unboxes as Java
-//! does, and `+` with a string calls `toString()`. Also how the Variables
+//! does, and `+` with a string calls `toString()`; `new` calls a
+//! constructor (so does a Kotlin-style `Point(1, 2)`), casts convert or
+//! check the class, and assignments set locals, fields and elements. Also
+//! how the Variables
 //! view describes an object: `size = 3` for a collection, its `toString()`
 //! when its class has one.
 
 use crate::domain::debugger::{value_text, ClassRef, DebugVm, Frame, MethodInfo, Value, Variable};
-use crate::domain::expression::{parse, BinaryOp, Expr, UnaryOp};
+use crate::domain::expression::{parse, BinaryOp, Expr, UnaryOp, PRIMITIVES};
 
 /// Where an expression is evaluated: a paused thread's frame.
 pub struct Scope<'a> {
@@ -112,6 +115,82 @@ fn convert(value: &Value, ty: &str) -> Option<Value> {
     })
 }
 
+/// Of overloads taking as many arguments, the one whose parameters best
+/// fit them: primitives for primitives (boxes too), references for
+/// objects.
+fn best_overload(methods: Vec<MethodInfo>, args: &[Value]) -> Option<MethodInfo> {
+    let fit = |m: &MethodInfo| -> i32 {
+        params(&m.signature)
+            .iter()
+            .zip(args)
+            .map(|(ty, arg)| {
+                let reference = ty.starts_with('L') || ty.starts_with('[');
+                let boxed = matches!(arg, Value::Object { class, .. } if BOXES.iter().any(|(w, _)| w == class));
+                let primitive = is_numeric(arg) || matches!(arg, Value::Boolean(_));
+                let letter = match arg {
+                    Value::Int(_) => "I",
+                    Value::Long(_) => "J",
+                    Value::Double(_) => "D",
+                    Value::Float(_) => "F",
+                    Value::Short(_) => "S",
+                    Value::Byte(_) => "B",
+                    Value::Char(_) => "C",
+                    Value::Boolean(_) => "Z",
+                    _ => "",
+                };
+                match (reference, primitive || boxed) {
+                    // The exact type first, then a widening.
+                    (false, true) if letter == ty => 3,
+                    (false, true) if primitive && convert(arg, ty).is_none() => -100,
+                    (false, true) => 2,
+                    (true, false) if ty == "Ljava/lang/String;" && !matches!(arg, Value::String { .. } | Value::Null) => 0,
+                    (true, false) => 2,
+                    (true, true) => 1,
+                    (false, false) => -100,
+                }
+            })
+            .sum()
+    };
+    // The first of equally fitting ones.
+    methods.into_iter().map(|m| (fit(&m), m)).fold(None, |best: Option<(i32, MethodInfo)>, (score, m)| match best {
+        Some((s, _)) if s >= score => best,
+        _ => Some((score, m)),
+    }).map(|(_, m)| m)
+}
+
+/// A primitive cast, as Java's narrowing and widening conversions.
+fn cast_primitive(value: &Value, ty: &str) -> Option<Value> {
+    if let Value::Boolean(b) = value {
+        return (ty == "Z").then_some(Value::Boolean(*b));
+    }
+    if ty == "Z" {
+        return None;
+    }
+    let whole = as_i64(value);
+    let real = as_f64(value)?;
+    // Java truncates toward zero; NaN is 0, out of range saturates.
+    let truncated = whole.unwrap_or(if real.is_nan() { 0 } else { real as i64 });
+    Some(match ty {
+        "I" => Value::Int(whole.map(|n| n as i32).unwrap_or(if real.is_nan() { 0 } else { real as i32 })),
+        "J" => Value::Long(truncated),
+        "S" => Value::Short(truncated as i16),
+        "B" => Value::Byte(truncated as i8),
+        "C" => Value::Char(truncated as u16),
+        "F" => Value::Float(real as f32),
+        "D" => Value::Double(real),
+        _ => return None,
+    })
+}
+
+/// A JNI type as Java writes it: `I` → `int`, `Ljava/lang/String;` →
+/// `java.lang.String`.
+fn type_name(ty: &str) -> String {
+    match PRIMITIVES.iter().find(|(_, jni)| *jni == ty) {
+        Some((name, _)) => name.to_string(),
+        None => crate::domain::debugger::java_name(ty),
+    }
+}
+
 impl Scope<'_> {
     fn this(&self) -> Option<&Value> {
         self.locals.iter().find(|v| v.name == "this").map(|v| &v.value)
@@ -140,13 +219,28 @@ impl Scope<'_> {
         let mut candidates = vec![name.to_owned()];
         if !name.contains('.') {
             candidates.push(format!("java.lang.{name}"));
-            if let Some(p) = package {
-                candidates.push(format!("{p}.{name}"));
+            // A class nested in the frame's (or its outer) class.
+            let mut outer = self.frame.class.as_str();
+            loop {
+                candidates.push(format!("{outer}${name}"));
+                match outer.rsplit_once('$') {
+                    Some((o, _)) => outer = o,
+                    None => break,
+                }
             }
         }
+        if let Some(p) = package {
+            candidates.push(format!("{p}.{name}"));
+        }
         for candidate in candidates {
-            if let Some(class) = self.vm.find_class(&candidate)? {
-                return Ok(Some(class));
+            // `Outer.Inner` is `Outer$Inner`: try the last dots as `$`.
+            let mut name = candidate;
+            for _ in 0..3 {
+                if let Some(class) = self.vm.find_class(&name)? {
+                    return Ok(Some(class));
+                }
+                let Some(dot) = name.rfind('.') else { break };
+                name.replace_range(dot..dot + 1, "$");
             }
         }
         Ok(None)
@@ -223,13 +317,23 @@ impl Scope<'_> {
                             None => return Err(e),
                         },
                     },
-                    None => match self.this().cloned().filter(|t| t.object_id().is_some()) {
-                        Some(this) => self.call_on(&this, name, args)?,
-                        None => {
-                            let class = ClassRef { id: self.frame.location.class, name: self.frame.class.clone() };
-                            self.call_static(&class, name, args)?
+                    None => {
+                        let called = match self.this().cloned().filter(|t| t.object_id().is_some()) {
+                            Some(this) => self.call_on(&this, name, args.clone()),
+                            None => {
+                                let class = ClassRef { id: self.frame.location.class, name: self.frame.class.clone() };
+                                self.call_static(&class, name, args.clone())
+                            }
+                        };
+                        match called {
+                            // Kotlin creates objects without `new`.
+                            Err(e) if e.starts_with("Cannot find") && name.starts_with(char::is_uppercase) => match self.class_named(name)? {
+                                Some(class) => self.construct(&class, args)?,
+                                None => return Err(e),
+                            },
+                            other => other?,
                         }
-                    },
+                    }
                 }
             }
             Expr::Unary(op, e) => {
@@ -244,7 +348,175 @@ impl Scope<'_> {
                 }
             }
             Expr::Binary(op, a, b) => self.binary(*op, a, b)?,
+            Expr::New(ty, args) => {
+                let class = self.class_named(ty)?.ok_or_else(|| format!("Cannot resolve class '{ty}'"))?;
+                let args = args.iter().map(|a| self.eval(a)).collect::<Result<Vec<_>, _>>()?;
+                self.construct(&class, args)?
+            }
+            Expr::Cast(ty, e) => {
+                let value = self.eval(e)?;
+                self.cast(value, ty)?
+            }
+            Expr::InstanceOf(e, ty) => {
+                let value = self.eval(e)?;
+                Value::Boolean(self.is_instance(&value, ty)?)
+            }
+            Expr::Assign(target, value) => {
+                let value = self.eval(value)?;
+                self.assign(target, value)?
+            }
         }))
+    }
+
+    /// `new`: the class's constructor taking the arguments.
+    fn construct(&self, class: &ClassRef, args: Vec<Value>) -> Result<Value, String> {
+        let constructors: Vec<MethodInfo> = self.vm.methods(class.id)?.into_iter().filter(|m| m.name == "<init>" && params(&m.signature).len() == args.len()).collect();
+        let Some(constructor) = best_overload(constructors, &args) else {
+            return Err(format!("Cannot find constructor of {} with {} arguments", class.name, args.len()));
+        };
+        let args = self.arguments(&constructor, args)?;
+        self.vm.new_instance(self.thread, class.id, constructor.id, &args)
+    }
+
+    /// Whether a class is, extends or implements another.
+    fn assignable(&self, class: u64, to: u64) -> Result<bool, String> {
+        let mut pending = vec![class];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(at) = pending.pop() {
+            if at == to {
+                return Ok(true);
+            }
+            if at == 0 || !seen.insert(at) || seen.len() > 256 {
+                continue;
+            }
+            pending.push(self.vm.superclass(at)?);
+            pending.extend(self.vm.interfaces(at)?);
+        }
+        Ok(false)
+    }
+
+    /// `instanceof`: false for null; a primitive is its box.
+    fn is_instance(&self, value: &Value, ty: &str) -> Result<bool, String> {
+        let value = match value {
+            Value::Null => return Ok(false),
+            v if is_numeric(v) || matches!(v, Value::Boolean(_)) => self.box_value(v.clone())?,
+            v => v.clone(),
+        };
+        let (Value::String { id, .. } | Value::Object { id, .. } | Value::Array { id, .. }) = value else { return Ok(false) };
+        let target = self.class_named(ty)?.ok_or_else(|| format!("Cannot resolve class '{ty}'"))?;
+        if target.name == "java.lang.Object" {
+            return Ok(true);
+        }
+        let class = self.vm.class_of(id)?;
+        self.assignable(class.id, target.id)
+    }
+
+    /// A cast: a primitive converts as Java's (truncating, wrapping); a
+    /// reference must be an instance of the type.
+    fn cast(&self, value: Value, ty: &str) -> Result<Value, String> {
+        if let Some((_, jni)) = PRIMITIVES.iter().find(|(name, _)| *name == ty) {
+            let value = self.unbox(value)?;
+            return cast_primitive(&value, jni).ok_or_else(|| format!("Inconvertible types; cannot cast '{}' to '{ty}'", value_text(&value)));
+        }
+        if matches!(value, Value::Null) {
+            return Ok(value);
+        }
+        if self.is_instance(&value, ty)? {
+            let boxed = is_numeric(&value) || matches!(value, Value::Boolean(_));
+            return if boxed { self.box_value(value) } else { Ok(value) };
+        }
+        let class = match &value {
+            Value::String { .. } => "java.lang.String".to_owned(),
+            Value::Object { class, .. } | Value::Array { class, .. } => class.clone(),
+            other => value_text(other),
+        };
+        Err(format!("java.lang.ClassCastException: class {class} cannot be cast to class {ty}"))
+    }
+
+    /// A value as a variable of a JNI type holds it: a primitive
+    /// converted, boxed for a reference.
+    fn coerce(&self, value: Value, ty: &str) -> Result<Value, String> {
+        if ty.starts_with('L') || ty.starts_with('[') {
+            return match value {
+                v if is_numeric(&v) || matches!(v, Value::Boolean(_)) => {
+                    // A primitive goes into its box, or a supertype of it.
+                    let class = crate::domain::debugger::java_name(ty);
+                    let boxable = BOXES.iter().any(|(w, _)| *w == class) || matches!(class.as_str(), "java.lang.Object" | "java.lang.Number" | "java.lang.Comparable" | "java.io.Serializable");
+                    if !boxable {
+                        return Err(format!("Incompatible types: '{}' cannot be assigned to '{class}'", value_text(&v)));
+                    }
+                    self.box_value(v)
+                }
+                v => Ok(v),
+            };
+        }
+        let value = self.unbox(value)?;
+        convert(&value, ty).ok_or_else(|| format!("Incompatible types: '{}' cannot be assigned to '{}'", value_text(&value), type_name(ty)))
+    }
+
+    /// `target = value`: a local, a field of `this` or a static of the
+    /// frame's class; `x.f`; `a[i]`. The value assigned.
+    fn assign(&self, target: &Expr, value: Value) -> Result<Value, String> {
+        match target {
+            Expr::Name(name) => {
+                if let Some(ty) = self.vm.variable_type(self.thread, self.frame, name)? {
+                    let value = self.coerce(value, &ty)?;
+                    self.vm.set_variable(self.thread, self.frame, name, &value)?;
+                    return Ok(value);
+                }
+                if let Some(this) = self.this().and_then(Value::object_id) {
+                    let class = self.vm.class_of(this)?;
+                    if let Some(ty) = self.vm.field_type(class.id, name)? {
+                        let value = self.coerce(value, &ty)?;
+                        self.vm.set_field(class.id, Some(this), name, &value)?;
+                        return Ok(value);
+                    }
+                }
+                let class = self.frame.location.class;
+                match self.vm.field_type(class, name)? {
+                    Some(ty) => {
+                        let value = self.coerce(value, &ty)?;
+                        self.vm.set_field(class, None, name, &value)?;
+                        Ok(value)
+                    }
+                    None => Err(format!("Cannot find local variable '{name}'")),
+                }
+            }
+            Expr::Field(owner, name) => {
+                let (class, object) = match self.target(owner)? {
+                    Target::Class(class) => (class.id, None),
+                    Target::Value(Value::Null) => return Err("java.lang.NullPointerException".into()),
+                    Target::Value(v) => {
+                        let id = match &v {
+                            Value::Object { id, .. } | Value::String { id, .. } | Value::Array { id, .. } => *id,
+                            other => return Err(format!("Cannot find field '{name}' in {}", value_text(other))),
+                        };
+                        (self.vm.class_of(id)?.id, Some(id))
+                    }
+                };
+                let ty = self.vm.field_type(class, name)?.ok_or_else(|| format!("Cannot find field '{name}'"))?;
+                let value = self.coerce(value, &ty)?;
+                self.vm.set_field(class, object, name, &value)?;
+                Ok(value)
+            }
+            Expr::Index(array, index) => {
+                let array = self.eval(array)?;
+                let ix = as_i64(&self.unbox(self.eval(index)?)?).ok_or("Array index must be an integer")?;
+                let Value::Array { id, class, length } = array else { return Err("Array expected".into()) };
+                if ix < 0 || ix as usize >= length {
+                    return Err(format!("java.lang.ArrayIndexOutOfBoundsException: Index {ix} out of bounds for length {length}"));
+                }
+                let component = class.strip_suffix("[]").unwrap_or(&class);
+                let ty = match PRIMITIVES.iter().find(|(name, _)| *name == component) {
+                    Some((_, jni)) => jni.to_string(),
+                    None => format!("L{};", component.replace('.', "/")),
+                };
+                let value = self.coerce(value, &ty)?;
+                self.vm.set_array_element(id, ix as usize, &value)?;
+                Ok(value)
+            }
+            _ => Err("Variable expected".into()),
+        }
     }
 
     /// `value.name`: an array's length, a field, a Kotlin property's
@@ -269,7 +541,7 @@ impl Scope<'_> {
             first.make_ascii_uppercase();
         }
         for getter in [format!("get{cap}"), format!("is{cap}"), name.to_owned()] {
-            if self.find_method(class.id, &getter, 0, false)?.is_some() {
+            if self.find_method(class.id, &getter, &[], false)?.is_some() {
                 return self.call_on(value, &getter, Vec::new());
             }
         }
@@ -278,12 +550,13 @@ impl Scope<'_> {
 
     /// A method by name and argument count, up the class chain: (its
     /// class, the method).
-    fn find_method(&self, class: u64, name: &str, args: usize, want_static: bool) -> Result<Option<(u64, MethodInfo)>, String> {
+    fn find_method(&self, class: u64, name: &str, args: &[Value], want_static: bool) -> Result<Option<(u64, MethodInfo)>, String> {
         let mut at = class;
         let mut depth = 0;
         while at != 0 && depth < 32 {
             depth += 1;
-            if let Some(m) = self.vm.methods(at)?.into_iter().find(|m| m.name == name && params(&m.signature).len() == args && (!want_static || m.is_static)) {
+            let overloads: Vec<MethodInfo> = self.vm.methods(at)?.into_iter().filter(|m| m.name == name && params(&m.signature).len() == args.len() && (!want_static || m.is_static)).collect();
+            if let Some(m) = best_overload(overloads, args) {
                 return Ok(Some((at, m)));
             }
             at = self.vm.superclass(at)?;
@@ -318,7 +591,7 @@ impl Scope<'_> {
             v => return self.call_on(&self.box_value(v.clone())?, name, args),
         };
         let class = self.vm.class_of(object)?;
-        let Some((owner, method)) = self.find_method(class.id, name, args.len(), false)? else {
+        let Some((owner, method)) = self.find_method(class.id, name, &args, false)? else {
             return Err(format!("Cannot find method '{name}' in {}", class.name));
         };
         let args = self.arguments(&method, args)?;
@@ -327,7 +600,7 @@ impl Scope<'_> {
     }
 
     fn call_static(&self, class: &ClassRef, name: &str, args: Vec<Value>) -> Result<Value, String> {
-        let Some((owner, method)) = self.find_method(class.id, name, args.len(), true)? else {
+        let Some((owner, method)) = self.find_method(class.id, name, &args, true)? else {
             return Err(format!("Cannot find static method '{name}' in {}", class.name));
         };
         let args = self.arguments(&method, args)?;

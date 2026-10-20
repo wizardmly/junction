@@ -219,6 +219,24 @@ pub trait DebugVm: Send + Sync {
     /// A string in the VM, to pass to a method.
     fn create_string(&self, text: &str) -> Result<Value, String>;
     fn array_element(&self, array: u64, index: usize) -> Result<Value, String>;
+    /// `ClassType.NewInstance`: a new object made by a constructor on a
+    /// suspended thread; a thrown exception is the error.
+    fn new_instance(&self, thread: u64, class: u64, constructor: u64, args: &[Value]) -> Result<Value, String>;
+    /// A class's directly implemented interfaces.
+    fn interfaces(&self, class: u64) -> Result<Vec<u64>, String>;
+    /// A visible local's JNI type (`I`, `Ljava/lang/String;`); none when
+    /// the frame has no such local.
+    fn variable_type(&self, thread: u64, frame: &Frame, name: &str) -> Result<Option<String>, String>;
+    /// Sets a visible local to a value of its type.
+    fn set_variable(&self, thread: u64, frame: &Frame, name: &str, value: &Value) -> Result<(), String>;
+    /// A field's JNI type, up the class chain; none when there's no such
+    /// field.
+    fn field_type(&self, class: u64, name: &str) -> Result<Option<String>, String>;
+    /// Sets an object's field (`object`), else a static one, to a value of
+    /// its type.
+    fn set_field(&self, class: u64, object: Option<u64>, name: &str, value: &Value) -> Result<(), String>;
+    /// Sets an array's element to a value of its component type.
+    fn set_array_element(&self, array: u64, index: usize, value: &Value) -> Result<(), String>;
     /// Waits for the VM's next events; `None` on timeout.
     fn next_events(&self, timeout: Duration) -> Result<Option<EventSet>, String>;
     /// Stop: `VirtualMachine.Exit`.

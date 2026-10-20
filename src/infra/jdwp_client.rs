@@ -75,7 +75,7 @@ struct ClassCache {
     /// Instance fields: (id, name).
     fields: Option<Vec<(u64, String)>>,
     /// Every own field: (id, name, static).
-    all_fields: Option<Vec<(u64, String, bool)>>,
+    all_fields: Option<Vec<(u64, String, bool, String)>>,
 }
 
 struct Inner {
@@ -240,7 +240,7 @@ impl JdwpVm {
     }
 
     /// A class's own fields, statics included.
-    fn own_fields(&self, class: u64) -> Result<Vec<(u64, String, bool)>, String> {
+    fn own_fields(&self, class: u64) -> Result<Vec<(u64, String, bool, String)>, String> {
         if let Some(fields) = self.inner.classes.lock().unwrap().get(&class).and_then(|c| c.all_fields.clone()) {
             return Ok(fields);
         }
@@ -251,12 +251,64 @@ impl JdwpVm {
         for _ in 0..count {
             let id = r.field().ok_or("bad Fields reply")?;
             let name = r.string().ok_or("bad Fields reply")?;
-            let _signature = r.string();
+            let signature = r.string().ok_or("bad Fields reply")?;
             let modifiers = r.bytes.int().ok_or("bad Fields reply")?;
-            fields.push((id, name, modifiers & 0x8 != 0));
+            fields.push((id, name, modifiers & 0x8 != 0, signature));
         }
         self.inner.classes.lock().unwrap().entry(class).or_default().all_fields = Some(fields.clone());
         Ok(fields)
+    }
+
+    /// The locals in scope at a frame's index (`this` aside), by slot:
+    /// (slot, name, JNI type); none without debug info.
+    fn visible_locals(&self, frame: &Frame) -> Result<Vec<(i32, String, String)>, String> {
+        let mut out = self.out().reference_type(frame.location.class);
+        out.method(frame.location.method);
+        let (code, data) = self.command_raw(METHOD, 2, &out.data)?;
+        if code == ABSENT_INFORMATION || code == NATIVE_METHOD {
+            return Ok(Vec::new());
+        }
+        if code != 0 {
+            return Err(error_text(code));
+        }
+        let mut r = self.reader(&data);
+        let _args = r.bytes.int();
+        let count = r.bytes.int().ok_or("bad VariableTable reply")?;
+        let mut visible: Vec<(i32, String, String)> = Vec::new();
+        for _ in 0..count {
+            let start = r.bytes.long().ok_or("bad VariableTable reply")? as u64;
+            let name = r.string().ok_or("bad VariableTable reply")?;
+            let signature = r.string().ok_or("bad VariableTable reply")?;
+            let length = r.bytes.int().ok_or("bad VariableTable reply")? as u64;
+            let slot = r.bytes.int().ok_or("bad VariableTable reply")?;
+            if name != "this" && start <= frame.location.index && frame.location.index < start + length {
+                visible.push((slot, name, signature));
+            }
+        }
+        visible.sort_by_key(|(slot, _, _)| *slot);
+        Ok(visible)
+    }
+
+    /// A field by name up the class chain: (its class, id, static, type).
+    fn find_field(&self, class: u64, name: &str) -> Result<Option<(u64, u64, bool, String)>, String> {
+        let mut at = class;
+        let mut depth = 0;
+        while at != 0 && depth < 32 {
+            depth += 1;
+            if let Some((id, _, is_static, signature)) = self.own_fields(at)?.into_iter().find(|(_, n, ..)| n == name) {
+                return Ok(Some((at, id, is_static, signature)));
+            }
+            at = self.superclass_of(at)?;
+        }
+        Ok(None)
+    }
+
+    /// A SetValues reply: nothing, or why not.
+    fn set_result(&self, set: u8, command: u8, data: &[u8]) -> Result<(), String> {
+        match self.command_raw(set, command, data)? {
+            (0, _) => Ok(()),
+            (code, _) => Err(error_text(code)),
+        }
     }
 
     /// The reply of an invoke: the returned value, or the thrown exception.
@@ -486,7 +538,7 @@ impl DebugVm for JdwpVm {
     }
 
     fn field_id(&self, class: u64, name: &str) -> Result<Option<u64>, String> {
-        Ok(self.own_fields(class)?.into_iter().find(|(_, n, _)| n == name).map(|(id, ..)| id))
+        Ok(self.own_fields(class)?.into_iter().find(|(_, n, ..)| n == name).map(|(id, ..)| id))
     }
 
     fn set_field_watch(&self, class: u64, field: u64, access: bool) -> Result<u32, String> {
@@ -611,31 +663,7 @@ impl DebugVm for JdwpVm {
                 vars.push(Variable { name: "this".into(), value: self.object_value(tag, id)? });
             }
         }
-        // The variables in scope at the frame's index.
-        let mut out = self.out().reference_type(frame.location.class);
-        out.method(frame.location.method);
-        let (code, data) = self.command_raw(METHOD, 2, &out.data)?;
-        if code == ABSENT_INFORMATION || code == NATIVE_METHOD {
-            return Ok(vars);
-        }
-        if code != 0 {
-            return Err(error_text(code));
-        }
-        let mut r = self.reader(&data);
-        let _args = r.bytes.int();
-        let count = r.bytes.int().ok_or("bad VariableTable reply")?;
-        let mut visible: Vec<(i32, String, String)> = Vec::new();
-        for _ in 0..count {
-            let start = r.bytes.long().ok_or("bad VariableTable reply")? as u64;
-            let name = r.string().ok_or("bad VariableTable reply")?;
-            let signature = r.string().ok_or("bad VariableTable reply")?;
-            let length = r.bytes.int().ok_or("bad VariableTable reply")? as u64;
-            let slot = r.bytes.int().ok_or("bad VariableTable reply")?;
-            if name != "this" && start <= frame.location.index && frame.location.index < start + length {
-                visible.push((slot, name, signature));
-            }
-        }
-        visible.sort_by_key(|(slot, _, _)| *slot);
+        let visible = self.visible_locals(frame)?;
         if visible.is_empty() {
             return Ok(vars);
         }
@@ -720,7 +748,7 @@ impl DebugVm for JdwpVm {
         let mut depth = 0;
         while at != 0 && depth < 32 {
             depth += 1;
-            if let Some((id, _, is_static)) = self.own_fields(at)?.into_iter().find(|(_, n, _)| n == name) {
+            if let Some((id, _, is_static, _)) = self.own_fields(at)?.into_iter().find(|(_, n, ..)| n == name) {
                 let data = match (is_static, object) {
                     (false, Some(object)) => {
                         let mut out = self.out().object(object);
@@ -796,6 +824,69 @@ impl DebugVm for JdwpVm {
         let primitive = matches!(tag, b'Z' | b'B' | b'C' | b'S' | b'I' | b'J' | b'F' | b'D');
         let tag = if primitive { tag } else { r.bytes.u8().ok_or("bad GetValues reply")? };
         self.resolve(tag, &mut r)
+    }
+
+    fn new_instance(&self, thread: u64, class: u64, constructor: u64, args: &[Value]) -> Result<Value, String> {
+        const SINGLE_THREADED: i32 = 1;
+        let mut out = self.out().reference_type(class);
+        out.object_id(thread).method(constructor).int(args.len() as i32);
+        for arg in args {
+            out.value(arg);
+        }
+        out.int(SINGLE_THREADED);
+        // The new object (tagged), then the exception: as an invoke's reply.
+        let data = self.command(CLASS_TYPE, 4, &out.data)?;
+        self.invoke_result(&data).map_err(|e| e.replace("Method threw", "Constructor threw"))
+    }
+
+    fn interfaces(&self, class: u64) -> Result<Vec<u64>, String> {
+        let data = self.command(REFERENCE_TYPE, 10, &self.out().reference_type(class).data)?;
+        let mut r = self.reader(&data);
+        let count = r.bytes.int().ok_or("bad Interfaces reply")?;
+        (0..count).map(|_| r.reference_type().ok_or_else(|| "bad Interfaces reply".to_string())).collect()
+    }
+
+    fn variable_type(&self, _thread: u64, frame: &Frame, name: &str) -> Result<Option<String>, String> {
+        Ok(self.visible_locals(frame)?.into_iter().find(|(_, n, _)| n == name).map(|(_, _, t)| t))
+    }
+
+    fn set_variable(&self, thread: u64, frame: &Frame, name: &str, value: &Value) -> Result<(), String> {
+        let Some((slot, ..)) = self.visible_locals(frame)?.into_iter().find(|(_, n, _)| n == name) else {
+            return Err(format!("Cannot find local variable '{name}'"));
+        };
+        // A call made while evaluating resumed the thread, which voids its
+        // frame IDs: the frame now at the same place.
+        let id = self.frames(thread)?.into_iter().find(|f| f.location == frame.location).map_or(frame.id, |f| f.id);
+        let mut out = self.out().object(thread);
+        out.frame_id(id).int(1).int(slot).value(value);
+        self.set_result(STACK_FRAME, 2, &out.data)
+    }
+
+    fn field_type(&self, class: u64, name: &str) -> Result<Option<String>, String> {
+        Ok(self.find_field(class, name)?.map(|(.., t)| t))
+    }
+
+    fn set_field(&self, class: u64, object: Option<u64>, name: &str, value: &Value) -> Result<(), String> {
+        let Some((owner, id, is_static, _)) = self.find_field(class, name)? else { return Err(format!("Cannot find field '{name}'")) };
+        match (is_static, object) {
+            (false, Some(object)) => {
+                let mut out = self.out().object(object);
+                out.int(1).field_id(id).untagged(value);
+                self.set_result(OBJECT_REFERENCE, 3, &out.data)
+            }
+            (true, _) => {
+                let mut out = self.out().reference_type(owner);
+                out.int(1).field_id(id).untagged(value);
+                self.set_result(CLASS_TYPE, 2, &out.data)
+            }
+            (false, None) => Err(format!("Cannot find field '{name}'")),
+        }
+    }
+
+    fn set_array_element(&self, array: u64, index: usize, value: &Value) -> Result<(), String> {
+        let mut out = self.out().object(array);
+        out.int(index as i32).int(1).untagged(value);
+        self.set_result(ARRAY_REFERENCE, 3, &out.data)
     }
 
     fn next_events(&self, timeout: Duration) -> Result<Option<EventSet>, String> {
@@ -1113,6 +1204,15 @@ impl Out {
         }
     }
 
+    /// A value without its tag, where the type is known (a field's, an
+    /// array's elements).
+    fn untagged(&mut self, value: &Value) -> &mut Self {
+        let at = self.data.len();
+        self.value(value);
+        self.data.remove(at);
+        self
+    }
+
     fn location(&mut self, location: Location) -> &mut Self {
         // Type tag 1: a class.
         self.u8(1);
@@ -1391,6 +1491,36 @@ public class Main {
         let entries = children(&vm, thread, &value("map"), 100).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(describe(&vm, thread, &entries[0].value).as_deref(), Some("\"k=5\""));
+
+        // Object creation, casts, instanceof.
+        assert_eq!(eval("new Main.Point().x + new Point().x"), Ok("6".into()));
+        assert_eq!(eval("new java.util.ArrayList(list).size()"), Ok("2".into()));
+        // remove(int), not remove(Object).
+        assert_eq!(eval("new java.util.ArrayList(list).remove(0)"), Ok("\"x\"".into()));
+        assert_eq!(eval("Point().toString()"), Ok("\"Point(3)\"".into()));
+        assert_eq!(eval("new Point(1)"), Err("Cannot find constructor of demo.Main$Point with 1 arguments".into()));
+        assert_eq!(eval("(int) 3.9 + (long) a"), Ok("24".into()));
+        assert_eq!(eval("(double) a / 2"), Ok("10.5".into()));
+        assert_eq!(eval("(byte) 300"), Ok("44".into()));
+        assert_eq!(eval("((String) list.get(0)).length()"), Ok("1".into()));
+        assert_eq!(eval("(String) nothing"), Ok("null".into()));
+        assert!(eval("(String) p").unwrap_err().starts_with("java.lang.ClassCastException"));
+        assert_eq!(eval("list instanceof java.util.List && s instanceof Comparable"), Ok("true".into()));
+        assert_eq!(eval("p instanceof Plain || nothing instanceof Object"), Ok("false".into()));
+
+        // Assignments: locals, fields, statics, elements.
+        assert_eq!(eval("a = 5"), Ok("5".into()));
+        assert_eq!(eval("p.x = 10"), Ok("10".into()));
+        assert_eq!(eval("COUNT = 8"), Ok("8".into()));
+        assert_eq!(eval("numbers[0] = 'a'"), Ok("97".into()));
+        assert_eq!(eval("big = a"), Ok("21".into()));
+        assert!(eval("s = 1").unwrap_err().starts_with("Incompatible types"));
+        // Calls void frame IDs: the frames again, as the session does.
+        let frames = vm.frames(thread).unwrap();
+        let locals = vm.locals(thread, &frames[0]).unwrap();
+        let scope = Scope { vm: &vm, thread, frame: &frames[0], locals: &locals };
+        let eval = |text: &str| evaluate(&scope, text).map(|v| value_text(&v));
+        assert_eq!(eval("a + p.x + COUNT + numbers[0] + big"), Ok("141".into()));
         vm.resume().unwrap();
         wait_for(&vm, |e| matches!(e, DebugEvent::VmDeath));
     }
