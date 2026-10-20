@@ -171,6 +171,7 @@ impl Workspace {
                     }
                     crate::ui::local_history_window::record_file(root.clone(), path.clone(), false);
                     let file = if std::path::Path::new(&path).is_absolute() { std::path::PathBuf::from(&path) } else { root.join(&path) };
+                    crate::ui::debug_service::DebugService::global(cx).update(cx, |debug, cx| debug.source_saved(file.clone(), cx));
                     crate::ui::compile_service::CompileService::global(cx).update(cx, |service, cx| service.file_saved(file, cx));
                 }
             }

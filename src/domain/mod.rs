@@ -14,6 +14,7 @@ pub mod dependency_versions;
 pub mod diagnostics;
 pub mod expression;
 pub mod generate;
+pub mod hotswap;
 pub mod imports;
 pub mod line_edit;
 pub mod navigation_history;

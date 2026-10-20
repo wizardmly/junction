@@ -276,6 +276,63 @@ impl FileEditor {
         cx.notify();
     }
 
+    /// IntelliJ's floating HotSwap toolbar at the editor's top right,
+    /// while a debug session runs and sources were saved: "Code changed:"
+    /// Apply HotSwap, Hide; then "Code has been reloaded".
+    pub(super) fn render_hot_swap(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        use crate::ui::as_icons as icons;
+        use crate::ui::debug_service::HotSwapStatus;
+        self.breakpoint_file()?;
+        let status = DebugService::global(cx).read(cx).hot_swap;
+        if status == HotSwapStatus::Hidden {
+            return None;
+        }
+        let palette = cx.palette().clone();
+        let (text, button) = match status {
+            HotSwapStatus::Offered => (
+                "Code changed:",
+                Some(
+                    Button::new("hot-swap-apply")
+                        .icon(icons::DEBUGGER_SYNC)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Apply HotSwap")
+                        .on_click(|_, _, cx| DebugService::global(cx).update(cx, |d, cx| d.apply_hot_swap(cx))),
+                ),
+            ),
+            HotSwapStatus::Running => ("Reloading classes…", None),
+            _ => ("Code has been reloaded", Some(Button::new("hot-swap-done").icon(icons::SUCCESS).ghost().xsmall())),
+        };
+        Some(
+            h_flex()
+                .id("hot-swap-toolbar")
+                .occlude()
+                .absolute()
+                .top_2()
+                .right_6()
+                .gap_1()
+                .pl_2()
+                .pr_0p5()
+                .py_0p5()
+                .text_sm()
+                .bg(gpui_kit::component::ActiveTheme::theme(&**cx).popover)
+                .border_1()
+                .border_color(palette.border)
+                .rounded_md()
+                .shadow_md()
+                .child(div().text_color(palette.text_secondary).child(text))
+                .children(button)
+                .child(
+                    Button::new("hot-swap-hide")
+                        .icon(icons::CLOSE_SMALL)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Hide")
+                        .on_click(|_, _, cx| DebugService::global(cx).update(cx, |d, cx| d.hide_hot_swap(cx))),
+                ),
+        )
+    }
+
     pub(super) fn render_breakpoint_popup(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let popup = self.breakpoint_popup.as_ref()?;
         let palette = cx.palette().clone();

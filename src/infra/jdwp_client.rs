@@ -800,6 +800,33 @@ impl DebugVm for JdwpVm {
         let _ = self.inner.writer.lock().unwrap().shutdown(std::net::Shutdown::Both);
     }
 
+    fn can_redefine(&self) -> Result<bool, String> {
+        let data = self.command(VM, 17, &[])?;
+        // canRedefineClasses is the eighth of the capabilities.
+        Ok(data.get(7).is_some_and(|b| *b != 0))
+    }
+
+    fn redefine_classes(&self, classes: &[(u64, Vec<u8>)]) -> Result<(), String> {
+        let mut out = self.out();
+        out.int(classes.len() as i32);
+        let size = out.sizes.reference_type;
+        for (class, bytes) in classes {
+            out.id(*class, size).int(bytes.len() as i32);
+            out.data.extend_from_slice(bytes);
+        }
+        let (code, _) = self.command_raw(VM, 18, &out.data)?;
+        if code != 0 {
+            return Err(crate::domain::hotswap::redefine_error(code));
+        }
+        // The cached line tables are of the old code.
+        let mut cache = self.inner.classes.lock().unwrap();
+        for (class, _) in classes {
+            if let Some(c) = cache.get_mut(class) {
+                c.methods = None;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// An `Event.Composite` packet. Events of kinds never requested end the

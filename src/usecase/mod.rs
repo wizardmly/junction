@@ -8,6 +8,7 @@ pub mod translations;
 pub mod check_syntax;
 pub mod compile_on_save;
 pub mod debug_session;
+pub mod hot_swap;
 pub mod evaluate;
 pub mod dependency_updates;
 pub mod local_history;

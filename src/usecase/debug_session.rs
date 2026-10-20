@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::domain::debugger::{in_package, line_locations, method_entries, FieldWatch, MethodHeader, package_pattern, DebugEvent, DebugVm, Frame, StepDepth, Suspend, ThreadInfo, Value, Variable};
+use crate::domain::hotswap::{ClassFiles, Dexer, HotSwapOutcome};
 use crate::usecase::evaluate::{self, Scope};
 
 /// A line breakpoint, as the editor's gutter sets it.
@@ -372,6 +373,58 @@ impl DebugSession {
         self.vm.dispose();
     }
 
+    /// HotSwap (IntelliJ's `ReloadClassesWorker`): the changed classes the
+    /// VM has loaded get the new code (dexed first on Android); the line
+    /// breakpoints in them are placed again, as the old ones went with the
+    /// old code.
+    pub fn hot_swap(&self, changed: &[(String, PathBuf)], files: &dyn ClassFiles, dexer: Option<&dyn Dexer>) -> HotSwapOutcome {
+        match self.redefine(changed, files, dexer) {
+            Ok(0) => HotSwapOutcome::UpToDate,
+            Ok(n) => HotSwapOutcome::Reloaded(n),
+            Err(e) => HotSwapOutcome::Failed(e),
+        }
+    }
+
+    fn redefine(&self, changed: &[(String, PathBuf)], files: &dyn ClassFiles, dexer: Option<&dyn Dexer>) -> Result<usize, String> {
+        let mut loaded = Vec::new();
+        for (name, file) in changed {
+            if let Some(class) = self.vm.find_class(name)? {
+                loaded.push((class.id, name.as_str(), file.clone()));
+            }
+        }
+        if loaded.is_empty() {
+            return Ok(0);
+        }
+        if !self.vm.can_redefine()? {
+            return Err(crate::domain::hotswap::redefine_error(99));
+        }
+        let paths: Vec<PathBuf> = loaded.iter().map(|(_, _, f)| f.clone()).collect();
+        let bytes = match dexer {
+            Some(dexer) => dexer.dex(&paths)?,
+            None => paths.iter().map(|f| files.read(f).map_err(|e| format!("{} : {e}", f.display()))).collect::<Result<_, _>>()?,
+        };
+        let classes: Vec<(u64, Vec<u8>)> = loaded.iter().map(|(id, _, _)| *id).zip(bytes).collect();
+        self.vm.redefine_classes(&classes)?;
+        // Breakpoints whose file compiled to a reloaded class.
+        let mut sources = std::collections::HashSet::new();
+        for (id, _, _) in &loaded {
+            if let Some(source) = self.vm.source_file(*id)? {
+                sources.insert(source);
+            }
+        }
+        let mut state = self.state.lock().unwrap();
+        let classes = self.vm.all_classes()?;
+        for placed in state.breakpoints.iter_mut().filter(|p| p.breakpoint.field.is_none() && sources.contains(&p.breakpoint.source_name)) {
+            for request in placed.requests.drain(..) {
+                let _ = self.vm.clear_breakpoint(request);
+            }
+            for class in classes.iter().filter(|c| in_package(&c.name, &placed.breakpoint.package)) {
+                placed.requests.extend(self.place(class.id, &placed.breakpoint)?);
+            }
+        }
+        Ok(loaded.len())
+    }
+
     /// Another suspended thread's frames (the Frames view's thread list).
     pub fn frames(&self, thread: u64) -> Result<Vec<Frame>, String> {
         self.vm.frames(thread)
@@ -671,8 +724,8 @@ mod tests {
         fn children(&self, _: u64, _: usize) -> Result<Vec<Variable>, String> {
             Ok(Vec::new())
         }
-        fn find_class(&self, _: &str) -> Result<Option<ClassRef>, String> {
-            Ok(None)
+        fn find_class(&self, name: &str) -> Result<Option<ClassRef>, String> {
+            Ok(self.loaded.lock().unwrap().iter().find(|c| c.name == name).cloned())
         }
         fn class_of(&self, _: u64) -> Result<ClassRef, String> {
             Ok(ClassRef { id: 10, name: "a.CalcTest".into() })
@@ -704,6 +757,13 @@ mod tests {
         fn dispose(&self) {
             self.log("dispose".into());
         }
+        fn can_redefine(&self) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn redefine_classes(&self, classes: &[(u64, Vec<u8>)]) -> Result<(), String> {
+            self.log(format!("redefine {:?}", classes.iter().map(|(c, b)| (*c, b.len())).collect::<Vec<_>>()));
+            Ok(())
+        }
     }
 
     fn vm() -> Arc<FakeVm> {
@@ -717,6 +777,31 @@ mod tests {
 
     fn breakpoint(line: u32) -> LineBreakpoint {
         LineBreakpoint::new(Path::new("/p/src/test/java/a/CalcTest.java"), "a".into(), line)
+    }
+
+    struct Files;
+    impl ClassFiles for Files {
+        fn changed_since(&self, _: &[PathBuf], _: std::time::SystemTime) -> Vec<(String, PathBuf)> {
+            Vec::new()
+        }
+        fn read(&self, file: &Path) -> Result<Vec<u8>, String> {
+            Ok(file.to_string_lossy().as_bytes().to_vec())
+        }
+    }
+
+    #[test]
+    fn hot_swap_reloads_loaded_classes_and_places_their_breakpoints_again() {
+        let vm = vm();
+        vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
+        let session = DebugSession::new(vm.clone());
+        assert_eq!(session.add_breakpoint(breakpoint(5)), Ok(true));
+        vm.take_log();
+        let changed = [("a.CalcTest".to_owned(), PathBuf::from("a/CalcTest.class")), ("a.NotLoaded".to_owned(), PathBuf::from("a/NotLoaded.class"))];
+        assert_eq!(session.hot_swap(&changed, &Files, None), HotSwapOutcome::Reloaded(1));
+        assert_eq!(vm.take_log(), ["redefine [(10, 16)]", "clear 2", "break 10:1:4"]);
+        // Nothing of it loaded: up to date.
+        assert_eq!(session.hot_swap(&changed[1..], &Files, None), HotSwapOutcome::UpToDate);
+        assert!(vm.take_log().is_empty());
     }
 
     #[test]

@@ -3000,7 +3000,8 @@ impl Render for FileEditor {
                 .children(self.render_parameter_info(cx))
                 .children(self.render_context_actions(cx))
                 .children(self.render_test_menu(cx))
-                .children(self.render_breakpoint_popup(cx)),
+                .children(self.render_breakpoint_popup(cx))
+                .children(self.render_hot_swap(cx)),
             ))
             .children(manifest_tabs)
     }

@@ -106,6 +106,9 @@ actions!(
         RunApp,
         DebugApp,
         StopApp,
+        ApplyChanges,
+        ApplyCodeChanges,
+        ReloadChangedClasses,
         ToggleRunWindow,
         ToggleDebugWindow,
         DebugResume,
@@ -192,6 +195,8 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if cfg!(target_os = "macos") { "ctrl-r" } else { "shift-f10" }, RunApp, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "ctrl-d" } else { "shift-f9" }, DebugApp, Some(CONTEXT)),
         KeyBinding::new("secondary-f2", StopApp, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-ctrl-r" } else { "ctrl-f10" }, ApplyChanges, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-ctrl-shift-r" } else { "ctrl-alt-f10" }, ApplyCodeChanges, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-4" } else { "alt-4" }, ToggleRunWindow, Some(CONTEXT)),
         // Debugger: Alt+5, F9 Resume, F8 Step Over, Shift+F8 Step Out (F7,
         // Step Into, shares Next Difference's key).
@@ -1004,6 +1009,9 @@ impl Render for Workspace {
                     this.run.update(cx, |r, cx| r.stop(cx));
                 }
             }))
+            .on_action(cx.listener(|this, _: &ApplyChanges, window, cx| this.apply_changes(window, cx)))
+            .on_action(cx.listener(|this, _: &ApplyCodeChanges, window, cx| this.apply_changes(window, cx)))
+            .on_action(cx.listener(|_, _: &ReloadChangedClasses, _, cx| crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.apply_hot_swap(cx))))
             .on_action(cx.listener(|this, _: &ToggleDebugWindow, window, cx| this.shortcut_tool(ToolWindow::Debug, window, cx)))
             .on_action(cx.listener(|this, _: &DebugApp, _, cx| this.run.update(cx, |r, cx| r.debug(cx))))
             .on_action(cx.listener(|_, _: &DebugResume, _, cx| crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.resume(cx))))

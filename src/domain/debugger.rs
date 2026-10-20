@@ -220,6 +220,11 @@ pub trait DebugVm: Send + Sync {
     /// Detach: `VirtualMachine.Dispose`; the VM drops the debugger's
     /// requests and resumes its threads.
     fn dispose(&self);
+    /// `VirtualMachine.CapabilitiesNew`'s canRedefineClasses.
+    fn can_redefine(&self) -> Result<bool, String>;
+    /// `VirtualMachine.RedefineClasses`: new bytes (class files, dex on
+    /// Android) for loaded classes; a refusal worded as IntelliJ does.
+    fn redefine_classes(&self, classes: &[(u64, Vec<u8>)]) -> Result<(), String>;
 }
 
 // --- Rules --------------------------------------------------------------------
