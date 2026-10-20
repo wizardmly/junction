@@ -41,11 +41,17 @@ pub struct SavedBreakpoint {
     pub field_access: bool,
     #[serde(default = "enabled", skip_serializing_if = "is_true")]
     pub field_modification: bool,
+    /// A method breakpoint's Method entry (on by default) and Method exit
+    /// (off).
+    #[serde(default = "enabled", skip_serializing_if = "is_true")]
+    pub method_entry: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub method_exit: bool,
 }
 
 impl SavedBreakpoint {
     pub fn new(file: &str, line: u32) -> Self {
-        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None, field: None, field_access: false, field_modification: true }
+        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None, field: None, field_access: false, field_modification: true, method_entry: true, method_exit: false }
     }
 }
 

@@ -31,6 +31,10 @@ pub struct LineBreakpoint {
     /// A method breakpoint: it stops on entering the method declared on
     /// `line`.
     pub method: Option<MethodHeader>,
+    /// A method breakpoint's Method entry (on by default) and Method exit
+    /// (IntelliJ's Watch options).
+    pub method_entry: bool,
+    pub method_exit: bool,
     /// A field watchpoint: it stops where the field declared on `line` is
     /// read or written.
     pub field: Option<FieldWatch>,
@@ -39,7 +43,7 @@ pub struct LineBreakpoint {
 impl LineBreakpoint {
     pub fn new(path: &Path, package: String, line: u32) -> Self {
         let source_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Self { path: path.to_path_buf(), source_name, package, line, condition: None, actions: BreakpointActions::default(), method: None, field: None }
+        Self { path: path.to_path_buf(), source_name, package, line, condition: None, actions: BreakpointActions::default(), method: None, method_entry: true, method_exit: false, field: None }
     }
 }
 
@@ -139,11 +143,13 @@ pub struct DebugSession {
     evaluating: AtomicUsize,
     /// Mute Breakpoints: hits run on (Run to Cursor and steps still stop).
     muted: AtomicBool,
+    /// Method exit requests, with the methods whose exits stop.
+    exits: Mutex<HashMap<u32, Vec<u64>>>,
 }
 
 impl DebugSession {
     pub fn new(vm: Arc<dyn DebugVm>) -> Self {
-        Self { vm, state: Mutex::default(), evaluating: AtomicUsize::new(0), muted: AtomicBool::new(false) }
+        Self { vm, state: Mutex::default(), evaluating: AtomicUsize::new(0), muted: AtomicBool::new(false), exits: Mutex::default() }
     }
 
     /// Changes a breakpoint's condition (none: always stop).
@@ -236,10 +242,19 @@ impl DebugSession {
                 self.vm.clear_field_watch(request, false)?;
                 self.vm.clear_field_watch(request, true)?;
             } else {
-                self.vm.clear_breakpoint(request)?;
+                self.clear_request(request)?;
             }
         }
         Ok(())
+    }
+
+    /// Clears a line or method breakpoint's request.
+    fn clear_request(&self, request: u32) -> Result<(), String> {
+        if self.exits.lock().unwrap().remove(&request).is_some() {
+            self.vm.clear_method_exit(request)
+        } else {
+            self.vm.clear_breakpoint(request)
+        }
     }
 
     /// Sets an exception breakpoint (replacing the class's): now, when
@@ -293,7 +308,23 @@ impl DebugSession {
         }
         let methods = self.vm.methods(class)?;
         let locations = match &breakpoint.method {
-            Some(header) => method_entries(class, &methods, header),
+            Some(header) => {
+                let entries = method_entries(class, &methods, header);
+                let mut requests = Vec::new();
+                // Exits come as events from the class's methods, kept for
+                // these (IntelliJ's non-emulated method breakpoint).
+                if breakpoint.method_exit && !entries.is_empty() {
+                    let request = self.vm.set_method_exit(class)?;
+                    self.exits.lock().unwrap().insert(request, entries.iter().map(|l| l.method).collect());
+                    requests.push(request);
+                }
+                if breakpoint.method_entry {
+                    for location in entries {
+                        requests.push(self.vm.set_breakpoint(location)?);
+                    }
+                }
+                return Ok(requests);
+            }
             None => line_locations(class, &methods, breakpoint.line),
         };
         locations.into_iter().map(|location| self.vm.set_breakpoint(location)).collect()
@@ -416,7 +447,7 @@ impl DebugSession {
         let classes = self.vm.all_classes()?;
         for placed in state.breakpoints.iter_mut().filter(|p| p.breakpoint.field.is_none() && sources.contains(&p.breakpoint.source_name)) {
             for request in placed.requests.drain(..) {
-                let _ = self.vm.clear_breakpoint(request);
+                let _ = self.clear_request(request);
             }
             for class in classes.iter().filter(|c| in_package(&c.name, &placed.breakpoint.package)) {
                 placed.requests.extend(self.place(class.id, &placed.breakpoint)?);
@@ -458,7 +489,7 @@ impl DebugSession {
         let Some(set) = self.vm.next_events(timeout)? else { return Ok(Vec::new()) };
         // A method an evaluation calls hit a breakpoint or a step ended in
         // it: let it run on, as IntelliJ does.
-        let nested = set.events.iter().all(|e| matches!(e, DebugEvent::Breakpoint { .. } | DebugEvent::Field { .. } | DebugEvent::Step { .. } | DebugEvent::Exception { .. }));
+        let nested = set.events.iter().all(|e| matches!(e, DebugEvent::Breakpoint { .. } | DebugEvent::Field { .. } | DebugEvent::MethodExit { .. } | DebugEvent::Step { .. } | DebugEvent::Exception { .. }));
         if nested && !set.events.is_empty() && self.evaluating.load(Ordering::SeqCst) > 0 {
             self.vm.resume()?;
             return Ok(Vec::new());
@@ -503,6 +534,10 @@ impl DebugSession {
                 DebugEvent::Breakpoint { request, .. } | DebugEvent::Field { request, .. } if muted && !state.run_to.contains(&request) => {
                     resume = set.suspended != Suspend::None;
                 }
+                // Another method of the class returning, or muted: run on.
+                DebugEvent::MethodExit { request, location, .. } if muted || !self.exits.lock().unwrap().get(&request).is_some_and(|m| m.contains(&location.method)) => {
+                    resume = set.suspended != Suspend::None;
+                }
                 DebugEvent::Exception { .. } if muted => resume = set.suspended != Suspend::None,
                 DebugEvent::Breakpoint { thread, request, .. } => {
                     let reason = if state.run_to.contains(&request) { PauseReason::Paused } else { PauseReason::Breakpoint };
@@ -511,7 +546,7 @@ impl DebugSession {
                     }
                     paused = Some((thread, reason));
                 }
-                DebugEvent::Field { thread, request, .. } => {
+                DebugEvent::Field { thread, request, .. } | DebugEvent::MethodExit { thread, request, .. } => {
                     hit = state.breakpoints.iter().find(|p| p.requests.contains(&request)).map(|p| p.breakpoint.clone());
                     paused = Some((thread, PauseReason::Breakpoint));
                 }
@@ -690,6 +725,13 @@ mod tests {
             self.log(format!("unwatch {request} {access}"));
             Ok(())
         }
+        fn set_method_exit(&self, class: u64) -> Result<u32, String> {
+            Ok(self.log(format!("exit {class}")))
+        }
+        fn clear_method_exit(&self, request: u32) -> Result<(), String> {
+            self.log(format!("clear exit {request}"));
+            Ok(())
+        }
         fn clear_exception_breakpoint(&self, request: u32) -> Result<(), String> {
             self.log(format!("clear exception {request}"));
             Ok(())
@@ -835,6 +877,32 @@ mod tests {
         // Removing clears its requests.
         session.remove_breakpoint(Path::new("/p/src/test/java/a/CalcTest.java"), 9).unwrap();
         assert_eq!(vm.take_log().len(), 1);
+    }
+
+    #[test]
+    fn method_exit_stops_only_when_its_method_returns() {
+        let vm = vm();
+        vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
+        let session = DebugSession::new(vm.clone());
+        let mut exit = breakpoint(4);
+        exit.method = Some(MethodHeader { name: "m1".into(), line: 4, end: 5 });
+        (exit.method_entry, exit.method_exit) = (false, true);
+        assert_eq!(session.add_breakpoint(exit), Ok(true));
+        let log = vm.take_log();
+        assert_eq!(&log[1..], ["exit 10"]);
+        let request = vm.log("probe".into()) - 1;
+        vm.take_log();
+        let returning = |method| vec![DebugEvent::MethodExit { thread: 1, location: Location { class: 10, method, index: 9 }, request }];
+        // Another method of the class returns: it runs on.
+        vm.send(Suspend::All, returning(2));
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume"]);
+        vm.send(Suspend::All, returning(1));
+        let events = session.poll(Duration::ZERO).unwrap();
+        assert!(matches!(events.last(), Some(SessionEvent::Paused { reason: PauseReason::Breakpoint, .. })), "{events:?}");
+        vm.take_log();
+        session.remove_breakpoint(Path::new("/p/src/test/java/a/CalcTest.java"), 4).unwrap();
+        assert_eq!(vm.take_log(), [format!("clear exit {request}")]);
     }
 
     #[test]

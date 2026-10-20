@@ -42,6 +42,7 @@ const THREAD_DEATH: u8 = 7;
 const CLASS_PREPARE: u8 = 8;
 const FIELD_ACCESS: u8 = 20;
 const FIELD_MODIFICATION: u8 = 21;
+const METHOD_EXIT: u8 = 41;
 const VM_START: u8 = 90;
 const VM_DEATH: u8 = 99;
 
@@ -504,6 +505,22 @@ impl DebugVm for JdwpVm {
         self.command(EVENT_REQUEST, 2, &out.data).map(drop)
     }
 
+    fn set_method_exit(&self, class: u64) -> Result<u32, String> {
+        let mut out = self.out();
+        out.u8(METHOD_EXIT).u8(SUSPEND_ALL).int(1);
+        // ClassOnly.
+        let size = out.sizes.reference_type;
+        out.u8(4).id(class, size);
+        let data = self.command(EVENT_REQUEST, 1, &out.data)?;
+        self.reader(&data).bytes.int().map(|n| n as u32).ok_or_else(|| "bad Set reply".into())
+    }
+
+    fn clear_method_exit(&self, request: u32) -> Result<(), String> {
+        let mut out = self.out();
+        out.u8(METHOD_EXIT).int(request as i32);
+        self.command(EVENT_REQUEST, 2, &out.data).map(drop)
+    }
+
     fn step(&self, thread: u64, depth: StepDepth) -> Result<u32, String> {
         let mut out = self.out();
         out.u8(SINGLE_STEP).u8(SUSPEND_ALL).int(2);
@@ -850,6 +867,7 @@ fn parse_events(data: &[u8], sizes: IdSizes) -> Option<EventSet> {
             THREAD_DEATH => DebugEvent::ThreadDeath { thread: r.object()? },
             BREAKPOINT => DebugEvent::Breakpoint { thread: r.object()?, location: r.location()?, request },
             SINGLE_STEP => DebugEvent::Step { thread: r.object()?, location: r.location()?, request },
+            METHOD_EXIT => DebugEvent::MethodExit { thread: r.object()?, location: r.location()?, request },
             EXCEPTION => {
                 let thread = r.object()?;
                 let location = r.location()?;
