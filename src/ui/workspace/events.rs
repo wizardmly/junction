@@ -456,6 +456,8 @@ impl Workspace {
                 self.tools.hide(ToolWindow::Logcat);
                 cx.notify();
             }
+            // The tabs split their panels themselves.
+            LogcatEvent::Split { .. } | LogcatEvent::ClosePanel => {}
         }
     }
 

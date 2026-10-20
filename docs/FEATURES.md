@@ -376,7 +376,8 @@ Android Studio 的 Logcat 工具窗口（Alt+6 / ⌘6，底部）。代码：`sr
 | 过滤历史和收藏：输入框左侧的历史按钮弹出 Favorites 和 History 两段，每条带匹配条数，点一条应用、× 删除；回车或离开输入框时记入历史（最近 20 条，同 AS）；右侧星标把当前过滤加入 / 移出收藏；跨会话保存在设置目录 `logcat-filters.json` | ✅ |
 | 多个标签页（2026-10-16，`src/ui/logcat_view/tabs.rs`）：标题旁的标签条，+ 新建标签（命名照 AS 的 `UniqueNameGenerator`：“Logcat”、“Logcat (2)”…取第一个没用过的），每个标签各自的设备、过滤、暂停和日志，工具窗口隐藏时全部继续读；× 或中键关闭（只剩一个时不能关），关闭后停止读取；右键菜单 Rename Tab…（不能为空或与其他标签重名）、Close Tab、Close Other Tabs。实测（Xvfb，模拟 adb）：新建 “Logcat (2)” 设 `level:error` 只剩三条 E，切回 “Logcat” 仍是 `package:mine`；重命名为 “Errors”；关闭后 adb logcat 进程少一个 | ✅ |
 | Screen Capture / Screen Record（2026-10-16）：左侧工具栏末尾 AS 的截屏和录屏按钮，对当前跟随的设备；截屏用 Running Devices 的截图对话框（Recapture、Copy to Clipboard、Save），录屏第二次点击停止并选择保存位置（`screenrecord`，同 Running Devices）。实测（假 adb 返回 PNG）：点击后弹出截图，Recapture 重新截取 | ✅ |
-| 分屏、导入导出日志文件、Proguard 反混淆、过滤的 `name:` 键、标签页在重启后恢复 | ❌ 未做 |
+| 分屏（AS 的 `SplittingPanel` / Split Panels）：左侧工具栏最下面的 Split Panels 按钮，Split Right、Split Down 在旁边加一个面板，各自有设备、过滤和日志，可以继续分、拖动分隔线调大小；Close 关掉当前面板，旁边的顶上，标签页只剩一个面板时关整个标签页；面板矮时左侧工具栏可滚动 | ✅（2026-10-20） |
+| 导入导出日志文件、Proguard 反混淆、过滤的 `name:` 键、标签页和分屏在重启后恢复 | ❌ 未做 |
 
 过滤补全实测（假 adb）：清空后输入 `ta` 弹出 `tag:` `tag~:` `tag=:`，回车后弹出 ActivityManager / MainActivity / OkHttp / SystemUi，接着输入 `ma` 剩 MainActivity（前缀）和 ActivityManager（包含），Tab 填入；输入 ` level:` 列出级别，点 info 后过滤为三条 ActivityManager 的 I 级日志；点星标收藏，再输入 `is:crash` 回车；历史按钮弹出 Favorites “tag:ActivityManager level:info (3)” 和 History “is:crash (0)”，点收藏项恢复该过滤。空输入框 Ctrl+Space 列出全部键，↓ 超出可见范围时列表跟着滚动。
 
