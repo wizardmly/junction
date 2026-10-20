@@ -796,6 +796,9 @@ mod tests {
         fn interfaces(&self, _: u64) -> Result<Vec<u64>, String> {
             Ok(Vec::new())
         }
+        fn class_object(&self, _: u64) -> Result<Value, String> {
+            Ok(Value::Null)
+        }
         fn variable_type(&self, _: u64, _: &Frame, _: &str) -> Result<Option<String>, String> {
             Ok(None)
         }

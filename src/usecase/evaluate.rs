@@ -144,6 +144,15 @@ fn best_overload(methods: Vec<MethodInfo>, args: &[Value]) -> Option<MethodInfo>
                     (false, true) if primitive && convert(arg, ty).is_none() => -100,
                     (false, true) => 2,
                     (true, false) if ty == "Ljava/lang/String;" && !matches!(arg, Value::String { .. } | Value::Null) => 0,
+                    // An array: its own type, else an array of references
+                    // for one of objects, else a plain Object.
+                    (true, false) if ty.starts_with('[') => match arg {
+                        Value::Array { class, .. } if jni_type(class) == *ty => 3,
+                        Value::Array { class, .. } if ty.starts_with("[L") && jni_type(class).starts_with("[L") => 2,
+                        Value::Null => 2,
+                        _ => -100,
+                    },
+                    (true, false) if matches!(arg, Value::Array { .. }) => 1,
                     (true, false) => 2,
                     (true, true) => 1,
                     (false, false) => -100,
@@ -156,6 +165,18 @@ fn best_overload(methods: Vec<MethodInfo>, args: &[Value]) -> Option<MethodInfo>
         Some((s, _)) if s >= score => best,
         _ => Some((score, m)),
     }).map(|(_, m)| m)
+}
+
+/// A type's JNI signature from its Java name: `int[]` is `[I`,
+/// `java.lang.String[]` is `[Ljava/lang/String;`.
+fn jni_type(name: &str) -> String {
+    let base = name.trim_end_matches("[]");
+    let mut out = "[".repeat((name.len() - base.len()) / 2);
+    match PRIMITIVES.iter().find(|(n, _)| *n == base) {
+        Some((_, jni)) => out.push_str(jni),
+        None => out.push_str(&format!("L{};", base.replace('.', "/"))),
+    }
+    out
 }
 
 /// A primitive cast, as Java's narrowing and widening conversions.
@@ -365,7 +386,112 @@ impl Scope<'_> {
                 let value = self.eval(value)?;
                 self.assign(target, value)?
             }
+            Expr::NewArray { ty, dims, rank, init } => self.new_array(ty, dims, *rank, init.as_deref())?,
+            Expr::ArrayInit(_) => return Err("Array initializer is not allowed here".into()),
         }))
+    }
+
+    /// `new T[a][b][]`, `new T[] {…}`: made with
+    /// `java.lang.reflect.Array.newInstance`, as IntelliJ's evaluator
+    /// does when the array class isn't loaded yet.
+    fn new_array(&self, ty: &str, dims: &[Expr], rank: usize, init: Option<&[Expr]>) -> Result<Value, String> {
+        let element = self.class_object(ty)?;
+        let jni = match PRIMITIVES.iter().find(|(name, _)| *name == ty) {
+            Some((_, jni)) => (*jni).to_owned(),
+            None => "Ljava/lang/Object;".to_owned(),
+        };
+        match init {
+            Some(items) => self.fill_array(&element, &jni, rank, items),
+            None => {
+                let lengths = dims
+                    .iter()
+                    .map(|d| {
+                        let n = self.unbox(self.eval(d)?)?;
+                        match n {
+                            Value::Int(_) | Value::Short(_) | Value::Byte(_) | Value::Char(_) => {
+                                let n = as_i64(&n).unwrap_or(0);
+                                if n < 0 { Err(format!("java.lang.NegativeArraySizeException: {n}")) } else { Ok(n as i32) }
+                            }
+                            other => Err(format!("Incompatible types: '{}' cannot be an array length", value_text(&other))),
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let component = self.array_class(&element, rank - dims.len())?;
+                self.reflect_array(&component, &lengths)
+            }
+        }
+    }
+
+    /// An initializer's array: `rank` dimensions of `element`, whose
+    /// elements take `jni` (the innermost type).
+    fn fill_array(&self, element: &Value, jni: &str, rank: usize, items: &[Expr]) -> Result<Value, String> {
+        let component = self.array_class(element, rank - 1)?;
+        let array = self.reflect_array(&component, &[items.len() as i32])?;
+        let Value::Array { id, .. } = array else { return Err("Cannot create the array".into()) };
+        for (ix, item) in items.iter().enumerate() {
+            let value = match item {
+                Expr::ArrayInit(inner) if rank > 1 => self.fill_array(element, jni, rank - 1, inner)?,
+                Expr::ArrayInit(_) => return Err("Illegal initializer for an array element".into()),
+                e if rank > 1 => match self.eval(e)? {
+                    v @ (Value::Array { .. } | Value::Null) => v,
+                    v => return Err(format!("Incompatible types: '{}' is not an array", value_text(&v))),
+                },
+                e => {
+                    let v = self.eval(e)?;
+                    self.coerce(v, jni)?
+                }
+            };
+            self.vm.set_array_element(id, ix, &value)?;
+        }
+        Ok(array)
+    }
+
+    /// The `java.lang.Class` of a type as written: `int` is `Integer.TYPE`.
+    fn class_object(&self, ty: &str) -> Result<Value, String> {
+        if let Some((_, jni)) = PRIMITIVES.iter().find(|(name, _)| *name == ty) {
+            let (wrapper, _) = BOXES.iter().find(|(_, t)| t == jni).ok_or("No wrapper")?;
+            let class = self.vm.find_class(wrapper)?.ok_or_else(|| format!("{wrapper} is not loaded"))?;
+            return self.vm.field(class.id, None, "TYPE")?.ok_or_else(|| format!("{wrapper}.TYPE not found"));
+        }
+        let class = self.class_named(ty)?.ok_or_else(|| format!("Cannot resolve class '{ty}'"))?;
+        self.vm.class_object(class.id)
+    }
+
+    /// The class of `extra` dimensions of arrays of a class (itself for none).
+    fn array_class(&self, element: &Value, extra: usize) -> Result<Value, String> {
+        if extra == 0 {
+            return Ok(element.clone());
+        }
+        let empty = self.reflect_array(element, &vec![0; extra])?;
+        self.call_on(&empty, "getClass", Vec::new())
+    }
+
+    /// A JDK class, loaded with `Class.forName` when nothing loaded it yet.
+    fn load_class(&self, name: &str) -> Result<ClassRef, String> {
+        if let Some(class) = self.vm.find_class(name)? {
+            return Ok(class);
+        }
+        let class = self.vm.find_class("java.lang.Class")?.ok_or("java.lang.Class is not loaded")?;
+        let name_value = self.vm.create_string(name)?;
+        self.call_static(&class, "forName", vec![name_value])?;
+        self.vm.find_class(name)?.ok_or_else(|| format!("{name} is not loaded"))
+    }
+
+    /// `Array.newInstance(component, lengths…)`.
+    fn reflect_array(&self, component: &Value, lengths: &[i32]) -> Result<Value, String> {
+        let class = self.load_class("java.lang.reflect.Array")?;
+        let methods = self.vm.methods(class.id)?;
+        let method = |signature: &str| methods.iter().find(|m| m.name == "newInstance" && m.signature == signature).map(|m| m.id).ok_or("Array.newInstance not found");
+        if let [length] = lengths {
+            return self.vm.invoke(self.thread, class.id, None, method("(Ljava/lang/Class;I)Ljava/lang/Object;")?, &[component.clone(), Value::Int(*length)]);
+        }
+        let int = self.class_object("int")?;
+        let dims = self.vm.invoke(self.thread, class.id, None, method("(Ljava/lang/Class;I)Ljava/lang/Object;")?, &[int, Value::Int(lengths.len() as i32)])?;
+        let Value::Array { id, .. } = dims else { return Err("Cannot create the array".into()) };
+        for (ix, n) in lengths.iter().enumerate() {
+            self.vm.set_array_element(id, ix, &Value::Int(*n))?;
+        }
+        self.vm.invoke(self.thread, class.id, None, method("(Ljava/lang/Class;[I)Ljava/lang/Object;")?, &[component.clone(), dims])
     }
 
     /// `new`: the class's constructor taking the arguments.
