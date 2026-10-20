@@ -428,6 +428,18 @@ impl BreakpointsView {
                         this.apply(|b| b.field_modification = checked, cx);
                     })))
             })
+            // IntelliJ's method breakpoint options.
+            .when(b.method.is_some(), |el| {
+                el.child(label("Watch:"))
+                    .child(Checkbox::new("breakpoints-method-entry").label("Method entry").checked(b.method_entry).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        this.apply(|b| b.method_entry = checked, cx);
+                    })))
+                    .child(Checkbox::new("breakpoints-method-exit").label("Method exit").checked(b.method_exit).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        this.apply(|b| b.method_exit = checked, cx);
+                    })))
+            })
             .child(v_flex().gap_1().child(label("Condition:")).child(Input::new(&self.condition).small()))
             .child(
                 v_flex()

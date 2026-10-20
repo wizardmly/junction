@@ -806,7 +806,10 @@ Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int)
 | 声明行判断：Kotlin `fun` / Java 方法、构造方法（`<init>`）的名字在这一行，方法体是 `{…}` 块且第一条代码在后面的行；表达式体 `fun f() = …` 和单行方法 `{ return a + b; }` 仍是行断点 | ✅ |
 | 设在哪：类加载后，类里同名方法中代码落在声明范围内的那个（区分重载、跳过 Kotlin 的 `name$default` 桥方法，认 internal 函数的 `name$module`），断点设在它第一条代码上；条件、Suspend、日志选项和行断点一样 | ✅ |
 | 图标：菱形，已验证带勾、禁用为空心、不挂起为黄色（IntelliJ 的 breakpointMethod 系列）；Breakpoints 对话框分为 “Java Method Breakpoints” / “Kotlin Function Breakpoints”，标题如 “CalcTest.java:30 totals()”；持久化在 breakpoints.json 的 `method` 字段 | ✅ |
-| 方法退出（Method exit）、接口 / 抽象方法上的断点（停在所有实现里）、按类名 + 方法名的通配方法断点 | ⬜ |
+| Method exit（2026-10-20）：Breakpoints 对话框里方法断点的 Watch 选项 “Method entry”（默认开）/ “Method exit”（默认关），照 IntelliJ；退出用 JDWP 的 MethodExit 事件（`ClassOnly` 过滤到该类，事件来自别的方法时直接继续），停在方法返回处（`return` 那一行，局部变量还在）；JVM 和 ART 都支持。存为 breakpoints.json 的 `method_entry` / `method_exit`，改动后在运行中的会话里重设 | ✅ |
+| 接口 / 抽象方法上的断点（停在所有实现里）、按类名 + 方法名的通配方法断点 | ⬜ |
+
+Method exit 实测（Xvfb，JUnit 4 示例）：`Calc.add` 上的方法断点只勾 Method exit，Debug 'CalcTest.adds' 后停在 `add:6`（`return sum + 10;`），Variables 显示 `a = 1`、`b = 2`、`sum = 3`；F9 后第二次调用再停一次（帧 `adds:10`），再 F9 测试结束。
 
 Linux 实测（Xvfb，calc 示例）：在 `CalcTest.java` 第 30 行 `public void totals() {` 按 Ctrl+F8，gutter 出现菱形；Debug 'totals'（Ctrl+Shift+F9）后菱形带勾，程序停在 `totals:31`（方法第一行代码）；Ctrl+Shift+F8 的 Breakpoints 对话框列在 “Java Method Breakpoints” 下。
 

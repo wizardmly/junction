@@ -138,6 +138,8 @@ pub enum DebugEvent {
     Exception { thread: u64, location: Location, exception: u64, caught: bool, request: u32 },
     /// A watched field was read (`access`) or is about to be written.
     Field { thread: u64, location: Location, access: bool, request: u32 },
+    /// A method of a watched class is returning (at its return).
+    MethodExit { thread: u64, location: Location, request: u32 },
     ThreadStart { thread: u64 },
     ThreadDeath { thread: u64 },
 }
@@ -183,6 +185,10 @@ pub trait DebugVm: Send + Sync {
     /// (`access`) or writes.
     fn set_field_watch(&self, class: u64, field: u64, access: bool) -> Result<u32, String>;
     fn clear_field_watch(&self, request: u32, access: bool) -> Result<(), String>;
+    /// Method exit events from a class's methods (each one: the session
+    /// keeps those of the methods it watches), suspending all threads.
+    fn set_method_exit(&self, class: u64) -> Result<u32, String>;
+    fn clear_method_exit(&self, request: u32) -> Result<(), String>;
     /// A line step on a suspended thread; the next event of it ends it.
     fn step(&self, thread: u64, depth: StepDepth) -> Result<u32, String>;
     fn clear_step(&self, request: u32) -> Result<(), String>;

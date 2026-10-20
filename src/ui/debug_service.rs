@@ -226,8 +226,9 @@ impl DebugService {
                     cx.background_spawn(async move { session.remove_breakpoint(&path, line + 1) }).detach();
                 }
                 (false, true) => self.place_in_session(session, breakpoint, cx),
-                // A watchpoint's access / modification changed: set again.
-                (true, true) if (before.field_access, before.field_modification) != (breakpoint.field_access, breakpoint.field_modification) => {
+                // A watchpoint's access / modification or a method
+                // breakpoint's entry / exit changed: set again.
+                (true, true) if (before.field_access, before.field_modification, before.method_entry, before.method_exit) != (breakpoint.field_access, breakpoint.field_modification, breakpoint.method_entry, breakpoint.method_exit) => {
                     self.verified.remove(&(file, line));
                     let task = cx.background_spawn(async move { session.remove_breakpoint(&path, line + 1) });
                     let generation = self.generation;
@@ -1126,6 +1127,8 @@ fn line_breakpoint(saved: &SavedBreakpoint) -> LineBreakpoint {
             .and_then(|lang| crate::index::method_breakpoint::method_header(lang, &text, saved.line))
             .unwrap_or(debugger::MethodHeader { name: name.clone(), line: saved.line + 1, end: saved.line + 1 })
     });
+    breakpoint.method_entry = saved.method_entry;
+    breakpoint.method_exit = saved.method_exit;
     breakpoint.field = saved.field.as_ref().map(|name| debugger::FieldWatch { name: name.clone(), access: saved.field_access, modification: saved.field_modification });
     breakpoint
 }
