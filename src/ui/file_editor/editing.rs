@@ -150,8 +150,8 @@ impl FileEditor {
         self.state.update(cx, |state, cx| state.fold_all(false, cx));
     }
 
-    /// Inline (Ctrl+Alt+N): a local variable into its uses, or a function
-    /// into its calls.
+    /// Inline (Ctrl+Alt+N): a local variable into its uses, a property or
+    /// field into its references, or a function into its calls.
     pub(super) fn inline(&mut self, _: &Inline, window: &mut Window, cx: &mut Context<Self>) {
         if self.read_only() {
             return;
@@ -161,11 +161,16 @@ impl FileEditor {
         let offset = self.state.read(cx).cursor();
         match crate::index::inline::inline_variable(lang, &text, offset) {
             Ok(edited) => self.apply_edited(edited, window, cx),
-            // Not a local variable: a function?
-            Err(variable) => match crate::index::inline_function::plan_at(lang, &text, offset) {
-                Ok((plan, declaration)) => self.inline_function(lang, text, offset, plan, declaration, window, cx),
-                Err(_) if !variable.contains("Caret should be positioned") => Self::hint("Inline Variable", variable, window, cx),
-                Err(function) => Self::hint("Inline", function, window, cx),
+            Err(variable) if !variable.contains("Caret should be positioned") => Self::hint("Inline Variable", variable, window, cx),
+            // Not a local variable: a property or field?
+            Err(_) => match crate::index::inline_field::field_at(lang, &text, offset) {
+                Ok((field, on)) => self.inline_field(lang, text, field, on, window, cx),
+                Err(field) if !field.contains("Caret should be positioned") => Self::hint("Inline", field, window, cx),
+                // A function?
+                Err(_) => match crate::index::inline_function::plan_at(lang, &text, offset) {
+                    Ok((plan, declaration)) => self.inline_function(lang, text, offset, plan, declaration, window, cx),
+                    Err(function) => Self::hint("Inline", function, window, cx),
+                },
             },
         }
     }

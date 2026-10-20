@@ -972,7 +972,10 @@ Linux 实测（Xvfb，`ip` 工程）：在 Cart.kt 的 `use` 上 Ctrl+B 跳到 `
 | 顺带修正：局部变量的解析（Ctrl+点击、Find Usages、Rename）现在认得 Kotlin 字符串模板里的 `$x`，以前 Rename 局部变量会漏改模板里的使用 | ✅ |
 | Inline Function：光标在函数声明或本文件里的调用上（同一个 Ctrl+Alt+N，不是局部变量时）；函数体只有一个表达式（`= …` 或只有一条 `return …`）时，选 Inline All and Remove 后，工程里每个调用都换成函数体（参数换成实参，具名实参按名字对应；类成员加上调用方的接收者，`cart.total(…)` 里的 `rate` 变成 `cart.rate`；外面有运算时加括号），然后删掉声明。其他文件经 `usecase::update_calls` 改写。不内联：多条语句、递归、调用省略了有默认值的参数 | ✅ |
 | 对话框照 IntelliJ："Function total() has 3 usages."，Inline All and Remove（默认）；在调用上执行时多一个 Inline This Only，只换这一处、保留函数 | ✅ |
-| Inline 字段与常量、预览 | ⬜ |
+| Inline Property / Field（同一个 Ctrl+Alt+N，光标在类 / object / companion 的属性、顶层属性、`const val` 或 Java 字段的名字或本文件的引用上）：对话框 "Property MAX has 2 usages."，Inline All and Remove 把工程里每个引用换成初始值（需要时加括号，模板里写成 `${10}`）、删掉不再需要的 import、删掉声明；在引用上执行时多一个 Inline This Only。代码：`src/index/inline_field.rs`、`usecase::project_edits` | ✅ |
+| 没有类型解析，只跟随不会认错的引用：本文件里的裸名字和 `this.x`，任何文件里的 `Owner.x`（companion 的也算），导入了它的文件里的裸名字；遇到 `other.x`、`::x` 就停下并指出位置，不去猜；初始值里有名字时只在本文件内联（换个文件同名的可能是别的东西）；被赋值的 `var` / 非 final 字段拒绝 | ✅ |
+| 顺带修正：Inline Variable 以前把 Kotlin 类 / object 里的属性也当成局部变量，只改本文件，其他文件里的 `Limits.MAX` 会断掉；现在只接受函数体里的局部变量 | ✅ |
+| 预览、按类型解析 `other.x` | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程 Main.kt）：光标在 `val cart = Cart(0.2)` 的 `cart` 上按 Ctrl+Alt+N，两处 `cart.total(…)` 变成 `Cart(0.2).total(…)`，声明行删除；再按一次弹出 "Cannot perform refactoring. Caret should be positioned at the name of element to be inlined."。Inline Function：Cart.kt 光标在 `total` 上按 Ctrl+Alt+N，确认 3 处后 `fun use() = 1.0 * rate * 2 + 1.0 * rate`，Main.kt 的两处变成 `10.0 * cart.rate * 3 + 10.0 * cart.rate` 和 `2.0 * cart.rate * 1 + 2.0 * cart.rate`（具名实参 `count = 1, price = 2.0` 对上了）。
 

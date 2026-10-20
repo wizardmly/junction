@@ -1,5 +1,8 @@
 # Builds Junction Studio for Windows, Linux and macOS on every push to master and
-# publishes the files as the "latest" release, so the links never change.
+# publishes the files as the "latest" release, so the links never change. The
+# per-platform artifacts only carry the files to the release job, so they are
+# kept a day, and the run first deletes the artifacts earlier runs left: the
+# repository's artifact storage is limited, and a full one fails the uploads.
 name: Release build
 
 on:
@@ -9,13 +12,27 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: release-build
   cancel-in-progress: true
 
 jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete earlier runs' artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api --paginate "repos/$GH_REPO/actions/artifacts?per_page=100" \
+            --jq ".artifacts[] | select(.workflow_run.id != ${{ github.run_id }}) | .id" |
+            while read -r id; do gh api -X DELETE "repos/$GH_REPO/actions/artifacts/$id" || true; done
+
   windows:
+    needs: cleanup
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +48,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows
+          retention-days: 1
           path: junction-windows-x64.zip
 
   linux:
+    needs: cleanup
     # The oldest supported runner, so the binary runs on older glibc too.
     runs-on: ubuntu-22.04
     steps:
@@ -68,11 +87,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux
+          retention-days: 1
           path: |
             junction-linux-x64.tar.gz
             Junction-x86_64.AppImage
 
   macos:
+    needs: cleanup
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -114,6 +135,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos
+          retention-days: 1
           path: |
             junction-macos-universal.dmg
             junction-macos-universal.app.zip

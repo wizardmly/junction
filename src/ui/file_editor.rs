@@ -1458,6 +1458,93 @@ impl FileEditor {
         .detach();
     }
 
+    /// Inline Property / Field: the references (this one only, when on
+    /// one) become the initializer; with all of them, the declaration goes.
+    /// The project's other files are searched first; a reference that can't
+    /// be told apart stops it.
+    pub(super) fn inline_field(&mut self, lang: crate::index::lang::Lang, text: String, field: crate::index::inline_field::Field, on: Option<crate::index::inline_field::Reference>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::introduce_parameter::apply;
+        use crate::index::inline_field::{References, edits, references};
+        use crate::index::lang::Lang;
+        use crate::infra::project_files::DiskFiles;
+        use crate::usecase::project_edits;
+        let title = format!("Inline {}", field.kind);
+        let here = references(lang, &text, &field, true);
+        if let Some(&at) = here.unresolved.first() {
+            let line = text[..at].matches('\n').count() + 1;
+            return Self::hint(&title, format!("Cannot inline {} {}: the reference on line {line} can't be followed.", field.kind.to_lowercase(), field.name), window, cx);
+        }
+        let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(|r| r.to_path_buf()));
+        let own = self.path.clone();
+        let files = root.clone().map(|root| DiskFiles { root, repository: None });
+        let task = cx.background_spawn({
+            let field = field.clone();
+            async move {
+                let Some(root) = root else { return Vec::new() };
+                let files = DiskFiles { root, repository: None };
+                project_edits::scan(&files, &own, &field.name, &|path, text| {
+                    let found = references(Lang::from_path(path)?, text, &field, false);
+                    (!found.refs.is_empty() || !found.imports.is_empty() || !found.unresolved.is_empty()).then_some(found)
+                })
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let elsewhere: Vec<project_edits::FileChange<References>> = task.await;
+            this.update_in(cx, |_, window, cx| {
+                if let Some(file) = elsewhere.iter().find(|f| !f.found.unresolved.is_empty()) {
+                    let line = file.text[..file.found.unresolved[0]].matches('\n').count() + 1;
+                    return Self::hint(&title, format!("Cannot inline {} {}: the reference at {}:{line} can't be followed.", field.kind.to_lowercase(), field.name, file.path), window, cx);
+                }
+                let others: usize = elsewhere.iter().map(|f| f.found.refs.len()).sum();
+                if others > 0 && !field.portable {
+                    let file = &elsewhere.iter().find(|f| !f.found.refs.is_empty()).unwrap().path;
+                    return Self::hint(&title, format!("Cannot inline {} {} into {file}: its initializer names things that may mean something else there.", field.kind.to_lowercase(), field.name), window, cx);
+                }
+                let usages = here.refs.len() + others;
+                let editor = cx.entity().downgrade();
+                let mut options: Vec<(&'static str, std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)>)> = Vec::new();
+                if let Some(reference) = on.clone() {
+                    let (editor, field, text, title) = (editor.clone(), field.clone(), text.clone(), title.clone());
+                    options.push(("Inline This Only", std::rc::Rc::new(move |window, cx| {
+                        editor
+                            .update(cx, |this, cx| {
+                                if this.text(cx) != text {
+                                    return Self::hint(&title, "The file changed; try again", window, cx);
+                                }
+                                let one = References { refs: vec![reference.clone()], ..Default::default() };
+                                let new = apply(&text, edits(&field, &one));
+                                this.replace_text(&text, &new, reference.range.start, window, cx);
+                            })
+                            .ok();
+                    })));
+                }
+                let message = format!("{} {} has {usages} usages.", field.kind, field.name);
+                let dialog_title = title.clone();
+                options.push(("Inline All and Remove", std::rc::Rc::new(move |window, cx| {
+                    editor
+                        .update(cx, |this, cx| {
+                            if this.text(cx) != text {
+                                return Self::hint(&title, "The file changed; try again", window, cx);
+                            }
+                            let mut changes = edits(&field, &here);
+                            changes.retain(|(r, _)| r.end <= field.declaration.start || r.start >= field.declaration.end);
+                            changes.push((field.declaration.clone(), String::new()));
+                            let new = apply(&text, changes);
+                            this.replace_text(&text, &new, field.declaration.start.min(new.len()), window, cx);
+                            let written = files.as_ref().map_or_else(Vec::new, |files| project_edits::write(files, &elsewhere, &|f| edits(&field, &f.found)));
+                            if !written.is_empty() {
+                                cx.emit(FileEditorEvent::FilesWritten(written));
+                            }
+                        })
+                        .ok();
+                })));
+                crate::ui::dialogs::choose(dialog_title, message, Vec::new(), "Cancel", options, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Safe Delete (Alt+Delete): the declaration at the caret goes when
     /// nothing uses it; with usages, IntelliJ's "Usages Detected" offers to
     /// view them or delete anyway.

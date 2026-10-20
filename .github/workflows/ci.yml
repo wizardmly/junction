@@ -51,12 +51,14 @@ jobs:
           cd out/debs
           llvm=$(apt-cache depends mesa-vulkan-drivers | awk '/Depends: libllvm/{print $2}' | head -1)
           apt-get download mesa-vulkan-drivers $llvm xdotool libxdo3 || true
+      # A full artifact storage doesn't make the checks fail.
       - uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
           name: linux-ci
           path: out
-          retention-days: 7
+          retention-days: 3
 
   windows:
     runs-on: windows-latest
