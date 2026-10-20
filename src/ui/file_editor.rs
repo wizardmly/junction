@@ -715,9 +715,16 @@ impl FileEditor {
                 cx.notify();
             }
         }), cx.subscribe_in(&state, window, |this, _, event: &InputEvent, window, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.template_edited(window, cx);
-                this.parameter_info_autopopup(window, cx);
+            match event {
+                InputEvent::Change => {
+                    this.template_edited(window, cx);
+                    this.parameter_info_autopopup(window, cx);
+                }
+                // A live template picked in the completion popup expands.
+                InputEvent::CompletionCommand { command, .. } if command == crate::domain::live_templates::EXPAND_COMMAND => {
+                    this.expand_template(window, cx);
+                }
+                _ => {}
             }
         })];
         let read_only = revision.is_some() || external;

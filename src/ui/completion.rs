@@ -51,7 +51,11 @@ impl CompletionProvider for IndexCompletion {
             // The popup highlights this many leading characters of each name.
             let typed = text[found.replace.clone()].to_owned();
             let call_follows = text[offset..].trim_start().starts_with('(');
-            let items = found
+            // The index's names typed this far: templates that aren't an
+            // exact match go after them.
+            let starting = found.items.iter().filter(|c| c.candidate.name.starts_with(&typed)).count();
+            let templates = template_items(lang, &text, found.replace.start, &typed, range);
+            let mut items: Vec<CompletionItem> = found
                 .items
                 .into_iter()
                 .map(|c| {
@@ -77,6 +81,9 @@ impl CompletionProvider for IndexCompletion {
                     }
                 })
                 .collect();
+            for (exact, item) in templates.into_iter().rev() {
+                items.insert(if exact { 0 } else { starting.min(items.len()) }, item);
+            }
             Ok(CompletionResponse::Array(items))
         })
     }
@@ -89,6 +96,35 @@ impl CompletionProvider for IndexCompletion {
             _ => false,
         }
     }
+}
+
+/// Live templates whose abbreviation starts with the typed word, where
+/// they apply, as IntelliJ lists them: the abbreviation with the
+/// description at the right; picking one expands it (the editor runs the
+/// item's command). Whether each matches the word exactly comes with it.
+fn template_items(lang: crate::index::lang::Lang, text: &str, start: usize, typed: &str, range: lsp_types::Range) -> Vec<(bool, CompletionItem)> {
+    use crate::domain::live_templates as lt;
+    let Some(style) = IndexCodeModel::import_style(lang) else { return Vec::new() };
+    let kotlin = style == crate::domain::imports::ImportStyle::Kotlin;
+    if !lt::any_starts_with(kotlin, typed) {
+        return Vec::new();
+    }
+    let contexts = crate::index::introduce::template_contexts(lang, text, start);
+    lt::completing(kotlin, typed, &contexts)
+        .into_iter()
+        .map(|t| {
+            let item = CompletionItem {
+                label: t.name.to_owned(),
+                filter_text: Some(typed.to_owned()),
+                kind: Some(CompletionItemKind::SNIPPET),
+                detail: Some(t.description.to_owned()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: t.name.to_owned() })),
+                command: Some(lsp_types::Command { title: t.description.to_owned(), command: lt::EXPAND_COMMAND.to_owned(), arguments: None }),
+                ..Default::default()
+            };
+            (t.name == typed, item)
+        })
+        .collect()
 }
 
 fn kind_of(kind: CandidateKind) -> CompletionItemKind {

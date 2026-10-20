@@ -42,7 +42,7 @@
 
 - 2026-10-09 做过一次全量回归（358 项对照 AS），之后全部修复并复测：旧问题 127/135 通过，0 崩溃。
 - 2026-10-12 做过一次“所有右键菜单 / 弹出菜单 / 主菜单每一项”的回归：首轮 518 项通过、42 个问题，已全部修复并复测两轮。
-- `cargo test` 当前 440 个单元测试通过（另有 15 个 `#[ignore]` 的基准、探针和需要外部工具的测试，如调用 keytool 的 `creates_a_keystore`）。
+- `cargo test` 当前 441 个单元测试通过（另有 15 个 `#[ignore]` 的基准、探针和需要外部工具的测试，如调用 keytool 的 `creates_a_keystore`）。
 - 绝大多数功能**只在 Linux（Xvfb）下测过**。Windows 上验证过的：启动、任务栏点击最小化、旧索引缓存崩溃修复、Device Manager 的 Wi-Fi 自动连接，以及维护者在 Windows 11（10.0.26200，Gradle JDK 用 AS 自带的 JBR 21.0.9）上编译 mytv-android 的 APK。macOS 基本未在真机验证。
 - CI 每次推分支都在 `windows-latest` 上跑一次 `cargo check --release`，只在 Windows 下编译的代码（`#[cfg(windows)]`）在合并前就能发现编译错误，但不等于在 Windows 上跑过。
 
@@ -173,7 +173,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 - **缓存视图**：面板是 GPUI 的 cached view（`ui::common::cached`），`Workspace::redraw_panels` 在 model / index 变化时通知它们。**一个缓存面板如果 render 里读了新状态，必须 observe 它并 `cx.notify()`**，否则界面不刷新。
 - **索引缓存兼容**：`ProjectIndex` / `LibraryCache` 的**第一个字段必须是 `version: u32`**，一律通过 `index::store::read_cache` 读（先校验版本，再按文件大小限制 bincode 解码）。**改了缓存结构就把 `CACHE_VERSION` 加一**。曾经因为旧缓存被新结构解码，Windows 启动时申请了几 EB 内存直接崩溃。
 - 缓存位置：项目索引 `<gitdir>/junction/index.bin`；外部库索引 `~/.cache/Junction/libraries`（跨项目共享）；jar 源码解压到 `~/.cache/Junction/sources`。外部库文件以绝对路径作为键，只读打开。
-- **vendor 补丁**：`vendor/` 下的改动都标有 `Junction:` 注释（对话框居中不滑入、通知右下角堆叠且最旧在下、通知 10 秒自动消失、分层彩色图标、按钮尺寸和悬停色、补全插入 import 和括号内光标、Ctrl+Space 手动补全 `trigger_completion`、导出 Diagnostic 等）。升级 gpui-kit 时要从 registry 重新拷贝这些 crate，再把 `Junction:` 的改动补回去。
+- **vendor 补丁**：`vendor/` 下的改动都标有 `Junction:` 注释（对话框居中不滑入、通知右下角堆叠且最旧在下、通知 10 秒自动消失、分层彩色图标、按钮尺寸和悬停色、补全插入 import 和括号内光标、补全项带 command 时发 `InputEvent::CompletionCommand`（选中模板后展开）、Ctrl+Space 手动补全 `trigger_completion`、导出 Diagnostic 等）。升级 gpui-kit 时要从 registry 重新拷贝这些 crate，再把 `Junction:` 的改动补回去。
 - **图标**：全部用 IntelliJ 官方新 UI SVG（Apache 2.0，见 `assets/as-icons/NOTICE.md`）。源文件放 `assets/as-icons/src/<名字>.svg` 和 `<名字>_dark.svg`（从 `JetBrains/intellij-community` 的 `platform/icons/src/expui/...` 取），然后 `python3 tools/as_icons.py` 重新生成 `assets/as-icons/gen` 和 `src/ui/as_icons_gen.rs`。代码里 `use crate::ui::as_icons as icons;`，直接传 `icons::X`。不要再引入别的图标库。
 - **语法高亮**：`src/ui/file_editor.rs` 的 `language_for(path)` 映射扩展名，`grammars()` 注册自己的查询覆盖工具包自带的（工具包里 Swift、CMake、proto、C# 等的查询是空的）。**`.v` 是 V 语言，不是 Verilog**。测试 `every_language_highlights` 检查每种语言的关键字颜色，加语言时要加样例。
 - **多仓库**：`model.rs` 里每个根一个 `RootState`；`route(path)` / `run_in_roots` 按文件所在的根执行 git；Log 合并各根历史（`git::log::merge_logs`）。判断提交属于哪个根要用 `rev-parse <hash>^{commit}`，因为 `rev-parse --verify <40位hex>` 对任意 40 位哈希都返回成功。macOS 上 `git rev-parse --show-toplevel` 返回真实路径，而 `RootState.path` 是拼出来的，有符号链接时路径比较会失败（疑似导致 mac 上切换仓库后 Project 树不刷新，未确认）。
@@ -244,7 +244,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 8. ✅ 测试（2026-10-15，FEATURES.md 第 21 节）：gutter ▶ / ▶▶ 和结果图标、Ctrl+Shift+F10、Gradle test 任务 + init script 实时事件 + JUnit XML、Run 窗口的测试标签页（结果树、状态行、Rerun Failed Tests、控制台）。剩覆盖率、Project 窗口右键运行目录、对比窗口、仪器测试真机验证（Debug 测试已随第 5 项完成）。
 9. ✅ Gradle 文件辅助（2026-10-15，FEATURES.md 第 20 节）：version catalog 跳转、悬停、Find Usages、`libs.` 补全，依赖和插件新版本警告 + Alt+Enter “Change to …”。剩 Project Structure 对话框、“改用 version catalog” 之类的迁移修复。
 10. ✅ Problems / TODO 工具窗口、Local History（2026-10-15，FEATURES.md 第 18 节）。
-11. 🟡 代码生成：✅ Surround With（Ctrl+Alt+T，FEATURES.md 第 28 节，照 IntelliJ 的 Kotlin / Java surround descriptor）。✅ Live Templates（Tab 展开、变量间跳转与同步，FEATURES.md 第 29 节，模板取自 IntelliJ 的 Kotlin.xml / Java.xml）。✅ Generate（Alt+Insert：toString、equals / hashCode，Java 的构造函数、getter / setter，FEATURES.md 第 30 节，照 IntelliJ 默认模板）。✅ Override / Implement Methods（Ctrl+O / Ctrl+I，2026-10-16，FEATURES.md 第 36 节）。剩模板进补全列表、自定义模板。
+11. 🟡 代码生成：✅ Surround With（Ctrl+Alt+T，FEATURES.md 第 28 节，照 IntelliJ 的 Kotlin / Java surround descriptor）。✅ Live Templates（Tab 展开、变量间跳转与同步，FEATURES.md 第 29 节，模板取自 IntelliJ 的 Kotlin.xml / Java.xml）。✅ Generate（Alt+Insert：toString、equals / hashCode，Java 的构造函数、getter / setter，FEATURES.md 第 30 节，照 IntelliJ 默认模板）。✅ Override / Implement Methods（Ctrl+O / Ctrl+I，2026-10-16，FEATURES.md 第 36 节）。模板进补全列表已补上（2026-10-20，FEATURES.md 第 29 节）。剩自定义模板。
 
 **P2：重，可以长期留给 AS**
 
@@ -278,7 +278,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 2026-10-17 | Call / Type / Method Hierarchy、Recent Locations、Inline Variable / Function、Unwrap、Safe Delete、会话恢复；架构复查（`arch_tests`）；缺 DLL 诊断；CI 加 Windows 检查 |
 | 2026-10-18 | Generate Signed Bundle / APK 和新建 keystore；Build 窗口列出 Gradle 的 “What went wrong”；控制台往上滚不再被拉回底部；改为分支 + PR 合入 master |
 | 2026-10-19 | 控制台 ANSI 颜色和 1 MB 输出上限；Inline Property / Field（顺带修了 Inline Variable 把成员属性当局部变量的 bug） |
-| 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release；签名打包的 Remember passwords（系统密码库）和 Destination Folder |
+| 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release；签名打包的 Remember passwords（系统密码库）和 Destination Folder；Live Templates 进补全列表 |
 
 更细的历史看 `git log`，每个提交的标题都写明了用户可见的变化。
 
