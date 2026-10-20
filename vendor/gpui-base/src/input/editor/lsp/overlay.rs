@@ -220,6 +220,12 @@ impl InputBaseState<EditorMode> {
         }
         self.completion_inserting = false;
         self.focus(window, cx);
+        // Junction: an item's command runs once its text is in (a live
+        // template expands).
+        if let Some(command) = &item.command {
+            let argument = command.arguments.as_ref().and_then(|a| a.first()).and_then(|v| v.as_str()).map(str::to_owned);
+            cx.emit(crate::input::InputEvent::CompletionCommand { command: command.command.clone(), argument });
+        }
     }
 
     #[doc(hidden)]

@@ -101,6 +101,26 @@ pub fn find(kotlin: bool, abbreviation: &str, contexts: &[Context]) -> Option<&'
     templates(kotlin).iter().find(|t| t.name == abbreviation && t.contexts.iter().any(|c| contexts.contains(c)))
 }
 
+/// The templates code completion offers for the word typed before the
+/// caret, as IntelliJ's `LiveTemplateCompletionContributor`: those that
+/// apply here whose abbreviation starts with it (`so` → `sout`, `soutv`).
+/// Nothing for an empty word.
+pub fn completing(kotlin: bool, typed: &str, contexts: &[Context]) -> Vec<&'static Template> {
+    if typed.is_empty() {
+        return Vec::new();
+    }
+    templates(kotlin).iter().filter(|t| t.name.starts_with(typed) && t.contexts.iter().any(|c| contexts.contains(c))).collect()
+}
+
+/// Whether any template's abbreviation starts with the word: when none
+/// does, completion needn't work out where the caret is.
+pub fn any_starts_with(kotlin: bool, typed: &str) -> bool {
+    !typed.is_empty() && templates(kotlin).iter().any(|t| t.name.starts_with(typed))
+}
+
+/// The completion command that expands the template just completed.
+pub const EXPAND_COMMAND: &str = "junction.expandLiveTemplate";
+
 /// A template written out: its text, each tab stop's ranges (a variable
 /// with its copies), and where `$END$` is.
 #[derive(Debug, PartialEq, Eq)]
@@ -291,6 +311,16 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn offers_templates_starting_with_the_word() {
+        let names = |typed, contexts: &[Context]| super::completing(true, typed, contexts).iter().map(|t| t.name).collect::<Vec<_>>();
+        assert_eq!(names("so", &[Context::Statement]), ["sout", "soutv"]);
+        assert_eq!(names("sout", &[Context::Class]), Vec::<&str>::new());
+        assert_eq!(names("", &[Context::Statement]), Vec::<&str>::new());
+        assert!(super::any_starts_with(false, "fo"));
+        assert!(!super::any_starts_with(false, "xyz"));
+    }
+
     use super::*;
 
     fn template(kotlin: bool, name: &str) -> &'static Template {

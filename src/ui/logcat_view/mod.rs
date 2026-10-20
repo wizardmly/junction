@@ -117,7 +117,7 @@ impl LogcatView {
                     this.completion = None;
                     cx.notify();
                 }
-                InputEvent::Focus => {}
+                InputEvent::Focus | InputEvent::CompletionCommand { .. } => {}
             }),
             cx.observe(&devices, |this, _, cx| this.follow_device(cx)),
             // A launch's application ID joins `package:mine` (a debug suffix

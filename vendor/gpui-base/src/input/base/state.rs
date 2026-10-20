@@ -128,6 +128,9 @@ pub enum InputEvent {
     PressEnter { secondary: bool, shift: bool },
     Focus,
     Blur,
+    /// Junction: a completion item with a command was picked (after its
+    /// text went in): the command's name and its first argument, if any.
+    CompletionCommand { command: String, argument: Option<String> },
 }
 
 pub(super) const CONTEXT: &str = "Input";

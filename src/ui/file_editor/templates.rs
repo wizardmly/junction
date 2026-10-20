@@ -48,7 +48,7 @@ impl FileEditor {
     }
 
     /// Expands the abbreviation before the caret, if a template has it here.
-    fn expand_template(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(super) fn expand_template(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some((lang, style)) = self.jvm_style() else { return false };
         let text = self.text(cx);
         let cursor = self.state.read(cx).cursor();

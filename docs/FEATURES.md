@@ -581,7 +581,8 @@ Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+
 | 同一变量的多处（`fori` 的 `i`、`soutv` 里的 `escapeString(EXPR)`、`closure` 的参数）随输入同步修改 | ✅ |
 | 展开时按当前行缩进和括号层级重新缩进（IntelliJ 的 toReformat） | ✅ |
 | Settings › Editor › Live Templates：按 Kotlin / Java 列出全部缩写和说明（可搜索） | ✅ |
-| IntelliJ 根据代码计算的变量（`kotlinVariable()`、`suggestIndexName()`、`iterableComponentType()` 等）用固定默认值（`i`、`iterable`、`Object`…）；soutp、soutf 等依赖这些计算的模板未收录；模板出现在补全列表里、自定义 / 编辑模板、Surround with Live Template | ❌ 未做 |
+| 模板出现在代码补全列表里（2026-10-20，照 IntelliJ 的 `LiveTemplateCompletionContributor`）：缩写以已输入的词开头、当前位置适用的模板列出来，右侧是描述；和缩写完全一致的排第一，其余排在名字同样以这个词开头的符号之后；选中后直接展开并进入模板变量编辑。Linux 实测：`so` 列出 sout / soutv，`sout` 回车得到 `println()`，`soutv` 回车后变量同步编辑 | ✅ |
+| IntelliJ 根据代码计算的变量（`kotlinVariable()`、`suggestIndexName()`、`iterableComponentType()` 等）用固定默认值（`i`、`iterable`、`Object`…）；soutp、soutf 等依赖这些计算的模板未收录；自定义 / 编辑模板、Surround with Live Template | ❌ 未做 |
 
 Linux 实测（Xvfb）：Kotlin 函数体里输入 `iter` 按 Tab 得到 `for (i in iterable) {}`，`iterable` 加框；输入 `items`、Tab、输入 `n`、Tab 后光标进入循环体；`soutv` 展开后把 `expr` 改成 `n`，字符串里的副本同步变成 `n`。
 
