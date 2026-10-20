@@ -48,6 +48,8 @@ pub struct SyncReport {
     pub modules: Vec<ModuleInfo>,
     /// The build's output, to explain a failure.
     pub output: String,
+    /// Stopped from the Build window's Sync tab.
+    pub cancelled: bool,
 }
 
 /// The last successful sync of a build, kept across sessions.
@@ -68,7 +70,8 @@ pub trait ProjectSync {
     fn stamp(&self, root: &Path, build_root: &Path, files: &[String]) -> u64;
     /// Resolves each module's classpaths for its variant (`variants`:
     /// module path and variant, for the ones picked in Build Variants).
-    fn sync(&self, build_root: &Path, variants: &[(String, String)]) -> SyncReport;
+    /// Gradle's output goes to `line` as it comes; `cancelled` stops it.
+    fn sync(&self, build_root: &Path, variants: &[(String, String)], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> SyncReport;
     fn load(&self, build_root: &Path) -> Option<SyncRecord>;
     fn save(&self, build_root: &Path, record: &SyncRecord);
 }

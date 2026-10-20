@@ -53,6 +53,8 @@ pub struct BuildLog {
     pub status: BuildStatus,
     pub started: chrono::DateTime<chrono::Local>,
     pub took: Option<Duration>,
+    /// A sync's warnings: "Failed to resolve: g:a:v".
+    pub warnings: Vec<String>,
 }
 
 /// What the Run window shows: the last launch.
@@ -360,7 +362,7 @@ impl RunService {
         self.busy = true;
         // Android Studio's first line.
         let first = format!("Executing tasks: [{}]", tasks.join(", "));
-        self.build = Some(BuildLog { title, lines: vec![first.into()], problems: Vec::new(), failure: None, status: BuildStatus::Running, started: chrono::Local::now(), took: None });
+        self.build = Some(BuildLog { title, lines: vec![first.into()], problems: Vec::new(), failure: None, status: BuildStatus::Running, started: chrono::Local::now(), took: None, warnings: Vec::new() });
         cx.emit(RunEvent::ShowBuild);
         cx.notify();
         let (tx, rx) = std::sync::mpsc::channel();

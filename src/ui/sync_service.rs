@@ -6,9 +6,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
-use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global};
+use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
+
+use crate::ui::run_service::{BuildLog, BuildStatus};
 
 use crate::domain::run::ModuleInfo;
 use crate::domain::sync::{self, ProjectSync as _};
@@ -25,6 +29,8 @@ pub enum SyncEvent {
     /// A sync finished; the libraries follow its record.
     Finished { build: String, seconds: u64, unresolved: Vec<String> },
     Failed { build: String, output: String },
+    /// A sync started: the Build window shows its Sync tab.
+    Started,
 }
 
 #[derive(Default)]
@@ -38,6 +44,14 @@ pub struct SyncService {
     /// Each build and its modules: from its last sync, else guessed from
     /// the build files.
     builds: Vec<(PathBuf, Vec<ModuleInfo>)>,
+    /// The Build window's Sync tab: the last sync's tree and output.
+    pub log: Option<BuildLog>,
+    /// Stops the running syncs.
+    cancel: Arc<AtomicBool>,
+    /// Output lines the running syncs send, drained ten times a second.
+    lines: Option<std::sync::mpsc::Receiver<String>>,
+    sender: Option<std::sync::mpsc::Sender<String>>,
+    _drain: Option<Task<()>>,
 }
 
 impl EventEmitter<SyncEvent> for SyncService {}
@@ -57,6 +71,104 @@ impl SyncService {
 
     pub fn try_global(cx: &App) -> Option<Entity<Self>> {
         cx.try_global::<GlobalSync>().map(|g| g.0.clone())
+    }
+
+    /// The Sync tab's Clear All: its output text.
+    pub fn clear_output(&mut self, cx: &mut Context<Self>) {
+        if let Some(log) = self.log.as_mut() {
+            log.lines.clear();
+            cx.notify();
+        }
+    }
+
+    /// The Sync tab's Stop.
+    pub fn stop(&mut self, cx: &mut Context<Self>) {
+        if !self.running.is_empty() {
+            self.cancel.store(true, Ordering::Relaxed);
+            self.again.clear();
+            cx.notify();
+        }
+    }
+
+    /// A sync starts: with none running, the Sync tab begins anew, as
+    /// Android Studio's "<project>: syncing…" node.
+    fn start_log(&mut self, build: &Path, cx: &mut Context<Self>) -> std::sync::mpsc::Sender<String> {
+        // Another build of the project is syncing too: the same tab.
+        if self.running.len() > 1
+            && let Some(sender) = &self.sender
+        {
+            return sender.clone();
+        }
+        self.cancel = Arc::default();
+        let name = self.project.as_ref().map(|(root, _)| build_name(root)).unwrap_or_else(|| build_name(build));
+        self.log = Some(BuildLog { title: name, lines: Vec::new(), problems: Vec::new(), failure: None, status: BuildStatus::Running, started: chrono::Local::now(), took: None, warnings: Vec::new() });
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.lines = Some(rx);
+        self.sender = Some(tx.clone());
+        self._drain = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(100)).await;
+                let Ok(more) = this.update(cx, |this, cx| {
+                    if this.drain() {
+                        cx.notify();
+                    }
+                    this.lines.is_some()
+                }) else {
+                    break;
+                };
+                if !more {
+                    break;
+                }
+            }
+        }));
+        cx.emit(SyncEvent::Started);
+        tx
+    }
+
+    fn drain(&mut self) -> bool {
+        let Some(rx) = &self.lines else { return false };
+        let mut any = false;
+        loop {
+            match rx.try_recv() {
+                Ok(line) => {
+                    any = true;
+                    if let Some(log) = self.log.as_mut() {
+                        log.lines.push(line.into());
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.lines = None;
+                    break;
+                }
+            }
+        }
+        any
+    }
+
+    /// A build's sync ended: with none left running, the tab's root node
+    /// shows how it went.
+    fn end_log(&mut self, report: &crate::domain::sync::SyncReport, cx: &mut Context<Self>) {
+        self.drain();
+        let Some(log) = self.log.as_mut() else { return };
+        log.warnings.extend(report.unresolved.iter().cloned());
+        if report.cancelled {
+            log.status = BuildStatus::Cancelled;
+        } else if !report.succeeded {
+            log.status = BuildStatus::Failed;
+            if log.failure.is_none() {
+                log.failure = crate::domain::build::failure_summary(&report.output).or_else(|| Some(report.output.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("Gradle sync failed").to_owned()));
+            }
+        }
+        if self.running.is_empty() {
+            if log.status == BuildStatus::Running {
+                log.status = BuildStatus::Succeeded;
+            }
+            log.took = Some((chrono::Local::now() - log.started).to_std().unwrap_or_default());
+            // The senders go: the drain loop ends once it has read the rest.
+            self.sender = None;
+        }
+        cx.notify();
     }
 
     pub fn status(&self) -> Option<String> {
@@ -139,18 +251,21 @@ impl SyncService {
             return;
         }
         cx.emit(SyncEvent::Status);
+        let send = self.start_log(&build, cx);
+        let cancel = self.cancel.clone();
         let variants = self.variants(&build, cx);
         cx.spawn(async move |this, cx| {
             let started = Instant::now();
             let b = build.clone();
             let (report, stamp) = cx
                 .background_spawn(async move {
-                    let report = sync_project::sync(&GradleSync, &root, &b, &files, &variants);
+                    let report = sync_project::sync(&GradleSync, &root, &b, &files, &variants, &mut |l| drop(send.send(l.to_owned())), &|| cancel.load(Ordering::Relaxed));
                     (report, GradleSync.stamp(&root, &b, &files))
                 })
                 .await;
             this.update(cx, |this, cx| {
                 this.running.remove(&build);
+                this.end_log(&report, cx);
                 this.seen.insert(build.clone(), stamp);
                 let name = build_name(&build);
                 if report.succeeded {
@@ -161,7 +276,7 @@ impl SyncService {
                         }
                     }
                     cx.emit(SyncEvent::Finished { build: name, seconds: started.elapsed().as_secs(), unresolved: report.unresolved });
-                } else {
+                } else if !report.cancelled {
                     // What went wrong, without Gradle's "* Try:" advice.
                     let output = report.output.split("* Try:").next().unwrap_or_default();
                     let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("JUNCTION_")).collect();

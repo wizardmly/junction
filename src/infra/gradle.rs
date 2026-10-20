@@ -204,7 +204,7 @@ pub fn jdk_for(build_root: &Path) -> Option<crate::domain::jdk::Jdk> {
 
 /// The build's second line: the JDK Gradle runs on and, on Windows, the
 /// system's version, for reading a failure.
-fn environment(build_root: &Path) -> String {
+pub fn environment(build_root: &Path) -> String {
     let jdk = jdk_for(build_root).map(|j| j.label()).unwrap_or_else(|| "none found (Gradle uses java on the PATH)".into());
     match os_version() {
         Some(os) => format!("Gradle JDK: {jdk} · {os}"),
