@@ -11,7 +11,7 @@ use gpui_kit::component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     checkbox::Checkbox,
     dialog::{DialogAction, DialogClose, DialogFooter},
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     radio::RadioGroup,
     scroll::ScrollableElement as _,
     v_flex,
@@ -22,6 +22,7 @@ use gpui_kit::{
 };
 
 use crate::hosting::account::Service;
+use crate::domain::live_templates::CustomTemplates;
 use crate::index::lang::Lang;
 use crate::model::RepoModel;
 use crate::settings::{Settings, UpdateMethod};
@@ -100,7 +101,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
-            Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "sout", "fori", "iter", "main", "psvm"],
+            Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "sout", "fori", "iter", "main", "psvm"],
             Page::Commit => &[
                 "Use non-modal commit interface",
                 "Limit subject line length",
@@ -188,6 +189,20 @@ pub struct SettingsView {
     gradle_homes: Vec<Entity<InputState>>,
     /// "Download JDK…" open for a build (its key).
     jdk_download: Option<(String, Entity<crate::ui::jdk_download_panel::JdkDownloadPanel>, Subscription)>,
+    /// Editor › Live Templates: the draft, and the person's template being
+    /// edited with its fields.
+    templates: CustomTemplates,
+    template: Option<(usize, TemplateFields)>,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// The fields of the person's template being edited.
+struct TemplateFields {
+    abbreviation: Entity<InputState>,
+    description: Entity<InputState>,
+    text: Entity<TextareaState>,
+    /// A default value per variable, in the text's order.
+    defaults: Vec<(String, Entity<InputState>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -298,6 +313,8 @@ impl SettingsView {
             gradle_user_home,
             gradle_homes,
             jdk_download: None,
+            templates: crate::domain::live_templates::custom(),
+            template: None,
             _subscriptions: subscriptions,
         }
     }
@@ -351,6 +368,8 @@ impl SettingsView {
         Settings::update(cx, |s| *s = current.clone());
         self.draft = current;
         crate::theme::refresh(cx);
+        self.sync_template(window, cx);
+        crate::infra::template_store::save(self.templates.clone());
         for (action, keys) in std::mem::take(&mut self.keymap) {
             keymap::set(action, keys, cx);
         }
@@ -746,27 +765,237 @@ impl SettingsView {
             .when(missing, |el| el.child(div().pl_6().text_color(cx.palette().status_conflict).child("No bin/gradle in this folder.")))
     }
 
-    /// Settings › Editor › Live Templates: the built-in templates by group
-    /// (Kotlin, Java), each abbreviation with its description, as Android
-    /// Studio's page lists them; Tab expands one in the editor.
+    /// Settings › Editor › Live Templates, as Android Studio's page: the
+    /// person's templates ("User", + and −) and the built-in ones by group
+    /// (Kotlin, Java), each with a checkbox that turns it on or off; the
+    /// selected template of the person's is edited below the list.
     fn live_templates_page(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
-        use crate::domain::live_templates::templates;
+        use crate::domain::live_templates::builtin;
         let palette = cx.palette().clone();
+        let view = cx.entity();
+        let selected = self.template.as_ref().map(|(ix, _)| *ix);
         let mut page = v_flex().gap_1().text_sm().child(
             div().text_color(palette.text_secondary).child("Type an abbreviation in a Kotlin or Java file and press Tab; Tab and Enter then move through the template's variables."),
         );
+        let add = view.clone();
+        let remove = view.clone();
+        page = page.child(
+            h_flex()
+                .gap_2()
+                .child(self.section("User", cx))
+                .child(div().flex_1())
+                .child(Button::new("live-template-add").icon(Icon::new(icons::ADD).xsmall()).ghost().xsmall().tooltip("Add").on_click(move |_, window, cx| {
+                    add.update(cx, |this, cx| this.add_template(window, cx))
+                }))
+                .child(Button::new("live-template-remove").icon(Icon::new(icons::REMOVE).xsmall()).ghost().xsmall().tooltip("Remove").disabled(selected.is_none()).on_click(
+                    move |_, window, cx| remove.update(cx, |this, cx| this.remove_template(window, cx)),
+                )),
+        );
+        if self.templates.user.is_empty() {
+            page = page.child(div().pl_6().text_xs().text_color(palette.text_secondary).child("No templates of your own: + adds one."));
+        }
+        for (ix, t) in self.templates.user.iter().enumerate() {
+            let (toggle, select) = (view.clone(), view.clone());
+            page = page.child(
+                h_flex()
+                    .id(("live-template-user", ix))
+                    .gap_3()
+                    .px_1()
+                    .rounded(px(3.))
+                    .when(selected == Some(ix), |el| el.bg(palette.selection))
+                    .on_click(move |_, window, cx| select.update(cx, |this, cx| this.select_template(Some(ix), window, cx)))
+                    .child(Checkbox::new(("live-template-on", ix)).checked(t.enabled).on_change(move |v, _, cx| {
+                        let v = *v;
+                        toggle.update(cx, |this, cx| {
+                            if let Some(t) = this.templates.user.get_mut(ix) {
+                                t.enabled = v;
+                            }
+                            cx.notify();
+                        })
+                    }))
+                    .child(self.found(&t.abbreviation, query, cx).w(px(90.)).font_family("monospace").child(t.abbreviation.clone()))
+                    .child(self.found(&t.description, query, cx).text_color(palette.text_secondary).child(t.description.clone())),
+            );
+        }
+        if let Some((_, fields)) = &self.template {
+            page = page.child(self.template_editor(fields, cx));
+        }
         for (group, kotlin) in [("Kotlin", true), ("Java", false)] {
             page = page.child(self.section(group, cx));
-            for t in templates(kotlin) {
+            for (ix, t) in builtin(kotlin).iter().enumerate() {
+                let on = self.templates.is_enabled(kotlin, &t.name);
+                let (toggle, name) = (view.clone(), t.name.to_string());
                 page = page.child(
                     h_flex()
                         .gap_3()
-                        .child(self.found(t.name, query, cx).w(px(90.)).font_family("monospace").child(t.name))
-                        .child(self.found(t.description, query, cx).text_color(palette.text_secondary).child(t.description)),
+                        .px_1()
+                        .child(Checkbox::new((if kotlin { "live-template-kotlin" } else { "live-template-java" }, ix)).checked(on).on_change(move |v, _, cx| {
+                            let (v, key) = (*v, CustomTemplates::key(kotlin, &name));
+                            toggle.update(cx, |this, cx| {
+                                this.templates.disabled.retain(|k| *k != key);
+                                if !v {
+                                    this.templates.disabled.push(key);
+                                }
+                                cx.notify();
+                            })
+                        }))
+                        .child(self.found(&t.name, query, cx).w(px(90.)).font_family("monospace").child(t.name.to_string()))
+                        .child(self.found(&t.description, query, cx).text_color(palette.text_secondary).child(t.description.to_string())),
                 );
             }
         }
         page
+    }
+
+    /// The selected template's Abbreviation, Description, Template text,
+    /// its variables' default values, and where it applies.
+    fn template_editor(&self, fields: &TemplateFields, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::domain::live_templates::Context as Where;
+        let palette = cx.palette().clone();
+        let Some((ix, _)) = &self.template else { return div().into_any_element() };
+        let Some(t) = self.templates.user.get(*ix) else { return div().into_any_element() };
+        let label = |text: &'static str| div().w(px(110.)).child(text);
+        let mut contexts = v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Applicable in:"));
+        let groups: [(&'static str, bool, &[(Where, &'static str)]); 2] = [
+            ("Kotlin", true, &[(Where::Statement, "Statement"), (Where::Expression, "Expression"), (Where::Class, "Class"), (Where::TopLevel, "Top-level"), (Where::Object, "Object declaration")]),
+            ("Java", false, &[(Where::Statement, "Statement"), (Where::Expression, "Expression"), (Where::Class, "Declaration")]),
+        ];
+        for (group, kotlin, places) in groups {
+            let ticked = if kotlin { &t.kotlin } else { &t.java };
+            let mut row = h_flex().gap_3().child(div().w(px(60.)).child(group));
+            for (n, (place, name)) in places.iter().enumerate() {
+                let (view, place) = (cx.entity(), *place);
+                let id = (if kotlin { "live-template-ctx-kotlin" } else { "live-template-ctx-java" }, n);
+                row = row.child(Checkbox::new(id).label(*name).checked(ticked.contains(&place)).on_change(move |v, _, cx| {
+                    let v = *v;
+                    view.update(cx, |this, cx| {
+                        let ix = this.template.as_ref().map(|(ix, _)| *ix);
+                        if let Some(t) = ix.and_then(|ix| this.templates.user.get_mut(ix)) {
+                            let list = if kotlin { &mut t.kotlin } else { &mut t.java };
+                            list.retain(|c| *c != place);
+                            if v {
+                                list.push(place);
+                            }
+                        }
+                        cx.notify();
+                    })
+                }));
+            }
+            contexts = contexts.child(row);
+        }
+        let mut variables = v_flex().gap_1();
+        if !fields.defaults.is_empty() {
+            variables = variables.child(div().text_color(palette.text_secondary).child("Default values of the variables:"));
+        }
+        for (name, input) in &fields.defaults {
+            variables = variables.child(h_flex().gap_2().child(div().w(px(110.)).font_family("monospace").child(format!("${name}$"))).child(div().w(px(260.)).child(Input::new(input).small())));
+        }
+        v_flex()
+            .gap_2()
+            .my_2()
+            .p_2()
+            .border_1()
+            .border_color(palette.border)
+            .rounded(px(4.))
+            .child(h_flex().gap_2().child(label("Abbreviation:")).child(div().w(px(160.)).child(Input::new(&fields.abbreviation).small())))
+            .child(h_flex().gap_2().child(label("Description:")).child(div().flex_1().child(Input::new(&fields.description).small())))
+            .child(v_flex().gap_1().child("Template text:").child(Textarea::new(&fields.text).font_family("monospace")))
+            .child(div().text_xs().text_color(palette.text_secondary).child("$NAME$ is a variable Tab moves through; $END$ is where the caret ends; $SELECTION$ is the selected text (Surround With)."))
+            .child(variables)
+            .child(contexts)
+            .into_any_element()
+    }
+
+    fn add_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::live_templates::{Context as Where, UserTemplate};
+        self.sync_template(window, cx);
+        let n = (1..).find(|n| !self.templates.user.iter().any(|t| t.abbreviation == format!("abbr{n}"))).unwrap_or(1);
+        self.templates.user.push(UserTemplate {
+            abbreviation: format!("abbr{n}"),
+            text: "$END$".into(),
+            kotlin: vec![Where::Statement],
+            java: vec![Where::Statement],
+            enabled: true,
+            ..Default::default()
+        });
+        self.select_template(Some(self.templates.user.len() - 1), window, cx);
+    }
+
+    fn remove_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((ix, _)) = self.template.take() else { return };
+        if ix < self.templates.user.len() {
+            self.templates.user.remove(ix);
+        }
+        let next = (!self.templates.user.is_empty()).then(|| ix.min(self.templates.user.len() - 1));
+        self.select_template(next, window, cx);
+    }
+
+    /// Edits one of the person's templates below the list.
+    fn select_template(&mut self, ix: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_template(window, cx);
+        self.template = ix.and_then(|ix| {
+            let t = self.templates.user.get(ix)?.clone();
+            let abbreviation = cx.new(|cx| InputState::new(window, cx).default_value(t.abbreviation.clone()));
+            let description = cx.new(|cx| InputState::new(window, cx).default_value(t.description.clone()));
+            let text = cx.new(|cx| TextareaState::new(window, cx).rows(4).default_value(t.text.clone()));
+            let subscriptions = vec![
+                cx.subscribe_in(&abbreviation, window, Self::template_changed),
+                cx.subscribe_in(&description, window, Self::template_changed),
+                cx.subscribe_in(&text, window, Self::template_changed),
+            ];
+            let mut fields = TemplateFields { abbreviation, description, text, defaults: Vec::new(), _subscriptions: subscriptions };
+            self.default_fields(&mut fields, &t, window, cx);
+            Some((ix, fields))
+        });
+        cx.notify();
+    }
+
+    fn template_changed<E>(&mut self, _: &Entity<E>, event: &InputEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(event, InputEvent::Change) {
+            self.sync_template(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// A default value field per variable of the text, keeping the ones
+    /// already there.
+    fn default_fields(&self, fields: &mut TemplateFields, t: &crate::domain::live_templates::UserTemplate, window: &mut Window, cx: &mut Context<Self>) {
+        let names = crate::domain::live_templates::variables(&t.text);
+        if fields.defaults.iter().map(|(n, _)| n).eq(names.iter()) {
+            return;
+        }
+        let mut old = std::mem::take(&mut fields.defaults);
+        for name in names {
+            let input = match old.iter().position(|(n, _)| *n == name) {
+                Some(at) => old.remove(at).1,
+                None => {
+                    let value = t.defaults.iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone()).unwrap_or_default();
+                    let input = cx.new(|cx| InputState::new(window, cx).placeholder("None").default_value(value));
+                    fields._subscriptions.push(cx.subscribe_in(&input, window, Self::template_changed));
+                    input
+                }
+            };
+            fields.defaults.push((name, input));
+        }
+    }
+
+    /// The edited template's fields into the draft.
+    fn sync_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((ix, mut fields)) = self.template.take() else { return };
+        if let Some(t) = self.templates.user.get_mut(ix) {
+            t.abbreviation = fields.abbreviation.read(cx).value().trim().to_owned();
+            t.description = fields.description.read(cx).value().trim().to_owned();
+            t.text = fields.text.read(cx).value().to_string();
+            t.defaults = fields
+                .defaults
+                .iter()
+                .map(|(n, i)| (n.clone(), i.read(cx).value().to_string()))
+                .filter(|(_, v)| !v.is_empty())
+                .collect();
+            let t = t.clone();
+            self.default_fields(&mut fields, &t, window, cx);
+        }
+        self.template = Some((ix, fields));
     }
 
     fn section(&self, title: &'static str, cx: &App) -> gpui_kit::Div {

@@ -41,10 +41,16 @@ impl FileEditor {
             }
             self.template = None;
         }
-        if !forward || self.read_only() || self.state.read(cx).is_completion_menu_open(cx) || !self.state.read(cx).selected_range().is_empty() {
+        if !forward || self.read_only() || !self.state.read(cx).selected_range().is_empty() {
             return false;
         }
-        self.expand_template(window, cx)
+        // An abbreviation typed in full expands even with the completion
+        // popup open (it lists the template too), as IntelliJ's Tab does.
+        let expanded = self.expand_template(window, cx);
+        if expanded {
+            self.state.update(cx, |state, cx| state.dismiss_completion_overlay(cx));
+        }
+        expanded
     }
 
     /// Expands the abbreviation before the caret, if a template has it here.
@@ -61,7 +67,7 @@ impl FileEditor {
         let Some(template) = find(kotlin, &text[start..cursor], &contexts) else { return false };
         let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
         let indent: String = text[line_start..start].chars().take_while(|c| c.is_whitespace()).collect();
-        let expansion = expand(template, &indent, &crate::domain::surround::indent_unit(&text));
+        let expansion = expand(&template, &indent, &crate::domain::surround::indent_unit(&text));
         let mut new_text = text.clone();
         new_text.replace_range(start..cursor, &expansion.text);
         let session = Session::new(&expansion, start);
