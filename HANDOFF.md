@@ -234,7 +234,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 3 | Build + Run | ✅ 2026-10-15 完成：标题栏 Make / 设备 / 运行配置 / Run / Stop，Build、Run、Build Variants 工具窗口（FEATURES.md 第 16 节） | Edit Configurations 对话框已补上（2026-10-16，FEATURES.md 第 16 节）；Apply Code Changes 以 HotSwap 方式补上（2026-10-20，FEATURES.md 第 60 节：调试中通过 JDWP 重载类，Android 用 d8 转 dex，未真机验证；不调试时没有 AS 的部署代理，改为重装重启）；剩真机验证（Debug 见第 5 项） |
 | 4 | Logcat | ✅ 2026-10-15 完成：Logcat 工具窗口（Alt+6），设备下拉、AS 过滤语法、AS 配色、PROCESS STARTED / ENDED、堆栈跳源码、Standard / Compact、暂停、清空、重启（FEATURES.md 第 17 节） | 过滤输入补全、历史和收藏已补上（2026-10-16）；多个 Logcat 标签页已补上（2026-10-16）；截屏录屏按钮已补上（2026-10-16）；分屏已补上（2026-10-20）；剩真机验证 |
 
-**工程配置**：✅ Gradle JDK（2026-10-15，FEATURES.md 第 23 节）：用户在 Windows 上遇到 “JAVA_HOME is not set and no 'java' command could be found”，现在按 AS 的规则自动找 JDK（含 Toolbox 安装的 AS），并有 Settings › Gradle 的 Gradle JDK 下拉。Download JDK 已补上（2026-10-16）。剩 Gradle 版本 / 离线模式、Project Structure 对话框。
+**工程配置**：✅ Gradle JDK（2026-10-15，FEATURES.md 第 23 节）：用户在 Windows 上遇到 “JAVA_HOME is not set and no 'java' command could be found”，现在按 AS 的规则自动找 JDK（含 Toolbox 安装的 AS），并有 Settings › Gradle 的 Gradle JDK 下拉。Download JDK 已补上（2026-10-16）。Gradle user home、Offline work、每个构建的 Distribution（Wrapper / 指定的 Gradle 安装目录）已补上（2026-10-20，FEATURES.md 第 23 节），顺带修了设置页改的 Gradle JDK 点 Apply 后不保存的问题。剩修改 wrapper 的 Gradle 版本、Project Structure 对话框。
 
 **P1：每天会用，可暂时回 AS**
 
@@ -278,7 +278,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 2026-10-17 | Call / Type / Method Hierarchy、Recent Locations、Inline Variable / Function、Unwrap、Safe Delete、会话恢复；架构复查（`arch_tests`）；缺 DLL 诊断；CI 加 Windows 检查 |
 | 2026-10-18 | Generate Signed Bundle / APK 和新建 keystore；Build 窗口列出 Gradle 的 “What went wrong”；控制台往上滚不再被拉回底部；改为分支 + PR 合入 master |
 | 2026-10-19 | 控制台 ANSI 颜色和 1 MB 输出上限；Inline Property / Field（顺带修了 Inline Variable 把成员属性当局部变量的 bug） |
-| 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release；签名打包的 Remember passwords（系统密码库）和 Destination Folder；Live Templates 进补全列表；Build 窗口 Sync 标签页；HotSwap / Apply Code Changes；Logcat 分屏 |
+| 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release；签名打包的 Remember passwords（系统密码库）和 Destination Folder；Live Templates 进补全列表；Build 窗口 Sync 标签页；HotSwap / Apply Code Changes；Logcat 分屏；Gradle user home / Offline work / Distribution 设置，修复 Gradle JDK 设置不保存 |
 
 更细的历史看 `git log`，每个提交的标题都写明了用户可见的变化。
 

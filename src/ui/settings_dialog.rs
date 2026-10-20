@@ -137,7 +137,7 @@ impl Page {
             Page::GitLab => &["Account", "Token", "Log In", "Merge Request"],
             Page::Languages => &["Language server", "LSP", "Code Navigation", "Go to Declaration"],
             Page::Compiler => &["Compile on save", "Gradle", "Build", "Compiler errors"],
-            Page::Gradle => &["Gradle JDK", "JDK", "Java", "JAVA_HOME", "GRADLE_LOCAL_JAVA_HOME", "Build Tools"],
+            Page::Gradle => &["Gradle JDK", "JDK", "Java", "JAVA_HOME", "GRADLE_LOCAL_JAVA_HOME", "Build Tools", "Gradle user home", "Offline work", "Distribution", "Wrapper", "Specified location", "Gradle version"],
         }
     }
 
@@ -182,6 +182,10 @@ pub struct SettingsView {
     /// Gradle builds.
     jdks: Vec<crate::domain::jdk::Jdk>,
     gradle_builds: Vec<std::path::PathBuf>,
+    /// Gradle user home, and each build's Gradle installation folder
+    /// ("Specified location").
+    gradle_user_home: Entity<InputState>,
+    gradle_homes: Vec<Entity<InputState>>,
     /// "Download JDK…" open for a build (its key).
     jdk_download: Option<(String, Entity<crate::ui::jdk_download_panel::JdkDownloadPanel>, Subscription)>,
     _subscriptions: Vec<Subscription>,
@@ -228,6 +232,21 @@ impl SettingsView {
             gradle_builds.extend(project_root.filter(|r| gradle_file(r)));
         }
         let jdks = crate::infra::jdk_discovery::discover(&crate::infra::jdk_discovery::Env::current(), None);
+        let gradle_user_home = cx.new(|cx| {
+            let default = std::env::var("GRADLE_USER_HOME").ok().filter(|v| !v.is_empty()).map(std::path::PathBuf::from).or_else(|| crate::android::sdk::home().map(|h| h.join(".gradle")));
+            let mut state = InputState::new(window, cx).default_value(initial.gradle_user_home.clone());
+            if let Some(default) = default {
+                state = state.placeholder(default.display().to_string());
+            }
+            state
+        });
+        let gradle_homes: Vec<Entity<InputState>> = gradle_builds
+            .iter()
+            .map(|build| {
+                let value = initial.gradle_distribution.get(&crate::domain::diagnostics::file_key(build)).cloned().unwrap_or_default();
+                cx.new(|cx| InputState::new(window, cx).placeholder("Gradle installation folder (has bin/gradle)").default_value(value))
+            })
+            .collect();
         let mappings = model.and_then(|model| MappingsView::new(model, cx)).map(|view| cx.new(|_| view));
         let mut subscriptions = vec![cx.subscribe(&search, |this: &mut Self, search, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -241,6 +260,13 @@ impl SettingsView {
                 cx.notify();
             }
         })];
+        for input in &gradle_homes {
+            subscriptions.push(cx.subscribe(input, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }));
+        }
         for (_, input, _) in &servers {
             subscriptions.push(cx.subscribe(input, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -269,6 +295,8 @@ impl SettingsView {
             intercept: None,
             jdks,
             gradle_builds,
+            gradle_user_home,
+            gradle_homes,
             jdk_download: None,
             _subscriptions: subscriptions,
         }
@@ -283,6 +311,17 @@ impl SettingsView {
         let mut next = self.draft.clone();
         next.protected_branches = self.protected.read(cx).value().trim().to_owned();
         next.git_executable = self.git_path.read(cx).value().trim().to_owned();
+        next.gradle_user_home = self.gradle_user_home.read(cx).value().trim().to_owned();
+        for (build, input) in self.gradle_builds.iter().zip(&self.gradle_homes) {
+            let key = crate::domain::diagnostics::file_key(build);
+            let home = input.read(cx).value().trim().to_owned();
+            // A specified location left empty is the wrapper.
+            if next.gradle_distribution.contains_key(&key) && !home.is_empty() {
+                next.gradle_distribution.insert(key, home);
+            } else {
+                next.gradle_distribution.remove(&key);
+            }
+        }
         next.language_servers = self
             .servers
             .iter()
@@ -356,6 +395,10 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.use_credential_helper = from.use_credential_helper;
     to.use_language_servers = from.use_language_servers;
     to.compile_on_save = from.compile_on_save;
+    to.gradle_jdk = from.gradle_jdk.clone();
+    to.gradle_distribution = from.gradle_distribution.clone();
+    to.gradle_user_home = from.gradle_user_home.clone();
+    to.gradle_offline = from.gradle_offline;
     to.language_servers = from.language_servers.clone();
     to.diff.soft_wrap = from.diff.soft_wrap;
     to.diff.show_line_numbers = from.diff.show_line_numbers;
@@ -557,7 +600,13 @@ impl SettingsView {
     fn gradle_page(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::domain::jdk::{pick, GradleJdk, Jdk, JdkSource};
         let palette = cx.palette().clone();
-        let mut page = v_flex().gap_3().text_sm();
+        let mut page = v_flex().gap_3().text_sm().child(
+            v_flex()
+                .gap_1()
+                .child(self.section("General Settings", cx))
+                .child(self.row("Gradle user home:", query, div().w(px(420.)).child(Input::new(&self.gradle_user_home).small()), cx))
+                .child(self.check("settings-gradle-offline", "Offline work (builds and syncs run with --offline: only what is in the Gradle caches)", self.draft.gradle_offline, query, |s, v| s.gradle_offline = v, cx)),
+        );
         if self.gradle_builds.is_empty() {
             return page.child(div().text_color(palette.text_secondary).child("The project has no Gradle build."));
         }
@@ -647,6 +696,7 @@ impl SettingsView {
                     .gap_1()
                     .child(self.section("Gradle Projects", cx).when(ix > 0, |el| el.invisible()))
                     .child(h_flex().gap_2().child(div().font_weight(FontWeight::SEMIBOLD).child(name)).child(div().text_color(palette.text_secondary).child(build.display().to_string())))
+                    .child(self.distribution_row(ix, build, query, cx))
                     .child(self.row("Gradle JDK:", query, picker, cx))
                     .children(self.jdk_download.as_ref().filter(|(k, ..)| *k == key).map(|(_, panel, _)| panel.clone()))
                     .children(picked.as_ref().map(|jdk| div().text_xs().text_color(palette.text_secondary).child(jdk.home.display().to_string())))
@@ -659,6 +709,41 @@ impl SettingsView {
             page = page.child(div().text_color(palette.status_conflict).child(e.clone()));
         }
         page
+    }
+
+    /// A build's "Distribution": its wrapper (with the Gradle version it
+    /// downloads) or a Gradle installed in a folder.
+    fn distribution_row(&self, ix: usize, build: &std::path::Path, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let key = crate::domain::diagnostics::file_key(build);
+        let local = self.draft.gradle_distribution.contains_key(&key);
+        let wrapper = match crate::infra::gradle::wrapper_version(build) {
+            Some(version) => format!("Wrapper (Gradle {version})"),
+            None => "Wrapper (no gradle-wrapper.properties: gradle on the PATH)".to_owned(),
+        };
+        let view = cx.entity();
+        let (menu_key, menu_wrapper) = (key.clone(), wrapper.clone());
+        let picker = Button::new(("gradle-distribution", ix))
+            .outline()
+            .small()
+            .label(if local { "Specified location".to_owned() } else { wrapper })
+            .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
+            .dropdown_menu(move |menu, _, _| {
+                let (a, b) = ((view.clone(), menu_key.clone()), (view.clone(), menu_key.clone()));
+                menu.item(PopupMenuItem::new(menu_wrapper.clone()).checked(!local).on_click(move |_, _, cx| {
+                    a.0.update(cx, |this, cx| this.set(|s| drop(s.gradle_distribution.remove(&a.1)), cx));
+                }))
+                .item(PopupMenuItem::new("Specified location").checked(local).on_click(move |_, _, cx| {
+                    b.0.update(cx, |this, cx| this.set(|s| { s.gradle_distribution.entry(b.1.clone()).or_default(); }, cx));
+                }))
+            });
+        let input = self.gradle_homes.get(ix).cloned();
+        let home = input.as_ref().map(|i| i.read(cx).value().trim().to_owned()).unwrap_or_default();
+        let missing = local && !home.is_empty() && !crate::infra::gradle::local_gradle(std::path::Path::new(&home)).is_file();
+        v_flex()
+            .gap_1()
+            .child(self.row("Distribution:", query, picker, cx))
+            .when_some(input.filter(|_| local), |el, input| el.child(div().pl_6().w(px(480.)).child(Input::new(&input).small())))
+            .when(missing, |el| el.child(div().pl_6().text_color(cx.palette().status_conflict).child("No bin/gradle in this folder.")))
     }
 
     /// Settings › Editor › Live Templates: the built-in templates by group
