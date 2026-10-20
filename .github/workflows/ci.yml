@@ -58,7 +58,7 @@ jobs:
         with:
           name: linux-ci
           path: out
-          retention-days: 3
+          retention-days: 1
 
   windows:
     runs-on: windows-latest
