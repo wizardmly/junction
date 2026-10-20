@@ -587,14 +587,17 @@ Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+
 
 | 功能 | 状态 |
 |---|---|
-| Kotlin / Java 文件里输入缩写按 Tab 展开（补全弹窗开着时 Tab 仍归补全）；模板照 IntelliJ 的 Kotlin.xml / Java.xml：Kotlin 的 main、maina、maino、sout、serr、soutv、iter、ifn、inn、void、fun0–2、interface、singleton、closure、anonymous / object、exfun、exval、exvar、psvm 系列；Java 的 sout、serr、souf、soutv、psvm、fori、itar、iter、ifn、inn、St、psf、prsf、psfi、psfs、thr、else-if | ✅ |
+| Kotlin / Java 文件里输入缩写按 Tab 展开（补全弹窗开着时，缩写完整输入的也直接展开，照 IntelliJ 的 Tab）；模板照 IntelliJ 的 Kotlin.xml / Java.xml：Kotlin 的 main、maina、maino、sout、serr、soutv、iter、ifn、inn、void、fun0–2、interface、singleton、closure、anonymous / object、exfun、exval、exvar、psvm 系列；Java 的 sout、serr、souf、soutv、psvm、fori、itar、iter、ifn、inn、St、psf、prsf、psfi、psfs、thr、else-if | ✅ |
 | 适用位置照 IntelliJ 的上下文：语句、表达式、类成员、Kotlin 顶层和 `object` 体、Java 的 if 块之后（else-if）；注释和字符串里不展开 | ✅ |
 | 展开后按 IntelliJ 的变量顺序逐个停留：当前变量加框，Tab / Enter 到下一个、Shift+Tab 回上一个，最后停在 `$END$`；Escape 提前结束 | ✅ |
 | 同一变量的多处（`fori` 的 `i`、`soutv` 里的 `escapeString(EXPR)`、`closure` 的参数）随输入同步修改 | ✅ |
 | 展开时按当前行缩进和括号层级重新缩进（IntelliJ 的 toReformat） | ✅ |
 | Settings › Editor › Live Templates：按 Kotlin / Java 列出全部缩写和说明（可搜索） | ✅ |
 | 模板出现在代码补全列表里（2026-10-20，照 IntelliJ 的 `LiveTemplateCompletionContributor`）：缩写以已输入的词开头、当前位置适用的模板列出来，右侧是描述；和缩写完全一致的排第一，其余排在名字同样以这个词开头的符号之后；选中后直接展开并进入模板变量编辑。Linux 实测：`so` 列出 sout / soutv，`sout` 回车得到 `println()`，`soutv` 回车后变量同步编辑 | ✅ |
-| IntelliJ 根据代码计算的变量（`kotlinVariable()`、`suggestIndexName()`、`iterableComponentType()` 等）用固定默认值（`i`、`iterable`、`Object`…）；soutp、soutf 等依赖这些计算的模板未收录；自定义 / 编辑模板、Surround with Live Template | ❌ 未做 |
+| 自定义模板（2026-10-20，照 IntelliJ 的 User 组）：Settings › Editor › Live Templates 里 User 组 + / − 新建、删除；选中后编辑 Abbreviation、Description、Template text（`$NAME$` 变量按出现顺序停留，同名的多处同步，`$END$` 是结束位置），每个变量的默认值，以及适用位置（Kotlin：Statement、Expression、Class、Top-level、Object declaration；Java：Statement、Expression、Declaration）；每个模板（含内置模板）前的勾选框可关闭它；Apply / OK 后存到设置目录的 `live-templates.json`，下次启动读回。自定义模板与内置模板同名时优先 | ✅ |
+| IntelliJ 根据代码计算的变量（`kotlinVariable()`、`suggestIndexName()`、`iterableComponentType()` 等）用固定默认值（`i`、`iterable`、`Object`…）；soutp、soutf 等依赖这些计算的模板未收录；自定义模板的变量表达式（只有默认值）、模板分组 / 导入导出、Surround with Live Template | ❌ 未做 |
+
+Linux 实测（Xvfb，自定义模板）：新建 `pv`，文本 `System.out.println("$NAME$ = " + $NAME$);$END$`，NAME 默认值 `value`；Java 方法体里输入 `pv` 按 Tab（补全弹窗开着）展开，输入 `sum` 两处同步，得到 `System.out.println("sum = " + sum);`；关掉 Java 的 `sout` 后按 Tab 不再展开；`live-templates.json` 内容正确。
 
 Linux 实测（Xvfb）：Kotlin 函数体里输入 `iter` 按 Tab 得到 `for (i in iterable) {}`，`iterable` 加框；输入 `items`、Tab、输入 `n`、Tab 后光标进入循环体；`soutv` 展开后把 `expr` 改成 `n`，字符串里的副本同步变成 `n`。
 

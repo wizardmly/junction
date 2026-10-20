@@ -12,6 +12,7 @@ pub mod jdk_download;
 pub mod sources_download;
 pub mod adb_logcat;
 pub mod logcat_filter_store;
+pub mod template_store;
 pub mod catalog_files;
 pub mod gradle;
 pub mod gradle_sync;

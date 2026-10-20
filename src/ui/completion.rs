@@ -114,12 +114,12 @@ fn template_items(lang: crate::index::lang::Lang, text: &str, start: usize, type
         .into_iter()
         .map(|t| {
             let item = CompletionItem {
-                label: t.name.to_owned(),
+                label: t.name.to_string(),
                 filter_text: Some(typed.to_owned()),
                 kind: Some(CompletionItemKind::SNIPPET),
-                detail: Some(t.description.to_owned()),
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: t.name.to_owned() })),
-                command: Some(lsp_types::Command { title: t.description.to_owned(), command: lt::EXPAND_COMMAND.to_owned(), arguments: None }),
+                detail: Some(t.description.to_string()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: t.name.to_string() })),
+                command: Some(lsp_types::Command { title: t.description.to_string(), command: lt::EXPAND_COMMAND.to_owned(), arguments: None }),
                 ..Default::default()
             };
             (t.name == typed, item)

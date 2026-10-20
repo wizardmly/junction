@@ -7,10 +7,20 @@
 //! Variables IntelliJ computes from the code (`suggestIndexName()`,
 //! `iterableComponentType(…)`) start from their usual values.
 
+use std::borrow::Cow;
 use std::ops::Range;
+use std::sync::RwLock;
+
+use serde::{Deserialize, Serialize};
+
+type Text = Cow<'static, str>;
+
+const fn s(text: &'static str) -> Text {
+    Cow::Borrowed(text)
+}
 
 /// Where a template applies.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Context {
     /// A statement in a function body.
     Statement,
@@ -26,90 +36,210 @@ pub enum Context {
     Else,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Var {
-    pub name: &'static str,
-    pub default: &'static str,
+    pub name: Text,
+    pub default: Text,
     /// Tab stops at it.
     pub stop: bool,
     /// Follows another variable (`escapeString(EXPR)`, `PARAM`).
-    pub copy_of: Option<&'static str>,
+    pub copy_of: Option<Text>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Template {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub value: &'static str,
-    pub vars: &'static [Var],
-    pub contexts: &'static [Context],
+    pub name: Text,
+    pub description: Text,
+    pub value: Text,
+    pub vars: Cow<'static, [Var]>,
+    pub contexts: Cow<'static, [Context]>,
 }
 
 const KOTLIN: &[Template] = &[
-    Template { name: "main", description: "main() function", value: "fun main($ARGS$) {\n  $END$\n}", vars: &[Var { name: "ARGS", default: "", stop: false, copy_of: None }], contexts: &[Context::TopLevel] },
-    Template { name: "maina", description: "main(args) function", value: "fun main(args: Array<String>) {\n  $END$\n}", vars: &[], contexts: &[Context::TopLevel] },
-    Template { name: "maino", description: "main(args) function", value: "@JvmStatic\nfun main(args: Array<String>) {\n  $END$\n}", vars: &[], contexts: &[Context::Object] },
-    Template { name: "sout", description: "Prints a string to System.out", value: "println($END$)", vars: &[], contexts: &[Context::Statement] },
-    Template { name: "serr", description: "Prints a string to System.err", value: "System.err.println($END$)", vars: &[], contexts: &[Context::Statement] },
-    Template { name: "soutv", description: "Prints a value to System.out", value: "println(\"$EXPR_COPY$ = $DOLLAR${$EXPR$}\")", vars: &[Var { name: "DOLLAR", default: "$", stop: false, copy_of: None }, Var { name: "EXPR", default: "expr", stop: true, copy_of: None }, Var { name: "EXPR_COPY", default: "", stop: false, copy_of: Some("EXPR") }], contexts: &[Context::Statement] },
-    Template { name: "iter", description: "Iterate over elements of iterable (for-in loop)", value: "for ($VAR$ in $ITERABLE$) {\n$END$\n}", vars: &[Var { name: "ITERABLE", default: "iterable", stop: true, copy_of: None }, Var { name: "VAR", default: "i", stop: true, copy_of: None }], contexts: &[Context::Statement] },
-    Template { name: "ifn", description: "Inserts 'if null' expression", value: "if ($VAR$ == null) {\n$END$\n}", vars: &[Var { name: "VAR", default: "i", stop: true, copy_of: None }], contexts: &[Context::Expression] },
-    Template { name: "inn", description: "Inserts 'if not null' expression", value: "if ($VAR$ != null) {\n$END$\n}", vars: &[Var { name: "VAR", default: "i", stop: true, copy_of: None }], contexts: &[Context::Expression] },
-    Template { name: "void", description: "Function returning nothing", value: "fun $NAME$($PARAMS$) {\n$END$\n}", vars: &[Var { name: "NAME", default: "", stop: true, copy_of: None }, Var { name: "PARAMS", default: "", stop: true, copy_of: None }], contexts: &[Context::Class, Context::Statement, Context::TopLevel] },
-    Template { name: "fun0", description: "Function with no parameters", value: "fun $NAME$() : $RETURN$ {\n$END$\n}", vars: &[Var { name: "NAME", default: "", stop: true, copy_of: None }, Var { name: "RETURN", default: "Unit", stop: true, copy_of: None }], contexts: &[Context::Class, Context::Statement, Context::TopLevel] },
-    Template { name: "fun1", description: "Function with one parameter", value: "fun $NAME$($PARAM1$ : $PARAM1TYPE$) : $RETURN$ {\n$END$\n}", vars: &[Var { name: "NAME", default: "", stop: true, copy_of: None }, Var { name: "PARAM1", default: "x", stop: true, copy_of: None }, Var { name: "PARAM1TYPE", default: "Any", stop: true, copy_of: None }, Var { name: "RETURN", default: "Unit", stop: true, copy_of: None }], contexts: &[Context::Class, Context::Statement, Context::TopLevel] },
-    Template { name: "fun2", description: "Function with two parameters", value: "fun $NAME$($PARAM1$ : $PARAM1TYPE$, $PARAM2$ : $PARAM2TYPE$) : $RETURN$ {\n$END$\n}", vars: &[Var { name: "NAME", default: "", stop: true, copy_of: None }, Var { name: "PARAM1", default: "x", stop: true, copy_of: None }, Var { name: "PARAM1TYPE", default: "Any", stop: true, copy_of: None }, Var { name: "PARAM2", default: "y", stop: true, copy_of: None }, Var { name: "PARAM2TYPE", default: "Any", stop: true, copy_of: None }, Var { name: "RETURN", default: "Unit", stop: true, copy_of: None }], contexts: &[Context::Class, Context::Statement, Context::TopLevel] },
-    Template { name: "interface", description: "Interface", value: "interface $NAME$ {\n$END$\n}", vars: &[Var { name: "NAME", default: "", stop: true, copy_of: None }], contexts: &[Context::Class, Context::Statement, Context::TopLevel] },
-    Template { name: "singleton", description: "Singleton", value: "object $NAME$ {\n$END$\n}", vars: &[Var { name: "NAME", default: "", stop: true, copy_of: None }], contexts: &[Context::Class, Context::Statement, Context::TopLevel] },
-    Template { name: "closure", description: "Closure (function without name)", value: "{$PARAM$ -> $PARAM_COPY$}", vars: &[Var { name: "PARAM", default: "x", stop: true, copy_of: None }, Var { name: "PARAM_COPY", default: "", stop: false, copy_of: Some("PARAM") }], contexts: &[Context::Expression, Context::Statement] },
-    Template { name: "anonymous", description: "Anonymous class", value: "object : $SUPERTYPE$ {\n$END$\n}", vars: &[Var { name: "SUPERTYPE", default: "Object", stop: true, copy_of: None }], contexts: &[Context::Expression, Context::Statement] },
-    Template { name: "exfun", description: "Extension function", value: "fun $RECEIVER$.$NAME$($PARAMS$) : $RETURN$ {\n$END$\n}", vars: &[Var { name: "RECEIVER", default: "Any", stop: true, copy_of: None }, Var { name: "NAME", default: "f", stop: true, copy_of: None }, Var { name: "PARAMS", default: "", stop: true, copy_of: None }, Var { name: "RETURN", default: "Unit", stop: true, copy_of: None }], contexts: &[Context::Class, Context::TopLevel] },
-    Template { name: "exval", description: "Extension read-only property", value: "val $RECEIVER$.$NAME$ : $TYPE$\nget() {\n$END$\n}", vars: &[Var { name: "RECEIVER", default: "Any", stop: true, copy_of: None }, Var { name: "NAME", default: "v", stop: true, copy_of: None }, Var { name: "TYPE", default: "Any", stop: true, copy_of: None }], contexts: &[Context::Class, Context::TopLevel] },
-    Template { name: "exvar", description: "Extension read-write property", value: "var $RECEIVER$.$NAME$ : $TYPE$\nget() {\n$END$\n}\nset(value) {\n \n}", vars: &[Var { name: "RECEIVER", default: "Any", stop: true, copy_of: None }, Var { name: "NAME", default: "v", stop: true, copy_of: None }, Var { name: "TYPE", default: "Any", stop: true, copy_of: None }], contexts: &[Context::Class, Context::TopLevel] },
-    Template { name: "psvm", description: "main() function", value: "fun main($ARGS$) {\n  $END$\n}", vars: &[Var { name: "ARGS", default: "", stop: false, copy_of: None }], contexts: &[Context::TopLevel] },
-    Template { name: "psvma", description: "main(args) function", value: "fun main(args: Array<String>) {\n  $END$\n}", vars: &[], contexts: &[Context::TopLevel] },
-    Template { name: "psvmo", description: "main(args) function", value: "@JvmStatic\nfun main(args: Array<String>) {\n  $END$\n}", vars: &[], contexts: &[Context::Object] },
-    Template { name: "object", description: "Anonymous class", value: "object : $SUPERTYPE$ {\n$END$\n}", vars: &[Var { name: "SUPERTYPE", default: "Object", stop: true, copy_of: None }], contexts: &[Context::Expression, Context::Statement] },
+    Template { name: s("main"), description: s("main() function"), value: s("fun main($ARGS$) {\n  $END$\n}"), vars: Cow::Borrowed(&[Var { name: s("ARGS"), default: s(""), stop: false, copy_of: None }]), contexts: Cow::Borrowed(&[Context::TopLevel]) },
+    Template { name: s("maina"), description: s("main(args) function"), value: s("fun main(args: Array<String>) {\n  $END$\n}"), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::TopLevel]) },
+    Template { name: s("maino"), description: s("main(args) function"), value: s("@JvmStatic\nfun main(args: Array<String>) {\n  $END$\n}"), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Object]) },
+    Template { name: s("sout"), description: s("Prints a string to System.out"), value: s("println($END$)"), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("serr"), description: s("Prints a string to System.err"), value: s("System.err.println($END$)"), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("soutv"), description: s("Prints a value to System.out"), value: s("println(\"$EXPR_COPY$ = $DOLLAR${$EXPR$}\")"), vars: Cow::Borrowed(&[Var { name: s("DOLLAR"), default: s("$"), stop: false, copy_of: None }, Var { name: s("EXPR"), default: s("expr"), stop: true, copy_of: None }, Var { name: s("EXPR_COPY"), default: s(""), stop: false, copy_of: Some(s("EXPR")) }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("iter"), description: s("Iterate over elements of iterable (for-in loop)"), value: s("for ($VAR$ in $ITERABLE$) {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("ITERABLE"), default: s("iterable"), stop: true, copy_of: None }, Var { name: s("VAR"), default: s("i"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("ifn"), description: s("Inserts 'if null' expression"), value: s("if ($VAR$ == null) {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("VAR"), default: s("i"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Expression]) },
+    Template { name: s("inn"), description: s("Inserts 'if not null' expression"), value: s("if ($VAR$ != null) {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("VAR"), default: s("i"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Expression]) },
+    Template { name: s("void"), description: s("Function returning nothing"), value: s("fun $NAME$($PARAMS$) {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("NAME"), default: s(""), stop: true, copy_of: None }, Var { name: s("PARAMS"), default: s(""), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Class, Context::Statement, Context::TopLevel]) },
+    Template { name: s("fun0"), description: s("Function with no parameters"), value: s("fun $NAME$() : $RETURN$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("NAME"), default: s(""), stop: true, copy_of: None }, Var { name: s("RETURN"), default: s("Unit"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Class, Context::Statement, Context::TopLevel]) },
+    Template { name: s("fun1"), description: s("Function with one parameter"), value: s("fun $NAME$($PARAM1$ : $PARAM1TYPE$) : $RETURN$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("NAME"), default: s(""), stop: true, copy_of: None }, Var { name: s("PARAM1"), default: s("x"), stop: true, copy_of: None }, Var { name: s("PARAM1TYPE"), default: s("Any"), stop: true, copy_of: None }, Var { name: s("RETURN"), default: s("Unit"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Class, Context::Statement, Context::TopLevel]) },
+    Template { name: s("fun2"), description: s("Function with two parameters"), value: s("fun $NAME$($PARAM1$ : $PARAM1TYPE$, $PARAM2$ : $PARAM2TYPE$) : $RETURN$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("NAME"), default: s(""), stop: true, copy_of: None }, Var { name: s("PARAM1"), default: s("x"), stop: true, copy_of: None }, Var { name: s("PARAM1TYPE"), default: s("Any"), stop: true, copy_of: None }, Var { name: s("PARAM2"), default: s("y"), stop: true, copy_of: None }, Var { name: s("PARAM2TYPE"), default: s("Any"), stop: true, copy_of: None }, Var { name: s("RETURN"), default: s("Unit"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Class, Context::Statement, Context::TopLevel]) },
+    Template { name: s("interface"), description: s("Interface"), value: s("interface $NAME$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("NAME"), default: s(""), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Class, Context::Statement, Context::TopLevel]) },
+    Template { name: s("singleton"), description: s("Singleton"), value: s("object $NAME$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("NAME"), default: s(""), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Class, Context::Statement, Context::TopLevel]) },
+    Template { name: s("closure"), description: s("Closure (function without name)"), value: s("{$PARAM$ -> $PARAM_COPY$}"), vars: Cow::Borrowed(&[Var { name: s("PARAM"), default: s("x"), stop: true, copy_of: None }, Var { name: s("PARAM_COPY"), default: s(""), stop: false, copy_of: Some(s("PARAM")) }]), contexts: Cow::Borrowed(&[Context::Expression, Context::Statement]) },
+    Template { name: s("anonymous"), description: s("Anonymous class"), value: s("object : $SUPERTYPE$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("SUPERTYPE"), default: s("Object"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Expression, Context::Statement]) },
+    Template { name: s("exfun"), description: s("Extension function"), value: s("fun $RECEIVER$.$NAME$($PARAMS$) : $RETURN$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("RECEIVER"), default: s("Any"), stop: true, copy_of: None }, Var { name: s("NAME"), default: s("f"), stop: true, copy_of: None }, Var { name: s("PARAMS"), default: s(""), stop: true, copy_of: None }, Var { name: s("RETURN"), default: s("Unit"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Class, Context::TopLevel]) },
+    Template { name: s("exval"), description: s("Extension read-only property"), value: s("val $RECEIVER$.$NAME$ : $TYPE$\nget() {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("RECEIVER"), default: s("Any"), stop: true, copy_of: None }, Var { name: s("NAME"), default: s("v"), stop: true, copy_of: None }, Var { name: s("TYPE"), default: s("Any"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Class, Context::TopLevel]) },
+    Template { name: s("exvar"), description: s("Extension read-write property"), value: s("var $RECEIVER$.$NAME$ : $TYPE$\nget() {\n$END$\n}\nset(value) {\n \n}"), vars: Cow::Borrowed(&[Var { name: s("RECEIVER"), default: s("Any"), stop: true, copy_of: None }, Var { name: s("NAME"), default: s("v"), stop: true, copy_of: None }, Var { name: s("TYPE"), default: s("Any"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Class, Context::TopLevel]) },
+    Template { name: s("psvm"), description: s("main() function"), value: s("fun main($ARGS$) {\n  $END$\n}"), vars: Cow::Borrowed(&[Var { name: s("ARGS"), default: s(""), stop: false, copy_of: None }]), contexts: Cow::Borrowed(&[Context::TopLevel]) },
+    Template { name: s("psvma"), description: s("main(args) function"), value: s("fun main(args: Array<String>) {\n  $END$\n}"), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::TopLevel]) },
+    Template { name: s("psvmo"), description: s("main(args) function"), value: s("@JvmStatic\nfun main(args: Array<String>) {\n  $END$\n}"), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Object]) },
+    Template { name: s("object"), description: s("Anonymous class"), value: s("object : $SUPERTYPE$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("SUPERTYPE"), default: s("Object"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Expression, Context::Statement]) },
 ];
 const JAVA: &[Template] = &[
-    Template { name: "sout", description: "Prints a string to System.out", value: "System.out.println($END$);", vars: &[], contexts: &[Context::Statement] },
-    Template { name: "serr", description: "Prints a string to System.err", value: "System.err.println($END$);", vars: &[], contexts: &[Context::Statement] },
-    Template { name: "souf", description: "Prints a formatted string to System.out", value: "System.out.printf(\"$END$\");", vars: &[], contexts: &[Context::Statement] },
-    Template { name: "soutv", description: "Prints a value to System.out", value: "System.out.println(\"$EXPR_COPY$ = \" + $EXPR$);", vars: &[Var { name: "EXPR", default: "expr", stop: true, copy_of: None }, Var { name: "EXPR_COPY", default: "", stop: false, copy_of: Some("EXPR") }], contexts: &[Context::Statement] },
-    Template { name: "psvm", description: "main() method declaration", value: "public static void main(String[] args){\n  $END$\n}", vars: &[], contexts: &[Context::Class] },
-    Template { name: "fori", description: "Create iteration loop", value: "for(int $INDEX$ = 0; $INDEX$ < $LIMIT$; $INDEX$++) {\n  $END$\n}", vars: &[Var { name: "INDEX", default: "i", stop: true, copy_of: None }, Var { name: "LIMIT", default: "", stop: true, copy_of: None }], contexts: &[Context::Statement] },
-    Template { name: "itar", description: "Iterate elements of array", value: "for(int $INDEX$ = 0; $INDEX$ < $ARRAY$.length; $INDEX$++) {\n  $ELEMENT_TYPE$ $VAR$ = $ARRAY$[$INDEX$];\n  $END$\n}", vars: &[Var { name: "INDEX", default: "i", stop: true, copy_of: None }, Var { name: "ARRAY", default: "array", stop: true, copy_of: None }, Var { name: "ELEMENT_TYPE", default: "Object", stop: true, copy_of: None }, Var { name: "VAR", default: "o", stop: true, copy_of: None }], contexts: &[Context::Statement] },
-    Template { name: "iter", description: "Iterate Iterable or array", value: "for ($ELEMENT_TYPE$ $VAR$ : $ITERABLE_TYPE$) {\n  $END$\n}", vars: &[Var { name: "ITERABLE_TYPE", default: "iterable", stop: true, copy_of: None }, Var { name: "ELEMENT_TYPE", default: "Object", stop: true, copy_of: None }, Var { name: "VAR", default: "o", stop: true, copy_of: None }], contexts: &[Context::Statement] },
-    Template { name: "ifn", description: "Inserts 'if null' statement", value: "if ($VAR$ == null) {\n$END$\n}", vars: &[Var { name: "VAR", default: "var", stop: true, copy_of: None }], contexts: &[Context::Statement] },
-    Template { name: "inn", description: "Inserts 'if not null' statement", value: "if ($VAR$ != null) {\n$END$\n}", vars: &[Var { name: "VAR", default: "var", stop: true, copy_of: None }], contexts: &[Context::Statement] },
-    Template { name: "St", description: "String", value: "String ", vars: &[], contexts: &[Context::Class, Context::Statement] },
-    Template { name: "psf", description: "public static final", value: "public static final ", vars: &[], contexts: &[Context::Class] },
-    Template { name: "prsf", description: "private static final", value: "private static final ", vars: &[], contexts: &[Context::Class] },
-    Template { name: "psfi", description: "public static final int", value: "public static final int ", vars: &[], contexts: &[Context::Class] },
-    Template { name: "psfs", description: "public static final String", value: "public static final String ", vars: &[], contexts: &[Context::Class] },
-    Template { name: "thr", description: "throw new", value: "throw new ", vars: &[], contexts: &[Context::Statement] },
-    Template { name: "else-if", description: "Add else-if branch", value: "else if($CONDITION$){\n$END$\n} ", vars: &[Var { name: "CONDITION", default: "", stop: true, copy_of: None }], contexts: &[Context::Else] },
+    Template { name: s("sout"), description: s("Prints a string to System.out"), value: s("System.out.println($END$);"), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("serr"), description: s("Prints a string to System.err"), value: s("System.err.println($END$);"), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("souf"), description: s("Prints a formatted string to System.out"), value: s("System.out.printf(\"$END$\");"), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("soutv"), description: s("Prints a value to System.out"), value: s("System.out.println(\"$EXPR_COPY$ = \" + $EXPR$);"), vars: Cow::Borrowed(&[Var { name: s("EXPR"), default: s("expr"), stop: true, copy_of: None }, Var { name: s("EXPR_COPY"), default: s(""), stop: false, copy_of: Some(s("EXPR")) }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("psvm"), description: s("main() method declaration"), value: s("public static void main(String[] args){\n  $END$\n}"), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Class]) },
+    Template { name: s("fori"), description: s("Create iteration loop"), value: s("for(int $INDEX$ = 0; $INDEX$ < $LIMIT$; $INDEX$++) {\n  $END$\n}"), vars: Cow::Borrowed(&[Var { name: s("INDEX"), default: s("i"), stop: true, copy_of: None }, Var { name: s("LIMIT"), default: s(""), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("itar"), description: s("Iterate elements of array"), value: s("for(int $INDEX$ = 0; $INDEX$ < $ARRAY$.length; $INDEX$++) {\n  $ELEMENT_TYPE$ $VAR$ = $ARRAY$[$INDEX$];\n  $END$\n}"), vars: Cow::Borrowed(&[Var { name: s("INDEX"), default: s("i"), stop: true, copy_of: None }, Var { name: s("ARRAY"), default: s("array"), stop: true, copy_of: None }, Var { name: s("ELEMENT_TYPE"), default: s("Object"), stop: true, copy_of: None }, Var { name: s("VAR"), default: s("o"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("iter"), description: s("Iterate Iterable or array"), value: s("for ($ELEMENT_TYPE$ $VAR$ : $ITERABLE_TYPE$) {\n  $END$\n}"), vars: Cow::Borrowed(&[Var { name: s("ITERABLE_TYPE"), default: s("iterable"), stop: true, copy_of: None }, Var { name: s("ELEMENT_TYPE"), default: s("Object"), stop: true, copy_of: None }, Var { name: s("VAR"), default: s("o"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("ifn"), description: s("Inserts 'if null' statement"), value: s("if ($VAR$ == null) {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("VAR"), default: s("var"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("inn"), description: s("Inserts 'if not null' statement"), value: s("if ($VAR$ != null) {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("VAR"), default: s("var"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("St"), description: s("String"), value: s("String "), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Class, Context::Statement]) },
+    Template { name: s("psf"), description: s("public static final"), value: s("public static final "), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Class]) },
+    Template { name: s("prsf"), description: s("private static final"), value: s("private static final "), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Class]) },
+    Template { name: s("psfi"), description: s("public static final int"), value: s("public static final int "), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Class]) },
+    Template { name: s("psfs"), description: s("public static final String"), value: s("public static final String "), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Class]) },
+    Template { name: s("thr"), description: s("throw new"), value: s("throw new "), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("else-if"), description: s("Add else-if branch"), value: s("else if($CONDITION$){\n$END$\n} "), vars: Cow::Borrowed(&[Var { name: s("CONDITION"), default: s(""), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Else]) },
 ];
 
-/// The templates of a language: `kotlin` or Java.
-pub fn templates(kotlin: bool) -> &'static [Template] {
+/// The built-in templates of a language: `kotlin` or Java.
+pub fn builtin(kotlin: bool) -> &'static [Template] {
     if kotlin { KOTLIN } else { JAVA }
 }
 
+/// A template the person made (Settings › Editor › Live Templates, the
+/// "user" group, as IntelliJ's): its text's `$NAME$` variables are tab
+/// stops in order, a repeated one following the first; it applies in
+/// the Kotlin and Java contexts ticked.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct UserTemplate {
+    pub abbreviation: String,
+    #[serde(default)]
+    pub description: String,
+    pub text: String,
+    /// Default values by variable name.
+    #[serde(default)]
+    pub defaults: Vec<(String, String)>,
+    #[serde(default)]
+    pub kotlin: Vec<Context>,
+    #[serde(default)]
+    pub java: Vec<Context>,
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+}
+
+fn enabled() -> bool {
+    true
+}
+
+/// The `$NAME$` variables of a template's text in order, once each
+/// (`$END$` and `$SELECTION$` aside).
+pub fn variables(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find('$') {
+        let after = &rest[at + 1..];
+        let Some(close) = after.find('$') else { break };
+        let name = &after[..close];
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            rest = after;
+            continue;
+        }
+        if name != "END" && name != "SELECTION" && !out.iter().any(|n| n == name) {
+            out.push(name.to_owned());
+        }
+        rest = &after[close + 1..];
+    }
+    out
+}
+
+impl UserTemplate {
+    /// As a template of a language, when it applies in any of its contexts.
+    pub fn template(&self, kotlin: bool) -> Option<Template> {
+        let contexts = if kotlin { &self.kotlin } else { &self.java };
+        if !self.enabled || contexts.is_empty() || self.abbreviation.is_empty() {
+            return None;
+        }
+        let vars = variables(&self.text)
+            .into_iter()
+            .map(|name| {
+                let default = self.defaults.iter().find(|(n, _)| *n == name).map(|(_, d)| d.clone()).unwrap_or_default();
+                Var { name: Cow::Owned(name), default: Cow::Owned(default), stop: true, copy_of: None }
+            })
+            .collect::<Vec<_>>();
+        Some(Template {
+            name: Cow::Owned(self.abbreviation.clone()),
+            description: Cow::Owned(self.description.clone()),
+            value: Cow::Owned(self.text.clone()),
+            vars: Cow::Owned(vars),
+            contexts: Cow::Owned(contexts.clone()),
+        })
+    }
+}
+
+/// The person's templates and the built-in ones turned off
+/// (`Kotlin/sout`, `Java/fori`).
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CustomTemplates {
+    #[serde(default)]
+    pub user: Vec<UserTemplate>,
+    #[serde(default)]
+    pub disabled: Vec<String>,
+}
+
+impl CustomTemplates {
+    /// A built-in template's key in `disabled`.
+    pub fn key(kotlin: bool, name: &str) -> String {
+        format!("{}/{name}", if kotlin { "Kotlin" } else { "Java" })
+    }
+
+    pub fn is_enabled(&self, kotlin: bool, name: &str) -> bool {
+        !self.disabled.contains(&Self::key(kotlin, name))
+    }
+}
+
+static CUSTOM: RwLock<CustomTemplates> = RwLock::new(CustomTemplates { user: Vec::new(), disabled: Vec::new() });
+
+/// The templates settings, as saved: what the editor expands from now on.
+pub fn set_custom(custom: CustomTemplates) {
+    *CUSTOM.write().unwrap() = custom;
+}
+
+pub fn custom() -> CustomTemplates {
+    CUSTOM.read().unwrap().clone()
+}
+
+/// The templates of a language that are on: the person's first (one
+/// can take a built-in's abbreviation), then the built-in ones.
+pub fn templates(kotlin: bool) -> Vec<Template> {
+    templates_in(&CUSTOM.read().unwrap(), kotlin)
+}
+
+fn templates_in(custom: &CustomTemplates, kotlin: bool) -> Vec<Template> {
+    let mut out: Vec<Template> = custom.user.iter().filter_map(|u| u.template(kotlin)).collect();
+    out.extend(builtin(kotlin).iter().filter(|t| custom.is_enabled(kotlin, &t.name)).cloned());
+    out
+}
+
 /// The template an abbreviation expands to here.
-pub fn find(kotlin: bool, abbreviation: &str, contexts: &[Context]) -> Option<&'static Template> {
-    templates(kotlin).iter().find(|t| t.name == abbreviation && t.contexts.iter().any(|c| contexts.contains(c)))
+pub fn find(kotlin: bool, abbreviation: &str, contexts: &[Context]) -> Option<Template> {
+    templates(kotlin).into_iter().find(|t| t.name == abbreviation && t.contexts.iter().any(|c| contexts.contains(c)))
 }
 
 /// The templates code completion offers for the word typed before the
 /// caret, as IntelliJ's `LiveTemplateCompletionContributor`: those that
 /// apply here whose abbreviation starts with it (`so` → `sout`, `soutv`).
 /// Nothing for an empty word.
-pub fn completing(kotlin: bool, typed: &str, contexts: &[Context]) -> Vec<&'static Template> {
+pub fn completing(kotlin: bool, typed: &str, contexts: &[Context]) -> Vec<Template> {
     if typed.is_empty() {
         return Vec::new();
     }
-    templates(kotlin).iter().filter(|t| t.name.starts_with(typed) && t.contexts.iter().any(|c| contexts.contains(c))).collect()
+    let mut out: Vec<Template> = Vec::new();
+    for t in templates(kotlin) {
+        if t.name.starts_with(typed) && t.contexts.iter().any(|c| contexts.contains(c)) && !out.iter().any(|o| o.name == t.name) {
+            out.push(t);
+        }
+    }
+    out
 }
 
 /// Whether any template's abbreviation starts with the word: when none
@@ -135,8 +265,8 @@ pub struct Expansion {
 pub fn expand(template: &Template, indent: &str, unit: &str) -> Expansion {
     let value_of = |name: &str| -> &str {
         let var = template.vars.iter().find(|v| v.name == name);
-        let source = var.and_then(|v| v.copy_of).and_then(|c| template.vars.iter().find(|v| v.name == c));
-        source.or(var).map_or("", |v| v.default)
+        let source = var.and_then(|v| v.copy_of.as_deref()).and_then(|c| template.vars.iter().find(|v| v.name == c));
+        source.or(var).map_or("", |v| &v.default)
     };
     let mut out = String::new();
     let mut ranges: Vec<(&str, Range<usize>)> = Vec::new();
@@ -158,7 +288,7 @@ pub fn expand(template: &Template, indent: &str, unit: &str) -> Expansion {
             let after = &rest[at + 1..];
             let Some(close) = after.find('$') else { break };
             let name = &after[..close];
-            if name.is_empty() || !name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') {
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                 out.push_str(&rest[..at + 1]);
                 rest = after;
                 continue;
@@ -183,7 +313,7 @@ pub fn expand(template: &Template, indent: &str, unit: &str) -> Expansion {
         .iter()
         .filter(|v| v.stop)
         .map(|v| {
-            let copies: Vec<&str> = template.vars.iter().filter(|c| c.copy_of == Some(v.name)).map(|c| c.name).collect();
+            let copies: Vec<&str> = template.vars.iter().filter(|c| c.copy_of.as_deref() == Some(&*v.name)).map(|c| &*c.name).collect();
             ranges.iter().filter(|(n, _)| *n == v.name || copies.contains(n)).map(|(_, r)| r.clone()).collect()
         })
         .filter(|r: &Vec<Range<usize>>| !r.is_empty())
@@ -313,10 +443,10 @@ impl Session {
 mod tests {
     #[test]
     fn offers_templates_starting_with_the_word() {
-        let names = |typed, contexts: &[Context]| super::completing(true, typed, contexts).iter().map(|t| t.name).collect::<Vec<_>>();
+        let names = |typed, contexts: &[Context]| super::completing(true, typed, contexts).into_iter().map(|t| t.name.into_owned()).collect::<Vec<_>>();
         assert_eq!(names("so", &[Context::Statement]), ["sout", "soutv"]);
-        assert_eq!(names("sout", &[Context::Class]), Vec::<&str>::new());
-        assert_eq!(names("", &[Context::Statement]), Vec::<&str>::new());
+        assert!(names("sout", &[Context::Class]).is_empty());
+        assert!(names("", &[Context::Statement]).is_empty());
         assert!(super::any_starts_with(false, "fo"));
         assert!(!super::any_starts_with(false, "xyz"));
     }
@@ -324,7 +454,7 @@ mod tests {
     use super::*;
 
     fn template(kotlin: bool, name: &str) -> &'static Template {
-        templates(kotlin).iter().find(|t| t.name == name).unwrap()
+        builtin(kotlin).iter().find(|t| t.name == name).unwrap()
     }
 
     #[test]
@@ -343,7 +473,7 @@ mod tests {
         // EXPR with its escaped copy.
         assert_eq!(e.stops.len(), 1);
         assert_eq!(e.stops[0].len(), 2);
-        assert_eq!(find(true, "sout", &[Context::Statement, Context::Expression]).map(|t| t.value), Some("println($END$)"));
+        assert_eq!(find(true, "sout", &[Context::Statement, Context::Expression]).map(|t| t.value), Some(s("println($END$)")));
         assert!(find(true, "sout", &[Context::TopLevel]).is_none());
     }
 
@@ -377,6 +507,36 @@ mod tests {
         let mut moved = old.clone();
         moved.insert(0, 'x');
         assert_eq!(session.edited(&old, &moved, 1), None);
+    }
+
+    #[test]
+    fn the_persons_templates_come_first() {
+        let custom = CustomTemplates {
+            user: vec![UserTemplate {
+                abbreviation: "logd".into(),
+                description: "Log.d".into(),
+                text: "Log.d($TAG$, \"$MSG$: ${$MSG$}\")$END$".into(),
+                defaults: vec![("TAG".into(), "TAG".into())],
+                kotlin: vec![Context::Statement],
+                java: vec![],
+                enabled: true,
+            }],
+            disabled: vec![CustomTemplates::key(true, "sout")],
+        };
+        let kotlin = templates_in(&custom, true);
+        assert_eq!(kotlin[0].name, "logd");
+        assert!(!kotlin.iter().any(|t| t.name == "sout"));
+        assert!(templates_in(&custom, false).iter().any(|t| t.name == "sout"));
+        assert!(!templates_in(&custom, false).iter().any(|t| t.name == "logd"));
+        assert_eq!(variables(&custom.user[0].text), ["TAG", "MSG"]);
+        let e = expand(&kotlin[0], "", "    ");
+        assert_eq!(e.text, "Log.d(TAG, \": ${}\")");
+        // TAG, then MSG with its repeat.
+        assert_eq!(e.stops.len(), 2);
+        assert_eq!(e.stops[1].len(), 2);
+        assert_eq!(e.end, e.text.len());
+        let off = CustomTemplates { user: vec![UserTemplate { enabled: false, ..custom.user[0].clone() }], disabled: Vec::new() };
+        assert!(templates_in(&off, true).iter().all(|t| t.name != "logd"));
     }
 
     #[test]

@@ -73,6 +73,7 @@ fn main() {
         ui::keymap::init(cx);
         let settings = settings::Settings::load();
         settings.apply_git();
+        infra::template_store::load();
         ui::common::set_compact(settings.compact);
         cx.set_global(settings);
         let dark = std::env::var("JUNCTION_THEME").map(|t| t != "light").unwrap_or_else(|_| theme::effective_dark(cx));
