@@ -8,6 +8,7 @@
 use crate::domain::password_safe::PasswordSafe;
 
 /// The service the passwords are filed under.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const SERVICE: &str = "Junction Studio";
 
 pub struct SystemPasswordSafe;
