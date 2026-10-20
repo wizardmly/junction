@@ -938,6 +938,14 @@ impl DebugService {
         }))
     }
 
+    /// After an evaluation: one that assigned shows the Variables again,
+    /// with the new values.
+    pub fn evaluated(&mut self, text: &str, cx: &mut Context<Self>) {
+        if crate::domain::expression::assigns(text) {
+            self.reload_variables(true, cx);
+        }
+    }
+
     /// Remembers an evaluated expression, the latest first, as IntelliJ's
     /// history (20 of them).
     pub fn remember_evaluated(&mut self, text: &str) {
@@ -966,7 +974,8 @@ impl DebugService {
                 }
                 let Some(run) = this.run.as_mut() else { return };
                 run.variables.retain(|n| n.kind != NodeKind::Evaluation);
-                run.variables.insert(0, VarNode::expression(text, NodeKind::Evaluation, result));
+                run.variables.insert(0, VarNode::expression(text.clone(), NodeKind::Evaluation, result));
+                this.evaluated(&text, cx);
                 cx.notify();
             })
             .ok();

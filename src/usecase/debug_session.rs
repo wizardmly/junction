@@ -790,6 +790,27 @@ mod tests {
         fn array_element(&self, _: u64, _: usize) -> Result<Value, String> {
             Ok(Value::Null)
         }
+        fn new_instance(&self, _: u64, _: u64, _: u64, _: &[Value]) -> Result<Value, String> {
+            Err("not here".into())
+        }
+        fn interfaces(&self, _: u64) -> Result<Vec<u64>, String> {
+            Ok(Vec::new())
+        }
+        fn variable_type(&self, _: u64, _: &Frame, _: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn set_variable(&self, _: u64, _: &Frame, _: &str, _: &Value) -> Result<(), String> {
+            Err("not here".into())
+        }
+        fn field_type(&self, _: u64, _: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn set_field(&self, _: u64, _: Option<u64>, _: &str, _: &Value) -> Result<(), String> {
+            Err("not here".into())
+        }
+        fn set_array_element(&self, _: u64, _: usize, _: &Value) -> Result<(), String> {
+            Err("not here".into())
+        }
         fn next_events(&self, _: Duration) -> Result<Option<EventSet>, String> {
             Ok(self.events.lock().unwrap().pop_front())
         }

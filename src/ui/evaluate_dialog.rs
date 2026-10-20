@@ -59,6 +59,7 @@ impl EvaluateView {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
+                this.service.update(cx, |s, cx| s.evaluated(&text, cx));
                 this.evaluating = false;
                 // IntelliJ names the root "result".
                 let mut node = VarNode::expression("result".into(), NodeKind::Evaluation, result);

@@ -3,7 +3,9 @@
 //! literals, names (`x`, `this`), fields and properties (`p.x`,
 //! `list.size`), array elements (`a[i]`), method calls (`s.length()`,
 //! `Math.max(a, b)`), arithmetic, comparisons, `&&` `||` `!`, string
-//! concatenation and parentheses.
+//! concatenation, parentheses, object creation (`new Point(1, 2)`), casts
+//! (`(int) d`, `x as String`), `instanceof` / `is` and assignment
+//! (`x = 5`, `p.y = 0`, `a[i] = 1`).
 
 /// A parsed expression.
 #[derive(Clone, Debug, PartialEq)]
@@ -26,7 +28,18 @@ pub enum Expr {
     Call(Option<Box<Expr>>, String, Vec<Expr>),
     Unary(UnaryOp, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
+    /// `new Type(args)`: the type as written (`Point`, `java.util.ArrayList`).
+    New(String, Vec<Expr>),
+    /// `(Type) e`, Kotlin's `e as Type`.
+    Cast(String, Box<Expr>),
+    /// `e instanceof Type`, Kotlin's `e is Type` (`!is`: negated outside).
+    InstanceOf(Box<Expr>, String),
+    /// `target = value`: a local, a field or an array element.
+    Assign(Box<Expr>, Box<Expr>),
 }
+
+/// Java's primitive types, as casts name them, with their JNI letters.
+pub const PRIMITIVES: &[(&str, &str)] = &[("int", "I"), ("long", "J"), ("double", "D"), ("float", "F"), ("short", "S"), ("byte", "B"), ("char", "C"), ("boolean", "Z")];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnaryOp {
@@ -61,7 +74,7 @@ enum Tok {
     Op(&'static str),
 }
 
-const OPS: &[&str] = &["&&", "||", "==", "!=", "<=", ">=", "+", "-", "*", "/", "%", "<", ">", "!", "(", ")", "[", "]", ".", ",", "?"];
+const OPS: &[&str] = &["&&", "||", "==", "!=", "<=", ">=", "+", "-", "*", "/", "%", "<", ">", "!", "(", ")", "[", "]", ".", ",", "?", "="];
 
 fn lex(text: &str) -> Result<Vec<Tok>, String> {
     let chars: Vec<char> = text.chars().collect();
@@ -184,6 +197,18 @@ impl Parser {
         }
         let mut left = self.binary(level + 1)?;
         'more: loop {
+            // `instanceof` / `is` / `!is` bind as the comparisons.
+            if level == 3 {
+                if self.eat_word("instanceof") || self.eat_word("is") {
+                    left = Expr::InstanceOf(Box::new(left), self.type_name()?);
+                    continue 'more;
+                }
+                if matches!(self.peek(), Some(Tok::Op("!"))) && matches!(self.toks.get(self.at + 1), Some(Tok::Ident(w)) if w == "is") {
+                    self.at += 2;
+                    left = Expr::Unary(UnaryOp::Not, Box::new(Expr::InstanceOf(Box::new(left), self.type_name()?)));
+                    continue 'more;
+                }
+            }
             for (op, kind) in LEVELS[level] {
                 if self.eat(op) {
                     let right = self.binary(level + 1)?;
@@ -193,6 +218,80 @@ impl Parser {
             }
             return Ok(left);
         }
+    }
+
+    fn eat_word(&mut self, word: &str) -> bool {
+        if matches!(self.peek(), Some(Tok::Ident(w)) if w == word) {
+            self.at += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A type as written: `int`, `java.util.List`, `String[]`.
+    fn type_name(&mut self) -> Result<String, String> {
+        let Some(Tok::Ident(first)) = self.peek().cloned() else { return Err("Type expected".into()) };
+        self.at += 1;
+        let mut name = first;
+        while matches!(self.peek(), Some(Tok::Op("."))) && matches!(self.toks.get(self.at + 1), Some(Tok::Ident(_))) {
+            let Some(Tok::Ident(part)) = self.toks.get(self.at + 1).cloned() else { break };
+            self.at += 2;
+            name = format!("{name}.{part}");
+        }
+        while matches!(self.peek(), Some(Tok::Op("["))) && matches!(self.toks.get(self.at + 1), Some(Tok::Op("]"))) {
+            self.at += 2;
+            name.push_str("[]");
+        }
+        // Kotlin's nullable type reads as the type.
+        if matches!(self.peek(), Some(Tok::Op("?"))) && !matches!(self.toks.get(self.at + 1), Some(Tok::Op("."))) {
+            self.at += 1;
+        }
+        Ok(name)
+    }
+
+    /// `(Type) operand` ahead, as Java tells a cast from a parenthesized
+    /// expression: a type in parentheses followed by an operand (or, for a
+    /// primitive type, a sign).
+    fn cast_ahead(&self) -> bool {
+        let mut at = self.at;
+        let mut primitive = match self.toks.get(at) {
+            Some(Tok::Ident(w)) if !matches!(w.as_str(), "this" | "null" | "true" | "false" | "new") => PRIMITIVES.iter().any(|(p, _)| p == w),
+            _ => return false,
+        };
+        at += 1;
+        loop {
+            match (self.toks.get(at), self.toks.get(at + 1)) {
+                (Some(Tok::Op(".")), Some(Tok::Ident(_))) => {
+                    primitive = false;
+                    at += 2;
+                }
+                (Some(Tok::Op("[")), Some(Tok::Op("]"))) => at += 2,
+                _ => break,
+            }
+        }
+        if !matches!(self.toks.get(at), Some(Tok::Op(")"))) {
+            return false;
+        }
+        match self.toks.get(at + 1) {
+            Some(Tok::Ident(_) | Tok::Int(..) | Tok::Double(_) | Tok::Str(_) | Tok::Char(_)) => true,
+            Some(Tok::Op("(" | "!")) => true,
+            Some(Tok::Op("-" | "+")) => primitive,
+            _ => false,
+        }
+    }
+
+    /// The lowest level: an assignment (right to left), else a binary
+    /// expression.
+    fn expression(&mut self) -> Result<Expr, String> {
+        let target = self.binary(0)?;
+        if self.eat("=") {
+            if !matches!(target, Expr::Name(_) | Expr::Field(..) | Expr::Index(..)) {
+                return Err("Variable expected".into());
+            }
+            return Ok(Expr::Assign(Box::new(target), Box::new(self.expression()?)));
+        }
+        Ok(target)
     }
 
     fn unary(&mut self) -> Result<Expr, String> {
@@ -207,7 +306,13 @@ impl Parser {
         if self.eat("!") {
             return Ok(Expr::Unary(UnaryOp::Not, Box::new(self.unary()?)));
         }
-        self.postfix()
+        let mut e = self.postfix()?;
+        // Kotlin's `as` / `as?` binds tighter than `*`.
+        while self.eat_word("as") {
+            self.eat("?");
+            e = Expr::Cast(self.type_name()?, Box::new(e));
+        }
+        Ok(e)
     }
 
     fn args(&mut self) -> Result<Vec<Expr>, String> {
@@ -216,7 +321,7 @@ impl Parser {
             return Ok(args);
         }
         loop {
-            args.push(self.binary(0)?);
+            args.push(self.expression()?);
             if self.eat(")") {
                 return Ok(args);
             }
@@ -268,11 +373,24 @@ impl Parser {
                 "false" => Expr::Bool(false),
                 "null" => Expr::Null,
                 "this" => Expr::This,
+                "new" if matches!(self.peek(), Some(Tok::Ident(_))) => {
+                    let ty = self.type_name()?;
+                    if ty.ends_with("[]") || matches!(self.peek(), Some(Tok::Op("["))) {
+                        return Err("Array creation is not supported".into());
+                    }
+                    self.expect("(")?;
+                    Expr::New(ty, self.args()?)
+                }
                 _ if self.eat("(") => Expr::Call(None, word, self.args()?),
                 _ => Expr::Name(word),
             },
+            Tok::Op("(") if self.cast_ahead() => {
+                let ty = self.type_name()?;
+                self.expect(")")?;
+                Expr::Cast(ty, Box::new(self.unary()?))
+            }
             Tok::Op("(") => {
-                let e = self.binary(0)?;
+                let e = self.expression()?;
                 self.expect(")")?;
                 e
             }
@@ -288,12 +406,28 @@ pub fn parse(text: &str) -> Result<Expr, String> {
         return Err("Expression expected".into());
     }
     let mut parser = Parser { toks, at: 0 };
-    let e = parser.binary(0)?;
+    let e = parser.expression()?;
     match parser.peek() {
         None => Ok(e),
         Some(Tok::Op(op)) => Err(format!("Unexpected '{op}'")),
         Some(_) => Err("';' expected".into()),
     }
+}
+
+/// Whether an expression assigns something: the Variables view shows
+/// the new values after it.
+pub fn assigns(text: &str) -> bool {
+    fn walk(e: &Expr) -> bool {
+        match e {
+            Expr::Assign(..) => true,
+            Expr::Field(t, _) | Expr::Unary(_, t) | Expr::Cast(_, t) | Expr::InstanceOf(t, _) => walk(t),
+            Expr::Index(a, b) | Expr::Binary(_, a, b) => walk(a) || walk(b),
+            Expr::Call(t, _, args) => t.as_deref().is_some_and(walk) || args.iter().any(walk),
+            Expr::New(_, args) => args.iter().any(walk),
+            _ => false,
+        }
+    }
+    parse(text).is_ok_and(|e| walk(&e))
 }
 
 /// What Evaluate Expression (Alt+F8) starts with when nothing is
@@ -447,6 +581,27 @@ mod tests {
         assert_eq!(parse("1.5f").unwrap(), Expr::Double(1.5));
         assert_eq!(parse("1_000").unwrap(), Expr::Int(1000));
         assert_eq!(parse("null").unwrap(), Expr::Null);
+    }
+
+    #[test]
+    fn parses_new_casts_and_assignments() {
+        assert_eq!(parse("new java.util.ArrayList()").unwrap(), Expr::New("java.util.ArrayList".into(), vec![]));
+        assert_eq!(parse("new Point(1, x)").unwrap(), Expr::New("Point".into(), vec![Expr::Int(1), Expr::Name("x".into())]));
+        assert_eq!(parse("(int) d * 2").unwrap(), Expr::Binary(BinaryOp::Mul, Box::new(Expr::Cast("int".into(), name("d"))), Box::new(Expr::Int(2))));
+        assert_eq!(parse("(long) -1").unwrap(), Expr::Cast("long".into(), Box::new(Expr::Int(-1))));
+        assert_eq!(parse("(String) list.get(0)").unwrap(), Expr::Cast("String".into(), Box::new(Expr::Call(Some(name("list")), "get".into(), vec![Expr::Int(0)]))));
+        // Not casts: a parenthesized name before an operator.
+        assert_eq!(parse("(a) - b").unwrap(), Expr::Binary(BinaryOp::Sub, name("a"), name("b")));
+        assert_eq!(parse("(a)").unwrap(), Expr::Name("a".into()));
+        assert_eq!(parse("o as String?").unwrap(), Expr::Cast("String".into(), name("o")));
+        assert_eq!(parse("o instanceof java.util.List && o != null").unwrap().clone(), Expr::Binary(BinaryOp::And, Box::new(Expr::InstanceOf(name("o"), "java.util.List".into())), Box::new(Expr::Binary(BinaryOp::Ne, name("o"), Box::new(Expr::Null)))));
+        assert_eq!(parse("o !is String").unwrap(), Expr::Unary(UnaryOp::Not, Box::new(Expr::InstanceOf(name("o"), "String".into()))));
+        assert_eq!(parse("x = y = 3").unwrap(), Expr::Assign(name("x"), Box::new(Expr::Assign(name("y"), Box::new(Expr::Int(3))))));
+        assert_eq!(parse("p.y = 0").unwrap(), Expr::Assign(Box::new(Expr::Field(name("p"), "y".into())), Box::new(Expr::Int(0))));
+        assert_eq!(parse("a[i] == 1").unwrap(), Expr::Binary(BinaryOp::Eq, Box::new(Expr::Index(name("a"), name("i"))), Box::new(Expr::Int(1))));
+        assert_eq!(parse("1 = 2"), Err("Variable expected".into()));
+        assert!(assigns("f(x = 1)") && !assigns("x == 1"));
+        assert_eq!(parse("new int[3]"), Err("Array creation is not supported".into()));
     }
 
     #[test]
