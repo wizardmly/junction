@@ -1,8 +1,8 @@
 # Builds Junction Studio for Windows, Linux and macOS on every push to master and
-# publishes the files as the "latest" release, so the links never change. The
-# per-platform artifacts only carry the files to the release job, so they are
-# kept a day, and the run first deletes the artifacts earlier runs left: the
-# repository's artifact storage is limited, and a full one fails the uploads.
+# publishes the files as the "latest" release, so the links never change. Each
+# platform uploads its files straight to a draft release, which the last job
+# turns into "latest": release files don't count against the repository's
+# artifact storage, whose limit, once hit, failed every upload.
 name: Release build
 
 on:
@@ -12,27 +12,33 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: release-build
   cancel-in-progress: true
 
 jobs:
-  cleanup:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.draft.outputs.tag }}
     steps:
-      - name: Delete earlier runs' artifacts
+      - name: Create this build's draft release
+        id: draft
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh api --paginate "repos/$GH_REPO/actions/artifacts?per_page=100" \
-            --jq ".artifacts[] | select(.workflow_run.id != ${{ github.run_id }}) | .id" |
-            while read -r id; do gh api -X DELETE "repos/$GH_REPO/actions/artifacts/$id" || true; done
+          # Drafts that cancelled or failed builds left.
+          gh release list --limit 100 --json tagName,isDraft \
+            --jq '.[] | select(.isDraft and (.tagName | startswith("build-"))) | .tagName' |
+            while read -r old; do gh release delete "$old" --yes || true; done
+          tag="build-${{ github.run_id }}"
+          gh release create "$tag" --draft --target "$GITHUB_SHA" --title "Junction Studio (latest build)" --notes "Building ${GITHUB_SHA::7}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   windows:
-    needs: cleanup
+    needs: prepare
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,14 +51,14 @@ jobs:
           New-Item -ItemType Directory -Force 'dist/Junction Studio' | Out-Null
           Copy-Item target/release/junction.exe 'dist/Junction Studio/'
           Compress-Archive -Path 'dist/Junction Studio' -DestinationPath junction-windows-x64.zip -Force
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows
-          retention-days: 1
-          path: junction-windows-x64.zip
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" junction-windows-x64.zip --clobber
 
   linux:
-    needs: cleanup
+    needs: prepare
     # The oldest supported runner, so the binary runs on older glibc too.
     runs-on: ubuntu-22.04
     steps:
@@ -84,16 +90,14 @@ jobs:
           curl -sSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir Junction-x86_64.AppImage
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux
-          retention-days: 1
-          path: |
-            junction-linux-x64.tar.gz
-            Junction-x86_64.AppImage
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" junction-linux-x64.tar.gz Junction-x86_64.AppImage --clobber
 
   macos:
-    needs: cleanup
+    needs: prepare
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -132,29 +136,26 @@ jobs:
             [ $attempt = 5 ] && exit 1
             sleep $((attempt * 5))
           done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos
-          retention-days: 1
-          path: |
-            junction-macos-universal.dmg
-            junction-macos-universal.app.zip
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" junction-macos-universal.dmg junction-macos-universal.app.zip --clobber
 
   release:
-    needs: [windows, linux, macos]
+    needs: [prepare, windows, linux, macos]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: out
-          merge-multiple: true
-      - name: Publish the "latest" release
+      - name: Publish the draft as the "latest" release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          cd out
+          tag="${{ needs.prepare.outputs.tag }}"
+          mkdir out && cd out
+          gh release download "$tag"
           sha256sum * > SHA256SUMS.txt
+          gh release upload "$tag" SHA256SUMS.txt --clobber
           cat > ../notes.md <<NOTES
           Built from ${GITHUB_SHA::7}.
 
@@ -165,4 +166,4 @@ jobs:
           Checksums are in SHA256SUMS.txt.
           NOTES
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest * --target "$GITHUB_SHA" --title "Junction Studio (latest build)" --notes-file ../notes.md
+          gh release edit "$tag" --tag latest --target "$GITHUB_SHA" --notes-file ../notes.md --draft=false
