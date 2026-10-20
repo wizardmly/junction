@@ -397,6 +397,7 @@ impl Workspace {
         match event {
             TestServiceEvent::Show => self.tools.open(ToolWindow::Run),
             TestServiceEvent::Error { title, message } => window.push_notification(Notification::error(message.clone()).title(title.clone()), cx),
+            TestServiceEvent::Temporary(name) => self.run.update(cx, |r, cx| r.pick_test(name.clone(), cx)),
         }
         cx.notify();
     }

@@ -452,7 +452,8 @@ Linux 实测（容器访问不了 dl.google.com，androidx 和 AGP 用预先写�
 | JUnit XML 报告：跑完读本次写入的 XML，补上事件里没有的测试（仪器测试只有 XML） | ✅ |
 | 编译失败：错误交给编辑器标红（同 Make Project），弹 “Error running '…'” 通知 | ✅ |
 | Project 窗口右键运行测试（2026-10-20，照 IntelliJ 的 AllInPackage / AllInDirectory 生产者）：测试源集里的包目录 “Run / Debug 'Tests in 'com.example''”（单元测试 `--tests 'com.example.*'`，仪器测试用 runner 的 `package` 参数）；源集、源根、`src` 和模块目录 “Run / Debug 'Tests in 'app''”（整个模块，`src` 和模块目录只跑单元测试，且只在有单元测试时出现）；测试文件 “Run / Debug 'CalcTest'”。Linux 实测：右键 `test/java/demo` 运行得到 CalcTest 的结果树，Debug 在断点停下 | ✅ |
-| 运行配置下拉里的测试配置、覆盖率、测试历史 | ❌ 未做 |
+| 临时运行配置（2026-10-20，照 IntelliJ 的 temporary configurations）：从 gutter、Ctrl+Shift+F10 或 Project 窗口跑测试，会生成同名的临时配置（如 “CalcTest.adds”、“Tests in 'app'”），标题栏下拉自动选中它，排在应用配置之后、最新的在上，最多 5 个；选中时标题栏的 Run / Debug / Stop 和 Run 菜单作用于这个测试。Linux 实测：gutter 运行 CalcTest.adds 后下拉选中它，点 Run 重跑，点 Debug 在断点停下，Stop 结束 | ✅（不能保存成永久配置，重启后不保留） |
+| 覆盖率、测试历史 | ❌ 未做 |
 
 Linux 实测（Xvfb）：JDK 21 + Gradle 8.14 的纯 Java 多模块项目（`:core`，JUnit 4，通过 / 断言失败 / 异常 / `@Ignore` 各一个），未同步直接运行：
 - 打开 CalcTest.java，类上 ▶▶、三个 `@Test` 方法上 ▶；点类图标弹出 “Run 'CalcTest'  Ctrl+Shift+F10”，运行 `:core:test --tests com.example.calc.CalcTest`；

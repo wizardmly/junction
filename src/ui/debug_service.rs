@@ -538,6 +538,12 @@ impl DebugService {
         }, cx);
     }
 
+    /// Debug with a temporary test configuration selected in the toolbar.
+    pub fn debug_temporary(&mut self, name: String, cx: &mut Context<Self>) {
+        let n = name.clone();
+        self.debug_tests(name, move |port, cx| TestService::global(cx).update(cx, |s, cx| s.run_temporary(&n, Some(port), cx)), cx);
+    }
+
     /// Starts tests with their JVM waiting for the debugger on a free
     /// port (`start` says whether it did), and attaches.
     fn debug_tests(&mut self, name: String, start: impl FnOnce(u16, &mut Context<Self>) -> bool, cx: &mut Context<Self>) {

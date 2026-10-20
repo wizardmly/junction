@@ -18,6 +18,7 @@ use crate::infra::gradle::GradleBuild;
 use crate::settings::Settings;
 use crate::ui::device_manager::DeviceManager;
 use crate::ui::sync_service::{self, SyncService};
+use crate::ui::test_service::TestService;
 use crate::usecase::run_app::{self, ConsoleLine, RunOutcome};
 
 pub enum RunEvent {
@@ -76,6 +77,8 @@ pub struct RunService {
     devices: Entity<DeviceManager>,
     /// The picked configuration's module path ("build root|:app").
     config: Option<String>,
+    /// A temporary test configuration picked instead (its name).
+    test: Option<String>,
     pub build: Option<BuildLog>,
     pub console: Option<Console>,
     cancel: Arc<AtomicBool>,
@@ -90,7 +93,7 @@ impl EventEmitter<RunEvent> for RunService {}
 
 impl RunService {
     pub fn new(devices: Entity<DeviceManager>) -> Self {
-        Self { devices, config: None, build: None, console: None, cancel: Arc::default(), busy: false, receiver: None, _task: None }
+        Self { devices, config: None, test: None, build: None, console: None, cancel: Arc::default(), busy: false, receiver: None, _task: None }
     }
 
     /// The Build window's Clear All: its output text (the problems stay).
@@ -140,7 +143,29 @@ impl RunService {
 
     pub fn pick_configuration(&mut self, config: &RunConfiguration, cx: &mut Context<Self>) {
         self.config = Some(config_key(config));
+        self.test = None;
         cx.notify();
+    }
+
+    /// The temporary test configurations the dropdown lists after the
+    /// project's, oldest first.
+    pub fn test_configurations(&self, cx: &App) -> Vec<String> {
+        TestService::try_global(cx).map(|t| t.read(cx).temporary_names()).unwrap_or_default()
+    }
+
+    /// The picked temporary test configuration, while it still exists.
+    pub fn selected_test(&self, cx: &App) -> Option<String> {
+        self.test.clone().filter(|name| self.test_configurations(cx).contains(name))
+    }
+
+    pub fn pick_test(&mut self, name: String, cx: &mut Context<Self>) {
+        self.test = Some(name);
+        cx.notify();
+    }
+
+    /// What Run and Debug start: the picked configuration's name.
+    pub fn selected_name(&self, cx: &App) -> Option<String> {
+        self.selected_test(cx).or_else(|| self.configuration(cx).map(|c| c.name))
     }
 
     /// The devices a run can target: running ones, then the virtual
@@ -169,6 +194,11 @@ impl RunService {
     /// Something Stop can stop: a build, a launch or the app.
     pub fn can_stop(&self) -> bool {
         self.busy || self.console.as_ref().is_some_and(|c| c.active)
+    }
+
+    /// The toolbar's and Run menu's Stop: the app, or a test run.
+    pub fn can_stop_any(&self, cx: &App) -> bool {
+        self.can_stop() || TestService::try_global(cx).is_some_and(|t| t.read(cx).is_running())
     }
 
     /// Make Project: every module's selected variant.
@@ -242,6 +272,14 @@ impl RunService {
     }
 
     fn launch(&mut self, debug: bool, cx: &mut Context<Self>) {
+        if let Some(name) = self.selected_test(cx) {
+            if debug {
+                crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.debug_temporary(name, cx));
+            } else {
+                TestService::global(cx).update(cx, |t, cx| t.run_temporary(&name, None, cx));
+            }
+            return;
+        }
         if self.busy {
             self.stop(cx);
         }
@@ -343,6 +381,9 @@ impl RunService {
     /// Stop: cancels the build or launch, and stops the app.
     pub fn stop(&mut self, cx: &mut Context<Self>) {
         self.cancel.store(true, Ordering::Relaxed);
+        if let Some(tests) = TestService::try_global(cx).filter(|t| t.read(cx).is_running()) {
+            tests.update(cx, |t, cx| t.stop(cx));
+        }
         let Some(console) = self.console.as_mut().filter(|c| c.active) else { return };
         console.active = false;
         if let (Some(id), Some(adb)) = (console.application_id.clone(), self.devices.read(cx).adb()) {
