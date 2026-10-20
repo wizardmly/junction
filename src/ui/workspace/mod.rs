@@ -103,6 +103,7 @@ actions!(
         SyncProjectWithGradleFiles,
         MakeProject,
         GenerateSignedApk,
+        ProjectStructure,
         RunApp,
         DebugApp,
         StopApp,
@@ -191,6 +192,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("alt-f12", ToggleTerminalWindow, Some(CONTEXT)),
         // Android Studio's.
         KeyBinding::new("secondary-shift-o", SyncProjectWithGradleFiles, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-;" } else { "ctrl-alt-shift-s" }, ProjectStructure, Some(CONTEXT)),
         KeyBinding::new("secondary-f9", MakeProject, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "ctrl-r" } else { "shift-f10" }, RunApp, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "ctrl-d" } else { "shift-f9" }, DebugApp, Some(CONTEXT)),
@@ -992,6 +994,14 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleTerminalWindow, window, cx| this.shortcut_tool(ToolWindow::Terminal, window, cx)))
             .on_action(cx.listener(|_, _: &SyncProjectWithGradleFiles, _, cx| crate::ui::sync_service::SyncService::global(cx).update(cx, |s, cx| s.sync_all(cx))))
             .on_action(cx.listener(|this, _: &MakeProject, _, cx| this.run.update(cx, |r, cx| r.make_project(cx))))
+            .on_action(cx.listener(|_, _: &ProjectStructure, window, cx| {
+                let sync = crate::ui::sync_service::SyncService::global(cx);
+                let Some((root, modules)) = sync.read(cx).builds().first().cloned() else {
+                    window.push_notification(Notification::info("This project has no Gradle build, or it hasn't been synced.").title("Project Structure"), cx);
+                    return;
+                };
+                crate::ui::project_structure_dialog::open(root, modules, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &GenerateSignedApk, window, cx| {
                 let modules = crate::ui::signed_apk_dialog::application_modules(crate::ui::sync_service::SyncService::global(cx).read(cx).builds());
                 let store: std::rc::Rc<dyn crate::domain::signing::SigningStore> = std::rc::Rc::new(crate::infra::signing_store::JsonSigning);

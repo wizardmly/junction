@@ -427,7 +427,8 @@ Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 
 | 新版本警告（AS 的 GradleDependency 检查）：build 脚本的 `"g:a:v"` 和 `id("x") version "v"`、catalog 的版本（`[versions]` 和内联版本）有更新时黄色波浪线，提示 “A newer version of g:a than v is available: w”；稳定版只推荐稳定版，预览版可推荐更新的预览版；动态版本不提示 | ✅ |
 | Alt+Enter（Show Context Actions）：弹出所在行的快速修复，“Change to w” 直接改版本 | ✅（目前只有这一种修复） |
 | 版本来源：androidx、com.android、com.google.android、Firebase 等查 Google Maven，其他查 Maven Central，插件查 Gradle Plugin Portal；结果缓存在 `~/.cache/Junction/maven-versions/`，一天后重查，失败一小时后重试 | ✅ |
-| Project Structure 对话框、迁移到 version catalog、`buildSrc` 常量、Groovy 脚本里的 catalog 补全 | ❌ 未做 |
+| Project Structure 对话框（见第 61 节） | ✅ |
+| 迁移到 version catalog、`buildSrc` 常量、Groovy 脚本里的 catalog 补全 | ❌ 未做 |
 
 Linux 实测（容器访问不了 dl.google.com，androidx 和 AGP 用预先写入的缓存，其他是实际联网结果）：build.gradle.kts 里 Ctrl+B `libs.androidx.core.ktx` 跳到 toml 第 9 行；toml 里所有旧版本都有警告，Alt+Enter 选 “Change to 1.13.1” 后版本被替换；`version.ref` 跳到 `[versions]`；Alt+F7 列出 build 脚本里的用法；`libs.andr` → `androidx` → `core.` → `ktx` 逐段补全。截图：reports/Gradle文件辅助-2026-10-15/。
 
@@ -504,7 +505,7 @@ Linux 实测（Xvfb，JDK 21 + Gradle 8.14 的 calc 项目，未同步）：点�
 | General Settings（2026-10-20）：Gradle user home（设置后作为 `GRADLE_USER_HOME` 传给每次 Gradle 调用，空着时占位显示当前生效的目录）；Offline work（每次 Gradle 调用加 `--offline`，Sync 控制台第一行显示 “· offline”） | ✅ |
 | 每个构建的 Distribution（IntelliJ 的 “Gradle from”，2026-10-20）：Wrapper（显示 `gradle-wrapper.properties` 里 `distributionUrl` 的版本，如 “Wrapper (Gradle 8.14.3)”；没有 wrapper 时用 PATH 上的 gradle）或 Specified location（填 Gradle 安装目录，跑它的 `bin/gradle`，目录里没有时提示）；空着等于 Wrapper；Sync 控制台第一行显示 “· Gradle: /opt/gradle” | ✅ |
 | 修复（2026-10-20）：设置页改的 Gradle JDK 点 Apply / OK 后没有保存（应用设置时漏拷了这一项） | ✅ |
-| 修改 wrapper 的 Gradle 版本、Project Structure 对话框（SDK Location、AGP 版本等） | ❌ 未做 |
+| 修改 wrapper 的 Gradle 版本、Project Structure 对话框（SDK Location、AGP 版本等） | ✅（第 61 节） |
 
 Linux 实测：去掉 `JAVA_HOME`、PATH 中不含 `java` 启动（即用户截图里的情况），Sync Now 成功，自动用了 `/usr/lib/jvm` 里的 JDK 21；设置页显示 “Detect automatically: java-1.21.0-openjdk-amd64 (21.0.12.1)”，下拉里三个指向同一 JDK 的符号链接只列一次；把 Gradle JDK 设成 `JAVA_HOME`（未设置）后同步，弹出 “Invalid Gradle JDK configuration found / JAVA_HOME is not set and no 'java' command could be found in your PATH. / Open Gradle Settings”，点链接直达 Gradle 设置页。
 
@@ -1087,3 +1088,19 @@ Linux 实测（Xvfb，假 Android 工程 `droid`）：对话框能列出 app / r
 | AS 不调试时也能 Apply Changes（靠它自己的部署代理 `installer` / `agent.so` 换代码）；Junction 没有这个代理，所以没挂调试器时 Apply Changes 提示后重新安装并重启应用；Restart Activity 也不做（调试中只换代码） | ⚠️ 差异 |
 
 Linux 实测（Xvfb，Java + JUnit 4 工程）：在 `CalcTest.adds` 第 10 行断住（`first = 3` 已算出），把 `Calc.add` 改成 `a + b + 10` 并保存，浮条出现；点 Apply HotSwap 后显示 “Code has been reloaded”，控制台 “HotSwap: 1 class reloaded”；继续运行后测试输出 `first=3 second=13`。再给 `Calc` 加一个方法后 Apply，得到 “Operation not supported by VM: add method not implemented”，浮条回到 “Code changed:”。
+
+## 61. Project Structure 对话框（2026-10-20）
+
+代码：`src/domain/project_structure.rs`（从构建脚本 / version catalog / `gradle-wrapper.properties` / `local.properties` 读值、按原写法写回）、`src/usecase/project_structure.rs`（读取一个构建、把改动写回各文件）、`src/ui/project_structure_dialog.rs`。
+
+| 功能 | 状态 |
+|---|---|
+| File › Project Structure…（Ctrl+Alt+Shift+S，macOS ⌘;），左侧 SDK Location / Project / Modules 三页 | ✅ |
+| SDK Location：Android SDK location（`local.properties` 的 `sdk.dir`，按 AS 的转义写 `C\:\\Users\\…`；清空则删除该行），“…” 选目录 | ✅ |
+| Project：Android Gradle Plugin Version（根脚本的 `id("com.android.*") version`、`buildscript` 的 classpath、settings 脚本的 plugins、catalog 的 `[plugins]` 或其 `version.ref`，改动写到所有出现处）；Gradle Version（改 `distributionUrl` 里的版本） | ✅ |
+| Modules：模块列表，右侧 Properties（Compile Sdk Version、Build Tools Version、NDK Version、Source / Target Compatibility）和 Default Config（Application ID、Min / Target SDK Version、Version Code、Version Name）；Kotlin DSL 和 Groovy 都支持（`x = v`、`x v`、`x(v)`） | ✅ |
+| 写回保持原写法：数字、引号（单 / 双）、`JavaVersion.VERSION_1_8` 显示为 `1.8`；`libs.versions.minSdk.get().toInt()`（Groovy 的 `toInteger()`）显示 catalog 里的值，旁边标出 `libs.versions.minSdk`，改动写进 toml；其他表达式（`rootProject.ext.target`）灰显不可改；未写的属性显示 “Not set”（暂不能新增） | ✅ |
+| OK：校验（数字字段必须是整数，Java 版本只能是数字和点），出错时在对话框底部显示 “Version Code: 'x' is not a whole number.” 并保持打开；成功后写文件并自动 Sync | ✅ |
+| AS 的 Variants / Dependencies / Build Variants 页、Signing Configs、Suggestions，新增未写的属性 | ❌ 未做 |
+
+Linux 实测（Xvfb，两个模块的 Groovy 工程 + catalog）：三页显示正确（SDK `/opt/android-sdk`、AGP 8.5.0、Gradle 8.7，app 的 Min SDK 显示 24 和 `libs.versions.minSdk`，Target SDK 灰显 `rootProject.ext.target`）；lib 的 Compile Sdk 改 35、Gradle 改 8.9、app 的 Min SDK 改 26 后点 OK，`git diff` 只改了 `lib/build.gradle` 一处、`gradle-wrapper.properties` 的 URL 和 toml 的 `minSdk = "26"`；Version Code 填 `x` 时对话框不关闭并提示错误。
