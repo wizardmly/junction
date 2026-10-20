@@ -30,6 +30,9 @@ use crate::ui::console_view::{ConsoleEvent, ConsoleView};
 pub enum RunViewEvent {
     /// Open a file at a 0-based line and column.
     OpenFile { path: std::path::PathBuf, line: u32, col: u32 },
+    /// A failed assertion's two sides in the diff viewer (IntelliJ's
+    /// "<Click to see difference>").
+    Compare { name: String, expected: String, actual: String },
     Hide,
 }
 

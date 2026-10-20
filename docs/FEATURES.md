@@ -446,7 +446,8 @@ Linux 实测（容器访问不了 dl.google.com，androidx 和 AGP 用预先写�
 | 测试运行视图工具栏：Rerun、Rerun Failed Tests、Stop、Show Passed、Show Ignored、Sort Alphabetically、Sort by Duration、Expand All、Collapse All | ✅ |
 | 状态行（IntelliJ 文案和配色）：“1 test failed, 2 passed, 1 ignored” + 灰色 “4 tests total, 25 ms”；运行中显示进度；停止时 “Stopped. … 1 / 3 tests”；编译失败 “Test events were not received” | ✅ |
 | 结果树：Test Results › 测试类 › 测试，结果图标和时长（IntelliJ 的窄格式 “1 sec 234 ms”）；类可折叠；双击跳到源码 | ✅ |
-| 右侧控制台：根节点显示 Gradle 输出，类节点显示类的输出和各测试的输出 / 失败，测试节点显示它的 stdout / stderr、断言两侧（“Expected :4 / Actual :5”）和堆栈 | ✅（AS 的 `<Click to see difference>` 对比窗口未做） |
+| 右侧控制台：根节点显示 Gradle 输出，类节点显示类的输出和各测试的输出 / 失败，测试节点显示它的 stdout / stderr、断言两侧（“Expected :4 / Actual :5”）和堆栈 | ✅ |
+| 断言两侧下方的 `<Click to see difference>` 链接（2026-10-20，照 IntelliJ）：点击在对比窗口打开 Expected / Actual 两段文本（标签页名 “CalcTest.adds (Expected vs Actual)”，只读）。Linux 实测 `assertEquals(3, first)` 打开 3 对 13 的对比 | ✅ |
 | JUnit XML 报告：跑完读本次写入的 XML，补上事件里没有的测试（仪器测试只有 XML） | ✅ |
 | 编译失败：错误交给编辑器标红（同 Make Project），弹 “Error running '…'” 通知 | ✅ |
 | Project 窗口右键运行测试（2026-10-20，照 IntelliJ 的 AllInPackage / AllInDirectory 生产者）：测试源集里的包目录 “Run / Debug 'Tests in 'com.example''”（单元测试 `--tests 'com.example.*'`，仪器测试用 runner 的 `package` 参数）；源集、源根、`src` 和模块目录 “Run / Debug 'Tests in 'app''”（整个模块，`src` 和模块目录只跑单元测试，且只在有单元测试时出现）；测试文件 “Run / Debug 'CalcTest'”。Linux 实测：右键 `test/java/demo` 运行得到 CalcTest 的结果树，Debug 在断点停下 | ✅ |

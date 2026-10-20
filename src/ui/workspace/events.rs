@@ -472,6 +472,16 @@ impl Workspace {
                 };
                 self.open_at(path, *line, *col, window, cx);
             }
+            RunViewEvent::Compare { name, expected, actual } => {
+                let source = crate::ui::diff_view::DiffSource::Texts {
+                    path: name.clone(),
+                    old: expected.clone(),
+                    new: actual.clone(),
+                    old_title: "Expected".into(),
+                    new_title: "Actual".into(),
+                };
+                self.open_diff(source, cx);
+            }
             RunViewEvent::Hide => {
                 self.tools.hide(tool);
                 cx.notify();
