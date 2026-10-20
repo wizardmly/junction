@@ -2,7 +2,7 @@
 
 写给接手这个仓库继续开发的人或 AI。读完这一份，再按需看 [docs/FEATURES.md](docs/FEATURES.md)（逐项功能状态）和 [docs/DIFF_MERGE.md](docs/DIFF_MERGE.md)（Diff/Merge 规格），就能接着做。
 
-最后更新：2026-10-15，对应 master `8fabe1f`。
+最后更新：2026-10-20，对应 master `cdf5451`。
 
 ---
 
@@ -42,8 +42,9 @@
 
 - 2026-10-09 做过一次全量回归（358 项对照 AS），之后全部修复并复测：旧问题 127/135 通过，0 崩溃。
 - 2026-10-12 做过一次“所有右键菜单 / 弹出菜单 / 主菜单每一项”的回归：首轮 518 项通过、42 个问题，已全部修复并复测两轮。
-- `cargo test` 当前约 196 个单元测试（另有若干 `#[ignore]` 的基准和探针）。
-- 绝大多数功能**只在 Linux（Xvfb）下测过**。Windows 上验证过的：启动、任务栏点击最小化、旧索引缓存崩溃修复、Device Manager 的 Wi-Fi 自动连接。macOS 基本未在真机验证。
+- `cargo test` 当前 438 个单元测试通过（另有 15 个 `#[ignore]` 的基准、探针和需要外部工具的测试，如调用 keytool 的 `creates_a_keystore`）。
+- 绝大多数功能**只在 Linux（Xvfb）下测过**。Windows 上验证过的：启动、任务栏点击最小化、旧索引缓存崩溃修复、Device Manager 的 Wi-Fi 自动连接，以及维护者在 Windows 11（10.0.26200，Gradle JDK 用 AS 自带的 JBR 21.0.9）上编译 mytv-android 的 APK。macOS 基本未在真机验证。
+- CI 每次推分支都在 `windows-latest` 上跑一次 `cargo check --release`，只在 Windows 下编译的代码（`#[cfg(windows)]`）在合并前就能发现编译错误，但不等于在 Windows 上跑过。
 
 ## 3. 怎么编译、运行、测试
 
@@ -65,6 +66,11 @@ cargo test                               # 单元测试
 ### 发布
 
 `.github/workflows/release.yml`：**每次推送到 master** 自动编译 Windows zip、Linux tar.gz + AppImage、macOS universal .dmg + .app.zip（ad-hoc 签名，未公证），并替换 Release [`latest`](https://github.com/wizardmly/junction/releases/tag/latest)。所以推 master 就是发版，推之前务必确保能编译、测试通过。macOS runner 上 `hdiutil` 偶尔报 “Resource busy”，脚本里已有重试。
+
+- **发布不用 Actions 构件**（2026-10-20 起）：`prepare` 先建草稿 Release `build-<run id>`（顺手删掉被取消 / 失败的运行留下的 `build-*` 草稿），三个平台编译完用 `gh release upload --clobber` 直接传到草稿，最后的 `release` 任务下载全部文件、加 `SHA256SUMS.txt`，删掉旧的 `latest`，再把草稿改成 `latest` 发布。原因：以前用 `upload-artifact` 中转，构件默认留 90 天，加上 CI 每次推送的 `linux-ci` 构件，仓库的构件存储额度被占满（6.6 GB），10-19 / 10-20 两次发版在上传那步失败、什么也没发布。GitHub 每 6–12 小时才重算一次用量，删了构件也不会马上恢复。**不要再在发布流程里用构件中转。**
+- `.github/workflows/ci.yml`：分支和 PR 上跑 Linux 编译（数警告）+ 单元测试，Windows `cargo check`；`linux-ci` 构件只留 1 天，上传失败（额度满）不算 CI 失败。
+- **提交流程**：AI 会话在分支 `claude/testing-tool-window-j0gvx7` 上开发、推送，CI 绿了以后提 PR 到 master，由维护者合并（合并即发版）。合并后把分支重置到最新 master（`git checkout -B <分支> origin/master`）再继续，不要在已合并的历史上叠提交。
+- 仓库里的 `.claude/settings.json` 允许 Claude Code 会话执行 `git push origin *:master`（维护者 2026-10-18 加的，从新开的会话起生效）。有了它，做完一项、CI 通过就可以直接推 master，不必再走 PR；AI 不能自己修改这个文件（会被当成给自己放权而拦下）。
 
 ### 在无界面环境下看 UI
 
@@ -101,6 +107,8 @@ JUNCTION_PROBE=<repo> cargo test probe_project -- --ignored --nocapture   # 也�
 ### 测试 Android 功能（没有真机）
 
 用一个假的 `adb` 脚本（放在 PATH 前面）模拟 `adb devices`、`shell` 输出、`mdns services` 等；Running Devices 用一个假的 scrcpy 服务端（Python 脚本推送 ffmpeg 生成的 H.264 流并记录控制消息）。Device Explorer 的 Processes 需要假 adb 带一个 JDWP 服务端。
+
+容器里没有 Android SDK，AGP 构建跑不起来。模块类型是从 build 脚本文本判断的，所以一个只有 `settings.gradle.kts`（`include(":app")`）和 `app/build.gradle.kts`（`plugins { id("com.android.application") }`、`buildTypes { release { } }`）的假工程就能让 Run 配置、Build Variants、Generate Signed Bundle / APK 对话框认出 app 模块；要验证传给 Gradle 的参数，把 app 的 build 脚本临时换成一个注册同名任务（如 `assembleRelease`）并打印 `providers.gradleProperty(...)` 的脚本。
 
 ## 4. 代码结构
 
@@ -154,6 +162,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 - 导航历史（Back / Forward、Recent Files、Recent Locations 的位置和代码片段）是 `domain::navigation_history`，编辑器会话的数据是 `domain::editor_session`，`ui/workspace/session.rs` 只做组装。
 - 读文件不要放在 UI 线程：Call Hierarchy 的分组和读文件在 `index::call_hierarchy::group_by_function`，由 `CodeIndex::callers_of` / `callees_of` 在后台做；Recent Locations 在后台读没打开的文件。
 - 所有端口都在 `domain`（`ResFiles` 也已移过去），`infra` 只依赖 `domain`（测试除外），由 `arch_tests` 检查。
+- 2026-10-17 之后新加的：`domain::signing`（签名请求、校验、`SigningStore` 记住 keystore 路径和别名、`KeyTool` 新建 keystore；实现 `infra::signing_store::JsonSigning`、`infra::keytool::JdkKeyTool`），`domain::ansi`（控制台 ANSI 解码），`usecase::project_edits`（在其他 Kotlin / Java 文件里找并统一改写，Inline Property 用），`domain::run::TaskRunner::run_tasks` 多了 Gradle 属性参数（`-Pname=value`）。UI 需要的端口实现在组装处（`ui/workspace/mod.rs` 的 action 处理）创建后传进去，UI 组件本身不直接调 `infra`。
 - 还没迁移的旧依赖（新代码不要照抄）：`index/service.rs`、`index/libraries.rs` 直接调用 `infra::gradle_sync`、`infra::catalog_files`、`usecase::android_resources`；部分 UI（断点、Gradle 下载）直接调用 `infra` 的存储函数。行为不确定时查源码：编辑器、补全、Problems、Local History、测试、Debugger 看 intellij-community；Logcat、Build/Run、Gradle Sync、资源、设备相关看 AOSP `platform/tools/adt/idea`（都是 Apache 2.0）。
 
 ### 需要知道的约定和坑
@@ -171,6 +180,10 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 - **Running Devices 输入**：非 ASCII 文字（中文等）由 `assets/text-input` 里的小程序以 shell 身份通过 UiAutomation 直接写进焦点输入框；失败时退回 Gboard Unicode 组合输入，再不行就丢弃并通知。**绝对不要用剪贴板粘贴**（会弹系统提示，明确不接受）。手机上如果有其他程序占着 UiAutomation（例如 Maestro、其他 instrumentation），小程序起不来，通知里会列出占用者。
 - **设置和日志**：Linux `~/.config/Junction/settings.conf`；Windows `%APPDATA%\Junction\`，启动崩溃看 `stderr.log`（内存分配失败、panic），`crash.log` 只记 SEH 异常。
 - 编译警告基线：约 9 个已有的 dead-code 警告，改动不要新增警告。
+- **Windows 上运行 Gradle**：直接 `Command::new("gradlew.bat")`，不要再套 `cmd /C`。Rust 标准库会按 cmd 的规则给 .bat 的参数转义，签名密码里的 `&`、`^`、`%`、引号才能原样传到 Gradle。Gradle 不认名字里带点的 `ORG_GRADLE_PROJECT_*` 环境变量，所以签名属性只能走 `-P`（AS 也是这样）。
+- **缺 DLL 的诊断**：`main.rs` 启动时 `SetErrorMode(SEM_FAILCRITICALERRORS)`，子进程继承，缺 DLL 的程序不再弹系统框而是以 0xC0000135 退出；`domain::build::missing_dll` 认出 Gradle 输出里的这个退出码并说明是哪个程序。每次构建的第二行写 Gradle JDK 和 Windows 版本（`infra::gradle::environment`）。维护者报过的 `api-ms-win-eventing-consumer-l1-1-0.dll` 弹框：已排查 junction.exe、aapt2、platform-tools、Temurin 17/21、JBR 21.0.8/21.0.9、Gradle 8.11 的原生库，都不依赖它；加了上面的诊断后，维护者贴出的一次 release 构建输出里没有缺 DLL 的提示（那次构建因签名文件不存在失败）；弹框是否还会出现、是哪个程序，都还没确认。
+- **控制台**（`ui/console_view.rs`）：按滚动位置决定是否跟随新输出（vendor 编辑器加了 `scrolled_to_end`），往上滚就停住；插入文本前后要恢复滚动位置，否则编辑器会滚到光标处。Build / Run / Debug 走 `set_lines`（ANSI 解码、1 MB cycle buffer 在这里），Logcat 走 `sync`，有自己的缓冲区。
+- **Inline**（Ctrl+Alt+N）的顺序：局部变量（`index::inline`，只认函数体里的属性）→ 成员属性 / 字段（`index::inline_field`，没有类型解析，只跟随不会认错的引用，遇到 `other.x` 就拒绝）→ 函数（`index::inline_function`）。
 
 ### 环境变量
 
@@ -236,13 +249,13 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 
 12. Compose Preview / Layout Editor（依赖 layoutlib，成本极高，建议用投屏替代）。
 13. Profiler、Layout Inspector、App Inspection。
-14. Generate Signed APK/AAB、APK Analyzer、SDK Manager、Lint 视图。
+14. APK Analyzer、SDK Manager、Lint 视图。（Generate Signed Bundle / APK 已做，2026-10-18，FEATURES.md 第 59 节：注入 `android.injected.signing.*`，项目没带 keystore 也能出签名包；Create new… 用 keytool 新建 keystore。剩 Remember passwords、指定输出目录。）
 
 **内存实测（Linux 容器，软件渲染）**：Junction 打开一个 104 个 .kt 文件的 Android 项目约 241 MB；打开 junction 仓库（含 Cargo 依赖源码）首次建索引峰值 674 MB、约 20 秒，再次启动读缓存 396 MB、CPU 约 2 秒。作为对比，最小 Kotlin/JVM 项目的 Gradle Daemon 669 MB + Kotlin Compile Daemon 378 MB。结论：Rust 能省掉 IDE 自身的内存和启动扫描，但 Gradle Sync / 构建 / AS 级 Kotlin 语言服务本身是 JVM，省不掉，只能做到按需启动、少同步。
 
 ### 6.3 尚未在真机验证
 
-- Windows：Terminal（PowerShell / ConPTY）、Running Devices 和 Device Explorer 的完整流程、双击 Shift、大部分 2026-10-12 之后的功能。
+- Windows：Terminal（PowerShell / ConPTY）、Running Devices 和 Device Explorer 的完整流程、双击 Shift、大部分 2026-10-12 之后的功能。2026-10-17 之后只在 Windows 编译检查过、没在 Windows 上跑过的：直接运行 `gradlew.bat`（参数转义）、`SetErrorMode` 和缺 DLL 提示、`RtlGetVersion` 取系统版本（这一项维护者的构建输出里已经看到了）、keytool.exe 新建 keystore。
 - macOS：.app 能否正常运行、macOS keymap、打包脚本、符号链接路径下的多仓库行为。
 - 容器里测不了：跟随系统主题、GPG 密钥列表、原生文件选择框、外部修改后自动刷新。
 
@@ -258,6 +271,13 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 2026-10-11 | 多仓库与 AS 逐项对齐；实现/覆盖 gutter、Ctrl+点击全覆盖；第二轮性能优化；README 中英文与截图 |
 | 2026-10-12 | 菜单全量回归；Find / Terminal 工具窗口；树的选择行为；Device Manager、Running Devices、Device Explorer |
 | 2026-10-13 | Diff 与编辑器行号栏菜单、Blame 列、书签、标签页菜单、Copy Path/Reference；Log 引用标签配色；日常 Android 开发缺口评估 |
+| 2026-10-14 | 编辑器语言智能（补全、自动 import、语法错误、保存后编译）；Gradle Sync；Clean 架构分层 |
+| 2026-10-15 | Build / Run、Logcat、Android 资源、测试、Debugger 主体、Gradle JDK、Rename 等重构 |
+| 2026-10-16 | Debugger 细节（日志 / 异常 / 方法断点、字段监视点、Mute）；Extract Method、Introduce Parameter、Change Signature；Translations Editor、drawable 预览、Merged Manifest；控制台改成只读编辑器 |
+| 2026-10-17 | Call / Type / Method Hierarchy、Recent Locations、Inline Variable / Function、Unwrap、Safe Delete、会话恢复；架构复查（`arch_tests`）；缺 DLL 诊断；CI 加 Windows 检查 |
+| 2026-10-18 | Generate Signed Bundle / APK 和新建 keystore；Build 窗口列出 Gradle 的 “What went wrong”；控制台往上滚不再被拉回底部；改为分支 + PR 合入 master |
+| 2026-10-19 | 控制台 ANSI 颜色和 1 MB 输出上限；Inline Property / Field（顺带修了 Inline Variable 把成员属性当局部变量的 bug） |
+| 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release |
 
 更细的历史看 `git log`，每个提交的标题都写明了用户可见的变化。
 
@@ -266,5 +286,6 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 0. 行为拿不准时，去 IntelliJ IDEA / Android Studio 的开源代码里看它们怎么做（`git clone --filter=blob:none --sparse https://github.com/JetBrains/intellij-community`，按需 `git show HEAD:<路径>` 读单个文件）；Optimize Imports 的默认排序、Introduce Variable 的取名规则和提示文案都按那里核对过。
 
 1. 先编译运行一次，打开一个 Android 项目和一个多仓库目录，对照 FEATURES.md 熟悉界面。
-2. 下一步按维护者定的顺序做 6.2：测试 → Debugger。新功能按第 4 节的 Clean 架构分层写。
-3. 动 `vendor/`、索引缓存结构、`release.yml` 之前，先读第 4 节对应的坑。
+2. 6.2 的 P0、P1 大多已完成，剩下的缺口在各项的“剩 …”里，以及 FEATURES.md 里标 ⬜ 的行。维护者的工作方式：让 AI 持续迭代（“参考 IntelliJ / Android Studio 源码，有需要再找我”），用中文沟通；完成一项就推分支、CI 绿了合入 master（见第 3 节“提交流程”）。新功能按第 4 节的 Clean 架构分层写。
+3. 动 `vendor/`、索引缓存结构、`release.yml` 之前，先读第 3、4 节对应的坑。
+4. 维护者实际在用的工程是 mytv-android（Windows 11）。它的 release 签名配置指向仓库里没有的 `app/keystore.jks`，直接 assembleRelease 会失败；用 Build › Generate Signed Bundle / APK… 带自己的 keystore 就能出包。
