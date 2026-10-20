@@ -991,7 +991,8 @@ impl Render for Workspace {
                 let modules = crate::ui::signed_apk_dialog::application_modules(crate::ui::sync_service::SyncService::global(cx).read(cx).builds());
                 let store: std::rc::Rc<dyn crate::domain::signing::SigningStore> = std::rc::Rc::new(crate::infra::signing_store::JsonSigning);
                 let keytool: crate::ui::signed_apk_dialog::KeyToolFor = std::rc::Rc::new(|build_root| Box::new(crate::infra::keytool::JdkKeyTool { build_root }));
-                crate::ui::signed_apk_dialog::open(modules, store, this.run.clone(), keytool, window, cx);
+                let passwords: std::sync::Arc<dyn crate::domain::password_safe::PasswordSafe> = std::sync::Arc::new(crate::infra::password_safe::SystemPasswordSafe);
+                crate::ui::signed_apk_dialog::open(modules, store, passwords, this.run.clone(), keytool, window, cx);
             }))
             .on_action(cx.listener(|this, _: &RunApp, _, cx| this.run.update(cx, |r, cx| r.run(cx))))
             .on_action(cx.listener(|this, _: &StopApp, _, cx| {

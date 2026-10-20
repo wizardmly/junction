@@ -1,15 +1,19 @@
 //! Build › Generate Signed Bundle / APK…, Android Studio's wizard in one
 //! dialog: the package (App Bundle or APK), the application module and its
-//! variant, the keystore and the key. The keystore path and the key alias
-//! come back next time for the module; the passwords don't. Create new…
-//! opens New Key Store, which makes one with the JDK's keytool.
+//! variant, the destination folder, the keystore and the key. The keystore
+//! path, the key alias and the destination come back next time for the
+//! module; the passwords with Remember passwords, from the system's
+//! password safe. Create new… opens New Key Store, which makes one with
+//! the JDK's keytool.
 
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::component::{
     Sizable as _, WindowExt as _, h_flex,
     button::Button,
+    checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
     radio::RadioGroup,
@@ -17,6 +21,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px};
 
+use crate::domain::password_safe::PasswordSafe;
 use crate::domain::run::{ModuleInfo, ModuleType};
 use crate::domain::signing::{self, KeyTool, NewKeystore, PackageFormat, RememberedKey, SigningRequest, SigningStore};
 use crate::theme::ActivePalette as _;
@@ -29,12 +34,17 @@ pub struct SignedApkDialog {
     module: usize,
     variant: String,
     format: PackageFormat,
+    destination: Entity<InputState>,
     store_file: Entity<InputState>,
     store_password: Entity<InputState>,
     key_alias: Entity<InputState>,
     key_password: Entity<InputState>,
+    remember_passwords: bool,
+    /// What the module remembers, the destinations of both formats among it.
+    remembered: RememberedKey,
     error: Option<&'static str>,
     store: Rc<dyn SigningStore>,
+    passwords: Arc<dyn PasswordSafe>,
     run: Entity<RunService>,
     /// The keytool for a build root.
     keytool: KeyToolFor,
@@ -45,13 +55,14 @@ pub struct SignedApkDialog {
 pub type KeyToolFor = Rc<dyn Fn(PathBuf) -> Box<dyn KeyTool + Send>>;
 
 impl SignedApkDialog {
-    fn new(modules: Vec<(PathBuf, ModuleInfo)>, store: Rc<dyn SigningStore>, run: Entity<RunService>, keytool: KeyToolFor, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(modules: Vec<(PathBuf, ModuleInfo)>, store: Rc<dyn SigningStore>, passwords: Arc<dyn PasswordSafe>, run: Entity<RunService>, keytool: KeyToolFor, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let destination = cx.new(|cx| InputState::new(window, cx));
         let store_file = cx.new(|cx| InputState::new(window, cx).placeholder("Path to the .jks or .keystore file"));
         let store_password = cx.new(|cx| InputState::new(window, cx).masked(true));
         let key_alias = cx.new(|cx| InputState::new(window, cx));
         let key_password = cx.new(|cx| InputState::new(window, cx).masked(true));
         // An edit clears the last check's message.
-        let subscriptions = [&store_file, &store_password, &key_alias, &key_password]
+        let subscriptions = [&destination, &store_file, &store_password, &key_alias, &key_password]
             .into_iter()
             .map(|input| {
                 cx.subscribe(input, |this: &mut Self, _, event: &InputEvent, cx| {
@@ -66,12 +77,16 @@ impl SignedApkDialog {
             module: 0,
             variant: String::new(),
             format: PackageFormat::default(),
+            destination,
             store_file,
             store_password,
             key_alias,
             key_password,
+            remember_passwords: false,
+            remembered: RememberedKey::default(),
             error: None,
             store,
+            passwords,
             run,
             keytool,
             _subscriptions: subscriptions,
@@ -80,17 +95,70 @@ impl SignedApkDialog {
         this
     }
 
-    /// A module: its release variant and the key it was signed with last.
+    /// A module: its release variant, and the package, destination and key
+    /// it was signed with last.
     fn select_module(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some((_, module)) = self.modules.get(ix) else { return };
         self.module = ix;
         self.variant = signing::default_variant(module);
-        if let Some(key) = self.store.load(&module.dir) {
-            self.store_file.update(cx, |s, cx| s.set_value(key.store_file.display().to_string(), window, cx));
-            self.key_alias.update(cx, |s, cx| s.set_value(key.key_alias, window, cx));
+        let dir = module.dir.clone();
+        match self.store.load(&dir) {
+            Some(key) => {
+                self.store_file.update(cx, |s, cx| s.set_value(key.store_file.display().to_string(), window, cx));
+                self.key_alias.update(cx, |s, cx| s.set_value(key.key_alias.clone(), window, cx));
+                self.format = key.format();
+                self.remember_passwords = key.remember_passwords;
+                self.remembered = key;
+            }
+            None => self.remembered = RememberedKey::default(),
         }
+        let destination = self.remembered.destination(self.format, &dir);
+        self.destination.update(cx, |s, cx| s.set_value(destination.display().to_string(), window, cx));
         self.error = None;
+        self.load_passwords(window, cx);
         cx.notify();
+    }
+
+    fn set_format(&mut self, format: PackageFormat, window: &mut Window, cx: &mut Context<Self>) {
+        if format == self.format {
+            return;
+        }
+        self.format = format;
+        if let Some((_, module)) = self.modules.get(self.module) {
+            let destination = self.remembered.destination(format, &module.dir);
+            self.destination.update(cx, |s, cx| s.set_value(destination.display().to_string(), window, cx));
+        }
+        cx.notify();
+    }
+
+    /// The keystore's saved passwords, read in the background (the safe may
+    /// ask to be unlocked) into the password fields still empty, as Android
+    /// Studio's `KeystoreStep.tryLoadSavedPasswords`.
+    fn load_passwords(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let store_file = PathBuf::from(self.store_file.read(cx).value().trim());
+        let alias = self.key_alias.read(cx).value().to_string();
+        if store_file.as_os_str().is_empty() {
+            return;
+        }
+        let (store_key, key_key) = signing::password_keys(&store_file, &alias);
+        let safe = self.passwords.clone();
+        let handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let (store, key) = cx.background_spawn(async move { (safe.get(&store_key), safe.get(&key_key)) }).await;
+            let _ = handle.update(cx, |_, window, cx| {
+                this.update(cx, |this, cx| {
+                    for (input, password) in [(this.store_password.clone(), store), (this.key_password.clone(), key)] {
+                        if let Some(password) = password
+                            && input.read(cx).value().is_empty()
+                        {
+                            input.update(cx, |s, cx| s.set_value(password, window, cx));
+                        }
+                    }
+                })
+                .ok();
+            });
+        })
+        .detach();
     }
 
     fn request(&self, cx: &App) -> SigningRequest {
@@ -100,12 +168,34 @@ impl SignedApkDialog {
             store_password: self.store_password.read(cx).value().to_string(),
             key_alias: self.key_alias.read(cx).value().trim().to_owned(),
             key_password: self.key_password.read(cx).value().to_string(),
+            destination: PathBuf::from(self.destination.read(cx).value().trim()),
         }
     }
 
     fn browse(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Choose Key Store File".into()) });
         let input = self.store_file.clone();
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            cx.update(|cx| {
+                if let Some(window) = cx.active_window() {
+                    window
+                        .update(cx, |_, window, cx| {
+                            input.update(cx, |s, cx| s.set_value(path.display().to_string(), window, cx));
+                            this.update(cx, |this, cx| this.load_passwords(window, cx)).ok();
+                        })
+                        .ok();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Destination Folder's browse button: Select APK Destination Folder.
+    fn browse_destination(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Select APK Destination Folder".into()) });
+        let input = self.destination.clone();
         cx.spawn(async move |_, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
@@ -136,17 +226,28 @@ impl SignedApkDialog {
         cx.notify();
     }
 
-    /// Create: checks the fields, remembers the keystore and alias, and
-    /// starts the build; false keeps the dialog open on an error.
+    /// Create: checks the fields, remembers the keystore, alias and
+    /// destination (and the passwords, or forgets them), and starts the
+    /// build; false keeps the dialog open on an error.
     fn create(&mut self, cx: &mut Context<Self>) -> bool {
         let request = self.request(cx);
-        if let Err(error) = signing::check(&request, request.store_file.is_file()) {
+        let writable = std::fs::metadata(&request.destination).is_ok_and(|m| m.is_dir() && !m.permissions().readonly());
+        if let Err(error) = signing::check(&request, request.store_file.is_file()).and_then(|()| signing::check_destination(&request, writable)) {
             self.error = Some(error);
             cx.notify();
             return false;
         }
         let Some((root, module)) = self.modules.get(self.module).cloned() else { return false };
-        self.store.save(&module.dir, &RememberedKey { store_file: request.store_file.clone(), key_alias: request.key_alias.clone() });
+        self.remembered.record(&request, self.remember_passwords);
+        self.store.save(&module.dir, &self.remembered);
+        let (store_key, key_key) = signing::password_keys(&request.store_file, &request.key_alias);
+        let safe = self.passwords.clone();
+        let passwords = self.remember_passwords.then(|| (request.store_password.clone(), request.key_password.clone()));
+        cx.background_spawn(async move {
+            safe.set(&store_key, passwords.as_ref().map(|p| p.0.as_str()));
+            safe.set(&key_key, passwords.as_ref().map(|p| p.1.as_str()));
+        })
+        .detach();
         let variant = self.variant.clone();
         self.run.update(cx, |run, cx| run.generate_signed(root, module, variant, request, cx));
         true
@@ -191,15 +292,17 @@ impl Render for SignedApkDialog {
                 RadioGroup::new("signed-format")
                     .children([PackageFormat::Bundle.label(), PackageFormat::Apk.label()])
                     .selected_index(Some(format_ix))
-                    .on_change(move |ix, _, cx| {
-                        e.update(cx, |this, cx| {
-                            this.format = if *ix == 1 { PackageFormat::Apk } else { PackageFormat::Bundle };
-                            cx.notify();
-                        })
-                    }),
+                    .on_change(move |ix, window, cx| e.update(cx, |this, cx| this.set_format(if *ix == 1 { PackageFormat::Apk } else { PackageFormat::Bundle }, window, cx))),
             )
             .child(row("Module:", h_flex().child(module_button).into_any_element()))
             .child(row("Build variant:", h_flex().child(variant_button).into_any_element()))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(label("Destination folder:"))
+                    .child(div().flex_1().child(Input::new(&self.destination).small()))
+                    .child(Button::new("signed-destination").small().label("…").on_click(cx.listener(|this, _, _, cx| this.browse_destination(cx)))),
+            )
             .child(div().h(px(1.)).bg(palette.border))
             .child(
                 h_flex()
@@ -212,6 +315,12 @@ impl Render for SignedApkDialog {
             .child(row("Key store password:", Input::new(&self.store_password).small().mask_toggle().into_any_element()))
             .child(row("Key alias:", Input::new(&self.key_alias).small().into_any_element()))
             .child(row("Key password:", Input::new(&self.key_password).small().mask_toggle().into_any_element()))
+            .child(
+                div().pl(px(138.)).child(Checkbox::new("signed-remember").label("Remember passwords").checked(self.remember_passwords).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                    this.remember_passwords = *checked;
+                    cx.notify();
+                }))),
+            )
             .when_some(self.error, |el, error| el.child(div().pl(px(138.)).text_xs().text_color(palette.status_conflict).child(error)))
     }
 }
@@ -222,7 +331,7 @@ pub fn application_modules(builds: &[(PathBuf, Vec<ModuleInfo>)]) -> Vec<(PathBu
     builds.iter().flat_map(|(root, modules)| modules.iter().filter(|m| m.kind == ModuleType::Application).map(move |m| (root.clone(), m.clone()))).collect()
 }
 
-pub fn open(modules: Vec<(PathBuf, ModuleInfo)>, store: Rc<dyn SigningStore>, run: Entity<RunService>, keytool: KeyToolFor, window: &mut Window, cx: &mut App) {
+pub fn open(modules: Vec<(PathBuf, ModuleInfo)>, store: Rc<dyn SigningStore>, passwords: Arc<dyn PasswordSafe>, run: Entity<RunService>, keytool: KeyToolFor, window: &mut Window, cx: &mut App) {
     if modules.is_empty() {
         window.push_notification(
             gpui_kit::component::notification::Notification::error("The project has no Android application module. Sync the project with its Gradle files first.").title("Generate Signed Bundle / APK"),
@@ -230,7 +339,7 @@ pub fn open(modules: Vec<(PathBuf, ModuleInfo)>, store: Rc<dyn SigningStore>, ru
         );
         return;
     }
-    let view = cx.new(|cx| SignedApkDialog::new(modules, store, run.clone(), keytool, window, cx));
+    let view = cx.new(|cx| SignedApkDialog::new(modules, store, passwords, run.clone(), keytool, window, cx));
     let focus = view.read(cx).store_password.clone();
     window.open_dialog(cx, move |dialog, _, cx| {
         let busy = run.read(cx).is_busy();

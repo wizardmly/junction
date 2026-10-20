@@ -28,6 +28,7 @@ pub mod local_history;
 pub mod logcat;
 pub mod logcat_filter;
 pub mod overrides;
+pub mod password_safe;
 pub mod parameter_info;
 pub mod reformat;
 pub mod rename;
