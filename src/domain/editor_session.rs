@@ -29,6 +29,9 @@ pub struct EditorSession {
     pub active: Option<String>,
     #[serde(default)]
     pub places: Vec<Place>,
+    /// Logcat's tabs and panels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logcat: Option<super::logcat_layout::LogcatLayout>,
 }
 
 impl EditorSession {
@@ -64,7 +67,7 @@ mod tests {
     #[test]
     fn reopens_existing_files() {
         let tab = |p: &str| SessionTab { path: p.into(), ..SessionTab::default() };
-        let session = EditorSession { tabs: vec![tab("a.kt"), tab("gone.kt"), tab("b.kt")], active: Some("gone.kt".into()), places: Vec::new() };
+        let session = EditorSession { tabs: vec![tab("a.kt"), tab("gone.kt"), tab("b.kt")], active: Some("gone.kt".into()), places: Vec::new(), ..Default::default() };
         let (tabs, active) = session.reopenable(|p| p != "gone.kt");
         assert_eq!(tabs.iter().map(|t| t.path.as_str()).collect::<Vec<_>>(), ["a.kt", "b.kt"]);
         assert!(active.is_none());

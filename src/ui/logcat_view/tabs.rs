@@ -21,6 +21,7 @@ use gpui_kit::{
 
 use super::{LogcatEvent, LogcatView};
 use crate::domain::logcat::tab_name;
+use crate::domain::logcat_layout::{LogcatLayout, PaneLayout, TabLayout};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
@@ -142,7 +143,7 @@ impl LogcatTabs {
             LogcatEvent::Split { down } => this.split(view.entity_id(), *down, window, cx),
             LogcatEvent::ClosePanel => this.close_panel(view.entity_id(), cx),
             LogcatEvent::Import => this.import(window, cx),
-            LogcatEvent::Hide => {}
+            LogcatEvent::Hide | LogcatEvent::LayoutChanged => {}
         });
         self.subscriptions.insert(view.entity_id(), subscription);
         if self.shown {
@@ -157,6 +158,7 @@ impl LogcatTabs {
         self.tabs.push(Tab { name: tab_name(&self.names()), pane: Pane::Log(view) });
         self.active = self.tabs.len() - 1;
         cx.notify();
+        cx.emit(LogcatEvent::LayoutChanged);
     }
 
     /// Import Logcat from a File…: asks for the file.
@@ -174,8 +176,7 @@ impl LogcatTabs {
     /// new tab named after it.
     pub fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         use gpui_kit::component::{WindowExt as _, notification::Notification};
-        let read = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| crate::domain::logcat_file::read(&String::from_utf8_lossy(&bytes)));
-        let log = match read {
+        let log = match read_log(&path) {
             Ok(log) => log,
             Err(e) => {
                 window.push_notification(Notification::error(e).title(format!("Cannot import {}", path.display())), cx);
@@ -184,12 +185,13 @@ impl LogcatTabs {
         };
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let view = self.new_log(window, cx);
-        view.update(cx, |v, cx| v.load_file(name.clone(), log, window, cx));
+        view.update(cx, |v, cx| v.load_file(path.clone(), log, window, cx));
         let names = self.names();
         let tab = if names.contains(&name) { (2..).map(|n| format!("{name} ({n})")).find(|n| !names.contains(n)).unwrap_or_default() } else { name };
         self.tabs.push(Tab { name: tab, pane: Pane::Log(view) });
         self.active = self.tabs.len() - 1;
         cx.notify();
+        cx.emit(LogcatEvent::LayoutChanged);
     }
 
     /// Split Right / Split Down: a new panel beside the log.
@@ -202,6 +204,7 @@ impl LogcatTabs {
         self.focused = Some(view.entity_id());
         view.focus_handle(cx).focus(window, cx);
         cx.notify();
+        cx.emit(LogcatEvent::LayoutChanged);
     }
 
     /// Close (Split Panels): the panel goes; a tab's only panel closes
@@ -220,6 +223,7 @@ impl LogcatTabs {
             }
         }
         cx.notify();
+        cx.emit(LogcatEvent::LayoutChanged);
     }
 
     fn drop_log(&mut self, view: &Entity<LogcatView>, cx: &mut Context<Self>) {
@@ -248,6 +252,7 @@ impl LogcatTabs {
             self.active = self.active.saturating_sub(1);
         }
         cx.notify();
+        cx.emit(LogcatEvent::LayoutChanged);
     }
 
     fn close_others(&mut self, keep: usize, cx: &mut Context<Self>) {
@@ -261,6 +266,59 @@ impl LogcatTabs {
         self.tabs.push(kept);
         self.active = 0;
         cx.notify();
+        cx.emit(LogcatEvent::LayoutChanged);
+    }
+
+    /// The tabs and panels as kept across restarts.
+    pub fn layout(&self, cx: &App) -> LogcatLayout {
+        fn pane(p: &Pane, cx: &App) -> PaneLayout {
+            match p {
+                Pane::Log(view) => PaneLayout::Log(view.read(cx).panel_state(cx)),
+                Pane::Split { down, first, second, .. } => PaneLayout::Split { down: *down, first: Box::new(pane(first, cx)), second: Box::new(pane(second, cx)) },
+            }
+        }
+        LogcatLayout { tabs: self.tabs.iter().map(|t| TabLayout { name: t.name.clone(), pane: pane(&t.pane, cx) }).collect(), active: self.active }
+    }
+
+    /// The tabs and panels of the last session, in place of the ones open.
+    pub fn restore(&mut self, layout: LogcatLayout, window: &mut Window, cx: &mut Context<Self>) {
+        if layout.tabs.is_empty() {
+            return;
+        }
+        for tab in std::mem::take(&mut self.tabs) {
+            self.drop_tab(tab, cx);
+        }
+        self.focused = None;
+        for tab in layout.tabs {
+            let pane = self.restore_pane(tab.pane, window, cx);
+            self.tabs.push(Tab { name: tab.name, pane });
+        }
+        self.active = layout.active.min(self.tabs.len() - 1);
+        cx.notify();
+    }
+
+    fn restore_pane(&mut self, layout: PaneLayout, window: &mut Window, cx: &mut Context<Self>) -> Pane {
+        match layout {
+            PaneLayout::Log(state) => {
+                let view = self.new_log(window, cx);
+                let file = state.file.as_ref().map(PathBuf::from);
+                view.update(cx, |v, cx| {
+                    // A file that's gone: the panel goes back to the device.
+                    if let Some((path, log)) = file.and_then(|p| read_log(&p).ok().map(|log| (p, log))) {
+                        v.load_file(path, log, window, cx);
+                    }
+                    v.restore_state(state, window, cx);
+                });
+                Pane::Log(view)
+            }
+            PaneLayout::Split { down, first, second } => {
+                self.next_split += 1;
+                let id = self.next_split;
+                let first = self.restore_pane(*first, window, cx);
+                let second = self.restore_pane(*second, window, cx);
+                Pane::Split { id, down, first: Box::new(first), second: Box::new(second) }
+            }
+        }
     }
 
     /// Rename Tab: a name not empty and not another tab's.
@@ -283,6 +341,7 @@ impl LogcatTabs {
                         tab.name = name;
                     }
                     cx.notify();
+                    cx.emit(LogcatEvent::LayoutChanged);
                 });
                 true
             })
@@ -331,6 +390,7 @@ impl LogcatTabs {
                 this.focused = None;
                 this.tabs[ix].pane.first_log().focus_handle(cx).focus(window, cx);
                 cx.notify();
+                cx.emit(LogcatEvent::LayoutChanged);
             }))
             .on_mouse_up(MouseButton::Middle, cx.listener(move |this, _, _, cx| this.close_tab(ix, cx)))
             .context_menu(move |menu, _, _| {
@@ -386,4 +446,10 @@ fn render_pane(pane: &Pane, border: gpui_kit::Hsla) -> gpui_kit::AnyElement {
             group.child(resizable_panel().child(a)).child(resizable_panel().child(div().size_full().when(*down, |el| el.border_t_1()).when(!*down, |el| el.border_l_1()).border_color(border).child(b))).into_any_element()
         }
     }
+}
+
+/// A Logcat file: `.logcat`, `logcat` output or a bugreport's log.
+fn read_log(path: &std::path::Path) -> Result<crate::domain::logcat_file::LogFile, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    crate::domain::logcat_file::read(&String::from_utf8_lossy(&bytes))
 }

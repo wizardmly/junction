@@ -150,6 +150,10 @@ impl Filter {
                 Some(t) if t.contains(':') => (true, t.to_owned()),
                 _ => (false, token),
             };
+            // `name:` names the filter and matches every line.
+            if !negated && token.starts_with("name:") {
+                continue;
+            }
             let parsed = token.split_once(':').and_then(|(k, v)| {
                 let (k, op) = if let Some(k) = k.strip_suffix('~') {
                     (k, Op::Regex)
@@ -260,6 +264,17 @@ fn tokens(query: &str) -> Vec<String> {
         out.push(cur);
     }
     out
+}
+
+/// The filter's name, Android Studio's `name:` term (the last one wins);
+/// the history shows it in place of the query.
+pub fn filter_name(query: &str) -> Option<String> {
+    tokens(query).iter().filter_map(|t| t.strip_prefix("name:")).map(unquote).filter(|v| !v.is_empty()).last()
+}
+
+/// The query without its `name:` terms.
+pub fn remove_filter_names(query: &str) -> String {
+    tokens(query).into_iter().filter(|t| !t.starts_with("name:")).collect::<Vec<_>>().join(" ")
 }
 
 fn unquote(v: &str) -> String {
@@ -402,5 +417,16 @@ mod tests {
         assert_eq!(stack_frame("\tat com.example.ui.MainActivity$1.run(MainActivity.kt:42)"), Some(("com/example/ui".into(), "MainActivity.kt".into(), 42)));
         assert_eq!(stack_frame("at android.os.Handler.dispatchMessage(Unknown Source:0)").map(|f| f.1), Some("Unknown Source".into()));
         assert!(stack_frame("Caused by: java.lang.NullPointerException").is_none());
+    }
+
+    #[test]
+    fn named_filters() {
+        let e = parse_threadtime("2026-10-15 02:05:48.123  1234  1250 W OkHttp  : slow").unwrap();
+        assert!(Filter::parse("name:\"Slow calls\" tag:OkHttp", &[]).matches(&e, e.millis));
+        assert!(!Filter::parse("name:Net tag:Other", &[]).matches(&e, e.millis));
+        assert_eq!(filter_name("tag:OkHttp name:\"Slow calls\""), Some("Slow calls".to_owned()));
+        assert_eq!(filter_name("name:A level:warn name:B"), Some("B".to_owned()));
+        assert_eq!(filter_name("tag:OkHttp"), None);
+        assert_eq!(remove_filter_names("name:A level:warn  tag:X"), "level:warn tag:X");
     }
 }
