@@ -2,7 +2,8 @@
 //! process picker, Start / Stop, the CPU timeline (the app's share of the
 //! CPU and its threads) and the Memory timeline stacked by category (Java,
 //! Native, Graphics, Stack, Code, Others). Capture heap dump saves an
-//! `.hprof` and lists its classes with their Allocations and Shallow Size.
+//! `.hprof` and lists its classes with their Allocations, Shallow Size and
+//! Retained Size.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -268,6 +269,7 @@ impl ProfilerView {
                     .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(c.name.clone()))
                     .child(div().w(px(110.)).flex_none().text_right().child(c.count.to_string()))
                     .child(div().w(px(130.)).flex_none().text_right().child(c.shallow.to_string()))
+                    .child(div().w(px(130.)).flex_none().text_right().child(c.retained.to_string()))
                     .into_any_element()
             })
             .collect()
@@ -468,7 +470,8 @@ impl Render for ProfilerView {
                         .border_color(palette.border)
                         .child(div().flex_1().min_w_0().child("Class Name"))
                         .child(div().w(px(110.)).flex_none().text_right().child("Allocations"))
-                        .child(div().w(px(130.)).flex_none().text_right().child("Shallow Size")),
+                        .child(div().w(px(130.)).flex_none().text_right().child("Shallow Size"))
+                        .child(div().w(px(130.)).flex_none().text_right().child("Retained Size")),
                 )
                 .child(uniform_list("pf-classes", count, cx.processor(Self::render_class_rows)).flex_1().min_h_0())
         });
