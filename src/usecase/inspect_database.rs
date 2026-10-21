@@ -2,7 +2,7 @@
 //! a table's rows, and a query's.
 
 use crate::domain::profiler::ProfiledProcess;
-use crate::domain::sqlite_file::{Database, DatabaseSource, Table, Value};
+use crate::domain::sqlite_file::{self, Database, DatabaseSource, Table, Value};
 use crate::domain::sqlite_query;
 
 pub struct OpenedDatabase {
@@ -53,6 +53,30 @@ pub fn query(db: &OpenedDatabase, sql: &str, limit: usize) -> Result<(String, Ve
     Ok((result.table, result.columns, cells(result.rows)))
 }
 
+/// What Export saves.
+pub enum Export<'a> {
+    /// The whole database file, the WAL's pages written in.
+    Database,
+    /// A table's rows, all of them, as CSV.
+    Table(&'a str),
+    /// A query's rows, all of them, as CSV.
+    Query(&'a str),
+}
+
+pub fn export(db: &OpenedDatabase, what: Export) -> Result<Vec<u8>, String> {
+    match what {
+        Export::Database => Ok(db.database.image()),
+        Export::Table(name) => {
+            let table = db.tables.iter().find(|t| t.name == name).ok_or_else(|| format!("No table named {name}"))?;
+            Ok(sqlite_file::csv(&table.columns, &db.database.rows(table, usize::MAX)?).into_bytes())
+        }
+        Export::Query(sql) => {
+            let result = sqlite_query::run(&db.database, &db.tables, sql, usize::MAX)?;
+            Ok(sqlite_file::csv(&result.columns, &result.rows).into_bytes())
+        }
+    }
+}
+
 fn cells(rows: Vec<Vec<Value>>) -> Vec<Vec<String>> {
     rows.into_iter()
         .map(|row| {
@@ -97,6 +121,12 @@ mod tests {
         assert_eq!(rows(&dbs[0], users, 10).unwrap().len(), 10);
         let (table, columns, found) = query(&dbs[0], "SELECT name FROM users WHERE id = 7", 10).unwrap();
         assert_eq!((table.as_str(), columns, found), ("users", vec!["name".to_owned()], vec![vec!["user7".to_owned()]]));
+        let csv = String::from_utf8(export(&dbs[0], Export::Table("users")).unwrap()).unwrap();
+        assert_eq!(csv.lines().count(), 301);
+        assert!(csv.starts_with("id,name,age,score,avatar\r\n1,user1,21,1.5,010102\r\n"));
+        let csv = String::from_utf8(export(&dbs[0], Export::Query("SELECT id FROM users WHERE id < 3")).unwrap()).unwrap();
+        assert_eq!(csv, "id\r\n1\r\n2\r\n");
+        assert!(export(&dbs[0], Export::Database).unwrap().starts_with(b"SQLite format 3\0"));
     }
 
     #[test]
