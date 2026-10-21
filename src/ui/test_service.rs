@@ -146,10 +146,6 @@ impl TestService {
         };
         let mut request = TestRequest::of(kind, mark);
         set(&mut request);
-        if request.coverage && kind == testing::TestKind::Instrumented {
-            cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "Coverage is measured for unit tests only.".into() });
-            return false;
-        }
         self.launch_request(path, marks, request, cx)
     }
 
@@ -188,10 +184,6 @@ impl TestService {
     /// Runs a folder's tests (Project window › Run 'Tests in …').
     pub fn run_folder(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, mut request: TestRequest, debug_port: Option<u16>, cx: &mut Context<Self>) {
         request.debug_port = debug_port;
-        if request.coverage && request.kind == testing::TestKind::Instrumented {
-            cx.emit(TestServiceEvent::Error { title: format!("Error running '{}'", request.name), message: "Coverage is measured for unit tests only.".into() });
-            return;
-        }
         let launch = Launch { build_root, module, request, source: None };
         self.remember(&launch, cx);
         self.start(launch, cx);
@@ -208,10 +200,6 @@ impl TestService {
         let Some(mut launch) = self.temporary.iter().find(|l| l.request.name == name).cloned() else { return false };
         launch.request.debug_port = debug_port;
         launch.request.coverage = coverage;
-        if coverage && launch.request.kind == testing::TestKind::Instrumented {
-            cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "Coverage is measured for unit tests only.".into() });
-            return false;
-        }
         self.start(launch, cx);
         true
     }

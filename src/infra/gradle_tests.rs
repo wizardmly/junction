@@ -21,7 +21,8 @@ const INIT_SCRIPT: &str = r#"// Written by Junction for running tests.
 import groovy.json.JsonOutput
 
 def junctionEmit = { Map m -> println("JUNCTION_TEST " + JsonOutput.toJson(m)) }
-// Run with Coverage: the test task to measure, as `-Pjunction.coverage=testDebugUnitTest`.
+// Run with Coverage: the test task to measure, as `-Pjunction.coverage=testDebugUnitTest`
+// or `connectedDebugAndroidTest`.
 def junctionCoverage = gradle.startParameter.projectProperties["junction.coverage"]
 def junctionName = { d ->
     try { return d.displayName ?: d.name } catch (Throwable ignored) { return d.name }
@@ -30,15 +31,33 @@ def junctionName = { d ->
 allprojects { p ->
     if (junctionCoverage) {
         p.apply plugin: "jacoco"
+        // On a device: the app records what ran (`enableAndroidTestCoverage`,
+        // `testCoverageEnabled` before AGP 7.3), as Android Studio sets it.
+        if (junctionCoverage.startsWith("connected")) {
+            ["com.android.application", "com.android.library"].each { id ->
+                p.plugins.withId(id) {
+                    p.android.buildTypes.configureEach { bt ->
+                        try { bt.enableAndroidTestCoverage = true } catch (MissingPropertyException ignored) { bt.testCoverageEnabled = true }
+                    }
+                }
+            }
+        }
         // The XML report of what the measured task ran, as Android Studio's
         // JaCoCo runner records it. Classes: plain JVM modules', or an
         // Android variant's Java and Kotlin output.
         p.tasks.register("junctionCoverage", org.gradle.testing.jacoco.tasks.JacocoReport) { r ->
-            def test = p.tasks.findByName(junctionCoverage)
-            if (test != null) r.executionData(test)
-            def m = junctionCoverage =~ /^test(.+)UnitTest$/
-            def variant = m.matches() ? m.group(1)[0].toLowerCase() + m.group(1).substring(1) : null
             def build = p.layout.buildDirectory.get().asFile
+            def m = junctionCoverage =~ /^(?:test(.+)UnitTest|connected(.+)AndroidTest)$/
+            def name = m.matches() ? (m.group(1) ?: m.group(2)) : null
+            def variant = name ? name[0].toLowerCase() + name.substring(1) : null
+            if (junctionCoverage.startsWith("connected")) {
+                // The device's `.ec` files, pulled after the run.
+                r.mustRunAfter { p.tasks.findByName(junctionCoverage) ?: [] }
+                r.executionData.from(p.fileTree(build) { include "outputs/code_coverage/${variant}AndroidTest/connected/**/*.ec", "outputs/code_coverage/connected/**/*.ec" })
+            } else {
+                def test = p.tasks.findByName(junctionCoverage)
+                if (test != null) r.executionData(test)
+            }
             r.classDirectories.from(p.fileTree(build) {
                 if (variant) {
                     include "intermediates/javac/${variant}/**/classes/**"
