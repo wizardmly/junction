@@ -1,9 +1,11 @@
 //! The Profiler's session: a sample of the app's CPU and memory per tick,
-//! and Capture heap dump read into its class list.
+//! Capture heap dump read into its class list, and Record's method trace
+//! read into call trees.
 
 use std::path::Path;
 
 use crate::domain::hprof::{self, HeapSummary};
+use crate::domain::method_trace::{self, MethodTrace};
 use crate::domain::profiler::{self, CpuTicks, ProfilerSource, Sample};
 
 #[derive(Default)]
@@ -32,6 +34,35 @@ pub fn capture_heap_dump(source: &dyn ProfilerSource, serial: &str, pid: u32, to
     hprof::summarize(&bytes).ok_or_else(|| "The heap dump can't be read".to_owned())
 }
 
+/// How Record captures the app's methods, as Android Studio's CPU
+/// recording configurations name them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TraceMode {
+    /// Java/Kotlin Method Sample: the stacks every millisecond.
+    Sample,
+    /// Java/Kotlin Method Trace: every call (slows the app down).
+    Trace,
+}
+
+impl TraceMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            TraceMode::Sample => "Java/Kotlin Method Sample",
+            TraceMode::Trace => "Java/Kotlin Method Trace",
+        }
+    }
+}
+
+pub fn start_method_trace(source: &dyn ProfilerSource, serial: &str, pid: u32, mode: TraceMode) -> Result<(), String> {
+    source.start_method_trace(serial, pid, (mode == TraceMode::Sample).then_some(1000))
+}
+
+/// Stops the recording, saves it to `to` and reads its call trees.
+pub fn stop_method_trace(source: &dyn ProfilerSource, serial: &str, pid: u32, to: &Path) -> Result<MethodTrace, String> {
+    let bytes = source.stop_method_trace(serial, pid, to)?;
+    method_trace::parse(&bytes).ok_or_else(|| "The method trace can't be read".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +89,15 @@ mod tests {
         fn heap_dump(&self, _: &str, _: u32, _: &Path) -> Result<Vec<u8>, String> {
             Ok(crate::domain::hprof::tests::sample())
         }
+
+        fn start_method_trace(&self, _: &str, _: u32, sampling_us: Option<u32>) -> Result<(), String> {
+            assert_eq!(sampling_us, Some(1000));
+            Ok(())
+        }
+
+        fn stop_method_trace(&self, _: &str, _: u32, _: &Path) -> Result<Vec<u8>, String> {
+            Ok(crate::domain::method_trace::tests::sample())
+        }
     }
 
     #[test]
@@ -71,5 +111,8 @@ mod tests {
         assert_eq!(second.memory.unwrap().total, 30);
         let heap = capture_heap_dump(&fake, "s", 42, Path::new("x.hprof")).unwrap();
         assert_eq!(heap.classes[0].name, "java.lang.String");
+        start_method_trace(&fake, "s", 42, TraceMode::Sample).unwrap();
+        let trace = stop_method_trace(&fake, "s", 42, Path::new("x.trace")).unwrap();
+        assert_eq!(trace.threads[0].name, "main");
     }
 }

@@ -18,6 +18,7 @@ pub mod view_hierarchy;
 pub mod profiler;
 pub mod proto_xml;
 pub mod hprof;
+pub mod method_trace;
 pub mod sqlite_file;
 pub mod file_type_overrides;
 pub mod build;
