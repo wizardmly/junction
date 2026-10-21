@@ -1201,7 +1201,7 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | 点表显示行：列名来自 CREATE TABLE，`INTEGER PRIMARY KEY` 列填 rowid，NULL 斜体，BLOB 显示 `X'..'`，长文本（溢出页）和 UTF-16 编码库都能读；最多读 5000 行，网格可横向滚动 | ✅ |
 | Refresh：重新从设备读取，保留当前表 | ✅ |
 | 应用不可调试（`run-as` 拒绝）时显示原因 | ✅ |
-| 查询栏：选数据库，输入 SELECT 回车或点 Run，结果显示在网格里（Refresh / Live updates 时重新执行）。支持单表的 `SELECT 列 / * / COUNT(*)`、`WHERE`（比较、`LIKE`、`IN`、`BETWEEN`、`IS [NOT] NULL`、`AND` / `OR` / `NOT`、括号，列与字面量比较时按列的类型转换）、`ORDER BY`、`LIMIT` / `OFFSET`；不支持的写法（JOIN、GROUP BY、函数、表达式）报出是哪个词；INSERT / UPDATE / DELETE 等会说明数据库是副本、改不了应用的数据 | ✅（自己写的求值，不是 SQLite，不支持 JOIN、聚合和子查询） |
+| 查询栏：选数据库，输入 SELECT 回车或点 Run，结果显示在网格里（Refresh / Live updates 时重新执行）。支持多表 `JOIN … ON` / `USING`、`LEFT JOIN`、`CROSS JOIN` 和逗号连接（等值条件走哈希连接），表别名和 `表.列`、`表.*`；表达式（四则运算、`%`、`||`、比较、`LIKE`、`IN`、`BETWEEN`、`IS [NOT] NULL`、`CASE`、`CAST`，列与字面量比较时按列的类型转换）；函数 `lower` / `upper` / `length` / `substr` / `trim` / `replace` / `instr` / `round` / `abs` / `coalesce` / `ifnull` / `nullif` / `iif` / `typeof` / `hex` 等；聚合 `COUNT` / `SUM` / `AVG` / `MIN` / `MAX` / `TOTAL` / `GROUP_CONCAT`（可带 `DISTINCT`）、`GROUP BY`、`HAVING`、`SELECT DISTINCT`、`ORDER BY`（列、表达式、别名、序号）、`LIMIT` / `OFFSET`、`AS` 别名；不支持的写法（子查询、`UNION`、`WITH`、窗口函数、未知函数）报出原因；INSERT / UPDATE / DELETE 等会说明数据库是副本、改不了应用的数据 | ✅（自己写的求值，不是 SQLite；结果和 Python sqlite3 对比过） |
 | Live updates：每 3 秒从设备重新读取数据库，保留当前表或查询 | ✅（AS 是表变化时才推送；这里是定时整库重读，大库会慢） |
 | 编辑单元格、导出、`WITHOUT ROWID` 表 | ❌ |
 | Network Inspector | 🟡 见第 68 节 |
