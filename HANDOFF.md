@@ -249,7 +249,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 **P2：重，可以长期留给 AS**
 
 12. Compose Preview / Layout Editor（依赖 layoutlib，成本极高，建议用投屏替代）。
-13. 🟡 Layout Inspector 已做（2026-10-21，FEATURES.md 第 64 节：快照式，`dumpsys activity top` 或 UI Automator + 截图，组件树、截图框选、属性、Live Updates；只用模拟 adb 验证过；没有 AS 的 3D 视图、Compose 重组计数和改属性）。Profiler、App Inspection 还没做。
+13. 🟡 Layout Inspector 已做（2026-10-21，FEATURES.md 第 64 节：快照式，`dumpsys activity top` 或 UI Automator + 截图，组件树、截图框选、属性、Live Updates；只用模拟 adb 验证过；没有 AS 的 3D 视图、Compose 重组计数和改属性）。Profiler 已做（2026-10-21，FEATURES.md 第 65 节：CPU / 内存实时曲线、Capture heap dump 后按类列出 Allocations 和 Shallow Size；只用模拟 adb 验证过；没有 CPU 方法追踪、分配跟踪、Retained Size 和 Perfetto 系统跟踪）。App Inspection（数据库、网络、后台任务）还没做。
 14. 🟡 APK Analyzer 已做（2026-10-21，FEATURES.md 第 62 节：大小树、Manifest 解码、dex 方法数；没做 Compare with previous APK 和引用名解析）。Lint 已并进 Analyze › Inspect Code（2026-10-21：Android 模块跑 Gradle `lint<Variant>`，结果在 Problems 窗口的 Inspection 标签，只用模拟 gradlew 验证过）。SDK Manager 已做（2026-10-21，FEATURES.md 第 63 节：Tools › SDK Manager，SDK Platforms / SDK Tools 两个标签，装、删、更新和许可证；只用本地假仓库验证过，没拉 system-images 仓库）。（Generate Signed Bundle / APK 已做，2026-10-18，FEATURES.md 第 59 节：注入 `android.injected.signing.*`，项目没带 keystore 也能出签名包；Create new… 用 keytool 新建 keystore。Remember passwords 和 Destination Folder 已补上，2026-10-20。）
 
 **内存实测（Linux 容器，软件渲染）**：Junction 打开一个 104 个 .kt 文件的 Android 项目约 241 MB；打开 junction 仓库（含 Cargo 依赖源码）首次建索引峰值 674 MB、约 20 秒，再次启动读缓存 396 MB、CPU 约 2 秒。作为对比，最小 Kotlin/JVM 项目的 Gradle Daemon 669 MB + Kotlin Compile Daemon 378 MB。结论：Rust 能省掉 IDE 自身的内存和启动扫描，但 Gradle Sync / 构建 / AS 级 Kotlin 语言服务本身是 JVM，省不掉，只能做到按需启动、少同步。

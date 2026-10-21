@@ -69,6 +69,7 @@ actions!(
         ToggleRunningDevicesWindow,
         ToggleDeviceExplorerWindow,
         ToggleLayoutInspectorWindow,
+        ToggleProfilerWindow,
         SelectInProject,
         FindInPath,
         ReplaceInPath,
@@ -316,6 +317,7 @@ pub struct Workspace {
     running_devices: Entity<crate::ui::running_devices::RunningDevices>,
     device_explorer: Entity<crate::ui::device_explorer::DeviceExplorer>,
     layout_inspector: Entity<crate::ui::layout_inspector::LayoutInspector>,
+    profiler: Entity<crate::ui::profiler_view::ProfilerView>,
     /// Build and Run: the toolbar's configuration and device, and the
     /// Build, Run and Build Variants tool windows.
     run: Entity<crate::ui::run_service::RunService>,
@@ -439,6 +441,7 @@ impl Workspace {
         let todo_view = cx.new(|cx| crate::ui::todo_view::TodoView::new(code_index.clone(), android_project.clone(), cx));
         let device_manager = cx.new(|_| crate::ui::device_manager::DeviceManager::new(android_project.clone()));
         let running_devices = cx.new(|cx| crate::ui::running_devices::RunningDevices::new(device_manager.clone(), cx));
+        let profiler = cx.new(|cx| crate::ui::profiler_view::ProfilerView::new(device_manager.clone(), android_project.clone(), window, cx));
         let device_explorer = cx.new(|cx| crate::ui::device_explorer::DeviceExplorer::new(device_manager.clone(), android_project, cx));
         let layout_inspector = cx.new(|cx| crate::ui::layout_inspector::LayoutInspector::new(device_manager.clone(), cx));
         let run = cx.new(|_| crate::ui::run_service::RunService::new(device_manager.clone()));
@@ -608,6 +611,16 @@ impl Workspace {
                     this.device_manager.update(cx, |d, cx| d.set_mirrored(serials, cx));
                 }
                 crate::ui::running_devices::RunningDevicesEvent::Notify { title, message, error } => {
+                    let (title, message, error) = (title.clone(), message.clone(), *error);
+                    this.model.update(cx, |m, cx| m.notify(title, message, error, cx));
+                }
+            }),
+            cx.subscribe_in(&profiler, window, |this, _, event: &crate::ui::profiler_view::ProfilerEvent, _, cx| match event {
+                crate::ui::profiler_view::ProfilerEvent::Hide => {
+                    this.tools.hide(ToolWindow::Profiler);
+                    cx.notify();
+                }
+                crate::ui::profiler_view::ProfilerEvent::Notify { title, message, error } => {
                     let (title, message, error) = (title.clone(), message.clone(), *error);
                     this.model.update(cx, |m, cx| m.notify(title, message, error, cx));
                 }
@@ -783,6 +796,7 @@ impl Workspace {
             running_devices,
             device_explorer,
             layout_inspector,
+            profiler,
             run,
             build_view,
             run_view,
@@ -875,7 +889,7 @@ impl Render for Workspace {
         let android = crate::ui::sync_service::SyncService::global(cx).read(cx).builds().iter().any(|(_, m)| m.iter().any(|m| m.kind == crate::domain::run::ModuleType::Application));
         let logcat_shown = self.tools.is_open(ToolWindow::Logcat);
         self.logcat_view.update(cx, |l, cx| l.set_shown(logcat_shown, cx));
-        let inspector_shown = self.tools.is_open(ToolWindow::LayoutInspector);
+        let inspector_shown = self.tools.is_open(ToolWindow::LayoutInspector) || self.tools.is_open(ToolWindow::Profiler);
         let devices_shown = logcat_shown || self.tools.is_open(ToolWindow::DeviceManager) || self.tools.is_open(ToolWindow::RunningDevices) || explorer_shown || inspector_shown || android;
         self.device_manager.update(cx, |d, cx| d.set_shown(devices_shown, cx));
         self.device_explorer.update(cx, |d, cx| d.set_shown(explorer_shown, cx));
@@ -1084,6 +1098,12 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleDeviceManagerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceManager, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleRunningDevicesWindow, window, cx| this.shortcut_tool(ToolWindow::RunningDevices, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleDeviceExplorerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceExplorer, window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleProfilerWindow, window, cx| {
+                if !this.tools.is_open(ToolWindow::Profiler) {
+                    this.profiler.update(cx, |p, cx| p.load_processes(cx));
+                }
+                this.shortcut_tool(ToolWindow::Profiler, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleLayoutInspectorWindow, window, cx| {
                 // Its three panes need the room.
                 this.tools.make_room(ToolWindow::LayoutInspector, 900, cx);

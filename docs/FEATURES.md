@@ -1171,3 +1171,16 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | 3D 视图、Compose 重组计数、改属性 | ❌ |
 
 只用模拟 adb 验证过（假 `dumpsys activity top` 输出 + 540×1200 截图）：树、框选、属性、窗口切换和 UI Automator 失败提示都正确。
+
+## 65. Profiler（2026-10-21）
+
+| 功能 | 状态 |
+|---|---|
+| View › Tool Windows / Tools › Profiler：底部工具窗口，设备下拉、进程下拉（`ps -A` 里的应用进程，本项目的 applicationId 排在最前）、Start / Stop | ✅ |
+| CPU 时间线：每秒读 `/proc/stat` 和 `/proc/<pid>/stat`，算应用占整机 CPU 的百分比，显示当前值和线程数；保留最近 2 分钟 | ✅ |
+| Memory 时间线：每秒读 `dumpsys meminfo <pid>` 的 App Summary，按 Java / Native / Graphics / Stack / Code / Others 堆叠，图例显示 Total 和各项当前值（AS 的配色和顺序） | ✅ |
+| 进程退出后自动停止并提示 | ✅ |
+| Capture heap dump：`am dumpheap` 后拉回电脑，存到 `~/.cache/Junction/captures/<进程>_<时间>.hprof`（AS 的 File › Open 也能打开）；解析成类列表：Class Name、Allocations、Shallow Size，按堆（app / image / zygote）切换，可搜索 | ✅（没有 Retained Size、实例列表和引用链） |
+| CPU 方法 / 系统跟踪（Perfetto）、分配跟踪、Energy | ❌ |
+
+只用模拟 adb 验证过（假 `/proc`、`dumpsys meminfo` 输出和一个 120 万字节的 Android 格式 hprof）：曲线、图例、进程切换、堆转储列表、堆切换和搜索都正确。
