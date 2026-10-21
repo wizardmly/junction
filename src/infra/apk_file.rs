@@ -60,7 +60,10 @@ fn probe_apk() {
     let entries = apk.entries();
     let root = crate::domain::apk::tree(&entries);
     eprintln!("{} entries, raw {} download {} in {:?}", entries.len(), root.raw, root.download, start.elapsed());
-    let manifest = crate::domain::axml::decode(&apk.read("AndroidManifest.xml").unwrap()).unwrap();
+    let start = std::time::Instant::now();
+    let table = crate::domain::arsc::ResourceTable::parse(&apk.read("resources.arsc").unwrap()).unwrap();
+    eprintln!("{} resource names in {:?}", table.len(), start.elapsed());
+    let manifest = crate::domain::axml::decode_with(&apk.read("AndroidManifest.xml").unwrap(), &|id| table.name(id)).unwrap();
     eprintln!("{}", &manifest[..manifest.len().min(1500)]);
     let start = std::time::Instant::now();
     let dex = crate::domain::dex::summarize(&apk.read("classes.dex").unwrap()).unwrap();

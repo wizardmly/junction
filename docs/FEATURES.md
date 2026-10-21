@@ -1137,12 +1137,12 @@ Linux 实测（Xvfb，两个模块的 Groovy 工程 + catalog）：2026-10-21 �
 |---|---|
 | Build › Analyze APK… 选 APK / AAB；Project 窗口双击 `.apk` / `.aab` 也直接打开；在编辑区开一个标签页 | ✅ |
 | 顶部 “APK size: 31.7 MB, Download Size: 30.9 MB”；文件树列出 Raw File Size（解压后大小）、Download Size（按下载时的压缩估算：已压缩的条目取压缩后大小，未压缩的条目当场 deflate 估算）、% of Total Download Size；目录汇总子项，每层按大小从大到小 | ✅ |
-| 选中 AndroidManifest.xml 或 res 下的二进制 XML：解码成带缩进的 XML，放在只读的 XML 高亮编辑器里；引用写成 `@ref/0x7f…`（AS 会按 resources.arsc 换成名字） | ✅（引用暂不解析成名字） |
+| 选中 AndroidManifest.xml 或 res 下的二进制 XML：解码成带缩进的 XML，放在只读的 XML 高亮编辑器里；引用按 APK 里的 resources.arsc 写成 `@string/app_name`、`?attr/colorPrimary`（库包的写成 `pkg:type/name`），查不到的仍是 `@ref/0x…` | ✅（`0x01…` 框架资源不解析成 `@android:…`，那要读 SDK 的 android.jar） |
 | 选中 `classes*.dex`：“This dex file defines N classes with M methods, and references R methods.”，下面按包展开的类树，列出 Defined Methods / Referenced Methods；只被引用、不在本 dex 定义的包和类灰显 | ✅（没有 AS 的 Size 列，也不能多选几个 dex 合并查看） |
 | 文本文件（.properties、.json、.version 等）直接显示内容；其他文件提示没有预览 | ✅ |
-| Compare with previous APK… | ❌ |
+| 顶部 Compare with previous APK…：选旧 APK，标签页换成 APK Size Differ：“old.apk → new.apk: 30 MB → 32 MB (+2.0 MB)”，文件树合并两边，列出 Old Size / New Size / Diff Size（Raw 大小），每层按增长从多到少；Close Comparison 回到分析页 | ✅（没有 AS 的 Show only changed / file-by-file patch 大小） |
 
-Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个 dex）后台算大小约 0.1 秒，`classes.dex`（9.3 MB）的汇总约 0.07 秒，Manifest 解码正确。
+Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个 dex）后台算大小约 0.1 秒，`classes.dex`（9.3 MB）的汇总约 0.07 秒，Manifest 解码正确。resources.arsc 解析（2026-10-21 补）：同一 APK 的 3521 个资源名约 7 毫秒，Manifest 里的 `@string/application_name`、`@mipmap/ic_launcher` 等都换成了名字；和改过的旧版本对比，新增、删除、变大的文件都对上。
 
 ## 63. SDK Manager（2026-10-21）
 

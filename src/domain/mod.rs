@@ -9,6 +9,7 @@ pub mod android_resources;
 pub mod ansi;
 pub mod excluded_folders;
 pub mod apk;
+pub mod arsc;
 pub mod axml;
 pub mod dex;
 pub mod lint;

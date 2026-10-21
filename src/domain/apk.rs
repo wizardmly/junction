@@ -60,6 +60,56 @@ fn sort(node: &mut ApkNode) {
     }
 }
 
+/// A folder or file of two archives compared, as the APK Size Differ
+/// shows it: its raw size in the old and the new one (0 where missing).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ApkDiffNode {
+    pub name: String,
+    pub path: String,
+    pub old: u64,
+    pub new: u64,
+    pub children: Vec<ApkDiffNode>,
+}
+
+impl ApkDiffNode {
+    pub fn is_dir(&self) -> bool {
+        !self.children.is_empty()
+    }
+
+    pub fn diff(&self) -> i64 {
+        self.new as i64 - self.old as i64
+    }
+}
+
+/// `old` and `new` merged by path, each level ordered by how much it
+/// grew (shrinking last), then by name.
+pub fn diff(old: &ApkNode, new: &ApkNode) -> ApkDiffNode {
+    fn merge(name: &str, path: &str, old: Option<&ApkNode>, new: Option<&ApkNode>) -> ApkDiffNode {
+        let mut children: Vec<ApkDiffNode> = Vec::new();
+        for o in old.map_or(&[][..], |n| &n.children) {
+            let n = new.and_then(|n| n.children.iter().find(|c| c.name == o.name));
+            children.push(merge(&o.name, &o.path, Some(o), n));
+        }
+        for n in new.map_or(&[][..], |n| &n.children) {
+            if !old.is_some_and(|o| o.children.iter().any(|c| c.name == n.name)) {
+                children.push(merge(&n.name, &n.path, None, Some(n)));
+            }
+        }
+        children.sort_by(|a, b| b.diff().cmp(&a.diff()).then_with(|| a.name.cmp(&b.name)));
+        ApkDiffNode { name: name.to_owned(), path: path.to_owned(), old: old.map_or(0, |n| n.raw), new: new.map_or(0, |n| n.raw), children }
+    }
+    merge("", "", Some(old), Some(new))
+}
+
+/// A size change: "+1.2 KB", "-512 B", "0 B".
+pub fn signed_size(delta: i64) -> String {
+    match delta {
+        0 => "0 B".to_owned(),
+        d if d > 0 => format!("+{}", size(d as u64)),
+        d => format!("-{}", size(d.unsigned_abs())),
+    }
+}
+
 /// A size as the analyzer writes it: "512 B", "12.3 KB", "4.5 MB".
 pub fn size(bytes: u64) -> String {
     let b = bytes as f64;
@@ -102,5 +152,24 @@ mod tests {
         assert_eq!(size(512), "512 B");
         assert_eq!(size(1536), "1.5 KB");
         assert_eq!(percent(1, 3), "33.3%");
+    }
+
+    #[test]
+    fn compares_two_trees() {
+        let e = |path: &str, raw| ApkEntry { path: path.into(), raw, download: raw };
+        let old = tree(&[e("classes.dex", 100), e("res/a.png", 30), e("res/gone.xml", 20)]);
+        let new = tree(&[e("classes.dex", 160), e("res/a.png", 30), e("lib/x.so", 5)]);
+        let d = diff(&old, &new);
+        assert_eq!((d.old, d.new, d.diff()), (150, 195, 45));
+        let names: Vec<&str> = d.children.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["classes.dex", "lib", "res"]);
+        let res = &d.children[2];
+        assert_eq!((res.old, res.new), (50, 30));
+        assert_eq!(res.children[1].name, "gone.xml");
+        assert_eq!((res.children[1].old, res.children[1].new), (20, 0));
+        assert_eq!(d.children[1].children[0].path, "lib/x.so");
+        assert_eq!(signed_size(-512), "-512 B");
+        assert_eq!(signed_size(1536), "+1.5 KB");
+        assert_eq!(signed_size(0), "0 B");
     }
 }

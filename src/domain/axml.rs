@@ -1,22 +1,22 @@
 //! Android's binary XML (a compiled AndroidManifest.xml or layout), back to
 //! text, as the APK Analyzer shows it.
 
-fn u16_at(b: &[u8], at: usize) -> Option<u16> {
+pub(crate) fn u16_at(b: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?))
 }
 
-fn u32_at(b: &[u8], at: usize) -> Option<u32> {
+pub(crate) fn u32_at(b: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
 }
 
-const NONE: u32 = u32::MAX;
+pub(crate) const NONE: u32 = u32::MAX;
 
-struct Pool {
+pub(crate) struct Pool {
     strings: Vec<String>,
 }
 
 impl Pool {
-    fn parse(b: &[u8], start: usize) -> Option<Pool> {
+    pub(crate) fn parse(b: &[u8], start: usize) -> Option<Pool> {
         let header = u16_at(b, start + 2)? as usize;
         let count = u32_at(b, start + 8)? as usize;
         let utf8 = u32_at(b, start + 16)? & 0x100 != 0;
@@ -29,7 +29,7 @@ impl Pool {
         Some(Pool { strings })
     }
 
-    fn get(&self, ix: u32) -> &str {
+    pub(crate) fn get(&self, ix: u32) -> &str {
         if ix == NONE { "" } else { self.strings.get(ix as usize).map_or("", String::as_str) }
     }
 }
@@ -56,12 +56,12 @@ fn escape(s: &str) -> String {
 }
 
 /// A typed attribute value as aapt2's `dump xmltree` and the analyzer
-/// write it.
-fn value(pool: &Pool, raw: u32, kind: u8, data: u32) -> String {
+/// write it; `names` turns a resource id into `type/name`.
+fn value(pool: &Pool, raw: u32, kind: u8, data: u32, names: &dyn Fn(u32) -> Option<String>) -> String {
     match kind {
         0x03 => pool.get(if raw != NONE { raw } else { data }).to_owned(),
-        0x01 => format!("@ref/0x{data:08x}"),
-        0x02 => format!("?ref/0x{data:08x}"),
+        0x01 => names(data).map_or_else(|| format!("@ref/0x{data:08x}"), |name| format!("@{name}")),
+        0x02 => names(data).map_or_else(|| format!("?ref/0x{data:08x}"), |name| format!("?{name}")),
         0x04 => f32::from_bits(data).to_string(),
         0x05 | 0x06 => {
             let units = if kind == 0x05 { ["px", "dp", "sp", "pt", "in", "mm"].get((data & 0xf) as usize).copied().unwrap_or("") } else if data & 0xf == 0 { "%" } else { "%p" };
@@ -81,8 +81,10 @@ fn value(pool: &Pool, raw: u32, kind: u8, data: u32) -> String {
     }
 }
 
-/// The document as indented XML text; `None` when it isn't binary XML.
-pub fn decode(b: &[u8]) -> Option<String> {
+/// The document as indented XML text, with references as `@type/name`
+/// where `names` knows the id (from the APK's resources.arsc) and as
+/// `@ref/0x…` elsewhere; `None` when it isn't binary XML.
+pub fn decode_with(b: &[u8], names: &dyn Fn(u32) -> Option<String>) -> Option<String> {
     if u16_at(b, 0)? != 0x0003 {
         return None;
     }
@@ -138,7 +140,7 @@ pub fn decode(b: &[u8]) -> Option<String> {
                         let uri = p.get(ns);
                         namespaces.iter().rev().find(|(_, u)| u == uri).map(|(prefix, _)| format!("{prefix}:")).unwrap_or_default()
                     };
-                    out.push_str(&format!("\n{indent}    {prefix}{attr}=\"{}\"", escape(&value(p, raw, kind, data))));
+                    out.push_str(&format!("\n{indent}    {prefix}{attr}=\"{}\"", escape(&value(p, raw, kind, data, names))));
                 }
                 open = true;
                 depth += 1;
@@ -169,12 +171,11 @@ pub fn decode(b: &[u8]) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// A tiny binary XML: `<manifest xmlns:android=… package="p" android:versionCode="7"/>`.
-    pub fn sample() -> Vec<u8> {
-        let strings = ["android", "http://schemas.android.com/apk/res/android", "manifest", "package", "p", "versionCode"];
+    /// A UTF-8 string pool chunk.
+    pub fn pool(strings: &[&str]) -> Vec<u8> {
         let mut pool = Vec::new();
         let mut offsets = Vec::new();
         for s in strings {
@@ -198,6 +199,13 @@ mod tests {
         sp.extend(0u32.to_le_bytes());
         sp.extend(&offsets);
         sp.extend(&pool);
+        sp
+    }
+
+    /// A tiny binary XML: `<manifest xmlns:android=… package="p" android:versionCode="7"/>`.
+    pub fn sample() -> Vec<u8> {
+        let strings = ["android", "http://schemas.android.com/apk/res/android", "manifest", "package", "p", "versionCode", "label"];
+        let sp = pool(&strings);
         let node = |kind: u16, body: &[u8]| {
             let mut c = Vec::new();
             c.extend(kind.to_le_bytes());
@@ -213,7 +221,7 @@ mod tests {
         for v in [NONE, 2] {
             start.extend(v.to_le_bytes());
         }
-        for v in [20u16, 20, 2, 0, 0, 0] {
+        for v in [20u16, 20, 3, 0, 0, 0] {
             start.extend(v.to_le_bytes());
         }
         let attr = |ns: u32, name: u32, raw: u32, kind: u8, data: u32| {
@@ -228,6 +236,7 @@ mod tests {
         };
         start.extend(attr(NONE, 3, 4, 0x03, 4));
         start.extend(attr(1, 5, NONE, 0x10, 7));
+        start.extend(attr(1, 6, NONE, 0x01, 0x7f01_0000));
         let end: Vec<u8> = [NONE, 2].iter().flat_map(|v| v.to_le_bytes()).collect();
         let mut body = sp;
         body.extend(node(0x0100, &ns));
@@ -244,11 +253,13 @@ mod tests {
 
     #[test]
     fn decodes_binary_xml() {
-        let text = decode(&sample()).unwrap();
+        let text = decode_with(&sample(), &|_| None).unwrap();
         assert_eq!(
             text,
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest\n    xmlns:android=\"http://schemas.android.com/apk/res/android\"\n    package=\"p\"\n    android:versionCode=\"7\" />\n"
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest\n    xmlns:android=\"http://schemas.android.com/apk/res/android\"\n    package=\"p\"\n    android:versionCode=\"7\"\n    android:label=\"@ref/0x7f010000\" />\n"
         );
-        assert_eq!(decode(b"<manifest/>"), None);
+        let named = decode_with(&sample(), &|id| (id == 0x7f01_0000).then(|| "string/app_name".to_owned())).unwrap();
+        assert!(named.contains("android:label=\"@string/app_name\""), "{named}");
+        assert_eq!(decode_with(b"<manifest/>", &|_| None), None);
     }
 }
