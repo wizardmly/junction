@@ -1169,7 +1169,8 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | Component Tree：类名 + `@id/…` + 文字，可折叠；GONE / INVISIBLE 的 View 灰显 | ✅ |
 | 中间是设备截图，每个可见 View 画框；悬停高亮、点击选中最里层的 View，树里同步展开并滚到它；刷新后保留选中 | ✅ |
 | Attributes：layout / bounds、size、visibility、focusable、enabled、clickable、focused、selected、pressed 等，UI Automator 模式另有 text、content-desc、checked、scrollable 等 | ✅（AS 的完整属性和 Declared Attributes 需要设备端 agent，没做） |
-| 3D 视图、Compose 重组计数、改属性 | ❌ |
+| 3D（标题栏 3D 按钮）：每个可见 View 按层级深度拉开成一层，默认斜着看（AS 进入 3D 时的角度）；拖动左右 / 上下旋转，Layer Spacing − / + 调层间距，Reset View 复位；悬停和点击选中最上面那层的 View，与树同步 | ✅（层上没有贴截图，只画半透明的层和边框） |
+| Compose 重组计数、改属性 | ❌ |
 
 只用模拟 adb 验证过（假 `dumpsys activity top` 输出 + 540×1200 截图）：树、框选、属性、窗口切换和 UI Automator 失败提示都正确。
 

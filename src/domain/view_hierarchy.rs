@@ -261,6 +261,54 @@ pub fn png_size(png: &[u8]) -> Option<(u32, u32)> {
     Some((be(16), be(20)))
 }
 
+/// The 3D view's camera: each view a layer `depth × spacing` device
+/// pixels in front of the screen, turned `yaw` radians around the vertical
+/// axis and `pitch` around the horizontal one, seen without perspective.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rotation {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub spacing: f32,
+}
+
+impl Rotation {
+    /// How Android Studio turns the layers when 3D mode opens.
+    pub const START: Rotation = Rotation { yaw: -0.6, pitch: 0.25, spacing: 60. };
+
+    /// A device point on layer `depth` of a `width × height` screen, as
+    /// seen: centered on the screen's middle.
+    pub fn project(&self, x: f32, y: f32, depth: usize, width: f32, height: f32) -> (f32, f32) {
+        let (x, y, z) = (x - width / 2., y - height / 2., depth as f32 * self.spacing);
+        let (sy, cy) = self.yaw.sin_cos();
+        let (sp, cp) = self.pitch.sin_cos();
+        let x1 = x * cy + z * sy;
+        let z1 = -x * sy + z * cy;
+        (x1, y * cp - z1 * sp)
+    }
+
+    /// A view's four corners on its layer, clockwise from top left.
+    pub fn corners(&self, r: &Rect, depth: usize, width: f32, height: f32) -> [(f32, f32); 4] {
+        let (l, t, rt, b) = (r.left as f32, r.top as f32, r.right as f32, r.bottom as f32);
+        [self.project(l, t, depth, width, height), self.project(rt, t, depth, width, height), self.project(rt, b, depth, width, height), self.project(l, b, depth, width, height)]
+    }
+}
+
+/// Whether `p` is inside the convex quadrilateral `q`.
+pub fn quad_contains(q: &[(f32, f32); 4], p: (f32, f32)) -> bool {
+    let mut sign = 0.;
+    for i in 0..4 {
+        let (a, b) = (q[i], q[(i + 1) % 4]);
+        let cross = (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
+        if cross != 0. {
+            if sign != 0. && cross.signum() != sign {
+                return false;
+            }
+            sign = cross.signum();
+        }
+    }
+    true
+}
+
 /// Where the snapshot comes from.
 pub trait LayoutSource {
     /// `dumpsys activity top`'s text, or the `uiautomator dump` XML.
@@ -271,6 +319,23 @@ pub trait LayoutSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projects_layers() {
+        let flat = Rotation { yaw: 0., pitch: 0., spacing: 50. };
+        assert_eq!(flat.project(100., 50., 3, 200., 100.), (0., 0.));
+        let r = Rect { left: 0, top: 0, right: 200, bottom: 100 };
+        assert_eq!(flat.corners(&r, 0, 200., 100.), [(-100., -50.), (100., -50.), (100., 50.), (-100., 50.)]);
+        // Turned a quarter: a layer shows edge on, deeper layers further right.
+        let side = Rotation { yaw: std::f32::consts::FRAC_PI_2, pitch: 0., spacing: 50. };
+        let (x0, _) = side.project(0., 0., 0, 200., 100.);
+        let (x1, _) = side.project(0., 0., 1, 200., 100.);
+        assert!(x0.abs() < 1e-3 && (x1 - 50.).abs() < 1e-3);
+        let q = Rotation::START.corners(&r, 2, 200., 100.);
+        let middle = Rotation::START.project(100., 50., 2, 200., 100.);
+        assert!(quad_contains(&q, middle));
+        assert!(!quad_contains(&q, (middle.0 + 500., middle.1)));
+    }
 
     const DUMPSYS: &str = "TASK 1:com.android.launcher3 id=2 userId=0
   ACTIVITY com.android.launcher3/.Launcher 1a2b pid=900
