@@ -92,7 +92,11 @@ pub struct DeviceManager {
     loaded: bool,
     adb_error: Option<String>,
     cache: Arc<Mutex<ScanCache>>,
+    /// Following adb: a window that lists devices shows, or something holds it.
     shown: bool,
+    window_shown: bool,
+    /// Dialogs that list devices while open (Attach Debugger).
+    held: usize,
     poll: Option<Task<()>>,
     /// Asks the running scan loop to scan again right away.
     rescan: bool,
@@ -119,6 +123,8 @@ impl DeviceManager {
             adb_error: None,
             cache: Arc::default(),
             shown: false,
+            window_shown: false,
+            held: 0,
             poll: None,
             rescan: false,
             transitions: HashMap::new(),
@@ -136,6 +142,8 @@ impl DeviceManager {
     /// while it shows (the first time starts adb's server, as Android
     /// Studio does when it opens).
     pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        self.window_shown = shown;
+        let shown = shown || self.held > 0;
         self.shown = shown;
         if shown && self.poll.is_none() {
             self.poll = Some(cx.spawn(async move |this, cx| {
@@ -196,7 +204,14 @@ impl DeviceManager {
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.rescan = true;
-        self.set_shown(self.shown, cx);
+        self.set_shown(self.window_shown, cx);
+    }
+
+    /// A dialog listing devices opened (`true`) or closed: the list
+    /// follows adb meanwhile.
+    pub fn hold(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.held = if on { self.held + 1 } else { self.held.saturating_sub(1) };
+        self.set_shown(self.window_shown, cx);
     }
 
     fn apply_scan(&mut self, tools: Tools, devices: Vec<Device>, error: Option<String>, cx: &mut Context<Self>) {

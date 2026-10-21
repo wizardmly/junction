@@ -350,6 +350,13 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Run › Attach Debugger to Android Process: the Choose Process dialog.
+    pub(super) fn attach_debugger(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let model = self.model.clone();
+        let project: std::rc::Rc<dyn Fn(&gpui_kit::App) -> Option<std::path::PathBuf>> = std::rc::Rc::new(move |cx| model.read(cx).project_root().map(std::path::Path::to_path_buf));
+        crate::ui::attach_debugger_dialog::open(self.device_manager.clone(), project, window, cx);
+    }
+
     /// Debug: a session shows the Debug window, a pause the execution
     /// point in the editor, errors become balloons.
     /// Apply Changes (Ctrl+F10) / Apply Code Changes (Ctrl+Alt+F10).

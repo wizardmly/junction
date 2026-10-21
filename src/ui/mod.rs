@@ -39,6 +39,7 @@ pub mod layout_inspector;
 pub mod profiler_view;
 pub mod system_trace_view;
 pub mod app_inspection;
+pub mod attach_debugger_dialog;
 pub mod background_task_view;
 pub mod network_view;
 pub mod selectable_text;

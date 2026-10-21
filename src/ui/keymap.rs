@@ -65,6 +65,7 @@ pub const ENTRIES: &[Entry] = &[
     entry("Build", "Make Project", "workspace::MakeProject"),
     entry("Run", "Run 'app'", "workspace::RunApp"),
     entry("Run", "Run with Coverage", "workspace::RunWithCoverage"),
+    entry("Run", "Attach Debugger to Android Process", "workspace::AttachDebugger"),
     entry("Run", "Stop", "workspace::StopApp"),
     entry("Run", "Apply Changes and Restart Activity", "workspace::ApplyChanges"),
     entry("Run", "Apply Code Changes", "workspace::ApplyCodeChanges"),
