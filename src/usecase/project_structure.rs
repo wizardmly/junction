@@ -19,6 +19,15 @@ pub struct ModulePage {
     pub script: Option<String>,
     pub properties: Vec<Property>,
     pub default_config: Vec<Property>,
+    pub build_types: Vec<ps::Variant>,
+    pub flavors: Vec<ps::Variant>,
+}
+
+/// Build Variants' two tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VariantKind {
+    BuildType,
+    Flavor,
 }
 
 /// What the dialog shows, and where each value is written.
@@ -44,11 +53,13 @@ pub struct Edits {
     pub gradle: Option<String>,
     /// (module index, label, value).
     pub modules: Vec<(usize, &'static str, String)>,
+    /// (module index, tab, build type or flavor, label, value).
+    pub variants: Vec<(usize, VariantKind, String, &'static str, String)>,
 }
 
 impl Edits {
     pub fn is_empty(&self) -> bool {
-        self.sdk_dir.is_none() && self.agp.is_none() && self.gradle.is_none() && self.modules.is_empty()
+        self.sdk_dir.is_none() && self.agp.is_none() && self.gradle.is_none() && self.modules.is_empty() && self.variants.is_empty()
     }
 }
 
@@ -73,8 +84,10 @@ pub fn read(files: &dyn ProjectFiles, modules: &[(String, String)], catalogs: Ve
         .iter()
         .map(|(path, dir)| {
             let script = script_in(files, dir, "build");
-            let (properties, default_config) = ps::module_properties(script.as_ref().map_or("", |(_, t)| t), &catalogs);
-            ModulePage { path: path.clone(), script: script.map(|(p, _)| p), properties, default_config }
+            let text = script.as_ref().map_or("", |(_, t)| t.as_str());
+            let (properties, default_config) = ps::module_properties(text, &catalogs);
+            let (build_types, flavors) = ps::variants(text, &catalogs);
+            ModulePage { path: path.clone(), script: script.map(|(p, _)| p), properties, default_config, build_types, flavors }
         })
         .collect();
     Structure {
@@ -98,6 +111,16 @@ impl Structure {
         }
     }
 
+    /// A row of a build type or flavor.
+    pub fn variant_property(&self, module: usize, kind: VariantKind, name: &str, label: &str) -> Option<&Property> {
+        let page = self.modules.get(module)?;
+        let list = match kind {
+            VariantKind::BuildType => &page.build_types,
+            VariantKind::Flavor => &page.flavors,
+        };
+        list.iter().find(|v| v.name == name)?.properties.iter().find(|p| p.label == label)
+    }
+
     /// A row of a module's page by its label.
     pub fn property(&self, module: usize, label: &str) -> Option<&Property> {
         let page = self.modules.get(module)?;
@@ -110,6 +133,10 @@ pub fn check(structure: &Structure, edits: &Edits) -> Result<(), String> {
     for (module, label, value) in &edits.modules {
         let Some(site) = structure.property(*module, label).and_then(|p| p.site.as_ref()) else { continue };
         ps::check(site, value).map_err(|e| format!("{label}: {e}"))?;
+    }
+    for (module, kind, name, label, value) in &edits.variants {
+        let Some(site) = structure.variant_property(*module, *kind, name, label).and_then(|p| p.site.as_ref()) else { continue };
+        ps::check(site, value).map_err(|e| format!("{name} › {label}: {e}"))?;
     }
     for (label, value) in [("Android Gradle Plugin Version", &edits.agp), ("Gradle Version", &edits.gradle)] {
         if value.as_deref().is_some_and(|v| v.trim().is_empty() || v.trim().contains(char::is_whitespace)) {
@@ -141,6 +168,13 @@ pub fn apply(files: &dyn ProjectFiles, structure: &Structure, edits: &Edits) -> 
     for (module, label, value) in &edits.modules {
         let Some(page) = structure.modules.get(*module) else { continue };
         let Some(site) = structure.property(*module, label).and_then(|p| p.site.clone()) else { continue };
+        if let Some(file) = structure.file_of(site.place, page.script.as_ref()) {
+            add(file, site, value.trim().to_owned());
+        }
+    }
+    for (module, kind, name, label, value) in &edits.variants {
+        let Some(page) = structure.modules.get(*module) else { continue };
+        let Some(site) = structure.variant_property(*module, *kind, name, label).and_then(|p| p.site.clone()) else { continue };
         if let Some(file) = structure.file_of(site.place, page.script.as_ref()) {
             add(file, site, value.trim().to_owned());
         }
@@ -323,6 +357,7 @@ mod tests {
             agp: Some("8.7.2".into()),
             gradle: Some("8.11.1".into()),
             modules: vec![(0, "Compile Sdk Version", "35".into()), (0, "Min SDK Version", "26".into()), (1, "Min SDK Version", "26".into()), (0, "Version Name", "1.1".into())],
+            ..Default::default()
         };
         let mut changed = apply(&files, &s, &edits).unwrap();
         changed.sort();
@@ -353,6 +388,12 @@ mod tests {
         // Properties are found again in the new text.
         let s = structure(&files);
         apply(&files, &s, &Edits { modules: vec![(0, "Compile Sdk Version", "35".into())], ..Default::default() }).unwrap();
+        let groovy = "android {\n    buildTypes {\n        release {\n            minifyEnabled false\n        }\n    }\n}\n";
+        files.write("lib/build.gradle", groovy).unwrap();
+        let s = structure(&files);
+        let edits = Edits { variants: vec![(1, VariantKind::BuildType, "release".into(), "Minify Enabled", "true".into())], ..Default::default() };
+        apply(&files, &s, &edits).unwrap();
+        assert_eq!(files.read("lib/build.gradle").unwrap(), groovy.replace("false", "true"));
         assert_eq!(files.read("app/build.gradle.kts").unwrap(), "android {\n    compileSdk = 35\n}\n\ndependencies {\n    api(project(\":lib\"))\n    implementation(libs.coil)\n}\n");
     }
 }

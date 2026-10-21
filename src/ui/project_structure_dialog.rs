@@ -21,14 +21,14 @@ use gpui_kit::component::{
 use gpui_kit::{App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px};
 
 use crate::domain::dependencies::{Addition, CONFIGURATIONS, Change, Notation};
-use crate::domain::project_structure::{DEFAULT_CONFIG, MODULE_PROPERTIES, Property};
+use crate::domain::project_structure::{BUILD_TYPE, DEFAULT_CONFIG, FLAVOR, MODULE_PROPERTIES, Property, Variant};
 use crate::domain::run::ModuleInfo;
 use crate::infra::project_files::DiskFiles;
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
 use crate::ui::dialogs;
-use crate::usecase::project_structure::{self as usecase, DependencyDraft, Edits, Structure};
+use crate::usecase::project_structure::{self as usecase, DependencyDraft, Edits, Structure, VariantKind};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -36,9 +36,19 @@ enum Page {
     Project,
     Modules,
     Dependencies,
+    BuildVariants,
 }
 
-const PAGES: [(Page, &str); 4] = [(Page::SdkLocation, "SDK Location"), (Page::Project, "Project"), (Page::Modules, "Modules"), (Page::Dependencies, "Dependencies")];
+const PAGES: [(Page, &str); 5] =
+    [(Page::SdkLocation, "SDK Location"), (Page::Project, "Project"), (Page::Modules, "Modules"), (Page::Dependencies, "Dependencies"), (Page::BuildVariants, "Build Variants")];
+
+/// A tab's rows.
+fn variant_rows(kind: VariantKind) -> &'static [(&'static str, &'static str)] {
+    match kind {
+        VariantKind::BuildType => BUILD_TYPE,
+        VariantKind::Flavor => FLAVOR,
+    }
+}
 
 /// The labels of a module's rows, Properties then Default Config.
 fn labels() -> impl Iterator<Item = &'static str> {
@@ -68,6 +78,13 @@ pub struct ProjectStructureView {
     /// Add Library Dependency: the coordinate and its configuration.
     library: Entity<InputState>,
     configuration: String,
+    /// Build Variants: the tab, the selected build type or flavor, its
+    /// rows' fields, and every one's values as edited (by module, tab and
+    /// name, in the tab's row order).
+    variant_kind: VariantKind,
+    variant: usize,
+    variant_fields: Vec<Entity<InputState>>,
+    variant_values: std::collections::HashMap<(usize, VariantKind, String), Vec<String>>,
     error: Option<String>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
@@ -121,7 +138,17 @@ impl ProjectStructureView {
             agp: self.structure.agp.as_deref().and_then(|old| changed(&self.agp, Some(old))),
             gradle: self.structure.gradle.as_deref().and_then(|old| changed(&self.gradle, Some(old))),
             modules: Vec::new(),
+            variants: Vec::new(),
         };
+        self.store_variant(cx);
+        for ((module, kind, name), values) in &self.variant_values {
+            for ((label, _), value) in variant_rows(*kind).iter().zip(values) {
+                let Some(p) = self.structure.variant_property(*module, *kind, name, label).filter(|p| p.site.is_some()) else { continue };
+                if value.trim() != p.value {
+                    edits.variants.push((*module, *kind, name.clone(), label, value.trim().to_owned()));
+                }
+            }
+        }
         for (module, values) in self.values.iter().enumerate() {
             for (ix, label) in labels().enumerate() {
                 let Some(p) = self.row(module, ix).filter(|p| p.site.is_some()) else { continue };
@@ -159,6 +186,130 @@ impl ProjectStructureView {
                 false
             }
         }
+    }
+
+    fn variants_of(&self, module: usize, kind: VariantKind) -> &[Variant] {
+        match (self.structure.modules.get(module), kind) {
+            (Some(m), VariantKind::BuildType) => &m.build_types,
+            (Some(m), VariantKind::Flavor) => &m.flavors,
+            (None, _) => &[],
+        }
+    }
+
+    fn current_variant(&self) -> Option<&Variant> {
+        self.variants_of(self.module, self.variant_kind).get(self.variant)
+    }
+
+    /// The selected build type's or flavor's rows into the fields.
+    fn load_variant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let variant = self.current_variant().cloned();
+        let key = variant.as_ref().map(|v| (self.module, self.variant_kind, v.name.clone()));
+        for (ix, field) in self.variant_fields.clone().iter().enumerate() {
+            let row = variant.as_ref().and_then(|v| v.properties.get(ix));
+            let editable = row.is_some_and(|p| p.site.is_some());
+            let text = match row {
+                Some(p) if p.site.is_none() => p.expression.clone().unwrap_or_default(),
+                Some(_) => key.as_ref().and_then(|k| self.variant_values.get(k)).and_then(|v| v.get(ix)).cloned().unwrap_or_default(),
+                None => String::new(),
+            };
+            field.update(cx, |s, cx| {
+                s.set_value(text, window, cx);
+                s.set_placeholder(if editable { "" } else { "Not set" }, window, cx);
+            });
+        }
+    }
+
+    fn store_variant(&mut self, cx: &App) {
+        let Some(name) = self.current_variant().map(|v| v.name.clone()) else { return };
+        let n = variant_rows(self.variant_kind).len();
+        let values: Vec<String> = self.variant_fields.iter().take(n).map(|f| f.read(cx).value().to_string()).collect();
+        self.variant_values.insert((self.module, self.variant_kind, name), values);
+    }
+
+    fn select_variant(&mut self, module: usize, kind: VariantKind, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.store_variant(cx);
+        if module != self.module {
+            self.select_module(module, window, cx);
+        }
+        self.variant_kind = kind;
+        self.variant = index;
+        self.load_variant(window, cx);
+        cx.notify();
+    }
+
+    fn render_variants(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let palette = cx.palette().clone();
+        let entity = cx.entity();
+        let kind = self.variant_kind;
+        let modules = v_flex()
+            .id("psd-var-modules")
+            .w(px(130.))
+            .flex_none()
+            .h_full()
+            .overflow_y_scroll()
+            .border_r_1()
+            .border_color(palette.border)
+            .children(self.structure.modules.iter().enumerate().map(|(ix, m)| {
+                let e = entity.clone();
+                div()
+                    .id(("psd-var-module", ix))
+                    .px_2()
+                    .py_0p5()
+                    .text_sm()
+                    .when(ix == self.module, |el| el.bg(palette.selection))
+                    .hover(|el| el.bg(palette.hover))
+                    .child(m.path.trim_start_matches(':').to_owned().replace(':', "/"))
+                    .on_click(move |_, window, cx| e.update(cx, |this, cx| this.select_variant(ix, kind, 0, window, cx)))
+            }));
+        let module = self.module;
+        let tabs = h_flex().gap_3().px_2().pb_1().border_b_1().border_color(palette.border).children([(VariantKind::BuildType, "Build Types"), (VariantKind::Flavor, "Flavors")].into_iter().map(|(k, name)| {
+            let e = entity.clone();
+            div()
+                .id(name)
+                .text_sm()
+                .when(k == kind, |el| el.font_weight(FontWeight::SEMIBOLD).border_b_2().border_color(palette.accent))
+                .child(name)
+                .on_click(move |_, window, cx| e.update(cx, |this, cx| this.select_variant(module, k, 0, window, cx)))
+        }));
+        let list = self.variants_of(self.module, kind);
+        let names = v_flex().id("psd-var-names").w(px(150.)).flex_none().h_full().overflow_y_scroll().border_r_1().border_color(palette.border).children(list.iter().enumerate().map(|(ix, v)| {
+            let e = entity.clone();
+            div()
+                .id(("psd-var", ix))
+                .px_2()
+                .py_0p5()
+                .text_sm()
+                .when(ix == self.variant, |el| el.bg(palette.selection))
+                .hover(|el| el.bg(palette.hover))
+                .child(v.name.clone())
+                .on_click(move |_, window, cx| e.update(cx, |this, cx| this.select_variant(module, kind, ix, window, cx)))
+        }));
+        let label = |text: &'static str| div().w(px(170.)).flex_none().text_sm().child(text);
+        let fields = match self.current_variant() {
+            Some(v) => v_flex()
+                .id("psd-var-fields")
+                .flex_1()
+                .h_full()
+                .overflow_y_scroll()
+                .px_3()
+                .gap_2()
+                .children(variant_rows(kind).iter().enumerate().map(|(ix, (name, _))| {
+                    let editable = v.properties.get(ix).is_some_and(|p| p.site.is_some());
+                    h_flex().gap_2().child(label(name)).child(div().flex_1().child(Input::new(&self.variant_fields[ix]).small().disabled(!editable)))
+                }))
+                .into_any_element(),
+            None => div()
+                .px_3()
+                .text_sm()
+                .text_color(palette.text_secondary)
+                .child(match kind {
+                    VariantKind::BuildType => "This module's build script declares no build types (debug and release are Gradle's defaults).",
+                    VariantKind::Flavor => "This module's build script declares no product flavors.",
+                })
+                .into_any_element(),
+        };
+        let body = h_flex().flex_1().min_h_0().items_start().child(names).child(fields);
+        h_flex().size_full().items_start().child(modules).child(v_flex().flex_1().min_w_0().h_full().gap_1().child(tabs).child(body)).into_any_element()
     }
 
     /// A row of the Dependencies page picked: its version into the field.
@@ -434,6 +585,7 @@ impl ProjectStructureView {
                 h_flex().size_full().items_start().child(modules).child(settings).into_any_element()
             }
             Page::Dependencies => self.render_dependencies(cx),
+            Page::BuildVariants => self.render_variants(cx),
         }
     }
 }
@@ -479,12 +631,24 @@ pub fn open(build_root: PathBuf, modules: Vec<ModuleInfo>, window: &mut Window, 
         let fields = labels().map(|_| input(cx, String::new())).collect();
         let values = structure.modules.iter().map(|m| m.properties.iter().chain(&m.default_config).map(|p| p.value.clone()).collect()).collect();
         let version = input(cx, String::new());
+        let variant_fields = (0..BUILD_TYPE.len().max(FLAVOR.len())).map(|_| input(cx, String::new())).collect::<Vec<_>>();
         let library = cx.new(|cx| InputState::new(window, cx).placeholder("group:artifact:version"));
         let subscriptions = vec![cx.subscribe(&version, |this: &mut ProjectStructureView, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.version_changed(cx);
             }
         })];
+        let variant_values = structure
+            .modules
+            .iter()
+            .enumerate()
+            .flat_map(|(ix, m)| {
+                let tab = |kind, list: &Vec<Variant>| list.iter().map(move |v| ((ix, kind, v.name.clone()), v.properties.iter().map(|p| p.value.clone()).collect::<Vec<_>>())).collect::<Vec<_>>();
+                let mut out = tab(VariantKind::BuildType, &m.build_types);
+                out.extend(tab(VariantKind::Flavor, &m.flavors));
+                out
+            })
+            .collect();
         let mut view = ProjectStructureView {
             build_root,
             structure,
@@ -501,10 +665,15 @@ pub fn open(build_root: PathBuf, modules: Vec<ModuleInfo>, window: &mut Window, 
             version,
             library,
             configuration: "implementation".into(),
+            variant_kind: VariantKind::BuildType,
+            variant: 0,
+            variant_fields,
+            variant_values,
             error: None,
             _subscriptions: subscriptions,
         };
         view.load_fields(window, cx);
+        view.load_variant(window, cx);
         view
     });
     let focus = view.read(cx).sdk_dir.clone();

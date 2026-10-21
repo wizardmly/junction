@@ -1109,7 +1109,7 @@ Linux 实测（Xvfb，Java + JUnit 4 工程）：在 `CalcTest.adds` 第 10 行�
 
 | 功能 | 状态 |
 |---|---|
-| File › Project Structure…（Ctrl+Alt+Shift+S，macOS ⌘;），左侧 SDK Location / Project / Modules / Dependencies 四页 | ✅ |
+| File › Project Structure…（Ctrl+Alt+Shift+S，macOS ⌘;），左侧 SDK Location / Project / Modules / Dependencies / Build Variants 五页 | ✅ |
 | SDK Location：Android SDK location（`local.properties` 的 `sdk.dir`，按 AS 的转义写 `C\:\\Users\\…`；清空则删除该行），“…” 选目录 | ✅ |
 | Project：Android Gradle Plugin Version（根脚本的 `id("com.android.*") version`、`buildscript` 的 classpath、settings 脚本的 plugins、catalog 的 `[plugins]` 或其 `version.ref`，改动写到所有出现处）；Gradle Version（改 `distributionUrl` 里的版本） | ✅ |
 | Modules：模块列表，右侧 Properties（Compile Sdk Version、Build Tools Version、NDK Version、Source / Target Compatibility）和 Default Config（Application ID、Min / Target SDK Version、Version Code、Version Name）；Kotlin DSL 和 Groovy 都支持（`x = v`、`x v`、`x(v)`） | ✅ |
@@ -1117,6 +1117,7 @@ Linux 实测（Xvfb，Java + JUnit 4 工程）：在 `CalcTest.adds` 第 10 行�
 | OK：校验（数字字段必须是整数，Java 版本只能是数字和点），出错时在对话框底部显示 “Version Code: 'x' is not a whole number.” 并保持打开；成功后写文件并自动 Sync | ✅ |
 | Dependencies（2026-10-20）：左边模块，中间 Declared Dependencies（顶层 `dependencies { }` 里的每条声明：库显示解析后的 `g:a:v`，`libs.x` 经 catalog 解析，模块显示 `:lib`，`platform(…)`、`files(…)` 照写的显示），右边选中项的 Requested Version（写在脚本里就改脚本，`libs.x` 改 catalog 的版本或其 `version.ref` 指向的 `[versions]`）和 Configuration 下拉；“+” 加模块依赖，“−” 删除（连同 `{ exclude … }` 闭包），下方 Add Library Dependency 填 `group:artifact:version` 和配置后添加：项目有 catalog 时按 AS 的做法加到 catalog 里（`libs.okhttp`），否则写坐标；没有 `dependencies` 块时新建；Kotlin DSL 和 Groovy 写法各按原样 | ✅（加库不能在线搜索，要填完整坐标；`buildscript` 里的 classpath 不列出） |
 | OK 时先写依赖的改动，再按新文本找回 Properties / Default Config 的位置写属性，两页同时改也不会错位 | ✅ |
-| AS 的 Variants / Build Variants 页、Signing Configs、Suggestions，新增未写的属性 | ❌ 未做 |
+| Build Variants（2026-10-20）：左边模块，Build Types / Flavors 两个标签，中间是脚本里声明的构建类型或产品风味（`release { }`、`getByName("debug") { }`、`create("free") { }`），右边按 AS 的行：构建类型有 Debuggable、Jni Debuggable、Minify Enabled、Shrink Resources、Multi Dex Enabled、Application Id Suffix、Version Name Suffix（Kotlin DSL 的 `isX` 和 Groovy 的 `x` 都认），风味有 Dimension、Application ID、Application Id Suffix、Min / Target SDK、Version Code / Name、Version Name Suffix；布尔值只接受 true / false。Default Config 的行现在只在 `defaultConfig { }` 里找，不会读到风味里的同名设置 | ✅（不能新增 / 删除构建类型和风味；未写的属性不能新增） |
+| Signing Configs、Suggestions，新增未写的属性 | ❌ 未做 |
 
-Linux 实测（Xvfb，两个模块的 Groovy 工程 + catalog）：Dependencies 页改 core-ktx 版本为 1.15.0、删 `:lib`、加 `com.squareup.okhttp3:okhttp:4.12.0` 后 OK，`app/build.gradle` 得到 `implementation libs.okhttp`，toml 加了 `okhttp` 的 `[versions]` 和新建的 `[libraries]` 段。其余三页显示正确（SDK `/opt/android-sdk`、AGP 8.5.0、Gradle 8.7，app 的 Min SDK 显示 24 和 `libs.versions.minSdk`，Target SDK 灰显 `rootProject.ext.target`）；lib 的 Compile Sdk 改 35、Gradle 改 8.9、app 的 Min SDK 改 26 后点 OK，`git diff` 只改了 `lib/build.gradle` 一处、`gradle-wrapper.properties` 的 URL 和 toml 的 `minSdk = "26"`；Version Code 填 `x` 时对话框不关闭并提示错误。
+Linux 实测（Xvfb，两个模块的 Groovy 工程 + catalog）：Build Variants 页把 release 的 Minify Enabled 改 true、free 风味的 Min SDK 改 23 后 OK，只改了这两行，Modules 页的 Default Config 仍显示 24。Dependencies 页改 core-ktx 版本为 1.15.0、删 `:lib`、加 `com.squareup.okhttp3:okhttp:4.12.0` 后 OK，`app/build.gradle` 得到 `implementation libs.okhttp`，toml 加了 `okhttp` 的 `[versions]` 和新建的 `[libraries]` 段。其余三页显示正确（SDK `/opt/android-sdk`、AGP 8.5.0、Gradle 8.7，app 的 Min SDK 显示 24 和 `libs.versions.minSdk`，Target SDK 灰显 `rootProject.ext.target`）；lib 的 Compile Sdk 改 35、Gradle 改 8.9、app 的 Min SDK 改 26 后点 OK，`git diff` 只改了 `lib/build.gradle` 一处、`gradle-wrapper.properties` 的 URL 和 toml 的 `minSdk = "26"`；Version Code 填 `x` 时对话框不关闭并提示错误。

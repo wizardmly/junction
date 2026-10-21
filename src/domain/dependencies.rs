@@ -77,7 +77,7 @@ fn block(script: &str) -> Option<Range<usize>> {
 }
 
 /// The next `{` from `from`, past strings and comments.
-fn next_open(text: &str, from: usize) -> Option<usize> {
+pub(super) fn next_open(text: &str, from: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut i = from;
     while i < bytes.len() {
