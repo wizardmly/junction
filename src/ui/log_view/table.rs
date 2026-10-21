@@ -321,12 +321,13 @@ impl LogView {
                         ref_labels.child(head_label(palette.text_secondary, &palette))
                     };
                 }
-                for label in labels.iter().take(shown) {
-                    ref_labels = ref_labels.child(ref_label(label, palette.text_secondary, &palette));
+                let groups = refs.table_groups(&commit.hash);
+                for group in groups.iter().take(shown) {
+                    ref_labels = ref_labels.child(group_label(group, palette.text_secondary, &palette));
                 }
-                if labels.len() > shown {
+                if groups.len() > shown {
                     ref_labels = ref_labels.child(
-                        div().mr_1().text_xs().text_color(palette.text_secondary).child(format!("+{}", labels.len() - shown)),
+                        div().mr_1().text_xs().text_color(palette.text_secondary).child(format!("+{}", groups.len() - shown)),
                     );
                 }
                 if log.refs_on_left {

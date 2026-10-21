@@ -11,6 +11,14 @@ pub enum RefKind {
     Tag,
 }
 
+/// One label of a Log row: a ref, or a local branch with the remote
+/// branch it tracks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefGroup<'a> {
+    pub name: String,
+    pub refs: Vec<&'a RefName>,
+}
+
 /// A branch or tag pointing at a commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefName {
@@ -148,6 +156,34 @@ impl RepositoryRefs {
             .collect();
         refs.sort_by_key(|r| (Some(&r.name) != self.current_branch.as_ref() || r.kind != RefKind::LocalBranch, r.kind));
         refs
+    }
+
+    /// The labels of a row as IntelliJ groups them (`GitRefManager.groupForTable`):
+    /// a local branch and the remote branch it tracks on the same commit
+    /// share one label, `origin & main`; the current branch's label first.
+    pub fn table_groups(&self, hash: &str) -> Vec<RefGroup<'_>> {
+        let mut rest = self.for_commit(hash);
+        let mut tracked: Vec<RefGroup> = Vec::new();
+        for local in rest.iter().filter(|r| r.kind == RefKind::LocalBranch).copied().collect::<Vec<_>>() {
+            let remotes = || rest.iter().filter(|r| r.kind == RefKind::RemoteBranch);
+            // The upstream, else a remote's branch of the same name.
+            let remote = local.upstream.as_ref().and_then(|u| remotes().find(|r| &r.name == u)).or_else(|| {
+                remotes().find(|r| r.remote().is_some_and(|remote| r.name == format!("{remote}/{}", local.name) && (self.remotes.is_empty() || self.remotes.iter().any(|known| known == remote))))
+            });
+            if let Some(&remote) = remote {
+                tracked.push(RefGroup { name: format!("{} & {}", remote.remote().unwrap_or_default(), local.name), refs: vec![local, remote] });
+                rest.retain(|r| !std::ptr::eq(*r, local) && !std::ptr::eq(*r, remote));
+            }
+        }
+        let current = self.current_branch.as_deref();
+        let mut out: Vec<RefGroup> = Vec::new();
+        if let Some(ix) = rest.iter().position(|r| r.kind == RefKind::LocalBranch && Some(r.name.as_str()) == current) {
+            let branch = rest.remove(ix);
+            out.push(RefGroup { name: branch.name.clone(), refs: vec![branch] });
+        }
+        out.extend(tracked);
+        out.extend(rest.into_iter().map(|r| RefGroup { name: r.name.clone(), refs: vec![r] }));
+        out
     }
 
     pub fn local_branches(&self) -> impl Iterator<Item = &RefName> {
@@ -293,6 +329,20 @@ mod tests {
     fn recent_branches_from_reflog() {
         let reflog = "commit: x\ncheckout: moving from feature to main\ncheckout: moving from main to feature\ncheckout: moving from gone to main\n";
         assert_eq!(recent_branches(reflog, |n| n != "gone"), ["main", "feature"]);
+    }
+
+    #[test]
+    fn groups_tracked_branches_like_intellij() {
+        let output = "aaa\0\0refs/heads/main\0main\0origin/main\0\n\
+                      aaa\0\0refs/remotes/origin/main\0origin/main\0\0\n\
+                      aaa\0\0refs/heads/topic\0topic\0\0\n\
+                      aaa\0\0refs/remotes/upstream/topic\0upstream/topic\0\0\n\
+                      aaa\0\0refs/heads/solo\0solo\0\0\n\
+                      aaa\0\0refs/tags/v1\0v1\0\0\n";
+        let mut refs = RepositoryRefs::new(None, Some("solo".into()), parse_for_each_ref(output));
+        refs.remotes = vec!["origin".into(), "upstream".into()];
+        let names: Vec<(String, usize)> = refs.table_groups("aaa").into_iter().map(|g| (g.name, g.refs.len())).collect();
+        assert_eq!(names, [("solo".into(), 1), ("origin & main".into(), 2), ("upstream & topic".into(), 2), ("v1".into(), 1)]);
     }
 
     #[test]

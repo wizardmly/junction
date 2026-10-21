@@ -45,6 +45,7 @@
 | 提交图（彩色泳道、合并线、长边折叠为箭头） | M1 | ✅（跨 30 行以上的长边默认只画两端，以箭头收尾，点击箭头跳到另一端；View Options › Show Long Edges 画出整条边） |
 | 列：Subject（含分支/标签标签）、Author、Date、Hash；列可显示/隐藏、可拖宽 | M1 | ✅（View Options › Show Columns：Author / Date / Hash 显示隐藏并记住；拖动列的左边缘改宽度，宽度记住） |
 | 引用标签：本地分支、远程分支、标签、HEAD；左/右侧显示；紧凑引用视图 | M1 | ✅（本地/远程/标签/HEAD 标签；默认在右侧，与 IntelliJ 一致；View Options：Compact References View、Show References on the Left） |
+| 跟踪分支合并标签（2026-10-21，照 IntelliJ 的 `GitRefManager.groupForTable`）：本地分支和它跟踪的远程分支（没设 upstream 时找同名的 `<remote>/<分支>`）在同一个提交上时合成一个标签 “origin & main”，图标叠两个标签（下面紫色只露左边，上面绿色）；当前分支的标签排第一，+N 按合并后的标签数算。详情面板仍逐个列出 | M1 | ✅ |
 | 虚拟滚动，几十万提交流畅 | M1 | ✅ |
 | 分段加载（先加载最近的，滚动时加载更多） | M2 | ✅（先 1000 条，其余后台加载） |
 | 多选（Shift/Ctrl） | M2 | ✅（多选后可 Cherry-Pick / Revert / 复制哈希；键盘：↑↓、PageUp/PageDown、Home/End，Shift+↑↓/Home/End 扩展选择，Ctrl+A 全选） |
