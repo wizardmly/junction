@@ -2,14 +2,18 @@
 //! shows it: a device and app picker, the app's databases with their
 //! tables, and the picked table's rows in a grid. The databases are read
 //! from the device (`run-as`, so the app must be debuggable) with their
-//! WAL applied; Refresh reads them again.
+//! WAL applied; Refresh reads them again, and Live updates every few
+//! seconds. The query bar runs a SELECT on the picked database.
 
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui_kit::component::{
     Disableable as _, Icon, Sizable as _, h_flex,
     button::Button,
+    checkbox::Checkbox,
+    input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
@@ -32,6 +36,7 @@ const ROW_H: f32 = 22.;
 const COLUMN_W: f32 = 160.;
 /// Rows read from a table; Android Studio pages through 50 at a time.
 const ROW_LIMIT: usize = 5000;
+const LIVE_INTERVAL: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 struct Target {
@@ -43,6 +48,8 @@ struct Target {
 struct Grid {
     database: String,
     table: String,
+    /// The query that made the grid, run again on refresh.
+    query: Option<String>,
     columns: Vec<String>,
     rows: Vec<Vec<String>>,
 }
@@ -60,13 +67,17 @@ pub struct AppInspectionView {
     grid: Option<Grid>,
     loading: bool,
     error: Option<String>,
+    live: bool,
+    query: Entity<InputState>,
+    /// The database queries run on.
+    query_database: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<AppInspectionEvent> for AppInspectionView {}
 
 impl AppInspectionView {
-    pub fn new(device_manager: Entity<DeviceManager>, project: Rc<dyn Fn(&App) -> Option<PathBuf>>, cx: &mut Context<Self>) -> Self {
+    pub fn new(device_manager: Entity<DeviceManager>, project: Rc<dyn Fn(&App) -> Option<PathBuf>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&device_manager, |this, dm, cx| {
             this.devices = dm.read(cx).devices().iter().filter(|d| d.online).filter_map(|d| Some(Target { serial: d.serial.clone()?, name: d.name.clone() })).collect();
             if this.active.as_ref().is_none_or(|s| !this.devices.iter().any(|d| &d.serial == s)) {
@@ -74,6 +85,12 @@ impl AppInspectionView {
                 this.load_apps(cx);
             }
             cx.notify();
+        });
+        let query = cx.new(|cx| InputState::new(window, cx).placeholder("SELECT * FROM table WHERE … ORDER BY … LIMIT …"));
+        let run = cx.subscribe(&query, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.run_query(cx);
+            }
         });
         Self {
             device_manager,
@@ -88,7 +105,10 @@ impl AppInspectionView {
             grid: None,
             loading: false,
             error: None,
-            _subscriptions: vec![observe],
+            live: false,
+            query,
+            query_database: None,
+            _subscriptions: vec![observe, run],
         }
     }
 
@@ -147,10 +167,11 @@ impl AppInspectionView {
                     Ok((databases, errors)) => {
                         this.databases = databases;
                         this.error = (!errors.is_empty()).then(|| errors.join("\n"));
-                        let shown = this.grid.as_ref().map(|g| (g.database.clone(), g.table.clone()));
-                        this.grid = None;
-                        if let Some((database, table)) = shown {
-                            this.show_table(&database, &table);
+                        let shown = this.grid.take();
+                        match shown {
+                            Some(Grid { database, query: Some(sql), .. }) => this.show_query(&database, &sql),
+                            Some(Grid { database, table, .. }) => this.show_table(&database, &table),
+                            None => {}
                         }
                     }
                     Err(e) => {
@@ -171,12 +192,62 @@ impl AppInspectionView {
         let Some(db) = self.databases.iter().find(|d| d.name == database) else { return };
         let Some(t) = db.tables.iter().find(|t| t.name == table) else { return };
         match inspect_database::rows(db, t, ROW_LIMIT) {
-            Ok(rows) => self.grid = Some(Grid { database: database.to_owned(), table: table.to_owned(), columns: t.columns.clone(), rows }),
+            Ok(rows) => self.grid = Some(Grid { database: database.to_owned(), table: table.to_owned(), query: None, columns: t.columns.clone(), rows }),
             Err(e) => {
                 self.grid = None;
                 self.error = Some(format!("{table}: {e}"));
             }
         }
+    }
+
+    /// The query bar's database: the one picked, else the shown table's, else the first.
+    fn query_target(&self) -> Option<String> {
+        let known = |name: &String| self.databases.iter().any(|d| &d.name == name);
+        self.query_database.clone().filter(known).or_else(|| self.grid.as_ref().map(|g| g.database.clone()).filter(known)).or_else(|| self.databases.first().map(|d| d.name.clone()))
+    }
+
+    fn run_query(&mut self, cx: &mut Context<Self>) {
+        let sql = self.query.read(cx).value().trim().to_owned();
+        if sql.is_empty() {
+            return;
+        }
+        let Some(database) = self.query_target() else { return };
+        self.error = None;
+        self.show_query(&database, &sql);
+        cx.notify();
+    }
+
+    fn show_query(&mut self, database: &str, sql: &str) {
+        let Some(db) = self.databases.iter().find(|d| d.name == database) else { return };
+        match inspect_database::query(db, sql, ROW_LIMIT) {
+            Ok((table, columns, rows)) => self.grid = Some(Grid { database: database.to_owned(), table, query: Some(sql.to_owned()), columns, rows }),
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    fn set_live(&mut self, live: bool, cx: &mut Context<Self>) {
+        self.live = live;
+        if live {
+            self.load_databases(cx);
+            cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(LIVE_INTERVAL).await;
+                    let go = this
+                        .update(cx, |this, cx| {
+                            if this.live && !this.loading {
+                                this.load_databases(cx);
+                            }
+                            this.live
+                        })
+                        .unwrap_or(false);
+                    if !go {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+        cx.notify();
     }
 
     fn render_rows(&mut self, range: std::ops::Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
@@ -213,7 +284,7 @@ impl AppInspectionView {
 
     fn render_tree(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
-        let shown = self.grid.as_ref().map(|g| (g.database.clone(), g.table.clone()));
+        let shown = self.grid.as_ref().filter(|g| g.query.is_none()).map(|g| (g.database.clone(), g.table.clone()));
         let mut list = v_flex().id("ai-databases").size_full().overflow_y_scroll().py_1();
         for db in &self.databases {
             let open = !self.collapsed.contains(&db.name);
@@ -339,6 +410,13 @@ impl Render for AppInspectionView {
                     .disabled(self.app.is_none() || self.loading)
                     .on_click(cx.listener(|this, _, _, cx| this.load_databases(cx))),
             )
+            .child(Checkbox::new("ai-live").label("Live updates").checked(self.live).on_change({
+                let entity = entity.clone();
+                move |v, _, cx| {
+                    let v = *v;
+                    entity.update(cx, |this, cx| this.set_live(v, cx))
+                }
+            }))
             .child(div().flex_1())
             .child(tool_button("ai-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(AppInspectionEvent::Hide))));
         let grid = self.grid.as_ref().map(|grid| {
@@ -356,8 +434,9 @@ impl Render for AppInspectionView {
                         .gap_2()
                         .text_xs()
                         .flex_shrink_0()
-                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(grid.table.clone()))
-                        .child(div().text_color(palette.text_secondary).child(format!("{} · {note}", grid.database))),
+                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(if grid.query.is_some() { "Query result".to_owned() } else { grid.table.clone() }))
+                        .child(div().text_color(palette.text_secondary).child(format!("{} · {note}", grid.database)))
+                        .when_some(grid.query.clone(), |el, q| el.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_color(palette.text_secondary).child(q))),
                 )
                 .child(
                     div().id("ai-grid-scroll").flex_1().min_h_0().overflow_x_scroll().child(
@@ -389,9 +468,38 @@ impl Render for AppInspectionView {
         } else {
             "Pick a table to see its rows."
         };
+        let query_bar = (!self.databases.is_empty()).then(|| {
+            let names: Vec<String> = self.databases.iter().map(|d| d.name.clone()).collect();
+            let target = self.query_target().unwrap_or_default();
+            h_flex()
+                .px_2()
+                .py_1()
+                .gap_2()
+                .flex_shrink_0()
+                .border_b_1()
+                .border_color(palette.border)
+                .child(Button::new("ai-query-db").outline().xsmall().label(target).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
+                    let entity = entity.clone();
+                    move |mut menu, _, _| {
+                        for name in &names {
+                            let (entity, name) = (entity.clone(), name.clone());
+                            menu = menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.query_database = Some(name.clone());
+                                    cx.notify();
+                                })
+                            }));
+                        }
+                        menu
+                    }
+                }))
+                .child(div().flex_1().min_w_0().child(Input::new(&self.query).xsmall().cleanable(true)))
+                .child(Button::new("ai-run").xsmall().outline().label("Run").on_click(cx.listener(|this, _, _, cx| this.run_query(cx))))
+        });
         v_flex()
             .size_full()
             .child(header)
+            .children(query_bar)
             .when_some(self.error.clone(), |el, e| el.child(div().px_2().py_1().text_xs().text_color(palette.status_conflict).child(SharedString::from(e))))
             .child(
                 h_flex()

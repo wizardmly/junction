@@ -1,8 +1,9 @@
 //! The Database Inspector: an app's databases opened with their tables,
-//! and a table's rows.
+//! a table's rows, and a query's.
 
 use crate::domain::profiler::ProfiledProcess;
 use crate::domain::sqlite_file::{Database, DatabaseSource, Table, Value};
+use crate::domain::sqlite_query;
 
 pub struct OpenedDatabase {
     pub name: String,
@@ -43,10 +44,17 @@ pub fn open(source: &dyn DatabaseSource, serial: &str, package: &str, name: &str
 
 /// Up to `limit` rows, as the grid shows them.
 pub fn rows(db: &OpenedDatabase, table: &Table, limit: usize) -> Result<Vec<Vec<String>>, String> {
-    Ok(db
-        .database
-        .rows(table, limit)?
-        .into_iter()
+    Ok(cells(db.database.rows(table, limit)?))
+}
+
+/// A query's table, columns and up to `limit` rows, as the grid shows them.
+pub fn query(db: &OpenedDatabase, sql: &str, limit: usize) -> Result<(String, Vec<String>, Vec<Vec<String>>), String> {
+    let result = sqlite_query::run(&db.database, &db.tables, sql, limit)?;
+    Ok((result.table, result.columns, cells(result.rows)))
+}
+
+fn cells(rows: Vec<Vec<Value>>) -> Vec<Vec<String>> {
+    rows.into_iter()
         .map(|row| {
             row.iter()
                 .map(|v| match v {
@@ -56,7 +64,7 @@ pub fn rows(db: &OpenedDatabase, table: &Table, limit: usize) -> Result<Vec<Vec<
                 })
                 .collect()
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -87,6 +95,8 @@ mod tests {
         assert_eq!(names, ["notes", "users"]);
         let users = &dbs[0].tables[1];
         assert_eq!(rows(&dbs[0], users, 10).unwrap().len(), 10);
+        let (table, columns, found) = query(&dbs[0], "SELECT name FROM users WHERE id = 7", 10).unwrap();
+        assert_eq!((table.as_str(), columns, found), ("users", vec!["name".to_owned()], vec![vec!["user7".to_owned()]]));
     }
 
     #[test]

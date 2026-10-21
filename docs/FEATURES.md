@@ -1201,7 +1201,9 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | 点表显示行：列名来自 CREATE TABLE，`INTEGER PRIMARY KEY` 列填 rowid，NULL 斜体，BLOB 显示 `X'..'`，长文本（溢出页）和 UTF-16 编码库都能读；最多读 5000 行，网格可横向滚动 | ✅ |
 | Refresh：重新从设备读取，保留当前表 | ✅ |
 | 应用不可调试（`run-as` 拒绝）时显示原因 | ✅ |
-| 自定义 SQL 查询、编辑单元格、Live updates、导出、`WITHOUT ROWID` 表 | ❌ |
+| 查询栏：选数据库，输入 SELECT 回车或点 Run，结果显示在网格里（Refresh / Live updates 时重新执行）。支持单表的 `SELECT 列 / * / COUNT(*)`、`WHERE`（比较、`LIKE`、`IN`、`BETWEEN`、`IS [NOT] NULL`、`AND` / `OR` / `NOT`、括号，列与字面量比较时按列的类型转换）、`ORDER BY`、`LIMIT` / `OFFSET`；不支持的写法（JOIN、GROUP BY、函数、表达式）报出是哪个词；INSERT / UPDATE / DELETE 等会说明数据库是副本、改不了应用的数据 | ✅（自己写的求值，不是 SQLite，不支持 JOIN、聚合和子查询） |
+| Live updates：每 3 秒从设备重新读取数据库，保留当前表或查询 | ✅（AS 是表变化时才推送；这里是定时整库重读，大库会慢） |
+| 编辑单元格、导出、`WITHOUT ROWID` 表 | ❌ |
 | Network Inspector、Background Task Inspector | ❌ |
 
 数据库是自己写的只读 SQLite 解析（`src/domain/sqlite_file.rs`），不依赖 sqlite 库，也不需要在设备上装 agent。只用模拟 adb 验证过（`sqlite3` 生成的普通库和带 WAL 的库）。
