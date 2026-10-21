@@ -9,6 +9,7 @@ pub mod store;
 pub mod libraries;
 pub mod nav;
 pub mod hierarchy;
+pub mod dependencies;
 pub mod locals;
 pub mod introduce;
 pub mod call_hierarchy;

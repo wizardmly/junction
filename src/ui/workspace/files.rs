@@ -328,6 +328,28 @@ impl Workspace {
         .detach();
     }
 
+    /// Analyze › Analyze Dependencies… on a scope: its Java and Kotlin files
+    /// in the Dependency Viewer.
+    pub(super) fn analyze_dependencies(&mut self, items: Vec<(String, bool)>, scope: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+        let files = crate::infra::project_files::DiskFiles { root, repository: None };
+        let jvm = |p: &str| p.ends_with(".kt") || p.ends_with(".kts") || p.ends_with(".java");
+        let targets = crate::usecase::inspect_code::targets(&files, &items, &jvm);
+        let task = self.code_index.read(cx).dependencies(targets, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let deps = task.await;
+            this.update_in(cx, |_, window, cx| {
+                let workspace = cx.entity().downgrade();
+                let open_file: crate::ui::dependency_viewer::OpenFile = Rc::new(move |path, window, cx| {
+                    workspace.update(cx, |w, cx| w.file_action(crate::ui::file_menus::FileAction::OpenFile(path), window, cx)).ok();
+                });
+                crate::ui::dependency_viewer::open(scope, deps, open_file, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Local History › Show History… of a project file or folder from a
     /// menu (empty: Show Project History).
     pub(super) fn show_local_history_of(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -619,6 +641,7 @@ impl Workspace {
                 }
             }
             FileAction::InspectCode { items, scope } => self.inspect_code(items, scope, window, cx),
+            FileAction::AnalyzeDependencies { items, scope } => self.analyze_dependencies(items, scope, window, cx),
             FileAction::RepairFiles(files) => {
                 self.code_index.update(cx, |index, cx| {
                     for file in &files {
