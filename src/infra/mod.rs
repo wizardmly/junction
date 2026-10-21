@@ -6,6 +6,7 @@ pub mod adb_layout;
 pub mod adb_profiler;
 pub mod adb_databases;
 pub mod adb_background_tasks;
+pub mod adb_network;
 pub mod sdk_repository;
 pub mod excluded_store;
 pub mod file_type_store;

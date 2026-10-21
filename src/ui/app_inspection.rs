@@ -4,7 +4,8 @@
 //! from the device (`run-as`, so the app must be debuggable) with their
 //! WAL applied; Refresh reads them again, and Live updates every few
 //! seconds. The query bar runs a SELECT on the picked database. The
-//! Background Task Inspector is in `background_task_view`.
+//! Background Task Inspector is in `background_task_view`, the Network
+//! Inspector in `network_view`.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -27,6 +28,7 @@ use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::background_task_view::BackgroundTaskView;
 use crate::ui::common::tool_button;
+use crate::ui::network_view::NetworkView;
 use crate::ui::device_manager::DeviceManager;
 use crate::usecase::inspect_database::{self, OpenedDatabase};
 
@@ -44,6 +46,7 @@ const LIVE_INTERVAL: Duration = Duration::from_secs(3);
 enum Inspector {
     Database,
     BackgroundTasks,
+    Network,
 }
 
 #[derive(Clone)]
@@ -81,6 +84,9 @@ pub struct AppInspectionView {
     query_database: Option<String>,
     inspector: Inspector,
     background: Entity<BackgroundTaskView>,
+    network: Entity<NetworkView>,
+    /// The tool window shows; the Network Inspector reads only then.
+    shown: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -120,6 +126,8 @@ impl AppInspectionView {
             query_database: None,
             inspector: Inspector::Database,
             background: cx.new(|_| BackgroundTaskView::new()),
+            network: cx.new(|_| NetworkView::new()),
+            shown: false,
             _subscriptions: vec![observe, run],
         }
     }
@@ -162,12 +170,32 @@ impl AppInspectionView {
     fn app_changed(&mut self, cx: &mut Context<Self>) {
         self.grid = None;
         self.background.update(cx, |b, cx| b.clear(cx));
-        match self.inspector {
-            Inspector::Database => self.load_databases(cx),
-            Inspector::BackgroundTasks => {
-                self.databases.clear();
-                self.load_background(cx);
+        self.network.update(cx, |n, cx| n.forget(cx));
+        if self.inspector != Inspector::Database {
+            self.databases.clear();
+        }
+        self.refresh(cx);
+    }
+
+    /// The tool window showed or hid.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if shown == self.shown {
+            return;
+        }
+        self.shown = shown;
+        if self.inspector == Inspector::Network {
+            if shown {
+                self.watch_network(cx);
+            } else {
+                self.network.update(cx, |n, _| n.stop());
             }
+        }
+    }
+
+    fn watch_network(&mut self, cx: &mut Context<Self>) {
+        let (Some(serial), Some(adb), Some(app)) = (self.active.clone(), self.adb(cx), self.app.clone()) else { return };
+        if self.shown {
+            self.network.update(cx, |n, cx| n.watch(adb, serial, app, cx));
         }
     }
 
@@ -175,6 +203,7 @@ impl AppInspectionView {
         match self.inspector {
             Inspector::Database => self.load_databases(cx),
             Inspector::BackgroundTasks => self.load_background(cx),
+            Inspector::Network => self.watch_network(cx),
         }
     }
 
@@ -182,6 +211,7 @@ impl AppInspectionView {
         match self.inspector {
             Inspector::Database => self.loading,
             Inspector::BackgroundTasks => self.background.read(cx).loading,
+            Inspector::Network => false,
         }
     }
 
@@ -193,6 +223,9 @@ impl AppInspectionView {
     fn show_inspector(&mut self, inspector: Inspector, cx: &mut Context<Self>) {
         if self.inspector == inspector {
             return;
+        }
+        if self.inspector == Inspector::Network {
+            self.network.update(cx, |n, _| n.stop());
         }
         self.inspector = inspector;
         self.error = None;
@@ -411,6 +444,7 @@ impl Render for AppInspectionView {
                             this.databases.clear();
                             this.grid = None;
                             this.background.update(cx, |b, cx| b.clear(cx));
+                            this.network.update(cx, |n, cx| n.forget(cx));
                             this.load_apps(cx);
                         })
                     }));
@@ -464,11 +498,12 @@ impl Render for AppInspectionView {
                             .label("Background Task Inspector")
                             .selected(self.inspector == Inspector::BackgroundTasks)
                             .on_click(cx.listener(|this, _, _, cx| this.show_inspector(Inspector::BackgroundTasks, cx))),
-                    ),
+                    )
+                    .child(Button::new("ai-tab-net").xsmall().ghost().label("Network Inspector").selected(self.inspector == Inspector::Network).on_click(cx.listener(|this, _, _, cx| this.show_inspector(Inspector::Network, cx)))),
             )
             .child(device_picker)
             .child(app_picker)
-            .child(
+            .when(self.inspector != Inspector::Network, |el| el.child(
                 Button::new("ai-refresh")
                     .xsmall()
                     .outline()
@@ -476,15 +511,15 @@ impl Render for AppInspectionView {
                     .label(if busy { "Reading…" } else { "Refresh" })
                     .disabled(self.app.is_none() || busy)
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-            )
+            ))
             .when(self.inspector == Inspector::BackgroundTasks, |el| el.child(self.background.update(cx, |b, cx| b.tag_filter(cx).into_any_element())))
-            .child(Checkbox::new("ai-live").label("Live updates").checked(self.live).on_change({
+            .when(self.inspector != Inspector::Network, |el| el.child(Checkbox::new("ai-live").label("Live updates").checked(self.live).on_change({
                 let entity = entity.clone();
                 move |v, _, cx| {
                     let v = *v;
                     entity.update(cx, |this, cx| this.set_live(v, cx))
                 }
-            }))
+            })))
             .child(div().flex_1())
             .child(tool_button("ai-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(AppInspectionEvent::Hide))));
         let grid = self.grid.as_ref().map(|grid| {
@@ -536,12 +571,13 @@ impl Render for AppInspectionView {
         } else {
             "Pick a table to see its rows."
         };
-        if self.inspector == Inspector::BackgroundTasks {
+        if self.inspector != Inspector::Database {
+            let body = if self.inspector == Inspector::Network { self.network.clone().into_any_element() } else { self.background.clone().into_any_element() };
             return v_flex()
                 .size_full()
                 .child(header)
                 .when_some(self.error.clone(), |el, e| el.child(div().px_2().py_1().text_xs().text_color(palette.status_conflict).child(SharedString::from(e))))
-                .child(div().flex_1().min_h_0().child(self.background.clone()));
+                .child(div().flex_1().min_h_0().child(body));
         }
         let query_bar = (!self.databases.is_empty()).then(|| {
             let names: Vec<String> = self.databases.iter().map(|d| d.name.clone()).collect();

@@ -904,6 +904,8 @@ impl Render for Workspace {
         self.device_manager.update(cx, |d, cx| d.set_shown(devices_shown, cx));
         self.device_explorer.update(cx, |d, cx| d.set_shown(explorer_shown, cx));
         self.layout_inspector.update(cx, |d, cx| d.set_shown(inspector_shown, cx));
+        let app_inspection_shown = self.tools.is_open(ToolWindow::AppInspection);
+        self.app_inspection.update(cx, |a, cx| a.set_shown(app_inspection_shown, cx));
         let mirroring_shown = self.tools.is_open(ToolWindow::RunningDevices);
         self.running_devices.update(cx, |d, cx| d.set_shown(mirroring_shown, cx));
         let git_on_side = self.tools.side(ToolWindow::Git) != Side::Bottom;

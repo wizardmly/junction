@@ -1204,7 +1204,7 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | 查询栏：选数据库，输入 SELECT 回车或点 Run，结果显示在网格里（Refresh / Live updates 时重新执行）。支持单表的 `SELECT 列 / * / COUNT(*)`、`WHERE`（比较、`LIKE`、`IN`、`BETWEEN`、`IS [NOT] NULL`、`AND` / `OR` / `NOT`、括号，列与字面量比较时按列的类型转换）、`ORDER BY`、`LIMIT` / `OFFSET`；不支持的写法（JOIN、GROUP BY、函数、表达式）报出是哪个词；INSERT / UPDATE / DELETE 等会说明数据库是副本、改不了应用的数据 | ✅（自己写的求值，不是 SQLite，不支持 JOIN、聚合和子查询） |
 | Live updates：每 3 秒从设备重新读取数据库，保留当前表或查询 | ✅（AS 是表变化时才推送；这里是定时整库重读，大库会慢） |
 | 编辑单元格、导出、`WITHOUT ROWID` 表 | ❌ |
-| Network Inspector | ❌ |
+| Network Inspector | 🟡 见第 68 节 |
 | Background Task Inspector | ✅ 见第 67 节 |
 
 数据库是自己写的只读 SQLite 解析（`src/domain/sqlite_file.rs`），不依赖 sqlite 库，也不需要在设备上装 agent。只用模拟 adb 验证过（`sqlite3` 生成的普通库和带 WAL 的库）。
@@ -1224,3 +1224,14 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | 取消 Worker、已结束的 job / alarm 历史、Worker 链的图形视图、跳到入队代码 | ❌（AS 靠应用内 agent 实时上报；这里只读设备当前状态） |
 
 解析在 `src/domain/background_tasks.rs`，只用模拟 adb 和 `sqlite3` + Java 生成的 WorkManager 库验证过，没在真机上看过 dumpsys 的实际输出。
+
+## 68. App Inspection：Network Inspector（2026-10-21）
+
+| 功能 | 状态 |
+|---|---|
+| App Inspection 顶部第三个标签 Network Inspector：选中应用后每秒从设备的 `/proc/net/tcp`、`tcp6`、`udp`、`udp6` 读取该应用 uid（`pm list packages -U`）的套接字；只在工具窗口显示且在这个标签时读取 | ✅ |
+| 连接表：协议、远端地址（IPv4 映射的 IPv6 显示为 IPv4）、本地地址、状态（ESTABLISHED、TIME_WAIT 等）、打开时间、持续时长；按套接字 inode 跨次读取追踪，关掉的连接留在表里标 Closed，Clear 清掉已关闭的 | ✅ |
+| 默认只列有远端的连接，勾选后也显示监听和未连接的套接字 | ✅ |
+| AS 的 HTTP 请求列表（URL、状态码、请求 / 响应头和正文、时间线）、流量曲线、主机名 | ❌（AS 靠应用内 agent 拦截 OkHttp / HttpURLConnection；不装 agent 拿不到） |
+
+解析在 `src/domain/network_connections.rs`，只用模拟 adb 验证过。部分设备可能不让 adb shell 读 `/proc/net`，这时显示设备返回的错误。
