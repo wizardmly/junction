@@ -134,6 +134,51 @@ impl Structure {
     }
 }
 
+/// A build type, flavor or signing config added ("+") or removed ("−").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockChange {
+    Add(String),
+    Remove(String),
+}
+
+impl VariantKind {
+    fn container(self) -> &'static str {
+        match self {
+            VariantKind::BuildType => ps::BUILD_TYPES,
+            VariantKind::Flavor => ps::PRODUCT_FLAVORS,
+            VariantKind::SigningConfig => ps::SIGNING_CONFIGS,
+        }
+    }
+}
+
+/// Adds and removes build types, flavors and signing configs, in order;
+/// the scripts it changed. The structure is read again after, for the
+/// new blocks' rows.
+pub fn apply_blocks(files: &dyn ProjectFiles, structure: &Structure, changes: &[(usize, VariantKind, BlockChange)]) -> Result<Vec<String>, String> {
+    let mut texts: Vec<(String, String)> = Vec::new();
+    for (module, kind, change) in changes {
+        let Some(page) = structure.modules.get(*module) else { continue };
+        let Some(script) = page.script.clone() else { return Err(format!("{} has no build script.", page.path)) };
+        let at = match texts.iter().position(|(p, _)| *p == script) {
+            Some(at) => at,
+            None => {
+                texts.push((script.clone(), files.read(&script)?));
+                texts.len() - 1
+            }
+        };
+        let text = &texts[at].1;
+        let changed = match change {
+            BlockChange::Add(name) => ps::add_block(text, kind.container(), name, script.ends_with(".kts")).map_err(|e| format!("{}: {e}", page.path))?,
+            BlockChange::Remove(name) => ps::remove_block(text, kind.container(), name).ok_or_else(|| format!("{}: '{name}' not found.", page.path))?,
+        };
+        texts[at].1 = changed;
+    }
+    for (path, text) in &texts {
+        files.write(path, text)?;
+    }
+    Ok(texts.into_iter().map(|(p, _)| p).collect())
+}
+
 /// Why a value can't be written; the first problem found.
 pub fn check(structure: &Structure, edits: &Edits) -> Result<(), String> {
     for (module, label, value) in &edits.modules {
@@ -397,5 +442,21 @@ mod tests {
         apply(&files, &s, &edits).unwrap();
         assert_eq!(files.read("lib/build.gradle").unwrap(), groovy.replace("false", "true"));
         assert_eq!(files.read("app/build.gradle.kts").unwrap(), "android {\n    compileSdk = 35\n}\n\ndependencies {\n    api(project(\":lib\"))\n    implementation(libs.coil)\n}\n");
+    }
+
+    #[test]
+    fn adds_blocks_then_fills_their_rows() {
+        let files = project();
+        let s = structure(&files);
+        let changes = [(0, VariantKind::SigningConfig, BlockChange::Add("upload".into())), (1, VariantKind::Flavor, BlockChange::Add("free".into())), (1, VariantKind::Flavor, BlockChange::Add("paid".into())), (1, VariantKind::Flavor, BlockChange::Remove("free".into()))];
+        let mut written = apply_blocks(&files, &s, &changes).unwrap();
+        written.sort();
+        assert_eq!(written, ["app/build.gradle.kts", "lib/build.gradle"]);
+        let s = structure(&files);
+        assert_eq!(s.modules[1].flavors.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["paid"]);
+        let edits = Edits { variants: vec![(0, VariantKind::SigningConfig, "upload".into(), "Key Alias", "up".into())], ..Default::default() };
+        apply(&files, &s, &edits).unwrap();
+        assert!(files.read("app/build.gradle.kts").unwrap().contains("    signingConfigs {\n        create(\"upload\") {\n            keyAlias = \"up\"\n        }\n    }\n}\n"));
+        assert!(apply_blocks(&files, &s, &[(1, VariantKind::Flavor, BlockChange::Remove("nope".into()))]).is_err());
     }
 }

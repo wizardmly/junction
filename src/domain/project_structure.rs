@@ -320,19 +320,22 @@ fn new_row(label: &str, kotlin: bool) -> Option<(String, Kind, &'static str)> {
     Some((prefix, kind, ""))
 }
 
-/// Where a row not written yet goes: a new line at the end of its block
-/// (`body`, between the braces), indented as the block's lines are.
-fn insertion(script: &str, body: Range<usize>, label: &str, kotlin: bool) -> Option<Site> {
-    let (prefix, kind, suffix) = new_row(label, kotlin)?;
-    let quote = match kind {
-        Kind::Quoted(q) => q.to_string(),
-        _ => String::new(),
-    };
+/// Where a new line goes at the end of a block (`body`, between the
+/// braces), and what goes around it: on a line of its own, indented as the
+/// block's lines are; an empty block opens onto lines; a one-line block
+/// takes it after a `;`. `child` is the new line's indent.
+struct Placement {
+    range: Range<usize>,
+    lead: String,
+    trail: String,
+    child: String,
+}
+
+fn placement(script: &str, body: Range<usize>) -> Placement {
     let inner = &script[body.clone()];
     let line_start = |at: usize| script[..at].rfind('\n').map_or(0, |i| i + 1);
     let indent_at = |at: usize| script[line_start(at)..at].chars().take_while(|c| *c == ' ' || *c == '\t').collect::<String>();
-    let closing_start = line_start(body.end);
-    let closing_own_line = script[closing_start..body.end].trim().is_empty();
+    let closing_own_line = script[line_start(body.end)..body.end].trim().is_empty();
     let closing_indent = indent_at(body.end);
     // The block's own lines' indent, else one more level than its brace.
     let child = inner
@@ -341,16 +344,95 @@ fn insertion(script: &str, body: Range<usize>, label: &str, kotlin: bool) -> Opt
         .find(|l| !l.trim().is_empty())
         .map(|l| l.chars().take_while(|c| *c == ' ' || *c == '\t').collect::<String>())
         .unwrap_or_else(|| format!("{closing_indent}    "));
-    let (range, lead, trail) = if inner.trim().is_empty() {
-        (body.clone(), format!("\n{child}{prefix}{quote}"), format!("{quote}{suffix}\n{closing_indent}"))
+    let at = body.start + inner.trim_end().len();
+    if inner.trim().is_empty() {
+        Placement { range: body, lead: format!("\n{child}"), trail: format!("\n{closing_indent}"), child }
     } else if closing_own_line {
-        let at = body.start + inner.trim_end().len();
-        (at..at, format!("\n{child}{prefix}{quote}"), format!("{quote}{suffix}"))
+        Placement { range: at..at, lead: format!("\n{child}"), trail: String::new(), child }
     } else {
-        let at = body.start + inner.trim_end().len();
-        (at..at, format!("; {prefix}{quote}"), format!("{quote}{suffix}"))
+        Placement { range: at..at, lead: "; ".into(), trail: String::new(), child }
+    }
+}
+
+/// Where a row not written yet goes: a new line at the end of its block.
+fn insertion(script: &str, body: Range<usize>, label: &str, kotlin: bool) -> Option<Site> {
+    let (prefix, kind, suffix) = new_row(label, kotlin)?;
+    let quote = match kind {
+        Kind::Quoted(q) => q.to_string(),
+        _ => String::new(),
     };
-    Some(Site { place: Place::Script, range, kind, insert: Some((lead, trail)) })
+    let p = placement(script, body);
+    Some(Site { place: Place::Script, range: p.range, kind, insert: Some((format!("{}{prefix}{quote}", p.lead), format!("{quote}{suffix}{}", p.trail))) })
+}
+
+/// The blocks a module's build types, flavors and signing configs are
+/// declared in, inside `android { }`.
+pub const BUILD_TYPES: &str = "buildTypes";
+pub const PRODUCT_FLAVORS: &str = "productFlavors";
+pub const SIGNING_CONFIGS: &str = "signingConfigs";
+
+/// Adds an empty build type, flavor or signing config named `name` to the
+/// `container` block (made at the end of `android { }` when missing), as
+/// the PSD's "+": `create("staging") { }` in the Kotlin DSL
+/// (`getByName("debug")` for the ones Gradle already has), `staging { }`
+/// in Groovy.
+pub fn add_block(script: &str, container: &str, name: &str, kotlin: bool) -> Result<String, String> {
+    if !is_identifier(name) {
+        return Err(format!("'{name}' is not a valid name."));
+    }
+    let Some((_, android)) = child_blocks(script, 0..script.len()).into_iter().find(|(n, _)| n == "android") else {
+        return Err("The build script has no android { } block.".into());
+    };
+    let header = match (kotlin, name) {
+        (true, "debug" | "release") if container != PRODUCT_FLAVORS => format!("getByName(\"{name}\")"),
+        (true, _) => format!("create(\"{name}\")"),
+        (false, _) => name.to_owned(),
+    };
+    let (body, text) = match child_blocks(script, android.clone()).into_iter().find(|(n, _)| n == container) {
+        Some((_, body)) => {
+            if child_blocks(script, body.clone()).iter().any(|(n, _)| n == name) {
+                return Err(format!("'{name}' already exists."));
+            }
+            let child = placement(script, body.clone()).child;
+            (body, format!("{header} {{\n{child}}}"))
+        }
+        None => {
+            let child = placement(script, android.clone()).child;
+            (android, format!("{container} {{\n{child}    {header} {{\n{child}    }}\n{child}}}"))
+        }
+    };
+    let p = placement(script, body);
+    let mut out = String::with_capacity(script.len() + text.len() + 16);
+    out.push_str(&script[..p.range.start]);
+    out.push_str(&p.lead);
+    out.push_str(&text);
+    out.push_str(&p.trail);
+    out.push_str(&script[p.range.end..]);
+    Ok(out)
+}
+
+/// Removes a build type, flavor or signing config (the PSD's "−"), with
+/// the lines it takes up.
+pub fn remove_block(script: &str, container: &str, name: &str) -> Option<String> {
+    let (_, android) = child_blocks(script, 0..script.len()).into_iter().find(|(n, _)| n == "android")?;
+    let (_, outer) = child_blocks(script, android).into_iter().find(|(n, _)| n == container)?;
+    let (_, body) = child_blocks(script, outer).into_iter().find(|(n, _)| n == name)?;
+    let open = body.start - 1;
+    let header = script[..open].rfind('\n').map_or(0, |i| i + 1);
+    let after = body.end + 1;
+    // Whole lines when the block has them to itself.
+    let line_end = script[after..].find('\n').map(|i| after + i + 1).unwrap_or(script.len());
+    let before = &script[header..open];
+    let (start, end) = if !before.contains(['{', ';', '}']) && script[after..line_end].trim().is_empty() {
+        (header, line_end)
+    } else {
+        let start = script[..open].rfind(|c: char| c == '{' || c == ';' || c == '\n').map_or(0, |i| i + 1);
+        (start, after)
+    };
+    let mut out = String::with_capacity(script.len());
+    out.push_str(&script[..start]);
+    out.push_str(&script[end..]);
+    Some(out)
 }
 
 /// A build type or product flavor: its name and rows.
@@ -633,6 +715,31 @@ android {
         assert!(write(groovy, target.site.as_ref().unwrap(), "17").contains("compileOptions {\n        targetCompatibility JavaVersion.VERSION_17\n    }"));
         let compile = props.iter().find(|p| p.label == "Compile Sdk Version").unwrap();
         assert!(write(groovy, compile.site.as_ref().unwrap(), "35").contains("    }\n    compileSdk 35\n}"));
+    }
+
+    #[test]
+    fn adds_and_removes_blocks() {
+        let kts = "android {\n    buildTypes {\n        release {\n            isMinifyEnabled = true\n        }\n    }\n}\n";
+        let added = add_block(kts, BUILD_TYPES, "staging", true).unwrap();
+        assert!(added.contains("        }\n        create(\"staging\") {\n        }\n    }"), "{added}");
+        let debug = add_block(kts, BUILD_TYPES, "debug", true).unwrap();
+        assert!(debug.contains("getByName(\"debug\") {"));
+        assert!(add_block(kts, BUILD_TYPES, "release", true).is_err());
+        assert!(add_block(kts, BUILD_TYPES, "bad name", true).is_err());
+        // The container is made when missing.
+        let signing = add_block(kts, SIGNING_CONFIGS, "upload", true).unwrap();
+        assert!(signing.contains("    }\n    signingConfigs {\n        create(\"upload\") {\n        }\n    }\n}"), "{signing}");
+        assert_eq!(signing_configs(&signing, &[], true)[0].name, "upload");
+        // A new block takes rows like any other.
+        let store = signing_configs(&signing, &[], true)[0].properties[0].site.clone().unwrap();
+        assert!(write(&signing, &store, "u.jks").contains("create(\"upload\") {\n            storeFile = file(\"u.jks\")\n        }"));
+        let groovy = "android {\n    productFlavors {\n        free {\n            dimension \"tier\"\n        }\n    }\n}\n";
+        let paid = add_block(groovy, PRODUCT_FLAVORS, "paid", false).unwrap();
+        assert!(paid.contains("        }\n        paid {\n        }\n"));
+        assert_eq!(remove_block(&paid, PRODUCT_FLAVORS, "free").unwrap(), "android {\n    productFlavors {\n        paid {\n        }\n    }\n}\n");
+        assert_eq!(remove_block(&added, BUILD_TYPES, "release").unwrap(), "android {\n    buildTypes {\n        create(\"staging\") {\n        }\n    }\n}\n");
+        assert_eq!(remove_block("android { buildTypes { release { } } }", BUILD_TYPES, "release").unwrap(), "android { buildTypes { } }");
+        assert_eq!(remove_block(kts, BUILD_TYPES, "nope"), None);
     }
 
     #[test]

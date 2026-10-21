@@ -28,7 +28,7 @@ use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
 use crate::ui::dialogs;
-use crate::usecase::project_structure::{self as usecase, DependencyDraft, Edits, Structure, VariantKind};
+use crate::usecase::project_structure::{self as usecase, BlockChange, DependencyDraft, Edits, Structure, VariantKind};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -95,6 +95,10 @@ pub struct ProjectStructureView {
     variant: usize,
     variant_fields: Vec<Entity<InputState>>,
     variant_values: std::collections::HashMap<(usize, VariantKind, String), Vec<String>>,
+    /// Build types, flavors and signing configs added or removed, written
+    /// on OK before the rows; the name a new one gets.
+    blocks: Vec<(usize, VariantKind, BlockChange)>,
+    new_name: Entity<InputState>,
     error: Option<String>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
@@ -151,9 +155,14 @@ impl ProjectStructureView {
         };
         self.store_variant(cx);
         for ((module, kind, name), values) in &self.variant_values {
+            let added = self.is_added(*module, *kind, name);
             for ((label, _), value) in variant_rows(*kind).iter().zip(values) {
-                let Some(p) = self.structure.variant_property(*module, *kind, name, label).filter(|p| p.site.is_some()) else { continue };
-                if value.trim() != p.value {
+                // A new one's rows are found once it's written.
+                let old = if added { String::new() } else {
+                    let Some(p) = self.structure.variant_property(*module, *kind, name, label).filter(|p| p.site.is_some()) else { continue };
+                    p.value.clone()
+                };
+                if value.trim() != old {
                     edits.variants.push((*module, *kind, name.clone(), label, value.trim().to_owned()));
                 }
             }
@@ -173,16 +182,24 @@ impl ProjectStructureView {
     /// they can't be written.
     fn save(&mut self, cx: &mut Context<Self>) -> bool {
         let edits = self.edits(cx);
-        if edits.is_empty() && !self.draft.is_changed() {
+        if edits.is_empty() && !self.draft.is_changed() && self.blocks.is_empty() {
             return true;
         }
         let files = DiskFiles { root: self.build_root.clone(), repository: None };
-        let written = if self.draft.is_changed() {
-            // The properties are found again in the scripts as written now.
-            self.draft.write(&files).map(|_| usecase::read(&files, &self.paths, crate::infra::catalog_files::load(&self.build_root, &catalog_candidates(&self.build_root))))
-        } else {
-            Ok(self.structure.clone())
-        };
+        // Dependencies and added / removed blocks first; the rows are found
+        // again in the scripts as written then.
+        let structural = self.draft.is_changed() || !self.blocks.is_empty();
+        let written = (|| {
+            if self.draft.is_changed() {
+                self.draft.write(&files)?;
+            }
+            usecase::apply_blocks(&files, &self.structure, &self.blocks)?;
+            Ok::<_, String>(if structural {
+                usecase::read(&files, &self.paths, crate::infra::catalog_files::load(&self.build_root, &catalog_candidates(&self.build_root)))
+            } else {
+                self.structure.clone()
+            })
+        })();
         match written.and_then(|structure| if edits.is_empty() { Ok(Vec::new()) } else { usecase::apply(&files, &structure, &edits) }) {
             Ok(_) => {
                 let build = self.build_root.clone();
@@ -197,22 +214,80 @@ impl ProjectStructureView {
         }
     }
 
-    fn variants_of(&self, module: usize, kind: VariantKind) -> &[Variant] {
-        match (self.structure.modules.get(module), kind) {
-            (Some(m), VariantKind::BuildType) => &m.build_types,
-            (Some(m), VariantKind::Flavor) => &m.flavors,
-            (Some(m), VariantKind::SigningConfig) => &m.signing_configs,
-            (None, _) => &[],
+    /// A tab's build types, flavors or signing configs as edited: those
+    /// written, less the removed, then the added (with every row not set).
+    fn variants_of(&self, module: usize, kind: VariantKind) -> Vec<Variant> {
+        let written = match (self.structure.modules.get(module), kind) {
+            (Some(m), VariantKind::BuildType) => m.build_types.clone(),
+            (Some(m), VariantKind::Flavor) => m.flavors.clone(),
+            (Some(m), VariantKind::SigningConfig) => m.signing_configs.clone(),
+            (None, _) => Vec::new(),
+        };
+        let mut list: Vec<Variant> = written.into_iter().filter(|v| !self.blocks.contains(&(module, kind, BlockChange::Remove(v.name.clone())))).collect();
+        for (m, k, change) in &self.blocks {
+            if let (true, BlockChange::Add(name)) = (*m == module && *k == kind, change) {
+                let properties = variant_rows(kind).iter().map(|(label, _)| Property { label, value: String::new(), site: None, expression: None }).collect();
+                list.push(Variant { name: name.clone(), properties });
+            }
         }
+        list
     }
 
-    fn current_variant(&self) -> Option<&Variant> {
-        self.variants_of(self.module, self.variant_kind).get(self.variant)
+    fn is_added(&self, module: usize, kind: VariantKind, name: &str) -> bool {
+        self.blocks.contains(&(module, kind, BlockChange::Add(name.to_owned())))
+    }
+
+    fn current_variant(&self) -> Option<Variant> {
+        self.variants_of(self.module, self.variant_kind).into_iter().nth(self.variant)
+    }
+
+    /// "+": a new build type, flavor or signing config with the typed name.
+    fn add_variant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.new_name.read(cx).value().trim().to_owned();
+        let list = self.variants_of(self.module, self.variant_kind);
+        let valid = name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+        self.error = if !valid {
+            Some(format!("'{name}' is not a valid name."))
+        } else if list.iter().any(|v| v.name == name) {
+            Some(format!("'{name}' already exists."))
+        } else {
+            None
+        };
+        if self.error.is_some() {
+            cx.notify();
+            return;
+        }
+        let (module, kind) = (self.module, self.variant_kind);
+        // Removed and added again: it stays, rows and all.
+        let removed = (module, kind, BlockChange::Remove(name.clone()));
+        if self.blocks.contains(&removed) {
+            self.blocks.retain(|b| *b != removed);
+        } else {
+            self.blocks.push((module, kind, BlockChange::Add(name.clone())));
+        }
+        self.new_name.update(cx, |s, cx| s.set_value("", window, cx));
+        let index = self.variants_of(module, kind).iter().position(|v| v.name == name).unwrap_or(0);
+        self.select_variant(module, kind, index, window, cx);
+    }
+
+    /// "−": the selected one goes.
+    fn remove_variant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.current_variant().map(|v| v.name) else { return };
+        let (module, kind) = (self.module, self.variant_kind);
+        if self.is_added(module, kind, &name) {
+            self.blocks.retain(|b| *b != (module, kind, BlockChange::Add(name.clone())));
+        } else {
+            self.blocks.push((module, kind, BlockChange::Remove(name.clone())));
+        }
+        self.variant_values.remove(&(module, kind, name));
+        self.variant = 0;
+        self.load_variant(window, cx);
+        cx.notify();
     }
 
     /// The selected build type's or flavor's rows into the fields.
     fn load_variant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let variant = self.current_variant().cloned();
+        let variant = self.current_variant();
         let key = variant.as_ref().map(|v| (self.module, self.variant_kind, v.name.clone()));
         for (ix, field) in self.variant_fields.clone().iter().enumerate() {
             let row = variant.as_ref().and_then(|v| v.properties.get(ix));
@@ -232,7 +307,7 @@ impl ProjectStructureView {
     }
 
     fn store_variant(&mut self, cx: &App) {
-        let Some(name) = self.current_variant().map(|v| v.name.clone()) else { return };
+        let Some(name) = self.current_variant().map(|v| v.name) else { return };
         let n = variant_rows(self.variant_kind).len();
         let values: Vec<String> = self.variant_fields.iter().take(n).map(|f| f.read(cx).value().to_string()).collect();
         self.variant_values.insert((self.module, self.variant_kind, name), values);
@@ -256,7 +331,15 @@ impl ProjectStructureView {
         let entity = cx.entity();
         let module = self.module;
         let list = self.variants_of(self.module, kind);
-        let names = v_flex().id("psd-var-names").w(px(150.)).flex_none().h_full().overflow_y_scroll().border_r_1().border_color(palette.border).children(list.iter().enumerate().map(|(ix, v)| {
+        let (add, remove) = (entity.clone(), entity.clone());
+        let toolbar = h_flex()
+            .gap_1()
+            .px_1()
+            .pb_1()
+            .child(div().flex_1().child(Input::new(&self.new_name).small()))
+            .child(tool_button("psd-var-add", icons::ADD, "Add").on_click(move |_, window, cx| add.update(cx, |this, cx| this.add_variant(window, cx))))
+            .child(tool_button("psd-var-remove", icons::REMOVE, "Remove").disabled(list.is_empty()).on_click(move |_, window, cx| remove.update(cx, |this, cx| this.remove_variant(window, cx))));
+        let names = v_flex().id("psd-var-names").w(px(170.)).flex_none().h_full().overflow_y_scroll().border_r_1().border_color(palette.border).child(toolbar).children(list.iter().enumerate().map(|(ix, v)| {
             let e = entity.clone();
             div()
                 .id(("psd-var", ix))
@@ -278,7 +361,7 @@ impl ProjectStructureView {
                 .px_3()
                 .gap_2()
                 .children(variant_rows(kind).iter().enumerate().map(|(ix, (name, _))| {
-                    let editable = v.properties.get(ix).is_some_and(|p| p.site.is_some());
+                    let editable = self.is_added(module, kind, &v.name) || v.properties.get(ix).is_some_and(|p| p.site.is_some());
                     h_flex().gap_2().child(label(name)).child(div().flex_1().child(Input::new(&self.variant_fields[ix]).small().disabled(!editable)))
                 }))
                 .into_any_element(),
@@ -690,6 +773,7 @@ pub fn open(build_root: PathBuf, modules: Vec<ModuleInfo>, window: &mut Window, 
         let version = input(cx, String::new());
         let variant_fields = (0..BUILD_TYPE.len().max(FLAVOR.len()).max(SIGNING_CONFIG.len())).map(|_| input(cx, String::new())).collect::<Vec<_>>();
         let library = cx.new(|cx| InputState::new(window, cx).placeholder("group:artifact:version"));
+        let new_name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let subscriptions = vec![cx.subscribe(&version, |this: &mut ProjectStructureView, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.version_changed(cx);
@@ -728,6 +812,8 @@ pub fn open(build_root: PathBuf, modules: Vec<ModuleInfo>, window: &mut Window, 
             variant: 0,
             variant_fields,
             variant_values,
+            blocks: Vec::new(),
+            new_name,
             error: None,
             _subscriptions: subscriptions,
         };
