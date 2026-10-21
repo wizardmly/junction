@@ -16,6 +16,7 @@ pub mod lint;
 pub mod sdk_packages;
 pub mod view_hierarchy;
 pub mod profiler;
+pub mod proto_xml;
 pub mod hprof;
 pub mod sqlite_file;
 pub mod file_type_overrides;

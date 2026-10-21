@@ -1,10 +1,10 @@
 //! Build › Analyze APK…: the archive's size tree, and what the analyzer
-//! shows for a selected file (the decoded manifest or a binary XML, a dex
-//! file's classes, a text file).
+//! shows for a selected file (the decoded manifest or another binary XML,
+//! an app bundle's protocol-buffer XML, a dex file's classes, a text file).
 
 use crate::domain::apk::{self, ApkArchive, ApkDiffNode, ApkNode};
 use crate::domain::arsc::ResourceTable;
-use crate::domain::{axml, dex};
+use crate::domain::{axml, dex, proto_xml};
 
 pub fn sizes(archive: &dyn ApkArchive) -> ApkNode {
     apk::tree(&archive.entries())
@@ -36,6 +36,12 @@ pub fn detail(archive: &dyn ApkArchive, path: &str) -> Detail {
     if path.ends_with(".xml") && bytes.starts_with(&[0x03, 0x00]) {
         let table = archive.read("resources.arsc").ok().and_then(|b| ResourceTable::parse(&b)).unwrap_or_default();
         if let Some(text) = axml::decode_with(&bytes, &|id| table.name(id)) {
+            return Detail::Text { text, language: "xml" };
+        }
+    }
+    // An app bundle's XML is an aapt2 protocol buffer (its first field is the element).
+    if path.ends_with(".xml") && bytes.first() == Some(&0x0a) {
+        if let Some(text) = proto_xml::decode(&bytes) {
             return Detail::Text { text, language: "xml" };
         }
     }
