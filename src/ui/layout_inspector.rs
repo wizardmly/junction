@@ -3,8 +3,9 @@
 //! the screen with each view's outline (hover and click pick a view), and
 //! the selected view's attributes. The snapshot comes from `dumpsys
 //! activity top`, or from UI Automator, which also sees Compose and text.
+//! 3D mode spreads the views into layers by depth; dragging turns them.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
@@ -12,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::{
-    Icon, Sizable as _, h_flex,
-    button::Button,
+    Icon, Selectable as _, Sizable as _, h_flex,
+    button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     menu::{DropdownMenu as _, PopupMenuItem},
     scroll::ScrollableElement as _,
@@ -25,7 +26,7 @@ use gpui_kit::{
     uniform_list,
 };
 
-use crate::domain::view_hierarchy::LayoutWindow;
+use crate::domain::view_hierarchy::{LayoutWindow, Rotation, quad_contains};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
@@ -67,6 +68,13 @@ pub struct LayoutInspector {
     tree_scroll: UniformListScrollHandle,
     /// Where the screen was painted: its bounds and device pixels per pixel.
     painted: Rc<Cell<Option<(Bounds<Pixels>, f32)>>>,
+    three_d: bool,
+    rotation: Rotation,
+    /// A drag turning the 3D view: where the mouse last was, and whether
+    /// it moved (a press without moving picks a view).
+    drag: Option<(gpui_kit::Point<Pixels>, bool)>,
+    /// The 3D layers as painted, back to front: view and window corners.
+    projected: Rc<RefCell<Vec<(usize, [(f32, f32); 4])>>>,
     _observe: Subscription,
 }
 
@@ -102,6 +110,10 @@ impl LayoutInspector {
             collapsed: HashSet::new(),
             tree_scroll: UniformListScrollHandle::new(),
             painted: Rc::default(),
+            three_d: false,
+            rotation: Rotation::START,
+            drag: None,
+            projected: Rc::default(),
             _observe: observe,
         }
     }
@@ -231,6 +243,10 @@ impl LayoutInspector {
 
     /// The view under a point of the painted screen.
     fn view_at(&self, position: gpui_kit::Point<Pixels>) -> Option<usize> {
+        if self.three_d {
+            let p = (f32::from(position.x), f32::from(position.y));
+            return self.projected.borrow().iter().rev().find(|(_, q)| quad_contains(q, p)).map(|(ix, _)| *ix);
+        }
         let (bounds, scale) = self.painted.get()?;
         if !bounds.contains(&position) {
             return None;
@@ -365,6 +381,113 @@ impl LayoutInspector {
             .into_any_element()
     }
 
+    /// The views as layers, one per depth, turned by `rotation`; the
+    /// selected and hovered views are filled.
+    fn render_screen_3d(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette().clone();
+        let (width, height) = self.snapshot.as_ref().map(|s| (s.size.0.max(1) as f32, s.size.1.max(1) as f32)).unwrap_or((1., 1.));
+        let rotation = self.rotation;
+        let mut layers: Vec<(usize, usize, crate::domain::view_hierarchy::Rect)> = self
+            .current()
+            .map(|w| (0..w.nodes.len()).filter(|&i| w.shown(i) && w.nodes[i].bounds.width() > 0 && w.nodes[i].bounds.height() > 0).map(|i| (i, w.nodes[i].depth, w.nodes[i].bounds)).collect())
+            .unwrap_or_default();
+        // Back to front: deeper views are nearer unless the layers are turned past edge on.
+        let facing = rotation.yaw.cos() * rotation.pitch.cos() >= 0.;
+        layers.sort_by_key(|&(i, depth, _)| if facing { (depth, i) } else { (usize::MAX - depth, i) });
+        let (selected, hovered) = (self.selected, self.hovered);
+        let projected = self.projected.clone();
+        // Faint layers that add up where views stack, in either theme.
+        let (outline, hover, accent, background) = (gpui_kit::Hsla { a: 0.55, ..palette.text_secondary }, palette.text, palette.accent, gpui_kit::Hsla { a: 0.05, ..palette.text });
+        div()
+            .id("li-screen-3d")
+            .size_full()
+            .p_2()
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        let quads: Vec<(usize, [(f32, f32); 4])> = layers.iter().map(|&(i, depth, r)| (i, rotation.corners(&r, depth, width, height))).collect();
+                        let (mut lo, mut hi) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
+                        for (_, q) in &quads {
+                            for &(x, y) in q {
+                                lo = (lo.0.min(x), lo.1.min(y));
+                                hi = (hi.0.max(x), hi.1.max(y));
+                            }
+                        }
+                        let (bw, bh) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                        let fit = ((bw / (hi.0 - lo.0).max(1.)).min(bh / (hi.1 - lo.1).max(1.)) * 0.95).max(0.0001);
+                        let (cx0, cy0) = ((lo.0 + hi.0) / 2., (lo.1 + hi.1) / 2.);
+                        let (ox, oy) = (f32::from(bounds.origin.x) + bw / 2., f32::from(bounds.origin.y) + bh / 2.);
+                        let mut shown = Vec::with_capacity(quads.len());
+                        for (i, q) in quads {
+                            let q = q.map(|(x, y)| (ox + (x - cx0) * fit, oy + (y - cy0) * fit));
+                            let picked = selected == Some(i);
+                            let fill = if picked {
+                                gpui_kit::Hsla { a: 0.3, ..accent }
+                            } else if hovered == Some(i) {
+                                gpui_kit::Hsla { a: 0.15, ..accent }
+                            } else {
+                                background
+                            };
+                            let mut path = gpui_kit::PathBuilder::fill();
+                            path.move_to(point(px(q[0].0), px(q[0].1)));
+                            for &(x, y) in &q[1..] {
+                                path.line_to(point(px(x), px(y)));
+                            }
+                            path.close();
+                            if let Ok(path) = path.build() {
+                                window.paint_path(path, fill);
+                            }
+                            let mut edge = gpui_kit::PathBuilder::stroke(px(if picked { 2. } else { 1. }));
+                            edge.move_to(point(px(q[0].0), px(q[0].1)));
+                            for &(x, y) in q[1..].iter().chain([&q[0]]) {
+                                edge.line_to(point(px(x), px(y)));
+                            }
+                            if let Ok(path) = edge.build() {
+                                window.paint_path(path, if picked { accent } else if hovered == Some(i) { hover } else { outline });
+                            }
+                            shown.push((i, q));
+                        }
+                        *projected.borrow_mut() = shown;
+                    },
+                )
+                .size_full(),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, _| {
+                    this.drag = Some((event.position, false));
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if let (Some((last, _)), Some(MouseButton::Left)) = (this.drag, event.pressed_button) {
+                    let (dx, dy) = (f32::from(event.position.x - last.x), f32::from(event.position.y - last.y));
+                    this.rotation.yaw = (this.rotation.yaw + dx * 0.01).clamp(-1.5, 1.5);
+                    this.rotation.pitch = (this.rotation.pitch + dy * 0.01).clamp(-1.5, 1.5);
+                    this.drag = Some((event.position, true));
+                    cx.notify();
+                    return;
+                }
+                this.drag = None;
+                let at = this.view_at(event.position);
+                if at != this.hovered {
+                    this.hovered = at;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui_kit::MouseUpEvent, _, cx| {
+                    let moved = this.drag.take().is_some_and(|(_, moved)| moved);
+                    if !moved {
+                        if let Some(ix) = this.view_at(event.position) {
+                            this.select(ix, cx);
+                        }
+                    }
+                }),
+            )
+    }
+
     fn render_attributes(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let node = self.selected.and_then(|ix| self.current()?.nodes.get(ix));
@@ -446,6 +569,26 @@ impl Render for LayoutInspector {
                     this.refresh(cx);
                 })
             }))
+            .child(Button::new("li-3d").ghost().xsmall().label("3D").tooltip("Toggle 3D Mode").selected(self.three_d).on_click(cx.listener(|this, _, _, cx| {
+                this.three_d = !this.three_d;
+                this.rotation = Rotation::START;
+                this.drag = None;
+                cx.notify();
+            })))
+            .when(self.three_d, |el| {
+                el.child(Button::new("li-spacing-less").ghost().xsmall().label("Layer Spacing −").on_click(cx.listener(|this, _, _, cx| {
+                    this.rotation.spacing = (this.rotation.spacing / 1.5).max(5.);
+                    cx.notify();
+                })))
+                .child(Button::new("li-spacing-more").ghost().xsmall().label("+").on_click(cx.listener(|this, _, _, cx| {
+                    this.rotation.spacing = (this.rotation.spacing * 1.5).min(600.);
+                    cx.notify();
+                })))
+                .child(Button::new("li-reset-view").ghost().xsmall().label("Reset View").on_click(cx.listener(|this, _, _, cx| {
+                    this.rotation = Rotation::START;
+                    cx.notify();
+                })))
+            })
             .child(div().flex_1())
             .when(self.loading, |el| el.child(div().text_xs().text_color(palette.text_secondary).child("Refreshing…")))
             .child(tool_button("li-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(LayoutInspectorEvent::Hide))));
@@ -464,7 +607,7 @@ impl Render for LayoutInspector {
             .flex_1()
             .min_h_0()
             .child(tree)
-            .child(div().flex_1().min_w_0().h_full().child(self.render_screen(cx)))
+            .child(div().flex_1().min_w_0().h_full().child(if self.three_d && self.snapshot.is_some() { self.render_screen_3d(cx).into_any_element() } else { self.render_screen(cx).into_any_element() }))
             .child(
                 v_flex()
                     .w(px(260.))
