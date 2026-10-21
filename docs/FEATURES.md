@@ -299,7 +299,7 @@
 | Copy Path/Reference… 弹窗（标签、Project 视图、编辑器 Copy / Paste Special）：Absolute Path（Ctrl+Shift+C）、File Name、Path from Content Root、Path from Source Root、Path From Repository Root、GitHub / GitLab Repository URL（跟踪的远程分支，否则当前提交；编辑器里带选中行），每行右侧预览要复制的内容，↑↓ Enter 或点击复制 | M8 | ✅（内容根/源码根按 AS 的模块规则推断：Gradle source set 为 app/src/main，源码根为其下的 java、kotlin、res 等；Cargo、Dart、Swift Package、Go 模块也有对应规则） |
 | 固定标签排在最前并显示图钉；拖动标签调整顺序 | M8 | ✅ |
 | 中键关闭；Ctrl+F4 关闭；Alt+← / Alt+→ 切换（macOS 为 Cmd+Shift+[ / ]） | M8 | ✅ |
-| 分屏：Split Right / Down、Split and Move Right / Down、Open in / Move to Opposite Group、Unsplit；标签可拖到另一组；某组标签关完后自动合并 | M8 | ✅（两组；同一文件在两组各有一份编辑缓冲） |
+| 分屏：Split Right / Down、Split and Move Right / Down、Open in / Move to Opposite Group、Unsplit；标签可拖到另一组；某组标签关完后自动合并 | M8 | ✅（两组；同一文件在两组共用一份文本（2026-10-21）：一边的输入、撤销、保存立刻同步到另一边，另一边的光标留在原处，修改标记一起变；分屏时未保存的修改带过去。撤销历史各自一份） |
 | 预览标签（Project 窗口 ⋮ › Behavior › Enable Preview Tab） | M8 | ✅（单击文件在一个斜体标签里预览，下一次预览替换它；编辑、双击文件或双击标签后变成普通标签） |
 | 多行标签、双击最大化编辑器（2026-10-21） | — | ✅（Settings › Editor › Editor Tabs 的 Multiple rows：标签换行、标签栏变高，默认仍是一行可滚动；双击标签按 IntelliJ 的 `doProcessDoubleClick`：预览标签变成普通标签，否则切换 Hide All Tool Windows，再双击恢复） |
 

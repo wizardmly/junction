@@ -204,6 +204,9 @@ pub enum FileEditorEvent {
     FilesWritten(Vec<String>),
     /// The text was edited (a preview tab becomes a normal one).
     Edited,
+    /// The text changed, saved or not: the same file in the other split
+    /// follows it.
+    TextChanged,
     /// The file is gone from disk (a checkout, say) and had no unsaved edits.
     Deleted,
     /// Call Hierarchy (Ctrl+Alt+H) of the function at this offset.
@@ -715,6 +718,7 @@ impl FileEditor {
                 if this.is_dirty(cx) {
                     cx.emit(FileEditorEvent::Edited);
                 }
+                cx.emit(FileEditorEvent::TextChanged);
                 cx.notify();
             }
         }), cx.subscribe_in(&state, window, |this, _, event: &InputEvent, window, cx| {
@@ -830,6 +834,32 @@ impl FileEditor {
     /// The selected lines (1-based) for a web URL.
     pub fn url_lines(&self, cx: &gpui_kit::App) -> (usize, usize) {
         self.selected_lines(cx)
+    }
+
+    /// The text as edited and as last saved, for the same file's editor in
+    /// the other split.
+    pub fn buffer(&self, cx: &gpui_kit::App) -> (String, String) {
+        (self.text(cx), self.saved.clone())
+    }
+
+    /// Takes the other split's text and saved state for the same file, as
+    /// IntelliJ's splits share one document: only the changed span is
+    /// replaced, and this editor's caret stays where it was in the text.
+    pub fn mirror(&mut self, text: &str, saved: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only() {
+            return;
+        }
+        self.saved = saved.to_owned();
+        let own = self.text(cx);
+        if own != text {
+            let caret = self.state.read(cx).cursor();
+            let prefix = own.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count();
+            let suffix = own.bytes().rev().zip(text.bytes().rev()).take_while(|(a, b)| a == b).count().min(own.len().min(text.len()) - prefix);
+            // A caret after the edit moves with the text after it.
+            let caret = if caret >= own.len() - suffix { caret + text.len() - own.len() } else { caret.min(prefix) };
+            self.replace_text(&own, text, caret, window, cx);
+        }
+        cx.notify();
     }
 
     /// Replaces the text (unsaved), e.g. a moved file's edits.
