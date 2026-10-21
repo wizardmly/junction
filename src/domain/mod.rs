@@ -21,6 +21,7 @@ pub mod hprof;
 pub mod method_trace;
 pub mod sqlite_file;
 pub mod sqlite_query;
+pub mod background_tasks;
 pub mod file_type_overrides;
 pub mod build;
 pub mod completion;

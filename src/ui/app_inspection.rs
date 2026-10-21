@@ -1,17 +1,18 @@
-//! The App Inspection tool window's Database Inspector, as Android Studio
-//! shows it: a device and app picker, the app's databases with their
-//! tables, and the picked table's rows in a grid. The databases are read
+//! The App Inspection tool window, as Android Studio shows it: a device and
+//! app picker over two inspectors. The Database Inspector shows the app's
+//! databases with their tables, and the picked table's rows in a grid. The databases are read
 //! from the device (`run-as`, so the app must be debuggable) with their
 //! WAL applied; Refresh reads them again, and Live updates every few
-//! seconds. The query bar runs a SELECT on the picked database.
+//! seconds. The query bar runs a SELECT on the picked database. The
+//! Background Task Inspector is in `background_task_view`.
 
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::component::{
-    Disableable as _, Icon, Sizable as _, h_flex,
-    button::Button,
+    Disableable as _, Icon, Selectable as _, Sizable as _, h_flex,
+    button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -24,6 +25,7 @@ use gpui_kit::{
 
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
+use crate::ui::background_task_view::BackgroundTaskView;
 use crate::ui::common::tool_button;
 use crate::ui::device_manager::DeviceManager;
 use crate::usecase::inspect_database::{self, OpenedDatabase};
@@ -37,6 +39,12 @@ const COLUMN_W: f32 = 160.;
 /// Rows read from a table; Android Studio pages through 50 at a time.
 const ROW_LIMIT: usize = 5000;
 const LIVE_INTERVAL: Duration = Duration::from_secs(3);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Inspector {
+    Database,
+    BackgroundTasks,
+}
 
 #[derive(Clone)]
 struct Target {
@@ -71,6 +79,8 @@ pub struct AppInspectionView {
     query: Entity<InputState>,
     /// The database queries run on.
     query_database: Option<String>,
+    inspector: Inspector,
+    background: Entity<BackgroundTaskView>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -108,6 +118,8 @@ impl AppInspectionView {
             live: false,
             query,
             query_database: None,
+            inspector: Inspector::Database,
+            background: cx.new(|_| BackgroundTaskView::new()),
             _subscriptions: vec![observe, run],
         }
     }
@@ -134,7 +146,7 @@ impl AppInspectionView {
                         this.app_ids = ids;
                         if this.app.as_ref().is_none_or(|a| !this.apps.contains(a)) {
                             this.app = this.apps.iter().find(|a| this.app_ids.contains(a)).cloned();
-                            this.load_databases(cx);
+                            this.app_changed(cx);
                         }
                     }
                     Err(e) => this.error = Some(e),
@@ -144,6 +156,48 @@ impl AppInspectionView {
             .ok();
         })
         .detach();
+    }
+
+    /// A new app or device: the shown inspector reads it, the other forgets the old one.
+    fn app_changed(&mut self, cx: &mut Context<Self>) {
+        self.grid = None;
+        self.background.update(cx, |b, cx| b.clear(cx));
+        match self.inspector {
+            Inspector::Database => self.load_databases(cx),
+            Inspector::BackgroundTasks => {
+                self.databases.clear();
+                self.load_background(cx);
+            }
+        }
+    }
+
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        match self.inspector {
+            Inspector::Database => self.load_databases(cx),
+            Inspector::BackgroundTasks => self.load_background(cx),
+        }
+    }
+
+    fn busy(&self, cx: &App) -> bool {
+        match self.inspector {
+            Inspector::Database => self.loading,
+            Inspector::BackgroundTasks => self.background.read(cx).loading,
+        }
+    }
+
+    fn load_background(&mut self, cx: &mut Context<Self>) {
+        let (Some(serial), Some(adb), Some(app)) = (self.active.clone(), self.adb(cx), self.app.clone()) else { return };
+        self.background.update(cx, |b, cx| b.load(adb, serial, app, cx));
+    }
+
+    fn show_inspector(&mut self, inspector: Inspector, cx: &mut Context<Self>) {
+        if self.inspector == inspector {
+            return;
+        }
+        self.inspector = inspector;
+        self.error = None;
+        self.refresh(cx);
+        cx.notify();
     }
 
     /// Reads the app's databases again, keeping the table shown.
@@ -228,14 +282,14 @@ impl AppInspectionView {
     fn set_live(&mut self, live: bool, cx: &mut Context<Self>) {
         self.live = live;
         if live {
-            self.load_databases(cx);
+            self.refresh(cx);
             cx.spawn(async move |this, cx| {
                 loop {
                     cx.background_executor().timer(LIVE_INTERVAL).await;
                     let go = this
                         .update(cx, |this, cx| {
-                            if this.live && !this.loading {
-                                this.load_databases(cx);
+                            if this.live && !this.busy(cx) {
+                                this.refresh(cx);
                             }
                             this.live
                         })
@@ -356,6 +410,7 @@ impl Render for AppInspectionView {
                             this.app = None;
                             this.databases.clear();
                             this.grid = None;
+                            this.background.update(cx, |b, cx| b.clear(cx));
                             this.load_apps(cx);
                         })
                     }));
@@ -379,8 +434,7 @@ impl Render for AppInspectionView {
                     menu = menu.item(PopupMenuItem::new(app.clone()).on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| {
                             this.app = Some(app.clone());
-                            this.grid = None;
-                            this.load_databases(cx);
+                            this.app_changed(cx);
                         })
                     }));
                 }
@@ -390,6 +444,7 @@ impl Render for AppInspectionView {
                 }))
             }
         });
+        let busy = self.busy(cx);
         let header = h_flex()
             .h(px(crate::ui::common::header_height()))
             .px_2()
@@ -398,7 +453,19 @@ impl Render for AppInspectionView {
             .border_b_1()
             .border_color(palette.border)
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("App Inspection"))
-            .child(div().text_xs().px_2().py(px(2.)).rounded_sm().bg(palette.selection).child("Database Inspector"))
+            .child(
+                h_flex()
+                    .gap_0p5()
+                    .child(Button::new("ai-tab-db").xsmall().ghost().label("Database Inspector").selected(self.inspector == Inspector::Database).on_click(cx.listener(|this, _, _, cx| this.show_inspector(Inspector::Database, cx))))
+                    .child(
+                        Button::new("ai-tab-bt")
+                            .xsmall()
+                            .ghost()
+                            .label("Background Task Inspector")
+                            .selected(self.inspector == Inspector::BackgroundTasks)
+                            .on_click(cx.listener(|this, _, _, cx| this.show_inspector(Inspector::BackgroundTasks, cx))),
+                    ),
+            )
             .child(device_picker)
             .child(app_picker)
             .child(
@@ -406,10 +473,11 @@ impl Render for AppInspectionView {
                     .xsmall()
                     .outline()
                     .icon(Icon::new(icons::REFRESH))
-                    .label(if self.loading { "Reading…" } else { "Refresh" })
-                    .disabled(self.app.is_none() || self.loading)
-                    .on_click(cx.listener(|this, _, _, cx| this.load_databases(cx))),
+                    .label(if busy { "Reading…" } else { "Refresh" })
+                    .disabled(self.app.is_none() || busy)
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             )
+            .when(self.inspector == Inspector::BackgroundTasks, |el| el.child(self.background.update(cx, |b, cx| b.tag_filter(cx).into_any_element())))
             .child(Checkbox::new("ai-live").label("Live updates").checked(self.live).on_change({
                 let entity = entity.clone();
                 move |v, _, cx| {
@@ -468,6 +536,13 @@ impl Render for AppInspectionView {
         } else {
             "Pick a table to see its rows."
         };
+        if self.inspector == Inspector::BackgroundTasks {
+            return v_flex()
+                .size_full()
+                .child(header)
+                .when_some(self.error.clone(), |el, e| el.child(div().px_2().py_1().text_xs().text_color(palette.status_conflict).child(SharedString::from(e))))
+                .child(div().flex_1().min_h_0().child(self.background.clone()));
+        }
         let query_bar = (!self.databases.is_empty()).then(|| {
             let names: Vec<String> = self.databases.iter().map(|d| d.name.clone()).collect();
             let target = self.query_target().unwrap_or_default();

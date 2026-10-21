@@ -1204,6 +1204,23 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | 查询栏：选数据库，输入 SELECT 回车或点 Run，结果显示在网格里（Refresh / Live updates 时重新执行）。支持单表的 `SELECT 列 / * / COUNT(*)`、`WHERE`（比较、`LIKE`、`IN`、`BETWEEN`、`IS [NOT] NULL`、`AND` / `OR` / `NOT`、括号，列与字面量比较时按列的类型转换）、`ORDER BY`、`LIMIT` / `OFFSET`；不支持的写法（JOIN、GROUP BY、函数、表达式）报出是哪个词；INSERT / UPDATE / DELETE 等会说明数据库是副本、改不了应用的数据 | ✅（自己写的求值，不是 SQLite，不支持 JOIN、聚合和子查询） |
 | Live updates：每 3 秒从设备重新读取数据库，保留当前表或查询 | ✅（AS 是表变化时才推送；这里是定时整库重读，大库会慢） |
 | 编辑单元格、导出、`WITHOUT ROWID` 表 | ❌ |
-| Network Inspector、Background Task Inspector | ❌ |
+| Network Inspector | ❌ |
+| Background Task Inspector | ✅ 见第 67 节 |
 
 数据库是自己写的只读 SQLite 解析（`src/domain/sqlite_file.rs`），不依赖 sqlite 库，也不需要在设备上装 agent。只用模拟 adb 验证过（`sqlite3` 生成的普通库和带 WAL 的库）。
+
+## 67. App Inspection：Background Task Inspector（2026-10-21）
+
+| 功能 | 状态 |
+|---|---|
+| App Inspection 顶部切换 Database Inspector / Background Task Inspector，两者共用设备和应用下拉、Refresh、Live updates（每 3 秒重读） | ✅ |
+| 一张表按 Workers / Jobs / Alarms / WakeLocks 分组（可折叠），列为 Class Name、Status、Start、Result；Worker 状态按 AS 着色（Running 蓝、Succeeded 绿、Failed 红） | ✅ |
+| Workers：`run-as` 读取应用的 `androidx.work.workdb`（WorkSpec、WorkTag、WorkName、Dependency 表），解码输入输出 `Data`（WorkManager 2.9 起的格式和旧版 Java 序列化格式都支持） | ✅ |
+| Worker 详情：类名、标签、唯一名、UUID、约束、One Time / Periodic 频率、状态、初始延迟、加急、前后依赖（可点击跳转）、开始时间、重试次数、输入和输出数据 | ✅ |
+| 按标签过滤 Workers | ✅ |
+| Jobs：`dumpsys jobscheduler <包名>`，显示 Running / Ready / Waiting、所需和未满足的约束、周期、入队时间、运行时间窗口，标出 WorkManager 调度的 job | ✅ |
+| Alarms：`dumpsys alarm` 里本应用的闹钟（类型、tag、多久后触发、窗口、重复间隔、PendingIntent） | ✅ |
+| WakeLocks：`dumpsys power` 里本应用 uid（`pm list packages -U`）持有的 wake lock | ✅ |
+| 取消 Worker、已结束的 job / alarm 历史、Worker 链的图形视图、跳到入队代码 | ❌（AS 靠应用内 agent 实时上报；这里只读设备当前状态） |
+
+解析在 `src/domain/background_tasks.rs`，只用模拟 adb 和 `sqlite3` + Java 生成的 WorkManager 库验证过，没在真机上看过 dumpsys 的实际输出。
