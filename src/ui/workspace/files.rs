@@ -31,6 +31,7 @@ impl Workspace {
 
     pub(crate) fn on_file_editor_event(&mut self, view: &Entity<FileEditor>, event: &FileEditorEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
+            FileEditorEvent::TextChanged => self.mirror_to_twin(view, window, cx),
             FileEditorEvent::Edited => {
                 self.keep_tab(view, cx);
                 let editor = view.read(cx);
@@ -160,6 +161,7 @@ impl Workspace {
                 self.open_translations(&path, window, cx);
             }
             FileEditorEvent::Saved(path) => {
+                self.mirror_to_twin(view, window, cx);
                 let path = path.clone();
                 self.reload_translations(&path, cx);
                 self.recently_changed.touch(&path);

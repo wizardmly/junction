@@ -282,7 +282,12 @@ impl Workspace {
                 .max(pinned)
                 .min(self.editors.len());
                 let id = view.entity_id();
-                self.editors.insert(at, EditorTab { view, _subscription: subscription, pinned: false, preview: false, used: 0 });
+                self.editors.insert(at, EditorTab { view: view.clone(), _subscription: subscription, pinned: false, preview: false, used: 0 });
+                // The other split's unsaved edits come along.
+                if let Some(twin) = self.twin(&view, cx) {
+                    let (text, saved) = twin.read(cx).buffer(cx);
+                    view.update(cx, |view, cx| view.mirror(&text, &saved, window, cx));
+                }
                 if let Front::Editor(active) = &mut self.front {
                     if *active >= at {
                         *active += 1;
@@ -293,6 +298,27 @@ impl Workspace {
             }
         };
         self.activate_tab(ix, cx);
+    }
+
+    /// The same working-tree file's editor in the other split group.
+    pub(super) fn twin(&self, view: &Entity<FileEditor>, cx: &gpui_kit::App) -> Option<Entity<FileEditor>> {
+        let split = self.split.as_ref()?;
+        let editor = view.read(cx);
+        if editor.revision().is_some() {
+            return None;
+        }
+        let path = editor.path();
+        let mine = self.editors.iter().any(|t| t.view == *view);
+        let others = if mine { &split.editors } else { &self.editors };
+        others.iter().find(|t| t.view != *view && t.view.read(cx).revision().is_none() && t.view.read(cx).path() == path).map(|t| t.view.clone())
+    }
+
+    /// One split's edit or save reaches the other split's editor of the
+    /// file, as both show one document in IntelliJ.
+    pub(super) fn mirror_to_twin(&mut self, view: &Entity<FileEditor>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(twin) = self.twin(view, cx) else { return };
+        let (text, saved) = view.read(cx).buffer(cx);
+        twin.update(cx, |twin, cx| twin.mirror(&text, &saved, window, cx));
     }
 
     /// Past the tab limit, closes the least recently used unpinned, unmodified tab.
