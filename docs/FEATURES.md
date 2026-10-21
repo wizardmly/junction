@@ -1183,9 +1183,12 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | 进程退出后自动停止并提示 | ✅ |
 | Capture heap dump：`am dumpheap` 后拉回电脑，存到 `~/.cache/Junction/captures/<进程>_<时间>.hprof`（AS 的 File › Open 也能打开）；解析成类列表：Class Name、Allocations、Shallow Size、Retained Size（从 GC Root 建支配树，每个对象的保留大小按类相加；`Reference.referent` 不算持有，和 AS 一样），默认按 Retained Size 从大到小排，按堆（app / image / zygote）切换，可搜索 | ✅（JVM 导出的 78 MB hprof、约 120 万对象解析约 1.2 秒，峰值内存约 290 MB） |
 | 点一个类：右侧 Instance List（Instance `HashMap@0x…`、Depth、Shallow Size、Retained Size，可达的按 Retained 从大到小，不可达的灰显）；点一个实例：下方 References 树，每行“字段 in 引用者”（`next`、`[3]`、`static sInstance`），按 Depth 从小到大，可一层层展开到 GC root（标 “GC root”，环不再展开，每层最多 200 个） | ✅（没有 Fields 标签页、Jump to Source 和按包分组） |
-| CPU 方法 / 系统跟踪（Perfetto）、分配跟踪、Energy | ❌ |
+| Record（CPU 方法追踪）：录制方式下拉 Java/Kotlin Method Sample（`am profile start --sampling 1000`）/ Java/Kotlin Method Trace（不带 `--sampling`，记录每次调用），Stop recording 后 `am profile stop` 并拉回 `.trace`，存到 `~/.cache/Junction/captures/<进程>_<时间>.trace` | ✅ |
+| 解析 ART 追踪文件（文本头 + `SLOW` 二进制记录，版本 1–3，单时钟和双时钟），每个线程建调用树；录制开始前已在运行的方法从第一条记录算起，结束时还没返回的算到最后一条 | ✅ |
+| 追踪视图：线程下拉（按耗时排序）、Wall Clock Time / Thread Time 切换；Top Down（Name、Total、Self、Children 及各自占线程的 %，默认沿最耗时的路径展开）、Bottom Up（每个方法的总耗时，展开看调用者；递归不重复计算）、Flame Chart（相同调用栈合并，宽度按耗时，绿色是本项目代码，橙色是系统代码，蓝色是其他库，悬停显示耗时） | ✅（没有 Call Chart 时间轴、选区、Summary、Jump to Source 和搜索） |
+| 系统跟踪（Perfetto）、C/C++ 采样（simpleperf）、分配跟踪、Energy | ❌ |
 
-只用模拟 adb 验证过（假 `/proc`、`dumpsys meminfo` 输出和一个 120 万字节的 Android 格式 hprof）：曲线、图例、进程切换、堆转储列表、堆切换和搜索都正确。
+只用模拟 adb 验证过（假 `/proc`、`dumpsys meminfo` 输出和一个 120 万字节的 Android 格式 hprof）：曲线、图例、进程切换、堆转储列表、堆切换和搜索都正确。方法追踪只用脚本按 ART 格式生成的追踪文件（4 个线程、约 1.8 万条记录）验证过，没有真机录制过。
 
 ## 66. App Inspection：Database Inspector（2026-10-21）
 

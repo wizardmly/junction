@@ -134,6 +134,11 @@ pub trait ProfilerSource {
     fn meminfo(&self, serial: &str, pid: u32) -> Result<String, String>;
     /// Dumps the Java heap into the file `to` on the computer; its bytes.
     fn heap_dump(&self, serial: &str, pid: u32, to: &std::path::Path) -> Result<Vec<u8>, String>;
+    /// `am profile start`: samples the app's stacks every `sampling_us`,
+    /// or records every method enter and exit when `None`.
+    fn start_method_trace(&self, serial: &str, pid: u32, sampling_us: Option<u32>) -> Result<(), String>;
+    /// `am profile stop`; the trace pulled into the file `to`, its bytes.
+    fn stop_method_trace(&self, serial: &str, pid: u32, to: &std::path::Path) -> Result<Vec<u8>, String>;
 }
 
 #[cfg(test)]

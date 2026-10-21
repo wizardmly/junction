@@ -4,7 +4,9 @@
 //! Native, Graphics, Stack, Code, Others). Capture heap dump saves an
 //! `.hprof` and lists its classes with their Allocations, Shallow Size and
 //! Retained Size; a class's Instance List (Depth, Shallow and Retained Size)
-//! and an instance's References, expandable toward the GC roots.
+//! and an instance's References, expandable toward the GC roots. Record
+//! takes a Java/Kotlin Method Sample or Trace and shows its threads' calls
+//! as Top Down, Bottom Up and Flame Chart.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
@@ -13,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
-    Disableable as _, Icon, Sizable as _, h_flex,
+    Disableable as _, Icon, Selectable as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -25,6 +27,8 @@ use gpui_kit::{
 };
 
 use crate::domain::hprof::{HeapSummary, Instance};
+use crate::domain::method_trace::{CallTree, Clock, MethodTrace};
+use crate::usecase::profile_app::TraceMode;
 use crate::domain::profiler::{ProfiledProcess, Sample};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
@@ -113,6 +117,106 @@ impl HeapView {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TraceTab {
+    TopDown,
+    FlameChart,
+    BottomUp,
+}
+
+/// A method trace on screen: the thread, tab and clock picked, and the
+/// tree rows shown.
+struct TraceView {
+    file: PathBuf,
+    trace: MethodTrace,
+    thread: usize,
+    tab: TraceTab,
+    clock: Clock,
+    /// The picked thread's Bottom Up tree, made when its tab opens.
+    bottom_up: Option<CallTree>,
+    expanded: HashSet<u32>,
+    /// (node, depth) in the tree shown.
+    rows: Vec<(u32, u32)>,
+    hovered: Option<u32>,
+}
+
+impl TraceView {
+    fn new(file: PathBuf, trace: MethodTrace) -> Self {
+        let clock = if trace.wall { Clock::Wall } else { Clock::Thread };
+        let mut view = Self { file, trace, thread: 0, tab: TraceTab::TopDown, clock, bottom_up: None, expanded: HashSet::new(), rows: Vec::new(), hovered: None };
+        view.reset();
+        view
+    }
+
+    fn tree(&self) -> &CallTree {
+        match (&self.bottom_up, self.tab) {
+            (Some(up), TraceTab::BottomUp) => up,
+            _ => &self.trace.threads[self.thread].tree,
+        }
+    }
+
+    /// After picking a thread, tab or clock: Top Down opens along its
+    /// heaviest path, Bottom Up closed.
+    fn reset(&mut self) {
+        self.hovered = None;
+        self.bottom_up = None;
+        if self.trace.threads.is_empty() {
+            self.rows.clear();
+            return;
+        }
+        if self.tab == TraceTab::BottomUp {
+            self.bottom_up = Some(self.trace.threads[self.thread].tree.bottom_up());
+            self.expanded.clear();
+        } else {
+            let mut path = self.tree().heaviest_path(self.clock);
+            path.pop();
+            self.expanded = path.into_iter().collect();
+        }
+        self.refresh_rows();
+    }
+
+    fn refresh_rows(&mut self) {
+        fn walk(tree: &CallTree, node: u32, depth: u32, clock: Clock, expanded: &HashSet<u32>, out: &mut Vec<(u32, u32)>) {
+            for child in tree.sorted_children(node, clock) {
+                out.push((child, depth));
+                if expanded.contains(&child) {
+                    walk(tree, child, depth + 1, clock, expanded, out);
+                }
+            }
+        }
+        let mut rows = Vec::new();
+        if !self.trace.threads.is_empty() {
+            walk(self.tree(), 0, 0, self.clock, &self.expanded, &mut rows);
+        }
+        self.rows = rows;
+    }
+}
+
+/// Microseconds as Android Studio writes them: `12,345`.
+fn micros(us: u64) -> String {
+    let digits = us.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn percent(part: u64, whole: u64) -> String {
+    if whole == 0 { String::new() } else { format!("{:.2}", part as f64 * 100. / whole as f64) }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Recording {
+    Idle,
+    Starting,
+    Running,
+    Stopping,
+}
+
 pub struct ProfilerView {
     device_manager: Entity<DeviceManager>,
     project: Rc<dyn Fn(&App) -> Option<PathBuf>>,
@@ -127,6 +231,11 @@ pub struct ProfilerView {
     dumping: bool,
     error: Option<String>,
     heap: Option<HeapView>,
+    trace_mode: TraceMode,
+    recording: Recording,
+    /// The process being recorded.
+    recorded: Option<ProfiledProcess>,
+    trace: Option<TraceView>,
     filter: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
@@ -174,6 +283,10 @@ impl ProfilerView {
             dumping: false,
             error: None,
             heap: None,
+            trace_mode: TraceMode::Sample,
+            recording: Recording::Idle,
+            recorded: None,
+            trace: None,
             filter,
             _subscriptions: vec![observe, filtered],
         }
@@ -294,6 +407,7 @@ impl ProfilerView {
                         let heap = if summary.heaps.iter().any(|h| h == "app") { "app".to_owned() } else { summary.heaps.first().cloned().unwrap_or_default() };
                         cx.emit(ProfilerEvent::Notify { title: "Heap Dump".into(), message: format!("Saved to {}", file.display()), error: false });
                         this.heap = Some(HeapView::new(file, summary, heap));
+                        this.trace = None;
                     }
                     Err(e) => cx.emit(ProfilerEvent::Notify { title: "Heap Dump".into(), message: format!("Cannot capture a heap dump: {e} (the app must be debuggable)"), error: true }),
                 }
@@ -303,6 +417,286 @@ impl ProfilerView {
         })
         .detach();
         cx.notify();
+    }
+
+    fn start_recording(&mut self, cx: &mut Context<Self>) {
+        let (Some(serial), Some(adb), Some(process)) = (self.active.clone(), self.adb(cx), self.process.clone()) else { return };
+        if self.recording != Recording::Idle {
+            return;
+        }
+        self.recording = Recording::Starting;
+        self.recorded = Some(process.clone());
+        let mode = self.trace_mode;
+        let task = cx.background_spawn(async move { crate::usecase::profile_app::start_method_trace(&crate::infra::adb_profiler::AdbProfiler { adb }, &serial, process.pid, mode) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => this.recording = Recording::Running,
+                    Err(e) => {
+                        this.recording = Recording::Idle;
+                        cx.emit(ProfilerEvent::Notify { title: "CPU Recording".into(), message: format!("Cannot start recording: {e} (the app must be debuggable or profileable)"), error: true });
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn stop_recording(&mut self, cx: &mut Context<Self>) {
+        let (Some(serial), Some(adb), Some(process)) = (self.active.clone(), self.adb(cx), self.recorded.clone()) else { return };
+        if self.recording != Recording::Running {
+            return;
+        }
+        self.recording = Recording::Stopping;
+        let name = process.name.replace([':', '/'], "_");
+        let file = crate::index::libraries::cache_dir().unwrap_or_else(std::env::temp_dir).join("captures").join(format!("{name}_{}.trace", chrono::Local::now().format("%Y-%m-%d_%H.%M.%S")));
+        let to = file.clone();
+        let task = cx.background_spawn(async move { crate::usecase::profile_app::stop_method_trace(&crate::infra::adb_profiler::AdbProfiler { adb }, &serial, process.pid, &to) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.recording = Recording::Idle;
+                match result {
+                    Ok(trace) => {
+                        cx.emit(ProfilerEvent::Notify { title: "CPU Recording".into(), message: format!("Saved to {}", file.display()), error: false });
+                        this.trace = Some(TraceView::new(file, trace));
+                        this.heap = None;
+                    }
+                    Err(e) => cx.emit(ProfilerEvent::Notify { title: "CPU Recording".into(), message: format!("Cannot record the method trace: {e}"), error: true }),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn render_trace_rows(&mut self, range: std::ops::Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
+        let palette = cx.palette().clone();
+        let Some(view) = &self.trace else { return Vec::new() };
+        let tree = view.tree();
+        let (clock, c) = (view.clock, view.clock as usize);
+        let whole = view.trace.threads[view.thread].tree.total(clock);
+        view.rows[range.start.min(view.rows.len())..range.end.min(view.rows.len())]
+            .iter()
+            .map(|&(node, depth)| {
+                let n = &tree.nodes[node as usize];
+                let expandable = !n.children.is_empty();
+                let expanded = view.expanded.contains(&node);
+                let (total, own) = (n.total[c], n.own[c]);
+                let children = total.saturating_sub(own);
+                let cell = |w: f32, text: String| div().w(px(w)).flex_none().text_right().child(text);
+                h_flex()
+                    .id(("pf-trace", node as usize))
+                    .w_full()
+                    .h(px(ROW_H))
+                    .px_2()
+                    .text_sm()
+                    .hover(|el| el.bg(palette.hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(view) = &mut this.trace {
+                            if expandable && !view.expanded.remove(&node) {
+                                view.expanded.insert(node);
+                            }
+                            view.refresh_rows();
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .pl(px(depth as f32 * 16.))
+                            .child(div().w(px(14.)).flex_none().when(expandable, |el| el.child(Icon::new(if expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).xsmall())))
+                            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().child(view.trace.label(n.method))),
+                    )
+                    .child(cell(100., micros(total)))
+                    .child(cell(60., percent(total, whole)))
+                    .child(cell(100., micros(own)))
+                    .child(cell(60., percent(own, whole)))
+                    .child(cell(100., micros(children)))
+                    .child(cell(60., percent(children, whole)))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    /// The Flame Chart: the Top Down tree from the bottom up, each call
+    /// path as wide as its share of the thread's time, longest first.
+    /// Green is the app's code, orange the platform's, blue the rest.
+    fn render_flame_chart(&self, view: &TraceView, palette: &crate::theme::Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        const BAR: f32 = 18.;
+        const MAX_BARS: usize = 4000;
+        let tree = view.tree();
+        let whole = tree.total(view.clock).max(1) as f64;
+        let mut bars = Vec::new();
+        let mut depth_max = 0;
+        let mut stack = vec![(0u32, 0u32, 0f64)];
+        while let Some((node, depth, x)) = stack.pop() {
+            let mut at = x;
+            for child in tree.sorted_children(node, view.clock) {
+                let w = tree.nodes[child as usize].total[view.clock as usize] as f64 / whole;
+                // Narrower than a pixel or so on a wide window.
+                if w >= 0.0005 && bars.len() < MAX_BARS {
+                    bars.push((child, depth, at, w));
+                    depth_max = depth_max.max(depth + 1);
+                    stack.push((child, depth + 1, at));
+                }
+                at += w;
+            }
+        }
+        let system = ["android.", "androidx.", "com.android.", "dalvik.", "libcore.", "java.", "javax.", "sun.", "kotlin.", "kotlinx.", "org.apache.harmony."];
+        let hovered = view.hovered.map(|node| {
+            let n = &tree.nodes[node as usize];
+            let total = n.total[view.clock as usize];
+            format!("{}   {} μs ({}%)", view.trace.label(n.method), micros(total), percent(total, tree.total(view.clock)))
+        });
+        let height = depth_max as f32 * BAR;
+        let chart = div().relative().w_full().h(px(height)).children(bars.into_iter().map(|(node, depth, x, w)| {
+            let method = tree.nodes[node as usize].method;
+            let class = view.trace.methods.get(method as usize).map(|m| m.class.as_str()).unwrap_or_default();
+            let app = self.app_ids.iter().any(|id| class.starts_with(&format!("{id}.")));
+            let fill = if app {
+                0x81c784
+            } else if system.iter().any(|p| class.starts_with(p)) {
+                0xffb74d
+            } else {
+                0x64b5f6
+            };
+            div()
+                .id(("pf-flame", node as usize))
+                .absolute()
+                .left(relative(x as f32))
+                .w(relative(w as f32))
+                .bottom(px(depth as f32 * BAR))
+                .h(px(BAR - 1.))
+                .border_r_1()
+                .border_color(palette.panel)
+                .bg(color(fill))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .px_1()
+                .text_xs()
+                .text_color(gpui_kit::black())
+                .child(view.trace.label(method))
+                .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                    if let Some(view) = &mut this.trace {
+                        if *over {
+                            view.hovered = Some(node);
+                        } else if view.hovered == Some(node) {
+                            view.hovered = None;
+                        }
+                    }
+                    cx.notify();
+                }))
+        }));
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .child(div().h(px(ROW_H)).flex_none().px_2().text_xs().text_color(palette.text_secondary).overflow_hidden().whitespace_nowrap().child(hovered.unwrap_or_else(|| "Hover over a method to see its time".into())))
+            .child(v_flex().id("pf-flame-scroll").flex_1().min_h_0().overflow_y_scroll().justify_end().px_2().child(chart))
+    }
+
+    fn render_trace(&self, view: &TraceView, palette: &crate::theme::Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let threads: Vec<(usize, String)> = view.trace.threads.iter().enumerate().map(|(i, t)| (i, format!("{} ({})", t.name, t.id))).collect();
+        let thread_label = threads.get(view.thread).map(|t| t.1.clone()).unwrap_or_else(|| "No threads".into());
+        let thread_picker = Button::new("pf-trace-thread").outline().xsmall().label(thread_label).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
+            let entity = entity.clone();
+            move |mut menu, _, _| {
+                for (i, name) in &threads {
+                    let (entity, i) = (entity.clone(), *i);
+                    menu = menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            if let Some(v) = &mut this.trace {
+                                v.thread = i;
+                                v.reset();
+                            }
+                            cx.notify();
+                        })
+                    }));
+                }
+                menu
+            }
+        });
+        let (wall, thread_time) = (view.trace.wall, view.trace.thread_time);
+        let clock_label = if view.clock == Clock::Wall { "Wall Clock Time" } else { "Thread Time" };
+        let clock_picker = Button::new("pf-trace-clock").outline().xsmall().label(clock_label).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
+            let entity = entity.clone();
+            move |mut menu, _, _| {
+                for (clock, label, on) in [(Clock::Wall, "Wall Clock Time", wall), (Clock::Thread, "Thread Time", thread_time)] {
+                    let entity = entity.clone();
+                    menu = menu.item(PopupMenuItem::new(label).disabled(!on).on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            if let Some(v) = &mut this.trace {
+                                v.clock = clock;
+                                v.reset();
+                            }
+                            cx.notify();
+                        })
+                    }));
+                }
+                menu
+            }
+        });
+        let tab = |id: &'static str, label: &'static str, which: TraceTab| {
+            Button::new(id).ghost().xsmall().label(label).selected(view.tab == which).on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(v) = &mut this.trace {
+                    if v.tab != which {
+                        v.tab = which;
+                        v.reset();
+                    }
+                }
+                cx.notify();
+            }))
+        };
+        let total = view.trace.threads.get(view.thread).map(|t| t.tree.total(view.clock)).unwrap_or(0);
+        let head = |w: f32, text: &'static str| div().w(px(w)).flex_none().text_right().child(text);
+        let columns = h_flex()
+            .h(px(ROW_H))
+            .flex_none()
+            .px_2()
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(palette.text_secondary)
+            .border_b_1()
+            .border_color(palette.border)
+            .child(div().flex_1().min_w_0().child("Name"))
+            .child(head(100., "Total (μs)"))
+            .child(head(60., "%"))
+            .child(head(100., "Self (μs)"))
+            .child(head(60., "%"))
+            .child(head(100., "Children (μs)"))
+            .child(head(60., "%"));
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .border_t_1()
+            .border_color(palette.border)
+            .child(
+                h_flex()
+                    .px_2()
+                    .py_1()
+                    .gap_2()
+                    .text_xs()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).text_sm().child("Method Trace"))
+                    .child(thread_picker)
+                    .child(clock_picker)
+                    .child(tab("pf-tab-top", "Top Down", TraceTab::TopDown))
+                    .child(tab("pf-tab-flame", "Flame Chart", TraceTab::FlameChart))
+                    .child(tab("pf-tab-bottom", "Bottom Up", TraceTab::BottomUp))
+                    .child(div().text_color(palette.text_secondary).child(format!("Thread {} μs of {} μs recorded, {} threads", micros(total), micros(view.trace.elapsed_us), view.trace.threads.len())))
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_color(palette.text_secondary).child(view.file.display().to_string())),
+            )
+            .when(view.trace.threads.is_empty(), |el| el.child(div().p_2().text_sm().text_color(palette.text_secondary).child("The trace has no method calls")))
+            .when(!view.trace.threads.is_empty() && view.tab == TraceTab::FlameChart, |el| el.child(self.render_flame_chart(view, palette, cx)))
+            .when(!view.trace.threads.is_empty() && view.tab != TraceTab::FlameChart, |el| el.child(columns).child(uniform_list("pf-trace-rows", view.rows.len(), cx.processor(Self::render_trace_rows)).flex_1().min_h_0()))
     }
 
     /// The classes shown: the picked heap's, matching the search.
@@ -472,7 +866,7 @@ impl ProfilerView {
 
     /// Shorter charts while a heap dump shares the window.
     fn render_charts(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let compact = self.heap.is_some();
+        let compact = self.heap.is_some() || self.trace.is_some();
         let palette = cx.palette().clone();
         let last = self.samples.back().copied();
         let cpu_label = match last {
@@ -600,6 +994,21 @@ impl Render for ProfilerView {
         });
         let running = self.session.is_some();
         let can = self.process.is_some();
+        let mode_picker = Button::new("pf-trace-mode").outline().xsmall().label(self.trace_mode.label()).disabled(self.recording != Recording::Idle).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
+            let entity = entity.clone();
+            move |mut menu, _, _| {
+                for mode in [TraceMode::Sample, TraceMode::Trace] {
+                    let entity = entity.clone();
+                    menu = menu.item(PopupMenuItem::new(mode.label()).on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.trace_mode = mode;
+                            cx.notify();
+                        })
+                    }));
+                }
+                menu
+            }
+        });
         let header = h_flex()
             .h(px(crate::ui::common::header_height()))
             .px_2()
@@ -616,6 +1025,13 @@ impl Render for ProfilerView {
                 Button::new("pf-start").xsmall().primary().label("Start").disabled(!can).on_click(cx.listener(|this, _, _, cx| this.start(cx)))
             })
             .child(Button::new("pf-heap").xsmall().outline().label(if self.dumping { "Dumping heap…" } else { "Capture heap dump" }).disabled(!can || self.dumping).on_click(cx.listener(|this, _, _, cx| this.capture_heap_dump(cx))))
+            .child(mode_picker)
+            .child(match self.recording {
+                Recording::Idle => Button::new("pf-record").xsmall().outline().label("Record").disabled(!can).on_click(cx.listener(|this, _, _, cx| this.start_recording(cx))),
+                Recording::Running => Button::new("pf-record").xsmall().primary().label("Stop recording").on_click(cx.listener(|this, _, _, cx| this.stop_recording(cx))),
+                Recording::Starting => Button::new("pf-record").xsmall().outline().label("Starting…").disabled(true),
+                Recording::Stopping => Button::new("pf-record").xsmall().outline().label("Saving trace…").disabled(true),
+            })
             .child(div().flex_1())
             .child(tool_button("pf-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(ProfilerEvent::Hide))));
         let heap = self.heap.as_ref().map(|heap| {
@@ -684,15 +1100,18 @@ impl Render for ProfilerView {
                         .when(heap.class.is_some(), |el| el.child(self.render_instance_panel(heap, &palette, cx))),
                 )
         });
+        let trace = self.trace.as_ref().map(|view| self.render_trace(view, &palette, cx).into_any_element());
         let empty = self.session.is_none() && self.samples.is_empty();
+        let charts = (!empty).then(|| self.render_charts(cx));
         v_flex()
             .size_full()
             .child(header)
             .when_some(self.error.clone(), |el, e| el.child(div().px_2().py_1().text_xs().text_color(palette.status_conflict).child(SharedString::from(e))))
-            .when(empty && self.heap.is_none(), |el| {
-                el.child(div().p_4().text_sm().text_color(palette.text_secondary).child("Pick a process to watch its CPU and memory; Capture heap dump lists what its Java heap holds."))
+            .when(empty && self.heap.is_none() && self.trace.is_none(), |el| {
+                el.child(div().p_4().text_sm().text_color(palette.text_secondary).child("Pick a process to watch its CPU and memory; Capture heap dump lists what its Java heap holds, and Record shows which methods it spends its time in."))
             })
-            .when(!empty, |el| el.child(self.render_charts(cx)))
+            .children(charts)
             .children(heap)
+            .children(trace)
     }
 }
