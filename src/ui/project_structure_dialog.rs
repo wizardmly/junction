@@ -7,7 +7,8 @@
 //! A value written as an expression the dialog can't rewrite is shown
 //! greyed out. The Dependencies page lists each module's declared
 //! dependencies, edits their version and configuration, removes them and
-//! adds library and module dependencies.
+//! adds library and module dependencies. The Suggestions page lists the
+//! declared libraries with a newer version, each with Update.
 
 use std::path::PathBuf;
 
@@ -23,12 +24,14 @@ use gpui_kit::{App, AppContext as _, Context, Entity, FontWeight, InteractiveEle
 use crate::domain::dependencies::{Addition, CONFIGURATIONS, Change, Notation};
 use crate::domain::project_structure::{BUILD_TYPE, DEFAULT_CONFIG, FLAVOR, MODULE_PROPERTIES, Property, SIGNING_CONFIG, Variant};
 use crate::domain::run::ModuleInfo;
+use crate::infra::maven_versions::MavenVersions;
 use crate::infra::project_files::DiskFiles;
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
 use crate::ui::dialogs;
-use crate::usecase::project_structure::{self as usecase, BlockChange, DependencyDraft, Edits, Structure, VariantKind};
+use crate::usecase::dependency_updates::{self, Known};
+use crate::usecase::project_structure::{self as usecase, BlockChange, DependencyDraft, Edits, Structure, Suggestion, VariantKind};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -37,10 +40,17 @@ enum Page {
     Modules,
     Dependencies,
     BuildVariants,
+    Suggestions,
 }
 
-const PAGES: [(Page, &str); 5] =
-    [(Page::SdkLocation, "SDK Location"), (Page::Project, "Project"), (Page::Modules, "Modules"), (Page::Dependencies, "Dependencies"), (Page::BuildVariants, "Build Variants")];
+const PAGES: [(Page, &str); 6] = [
+    (Page::SdkLocation, "SDK Location"),
+    (Page::Project, "Project"),
+    (Page::Modules, "Modules"),
+    (Page::Dependencies, "Dependencies"),
+    (Page::BuildVariants, "Build Variants"),
+    (Page::Suggestions, "Suggestions"),
+];
 
 /// A tab's rows.
 fn variant_rows(kind: VariantKind) -> &'static [(&'static str, &'static str)] {
@@ -99,6 +109,11 @@ pub struct ProjectStructureView {
     /// on OK before the rows; the name a new one gets.
     blocks: Vec<(usize, VariantKind, BlockChange)>,
     new_name: Entity<InputState>,
+    /// Suggestions: the libraries' published versions once looked up, and
+    /// the module shown (all of them when none).
+    known: Option<Known>,
+    looking_up: bool,
+    suggestion_module: Option<usize>,
     error: Option<String>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
@@ -383,6 +398,9 @@ impl ProjectStructureView {
     /// Build Variants page share the selected block's fields.
     fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         self.page = page;
+        if page == Page::Suggestions {
+            self.look_up(cx);
+        }
         let signing = page == Page::Modules && self.module_tab == ModuleTab::SigningConfigs;
         if signing != (self.variant_kind == VariantKind::SigningConfig) && matches!(page, Page::Modules | Page::BuildVariants) {
             let kind = if signing { VariantKind::SigningConfig } else { VariantKind::BuildType };
@@ -611,6 +629,103 @@ impl ProjectStructureView {
         h_flex().size_full().items_start().child(modules).child(middle).child(right).into_any_element()
     }
 
+    /// Looks the declared libraries' versions up, once, off the UI thread
+    /// (the network, or the day-old answers on disk).
+    fn look_up(&mut self, cx: &mut Context<Self>) {
+        if self.known.is_some() || self.looking_up {
+            return;
+        }
+        self.looking_up = true;
+        let libraries = self.draft.libraries();
+        cx.spawn(async move |this, cx| {
+            let known = cx.background_spawn(async move { dependency_updates::look_up(&MavenVersions::new(), libraries) }).await;
+            this.update(cx, |this, cx| {
+                this.known = Some(known);
+                this.looking_up = false;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn update_suggestion(&mut self, suggestion: &Suggestion, cx: &mut Context<Self>) {
+        match self.draft.change(suggestion.module, suggestion.index, &Change::Version(suggestion.newest.clone())) {
+            Ok(()) => self.error = None,
+            Err(e) => self.error = Some(e),
+        }
+        cx.notify();
+    }
+
+    fn render_suggestions(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let palette = cx.palette().clone();
+        let entity = cx.entity();
+        let suggestions = self.known.as_ref().map(|k| self.draft.suggestions(k)).unwrap_or_default();
+        let count = |module: Option<usize>| suggestions.iter().filter(|s| module.is_none_or(|m| s.module == m)).count();
+        let module_row = |id: usize, module: Option<usize>, name: String| {
+            let e = entity.clone();
+            let n = count(module);
+            h_flex()
+                .id(("psd-suggestion-module", id))
+                .px_2()
+                .py_0p5()
+                .gap_1()
+                .text_sm()
+                .when(self.suggestion_module == module, |el| el.bg(palette.selection))
+                .hover(|el| el.bg(palette.hover))
+                .child(div().flex_1().truncate().child(name))
+                .when(n > 0, |el| el.child(div().text_xs().text_color(palette.text_secondary).child(n.to_string())))
+                .on_click(move |_, _, cx| {
+                    e.update(cx, |this, cx| {
+                        this.suggestion_module = module;
+                        cx.notify();
+                    })
+                })
+        };
+        let modules = v_flex()
+            .id("psd-suggestion-modules")
+            .w(px(150.))
+            .flex_none()
+            .h_full()
+            .overflow_y_scroll()
+            .border_r_1()
+            .border_color(palette.border)
+            .child(module_row(0, None, "<All Modules>".into()))
+            .children(self.structure.modules.iter().enumerate().map(|(ix, m)| module_row(ix + 1, Some(ix), m.path.trim_start_matches(':').replace(':', "/"))));
+        let shown: Vec<&Suggestion> = suggestions.iter().filter(|s| self.suggestion_module.is_none_or(|m| s.module == m)).collect();
+        let empty = if self.known.is_none() { "Looking for newer versions…" } else { "No suggestions." };
+        let list = v_flex()
+            .id("psd-suggestions")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .px_2()
+            .gap_1()
+            .when(!shown.is_empty(), |el| el.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(format!("Updates ({})", shown.len()))))
+            .when(shown.is_empty(), |el| el.child(div().pt_4().text_sm().text_color(palette.text_secondary).child(empty)))
+            .children(shown.into_iter().enumerate().map(|(ix, s)| {
+                let (e, owned) = (entity.clone(), s.clone());
+                let module = self.structure.modules.get(s.module).map(|m| m.path.trim_start_matches(':').replace(':', "/")).unwrap_or_default();
+                h_flex()
+                    .px_2()
+                    .py_1()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(Icon::new(icons::LIBRARY).small())
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_sm().truncate().child(format!("{}:{}", s.library, s.current)))
+                            .child(div().text_xs().text_color(palette.text_secondary).truncate().child(format!("{module} · {}", s.message()))),
+                    )
+                    .child(Button::new(("psd-suggestion-update", ix)).small().label("Update").on_click(move |_, _, cx| e.update(cx, |this, cx| this.update_suggestion(&owned, cx))))
+            }));
+        h_flex().size_full().items_start().child(modules).child(list).into_any_element()
+    }
+
     fn browse_sdk(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Select Android SDK Location".into()) });
         let input = self.sdk_dir.clone();
@@ -729,6 +844,7 @@ impl ProjectStructureView {
             }
             Page::Dependencies => self.render_dependencies(cx),
             Page::BuildVariants => self.render_variants(cx),
+            Page::Suggestions => self.render_suggestions(cx),
         }
     }
 }
@@ -814,6 +930,9 @@ pub fn open(build_root: PathBuf, modules: Vec<ModuleInfo>, window: &mut Window, 
             variant_values,
             blocks: Vec::new(),
             new_name,
+            known: None,
+            looking_up: false,
+            suggestion_module: None,
             error: None,
             _subscriptions: subscriptions,
         };
