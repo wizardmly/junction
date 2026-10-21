@@ -543,6 +543,10 @@ impl Workspace {
                 self.show_left_tab(LeftTab::Stash, window, cx);
             }
             FileAction::Moved { from, to } => {
+                if let (Some(root), Some(store)) = (self.model.read(cx).project_root().map(|r| r.to_path_buf()), crate::infra::file_type_store::DiskFileTypes::new()) {
+                    let abs = |p: &str| root.join(p).to_string_lossy().replace('\\', "/");
+                    crate::usecase::override_file_type::file_moved(&store, &abs(&from), &abs(&to)).ok();
+                }
                 self.retarget_tabs(&from, &to, window, cx);
                 self.code_index.update(cx, |index, cx| index.refresh(cx));
                 self.model.update(cx, |m, cx| m.reload(cx));
@@ -554,6 +558,22 @@ impl Workspace {
                     Ok(true) => self.code_index.update(cx, |index, cx| index.refresh(cx)),
                     Ok(false) => {}
                     Err(error) => window.push_notification(Notification::error(error).title("Mark Directory As"), cx),
+                }
+            }
+            FileAction::SetFileType { path, language } => {
+                let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+                let Some(store) = crate::infra::file_type_store::DiskFileTypes::new() else { return };
+                let file = root.join(&path).to_string_lossy().replace('\\', "/");
+                match crate::usecase::override_file_type::set_file_type(&store, &file, language.as_deref()) {
+                    Ok(true) => {
+                        let language = language.unwrap_or_else(|| crate::ui::file_editor::language_for(&path).to_owned());
+                        let editors: Vec<_> = self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).filter(|v| v.read(cx).path() == path).collect();
+                        for editor in editors {
+                            editor.update(cx, |e, cx| e.set_language(language.clone(), cx));
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(error) => window.push_notification(Notification::error(error).title("Override File Type"), cx),
                 }
             }
             FileAction::RepairFiles(files) => {
