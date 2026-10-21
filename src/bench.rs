@@ -198,7 +198,7 @@ fn bench_gutter() {
         let Some(lang) = index::service::CodeIndex::lang_of(file, &text) else { continue };
         let symbols = index::symbols::extract(lang, &text);
         let t = Instant::now();
-        let marks = index::hierarchy::gutter_marks(&idx, file, &symbols);
+        let marks = index::hierarchy::gutter_marks(&idx, file, &text, &symbols);
         let took = t.elapsed();
         total += took;
         if let Ok(dump) = std::env::var("JUNCTION_BENCH_GUTTER_DUMP") {

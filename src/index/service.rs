@@ -643,7 +643,7 @@ impl CodeIndex {
         let index = self.index.clone();
         cx.background_spawn(async move {
             let symbols = super::symbols::extract(lang, &text);
-            let mut marks = super::hierarchy::gutter_marks(&index.read().unwrap(), &path, &symbols);
+            let mut marks = super::hierarchy::gutter_marks(&index.read().unwrap(), &path, &text, &symbols);
             for mark in &mut marks {
                 if symbols.iter().any(|s| s.line == mark.line && s.name == mark.name && s.kind.is_callable()) {
                     mark.signature = super::hierarchy::signature(&text, mark.line, &mark.name);
