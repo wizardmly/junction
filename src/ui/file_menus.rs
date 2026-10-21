@@ -56,6 +56,8 @@ pub enum FileAction {
     ShowLocalHistory(String),
     /// Local History › Put Label….
     PutLocalHistoryLabel,
+    /// Local History › Recent Changes.
+    RecentChanges,
     /// Find Usages of a source file: of its class, as IntelliJ's.
     FindUsages(String),
     /// Reformat Code / Optimize Imports on the selected files and folders.
@@ -134,19 +136,19 @@ pub fn stub_submenu(
     })
 }
 
-/// Local History: a file's history, and Put Label… (Show Project History
-/// and Recent Changes aren't done).
+/// Local History: the history of a file or folder, the project's, Recent
+/// Changes, and Put Label….
 pub fn local_history_submenu(menu: PopupMenu, file: Option<String>, actions: FileActions, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
     menu.submenu("Local History", window, cx, move |m, _, _| {
-        let (show, label) = (actions.clone(), actions.clone());
+        let (show, project, recent, label) = (actions.clone(), actions.clone(), actions.clone(), actions.clone());
         let file = file.clone();
         m.item(entry("Show History…", "").disabled(file.is_none()).on_click(move |_, window, cx| {
             if let Some(file) = file.clone() {
                 show(FileAction::ShowLocalHistory(file), window, cx)
             }
         }))
-        .item(entry("Show Project History…", "").disabled(true))
-        .item(entry("Recent Changes", "Alt+Shift+C").disabled(true))
+        .item(entry("Show Project History…", "").on_click(move |_, window, cx| project(FileAction::ShowLocalHistory(String::new()), window, cx)))
+        .item(entry("Recent Changes", "Alt+Shift+C").on_click(move |_, window, cx| recent(FileAction::RecentChanges, window, cx)))
         .separator()
         .item(entry("Put Label…", "").on_click(move |_, window, cx| label(FileAction::PutLocalHistoryLabel, window, cx)))
     })
@@ -602,7 +604,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         }))
     });
     let menu = open_in_submenu(menu, target.full(), is_dir, window, cx);
-    let menu = local_history_submenu(menu.separator(), (!is_dir && !target.multi()).then(|| target.path.clone()), target.actions.clone(), window, cx);
+    let menu = local_history_submenu(menu.separator(), (!target.multi()).then(|| target.path.clone()), target.actions.clone(), window, cx);
     let git = GitTarget {
         model: target.model.clone(),
         paths: if is_dir || target.multi() { target.files.clone() } else { vec![target.path.clone()] },

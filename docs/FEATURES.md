@@ -252,7 +252,7 @@
 | Project 窗口视图切换：Project（根节点带绝对路径）/ Project Files / Production / Tests / Open Files / Changed Files | M8 | ✅（Open Files 即当前打开的标签） |
 | Project 窗口头部：New（File / Directory）、Select Opened File（准星）、Expand All、Collapse All | M8 | ✅ |
 | Project 窗口选择与展开（与 AS 一致） | M9 | ✅（单击只选中，双击、点箭头、→ / ← 或 Enter 才展开/折叠；Ctrl·Cmd+单击增减、Shift+单击按范围选、Shift+↑↓/Home/End/PgUp/PgDn 扩展选区、Ctrl+A 全选；多选时右键菜单的 Cut / Copy / Copy Path / Delete / Git / Create Gist 作用于整个选区，Rename 置灰，选中两个文件时 Compare With…（Ctrl+D）直接比较这两个；把选中项拖到文件夹上弹出 Move（按住 Ctrl 为 Copy）。Commit、Changes、Log 的改动文件与分支树、Shelf、Stash、Find 结果、Repository at … 树同样改为单击选中、双击或点箭头展开） |
-| Project 窗口右键里原来置灰的项（2026-10-21）：Find Usages（Alt+F7，Java / Kotlin 文件：查文件里同名类的用法）；Refactor › Move…（F6）/ Copy…（F5）对话框（To directory 相对工程，不存在就建；复制一项时可改 New name；不覆盖已有文件）；Reformat Code（Ctrl+Alt+L）/ Optimize Imports（Ctrl+Alt+O）对文件直接做，对目录先确认，处理其中所有 Java / Kotlin 文件，打开着的文件改在编辑器里（可撤销），其余写盘，右下角提示改了几个文件；Open Module Settings（F4，工程根目录和含 build.gradle 的模块目录）打开 Project Structure；Local History › Show History… / Put Label… | M9 | ✅（Analyze、Mark Directory As、Override File Type、Repair IDE on File、Local History 的 Show Project History / Recent Changes 仍置灰） |
+| Project 窗口右键里原来置灰的项（2026-10-21）：Find Usages（Alt+F7，Java / Kotlin 文件：查文件里同名类的用法）；Refactor › Move…（F6）/ Copy…（F5）对话框（To directory 相对工程，不存在就建；复制一项时可改 New name；不覆盖已有文件）；Reformat Code（Ctrl+Alt+L）/ Optimize Imports（Ctrl+Alt+O）对文件直接做，对目录先确认，处理其中所有 Java / Kotlin 文件，打开着的文件改在编辑器里（可撤销），其余写盘，右下角提示改了几个文件；Open Module Settings（F4，工程根目录和含 build.gradle 的模块目录）打开 Project Structure；Local History › Show History… / Put Label… | M9 | ✅（Analyze、Mark Directory As、Override File Type、Repair IDE on File 仍置灰） |
 | ⋮ › Behavior：Always Select Opened File、Open Files with Single Click（默认双击打开） | M8 | ✅（设置持久化） |
 | ⋮ › Appearance：Show Excluded Files（Git 忽略的文件橄榄色显示，展开时按需读盘）、Compact Middle Packages | M8 | ✅ |
 | ⋮ › Sort By：Name / Type / Modification Time、Folders Always on Top | M8 | ✅ |
@@ -295,7 +295,7 @@
 | Diff、Merge、Pull Request 视图也作为标签显示，可切换、可关闭 | M8 | ✅ |
 | 新标签开在当前标签右侧；关闭后激活左侧标签；关闭时自动保存 | M8 | ✅ |
 | 标签上限 10 个，超出时关闭最久未用的、未固定且未修改的标签 | M8 | ✅ |
-| 右键（与 AS 一致）：Close（Ctrl+F4）/ Close Other Tabs / Close All Tabs / Close Unmodified Tabs / Close Tabs to the Left / Right / Close All Read-Only（有固定标签时多 Close All but Pinned）、Copy Path/Reference…、Split Right / Split and Move Right / Split Down / Split and Move Down、Pin Tab、Open Tab in New Window（Shift+F4，标签移到独立窗口）、Configure Editor Tabs…（Settings › Editor › Editor Tabs：关闭按钮、Mark modified (*)、预览标签、标签上限）、Bookmarks（文件书签）、Override File Type（未实现，置灰）、Open In、Local History（未实现）、Git、Rename File…、Create Gist… | M8 | ✅ |
+| 右键（与 AS 一致）：Close（Ctrl+F4）/ Close Other Tabs / Close All Tabs / Close Unmodified Tabs / Close Tabs to the Left / Right / Close All Read-Only（有固定标签时多 Close All but Pinned）、Copy Path/Reference…、Split Right / Split and Move Right / Split Down / Split and Move Down、Pin Tab、Open Tab in New Window（Shift+F4，标签移到独立窗口）、Configure Editor Tabs…（Settings › Editor › Editor Tabs：关闭按钮、Mark modified (*)、预览标签、标签上限）、Bookmarks（文件书签）、Override File Type（未实现，置灰）、Open In、Local History（Show History… / Show Project History… / Recent Changes / Put Label…）、Git、Rename File…、Create Gist… | M8 | ✅ |
 | 标签悬停显示文件完整路径；修改未保存的文件关闭按钮位置显示圆点，悬停变 × | M8 | ✅ |
 | Copy Path/Reference… 弹窗（标签、Project 视图、编辑器 Copy / Paste Special）：Absolute Path（Ctrl+Shift+C）、File Name、Path from Content Root、Path from Source Root、Path From Repository Root、GitHub / GitLab Repository URL（跟踪的远程分支，否则当前提交；编辑器里带选中行），每行右侧预览要复制的内容，↑↓ Enter 或点击复制 | M8 | ✅（内容根/源码根按 AS 的模块规则推断：Gradle source set 为 app/src/main，源码根为其下的 java、kotlin、res 等；Cargo、Dart、Swift Package、Go 模块也有对应规则） |
 | 固定标签排在最前并显示图钉；拖动标签调整顺序 | M8 | ✅ |
@@ -396,6 +396,7 @@ Linux 实测（假 adb 模拟日志流和进程表）：打开窗口即显示 pa
 | TODO 工具窗口（底部）：Project 和 Current File 标签页，找注释里的 `TODO` / `FIXME`（IntelliJ 默认模式，不区分大小写，只认注释），按文件分组，显示 “(行, 列) 文本” 并高亮 TODO 部分，顶部显示 “Found N TODO items in M files”；文件保存或变化后自动刷新 | ✅（模式不能自定义；没有按模块 / 包分组） |
 | Local History：每次保存记录一个版本，文件第一次打开时记录原始内容；内容去重存放在 `~/.cache/Junction/local-history/<项目>/`；保留最近 5 个有改动的日子（IntelliJ 默认），超出的在打开项目后第一次保存时清理 | ✅ |
 | Local History › Show History（File 菜单、编辑器右键、Find Action）：独立窗口，左边版本列表（时间到秒、标签），右边所选版本和当前文件的对比（当前文件可编辑）；Revert 把文件恢复到所选版本，打开的编辑器同步刷新 | ✅ |
+| Local History 的目录和项目历史（2026-10-21）：Project 窗口右键目录 › Local History › Show History…、Show Project History…（也在 File › Local History）：左边是目录下各文件的版本（带文件名）和标签，中间列出所选时刻之后改过的文件，右边是所选文件当时与现在的对比；Revert 把这些文件一起恢复。Recent Changes（Alt+Shift+C）：最近 40 条记录（时间、文件、所在目录），点一条打开该文件的历史并选中那个版本，标签打开项目历史 | ✅ |
 | Local History › Put Label…：给整个项目在此刻打标签，出现在每个文件的历史里 | ✅ |
 | 外部修改（Git 操作、其他程序）自动记版本、目录的历史、Show History for Selection、按内容搜索版本 | ❌ 未做 |
 

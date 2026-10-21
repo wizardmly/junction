@@ -93,6 +93,44 @@ pub fn file_history(revisions: &[Revision], path: &str) -> Vec<Revision> {
     out
 }
 
+/// Whether `path` is in the folder `dir` (empty: the project).
+pub fn is_under(path: &str, dir: &str) -> bool {
+    dir.is_empty() || path == dir || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// A folder's history (`dir` empty: the whole project's), newest first:
+/// the versions of its files and the project's labels in between.
+pub fn folder_history(revisions: &[Revision], dir: &str) -> Vec<Revision> {
+    let mut out: Vec<Revision> = revisions.iter().filter(|r| r.kind == Kind::Label || is_under(&r.path, dir)).cloned().collect();
+    out.sort_by_key(|r| std::cmp::Reverse(r.time));
+    while out.last().is_some_and(|r| r.kind == Kind::Label) {
+        out.pop();
+    }
+    out
+}
+
+/// The folder's files as they were at `time` that differ from their newest
+/// version: (path, content hash then), by path. A file with no version
+/// yet at that time is left out: its text then isn't known.
+pub fn changed_since(revisions: &[Revision], dir: &str, time: i64) -> Vec<(String, String)> {
+    use std::collections::BTreeMap;
+    // Per file: (newest version at or before `time`, newest overall).
+    let mut files: BTreeMap<&str, (Option<&Revision>, &Revision)> = BTreeMap::new();
+    for r in revisions.iter().filter(|r| r.kind != Kind::Label && is_under(&r.path, dir)) {
+        let entry = files.entry(r.path.as_str()).or_insert((None, r));
+        if r.time >= entry.1.time {
+            entry.1 = r;
+        }
+        if r.time <= time && entry.0.is_none_or(|then| r.time >= then.time) {
+            entry.0 = Some(r);
+        }
+    }
+    files
+        .into_iter()
+        .filter_map(|(path, (then, newest))| then.filter(|then| then.content != newest.content).map(|then| (path.to_owned(), then.content.clone())))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +158,19 @@ mod tests {
         let revs = vec![rev(1, Kind::Label, ""), rev(2, Kind::Saved, "a"), rev(3, Kind::Saved, "b"), rev(4, Kind::Label, ""), rev(5, Kind::Saved, "a")];
         let h = file_history(&revs, "a");
         assert_eq!(h.iter().map(|r| r.time).collect::<Vec<_>>(), vec![5, 4, 2]);
+    }
+
+    #[test]
+    fn folder_history_and_changes() {
+        let mut revs = vec![rev(1, Kind::Saved, "src/a"), rev(2, Kind::Saved, "src/b"), rev(3, Kind::Label, ""), rev(4, Kind::Saved, "src/a"), rev(5, Kind::Saved, "srcx/c")];
+        revs[3].content = "h2".into();
+        assert_eq!(folder_history(&revs, "src").iter().map(|r| r.time).collect::<Vec<_>>(), vec![4, 3, 2, 1]);
+        assert_eq!(folder_history(&revs, "").len(), 5);
+        // At 3, src/a was "h"; it is "h2" now. src/b is unchanged.
+        assert_eq!(changed_since(&revs, "src", 3), vec![("src/a".to_owned(), "h".to_owned())]);
+        assert!(changed_since(&revs, "src", 4).is_empty());
+        // Before src/b had a version: only src/a is known.
+        assert_eq!(changed_since(&revs, "", 1).len(), 1);
+        assert!(is_under("src/a", "src") && !is_under("srcx/c", "src") && is_under("x", ""));
     }
 }

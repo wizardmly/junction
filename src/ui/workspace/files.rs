@@ -256,10 +256,8 @@ impl Workspace {
 
     /// Local History › Show History for the open file.
     pub(super) fn show_local_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editor) = self.editor().cloned() else { return };
-        let (path, (repository, own)) = { let e = editor.read(cx); (e.path().to_owned(), e.source()) };
-        let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
-        crate::ui::local_history_window::open(root, path, repository, own, cx.entity().downgrade(), window.window_handle(), cx);
+        let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
+        self.show_local_history_of(path, window, cx);
     }
 
     /// Reformat Code / Optimize Imports on files: an open file's editor
@@ -288,12 +286,19 @@ impl Workspace {
         self.file_action(crate::ui::file_menus::FileAction::FilesChanged, window, cx);
     }
 
-    /// Local History › Show History… of a project file from a menu.
+    /// Local History › Show History… of a project file or folder from a
+    /// menu (empty: Show Project History).
     pub(super) fn show_local_history_of(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
-        let model = self.model.read(cx);
-        let Some(root) = model.project_root().map(|r| r.to_path_buf()) else { return };
-        let Some((repository, own)) = model.route(&path).or_else(|| model.project_repository().cloned().map(|r| (r, path.clone()))) else { return };
-        crate::ui::local_history_window::open(root, path, repository, own, cx.entity().downgrade(), window.window_handle(), cx);
+        use crate::ui::local_history_window::{self as lh, Scope};
+        let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+        let scope = if root.join(&path).is_dir() { Scope::Folder(path) } else { Scope::File(path) };
+        lh::open(root, scope, None, self.model.clone(), cx.entity().downgrade(), window.window_handle(), cx);
+    }
+
+    /// Recent Changes (Alt+Shift+C).
+    pub(super) fn recent_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+        crate::ui::local_history_window::recent_changes(root, self.model.clone(), cx.entity().downgrade(), window, cx);
     }
 
     pub(super) fn put_local_history_label(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -474,6 +479,7 @@ impl Workspace {
             FileAction::OpenInSplit(path) => self.open_in_split(path, window, cx),
             FileAction::ShowLocalHistory(path) => self.show_local_history_of(path, window, cx),
             FileAction::PutLocalHistoryLabel => self.put_local_history_label(window, cx),
+            FileAction::RecentChanges => self.recent_changes(window, cx),
             FileAction::FindUsages(path) => {
                 let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
                 let text = std::fs::read_to_string(root.join(&path)).unwrap_or_default();

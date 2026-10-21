@@ -43,6 +43,16 @@ pub fn history(store: &dyn HistoryStore, path: &str) -> Vec<Revision> {
     lh::file_history(&store.revisions(), path)
 }
 
+/// A folder's history (`dir` empty: the project's), newest first.
+pub fn folder_history(store: &dyn HistoryStore, dir: &str) -> Vec<Revision> {
+    lh::folder_history(&store.revisions(), dir)
+}
+
+/// The folder's files changed since `time`, with their text then.
+pub fn changed_since(store: &dyn HistoryStore, dir: &str, time: i64) -> Vec<(String, String)> {
+    lh::changed_since(&store.revisions(), dir, time).into_iter().filter_map(|(path, hash)| Some((path, store.content(&hash)?))).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

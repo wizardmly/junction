@@ -121,6 +121,8 @@ actions!(
         EditConfigurations,
         ToggleLogcatWindow,
         ShowLocalHistory,
+        ShowProjectHistory,
+        RecentChanges,
         PutLocalHistoryLabel,
         ToggleProblemsWindow,
         ToggleTodoWindow,
@@ -191,6 +193,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-1" } else { "alt-1" }, ToggleProjectWindow, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-3" } else { "alt-3" }, ToggleFindWindow, Some(CONTEXT)),
         KeyBinding::new("alt-f12", ToggleTerminalWindow, Some(CONTEXT)),
+        KeyBinding::new("alt-shift-c", RecentChanges, Some(CONTEXT)),
         // Android Studio's.
         KeyBinding::new("secondary-shift-o", SyncProjectWithGradleFiles, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-;" } else { "ctrl-alt-shift-s" }, ProjectStructure, Some(CONTEXT)),
@@ -1053,6 +1056,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleLogcatWindow, window, cx| this.shortcut_tool(ToolWindow::Logcat, window, cx)))
             .on_action(cx.listener(|this, _: &ShowLocalHistory, window, cx| this.show_local_history(window, cx)))
             .on_action(cx.listener(|this, _: &PutLocalHistoryLabel, window, cx| this.put_local_history_label(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowProjectHistory, window, cx| this.show_local_history_of(String::new(), window, cx)))
+            .on_action(cx.listener(|this, _: &RecentChanges, window, cx| this.recent_changes(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleProblemsWindow, window, cx| this.shortcut_tool(ToolWindow::Problems, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleTodoWindow, window, cx| this.shortcut_tool(ToolWindow::Todo, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleBuildWindow, window, cx| this.shortcut_tool(ToolWindow::Build, window, cx)))
