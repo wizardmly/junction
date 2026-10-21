@@ -49,6 +49,7 @@ pub mod jdk;
 pub mod local_history;
 pub mod logcat;
 pub mod logcat_filter;
+pub mod logcat_layout;
 pub mod logcat_file;
 pub mod overrides;
 pub mod password_safe;

@@ -19,7 +19,7 @@ impl Workspace {
             })
             .collect();
         let active = self.editor().map(|e| e.read(cx)).filter(|e| e.revision().is_none()).map(|e| e.path().to_owned());
-        EditorSession { tabs, active, places: self.recent_places.to_vec() }
+        EditorSession { tabs, active, places: self.recent_places.to_vec(), logcat: Some(self.logcat_view.read(cx).layout(cx)) }
     }
 
     /// Saves the session of the project whose session is showing.
@@ -97,6 +97,9 @@ impl Workspace {
             if let Some(active) = active {
                 self.open_at(active.path, active.line, active.col, window, cx);
             }
+        }
+        if let Some(layout) = session.logcat.clone() {
+            self.logcat_view.update(cx, |logcat, cx| logcat.restore(layout, window, cx));
         }
         // Reopening isn't a visit: the places stay as they were.
         self.recent_places = places;

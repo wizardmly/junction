@@ -7,12 +7,12 @@ use std::collections::BTreeSet;
 
 use gpui_kit::component::{Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, Context, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div,
+    AnyElement, Context, FontWeight, SharedString, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div,
     point, prelude::FluentBuilder as _, px,
 };
 
 use super::LogcatView;
-use crate::domain::logcat::Filter;
+use crate::domain::logcat::{self, Filter};
 use crate::domain::logcat_filter::{self, Completion, Known};
 use crate::infra::logcat_filter_store;
 use crate::theme::ActivePalette as _;
@@ -240,6 +240,19 @@ impl LogcatView {
                 cx.notify();
             }));
             let section = |title: &'static str| div().px_2().pt_1().text_xs().text_color(palette.text_secondary).child(title);
+            // A named filter shows its name in bold, the query as its
+            // tooltip; after it when another filter has the same name.
+            let names: Vec<Option<String>> = self.history.favorites.iter().chain(&self.history.recent).map(|f| logcat::filter_name(f)).collect();
+            let label = |ix: usize, filter: &String| {
+                let el = div().id(("logcat-history-label", ix)).flex_1().whitespace_nowrap();
+                let Some(name) = logcat::filter_name(filter) else { return el.child(filter.clone()) };
+                let rest: SharedString = logcat::remove_filter_names(filter).into();
+                if names.iter().filter(|n| n.as_deref() == Some(name.as_str())).count() > 1 {
+                    el.child(h_flex().child(div().font_weight(FontWeight::BOLD).child(name)).child(format!(": {rest}")))
+                } else {
+                    el.child(div().font_weight(FontWeight::BOLD).child(name)).tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(rest.clone()).build(w, cx))
+                }
+            };
             let row = |ix: usize, filter: &String, starred: bool, cx: &mut Context<Self>| {
                 let (pick, forget) = (filter.clone(), filter.clone());
                 h_flex()
@@ -250,7 +263,7 @@ impl LogcatView {
                     .hover(|el| el.bg(palette.hover))
                     .on_click(cx.listener(move |this, _, window, cx| this.use_filter(pick.clone(), window, cx)))
                     .child(Icon::new(if starred { icons::STAR } else { icons::HISTORY }).xsmall())
-                    .child(div().flex_1().whitespace_nowrap().child(filter.clone()))
+                    .child(label(ix, filter))
                     .child(div().text_color(palette.text_secondary).child(format!("({})", self.count(filter))))
                     .child(tool_button(("logcat-history-remove", ix), icons::CLOSE_SMALL, "Remove from history").on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();

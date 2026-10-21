@@ -28,7 +28,7 @@ const IS_VALUES: &[&str] = &["crash", "stacktrace"];
 /// Every key the query understands, in the popup's order.
 pub fn keys() -> Vec<String> {
     let mut out = Vec::new();
-    for key in ["age", "is", "level", "line", "message", "package", "process", "tag"] {
+    for key in ["age", "is", "level", "line", "message", "name", "package", "process", "tag"] {
         if STRING_KEYS.contains(&key) {
             out.extend([format!("{key}:"), format!("-{key}:"), format!("{key}~:"), format!("-{key}~:"), format!("{key}=:"), format!("-{key}=:")]);
         } else {

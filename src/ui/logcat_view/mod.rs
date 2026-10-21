@@ -54,6 +54,8 @@ pub enum LogcatEvent {
     ClosePanel,
     /// Import Logcat from a File…: asks for a file and opens it in a new tab.
     Import,
+    /// Tabs or panels changed: worth keeping for the next start.
+    LayoutChanged,
 }
 
 pub struct LogcatView {
@@ -97,6 +99,8 @@ pub struct LogcatView {
     recording: Option<crate::android::mirror::Recording>,
     /// An imported log file's name: the panel shows the file, not a device.
     file: Option<String>,
+    /// That file's path, to reopen it after a restart.
+    file_path: Option<PathBuf>,
     /// R8 / ProGuard mappings that retrace stack frames.
     mappings: Mappings,
     _pump: Option<Task<()>>,
@@ -171,6 +175,7 @@ impl LogcatView {
             embedded: false,
             recording: None,
             file: None,
+            file_path: None,
             mappings: Mappings::default(),
             _pump: None,
             _subscriptions: subscriptions,
@@ -267,8 +272,10 @@ impl LogcatView {
 
     /// Shows an imported log (Import Logcat from a File): its entries, all
     /// of them, and the filter it was saved with.
-    pub fn load_file(&mut self, name: String, log: crate::domain::logcat_file::LogFile, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn load_file(&mut self, path: PathBuf, log: crate::domain::logcat_file::LogFile, window: &mut Window, cx: &mut Context<Self>) {
         self.shutdown();
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.file_path = Some(path);
         self.following = None;
         self.file = Some(match &log.device {
             Some(device) => format!("{name} ({device})"),
@@ -486,6 +493,7 @@ impl LogcatView {
         self.following = None;
         // A device picked in an imported log's panel: back to the device.
         if self.file.take().is_some() {
+            self.file_path = None;
             self.entries.clear();
             self.shown.clear();
             self.bytes = 0;
@@ -510,10 +518,18 @@ impl LogcatView {
                     None => return,
                 },
             };
-            let loaded = cx.background_executor().spawn({
-                let path = path.clone();
-                async move { crate::infra::r8_mapping::load(&path) }
-            });
+            this.update_in(cx, |this, window, cx| this.load_mapping(path, true, window, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Loads a mapping for the panel; `report` says when it fails.
+    fn load_mapping(&mut self, path: PathBuf, report: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let loaded = cx.background_executor().spawn({
+            let path = path.clone();
+            async move { crate::infra::r8_mapping::load(&path) }
+        });
+        cx.spawn_in(window, async move |this, cx| {
             let loaded = loaded.await;
             this.update_in(cx, |this, window, cx| match loaded {
                 Ok(retracer) => {
@@ -521,14 +537,45 @@ impl LogcatView {
                     this.generation += 1;
                     cx.notify();
                 }
-                Err(e) => {
+                Err(e) if report => {
                     use gpui_kit::component::{WindowExt as _, notification::Notification};
                     window.push_notification(Notification::error(e).title("Failed to add mapping file"), cx);
                 }
+                Err(_) => {}
             })
             .ok();
         })
         .detach();
+    }
+
+    /// What the panel keeps across restarts.
+    pub fn panel_state(&self, cx: &App) -> crate::domain::logcat_layout::PanelState {
+        crate::domain::logcat_layout::PanelState {
+            filter: self.query.read(cx).value().to_string(),
+            device: self.picked.clone(),
+            compact: self.compact,
+            wrap: self.wrap,
+            mapping: self.mappings.manual.as_ref().map(|(p, _)| p.to_string_lossy().into_owned()),
+            file: self.file_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        }
+    }
+
+    /// Back as it was kept (an imported file is read by the tabs).
+    pub fn restore_state(&mut self, state: crate::domain::logcat_layout::PanelState, window: &mut Window, cx: &mut Context<Self>) {
+        self.picked = state.device;
+        self.compact = state.compact;
+        self.wrap = state.wrap;
+        let wrap = self.wrap;
+        self.console.update(cx, |c, cx| c.set_soft_wrap(wrap, window, cx));
+        self.skip_completion = true;
+        self.query.update(cx, |q, cx| q.set_value(state.filter, window, cx));
+        self.refilter(cx);
+        if let Some(path) = state.mapping {
+            self.load_mapping(PathBuf::from(path), false, window, cx);
+        }
+        if self.open && self.file.is_none() {
+            self.follow_device(cx);
+        }
     }
 
     /// A frame named an `r8-map-id` no loaded mapping has: look for the

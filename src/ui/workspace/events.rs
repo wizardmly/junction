@@ -466,6 +466,7 @@ impl Workspace {
             }
             // The tabs split their panels themselves.
             LogcatEvent::Split { .. } | LogcatEvent::ClosePanel | LogcatEvent::Import => {}
+            LogcatEvent::LayoutChanged => self.schedule_session_save(cx),
         }
     }
 
