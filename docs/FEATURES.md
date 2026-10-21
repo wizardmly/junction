@@ -1143,3 +1143,18 @@ Linux 实测（Xvfb，两个模块的 Groovy 工程 + catalog）：2026-10-21 �
 | Compare with previous APK… | ❌ |
 
 Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个 dex）后台算大小约 0.1 秒，`classes.dex`（9.3 MB）的汇总约 0.07 秒，Manifest 解码正确。
+
+## 63. SDK Manager（2026-10-21）
+
+| 功能 | 状态 |
+|---|---|
+| Tools › SDK Manager 打开 Settings › Languages & Frameworks › Android SDK；Android SDK Location 默认取项目 local.properties 的 sdk.dir、ANDROID_HOME、ANDROID_SDK_ROOT、默认安装目录；改路径回车后重新扫描 | ✅（路径不写回 local.properties） |
+| 已安装的包：扫 SDK 目录下各包的 `package.xml`（最深 4 层，system-images 也能认） | ✅ |
+| 可装的包：Google 的 `repository2-3.xml`，只取 stable 频道、每个 path 的最新版；下载失败时用上次缓存的列表并提示 | ✅（system-images、add-ons 等其他仓库的列表没拉） |
+| SDK Platforms 标签：每个 API 一行（“Android 14.0 ("UpsideDownCake")”、API Level、Revision、Status）；Show Package Details 展开成 Platform、Sources 等单个包 | ✅ |
+| SDK Tools 标签：Build-Tools、NDK、CMake 等多版本的工具合成一行显示最新版；Show Package Details 列出每个版本；Hide Obsolete Packages（已装的过时包仍显示） | ✅ |
+| 勾选：未装的勾上=安装；已装的取消=删除；有更新的已装包再点一次=更新（Status 显示 Will be installed / updated / removed） | ✅（AS 是三态复选框，这里用 Status 文字区分） |
+| Apply / OK：Confirm Change 列出要装和要删的包及下载大小 → License Agreement（未接受的许可证，接受后写 `licenses/<id>` 的 SHA-1，Gradle 也认）→ SDK Component Installer（逐个下载、SHA-1 校验、去掉 zip 根目录解压、写 package.xml，进度条和日志，可取消） | ✅ |
+| `JUNCTION_SDK_REPO` 环境变量换成镜像地址 | ✅ |
+
+容器连不上 dl.google.com，只用本地 HTTP 假仓库（12 个包）验证过：装 Platform 35 + Sources、更新 Platform 34、装 Build-Tools 35 / Platform-Tools、删 Build-Tools 34，许可证文件和 package.xml 都正确。

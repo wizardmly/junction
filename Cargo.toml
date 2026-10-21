@@ -69,6 +69,7 @@ lzma-rs = "0.3"
 tar = "0.4"
 flate2 = "1"
 sha2 = "0.10"
+sha1_smol = "1"
 
 [profile.dev]
 opt-level = 1

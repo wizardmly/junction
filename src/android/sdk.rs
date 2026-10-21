@@ -25,7 +25,7 @@ pub fn sdk_dir_from_local_properties(text: &str) -> Option<PathBuf> {
 }
 
 /// The default SDK folder Android Studio installs to.
-fn default_sdk() -> Option<PathBuf> {
+pub fn default_sdk() -> Option<PathBuf> {
     if cfg!(windows) {
         env_path("LOCALAPPDATA").map(|d| d.join("Android").join("Sdk"))
     } else if cfg!(target_os = "macos") {

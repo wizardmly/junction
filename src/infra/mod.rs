@@ -2,6 +2,7 @@
 //! code index, Gradle, adb.
 
 pub mod adb_device;
+pub mod sdk_repository;
 pub mod excluded_store;
 pub mod file_type_store;
 pub mod apk_file;

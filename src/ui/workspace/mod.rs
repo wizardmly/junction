@@ -104,6 +104,7 @@ actions!(
         MakeProject,
         GenerateSignedApk,
         AnalyzeApk,
+        OpenSdkManager,
         ProjectStructure,
         RunApp,
         RunWithCoverage,
@@ -1021,6 +1022,7 @@ impl Render for Workspace {
                 crate::ui::project_structure_dialog::open(root, modules, window, cx);
             }))
             .on_action(cx.listener(|this, _: &AnalyzeApk, window, cx| this.analyze_apk(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenSdkManager, window, cx| crate::ui::settings_dialog::open_page(Some(this.model.clone()), "Android SDK", window, cx)))
             .on_action(cx.listener(|this, _: &GenerateSignedApk, window, cx| {
                 let modules = crate::ui::signed_apk_dialog::application_modules(crate::ui::sync_service::SyncService::global(cx).read(cx).builds());
                 let store: std::rc::Rc<dyn crate::domain::signing::SigningStore> = std::rc::Rc::new(crate::infra::signing_store::JsonSigning);
