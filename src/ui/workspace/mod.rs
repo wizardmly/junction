@@ -103,6 +103,7 @@ actions!(
         SyncProjectWithGradleFiles,
         MakeProject,
         GenerateSignedApk,
+        AnalyzeApk,
         ProjectStructure,
         RunApp,
         RunWithCoverage,
@@ -360,6 +361,8 @@ pub struct Workspace {
     timeline: Option<Entity<crate::ui::pull_requests::PrTimelineView>>,
     /// The Translations Editor of a res folder, shown in the editor area.
     translations: Option<(Entity<crate::ui::translations_editor::TranslationsEditor>, Subscription)>,
+    /// Build › Analyze APK…'s analyzer, shown in the editor area.
+    apk: Option<Entity<crate::ui::apk_analyzer::ApkAnalyzer>>,
     /// The merge tool, shown in the editor area instead of the diff.
     merge: Option<(Entity<MergeView>, Subscription)>,
     /// Git tool window Log tabs; the first is the main "Log".
@@ -796,6 +799,7 @@ impl Workspace {
             changes,
             timeline: None,
             translations: None,
+            apk: None,
             merge: None,
             log_tabs: vec![LogTab { title: "Log".into(), filter: Default::default(), selected: None }],
             active_log: 0,
@@ -1016,6 +1020,7 @@ impl Render for Workspace {
                 };
                 crate::ui::project_structure_dialog::open(root, modules, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &AnalyzeApk, window, cx| this.analyze_apk(window, cx)))
             .on_action(cx.listener(|this, _: &GenerateSignedApk, window, cx| {
                 let modules = crate::ui::signed_apk_dialog::application_modules(crate::ui::sync_service::SyncService::global(cx).read(cx).builds());
                 let store: std::rc::Rc<dyn crate::domain::signing::SigningStore> = std::rc::Rc::new(crate::infra::signing_store::JsonSigning);

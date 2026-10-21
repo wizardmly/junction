@@ -8,6 +8,9 @@
 pub mod android_resources;
 pub mod ansi;
 pub mod excluded_folders;
+pub mod apk;
+pub mod axml;
+pub mod dex;
 pub mod file_type_overrides;
 pub mod build;
 pub mod completion;

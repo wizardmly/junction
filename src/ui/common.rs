@@ -193,7 +193,7 @@ pub fn known_file_icon(path: &str) -> Option<Icon> {
         "json" => icons::FILE_JSON,
         "yaml" | "yml" => icons::FILE_YAML,
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" => icons::FILE_IMAGE,
-        "zip" | "jar" | "aar" | "tar" | "gz" | "7z" => icons::FILE_ARCHIVE,
+        "zip" | "jar" | "aar" | "apk" | "aab" | "tar" | "gz" | "7z" => icons::FILE_ARCHIVE,
         "patch" | "diff" => icons::FILE_PATCH,
         "mf" => icons::FILE_MANIFEST,
         "so" | "dll" | "exe" | "bin" | "class" | "dex" => icons::FILE_BINARY,

@@ -1130,3 +1130,16 @@ Linux 实测（Xvfb，Java + JUnit 4 工程）：在 `CalcTest.adds` 第 10 行�
 | Suggestions（2026-10-21）：左边 <All Modules> 和各模块（带条数），右边 Updates：每个声明了版本的库有更新的稳定版（预览版可升到更新的预览版，规则同 Gradle 文件里的 newer-version 提示）时一行 `group:artifact:当前版本`，下面写模块和 “Newer version available: x”，点 Update 改成新版本（写在 catalog 里的改 catalog），OK 时写回。版本在第一次打开这页时后台查（Google Maven / Maven Central，结果在磁盘缓存一天） | ✅（只有依赖更新这一类；AS 的其他提示如 AGP 升级不在这页） |
 
 Linux 实测（Xvfb，两个模块的 Groovy 工程 + catalog）：2026-10-21 在 Signing Configs 标签给 release 填 Store Password（含 `"`）和 Key Password、release 构建类型填 Signing Config `release`、debug 填 Debuggable 和 Jni Debuggable、Properties 填 NDK Version 后 OK，`git diff` 正好是这六行新增，位置和缩进正确；重开对话框密码显示为圆点。Build Variants 页把 release 的 Minify Enabled 改 true、free 风味的 Min SDK 改 23 后 OK，只改了这两行，Modules 页的 Default Config 仍显示 24。Dependencies 页改 core-ktx 版本为 1.15.0、删 `:lib`、加 `com.squareup.okhttp3:okhttp:4.12.0` 后 OK，`app/build.gradle` 得到 `implementation libs.okhttp`，toml 加了 `okhttp` 的 `[versions]` 和新建的 `[libraries]` 段。其余三页显示正确（SDK `/opt/android-sdk`、AGP 8.5.0、Gradle 8.7，app 的 Min SDK 显示 24 和 `libs.versions.minSdk`，Target SDK 灰显 `rootProject.ext.target`）；lib 的 Compile Sdk 改 35、Gradle 改 8.9、app 的 Min SDK 改 26 后点 OK，`git diff` 只改了 `lib/build.gradle` 一处、`gradle-wrapper.properties` 的 URL 和 toml 的 `minSdk = "26"`；Version Code 填 `x` 时对话框不关闭并提示错误。
+
+## 62. APK Analyzer（2026-10-21）
+
+| 功能 | 状态 |
+|---|---|
+| Build › Analyze APK… 选 APK / AAB；Project 窗口双击 `.apk` / `.aab` 也直接打开；在编辑区开一个标签页 | ✅ |
+| 顶部 “APK size: 31.7 MB, Download Size: 30.9 MB”；文件树列出 Raw File Size（解压后大小）、Download Size（按下载时的压缩估算：已压缩的条目取压缩后大小，未压缩的条目当场 deflate 估算）、% of Total Download Size；目录汇总子项，每层按大小从大到小 | ✅ |
+| 选中 AndroidManifest.xml 或 res 下的二进制 XML：解码成带缩进的 XML，放在只读的 XML 高亮编辑器里；引用写成 `@ref/0x7f…`（AS 会按 resources.arsc 换成名字） | ✅（引用暂不解析成名字） |
+| 选中 `classes*.dex`：“This dex file defines N classes with M methods, and references R methods.”，下面按包展开的类树，列出 Defined Methods / Referenced Methods；只被引用、不在本 dex 定义的包和类灰显 | ✅（没有 AS 的 Size 列，也不能多选几个 dex 合并查看） |
+| 文本文件（.properties、.json、.version 等）直接显示内容；其他文件提示没有预览 | ✅ |
+| Compare with previous APK… | ❌ |
+
+Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个 dex）后台算大小约 0.1 秒，`classes.dex`（9.3 MB）的汇总约 0.07 秒，Manifest 解码正确。

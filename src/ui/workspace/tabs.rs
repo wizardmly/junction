@@ -39,6 +39,7 @@ pub(super) enum Front {
     Merge,
     Timeline,
     Translations,
+    Apk,
 }
 
 /// The tab group not focused, after Split Right / Down.
@@ -205,6 +206,9 @@ impl Workspace {
         }
         if self.translations.is_some() {
             tabs.push(Front::Translations);
+        }
+        if self.apk.is_some() {
+            tabs.push(Front::Apk);
         }
         tabs
     }
@@ -429,6 +433,7 @@ impl Workspace {
             Front::Merge => self.merge.is_some(),
             Front::Timeline => self.timeline.is_some(),
             Front::Translations => self.translations.is_some(),
+            Front::Apk => self.apk.is_some(),
         };
         if ok {
             return;
@@ -457,6 +462,7 @@ impl Workspace {
             Front::Merge => self.merge = None,
             Front::Timeline => self.timeline = None,
             Front::Translations => self.translations = None,
+            Front::Apk => self.apk = None,
         }
         self.fix_front(cx);
         cx.notify();
@@ -618,6 +624,10 @@ impl Workspace {
             Front::Translations => {
                 let title = self.translations.as_ref().map(|(t, _)| t.read(cx).title()).unwrap_or_default();
                 (title, gpui_kit::component::Icon::from(icons::LANGUAGE), None)
+            }
+            Front::Apk => {
+                let title = self.apk.as_ref().map(|a| a.read(cx).title()).unwrap_or_default();
+                (title, gpui_kit::component::Icon::from(icons::FILE_ARCHIVE), None)
             }
         }
     }

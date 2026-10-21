@@ -271,6 +271,9 @@ impl Workspace {
         if let Some((translations, _)) = &self.translations {
             redraw(translations, cx);
         }
+        if let Some(apk) = &self.apk {
+            redraw(apk, cx);
+        }
     }
 
     pub(super) fn tool_window_view(&self, window: ToolWindow, cx: &mut Context<Self>) -> gpui_kit::AnyElement {

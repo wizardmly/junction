@@ -32,6 +32,7 @@ impl Workspace {
                             Front::DiffTab(ix) if ix < self.diff_tabs.len() => el.child(crate::ui::common::cached(&self.diff_tabs[ix].0)),
                             Front::Timeline if self.timeline.is_some() => el.child(crate::ui::common::cached(self.timeline.as_ref().unwrap())),
                             Front::Translations if self.translations.is_some() => el.child(crate::ui::common::cached(&self.translations.as_ref().unwrap().0)),
+                            Front::Apk if self.apk.is_some() => el.child(crate::ui::common::cached(self.apk.as_ref().unwrap())),
                             Front::Merge if self.merge.is_some() => el.child(crate::ui::common::cached(&self.merge.as_ref().unwrap().0)),
                             _ => el.child(crate::ui::common::cached(&self.diff)),
                         }
