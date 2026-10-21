@@ -505,6 +505,16 @@ pub fn plan(build_root: &Path, module: &ModuleInfo, variant: &str, request: &Tes
                 args.push(format!("-Pandroid.testInstrumentationRunnerArguments.package={}", packages.join(",")));
             }
             report_dir = module.dir.join("build/outputs/androidTest-results/connected");
+            // The init script turns on the build types' androidTest coverage
+            // and reports the device's `.ec` files after the run; `--continue`
+            // reports when tests fail, as `finalizedBy` does for unit tests.
+            if request.coverage {
+                let task = format!("connected{}AndroidTest", capitalize(variant));
+                args.push(format!("-Pjunction.coverage={task}"));
+                args.push(format!("{prefix}:junctionCoverage"));
+                args.push("--continue".into());
+                coverage_report = Some(module.dir.join("build/junction-coverage").join(format!("{task}.xml")));
+            }
         }
     }
     TestPlan { build_root: build_root.to_path_buf(), args, report_dir, coverage_report }
@@ -979,6 +989,9 @@ abstract class BaseTest {
         let request = TestRequest { kind: TestKind::Instrumented, filters: vec![("a.ATest".into(), None), ("a.BTest".into(), Some("b".into()))], name: "x".into(), debug_port: None, coverage: false };
         let p = plan(Path::new("/p"), &app, "demoDebug", &request);
         assert_eq!(p.args, [":app:connectedDemoDebugAndroidTest", "-Pandroid.testInstrumentationRunnerArguments.class=a.ATest,a.BTest#b"]);
+        let covered = plan(Path::new("/p"), &app, "demoDebug", &TestRequest { coverage: true, ..request.clone() });
+        assert_eq!(covered.args[2..], ["-Pjunction.coverage=connectedDemoDebugAndroidTest", ":app:junctionCoverage", "--continue"]);
+        assert_eq!(covered.coverage_report, Some(PathBuf::from("/p/app/build/junction-coverage/connectedDemoDebugAndroidTest.xml")));
         let core = ModuleInfo { path: ":".into(), dir: "/p".into(), kind: ModuleType::Jvm, variants: vec![] };
         let mut all = TestRequest { kind: TestKind::Unit, filters: vec![], name: "All".into(), debug_port: None, coverage: false };
         assert_eq!(plan(Path::new("/p"), &core, "debug", &all).args, [":test"]);
