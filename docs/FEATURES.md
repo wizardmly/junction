@@ -301,7 +301,7 @@
 | 中键关闭；Ctrl+F4 关闭；Alt+← / Alt+→ 切换（macOS 为 Cmd+Shift+[ / ]） | M8 | ✅ |
 | 分屏：Split Right / Down、Split and Move Right / Down、Open in / Move to Opposite Group、Unsplit；标签可拖到另一组；某组标签关完后自动合并 | M8 | ✅（两组；同一文件在两组各有一份编辑缓冲） |
 | 预览标签（Project 窗口 ⋮ › Behavior › Enable Preview Tab） | M8 | ✅（单击文件在一个斜体标签里预览，下一次预览替换它；编辑、双击文件或双击标签后变成普通标签） |
-| 多行标签、双击最大化编辑器 | — | ❌ 未做 |
+| 多行标签、双击最大化编辑器（2026-10-21） | — | ✅（Settings › Editor › Editor Tabs 的 Multiple rows：标签换行、标签栏变高，默认仍是一行可滚动；双击标签按 IntelliJ 的 `doProcessDoubleClick`：预览标签变成普通标签，否则切换 Hide All Tool Windows，再双击恢复） |
 
 ## 14. 编辑器代码分析（2026-10-14）
 

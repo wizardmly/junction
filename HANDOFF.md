@@ -214,7 +214,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | GitHub / GitLab OAuth 浏览器登录 | 只支持 Token。需要先注册 OAuth App 拿 client id，由维护者决定 |
 | 多仓库：子仓库文件的部分操作 | Create Patch、合并冲突工具、Project 窗口右键 Git 菜单对嵌套仓库里的文件仍在当前选中的仓库执行；多仓 Apply Patch 的 changelist 选择 |
 | Log 里 AS 的合并引用标签（“origin & main” 叠放） | ✅ 2026-10-21（FEATURES.md 2.2 节） |
-| 编辑器多行标签、双击标签最大化编辑器 | 未做 |
+| 编辑器多行标签、双击标签最大化编辑器 | ✅ 2026-10-21 |
 | 同一文件在两个分屏里共享一份编辑缓冲 | 目前两边各一份 |
 | 菜单里置灰的 STUB 项 | Project 视图的 Find Usages、Analyze、Move/Copy（F6/F5）、Reformat/Optimize Imports、Mark Directory As、Module Settings、Override File Type、Local History |
 | jar 没有源码时的类文件骨架 + “Download Sources” 横幅 | 未做（已列为下一步候选） |

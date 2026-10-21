@@ -250,6 +250,8 @@ pub struct DiffSettings {
     pub tab_close_button: bool,
     /// Editor Tabs: modified files' tabs get a "*".
     pub tab_mark_modified: bool,
+    /// Editor Tabs › Multiple rows: tabs wrap instead of scrolling in one row.
+    pub tab_multiple_rows: bool,
     /// Editor Tabs: the least recently used tab closes past this many.
     pub tab_limit: usize,
 }
@@ -268,6 +270,7 @@ impl Default for DiffSettings {
             breadcrumbs: Breadcrumbs::Hidden,
             tab_close_button: true,
             tab_mark_modified: false,
+            tab_multiple_rows: false,
             tab_limit: 10,
         }
     }
@@ -333,9 +336,10 @@ impl Breadcrumbs {
 }
 
 impl DiffSettings {
-    fn fields(&mut self) -> [(&'static str, &mut bool); 8] {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 9] {
         [
             ("diff_tab_close_button", &mut self.tab_close_button),
+            ("diff_tab_multiple_rows", &mut self.tab_multiple_rows),
             ("diff_tab_mark_modified", &mut self.tab_mark_modified),
             ("diff_show_gutter_icons", &mut self.show_gutter_icons),
             ("diff_soft_wrap", &mut self.soft_wrap),
