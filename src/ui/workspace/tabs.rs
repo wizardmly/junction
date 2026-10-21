@@ -627,7 +627,9 @@ impl Workspace {
                 scroll.scroll_to_item(n);
             }
         }
-        let overflow = scroll.max_offset().x > px(0.);
+        let rows = tab_settings.tab_multiple_rows;
+        let tab_height = px(crate::ui::common::header_height());
+        let overflow = !rows && scroll.max_offset().x > px(0.);
         let hidden_menu = {
             let entity = entity.clone();
             let scroll = scroll.clone();
@@ -655,13 +657,13 @@ impl Workspace {
                 menu
             }
         };
+        // Multiple rows: the tabs wrap and the bar grows, as IntelliJ's
+        // "Multiple rows" layout.
         let tab_row = h_flex()
             .id(("editor-tabs", group))
             .flex_1()
             .min_w_0()
-            .h_full()
-            .overflow_x_scroll()
-            .track_scroll(&scroll)
+            .map(|el| if rows { el.flex_wrap() } else { el.h_full().overflow_x_scroll().track_scroll(&scroll) })
             .children(tabs.into_iter().enumerate().map(|(n, front)| {
                 let active = front == self.front;
                 let (title, icon, path) = self.tab_title(front, cx);
@@ -686,7 +688,8 @@ impl Workspace {
                 h_flex()
                     .id(("editor-tab", n))
                     .group(SharedString::from(format!("editor-tab-{group}")))
-                    .h_full()
+                    .h(tab_height)
+                    .when(rows, |el| el.border_b_1())
                     .pl_2()
                     .pr_1()
                     .gap_1()
@@ -754,11 +757,16 @@ impl Workspace {
                     .on_click({
                         let entity = entity.clone();
                         move |event: &gpui_kit::ClickEvent, window, cx| {
-                            let keep = event.click_count() >= 2;
+                            let double = event.click_count() == 2;
                             grp(&entity, group, cx, |this, cx| {
-                                // Double-clicking a preview tab keeps it.
-                                if let (true, Some(ix)) = (keep, editor_ix) {
-                                    this.editors[ix].preview = false;
+                                // A double click keeps a preview tab, otherwise
+                                // maximizes the editor (Hide All Tool Windows),
+                                // as IntelliJ's `doProcessDoubleClick`.
+                                if double {
+                                    match editor_ix {
+                                        Some(ix) if this.editors[ix].preview => this.editors[ix].preview = false,
+                                        _ => this.tools.toggle_all(),
+                                    }
                                 }
                                 this.activate(front, window, cx)
                             })
@@ -963,7 +971,7 @@ impl Workspace {
             .relative()
             .w_full()
             .min_w_0()
-            .h(px(crate::ui::common::header_height()))
+            .map(|el| if rows { el.min_h(tab_height) } else { el.h(tab_height) })
             .flex_shrink_0()
             .border_b_1()
             .border_color(palette.border)

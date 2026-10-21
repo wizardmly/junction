@@ -426,6 +426,7 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.diff.show_gutter_icons = from.diff.show_gutter_icons;
     to.diff.tab_close_button = from.diff.tab_close_button;
     to.diff.tab_mark_modified = from.diff.tab_mark_modified;
+    to.diff.tab_multiple_rows = from.diff.tab_multiple_rows;
     to.diff.tab_limit = from.diff.tab_limit;
     to.project.preview_tab = from.project.preview_tab;
 }
@@ -1089,6 +1090,8 @@ impl SettingsView {
         v_flex()
             .gap_2()
             .child(self.section("Appearance", cx))
+            .child(self.check("settings-tab-rows", "Multiple rows", d.tab_multiple_rows, query, |s, v| s.diff.tab_multiple_rows = v, cx))
+            .child(self.note("Otherwise one row that scrolls, as by default", cx))
             .child(self.check("settings-tab-close", "Show close button", d.tab_close_button, query, |s, v| s.diff.tab_close_button = v, cx))
             .child(self.check("settings-tab-modified", "Mark modified (*)", d.tab_mark_modified, query, |s, v| s.diff.tab_mark_modified = v, cx))
             .child(self.section("Opening Policy", cx))
