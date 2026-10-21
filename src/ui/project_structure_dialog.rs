@@ -5,33 +5,40 @@
 //! back where they're written (the build scripts, the version catalog,
 //! `gradle-wrapper.properties`, `local.properties`) and syncs, as AS does.
 //! A value written as an expression the dialog can't rewrite is shown
-//! greyed out.
+//! greyed out. The Dependencies page lists each module's declared
+//! dependencies, edits their version and configuration, removes them and
+//! adds library and module dependencies.
 
 use std::path::PathBuf;
 
 use gpui_kit::component::{
-    Sizable as _, WindowExt as _, h_flex,
-    button::Button,
-    input::{Input, InputState},
+    Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex,
+    button::{Button, ButtonVariants as _},
+    input::{Input, InputEvent, InputState},
+    menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
 use gpui_kit::{App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px};
 
+use crate::domain::dependencies::{Addition, CONFIGURATIONS, Change, Notation};
 use crate::domain::project_structure::{DEFAULT_CONFIG, MODULE_PROPERTIES, Property};
 use crate::domain::run::ModuleInfo;
 use crate::infra::project_files::DiskFiles;
 use crate::theme::ActivePalette as _;
+use crate::ui::as_icons as icons;
+use crate::ui::common::tool_button;
 use crate::ui::dialogs;
-use crate::usecase::project_structure::{self as usecase, Edits, Structure};
+use crate::usecase::project_structure::{self as usecase, DependencyDraft, Edits, Structure};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     SdkLocation,
     Project,
     Modules,
+    Dependencies,
 }
 
-const PAGES: [(Page, &str); 3] = [(Page::SdkLocation, "SDK Location"), (Page::Project, "Project"), (Page::Modules, "Modules")];
+const PAGES: [(Page, &str); 4] = [(Page::SdkLocation, "SDK Location"), (Page::Project, "Project"), (Page::Modules, "Modules"), (Page::Dependencies, "Dependencies")];
 
 /// The labels of a module's rows, Properties then Default Config.
 fn labels() -> impl Iterator<Item = &'static str> {
@@ -50,7 +57,19 @@ pub struct ProjectStructureView {
     fields: Vec<Entity<InputState>>,
     /// Each module's values as edited, in `labels()` order.
     values: Vec<Vec<String>>,
+    /// The modules' paths and directories, to read the structure again
+    /// after the dependencies are written.
+    paths: Vec<(String, String)>,
+    draft: DependencyDraft,
+    /// The selected row of the Dependencies page.
+    dependency: Option<usize>,
+    /// Its Requested Version.
+    version: Entity<InputState>,
+    /// Add Library Dependency: the coordinate and its configuration.
+    library: Entity<InputState>,
+    configuration: String,
     error: Option<String>,
+    _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
 impl ProjectStructureView {
@@ -118,11 +137,17 @@ impl ProjectStructureView {
     /// they can't be written.
     fn save(&mut self, cx: &mut Context<Self>) -> bool {
         let edits = self.edits(cx);
-        if edits.is_empty() {
+        if edits.is_empty() && !self.draft.is_changed() {
             return true;
         }
         let files = DiskFiles { root: self.build_root.clone(), repository: None };
-        match usecase::apply(&files, &self.structure, &edits) {
+        let written = if self.draft.is_changed() {
+            // The properties are found again in the scripts as written now.
+            self.draft.write(&files).map(|_| usecase::read(&files, &self.paths, crate::infra::catalog_files::load(&self.build_root, &catalog_candidates(&self.build_root))))
+        } else {
+            Ok(self.structure.clone())
+        };
+        match written.and_then(|structure| if edits.is_empty() { Ok(Vec::new()) } else { usecase::apply(&files, &structure, &edits) }) {
             Ok(_) => {
                 let build = self.build_root.clone();
                 crate::ui::sync_service::SyncService::global(cx).update(cx, |s, cx| s.sync(build, cx));
@@ -134,6 +159,183 @@ impl ProjectStructureView {
                 false
             }
         }
+    }
+
+    /// A row of the Dependencies page picked: its version into the field.
+    fn select_dependency(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        self.dependency = index;
+        let version = index.and_then(|ix| self.draft.declared(self.module).into_iter().nth(ix)).and_then(|d| d.version_site.is_some().then_some(d.version).flatten()).unwrap_or_default();
+        self.version.update(cx, |s, cx| s.set_value(version, window, cx));
+        cx.notify();
+    }
+
+    fn select_dependency_module(&mut self, module: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_module(module, window, cx);
+        self.select_dependency(None, window, cx);
+    }
+
+    fn change_dependency(&mut self, change: Change, cx: &mut Context<Self>) {
+        let Some(ix) = self.dependency else { return };
+        match self.draft.change(self.module, ix, &change) {
+            Ok(()) => self.error = None,
+            Err(e) => self.error = Some(e),
+        }
+        if change == Change::Remove {
+            self.dependency = None;
+        }
+        cx.notify();
+    }
+
+    /// The Requested Version as typed, once it reads as a version.
+    fn version_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(dep) = self.dependency.and_then(|ix| self.draft.declared(self.module).into_iter().nth(ix)) else { return };
+        let typed = self.version.read(cx).value().trim().to_owned();
+        if dep.version_site.is_none() || dep.version.as_deref() == Some(typed.as_str()) || crate::domain::dependencies::check(&Change::Version(typed.clone())).is_err() {
+            return;
+        }
+        self.change_dependency(Change::Version(typed), cx);
+    }
+
+    fn add_dependency(&mut self, addition: Addition, window: &mut Window, cx: &mut Context<Self>) {
+        match self.draft.add(self.module, &self.configuration, &addition) {
+            Ok(()) => {
+                self.error = None;
+                if matches!(addition, Addition::Library(_)) {
+                    self.library.update(cx, |s, cx| s.set_value("", window, cx));
+                }
+                let last = self.draft.declared(self.module).len().checked_sub(1);
+                self.select_dependency(last, window, cx);
+            }
+            Err(e) => self.error = Some(e),
+        }
+        cx.notify();
+    }
+
+    fn render_dependencies(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let palette = cx.palette().clone();
+        let entity = cx.entity();
+        let modules = v_flex()
+            .id("psd-dep-modules")
+            .w(px(130.))
+            .flex_none()
+            .h_full()
+            .overflow_y_scroll()
+            .border_r_1()
+            .border_color(palette.border)
+            .children(self.structure.modules.iter().enumerate().map(|(ix, m)| {
+                let e = entity.clone();
+                div()
+                    .id(("psd-dep-module", ix))
+                    .px_2()
+                    .py_0p5()
+                    .text_sm()
+                    .when(ix == self.module, |el| el.bg(palette.selection))
+                    .hover(|el| el.bg(palette.hover))
+                    .child(m.path.trim_start_matches(':').to_owned().replace(':', "/"))
+                    .on_click(move |_, window, cx| e.update(cx, |this, cx| this.select_dependency_module(ix, window, cx)))
+            }));
+        let declared = self.draft.declared(self.module);
+        let has_script = self.draft.has_script(self.module);
+        let others: Vec<String> = self.structure.modules.iter().enumerate().filter(|(ix, _)| *ix != self.module).map(|(_, m)| m.path.clone()).collect();
+        let (add, remove) = (entity.clone(), entity.clone());
+        let toolbar = h_flex()
+            .gap_1()
+            .child(div().flex_1().text_sm().font_weight(FontWeight::SEMIBOLD).child("Declared Dependencies"))
+            .child(
+                Button::new("psd-dep-add-module")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(icons::ADD))
+                    .tooltip("Add Module Dependency")
+                    .disabled(!has_script || others.is_empty())
+                    .dropdown_menu(move |mut menu, _, _| {
+                        menu = menu.label("Module Dependency");
+                        for path in &others {
+                            let (p, e) = (path.clone(), add.clone());
+                            menu = menu.item(PopupMenuItem::new(path.clone()).on_click(move |_, window, cx| {
+                                let p = p.clone();
+                                e.update(cx, |this, cx| this.add_dependency(Addition::Module(p), window, cx))
+                            }));
+                        }
+                        menu
+                    }),
+            )
+            .child(tool_button("psd-dep-remove", icons::REMOVE, "Remove Dependency").disabled(self.dependency.is_none()).on_click(move |_, _, cx| remove.update(cx, |this, cx| this.change_dependency(Change::Remove, cx))));
+        let rows = v_flex().id("psd-dep-rows").flex_1().min_h_0().overflow_y_scroll().border_1().border_color(palette.border).children(declared.iter().enumerate().map(|(ix, d)| {
+            let e = entity.clone();
+            let icon = match d.notation {
+                Notation::Module(_) => icons::MODULE_ANDROID,
+                _ => icons::LIBRARY,
+            };
+            h_flex()
+                .id(("psd-dep", ix))
+                .px_2()
+                .py_0p5()
+                .gap_2()
+                .text_sm()
+                .when(self.dependency == Some(ix), |el| el.bg(palette.selection))
+                .hover(|el| el.bg(palette.hover))
+                .child(Icon::new(icon).small())
+                .child(div().flex_1().truncate().child(d.text.clone()))
+                .child(div().w(px(150.)).flex_none().text_color(palette.text_secondary).truncate().child(d.configuration.clone()))
+                .on_click(move |_, window, cx| e.update(cx, |this, cx| this.select_dependency(Some(ix), window, cx)))
+        }));
+        let label = |text: &'static str| div().w(px(130.)).flex_none().text_sm().child(text);
+        let selected = self.dependency.and_then(|ix| declared.get(ix));
+        let pick = entity.clone();
+        let configuration_menu = |id: &'static str, current: String, on_pick: std::rc::Rc<dyn Fn(String, &mut Window, &mut App)>| {
+            Button::new(id).small().label(current.clone()).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu(move |mut menu, _, _| {
+                for name in CONFIGURATIONS {
+                    let pick = on_pick.clone();
+                    menu = menu.item(PopupMenuItem::new(*name).checked(current == *name).on_click(move |_, window, cx| pick(name.to_string(), window, cx)));
+                }
+                menu
+            })
+        };
+        let details = v_flex()
+            .gap_2()
+            .when_some(selected, |el, d| {
+                let e = pick.clone();
+                el.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).truncate().child(d.written.clone()))
+                    .child(h_flex().gap_2().child(label("Requested Version")).child(div().flex_1().child(Input::new(&self.version).small().disabled(d.version_site.is_none()))))
+                    .child(h_flex().gap_2().child(label("Configuration")).child(configuration_menu(
+                        "psd-dep-configuration",
+                        d.configuration.clone(),
+                        std::rc::Rc::new(move |name, _, cx| e.update(cx, |this, cx| this.change_dependency(Change::Configuration(name), cx))),
+                    )))
+            })
+            .when(selected.is_none(), |el| el.child(div().text_sm().text_color(palette.text_secondary).child(if has_script { "Select a dependency to edit its version and configuration." } else { "This module has no build script." })));
+        let (add_library, set_configuration) = (entity.clone(), entity.clone());
+        let add_row = v_flex()
+            .gap_1()
+            .pt_2()
+            .border_t_1()
+            .border_color(palette.border)
+            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Add Library Dependency"))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().flex_1().child(Input::new(&self.library).small().disabled(!has_script)))
+                    .child(configuration_menu(
+                        "psd-dep-new-configuration",
+                        self.configuration.clone(),
+                        std::rc::Rc::new(move |name, _, cx| {
+                            set_configuration.update(cx, |this, cx| {
+                                this.configuration = name;
+                                cx.notify();
+                            })
+                        }),
+                    ))
+                    .child(Button::new("psd-dep-add").small().label("Add").disabled(!has_script).on_click(move |_, window, cx| {
+                        add_library.update(cx, |this, cx| {
+                            let coordinate = this.library.read(cx).value().to_string();
+                            this.add_dependency(Addition::Library(coordinate), window, cx)
+                        })
+                    })),
+            );
+        let middle = v_flex().flex_1().min_w_0().overflow_hidden().h_full().px_2().gap_1().child(toolbar).child(rows);
+        let right = v_flex().w(px(280.)).flex_none().h_full().pl_2().gap_2().border_l_1().border_color(palette.border).child(div().flex_1().child(details)).child(add_row);
+        h_flex().size_full().items_start().child(modules).child(middle).child(right).into_any_element()
     }
 
     fn browse_sdk(&mut self, cx: &mut Context<Self>) {
@@ -231,6 +433,7 @@ impl ProjectStructureView {
                     .children(DEFAULT_CONFIG.iter().enumerate().map(|(ix, (name, _))| field(n + ix, name)));
                 h_flex().size_full().items_start().child(modules).child(settings).into_any_element()
             }
+            Page::Dependencies => self.render_dependencies(cx),
         }
     }
 }
@@ -255,7 +458,7 @@ impl Render for ProjectStructureView {
         }));
         v_flex()
             .gap_2()
-            .child(h_flex().h(px(420.)).items_start().border_1().border_color(palette.border).child(nav).child(div().flex_1().h_full().p_2().child(self.render_page(cx))))
+            .child(h_flex().h(px(420.)).items_start().border_1().border_color(palette.border).child(nav).child(div().flex_1().min_w_0().overflow_hidden().h_full().p_2().child(self.render_page(cx))))
             .child(div().h(px(16.)).text_xs().text_color(palette.status_conflict).children(self.error.clone()))
     }
 }
@@ -265,7 +468,9 @@ pub fn open(build_root: PathBuf, modules: Vec<ModuleInfo>, window: &mut Window, 
     let rel = |dir: &PathBuf| dir.strip_prefix(&build_root).map(|d| d.to_string_lossy().replace('\\', "/")).unwrap_or_default();
     let paths: Vec<(String, String)> = modules.iter().filter(|m| m.path != ":").map(|m| (m.path.clone(), rel(&m.dir))).collect();
     let files = DiskFiles { root: build_root.clone(), repository: None };
-    let structure = usecase::read(&files, &paths, crate::infra::catalog_files::load(&build_root, &catalog_candidates(&build_root)));
+    let catalogs = crate::infra::catalog_files::load(&build_root, &catalog_candidates(&build_root));
+    let structure = usecase::read(&files, &paths, catalogs.clone());
+    let draft = DependencyDraft::read(&files, &structure, catalogs);
     let view = cx.new(|cx| {
         let mut input = |cx: &mut Context<ProjectStructureView>, value: String| cx.new(|cx| InputState::new(window, cx).default_value(value));
         let sdk_dir = input(cx, structure.sdk_dir.clone());
@@ -273,14 +478,39 @@ pub fn open(build_root: PathBuf, modules: Vec<ModuleInfo>, window: &mut Window, 
         let gradle = input(cx, structure.gradle.clone().unwrap_or_default());
         let fields = labels().map(|_| input(cx, String::new())).collect();
         let values = structure.modules.iter().map(|m| m.properties.iter().chain(&m.default_config).map(|p| p.value.clone()).collect()).collect();
-        let mut view = ProjectStructureView { build_root, structure, page: Page::SdkLocation, module: 0, sdk_dir, agp, gradle, fields, values, error: None };
+        let version = input(cx, String::new());
+        let library = cx.new(|cx| InputState::new(window, cx).placeholder("group:artifact:version"));
+        let subscriptions = vec![cx.subscribe(&version, |this: &mut ProjectStructureView, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.version_changed(cx);
+            }
+        })];
+        let mut view = ProjectStructureView {
+            build_root,
+            structure,
+            page: Page::SdkLocation,
+            module: 0,
+            sdk_dir,
+            agp,
+            gradle,
+            fields,
+            values,
+            paths,
+            draft,
+            dependency: None,
+            version,
+            library,
+            configuration: "implementation".into(),
+            error: None,
+            _subscriptions: subscriptions,
+        };
         view.load_fields(window, cx);
         view
     });
     let focus = view.read(cx).sdk_dir.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         let view_ok = view.clone();
-        dialog.title("Project Structure").w(px(820.)).child(view.clone()).footer(dialogs::footer("OK")).on_ok(move |_, _, cx| view_ok.update(cx, |v, cx| v.save(cx)))
+        dialog.title("Project Structure").w(px(980.)).child(view.clone()).footer(dialogs::footer("OK")).on_ok(move |_, _, cx| view_ok.update(cx, |v, cx| v.save(cx)))
     });
     dialogs::focus_input(&focus, window, cx);
 }

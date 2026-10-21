@@ -2,6 +2,7 @@
 //! reads what its SDK Location, Project and Modules pages show, and writes
 //! the edited values back into the files they came from.
 
+use crate::domain::dependencies as deps;
 use crate::domain::project_files::ProjectFiles;
 use crate::domain::project_structure::{self as ps, Place, Property, Site};
 use crate::domain::version_catalog::Catalog;
@@ -175,6 +176,88 @@ pub fn apply(files: &dyn ProjectFiles, structure: &Structure, edits: &Edits) -> 
     Ok(changed)
 }
 
+/// The Dependencies page's working copy: each module's build script and
+/// the catalogs as edited, written on OK.
+#[derive(Clone, Debug)]
+pub struct DependencyDraft {
+    /// Per module: its script's path, the text read and the text now.
+    scripts: Vec<Option<(String, String, String)>>,
+    catalogs: Vec<Catalog>,
+    /// The catalogs' texts read and now.
+    catalog_texts: Vec<(String, String)>,
+}
+
+impl DependencyDraft {
+    pub fn read(files: &dyn ProjectFiles, structure: &Structure, catalogs: Vec<Catalog>) -> Self {
+        let scripts = structure.modules.iter().map(|m| m.script.as_ref().and_then(|p| files.read(p).ok().map(|t| (p.clone(), t.clone(), t)))).collect();
+        let (catalogs, catalog_texts) = catalogs.into_iter().filter_map(|c| files.read(&c.path).ok().map(|t| (c, (t.clone(), t)))).unzip();
+        Self { scripts, catalogs, catalog_texts }
+    }
+
+    fn current_catalogs(&self) -> Vec<Catalog> {
+        self.catalogs.iter().zip(&self.catalog_texts).map(|(c, (_, now))| Catalog::parse(&c.name, &c.path, now)).collect()
+    }
+
+    fn texts(&self) -> Vec<String> {
+        self.catalog_texts.iter().map(|(_, now)| now.clone()).collect()
+    }
+
+    fn set_texts(&mut self, texts: Vec<String>) {
+        for ((_, now), text) in self.catalog_texts.iter_mut().zip(texts) {
+            *now = text;
+        }
+    }
+
+    /// Whether a module has a build script to declare dependencies in.
+    pub fn has_script(&self, module: usize) -> bool {
+        self.scripts.get(module).is_some_and(Option::is_some)
+    }
+
+    /// A module's dependencies as edited.
+    pub fn declared(&self, module: usize) -> Vec<deps::Declared> {
+        let Some(Some((_, _, script))) = self.scripts.get(module) else { return Vec::new() };
+        deps::declared(script, &self.current_catalogs())
+    }
+
+    pub fn change(&mut self, module: usize, index: usize, change: &deps::Change) -> Result<(), String> {
+        deps::check(change)?;
+        let Some(dep) = self.declared(module).into_iter().nth(index) else { return Ok(()) };
+        let texts = self.texts();
+        let Some(Some((_, _, script))) = self.scripts.get_mut(module) else { return Ok(()) };
+        let (new_script, new_texts) = deps::change(script, &texts, &dep, change);
+        *script = new_script;
+        self.set_texts(new_texts);
+        Ok(())
+    }
+
+    pub fn add(&mut self, module: usize, configuration: &str, addition: &deps::Addition) -> Result<(), String> {
+        let (catalogs, texts) = (self.current_catalogs(), self.texts());
+        let Some(Some((path, _, script))) = self.scripts.get_mut(module) else { return Err("This module has no build script.".into()) };
+        let (new_script, new_texts) = deps::add(script, path.ends_with(".kts"), &catalogs, &texts, configuration, addition)?;
+        *script = new_script;
+        self.set_texts(new_texts);
+        Ok(())
+    }
+
+    pub fn is_changed(&self) -> bool {
+        self.scripts.iter().flatten().any(|(_, old, now)| old != now) || self.catalog_texts.iter().any(|(old, now)| old != now)
+    }
+
+    /// Writes the files that changed; their paths.
+    pub fn write(&self, files: &dyn ProjectFiles) -> Result<Vec<String>, String> {
+        let mut changed = Vec::new();
+        let scripts = self.scripts.iter().flatten().map(|(p, old, now)| (p, old, now));
+        let catalogs = self.catalogs.iter().zip(&self.catalog_texts).map(|(c, (old, now))| (&c.path, old, now));
+        for (path, old, now) in scripts.chain(catalogs) {
+            if old != now {
+                files.write(path, now)?;
+                changed.push(path.clone());
+            }
+        }
+        Ok(changed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -252,5 +335,24 @@ mod tests {
         assert_eq!(read(LOCAL_PROPERTIES), "sdk.dir=/sdk\n");
         let bad = Edits { modules: vec![(0, "Compile Sdk Version", "x".into())], ..Default::default() };
         assert!(apply(&files, &s, &bad).unwrap_err().starts_with("Compile Sdk Version"));
+    }
+
+    #[test]
+    fn edits_dependencies_then_properties() {
+        let files = project();
+        files.write("app/build.gradle.kts", "android {\n    compileSdk = 34\n}\n\ndependencies {\n    implementation(project(\":lib\"))\n}\n").unwrap();
+        let s = structure(&files);
+        let catalogs = vec![Catalog::parse("libs", "gradle/libs.versions.toml", CATALOG)];
+        let mut draft = DependencyDraft::read(&files, &s, catalogs);
+        draft.add(0, "implementation", &deps::Addition::Library("io.coil-kt:coil:2.6.0".into())).unwrap();
+        draft.change(0, 0, &deps::Change::Configuration("api".into())).unwrap();
+        assert_eq!(draft.declared(0).iter().map(|d| format!("{} {}", d.configuration, d.text)).collect::<Vec<_>>(), ["api :lib", "implementation io.coil-kt:coil:2.6.0"]);
+        let mut written = draft.write(&files).unwrap();
+        written.sort();
+        assert_eq!(written, ["app/build.gradle.kts", "gradle/libs.versions.toml"]);
+        // Properties are found again in the new text.
+        let s = structure(&files);
+        apply(&files, &s, &Edits { modules: vec![(0, "Compile Sdk Version", "35".into())], ..Default::default() }).unwrap();
+        assert_eq!(files.read("app/build.gradle.kts").unwrap(), "android {\n    compileSdk = 35\n}\n\ndependencies {\n    api(project(\":lib\"))\n    implementation(libs.coil)\n}\n");
     }
 }
