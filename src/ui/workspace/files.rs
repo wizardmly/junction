@@ -547,6 +547,23 @@ impl Workspace {
                 self.code_index.update(cx, |index, cx| index.refresh(cx));
                 self.model.update(cx, |m, cx| m.reload(cx));
             }
+            FileAction::SetExcluded { dir, excluded } => {
+                let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+                let Some(store) = crate::infra::excluded_store::DiskExcluded::for_project(&root) else { return };
+                match crate::usecase::mark_directory::set_excluded(&store, &dir, excluded) {
+                    Ok(true) => self.code_index.update(cx, |index, cx| index.refresh(cx)),
+                    Ok(false) => {}
+                    Err(error) => window.push_notification(Notification::error(error).title("Mark Directory As"), cx),
+                }
+            }
+            FileAction::RepairFiles(files) => {
+                self.code_index.update(cx, |index, cx| {
+                    for file in &files {
+                        index.refresh_file(file, cx);
+                    }
+                });
+                self.files_changed_on_disk(files, window, cx);
+            }
             FileAction::FilesChanged => {
                 self.code_index.update(cx, |index, cx| index.refresh(cx));
                 self.model.update(cx, |m, cx| m.reload(cx));

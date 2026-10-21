@@ -411,11 +411,13 @@ impl ProjectView {
             .map(|m| m.read(cx).root_states().iter().map(|s| (s.path.clone(), s.prefix.clone())).collect())
             .unwrap_or_default();
         if roots.is_empty() {
-            roots.push((root, String::new()));
+            roots.push((root.clone(), String::new()));
         }
         // A nested root's folder, ignored by the repository around it,
         // shows that root's own files instead.
         let nested: Vec<String> = roots.iter().filter(|(_, p)| !p.is_empty()).map(|(_, p)| format!("{p}/")).collect();
+        // Mark Directory As › Excluded: shown as excluded folders.
+        let marked: Vec<String> = crate::infra::excluded_store::load(&root).folders().iter().map(|f| format!("{f}/")).collect();
         let task = cx.background_spawn(async move {
             let mut ignored = Vec::new();
             for (root, prefix) in roots {
@@ -441,6 +443,7 @@ impl ProjectView {
                         }),
                 );
             }
+            ignored.extend(marked);
             ignored
         });
         cx.spawn(async move |this, cx| {

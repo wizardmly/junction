@@ -2,6 +2,7 @@
 //! code index, Gradle, adb.
 
 pub mod adb_device;
+pub mod excluded_store;
 pub mod password_safe;
 pub mod breakpoint_store;
 pub mod class_files;

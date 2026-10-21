@@ -58,6 +58,10 @@ pub enum FileAction {
     PutLocalHistoryLabel,
     /// Local History › Recent Changes.
     RecentChanges,
+    /// Mark Directory As › Excluded (true) / Cancel Exclusion (false).
+    SetExcluded { dir: String, excluded: bool },
+    /// Repair IDE on File: re-index the files and reload them from disk.
+    RepairFiles(Vec<String>),
     /// Find Usages of a source file: of its class, as IntelliJ's.
     FindUsages(String),
     /// Reformat Code / Optimize Imports on the selected files and folders.
@@ -133,6 +137,20 @@ pub fn stub_submenu(
             m = m.item(entry(*label, shortcut).disabled(true));
         }
         m
+    })
+}
+
+/// Mark Directory As: Excluded, or Cancel Exclusion on an excluded folder.
+/// The source and resource roots come from the Gradle build, as in
+/// Android Studio, where marks made here are lost on the next sync.
+fn mark_directory_submenu(menu: PopupMenu, target: &ProjectTarget, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    let marked = crate::infra::excluded_store::load(&target.root).is_marked(&target.path);
+    let (actions, dir) = (target.actions.clone(), target.path.clone());
+    menu.submenu("Mark Directory As", window, cx, move |m, _, _| {
+        let (actions, dir) = (actions.clone(), dir.clone());
+        let m = ["Sources Root", "Test Sources Root", "Resources Root", "Test Resources Root"].iter().fold(m, |m, label| m.item(entry(*label, "").disabled(true)));
+        let label = if marked { "Cancel Exclusion" } else { "Excluded" };
+        m.item(entry(label, "").icon(Icon::new(icons::EXCLUDE_ROOT)).on_click(move |_, window, cx| actions(FileAction::SetExcluded { dir: dir.clone(), excluded: !marked }, window, cx)))
     })
 }
 
@@ -613,7 +631,11 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
     };
     let menu = git_submenu(menu, git, window, cx);
     let (t_reload, t_compare, t_clip, t_gist) = (target.clone(), target.clone(), target.clone(), target.clone());
-    let menu = menu.item(entry("Repair IDE on File", "").disabled(true))
+    let t_repair = target.clone();
+    let menu = menu.item(entry("Repair IDE on File", "").on_click(move |_, window, cx| {
+            let files = if t_repair.is_dir || t_repair.multi() { t_repair.files.clone() } else { vec![t_repair.path.clone()] };
+            (t_repair.actions)(FileAction::RepairFiles(files), window, cx)
+        }))
         .item(entry("Reload from Disk", "").icon(Icon::new(icons::REFRESH)).on_click(move |_, window, cx| {
             (t_reload.actions)(FileAction::FilesChanged, window, cx)
         }))
@@ -628,8 +650,8 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         })
         .when(target.is_module(), |m| m.item(entry("Open Module Settings", "F4").on_click(|_, window, cx| window.dispatch_action(Box::new(crate::ui::workspace::ProjectStructure), cx))))
         .separator();
-    let menu = if is_dir {
-        stub_submenu(menu, "Mark Directory As", &[("Sources Root", ""), ("Test Sources Root", ""), ("Resources Root", ""), ("Test Resources Root", ""), ("Excluded", "")], window, cx)
+    let menu = if is_dir && !target.multi() && !target.path.is_empty() {
+        mark_directory_submenu(menu, &target, window, cx)
     } else {
         menu
     };

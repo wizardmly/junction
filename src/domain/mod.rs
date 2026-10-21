@@ -7,6 +7,7 @@
 
 pub mod android_resources;
 pub mod ansi;
+pub mod excluded_folders;
 pub mod build;
 pub mod completion;
 pub mod debugger;
