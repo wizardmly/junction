@@ -139,6 +139,11 @@ pub trait ProfilerSource {
     fn start_method_trace(&self, serial: &str, pid: u32, sampling_us: Option<u32>) -> Result<(), String>;
     /// `am profile stop`; the trace pulled into the file `to`, its bytes.
     fn stop_method_trace(&self, serial: &str, pid: u32, to: &std::path::Path) -> Result<Vec<u8>, String>;
+    /// Starts Perfetto recording the scheduler, CPU frequencies and the
+    /// `package`'s atrace sections; the recording's id.
+    fn start_system_trace(&self, serial: &str, package: &str) -> Result<u32, String>;
+    /// Stops the recording `id`; the trace pulled into the file `to`, its bytes.
+    fn stop_system_trace(&self, serial: &str, id: u32, to: &std::path::Path) -> Result<Vec<u8>, String>;
 }
 
 #[cfg(test)]

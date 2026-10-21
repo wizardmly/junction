@@ -19,6 +19,7 @@ pub mod profiler;
 pub mod proto_xml;
 pub mod hprof;
 pub mod method_trace;
+pub mod system_trace;
 pub mod sqlite_file;
 pub mod sqlite_query;
 pub mod background_tasks;

@@ -1188,7 +1188,8 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | 解析 ART 追踪文件（文本头 + `SLOW` 二进制记录，版本 1–3，单时钟和双时钟），每个线程建调用树；录制开始前已在运行的方法从第一条记录算起，结束时还没返回的算到最后一条 | ✅ |
 | Call Chart（默认标签页）：按时间画出每次调用，调用者在上、被调用者在下，颜色同 Flame Chart；Ctrl + 滚轮缩放、Shift + 滚轮（或横向滚轮）平移、Zoom In / Zoom Out / Reset Zoom，点一个调用放大到它，悬停显示方法、耗时和起止时间 | ✅ |
 | 追踪视图：线程下拉（按耗时排序）、Wall Clock Time / Thread Time 切换；Top Down（Name、Total、Self、Children 及各自占线程的 %，默认沿最耗时的路径展开）、Bottom Up（每个方法的总耗时，展开看调用者；递归不重复计算）、Flame Chart（相同调用栈合并，宽度按耗时，绿色是本项目代码，橙色是系统代码，蓝色是其他库，悬停显示耗时） | ✅（没有框选时间段、Summary、Jump to Source 和搜索） |
-| 系统跟踪（Perfetto）、C/C++ 采样（simpleperf）、分配跟踪、Energy | ❌ |
+| 系统跟踪（Perfetto）：见第 69 节 | ✅ |
+| C/C++ 采样（simpleperf）、分配跟踪、Energy | ❌ |
 
 只用模拟 adb 验证过（假 `/proc`、`dumpsys meminfo` 输出和一个 120 万字节的 Android 格式 hprof）：曲线、图例、进程切换、堆转储列表、堆切换和搜索都正确。方法追踪只用脚本按 ART 格式生成的追踪文件（4 个线程、约 1.8 万条记录）验证过，没有真机录制过。
 
@@ -1235,3 +1236,16 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | AS 的 HTTP 请求列表（URL、状态码、请求 / 响应头和正文、时间线）、流量曲线、主机名 | ❌（AS 靠应用内 agent 拦截 OkHttp / HttpURLConnection；不装 agent 拿不到） |
 
 解析在 `src/domain/network_connections.rs`，只用模拟 adb 验证过。部分设备可能不让 adb shell 读 `/proc/net`，这时显示设备返回的错误。
+
+## 69. Profiler：System Trace（2026-10-21）
+
+| 功能 | 状态 |
+|---|---|
+| Record 的录制方式下拉多了 System Trace：在设备上用 `perfetto --background` 录制（配置从标准输入传入：`sched_switch`、`sched_waking`、`task_newtask`、`task_rename`、`cpu_frequency`、`ftrace/print`，atrace 的 am / dalvik / gfx / input / view / wm 类别和本应用的 `Trace.beginSection`，开始时扫描所有进程和线程名；64 MB 环形缓冲，最长 10 分钟）；Stop recording 时 `kill -TERM` 让 perfetto 写出并拉回，存到 `~/.cache/Junction/captures/<进程>_<时间>.pftrace`（Perfetto UI 也能打开） | ✅ |
+| 解析 Perfetto 的 protobuf trace（自己写的读取，不依赖 protobuf 库）：按时间合并各 CPU 的 ftrace 事件，算出每个 CPU 上跑过的线程、频率变化，本应用每个线程的状态（Running、Runnable、Sleeping、Waiting（不可中断，通常是 I/O））和 atrace 区段（嵌套深度）；录制中新建和改名的线程也能归到本应用 | ✅ |
+| CPU cores：每个核一条泳道，本应用的线程绿色、其他进程灰色，下面一条橙色频率条；悬停显示时间点、线程名（其他进程带进程名）、这段运行时长和频率 | ✅ |
+| Threads：本应用的线程（主线程在前，其余按运行时间排序），每个线程一条状态条（绿 Running、蓝 Runnable、橙 Waiting，Sleeping 只画细线）加区段；悬停显示状态和时长，点区段放大到它；点线程名后底部汇总它在可见范围里各状态的时间 | ✅ |
+| Ctrl + 滚轮缩放、Shift + 滚轮平移、Zoom In / Zoom Out / Reset Zoom | ✅ |
+| Frames（Janky frames）、SurfaceFlinger / 显示泳道、框选时间段汇总、Flame Chart / Top Down、Energy、`compact_sched` 格式 | ❌（配置里关掉了 compact_sched，所以录制的 trace 都能读） |
+
+解析在 `src/domain/system_trace.rs`，只用构造的 trace 验证过（单元测试，以及脚本生成的 8 核、3 秒、约 80 万字节的 trace 走模拟 adb 的完整录制流程）。没有在真机上录制过，perfetto 需要 Android 9 及以上。

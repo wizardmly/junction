@@ -1,12 +1,14 @@
 //! The Profiler's session: a sample of the app's CPU and memory per tick,
 //! Capture heap dump read into its class list, and Record's method trace
-//! read into call trees.
+//! read into call trees, or its System Trace read into CPU and thread
+//! timelines.
 
 use std::path::Path;
 
 use crate::domain::hprof::{self, HeapSummary};
 use crate::domain::method_trace::{self, MethodTrace};
 use crate::domain::profiler::{self, CpuTicks, ProfilerSource, Sample};
+use crate::domain::system_trace::{self, SystemTrace};
 
 #[derive(Default)]
 pub struct Sampler {
@@ -42,6 +44,8 @@ pub enum TraceMode {
     Sample,
     /// Java/Kotlin Method Trace: every call (slows the app down).
     Trace,
+    /// System Trace: Perfetto's view of the CPUs and the app's threads.
+    System,
 }
 
 impl TraceMode {
@@ -49,6 +53,7 @@ impl TraceMode {
         match self {
             TraceMode::Sample => "Java/Kotlin Method Sample",
             TraceMode::Trace => "Java/Kotlin Method Trace",
+            TraceMode::System => "System Trace",
         }
     }
 }
@@ -61,6 +66,19 @@ pub fn start_method_trace(source: &dyn ProfilerSource, serial: &str, pid: u32, m
 pub fn stop_method_trace(source: &dyn ProfilerSource, serial: &str, pid: u32, to: &Path) -> Result<MethodTrace, String> {
     let bytes = source.stop_method_trace(serial, pid, to)?;
     method_trace::parse(&bytes).ok_or_else(|| "The method trace can't be read".to_owned())
+}
+
+/// Starts a System Trace of the process `process` (`com.example.app` or
+/// `com.example.app:remote`); the recording's id.
+pub fn start_system_trace(source: &dyn ProfilerSource, serial: &str, process: &str) -> Result<u32, String> {
+    let package = process.split(':').next().unwrap_or(process);
+    source.start_system_trace(serial, package)
+}
+
+/// Stops the recording, saves it to `to` and reads it for the process `pid`.
+pub fn stop_system_trace(source: &dyn ProfilerSource, serial: &str, id: u32, pid: u32, to: &Path) -> Result<SystemTrace, String> {
+    let bytes = source.stop_system_trace(serial, id, to)?;
+    system_trace::parse(&bytes, pid).ok_or_else(|| "The system trace can't be read".to_owned())
 }
 
 #[cfg(test)]
@@ -98,6 +116,16 @@ mod tests {
         fn stop_method_trace(&self, _: &str, _: u32, _: &Path) -> Result<Vec<u8>, String> {
             Ok(crate::domain::method_trace::tests::sample())
         }
+
+        fn start_system_trace(&self, _: &str, package: &str) -> Result<u32, String> {
+            assert_eq!(package, "com.example.app");
+            Ok(7)
+        }
+
+        fn stop_system_trace(&self, _: &str, id: u32, _: &Path) -> Result<Vec<u8>, String> {
+            assert_eq!(id, 7);
+            Ok(crate::domain::system_trace::tests::sample())
+        }
     }
 
     #[test]
@@ -114,5 +142,8 @@ mod tests {
         start_method_trace(&fake, "s", 42, TraceMode::Sample).unwrap();
         let trace = stop_method_trace(&fake, "s", 42, Path::new("x.trace")).unwrap();
         assert_eq!(trace.threads[0].name, "main");
+        let id = start_system_trace(&fake, "s", "com.example.app:remote").unwrap();
+        let system = stop_system_trace(&fake, "s", id, 100, Path::new("x.pftrace")).unwrap();
+        assert_eq!(system.threads[0].name, "com.example.app");
     }
 }
