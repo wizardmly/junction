@@ -33,6 +33,8 @@ pub enum Kind {
     JavaVersion,
     /// `true` / `false`.
     Boolean,
+    /// A name written bare: Groovy's `signingConfigs.release`.
+    Bare,
 }
 
 /// Where a value is and how to rewrite it.
@@ -42,6 +44,9 @@ pub struct Site {
     /// The written value's bytes (inside the quotes for a quoted one).
     pub range: Range<usize>,
     pub kind: Kind,
+    /// A value not written yet: the text before and after it, put at the
+    /// empty `range` (the end of its block), as `\n    minSdk = ` and ``.
+    pub insert: Option<(String, String)>,
 }
 
 /// A row of a page: Android Studio's label, the value, and where to edit
@@ -71,6 +76,28 @@ pub const DEFAULT_CONFIG: &[(&str, &str)] = &[
     ("Version Name", r"versionName"),
 ];
 
+static QUOTED_CALL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^(?:(?:rootProject|project)\.)?(?:file|signingConfigs\.getByName)\(\s*(["'])([^"'\n]*)["']\s*\)$"#).unwrap());
+
+/// A string literal's text: `\"` is `"`, `\$` is `$`, `\\` is `\`.
+fn unescape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match (c, chars.clone().next()) {
+            ('\\', Some(next @ ('"' | '\'' | '$' | '\\'))) => {
+                out.push(next);
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn is_identifier(text: &str) -> bool {
+    text.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') && text.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
 static CATALOG_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+)\.versions\.([\w.]+?)(?:\.get\(\))?(?:\.toInt(?:eger)?\(\))?$").unwrap());
 
 /// A property of a module's build script (Kotlin DSL or Groovy): `name =
@@ -98,37 +125,66 @@ pub fn property(label: &'static str, name: &str, script: &str, catalogs: &[(Cata
     if let Some(quote) = text.chars().next().filter(|c| *c == '"' || *c == '\'') {
         if text.len() >= 2 && text.ends_with(quote) {
             let inner = start + 1..start + text.len() - 1;
-            return Property { label, value: script[inner.clone()].to_owned(), site: Some(Site { place: Place::Script, range: inner, kind: Kind::Quoted(quote) }), expression: None };
+            return Property { label, value: unescape(&script[inner.clone()]), site: Some(Site { place: Place::Script, range: inner, kind: Kind::Quoted(quote), insert: None }), expression: None };
         }
     }
+    // `file("release.jks")`, `signingConfigs.getByName("release")`: the
+    // quoted argument; Groovy's `signingConfigs.release`: the name.
+    if let Some(c) = QUOTED_CALL.captures(text) {
+        let inner = c.get(2).unwrap();
+        let range = start + inner.start()..start + inner.end();
+        let quote = c[1].chars().next().unwrap_or('"');
+        return Property { label, value: unescape(inner.as_str()), site: Some(Site { place: Place::Script, range, kind: Kind::Quoted(quote), insert: None }), expression: None };
+    }
+    if let Some(name) = text.strip_prefix("signingConfigs.").filter(|n| is_identifier(n)) {
+        let range = found.end - name.len()..found.end;
+        return Property { label, value: name.to_owned(), site: Some(Site { place: Place::Script, range, kind: Kind::Bare, insert: None }), expression: None };
+    }
     if text == "true" || text == "false" {
-        return Property { label, value: text.to_owned(), site: Some(Site { place: Place::Script, range: found.clone(), kind: Kind::Boolean }), expression: None };
+        return Property { label, value: text.to_owned(), site: Some(Site { place: Place::Script, range: found.clone(), kind: Kind::Boolean, insert: None }), expression: None };
     }
     if text.chars().all(|c| c.is_ascii_digit()) {
-        return Property { label, value: text.to_owned(), site: Some(Site { place: Place::Script, range: found.clone(), kind: Kind::Number }), expression: None };
+        return Property { label, value: text.to_owned(), site: Some(Site { place: Place::Script, range: found.clone(), kind: Kind::Number, insert: None }), expression: None };
     }
     if let Some(version) = text.strip_prefix("JavaVersion.VERSION_") {
         let range = start + "JavaVersion.VERSION_".len()..found.end;
-        return Property { label, value: version.replace('_', "."), site: Some(Site { place: Place::Script, range, kind: Kind::JavaVersion }), expression: None };
+        return Property { label, value: version.replace('_', "."), site: Some(Site { place: Place::Script, range, kind: Kind::JavaVersion, insert: None }), expression: None };
     }
     if let Some(c) = CATALOG_REF.captures(text) {
         let (name, key) = (&c[1], &c[2]);
         let entry = catalogs.iter().enumerate().filter(|(_, (cat, _))| cat.name == name).flat_map(|(ix, (cat, _))| cat.entries.iter().map(move |e| (ix, e))).find(|(_, e)| e.section == Section::Versions && accessor(&e.key) == key);
         if let Some((ix, (value, range))) = entry.and_then(|(ix, e)| Some((ix, e.version.clone()?))) {
-            return Property { label, value, site: Some(Site { place: Place::Catalog(ix), range, kind: Kind::Quoted('"') }), expression: Some(text.to_owned()) };
+            return Property { label, value, site: Some(Site { place: Place::Catalog(ix), range, kind: Kind::Quoted('"'), insert: None }), expression: Some(text.to_owned()) };
         }
     }
     Property { label, value: text.to_owned(), site: None, expression: Some(text.to_owned()) }
 }
 
 /// A module's Properties and Default Config.
-pub fn module_properties(script: &str, catalogs: &[(Catalog, String)]) -> (Vec<Property>, Vec<Property>) {
+/// One not written yet is added to `android { }` (the compatibilities to
+/// its `compileOptions { }`), Default Config's to `defaultConfig { }`,
+/// when the block is there.
+pub fn module_properties(script: &str, catalogs: &[(Catalog, String)], kotlin: bool) -> (Vec<Property>, Vec<Property>) {
     // Default Config's rows come from its block, as flavors set the same
     // names.
     let android = child_blocks(script, 0..script.len()).into_iter().find(|(n, _)| n == "android").map(|(_, r)| r);
-    let default_config = android.and_then(|r| child_blocks(script, r).into_iter().find(|(n, _)| n == "defaultConfig")).map(|(_, r)| r).unwrap_or(0..script.len());
-    let properties = MODULE_PROPERTIES.iter().map(|(label, name)| property(label, name, script, catalogs)).collect();
-    let defaults = DEFAULT_CONFIG.iter().map(|(label, name)| property_in(label, name, script, default_config.clone(), catalogs)).collect();
+    let inside = android.clone().map(|r| child_blocks(script, r)).unwrap_or_default();
+    let block = |name: &str| inside.iter().find(|(n, _)| n == name).map(|(_, r)| r.clone());
+    let properties = MODULE_PROPERTIES
+        .iter()
+        .map(|(label, name)| {
+            let mut p = property(label, name, script, catalogs);
+            let body = if label.ends_with("Compatibility") { block("compileOptions") } else { android.clone() };
+            if let (None, None, Some(body)) = (&p.site, &p.expression, body) {
+                p.site = insertion(script, body, label, kotlin);
+            }
+            p
+        })
+        .collect();
+    let defaults = match block("defaultConfig") {
+        Some(body) => DEFAULT_CONFIG.iter().map(|(label, name)| property_in(label, name, script, body.clone(), catalogs, kotlin)).collect(),
+        None => DEFAULT_CONFIG.iter().map(|(label, name)| property(label, name, script, catalogs)).collect(),
+    };
     (properties, defaults)
 }
 
@@ -136,13 +192,49 @@ pub fn module_properties(script: &str, catalogs: &[(Catalog, String)]) -> (Vec<P
 pub fn write(text: &str, site: &Site, value: &str) -> String {
     let value = match site.kind {
         Kind::Number | Kind::Boolean => value.trim().to_owned(),
-        Kind::Quoted(q) => value.replace(q, &format!("\\{q}")),
+        // A double-quoted string interpolates `$` in Kotlin and Groovy.
+        Kind::Quoted(q) => value.chars().fold(String::new(), |mut out, c| {
+            if c == '\\' || c == q || (c == '$' && q == '"') {
+                out.push('\\');
+            }
+            out.push(c);
+            out
+        }),
         Kind::JavaVersion => value.trim().replace('.', "_"),
+        Kind::Bare => value.trim().to_owned(),
     };
-    let mut out = String::with_capacity(text.len() + value.len());
+    let (lead, trail) = site.insert.clone().unwrap_or_default();
+    let mut out = String::with_capacity(text.len() + value.len() + lead.len() + trail.len());
     out.push_str(&text[..site.range.start]);
+    out.push_str(&lead);
     out.push_str(&value);
+    out.push_str(&trail);
     out.push_str(&text[site.range.end..]);
+    out
+}
+
+/// Writes several values into one file's text: from the end, so earlier
+/// ranges stay put, and rows added to one block in the order given.
+pub fn write_all(text: &str, sites: Vec<(Site, String)>) -> String {
+    let mut indexed: Vec<(usize, (Site, String))> = sites.into_iter().enumerate().collect();
+    indexed.sort_by_key(|(i, (s, _))| (std::cmp::Reverse(s.range.start), std::cmp::Reverse(*i)));
+    let mut filled: Vec<Range<usize>> = Vec::new();
+    let mut out = text.to_owned();
+    for (_, (mut site, value)) in indexed {
+        // An empty block (its row ends with the closing brace's line)
+        // another row already went into: this one goes before it, without
+        // that line again.
+        let fills_block = site.insert.as_ref().is_some_and(|(_, trail)| trail.contains('\n'));
+        if fills_block && filled.contains(&site.range) {
+            if let Some((_, trail)) = site.insert.as_mut() {
+                trail.truncate(trail.rfind('\n').unwrap_or(trail.len()));
+            }
+            site.range = site.range.start..site.range.start;
+        } else if fills_block {
+            filled.push(site.range.clone());
+        }
+        out = write(&out, &site, &value);
+    }
     out
 }
 
@@ -156,6 +248,7 @@ pub fn check(site: &Site, value: &str) -> Result<(), String> {
         Kind::Number if !value.chars().all(|c| c.is_ascii_digit()) => Err(format!("'{value}' is not a whole number.")),
         Kind::JavaVersion if !value.chars().all(|c| c.is_ascii_digit() || c == '.') => Err(format!("'{value}' is not a Java version (17, 1.8).")),
         Kind::Boolean if value != "true" && value != "false" => Err(format!("'{value}' is not true or false.")),
+        Kind::Bare if !is_identifier(value) => Err(format!("'{value}' is not a name.")),
         _ => Ok(()),
     }
 }
@@ -165,6 +258,7 @@ pub fn check(site: &Site, value: &str) -> Result<(), String> {
 pub const BUILD_TYPE: &[(&str, &str)] = &[
     ("Debuggable", r"(?:isDebuggable|debuggable)"),
     ("Jni Debuggable", r"(?:isJniDebuggable|jniDebuggable)"),
+    ("Signing Config", r"signingConfig"),
     ("Minify Enabled", r"(?:isMinifyEnabled|minifyEnabled)"),
     ("Shrink Resources", r"(?:isShrinkResources|shrinkResources)"),
     ("Multi Dex Enabled", r"multiDexEnabled"),
@@ -183,6 +277,81 @@ pub const FLAVOR: &[(&str, &str)] = &[
     ("Version Name", r"versionName"),
     ("Version Name Suffix", r"versionNameSuffix"),
 ];
+
+/// Modules › Signing Configs.
+pub const SIGNING_CONFIG: &[(&str, &str)] = &[("Store File", r"storeFile"), ("Store Password", r"storePassword"), ("Key Alias", r"keyAlias"), ("Key Password", r"keyPassword")];
+
+/// How a row not written yet is written, in the Kotlin DSL or Groovy:
+/// what goes before the value, its kind, and what goes after.
+fn new_row(label: &str, kotlin: bool) -> Option<(String, Kind, &'static str)> {
+    let q = Kind::Quoted('"');
+    let (kts, groovy, kind) = match label {
+        "Compile Sdk Version" => ("compileSdk", "compileSdk", Kind::Number),
+        "Build Tools Version" => ("buildToolsVersion", "buildToolsVersion", q),
+        "NDK Version" => ("ndkVersion", "ndkVersion", q),
+        "Source Compatibility" => ("sourceCompatibility", "sourceCompatibility", Kind::JavaVersion),
+        "Target Compatibility" => ("targetCompatibility", "targetCompatibility", Kind::JavaVersion),
+        "Application ID" => ("applicationId", "applicationId", q),
+        "Min SDK Version" => ("minSdk", "minSdk", Kind::Number),
+        "Target SDK Version" => ("targetSdk", "targetSdk", Kind::Number),
+        "Version Code" => ("versionCode", "versionCode", Kind::Number),
+        "Version Name" => ("versionName", "versionName", q),
+        "Debuggable" => ("isDebuggable", "debuggable", Kind::Boolean),
+        "Jni Debuggable" => ("isJniDebuggable", "jniDebuggable", Kind::Boolean),
+        "Minify Enabled" => ("isMinifyEnabled", "minifyEnabled", Kind::Boolean),
+        "Shrink Resources" => ("isShrinkResources", "shrinkResources", Kind::Boolean),
+        "Multi Dex Enabled" => ("multiDexEnabled", "multiDexEnabled", Kind::Boolean),
+        "Application Id Suffix" => ("applicationIdSuffix", "applicationIdSuffix", q),
+        "Version Name Suffix" => ("versionNameSuffix", "versionNameSuffix", q),
+        "Dimension" => ("dimension", "dimension", q),
+        "Store Password" => ("storePassword", "storePassword", q),
+        "Key Alias" => ("keyAlias", "keyAlias", q),
+        "Key Password" => ("keyPassword", "keyPassword", q),
+        "Store File" => return Some((if kotlin { "storeFile = file(" } else { "storeFile file(" }.to_owned(), q, ")")),
+        "Signing Config" if kotlin => return Some(("signingConfig = signingConfigs.getByName(".to_owned(), q, ")")),
+        "Signing Config" => return Some(("signingConfig signingConfigs.".to_owned(), Kind::Bare, "")),
+        _ => return None,
+    };
+    let name = if kotlin { kts } else { groovy };
+    let mut prefix = if kotlin { format!("{name} = ") } else { format!("{name} ") };
+    if kind == Kind::JavaVersion {
+        prefix.push_str("JavaVersion.VERSION_");
+    }
+    Some((prefix, kind, ""))
+}
+
+/// Where a row not written yet goes: a new line at the end of its block
+/// (`body`, between the braces), indented as the block's lines are.
+fn insertion(script: &str, body: Range<usize>, label: &str, kotlin: bool) -> Option<Site> {
+    let (prefix, kind, suffix) = new_row(label, kotlin)?;
+    let quote = match kind {
+        Kind::Quoted(q) => q.to_string(),
+        _ => String::new(),
+    };
+    let inner = &script[body.clone()];
+    let line_start = |at: usize| script[..at].rfind('\n').map_or(0, |i| i + 1);
+    let indent_at = |at: usize| script[line_start(at)..at].chars().take_while(|c| *c == ' ' || *c == '\t').collect::<String>();
+    let closing_start = line_start(body.end);
+    let closing_own_line = script[closing_start..body.end].trim().is_empty();
+    let closing_indent = indent_at(body.end);
+    // The block's own lines' indent, else one more level than its brace.
+    let child = inner
+        .split('\n')
+        .skip(1)
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.chars().take_while(|c| *c == ' ' || *c == '\t').collect::<String>())
+        .unwrap_or_else(|| format!("{closing_indent}    "));
+    let (range, lead, trail) = if inner.trim().is_empty() {
+        (body.clone(), format!("\n{child}{prefix}{quote}"), format!("{quote}{suffix}\n{closing_indent}"))
+    } else if closing_own_line {
+        let at = body.start + inner.trim_end().len();
+        (at..at, format!("\n{child}{prefix}{quote}"), format!("{quote}{suffix}"))
+    } else {
+        let at = body.start + inner.trim_end().len();
+        (at..at, format!("; {prefix}{quote}"), format!("{quote}{suffix}"))
+    };
+    Some(Site { place: Place::Script, range, kind, insert: Some((lead, trail)) })
+}
 
 /// A build type or product flavor: its name and rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,17 +379,21 @@ fn child_blocks(text: &str, range: std::ops::Range<usize>) -> Vec<(String, std::
 }
 
 /// A property read from `body` of the script, at the script's offsets.
-fn property_in(label: &'static str, name: &str, script: &str, body: std::ops::Range<usize>, catalogs: &[(Catalog, String)]) -> Property {
+/// One not written yet can be added at the end of `body`.
+fn property_in(label: &'static str, name: &str, script: &str, body: std::ops::Range<usize>, catalogs: &[(Catalog, String)], kotlin: bool) -> Property {
     let mut p = property(label, name, &script[body.clone()], catalogs);
     if let Some(site) = p.site.as_mut().filter(|s| s.place == Place::Script) {
         site.range = site.range.start + body.start..site.range.end + body.start;
+    }
+    if p.site.is_none() && p.expression.is_none() {
+        p.site = insertion(script, body, label, kotlin);
     }
     p
 }
 
 /// A module's build types and product flavors, from `android { buildTypes
 /// { … } productFlavors { … } }`.
-pub fn variants(script: &str, catalogs: &[(Catalog, String)]) -> (Vec<Variant>, Vec<Variant>) {
+pub fn variants(script: &str, catalogs: &[(Catalog, String)], kotlin: bool) -> (Vec<Variant>, Vec<Variant>) {
     let Some((_, android)) = child_blocks(script, 0..script.len()).into_iter().find(|(n, _)| n == "android") else { return Default::default() };
     let inside = child_blocks(script, android);
     let read = |block: &str, rows: &[(&'static str, &str)]| -> Vec<Variant> {
@@ -228,12 +401,22 @@ pub fn variants(script: &str, catalogs: &[(Catalog, String)]) -> (Vec<Variant>, 
         child_blocks(script, range.clone())
             .into_iter()
             .map(|(name, body)| {
-                let properties = rows.iter().map(|(label, re)| property_in(label, re, script, body.clone(), catalogs)).collect();
+                let properties = rows.iter().map(|(label, re)| property_in(label, re, script, body.clone(), catalogs, kotlin)).collect();
                 Variant { name, properties }
             })
             .collect()
     };
     (read("buildTypes", BUILD_TYPE), read("productFlavors", FLAVOR))
+}
+
+/// A module's signing configs, from `android { signingConfigs { … } }`.
+pub fn signing_configs(script: &str, catalogs: &[(Catalog, String)], kotlin: bool) -> Vec<Variant> {
+    let Some((_, android)) = child_blocks(script, 0..script.len()).into_iter().find(|(n, _)| n == "android") else { return Vec::new() };
+    let Some((_, range)) = child_blocks(script, android).into_iter().find(|(n, _)| n == "signingConfigs") else { return Vec::new() };
+    child_blocks(script, range)
+        .into_iter()
+        .map(|(name, body)| Variant { name, properties: SIGNING_CONFIG.iter().map(|(label, re)| property_in(label, re, script, body.clone(), catalogs, kotlin)).collect() })
+        .collect()
 }
 
 static AGP_PLUGIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"id\s*\(?\s*["']com\.android\.[\w.]+["']\s*\)?\s*version\s*\(?\s*["']([\w.\-+]+)["']"#).unwrap());
@@ -249,7 +432,7 @@ pub fn agp_sites(root_script: &str, settings: &str, catalogs: &[(Catalog, String
         for re in [&*AGP_PLUGIN, &*AGP_CLASSPATH] {
             for c in re.captures_iter(text) {
                 let m = c.get(1).unwrap();
-                sites.push((Site { place, range: m.range(), kind: Kind::Quoted('"') }, m.as_str().to_owned()));
+                sites.push((Site { place, range: m.range(), kind: Kind::Quoted('"'), insert: None }, m.as_str().to_owned()));
             }
         }
     }
@@ -262,7 +445,7 @@ pub fn agp_sites(root_script: &str, settings: &str, catalogs: &[(Catalog, String
             };
             if let Some((value, range)) = quoted {
                 if !sites.iter().any(|(s, _): &(Site, String)| s.place == Place::Catalog(ix) && s.range == range) {
-                    sites.push((Site { place: Place::Catalog(ix), range, kind: Kind::Quoted('"') }, value));
+                    sites.push((Site { place: Place::Catalog(ix), range, kind: Kind::Quoted('"'), insert: None }, value));
                 }
             }
         }
@@ -353,12 +536,14 @@ android {
 
     #[test]
     fn reads_a_modules_values_as_written() {
-        let (props, defaults) = module_properties(KTS, &catalog());
+        let (props, defaults) = module_properties(KTS, &catalog(), true);
         let value = |list: &[Property], label: &str| list.iter().find(|p| p.label == label).unwrap().clone();
         let compile = value(&props, "Compile Sdk Version");
         assert_eq!((compile.value.as_str(), compile.site.as_ref().map(|s| s.place)), ("34", Some(Place::Catalog(0))));
         assert_eq!(value(&props, "Build Tools Version").value, "34.0.0");
-        assert_eq!(value(&props, "NDK Version").site, None);
+        // Not written: added at the end of `android { }`.
+        let ndk = value(&props, "NDK Version");
+        assert!(write(KTS, ndk.site.as_ref().unwrap(), "26.1").ends_with("    }\n    ndkVersion = \"26.1\"\n}\n"));
         assert_eq!(value(&props, "Source Compatibility").value, "1.8");
         assert_eq!(value(&defaults, "Min SDK Version").value, "24");
         let target = value(&defaults, "Target SDK Version");
@@ -368,7 +553,7 @@ android {
 
     #[test]
     fn writes_values_the_same_way() {
-        let (props, defaults) = module_properties(KTS, &catalog());
+        let (props, defaults) = module_properties(KTS, &catalog(), true);
         let site = |list: &[Property], label: &str| list.iter().find(|p| p.label == label).unwrap().site.clone().unwrap();
         let text = write(KTS, &site(&defaults, "Min SDK Version"), "26");
         assert!(text.contains("minSdk = 26\n"));
@@ -384,7 +569,7 @@ android {
     #[test]
     fn reads_groovy() {
         let groovy = "android {\n    compileSdkVersion 33\n    defaultConfig {\n        minSdkVersion 21\n        applicationId 'com.example'\n    }\n}\n";
-        let (props, defaults) = module_properties(groovy, &[]);
+        let (props, defaults) = module_properties(groovy, &[], false);
         assert_eq!(props[0].value, "33");
         assert_eq!(defaults[1].value, "21");
         assert_eq!(defaults[0].site.as_ref().map(|s| s.kind), Some(Kind::Quoted('\'')));
@@ -393,22 +578,61 @@ android {
     #[test]
     fn reads_build_types_and_flavors() {
         let kts = "android {\n    productFlavors { create(\"x\") { minSdk = 19 } }\n    defaultConfig { minSdk = 24 }\n    buildTypes {\n        release {\n            isMinifyEnabled = true\n        }\n        getByName(\"debug\") {\n            applicationIdSuffix = \".debug\"\n        }\n        create(\"staging\") {\n            initWith(getByName(\"debug\"))\n        }\n    }\n    flavorDimensions += \"tier\"\n    productFlavors {\n        create(\"free\") {\n            dimension = \"tier\"\n            minSdk = 21\n        }\n    }\n}\n";
-        assert_eq!(module_properties(kts, &[]).1[1].value, "24");
+        assert_eq!(module_properties(kts, &[], true).1[1].value, "24");
         let kts = &kts.replace("    productFlavors { create(\"x\") { minSdk = 19 } }\n", "");
-        let (types, flavors) = variants(kts, &[]);
+        let (types, flavors) = variants(kts, &[], true);
         assert_eq!(types.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["release", "debug", "staging"]);
         let row = |v: &Variant, label: &str| v.properties.iter().find(|p| p.label == label).unwrap().clone();
         let minify = row(&types[0], "Minify Enabled");
         assert_eq!(minify.value, "true");
         assert_eq!(write(kts, minify.site.as_ref().unwrap(), "false").contains("isMinifyEnabled = false"), true);
         assert_eq!(row(&types[1], "Application Id Suffix").value, ".debug");
-        assert_eq!(row(&types[2], "Debuggable").site, None);
+        // Not written: added at the end of its block.
+        let debuggable = row(&types[2], "Debuggable");
+        assert_eq!(debuggable.value, "");
+        assert!(write(kts, debuggable.site.as_ref().unwrap(), "true").contains("initWith(getByName(\"debug\"))\n            isDebuggable = true\n        }"));
         let min = row(&flavors[0], "Min SDK Version");
         assert_eq!((flavors[0].name.as_str(), min.value.as_str()), ("free", "21"));
         assert!(write(kts, min.site.as_ref().unwrap(), "23").contains("minSdk = 23\n        }"));
         assert!(check(minify.site.as_ref().unwrap(), "yes").is_err());
         let groovy = "android {\n    buildTypes {\n        release {\n            minifyEnabled false\n        }\n    }\n}\n";
-        assert_eq!(variants(groovy, &[]).0[0].properties[2].value, "false");
+        assert_eq!(variants(groovy, &[], false).0[0].properties[3].value, "false");
+    }
+
+    #[test]
+    fn reads_and_adds_signing_configs() {
+        let kts = "android {\n    signingConfigs {\n        create(\"release\") {\n            storeFile = file(\"keys/release.jks\")\n            keyAlias = \"app\"\n        }\n        create(\"empty\") {}\n    }\n    buildTypes {\n        release {\n            signingConfig = signingConfigs.getByName(\"release\")\n        }\n        debug { isDebuggable = true }\n    }\n}\n";
+        let configs = signing_configs(kts, &[], true);
+        assert_eq!(configs.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["release", "empty"]);
+        let row = |v: &Variant, label: &str| v.properties.iter().find(|p| p.label == label).unwrap().clone();
+        let store = row(&configs[0], "Store File");
+        assert_eq!(store.value, "keys/release.jks");
+        assert!(write(kts, store.site.as_ref().unwrap(), "x.jks").contains("storeFile = file(\"x.jks\")"));
+        let password = row(&configs[0], "Store Password");
+        let written = write(kts, password.site.as_ref().unwrap(), "s\"$1");
+        assert!(written.contains("keyAlias = \"app\"\n            storePassword = \"s\\\"\\$1\"\n        }"), "{written}");
+        // Read back as typed.
+        assert_eq!(row(&signing_configs(&written, &[], true)[0], "Store Password").value, "s\"$1");
+        let empty = row(&configs[1], "Store File");
+        assert!(write(kts, empty.site.as_ref().unwrap(), "a.jks").contains("create(\"empty\") {\n            storeFile = file(\"a.jks\")\n        }"));
+        // Two rows into the empty block, in row order.
+        let both = write_all(kts, vec![(empty.site.clone().unwrap(), "a.jks".into()), (row(&configs[1], "Key Alias").site.unwrap(), "k".into())]);
+        assert!(both.contains("create(\"empty\") {\n            storeFile = file(\"a.jks\")\n            keyAlias = \"k\"\n        }"), "{both}");
+        let (types, _) = variants(kts, &[], true);
+        assert_eq!(row(&types[0], "Signing Config").value, "release");
+        // A one-line block takes it after a semicolon.
+        let added = write(kts, row(&types[1], "Signing Config").site.as_ref().unwrap(), "release");
+        assert!(added.contains("debug { isDebuggable = true; signingConfig = signingConfigs.getByName(\"release\") }"));
+        let groovy = "android {\n    compileOptions {\n    }\n    buildTypes {\n        release {\n            signingConfig signingConfigs.release\n        }\n    }\n}\n";
+        let (types, _) = variants(groovy, &[], false);
+        let signing = row(&types[0], "Signing Config");
+        assert_eq!((signing.value.as_str(), signing.site.as_ref().map(|s| s.kind)), ("release", Some(Kind::Bare)));
+        assert!(check(signing.site.as_ref().unwrap(), "a b").is_err());
+        let (props, _) = module_properties(groovy, &[], false);
+        let target = props.iter().find(|p| p.label == "Target Compatibility").unwrap();
+        assert!(write(groovy, target.site.as_ref().unwrap(), "17").contains("compileOptions {\n        targetCompatibility JavaVersion.VERSION_17\n    }"));
+        let compile = props.iter().find(|p| p.label == "Compile Sdk Version").unwrap();
+        assert!(write(groovy, compile.site.as_ref().unwrap(), "35").contains("    }\n    compileSdk 35\n}"));
     }
 
     #[test]
