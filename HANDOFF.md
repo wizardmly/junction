@@ -216,7 +216,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | Log 里 AS 的合并引用标签（“origin & main” 叠放） | ✅ 2026-10-21（FEATURES.md 2.2 节） |
 | 编辑器多行标签、双击标签最大化编辑器 | ✅ 2026-10-21 |
 | 同一文件在两个分屏里共享一份编辑缓冲 | ✅ 2026-10-21（两边同步文本和保存状态；撤销历史各自一份） |
-| 菜单里置灰的 STUB 项 | Project 视图的 Find Usages、Analyze、Move/Copy（F6/F5）、Reformat/Optimize Imports、Mark Directory As、Module Settings、Override File Type、Local History |
+| 菜单里置灰的 STUB 项 | Find Usages、Move/Copy（F6/F5）、Reformat/Optimize Imports、Module Settings、Local History 已接上（2026-10-21）；剩 Analyze、Mark Directory As、Override File Type、Repair IDE on File、Local History 的 Show Project History / Recent Changes |
 | jar 没有源码时的类文件骨架 + “Download Sources” 横幅 | 未做（已列为下一步候选） |
 | 实现/覆盖标记的继承关系 | 只按简单名匹配，没有解析 import |
 | 不打算做 | Project 窗口的 Edit Scopes、Group Tabs、View Mode、Move to、Resize、Remove from Sidebar，Android / Packages 视图（Junction 没有对应的 IDE 布局和 Android 模块模型） |

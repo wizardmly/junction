@@ -262,6 +262,40 @@ impl Workspace {
         crate::ui::local_history_window::open(root, path, repository, own, cx.entity().downgrade(), window.window_handle(), cx);
     }
 
+    /// Reformat Code / Optimize Imports on files: an open file's editor
+    /// takes the new text as an undoable edit, the others are written.
+    pub(super) fn clean_up_files(&mut self, items: &[(String, bool)], clean_up: crate::usecase::clean_up_files::CleanUp, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::project_files::ProjectFiles as _;
+        use crate::usecase::clean_up_files as usecase;
+        let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+        let files = crate::infra::project_files::DiskFiles { root, repository: None };
+        let open: Vec<Entity<FileEditor>> = self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).filter(|v| v.read(cx).revision().is_none()).collect();
+        let mut changed = 0;
+        for path in usecase::targets(&files, items) {
+            if let Some(editor) = open.iter().find(|v| v.read(cx).path() == path) {
+                let (text, saved) = editor.read(cx).buffer(cx);
+                if let Some(new) = usecase::cleaned(&path, &text, clean_up) {
+                    editor.update(cx, |e, cx| e.mirror(&new, &saved, window, cx));
+                    changed += 1;
+                }
+            } else if let Some(new) = files.read(&path).ok().and_then(|text| usecase::cleaned(&path, &text, clean_up)) {
+                if files.write(&path, &new).is_ok() {
+                    changed += 1;
+                }
+            }
+        }
+        window.push_notification(Notification::info(usecase::summary(clean_up, changed)).title(clean_up.title()), cx);
+        self.file_action(crate::ui::file_menus::FileAction::FilesChanged, window, cx);
+    }
+
+    /// Local History › Show History… of a project file from a menu.
+    pub(super) fn show_local_history_of(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        let model = self.model.read(cx);
+        let Some(root) = model.project_root().map(|r| r.to_path_buf()) else { return };
+        let Some((repository, own)) = model.route(&path).or_else(|| model.project_repository().cloned().map(|r| (r, path.clone()))) else { return };
+        crate::ui::local_history_window::open(root, path, repository, own, cx.entity().downgrade(), window.window_handle(), cx);
+    }
+
     pub(super) fn put_local_history_label(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
         crate::ui::local_history_window::put_label(root, window, cx);
@@ -438,6 +472,22 @@ impl Workspace {
             }
             FileAction::OpenFile(path) => self.open_file(path, None, window, cx),
             FileAction::OpenInSplit(path) => self.open_in_split(path, window, cx),
+            FileAction::ShowLocalHistory(path) => self.show_local_history_of(path, window, cx),
+            FileAction::PutLocalHistoryLabel => self.put_local_history_label(window, cx),
+            FileAction::FindUsages(path) => {
+                let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+                let text = std::fs::read_to_string(root.join(&path)).unwrap_or_default();
+                let stem = std::path::Path::new(&path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                match crate::domain::project_files::class_declaration(&text, &stem) {
+                    Some(offset) => {
+                        self.find.update(cx, |view, cx| view.find_usages(path, text, offset, cx));
+                        self.show_find_window(cx);
+                        cx.notify();
+                    }
+                    None => window.push_notification(Notification::info(format!("No class {stem} declared in the file")).title("Find Usages"), cx),
+                }
+            }
+            FileAction::CleanUp { items, clean_up } => self.clean_up_files(&items, clean_up, window, cx),
             FileAction::Annotate(path) => self.annotate(path, None, window, cx),
             FileAction::ShowHistory(path) => self.show_history(path, cx),
             FileAction::CompareWithRevision(path) => {

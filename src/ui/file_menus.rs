@@ -52,6 +52,14 @@ pub enum FileAction {
     Moved { from: String, to: String },
     /// Find / Replace in Files scoped to a project-relative folder.
     FindInPath { dir: String, replace: bool },
+    /// Local History › Show History… of a file.
+    ShowLocalHistory(String),
+    /// Local History › Put Label….
+    PutLocalHistoryLabel,
+    /// Find Usages of a source file: of its class, as IntelliJ's.
+    FindUsages(String),
+    /// Reformat Code / Optimize Imports on the selected files and folders.
+    CleanUp { items: Vec<(String, bool)>, clean_up: crate::usecase::clean_up_files::CleanUp },
 }
 
 pub type FileActions = Rc<dyn Fn(FileAction, &mut Window, &mut App)>;
@@ -126,14 +134,22 @@ pub fn stub_submenu(
     })
 }
 
-pub fn local_history_submenu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
-    stub_submenu(
-        menu,
-        "Local History",
-        &[("Show History…", ""), ("Show Project History…", ""), ("Recent Changes", "Alt+Shift+C"), ("Put Label…", "")],
-        window,
-        cx,
-    )
+/// Local History: a file's history, and Put Label… (Show Project History
+/// and Recent Changes aren't done).
+pub fn local_history_submenu(menu: PopupMenu, file: Option<String>, actions: FileActions, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    menu.submenu("Local History", window, cx, move |m, _, _| {
+        let (show, label) = (actions.clone(), actions.clone());
+        let file = file.clone();
+        m.item(entry("Show History…", "").disabled(file.is_none()).on_click(move |_, window, cx| {
+            if let Some(file) = file.clone() {
+                show(FileAction::ShowLocalHistory(file), window, cx)
+            }
+        }))
+        .item(entry("Show Project History…", "").disabled(true))
+        .item(entry("Recent Changes", "Alt+Shift+C").disabled(true))
+        .separator()
+        .item(entry("Put Label…", "").on_click(move |_, window, cx| label(FileAction::PutLocalHistoryLabel, window, cx)))
+    })
 }
 
 /// The files a Git submenu acts on.
@@ -358,6 +374,11 @@ impl ProjectTarget {
         if self.path.is_empty() { self.root.clone() } else { self.root.join(&self.path) }
     }
 
+    /// The project folder or a Gradle module's: Open Module Settings.
+    fn is_module(&self) -> bool {
+        self.is_dir && !self.multi() && (self.path.is_empty() || ["build.gradle", "build.gradle.kts"].iter().any(|f| self.full().join(f).is_file()))
+    }
+
     /// The folder New and Paste put things in.
     fn folder(&self) -> PathBuf {
         let full = self.full();
@@ -516,7 +537,10 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         }))
         .item(entry("Paste", "Ctrl+V").icon(Icon::new(icons::PASTE)).disabled(!has_clipboard).on_click(move |_, window, cx| paste(&t_paste, window, cx)))
         .separator()
-        .item(entry("Find Usages", "Alt+F7").disabled(true))
+        .item(entry("Find Usages", "Alt+F7").disabled(is_dir || target.multi() || !(target.path.ends_with(".java") || target.path.ends_with(".kt"))).on_click({
+            let t = target.clone();
+            move |_, window, cx| (t.actions)(FileAction::FindUsages(t.path.clone()), window, cx)
+        }))
         .when(is_dir, |m| {
             let (t_find, t_replace) = (target.clone(), target.clone());
             m.item(entry("Find in Files…", "Ctrl+Shift+F").on_click(move |_, window, cx| {
@@ -535,8 +559,14 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
     let menu = menu.submenu("Refactor", window, cx, move |m, _, _| {
         let (t_rename, t_delete) = (t.clone(), t.clone());
         m.item(entry("Rename…", "Shift+F6").disabled(t.path.is_empty() || t.multi()).on_click(move |_, window, cx| rename(&t_rename, window, cx)))
-            .item(entry("Move…", "F6").disabled(true))
-            .item(entry("Copy…", "F5").disabled(true))
+            .item(entry("Move…", "F6").disabled(t.removable().is_empty()).on_click({
+                let t = t.clone();
+                move |_, window, cx| move_or_copy(&t, false, window, cx)
+            }))
+            .item(entry("Copy…", "F5").on_click({
+                let t = t.clone();
+                move |_, window, cx| move_or_copy(&t, true, window, cx)
+            }))
             .item(entry("Safe Delete…", "Alt+Delete").disabled(t.removable().is_empty()).on_click(move |_, window, cx| {
                 delete_files(t_delete.root.clone(), t_delete.removable(), t_delete.actions.clone(), window, cx)
             }))
@@ -549,8 +579,14 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
     let t_delete = target.clone();
     let menu = menu
         .separator()
-        .item(entry("Reformat Code", "Ctrl+Alt+L").icon(Icon::new(icons::FILE_TEXT)).disabled(true))
-        .item(entry("Optimize Imports", "Ctrl+Alt+O").disabled(true))
+        .item(entry("Reformat Code", "Ctrl+Alt+L").icon(Icon::new(icons::FILE_TEXT)).on_click({
+            let t = target.clone();
+            move |_, window, cx| clean_up(&t, crate::usecase::clean_up_files::CleanUp::Reformat, window, cx)
+        }))
+        .item(entry("Optimize Imports", "Ctrl+Alt+O").on_click({
+            let t = target.clone();
+            move |_, window, cx| clean_up(&t, crate::usecase::clean_up_files::CleanUp::OptimizeImports, window, cx)
+        }))
         .when(!target.removable().is_empty(), |m| {
             m.item(entry("Delete…", "Delete").on_click(move |_, window, cx| {
                 delete_files(t_delete.root.clone(), t_delete.removable(), t_delete.actions.clone(), window, cx)
@@ -566,7 +602,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         }))
     });
     let menu = open_in_submenu(menu, target.full(), is_dir, window, cx);
-    let menu = local_history_submenu(menu.separator(), window, cx);
+    let menu = local_history_submenu(menu.separator(), (!is_dir && !target.multi()).then(|| target.path.clone()), target.actions.clone(), window, cx);
     let git = GitTarget {
         model: target.model.clone(),
         paths: if is_dir || target.multi() { target.files.clone() } else { vec![target.path.clone()] },
@@ -588,7 +624,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
                 (t_clip.actions)(FileAction::CompareWithClipboard(t_clip.path.clone()), window, cx)
             }))
         })
-        .when(target.path.is_empty(), |m| m.item(entry("Open Module Settings", "F4").disabled(true)))
+        .when(target.is_module(), |m| m.item(entry("Open Module Settings", "F4").on_click(|_, window, cx| window.dispatch_action(Box::new(crate::ui::workspace::ProjectStructure), cx))))
         .separator();
     let menu = if is_dir {
         stub_submenu(menu, "Mark Directory As", &[("Sources Root", ""), ("Test Sources Root", ""), ("Resources Root", ""), ("Test Resources Root", ""), ("Excluded", "")], window, cx)
@@ -695,6 +731,14 @@ pub fn project_shortcut(target: &ProjectTarget, keystroke: &gpui_kit::Keystroke)
         (true, false, false, "v") if target.clipboard.borrow().is_some() => Box::new(move |window, cx| paste(&t, window, cx)),
         (true, false, true, "c") => Box::new(move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(full))),
         (false, false, true, "f6") if !root && !target.multi() => Box::new(move |window, cx| rename(&t, window, cx)),
+        (false, false, false, "f6") if removable => Box::new(move |window, cx| move_or_copy(&t, false, window, cx)),
+        (false, false, false, "f5") => Box::new(move |window, cx| move_or_copy(&t, true, window, cx)),
+        (false, true, false, "f7") if !target.is_dir && !target.multi() => Box::new(move |window, cx| (t.actions)(FileAction::FindUsages(t.path.clone()), window, cx)),
+        (true, true, false, "l" | "o") => {
+            let kind = if keystroke.key == "l" { crate::usecase::clean_up_files::CleanUp::Reformat } else { crate::usecase::clean_up_files::CleanUp::OptimizeImports };
+            Box::new(move |window, cx| clean_up(&t, kind, window, cx))
+        }
+        (false, false, false, "f4") if target.is_module() => Box::new(move |window, cx| window.dispatch_action(Box::new(crate::ui::workspace::ProjectStructure), cx)),
         (false, _, false, "delete") if removable => Box::new(move |window, cx| delete_files(t.root.clone(), t.removable(), t.actions.clone(), window, cx)),
         (false, false, true, "enter") if !target.is_dir => Box::new(move |window, cx| (t.actions)(FileAction::OpenInSplit(t.path.clone()), window, cx)),
         (true, false, true, "f" | "r") => {
@@ -748,16 +792,95 @@ pub fn drop_items(target: &ProjectTarget, sources: Vec<PathBuf>, copy: bool, win
     }, window, cx);
 }
 
+/// Refactor › Move… (F6) and Copy… (F5): IntelliJ's dialogs for the
+/// selected items, with the directory to put them in (project-relative,
+/// created when missing) and, copying one item, its new name.
+fn move_or_copy(target: &ProjectTarget, copy: bool, window: &mut Window, cx: &mut App) {
+    let sources: Vec<PathBuf> = if copy { target.fulls() } else { target.removable().iter().map(|p| target.item_full(p)).collect() };
+    let Some(first) = sources.first().cloned() else { return };
+    let rel = |p: &Path| p.strip_prefix(&target.root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+    let what = match sources.as_slice() {
+        [one] => format!("{} {}", if one.is_dir() { "directory" } else { "file" }, rel(one)),
+        many => format!("{} items", many.len()),
+    };
+    let title = format!("{} {what}", if copy { "Copy" } else { "Move" });
+    let directory = cx.new(|cx| InputState::new(window, cx).default_value(first.parent().map(|p| rel(p)).unwrap_or_default()));
+    let single = sources.len() == 1;
+    let name = cx.new(|cx| InputState::new(window, cx).default_value(first.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+    let focus = if copy && single { name.clone() } else { directory.clone() };
+    let (target, window_handle) = (target.clone(), window.window_handle());
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let palette = cx.palette().clone();
+        let label = |text: &'static str| div().w(px(100.)).flex_none().text_sm().child(text);
+        let (directory, name, target, sources) = (directory.clone(), name.clone(), target.clone(), sources.clone());
+        let body = gpui_kit::component::v_flex()
+            .gap_2()
+            .when(copy && single, |el| el.child(h_flex().gap_2().child(label("New name:")).child(div().flex_1().child(Input::new(&name)))))
+            .child(h_flex().gap_2().child(label("To directory:")).child(div().flex_1().child(Input::new(&directory))))
+            .child(div().text_xs().text_color(palette.text_secondary).child("Relative to the project; a missing directory is created."));
+        dialog.title(title.clone()).w(px(520.)).child(body).footer(dialogs::footer(if copy { "OK" } else { "Refactor" })).on_ok(move |_, _, cx| {
+            let dir = directory.read(cx).value().trim().trim_matches('/').to_owned();
+            let folder = if dir.is_empty() { target.root.clone() } else { target.root.join(&dir) };
+            let new_name = (copy && single).then(|| name.read(cx).value().trim().to_owned()).filter(|n| !n.is_empty() && !n.contains(['/', '\\']));
+            if std::fs::create_dir_all(&folder).is_err() {
+                return false;
+            }
+            let (target, sources) = (target.clone(), sources.clone());
+            // The dialog's OK runs while its window is being updated; act once that's done.
+            cx.defer(move |cx| {
+                window_handle.update(cx, |_, window, cx| transfer_to(&target, &folder, &sources, !copy, new_name.as_deref(), window, cx)).ok();
+            });
+            true
+        })
+    });
+    dialogs::focus_input(&focus, window, cx);
+}
+
+/// Reformat Code / Optimize Imports from the Project view: a file at once;
+/// folders after IntelliJ's question naming them.
+fn clean_up(target: &ProjectTarget, clean_up: crate::usecase::clean_up_files::CleanUp, window: &mut Window, cx: &mut App) {
+    let items = target.items.clone();
+    let actions = target.actions.clone();
+    let run = move |window: &mut Window, cx: &mut App| actions(FileAction::CleanUp { items: items.clone(), clean_up }, window, cx);
+    let dirs: Vec<&String> = target.items.iter().filter(|(_, dir)| *dir).map(|(p, _)| p).collect();
+    if dirs.is_empty() {
+        return run(window, cx);
+    }
+    let what = match dirs.as_slice() {
+        [one] if one.is_empty() => "the project".to_owned(),
+        [one] => format!("directory \u{201c}{one}\u{201d}"),
+        many => format!("{} directories", many.len()),
+    };
+    let verb = match clean_up {
+        crate::usecase::clean_up_files::CleanUp::Reformat => "Reformat",
+        crate::usecase::clean_up_files::CleanUp::OptimizeImports => "Optimize imports in",
+    };
+    let window_handle = window.window_handle();
+    let run = Rc::new(run);
+    dialogs::confirm(clean_up.title(), format!("{verb} the Java and Kotlin files in {what}?"), "Run", move |cx| {
+        let run = run.clone();
+        cx.defer(move |cx| {
+            window_handle.update(cx, |_, window, cx| run(window, cx)).ok();
+        });
+    }, window, cx);
+}
+
 /// Copies (or moves) `sources` into the target's folder.
 fn transfer(target: &ProjectTarget, sources: &[PathBuf], cut: bool, window: &mut Window, cx: &mut App) {
-    let folder = target.folder();
+    transfer_to(target, &target.folder(), sources, cut, None, window, cx);
+}
+
+/// Copies (or moves) `sources` into `folder`; one item may get a new name.
+fn transfer_to(target: &ProjectTarget, folder: &Path, sources: &[PathBuf], cut: bool, new_name: Option<&str>, window: &mut Window, cx: &mut App) {
     for source in sources {
         let Some(name) = source.file_name() else { continue };
+        let name = new_name.map(std::ffi::OsStr::new).unwrap_or(name);
         let mut dest = folder.join(name);
         if dest == *source && !cut {
             dest = folder.join(format!("{}_copy", name.to_string_lossy()));
         }
-        if dest == *source || dest.starts_with(source) {
+        // Never over an existing file or folder.
+        if dest == *source || dest.starts_with(source) || dest.exists() {
             continue;
         }
         if cut {
