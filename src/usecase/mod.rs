@@ -2,6 +2,7 @@
 //! They know nothing about GPUI or how a port is implemented.
 
 pub mod merged_manifest;
+pub mod mark_directory;
 pub mod android_resources;
 pub mod import_class;
 pub mod clean_up_files;

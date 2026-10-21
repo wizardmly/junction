@@ -206,6 +206,11 @@ pub fn list_files(root: &Path) -> Vec<String> {
         files.retain(|f| !f.starts_with(&prefix));
         files.extend(inner.into_iter().map(|f| format!("{prefix}{f}")));
     }
+    // Mark Directory As › Excluded.
+    let excluded = crate::infra::excluded_store::load(root);
+    if !excluded.is_empty() {
+        files.retain(|f| !excluded.is_excluded(f));
+    }
     files.sort();
     files.dedup();
     files
