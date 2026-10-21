@@ -61,6 +61,51 @@ impl ProfilerSource for AdbProfiler {
         self.settle(serial, &remote, "The method trace")?;
         self.pull(serial, &remote, to)
     }
+
+    fn start_system_trace(&self, serial: &str, package: &str) -> Result<u32, String> {
+        let config = system_trace_config(crate::infra::adb_background_tasks::package_arg(package)?);
+        // The config goes in on stdin: perfetto may not read files under /data/local/tmp.
+        let out = self.shell(serial, &format!("rm -f {SYSTEM_TRACE}; echo '{config}' | perfetto --background --txt -c - -o {SYSTEM_TRACE}"), Duration::from_secs(20))?;
+        // `--background` prints the recording's pid.
+        out.lines().rev().find_map(|l| l.trim().parse::<u32>().ok()).ok_or_else(|| {
+            let message = out.trim();
+            if message.is_empty() { "perfetto didn't start".to_owned() } else { message.lines().last().unwrap_or(message).to_owned() }
+        })
+    }
+
+    fn stop_system_trace(&self, serial: &str, id: u32, to: &Path) -> Result<Vec<u8>, String> {
+        // perfetto writes the trace when it is told to stop, and exits.
+        self.shell(serial, &format!("kill -TERM {id} 2>/dev/null; true"), Duration::from_secs(10))?;
+        let started = Instant::now();
+        while self.shell(serial, &format!("kill -0 {id} 2>/dev/null && echo running"), Duration::from_secs(5)).is_ok_and(|o| o.contains("running")) {
+            if started.elapsed() > Duration::from_secs(60) {
+                return Err("perfetto didn't stop in a minute".to_owned());
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        self.settle(serial, SYSTEM_TRACE, "The system trace")?;
+        self.pull(serial, SYSTEM_TRACE, to)
+    }
+}
+
+/// Where perfetto writes: the one directory it may write to on user builds.
+const SYSTEM_TRACE: &str = "/data/misc/perfetto-traces/junction.pftrace";
+
+/// Android Studio's System Trace configuration: the scheduler, CPU
+/// frequencies, thread names and creation, and the app's atrace sections,
+/// in perfetto's text format (no single quotes: it is passed through `echo`).
+fn system_trace_config(package: &str) -> String {
+    let events = ["sched/sched_switch", "sched/sched_waking", "sched/sched_wakeup_new", "task/task_newtask", "task/task_rename", "power/cpu_frequency", "ftrace/print"];
+    let categories = ["am", "dalvik", "gfx", "input", "view", "wm", "sched", "freq"];
+    let events: String = events.iter().map(|e| format!("ftrace_events: \"{e}\" ")).collect();
+    let categories: String = categories.iter().map(|c| format!("atrace_categories: \"{c}\" ")).collect();
+    format!(
+        "buffers {{ size_kb: 65536 fill_policy: RING_BUFFER }} \
+         buffers {{ size_kb: 4096 fill_policy: RING_BUFFER }} \
+         data_sources {{ config {{ name: \"linux.ftrace\" target_buffer: 0 ftrace_config {{ {events}{categories}atrace_apps: \"{package}\" compact_sched {{ enabled: false }} }} }} }} \
+         data_sources {{ config {{ name: \"linux.process_stats\" target_buffer: 1 process_stats_config {{ scan_all_processes_on_start: true }} }} }} \
+         duration_ms: 600000"
+    )
 }
 
 fn trace_file(pid: u32) -> String {

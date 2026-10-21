@@ -6,7 +6,8 @@
 //! Retained Size; a class's Instance List (Depth, Shallow and Retained Size)
 //! and an instance's References, expandable toward the GC roots. Record
 //! takes a Java/Kotlin Method Sample or Trace and shows its threads' calls
-//! as Call Chart, Flame Chart, Top Down and Bottom Up.
+//! as Call Chart, Flame Chart, Top Down and Bottom Up, or a System Trace
+//! (Perfetto) as CPU and thread timelines.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
@@ -34,6 +35,7 @@ use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
 use crate::ui::device_manager::DeviceManager;
+use crate::ui::system_trace_view::SystemTraceView;
 
 pub enum ProfilerEvent {
     Hide,
@@ -278,6 +280,9 @@ pub struct ProfilerView {
     /// The process being recorded.
     recorded: Option<ProfiledProcess>,
     trace: Option<TraceView>,
+    /// The System Trace recording on the device.
+    system_recording: Option<u32>,
+    system_trace: Option<Entity<SystemTraceView>>,
     filter: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
@@ -329,6 +334,8 @@ impl ProfilerView {
             recording: Recording::Idle,
             recorded: None,
             trace: None,
+            system_recording: None,
+            system_trace: None,
             filter,
             _subscriptions: vec![observe, filtered],
         }
@@ -450,6 +457,7 @@ impl ProfilerView {
                         cx.emit(ProfilerEvent::Notify { title: "Heap Dump".into(), message: format!("Saved to {}", file.display()), error: false });
                         this.heap = Some(HeapView::new(file, summary, heap));
                         this.trace = None;
+                        this.system_trace = None;
                     }
                     Err(e) => cx.emit(ProfilerEvent::Notify { title: "Heap Dump".into(), message: format!("Cannot capture a heap dump: {e} (the app must be debuggable)"), error: true }),
                 }
@@ -469,15 +477,25 @@ impl ProfilerView {
         self.recording = Recording::Starting;
         self.recorded = Some(process.clone());
         let mode = self.trace_mode;
-        let task = cx.background_spawn(async move { crate::usecase::profile_app::start_method_trace(&crate::infra::adb_profiler::AdbProfiler { adb }, &serial, process.pid, mode) });
+        let task = cx.background_spawn(async move {
+            let source = crate::infra::adb_profiler::AdbProfiler { adb };
+            match mode {
+                TraceMode::System => crate::usecase::profile_app::start_system_trace(&source, &serial, &process.name).map(Some),
+                _ => crate::usecase::profile_app::start_method_trace(&source, &serial, process.pid, mode).map(|()| None),
+            }
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
                 match result {
-                    Ok(()) => this.recording = Recording::Running,
+                    Ok(id) => {
+                        this.system_recording = id;
+                        this.recording = Recording::Running;
+                    }
                     Err(e) => {
                         this.recording = Recording::Idle;
-                        cx.emit(ProfilerEvent::Notify { title: "CPU Recording".into(), message: format!("Cannot start recording: {e} (the app must be debuggable or profileable)"), error: true });
+                        let hint = if mode == TraceMode::System { "System Trace needs perfetto: Android 9 or later" } else { "the app must be debuggable or profileable" };
+                        cx.emit(ProfilerEvent::Notify { title: "CPU Recording".into(), message: format!("Cannot start recording: {e} ({hint})"), error: true });
                     }
                 }
                 cx.notify();
@@ -495,7 +513,33 @@ impl ProfilerView {
         }
         self.recording = Recording::Stopping;
         let name = process.name.replace([':', '/'], "_");
-        let file = crate::index::libraries::cache_dir().unwrap_or_else(std::env::temp_dir).join("captures").join(format!("{name}_{}.trace", chrono::Local::now().format("%Y-%m-%d_%H.%M.%S")));
+        let system = self.system_recording.take();
+        let extension = if system.is_some() { "pftrace" } else { "trace" };
+        let file = crate::index::libraries::cache_dir().unwrap_or_else(std::env::temp_dir).join("captures").join(format!("{name}_{}.{extension}", chrono::Local::now().format("%Y-%m-%d_%H.%M.%S")));
+        if let Some(id) = system {
+            let to = file.clone();
+            let task = cx.background_spawn(async move { crate::usecase::profile_app::stop_system_trace(&crate::infra::adb_profiler::AdbProfiler { adb }, &serial, id, process.pid, &to) });
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                this.update(cx, |this, cx| {
+                    this.recording = Recording::Idle;
+                    match result {
+                        Ok(trace) => {
+                            cx.emit(ProfilerEvent::Notify { title: "System Trace".into(), message: format!("Saved to {}", file.display()), error: false });
+                            this.system_trace = Some(cx.new(|_| SystemTraceView::new(file, trace)));
+                            this.trace = None;
+                            this.heap = None;
+                        }
+                        Err(e) => cx.emit(ProfilerEvent::Notify { title: "System Trace".into(), message: format!("Cannot record the system trace: {e}"), error: true }),
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+            cx.notify();
+            return;
+        }
         let to = file.clone();
         let task = cx.background_spawn(async move { crate::usecase::profile_app::stop_method_trace(&crate::infra::adb_profiler::AdbProfiler { adb }, &serial, process.pid, &to) });
         cx.spawn(async move |this, cx| {
@@ -507,6 +551,7 @@ impl ProfilerView {
                         cx.emit(ProfilerEvent::Notify { title: "CPU Recording".into(), message: format!("Saved to {}", file.display()), error: false });
                         this.trace = Some(TraceView::new(file, trace));
                         this.heap = None;
+                        this.system_trace = None;
                     }
                     Err(e) => cx.emit(ProfilerEvent::Notify { title: "CPU Recording".into(), message: format!("Cannot record the method trace: {e}"), error: true }),
                 }
@@ -1041,7 +1086,7 @@ impl ProfilerView {
 
     /// Shorter charts while a heap dump shares the window.
     fn render_charts(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let compact = self.heap.is_some() || self.trace.is_some();
+        let compact = self.heap.is_some() || self.trace.is_some() || self.system_trace.is_some();
         let palette = cx.palette().clone();
         let last = self.samples.back().copied();
         let cpu_label = match last {
@@ -1172,7 +1217,7 @@ impl Render for ProfilerView {
         let mode_picker = Button::new("pf-trace-mode").outline().xsmall().label(self.trace_mode.label()).disabled(self.recording != Recording::Idle).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
             let entity = entity.clone();
             move |mut menu, _, _| {
-                for mode in [TraceMode::Sample, TraceMode::Trace] {
+                for mode in [TraceMode::Sample, TraceMode::Trace, TraceMode::System] {
                     let entity = entity.clone();
                     menu = menu.item(PopupMenuItem::new(mode.label()).on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| {
@@ -1282,11 +1327,12 @@ impl Render for ProfilerView {
             .size_full()
             .child(header)
             .when_some(self.error.clone(), |el, e| el.child(div().px_2().py_1().text_xs().text_color(palette.status_conflict).child(SharedString::from(e))))
-            .when(empty && self.heap.is_none() && self.trace.is_none(), |el| {
+            .when(empty && self.heap.is_none() && self.trace.is_none() && self.system_trace.is_none(), |el| {
                 el.child(div().p_4().text_sm().text_color(palette.text_secondary).child("Pick a process to watch its CPU and memory; Capture heap dump lists what its Java heap holds, and Record shows which methods it spends its time in."))
             })
             .children(charts)
             .children(heap)
             .children(trace)
+            .children(self.system_trace.clone())
     }
 }
