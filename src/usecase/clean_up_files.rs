@@ -10,6 +10,9 @@ use crate::domain::reformat;
 pub enum CleanUp {
     Reformat,
     OptimizeImports,
+    /// Analyze › Code Cleanup…: the fixes of the clean-up inspections
+    /// Junction has (unused imports removed).
+    CodeCleanup,
 }
 
 impl CleanUp {
@@ -17,6 +20,7 @@ impl CleanUp {
         match self {
             CleanUp::Reformat => "Reformat Code",
             CleanUp::OptimizeImports => "Optimize Imports",
+            CleanUp::CodeCleanup => "Code Cleanup",
         }
     }
 }
@@ -54,7 +58,7 @@ pub fn cleaned(path: &str, text: &str, clean_up: CleanUp) -> Option<String> {
     let style = style_of(path)?;
     let new = match clean_up {
         CleanUp::Reformat => reformat::reformat(style, text, None),
-        CleanUp::OptimizeImports => {
+        CleanUp::OptimizeImports | CleanUp::CodeCleanup => {
             let edit = imports::optimize(style, text)?;
             format!("{}{}{}", &text[..edit.range.start], edit.text, &text[edit.range.end..])
         }
@@ -67,6 +71,7 @@ pub fn summary(clean_up: CleanUp, changed: usize) -> String {
     match (clean_up, changed) {
         (CleanUp::Reformat, 0) => "No files changed: content is already properly formatted".into(),
         (CleanUp::OptimizeImports, 0) => "Unused imports not found".into(),
+        (CleanUp::CodeCleanup, 0) => "No code to clean up found".into(),
         (_, 1) => "1 file changed".into(),
         (_, n) => format!("{n} files changed"),
     }

@@ -286,6 +286,48 @@ impl Workspace {
         self.file_action(crate::ui::file_menus::FileAction::FilesChanged, window, cx);
     }
 
+    /// Analyze › Inspect Code… on a scope: every open file saved first, the
+    /// inspections run in the background, the findings in the Problems
+    /// window's Inspection tab (a notification when there are none).
+    pub(super) fn inspect_code(&mut self, items: Vec<(String, bool)>, scope: String, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::project_files::ProjectFiles as _;
+        use crate::usecase::inspect_code as usecase;
+        let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+        let editors: Vec<_> = self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).collect();
+        for editor in editors {
+            editor.update(cx, |e, cx| e.save_now(cx));
+        }
+        let task = cx.background_spawn(async move {
+            let files = crate::infra::project_files::DiskFiles { root: root.clone(), repository: None };
+            let targets = usecase::targets(&files, &items, &|p| crate::index::lang::Lang::from_path(p).is_some());
+            let count = targets.len();
+            let findings: Vec<(std::path::PathBuf, Vec<crate::domain::diagnostics::Problem>)> = targets
+                .into_iter()
+                .filter_map(|path| {
+                    let text = files.read(&path).ok()?;
+                    let syntax = crate::index::lang::Lang::from_path(&path).map(|lang| crate::infra::tree_sitter_syntax::TreeSitterSyntax { lang });
+                    let found = usecase::inspect(&path, &text, syntax.as_ref().map(|s| s as &dyn crate::domain::diagnostics::SyntaxChecker));
+                    (!found.is_empty()).then(|| (root.join(&path), found.into_iter().map(|f| f.problem).collect()))
+                })
+                .collect();
+            (count, findings)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let (count, findings) = task.await;
+            this.update_in(cx, |this, window, cx| {
+                if findings.is_empty() {
+                    let files = if count == 1 { "1 file".to_owned() } else { format!("{count} files") };
+                    window.push_notification(Notification::info(format!("No suspicious code found. {files} processed in '{scope}'.")).title("Code Analysis"), cx);
+                }
+                this.problems_view.update(cx, |p, cx| p.show_inspection(scope, findings, cx));
+                this.tools.open(crate::ui::tool_windows::ToolWindow::Problems);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Local History › Show History… of a project file or folder from a
     /// menu (empty: Show Project History).
     pub(super) fn show_local_history_of(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -576,6 +618,7 @@ impl Workspace {
                     Err(error) => window.push_notification(Notification::error(error).title("Override File Type"), cx),
                 }
             }
+            FileAction::InspectCode { items, scope } => self.inspect_code(items, scope, window, cx),
             FileAction::RepairFiles(files) => {
                 self.code_index.update(cx, |index, cx| {
                     for file in &files {

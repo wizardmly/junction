@@ -1,6 +1,7 @@
 //! The Problems tool window, as IntelliJ's: the File tab lists the open
 //! editor's problems (syntax errors and the compiler's), Project Errors
-//! every file the last builds and compiles reported. Options: show
+//! every file the last builds and compiles reported, Inspection the
+//! results of Analyze › Inspect Code… on its scope. Options: show
 //! warnings, sort by severity; Previous / Next Problem, Expand / Collapse
 //! All, Autoscroll to Source.
 
@@ -35,6 +36,7 @@ pub enum ProblemsEvent {
 enum Tab {
     File,
     Project,
+    Inspection,
 }
 
 pub struct ProblemsView {
@@ -43,6 +45,9 @@ pub struct ProblemsView {
     tab: Tab,
     file_tree: Entity<ItemTree>,
     project_tree: Entity<ItemTree>,
+    inspection_tree: Entity<ItemTree>,
+    /// Inspect Code's scope ("Project 'psd'") and findings by file.
+    inspection: Option<(String, Vec<(PathBuf, Vec<Problem>)>)>,
     show_warnings: bool,
     by_severity: bool,
     _editor_subscription: Option<Subscription>,
@@ -55,6 +60,7 @@ impl ProblemsView {
     pub fn new(project: Rc<dyn Fn(&App) -> Option<PathBuf>>, cx: &mut Context<Self>) -> Self {
         let file_tree = cx.new(|cx| ItemTree::new(("problem", "problems"), cx));
         let project_tree = cx.new(|cx| ItemTree::new(("problem", "problems"), cx));
+        let inspection_tree = cx.new(|cx| ItemTree::new(("problem", "problems"), cx));
         let compile = CompileService::global(cx);
         let forward = |_: &mut Self, _: Entity<ItemTree>, event: &ItemTreeEvent, cx: &mut Context<Self>| match event {
             ItemTreeEvent::Open { path, line, col } => cx.emit(ProblemsEvent::OpenFile { path: path.clone(), line: *line, col: *col }),
@@ -62,13 +68,14 @@ impl ProblemsView {
         let subscriptions = vec![
             cx.subscribe(&file_tree, forward),
             cx.subscribe(&project_tree, forward),
+            cx.subscribe(&inspection_tree, forward),
             cx.subscribe(&compile, |this, _, event: &CompileEvent, cx| {
                 if matches!(event, CompileEvent::ProblemsChanged) {
                     this.refresh_project(cx);
                 }
             }),
         ];
-        let mut this = Self { project, editor: None, tab: Tab::File, file_tree, project_tree, show_warnings: true, by_severity: false, _editor_subscription: None, _subscriptions: subscriptions };
+        let mut this = Self { project, editor: None, tab: Tab::File, file_tree, project_tree, inspection_tree, inspection: None, show_warnings: true, by_severity: false, _editor_subscription: None, _subscriptions: subscriptions };
         this.refresh_project(cx);
         this
     }
@@ -138,15 +145,31 @@ impl ProblemsView {
         cx.notify();
     }
 
+    /// Inspect Code's results: shown in their own tab, which comes to front.
+    pub fn show_inspection(&mut self, scope: String, findings: Vec<(PathBuf, Vec<Problem>)>, cx: &mut Context<Self>) {
+        self.inspection = Some((scope, findings));
+        self.tab = Tab::Inspection;
+        self.refresh_inspection(cx);
+    }
+
+    fn refresh_inspection(&mut self, cx: &mut Context<Self>) {
+        let findings = self.inspection.as_ref().map(|(_, f)| f.clone()).unwrap_or_default();
+        let files: Vec<TreeFile> = findings.into_iter().filter_map(|(path, problems)| self.tree_file(path, &problems, cx)).collect();
+        self.inspection_tree.update(cx, |t, cx| t.set_files(files, cx));
+        cx.notify();
+    }
+
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh_file(cx);
         self.refresh_project(cx);
+        self.refresh_inspection(cx);
     }
 
     fn tree(&self) -> &Entity<ItemTree> {
         match self.tab {
             Tab::File => &self.file_tree,
             Tab::Project => &self.project_tree,
+            Tab::Inspection => &self.inspection_tree,
         }
     }
 }
@@ -157,6 +180,7 @@ impl Render for ProblemsView {
         let file_name = self.editor.as_ref().map(|e| e.read(cx).absolute_path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
         let file_count = self.file_count(cx);
         let project_count = self.project_tree.read(cx).item_count();
+        let inspection = self.inspection.as_ref().map(|(scope, _)| (format!("Inspection of {scope}"), self.inspection_tree.read(cx).item_count()));
         let tab = |id: &'static str, label: String, count: usize, which: Tab, active: bool| {
             h_flex()
                 .id(id)
@@ -189,6 +213,7 @@ impl Render for ProblemsView {
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Problems:"))
             .child(tab("problems-tab-file", file_label, file_count, Tab::File, self.tab == Tab::File))
             .child(tab("problems-tab-project", "Project Errors".into(), project_count, Tab::Project, self.tab == Tab::Project))
+            .when_some(inspection, |el, (label, count)| el.child(tab("problems-tab-inspection", label, count, Tab::Inspection, self.tab == Tab::Inspection)))
             .child(div().flex_1())
             .child(tool_button("problems-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(ProblemsEvent::Hide))));
         let (show_warnings, by_severity) = (self.show_warnings, self.by_severity);
@@ -242,6 +267,7 @@ impl Render for ProblemsView {
             (Tab::File, Some(name)) => format!("No problems found in {name}"),
             (Tab::File, None) => "No file is open in the editor".to_owned(),
             (Tab::Project, _) => "No errors found by the latest build".to_owned(),
+            (Tab::Inspection, _) => "No suspicious code found".to_owned(),
         };
         v_flex().size_full().bg(palette.panel).child(header).child(
             h_flex().flex_1().min_h_0().items_stretch().child(toolbar).child(

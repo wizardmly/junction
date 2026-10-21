@@ -223,6 +223,49 @@ pub fn optimize(style: ImportStyle, text: &str) -> Option<ImportsEdit> {
     Some(ImportsEdit { range, text: out, removed: imports.len() - kept.len() })
 }
 
+/// Inspect Code's unused imports: the imports Optimize Imports drops
+/// (unused, duplicated, of the file's own package or `java.lang`), each
+/// with its 0-based line and path.
+pub fn unused_imports(style: ImportStyle, text: &str) -> Vec<(u32, String)> {
+    let mut package = None;
+    let mut imports = Vec::new();
+    for (line, raw) in text.lines().enumerate() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with("import ") {
+            if let Some(import) = parse_import(trimmed) {
+                imports.push((line as u32, import));
+            }
+        } else if let Some(p) = trimmed.strip_prefix("package ") {
+            package = Some(p.trim_end_matches(';').trim());
+        } else if !(trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') || trimmed.starts_with('@')) {
+            break;
+        }
+    }
+    if imports.is_empty() {
+        return Vec::new();
+    }
+    let words: HashSet<&str> = text
+        .lines()
+        .filter(|l| !(l.trim_start().starts_with("import ") || l.trim_start().starts_with("package ")))
+        .flat_map(|l| l.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$')))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for (line, import) in &imports {
+        let (owner, name) = import.path.rsplit_once('.').unwrap_or(("", import.path));
+        let used = name == "*" || words.contains(import.alias.unwrap_or(name)) || style == ImportStyle::Kotlin && KOTLIN_IMPLICIT.contains(&name);
+        let redundant = !import.is_static
+            && import.alias.is_none()
+            && name != "*"
+            && (Some(owner) == package || style == ImportStyle::Java && owner == "java.lang");
+        if !used || redundant || !seen.insert(import.line(style)) {
+            out.push((*line, import.path.to_owned()));
+        }
+    }
+    out
+}
+
 /// A JVM file's package and imports, read from its header.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Header {
@@ -370,6 +413,14 @@ mod tests {
         let mut out = text.to_owned();
         out.replace_range(edit.range, &edit.text);
         out
+    }
+
+    #[test]
+    fn finds_unused_imports() {
+        let kt = "package a.b\n\nimport x.Used\nimport x.Unused\nimport a.b.Same\nimport x.Used\nimport y.*\n\nclass C : Used, Same\n";
+        assert_eq!(unused_imports(ImportStyle::Kotlin, kt), vec![(3, "x.Unused".to_owned()), (4, "a.b.Same".to_owned()), (5, "x.Used".to_owned())]);
+        let java = "package p;\nimport java.lang.String;\nimport java.util.List;\nclass C { List<String> l; }\n";
+        assert_eq!(unused_imports(ImportStyle::Java, java), vec![(1, "java.lang.String".to_owned())]);
     }
 
     #[test]
