@@ -4,6 +4,7 @@
 pub mod merged_manifest;
 pub mod android_resources;
 pub mod import_class;
+pub mod clean_up_files;
 pub mod translations;
 pub mod check_syntax;
 pub mod compile_on_save;

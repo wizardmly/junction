@@ -240,7 +240,7 @@ pub(super) fn commit_menu(
         .separator()
         .item(entry("Refresh", "").icon(Icon::new(icons::REFRESH)).on_click(move |_, _, cx| m_refresh.update(cx, |m, cx| m.reload(cx))))
         .separator();
-    let menu = if file.is_some() { file_menus::local_history_submenu(menu, window, cx) } else { menu };
+    let menu = if file.is_some() { file_menus::local_history_submenu(menu, file.clone(), actions.clone(), window, cx) } else { menu };
     let target = GitTarget { model, paths, file, actions };
     file_menus::git_submenu(menu, target, window, cx)
 }

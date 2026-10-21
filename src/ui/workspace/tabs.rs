@@ -955,7 +955,7 @@ impl Workspace {
                             let Some(target) = target else { return menu };
                             let full = target.root.join(&target.path);
                             let menu = crate::ui::file_menus::open_in_submenu(menu, full, false, window, cx);
-                            let menu = crate::ui::file_menus::local_history_submenu(menu.separator(), window, cx);
+                            let menu = crate::ui::file_menus::local_history_submenu(menu.separator(), Some(target.path.clone()), target.actions.clone(), window, cx);
                             let git = crate::ui::file_menus::GitTarget {
                                 model: target.model.clone(),
                                 paths: vec![target.path.clone()],
