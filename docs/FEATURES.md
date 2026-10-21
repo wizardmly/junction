@@ -497,7 +497,8 @@ Android 单元测试（`testDebugUnitTest`）和仪器测试未实测（容器�
 | Debug 'app'：标题栏 Run 右边的 Debug 按钮、Shift+F9（macOS ⌃D）；构建、安装后以 `am start … -D` 启动（应用等调试器），通过 adb 的 `jdwp:<pid>` 连上进程，设断点后放行；Run 控制台显示 “Waiting for application to come online: …” | 🟡（只在模拟 adb 下验证：adb 服务端协议 + 真实 JVM，未在真机 / 模拟器验证） |
 | Attach debugger：Device Explorer 进程页右键 “Attach debugger”，附加到已在运行的可调试进程 | 🟡（同上） |
 | Disconnect：Debug 工具栏 Stop 右边的按钮（expui `exit` 图标），JDWP `VirtualMachine.Dispose` 后断开，程序去掉断点继续运行（测试照常跑完出结果）；Console 显示 “Disconnected from the target VM, address: '127.0.0.1:…', transport: 'socket'” | ✅ |
-| Attach Debugger to Android Process 对话框、Debug 'app' 时的 Logcat 联动 | ❌ 未做 |
+| Attach Debugger to Android Process 对话框（2026-10-21，`src/ui/attach_debugger_dialog.rs`，照 AS 的 `AndroidProcessChooserDialog`）：Run 菜单和 Find Action 打开 “Choose Process”；在线设备下列出可调试进程（`track-jdwp` 加 DDM `HELO`），默认只列项目的进程（进程名以项目 applicationId 开头），勾 “Show all processes” 列全部；非 0 用户显示 “(user N)”；对话框开着时每两秒刷新；记住上次选的设备和进程（重新打开时选中）；OK 或双击附加调试器。“Use Android Debugger Settings from” 和 “Debug Type” 只有 “[Use default settings]” 和 “Java Only”（没有原生调试）。实测（Xvfb，模拟 adb 服务端）：默认只列 com.example.psd.debug 的三个进程，勾选后多出 systemui；双击后 Debug 窗口开始附加 pid 12400 | 🟡（未在真机验证） |
+| Debug 'app' 时的 Logcat 联动 | ❌ 未做 |
 
 求值扩展的实测：JDWP 集成测试（真实 JVM）覆盖上面每个例子；界面上（Xvfb，JUnit 4 示例停在 `CalcTest.java:10`）在求值框输入 `first = (int) 2.9 + new java.util.ArrayList().size()`，结果 `= 2`，下面的 Variables 随即显示 `first = 2`。
 

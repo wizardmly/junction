@@ -68,7 +68,8 @@ impl IndexBuilder {
     }
 }
 
-/// Parses a whole mapping held in memory (tests, small files).
+/// Parses a whole mapping held in memory.
+#[cfg(test)]
 pub fn from_text(text: &str) -> Retracer {
     struct Text(String);
     impl MappingSource for Text {

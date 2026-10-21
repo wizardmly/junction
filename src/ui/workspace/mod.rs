@@ -112,6 +112,7 @@ actions!(
         RunApp,
         RunWithCoverage,
         DebugApp,
+        AttachDebugger,
         StopApp,
         ApplyChanges,
         ApplyCodeChanges,
@@ -1084,6 +1085,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &ReloadChangedClasses, _, cx| crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.apply_hot_swap(cx))))
             .on_action(cx.listener(|this, _: &ToggleDebugWindow, window, cx| this.shortcut_tool(ToolWindow::Debug, window, cx)))
             .on_action(cx.listener(|this, _: &DebugApp, _, cx| this.run.update(cx, |r, cx| r.debug(cx))))
+            .on_action(cx.listener(|this, _: &AttachDebugger, window, cx| this.attach_debugger(window, cx)))
             .on_action(cx.listener(|_, _: &DebugResume, _, cx| crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.resume(cx))))
             .on_action(cx.listener(|_, _: &DebugStepOver, _, cx| {
                 crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.step(crate::domain::debugger::StepDepth::Over, cx))
