@@ -23,6 +23,7 @@ pub enum ToolWindow {
     DeviceExplorer,
     LayoutInspector,
     Profiler,
+    AppInspection,
     Build,
     Run,
     Debug,
@@ -72,7 +73,7 @@ impl Side {
 }
 
 impl ToolWindow {
-    pub const ALL: [ToolWindow; 22] = [
+    pub const ALL: [ToolWindow; 23] = [
         ToolWindow::Project,
         ToolWindow::Commit,
         ToolWindow::PullRequests,
@@ -84,6 +85,7 @@ impl ToolWindow {
         ToolWindow::Debug,
         ToolWindow::Logcat,
         ToolWindow::Profiler,
+        ToolWindow::AppInspection,
         ToolWindow::Problems,
         ToolWindow::Todo,
         ToolWindow::Terminal,
@@ -112,6 +114,7 @@ impl ToolWindow {
             ToolWindow::DeviceExplorer => "explorer",
             ToolWindow::LayoutInspector => "layout-inspector",
             ToolWindow::Profiler => "profiler",
+            ToolWindow::AppInspection => "app_inspection",
             ToolWindow::Build => "build",
             ToolWindow::Run => "run",
             ToolWindow::Debug => "debug",
@@ -126,7 +129,7 @@ impl ToolWindow {
 
     fn default_side(self) -> Side {
         match self {
-            ToolWindow::Git | ToolWindow::Find | ToolWindow::Terminal | ToolWindow::Build | ToolWindow::Run | ToolWindow::Debug | ToolWindow::Logcat | ToolWindow::Profiler | ToolWindow::Problems | ToolWindow::Todo => Side::Bottom,
+            ToolWindow::Git | ToolWindow::Find | ToolWindow::Terminal | ToolWindow::Build | ToolWindow::Run | ToolWindow::Debug | ToolWindow::Logcat | ToolWindow::Profiler | ToolWindow::AppInspection | ToolWindow::Problems | ToolWindow::Todo => Side::Bottom,
             // The new UI keeps Notifications on the right stripe, and
             // Android Studio its Device Manager, Running Devices and Device
             // Explorer below it.
@@ -303,7 +306,7 @@ mod tests {
     #[test]
     fn find_and_terminal_share_the_bottom_with_git() {
         let mut t = layout();
-        assert_eq!(t.on_side(Side::Bottom), vec![ToolWindow::Find, ToolWindow::Build, ToolWindow::Run, ToolWindow::Debug, ToolWindow::Logcat, ToolWindow::Profiler, ToolWindow::Problems, ToolWindow::Todo, ToolWindow::Terminal, ToolWindow::Git]);
+        assert_eq!(t.on_side(Side::Bottom), vec![ToolWindow::Find, ToolWindow::Build, ToolWindow::Run, ToolWindow::Debug, ToolWindow::Logcat, ToolWindow::Profiler, ToolWindow::AppInspection, ToolWindow::Problems, ToolWindow::Todo, ToolWindow::Terminal, ToolWindow::Git]);
         t.open(ToolWindow::Terminal);
         assert!(t.is_open(ToolWindow::Terminal) && !t.is_open(ToolWindow::Git));
         t.open(ToolWindow::Find);

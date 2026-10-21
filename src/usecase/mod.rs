@@ -9,6 +9,7 @@ pub mod analyze_apk;
 pub mod manage_sdk;
 pub mod inspect_layout;
 pub mod profile_app;
+pub mod inspect_database;
 pub mod android_resources;
 pub mod import_class;
 pub mod clean_up_files;
