@@ -6,7 +6,7 @@
 //! Retained Size; a class's Instance List (Depth, Shallow and Retained Size)
 //! and an instance's References, expandable toward the GC roots. Record
 //! takes a Java/Kotlin Method Sample or Trace and shows its threads' calls
-//! as Top Down, Bottom Up and Flame Chart.
+//! as Call Chart, Flame Chart, Top Down and Bottom Up.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
@@ -119,6 +119,7 @@ impl HeapView {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TraceTab {
+    CallChart,
     TopDown,
     FlameChart,
     BottomUp,
@@ -138,12 +139,16 @@ struct TraceView {
     /// (node, depth) in the tree shown.
     rows: Vec<(u32, u32)>,
     hovered: Option<u32>,
+    /// The Call Chart's visible time range; `None` shows the whole thread.
+    range: Option<(u64, u64)>,
+    /// The Call Chart's hovered call, by its index.
+    hovered_call: Option<usize>,
 }
 
 impl TraceView {
     fn new(file: PathBuf, trace: MethodTrace) -> Self {
         let clock = if trace.wall { Clock::Wall } else { Clock::Thread };
-        let mut view = Self { file, trace, thread: 0, tab: TraceTab::TopDown, clock, bottom_up: None, expanded: HashSet::new(), rows: Vec::new(), hovered: None };
+        let mut view = Self { file, trace, thread: 0, tab: TraceTab::CallChart, clock, bottom_up: None, expanded: HashSet::new(), rows: Vec::new(), hovered: None, range: None, hovered_call: None };
         view.reset();
         view
     }
@@ -159,6 +164,8 @@ impl TraceView {
     /// heaviest path, Bottom Up closed.
     fn reset(&mut self) {
         self.hovered = None;
+        self.hovered_call = None;
+        self.range = None;
         self.bottom_up = None;
         if self.trace.threads.is_empty() {
             self.rows.clear();
@@ -173,6 +180,41 @@ impl TraceView {
             self.expanded = path.into_iter().collect();
         }
         self.refresh_rows();
+    }
+
+    /// The picked thread's whole time span on the picked clock.
+    fn span(&self) -> (u64, u64) {
+        let t = &self.trace.threads[self.thread];
+        let c = self.clock as usize;
+        (t.span[0][c], t.span[1][c].max(t.span[0][c] + 1))
+    }
+
+    fn visible(&self) -> (u64, u64) {
+        self.range.unwrap_or_else(|| self.span())
+    }
+
+    /// Narrows (`factor` < 1) or widens the Call Chart around its middle,
+    /// within the thread's span.
+    fn zoom(&mut self, factor: f64) {
+        let (lo, hi) = self.span();
+        let (start, end) = self.visible();
+        let middle = (start + end) as f64 / 2.;
+        let width = ((end - start) as f64 * factor).clamp(10., (hi - lo) as f64);
+        self.set_range(middle - width / 2., width);
+    }
+
+    /// Moves the Call Chart by `fraction` of its width.
+    fn pan(&mut self, fraction: f64) {
+        let (start, end) = self.visible();
+        let width = (end - start) as f64;
+        self.set_range(start as f64 + width * fraction, width);
+    }
+
+    fn set_range(&mut self, start: f64, width: f64) {
+        let (lo, hi) = self.span();
+        let start = start.clamp(lo as f64, (hi as f64 - width).max(lo as f64));
+        let range = (start as u64, (start + width) as u64);
+        self.range = if range.0 <= lo && range.1 >= hi { None } else { Some(range) };
     }
 
     fn refresh_rows(&mut self) {
@@ -527,6 +569,147 @@ impl ProfilerView {
             .collect()
     }
 
+    /// Green for the app's code, orange for the platform's, blue for the
+    /// rest, as Android Studio colors its charts.
+    fn method_color(&self, trace: &MethodTrace, method: u32) -> Hsla {
+        const SYSTEM: [&str; 11] = ["android.", "androidx.", "com.android.", "dalvik.", "libcore.", "java.", "javax.", "sun.", "kotlin.", "kotlinx.", "org.apache.harmony."];
+        let class = trace.methods.get(method as usize).map(|m| m.class.as_str()).unwrap_or_default();
+        if self.app_ids.iter().any(|id| class.starts_with(&format!("{id}."))) {
+            color(0x81c784)
+        } else if SYSTEM.iter().any(|p| class.starts_with(p)) {
+            color(0xffb74d)
+        } else {
+            color(0x64b5f6)
+        }
+    }
+
+    /// The Call Chart: each call where and as long as it ran, callers above
+    /// their callees. Ctrl + wheel zooms, Shift + wheel (or a sideways
+    /// wheel) pans, and clicking a call zooms to it.
+    fn render_call_chart(&self, view: &TraceView, palette: &crate::theme::Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        const BAR: f32 = 18.;
+        const MAX_BARS: usize = 5000;
+        let thread = &view.trace.threads[view.thread];
+        let c = view.clock as usize;
+        let (start, end) = view.visible();
+        let width = (end - start) as f64;
+        let mut depth_max = 0;
+        let mut bars = Vec::new();
+        for (i, call) in thread.calls.iter().enumerate() {
+            if call.end[c] < start || call.start[c] > end {
+                continue;
+            }
+            let (s, e) = (call.start[c].max(start), call.end[c].min(end));
+            let w = e.saturating_sub(s) as f64 / width;
+            depth_max = depth_max.max(call.depth + 1);
+            if w < 0.0005 || bars.len() >= MAX_BARS {
+                continue;
+            }
+            bars.push((i, call.method, call.depth, (s - start) as f64 / width, w));
+        }
+        let hovered = view.hovered_call.and_then(|i| thread.calls.get(i)).map(|call| {
+            let d = call.end[c] - call.start[c];
+            format!("{}   {} μs   {} – {} μs", view.trace.label(call.method), micros(d), micros(call.start[c] - thread.span[0][c]), micros(call.end[c] - thread.span[0][c]))
+        });
+        let (lo, _) = view.span();
+        let caption = format!("{} – {} μs", micros(start - lo), micros(end - lo));
+        let chart = div().relative().w_full().h(px(depth_max as f32 * BAR)).children(bars.into_iter().map(|(i, method, depth, x, w)| {
+            div()
+                .id(("pf-call", i))
+                .absolute()
+                .left(relative(x as f32))
+                .w(relative(w as f32))
+                .top(px(depth as f32 * BAR))
+                .h(px(BAR - 1.))
+                .border_r_1()
+                .border_color(palette.panel)
+                .bg(self.method_color(&view.trace, method))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_xs()
+                .text_color(gpui_kit::black())
+                // Padding inside the label, so a sliver of a call stays a sliver.
+                .child(div().pl_1().child(view.trace.label(method)))
+                .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                    if let Some(view) = &mut this.trace {
+                        if *over {
+                            view.hovered_call = Some(i);
+                        } else if view.hovered_call == Some(i) {
+                            view.hovered_call = None;
+                        }
+                    }
+                    cx.notify();
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(view) = &mut this.trace {
+                        let call = view.trace.threads[view.thread].calls[i];
+                        let c = view.clock as usize;
+                        let width = (call.end[c] - call.start[c]).max(10) as f64;
+                        // A little room either side, as Android Studio leaves.
+                        view.set_range(call.start[c] as f64 - width * 0.05, width * 1.1);
+                    }
+                    cx.notify();
+                }))
+        }));
+        let zoomed = view.range.is_some();
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .child(
+                h_flex()
+                    .h(px(ROW_H))
+                    .flex_none()
+                    .px_2()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(palette.text_secondary)
+                    .child(Button::new("pf-zoom-in").ghost().xsmall().label("Zoom In").on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(v) = &mut this.trace {
+                            v.zoom(0.5);
+                        }
+                        cx.notify();
+                    })))
+                    .child(Button::new("pf-zoom-out").ghost().xsmall().label("Zoom Out").disabled(!zoomed).on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(v) = &mut this.trace {
+                            v.zoom(2.);
+                        }
+                        cx.notify();
+                    })))
+                    .child(Button::new("pf-zoom-reset").ghost().xsmall().label("Reset Zoom").disabled(!zoomed).on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(v) = &mut this.trace {
+                            v.range = None;
+                        }
+                        cx.notify();
+                    })))
+                    .child(div().flex_none().child(caption))
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(hovered.unwrap_or_else(|| "Hover over a call to see its time; click it to zoom in".into()))),
+            )
+            .child(
+                v_flex()
+                    .id("pf-call-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px_2()
+                    .on_scroll_wheel(cx.listener(|this, e: &gpui_kit::ScrollWheelEvent, _, cx| {
+                        let delta = e.delta.pixel_delta(px(ROW_H));
+                        let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
+                        let Some(v) = &mut this.trace else { return };
+                        if e.modifiers.control || e.modifiers.platform {
+                            v.zoom(if dy > 0. { 0.8 } else { 1.25 });
+                        } else if e.modifiers.shift || dx.abs() > dy.abs() {
+                            let along = if dx.abs() > dy.abs() { dx } else { dy };
+                            v.pan(-along as f64 / 1000.);
+                        } else {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
+                    .child(chart),
+            )
+    }
+
     /// The Flame Chart: the Top Down tree from the bottom up, each call
     /// path as wide as its share of the thread's time, longest first.
     /// Green is the app's code, orange the platform's, blue the rest.
@@ -551,7 +734,6 @@ impl ProfilerView {
                 at += w;
             }
         }
-        let system = ["android.", "androidx.", "com.android.", "dalvik.", "libcore.", "java.", "javax.", "sun.", "kotlin.", "kotlinx.", "org.apache.harmony."];
         let hovered = view.hovered.map(|node| {
             let n = &tree.nodes[node as usize];
             let total = n.total[view.clock as usize];
@@ -560,15 +742,6 @@ impl ProfilerView {
         let height = depth_max as f32 * BAR;
         let chart = div().relative().w_full().h(px(height)).children(bars.into_iter().map(|(node, depth, x, w)| {
             let method = tree.nodes[node as usize].method;
-            let class = view.trace.methods.get(method as usize).map(|m| m.class.as_str()).unwrap_or_default();
-            let app = self.app_ids.iter().any(|id| class.starts_with(&format!("{id}.")));
-            let fill = if app {
-                0x81c784
-            } else if system.iter().any(|p| class.starts_with(p)) {
-                0xffb74d
-            } else {
-                0x64b5f6
-            };
             div()
                 .id(("pf-flame", node as usize))
                 .absolute()
@@ -578,13 +751,13 @@ impl ProfilerView {
                 .h(px(BAR - 1.))
                 .border_r_1()
                 .border_color(palette.panel)
-                .bg(color(fill))
+                .bg(self.method_color(&view.trace, method))
                 .overflow_hidden()
                 .whitespace_nowrap()
-                .px_1()
                 .text_xs()
                 .text_color(gpui_kit::black())
-                .child(view.trace.label(method))
+                // Padding inside the label, so a sliver of a call stays a sliver.
+                .child(div().pl_1().child(view.trace.label(method)))
                 .on_hover(cx.listener(move |this, over: &bool, _, cx| {
                     if let Some(view) = &mut this.trace {
                         if *over {
@@ -688,15 +861,17 @@ impl ProfilerView {
                     .child(div().font_weight(FontWeight::SEMIBOLD).text_sm().child("Method Trace"))
                     .child(thread_picker)
                     .child(clock_picker)
-                    .child(tab("pf-tab-top", "Top Down", TraceTab::TopDown))
+                    .child(tab("pf-tab-call", "Call Chart", TraceTab::CallChart))
                     .child(tab("pf-tab-flame", "Flame Chart", TraceTab::FlameChart))
+                    .child(tab("pf-tab-top", "Top Down", TraceTab::TopDown))
                     .child(tab("pf-tab-bottom", "Bottom Up", TraceTab::BottomUp))
                     .child(div().text_color(palette.text_secondary).child(format!("Thread {} μs of {} μs recorded, {} threads", micros(total), micros(view.trace.elapsed_us), view.trace.threads.len())))
                     .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_color(palette.text_secondary).child(view.file.display().to_string())),
             )
             .when(view.trace.threads.is_empty(), |el| el.child(div().p_2().text_sm().text_color(palette.text_secondary).child("The trace has no method calls")))
             .when(!view.trace.threads.is_empty() && view.tab == TraceTab::FlameChart, |el| el.child(self.render_flame_chart(view, palette, cx)))
-            .when(!view.trace.threads.is_empty() && view.tab != TraceTab::FlameChart, |el| el.child(columns).child(uniform_list("pf-trace-rows", view.rows.len(), cx.processor(Self::render_trace_rows)).flex_1().min_h_0()))
+            .when(!view.trace.threads.is_empty() && view.tab == TraceTab::CallChart, |el| el.child(self.render_call_chart(view, palette, cx)))
+            .when(!view.trace.threads.is_empty() && matches!(view.tab, TraceTab::TopDown | TraceTab::BottomUp), |el| el.child(columns).child(uniform_list("pf-trace-rows", view.rows.len(), cx.processor(Self::render_trace_rows)).flex_1().min_h_0()))
     }
 
     /// The classes shown: the picked heap's, matching the search.
