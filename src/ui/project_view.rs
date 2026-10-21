@@ -413,6 +413,9 @@ impl ProjectView {
         if roots.is_empty() {
             roots.push((root, String::new()));
         }
+        // A nested root's folder, ignored by the repository around it,
+        // shows that root's own files instead.
+        let nested: Vec<String> = roots.iter().filter(|(_, p)| !p.is_empty()).map(|(_, p)| format!("{p}/")).collect();
         let task = cx.background_spawn(async move {
             let mut ignored = Vec::new();
             for (root, prefix) in roots {
@@ -423,10 +426,20 @@ impl ProjectView {
                 else {
                     continue;
                 };
-                ignored.extend(output.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| {
-                    let p = String::from_utf8_lossy(p);
-                    if prefix.is_empty() { p.into_owned() } else { format!("{prefix}/{p}") }
-                }));
+                ignored.extend(
+                    output
+                        .stdout
+                        .split(|b| *b == 0)
+                        .filter(|p| !p.is_empty())
+                        .map(|p| {
+                            let p = String::from_utf8_lossy(p);
+                            if prefix.is_empty() { p.into_owned() } else { format!("{prefix}/{p}") }
+                        })
+                        .filter(|p| {
+                            let own = format!("{prefix}/");
+                            !nested.iter().filter(|n| **n != own).any(|n| p.starts_with(n.as_str()) || n.starts_with(p.as_str()) && p.ends_with('/'))
+                        }),
+                );
             }
             ignored
         });

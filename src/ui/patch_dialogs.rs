@@ -261,7 +261,8 @@ impl ApplyPatchView {
             }));
             input
         });
-        let lists = match model.read(cx).repository() {
+        // A multi-root project keeps its changelists in the project's repository.
+        let lists = match model.read(cx).project_repository() {
             Some(repository) if !crate::settings::Settings::get(cx).staging_area => Some(Changelists::load(repository)),
             _ => None,
         };
@@ -465,10 +466,20 @@ pub fn apply_patch(model: Entity<RepoModel>, clipboard: bool, window: &mut Windo
                     }
                 };
                 if !groups.is_empty() {
+                    let project = model.read(cx).project_repository().cloned();
+                    let prefixes: Vec<String> = groups.iter().map(|(r, _)| model.read(cx).prefix_of(r.root())).collect();
+                    let groups: Vec<_> = groups.into_iter().zip(prefixes).map(|((r, (text, paths)), prefix)| (r, (text, paths, prefix))).collect();
                     model.update(cx, |model, cx| {
-                        model.run_in_groups("Apply Patch", groups, |repo, (text, paths)| {
+                        model.run_in_groups("Apply Patch", groups, move |repo, (text, paths, prefix)| {
                             let files = if paths.len() == 1 { "1 file".to_owned() } else { format!("{} files", paths.len()) };
                             let (outcome, _) = patch::apply_adding_new(repo, &text, &paths)?;
+                            // The changelists list the project's paths.
+                            if let (Some(target), Some(project)) = (&changelist, &project) {
+                                let mut lists = Changelists::load(project);
+                                let listed: Vec<String> = paths.iter().map(|p| if prefix.is_empty() { p.clone() } else { format!("{prefix}/{p}") }).collect();
+                                lists.move_files(&listed, target);
+                                lists.save(project);
+                            }
                             Ok(match outcome {
                                 ApplyOutcome::Clean => format!("Patch applied to {files}"),
                                 ApplyOutcome::Merged => format!("Patch applied to {files} with a three-way merge"),
