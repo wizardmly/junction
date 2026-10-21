@@ -4,6 +4,7 @@
 pub mod adb_device;
 pub mod excluded_store;
 pub mod file_type_store;
+pub mod apk_file;
 pub mod password_safe;
 pub mod breakpoint_store;
 pub mod class_files;

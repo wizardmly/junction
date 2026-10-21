@@ -152,6 +152,7 @@ pub(super) fn main_menu(
             .menu("Select Build Variant…", Box::new(ToggleBuildVariantsWindow))
             .separator()
             .menu("Generate Signed Bundle / APK…", Box::new(GenerateSignedApk))
+            .menu("Analyze APK…", Box::new(AnalyzeApk))
     });
     let (e, f) = (entity.clone(), focus.clone());
     let menu = menu.submenu("Run", window, cx, move |menu, window, cx| {

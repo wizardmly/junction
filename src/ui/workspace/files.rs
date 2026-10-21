@@ -19,6 +19,12 @@ impl Workspace {
         if self.model.read(cx).repository().is_none() {
             return;
         }
+        // An APK or app bundle opens in the APK Analyzer, as in Android Studio.
+        if revision.is_none() && (path.ends_with(".apk") || path.ends_with(".aab")) {
+            if let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) {
+                return self.open_apk(root.join(&path), cx);
+            }
+        }
         if revision.is_none() {
             self.recent_files.touch(&path);
             // Leaving a file: where we were is a recent location.
@@ -324,6 +330,26 @@ impl Workspace {
                 cx.notify();
             })
             .ok();
+        })
+        .detach();
+    }
+
+    /// Build › Analyze APK…: the analyzer of `apk` in the editor area.
+    pub(super) fn open_apk(&mut self, apk: std::path::PathBuf, cx: &mut Context<Self>) {
+        if self.apk.as_ref().is_none_or(|a| *a.read(cx).path() != apk) {
+            self.apk = Some(cx.new(|cx| crate::ui::apk_analyzer::ApkAnalyzer::new(apk, cx)));
+        }
+        self.front = Front::Apk;
+        cx.notify();
+    }
+
+    /// Build › Analyze APK…: asks for the APK first.
+    pub(super) fn analyze_apk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Select an APK or app bundle".into()) });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(picked))) = paths.await else { return };
+            let Some(apk) = picked.into_iter().next() else { return };
+            this.update(cx, |this, cx| this.open_apk(apk, cx)).ok();
         })
         .detach();
     }
