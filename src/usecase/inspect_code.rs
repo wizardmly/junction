@@ -1,6 +1,7 @@
 //! Analyze › Inspect Code…: the inspections Junction has, run over a scope
 //! of the project, as IntelliJ's Inspection Results: syntax errors from
-//! the parser, and unused imports in Java and Kotlin.
+//! the parser, unused imports in Java and Kotlin, and Android Lint (its
+//! Gradle task) on Android modules.
 
 use crate::domain::diagnostics::{Origin, Pos, Problem, Severity, SyntaxChecker};
 use crate::domain::imports::{self, ImportStyle};
@@ -61,6 +62,48 @@ pub fn inspect(path: &str, text: &str, syntax: Option<&dyn SyntaxChecker>) -> Ve
     out
 }
 
+/// An Android module Inspect Code runs Lint on.
+#[derive(Clone, Debug)]
+pub struct LintModule {
+    /// ":app".
+    pub path: String,
+    pub dir: std::path::PathBuf,
+    pub variant: String,
+}
+
+/// Android Lint on the modules of one build, in one Gradle run; the issues
+/// as findings by file. Lint fails its task on errors but still writes the
+/// report, so a failed run only counts when no report came out.
+pub fn run_lint(
+    runner: &dyn crate::domain::run::TaskRunner,
+    build_root: &std::path::Path,
+    modules: &[LintModule],
+    read: &dyn Fn(&std::path::Path) -> Option<String>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<(std::path::PathBuf, Finding)>, String> {
+    use crate::domain::lint;
+    let tasks: Vec<String> = std::iter::once("--continue".to_owned()).chain(modules.iter().map(|m| lint::task(&m.path, &m.variant))).collect();
+    let result = runner.run_tasks(build_root, &tasks, &[], &mut |_| {}, cancelled);
+    let mut out = Vec::new();
+    let mut reports = 0;
+    for m in modules {
+        let Some(xml) = read(&lint::report(&m.dir, &m.variant)) else { continue };
+        reports += 1;
+        for issue in lint::parse(&xml, &m.dir) {
+            let at = Pos::new(issue.line, issue.col);
+            let message = format!("{} [{}]", issue.message, issue.id);
+            let problem = Problem { start: at, end: at, severity: issue.severity, message, origin: Origin::Inspection, fix: None };
+            out.push((issue.file, Finding { inspection: LINT, problem }));
+        }
+    }
+    if reports == 0 && !result.succeeded {
+        return Err(result.failure.unwrap_or_else(|| "Android Lint did not run".to_owned()));
+    }
+    Ok(out)
+}
+
+pub const LINT: &str = "Android Lint";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +113,28 @@ mod tests {
         fn check(&self, _: &str) -> Vec<Problem> {
             Vec::new()
         }
+    }
+
+    struct FakeGradle;
+    impl crate::domain::run::TaskRunner for FakeGradle {
+        fn run_tasks(&self, _: &std::path::Path, tasks: &[String], _: &[(String, String)], _: &mut dyn FnMut(&str), _: &dyn Fn() -> bool) -> crate::domain::run::BuildResult {
+            assert_eq!(tasks, ["--continue", ":app:lintDebug"]);
+            crate::domain::run::BuildResult { succeeded: false, cancelled: false, problems: Vec::new(), failure: Some("Lint found errors".into()) }
+        }
+        fn apk_output(&self, _: &crate::domain::run::ModuleInfo, _: &str) -> Option<crate::domain::run::ApkOutput> {
+            None
+        }
+    }
+
+    #[test]
+    fn reads_lint_reports_even_when_lint_fails() {
+        let modules = [LintModule { path: ":app".into(), dir: "/p/app".into(), variant: "debug".into() }];
+        let report = |_: &std::path::Path| Some(r#"<issues><issue id="X" severity="Error" message="Bad"><location file="A.kt" line="2"/></issue></issues>"#.to_owned());
+        let found = run_lint(&FakeGradle, std::path::Path::new("/p"), &modules, &report, &|| false).unwrap();
+        assert_eq!(found[0].0, std::path::PathBuf::from("/p/app/A.kt"));
+        assert_eq!(found[0].1.problem.message, "Bad [X]");
+        let none = |_: &std::path::Path| None;
+        assert_eq!(run_lint(&FakeGradle, std::path::Path::new("/p"), &modules, &none, &|| false).unwrap_err(), "Lint found errors");
     }
 
     #[test]

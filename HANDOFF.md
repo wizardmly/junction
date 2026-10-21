@@ -250,7 +250,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 
 12. Compose Preview / Layout Editor（依赖 layoutlib，成本极高，建议用投屏替代）。
 13. Profiler、Layout Inspector、App Inspection。
-14. 🟡 APK Analyzer 已做（2026-10-21，FEATURES.md 第 62 节：大小树、Manifest 解码、dex 方法数；没做 Compare with previous APK 和引用名解析）。SDK Manager、Lint 视图还没做。（Generate Signed Bundle / APK 已做，2026-10-18，FEATURES.md 第 59 节：注入 `android.injected.signing.*`，项目没带 keystore 也能出签名包；Create new… 用 keytool 新建 keystore。Remember passwords 和 Destination Folder 已补上，2026-10-20。）
+14. 🟡 APK Analyzer 已做（2026-10-21，FEATURES.md 第 62 节：大小树、Manifest 解码、dex 方法数；没做 Compare with previous APK 和引用名解析）。Lint 已并进 Analyze › Inspect Code（2026-10-21：Android 模块跑 Gradle `lint<Variant>`，结果在 Problems 窗口的 Inspection 标签，只用模拟 gradlew 验证过）。SDK Manager 还没做。（Generate Signed Bundle / APK 已做，2026-10-18，FEATURES.md 第 59 节：注入 `android.injected.signing.*`，项目没带 keystore 也能出签名包；Create new… 用 keytool 新建 keystore。Remember passwords 和 Destination Folder 已补上，2026-10-20。）
 
 **内存实测（Linux 容器，软件渲染）**：Junction 打开一个 104 个 .kt 文件的 Android 项目约 241 MB；打开 junction 仓库（含 Cargo 依赖源码）首次建索引峰值 674 MB、约 20 秒，再次启动读缓存 396 MB、CPU 约 2 秒。作为对比，最小 Kotlin/JVM 项目的 Gradle Daemon 669 MB + Kotlin Compile Daemon 378 MB。结论：Rust 能省掉 IDE 自身的内存和启动扫描，但 Gradle Sync / 构建 / AS 级 Kotlin 语言服务本身是 JVM，省不掉，只能做到按需启动、少同步。
 

@@ -152,6 +152,22 @@ impl ProblemsView {
         self.refresh_inspection(cx);
     }
 
+    /// More findings for the shown inspection (Android Lint, which finishes later).
+    pub fn add_inspection(&mut self, findings: Vec<(PathBuf, Vec<Problem>)>, cx: &mut Context<Self>) {
+        let Some((_, shown)) = &mut self.inspection else { return };
+        for (path, mut problems) in findings {
+            match shown.iter_mut().find(|(p, _)| *p == path) {
+                Some((_, existing)) => {
+                    existing.append(&mut problems);
+                    existing.sort_by_key(|p| (p.start, p.end));
+                }
+                None => shown.push((path, problems)),
+            }
+        }
+        shown.sort_by(|a, b| a.0.cmp(&b.0));
+        self.refresh_inspection(cx);
+    }
+
     fn refresh_inspection(&mut self, cx: &mut Context<Self>) {
         let findings = self.inspection.as_ref().map(|(_, f)| f.clone()).unwrap_or_default();
         let files: Vec<TreeFile> = findings.into_iter().filter_map(|(path, problems)| self.tree_file(path, &problems, cx)).collect();
