@@ -303,6 +303,9 @@ impl Workspace {
         for editor in editors {
             editor.update(cx, |e, cx| e.save_now(cx));
         }
+        let lint = lint_plan(&root, &items, cx);
+        let lint_items = items.clone();
+        let lint_root = root.clone();
         let task = cx.background_spawn(async move {
             let files = crate::infra::project_files::DiskFiles { root: root.clone(), repository: None };
             let targets = usecase::targets(&files, &items, &|p| crate::index::lang::Lang::from_path(p).is_some());
@@ -320,14 +323,61 @@ impl Workspace {
         });
         cx.spawn_in(window, async move |this, cx| {
             let (count, findings) = task.await;
+            let linting = !lint.is_empty();
             this.update_in(cx, |this, window, cx| {
-                if findings.is_empty() {
+                if findings.is_empty() && !linting {
                     let files = if count == 1 { "1 file".to_owned() } else { format!("{count} files") };
                     window.push_notification(Notification::info(format!("No suspicious code found. {files} processed in '{scope}'.")).title("Code Analysis"), cx);
+                }
+                if linting {
+                    window.push_notification(Notification::info("Running Android Lint…").title("Code Analysis"), cx);
                 }
                 this.problems_view.update(cx, |p, cx| p.show_inspection(scope, findings, cx));
                 this.tools.open(crate::ui::tool_windows::ToolWindow::Problems);
                 cx.notify();
+            })
+            .ok();
+            if !linting {
+                return;
+            }
+            // Android Lint runs Gradle: its findings join the results when it ends.
+            let found = cx
+                .background_spawn(async move {
+                    let mut found = Vec::new();
+                    let mut errors = Vec::new();
+                    let read = |p: &std::path::Path| std::fs::read_to_string(p).ok();
+                    for (build_root, modules) in lint {
+                        match crate::usecase::inspect_code::run_lint(&crate::infra::gradle::GradleBuild, &build_root, &modules, &read, &|| false) {
+                            Ok(more) => found.extend(more),
+                            Err(error) => errors.push(error),
+                        }
+                    }
+                    let in_scope = |file: &std::path::Path| {
+                        let rel = file.strip_prefix(&lint_root).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+                        lint_items.iter().any(|(item, dir)| item.is_empty() || rel == *item || (*dir && rel.starts_with(&format!("{item}/"))))
+                    };
+                    let mut by_file: Vec<(std::path::PathBuf, Vec<crate::domain::diagnostics::Problem>)> = Vec::new();
+                    for (file, finding) in found.into_iter().filter(|(f, _)| in_scope(f)) {
+                        match by_file.iter_mut().find(|(p, _)| *p == file) {
+                            Some((_, problems)) => problems.push(finding.problem),
+                            None => by_file.push((file, vec![finding.problem])),
+                        }
+                    }
+                    (by_file, errors)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                let (findings, errors) = found;
+                let count: usize = findings.iter().map(|(_, p)| p.len()).sum();
+                let message = match (count, errors.first()) {
+                    (_, Some(error)) => format!("Android Lint failed: {}", error.lines().next().unwrap_or_default()),
+                    (0, None) => "Android Lint found no problems".to_owned(),
+                    (1, None) => "Android Lint found 1 problem".to_owned(),
+                    (n, None) => format!("Android Lint found {n} problems"),
+                };
+                let notification = if errors.is_empty() { Notification::info(message) } else { Notification::error(message) };
+                window.push_notification(notification.title("Code Analysis"), cx);
+                this.problems_view.update(cx, |p, cx| p.add_inspection(findings, cx));
             })
             .ok();
         })
@@ -848,4 +898,29 @@ fn first_res(root: &std::path::Path) -> Option<std::path::PathBuf> {
     let mut found: Vec<std::path::PathBuf> = modules.map(|m| m.join("src/main/res")).filter(|r| r.join("values/strings.xml").is_file()).collect();
     found.sort();
     found.into_iter().next()
+}
+
+/// The Android modules Inspect Code runs Lint on for a scope, by build:
+/// those inside it and those holding a file or folder of it, each with the
+/// variant picked in Build Variants.
+fn lint_plan(root: &std::path::Path, items: &[(String, bool)], cx: &mut gpui_kit::App) -> Vec<(std::path::PathBuf, Vec<crate::usecase::inspect_code::LintModule>)> {
+    let sync = crate::ui::sync_service::SyncService::global(cx);
+    let cx: &gpui_kit::App = cx;
+    let mut out = Vec::new();
+    for (build_root, modules) in sync.read(cx).builds() {
+        let picked: Vec<crate::usecase::inspect_code::LintModule> = modules
+            .iter()
+            .filter(|m| m.kind.is_android())
+            .filter(|m| {
+                let Ok(rel) = m.dir.strip_prefix(root) else { return false };
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                items.iter().any(|(item, _)| item.is_empty() || rel == *item || rel.starts_with(&format!("{item}/")) || item.starts_with(&format!("{rel}/")) || rel.is_empty())
+            })
+            .map(|m| crate::usecase::inspect_code::LintModule { path: m.path.clone(), dir: m.dir.clone(), variant: crate::ui::sync_service::variant_of(build_root, m, cx) })
+            .collect();
+        if !picked.is_empty() {
+            out.push((build_root.clone(), picked));
+        }
+    }
+    out
 }

@@ -11,6 +11,7 @@ pub mod excluded_folders;
 pub mod apk;
 pub mod axml;
 pub mod dex;
+pub mod lint;
 pub mod file_type_overrides;
 pub mod build;
 pub mod completion;
