@@ -25,7 +25,7 @@ use gpui_kit::{
     Window, actions, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 
-use crate::git::{Commit, FileChangeKind, LogFilter, RefKind, RefName};
+use crate::git::{Commit, FileChangeKind, LogFilter, RefGroup, RefKind, RefName};
 use crate::settings::Settings;
 use crate::model::{RepoEvent, RepoModel};
 use crate::theme::ActivePalette as _;

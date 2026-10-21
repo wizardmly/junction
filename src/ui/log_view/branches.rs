@@ -577,12 +577,37 @@ pub(super) fn group_branches(branches: &[&RefName], scope: &str, short: impl Fn(
 /// IntelliJ's ref label: a tag-shaped icon in the ref's color (HEAD
 /// yellow, local branches green, remote ones purple, tags grey) and its name.
 pub(super) fn ref_label(reference: &RefName, text: gpui_kit::Hsla, palette: &crate::theme::Palette) -> impl IntoElement {
-    let color = match reference.kind {
+    named_label(reference.name.clone().into(), ref_color(reference, palette), text)
+}
+
+/// A row's label for a group of refs (`origin & main`): one tag per ref,
+/// stacked right to left with the first ref's on top, as IntelliJ's
+/// `LabelIcon` paints them.
+pub(super) fn group_label(group: &RefGroup, text: gpui_kit::Hsla, palette: &crate::theme::Palette) -> gpui_kit::AnyElement {
+    if let [reference] = group.refs.as_slice() {
+        return ref_label(reference, text, palette).into_any_element();
+    }
+    const STEP: f32 = 4.5;
+    let colors: Vec<gpui_kit::Hsla> = group.refs.iter().map(|r| ref_color(r, palette)).collect();
+    let icon = div()
+        .relative()
+        .flex_shrink_0()
+        .w(px(14. + STEP * (colors.len() - 1) as f32))
+        .h(px(14.))
+        .children(colors.iter().rev().enumerate().map(|(i, color)| {
+            // The outlined tags under the top one show only their left edge.
+            let under = i + 1 < colors.len();
+            div().absolute().top_0().left(px(STEP * i as f32)).h(px(14.)).when(under, |el| el.w(px(STEP + 1.5)).overflow_hidden()).child(ref_label_icon(*color))
+        }));
+    h_flex().flex_shrink_0().gap_0p5().mr_1p5().text_xs().child(icon).child(div().text_color(text).child(group.name.clone())).into_any_element()
+}
+
+fn ref_color(reference: &RefName, palette: &crate::theme::Palette) -> gpui_kit::Hsla {
+    match reference.kind {
         RefKind::LocalBranch => palette.ref_local,
         RefKind::RemoteBranch => palette.ref_remote,
         RefKind::Tag => palette.ref_tag,
-    };
-    named_label(reference.name.clone().into(), color, text)
+    }
 }
 
 /// The HEAD label, before the branches of the commit HEAD is on.

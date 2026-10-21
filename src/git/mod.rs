@@ -26,7 +26,7 @@ pub mod test_support;
 pub use command::{GitConsole, Repository, OpenError, detected_executable, executable, executable_version, git_process, redetect_executable, trust_directory, run_in, set_executable, set_use_credential_helper};
 pub use graph::GraphLayout;
 pub use log::{Commit, CommitDetails, FileChangeKind, LogFilter};
-pub use refs::{RefKind, RefName, RepositoryRefs};
+pub use refs::{RefGroup, RefKind, RefName, RepositoryRefs};
 pub use status::{StatusKind, WorkingTreeStatus};
 
 /// A long-running operation the repository is in the middle of, shown in the
