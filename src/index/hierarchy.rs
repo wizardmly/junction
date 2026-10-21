@@ -4,10 +4,13 @@
 //! method with overrides, and "Implements" / "Overrides" next to a method
 //! that implements or overrides one in a supertype.
 //!
-//! Names are matched by simple name, as the rest of the index does: good
-//! enough to point at the right places, without resolving imports.
+//! The index keeps supertypes by simple name; where a Java or Kotlin name
+//! is ambiguous, the file's package and imports pick the class it means,
+//! as the compiler does. Elsewhere names match by simple name.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+
+use crate::domain::imports::{self, Header};
 
 use super::nav::Target;
 use super::store::{FileEntry, ProjectIndex};
@@ -167,21 +170,133 @@ fn target(path: &str, entry: &FileEntry, s: &Symbol) -> Target {
     }
 }
 
-/// Every project type extending `name`, directly or further down.
-fn subtypes<'a>(index: &'a ProjectIndex, name: &str) -> Vec<(&'a str, &'a FileEntry, &'a Symbol)> {
+type Decl<'a> = (&'a str, &'a FileEntry, &'a Symbol);
+
+fn is_jvm(path: &str) -> bool {
+    path.ends_with(".java") || path.ends_with(".kt") || path.ends_with(".kts")
+}
+
+/// A file's text, for its package, imports and qualified supertypes; the
+/// first 512 KB.
+fn read_text(index: &ProjectIndex, path: &str) -> Option<String> {
+    use std::io::Read;
+    let full = if ProjectIndex::is_external(path) { std::path::PathBuf::from(path) } else { index.root.join(path) };
+    let mut buf = Vec::new();
+    std::fs::File::open(full).ok()?.take(512 * 1024).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Which declaration a type name in a file means. Headers are read only
+/// for names more than one class carries, and once per file.
+struct Scopes<'a> {
+    index: &'a ProjectIndex,
+    read: &'a dyn Fn(&str) -> Option<String>,
+    /// Each file's header, and its text for qualifiers.
+    headers: HashMap<String, Option<(Header, String)>>,
+    /// Class-like declarations per name, with their qualified names; none
+    /// when the name is unique.
+    decls: HashMap<String, (Vec<Decl<'a>>, Vec<String>)>,
+    /// What a name means where it is used: (file, line of the naming type,
+    /// name).
+    meant: HashMap<(String, Option<u32>, String), Option<Vec<Decl<'a>>>>,
+}
+
+impl<'a> Scopes<'a> {
+    fn new(index: &'a ProjectIndex, read: &'a dyn Fn(&str) -> Option<String>) -> Self {
+        Scopes { index, read, headers: HashMap::new(), decls: HashMap::new(), meant: HashMap::new() }
+    }
+
+    fn header(&mut self, path: &str) -> Option<&Header> {
+        if !self.headers.contains_key(path) {
+            let header = (self.read)(path).map(|text| (imports::header(&text), text));
+            self.headers.insert(path.to_owned(), header);
+        }
+        self.headers.get(path)?.as_ref().map(|(h, _)| h)
+    }
+
+    /// The declarations `name` means in the file at `from`, named by the
+    /// type declared on line `by` there; `None` when it can't tell, or
+    /// there is only one.
+    fn meant(&mut self, from: &str, by: Option<u32>, name: &str) -> Option<Vec<Decl<'a>>> {
+        if !is_jvm(from) {
+            return None;
+        }
+        let key = (from.to_owned(), by, name.to_owned());
+        if let Some(meant) = self.meant.get(&key) {
+            return meant.clone();
+        }
+        let meant = self.resolve(from, by, name);
+        self.meant.insert(key, meant.clone());
+        meant
+    }
+
+    fn resolve(&mut self, from: &str, by: Option<u32>, name: &str) -> Option<Vec<Decl<'a>>> {
+        if !self.decls.contains_key(name) {
+            let found: Vec<Decl<'a>> = self.index.symbols_named(name).filter(|(_, _, s)| is_class_like(s.kind)).collect();
+            let (mut decls, mut qualified) = (Vec::new(), Vec::new());
+            if found.len() > 1 {
+                for d in found {
+                    let package = if is_jvm(d.0) { self.header(d.0).map(|h| h.package.clone()) } else { None };
+                    qualified.push(match package {
+                        None => String::new(),
+                        Some(p) => [p.as_str(), d.2.container.as_deref().unwrap_or(""), name].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join("."),
+                    });
+                    decls.push(d);
+                }
+            }
+            self.decls.insert(name.to_owned(), (decls, qualified));
+        }
+        if self.decls[name].0.len() < 2 {
+            return None;
+        }
+        // The file's own class first; not the naming type itself, as in
+        // `class Factory : Job.Factory`.
+        let here: Vec<Decl<'a>> = self.decls[name].0.iter().filter(|d| d.0 == from && Some(d.2.line) != by).copied().collect();
+        if !here.is_empty() {
+            return Some(here);
+        }
+        self.header(from)?;
+        let (decls, qualified) = &self.decls[name];
+        let (header, text) = self.headers[from].as_ref()?;
+        // `Job.Factory`: the index keeps only the last name.
+        let qualifiers = by.map(|line| imports::qualifiers(text, line, name)).unwrap_or_default();
+        let picked: Vec<usize> = if qualifiers.is_empty() {
+            // One the header doesn't point at is a library's or the JDK's,
+            // not any of these.
+            imports::resolve(header, name, qualified).unwrap_or_default()
+        } else {
+            let mut picked: Vec<usize> = qualifiers.iter().flat_map(|q| imports::resolve_qualified(header, q, name, qualified)).collect();
+            picked.dedup();
+            picked
+        };
+        Some(picked.into_iter().map(|i| decls[i]).collect())
+    }
+
+    /// Whether `name`, a supertype of the type on line `by` in the file at
+    /// `from`, can mean the declaration at `path`:`line`.
+    fn refers_to(&mut self, from: &str, by: u32, name: &str, path: &str, line: u32) -> bool {
+        self.meant(from, Some(by), name).is_none_or(|decls| decls.iter().any(|(p, _, s)| *p == path && s.line == line))
+    }
+}
+
+/// Every project type extending `name` (declared at `decl`, when known),
+/// directly or further down.
+fn subtypes<'a>(scopes: &mut Scopes<'a>, name: &str, decl: Option<(&str, u32)>) -> Vec<Decl<'a>> {
+    let index = scopes.index;
     let mut out = Vec::new();
-    let mut seen: HashSet<(String, u32)> = HashSet::new();
-    let mut names: HashSet<String> = HashSet::from([name.to_owned()]);
-    let mut queue = VecDeque::from([name.to_owned()]);
-    while let Some(parent) = queue.pop_front() {
+    let mut seen: HashSet<(&str, u32)> = HashSet::new();
+    let mut queue = VecDeque::from([(name.to_owned(), decl.map(|(p, l)| (p.to_owned(), l)))]);
+    while let Some((parent, decl)) = queue.pop_front() {
         for (path, entry, s) in index.subtypes_of(&parent) {
-            if !is_class_like(s.kind) || !seen.insert((path.to_owned(), s.line)) {
+            if !is_class_like(s.kind) || seen.contains(&(path, s.line)) {
                 continue;
             }
-            out.push((path, entry, s));
-            if names.insert(s.name.clone()) {
-                queue.push_back(s.name.clone());
+            if decl.as_ref().is_some_and(|(p, l)| !scopes.refers_to(path, s.line, &parent, p, *l)) {
+                continue;
             }
+            seen.insert((path, s.line));
+            out.push((path, entry, s));
+            queue.push_back((s.name.clone(), Some((path.to_owned(), s.line))));
             if out.len() >= LIMIT {
                 return out;
             }
@@ -209,25 +324,32 @@ type MembersBelow<'a> = HashMap<&'a str, Vec<(&'a str, &'a FileEntry, &'a Symbol
 /// every namesake again.
 type ByOwner<'a> = HashMap<&'a str, Vec<(&'a str, &'a FileEntry, &'a Symbol)>>;
 
-/// Per supertype name: whether it is abstract, and its own supertypes.
+/// Per supertype: whether it is abstract, and its own supertypes with the
+/// file and line naming them.
 struct Parent {
     is_abstract: bool,
-    supers: Vec<String>,
+    supers: Vec<(String, String, Option<u32>)>,
 }
 
-/// The gutter markers of a file, from its current symbols.
-pub fn gutter_marks(index: &ProjectIndex, path: &str, symbols: &[Symbol]) -> Vec<GutterMark> {
+/// The gutter markers of a file, from its current text and symbols.
+pub fn gutter_marks(index: &ProjectIndex, path: &str, text: &str, symbols: &[Symbol]) -> Vec<GutterMark> {
+    let read = |p: &str| if p == path { Some(text.to_owned()) } else { read_text(index, p) };
+    marks_with(index, path, symbols, &read)
+}
+
+fn marks_with(index: &ProjectIndex, path: &str, symbols: &[Symbol], read: &dyn Fn(&str) -> Option<String>) -> Vec<GutterMark> {
     let mut out = Vec::new();
+    let mut scopes = Scopes::new(index, read);
     // Subtypes per type name, shared by the type and its members.
-    let mut below: HashMap<String, Vec<(&str, &FileEntry, &Symbol)>> = HashMap::new();
+    let mut below: HashMap<String, Vec<Decl>> = HashMap::new();
     let mut members_below: HashMap<String, MembersBelow> = HashMap::new();
     let mut by_owner: HashMap<&str, ByOwner> = HashMap::new();
-    let mut parents: HashMap<String, Parent> = HashMap::new();
+    let mut parents: HashMap<(String, Vec<String>), Parent> = HashMap::new();
     let types_here: HashMap<&str, &Symbol> = symbols.iter().filter(|s| is_class_like(s.kind)).map(|s| (s.name.as_str(), s)).collect();
 
     for s in symbols {
         if is_class_like(s.kind) {
-            let subs = below.entry(s.name.clone()).or_insert_with(|| subtypes(index, &s.name));
+            let subs = below.entry(s.name.clone()).or_insert_with(|| subtypes(&mut scopes, &s.name, Some((path, s.line))));
             let mut targets: Vec<Target> = subs.iter().map(|(p, e, sub)| target(p, e, sub)).collect();
             // A Rust trait is implemented by `impl Trait for T` blocks, known
             // by their methods: one entry per implementing type.
@@ -258,7 +380,7 @@ pub fn gutter_marks(index: &ProjectIndex, path: &str, symbols: &[Symbol]) -> Vec
 
         // Down: the same member in subtypes (Rust: in impls of the trait).
         let members = members_below.entry(owner.to_owned()).or_insert_with(|| {
-            let subs = below.entry(owner.to_owned()).or_insert_with(|| subtypes(index, owner));
+            let subs = below.entry(owner.to_owned()).or_insert_with(|| subtypes(&mut scopes, owner, owner_type.map(|t| (path, t.line))));
             let mut members: MembersBelow = HashMap::new();
             for (p, _, sub) in subs.iter() {
                 let Some(entry) = index.file(p) else { continue };
@@ -283,8 +405,11 @@ pub fn gutter_marks(index: &ProjectIndex, path: &str, symbols: &[Symbol]) -> Vec
         }
 
         // Up: the nearest supertype declaring the same member.
-        let mut queue: VecDeque<String> = owner_type.map(|t| t.supers.clone()).unwrap_or_default().into();
-        queue.extend(s.supers.iter().cloned());
+        let mut queue: VecDeque<(String, String, Option<u32>)> = owner_type
+            .into_iter()
+            .flat_map(|t| t.supers.iter().map(|n| (n.clone(), path.to_owned(), Some(t.line))))
+            .chain(s.supers.iter().map(|n| (n.clone(), path.to_owned(), None)))
+            .collect();
         if queue.is_empty() {
             continue;
         }
@@ -301,22 +426,27 @@ pub fn gutter_marks(index: &ProjectIndex, path: &str, symbols: &[Symbol]) -> Vec
         });
         let mut seen: HashSet<String> = HashSet::from([owner.to_owned()]);
         let mut found: Vec<(Target, bool)> = Vec::new();
-        while let Some(parent) = queue.pop_front() {
+        while let Some((parent, from, by)) = queue.pop_front() {
             if !seen.insert(parent.clone()) || seen.len() > 64 {
                 continue;
             }
-            let info = parents.entry(parent.clone()).or_insert_with(|| {
+            let meant = scopes.meant(&from, by, &parent);
+            let key = (parent.clone(), meant.as_ref().map(|d| d.iter().map(|(p, _, s)| format!("{p}:{}", s.line)).collect()).unwrap_or_default());
+            let info = parents.entry(key).or_insert_with(|| {
                 let mut info = Parent { is_abstract: false, supers: Vec::new() };
-                for (_, _, t) in index.symbols_named(&parent) {
-                    if is_class_like(t.kind) {
-                        info.is_abstract |= is_abstract(t.kind);
-                        info.supers.extend(t.supers.iter().cloned());
-                    }
+                let decls: Vec<Decl> = match &meant {
+                    Some(decls) => decls.clone(),
+                    None => index.symbols_named(&parent).filter(|(_, _, t)| is_class_like(t.kind)).collect(),
+                };
+                for (p, _, t) in decls {
+                    info.is_abstract |= is_abstract(t.kind);
+                    info.supers.extend(t.supers.iter().map(|n| (n.clone(), p.to_owned(), Some(t.line))));
                 }
                 info
             });
+            let inside = |p: &str, m: &Symbol| meant.as_ref().is_none_or(|decls| decls.iter().any(|(dp, _, d)| *dp == p && d.line <= m.line && m.line <= d.end_line));
             for (p, e, m) in namesakes.get(parent.as_str()).into_iter().flatten() {
-                if !(*p == path && m.line == s.line) {
+                if !(*p == path && m.line == s.line) && inside(p, m) {
                     found.push((target(p, e, m), m.decl || info.is_abstract));
                 }
             }
@@ -538,7 +668,7 @@ mod tests {
 
     fn marks(index: &ProjectIndex, path: &str) -> Vec<(u32, MarkKind, Vec<String>)> {
         let symbols = index.files[path].symbols.clone();
-        gutter_marks(index, path, &symbols)
+        marks_with(index, path, &symbols, &|_| None)
             .into_iter()
             .map(|m| (m.line, m.kind, m.targets.iter().map(|t| format!("{}:{}", t.path, t.line)).collect()))
             .collect()
@@ -561,6 +691,46 @@ mod tests {
             ]
         );
         assert_eq!(marks(&index, "Square.kt"), [(1, MarkKind::Overriding, vec!["Shape.kt:4".to_owned()])]);
+    }
+
+    #[test]
+    fn imports_pick_the_supertype() {
+        // Two classes called Base; each subclass imports one of them.
+        let files = [
+            ("a/Base.kt", Lang::Kotlin, "package a\n\nopen class Base {\n    open fun run() {}\n}\n"),
+            ("b/Base.java", Lang::Java, "package b;\n\npublic class Base {\n    public void run() {}\n}\n"),
+            ("c/One.kt", Lang::Kotlin, "package c\n\nimport a.Base\n\nclass One : Base() {\n    override fun run() {}\n}\n"),
+            ("c/Two.java", Lang::Java, "package c;\n\nimport b.*;\n\nclass Two extends Base {\n    public void run() {}\n}\n"),
+            ("b/Three.java", Lang::Java, "package b;\n\nclass Three extends Base {}\n"),
+        ];
+        let index = index_of(&files);
+        let texts: HashMap<&str, &str> = files.iter().map(|(p, _, t)| (*p, *t)).collect();
+        let marks = |path: &str| {
+            let symbols = index.files[path].symbols.clone();
+            marks_with(&index, path, &symbols, &|p| texts.get(p).map(|t| t.to_string()))
+                .into_iter()
+                .map(|m| (m.line, m.targets.iter().map(|t| t.path.clone()).collect::<Vec<_>>()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(marks("a/Base.kt"), [(2, vec!["c/One.kt".to_owned()]), (3, vec!["c/One.kt".to_owned()])]);
+        assert_eq!(marks("b/Base.java"), [(2, vec!["b/Three.java".to_owned(), "c/Two.java".to_owned()]), (3, vec!["c/Two.java".to_owned()])]);
+        assert_eq!(marks("c/One.kt"), [(5, vec!["a/Base.kt".to_owned()])]);
+        assert_eq!(marks("c/Two.java"), [(5, vec!["b/Base.java".to_owned()])]);
+
+        // `class Factory : Job.Factory`: nested classes of one name.
+        let files = [
+            ("j/Job.kt", Lang::Kotlin, "package j\n\nabstract class Job {\n    interface Factory\n}\n"),
+            ("k/Other.kt", Lang::Kotlin, "package k\n\nclass Other {\n    interface Factory\n}\n"),
+            ("w/Work.kt", Lang::Kotlin, "package w\n\nimport j.Job\n\nclass Work : Job() {\n    class Factory : Job.Factory\n}\n"),
+        ];
+        let index = index_of(&files);
+        let texts: HashMap<&str, &str> = files.iter().map(|(p, _, t)| (*p, *t)).collect();
+        let marks = |path: &str| {
+            let symbols = index.files[path].symbols.clone();
+            marks_with(&index, path, &symbols, &|p| texts.get(p).map(|t| t.to_string())).into_iter().map(|m| (m.line, m.targets.len())).collect::<Vec<_>>()
+        };
+        assert_eq!(marks("j/Job.kt"), [(2, 1), (3, 1)]);
+        assert_eq!(marks("k/Other.kt"), []);
     }
 
     #[test]
@@ -647,3 +817,4 @@ mod tests {
         assert_eq!(out, ["+Shape", "-Base", "!Disc", "+Square", "-Tile"]);
     }
 }
+

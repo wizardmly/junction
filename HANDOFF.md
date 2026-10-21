@@ -217,8 +217,8 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 编辑器多行标签、双击标签最大化编辑器 | ✅ 2026-10-21 |
 | 同一文件在两个分屏里共享一份编辑缓冲 | ✅ 2026-10-21（两边同步文本和保存状态；撤销历史各自一份） |
 | 菜单里置灰的 STUB 项 | Find Usages、Move/Copy（F6/F5）、Reformat/Optimize Imports、Module Settings、Local History 已接上（2026-10-21）；剩 Analyze、Mark Directory As、Override File Type、Repair IDE on File、Local History 的 Show Project History / Recent Changes |
-| jar 没有源码时的类文件骨架 + “Download Sources” 横幅 | 未做（已列为下一步候选） |
-| 实现/覆盖标记的继承关系 | 只按简单名匹配，没有解析 import |
+| jar 没有源码时的类文件骨架 + “Download Sources” 横幅 | ✅ 2026-10-16（FEATURES.md 第 47 节） |
+| 实现/覆盖标记的继承关系 | ✅ 2026-10-21：Java/Kotlin 同名类型按 import、包、`.*` 和 `Outer.Name` 写法解析（Signal 上 271 个 `Job.Factory`、17 个 `Constraint.Factory` 实现与源码一致）；其他语言仍按简单名；匿名对象（`object : X.Callback`）不算 |
 | 不打算做 | Project 窗口的 Edit Scopes、Group Tabs、View Mode、Move to、Resize、Remove from Sidebar，Android / Packages 视图（Junction 没有对应的 IDE 布局和 Android 模块模型） |
 
 ### 6.2 用 Junction 替代 AS 做日常 Android 开发的缺口（2026-10-13 评估）

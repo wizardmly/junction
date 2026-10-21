@@ -223,6 +223,131 @@ pub fn optimize(style: ImportStyle, text: &str) -> Option<ImportsEdit> {
     Some(ImportsEdit { range, text: out, removed: imports.len() - kept.len() })
 }
 
+/// A JVM file's package and imports, read from its header.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Header {
+    pub package: String,
+    /// (the name the file uses, the qualified name): `import a.B` gives
+    /// ("B", "a.B"), Kotlin's `import a.B as C` ("C", "a.B").
+    pub imports: Vec<(String, String)>,
+    /// Packages (or classes) imported with `.*`.
+    pub wildcards: Vec<String>,
+}
+
+/// The package and imports at the top of a Java or Kotlin file.
+pub fn header(text: &str) -> Header {
+    let mut out = Header::default();
+    let clean = |s: &str| s.trim().trim_end_matches(';').trim().replace('`', "");
+    for raw in text.lines() {
+        let trimmed = raw.trim();
+        if let Some(rest) = trimmed.strip_prefix("package ") {
+            out.package = clean(rest);
+        } else if let Some(rest) = trimmed.strip_prefix("import ") {
+            let rest = clean(rest);
+            if rest.starts_with("static ") {
+                continue;
+            }
+            if let Some(pkg) = rest.strip_suffix(".*") {
+                out.wildcards.push(pkg.to_owned());
+                continue;
+            }
+            let (qualified, name) = match rest.split_once(" as ") {
+                Some((q, alias)) => (q.trim().to_owned(), alias.trim().to_owned()),
+                None => (rest.clone(), rest.rsplit('.').next().unwrap_or(&rest).to_owned()),
+            };
+            out.imports.push((name, qualified));
+        } else if !(trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') || trimmed.starts_with('@')) {
+            // The first declaration ends the header.
+            break;
+        }
+    }
+    out
+}
+
+/// Which of the classes called `name` a file with this header means,
+/// given their qualified names, as the compiler picks: the one imported
+/// by name, else the file's own package's, else one under a `.*` import.
+/// Their positions in `qualified`; `None` when the header doesn't say
+/// (an implicitly imported or nested class).
+pub fn resolve(header: &Header, name: &str, qualified: &[String]) -> Option<Vec<usize>> {
+    let matching = |want: &dyn Fn(&str) -> bool| (0..qualified.len()).filter(|i| want(&qualified[*i])).collect::<Vec<_>>();
+    if let Some((_, imported)) = header.imports.iter().find(|(n, _)| n == name) {
+        return Some(matching(&|q| q == imported));
+    }
+    let local = format!("{}.{name}", header.package);
+    let found = matching(&|q| q == local || header.package.is_empty() && q == name);
+    if !found.is_empty() {
+        return Some(found);
+    }
+    let outer = |q: &str| q.strip_suffix(name).and_then(|p| p.strip_suffix('.')).map(str::to_owned);
+    let found = matching(&|q| outer(q).is_some_and(|o| header.wildcards.contains(&o)));
+    if !found.is_empty() {
+        return Some(found);
+    }
+    // `Outer.Name`, with the index keeping only the last name: a class
+    // nested in an imported class, or in one of the file's package.
+    let found = matching(&|q| outer(q).is_some_and(|o| header.imports.iter().any(|(_, i)| *i == o)));
+    if !found.is_empty() {
+        return Some(found);
+    }
+    let found = matching(&|q| outer(q).is_some_and(|o| o.rsplit_once('.').map_or(header.package.is_empty(), |(p, _)| p == header.package)));
+    (!found.is_empty()).then_some(found)
+}
+
+/// The qualifiers written before `name` in the declaration starting on
+/// `line` (0-based): ["Job"] for `class Factory : Job.Factory<T>`.
+pub fn qualifiers(text: &str, line: u32, name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(start) = (if line == 0 { Some(0) } else { text.match_indices('\n').nth(line as usize - 1).map(|(i, _)| i + 1) }) else { return out };
+    // The declaration's head: up to its body, over the lines that go on
+    // with it (at most a few).
+    let mut end = start;
+    for (i, raw) in text[start..].split_inclusive('\n').take(8).enumerate() {
+        let line = raw.trim();
+        let goes_on = |l: &str| l.starts_with([':', ',', '.', '<']) || l.starts_with("extends") || l.starts_with("implements") || l.starts_with("where");
+        if i > 0 && !(text[start..end].trim_end().ends_with([',', ':', '(', '<']) || goes_on(line)) {
+            break;
+        }
+        end += raw.len();
+        if line.contains('{') {
+            break;
+        }
+    }
+    let head = &text[start..end];
+    let head = &head[..head.find('{').unwrap_or(head.len())];
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    for (at, _) in head.match_indices(name) {
+        if !head[..at].ends_with('.') || head[at + name.len()..].starts_with(word) {
+            continue;
+        }
+        let before = &head[..at - 1];
+        let from = before.rfind(|c: char| !(word(c) || c == '.')).map_or(0, |i| i + 1);
+        let qualifier = &before[from..];
+        if !qualifier.is_empty() && !qualifier.starts_with('.') && !out.iter().any(|q| q == qualifier) {
+            out.push(qualifier.to_owned());
+        }
+    }
+    out
+}
+
+/// Which of the classes called `name` a file with this header means by
+/// `qualifier.name`, given their qualified names.
+pub fn resolve_qualified(header: &Header, qualifier: &str, name: &str, qualified: &[String]) -> Vec<usize> {
+    let (first, rest) = qualifier.split_once('.').map_or((qualifier, ""), |(f, r)| (f, r));
+    let tail = |base: &str| [base, rest, name].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(".");
+    let mut wanted: Vec<String> = Vec::new();
+    if let Some((_, imported)) = header.imports.iter().find(|(n, _)| n == first) {
+        wanted.push(tail(imported));
+    } else {
+        // The file's package, `.*` imports, or a qualified name as is.
+        let local = if header.package.is_empty() { first.to_owned() } else { format!("{}.{first}", header.package) };
+        wanted.push(tail(&local));
+        wanted.extend(header.wildcards.iter().map(|w| tail(&format!("{w}.{first}"))));
+        wanted.push(format!("{qualifier}.{name}"));
+    }
+    wanted.iter().map(|w| (0..qualified.len()).filter(|i| qualified[*i] == *w).collect::<Vec<_>>()).find(|v| !v.is_empty()).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +420,36 @@ mod tests {
         let mut out = text.to_owned();
         out.insert_str(at, &add);
         assert_eq!(out, "package a.b;\n\nimport java.util.List;\n\npublic class A {}\n");
+    }
+
+    #[test]
+    fn header_and_resolve() {
+        let h = header("// c\npackage a.b;\n\nimport x.Base;\nimport y.*;\nimport static z.Q.f;\nimport k.Long as `L`\n@Ann\nclass A extends Base {}\nimport no.Thing;\n");
+        assert_eq!(h.package, "a.b");
+        assert_eq!(h.imports, [("Base".to_owned(), "x.Base".to_owned()), ("L".to_owned(), "k.Long".to_owned())]);
+        assert_eq!(h.wildcards, ["y"]);
+        let q = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(resolve(&h, "Base", &q(&["a.b.Base", "x.Base"])), Some(vec![1]));
+        // Imported, but not one of these.
+        assert_eq!(resolve(&h, "Base", &q(&["a.b.Base"])), Some(vec![]));
+        assert_eq!(resolve(&h, "L", &q(&["k.Long", "k.L"])), Some(vec![0]));
+        assert_eq!(resolve(&h, "C", &q(&["y.C", "a.b.C", "z.C"])), Some(vec![1]));
+        assert_eq!(resolve(&h, "D", &q(&["y.D", "z.D", "y.E.D"])), Some(vec![0]));
+        assert_eq!(resolve(&h, "E", &q(&["z.E", "w.E"])), None);
+        // `Base.Factory`, `Local.Factory`.
+        assert_eq!(resolve(&h, "Factory", &q(&["x.Base.Factory", "w.Other.Factory"])), Some(vec![0]));
+        assert_eq!(resolve(&h, "Factory", &q(&["a.b.Local.Factory", "w.Other.Factory"])), Some(vec![0]));
+        assert_eq!(resolve(&h, "Factory", &q(&["a.b.Local.Factory", "x.Base.Factory"])), Some(vec![1]));
+
+        let text = "class A {\n  class Factory : Base.Factory<T>, Other\n  public static class F implements x.y.Factory, B.Factory {\n";
+        assert_eq!(qualifiers(text, 1, "Factory"), ["Base"]);
+        assert!(qualifiers(text, 1, "Other").is_empty());
+        assert_eq!(qualifiers(text, 2, "Factory"), ["x.y", "B"]);
+        assert_eq!(qualifiers("class X :\n  A.Callback,\n  B.Callback {\n  C.Callback\n", 0, "Callback"), ["A", "B"]);
+        assert_eq!(qualifiers("class X\n    extends P.Callback\n\nclass Y : Q.Callback\n", 0, "Callback"), ["P"]);
+        let fs = q(&["x.Base.Factory", "a.b.Base.Factory", "x.y.Factory", "y.Base.Factory"]);
+        assert_eq!(resolve_qualified(&h, "Base", "Factory", &fs), [0]);
+        assert_eq!(resolve_qualified(&h, "x.y", "Factory", &fs), [2]);
+        assert_eq!(resolve_qualified(&header("package z\nimport y.*\n"), "Base", "Factory", &fs), [3]);
     }
 }
