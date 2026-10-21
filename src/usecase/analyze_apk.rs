@@ -2,11 +2,17 @@
 //! shows for a selected file (the decoded manifest or a binary XML, a dex
 //! file's classes, a text file).
 
-use crate::domain::apk::{self, ApkArchive, ApkNode};
+use crate::domain::apk::{self, ApkArchive, ApkDiffNode, ApkNode};
+use crate::domain::arsc::ResourceTable;
 use crate::domain::{axml, dex};
 
 pub fn sizes(archive: &dyn ApkArchive) -> ApkNode {
     apk::tree(&archive.entries())
+}
+
+/// Compare with previous APK…: `old`'s files against `new`'s.
+pub fn compare(old: &dyn ApkArchive, new: &dyn ApkArchive) -> ApkDiffNode {
+    apk::diff(&sizes(old), &sizes(new))
 }
 
 /// The pane under the file tree for a selected file.
@@ -27,8 +33,9 @@ pub fn detail(archive: &dyn ApkArchive, path: &str) -> Detail {
     if path.ends_with(".dex") {
         return dex::summarize(&bytes).map(Detail::Dex).unwrap_or_else(|| Detail::None("Not a dex file".into()));
     }
-    if path.ends_with(".xml") {
-        if let Some(text) = axml::decode(&bytes) {
+    if path.ends_with(".xml") && bytes.starts_with(&[0x03, 0x00]) {
+        let table = archive.read("resources.arsc").ok().and_then(|b| ResourceTable::parse(&b)).unwrap_or_default();
+        if let Some(text) = axml::decode_with(&bytes, &|id| table.name(id)) {
             return Detail::Text { text, language: "xml" };
         }
     }
@@ -62,6 +69,7 @@ mod tests {
     #[test]
     fn picks_the_detail() {
         assert_eq!(sizes(&Fake).raw, 4);
+        assert_eq!(compare(&Fake, &Fake).diff(), 0);
         assert_eq!(detail(&Fake, "a.properties"), Detail::Text { text: "a=b\n".into(), language: "properties" });
         assert_eq!(detail(&Fake, "classes.dex"), Detail::None("Not a dex file".into()));
         assert_eq!(detail(&Fake, "lib/x.so"), Detail::None("missing".into()));

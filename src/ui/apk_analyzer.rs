@@ -3,22 +3,26 @@
 //! Download Size and % of Total Download Size, and under it the selected
 //! file: the decoded AndroidManifest.xml (or another binary XML), a dex
 //! file's packages and classes with their method counts, or text.
+//! Compare with previous APK… swaps the tree for the APK Size Differ: the
+//! files of both with Old Size, New Size and Diff Size.
 
 use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
 
 use gpui_kit::component::{
-    Icon, Sizable as _, h_flex,
+    Icon, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
     input::{Editor, EditorState},
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Task, UniformListScrollHandle, Window,
+    AnyElement, AppContext as _, Context, PathPromptOptions, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Task, UniformListScrollHandle, Window,
     div, prelude::FluentBuilder as _, px, uniform_list,
 };
 
-use crate::domain::apk::{self, ApkNode};
+use crate::domain::apk::{self, ApkDiffNode, ApkNode};
 use crate::domain::dex::{self, DexNode, DexSummary};
 use crate::infra::apk_file::ApkFile;
 use crate::theme::ActivePalette as _;
@@ -51,6 +55,43 @@ struct DexRow {
     parent: bool,
 }
 
+#[derive(Clone)]
+struct DiffRow {
+    depth: usize,
+    name: String,
+    path: String,
+    old: u64,
+    new: u64,
+    dir: bool,
+}
+
+/// The APK Size Differ against an older APK.
+struct Compare {
+    old: PathBuf,
+    root: Option<ApkDiffNode>,
+    expanded: HashSet<String>,
+    rows: Vec<DiffRow>,
+    selected: Option<String>,
+    scroll: UniformListScrollHandle,
+}
+
+impl Compare {
+    fn refresh_rows(&mut self) {
+        fn walk(node: &ApkDiffNode, depth: usize, expanded: &HashSet<String>, out: &mut Vec<DiffRow>) {
+            for c in &node.children {
+                out.push(DiffRow { depth, name: c.name.clone(), path: c.path.clone(), old: c.old, new: c.new, dir: c.is_dir() });
+                if c.is_dir() && expanded.contains(&c.path) {
+                    walk(c, depth + 1, expanded, out);
+                }
+            }
+        }
+        self.rows.clear();
+        if let Some(root) = &self.root {
+            walk(root, 0, &self.expanded, &mut self.rows);
+        }
+    }
+}
+
 enum Shown {
     Loading,
     Text(Entity<EditorState>),
@@ -71,7 +112,9 @@ pub struct ApkAnalyzer {
     dex_rows: Vec<DexRow>,
     dex_selected: Option<String>,
     dex_scroll: UniformListScrollHandle,
+    compare: Option<Compare>,
     _task: Option<Task<()>>,
+    _compare_task: Option<Task<()>>,
 }
 
 fn flatten(node: &ApkNode, depth: usize, expanded: &HashSet<String>, out: &mut Vec<FileRow>) {
@@ -128,7 +171,9 @@ impl ApkAnalyzer {
             dex_rows: Vec::new(),
             dex_selected: None,
             dex_scroll: UniformListScrollHandle::new(),
+            compare: None,
             _task: Some(task),
+            _compare_task: None,
         }
     }
 
@@ -253,6 +298,133 @@ impl ApkAnalyzer {
             .collect()
     }
 
+    /// Compare with previous APK…: asks for the older APK.
+    fn pick_previous(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Select the previous APK".into()) });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(picked))) = paths.await else { return };
+            let Some(old) = picked.into_iter().next() else { return };
+            this.update(cx, |this, cx| this.compare_with(old, cx)).ok();
+        })
+        .detach();
+    }
+
+    pub fn compare_with(&mut self, old: PathBuf, cx: &mut Context<Self>) {
+        let (old_archive, new_archive) = (ApkFile { path: old.clone() }, ApkFile { path: self.path.clone() });
+        self.compare = Some(Compare { old, root: None, expanded: HashSet::new(), rows: Vec::new(), selected: None, scroll: UniformListScrollHandle::new() });
+        self._compare_task = Some(cx.spawn(async move |this, cx| {
+            let root = cx.background_spawn(async move { analyze_apk::compare(&old_archive, &new_archive) }).await;
+            this.update(cx, |this, cx| {
+                if let Some(compare) = &mut this.compare {
+                    compare.root = Some(root);
+                    compare.refresh_rows();
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn toggle_diff(&mut self, path: &str, cx: &mut Context<Self>) {
+        if let Some(compare) = &mut self.compare {
+            if !compare.expanded.remove(path) {
+                compare.expanded.insert(path.to_owned());
+            }
+            compare.refresh_rows();
+        }
+        cx.notify();
+    }
+
+    fn render_diff_rows(&mut self, range: Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let palette = cx.palette().clone();
+        let Some(compare) = &self.compare else { return Vec::new() };
+        range
+            .filter_map(|ix| compare.rows.get(ix).cloned().map(|r| (ix, r)))
+            .map(|(ix, row)| {
+                let selected = compare.selected.as_deref() == Some(row.path.as_str());
+                let expanded = compare.expanded.contains(&row.path);
+                let icon = if row.dir { Icon::new(icons::FOLDER) } else { crate::ui::common::file_icon(&row.name) };
+                let (toggle_row, click_row) = (row.clone(), row.clone());
+                let delta = row.new as i64 - row.old as i64;
+                h_flex()
+                    .id(("apk-diff-row", ix))
+                    .h(px(ROW))
+                    .w_full()
+                    .pr_2()
+                    .text_sm()
+                    .whitespace_nowrap()
+                    .when(selected, |el| el.bg(palette.selection))
+                    .when(!selected, |el| el.hover(|el| el.bg(palette.hover)))
+                    .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                        if let Some(compare) = &mut this.compare {
+                            compare.selected = Some(click_row.path.clone());
+                        }
+                        if click_row.dir && event.click_count() >= 2 {
+                            this.toggle_diff(&click_row.path, cx);
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .pl(px(6. + row.depth as f32 * 16.))
+                            .child(
+                                div()
+                                    .id(("apk-diff-chevron", ix))
+                                    .w(px(14.))
+                                    .flex_none()
+                                    .when(row.dir, |el| el.child(Icon::new(if expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).xsmall()))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if toggle_row.dir {
+                                            cx.stop_propagation();
+                                            this.toggle_diff(&toggle_row.path, cx);
+                                        }
+                                    })),
+                            )
+                            .child(icon.xsmall())
+                            .child(div().min_w_0().overflow_hidden().text_ellipsis().child(row.name.clone())),
+                    )
+                    .child(div().w(px(SIZE_COL)).flex_none().text_right().child(apk::size(row.old)))
+                    .child(div().w(px(SIZE_COL)).flex_none().text_right().child(apk::size(row.new)))
+                    .child(div().w(px(SIZE_COL)).flex_none().text_right().child(apk::signed_size(delta)))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    fn render_compare(&self, compare: &Compare, cx: &mut Context<Self>) -> gpui_kit::Div {
+        let palette = cx.palette().clone();
+        let name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let summary = match &compare.root {
+            Some(root) => format!("{} → {}: {} → {} ({})", name(&compare.old), name(&self.path), apk::size(root.old), apk::size(root.new), apk::signed_size(root.diff())),
+            None => format!("Comparing {} with {}…", name(&self.path), name(&compare.old)),
+        };
+        v_flex()
+            .size_full()
+            .bg(palette.panel)
+            .child(
+                h_flex()
+                    .h(px(30.))
+                    .flex_none()
+                    .px_2()
+                    .gap_2()
+                    .text_sm()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(summary))
+                    .child(Button::new("apk-compare-close").xsmall().ghost().label("Close Comparison").on_click(cx.listener(|this, _, _, cx| {
+                        this.compare = None;
+                        this._compare_task = None;
+                        cx.notify();
+                    }))),
+            )
+            .child(header(vec![("File", None), ("Old Size", Some(SIZE_COL)), ("New Size", Some(SIZE_COL)), ("Diff Size", Some(SIZE_COL))], &palette))
+            .child(div().flex_1().min_h_0().child(uniform_list("apk-diff", compare.rows.len(), cx.processor(Self::render_diff_rows)).track_scroll(&compare.scroll).size_full()))
+    }
+
     fn render_dex_rows(&mut self, range: Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let palette = cx.palette().clone();
         range
@@ -330,6 +502,9 @@ fn header(columns: Vec<(&'static str, Option<f32>)>, palette: &crate::theme::Pal
 
 impl Render for ApkAnalyzer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(compare) = &self.compare {
+            return self.render_compare(compare, cx);
+        }
         let palette = cx.palette().clone();
         let summary = match &self.root {
             Some(root) => format!("APK size: {}, Download Size: {}", apk::size(self.file_size), apk::size(root.download)),
@@ -357,7 +532,18 @@ impl Render for ApkAnalyzer {
         v_flex()
             .size_full()
             .bg(palette.panel)
-            .child(h_flex().h(px(30.)).flex_none().px_2().text_sm().border_b_1().border_color(palette.border).child(summary))
+            .child(
+                h_flex()
+                    .h(px(30.))
+                    .flex_none()
+                    .px_2()
+                    .gap_2()
+                    .text_sm()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(div().flex_1().min_w_0().child(summary))
+                    .child(Button::new("apk-compare").xsmall().ghost().label("Compare with previous APK…").on_click(cx.listener(|this, _, window, cx| this.pick_previous(window, cx)))),
+            )
             .child(files)
             .when_some(detail, |el, detail| el.child(div().flex_1().min_h_0().border_t_1().border_color(palette.border).child(detail)))
     }
