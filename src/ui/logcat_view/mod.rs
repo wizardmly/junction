@@ -51,6 +51,8 @@ pub enum LogcatEvent {
     Split { down: bool },
     /// Split Panels › Close: this panel goes, its neighbour takes its place.
     ClosePanel,
+    /// Import Logcat from a File…: asks for a file and opens it in a new tab.
+    Import,
 }
 
 pub struct LogcatView {
@@ -92,6 +94,8 @@ pub struct LogcatView {
     embedded: bool,
     /// Screen Record in progress on the followed device.
     recording: Option<crate::android::mirror::Recording>,
+    /// An imported log file's name: the panel shows the file, not a device.
+    file: Option<String>,
     _pump: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -163,6 +167,7 @@ impl LogcatView {
             open: false,
             embedded: false,
             recording: None,
+            file: None,
             _pump: None,
             _subscriptions: subscriptions,
         }
@@ -256,6 +261,67 @@ impl LogcatView {
         }
     }
 
+    /// Shows an imported log (Import Logcat from a File): its entries, all
+    /// of them, and the filter it was saved with.
+    pub fn load_file(&mut self, name: String, log: crate::domain::logcat_file::LogFile, window: &mut Window, cx: &mut Context<Self>) {
+        self.shutdown();
+        self.following = None;
+        self.file = Some(match &log.device {
+            Some(device) => format!("{name} ({device})"),
+            None => name,
+        });
+        if let Some(root) = (self.project)(cx) {
+            for id in crate::android::application_ids(&root) {
+                if !self.mine.contains(&id) {
+                    self.mine.push(id);
+                }
+            }
+        }
+        let filter = crate::domain::logcat_file::imported_filter(&log, &self.mine).unwrap_or_default();
+        self.query.update(cx, |q, cx| q.set_value(filter, window, cx));
+        self.first += self.entries.len() as u64;
+        self.bytes = log.entries.iter().map(size_of).sum();
+        self.entries = log.entries.into();
+        self.refilter(cx);
+    }
+
+    /// Export Logcat to a File…: every entry read, as Android Studio's
+    /// `.logcat` JSON with the device and the filter.
+    fn export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::{WindowExt as _, notification::Notification};
+        let device = self.following.as_ref().and_then(|(id, _)| self.devices.read(cx).devices().iter().find(|d| d.id == *id).cloned());
+        let info = device.as_ref().map(|d| {
+            let prop = |k: &str| d.props.get(k).cloned().unwrap_or_default();
+            crate::domain::logcat_file::DeviceInfo {
+                serial: d.serial.clone().unwrap_or_default(),
+                manufacturer: prop("ro.product.manufacturer"),
+                model: if prop("ro.product.model").is_empty() { d.name.clone() } else { prop("ro.product.model") },
+                release: prop("ro.build.version.release"),
+                api: d.api.unwrap_or(0),
+                avd: d.avd.as_ref().map(|a| a.display_name.clone()),
+            }
+        });
+        let info = info.unwrap_or_default();
+        let entries: Vec<Entry> = self.entries.iter().cloned().collect();
+        let query = self.query.read(cx).value().to_string();
+        let text = crate::domain::logcat_file::write(&entries, &info, &query, &self.mine);
+        let device_name = if info.serial.is_empty() { "logcat".to_owned() } else { info.name().replace([' ', '/', '\\', ':'], "_") };
+        let name = format!("{device_name}_{}.logcat", chrono::Local::now().format("%Y-%m-%d_%H-%M-%S"));
+        let target = cx.prompt_for_new_path(&crate::ui::running_devices::default_save_dir(), Some(&name));
+        let handle = window.window_handle();
+        cx.spawn(async move |_, cx| {
+            // No file dialog (no portal on Linux): the default folder.
+            let Some(path) = crate::ui::running_devices::chosen_path(target.await, &name) else { return };
+            let result = std::fs::write(&path, text);
+            cx.update_window(handle, |_, window, cx| match result {
+                Ok(()) => window.push_notification(Notification::success(path.display().to_string()).title("Logcat exported"), cx),
+                Err(e) => window.push_notification(Notification::error(e.to_string()).title("Cannot export Logcat"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Devices with a log: the online ones.
     fn devices(&self, cx: &App) -> Vec<Device> {
         self.devices.read(cx).devices().iter().filter(|d| d.online && d.serial.is_some() && d.wifi.is_none()).cloned().collect()
@@ -273,7 +339,7 @@ impl LogcatView {
 
     /// Starts following the target device when it changed.
     fn follow_device(&mut self, cx: &mut Context<Self>) {
-        if !self.open {
+        if !self.open || self.file.is_some() {
             return;
         }
         let target = self.target(cx).and_then(|d| Some((d.id.clone(), d.serial.clone()?)));
@@ -379,7 +445,7 @@ impl LogcatView {
         self.shown.clear();
         self.bytes = 0;
         self.generation += 1;
-        if let (Some((_, serial)), Some(adb)) = (self.following.clone(), self.devices.read(cx).adb()) {
+        if let (Some((_, serial)), Some(adb), None) = (self.following.clone(), self.devices.read(cx).adb(), &self.file) {
             cx.background_executor()
                 .spawn(async move {
                     use crate::domain::logcat::LogSource as _;
@@ -414,6 +480,12 @@ impl LogcatView {
     fn pick(&mut self, id: String, cx: &mut Context<Self>) {
         self.picked = Some(id);
         self.following = None;
+        // A device picked in an imported log's panel: back to the device.
+        if self.file.take().is_some() {
+            self.entries.clear();
+            self.shown.clear();
+            self.bytes = 0;
+        }
         self.follow_device(cx);
     }
 
@@ -566,6 +638,7 @@ impl Render for LogcatView {
         let following = self.following.clone();
         let current = following.as_ref().and_then(|(id, _)| self.devices.read(cx).devices().iter().find(|d| d.id == *id).cloned());
         let label = match (&current, &following) {
+            _ if self.file.is_some() => self.file.clone().unwrap_or_default(),
             (Some(d), _) if d.online => Self::device_label(d),
             (Some(d), _) => format!("{} [OFFLINE]", Self::device_label(d)),
             (None, Some(_)) => "Device [OFFLINE]".to_owned(),
@@ -632,6 +705,8 @@ impl Render for LogcatView {
             .border_r_1()
             .border_color(palette.border)
             .child(side_button("logcat-clear", icons::CLEAR, "Clear Logcat").on_click(cx.listener(|this, _, _, cx| this.clear(cx))))
+            .child(side_button("logcat-export", icons::EXPORT, "Export Logcat to a File…").disabled(self.entries.is_empty()).on_click(cx.listener(|this, _, window, cx| this.export(window, cx))))
+            .when(self.embedded, |el| el.child(side_button("logcat-import", icons::IMPORT, "Import Logcat from a File…").on_click(cx.listener(|_, _, _, cx| cx.emit(LogcatEvent::Import)))))
             .child(
                 side_button("logcat-end", icons::DOWN, "Scroll to the End (clicking on a particular line stops scrolling and keeps that line visible)")
                     .selected(self.console.read(cx).is_following(cx))
@@ -671,7 +746,9 @@ impl Render for LogcatView {
                     }))
                 }))
             });
-        let empty_reason = if self.following.is_none() {
+        let empty_reason = if self.file.is_some() {
+            (self.shown.is_empty()).then(|| if self.entries.is_empty() { "The file has no log entries" } else { "All logs entries are hidden by the filter" }.to_owned())
+        } else if self.following.is_none() {
             Some(if self.devices(cx).is_empty() { "No connected devices" } else { "Select a device" }.to_owned())
         } else if self.shown.is_empty() && !self.entries.is_empty() {
             Some("All logs entries are hidden by the filter".to_owned())

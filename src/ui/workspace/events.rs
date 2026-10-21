@@ -465,7 +465,7 @@ impl Workspace {
                 cx.notify();
             }
             // The tabs split their panels themselves.
-            LogcatEvent::Split { .. } | LogcatEvent::ClosePanel => {}
+            LogcatEvent::Split { .. } | LogcatEvent::ClosePanel | LogcatEvent::Import => {}
         }
     }
 
