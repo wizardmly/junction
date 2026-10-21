@@ -66,6 +66,8 @@ pub enum FileAction {
     SetFileType { path: String, language: Option<String> },
     /// Find Usages of a source file: of its class, as IntelliJ's.
     FindUsages(String),
+    /// Analyze › Inspect Code… on the items (path, is folder) of a scope.
+    InspectCode { items: Vec<(String, bool)>, scope: String },
     /// Reformat Code / Optimize Imports on the selected files and folders.
     CleanUp { items: Vec<(String, bool)>, clean_up: crate::usecase::clean_up_files::CleanUp },
 }
@@ -620,7 +622,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
                 (t_replace.actions)(FileAction::FindInPath { dir: t_replace.path.clone(), replace: true }, window, cx)
             }))
         });
-    let menu = stub_submenu(menu, "Analyze", &[("Inspect Code…", ""), ("Code Cleanup…", ""), ("Analyze Dependencies…", "")], window, cx);
+    let menu = analyze_submenu(menu, &target, window, cx);
     let t_rename = target.clone();
     let menu = menu
         .separator()
@@ -912,6 +914,80 @@ fn move_or_copy(target: &ProjectTarget, copy: bool, window: &mut Window, cx: &mu
 
 /// Reformat Code / Optimize Imports from the Project view: a file at once;
 /// folders after IntelliJ's question naming them.
+/// Analyze: Inspect Code… and Code Cleanup… ask for their scope first,
+/// as IntelliJ's "Specify … Scope" dialogs.
+fn analyze_submenu(menu: PopupMenu, target: &ProjectTarget, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    let target = target.clone();
+    menu.submenu("Analyze", window, cx, move |m, _, _| {
+        let (inspect, cleanup) = (target.clone(), target.clone());
+        m.item(entry("Inspect Code…", "").on_click(move |_, window, cx| {
+            let actions = inspect.actions.clone();
+            scope_dialog("Specify Inspection Scope", "Analyze", &inspect, Rc::new(move |items, scope, window, cx| actions(FileAction::InspectCode { items, scope }, window, cx)), window, cx)
+        }))
+        .item(entry("Code Cleanup…", "").on_click(move |_, window, cx| {
+            let actions = cleanup.actions.clone();
+            let clean_up = crate::usecase::clean_up_files::CleanUp::CodeCleanup;
+            scope_dialog("Specify Code Cleanup Scope", "Run", &cleanup, Rc::new(move |items, _, window, cx| actions(FileAction::CleanUp { items, clean_up }, window, cx)), window, cx)
+        }))
+        .item(entry("Analyze Dependencies…", "").disabled(true))
+    })
+}
+
+type ScopeRun = Rc<dyn Fn(Vec<(String, bool)>, String, &mut Window, &mut App)>;
+
+/// The scopes IntelliJ offers for the selection: Whole project, the
+/// Gradle module holding it, and the file, directory or selected files.
+fn scope_dialog(title: &'static str, ok: &'static str, target: &ProjectTarget, run: ScopeRun, window: &mut Window, cx: &mut App) {
+    use gpui_kit::component::radio::RadioGroup;
+    let project = target.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut scopes: Vec<(String, Vec<(String, bool)>, String)> = vec![("Whole project".into(), vec![(String::new(), true)], format!("Project '{project}'"))];
+    let first = target.items.first().map(|(p, _)| p.clone()).unwrap_or_default();
+    let module = Path::new(&first)
+        .ancestors()
+        .map(|a| a.to_string_lossy().replace('\\', "/"))
+        .find(|a| !a.is_empty() && ["build.gradle", "build.gradle.kts"].iter().any(|f| target.root.join(a).join(f).is_file()));
+    if let Some(module) = module {
+        let name = module.rsplit('/').next().unwrap_or(&module).to_owned();
+        scopes.push((format!("Module '{name}'"), vec![(module.clone(), true)], format!("Module '{name}'")));
+    }
+    let own = match target.items.as_slice() {
+        [(path, _)] if path.is_empty() => None,
+        [(path, dir)] => {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let label = if *dir { format!("Directory '{path}'") } else { format!("File '{name}'") };
+            Some((label.clone(), target.items.clone(), label))
+        }
+        [] => None,
+        items => Some(("Selected files".into(), items.to_vec(), "Selected Files".into())),
+    };
+    let own = own.filter(|(_, items, _)| !scopes.iter().any(|(_, s, _)| s == items));
+    scopes.extend(own);
+    let selected = Rc::new(std::cell::Cell::new(scopes.len() - 1));
+    let scopes = Rc::new(scopes);
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (set, get, scopes_ok, run) = (selected.clone(), selected.clone(), scopes.clone(), run.clone());
+        dialog
+            .title(title)
+            .w(px(420.))
+            .child(
+                RadioGroup::vertical("analysis-scope")
+                    .children(scopes.iter().map(|(label, _, _)| label.clone()))
+                    .selected_index(Some(selected.get()))
+                    .on_change(move |ix, window, _| {
+                        set.set(*ix);
+                        window.refresh();
+                    }),
+            )
+            .on_ok(move |_, window, cx| {
+                if let Some((_, items, scope)) = scopes_ok.get(get.get()) {
+                    run(items.clone(), scope.clone(), window, cx);
+                }
+                true
+            })
+            .footer(dialogs::footer(ok))
+    });
+}
+
 fn clean_up(target: &ProjectTarget, clean_up: crate::usecase::clean_up_files::CleanUp, window: &mut Window, cx: &mut App) {
     let items = target.items.clone();
     let actions = target.actions.clone();
@@ -928,6 +1004,7 @@ fn clean_up(target: &ProjectTarget, clean_up: crate::usecase::clean_up_files::Cl
     let verb = match clean_up {
         crate::usecase::clean_up_files::CleanUp::Reformat => "Reformat",
         crate::usecase::clean_up_files::CleanUp::OptimizeImports => "Optimize imports in",
+        crate::usecase::clean_up_files::CleanUp::CodeCleanup => "Clean up",
     };
     let window_handle = window.window_handle();
     let run = Rc::new(run);

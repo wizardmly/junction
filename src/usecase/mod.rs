@@ -4,6 +4,7 @@
 pub mod merged_manifest;
 pub mod mark_directory;
 pub mod override_file_type;
+pub mod inspect_code;
 pub mod android_resources;
 pub mod import_class;
 pub mod clean_up_files;
