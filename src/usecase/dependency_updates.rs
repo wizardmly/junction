@@ -22,17 +22,25 @@ pub fn sites(path: &str, text: &str) -> Vec<VersionSite> {
     Vec::new()
 }
 
-/// Warnings for the sites with a newer version. Looks each module up once.
-pub fn check(source: &(dyn VersionSource + Sync), text: &str, sites: &[VersionSite]) -> Vec<Problem> {
-    // The lookups may go to the network: all modules at once, a few at a time.
-    let mut modules: Vec<(String, bool)> = sites.iter().map(|s| (s.module.clone(), s.plugin)).collect();
+/// The versions each module (and whether it's a plugin) has, looked up
+/// once each.
+pub type Known = HashMap<(String, bool), Option<Vec<String>>>;
+
+/// Looks the modules up; the lookups may go to the network, so all at
+/// once, a few at a time.
+pub fn look_up(source: &(dyn VersionSource + Sync), mut modules: Vec<(String, bool)>) -> Known {
     modules.sort();
     modules.dedup();
-    let known: HashMap<(String, bool), Option<Vec<String>>> = std::thread::scope(|scope| {
+    std::thread::scope(|scope| {
         let chunk = modules.len().div_ceil(8).max(1);
         let workers: Vec<_> = modules.chunks(chunk).map(|part| scope.spawn(move || part.iter().map(|(m, p)| ((m.clone(), *p), source.versions(m, *p))).collect::<Vec<_>>())).collect();
         workers.into_iter().flat_map(|w| w.join().unwrap_or_default()).collect()
-    });
+    })
+}
+
+/// Warnings for the sites with a newer version. Looks each module up once.
+pub fn check(source: &(dyn VersionSource + Sync), text: &str, sites: &[VersionSite]) -> Vec<Problem> {
+    let known = look_up(source, sites.iter().map(|s| (s.module.clone(), s.plugin)).collect());
     let mut out = Vec::new();
     for site in sites {
         let available = known.get(&(site.module.clone(), site.plugin)).cloned().flatten();

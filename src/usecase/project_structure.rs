@@ -5,7 +5,9 @@
 use crate::domain::dependencies as deps;
 use crate::domain::project_files::ProjectFiles;
 use crate::domain::project_structure::{self as ps, Place, Property, Site};
+use crate::domain::dependency_versions as versions;
 use crate::domain::version_catalog::Catalog;
+use crate::usecase::dependency_updates::Known;
 
 pub const LOCAL_PROPERTIES: &str = "local.properties";
 pub const WRAPPER_PROPERTIES: &str = "gradle/wrapper/gradle-wrapper.properties";
@@ -257,6 +259,25 @@ pub fn apply(files: &dyn ProjectFiles, structure: &Structure, edits: &Edits) -> 
     Ok(changed)
 }
 
+/// A newer version of a declared library (AS's "Newer Versions"
+/// suggestion); Update sets it as the requested version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Suggestion {
+    pub module: usize,
+    /// The dependency's index in its module's `declared`.
+    pub index: usize,
+    /// `group:artifact`.
+    pub library: String,
+    pub current: String,
+    pub newest: String,
+}
+
+impl Suggestion {
+    pub fn message(&self) -> String {
+        format!("Newer version available: {}", self.newest)
+    }
+}
+
 /// The Dependencies page's working copy: each module's build script and
 /// the catalogs as edited, written on OK.
 #[derive(Clone, Debug)]
@@ -318,6 +339,30 @@ impl DependencyDraft {
         *script = new_script;
         self.set_texts(new_texts);
         Ok(())
+    }
+
+    /// The libraries whose versions the Suggestions page looks up.
+    pub fn libraries(&self) -> Vec<(String, bool)> {
+        (0..self.scripts.len()).flat_map(|m| self.declared(m)).filter_map(|d| match d.notation {
+            deps::Notation::Library(name) if d.version_site.is_some() => Some((name, false)),
+            _ => None,
+        }).collect()
+    }
+
+    /// The Suggestions page's rows: each declared library with a newer
+    /// version than it requests, by module.
+    pub fn suggestions(&self, known: &Known) -> Vec<Suggestion> {
+        let mut out = Vec::new();
+        for module in 0..self.scripts.len() {
+            for (index, d) in self.declared(module).into_iter().enumerate() {
+                let (deps::Notation::Library(library), Some(current), Some(_)) = (&d.notation, &d.version, &d.version_site) else { continue };
+                let Some(Some(available)) = known.get(&(library.clone(), false)) else { continue };
+                if let Some(newest) = versions::newer(current, available) {
+                    out.push(Suggestion { module, index, library: library.clone(), current: current.clone(), newest });
+                }
+            }
+        }
+        out
     }
 
     pub fn is_changed(&self) -> bool {
@@ -458,5 +503,26 @@ mod tests {
         apply(&files, &s, &edits).unwrap();
         assert!(files.read("app/build.gradle.kts").unwrap().contains("    signingConfigs {\n        create(\"upload\") {\n            keyAlias = \"up\"\n        }\n    }\n}\n"));
         assert!(apply_blocks(&files, &s, &[(1, VariantKind::Flavor, BlockChange::Remove("nope".into()))]).is_err());
+    }
+
+    #[test]
+    fn suggests_newer_versions_and_updates_them() {
+        let files = project();
+        files.0.borrow_mut().insert("app/build.gradle.kts".into(), "dependencies {\n    implementation(\"com.squareup.okhttp3:okhttp:4.9.0\")\n    implementation(\"x.y:z:1.0\")\n    implementation(project(\":lib\"))\n}\n".into());
+        files.0.borrow_mut().insert("lib/build.gradle".into(), "dependencies {\n    api 'com.squareup.okhttp3:okhttp:4.12.0'\n}\n".into());
+        let s = structure(&files);
+        let mut draft = DependencyDraft::read(&files, &s, vec![Catalog::parse("libs", "gradle/libs.versions.toml", CATALOG)]);
+        let mut libraries = draft.libraries();
+        libraries.sort();
+        libraries.dedup();
+        assert_eq!(libraries, [("com.squareup.okhttp3:okhttp".to_owned(), false), ("x.y:z".to_owned(), false)]);
+        let known: Known = [(("com.squareup.okhttp3:okhttp".to_owned(), false), Some(vec!["4.9.0".to_owned(), "4.12.0".to_owned(), "5.0.0-alpha.14".to_owned()])), (("x.y:z".to_owned(), false), None)].into();
+        let found = draft.suggestions(&known);
+        assert_eq!(found, [Suggestion { module: 0, index: 0, library: "com.squareup.okhttp3:okhttp".into(), current: "4.9.0".into(), newest: "4.12.0".into() }]);
+        assert_eq!(found[0].message(), "Newer version available: 4.12.0");
+        draft.change(0, 0, &deps::Change::Version(found[0].newest.clone())).unwrap();
+        assert!(draft.suggestions(&known).is_empty());
+        draft.write(&files).unwrap();
+        assert!(files.read("app/build.gradle.kts").unwrap().contains("okhttp:4.12.0"));
     }
 }
