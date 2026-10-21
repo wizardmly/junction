@@ -68,6 +68,7 @@ actions!(
         ToggleDeviceManagerWindow,
         ToggleRunningDevicesWindow,
         ToggleDeviceExplorerWindow,
+        ToggleLayoutInspectorWindow,
         SelectInProject,
         FindInPath,
         ReplaceInPath,
@@ -314,6 +315,7 @@ pub struct Workspace {
     device_manager: Entity<crate::ui::device_manager::DeviceManager>,
     running_devices: Entity<crate::ui::running_devices::RunningDevices>,
     device_explorer: Entity<crate::ui::device_explorer::DeviceExplorer>,
+    layout_inspector: Entity<crate::ui::layout_inspector::LayoutInspector>,
     /// Build and Run: the toolbar's configuration and device, and the
     /// Build, Run and Build Variants tool windows.
     run: Entity<crate::ui::run_service::RunService>,
@@ -438,6 +440,7 @@ impl Workspace {
         let device_manager = cx.new(|_| crate::ui::device_manager::DeviceManager::new(android_project.clone()));
         let running_devices = cx.new(|cx| crate::ui::running_devices::RunningDevices::new(device_manager.clone(), cx));
         let device_explorer = cx.new(|cx| crate::ui::device_explorer::DeviceExplorer::new(device_manager.clone(), android_project, cx));
+        let layout_inspector = cx.new(|cx| crate::ui::layout_inspector::LayoutInspector::new(device_manager.clone(), cx));
         let run = cx.new(|_| crate::ui::run_service::RunService::new(device_manager.clone()));
         let tests = crate::ui::test_service::TestService::global(cx);
         let debug = crate::ui::debug_service::DebugService::global(cx);
@@ -609,6 +612,12 @@ impl Workspace {
                     this.model.update(cx, |m, cx| m.notify(title, message, error, cx));
                 }
             }),
+            cx.subscribe_in(&layout_inspector, window, |this, _, event: &crate::ui::layout_inspector::LayoutInspectorEvent, _, cx| match event {
+                crate::ui::layout_inspector::LayoutInspectorEvent::Hide => {
+                    this.tools.hide(ToolWindow::LayoutInspector);
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&device_explorer, window, |this, _, event: &crate::ui::device_explorer::DeviceExplorerEvent, window, cx| match event {
                 crate::ui::device_explorer::DeviceExplorerEvent::Hide => {
                     this.tools.hide(ToolWindow::DeviceExplorer);
@@ -773,6 +782,7 @@ impl Workspace {
             device_manager,
             running_devices,
             device_explorer,
+            layout_inspector,
             run,
             build_view,
             run_view,
@@ -865,9 +875,11 @@ impl Render for Workspace {
         let android = crate::ui::sync_service::SyncService::global(cx).read(cx).builds().iter().any(|(_, m)| m.iter().any(|m| m.kind == crate::domain::run::ModuleType::Application));
         let logcat_shown = self.tools.is_open(ToolWindow::Logcat);
         self.logcat_view.update(cx, |l, cx| l.set_shown(logcat_shown, cx));
-        let devices_shown = logcat_shown || self.tools.is_open(ToolWindow::DeviceManager) || self.tools.is_open(ToolWindow::RunningDevices) || explorer_shown || android;
+        let inspector_shown = self.tools.is_open(ToolWindow::LayoutInspector);
+        let devices_shown = logcat_shown || self.tools.is_open(ToolWindow::DeviceManager) || self.tools.is_open(ToolWindow::RunningDevices) || explorer_shown || inspector_shown || android;
         self.device_manager.update(cx, |d, cx| d.set_shown(devices_shown, cx));
         self.device_explorer.update(cx, |d, cx| d.set_shown(explorer_shown, cx));
+        self.layout_inspector.update(cx, |d, cx| d.set_shown(inspector_shown, cx));
         let mirroring_shown = self.tools.is_open(ToolWindow::RunningDevices);
         self.running_devices.update(cx, |d, cx| d.set_shown(mirroring_shown, cx));
         let git_on_side = self.tools.side(ToolWindow::Git) != Side::Bottom;
@@ -1072,6 +1084,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleDeviceManagerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceManager, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleRunningDevicesWindow, window, cx| this.shortcut_tool(ToolWindow::RunningDevices, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleDeviceExplorerWindow, window, cx| this.shortcut_tool(ToolWindow::DeviceExplorer, window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleLayoutInspectorWindow, window, cx| {
+                // Its three panes need the room.
+                this.tools.make_room(ToolWindow::LayoutInspector, 900, cx);
+                this.shortcut_tool(ToolWindow::LayoutInspector, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &FindInPath, window, cx| this.open_find_popup(false, window, cx)))
             .on_action(cx.listener(|this, _: &ReplaceInPath, window, cx| this.open_find_popup(true, window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| crate::ui::settings_dialog::open(Some(this.model.clone()), window, cx)))
