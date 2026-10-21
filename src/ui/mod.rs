@@ -37,6 +37,7 @@ pub mod settings_dialog;
 pub mod sdk_manager;
 pub mod layout_inspector;
 pub mod profiler_view;
+pub mod app_inspection;
 pub mod selectable_text;
 pub mod graph_paint;
 pub mod log_view;

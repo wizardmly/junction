@@ -1184,3 +1184,17 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | CPU 方法 / 系统跟踪（Perfetto）、分配跟踪、Energy | ❌ |
 
 只用模拟 adb 验证过（假 `/proc`、`dumpsys meminfo` 输出和一个 120 万字节的 Android 格式 hprof）：曲线、图例、进程切换、堆转储列表、堆切换和搜索都正确。
+
+## 66. App Inspection：Database Inspector（2026-10-21）
+
+| 功能 | 状态 |
+|---|---|
+| View › Tool Windows / Tools › App Inspection：底部工具窗口，设备下拉、应用下拉（正在运行的应用，`:remote` 这类子进程合并到包名，本项目的 applicationId 排在最前，运行中时自动选中） | ✅ |
+| 选中应用后用 `run-as <包名>` 列出并读取 `databases/` 下的所有数据库（带上 `-wal` 文件里已提交的页，Room 默认 WAL 模式也能看到最新数据）；左侧数据库 → 表的树 | ✅ |
+| 点表显示行：列名来自 CREATE TABLE，`INTEGER PRIMARY KEY` 列填 rowid，NULL 斜体，BLOB 显示 `X'..'`，长文本（溢出页）和 UTF-16 编码库都能读；最多读 5000 行，网格可横向滚动 | ✅ |
+| Refresh：重新从设备读取，保留当前表 | ✅ |
+| 应用不可调试（`run-as` 拒绝）时显示原因 | ✅ |
+| 自定义 SQL 查询、编辑单元格、Live updates、导出、`WITHOUT ROWID` 表 | ❌ |
+| Network Inspector、Background Task Inspector | ❌ |
+
+数据库是自己写的只读 SQLite 解析（`src/domain/sqlite_file.rs`），不依赖 sqlite 库，也不需要在设备上装 agent。只用模拟 adb 验证过（`sqlite3` 生成的普通库和带 WAL 的库）。

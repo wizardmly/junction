@@ -58,6 +58,7 @@ pub const ENTRIES: &[Entry] = &[
     entry("Tool Windows", "Device Explorer", "workspace::ToggleDeviceExplorerWindow"),
     entry("Tool Windows", "Layout Inspector", "workspace::ToggleLayoutInspectorWindow"),
     entry("Tool Windows", "Profiler", "workspace::ToggleProfilerWindow"),
+    entry("Tool Windows", "App Inspection", "workspace::ToggleAppInspectionWindow"),
     entry("Tool Windows", "Hide All Tool Windows", "workspace::HideAllToolWindows"),
     entry("Tool Windows", "Hide Active Tool Window", "workspace::HideActiveToolWindow"),
     entry("Build", "Sync Project with Gradle Files", "workspace::SyncProjectWithGradleFiles"),
