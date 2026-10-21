@@ -395,7 +395,8 @@ impl Workspace {
         };
         let config_name = selected_test.clone().or_else(|| config.as_ref().map(|c| c.name.clone()));
         let config_icon = if selected_test.is_some() { icons::TEST_ROOT } else { icons::MODULE_ANDROID };
-        let (make, pick_device, pick_config, start, stop, debug) = (run.clone(), run.clone(), run.clone(), run.clone(), run.clone(), run.clone());
+        let (make, pick_device, pick_config, start, stop, debug, cover) = (run.clone(), run.clone(), run.clone(), run.clone(), run.clone(), run.clone(), run.clone());
+        let cover_label = format!("Run '{}' with Coverage", config_name.as_deref().unwrap_or("app"));
         let selected_device = device.map(|d| d.id);
         let selected_config = config.filter(|_| selected_test.is_none()).map(|c| (c.build_root, c.name));
         let pick_test = run.clone();
@@ -483,6 +484,11 @@ impl Workspace {
             )
             // The new UI shows Stop only while something runs.
             .when(can_stop, |el| el.child(tool_button("tb-stop", icons::STOP, crate::ui::run_views::stop_label()).on_click(move |_, _, cx| stop.update(cx, |r, cx| r.stop(cx)))))
+            // More Actions: the other executors of the configuration.
+            .child(tool_button("tb-more", icons::MORE_VERTICAL, "More Actions").dropdown_menu(move |menu, _, _| {
+                let cover = cover.clone();
+                menu.item(PopupMenuItem::new(cover_label.clone()).icon(icons::RUN_WITH_COVERAGE).on_click(move |_, _, cx| cover.update(cx, |r, cx| r.run_with_coverage(cx))))
+            }))
     }
 
     /// The Notifications tool window: every balloon of this session, newest first.

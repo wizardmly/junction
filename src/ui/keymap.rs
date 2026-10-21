@@ -58,6 +58,7 @@ pub const ENTRIES: &[Entry] = &[
     entry("Build", "Sync Project with Gradle Files", "workspace::SyncProjectWithGradleFiles"),
     entry("Build", "Make Project", "workspace::MakeProject"),
     entry("Run", "Run 'app'", "workspace::RunApp"),
+    entry("Run", "Run with Coverage", "workspace::RunWithCoverage"),
     entry("Run", "Stop", "workspace::StopApp"),
     entry("Run", "Apply Changes and Restart Activity", "workspace::ApplyChanges"),
     entry("Run", "Apply Code Changes", "workspace::ApplyCodeChanges"),

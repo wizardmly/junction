@@ -105,6 +105,7 @@ actions!(
         GenerateSignedApk,
         ProjectStructure,
         RunApp,
+        RunWithCoverage,
         DebugApp,
         StopApp,
         ApplyChanges,
@@ -301,6 +302,7 @@ pub struct Workspace {
     code_index: Entity<CodeIndex>,
     find: Entity<crate::ui::find_view::FindView>,
     hierarchy: Entity<crate::ui::hierarchy_view::HierarchyView>,
+    coverage: Entity<crate::ui::coverage_view::CoverageView>,
     /// The Terminal tool window's sessions.
     terminal: Entity<crate::ui::terminal_view::TerminalPanel>,
     /// The Device Manager tool window (Android devices and emulators).
@@ -410,6 +412,7 @@ impl Workspace {
         let code_index = cx.new(CodeIndex::new);
         let find = cx.new(|_| crate::ui::find_view::FindView::new(code_index.clone()));
         let hierarchy = cx.new(|_| crate::ui::hierarchy_view::HierarchyView::new(code_index.clone()));
+        let coverage = cx.new(crate::ui::coverage_view::CoverageView::new);
         let terminal = {
             let model = model.clone();
             let cwd: Rc<dyn Fn(&App) -> Option<std::path::PathBuf>> = Rc::new(move |cx| {
@@ -613,6 +616,13 @@ impl Workspace {
                     this.open_file(path, None, window, cx);
                 }
             }),
+            cx.subscribe_in(&coverage, window, |this, _, event: &crate::ui::coverage_view::CoverageEvent, window, cx| match event {
+                crate::ui::coverage_view::CoverageEvent::Open(path) => this.open_file(path.to_string_lossy().into_owned(), None, window, cx),
+                crate::ui::coverage_view::CoverageEvent::Hide => {
+                    this.tools.hide(ToolWindow::Coverage);
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&hierarchy, window, |this, _, event: &crate::ui::hierarchy_view::HierarchyEvent, window, cx| match event {
                 crate::ui::hierarchy_view::HierarchyEvent::Open { path, line, col } => this.open_at(path.clone(), *line, *col, window, cx),
                 crate::ui::hierarchy_view::HierarchyEvent::Hide => {
@@ -751,6 +761,7 @@ impl Workspace {
             code_index,
             find,
             hierarchy,
+            coverage,
             terminal,
             device_manager,
             running_devices,
@@ -1010,6 +1021,7 @@ impl Render for Workspace {
                 crate::ui::signed_apk_dialog::open(modules, store, passwords, this.run.clone(), keytool, window, cx);
             }))
             .on_action(cx.listener(|this, _: &RunApp, _, cx| this.run.update(cx, |r, cx| r.run(cx))))
+            .on_action(cx.listener(|this, _: &RunWithCoverage, _, cx| this.run.update(cx, |r, cx| r.run_with_coverage(cx))))
             .on_action(cx.listener(|this, _: &StopApp, _, cx| {
                 // Ctrl+F2 stops the debug session first, as the active one.
                 let debug = crate::ui::debug_service::DebugService::global(cx);

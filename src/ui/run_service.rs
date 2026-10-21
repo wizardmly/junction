@@ -271,12 +271,23 @@ impl RunService {
         self.launch(true, cx);
     }
 
+    /// Run '…' with Coverage: for a test configuration, its tests with
+    /// JaCoCo measuring them.
+    pub fn run_with_coverage(&mut self, cx: &mut Context<Self>) {
+        match self.selected_test(cx) {
+            Some(name) => {
+                TestService::global(cx).update(cx, |t, cx| t.run_temporary(&name, None, true, cx));
+            }
+            None => cx.emit(RunEvent::Error { title: "Run with Coverage".into(), message: "Coverage is measured for test configurations. Run a test from the editor's gutter first.".into() }),
+        }
+    }
+
     fn launch(&mut self, debug: bool, cx: &mut Context<Self>) {
         if let Some(name) = self.selected_test(cx) {
             if debug {
                 crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.debug_temporary(name, cx));
             } else {
-                TestService::global(cx).update(cx, |t, cx| t.run_temporary(&name, None, cx));
+                TestService::global(cx).update(cx, |t, cx| t.run_temporary(&name, None, false, cx));
             }
             return;
         }

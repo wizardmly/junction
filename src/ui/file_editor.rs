@@ -5,6 +5,7 @@
 //! Rollback Lines.
 
 mod breakpoints;
+mod coverage;
 mod editing;
 mod fixes;
 mod generate;
@@ -399,6 +400,8 @@ pub struct FileEditor {
     unversioned: bool,
     saved: String,
     hunks: Vec<Hunk>,
+    /// The last Run with Coverage's lines of this file (0-based).
+    coverage: Vec<(u32, crate::domain::coverage::LineCoverage)>,
     /// The change block whose popup is open (a click on its gutter marker).
     popup: Option<usize>,
     /// Where the popup goes: under its block, as the last paint laid it out.
@@ -741,6 +744,7 @@ impl FileEditor {
             format: TextFormat::of(&content),
             saved: content,
             hunks: Vec::new(),
+            coverage: Vec::new(),
             popup: None,
             popup_anchor: Rc::default(),
             gutter_click: Rc::default(),
@@ -799,6 +803,7 @@ impl FileEditor {
             let debug = crate::ui::debug_service::DebugService::global(cx);
             this._subscriptions.push(cx.observe(&debug, |_, _, cx| cx.notify()));
         }
+        this.watch_coverage(cx);
         if this.bookmark_file().is_some_and(|f| crate::domain::testing::test_kind(&f).is_some()) {
             // The run icons show the last run's outcomes.
             let tests = crate::ui::test_service::TestService::global(cx);
@@ -2985,6 +2990,7 @@ impl Render for FileEditor {
                 )).children(vector_pane).children(manifest_pane))
                 .child(self.gutter_probe())
                 // Design shows the drawable alone: no gutter.
+                .when(!self.coverage.is_empty() && !vector_design, |el| el.child(self.coverage_strip(cx)))
                 .when(!read_only && !vector_design, |el| el.child(self.marker_strip(cx)))
                 .when(!self.hierarchy.is_empty() && icons_shown && !vector_design, |el| el.child(self.hierarchy_strip(cx)))
                 .children(bookmark_strip.filter(|_| !vector_design))
