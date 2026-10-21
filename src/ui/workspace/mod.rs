@@ -444,7 +444,7 @@ impl Workspace {
         let device_manager = cx.new(|_| crate::ui::device_manager::DeviceManager::new(android_project.clone()));
         let running_devices = cx.new(|cx| crate::ui::running_devices::RunningDevices::new(device_manager.clone(), cx));
         let profiler = cx.new(|cx| crate::ui::profiler_view::ProfilerView::new(device_manager.clone(), android_project.clone(), window, cx));
-        let app_inspection = cx.new(|cx| crate::ui::app_inspection::AppInspectionView::new(device_manager.clone(), android_project.clone(), cx));
+        let app_inspection = cx.new(|cx| crate::ui::app_inspection::AppInspectionView::new(device_manager.clone(), android_project.clone(), window, cx));
         let device_explorer = cx.new(|cx| crate::ui::device_explorer::DeviceExplorer::new(device_manager.clone(), android_project, cx));
         let layout_inspector = cx.new(|cx| crate::ui::layout_inspector::LayoutInspector::new(device_manager.clone(), cx));
         let run = cx.new(|_| crate::ui::run_service::RunService::new(device_manager.clone()));
