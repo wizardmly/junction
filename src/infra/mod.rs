@@ -17,6 +17,7 @@ pub mod catalog_files;
 pub mod gradle;
 pub mod gradle_sync;
 pub mod gradle_tests;
+pub mod jacoco;
 pub mod jdk_discovery;
 pub mod project_files;
 pub mod res_files;

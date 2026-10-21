@@ -7,7 +7,7 @@ use gpui_kit::component::input::RopeExt as _;
 use gpui_kit::component::{Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     AppContext as _, Bounds, Context, DispatchPhase, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, MouseDownEvent, ParentElement as _, Pixels,
-    StatefulInteractiveElement as _, Styled as _, Window, actions, anchored, canvas, deferred, div, point, px, size,
+    StatefulInteractiveElement as _, Styled as _, Window, prelude::FluentBuilder as _, actions, anchored, canvas, deferred, div, point, px, size,
 };
 
 use super::{FileEditor, GUTTER_ICON, GUTTER_ICON_GAP, GUTTER_ICON_SLOT};
@@ -76,6 +76,14 @@ impl FileEditor {
         let marks = self.test_marks.clone();
         self.test_menu = None;
         crate::ui::debug_service::DebugService::global(cx).update(cx, |s, cx| s.debug_test(file.into(), marks, &mark, cx));
+    }
+
+    /// Run '…' with Coverage.
+    fn cover_test(&mut self, mark: TestMark, cx: &mut Context<Self>) {
+        let Some(file) = self.bookmark_file() else { return };
+        let marks = self.test_marks.clone();
+        self.test_menu = None;
+        TestService::global(cx).update(cx, |s, cx| s.cover_mark(file.into(), marks, &mark, cx));
     }
 
     fn run_test(&mut self, mark: TestMark, cx: &mut Context<Self>) {
@@ -158,7 +166,9 @@ impl FileEditor {
     pub(super) fn render_test_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let (mark, at) = self.test_menu.clone()?;
         let palette = cx.palette().clone();
-        let (run, debug) = (mark.clone(), mark.clone());
+        let (run, debug, cover) = (mark.clone(), mark.clone(), mark.clone());
+        // Coverage is measured for unit tests.
+        let unit = self.bookmark_file().is_some_and(|f| testing::test_kind(&f) == Some(testing::TestKind::Unit));
         Some(
             deferred(
                 anchored().position(at).snap_to_window_with_margin(px(8.)).child(
@@ -203,7 +213,22 @@ impl FileEditor {
                                 .child(div().flex_1().child(format!("Debug '{}'", mark.name())))
                                 .child(div().pl_4().text_xs().text_color(palette.text_secondary).child(super::breakpoints::debug_shortcut()))
                                 .on_click(cx.listener(move |this, _, _, cx| this.debug_test(debug.clone(), cx))),
-                        ),
+                        )
+                        .when(unit, |el| {
+                            el.child(
+                                h_flex()
+                                    .id("test-coverage-item")
+                                    .gap_1p5()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .hover(|el| el.bg(palette.hover))
+                                    .child(Icon::new(icons::RUN_WITH_COVERAGE).xsmall())
+                                    .child(div().flex_1().child(format!("Run '{}' with Coverage", mark.name())))
+                                    .on_click(cx.listener(move |this, _, _, cx| this.cover_test(cover.clone(), cx))),
+                            )
+                        }),
                 ),
             )
             .with_priority(2),

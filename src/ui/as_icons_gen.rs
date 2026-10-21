@@ -240,6 +240,7 @@ pub const RESUME: AsIcon = AsIcon { light: &[("as/resume.l0.svg", 0xf2fcf3ff), (
 pub const RIGHT: AsIcon = AsIcon { light: &[("as/right.l0.svg", 0x6c707eff)], dark: &[("as/right.d0.svg", 0xced0d6ff)] };
 pub const RUN: AsIcon = AsIcon { light: &[("as/run.l0.svg", 0xf2fcf3ff), ("as/run.l1.svg", 0x208a3cff)], dark: &[("as/run.d0.svg", 0x253627ff), ("as/run.d1.svg", 0x57965cff)] };
 pub const RUN_TO_CURSOR: AsIcon = AsIcon { light: &[("as/run-to-cursor.l0.svg", 0x6c707eff), ("as/run-to-cursor.l1.svg", 0x3574f0ff)], dark: &[("as/run-to-cursor.d0.svg", 0xced0d6ff), ("as/run-to-cursor.d1.svg", 0x548af7ff)] };
+pub const RUN_WITH_COVERAGE: AsIcon = AsIcon { light: &[("as/run-with-coverage.l0.svg", 0x208a3cff), ("as/run-with-coverage.l1.svg", 0xf2fcf3ff), ("as/run-with-coverage.l2.svg", 0x6c707eff)], dark: &[("as/run-with-coverage.d0.svg", 0x57965cff), ("as/run-with-coverage.d1.svg", 0x253627ff), ("as/run-with-coverage.d2.svg", 0xced0d6ff)] };
 pub const SEARCH: AsIcon = AsIcon { light: &[("as/search.l0.svg", 0x6c707eff)], dark: &[("as/search.d0.svg", 0xced0d6ff)] };
 pub const SEARCH_HISTORY: AsIcon = AsIcon { light: &[("as/search-history.l0.svg", 0x6c707eff)], dark: &[("as/search-history.d0.svg", 0xced0d6ff)] };
 pub const SELECT_ALL: AsIcon = AsIcon { light: &[("as/select-all.l0.svg", 0x6c707eff)], dark: &[("as/select-all.d0.svg", 0xced0d6ff)] };
@@ -294,6 +295,7 @@ pub const TOGGLE_VISIBILITY: AsIcon = AsIcon { light: &[("as/toggle-visibility.l
 pub const TW_BOOKMARKS: AsIcon = AsIcon { light: &[("as/tw-bookmarks.l0.svg", 0x6c707eff)], dark: &[("as/tw-bookmarks.d0.svg", 0xced0d6ff)] };
 pub const TW_BUILD: AsIcon = AsIcon { light: &[("as/tw-build.l0.svg", 0x6c707eff)], dark: &[("as/tw-build.d0.svg", 0xced0d6ff)] };
 pub const TW_COMMIT: AsIcon = AsIcon { light: &[("as/tw-commit.l0.svg", 0x6c707eff)], dark: &[("as/tw-commit.d0.svg", 0xced0d6ff)] };
+pub const TW_COVERAGE: AsIcon = AsIcon { light: &[("as/tw-coverage.l0.svg", 0x6c707eff)], dark: &[("as/tw-coverage.d0.svg", 0xced0d6ff)] };
 pub const TW_DEBUG: AsIcon = AsIcon { light: &[("as/tw-debug.l0.svg", 0x6c707eff)], dark: &[("as/tw-debug.d0.svg", 0xced0d6ff)] };
 pub const TW_DEVICE_EXPLORER: AsIcon = AsIcon { light: &[("as/tw-device-explorer.l0.svg", 0x6c707eff)], dark: &[("as/tw-device-explorer.d0.svg", 0xced0d6ff)] };
 pub const TW_DEVICE_MANAGER: AsIcon = AsIcon { light: &[("as/tw-device-manager.l0.svg", 0x6c707eff)], dark: &[("as/tw-device-manager.d0.svg", 0xced0d6ff)] };
@@ -1124,6 +1126,12 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/run-to-cursor.l1.svg", include_bytes!("../../assets/as-icons/gen/run-to-cursor.l1.svg")),
     ("as/run-to-cursor.d0.svg", include_bytes!("../../assets/as-icons/gen/run-to-cursor.d0.svg")),
     ("as/run-to-cursor.d1.svg", include_bytes!("../../assets/as-icons/gen/run-to-cursor.d1.svg")),
+    ("as/run-with-coverage.l0.svg", include_bytes!("../../assets/as-icons/gen/run-with-coverage.l0.svg")),
+    ("as/run-with-coverage.l1.svg", include_bytes!("../../assets/as-icons/gen/run-with-coverage.l1.svg")),
+    ("as/run-with-coverage.l2.svg", include_bytes!("../../assets/as-icons/gen/run-with-coverage.l2.svg")),
+    ("as/run-with-coverage.d0.svg", include_bytes!("../../assets/as-icons/gen/run-with-coverage.d0.svg")),
+    ("as/run-with-coverage.d1.svg", include_bytes!("../../assets/as-icons/gen/run-with-coverage.d1.svg")),
+    ("as/run-with-coverage.d2.svg", include_bytes!("../../assets/as-icons/gen/run-with-coverage.d2.svg")),
     ("as/search.l0.svg", include_bytes!("../../assets/as-icons/gen/search.l0.svg")),
     ("as/search.d0.svg", include_bytes!("../../assets/as-icons/gen/search.d0.svg")),
     ("as/search-history.l0.svg", include_bytes!("../../assets/as-icons/gen/search-history.l0.svg")),
@@ -1258,6 +1266,8 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/tw-build.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-build.d0.svg")),
     ("as/tw-commit.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-commit.l0.svg")),
     ("as/tw-commit.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-commit.d0.svg")),
+    ("as/tw-coverage.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-coverage.l0.svg")),
+    ("as/tw-coverage.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-coverage.d0.svg")),
     ("as/tw-debug.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-debug.l0.svg")),
     ("as/tw-debug.d0.svg", include_bytes!("../../assets/as-icons/gen/tw-debug.d0.svg")),
     ("as/tw-device-explorer.l0.svg", include_bytes!("../../assets/as-icons/gen/tw-device-explorer.l0.svg")),

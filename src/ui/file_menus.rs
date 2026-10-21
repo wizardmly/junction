@@ -445,6 +445,10 @@ fn run_tests_items(menu: PopupMenu, target: &ProjectTarget, cx: &App) -> PopupMe
         let Some((build_root, module, request)) = TestService::folder_tests(&full, cx) else { return menu };
         let name = request.name.clone();
         let debug = (build_root.clone(), module.clone(), request.clone());
+        let mut covered = request.clone();
+        covered.coverage = true;
+        let cover = (build_root.clone(), module.clone(), covered);
+        let unit = request.kind == testing::TestKind::Unit;
         return menu
             .item(entry(format!("Run '{name}'"), "Ctrl+Shift+F10").icon(Icon::new(icons::RUN)).on_click(move |_, _, cx| {
                 let (build_root, module, request) = (build_root.clone(), module.clone(), request.clone());
@@ -454,6 +458,12 @@ fn run_tests_items(menu: PopupMenu, target: &ProjectTarget, cx: &App) -> PopupMe
                 let (build_root, module, request) = debug.clone();
                 DebugService::global(cx).update(cx, |s, cx| s.debug_folder(build_root, module, request, cx));
             }))
+            .when(unit, |menu| {
+                menu.item(entry(format!("Run '{name}' with Coverage"), "").icon(Icon::new(icons::RUN_WITH_COVERAGE)).on_click(move |_, _, cx| {
+                    let (build_root, module, request) = cover.clone();
+                    TestService::global(cx).update(cx, |s, cx| s.run_folder(build_root, module, request, None, cx));
+                }))
+            })
             .separator();
     }
     if testing::test_kind(&full.to_string_lossy()).is_none() || !matches!(full.extension().and_then(|e| e.to_str()), Some("kt" | "java")) {
@@ -463,6 +473,8 @@ fn run_tests_items(menu: PopupMenu, target: &ProjectTarget, cx: &App) -> PopupMe
     let marks = testing::find_tests(&text);
     let Some(mark) = marks.iter().find(|m| m.method.is_none()).cloned() else { return menu };
     let name = mark.name();
+    let unit = testing::test_kind(&full.to_string_lossy()) == Some(testing::TestKind::Unit);
+    let cover = (full.clone(), marks.clone(), mark.clone());
     let (run, debug) = ((full.clone(), marks.clone(), mark.clone()), (full, marks, mark));
     menu.item(entry(format!("Run '{name}'"), "Ctrl+Shift+F10").icon(Icon::new(icons::RUN)).on_click(move |_, _, cx| {
         let (path, marks, mark) = run.clone();
@@ -472,6 +484,12 @@ fn run_tests_items(menu: PopupMenu, target: &ProjectTarget, cx: &App) -> PopupMe
         let (path, marks, mark) = debug.clone();
         DebugService::global(cx).update(cx, |s, cx| s.debug_test(path, marks, &mark, cx));
     }))
+    .when(unit, |menu| {
+        menu.item(entry(format!("Run '{name}' with Coverage"), "").icon(Icon::new(icons::RUN_WITH_COVERAGE)).on_click(move |_, _, cx| {
+            let (path, marks, mark) = cover.clone();
+            TestService::global(cx).update(cx, |s, cx| s.cover_mark(path, marks, &mark, cx));
+        }))
+    })
     .separator()
 }
 

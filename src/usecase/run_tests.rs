@@ -1,15 +1,17 @@
 //! Run tests, as Android Studio runs a Gradle test configuration: runs the
 //! plan's tasks, building the results tree as tests start and finish, then
 //! adds what only the JUnit XML reports tell (instrumented tests). Gradle's
-//! other output goes to the console.
+//! other output goes to the console. Run with Coverage also returns what
+//! JaCoCo reported.
 
+use crate::domain::coverage::CoverageReport;
 use crate::domain::run::BuildResult;
 use crate::domain::testing::{TestEvent, TestPlan, TestResults, TestRunner};
 
 /// Runs a test plan. `on_event` sees each event once it is in the tree,
 /// `line` gets Gradle's other output. A stopped run leaves the tests that
 /// were still running terminated.
-pub fn run(runner: &dyn TestRunner, plan: &TestPlan, on_event: &mut dyn FnMut(&TestEvent), line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> (TestResults, BuildResult) {
+pub fn run(runner: &dyn TestRunner, plan: &TestPlan, on_event: &mut dyn FnMut(&TestEvent), line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> (TestResults, BuildResult, Option<CoverageReport>) {
     let mut results = TestResults::default();
     let report = runner.run_tests(
         plan,
@@ -24,7 +26,7 @@ pub fn run(runner: &dyn TestRunner, plan: &TestPlan, on_event: &mut dyn FnMut(&T
     if report.build.cancelled || cancelled() {
         results.terminate();
     }
-    (results, report.build)
+    (results, report.build, report.coverage)
 }
 
 #[cfg(test)]
@@ -47,12 +49,12 @@ mod tests {
             line("> Task :app:testDebugUnitTest");
             self.events.iter().cloned().for_each(event);
             let build = BuildResult { succeeded: !self.cancelled, cancelled: self.cancelled, problems: Vec::new(), failure: None };
-            TestRunReport { build, reported: self.reported.clone() }
+            TestRunReport { build, reported: self.reported.clone(), coverage: None }
         }
     }
 
     fn plan() -> TestPlan {
-        TestPlan { build_root: PathBuf::from("/p"), args: vec![":app:testDebugUnitTest".into()], report_dir: PathBuf::from("/p/app/build/test-results/testDebugUnitTest") }
+        TestPlan { build_root: PathBuf::from("/p"), args: vec![":app:testDebugUnitTest".into()], report_dir: PathBuf::from("/p/app/build/test-results/testDebugUnitTest"), coverage_report: None }
     }
 
     fn started(name: &str) -> TestEvent {
@@ -81,7 +83,7 @@ mod tests {
         };
         let gradle = Gradle { events: vec![started("one"), output, passed("one")], reported: vec![reported], cancelled: false, args: RefCell::default() };
         let (mut seen, mut lines) = (Vec::new(), Vec::new());
-        let (results, build) = run(&gradle, &plan(), &mut |e| seen.push(e.clone()), &mut |l| lines.push(l.to_owned()), &|| false);
+        let (results, build, _) = run(&gradle, &plan(), &mut |e| seen.push(e.clone()), &mut |l| lines.push(l.to_owned()), &|| false);
         assert!(build.succeeded);
         assert_eq!(gradle.args.borrow().as_slice(), [":app:testDebugUnitTest"]);
         assert_eq!(seen.len(), 3);
@@ -94,7 +96,7 @@ mod tests {
     #[test]
     fn a_stopped_run_terminates_what_still_runs() {
         let gradle = Gradle { events: vec![started("one"), passed("one"), started("two")], reported: vec![], cancelled: true, args: RefCell::default() };
-        let (results, build) = run(&gradle, &plan(), &mut |_| {}, &mut |_| {}, &|| true);
+        let (results, build, _) = run(&gradle, &plan(), &mut |_| {}, &mut |_| {}, &|| true);
         assert!(build.cancelled);
         assert_eq!(results.outcome_of("a.ATest", Some("two")), Some(Outcome::Terminated));
         assert_eq!(results.counts(), Counts { passed: 1, running: 1, ..Default::default() });

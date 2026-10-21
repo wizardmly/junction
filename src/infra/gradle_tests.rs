@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 
-use super::gradle;
+use super::{gradle, jacoco};
 use crate::domain::run::BuildResult;
 use crate::domain::testing::{comparison_in, Comparison, Outcome, OutputLine, TestCase, TestEvent, TestPlan, TestRunReport, TestRunner, TestSuite};
 use crate::index::libraries::cache_dir;
@@ -21,11 +21,44 @@ const INIT_SCRIPT: &str = r#"// Written by Junction for running tests.
 import groovy.json.JsonOutput
 
 def junctionEmit = { Map m -> println("JUNCTION_TEST " + JsonOutput.toJson(m)) }
+// Run with Coverage: the test task to measure, as `-Pjunction.coverage=testDebugUnitTest`.
+def junctionCoverage = gradle.startParameter.projectProperties["junction.coverage"]
 def junctionName = { d ->
     try { return d.displayName ?: d.name } catch (Throwable ignored) { return d.name }
 }
 
-allprojects {
+allprojects { p ->
+    if (junctionCoverage) {
+        p.apply plugin: "jacoco"
+        // The XML report of what the measured task ran, as Android Studio's
+        // JaCoCo runner records it. Classes: plain JVM modules', or an
+        // Android variant's Java and Kotlin output.
+        p.tasks.register("junctionCoverage", org.gradle.testing.jacoco.tasks.JacocoReport) { r ->
+            def test = p.tasks.findByName(junctionCoverage)
+            if (test != null) r.executionData(test)
+            def m = junctionCoverage =~ /^test(.+)UnitTest$/
+            def variant = m.matches() ? m.group(1)[0].toLowerCase() + m.group(1).substring(1) : null
+            def build = p.layout.buildDirectory.get().asFile
+            r.classDirectories.from(p.fileTree(build) {
+                if (variant) {
+                    include "intermediates/javac/${variant}/**/classes/**"
+                    include "intermediates/built_in_kotlinc/${variant}/**/classes/**"
+                    include "tmp/kotlin-classes/${variant}/**"
+                } else {
+                    include "classes/java/main/**"
+                    include "classes/kotlin/main/**"
+                }
+                exclude "**/R.class", "**/R\$*.class", "**/BuildConfig.class", "**/Manifest*.class"
+            })
+            r.sourceDirectories.from(p.files("src/main/java", "src/main/kotlin"))
+            r.reports { reports ->
+                reports.xml.required = true
+                reports.html.required = false
+                reports.csv.required = false
+                reports.xml.outputLocation = new File(build, "junction-coverage/" + junctionCoverage + ".xml")
+            }
+        }
+    }
     tasks.withType(Test).configureEach { t ->
         // Run again even when nothing changed, as Android Studio does.
         t.outputs.upToDateWhen { false }
@@ -34,6 +67,13 @@ allprojects {
         if (junctionDebugPort) {
             t.maxParallelForks = 1
             t.jvmArgs("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:" + junctionDebugPort)
+        }
+        if (junctionCoverage && t.name == junctionCoverage) {
+            // Robolectric loads classes without a location.
+            t.jacoco.includeNoLocationClasses = true
+            t.jacoco.excludes = ["jdk.internal.*"]
+            // Reports even when tests fail.
+            t.finalizedBy("junctionCoverage")
         }
         t.beforeTest { d ->
             junctionEmit(["event": "started", "class": d.className, "name": junctionName(d), "id": d.name, "composite": d.composite])
@@ -76,7 +116,7 @@ impl TestRunner for GradleTests {
         let Some(script) = init_script() else {
             let message = "Could not write the test script to Junction's cache.";
             line(message);
-            return TestRunReport { build: BuildResult::default(), reported: Vec::new() };
+            return TestRunReport { build: BuildResult::default(), reported: Vec::new(), coverage: None };
         };
         let mut command = gradle::gradle(&plan.build_root);
         command
@@ -92,7 +132,13 @@ impl TestRunner for GradleTests {
         let (succeeded, was_cancelled, output) = gradle::stream(command, &mut dispatch, cancelled);
         let since = started.checked_sub(Duration::from_secs(2)).unwrap_or(started);
         let reported = report_files(&plan.report_dir, since).iter().filter_map(|f| std::fs::read_to_string(f).ok()).flat_map(|xml| parse_report(&xml)).collect();
-        TestRunReport { build: BuildResult { succeeded, cancelled: was_cancelled, problems: gradle::parse_output(&output), failure: None }, reported }
+        let coverage = plan
+            .coverage_report
+            .as_deref()
+            .filter(|path| std::fs::metadata(path).and_then(|m| m.modified()).is_ok_and(|t| t >= since))
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|xml| jacoco::parse(&xml));
+        TestRunReport { build: BuildResult { succeeded, cancelled: was_cancelled, problems: gradle::parse_output(&output), failure: None }, reported, coverage }
     }
 }
 

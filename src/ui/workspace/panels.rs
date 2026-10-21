@@ -102,6 +102,7 @@ impl Workspace {
             ToolWindow::Todo => (Icon::from(icons::TW_TODO), "TODO".into(), ""),
             ToolWindow::BuildVariants => (Icon::from(icons::MODULE_ANDROID), "Build Variants".into(), ""),
             ToolWindow::Hierarchy => (Icon::from(icons::TW_HIERARCHY), "Hierarchy".into(), ""),
+            ToolWindow::Coverage => (Icon::from(icons::TW_COVERAGE), "Coverage".into(), ""),
         }
     }
 
@@ -173,6 +174,8 @@ impl Workspace {
             ToolWindow::Find => !self.find.read(cx).is_empty(),
             // Hierarchy too, with the first Call Hierarchy.
             ToolWindow::Hierarchy => !self.hierarchy.read(cx).is_empty(),
+            // Coverage with the first Run with Coverage.
+            ToolWindow::Coverage => !self.coverage.read(cx).is_empty(),
             ToolWindow::Commit => non_modal,
             _ => true,
         };
@@ -293,6 +296,7 @@ impl Workspace {
             ToolWindow::Todo => self.todo_view.clone().into_any_element(),
             ToolWindow::BuildVariants => crate::ui::common::cached(&self.variants_view),
             ToolWindow::Hierarchy => crate::ui::common::cached(&self.hierarchy),
+            ToolWindow::Coverage => crate::ui::common::cached(&self.coverage),
         }
     }
 

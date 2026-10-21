@@ -156,6 +156,7 @@ pub(super) fn main_menu(
         let debugging = crate::ui::debug_service::DebugService::global(cx).read(cx).is_active();
         menu.action_context(f.clone())
             .menu(format!("Run '{name}'"), Box::new(RunApp))
+            .menu(format!("Run '{name}' with Coverage"), Box::new(RunWithCoverage))
             .menu_with_disabled("Stop", Box::new(StopApp), !can_stop)
             .menu("Apply Changes and Restart Activity", Box::new(ApplyChanges))
             .menu("Apply Code Changes", Box::new(ApplyCodeChanges))

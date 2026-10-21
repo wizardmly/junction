@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, SharedString, Task};
 
+use crate::domain::coverage::CoverageReport;
 use crate::domain::run::{BuildResult, ModuleInfo};
 use crate::domain::testing::{self, Outcome, TestEvent, TestMark, TestRequest, TestResults};
 use crate::infra::gradle_tests::GradleTests;
@@ -27,6 +28,9 @@ pub enum TestServiceEvent {
     /// A test run from the gutter or the Project window made (or reused)
     /// its temporary run configuration: the toolbar selects it.
     Temporary(String),
+    /// Run with Coverage finished with a report (the Coverage window shows
+    /// it), or Hide Coverage dropped it.
+    Coverage,
 }
 
 const TEMPORARY_LIMIT: usize = 5;
@@ -71,6 +75,11 @@ pub struct TestService {
     /// run from the gutter or the Project window: newest last, at most
     /// five (its default "Temporary configurations limit").
     temporary: Vec<Launch>,
+    /// The last Run with Coverage's report, until Hide Coverage: the
+    /// Coverage window's table and the editors' gutter stripes.
+    pub coverage: Option<Arc<CoverageReport>>,
+    /// The covered module's folder, where its classes' sources are.
+    pub coverage_root: Option<PathBuf>,
     cancel: Arc<AtomicBool>,
     receiver: Option<std::sync::mpsc::Receiver<Message>>,
     _task: Option<Task<()>>,
@@ -121,11 +130,31 @@ impl TestService {
     /// Runs one of a file's tests (a gutter icon, Ctrl+Shift+F10); with a
     /// port, its test JVM waits there for the debugger.
     pub fn run_mark(&mut self, path: PathBuf, marks: Vec<TestMark>, mark: &TestMark, debug_port: Option<u16>, cx: &mut Context<Self>) -> bool {
+        self.launch_mark(path, marks, mark, |r| r.debug_port = debug_port, cx)
+    }
+
+    /// Run '…' with Coverage, from the gutter or the Project window.
+    pub fn cover_mark(&mut self, path: PathBuf, marks: Vec<TestMark>, mark: &TestMark, cx: &mut Context<Self>) -> bool {
+        self.launch_mark(path, marks, mark, |r| r.coverage = true, cx)
+    }
+
+    fn launch_mark(&mut self, path: PathBuf, marks: Vec<TestMark>, mark: &TestMark, set: impl FnOnce(&mut TestRequest), cx: &mut Context<Self>) -> bool {
         let name = mark.name();
         let Some(kind) = testing::test_kind(&path.to_string_lossy()) else {
             cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "The file is not in a test source set.".into() });
             return false;
         };
+        let mut request = TestRequest::of(kind, mark);
+        set(&mut request);
+        if request.coverage && kind == testing::TestKind::Instrumented {
+            cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "Coverage is measured for unit tests only.".into() });
+            return false;
+        }
+        self.launch_request(path, marks, request, cx)
+    }
+
+    fn launch_request(&mut self, path: PathBuf, marks: Vec<TestMark>, request: TestRequest, cx: &mut Context<Self>) -> bool {
+        let name = request.name.clone();
         let builds = SyncService::try_global(cx).map(|s| s.read(cx).builds().to_vec()).unwrap_or_default();
         // Before the first sync, the build files say where the module is.
         let found = testing::module_of(&path, &builds).map(|(b, m)| (b.to_path_buf(), m.clone())).or_else(|| crate::infra::gradle::module_from_files(&path));
@@ -133,8 +162,6 @@ impl TestService {
             cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "The file is not in a Gradle module.".into() });
             return false;
         };
-        let mut request = TestRequest::of(kind, mark);
-        request.debug_port = debug_port;
         let launch = Launch { build_root, module, request, source: Some((path, marks)) };
         self.remember(&launch, cx);
         self.start(launch, cx);
@@ -161,6 +188,10 @@ impl TestService {
     /// Runs a folder's tests (Project window › Run 'Tests in …').
     pub fn run_folder(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, mut request: TestRequest, debug_port: Option<u16>, cx: &mut Context<Self>) {
         request.debug_port = debug_port;
+        if request.coverage && request.kind == testing::TestKind::Instrumented {
+            cx.emit(TestServiceEvent::Error { title: format!("Error running '{}'", request.name), message: "Coverage is measured for unit tests only.".into() });
+            return;
+        }
         let launch = Launch { build_root, module, request, source: None };
         self.remember(&launch, cx);
         self.start(launch, cx);
@@ -173,9 +204,14 @@ impl TestService {
 
     /// Runs a temporary configuration again (the toolbar's Run or Debug
     /// with it selected); whether it still exists.
-    pub fn run_temporary(&mut self, name: &str, debug_port: Option<u16>, cx: &mut Context<Self>) -> bool {
+    pub fn run_temporary(&mut self, name: &str, debug_port: Option<u16>, coverage: bool, cx: &mut Context<Self>) -> bool {
         let Some(mut launch) = self.temporary.iter().find(|l| l.request.name == name).cloned() else { return false };
         launch.request.debug_port = debug_port;
+        launch.request.coverage = coverage;
+        if coverage && launch.request.kind == testing::TestKind::Instrumented {
+            cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "Coverage is measured for unit tests only.".into() });
+            return false;
+        }
         self.start(launch, cx);
         true
     }
@@ -216,6 +252,7 @@ impl TestService {
         self.temporary.retain(|l| l.request.name != name);
         let mut kept = launch.clone();
         kept.request.debug_port = None;
+        kept.request.coverage = false;
         self.temporary.push(kept);
         if self.temporary.len() > TEMPORARY_LIMIT {
             self.temporary.remove(0);
@@ -271,8 +308,8 @@ impl TestService {
             run_tests::run(&GradleTests, &plan, &mut |e| drop(events.send(Message::Event(e.clone()))), &mut |l| drop(tx.send(Message::Line(l.to_owned()))), &|| cancel.load(Ordering::Relaxed))
         });
         cx.spawn(async move |this, cx| {
-            let (results, build) = work.await;
-            this.update(cx, |this, cx| this.finish(&root, results, build, cx)).ok();
+            let (results, build, coverage) = work.await;
+            this.update(cx, |this, cx| this.finish(&root, results, build, coverage, cx)).ok();
         })
         .detach();
     }
@@ -301,9 +338,17 @@ impl TestService {
         any
     }
 
-    fn finish(&mut self, root: &Path, results: TestResults, build: BuildResult, cx: &mut Context<Self>) {
+    /// Hide Coverage: the Coverage window empties, the stripes go.
+    pub fn hide_coverage(&mut self, cx: &mut Context<Self>) {
+        self.coverage = None;
+        cx.emit(TestServiceEvent::Coverage);
+        cx.notify();
+    }
+
+    fn finish(&mut self, root: &Path, results: TestResults, build: BuildResult, coverage: Option<CoverageReport>, cx: &mut Context<Self>) {
         self.drain();
         self.receiver = None;
+        let covered = self.last.as_ref().is_some_and(|l| l.request.coverage);
         let Some(run) = self.run.as_mut() else { return };
         // The use case's tree has the XML reports merged in and the
         // stopped tests terminated.
@@ -326,6 +371,19 @@ impl TestService {
             let name = run.name.clone();
             crate::ui::compile_service::CompileService::global(cx).update(cx, |c, cx| c.set_build_problems(root, build.problems, cx));
             cx.emit(TestServiceEvent::Error { title: format!("Error running '{name}'"), message: "Gradle build failed. See the Run window.".into() });
+        } else if covered && !build.cancelled {
+            match coverage {
+                Some(mut report) => {
+                    report.name = run.name.clone();
+                    self.coverage = Some(Arc::new(report));
+                    self.coverage_root = self.last.as_ref().map(|l| l.module.dir.clone());
+                    cx.emit(TestServiceEvent::Coverage);
+                }
+                None => {
+                    let name = run.name.clone();
+                    cx.emit(TestServiceEvent::Error { title: format!("Coverage of '{name}'"), message: "JaCoCo wrote no coverage report. See the Run window.".into() });
+                }
+            }
         }
         cx.notify();
     }

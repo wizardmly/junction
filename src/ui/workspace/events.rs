@@ -398,6 +398,13 @@ impl Workspace {
             TestServiceEvent::Show => self.tools.open(ToolWindow::Run),
             TestServiceEvent::Error { title, message } => window.push_notification(Notification::error(message.clone()).title(title.clone()), cx),
             TestServiceEvent::Temporary(name) => self.run.update(cx, |r, cx| r.pick_test(name.clone(), cx)),
+            TestServiceEvent::Coverage => {
+                if crate::ui::test_service::TestService::global(cx).read(cx).coverage.is_some() {
+                    // Room for its five columns beside the editor.
+                    self.tools.make_room(ToolWindow::Coverage, 640, cx);
+                    self.tools.open(ToolWindow::Coverage);
+                }
+            }
         }
         cx.notify();
     }

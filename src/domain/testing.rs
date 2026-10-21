@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::coverage::CoverageReport;
 use super::run::{capitalize, BuildResult, ModuleInfo};
 
 // --- Test sources ---------------------------------------------------------
@@ -407,11 +408,13 @@ pub struct TestRequest {
     pub name: String,
     /// Debug: the port the test JVM waits for the debugger on.
     pub debug_port: Option<u16>,
+    /// Run with Coverage: JaCoCo records which code the tests ran.
+    pub coverage: bool,
 }
 
 impl TestRequest {
     pub fn of(kind: TestKind, mark: &TestMark) -> Self {
-        Self { kind, filters: vec![(mark.class.clone(), mark.method.clone())], name: mark.name(), debug_port: None }
+        Self { kind, filters: vec![(mark.class.clone(), mark.method.clone())], name: mark.name(), debug_port: None, coverage: false }
     }
 }
 
@@ -423,7 +426,7 @@ impl TestRequest {
 /// relative to the module's; none outside test sources.
 pub fn folder_request(rel: &str, module: &ModuleInfo) -> Option<TestRequest> {
     let parts: Vec<&str> = rel.split(['/', '\\']).filter(|p| !p.is_empty() && *p != ".").collect();
-    let whole = |kind| Some(TestRequest { kind, filters: Vec::new(), name: format!("Tests in '{}'", module.name()), debug_port: None });
+    let whole = |kind| Some(TestRequest { kind, filters: Vec::new(), name: format!("Tests in '{}'", module.name()), debug_port: None, coverage: false });
     match parts.as_slice() {
         [] | ["src"] => whole(TestKind::Unit),
         ["src", set, rest @ ..] => {
@@ -432,7 +435,7 @@ pub fn folder_request(rel: &str, module: &ModuleInfo) -> Option<TestRequest> {
                 [] | [_] => whole(kind),
                 [_, package @ ..] => {
                     let package = package.join(".");
-                    Some(TestRequest { kind, filters: vec![(format!("{package}.*"), None)], name: format!("Tests in '{package}'"), debug_port: None })
+                    Some(TestRequest { kind, filters: vec![(format!("{package}.*"), None)], name: format!("Tests in '{package}'"), debug_port: None, coverage: false })
                 }
             }
         }
@@ -448,6 +451,8 @@ pub struct TestPlan {
     pub args: Vec<String>,
     /// Where the task writes its JUnit XML reports.
     pub report_dir: PathBuf,
+    /// Run with Coverage: where the JaCoCo XML report goes.
+    pub coverage_report: Option<PathBuf>,
 }
 
 /// `:app:testDebugUnitTest --tests com.example.ExampleUnitTest.addition`
@@ -458,6 +463,7 @@ pub fn plan(build_root: &Path, module: &ModuleInfo, variant: &str, request: &Tes
     let prefix = if module.path == ":" { String::new() } else { module.path.clone() };
     let mut args = Vec::new();
     let report_dir;
+    let mut coverage_report = None;
     match request.kind {
         TestKind::Unit => {
             let task = if module.kind.is_android() { format!("test{}UnitTest", capitalize(variant)) } else { "test".into() };
@@ -469,10 +475,15 @@ pub fn plan(build_root: &Path, module: &ModuleInfo, variant: &str, request: &Tes
                     None => class.clone(),
                 });
             }
-            report_dir = module.dir.join("build/test-results").join(task);
+            report_dir = module.dir.join("build/test-results").join(&task);
             // The init script makes the test JVM wait for a debugger there.
             if let Some(port) = request.debug_port {
                 args.push(format!("-Pjunction.debugPort={port}"));
+            }
+            // The init script applies JaCoCo and reports after the task.
+            if request.coverage {
+                args.push(format!("-Pjunction.coverage={task}"));
+                coverage_report = Some(module.dir.join("build/junction-coverage").join(format!("{task}.xml")));
             }
         }
         TestKind::Instrumented => {
@@ -496,7 +507,7 @@ pub fn plan(build_root: &Path, module: &ModuleInfo, variant: &str, request: &Tes
             report_dir = module.dir.join("build/outputs/androidTest-results/connected");
         }
     }
-    TestPlan { build_root: build_root.to_path_buf(), args, report_dir }
+    TestPlan { build_root: build_root.to_path_buf(), args, report_dir, coverage_report }
 }
 
 // --- Results ------------------------------------------------------------
@@ -870,6 +881,8 @@ pub struct TestRunReport {
     pub build: BuildResult,
     /// The JUnit XML reports written during the run.
     pub reported: Vec<TestSuite>,
+    /// Run with Coverage: what JaCoCo reported.
+    pub coverage: Option<CoverageReport>,
 }
 
 /// Runs a test plan, reporting test events and Gradle's other output as
@@ -963,14 +976,19 @@ abstract class BaseTest {
         let p = plan(Path::new("/p"), &app, "demoDebug", &TestRequest::of(TestKind::Unit, &mark));
         assert_eq!(p.args, [":app:testDemoDebugUnitTest", "--tests", "a.ExampleTest.adds"]);
         assert_eq!(p.report_dir, PathBuf::from("/p/app/build/test-results/testDemoDebugUnitTest"));
-        let request = TestRequest { kind: TestKind::Instrumented, filters: vec![("a.ATest".into(), None), ("a.BTest".into(), Some("b".into()))], name: "x".into(), debug_port: None };
+        let request = TestRequest { kind: TestKind::Instrumented, filters: vec![("a.ATest".into(), None), ("a.BTest".into(), Some("b".into()))], name: "x".into(), debug_port: None, coverage: false };
         let p = plan(Path::new("/p"), &app, "demoDebug", &request);
         assert_eq!(p.args, [":app:connectedDemoDebugAndroidTest", "-Pandroid.testInstrumentationRunnerArguments.class=a.ATest,a.BTest#b"]);
         let core = ModuleInfo { path: ":".into(), dir: "/p".into(), kind: ModuleType::Jvm, variants: vec![] };
-        let mut all = TestRequest { kind: TestKind::Unit, filters: vec![], name: "All".into(), debug_port: None };
+        let mut all = TestRequest { kind: TestKind::Unit, filters: vec![], name: "All".into(), debug_port: None, coverage: false };
         assert_eq!(plan(Path::new("/p"), &core, "debug", &all).args, [":test"]);
         all.debug_port = Some(5005);
         assert_eq!(plan(Path::new("/p"), &core, "debug", &all).args, [":test", "-Pjunction.debugPort=5005"]);
+        all.debug_port = None;
+        all.coverage = true;
+        let covered = plan(Path::new("/p"), &app, "demoDebug", &all);
+        assert_eq!(covered.args, [":app:testDemoDebugUnitTest", "-Pjunction.coverage=testDemoDebugUnitTest"]);
+        assert_eq!(covered.coverage_report, Some(PathBuf::from("/p/app/build/junction-coverage/testDemoDebugUnitTest.xml")));
     }
 
     #[test]

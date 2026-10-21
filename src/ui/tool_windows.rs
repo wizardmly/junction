@@ -30,6 +30,8 @@ pub enum ToolWindow {
     BuildVariants,
     /// Call Hierarchy (Ctrl+Alt+H).
     Hierarchy,
+    /// Run with Coverage's results.
+    Coverage,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -68,7 +70,7 @@ impl Side {
 }
 
 impl ToolWindow {
-    pub const ALL: [ToolWindow; 19] = [
+    pub const ALL: [ToolWindow; 20] = [
         ToolWindow::Project,
         ToolWindow::Commit,
         ToolWindow::PullRequests,
@@ -88,6 +90,7 @@ impl ToolWindow {
         ToolWindow::RunningDevices,
         ToolWindow::DeviceExplorer,
         ToolWindow::Hierarchy,
+        ToolWindow::Coverage,
     ];
 
     fn key(self) -> &'static str {
@@ -111,6 +114,7 @@ impl ToolWindow {
             ToolWindow::Todo => "todo",
             ToolWindow::BuildVariants => "variants",
             ToolWindow::Hierarchy => "hierarchy",
+            ToolWindow::Coverage => "coverage",
         }
     }
 
@@ -120,7 +124,7 @@ impl ToolWindow {
             // The new UI keeps Notifications on the right stripe, and
             // Android Studio its Device Manager, Running Devices and Device
             // Explorer below it.
-            ToolWindow::Notifications | ToolWindow::DeviceManager | ToolWindow::RunningDevices | ToolWindow::DeviceExplorer | ToolWindow::Hierarchy => Side::Right,
+            ToolWindow::Notifications | ToolWindow::DeviceManager | ToolWindow::RunningDevices | ToolWindow::DeviceExplorer | ToolWindow::Hierarchy | ToolWindow::Coverage => Side::Right,
             _ => Side::Left,
         }
     }
@@ -253,8 +257,16 @@ impl ToolWindows {
         self.save(cx);
         // The Log needs room beside the editor: a side that was sized for
         // the Commit window gets wider for Git.
-        if window == ToolWindow::Git && side != Side::Bottom && Settings::get(cx).tool_window_sizes[side.index()] < GIT_SIDE_WIDTH {
-            Settings::update(cx, |s| s.tool_window_sizes[side.index()] = GIT_SIDE_WIDTH);
+        if window == ToolWindow::Git {
+            self.make_room(window, GIT_SIDE_WIDTH, cx);
+        }
+    }
+
+    /// Widens a window's side panel to at least `width` (not the bottom's).
+    pub fn make_room(&self, window: ToolWindow, width: u32, cx: &mut gpui_kit::App) {
+        let side = self.side(window);
+        if side != Side::Bottom && Settings::get(cx).tool_window_sizes[side.index()] < width {
+            Settings::update(cx, |s| s.tool_window_sizes[side.index()] = width);
         }
     }
 }
