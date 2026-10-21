@@ -150,8 +150,8 @@ pub(super) fn main_menu(
     let (e, f) = (entity.clone(), focus.clone());
     let menu = menu.submenu("Run", window, cx, move |menu, window, cx| {
         let run = e.read(cx).run.clone();
-        let name = run.read(cx).configuration(cx).map(|c| c.name).unwrap_or_else(|| "app".into());
-        let can_stop = run.read(cx).can_stop();
+        let name = run.read(cx).selected_name(cx).unwrap_or_else(|| "app".into());
+        let can_stop = run.read(cx).can_stop_any(cx);
         let muted = crate::ui::debug_service::DebugService::global(cx).read(cx).is_muted();
         let debugging = crate::ui::debug_service::DebugService::global(cx).read(cx).is_active();
         menu.action_context(f.clone())

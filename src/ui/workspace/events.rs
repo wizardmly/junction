@@ -397,6 +397,7 @@ impl Workspace {
         match event {
             TestServiceEvent::Show => self.tools.open(ToolWindow::Run),
             TestServiceEvent::Error { title, message } => window.push_notification(Notification::error(message.clone()).title(title.clone()), cx),
+            TestServiceEvent::Temporary(name) => self.run.update(cx, |r, cx| r.pick_test(name.clone(), cx)),
         }
         cx.notify();
     }
@@ -471,6 +472,16 @@ impl Workspace {
                     None => path.to_string_lossy().into_owned(),
                 };
                 self.open_at(path, *line, *col, window, cx);
+            }
+            RunViewEvent::Compare { name, expected, actual } => {
+                let source = crate::ui::diff_view::DiffSource::Texts {
+                    path: name.clone(),
+                    old: expected.clone(),
+                    new: actual.clone(),
+                    old_title: "Expected".into(),
+                    new_title: "Actual".into(),
+                };
+                self.open_diff(source, cx);
             }
             RunViewEvent::Hide => {
                 self.tools.hide(tool);

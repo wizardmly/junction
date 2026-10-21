@@ -45,10 +45,15 @@ struct Row {
     collapsed: Option<bool>,
 }
 
+/// IntelliJ's link under a failed comparison.
+const SEE_DIFFERENCE: &str = "<Click to see difference>";
+
 #[derive(Clone)]
 struct ConsoleLine {
     text: SharedString,
     color: Hsla,
+    /// `<Click to see difference>`: the test's name and its comparison.
+    compare: Option<(String, testing::Comparison)>,
 }
 
 pub struct TestView {
@@ -170,8 +175,11 @@ impl TestView {
         let palette = cx.palette();
         let (normal, error, secondary) = (palette.text, palette.status_conflict, palette.text_secondary);
         let mut out: Vec<ConsoleLine> = Vec::new();
-        let mut push = |text: &str, color: Hsla| out.push(ConsoleLine { text: text.to_owned().into(), color });
-        let test_lines = |class: &str, test: &TestCase, push: &mut dyn FnMut(&str, Hsla)| {
+        let link = palette.link;
+        // Each `<Click to see difference>` line's test and comparison, in order.
+        let mut compares: Vec<(String, testing::Comparison)> = Vec::new();
+        let mut push = |text: &str, color: Hsla| out.push(ConsoleLine { text: text.to_owned().into(), color, compare: None });
+        let test_lines = |class: &str, test: &TestCase, push: &mut dyn FnMut(&str, Hsla), compares: &mut Vec<(String, testing::Comparison)>| {
             for line in &test.output {
                 push(&line.text, if line.stderr { error } else { normal });
             }
@@ -181,6 +189,8 @@ impl TestView {
                     push("", normal);
                     push(&format!("Expected :{}", c.expected), normal);
                     push(&format!("Actual   :{}", c.actual), normal);
+                    push(SEE_DIFFERENCE, link);
+                    compares.push((testing::config_name(class, Some(test.method())), c.clone()));
                     push("", normal);
                 }
                 for line in testing::trim_stack(failure, class).lines() {
@@ -201,7 +211,7 @@ impl TestView {
                         push(&line.text, if line.stderr { error } else { normal });
                     }
                     for test in suite.tests.iter().filter(|t| self.visible(t)) {
-                        test_lines(class, test, &mut push);
+                        test_lines(class, test, &mut push, &mut compares);
                     }
                     if suite.tests.iter().all(|t| t.output.is_empty() && t.failure.is_none()) && suite.output.is_empty() {
                         push(&summary_of(suite), secondary);
@@ -210,7 +220,7 @@ impl TestView {
             }
             Node::Test(class, ix) => {
                 if let Some(test) = run.results.suites.iter().find(|s| s.class == *class).and_then(|s| s.tests.get(*ix)) {
-                    test_lines(class, test, &mut push);
+                    test_lines(class, test, &mut push, &mut compares);
                     if test.output.is_empty() && test.failure.is_none() {
                         let text = match test.outcome {
                             Outcome::Ignored => "Test ignored.",
@@ -222,6 +232,10 @@ impl TestView {
                     }
                 }
             }
+        }
+        let mut compares = compares.into_iter();
+        for line in out.iter_mut().filter(|l| l.color == link && l.text.as_ref() == SEE_DIFFERENCE) {
+            line.compare = compares.next();
         }
         out
     }
@@ -297,10 +311,21 @@ impl TestView {
             .collect()
     }
 
-    fn render_console(&mut self, range: Range<usize>, _: &mut Window, _: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_console(&mut self, range: Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         range
             .filter_map(|ix| self.console.get(ix).map(|l| (ix, l.clone())))
-            .map(|(ix, line)| div().id(ix).h(px(LINE)).px_2().whitespace_nowrap().text_color(line.color).child(line.text).into_any_element())
+            .map(|(ix, line)| {
+                let row = div().id(ix).h(px(LINE)).px_2().whitespace_nowrap().text_color(line.color);
+                match line.compare {
+                    // The link: the two sides in the diff viewer.
+                    Some((name, c)) => row
+                        .child(div().cursor_pointer().underline().child(line.text).id(("see-difference", ix)).on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(RunViewEvent::Compare { name: name.clone(), expected: c.expected.clone(), actual: c.actual.clone() })
+                        })))
+                        .into_any_element(),
+                    None => row.child(line.text).into_any_element(),
+                }
+            })
             .collect()
     }
 

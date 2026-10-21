@@ -31,6 +31,8 @@ pub enum Kind {
     Quoted(char),
     /// `JavaVersion.VERSION_17`, shown as `17`.
     JavaVersion,
+    /// `true` / `false`.
+    Boolean,
 }
 
 /// Where a value is and how to rewrite it.
@@ -99,6 +101,9 @@ pub fn property(label: &'static str, name: &str, script: &str, catalogs: &[(Cata
             return Property { label, value: script[inner.clone()].to_owned(), site: Some(Site { place: Place::Script, range: inner, kind: Kind::Quoted(quote) }), expression: None };
         }
     }
+    if text == "true" || text == "false" {
+        return Property { label, value: text.to_owned(), site: Some(Site { place: Place::Script, range: found.clone(), kind: Kind::Boolean }), expression: None };
+    }
     if text.chars().all(|c| c.is_ascii_digit()) {
         return Property { label, value: text.to_owned(), site: Some(Site { place: Place::Script, range: found.clone(), kind: Kind::Number }), expression: None };
     }
@@ -118,14 +123,19 @@ pub fn property(label: &'static str, name: &str, script: &str, catalogs: &[(Cata
 
 /// A module's Properties and Default Config.
 pub fn module_properties(script: &str, catalogs: &[(Catalog, String)]) -> (Vec<Property>, Vec<Property>) {
-    let read = |list: &[(&'static str, &str)]| list.iter().map(|(label, name)| property(label, name, script, catalogs)).collect();
-    (read(MODULE_PROPERTIES), read(DEFAULT_CONFIG))
+    // Default Config's rows come from its block, as flavors set the same
+    // names.
+    let android = child_blocks(script, 0..script.len()).into_iter().find(|(n, _)| n == "android").map(|(_, r)| r);
+    let default_config = android.and_then(|r| child_blocks(script, r).into_iter().find(|(n, _)| n == "defaultConfig")).map(|(_, r)| r).unwrap_or(0..script.len());
+    let properties = MODULE_PROPERTIES.iter().map(|(label, name)| property(label, name, script, catalogs)).collect();
+    let defaults = DEFAULT_CONFIG.iter().map(|(label, name)| property_in(label, name, script, default_config.clone(), catalogs)).collect();
+    (properties, defaults)
 }
 
 /// Writes a new value at a site, the way the old one was written.
 pub fn write(text: &str, site: &Site, value: &str) -> String {
     let value = match site.kind {
-        Kind::Number => value.trim().to_owned(),
+        Kind::Number | Kind::Boolean => value.trim().to_owned(),
         Kind::Quoted(q) => value.replace(q, &format!("\\{q}")),
         Kind::JavaVersion => value.trim().replace('.', "_"),
     };
@@ -145,8 +155,85 @@ pub fn check(site: &Site, value: &str) -> Result<(), String> {
     match site.kind {
         Kind::Number if !value.chars().all(|c| c.is_ascii_digit()) => Err(format!("'{value}' is not a whole number.")),
         Kind::JavaVersion if !value.chars().all(|c| c.is_ascii_digit() || c == '.') => Err(format!("'{value}' is not a Java version (17, 1.8).")),
+        Kind::Boolean if value != "true" && value != "false" => Err(format!("'{value}' is not true or false.")),
         _ => Ok(()),
     }
+}
+
+/// Build Variants › Build Types, as the PSD lists a build type's rows
+/// (Kotlin DSL's `isX` and Groovy's `x` alike).
+pub const BUILD_TYPE: &[(&str, &str)] = &[
+    ("Debuggable", r"(?:isDebuggable|debuggable)"),
+    ("Jni Debuggable", r"(?:isJniDebuggable|jniDebuggable)"),
+    ("Minify Enabled", r"(?:isMinifyEnabled|minifyEnabled)"),
+    ("Shrink Resources", r"(?:isShrinkResources|shrinkResources)"),
+    ("Multi Dex Enabled", r"multiDexEnabled"),
+    ("Application Id Suffix", r"applicationIdSuffix"),
+    ("Version Name Suffix", r"versionNameSuffix"),
+];
+
+/// Build Variants › Flavors.
+pub const FLAVOR: &[(&str, &str)] = &[
+    ("Dimension", r"dimension"),
+    ("Application ID", r"applicationId"),
+    ("Application Id Suffix", r"applicationIdSuffix"),
+    ("Min SDK Version", r"minSdk(?:Version)?"),
+    ("Target SDK Version", r"targetSdk(?:Version)?"),
+    ("Version Code", r"versionCode"),
+    ("Version Name", r"versionName"),
+    ("Version Name Suffix", r"versionNameSuffix"),
+];
+
+/// A build type or product flavor: its name and rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Variant {
+    pub name: String,
+    pub properties: Vec<Property>,
+}
+
+/// The blocks directly inside `range` of `text`: each name (`release`,
+/// or `getByName("release")` / `create("staging")`'s argument) and the
+/// bytes between its braces.
+fn child_blocks(text: &str, range: std::ops::Range<usize>) -> Vec<(String, std::ops::Range<usize>)> {
+    static NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?:(?:getByName|create|named|maybeCreate|register)\s*\(\s*["'](\w+)["']\s*\)|(\w+))\s*$"#).unwrap());
+    let mut out = Vec::new();
+    let mut at = range.start;
+    while let Some(open) = super::dependencies::next_open(text, at).filter(|&o| o < range.end) {
+        let Some(close) = super::intentions::matching(text, open) else { break };
+        let line_start = text[..open].rfind('\n').map_or(0, |i| i + 1).max(range.start);
+        if let Some(c) = NAME.captures(&text[line_start..open]) {
+            out.push((c.get(1).or(c.get(2)).unwrap().as_str().to_owned(), open + 1..close));
+        }
+        at = close + 1;
+    }
+    out
+}
+
+/// A property read from `body` of the script, at the script's offsets.
+fn property_in(label: &'static str, name: &str, script: &str, body: std::ops::Range<usize>, catalogs: &[(Catalog, String)]) -> Property {
+    let mut p = property(label, name, &script[body.clone()], catalogs);
+    if let Some(site) = p.site.as_mut().filter(|s| s.place == Place::Script) {
+        site.range = site.range.start + body.start..site.range.end + body.start;
+    }
+    p
+}
+
+/// A module's build types and product flavors, from `android { buildTypes
+/// { … } productFlavors { … } }`.
+pub fn variants(script: &str, catalogs: &[(Catalog, String)]) -> (Vec<Variant>, Vec<Variant>) {
+    let Some((_, android)) = child_blocks(script, 0..script.len()).into_iter().find(|(n, _)| n == "android") else { return Default::default() };
+    let inside = child_blocks(script, android);
+    let read = |block: &str, rows: &[(&'static str, &str)]| -> Vec<Variant> {
+        let Some((_, range)) = inside.iter().find(|(n, _)| n == block) else { return Vec::new() };
+        child_blocks(script, range.clone())
+            .into_iter()
+            .map(|(name, body)| {
+                let properties = rows.iter().map(|(label, re)| property_in(label, re, script, body.clone(), catalogs)).collect();
+                Variant { name, properties }
+            })
+            .collect()
+    };
+    (read("buildTypes", BUILD_TYPE), read("productFlavors", FLAVOR))
 }
 
 static AGP_PLUGIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"id\s*\(?\s*["']com\.android\.[\w.]+["']\s*\)?\s*version\s*\(?\s*["']([\w.\-+]+)["']"#).unwrap());
@@ -301,6 +388,27 @@ android {
         assert_eq!(props[0].value, "33");
         assert_eq!(defaults[1].value, "21");
         assert_eq!(defaults[0].site.as_ref().map(|s| s.kind), Some(Kind::Quoted('\'')));
+    }
+
+    #[test]
+    fn reads_build_types_and_flavors() {
+        let kts = "android {\n    productFlavors { create(\"x\") { minSdk = 19 } }\n    defaultConfig { minSdk = 24 }\n    buildTypes {\n        release {\n            isMinifyEnabled = true\n        }\n        getByName(\"debug\") {\n            applicationIdSuffix = \".debug\"\n        }\n        create(\"staging\") {\n            initWith(getByName(\"debug\"))\n        }\n    }\n    flavorDimensions += \"tier\"\n    productFlavors {\n        create(\"free\") {\n            dimension = \"tier\"\n            minSdk = 21\n        }\n    }\n}\n";
+        assert_eq!(module_properties(kts, &[]).1[1].value, "24");
+        let kts = &kts.replace("    productFlavors { create(\"x\") { minSdk = 19 } }\n", "");
+        let (types, flavors) = variants(kts, &[]);
+        assert_eq!(types.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["release", "debug", "staging"]);
+        let row = |v: &Variant, label: &str| v.properties.iter().find(|p| p.label == label).unwrap().clone();
+        let minify = row(&types[0], "Minify Enabled");
+        assert_eq!(minify.value, "true");
+        assert_eq!(write(kts, minify.site.as_ref().unwrap(), "false").contains("isMinifyEnabled = false"), true);
+        assert_eq!(row(&types[1], "Application Id Suffix").value, ".debug");
+        assert_eq!(row(&types[2], "Debuggable").site, None);
+        let min = row(&flavors[0], "Min SDK Version");
+        assert_eq!((flavors[0].name.as_str(), min.value.as_str()), ("free", "21"));
+        assert!(write(kts, min.site.as_ref().unwrap(), "23").contains("minSdk = 23\n        }"));
+        assert!(check(minify.site.as_ref().unwrap(), "yes").is_err());
+        let groovy = "android {\n    buildTypes {\n        release {\n            minifyEnabled false\n        }\n    }\n}\n";
+        assert_eq!(variants(groovy, &[]).0[0].properties[2].value, "false");
     }
 
     #[test]

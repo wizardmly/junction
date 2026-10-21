@@ -425,10 +425,11 @@ Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 
 | Find Usages（Alt+F7，在 toml 的键上）：分 Declarations、catalog 内引用、build 脚本引用三组；`libs.androidx.core` 不会误算成 `libs.androidx.core.ktx` 的用法 | ✅ |
 | `libs.` 补全：在 build 脚本里逐段补全 catalog 访问器，条目显示坐标或版本 | ✅ |
 | 新版本警告（AS 的 GradleDependency 检查）：build 脚本的 `"g:a:v"` 和 `id("x") version "v"`、catalog 的版本（`[versions]` 和内联版本）有更新时黄色波浪线，提示 “A newer version of g:a than v is available: w”；稳定版只推荐稳定版，预览版可推荐更新的预览版；动态版本不提示 | ✅ |
-| Alt+Enter（Show Context Actions）：弹出所在行的快速修复，“Change to w” 直接改版本 | ✅（目前只有这一种修复） |
+| Alt+Enter（Show Context Actions）：弹出所在行的快速修复，“Change to w” 直接改版本 | ✅ |
 | 版本来源：androidx、com.android、com.google.android、Firebase 等查 Google Maven，其他查 Maven Central，插件查 Gradle Plugin Portal；结果缓存在 `~/.cache/Junction/maven-versions/`，一天后重查，失败一小时后重试 | ✅ |
 | Project Structure 对话框（见第 61 节） | ✅ |
-| 迁移到 version catalog、`buildSrc` 常量、Groovy 脚本里的 catalog 补全 | ❌ 未做 |
+| Alt+Enter “Replace with new library catalog declaration for x”（AS 的 UseTomlInstead）：build 脚本里写死的 `"g:a:v"` 依赖和 `id("x") version "v"` 插件改成 `libs.x` / `alias(libs.plugins.x)`，同时在 `libs.versions.toml` 加 `[versions]` 和 `[libraries]`/`[plugins]` 条目（缺的段按 Gradle 顺序新建）；catalog 已有同坐标条目时改为 “Replace with existing version catalog reference 'x'” | ✅ |
+| `buildSrc` 常量、Groovy 脚本里的 catalog 补全 | ❌ 未做 |
 
 Linux 实测（容器访问不了 dl.google.com，androidx 和 AGP 用预先写入的缓存，其他是实际联网结果）：build.gradle.kts 里 Ctrl+B `libs.androidx.core.ktx` 跳到 toml 第 9 行；toml 里所有旧版本都有警告，Alt+Enter 选 “Change to 1.13.1” 后版本被替换；`version.ref` 跳到 `[versions]`；Alt+F7 列出 build 脚本里的用法；`libs.andr` → `androidx` → `core.` → `ktx` 逐段补全。截图：reports/Gradle文件辅助-2026-10-15/。
 
@@ -446,10 +447,13 @@ Linux 实测（容器访问不了 dl.google.com，androidx 和 AGP 用预先写�
 | 测试运行视图工具栏：Rerun、Rerun Failed Tests、Stop、Show Passed、Show Ignored、Sort Alphabetically、Sort by Duration、Expand All、Collapse All | ✅ |
 | 状态行（IntelliJ 文案和配色）：“1 test failed, 2 passed, 1 ignored” + 灰色 “4 tests total, 25 ms”；运行中显示进度；停止时 “Stopped. … 1 / 3 tests”；编译失败 “Test events were not received” | ✅ |
 | 结果树：Test Results › 测试类 › 测试，结果图标和时长（IntelliJ 的窄格式 “1 sec 234 ms”）；类可折叠；双击跳到源码 | ✅ |
-| 右侧控制台：根节点显示 Gradle 输出，类节点显示类的输出和各测试的输出 / 失败，测试节点显示它的 stdout / stderr、断言两侧（“Expected :4 / Actual :5”）和堆栈 | ✅（AS 的 `<Click to see difference>` 对比窗口未做） |
+| 右侧控制台：根节点显示 Gradle 输出，类节点显示类的输出和各测试的输出 / 失败，测试节点显示它的 stdout / stderr、断言两侧（“Expected :4 / Actual :5”）和堆栈 | ✅ |
+| 断言两侧下方的 `<Click to see difference>` 链接（2026-10-20，照 IntelliJ）：点击在对比窗口打开 Expected / Actual 两段文本（标签页名 “CalcTest.adds (Expected vs Actual)”，只读）。Linux 实测 `assertEquals(3, first)` 打开 3 对 13 的对比 | ✅ |
 | JUnit XML 报告：跑完读本次写入的 XML，补上事件里没有的测试（仪器测试只有 XML） | ✅ |
 | 编译失败：错误交给编辑器标红（同 Make Project），弹 “Error running '…'” 通知 | ✅ |
-| Project 窗口右键 “Run 'Tests in …'”、运行配置下拉里的测试配置、Debug 测试、覆盖率、测试历史 | ❌ 未做 |
+| Project 窗口右键运行测试（2026-10-20，照 IntelliJ 的 AllInPackage / AllInDirectory 生产者）：测试源集里的包目录 “Run / Debug 'Tests in 'com.example''”（单元测试 `--tests 'com.example.*'`，仪器测试用 runner 的 `package` 参数）；源集、源根、`src` 和模块目录 “Run / Debug 'Tests in 'app''”（整个模块，`src` 和模块目录只跑单元测试，且只在有单元测试时出现）；测试文件 “Run / Debug 'CalcTest'”。Linux 实测：右键 `test/java/demo` 运行得到 CalcTest 的结果树，Debug 在断点停下 | ✅ |
+| 临时运行配置（2026-10-20，照 IntelliJ 的 temporary configurations）：从 gutter、Ctrl+Shift+F10 或 Project 窗口跑测试，会生成同名的临时配置（如 “CalcTest.adds”、“Tests in 'app'”），标题栏下拉自动选中它，排在应用配置之后、最新的在上，最多 5 个；选中时标题栏的 Run / Debug / Stop 和 Run 菜单作用于这个测试。Linux 实测：gutter 运行 CalcTest.adds 后下拉选中它，点 Run 重跑，点 Debug 在断点停下，Stop 结束 | ✅（不能保存成永久配置，重启后不保留） |
+| 覆盖率、测试历史 | ❌ 未做 |
 
 Linux 实测（Xvfb）：JDK 21 + Gradle 8.14 的纯 Java 多模块项目（`:core`，JUnit 4，通过 / 断言失败 / 异常 / `@Ignore` 各一个），未同步直接运行：
 - 打开 CalcTest.java，类上 ▶▶、三个 `@Test` 方法上 ▶；点类图标弹出 “Run 'CalcTest'  Ctrl+Shift+F10”，运行 `:core:test --tests com.example.calc.CalcTest`；
@@ -1101,16 +1105,19 @@ Linux 实测（Xvfb，Java + JUnit 4 工程）：在 `CalcTest.adds` 第 10 行�
 
 ## 61. Project Structure 对话框（2026-10-20）
 
-代码：`src/domain/project_structure.rs`（从构建脚本 / version catalog / `gradle-wrapper.properties` / `local.properties` 读值、按原写法写回）、`src/usecase/project_structure.rs`（读取一个构建、把改动写回各文件）、`src/ui/project_structure_dialog.rs`。
+代码：`src/domain/project_structure.rs`、`src/domain/dependencies.rs`（从构建脚本 / version catalog / `gradle-wrapper.properties` / `local.properties` 读值、按原写法写回）、`src/usecase/project_structure.rs`（读取一个构建、把改动写回各文件）、`src/ui/project_structure_dialog.rs`。
 
 | 功能 | 状态 |
 |---|---|
-| File › Project Structure…（Ctrl+Alt+Shift+S，macOS ⌘;），左侧 SDK Location / Project / Modules 三页 | ✅ |
+| File › Project Structure…（Ctrl+Alt+Shift+S，macOS ⌘;），左侧 SDK Location / Project / Modules / Dependencies / Build Variants 五页 | ✅ |
 | SDK Location：Android SDK location（`local.properties` 的 `sdk.dir`，按 AS 的转义写 `C\:\\Users\\…`；清空则删除该行），“…” 选目录 | ✅ |
 | Project：Android Gradle Plugin Version（根脚本的 `id("com.android.*") version`、`buildscript` 的 classpath、settings 脚本的 plugins、catalog 的 `[plugins]` 或其 `version.ref`，改动写到所有出现处）；Gradle Version（改 `distributionUrl` 里的版本） | ✅ |
 | Modules：模块列表，右侧 Properties（Compile Sdk Version、Build Tools Version、NDK Version、Source / Target Compatibility）和 Default Config（Application ID、Min / Target SDK Version、Version Code、Version Name）；Kotlin DSL 和 Groovy 都支持（`x = v`、`x v`、`x(v)`） | ✅ |
 | 写回保持原写法：数字、引号（单 / 双）、`JavaVersion.VERSION_1_8` 显示为 `1.8`；`libs.versions.minSdk.get().toInt()`（Groovy 的 `toInteger()`）显示 catalog 里的值，旁边标出 `libs.versions.minSdk`，改动写进 toml；其他表达式（`rootProject.ext.target`）灰显不可改；未写的属性显示 “Not set”（暂不能新增） | ✅ |
 | OK：校验（数字字段必须是整数，Java 版本只能是数字和点），出错时在对话框底部显示 “Version Code: 'x' is not a whole number.” 并保持打开；成功后写文件并自动 Sync | ✅ |
-| AS 的 Variants / Dependencies / Build Variants 页、Signing Configs、Suggestions，新增未写的属性 | ❌ 未做 |
+| Dependencies（2026-10-20）：左边模块，中间 Declared Dependencies（顶层 `dependencies { }` 里的每条声明：库显示解析后的 `g:a:v`，`libs.x` 经 catalog 解析，模块显示 `:lib`，`platform(…)`、`files(…)` 照写的显示），右边选中项的 Requested Version（写在脚本里就改脚本，`libs.x` 改 catalog 的版本或其 `version.ref` 指向的 `[versions]`）和 Configuration 下拉；“+” 加模块依赖，“−” 删除（连同 `{ exclude … }` 闭包），下方 Add Library Dependency 填 `group:artifact:version` 和配置后添加：项目有 catalog 时按 AS 的做法加到 catalog 里（`libs.okhttp`），否则写坐标；没有 `dependencies` 块时新建；Kotlin DSL 和 Groovy 写法各按原样 | ✅（加库不能在线搜索，要填完整坐标；`buildscript` 里的 classpath 不列出） |
+| OK 时先写依赖的改动，再按新文本找回 Properties / Default Config 的位置写属性，两页同时改也不会错位 | ✅ |
+| Build Variants（2026-10-20）：左边模块，Build Types / Flavors 两个标签，中间是脚本里声明的构建类型或产品风味（`release { }`、`getByName("debug") { }`、`create("free") { }`），右边按 AS 的行：构建类型有 Debuggable、Jni Debuggable、Minify Enabled、Shrink Resources、Multi Dex Enabled、Application Id Suffix、Version Name Suffix（Kotlin DSL 的 `isX` 和 Groovy 的 `x` 都认），风味有 Dimension、Application ID、Application Id Suffix、Min / Target SDK、Version Code / Name、Version Name Suffix；布尔值只接受 true / false。Default Config 的行现在只在 `defaultConfig { }` 里找，不会读到风味里的同名设置 | ✅（不能新增 / 删除构建类型和风味；未写的属性不能新增） |
+| Signing Configs、Suggestions，新增未写的属性 | ❌ 未做 |
 
-Linux 实测（Xvfb，两个模块的 Groovy 工程 + catalog）：三页显示正确（SDK `/opt/android-sdk`、AGP 8.5.0、Gradle 8.7，app 的 Min SDK 显示 24 和 `libs.versions.minSdk`，Target SDK 灰显 `rootProject.ext.target`）；lib 的 Compile Sdk 改 35、Gradle 改 8.9、app 的 Min SDK 改 26 后点 OK，`git diff` 只改了 `lib/build.gradle` 一处、`gradle-wrapper.properties` 的 URL 和 toml 的 `minSdk = "26"`；Version Code 填 `x` 时对话框不关闭并提示错误。
+Linux 实测（Xvfb，两个模块的 Groovy 工程 + catalog）：Build Variants 页把 release 的 Minify Enabled 改 true、free 风味的 Min SDK 改 23 后 OK，只改了这两行，Modules 页的 Default Config 仍显示 24。Dependencies 页改 core-ktx 版本为 1.15.0、删 `:lib`、加 `com.squareup.okhttp3:okhttp:4.12.0` 后 OK，`app/build.gradle` 得到 `implementation libs.okhttp`，toml 加了 `okhttp` 的 `[versions]` 和新建的 `[libraries]` 段。其余三页显示正确（SDK `/opt/android-sdk`、AGP 8.5.0、Gradle 8.7，app 的 Min SDK 显示 24 和 `libs.versions.minSdk`，Target SDK 灰显 `rootProject.ext.target`）；lib 的 Compile Sdk 改 35、Gradle 改 8.9、app 的 Min SDK 改 26 后点 OK，`git diff` 只改了 `lib/build.gradle` 一处、`gradle-wrapper.properties` 的 URL 和 toml 的 `minSdk = "26"`；Version Code 填 `x` 时对话框不关闭并提示错误。

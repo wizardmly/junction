@@ -24,7 +24,12 @@ pub enum TestServiceEvent {
     Show,
     /// "Error running 'ExampleUnitTest'": a balloon.
     Error { title: String, message: String },
+    /// A test run from the gutter or the Project window made (or reused)
+    /// its temporary run configuration: the toolbar selects it.
+    Temporary(String),
 }
+
+const TEMPORARY_LIMIT: usize = 5;
 
 /// What a test run is of, kept for Rerun.
 #[derive(Clone)]
@@ -62,6 +67,10 @@ pub struct TestService {
     last: Option<Launch>,
     /// Each test's (and class's) last outcome, for the gutter.
     history: HashMap<(String, Option<String>), Outcome>,
+    /// Temporary run configurations, as IntelliJ makes one for each test
+    /// run from the gutter or the Project window: newest last, at most
+    /// five (its default "Temporary configurations limit").
+    temporary: Vec<Launch>,
     cancel: Arc<AtomicBool>,
     receiver: Option<std::sync::mpsc::Receiver<Message>>,
     _task: Option<Task<()>>,
@@ -126,7 +135,48 @@ impl TestService {
         };
         let mut request = TestRequest::of(kind, mark);
         request.debug_port = debug_port;
-        self.start(Launch { build_root, module, request, source: Some((path, marks)) }, cx);
+        let launch = Launch { build_root, module, request, source: Some((path, marks)) };
+        self.remember(&launch, cx);
+        self.start(launch, cx);
+        true
+    }
+
+    /// What Run on a Project window folder runs there (`Tests in
+    /// 'com.example'`), with the build and module; none outside tests.
+    pub fn folder_tests(dir: &std::path::Path, cx: &App) -> Option<(PathBuf, crate::domain::run::ModuleInfo, TestRequest)> {
+        let builds = SyncService::try_global(cx).map(|s| s.read(cx).builds().to_vec()).unwrap_or_default();
+        let (build_root, module) = testing::module_of(dir, &builds).map(|(b, m)| (b.to_path_buf(), m.clone())).or_else(|| crate::infra::gradle::module_from_files(&dir.join("x")))?;
+        let rel = dir.strip_prefix(&module.dir).ok()?.to_string_lossy().into_owned();
+        let request = testing::folder_request(&rel, &module)?;
+        // `src` and the module's folder offer it only with unit tests there.
+        if rel.is_empty() || rel == "src" {
+            let sets = std::fs::read_dir(module.dir.join("src")).ok()?;
+            if !sets.flatten().any(|e| testing::test_kind(&format!("src/{}/", e.file_name().to_string_lossy())) == Some(testing::TestKind::Unit)) {
+                return None;
+            }
+        }
+        Some((build_root, module, request))
+    }
+
+    /// Runs a folder's tests (Project window › Run 'Tests in …').
+    pub fn run_folder(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, mut request: TestRequest, debug_port: Option<u16>, cx: &mut Context<Self>) {
+        request.debug_port = debug_port;
+        let launch = Launch { build_root, module, request, source: None };
+        self.remember(&launch, cx);
+        self.start(launch, cx);
+    }
+
+    /// The temporary configurations' names, oldest first.
+    pub fn temporary_names(&self) -> Vec<String> {
+        self.temporary.iter().map(|l| l.request.name.clone()).collect()
+    }
+
+    /// Runs a temporary configuration again (the toolbar's Run or Debug
+    /// with it selected); whether it still exists.
+    pub fn run_temporary(&mut self, name: &str, debug_port: Option<u16>, cx: &mut Context<Self>) -> bool {
+        let Some(mut launch) = self.temporary.iter().find(|l| l.request.name == name).cloned() else { return false };
+        launch.request.debug_port = debug_port;
+        self.start(launch, cx);
         true
     }
 
@@ -160,6 +210,18 @@ impl TestService {
     }
 
     // --- Internals ------------------------------------------------------
+
+    fn remember(&mut self, launch: &Launch, cx: &mut Context<Self>) {
+        let name = launch.request.name.clone();
+        self.temporary.retain(|l| l.request.name != name);
+        let mut kept = launch.clone();
+        kept.request.debug_port = None;
+        self.temporary.push(kept);
+        if self.temporary.len() > TEMPORARY_LIMIT {
+            self.temporary.remove(0);
+        }
+        cx.emit(TestServiceEvent::Temporary(name));
+    }
 
     fn start(&mut self, launch: Launch, cx: &mut Context<Self>) {
         if self.is_running() {

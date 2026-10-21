@@ -525,16 +525,37 @@ impl DebugService {
     /// Debug a test (the gutter popup's Debug, Ctrl+Shift+F9): runs it with
     /// its JVM waiting for the debugger, and attaches.
     pub fn debug_test(&mut self, path: PathBuf, marks: Vec<TestMark>, mark: &TestMark, cx: &mut Context<Self>) {
+        let mark = mark.clone();
+        self.debug_tests(mark.name(), move |port, cx| TestService::global(cx).update(cx, |s, cx| s.run_mark(path, marks, &mark, Some(port), cx)), cx);
+    }
+
+    /// Debug 'Tests in …' on a Project window folder.
+    pub fn debug_folder(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, request: crate::domain::testing::TestRequest, cx: &mut Context<Self>) {
+        let name = request.name.clone();
+        self.debug_tests(name, move |port, cx| {
+            TestService::global(cx).update(cx, |s, cx| s.run_folder(build_root, module, request, Some(port), cx));
+            true
+        }, cx);
+    }
+
+    /// Debug with a temporary test configuration selected in the toolbar.
+    pub fn debug_temporary(&mut self, name: String, cx: &mut Context<Self>) {
+        let n = name.clone();
+        self.debug_tests(name, move |port, cx| TestService::global(cx).update(cx, |s, cx| s.run_temporary(&n, Some(port), cx)), cx);
+    }
+
+    /// Starts tests with their JVM waiting for the debugger on a free
+    /// port (`start` says whether it did), and attaches.
+    fn debug_tests(&mut self, name: String, start: impl FnOnce(u16, &mut Context<Self>) -> bool, cx: &mut Context<Self>) {
         self.end_session(cx);
         let Some(port) = free_port() else {
-            cx.emit(DebugServiceEvent::Error { title: format!("Error running '{}'", mark.name()), message: "No free port for the debugger.".into() });
+            cx.emit(DebugServiceEvent::Error { title: format!("Error running '{name}'"), message: "No free port for the debugger.".into() });
             return;
         };
-        let started = TestService::global(cx).update(cx, |s, cx| s.run_mark(path, marks, mark, Some(port), cx));
-        if !started {
+        if !start(port, cx) {
             return;
         }
-        let generation = self.begin(mark.name(), format!("Waiting for the test JVM on port {port}…"), cx);
+        let generation = self.begin(name, format!("Waiting for the test JVM on port {port}…"), cx);
         let address = format!("127.0.0.1:{port}");
         let tests = TestService::global(cx);
         self._poll = Some(cx.spawn(async move |this, cx| {

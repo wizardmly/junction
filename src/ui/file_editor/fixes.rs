@@ -58,6 +58,9 @@ pub(super) enum Choice {
     Intention(crate::domain::intentions::Intention),
     /// Generate › Override Methods… (false) / Implement Methods… (true).
     Override(bool),
+    /// Use version catalog instead: the edit, and the catalog's file
+    /// (absolute) with its new text.
+    Catalog(crate::domain::catalog_migration::CatalogMove, std::path::PathBuf),
     /// A language server's code action.
     Server(crate::index::lsp::CodeAction),
     /// Unwrap/Remove: one way to take a statement apart.
@@ -105,6 +108,10 @@ impl FileEditor {
                 items.push((intention.range.clone(), Choice::Intention(intention)));
             }
         }
+        // A build script's dependency or plugin into the version catalog.
+        if let Some((fix, file)) = self.catalog_move(&text, cursor, cx) {
+            items.push((fix.range.clone(), Choice::Catalog(fix, file)));
+        }
         // A language server's actions join the list when they arrive.
         self.request_server_actions(&text, cursor, window, cx);
         if items.is_empty() {
@@ -114,6 +121,32 @@ impl FileEditor {
         self.context_actions = Some(ContextActions { items, title: None, selected: 0, at, caret: None });
         window.focus(&self.context_focus, cx);
         cx.notify();
+    }
+
+    /// "Use version catalog instead" at the caret of a build script, with
+    /// the catalog of its build (`libs`, the nearest one up).
+    fn catalog_move(&self, text: &str, cursor: usize, cx: &Context<Self>) -> Option<(crate::domain::catalog_migration::CatalogMove, std::path::PathBuf)> {
+        if !crate::domain::version_catalog::is_build_script(&self.path) {
+            return None;
+        }
+        let index = self.code_index.clone()?;
+        let index = index.read(cx);
+        let root = index.root()?.to_path_buf();
+        let catalogs = index.catalogs.read().ok()?;
+        let dir = self.path.rsplit_once('/').map_or("", |(d, _)| d);
+        let catalog = catalogs
+            .iter()
+            .filter(|c| c.name == "libs")
+            .filter_map(|c| {
+                let build = c.path.strip_suffix("libs.versions.toml")?.trim_end_matches('/').strip_suffix("gradle")?.trim_end_matches('/');
+                (build.is_empty() || dir == build || dir.starts_with(&format!("{build}/"))).then_some((build.len(), c))
+            })
+            .max_by_key(|(len, _)| *len)?
+            .1;
+        let file = root.join(&catalog.path);
+        let catalog_text = std::fs::read_to_string(&file).ok()?;
+        let fix = crate::domain::catalog_migration::move_to_catalog(text, cursor, catalog, &catalog_text)?;
+        Some((fix, file))
     }
 
     /// Introduce Variable's "Expressions" popup at the caret: the one
@@ -233,6 +266,16 @@ impl FileEditor {
             Choice::Import(qualified) => self.import_class(&qualified, window, cx),
             Choice::Override(implement) => self.override_methods(implement, window, cx),
             Choice::Server(action) => self.apply_server_action(action, window, cx),
+            Choice::Catalog(fix, file) => {
+                if let Err(e) = std::fs::write(&file, &fix.catalog_text) {
+                    gpui_kit::component::WindowExt::push_notification(window, gpui_kit::component::notification::Notification::error(format!("Cannot write {}: {e}", file.display())), cx);
+                    return;
+                }
+                self.state.update(cx, |state, cx| {
+                    state.set_selected_range(fix.range.clone(), cx);
+                    state.replace(&fix.replacement, window, cx);
+                });
+            }
             Choice::Intention(intention) | Choice::Unwrap(intention) => self.state.update(cx, |state, cx| {
                 state.set_selected_range(intention.range.clone(), cx);
                 state.replace(&intention.replacement, window, cx);
@@ -404,6 +447,7 @@ impl FileEditor {
                 Choice::ImportClass(name, _) => (Some(icons::INTENTION_BULB), format!("Import class '{name}'")),
                 Choice::Import(qualified) => (Some(icons::CLASS), qualified.clone()),
                 Choice::Intention(i) => (Some(icons::INTENTION_BULB), i.title.clone()),
+                Choice::Catalog(fix, _) => (Some(icons::INTENTION_BULB), fix.title.clone()),
                 Choice::Unwrap(i) => (None, i.title.clone()),
                 Choice::Server(action) => (Some(icons::INTENTION_BULB), action.title.clone()),
                 Choice::Override(false) => (None, "Override Methods…".to_owned()),

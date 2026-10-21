@@ -2,6 +2,7 @@
 //! reads what its SDK Location, Project and Modules pages show, and writes
 //! the edited values back into the files they came from.
 
+use crate::domain::dependencies as deps;
 use crate::domain::project_files::ProjectFiles;
 use crate::domain::project_structure::{self as ps, Place, Property, Site};
 use crate::domain::version_catalog::Catalog;
@@ -18,6 +19,15 @@ pub struct ModulePage {
     pub script: Option<String>,
     pub properties: Vec<Property>,
     pub default_config: Vec<Property>,
+    pub build_types: Vec<ps::Variant>,
+    pub flavors: Vec<ps::Variant>,
+}
+
+/// Build Variants' two tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VariantKind {
+    BuildType,
+    Flavor,
 }
 
 /// What the dialog shows, and where each value is written.
@@ -43,11 +53,13 @@ pub struct Edits {
     pub gradle: Option<String>,
     /// (module index, label, value).
     pub modules: Vec<(usize, &'static str, String)>,
+    /// (module index, tab, build type or flavor, label, value).
+    pub variants: Vec<(usize, VariantKind, String, &'static str, String)>,
 }
 
 impl Edits {
     pub fn is_empty(&self) -> bool {
-        self.sdk_dir.is_none() && self.agp.is_none() && self.gradle.is_none() && self.modules.is_empty()
+        self.sdk_dir.is_none() && self.agp.is_none() && self.gradle.is_none() && self.modules.is_empty() && self.variants.is_empty()
     }
 }
 
@@ -72,8 +84,10 @@ pub fn read(files: &dyn ProjectFiles, modules: &[(String, String)], catalogs: Ve
         .iter()
         .map(|(path, dir)| {
             let script = script_in(files, dir, "build");
-            let (properties, default_config) = ps::module_properties(script.as_ref().map_or("", |(_, t)| t), &catalogs);
-            ModulePage { path: path.clone(), script: script.map(|(p, _)| p), properties, default_config }
+            let text = script.as_ref().map_or("", |(_, t)| t.as_str());
+            let (properties, default_config) = ps::module_properties(text, &catalogs);
+            let (build_types, flavors) = ps::variants(text, &catalogs);
+            ModulePage { path: path.clone(), script: script.map(|(p, _)| p), properties, default_config, build_types, flavors }
         })
         .collect();
     Structure {
@@ -97,6 +111,16 @@ impl Structure {
         }
     }
 
+    /// A row of a build type or flavor.
+    pub fn variant_property(&self, module: usize, kind: VariantKind, name: &str, label: &str) -> Option<&Property> {
+        let page = self.modules.get(module)?;
+        let list = match kind {
+            VariantKind::BuildType => &page.build_types,
+            VariantKind::Flavor => &page.flavors,
+        };
+        list.iter().find(|v| v.name == name)?.properties.iter().find(|p| p.label == label)
+    }
+
     /// A row of a module's page by its label.
     pub fn property(&self, module: usize, label: &str) -> Option<&Property> {
         let page = self.modules.get(module)?;
@@ -109,6 +133,10 @@ pub fn check(structure: &Structure, edits: &Edits) -> Result<(), String> {
     for (module, label, value) in &edits.modules {
         let Some(site) = structure.property(*module, label).and_then(|p| p.site.as_ref()) else { continue };
         ps::check(site, value).map_err(|e| format!("{label}: {e}"))?;
+    }
+    for (module, kind, name, label, value) in &edits.variants {
+        let Some(site) = structure.variant_property(*module, *kind, name, label).and_then(|p| p.site.as_ref()) else { continue };
+        ps::check(site, value).map_err(|e| format!("{name} › {label}: {e}"))?;
     }
     for (label, value) in [("Android Gradle Plugin Version", &edits.agp), ("Gradle Version", &edits.gradle)] {
         if value.as_deref().is_some_and(|v| v.trim().is_empty() || v.trim().contains(char::is_whitespace)) {
@@ -144,6 +172,13 @@ pub fn apply(files: &dyn ProjectFiles, structure: &Structure, edits: &Edits) -> 
             add(file, site, value.trim().to_owned());
         }
     }
+    for (module, kind, name, label, value) in &edits.variants {
+        let Some(page) = structure.modules.get(*module) else { continue };
+        let Some(site) = structure.variant_property(*module, *kind, name, label).and_then(|p| p.site.clone()) else { continue };
+        if let Some(file) = structure.file_of(site.place, page.script.as_ref()) {
+            add(file, site, value.trim().to_owned());
+        }
+    }
     if let Some(agp) = &edits.agp {
         for (site, _) in &structure.agp_sites {
             if let Some(file) = structure.file_of(site.place, structure.root_script.as_ref()) {
@@ -173,6 +208,88 @@ pub fn apply(files: &dyn ProjectFiles, structure: &Structure, edits: &Edits) -> 
         changed.push(LOCAL_PROPERTIES.into());
     }
     Ok(changed)
+}
+
+/// The Dependencies page's working copy: each module's build script and
+/// the catalogs as edited, written on OK.
+#[derive(Clone, Debug)]
+pub struct DependencyDraft {
+    /// Per module: its script's path, the text read and the text now.
+    scripts: Vec<Option<(String, String, String)>>,
+    catalogs: Vec<Catalog>,
+    /// The catalogs' texts read and now.
+    catalog_texts: Vec<(String, String)>,
+}
+
+impl DependencyDraft {
+    pub fn read(files: &dyn ProjectFiles, structure: &Structure, catalogs: Vec<Catalog>) -> Self {
+        let scripts = structure.modules.iter().map(|m| m.script.as_ref().and_then(|p| files.read(p).ok().map(|t| (p.clone(), t.clone(), t)))).collect();
+        let (catalogs, catalog_texts) = catalogs.into_iter().filter_map(|c| files.read(&c.path).ok().map(|t| (c, (t.clone(), t)))).unzip();
+        Self { scripts, catalogs, catalog_texts }
+    }
+
+    fn current_catalogs(&self) -> Vec<Catalog> {
+        self.catalogs.iter().zip(&self.catalog_texts).map(|(c, (_, now))| Catalog::parse(&c.name, &c.path, now)).collect()
+    }
+
+    fn texts(&self) -> Vec<String> {
+        self.catalog_texts.iter().map(|(_, now)| now.clone()).collect()
+    }
+
+    fn set_texts(&mut self, texts: Vec<String>) {
+        for ((_, now), text) in self.catalog_texts.iter_mut().zip(texts) {
+            *now = text;
+        }
+    }
+
+    /// Whether a module has a build script to declare dependencies in.
+    pub fn has_script(&self, module: usize) -> bool {
+        self.scripts.get(module).is_some_and(Option::is_some)
+    }
+
+    /// A module's dependencies as edited.
+    pub fn declared(&self, module: usize) -> Vec<deps::Declared> {
+        let Some(Some((_, _, script))) = self.scripts.get(module) else { return Vec::new() };
+        deps::declared(script, &self.current_catalogs())
+    }
+
+    pub fn change(&mut self, module: usize, index: usize, change: &deps::Change) -> Result<(), String> {
+        deps::check(change)?;
+        let Some(dep) = self.declared(module).into_iter().nth(index) else { return Ok(()) };
+        let texts = self.texts();
+        let Some(Some((_, _, script))) = self.scripts.get_mut(module) else { return Ok(()) };
+        let (new_script, new_texts) = deps::change(script, &texts, &dep, change);
+        *script = new_script;
+        self.set_texts(new_texts);
+        Ok(())
+    }
+
+    pub fn add(&mut self, module: usize, configuration: &str, addition: &deps::Addition) -> Result<(), String> {
+        let (catalogs, texts) = (self.current_catalogs(), self.texts());
+        let Some(Some((path, _, script))) = self.scripts.get_mut(module) else { return Err("This module has no build script.".into()) };
+        let (new_script, new_texts) = deps::add(script, path.ends_with(".kts"), &catalogs, &texts, configuration, addition)?;
+        *script = new_script;
+        self.set_texts(new_texts);
+        Ok(())
+    }
+
+    pub fn is_changed(&self) -> bool {
+        self.scripts.iter().flatten().any(|(_, old, now)| old != now) || self.catalog_texts.iter().any(|(old, now)| old != now)
+    }
+
+    /// Writes the files that changed; their paths.
+    pub fn write(&self, files: &dyn ProjectFiles) -> Result<Vec<String>, String> {
+        let mut changed = Vec::new();
+        let scripts = self.scripts.iter().flatten().map(|(p, old, now)| (p, old, now));
+        let catalogs = self.catalogs.iter().zip(&self.catalog_texts).map(|(c, (old, now))| (&c.path, old, now));
+        for (path, old, now) in scripts.chain(catalogs) {
+            if old != now {
+                files.write(path, now)?;
+                changed.push(path.clone());
+            }
+        }
+        Ok(changed)
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +357,7 @@ mod tests {
             agp: Some("8.7.2".into()),
             gradle: Some("8.11.1".into()),
             modules: vec![(0, "Compile Sdk Version", "35".into()), (0, "Min SDK Version", "26".into()), (1, "Min SDK Version", "26".into()), (0, "Version Name", "1.1".into())],
+            ..Default::default()
         };
         let mut changed = apply(&files, &s, &edits).unwrap();
         changed.sort();
@@ -252,5 +370,30 @@ mod tests {
         assert_eq!(read(LOCAL_PROPERTIES), "sdk.dir=/sdk\n");
         let bad = Edits { modules: vec![(0, "Compile Sdk Version", "x".into())], ..Default::default() };
         assert!(apply(&files, &s, &bad).unwrap_err().starts_with("Compile Sdk Version"));
+    }
+
+    #[test]
+    fn edits_dependencies_then_properties() {
+        let files = project();
+        files.write("app/build.gradle.kts", "android {\n    compileSdk = 34\n}\n\ndependencies {\n    implementation(project(\":lib\"))\n}\n").unwrap();
+        let s = structure(&files);
+        let catalogs = vec![Catalog::parse("libs", "gradle/libs.versions.toml", CATALOG)];
+        let mut draft = DependencyDraft::read(&files, &s, catalogs);
+        draft.add(0, "implementation", &deps::Addition::Library("io.coil-kt:coil:2.6.0".into())).unwrap();
+        draft.change(0, 0, &deps::Change::Configuration("api".into())).unwrap();
+        assert_eq!(draft.declared(0).iter().map(|d| format!("{} {}", d.configuration, d.text)).collect::<Vec<_>>(), ["api :lib", "implementation io.coil-kt:coil:2.6.0"]);
+        let mut written = draft.write(&files).unwrap();
+        written.sort();
+        assert_eq!(written, ["app/build.gradle.kts", "gradle/libs.versions.toml"]);
+        // Properties are found again in the new text.
+        let s = structure(&files);
+        apply(&files, &s, &Edits { modules: vec![(0, "Compile Sdk Version", "35".into())], ..Default::default() }).unwrap();
+        let groovy = "android {\n    buildTypes {\n        release {\n            minifyEnabled false\n        }\n    }\n}\n";
+        files.write("lib/build.gradle", groovy).unwrap();
+        let s = structure(&files);
+        let edits = Edits { variants: vec![(1, VariantKind::BuildType, "release".into(), "Minify Enabled", "true".into())], ..Default::default() };
+        apply(&files, &s, &edits).unwrap();
+        assert_eq!(files.read("lib/build.gradle").unwrap(), groovy.replace("false", "true"));
+        assert_eq!(files.read("app/build.gradle.kts").unwrap(), "android {\n    compileSdk = 35\n}\n\ndependencies {\n    api(project(\":lib\"))\n    implementation(libs.coil)\n}\n");
     }
 }

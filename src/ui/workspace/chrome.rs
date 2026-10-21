@@ -384,17 +384,21 @@ impl Workspace {
         let configs = service.configurations(cx);
         let device = service.device(cx);
         let devices = service.devices(cx);
-        let (busy, can_stop) = (service.is_busy(), service.can_stop());
+        let (busy, can_stop) = (service.is_busy(), service.can_stop_any(cx));
+        let tests = service.test_configurations(cx);
+        let selected_test = service.selected_test(cx);
         let running = service.console.as_ref().is_some_and(|c| c.active);
         let device_label = device.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| "No Devices".into());
         let device_icon = match device.as_ref() {
             Some(d) if d.kind == crate::android::Kind::Virtual => icons::VIRTUAL_DEVICE_PHONE,
             _ => icons::PHYSICAL_DEVICE_PHONE,
         };
-        let config_name = config.as_ref().map(|c| c.name.clone());
+        let config_name = selected_test.clone().or_else(|| config.as_ref().map(|c| c.name.clone()));
+        let config_icon = if selected_test.is_some() { icons::TEST_ROOT } else { icons::MODULE_ANDROID };
         let (make, pick_device, pick_config, start, stop, debug) = (run.clone(), run.clone(), run.clone(), run.clone(), run.clone(), run.clone());
         let selected_device = device.map(|d| d.id);
-        let selected_config = config.map(|c| (c.build_root, c.name));
+        let selected_config = config.filter(|_| selected_test.is_none()).map(|c| (c.build_root, c.name));
+        let pick_test = run.clone();
         let edit_configs = run.clone();
         h_flex()
             .gap_1()
@@ -435,7 +439,7 @@ impl Workspace {
                 Button::new("tb-config")
                     .ghost()
                     .small()
-                    .icon(Icon::new(icons::MODULE_ANDROID).small())
+                    .icon(Icon::new(config_icon).small())
                     .label(config_name.clone().unwrap_or_else(|| "Add Configuration…".into()))
                     .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
                     .tooltip("Run / Debug Configurations")
@@ -443,7 +447,7 @@ impl Workspace {
                         let edit = edit_configs.clone();
                         menu = menu.item(PopupMenuItem::new("Edit Configurations…").on_click(move |_, window, cx| edit.update(cx, |r, cx| r.edit_configurations(window, cx)))).separator();
                         if configs.is_empty() {
-                            return menu.item(PopupMenuItem::new("No application modules").disabled(true));
+                            menu = menu.item(PopupMenuItem::new("No application modules").disabled(true));
                         }
                         for c in &configs {
                             let checked = selected_config.as_ref().is_some_and(|(b, n)| *b == c.build_root && *n == c.name);
@@ -451,6 +455,19 @@ impl Workspace {
                             menu = menu.item(PopupMenuItem::new(c.name.clone()).checked(checked).on_click(move |_, _, cx| {
                                 let c = c2.clone();
                                 run.update(cx, |r, cx| r.pick_configuration(&c, cx))
+                            }));
+                        }
+                        // IntelliJ lists the temporary configurations (the
+                        // tests run from the gutter or the Project window)
+                        // after the saved ones, newest first.
+                        if !tests.is_empty() {
+                            menu = menu.separator();
+                        }
+                        for name in tests.iter().rev() {
+                            let (n, run) = (name.clone(), pick_test.clone());
+                            menu = menu.item(PopupMenuItem::new(name.clone()).icon(icons::TEST_ROOT).checked(selected_test.as_ref() == Some(name)).on_click(move |_, _, cx| {
+                                let n = n.clone();
+                                run.update(cx, |r, cx| r.pick_test(n, cx))
                             }));
                         }
                         menu
