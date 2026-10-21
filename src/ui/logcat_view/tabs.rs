@@ -141,6 +141,7 @@ impl LogcatTabs {
             LogcatEvent::OpenFrame { package, file, line } => cx.emit(LogcatEvent::OpenFrame { package: package.clone(), file: file.clone(), line: *line }),
             LogcatEvent::Split { down } => this.split(view.entity_id(), *down, window, cx),
             LogcatEvent::ClosePanel => this.close_panel(view.entity_id(), cx),
+            LogcatEvent::Import => this.import(window, cx),
             LogcatEvent::Hide => {}
         });
         self.subscriptions.insert(view.entity_id(), subscription);
@@ -154,6 +155,39 @@ impl LogcatTabs {
     fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let view = self.new_log(window, cx);
         self.tabs.push(Tab { name: tab_name(&self.names()), pane: Pane::Log(view) });
+        self.active = self.tabs.len() - 1;
+        cx.notify();
+    }
+
+    /// Import Logcat from a File…: asks for the file.
+    fn import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Import Logcat".into()) });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(picked))) = paths.await else { return };
+            let Some(path) = picked.into_iter().next() else { return };
+            this.update_in(cx, |this, window, cx| this.open_file(path, window, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// A Logcat file (`.logcat`, `logcat` output or a bugreport's log) in a
+    /// new tab named after it.
+    pub fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::{WindowExt as _, notification::Notification};
+        let read = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| crate::domain::logcat_file::read(&String::from_utf8_lossy(&bytes)));
+        let log = match read {
+            Ok(log) => log,
+            Err(e) => {
+                window.push_notification(Notification::error(e).title(format!("Cannot import {}", path.display())), cx);
+                return;
+            }
+        };
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let view = self.new_log(window, cx);
+        view.update(cx, |v, cx| v.load_file(name.clone(), log, window, cx));
+        let names = self.names();
+        let tab = if names.contains(&name) { (2..).map(|n| format!("{name} ({n})")).find(|n| !names.contains(n)).unwrap_or_default() } else { name };
+        self.tabs.push(Tab { name: tab, pane: Pane::Log(view) });
         self.active = self.tabs.len() - 1;
         cx.notify();
     }

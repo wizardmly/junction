@@ -25,6 +25,15 @@ impl Workspace {
                 return self.open_apk(root.join(&path), cx);
             }
         }
+        // A saved Logcat opens in a Logcat tab, as Android Studio imports it.
+        if revision.is_none() && path.ends_with(".logcat") {
+            if let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) {
+                self.tools.open(ToolWindow::Logcat);
+                self.logcat_view.update(cx, |l, cx| l.open_file(root.join(&path), window, cx));
+                cx.notify();
+                return;
+            }
+        }
         if revision.is_none() {
             self.recent_files.touch(&path);
             // Leaving a file: where we were is a recent location.
