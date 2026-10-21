@@ -95,6 +95,7 @@ impl Workspace {
             ToolWindow::RunningDevices => (Icon::from(icons::TW_RUNNING_DEVICES), "Running Devices".into(), ""),
             ToolWindow::DeviceExplorer => (Icon::from(icons::TW_DEVICE_EXPLORER), "Device Explorer".into(), ""),
             ToolWindow::LayoutInspector => (Icon::from(icons::LAYOUT), "Layout Inspector".into(), ""),
+            ToolWindow::Profiler => (Icon::from(icons::LIGHTNING), "Profiler".into(), ""),
             ToolWindow::Build => (Icon::from(icons::TW_BUILD), "Build".into(), ""),
             ToolWindow::Run => (Icon::from(icons::TW_RUN), "Run".into(), "Alt+4"),
             ToolWindow::Debug => (Icon::from(icons::TW_DEBUG), "Debug".into(), "Alt+5"),
@@ -261,6 +262,7 @@ impl Workspace {
         redraw(&self.running_devices, cx);
         redraw(&self.device_explorer, cx);
         redraw(&self.layout_inspector, cx);
+        redraw(&self.profiler, cx);
         for tab in &self.editors {
             redraw(&tab.view, cx);
         }
@@ -293,6 +295,7 @@ impl Workspace {
             ToolWindow::RunningDevices => crate::ui::common::cached(&self.running_devices),
             ToolWindow::DeviceExplorer => crate::ui::common::cached(&self.device_explorer),
             ToolWindow::LayoutInspector => crate::ui::common::cached(&self.layout_inspector),
+            ToolWindow::Profiler => crate::ui::common::cached(&self.profiler),
             // Not cached: their logs grow on their own.
             ToolWindow::Build => self.build_view.clone().into_any_element(),
             ToolWindow::Run => self.run_view.clone().into_any_element(),
