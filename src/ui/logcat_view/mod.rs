@@ -31,6 +31,7 @@ use gpui_kit::{
 
 use crate::android::Device;
 use crate::domain::logcat::{self, Entry, Filter, Level};
+use crate::domain::retrace::{self, Retracer};
 use crate::infra::adb_logcat::AdbLog;
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
@@ -96,6 +97,8 @@ pub struct LogcatView {
     recording: Option<crate::android::mirror::Recording>,
     /// An imported log file's name: the panel shows the file, not a device.
     file: Option<String>,
+    /// R8 / ProGuard mappings that retrace stack frames.
+    mappings: Mappings,
     _pump: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -168,6 +171,7 @@ impl LogcatView {
             embedded: false,
             recording: None,
             file: None,
+            mappings: Mappings::default(),
             _pump: None,
             _subscriptions: subscriptions,
         }
@@ -489,6 +493,69 @@ impl LogcatView {
         self.follow_device(cx);
     }
 
+    /// Load Proguard Mappings…: a mapping file for this panel's stack
+    /// traces. Without a file dialog, the project's newest mapping (the
+    /// one Android Studio's chooser starts at).
+    fn choose_mapping(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Select a Proguard Mapping File".into()) });
+        let root = (self.project)(cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let path = match paths.await {
+                Ok(Ok(picked)) => match picked.and_then(|p| p.into_iter().next()) {
+                    Some(path) => path,
+                    None => return,
+                },
+                _ => match root.and_then(|root| crate::infra::r8_mapping::project_mappings(&root).into_iter().next()) {
+                    Some(path) => path,
+                    None => return,
+                },
+            };
+            let loaded = cx.background_executor().spawn({
+                let path = path.clone();
+                async move { crate::infra::r8_mapping::load(&path) }
+            });
+            let loaded = loaded.await;
+            this.update_in(cx, |this, window, cx| match loaded {
+                Ok(retracer) => {
+                    this.mappings.manual = Some((path, Rc::new(retracer)));
+                    this.generation += 1;
+                    cx.notify();
+                }
+                Err(e) => {
+                    use gpui_kit::component::{WindowExt as _, notification::Notification};
+                    window.push_notification(Notification::error(e).title("Failed to add mapping file"), cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A frame named an `r8-map-id` no loaded mapping has: look for the
+    /// project's mapping R8 wrote with it (Android Studio's
+    /// `AutoProguardMessageRewriter`), once per id.
+    fn find_mapping(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.mappings.wanted.take() else { return };
+        if !self.mappings.tried.insert(id.clone()) {
+            return;
+        }
+        let Some(root) = (self.project)(cx) else { return };
+        let found = cx.background_executor().spawn(async move {
+            let path = crate::infra::r8_mapping::find_by_map_id(&root, &id)?;
+            crate::infra::r8_mapping::load(&path).ok().map(|r| (path, r))
+        });
+        cx.spawn(async move |this, cx| {
+            let Some((path, retracer)) = found.await else { return };
+            this.update(cx, |this, cx| {
+                this.mappings.auto = Some((path, Rc::new(retracer)));
+                this.generation += 1;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn device_label(d: &Device) -> String {
         let release = d.props.get("ro.build.version.release").cloned().unwrap_or_default();
         match d.api {
@@ -496,6 +563,36 @@ impl LogcatView {
             Some(api) => format!("{} API {api}", d.name),
             None => d.name.clone(),
         }
+    }
+}
+
+/// The panel's mappings: the one loaded with Load Proguard Mappings… and
+/// the project's one found by a frame's `r8-map-id`.
+#[derive(Default)]
+struct Mappings {
+    manual: Option<(PathBuf, Rc<Retracer>)>,
+    auto: Option<(PathBuf, Rc<Retracer>)>,
+    /// Map ids already looked for.
+    tried: std::collections::HashSet<String>,
+    /// A map id seen while drawing, to look for next.
+    wanted: std::cell::RefCell<Option<String>>,
+}
+
+impl Mappings {
+    fn retrace(&self, message: &str) -> Option<Vec<String>> {
+        let auto = self.auto.as_ref().map(|(_, r)| r);
+        if let Some(id) = retrace::frame_map_id(message) {
+            if let Some(r) = auto.filter(|r| r.map_id() == Some(id)) {
+                return r.retrace(message);
+            }
+            if !self.tried.contains(id) {
+                self.wanted.replace(Some(id.to_owned()));
+            }
+        }
+        if self.manual.is_none() && auto.is_none() {
+            return None;
+        }
+        self.manual.as_ref().and_then(|(_, r)| r.retrace(message)).or_else(|| auto.and_then(|r| r.retrace(message)))
     }
 }
 
@@ -519,7 +616,7 @@ fn pad(text: &str, width: usize) -> String {
 /// An entry as the console shows it: Android Studio's columns (the copy
 /// format), the level as a colored badge, the tag in its color, the
 /// message in the level's color, a stack frame's `Foo.kt:42` a link.
-fn console_line(e: &Entry, compact: bool, dark: bool, secondary: Hsla) -> ConsoleLine {
+fn console_line(e: &Entry, compact: bool, dark: bool, secondary: Hsla, mappings: &Mappings) -> ConsoleLine {
     use gpui_kit::HighlightStyle;
     if e.system {
         return ConsoleLine::plain(e.message.clone(), Some(secondary));
@@ -542,16 +639,28 @@ fn console_line(e: &Entry, compact: bool, dark: bool, secondary: Hsla) -> Consol
     spans.push((start..text.len(), HighlightStyle { color: Some(fg), background_color: Some(bg), ..Default::default() }));
     text.push(' ');
     let message_at = text.len();
-    text.push_str(&e.message);
+    // A retraced frame can be several (inlining): the rest go on lines of
+    // their own, under the message column.
+    let retraced = mappings.retrace(&e.message);
+    let lines = retraced.as_deref().unwrap_or(std::slice::from_ref(&e.message));
+    let indent = " ".repeat(text.chars().count());
+    let mut links = Vec::new();
+    for (i, message) in lines.iter().enumerate() {
+        if i > 0 {
+            text.push('\n');
+            text.push_str(&indent);
+        }
+        let at = text.len();
+        text.push_str(message);
+        if let Some((package, file, line)) = logcat::stack_frame(message).filter(|(_, file, _)| file != "Unknown Source") {
+            // "at com.example.Foo.bar(" + "Foo.kt:42" + ")"
+            let open = message.find('(').map_or(0, |i| i + 1);
+            let close = message.rfind(')').unwrap_or(message.len()).max(open);
+            links.push((at + open..at + close, crate::domain::console_links::ConsoleLink::Frame { package, file, line }));
+        }
+    }
     if let Some(color) = level_message(e.level, dark) {
         spans.push((message_at..text.len(), HighlightStyle { color: Some(color), ..Default::default() }));
-    }
-    let mut links = Vec::new();
-    if let Some((package, file, line)) = logcat::stack_frame(&e.message).filter(|(_, file, _)| file != "Unknown Source") {
-        // "at com.example.Foo.bar(" + "Foo.kt:42" + ")"
-        let open = e.message.find('(').map_or(0, |i| i + 1);
-        let close = e.message.rfind(')').unwrap_or(e.message.len()).max(open);
-        links.push((message_at + open..message_at + close, crate::domain::console_links::ConsoleLink::Frame { package, file, line }));
     }
     ConsoleLine { text: text.into(), color: None, spans, links }
 }
@@ -624,11 +733,12 @@ impl Render for LogcatView {
         let palette = cx.palette().clone();
         // The console catches up with what's shown.
         {
-            let (entries, first, compact, dark, secondary) = (&self.entries, self.first, self.compact, palette.dark, palette.text_secondary);
-            let line = |id: u64| entries.get((id - first) as usize).map(|e| console_line(e, compact, dark, secondary)).unwrap_or_default();
+            let (entries, first, compact, dark, secondary, mappings) = (&self.entries, self.first, self.compact, palette.dark, palette.text_secondary, &self.mappings);
+            let line = |id: u64| entries.get((id - first) as usize).map(|e| console_line(e, compact, dark, secondary, mappings)).unwrap_or_default();
             let (shown, generation) = (&self.shown, self.generation);
             self.console.update(cx, |c, cx| c.sync(shown, generation, &line, window, cx));
         }
+        self.find_mapping(cx);
         let filter_field = self.render_filter(window, cx);
         let mono = {
             use gpui_kit::component::ActiveTheme as _;
@@ -724,6 +834,14 @@ impl Render for LogcatView {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx))),
             )
             .child(side_button("logcat-restart", icons::RERUN, "Restart Logcat").on_click(cx.listener(|this, _, _, cx| this.restart(cx))))
+            .child(
+                side_button("logcat-mappings", icons::ABBREVIATE_PACKAGE_NAMES, match &self.mappings.manual {
+                    Some((path, _)) => format!("Load Proguard Mappings… (now {})", path.display()),
+                    None => "Load Proguard Mappings…".to_owned(),
+                })
+                .selected(self.mappings.manual.is_some())
+                .on_click(cx.listener(|this, _, window, cx| this.choose_mapping(window, cx))),
+            )
             // Android Studio's Screen Capture and Screen Record, for the followed device.
             .child(side_button("logcat-screenshot", icons::EMULATOR_SCREENSHOT, "Screen Capture").disabled(self.following.is_none()).on_click(cx.listener(|this, _, window, cx| this.take_screenshot(window, cx))))
             .child(

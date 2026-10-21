@@ -4,6 +4,7 @@
 
 use super::as_icons::AsIcon;
 
+pub const ABBREVIATE_PACKAGE_NAMES: AsIcon = AsIcon { light: &[("as/abbreviate-package-names.l0.svg", 0xebecf0ff), ("as/abbreviate-package-names.l1.svg", 0x3574f0ff), ("as/abbreviate-package-names.l2.svg", 0x6c707eff)], dark: &[("as/abbreviate-package-names.d0.svg", 0x43454aff), ("as/abbreviate-package-names.d1.svg", 0x548af7ff), ("as/abbreviate-package-names.d2.svg", 0xced0d6ff)] };
 pub const ACTUAL_ZOOM: AsIcon = AsIcon { light: &[("as/actual-zoom.l0.svg", 0x6c707eff)], dark: &[("as/actual-zoom.d0.svg", 0xced0d6ff)] };
 pub const ADD: AsIcon = AsIcon { light: &[("as/add.l0.svg", 0x6c707eff)], dark: &[("as/add.d0.svg", 0xced0d6ff)] };
 pub const ADD_FILE: AsIcon = AsIcon { light: &[("as/add-file.l0.svg", 0x3574f0ff), ("as/add-file.l1.svg", 0x6c707eff)], dark: &[("as/add-file.d0.svg", 0x548af7ff), ("as/add-file.d1.svg", 0xced0d6ff)] };
@@ -352,6 +353,12 @@ pub const ZOOM_OUT: AsIcon = AsIcon { light: &[("as/zoom-out.l0.svg", 0x6c707eff
 
 /// Every layer file, served by the asset source.
 pub static FILES: &[(&str, &[u8])] = &[
+    ("as/abbreviate-package-names.l0.svg", include_bytes!("../../assets/as-icons/gen/abbreviate-package-names.l0.svg")),
+    ("as/abbreviate-package-names.l1.svg", include_bytes!("../../assets/as-icons/gen/abbreviate-package-names.l1.svg")),
+    ("as/abbreviate-package-names.l2.svg", include_bytes!("../../assets/as-icons/gen/abbreviate-package-names.l2.svg")),
+    ("as/abbreviate-package-names.d0.svg", include_bytes!("../../assets/as-icons/gen/abbreviate-package-names.d0.svg")),
+    ("as/abbreviate-package-names.d1.svg", include_bytes!("../../assets/as-icons/gen/abbreviate-package-names.d1.svg")),
+    ("as/abbreviate-package-names.d2.svg", include_bytes!("../../assets/as-icons/gen/abbreviate-package-names.d2.svg")),
     ("as/actual-zoom.l0.svg", include_bytes!("../../assets/as-icons/gen/actual-zoom.l0.svg")),
     ("as/actual-zoom.d0.svg", include_bytes!("../../assets/as-icons/gen/actual-zoom.d0.svg")),
     ("as/add.l0.svg", include_bytes!("../../assets/as-icons/gen/add.l0.svg")),
