@@ -19,6 +19,103 @@ pub struct HeapSummary {
     /// Largest retained size first, as Android Studio sorts them.
     pub classes: Vec<ClassStat>,
     pub heaps: Vec<String>,
+    /// Every object, for the instance list and the references of one.
+    pub graph: HeapGraph,
+}
+
+/// One object of a class's Instance List.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Instance {
+    pub object: u32,
+    /// Hops from the nearest GC root; `None` when no root reaches it.
+    pub depth: Option<u32>,
+    pub shallow: u64,
+    pub retained: u64,
+}
+
+/// An object holding a reference to another: through which field
+/// (`mContext`, `[3]`, `static sInstance`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Referrer {
+    pub object: u32,
+    pub field: String,
+}
+
+/// The objects of a dump with what Android Studio's Instance View shows,
+/// and who references each (only reachable referrers, as the analysis
+/// counts them). Objects are numbered from 0 in dump order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeapGraph {
+    ids: Vec<u64>,
+    /// Its class row in [`HeapSummary::classes`], or past the end into
+    /// `type_names` for a class object.
+    rows: Vec<u32>,
+    type_names: Vec<String>,
+    shallow: Vec<u64>,
+    retained: Vec<u64>,
+    depth: Vec<u32>,
+    root: Vec<bool>,
+    referrer_start: Vec<u32>,
+    referrers: Vec<u32>,
+    referrer_fields: Vec<u32>,
+    fields: Vec<String>,
+}
+
+const ARRAY_INDEX: u32 = 1 << 31;
+const STATIC_FIELD: u32 = 1 << 30;
+
+impl HeapGraph {
+    /// The instances of class row `row`, reachable ones first by largest
+    /// retained size.
+    pub fn instances(&self, row: usize) -> Vec<Instance> {
+        let mut out: Vec<Instance> = (0..self.ids.len() as u32).filter(|&o| self.rows[o as usize] as usize == row).map(|o| self.instance(o)).collect();
+        out.sort_by(|a, b| a.depth.is_none().cmp(&b.depth.is_none()).then_with(|| b.retained.cmp(&a.retained)).then_with(|| a.object.cmp(&b.object)));
+        out
+    }
+
+    pub fn instance(&self, object: u32) -> Instance {
+        let o = object as usize;
+        let depth = (self.depth[o] != u32::MAX).then_some(self.depth[o]);
+        Instance { object, depth, shallow: self.shallow[o], retained: self.retained[o] }
+    }
+
+    /// `HashMap@0x12c4f0a8`, or `Foo (class)` for a class object, as the
+    /// analyzer labels an instance.
+    pub fn name(&self, object: u32) -> String {
+        let o = object as usize;
+        let full = self.type_names.get(self.rows[o] as usize).map_or("?", String::as_str);
+        if full.ends_with(" (class)") {
+            return full.to_owned();
+        }
+        let simple = full.rsplit('.').next().unwrap_or(full);
+        format!("{simple}@0x{:x}", self.ids[o])
+    }
+
+    pub fn is_root(&self, object: u32) -> bool {
+        self.root[object as usize]
+    }
+
+    /// Who references `object`, nearest to a GC root first.
+    pub fn referrers(&self, object: u32) -> Vec<Referrer> {
+        let o = object as usize;
+        let range = self.referrer_start[o] as usize..self.referrer_start[o + 1] as usize;
+        let mut out: Vec<Referrer> = self.referrers[range.clone()]
+            .iter()
+            .zip(&self.referrer_fields[range])
+            .map(|(&from, &field)| Referrer {
+                object: from,
+                field: if field & ARRAY_INDEX != 0 {
+                    format!("[{}]", field & !ARRAY_INDEX)
+                } else if field & STATIC_FIELD != 0 {
+                    format!("static {}", self.fields.get((field & !STATIC_FIELD) as usize).map_or("?", String::as_str))
+                } else {
+                    self.fields.get(field as usize).cloned().unwrap_or_default()
+                },
+            })
+            .collect();
+        out.sort_by_key(|r| (self.depth[r.object as usize], r.object));
+        out
+    }
 }
 
 struct Reader<'a> {
@@ -101,7 +198,8 @@ enum Refs {
     /// An object array's `count` ids at `off`.
     Array { off: usize, count: usize },
     /// A class object's static fields holding objects.
-    Statics(Vec<u64>),
+    /// A class object's static fields holding objects: (name, value).
+    Statics(Vec<(u64, u64)>),
 }
 
 struct Obj {
@@ -116,6 +214,7 @@ struct Obj {
 struct Layout {
     super_id: u64,
     fields: Vec<u8>,
+    names: Vec<u64>,
     /// The index of `java.lang.ref.Reference.referent`, which a weak, soft
     /// or phantom reference doesn't retain.
     referent: Option<usize>,
@@ -216,10 +315,10 @@ pub fn summarize(data: &[u8]) -> Option<HeapSummary> {
                             }
                             let mut statics = Vec::new();
                             for _ in 0..r.u16()? {
-                                r.skip(id)?;
+                                let name = r.id()?;
                                 let ty = r.u8()?;
                                 if ty == 2 {
-                                    statics.push(r.id()?);
+                                    statics.push((name, r.id()?));
                                 } else {
                                     r.skip(type_size(ty, id)?)?;
                                 }
@@ -232,7 +331,7 @@ pub fn summarize(data: &[u8]) -> Option<HeapSummary> {
                             }
                             let is_reference = class_names.get(&class).and_then(|n| strings.get(n)).is_some_and(|n| matches!(n.as_str(), "java.lang.ref.Reference" | "java/lang/ref/Reference"));
                             let referent = if is_reference { names.iter().position(|n| strings.get(n).is_some_and(|n| n == "referent")) } else { None };
-                            layouts.insert(class, Layout { super_id, fields, referent });
+                            layouts.insert(class, Layout { super_id, fields, names, referent });
                             objects.push(Obj { id: class, stat: u32::MAX, shallow: 0, refs: Refs::Statics(statics) });
                         }
                         0x21 => {
@@ -284,17 +383,18 @@ pub fn summarize(data: &[u8]) -> Option<HeapSummary> {
             }
         }
     }
-    let retained = retained_sizes(data, r.id_size, &objects, &roots, &layouts);
+    let mut graph = build_graph(data, r.id_size, &objects, &roots, &layouts, &strings);
     let mut retained_rows = vec![0u64; stats.len()];
-    for (o, size) in objects.iter().zip(&retained) {
+    for (o, size) in objects.iter().zip(&graph.retained) {
         if o.stat != u32::MAX {
             retained_rows[o.stat as usize] += size;
         }
     }
-    let mut classes: Vec<ClassStat> = stats
+    let mut classes: Vec<(usize, ClassStat)> = stats
         .into_iter()
         .zip(retained_rows)
-        .map(|((key, heap, count, data_bytes), retained)| {
+        .enumerate()
+        .map(|(i, ((key, heap, count, data_bytes), retained))| {
             let (name, shallow) = match key {
                 Key::Class(class) => {
                     let name = name_of(class);
@@ -306,25 +406,43 @@ pub fn summarize(data: &[u8]) -> Option<HeapSummary> {
                 }
                 Key::Primitive(ty) => (primitive_array_name(ty).to_owned(), data_bytes),
             };
-            ClassStat { name, heap: heaps[heap].clone(), count, shallow, retained }
+            (i, ClassStat { name, heap: heaps[heap].clone(), count, shallow, retained })
         })
         .collect();
-    classes.sort_by(|a, b| b.retained.cmp(&a.retained).then_with(|| b.shallow.cmp(&a.shallow)).then_with(|| a.name.cmp(&b.name)));
+    classes.sort_by(|(_, a), (_, b)| b.retained.cmp(&a.retained).then_with(|| b.shallow.cmp(&a.shallow)).then_with(|| a.name.cmp(&b.name)));
+    // The graph's rows follow the sorted list; class objects come after it.
+    let mut new_row = vec![0u32; classes.len()];
+    for (new, (old, _)) in classes.iter().enumerate() {
+        new_row[*old] = new as u32;
+    }
+    let classes: Vec<ClassStat> = classes.into_iter().map(|(_, c)| c).collect();
+    graph.type_names = classes.iter().map(|c| c.name.clone()).collect();
+    graph.rows = objects
+        .iter()
+        .map(|o| {
+            if o.stat != u32::MAX {
+                new_row[o.stat as usize]
+            } else {
+                graph.type_names.push(format!("{} (class)", name_of(o.id)));
+                graph.type_names.len() as u32 - 1
+            }
+        })
+        .collect();
     let mut used: Vec<String> = classes.iter().map(|c| c.heap.clone()).collect();
     used.sort();
     used.dedup();
-    Some(HeapSummary { classes, heaps: used })
+    Some(HeapSummary { classes, heaps: used, graph })
 }
 
 fn id_at(data: &[u8], at: usize, id_size: usize) -> u64 {
     data.get(at..at + id_size).map_or(0, |b| b.iter().fold(0u64, |acc, &x| (acc << 8) | x as u64))
 }
 
-/// Each object's retained size: its shallow size plus everything only it
-/// keeps alive, from the dominator tree of the graph under the GC roots
-/// (Cooper, Harvey and Kennedy's iterative algorithm). Objects no root
-/// reaches retain nothing.
-fn retained_sizes(data: &[u8], id_size: usize, objects: &[Obj], roots: &[u64], layouts: &HashMap<u64, Layout>) -> Vec<u64> {
+/// The object graph under the GC roots with each object's retained size:
+/// its shallow size plus everything only it keeps alive, from the dominator
+/// tree (Cooper, Harvey and Kennedy's iterative algorithm). Objects no root
+/// reaches retain nothing. Rows and type names are filled in by the caller.
+fn build_graph(data: &[u8], id_size: usize, objects: &[Obj], roots: &[u64], layouts: &HashMap<u64, Layout>, strings: &HashMap<u64, String>) -> HeapGraph {
     const NONE: u32 = u32::MAX;
     let index: HashMap<u64, u32> = objects.iter().enumerate().map(|(i, o)| (o.id, i as u32 + 1)).collect();
     let node = |id: u64| if id == 0 { None } else { index.get(&id).copied() };
@@ -332,14 +450,41 @@ fn retained_sizes(data: &[u8], id_size: usize, objects: &[Obj], roots: &[u64], l
     let n = objects.len() + 1;
     let mut starts: Vec<u32> = Vec::with_capacity(n + 1);
     let mut edges: Vec<u32> = Vec::new();
+    // Each edge's field: an index into `fields`, or ARRAY_INDEX | i.
+    let mut labels: Vec<u32> = Vec::new();
+    let mut fields: Vec<String> = Vec::new();
+    let mut field_ix: HashMap<u64, u32> = HashMap::new();
+    let mut field = |name: u64| {
+        *field_ix.entry(name).or_insert_with(|| {
+            fields.push(strings.get(&name).cloned().unwrap_or_default());
+            fields.len() as u32 - 1
+        })
+    };
     starts.push(0);
-    edges.extend(roots.iter().filter_map(|&id| node(id)));
+    for target in roots.iter().filter_map(|&id| node(id)) {
+        edges.push(target);
+        labels.push(0);
+    }
     starts.push(edges.len() as u32);
     for o in objects {
         match &o.refs {
             Refs::None => {}
-            Refs::Statics(ids) => edges.extend(ids.iter().filter_map(|&id| node(id))),
-            Refs::Array { off, count } => edges.extend((0..*count).filter_map(|i| node(id_at(data, off + i * id_size, id_size)))),
+            Refs::Statics(ids) => {
+                for &(name, id) in ids {
+                    if let Some(target) = node(id) {
+                        edges.push(target);
+                        labels.push(STATIC_FIELD | field(name));
+                    }
+                }
+            }
+            Refs::Array { off, count } => {
+                for i in 0..*count {
+                    if let Some(target) = node(id_at(data, off + i * id_size, id_size)) {
+                        edges.push(target);
+                        labels.push(ARRAY_INDEX | (i as u32).min(!ARRAY_INDEX));
+                    }
+                }
+            }
             Refs::Instance { class, off, len } => {
                 let (mut at, end) = (*off, off + len);
                 let mut class = *class;
@@ -353,6 +498,7 @@ fn retained_sizes(data: &[u8], id_size: usize, objects: &[Obj], roots: &[u64], l
                         if ty == 2 && layout.referent != Some(i) {
                             if let Some(target) = node(id_at(data, at, id_size)) {
                                 edges.push(target);
+                                labels.push(field(layout.names[i]));
                             }
                         }
                         at += size;
@@ -397,11 +543,14 @@ fn retained_sizes(data: &[u8], id_size: usize, objects: &[Obj], roots: &[u64], l
         pred_count[i] += pred_count[i - 1];
     }
     let mut preds = vec![0u32; pred_count[n] as usize];
+    let mut pred_labels = vec![0u32; pred_count[n] as usize];
     let mut fill = pred_count.clone();
     for &v in &order {
-        for &w in &edges[starts[v as usize] as usize..starts[v as usize + 1] as usize] {
-            preds[fill[w as usize] as usize] = v;
-            fill[w as usize] += 1;
+        for e in starts[v as usize] as usize..starts[v as usize + 1] as usize {
+            let w = edges[e] as usize;
+            preds[fill[w] as usize] = v;
+            pred_labels[fill[w] as usize] = labels[e];
+            fill[w] += 1;
         }
     }
     let mut idom = vec![NONE; n];
@@ -444,8 +593,65 @@ fn retained_sizes(data: &[u8], id_size: usize, objects: &[Obj], roots: &[u64], l
             }
         }
     }
+    drop((idom, post, order, seen, fill));
+    // Hops from the nearest root, breadth first.
+    let mut depth = vec![u32::MAX; n];
+    let mut queue = std::collections::VecDeque::new();
+    for &r in &edges[starts[0] as usize..starts[1] as usize] {
+        if depth[r as usize] == u32::MAX {
+            depth[r as usize] = 0;
+            queue.push_back(r);
+        }
+    }
+    while let Some(v) = queue.pop_front() {
+        for &w in &edges[starts[v as usize] as usize..starts[v as usize + 1] as usize] {
+            if depth[w as usize] == u32::MAX {
+                depth[w as usize] = depth[v as usize] + 1;
+                queue.push_back(w);
+            }
+        }
+    }
+    let mut root = vec![false; n];
+    for &r in &edges[starts[0] as usize..starts[1] as usize] {
+        root[r as usize] = true;
+    }
+    drop((edges, labels, starts, field));
+    // Referrers per object: the predecessors without the virtual root,
+    // compacted in place.
+    let mut referrer_start = Vec::with_capacity(n);
+    referrer_start.push(0u32);
+    let mut kept = 0usize;
+    for v in 1..n {
+        for e in pred_count[v] as usize..pred_count[v + 1] as usize {
+            if preds[e] != 0 {
+                preds[kept] = preds[e] - 1;
+                pred_labels[kept] = pred_labels[e];
+                kept += 1;
+            }
+        }
+        referrer_start.push(kept as u32);
+    }
+    drop(pred_count);
+    preds.truncate(kept);
+    preds.shrink_to_fit();
+    pred_labels.truncate(kept);
+    pred_labels.shrink_to_fit();
     retained.remove(0);
-    retained
+    depth.remove(0);
+    root.remove(0);
+    HeapGraph {
+        ids: objects.iter().map(|o| o.id).collect(),
+        rows: Vec::new(),
+        type_names: Vec::new(),
+        shallow: objects.iter().map(|o| o.shallow).collect(),
+        retained,
+        depth,
+        root,
+        referrer_start,
+        referrers: preds,
+        referrer_fields: pred_labels,
+        fields,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -527,6 +733,15 @@ pub(crate) mod tests {
         // The array alone keeps the second string; the first is also a
         // root of its own. Nothing reaches the byte array.
         assert_eq!(rows, [("java.lang.String", "app", 2, 32, 32), ("java.lang.Object[]", "app", 1, 8, 24), ("byte[]", "app", 1, 5, 0)]);
+        let g = &s.graph;
+        let strings = g.instances(0);
+        assert_eq!(strings.iter().map(|i| (i.depth, i.shallow, i.retained)).collect::<Vec<_>>(), [(Some(0), 16, 16), (Some(1), 16, 16)]);
+        assert_eq!(g.name(strings[0].object), "String@0xa");
+        assert!(g.is_root(strings[0].object) && !g.is_root(strings[1].object));
+        let array = g.instances(1)[0].object;
+        assert_eq!(g.referrers(strings[1].object), [Referrer { object: array, field: "[1]".into() }]);
+        assert_eq!(g.referrers(strings[0].object), [Referrer { object: array, field: "[0]".into() }]);
+        assert_eq!(g.instances(2)[0].depth, None);
         assert_eq!(s.heaps, ["app"]);
     }
 
@@ -590,6 +805,12 @@ pub(crate) mod tests {
         let get = |name: &str| s.classes.iter().find(|c| c.name == name).map(|c| (c.count, c.shallow, c.retained)).unwrap();
         assert_eq!(get("Holder"), (1, 12, 22));
         assert_eq!(get("Leaf"), (2, 20, 10));
+        let row = s.classes.iter().position(|c| c.name == "Leaf").unwrap();
+        let leaves = s.graph.instances(row);
+        let holder = s.graph.instances(s.classes.iter().position(|c| c.name == "Holder").unwrap())[0].object;
+        assert_eq!(s.graph.referrers(leaves[0].object), [Referrer { object: holder, field: "next".into() }]);
+        assert_eq!(leaves[1].depth, None);
+        assert_eq!(s.graph.name(holder), "Holder@0xa");
     }
 
     #[test]

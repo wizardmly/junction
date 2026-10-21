@@ -1181,7 +1181,8 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | CPU 时间线：每秒读 `/proc/stat` 和 `/proc/<pid>/stat`，算应用占整机 CPU 的百分比，显示当前值和线程数；保留最近 2 分钟 | ✅ |
 | Memory 时间线：每秒读 `dumpsys meminfo <pid>` 的 App Summary，按 Java / Native / Graphics / Stack / Code / Others 堆叠，图例显示 Total 和各项当前值（AS 的配色和顺序） | ✅ |
 | 进程退出后自动停止并提示 | ✅ |
-| Capture heap dump：`am dumpheap` 后拉回电脑，存到 `~/.cache/Junction/captures/<进程>_<时间>.hprof`（AS 的 File › Open 也能打开）；解析成类列表：Class Name、Allocations、Shallow Size、Retained Size（从 GC Root 建支配树，每个对象的保留大小按类相加；`Reference.referent` 不算持有，和 AS 一样），默认按 Retained Size 从大到小排，按堆（app / image / zygote）切换，可搜索 | ✅（没有实例列表和引用链；JVM 导出的 78 MB hprof、约 120 万对象解析约 1.1 秒，峰值内存约 270 MB） |
+| Capture heap dump：`am dumpheap` 后拉回电脑，存到 `~/.cache/Junction/captures/<进程>_<时间>.hprof`（AS 的 File › Open 也能打开）；解析成类列表：Class Name、Allocations、Shallow Size、Retained Size（从 GC Root 建支配树，每个对象的保留大小按类相加；`Reference.referent` 不算持有，和 AS 一样），默认按 Retained Size 从大到小排，按堆（app / image / zygote）切换，可搜索 | ✅（JVM 导出的 78 MB hprof、约 120 万对象解析约 1.2 秒，峰值内存约 290 MB） |
+| 点一个类：右侧 Instance List（Instance `HashMap@0x…`、Depth、Shallow Size、Retained Size，可达的按 Retained 从大到小，不可达的灰显）；点一个实例：下方 References 树，每行“字段 in 引用者”（`next`、`[3]`、`static sInstance`），按 Depth 从小到大，可一层层展开到 GC root（标 “GC root”，环不再展开，每层最多 200 个） | ✅（没有 Fields 标签页、Jump to Source 和按包分组） |
 | CPU 方法 / 系统跟踪（Perfetto）、分配跟踪、Energy | ❌ |
 
 只用模拟 adb 验证过（假 `/proc`、`dumpsys meminfo` 输出和一个 120 万字节的 Android 格式 hprof）：曲线、图例、进程切换、堆转储列表、堆切换和搜索都正确。

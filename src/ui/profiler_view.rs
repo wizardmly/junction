@@ -3,9 +3,10 @@
 //! CPU and its threads) and the Memory timeline stacked by category (Java,
 //! Native, Graphics, Stack, Code, Others). Capture heap dump saves an
 //! `.hprof` and lists its classes with their Allocations, Shallow Size and
-//! Retained Size.
+//! Retained Size; a class's Instance List (Depth, Shallow and Retained Size)
+//! and an instance's References, expandable toward the GC roots.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -20,10 +21,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     App, AppContext as _, Bounds, Context, Entity, EventEmitter, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Window, canvas, div, point, prelude::FluentBuilder as _, px, size, uniform_list,
+    StatefulInteractiveElement as _, Subscription, Window, canvas, div, point, prelude::FluentBuilder as _, px, relative, size, uniform_list,
 };
 
-use crate::domain::hprof::HeapSummary;
+use crate::domain::hprof::{HeapSummary, Instance};
 use crate::domain::profiler::{ProfiledProcess, Sample};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
@@ -46,11 +47,70 @@ struct Target {
     name: String,
 }
 
-/// A heap dump on screen: its file, classes and the heap shown.
+/// A heap dump on screen: its file, classes and the heap shown, and the
+/// class and instance picked.
 struct HeapView {
     file: PathBuf,
     summary: HeapSummary,
     heap: String,
+    class: Option<usize>,
+    instances: Vec<Instance>,
+    instance: Option<u32>,
+    refs: Vec<RefRow>,
+    /// Expanded reference rows, by their path from the picked instance.
+    expanded: HashSet<Vec<u32>>,
+}
+
+/// A row of the References tree: `field` of `object` points at the row
+/// above it (or at the picked instance).
+#[derive(Clone)]
+struct RefRow {
+    path: Vec<u32>,
+    field: String,
+    object: u32,
+    expandable: bool,
+}
+
+/// Referrers listed under one object; the rest are summarized.
+const MAX_REFERRERS: usize = 200;
+
+impl HeapView {
+    fn new(file: PathBuf, summary: HeapSummary, heap: String) -> Self {
+        Self { file, summary, heap, class: None, instances: Vec::new(), instance: None, refs: Vec::new(), expanded: HashSet::new() }
+    }
+
+    fn pick_class(&mut self, row: Option<usize>) {
+        self.class = row;
+        self.instances = row.map(|r| self.summary.graph.instances(r)).unwrap_or_default();
+        self.pick_instance(None);
+    }
+
+    fn pick_instance(&mut self, object: Option<u32>) {
+        self.instance = object;
+        self.expanded.clear();
+        self.refresh_refs();
+    }
+
+    fn refresh_refs(&mut self) {
+        fn walk(graph: &crate::domain::hprof::HeapGraph, path: &mut Vec<u32>, expanded: &HashSet<Vec<u32>>, out: &mut Vec<RefRow>) {
+            let Some(&object) = path.last() else { return };
+            for r in graph.referrers(object).into_iter().take(MAX_REFERRERS) {
+                // A referrer already on the path would loop.
+                let cycle = path.contains(&r.object);
+                path.push(r.object);
+                let expandable = !cycle && !graph.referrers(r.object).is_empty();
+                out.push(RefRow { path: path[1..].to_vec(), field: r.field, object: r.object, expandable });
+                if expandable && expanded.contains(&path[1..]) {
+                    walk(graph, path, expanded, out);
+                }
+                path.pop();
+            }
+        }
+        self.refs.clear();
+        if let Some(object) = self.instance {
+            walk(&self.summary.graph, &mut vec![object], &self.expanded, &mut self.refs);
+        }
+    }
 }
 
 pub struct ProfilerView {
@@ -233,7 +293,7 @@ impl ProfilerView {
                     Ok(summary) => {
                         let heap = if summary.heaps.iter().any(|h| h == "app") { "app".to_owned() } else { summary.heaps.first().cloned().unwrap_or_default() };
                         cx.emit(ProfilerEvent::Notify { title: "Heap Dump".into(), message: format!("Saved to {}", file.display()), error: false });
-                        this.heap = Some(HeapView { file, summary, heap });
+                        this.heap = Some(HeapView::new(file, summary, heap));
                     }
                     Err(e) => cx.emit(ProfilerEvent::Notify { title: "Heap Dump".into(), message: format!("Cannot capture a heap dump: {e} (the app must be debuggable)"), error: true }),
                 }
@@ -260,12 +320,21 @@ impl ProfilerView {
             .iter()
             .map(|&i| {
                 let c = &heap.summary.classes[i];
+                let selected = heap.class == Some(i);
                 h_flex()
+                    .id(("pf-class", i))
                     .w_full()
                     .h(px(ROW_H))
                     .px_2()
                     .text_sm()
-                    .hover(|el| el.bg(palette.hover))
+                    .when(selected, |el| el.bg(palette.selection))
+                    .when(!selected, |el| el.hover(|el| el.bg(palette.hover)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(h) = &mut this.heap {
+                            h.pick_class(Some(i));
+                        }
+                        cx.notify();
+                    }))
                     .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(c.name.clone()))
                     .child(div().w(px(110.)).flex_none().text_right().child(c.count.to_string()))
                     .child(div().w(px(130.)).flex_none().text_right().child(c.shallow.to_string()))
@@ -273,6 +342,132 @@ impl ProfilerView {
                     .into_any_element()
             })
             .collect()
+    }
+
+    fn render_instance_rows(&mut self, range: std::ops::Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
+        let palette = cx.palette().clone();
+        let Some(heap) = &self.heap else { return Vec::new() };
+        let graph = &heap.summary.graph;
+        heap.instances[range.start.min(heap.instances.len())..range.end.min(heap.instances.len())]
+            .iter()
+            .map(|inst| {
+                let object = inst.object;
+                let selected = heap.instance == Some(object);
+                h_flex()
+                    .id(("pf-instance", object as usize))
+                    .w_full()
+                    .h(px(ROW_H))
+                    .px_2()
+                    .text_sm()
+                    .when(inst.depth.is_none(), |el| el.text_color(palette.text_secondary))
+                    .when(selected, |el| el.bg(palette.selection))
+                    .when(!selected, |el| el.hover(|el| el.bg(palette.hover)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(h) = &mut this.heap {
+                            h.pick_instance(Some(object));
+                        }
+                        cx.notify();
+                    }))
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(graph.name(object)))
+                    .child(div().w(px(60.)).flex_none().text_right().child(inst.depth.map_or_else(String::new, |d| d.to_string())))
+                    .child(div().w(px(100.)).flex_none().text_right().child(inst.shallow.to_string()))
+                    .child(div().w(px(110.)).flex_none().text_right().child(inst.retained.to_string()))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    fn render_ref_rows(&mut self, range: std::ops::Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
+        let palette = cx.palette().clone();
+        let Some(heap) = &self.heap else { return Vec::new() };
+        let graph = &heap.summary.graph;
+        heap.refs[range.start.min(heap.refs.len())..range.end.min(heap.refs.len())]
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let inst = graph.instance(row.object);
+                let expanded = heap.expanded.contains(&row.path);
+                let path = row.path.clone();
+                let expandable = row.expandable;
+                h_flex()
+                    .id(("pf-ref", range.start + i))
+                    .w_full()
+                    .h(px(ROW_H))
+                    .px_2()
+                    .text_sm()
+                    .hover(|el| el.bg(palette.hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(h) = &mut this.heap {
+                            if expandable && !h.expanded.remove(&path) {
+                                h.expanded.insert(path.clone());
+                            }
+                            h.refresh_refs();
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .pl(px((row.path.len() - 1) as f32 * 16.))
+                            .child(div().w(px(14.)).flex_none().when(expandable, |el| el.child(Icon::new(if expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT }).xsmall())))
+                            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().child(format!("{} in {}", row.field, graph.name(row.object))))
+                            .when(graph.is_root(row.object), |el| el.child(div().flex_none().text_xs().text_color(palette.text_secondary).child("GC root"))),
+                    )
+                    .child(div().w(px(60.)).flex_none().text_right().child(inst.depth.map_or_else(String::new, |d| d.to_string())))
+                    .child(div().w(px(100.)).flex_none().text_right().child(inst.shallow.to_string()))
+                    .child(div().w(px(110.)).flex_none().text_right().child(inst.retained.to_string()))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    /// Instance List of the picked class, and the picked instance's References.
+    fn render_instance_panel(&self, heap: &HeapView, palette: &crate::theme::Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let columns = |first: &'static str| {
+            h_flex()
+                .h(px(ROW_H))
+                .flex_none()
+                .px_2()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette.text_secondary)
+                .border_b_1()
+                .border_color(palette.border)
+                .child(div().flex_1().min_w_0().child(first))
+                .child(div().w(px(60.)).flex_none().text_right().child("Depth"))
+                .child(div().w(px(100.)).flex_none().text_right().child("Shallow Size"))
+                .child(div().w(px(110.)).flex_none().text_right().child("Retained Size"))
+        };
+        let title = |text: String| div().px_2().py_1().flex_none().text_xs().font_weight(FontWeight::SEMIBOLD).child(text);
+        let class_name = heap.class.and_then(|c| heap.summary.classes.get(c)).map(|c| c.name.clone()).unwrap_or_default();
+        v_flex()
+            .w(relative(0.5))
+            .h_full()
+            .flex_none()
+            .border_l_1()
+            .border_color(palette.border)
+            .child(title(format!("Instance List: {class_name} ({})", heap.instances.len())))
+            .child(columns("Instance"))
+            .child(uniform_list("pf-instances", heap.instances.len(), cx.processor(Self::render_instance_rows)).flex_1().min_h_0())
+            .when_some(heap.instance, |el, object| {
+                let empty = heap.refs.is_empty();
+                el.child(
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .border_t_1()
+                        .border_color(palette.border)
+                        .child(title(format!("References: {}", heap.summary.graph.name(object))))
+                        .child(columns("Reference"))
+                        .when(empty, |el| {
+                            let why = if heap.summary.graph.is_root(object) { "A GC root; nothing else references it" } else { "Nothing reachable references it" };
+                            el.child(div().p_2().text_sm().text_color(palette.text_secondary).child(why))
+                        })
+                        .when(!empty, |el| el.child(uniform_list("pf-refs", heap.refs.len(), cx.processor(Self::render_ref_rows)).flex_1().min_h_0())),
+                )
+            })
     }
 
     /// Shorter charts while a heap dump shares the window.
@@ -435,6 +630,7 @@ impl Render for ProfilerView {
                         entity.update(cx, |this, cx| {
                             if let Some(h) = &mut this.heap {
                                 h.heap = name.clone();
+                                h.pick_class(None);
                             }
                             cx.notify();
                         })
@@ -461,19 +657,32 @@ impl Render for ProfilerView {
                 )
                 .child(
                     h_flex()
-                        .h(px(ROW_H))
-                        .px_2()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(palette.text_secondary)
-                        .border_b_1()
-                        .border_color(palette.border)
-                        .child(div().flex_1().min_w_0().child("Class Name"))
-                        .child(div().w(px(110.)).flex_none().text_right().child("Allocations"))
-                        .child(div().w(px(130.)).flex_none().text_right().child("Shallow Size"))
-                        .child(div().w(px(130.)).flex_none().text_right().child("Retained Size")),
+                        .flex_1()
+                        .min_h_0()
+                        .items_start()
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .h_full()
+                                .child(
+                                    h_flex()
+                                        .h(px(ROW_H))
+                                        .px_2()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(palette.text_secondary)
+                                        .border_b_1()
+                                        .border_color(palette.border)
+                                        .child(div().flex_1().min_w_0().child("Class Name"))
+                                        .child(div().w(px(110.)).flex_none().text_right().child("Allocations"))
+                                        .child(div().w(px(130.)).flex_none().text_right().child("Shallow Size"))
+                                        .child(div().w(px(130.)).flex_none().text_right().child("Retained Size")),
+                                )
+                                .child(uniform_list("pf-classes", count, cx.processor(Self::render_class_rows)).flex_1().min_h_0()),
+                        )
+                        .when(heap.class.is_some(), |el| el.child(self.render_instance_panel(heap, &palette, cx))),
                 )
-                .child(uniform_list("pf-classes", count, cx.processor(Self::render_class_rows)).flex_1().min_h_0())
         });
         let empty = self.session.is_none() && self.samples.is_empty();
         v_flex()
