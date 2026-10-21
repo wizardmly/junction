@@ -42,8 +42,10 @@ pub struct Table {
     pub columns: Vec<String>,
     /// The column that is the rowid (`INTEGER PRIMARY KEY`), stored as NULL.
     pub rowid_column: Option<usize>,
-    /// `WITHOUT ROWID` tables are index b-trees, which aren't read.
+    /// `WITHOUT ROWID` tables are index b-trees keyed by the primary key.
     pub without_rowid: bool,
+    /// The primary key's columns, in key order.
+    pub primary_key: Vec<usize>,
     pub sql: String,
 }
 
@@ -54,6 +56,8 @@ pub struct Database {
     /// Pages the WAL holds newer copies of: page number → offset in `wal`.
     wal_pages: HashMap<u32, usize>,
     wal: Vec<u8>,
+    /// The database's size in pages after the WAL's last commit.
+    wal_size: Option<u32>,
     utf16: Option<bool>,
 }
 
@@ -95,7 +99,7 @@ impl Database {
             3 => Some(true),
             _ => None,
         };
-        let mut db = Self { data, page_size, usable, wal_pages: HashMap::new(), wal: Vec::new(), utf16 };
+        let mut db = Self { data, page_size, usable, wal_pages: HashMap::new(), wal: Vec::new(), wal_size: None, utf16 };
         if let Some(wal) = wal {
             db.apply_wal(wal);
         }
@@ -119,12 +123,31 @@ impl Database {
             }
             let page = be(&wal, at, 4).unwrap_or(0) as u32;
             pending.insert(page, at + 24);
-            if be(&wal, at + 4, 4).unwrap_or(0) != 0 {
+            let size = be(&wal, at + 4, 4).unwrap_or(0) as u32;
+            if size != 0 {
                 self.wal_pages.extend(pending.drain());
+                self.wal_size = Some(size);
             }
             at += frame;
         }
         self.wal = wal;
+    }
+
+    /// The database as one file, the WAL's committed pages written in: what
+    /// Export saves, so it opens without its `-wal`.
+    pub fn image(&self) -> Vec<u8> {
+        let pages = self.wal_size.unwrap_or((self.data.len() / self.page_size) as u32);
+        let mut out = Vec::with_capacity(pages as usize * self.page_size);
+        for n in 1..=pages {
+            match self.page(n) {
+                Some(page) => out.extend_from_slice(page),
+                None => out.resize(out.len() + self.page_size, 0),
+            }
+        }
+        if out.len() >= 100 {
+            out[28..32].copy_from_slice(&pages.to_be_bytes());
+        }
+        out
     }
 
     fn page(&self, number: u32) -> Option<&[u8]> {
@@ -163,7 +186,7 @@ impl Database {
                     let cell = be(page, pointers + i * 2, 2)? as usize;
                     let (size, n) = varint(page, cell)?;
                     let (rowid, m) = varint(page, cell + n)?;
-                    let payload = self.payload(page, cell + n + m, size as usize)?;
+                    let payload = self.payload(page, cell + n + m, size as usize, self.usable - 35)?;
                     out.push((rowid as i64, payload));
                 }
                 Some(())
@@ -172,10 +195,50 @@ impl Database {
         }
     }
 
-    /// A cell's payload, following its overflow pages.
-    fn payload(&self, page: &[u8], at: usize, size: usize) -> Option<Vec<u8>> {
+    /// An index b-tree's keys in order: a `WITHOUT ROWID` table's records.
+    /// Interior pages hold keys too, between their children's.
+    fn walk_index(&self, root: u32, limit: usize, out: &mut Vec<Vec<u8>>, depth: usize) -> Option<()> {
+        if depth > 64 || out.len() >= limit {
+            return Some(());
+        }
+        let page = self.page(root)?;
+        let header = if root == 1 { 100 } else { 0 };
+        let kind = page[header];
+        let cells = be(page, header + 3, 2)? as usize;
+        let pointers = header + if kind == 2 { 12 } else { 8 };
+        let max_local = (self.usable - 12) * 64 / 255 - 23;
+        match kind {
+            2 | 10 => {
+                for i in 0..cells {
+                    if out.len() >= limit {
+                        return Some(());
+                    }
+                    let mut cell = be(page, pointers + i * 2, 2)? as usize;
+                    if kind == 2 {
+                        let child = be(page, cell, 4)? as u32;
+                        self.walk_index(child, limit, out, depth + 1)?;
+                        if out.len() >= limit {
+                            return Some(());
+                        }
+                        cell += 4;
+                    }
+                    let (size, n) = varint(page, cell)?;
+                    out.push(self.payload(page, cell + n, size as usize, max_local)?);
+                }
+                if kind == 2 {
+                    let right = be(page, header + 8, 4)? as u32;
+                    self.walk_index(right, limit, out, depth + 1)?;
+                }
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
+    /// A cell's payload, following its overflow pages; `x` is the most a
+    /// cell keeps on its page (smaller for index pages).
+    fn payload(&self, page: &[u8], at: usize, size: usize, x: usize) -> Option<Vec<u8>> {
         let u = self.usable;
-        let x = u - 35;
         if size <= x {
             return Some(page.get(at..at + size)?.to_vec());
         }
@@ -275,7 +338,9 @@ impl Database {
                 };
                 let sql = text(4);
                 let (columns, rowid_column) = columns(&sql);
-                Some(Table { name: text(1), root, columns, rowid_column, without_rowid: sql.to_uppercase().contains("WITHOUT ROWID"), sql })
+                let primary_key = primary_key(&sql, &columns);
+                let without_rowid = sql.to_uppercase().contains("WITHOUT ROWID");
+                Some(Table { name: text(1), root, columns, rowid_column: rowid_column.filter(|_| !without_rowid), without_rowid, primary_key, sql })
             })
             .filter(|t| t.root > 0 && !t.name.starts_with("sqlite_"))
             .collect();
@@ -286,7 +351,21 @@ impl Database {
     /// Up to `limit` rows of the table, the rowid column filled in.
     pub fn rows(&self, table: &Table, limit: usize) -> Result<Vec<Vec<Value>>, String> {
         if table.without_rowid {
-            return Err("WITHOUT ROWID tables can't be shown".into());
+            // Each key is the primary key's columns, then the others in order.
+            let order: Vec<usize> = table.primary_key.iter().copied().chain((0..table.columns.len()).filter(|i| !table.primary_key.contains(i))).collect();
+            let mut keys = Vec::new();
+            self.walk_index(table.root, limit, &mut keys, 0).ok_or("The table's pages can't be read")?;
+            return Ok(keys
+                .into_iter()
+                .map(|key| {
+                    let stored = self.record(&key);
+                    let mut values = vec![Value::Null; table.columns.len().max(order.len())];
+                    for (value, &column) in stored.into_iter().zip(&order) {
+                        values[column] = value;
+                    }
+                    values
+                })
+                .collect());
         }
         let mut raw = Vec::new();
         self.walk(table.root, limit, &mut raw, 0).ok_or("The table's pages can't be read")?;
@@ -335,7 +414,25 @@ fn leading_name(def: &str) -> String {
 
 /// The columns of a CREATE TABLE, and which one is the rowid.
 pub fn columns(sql: &str) -> (Vec<String>, Option<usize>) {
-    let Some(open) = sql.find('(') else { return (Vec::new(), None) };
+    let mut names = Vec::new();
+    let mut rowid = None;
+    for def in column_definitions(sql) {
+        let upper = def.trim().to_uppercase();
+        if ["PRIMARY ", "UNIQUE", "CHECK", "FOREIGN ", "CONSTRAINT "].iter().any(|k| upper.starts_with(k)) {
+            continue;
+        }
+        let rest = upper.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+        if rest.starts_with("INTEGER PRIMARY KEY") && !rest.contains("DESC") {
+            rowid = Some(names.len());
+        }
+        names.push(leading_name(def));
+    }
+    (names, rowid)
+}
+
+/// The comma-separated definitions inside a CREATE TABLE's parentheses.
+fn column_definitions(sql: &str) -> Vec<&str> {
+    let Some(open) = sql.find('(') else { return Vec::new() };
     let mut defs = Vec::new();
     let (mut depth, mut start, mut quote) = (0i32, open + 1, None::<char>);
     for (i, c) in sql.char_indices().skip_while(|(i, _)| *i <= open) {
@@ -357,20 +454,91 @@ pub fn columns(sql: &str) -> (Vec<String>, Option<usize>) {
             _ => {}
         }
     }
-    let mut names = Vec::new();
-    let mut rowid = None;
-    for def in defs {
-        let upper = def.trim().to_uppercase();
-        if ["PRIMARY ", "UNIQUE", "CHECK", "FOREIGN ", "CONSTRAINT "].iter().any(|k| upper.starts_with(k)) {
-            continue;
+    defs
+}
+
+/// The columns of the table's PRIMARY KEY, from a column's own
+/// `PRIMARY KEY` or a `PRIMARY KEY (a, b)` constraint.
+pub fn primary_key(sql: &str, names: &[String]) -> Vec<usize> {
+    // ASCII-only, so byte offsets match `sql`'s.
+    let upper = sql.to_ascii_uppercase();
+    let Some(open) = sql.find('(') else { return Vec::new() };
+    // A table constraint: the last `PRIMARY KEY (` at the top level.
+    let mut depth = 0;
+    let mut quote = None::<char>;
+    for (i, c) in sql.char_indices().skip_while(|(i, _)| *i <= open) {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '`' | '\'') => quote = Some(c),
+            (None, '[') => quote = Some(']'),
+            (None, '(') => depth += 1,
+            (None, ')') => depth -= 1,
+            (None, 'P') | (None, 'p') if depth == 0 && upper[i..].starts_with("PRIMARY") => {
+                let rest = upper[i + 7..].trim_start();
+                let Some(after_key) = rest.strip_prefix("KEY") else { continue };
+                if !after_key.trim_start().starts_with('(') {
+                    continue;
+                }
+                let start = sql.len() - after_key.trim_start().len() + 1;
+                let Some(len) = sql[start..].find(')') else { break };
+                return sql[start..start + len]
+                    .split(',')
+                    .filter_map(|part| {
+                        let name = leading_name(part);
+                        names.iter().position(|n| n.eq_ignore_ascii_case(&name))
+                    })
+                    .collect();
+            }
+            _ => {}
         }
-        let rest = upper.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
-        if rest.starts_with("INTEGER PRIMARY KEY") && !rest.contains("DESC") {
-            rowid = Some(names.len());
-        }
-        names.push(leading_name(def));
     }
-    (names, rowid)
+    // Otherwise the column declared PRIMARY KEY.
+    column_definitions(sql)
+        .iter()
+        .filter(|d| {
+            let u = d.to_uppercase();
+            !["PRIMARY ", "UNIQUE", "CHECK", "FOREIGN ", "CONSTRAINT "].iter().any(|k| u.trim_start().starts_with(k))
+        })
+        .position(|d| d.to_uppercase().contains("PRIMARY KEY"))
+        .into_iter()
+        .collect()
+}
+
+/// Rows as CSV (RFC 4180): a header line, NULL as an empty field, blobs as
+/// hex, fields with commas, quotes or line breaks quoted.
+pub fn csv(columns: &[String], rows: &[Vec<Value>]) -> String {
+    fn field(out: &mut String, text: &str) {
+        if text.contains([',', '"', '\n', '\r']) {
+            out.push('"');
+            out.push_str(&text.replace('"', "\"\""));
+            out.push('"');
+        } else {
+            out.push_str(text);
+        }
+    }
+    let mut out = String::new();
+    for (i, c) in columns.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        field(&mut out, c);
+    }
+    out.push_str("\r\n");
+    for row in rows {
+        for (i, v) in row.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            match v {
+                Value::Null => {}
+                Value::Blob(b) => b.iter().for_each(|byte| out.push_str(&format!("{byte:02X}"))),
+                v => field(&mut out, &v.to_string()),
+            }
+        }
+        out.push_str("\r\n");
+    }
+    out
 }
 
 /// Where the Database Inspector reads an app's databases.
@@ -441,9 +609,38 @@ mod tests {
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[1][1], Value::Text("from wal".into()));
         assert_eq!(db.rows(&tables[1], 1).unwrap()[0][1], Value::Text("renamed".into()));
+        // Exported, the WAL's pages are in the file.
+        let image = Database::open(db.image(), None).unwrap();
+        assert_eq!(image.rows(&image.tables()[0], 10).unwrap()[1][1], Value::Text("from wal".into()));
         // Without its WAL the file is as before.
         let old = Database::open(fixture("wal.db"), None).unwrap();
         assert_eq!(old.rows(&old.tables()[0], 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn without_rowid_tables() {
+        let db = Database::open(fixture("without_rowid.db"), None).unwrap();
+        let tables = db.tables();
+        let kv = tables.iter().find(|t| t.name == "kv").unwrap();
+        assert!(kv.without_rowid);
+        assert_eq!(kv.primary_key, [1, 3]);
+        let rows = db.rows(kv, usize::MAX).unwrap();
+        assert_eq!(rows.len(), 400);
+        // In key order: group, then key.
+        assert_eq!(rows[0], vec![Value::Text("v0".into()), Value::Text("g0".into()), Value::Integer(0), Value::Text("k0000".into())]);
+        assert_eq!(rows[1][3], Value::Text("k0003".into()));
+        let long = rows.iter().find(|r| r[3] == Value::Text("k0007".into())).unwrap();
+        assert_eq!(long[0], Value::Text("y".repeat(3000)));
+        assert_eq!(db.rows(kv, 5).unwrap().len(), 5);
+        let tags = tables.iter().find(|t| t.name == "tags").unwrap();
+        assert_eq!(tags.primary_key, [0]);
+        assert_eq!(db.rows(tags, 10).unwrap()[4], vec![Value::Text("t4".into()), Value::Integer(4)]);
+    }
+
+    #[test]
+    fn rows_as_csv() {
+        let rows = vec![vec![Value::Integer(1), Value::Text("a,\"b\"".into()), Value::Null, Value::Blob(vec![0xAB, 1])], vec![Value::Real(1.5), Value::Text("x\ny".into()), Value::Text(String::new()), Value::Blob(Vec::new())]];
+        assert_eq!(csv(&["id".into(), "name".into(), "n".into(), "b".into()], &rows), "id,name,n,b\r\n1,\"a,\"\"b\"\"\",,AB01\r\n1.5,\"x\ny\",,\r\n");
     }
 
     #[test]

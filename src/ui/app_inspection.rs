@@ -312,6 +312,44 @@ impl AppInspectionView {
         }
     }
 
+    /// Asks where to save the grid's rows as CSV (`whole_database`: the
+    /// database file instead) and writes them; every row, not only those shown.
+    fn export(&mut self, whole_database: bool, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::{WindowExt as _, notification::Notification};
+        let Some(grid) = &self.grid else { return };
+        let Some(db) = self.databases.iter().find(|d| d.name == grid.database) else { return };
+        let what = match (&grid.query, whole_database) {
+            (_, true) => inspect_database::Export::Database,
+            (Some(sql), false) => inspect_database::Export::Query(sql),
+            (None, false) => inspect_database::Export::Table(&grid.table),
+        };
+        let name = match what {
+            inspect_database::Export::Database => grid.database.clone(),
+            inspect_database::Export::Table(t) => format!("{t}.csv"),
+            inspect_database::Export::Query(_) => "query.csv".to_owned(),
+        };
+        let bytes = match inspect_database::export(db, what) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                window.push_notification(Notification::error(e).title("Cannot export"), cx);
+                return;
+            }
+        };
+        let target = cx.prompt_for_new_path(&crate::ui::running_devices::default_save_dir(), Some(&name));
+        let handle = window.window_handle();
+        cx.spawn(async move |_, cx| {
+            // No file dialog (no portal on Linux): the default folder.
+            let Some(path) = crate::ui::running_devices::chosen_path(target.await, &name) else { return };
+            let result = std::fs::write(&path, bytes);
+            cx.update_window(handle, |_, window, cx| match result {
+                Ok(()) => window.push_notification(Notification::success(path.display().to_string()).title("Exported"), cx),
+                Err(e) => window.push_notification(Notification::error(e.to_string()).title("Cannot export"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn set_live(&mut self, live: bool, cx: &mut Context<Self>) {
         self.live = live;
         if live {
@@ -539,7 +577,10 @@ impl Render for AppInspectionView {
                         .flex_shrink_0()
                         .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(if grid.query.is_some() { "Query result".to_owned() } else { grid.table.clone() }))
                         .child(div().text_color(palette.text_secondary).child(format!("{} · {note}", grid.database)))
-                        .when_some(grid.query.clone(), |el, q| el.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_color(palette.text_secondary).child(q))),
+                        .when_some(grid.query.clone(), |el, q| el.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_color(palette.text_secondary).child(q)))
+                        .when(grid.query.is_none(), |el| el.child(div().flex_1()))
+                        .child(Button::new("ai-export-csv").xsmall().ghost().label("Export to CSV…").on_click(cx.listener(|this, _, window, cx| this.export(false, window, cx))))
+                        .child(Button::new("ai-export-db").xsmall().ghost().label("Export Database…").on_click(cx.listener(|this, _, window, cx| this.export(true, window, cx)))),
                 )
                 .child(
                     div().id("ai-grid-scroll").flex_1().min_h_0().overflow_x_scroll().child(

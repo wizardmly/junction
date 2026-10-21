@@ -1204,7 +1204,9 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | 应用不可调试（`run-as` 拒绝）时显示原因 | ✅ |
 | 查询栏：选数据库，输入 SELECT 回车或点 Run，结果显示在网格里（Refresh / Live updates 时重新执行）。支持多表 `JOIN … ON` / `USING`、`LEFT JOIN`、`CROSS JOIN` 和逗号连接（等值条件走哈希连接），表别名和 `表.列`、`表.*`；表达式（四则运算、`%`、`||`、比较、`LIKE`、`IN`、`BETWEEN`、`IS [NOT] NULL`、`CASE`、`CAST`，列与字面量比较时按列的类型转换）；函数 `lower` / `upper` / `length` / `substr` / `trim` / `replace` / `instr` / `round` / `abs` / `coalesce` / `ifnull` / `nullif` / `iif` / `typeof` / `hex` 等；聚合 `COUNT` / `SUM` / `AVG` / `MIN` / `MAX` / `TOTAL` / `GROUP_CONCAT`（可带 `DISTINCT`）、`GROUP BY`、`HAVING`、`SELECT DISTINCT`、`ORDER BY`（列、表达式、别名、序号）、`LIMIT` / `OFFSET`、`AS` 别名；不支持的写法（子查询、`UNION`、`WITH`、窗口函数、未知函数）报出原因；INSERT / UPDATE / DELETE 等会说明数据库是副本、改不了应用的数据 | ✅（自己写的求值，不是 SQLite；结果和 Python sqlite3 对比过） |
 | Live updates：每 3 秒从设备重新读取数据库，保留当前表或查询 | ✅（AS 是表变化时才推送；这里是定时整库重读，大库会慢） |
-| 编辑单元格、导出、`WITHOUT ROWID` 表 | ❌ |
+| `WITHOUT ROWID` 表：按主键 B 树读出（主键列在前，再按声明顺序还原列），行按主键排序，查询也能用 | ✅（2026-10-21） |
+| 导出：网格上方 Export to CSV…（当前表或查询的全部行，不受 5000 行限制；NULL 为空、BLOB 为十六进制、按 RFC 4180 加引号）、Export Database…（整个数据库文件，WAL 里已提交的页写进去，单独就能打开） | ✅（2026-10-21；AS 还能导出成 SQL，这里没有） |
+| 编辑单元格 | ❌（会写应用的数据库，暂不做） |
 | Network Inspector | 🟡 见第 68 节 |
 | Background Task Inspector | ✅ 见第 67 节 |
 
