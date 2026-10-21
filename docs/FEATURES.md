@@ -1158,3 +1158,16 @@ Linux 实测：termux-app 0.118.1 的 debug APK（33 MB，755 个条目，27 个
 | `JUNCTION_SDK_REPO` 环境变量换成镜像地址 | ✅ |
 
 容器连不上 dl.google.com，只用本地 HTTP 假仓库（12 个包）验证过：装 Platform 35 + Sources、更新 Platform 34、装 Build-Tools 35 / Platform-Tools、删 Build-Tools 34，许可证文件和 package.xml 都正确。
+
+## 64. Layout Inspector（2026-10-21）
+
+| 功能 | 状态 |
+|---|---|
+| View › Tool Windows / Tools › Layout Inspector：右侧工具窗口，设备下拉、窗口下拉（多个 Activity 时）、Refresh Layout、Live Updates（约 2.5 秒刷新一次）、Hide；打开时自动给第一台设备拍快照 | ✅ |
+| 快照：默认读 `dumpsys activity top` 的 View Hierarchy（不占用 UI Automator，Maestro 在跑也能用），坐标按父 View 累加成屏幕坐标；勾 UI Automator 改用 `uiautomator dump`（能看到 Compose 节点和文字），被别的工具占用时提示原因 | ✅ |
+| Component Tree：类名 + `@id/…` + 文字，可折叠；GONE / INVISIBLE 的 View 灰显 | ✅ |
+| 中间是设备截图，每个可见 View 画框；悬停高亮、点击选中最里层的 View，树里同步展开并滚到它；刷新后保留选中 | ✅ |
+| Attributes：layout / bounds、size、visibility、focusable、enabled、clickable、focused、selected、pressed 等，UI Automator 模式另有 text、content-desc、checked、scrollable 等 | ✅（AS 的完整属性和 Declared Attributes 需要设备端 agent，没做） |
+| 3D 视图、Compose 重组计数、改属性 | ❌ |
+
+只用模拟 adb 验证过（假 `dumpsys activity top` 输出 + 540×1200 截图）：树、框选、属性、窗口切换和 UI Automator 失败提示都正确。

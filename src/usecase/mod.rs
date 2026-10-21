@@ -7,6 +7,7 @@ pub mod override_file_type;
 pub mod inspect_code;
 pub mod analyze_apk;
 pub mod manage_sdk;
+pub mod inspect_layout;
 pub mod android_resources;
 pub mod import_class;
 pub mod clean_up_files;

@@ -197,6 +197,7 @@ impl Workspace {
             ("Device Manager", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::DeviceManager, window, cx))),
             ("Running Devices", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::RunningDevices, window, cx))),
             ("Device Explorer", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::DeviceExplorer, window, cx))),
+            ("Layout Inspector", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::LayoutInspector, window, cx))),
             ("Build", "", op(|this, window, cx| this.shortcut_tool(ToolWindow::Build, window, cx))),
             ("Run", "Alt+4", op(|this, window, cx| this.shortcut_tool(ToolWindow::Run, window, cx))),
             ("Local History: Show History", "", op(|this, window, cx| this.show_local_history(window, cx))),

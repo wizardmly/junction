@@ -21,6 +21,7 @@ pub enum ToolWindow {
     DeviceManager,
     RunningDevices,
     DeviceExplorer,
+    LayoutInspector,
     Build,
     Run,
     Debug,
@@ -70,7 +71,7 @@ impl Side {
 }
 
 impl ToolWindow {
-    pub const ALL: [ToolWindow; 20] = [
+    pub const ALL: [ToolWindow; 21] = [
         ToolWindow::Project,
         ToolWindow::Commit,
         ToolWindow::PullRequests,
@@ -89,6 +90,7 @@ impl ToolWindow {
         ToolWindow::DeviceManager,
         ToolWindow::RunningDevices,
         ToolWindow::DeviceExplorer,
+        ToolWindow::LayoutInspector,
         ToolWindow::Hierarchy,
         ToolWindow::Coverage,
     ];
@@ -106,6 +108,7 @@ impl ToolWindow {
             ToolWindow::DeviceManager => "devices",
             ToolWindow::RunningDevices => "running",
             ToolWindow::DeviceExplorer => "explorer",
+            ToolWindow::LayoutInspector => "layout-inspector",
             ToolWindow::Build => "build",
             ToolWindow::Run => "run",
             ToolWindow::Debug => "debug",
@@ -124,7 +127,7 @@ impl ToolWindow {
             // The new UI keeps Notifications on the right stripe, and
             // Android Studio its Device Manager, Running Devices and Device
             // Explorer below it.
-            ToolWindow::Notifications | ToolWindow::DeviceManager | ToolWindow::RunningDevices | ToolWindow::DeviceExplorer | ToolWindow::Hierarchy | ToolWindow::Coverage => Side::Right,
+            ToolWindow::Notifications | ToolWindow::DeviceManager | ToolWindow::RunningDevices | ToolWindow::DeviceExplorer | ToolWindow::LayoutInspector | ToolWindow::Hierarchy | ToolWindow::Coverage => Side::Right,
             _ => Side::Left,
         }
     }

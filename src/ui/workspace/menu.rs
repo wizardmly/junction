@@ -82,6 +82,7 @@ pub(super) fn main_menu(
                     .menu("Device Manager", Box::new(ToggleDeviceManagerWindow))
                     .menu("Running Devices", Box::new(ToggleRunningDevicesWindow))
                     .menu("Device Explorer", Box::new(ToggleDeviceExplorerWindow))
+                    .menu("Layout Inspector", Box::new(ToggleLayoutInspectorWindow))
                     .menu("Build", Box::new(ToggleBuildWindow))
                     .menu("Run", Box::new(ToggleRunWindow))
                     .menu("Logcat", Box::new(ToggleLogcatWindow))
@@ -175,7 +176,7 @@ pub(super) fn main_menu(
     });
     let f = focus.clone();
     let menu = menu.submenu("Tools", window, cx, move |menu, _, _| {
-        menu.action_context(f.clone()).menu("SDK Manager", Box::new(OpenSdkManager)).menu("Device Manager", Box::new(ToggleDeviceManagerWindow))
+        menu.action_context(f.clone()).menu("SDK Manager", Box::new(OpenSdkManager)).menu("Device Manager", Box::new(ToggleDeviceManagerWindow)).menu("Layout Inspector", Box::new(ToggleLayoutInspectorWindow))
     });
     let (e, f) = (entity.clone(), focus.clone());
     let menu = menu.submenu("Git", window, cx, move |menu, window, cx| {
