@@ -21,7 +21,7 @@ impl AdbBackgroundTasks {
 }
 
 /// A package name is letters, digits, `_` and `.`; anything else isn't passed to the shell.
-fn package_arg(package: &str) -> Result<&str, String> {
+pub(crate) fn package_arg(package: &str) -> Result<&str, String> {
     if !package.is_empty() && package.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.') { Ok(package) } else { Err(format!("Not a package name: {package}")) }
 }
 
