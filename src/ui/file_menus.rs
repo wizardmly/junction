@@ -68,6 +68,8 @@ pub enum FileAction {
     FindUsages(String),
     /// Analyze › Inspect Code… on the items (path, is folder) of a scope.
     InspectCode { items: Vec<(String, bool)>, scope: String },
+    /// Analyze › Analyze Dependencies… on a scope.
+    AnalyzeDependencies { items: Vec<(String, bool)>, scope: String },
     /// Reformat Code / Optimize Imports on the selected files and folders.
     CleanUp { items: Vec<(String, bool)>, clean_up: crate::usecase::clean_up_files::CleanUp },
 }
@@ -682,7 +684,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
         actions: target.actions.clone(),
     };
     let menu = git_submenu(menu, git, window, cx);
-    let (t_reload, t_compare, t_clip, t_gist) = (target.clone(), target.clone(), target.clone(), target.clone());
+    let (t_reload, t_compare, t_clip, t_gist, t_deps) = (target.clone(), target.clone(), target.clone(), target.clone(), target.clone());
     let t_repair = target.clone();
     let menu = menu.item(entry("Repair IDE on File", "").on_click(move |_, window, cx| {
             let files = if t_repair.is_dir || t_repair.multi() { t_repair.files.clone() } else { vec![t_repair.path.clone()] };
@@ -716,7 +718,12 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
                 .collect();
             crate::ui::github_dialogs::create_gist(t_gist.model.clone(), files, window, cx)
         }))
-        .when(is_dir, |m| m.item(entry("Analyze Dependencies…", "").disabled(true)))
+        .when(is_dir, |m| {
+            m.item(entry("Analyze Dependencies…", "").on_click(move |_, window, cx| {
+                let actions = t_deps.actions.clone();
+                scope_dialog("Specify Dependency Analysis Scope", "Analyze", &t_deps, Rc::new(move |items, scope, window, cx| actions(FileAction::AnalyzeDependencies { items, scope }, window, cx)), window, cx)
+            }))
+        })
 }
 
 /// Open In: the file manager, a terminal in the folder, the system's app for the file.
@@ -914,12 +921,13 @@ fn move_or_copy(target: &ProjectTarget, copy: bool, window: &mut Window, cx: &mu
 
 /// Reformat Code / Optimize Imports from the Project view: a file at once;
 /// folders after IntelliJ's question naming them.
-/// Analyze: Inspect Code… and Code Cleanup… ask for their scope first,
+/// Analyze: Inspect Code…, Code Cleanup… and Analyze Dependencies… ask for
+/// their scope first,
 /// as IntelliJ's "Specify … Scope" dialogs.
 fn analyze_submenu(menu: PopupMenu, target: &ProjectTarget, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
     let target = target.clone();
     menu.submenu("Analyze", window, cx, move |m, _, _| {
-        let (inspect, cleanup) = (target.clone(), target.clone());
+        let (inspect, cleanup, deps) = (target.clone(), target.clone(), target.clone());
         m.item(entry("Inspect Code…", "").on_click(move |_, window, cx| {
             let actions = inspect.actions.clone();
             scope_dialog("Specify Inspection Scope", "Analyze", &inspect, Rc::new(move |items, scope, window, cx| actions(FileAction::InspectCode { items, scope }, window, cx)), window, cx)
@@ -929,7 +937,10 @@ fn analyze_submenu(menu: PopupMenu, target: &ProjectTarget, window: &mut Window,
             let clean_up = crate::usecase::clean_up_files::CleanUp::CodeCleanup;
             scope_dialog("Specify Code Cleanup Scope", "Run", &cleanup, Rc::new(move |items, _, window, cx| actions(FileAction::CleanUp { items, clean_up }, window, cx)), window, cx)
         }))
-        .item(entry("Analyze Dependencies…", "").disabled(true))
+        .item(entry("Analyze Dependencies…", "").on_click(move |_, window, cx| {
+            let actions = deps.actions.clone();
+            scope_dialog("Specify Dependency Analysis Scope", "Analyze", &deps, Rc::new(move |items, scope, window, cx| actions(FileAction::AnalyzeDependencies { items, scope }, window, cx)), window, cx)
+        }))
     })
 }
 

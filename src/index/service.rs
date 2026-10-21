@@ -632,6 +632,15 @@ impl CodeIndex {
         cx.background_spawn(async move { super::hierarchy::type_hierarchy(&index.read().unwrap(), &name, view) })
     }
 
+    /// Analyze Dependencies… of project files (project-relative).
+    pub fn dependencies(&self, files: Vec<String>, cx: &App) -> Task<Vec<super::dependencies::FileDeps>> {
+        let (index, root) = (self.index.clone(), self.root.clone().unwrap_or_default());
+        cx.background_spawn(async move {
+            let read = |p: &str| std::fs::read_to_string(root.join(p)).ok();
+            super::dependencies::dependencies(&index.read().unwrap(), &files, &read)
+        })
+    }
+
     pub fn method_hierarchy(&self, owner: String, method: String, cx: &App) -> Task<super::hierarchy::TypeNode> {
         let index = self.index.clone();
         cx.background_spawn(async move { super::hierarchy::method_hierarchy(&index.read().unwrap(), &owner, &method) })

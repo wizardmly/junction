@@ -66,6 +66,7 @@ pub mod run_service;
 pub mod signed_apk_dialog;
 pub mod item_tree;
 pub mod local_history_window;
+pub mod dependency_viewer;
 pub mod logcat_view;
 pub mod translations_editor;
 pub mod problems_view;
