@@ -126,6 +126,19 @@ pub struct TraceThread {
     pub id: u32,
     pub name: String,
     pub tree: CallTree,
+    /// Every call as it happened, for the Call Chart.
+    pub calls: Vec<Call>,
+    /// The first and last record's `[wall, thread]` times.
+    pub span: [[u64; 2]; 2],
+}
+
+/// One call on the Call Chart: `depth` 0 is a thread's outermost method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Call {
+    pub method: u32,
+    pub depth: u32,
+    pub start: [u64; 2],
+    pub end: [u64; 2],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -270,8 +283,10 @@ pub fn parse(b: &[u8]) -> Option<MethodTrace> {
     let mut threads: Vec<TraceThread> = order
         .into_iter()
         .map(|id| {
-            let tree = build(&by_thread[&id]);
-            TraceThread { id, name: names.get(&id).cloned().unwrap_or_else(|| format!("Thread {id}")), tree }
+            let records = &by_thread[&id];
+            let (tree, calls) = build(records);
+            let span = [records[0].time, records[records.len() - 1].time];
+            TraceThread { id, name: names.get(&id).cloned().unwrap_or_else(|| format!("Thread {id}")), tree, calls, span }
         })
         .collect();
     threads.sort_by_key(|t| std::cmp::Reverse(t.tree.total(Clock::Wall)));
@@ -284,9 +299,10 @@ pub fn parse(b: &[u8]) -> Option<MethodTrace> {
 /// One thread's records as a Top Down tree. Methods already running when
 /// the trace started (exits without an enter) start at its first record;
 /// methods still running at its end stop at its last.
-fn build(records: &[Record]) -> CallTree {
+fn build(records: &[Record]) -> (CallTree, Vec<Call>) {
     let mut tree = CallTree::new();
-    let Some(first) = records.first() else { return tree };
+    let mut calls = Vec::new();
+    let Some(first) = records.first() else { return (tree, calls) };
     let last = records.last().unwrap().time;
     let mut open = Vec::new();
     let mut unmatched = Vec::new();
@@ -312,8 +328,9 @@ fn build(records: &[Record]) -> CallTree {
         tree.nodes[node as usize].calls += 1;
         stack.push(Frame { node, start: time, children: [0; 2] });
     };
-    let close = |tree: &mut CallTree, stack: &mut Vec<Frame>, time: [u64; 2]| {
+    let close = |tree: &mut CallTree, calls: &mut Vec<Call>, stack: &mut Vec<Frame>, time: [u64; 2]| {
         let frame = stack.pop().unwrap();
+        calls.push(Call { method: tree.nodes[frame.node as usize].method, depth: stack.len() as u32, start: frame.start, end: time });
         let node = &mut tree.nodes[frame.node as usize];
         for c in 0..2 {
             let duration = time[c].saturating_sub(frame.start[c]);
@@ -332,18 +349,19 @@ fn build(records: &[Record]) -> CallTree {
             enter(&mut tree, &mut index, &mut stack, r.method, r.time);
         } else if let Some(i) = stack.iter().rposition(|f| tree.nodes[f.node as usize].method == r.method) {
             while stack.len() > i {
-                close(&mut tree, &mut stack, r.time);
+                close(&mut tree, &mut calls, &mut stack, r.time);
             }
         }
     }
     while !stack.is_empty() {
-        close(&mut tree, &mut stack, last);
+        close(&mut tree, &mut calls, &mut stack, last);
     }
     let roots = tree.nodes[0].children.clone();
     for c in 0..2 {
         tree.nodes[0].total[c] = roots.iter().map(|&r| tree.nodes[r as usize].total[c]).sum();
     }
-    tree
+    calls.sort_by_key(|c| (c.start[0], c.depth));
+    (tree, calls)
 }
 
 #[cfg(test)]
@@ -409,6 +427,9 @@ pub(crate) mod tests {
         let path: Vec<u32> = main.heaviest_path(Clock::Wall).iter().map(|&n| main.nodes[n as usize].method).collect();
         assert_eq!(path, [ROOT, 0, 1, 2]);
         assert_eq!(trace.threads[1].tree.total(Clock::Wall), 30);
+        let calls: Vec<(u32, u32, u64, u64)> = trace.threads[0].calls.iter().map(|c| (c.method, c.depth, c.start[0], c.end[0])).collect();
+        assert_eq!(calls, [(0, 0, 0, 60), (1, 1, 0, 30), (2, 2, 10, 20), (1, 1, 40, 50)]);
+        assert_eq!(trace.threads[0].span, [[0, 0], [60, 30]]);
     }
 
     #[test]
