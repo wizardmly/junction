@@ -62,6 +62,8 @@ pub enum FileAction {
     SetExcluded { dir: String, excluded: bool },
     /// Repair IDE on File: re-index the files and reload them from disk.
     RepairFiles(Vec<String>),
+    /// Override File Type (`Some` language) / Revert File Type Override.
+    SetFileType { path: String, language: Option<String> },
     /// Find Usages of a source file: of its class, as IntelliJ's.
     FindUsages(String),
     /// Reformat Code / Optimize Imports on the selected files and folders.
@@ -152,6 +154,54 @@ fn mark_directory_submenu(menu: PopupMenu, target: &ProjectTarget, window: &mut 
         let label = if marked { "Cancel Exclusion" } else { "Excluded" };
         m.item(entry(label, "").icon(Icon::new(icons::EXCLUDE_ROOT)).on_click(move |_, window, cx| actions(FileAction::SetExcluded { dir: dir.clone(), excluded: !marked }, window, cx)))
     })
+}
+
+/// Override File Type…, or Revert File Type Override on an overridden file
+/// (`path` is project-relative, `root` the project).
+pub fn override_file_type_item(menu: PopupMenu, root: &Path, path: &str, actions: FileActions) -> PopupMenu {
+    let current = crate::infra::file_type_store::language_of(&root.join(path));
+    let path = path.to_owned();
+    if current.is_some() {
+        return menu.item(entry("Revert File Type Override", "").on_click(move |_, window, cx| actions(FileAction::SetFileType { path: path.clone(), language: None }, window, cx)));
+    }
+    menu.item(entry("Override File Type", "").on_click(move |_, window, cx| {
+        let shown = crate::ui::file_editor::language_for(&path);
+        let (path, actions) = (path.clone(), actions.clone());
+        override_file_type_dialog(&path.clone(), shown, Rc::new(move |language, window, cx| actions(FileAction::SetFileType { path: path.clone(), language: Some(language) }, window, cx)), window, cx)
+    }))
+}
+
+/// IntelliJ's "Override File Type for 'name'" chooser: the file types, the
+/// one the file opens as now selected; a click picks one.
+fn override_file_type_dialog(path: &str, shown: &str, on_pick: Rc<dyn Fn(String, &mut Window, &mut App)>, window: &mut Window, cx: &mut App) {
+    use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _};
+    let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+    let shown = shown.to_owned();
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let palette = cx.palette().clone();
+        let rows = crate::domain::file_type_overrides::FILE_TYPES.iter().enumerate().map(|(ix, (label, language))| {
+            let selected = *language == shown;
+            let on_pick = on_pick.clone();
+            h_flex()
+                .id(("file-type", ix))
+                .px_2()
+                .py_0p5()
+                .rounded_sm()
+                .text_sm()
+                .cursor_pointer()
+                .when(selected, |el| el.bg(palette.selection))
+                .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
+                .child(*label)
+                .on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    on_pick(language.to_string(), window, cx)
+                })
+        });
+        dialog
+            .title(format!("Override File Type for '{name}'"))
+            .w(px(360.))
+            .child(gpui_kit::component::v_flex().id("file-types").max_h(px(420.)).overflow_y_scroll().children(rows))
+    });
 }
 
 /// Local History: the history of a file or folder, the project's, Recent
@@ -612,7 +662,7 @@ pub fn project_menu(menu: PopupMenu, target: ProjectTarget, window: &mut Window,
                 delete_files(t_delete.root.clone(), t_delete.removable(), t_delete.actions.clone(), window, cx)
             }))
         })
-        .when(!is_dir, |m| m.item(entry("Override File Type", "").disabled(true)))
+        .when(!is_dir && !target.multi(), |m| override_file_type_item(m, &target.root, &target.path, target.actions.clone()))
         .separator();
     let menu = run_tests_items(menu, &target, cx);
     let t_split = target.clone();

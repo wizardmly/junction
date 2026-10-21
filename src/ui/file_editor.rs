@@ -662,7 +662,7 @@ impl FileEditor {
         } else {
             (content.clone(), false)
         };
-        let language = language_for(&path);
+        let language = crate::infra::file_type_store::language_of(&repository.root().join(&own)).unwrap_or_else(|| language_for(&path).to_owned());
         let initial = content.clone();
         // Settings › Editor › General: line numbers, whitespaces, indent guides, soft wrap.
         let view = crate::settings::Settings::get(cx).diff.clone();
@@ -819,6 +819,12 @@ impl FileEditor {
 
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// Override File Type: highlight as `language` from now on.
+    pub fn set_language(&mut self, language: String, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.set_highlighter(language, cx));
+        cx.notify();
     }
 
     /// The repository the file is read from, and its path there.

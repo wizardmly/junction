@@ -951,8 +951,8 @@ impl Workspace {
                                 Some(file) => crate::ui::file_menus::bookmarks_submenu(menu, file, window, cx),
                                 None => crate::ui::file_menus::stub_submenu(menu, "Bookmarks", &[("Add Bookmark", "F11")], window, cx),
                             };
-                            let menu = menu.separator().item(entry("Override File Type", "").disabled(true)).separator();
-                            let Some(target) = target else { return menu };
+                            let Some(target) = target else { return menu.separator().item(entry("Override File Type", "").disabled(true)).separator() };
+                            let menu = crate::ui::file_menus::override_file_type_item(menu.separator(), &target.root, &target.path, target.actions.clone()).separator();
                             let full = target.root.join(&target.path);
                             let menu = crate::ui::file_menus::open_in_submenu(menu, full, false, window, cx);
                             let menu = crate::ui::file_menus::local_history_submenu(menu.separator(), Some(target.path.clone()), target.actions.clone(), window, cx);
