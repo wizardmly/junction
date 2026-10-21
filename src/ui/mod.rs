@@ -34,6 +34,7 @@ pub mod recent_locations;
 pub mod keymap;
 pub mod search_everywhere;
 pub mod settings_dialog;
+pub mod sdk_manager;
 pub mod selectable_text;
 pub mod graph_paint;
 pub mod log_view;

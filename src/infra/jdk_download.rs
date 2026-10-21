@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::domain::jdk_feed::{self, Archive, JdkItem};
 
-fn agent(url: &str) -> ureq::Agent {
+pub(crate) fn agent(url: &str) -> ureq::Agent {
     // Long downloads: no overall timeout, only for connecting and reading.
     let mut builder = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(30)).timeout_read(std::time::Duration::from_secs(60)).user_agent("Junction");
     let env = |k: &str| std::env::var(k).or_else(|_| std::env::var(k.to_lowercase())).ok().filter(|v| !v.is_empty());

@@ -173,6 +173,10 @@ pub(super) fn main_menu(
             .menu("View Breakpoints…", Box::new(ViewBreakpoints))
             .menu_with_check("Mute Breakpoints", muted, Box::new(MuteBreakpoints))
     });
+    let f = focus.clone();
+    let menu = menu.submenu("Tools", window, cx, move |menu, _, _| {
+        menu.action_context(f.clone()).menu("SDK Manager", Box::new(OpenSdkManager)).menu("Device Manager", Box::new(ToggleDeviceManagerWindow))
+    });
     let (e, f) = (entity.clone(), focus.clone());
     let menu = menu.submenu("Git", window, cx, move |menu, window, cx| {
         let e2 = e.clone();

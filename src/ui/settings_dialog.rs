@@ -50,6 +50,7 @@ enum Page {
     Languages,
     Compiler,
     Gradle,
+    AndroidSdk,
 }
 
 /// The page tree: a group and its pages; a group with no pages is a page itself.
@@ -59,7 +60,7 @@ const TREE: &[(&str, Option<Page>, &[Page])] = &[
     ("Editor", None, &[Page::EditorGeneral, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::LiveTemplates]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
     ("Build, Execution, Deployment", None, &[Page::Gradle, Page::Compiler]),
-    ("Languages & Frameworks", Some(Page::Languages), &[]),
+    ("Languages & Frameworks", Some(Page::Languages), &[Page::AndroidSdk]),
 ];
 
 impl Page {
@@ -81,6 +82,7 @@ impl Page {
             Page::Languages => "Languages & Frameworks",
             Page::Compiler => "Compiler",
             Page::Gradle => "Gradle",
+            Page::AndroidSdk => "Android SDK",
         }
     }
 
@@ -138,6 +140,7 @@ impl Page {
             Page::GitLab => &["Account", "Token", "Log In", "Merge Request"],
             Page::Languages => &["Language server", "LSP", "Code Navigation", "Go to Declaration"],
             Page::Compiler => &["Compile on save", "Gradle", "Build", "Compiler errors"],
+            Page::AndroidSdk => &["SDK Manager", "Android SDK Location", "SDK Platforms", "SDK Tools", "Build-Tools", "Platform-Tools", "NDK", "CMake", "Emulator"],
             Page::Gradle => &["Gradle JDK", "JDK", "Java", "JAVA_HOME", "GRADLE_LOCAL_JAVA_HOME", "Build Tools", "Gradle user home", "Offline work", "Distribution", "Wrapper", "Specified location", "Gradle version"],
         }
     }
@@ -193,6 +196,9 @@ pub struct SettingsView {
     /// edited with its fields.
     templates: CustomTemplates,
     template: Option<(usize, TemplateFields)>,
+    /// Languages & Frameworks › Android SDK, made when first shown.
+    sdk_manager: Option<Entity<crate::ui::sdk_manager::SdkManagerView>>,
+    project_root: Option<std::path::PathBuf>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -241,6 +247,7 @@ impl SettingsView {
         let github = cx.new(|cx| AccountsView::new_for(Some(Service::GitHub), window, cx));
         let gitlab = cx.new(|cx| AccountsView::new_for(Some(Service::GitLab), window, cx));
         let project_root = model.as_ref().and_then(|m| m.read(cx).project_root().map(std::path::Path::to_path_buf));
+        let sdk_project = project_root.clone();
         let mut gradle_builds: Vec<std::path::PathBuf> = crate::ui::sync_service::SyncService::try_global(cx).map(|s| s.read(cx).builds().iter().map(|(b, _)| b.clone()).collect()).unwrap_or_default();
         if gradle_builds.is_empty() {
             let gradle_file = |root: &std::path::Path| ["settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts"].iter().any(|f| root.join(f).is_file());
@@ -315,6 +322,8 @@ impl SettingsView {
             jdk_download: None,
             templates: crate::domain::live_templates::custom(),
             template: None,
+            sdk_manager: None,
+            project_root: sdk_project,
             _subscriptions: subscriptions,
         }
     }
@@ -372,6 +381,9 @@ impl SettingsView {
         crate::infra::template_store::save(self.templates.clone());
         for (action, keys) in std::mem::take(&mut self.keymap) {
             keymap::set(action, keys, cx);
+        }
+        if let Some(sdk) = &self.sdk_manager {
+            sdk.update(cx, |sdk, cx| sdk.apply(window, cx));
         }
         window.refresh();
         cx.notify();
@@ -550,6 +562,10 @@ impl Render for SettingsView {
                 Page::GitLab => self.gitlab.clone().into_any_element(),
                 Page::Languages => self.languages(&query, cx).into_any_element(),
                 Page::Gradle => self.gradle_page(&query, cx).into_any_element(),
+                Page::AndroidSdk => {
+                    let project = self.project_root.clone();
+                    self.sdk_manager.get_or_insert_with(|| cx.new(|cx| crate::ui::sdk_manager::SdkManagerView::new(project, window, cx))).clone().into_any_element()
+                }
                 Page::LiveTemplates => self.live_templates_page(&query, cx).into_any_element(),
                 Page::Compiler => v_flex()
                     .gap_2()
