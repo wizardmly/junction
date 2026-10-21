@@ -21,6 +21,7 @@ pub struct ModulePage {
     pub default_config: Vec<Property>,
     pub build_types: Vec<ps::Variant>,
     pub flavors: Vec<ps::Variant>,
+    pub signing_configs: Vec<ps::Variant>,
 }
 
 /// Build Variants' two tabs.
@@ -28,6 +29,8 @@ pub struct ModulePage {
 pub enum VariantKind {
     BuildType,
     Flavor,
+    /// Modules › Signing Configs, edited the same way.
+    SigningConfig,
 }
 
 /// What the dialog shows, and where each value is written.
@@ -85,9 +88,11 @@ pub fn read(files: &dyn ProjectFiles, modules: &[(String, String)], catalogs: Ve
         .map(|(path, dir)| {
             let script = script_in(files, dir, "build");
             let text = script.as_ref().map_or("", |(_, t)| t.as_str());
-            let (properties, default_config) = ps::module_properties(text, &catalogs);
-            let (build_types, flavors) = ps::variants(text, &catalogs);
-            ModulePage { path: path.clone(), script: script.map(|(p, _)| p), properties, default_config, build_types, flavors }
+            let kotlin = script.as_ref().is_some_and(|(p, _)| p.ends_with(".kts"));
+            let (properties, default_config) = ps::module_properties(text, &catalogs, kotlin);
+            let (build_types, flavors) = ps::variants(text, &catalogs, kotlin);
+            let signing_configs = ps::signing_configs(text, &catalogs, kotlin);
+            ModulePage { path: path.clone(), script: script.map(|(p, _)| p), properties, default_config, build_types, flavors, signing_configs }
         })
         .collect();
     Structure {
@@ -117,6 +122,7 @@ impl Structure {
         let list = match kind {
             VariantKind::BuildType => &page.build_types,
             VariantKind::Flavor => &page.flavors,
+            VariantKind::SigningConfig => &page.signing_configs,
         };
         list.iter().find(|v| v.name == name)?.properties.iter().find(|p| p.label == label)
     }
@@ -161,7 +167,7 @@ pub fn apply(files: &dyn ProjectFiles, structure: &Structure, edits: &Edits) -> 
             }
         };
         // Two modules naming one catalog version write it once.
-        if !sites.iter().any(|(s, _)| s.range == site.range) {
+        if !sites.iter().any(|(s, _)| s.range == site.range && s.insert == site.insert) {
             sites.push((site, value));
         }
     };
@@ -187,12 +193,8 @@ pub fn apply(files: &dyn ProjectFiles, structure: &Structure, edits: &Edits) -> 
         }
     }
     let mut changed = Vec::new();
-    for (file, mut sites) in writes {
-        let mut text = files.read(&file)?;
-        sites.sort_by_key(|(s, _)| std::cmp::Reverse(s.range.start));
-        for (site, value) in &sites {
-            text = ps::write(&text, site, value);
-        }
+    for (file, sites) in writes {
+        let text = ps::write_all(&files.read(&file)?, sites);
         files.write(&file, &text)?;
         changed.push(file);
     }

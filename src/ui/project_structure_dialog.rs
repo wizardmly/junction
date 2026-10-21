@@ -21,7 +21,7 @@ use gpui_kit::component::{
 use gpui_kit::{App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px};
 
 use crate::domain::dependencies::{Addition, CONFIGURATIONS, Change, Notation};
-use crate::domain::project_structure::{BUILD_TYPE, DEFAULT_CONFIG, FLAVOR, MODULE_PROPERTIES, Property, Variant};
+use crate::domain::project_structure::{BUILD_TYPE, DEFAULT_CONFIG, FLAVOR, MODULE_PROPERTIES, Property, SIGNING_CONFIG, Variant};
 use crate::domain::run::ModuleInfo;
 use crate::infra::project_files::DiskFiles;
 use crate::theme::ActivePalette as _;
@@ -47,7 +47,16 @@ fn variant_rows(kind: VariantKind) -> &'static [(&'static str, &'static str)] {
     match kind {
         VariantKind::BuildType => BUILD_TYPE,
         VariantKind::Flavor => FLAVOR,
+        VariantKind::SigningConfig => SIGNING_CONFIG,
     }
+}
+
+/// The Modules page's tabs, as the PSD's.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModuleTab {
+    Properties,
+    DefaultConfig,
+    SigningConfigs,
 }
 
 /// The labels of a module's rows, Properties then Default Config.
@@ -59,6 +68,7 @@ pub struct ProjectStructureView {
     build_root: PathBuf,
     structure: Structure,
     page: Page,
+    module_tab: ModuleTab,
     module: usize,
     sdk_dir: Entity<InputState>,
     agp: Entity<InputState>,
@@ -99,14 +109,13 @@ impl ProjectStructureView {
     /// that can't be edited here.
     fn load_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for ix in 0..self.fields.len() {
-            let editable = self.row(self.module, ix).is_some_and(|p| p.site.is_some());
             let text = match self.row(self.module, ix) {
                 Some(p) if p.site.is_none() => p.expression.clone().unwrap_or_default(),
                 _ => self.values.get(self.module).and_then(|v| v.get(ix)).cloned().unwrap_or_default(),
             };
             self.fields[ix].update(cx, |s, cx| {
                 s.set_value(text, window, cx);
-                s.set_placeholder(if editable { "" } else { "Not set" }, window, cx);
+                s.set_placeholder("Not set", window, cx);
             });
         }
     }
@@ -192,6 +201,7 @@ impl ProjectStructureView {
         match (self.structure.modules.get(module), kind) {
             (Some(m), VariantKind::BuildType) => &m.build_types,
             (Some(m), VariantKind::Flavor) => &m.flavors,
+            (Some(m), VariantKind::SigningConfig) => &m.signing_configs,
             (None, _) => &[],
         }
     }
@@ -206,15 +216,17 @@ impl ProjectStructureView {
         let key = variant.as_ref().map(|v| (self.module, self.variant_kind, v.name.clone()));
         for (ix, field) in self.variant_fields.clone().iter().enumerate() {
             let row = variant.as_ref().and_then(|v| v.properties.get(ix));
-            let editable = row.is_some_and(|p| p.site.is_some());
             let text = match row {
                 Some(p) if p.site.is_none() => p.expression.clone().unwrap_or_default(),
                 Some(_) => key.as_ref().and_then(|k| self.variant_values.get(k)).and_then(|v| v.get(ix)).cloned().unwrap_or_default(),
                 None => String::new(),
             };
+            // Passwords show as dots, as the PSD's password fields.
+            let masked = row.is_some_and(|p| p.label.ends_with("Password"));
             field.update(cx, |s, cx| {
                 s.set_value(text, window, cx);
-                s.set_placeholder(if editable { "" } else { "Not set" }, window, cx);
+                s.set_placeholder("Not set", window, cx);
+                s.set_masked(masked, window, cx);
             });
         }
     }
@@ -235,6 +247,70 @@ impl ProjectStructureView {
         self.variant = index;
         self.load_variant(window, cx);
         cx.notify();
+    }
+
+    /// A tab's names (build types, flavors, signing configs) and the
+    /// selected one's rows.
+    fn variant_body(&self, kind: VariantKind, cx: &mut Context<Self>) -> gpui_kit::Div {
+        let palette = cx.palette().clone();
+        let entity = cx.entity();
+        let module = self.module;
+        let list = self.variants_of(self.module, kind);
+        let names = v_flex().id("psd-var-names").w(px(150.)).flex_none().h_full().overflow_y_scroll().border_r_1().border_color(palette.border).children(list.iter().enumerate().map(|(ix, v)| {
+            let e = entity.clone();
+            div()
+                .id(("psd-var", ix))
+                .px_2()
+                .py_0p5()
+                .text_sm()
+                .when(ix == self.variant, |el| el.bg(palette.selection))
+                .hover(|el| el.bg(palette.hover))
+                .child(v.name.clone())
+                .on_click(move |_, window, cx| e.update(cx, |this, cx| this.select_variant(module, kind, ix, window, cx)))
+        }));
+        let label = |text: &'static str| div().w(px(170.)).flex_none().text_sm().child(text);
+        let fields = match self.current_variant() {
+            Some(v) => v_flex()
+                .id("psd-var-fields")
+                .flex_1()
+                .h_full()
+                .overflow_y_scroll()
+                .px_3()
+                .gap_2()
+                .children(variant_rows(kind).iter().enumerate().map(|(ix, (name, _))| {
+                    let editable = v.properties.get(ix).is_some_and(|p| p.site.is_some());
+                    h_flex().gap_2().child(label(name)).child(div().flex_1().child(Input::new(&self.variant_fields[ix]).small().disabled(!editable)))
+                }))
+                .into_any_element(),
+            None => div()
+                .px_3()
+                .text_sm()
+                .text_color(palette.text_secondary)
+                .child(match kind {
+                    VariantKind::BuildType => "This module's build script declares no build types (debug and release are Gradle's defaults).",
+                    VariantKind::Flavor => "This module's build script declares no product flavors.",
+                    VariantKind::SigningConfig => "This module's build script declares no signing configs (Gradle signs debug builds with the debug keystore).",
+                })
+                .into_any_element(),
+        };
+        h_flex().flex_1().min_h_0().items_start().child(names).child(fields)
+    }
+
+    /// A page of the left list; the Modules page's Signing Configs and the
+    /// Build Variants page share the selected block's fields.
+    fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        self.page = page;
+        let signing = page == Page::Modules && self.module_tab == ModuleTab::SigningConfigs;
+        if signing != (self.variant_kind == VariantKind::SigningConfig) && matches!(page, Page::Modules | Page::BuildVariants) {
+            let kind = if signing { VariantKind::SigningConfig } else { VariantKind::BuildType };
+            self.select_variant(self.module, kind, 0, window, cx);
+        }
+        cx.notify();
+    }
+
+    fn show_module_tab(&mut self, tab: ModuleTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.module_tab = tab;
+        self.show_page(Page::Modules, window, cx);
     }
 
     fn render_variants(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
@@ -271,44 +347,7 @@ impl ProjectStructureView {
                 .child(name)
                 .on_click(move |_, window, cx| e.update(cx, |this, cx| this.select_variant(module, k, 0, window, cx)))
         }));
-        let list = self.variants_of(self.module, kind);
-        let names = v_flex().id("psd-var-names").w(px(150.)).flex_none().h_full().overflow_y_scroll().border_r_1().border_color(palette.border).children(list.iter().enumerate().map(|(ix, v)| {
-            let e = entity.clone();
-            div()
-                .id(("psd-var", ix))
-                .px_2()
-                .py_0p5()
-                .text_sm()
-                .when(ix == self.variant, |el| el.bg(palette.selection))
-                .hover(|el| el.bg(palette.hover))
-                .child(v.name.clone())
-                .on_click(move |_, window, cx| e.update(cx, |this, cx| this.select_variant(module, kind, ix, window, cx)))
-        }));
-        let label = |text: &'static str| div().w(px(170.)).flex_none().text_sm().child(text);
-        let fields = match self.current_variant() {
-            Some(v) => v_flex()
-                .id("psd-var-fields")
-                .flex_1()
-                .h_full()
-                .overflow_y_scroll()
-                .px_3()
-                .gap_2()
-                .children(variant_rows(kind).iter().enumerate().map(|(ix, (name, _))| {
-                    let editable = v.properties.get(ix).is_some_and(|p| p.site.is_some());
-                    h_flex().gap_2().child(label(name)).child(div().flex_1().child(Input::new(&self.variant_fields[ix]).small().disabled(!editable)))
-                }))
-                .into_any_element(),
-            None => div()
-                .px_3()
-                .text_sm()
-                .text_color(palette.text_secondary)
-                .child(match kind {
-                    VariantKind::BuildType => "This module's build script declares no build types (debug and release are Gradle's defaults).",
-                    VariantKind::Flavor => "This module's build script declares no product flavors.",
-                })
-                .into_any_element(),
-        };
-        let body = h_flex().flex_1().min_h_0().items_start().child(names).child(fields);
+        let body = self.variant_body(kind, cx);
         h_flex().size_full().items_start().child(modules).child(v_flex().flex_1().min_w_0().h_full().gap_1().child(tabs).child(body)).into_any_element()
     }
 
@@ -554,9 +593,16 @@ impl ProjectStructureView {
                             .when(selected, |el| el.bg(palette.selection))
                             .hover(|el| el.bg(palette.hover))
                             .child(m.path.trim_start_matches(':').to_owned().replace(':', "/"))
-                            .on_click(move |_, window, cx| e.update(cx, |this, cx| this.select_module(ix, window, cx)))
+                            .on_click(move |_, window, cx| {
+                                e.update(cx, |this, cx| {
+                                    if this.module_tab == ModuleTab::SigningConfigs {
+                                        this.select_variant(ix, VariantKind::SigningConfig, 0, window, cx);
+                                    } else {
+                                        this.select_module(ix, window, cx);
+                                    }
+                                })
+                            })
                     }));
-                let heading = |text: &'static str| div().pt_1().text_sm().font_weight(FontWeight::SEMIBOLD).child(text);
                 let field = |ix: usize, name: &'static str| {
                     let row = self.row(self.module, ix);
                     let editable = row.is_some_and(|p| p.site.is_some());
@@ -570,19 +616,33 @@ impl ProjectStructureView {
                 };
                 let script = self.structure.modules.get(self.module).and_then(|m| m.script.clone());
                 let n = MODULE_PROPERTIES.len();
-                let settings = v_flex()
-                    .id("psd-module-settings")
-                    .flex_1()
-                    .h_full()
-                    .overflow_y_scroll()
-                    .px_3()
-                    .gap_2()
-                    .when_none(&script, |el| el.child(hint("This module has no build script.")))
-                    .child(heading("Properties"))
-                    .children(MODULE_PROPERTIES.iter().enumerate().map(|(ix, (name, _))| field(ix, name)))
-                    .child(heading("Default Config"))
-                    .children(DEFAULT_CONFIG.iter().enumerate().map(|(ix, (name, _))| field(n + ix, name)));
-                h_flex().size_full().items_start().child(modules).child(settings).into_any_element()
+                let tab = self.module_tab;
+                let tabs = h_flex().gap_3().px_2().pb_1().border_b_1().border_color(palette.border).children(
+                    [(ModuleTab::Properties, "Properties"), (ModuleTab::DefaultConfig, "Default Config"), (ModuleTab::SigningConfigs, "Signing Configs")].into_iter().map(|(t, name)| {
+                        let e = entity.clone();
+                        div()
+                            .id(name)
+                            .text_sm()
+                            .when(t == tab, |el| el.font_weight(FontWeight::SEMIBOLD).border_b_2().border_color(palette.accent))
+                            .child(name)
+                            .on_click(move |_, window, cx| e.update(cx, |this, cx| this.show_module_tab(t, window, cx)))
+                    }),
+                );
+                let body = match tab {
+                    ModuleTab::SigningConfigs => self.variant_body(VariantKind::SigningConfig, cx).into_any_element(),
+                    ModuleTab::Properties | ModuleTab::DefaultConfig => v_flex()
+                        .id("psd-module-settings")
+                        .flex_1()
+                        .h_full()
+                        .overflow_y_scroll()
+                        .px_3()
+                        .gap_2()
+                        .when_none(&script, |el| el.child(hint("This module has no build script.")))
+                        .when(tab == ModuleTab::Properties, |el| el.children(MODULE_PROPERTIES.iter().enumerate().map(|(ix, (name, _))| field(ix, name))))
+                        .when(tab == ModuleTab::DefaultConfig, |el| el.children(DEFAULT_CONFIG.iter().enumerate().map(|(ix, (name, _))| field(n + ix, name))))
+                        .into_any_element(),
+                };
+                h_flex().size_full().items_start().child(modules).child(v_flex().flex_1().min_w_0().h_full().gap_1().child(tabs).child(body)).into_any_element()
             }
             Page::Dependencies => self.render_dependencies(cx),
             Page::BuildVariants => self.render_variants(cx),
@@ -603,10 +663,7 @@ impl Render for ProjectStructureView {
                 .when(selected, |el| el.bg(palette.selection))
                 .hover(|el| el.bg(palette.hover))
                 .child(*name)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.page = page;
-                    cx.notify();
-                }))
+                .on_click(cx.listener(move |this, _, window, cx| this.show_page(page, window, cx)))
         }));
         v_flex()
             .gap_2()
@@ -631,7 +688,7 @@ pub fn open(build_root: PathBuf, modules: Vec<ModuleInfo>, window: &mut Window, 
         let fields = labels().map(|_| input(cx, String::new())).collect();
         let values = structure.modules.iter().map(|m| m.properties.iter().chain(&m.default_config).map(|p| p.value.clone()).collect()).collect();
         let version = input(cx, String::new());
-        let variant_fields = (0..BUILD_TYPE.len().max(FLAVOR.len())).map(|_| input(cx, String::new())).collect::<Vec<_>>();
+        let variant_fields = (0..BUILD_TYPE.len().max(FLAVOR.len()).max(SIGNING_CONFIG.len())).map(|_| input(cx, String::new())).collect::<Vec<_>>();
         let library = cx.new(|cx| InputState::new(window, cx).placeholder("group:artifact:version"));
         let subscriptions = vec![cx.subscribe(&version, |this: &mut ProjectStructureView, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -646,6 +703,7 @@ pub fn open(build_root: PathBuf, modules: Vec<ModuleInfo>, window: &mut Window, 
                 let tab = |kind, list: &Vec<Variant>| list.iter().map(move |v| ((ix, kind, v.name.clone()), v.properties.iter().map(|p| p.value.clone()).collect::<Vec<_>>())).collect::<Vec<_>>();
                 let mut out = tab(VariantKind::BuildType, &m.build_types);
                 out.extend(tab(VariantKind::Flavor, &m.flavors));
+                out.extend(tab(VariantKind::SigningConfig, &m.signing_configs));
                 out
             })
             .collect();
@@ -653,6 +711,7 @@ pub fn open(build_root: PathBuf, modules: Vec<ModuleInfo>, window: &mut Window, 
             build_root,
             structure,
             page: Page::SdkLocation,
+            module_tab: ModuleTab::Properties,
             module: 0,
             sdk_dir,
             agp,
