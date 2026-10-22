@@ -7,7 +7,8 @@
 //! (Gradle-aware Make, Run Gradle task, Run External tool; + − ✎ ↑ ↓) on
 //! the right. Gradle configurations (+ › Gradle) run a line of tasks and
 //! arguments in a build instead, JUnit ones (+ › JUnit) a module's unit
-//! tests: all in a package, a class or a method. OK saves them for the
+//! tests: all in a package, a class or a method, and Android Instrumented
+//! Tests ones its `androidTest` tests on the connected devices. OK saves them for the
 //! project.
 
 use std::path::PathBuf;
@@ -44,14 +45,16 @@ enum ConfigType {
     App,
     Gradle,
     JUnit,
+    Instrumented,
 }
 
 impl ConfigType {
-    const ALL: [ConfigType; 3] = [ConfigType::App, ConfigType::Gradle, ConfigType::JUnit];
+    const ALL: [ConfigType; 4] = [ConfigType::App, ConfigType::Instrumented, ConfigType::Gradle, ConfigType::JUnit];
 
     fn of(saved: &SavedRunConfiguration) -> Self {
         match (&saved.gradle, &saved.junit) {
             (Some(_), _) => ConfigType::Gradle,
+            (None, Some(j)) if j.instrumented => ConfigType::Instrumented,
             (None, Some(_)) => ConfigType::JUnit,
             (None, None) => ConfigType::App,
         }
@@ -62,6 +65,7 @@ impl ConfigType {
             ConfigType::App => "Android App",
             ConfigType::Gradle => "Gradle",
             ConfigType::JUnit => "JUnit",
+            ConfigType::Instrumented => "Android Instrumented Tests",
         }
     }
 
@@ -69,7 +73,7 @@ impl ConfigType {
         match self {
             ConfigType::App => icons::MODULE_ANDROID,
             ConfigType::Gradle => icons::GRADLE,
-            ConfigType::JUnit => icons::TEST_ROOT,
+            ConfigType::JUnit | ConfigType::Instrumented => icons::TEST_ROOT,
         }
     }
 }
@@ -112,6 +116,11 @@ impl RunConfigView {
     /// The application modules, what Android App configurations run.
     fn app_modules(&self) -> Vec<(PathBuf, ModuleInfo)> {
         self.modules.iter().filter(|(_, m)| m.kind == ModuleType::Application).cloned().collect()
+    }
+
+    /// The Android modules, what Android Instrumented Tests configurations run.
+    fn android_modules(&self) -> Vec<(PathBuf, ModuleInfo)> {
+        self.modules.iter().filter(|(_, m)| m.kind.is_android()).cloned().collect()
     }
 
     fn names(&self) -> Vec<String> {
@@ -186,6 +195,14 @@ impl RunConfigView {
                 let pick = self.modules.iter().find(|(_, m)| m.dir.join("src/test").is_dir()).or(self.modules.first());
                 let Some((root, module)) = pick else { return };
                 Draft { root: root.clone(), saved: SavedRunConfiguration { name, module: module.path.clone(), gradle: None, junit: Some(JUnitTarget::default()), options: bare } }
+            }
+            (Some(ConfigType::Instrumented), _) => {
+                // The first Android module with an androidTest source set, else the first app.
+                let android = self.android_modules();
+                let pick = android.iter().find(|(_, m)| m.dir.join("src/androidTest").is_dir()).or(android.first());
+                let Some((root, module)) = pick else { return };
+                let target = JUnitTarget { kind: JUnitKind::Module, instrumented: true, ..Default::default() };
+                Draft { root: root.clone(), saved: SavedRunConfiguration { name, module: module.path.clone(), gradle: None, junit: Some(target), options: bare } }
             }
             (Some(ConfigType::App), _) => {
                 let Some((root, module)) = self.app_modules().into_iter().next() else { return };
@@ -399,9 +416,10 @@ impl RunConfigView {
         if selected.is_some_and(|d| d.saved.gradle.is_some()) && self.gradle_run.read(cx).value().trim().is_empty() {
             return Some("No tasks specified".into());
         }
-        if let Some(kind) = selected.and_then(|d| d.saved.junit.as_ref()).map(|j| j.kind) {
+        if let Some((kind, instrumented)) = selected.and_then(|d| d.saved.junit.as_ref()).map(|j| (j.kind, j.instrumented)) {
             let typed = JUnitTarget {
                 kind,
+                instrumented,
                 package: self.junit_package.read(cx).value().to_string(),
                 class: self.junit_class.read(cx).value().to_string(),
                 method: self.junit_method.read(cx).value().to_string(),
@@ -433,7 +451,7 @@ impl RunConfigView {
     fn render_settings(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let palette = cx.palette().clone();
         let Some(d) = self.selected.and_then(|i| self.drafts.get(i)).cloned() else {
-            return div().p_4().text_sm().text_color(palette.text_secondary).child("Press + to add an Android App, Gradle or JUnit configuration.").into_any_element();
+            return div().p_4().text_sm().text_color(palette.text_secondary).child("Press + to add an Android App, Android Instrumented Tests, Gradle or JUnit configuration.").into_any_element();
         };
         let label = |text: &'static str| div().w(px(110.)).flex_none().text_sm().text_color(palette.text_secondary).child(text);
         let heading = |text: &'static str| div().pt_2().text_sm().font_weight(FontWeight::SEMIBOLD).child(text);
@@ -469,7 +487,11 @@ impl RunConfigView {
                 .child(self.render_before_launch(&d, cx))
                 .into_any_element();
         }
-        let modules = if d.saved.junit.is_some() { self.modules.clone() } else { self.app_modules() };
+        let modules = match &d.saved.junit {
+            Some(j) if j.instrumented => self.android_modules(),
+            Some(_) => self.modules.clone(),
+            None => self.app_modules(),
+        };
         let module_label = modules.iter().find(|(r, m)| *r == d.root && m.path == d.saved.module).map_or_else(|| format!("{} (missing)", d.saved.module), |(_, m)| m.name());
         let android = modules.iter().find(|(r, m)| *r == d.root && m.path == d.saved.module).is_none_or(|(_, m)| m.kind.is_android());
         let module = Button::new("rc-module").outline().small().icon(Icon::new(if android { icons::MODULE_ANDROID } else { icons::MODULE }).small()).label(module_label).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
@@ -502,13 +524,13 @@ impl RunConfigView {
             })
         };
         if let Some(junit) = &d.saved.junit {
-            let kind = junit.kind;
-            let kinds = Button::new("rc-junit-kind").outline().small().label(kind.label()).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
+            let (kind, instrumented) = (junit.kind, junit.instrumented);
+            let kinds = Button::new("rc-junit-kind").outline().small().label(kind.label(instrumented)).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
                 let this = this.clone();
                 move |mut menu, _, _| {
-                    for k in JUnitKind::ALL {
+                    for &k in JUnitKind::choices(instrumented) {
                         let this = this.clone();
-                        menu = menu.item(PopupMenuItem::new(k.label()).checked(k == kind).on_click(move |_, _, cx| {
+                        menu = menu.item(PopupMenuItem::new(k.label(instrumented)).checked(k == kind).on_click(move |_, _, cx| {
                             this.update(cx, |v, cx| v.change(|d| {
                                 if let Some(j) = &mut d.saved.junit {
                                     j.kind = k;
@@ -531,9 +553,13 @@ impl RunConfigView {
                 .child(h_flex().gap_2().child(label("Module:")).child(module))
                 .child(h_flex().gap_2().child(label("Test kind:")).child(kinds))
                 .when(kind == JUnitKind::Package, |el| el.child(h_flex().gap_2().child(label("Package:")).child(div().flex_1().child(Input::new(&self.junit_package).small()))))
-                .when(kind != JUnitKind::Package, |el| el.child(h_flex().gap_2().child(label("Class:")).child(div().flex_1().child(Input::new(&self.junit_class).small()))))
+                .when(matches!(kind, JUnitKind::Class | JUnitKind::Method), |el| el.child(h_flex().gap_2().child(label("Class:")).child(div().flex_1().child(Input::new(&self.junit_class).small()))))
                 .when(kind == JUnitKind::Method, |el| el.child(h_flex().gap_2().child(label("Method:")).child(div().flex_1().child(Input::new(&self.junit_method).small()))))
-                .child(div().text_xs().text_color(palette.text_secondary).child("Runs the module's unit tests through Gradle; an empty package runs them all."))
+                .child(div().text_xs().text_color(palette.text_secondary).child(if instrumented {
+                    "Runs the module's androidTest tests through Gradle on every connected device."
+                } else {
+                    "Runs the module's unit tests through Gradle; an empty package runs them all."
+                }))
                 .child(heading("Before launch"))
                 .child(self.render_before_launch(&d, cx))
                 .into_any_element();
@@ -666,6 +692,7 @@ impl Render for RunConfigView {
                                         let this = cx.entity().downgrade();
                                         let no_apps = self.app_modules().is_empty();
                                         let no_modules = self.modules.is_empty();
+                                        let no_android = self.android_modules().is_empty();
                                         move |mut menu, _, _| {
                                             menu = menu.label("Add New Configuration");
                                             for ty in ConfigType::ALL {
@@ -673,6 +700,7 @@ impl Render for RunConfigView {
                                                 let disabled = match ty {
                                                     ConfigType::App => no_apps,
                                                     ConfigType::JUnit => no_modules,
+                                                    ConfigType::Instrumented => no_android,
                                                     ConfigType::Gradle => false,
                                                 };
                                                 menu = menu.item(PopupMenuItem::new(ty.label()).icon(Icon::new(ty.icon())).disabled(disabled).on_click(move |_, window, cx| {

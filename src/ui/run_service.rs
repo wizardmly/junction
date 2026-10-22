@@ -183,15 +183,14 @@ impl RunService {
         }, window, cx);
     }
 
-    /// The picked temporary configuration as a saved JUnit one, when it
-    /// can be: unit tests of a package, a class or a method.
+    /// The picked temporary configuration as a saved JUnit (or Android
+    /// Instrumented Tests) one, when it can be: tests of a package, a
+    /// class or a method.
     fn savable_test(&self, cx: &App) -> Option<(std::path::PathBuf, run::SavedRunConfiguration)> {
         let name = self.selected_test(cx)?;
         let (root, module, request) = TestService::try_global(cx)?.read(cx).temporary(&name)?;
-        if request.kind != crate::domain::testing::TestKind::Unit {
-            return None;
-        }
-        let junit = run::JUnitTarget::from_filters(&request.filters)?;
+        let instrumented = request.kind == crate::domain::testing::TestKind::Instrumented;
+        let junit = run::JUnitTarget::from_filters(&request.filters, instrumented)?;
         let options = run::LaunchOptions { before_launch: Vec::new(), ..Default::default() };
         Some((root, run::SavedRunConfiguration { name, module: module.path, gradle: None, junit: Some(junit), options }))
     }
@@ -203,7 +202,7 @@ impl RunService {
     }
 
     /// Save '…' Configuration: the temporary configuration becomes a saved
-    /// JUnit one, picked.
+    /// JUnit (or Android Instrumented Tests) one, picked.
     pub fn save_test(&mut self, cx: &mut Context<Self>) {
         let Some((root, mut saved)) = self.savable_test(cx) else { return };
         let temporary = saved.name.clone();
@@ -398,11 +397,14 @@ impl RunService {
         }
     }
 
-    /// The picked configuration when it is a JUnit one, and its tests.
+    /// The picked configuration when it is a JUnit or Android Instrumented
+    /// Tests one, and its tests.
     fn junit_request(&self, cx: &App) -> Option<(RunConfiguration, crate::domain::testing::TestRequest)> {
+        use crate::domain::testing::TestKind;
         let config = self.configuration(cx)?;
         let target = config.junit.as_ref()?;
-        let request = crate::domain::testing::TestRequest { kind: crate::domain::testing::TestKind::Unit, filters: target.filters(), name: config.name.clone(), debug_port: None, coverage: false };
+        let kind = if target.instrumented { TestKind::Instrumented } else { TestKind::Unit };
+        let request = crate::domain::testing::TestRequest { kind, filters: target.filters(), name: config.name.clone(), debug_port: None, coverage: false };
         Some((config, request))
     }
 
@@ -427,6 +429,10 @@ impl RunService {
             return;
         }
         if let Some((config, request)) = self.junit_request(cx) {
+            if debug && request.kind == crate::domain::testing::TestKind::Instrumented {
+                cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: "Debugging instrumented tests is not supported: the debugger attaches to a JVM, not to the device.".into() });
+                return;
+            }
             if debug {
                 crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.debug_configured(config.build_root, config.module, request, cx));
             } else {
