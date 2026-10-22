@@ -60,6 +60,7 @@ pub mod rename;
 pub mod retrace;
 pub mod run;
 pub mod signing;
+pub mod test_history;
 pub mod testing;
 pub mod translations;
 pub mod todo;

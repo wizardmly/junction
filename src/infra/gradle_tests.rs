@@ -271,7 +271,7 @@ fn report_files(dir: &Path, since: SystemTime) -> Vec<PathBuf> {
 
 /// The test classes of a JUnit XML report (`<testsuite>`, or several in
 /// `<testsuites>`), grouped by each test's class.
-fn parse_report(xml: &str) -> Vec<TestSuite> {
+pub fn parse_report(xml: &str) -> Vec<TestSuite> {
     let Ok(doc) = roxmltree::Document::parse(xml) else { return Vec::new() };
     let mut suites: Vec<TestSuite> = Vec::new();
     fn suite<'a>(suites: &'a mut Vec<TestSuite>, class: &str) -> &'a mut TestSuite {

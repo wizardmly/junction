@@ -212,6 +212,7 @@ impl Workspace {
             ("Run 'app'", "Shift+F10", op(|this, _, cx| this.run.update(cx, |r, cx| r.run(cx)))),
             ("Stop", "Ctrl+F2", op(|this, _, cx| this.run.update(cx, |r, cx| r.stop(cx)))),
             ("Attach Debugger to Android Process", "", op(|this, window, cx| this.attach_debugger(window, cx))),
+            ("Import Tests from File…", "", op(|_, _, cx| crate::ui::test_view::import_from_file(cx))),
             ("Sync Project with Gradle Files", "Ctrl+Shift+O", op(|_, _, cx| crate::ui::sync_service::SyncService::global(cx).update(cx, |s, cx| s.sync_all(cx)))),
             ("Git", "Alt+9", op(|this, window, cx| this.on_toggle_git(&ToggleGitWindow, window, cx))),
             ("Commit", "Alt+0", op(|this, window, cx| this.show_left_tab(LeftTab::Commit, window, cx))),

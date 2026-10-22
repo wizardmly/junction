@@ -4,12 +4,17 @@
 //! results tree (Test Results › classes › tests, with outcome icons and
 //! durations) and the console of the selected node: the test's output and
 //! failure, a class's tests, or all of Gradle's output for the root.
-//! Double-clicking a test goes to its source.
+//! Double-clicking a test goes to its source. Test History lists the
+//! last ten runs (and Import Tests from File…) to open one again.
 
 use std::collections::HashSet;
 use std::ops::Range;
 
-use gpui_kit::component::{Disableable as _, Icon, Selectable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{
+    Disableable as _, Icon, Selectable as _, Sizable as _, h_flex,
+    menu::{DropdownMenu as _, PopupMenuItem},
+    v_flex,
+};
 use gpui_kit::{
     AnyElement, ClickEvent, Context, Entity, EventEmitter, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, uniform_list,
@@ -333,7 +338,7 @@ impl TestView {
         let service = self.service.read(cx);
         let running = service.is_running();
         let has_failed = service.has_failed();
-        let can_rerun = run.is_some() && !running;
+        let can_rerun = run.is_some() && service.can_rerun();
         let (rerun, rerun_failed, stop) = (self.service.clone(), self.service.clone(), self.service.clone());
         h_flex()
             .h(px(28.))
@@ -369,8 +374,30 @@ impl TestView {
                 this.collapsed.extend(classes);
                 cx.notify();
             })))
+            .child(div().w(px(1.)).h(px(16.)).mx_1().bg(cx.palette().border))
+            .child(dimmed(running, self.render_history(running)))
+            .child(dimmed(running, tool_button("tests-import", icons::IMPORT, "Import Tests from File…").disabled(running).on_click(|_, _, cx| import_from_file(cx))))
             .child(div().flex_1())
             .children(run.map(|run| self.render_status(run, cx)))
+            .into_any_element()
+    }
+
+    /// Test History: the saved runs, newest first; each opens in this tab.
+    fn render_history(&self, running: bool) -> AnyElement {
+        let service = self.service.clone();
+        tool_button("tests-history", icons::HISTORY, "Test History")
+            .disabled(running)
+            .dropdown_menu(move |mut menu, _, cx| {
+                let entries = service.read(cx).history_entries(cx);
+                if entries.is_empty() {
+                    return menu.item(PopupMenuItem::new("No test history").disabled(true));
+                }
+                for (path, label) in entries {
+                    let service = service.clone();
+                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| service.update(cx, |s, cx| s.open_saved(path.clone(), cx))));
+                }
+                menu
+            })
             .into_any_element()
     }
 
@@ -434,6 +461,7 @@ impl Render for TestView {
         let Some(run) = service.run.as_ref() else {
             return v_flex()
                 .size_full()
+                .child(self.render_toolbar(None, cx))
                 .child(div().p_4().text_sm().text_color(palette.text_secondary).child("No tests have run yet. Click ▶ in the gutter of a test, or press Ctrl+Shift+F10 in it."))
                 .into_any_element();
         };
@@ -482,6 +510,19 @@ impl Render for TestView {
             )
             .into_any_element()
     }
+}
+
+/// Import Tests from File…: a saved run (IntelliJ's format) or a JUnit
+/// XML report, opened in the test tab.
+pub fn import_from_file(cx: &mut gpui_kit::App) {
+    let service = TestService::global(cx);
+    let paths = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Choose a File with Tests Result".into()) });
+    cx.spawn(async move |cx| {
+        if let Ok(Ok(Some(path))) = paths.await.map(|r| r.map(|p| p.and_then(|p| p.into_iter().next()))) {
+            service.update(cx, |s, cx| s.open_saved(path, cx));
+        }
+    })
+    .detach();
 }
 
 /// The tab's title in the Run window.
