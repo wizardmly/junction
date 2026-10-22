@@ -8,7 +8,7 @@
 use gpui_kit::{Context, IntoElement, ParentElement as _, Styled as _, Window, anchored, deferred, div, px};
 
 use super::FileEditor;
-use crate::domain::live_templates::{expand, expand_around, find, shortened, Session, Template};
+use crate::domain::live_templates::{expand, expand_around, find, resolved, shortened, Expansion, Session, Template};
 use crate::theme::ActivePalette as _;
 
 pub(super) struct TemplateState {
@@ -65,51 +65,27 @@ impl FileEditor {
         let contexts = crate::index::introduce::template_contexts(lang, &text, start);
         let kotlin = style == crate::domain::imports::ImportStyle::Kotlin;
         let Some(template) = find(kotlin, &text[start..cursor], &contexts) else { return false };
+        // Its computed variables from the code here, its qualified names
+        // shortened (imported).
+        let template = resolved(&template, &crate::index::introduce::template_scope(lang, &text, start));
+        let (template, imports) = shortened(&template);
         let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
         let indent: String = text[line_start..start].chars().take_while(|c| c.is_whitespace()).collect();
         let expansion = expand(&template, &indent, &crate::domain::surround::indent_unit(&text));
-        let mut new_text = text.clone();
-        new_text.replace_range(start..cursor, &expansion.text);
-        let session = Session::new(&expansion, start);
-        let selection = session.selection().unwrap_or(session.end..session.end);
-        self.state.update(cx, |state, cx| {
-            state.set_selected_range(start..cursor, cx);
-            state.replace(expansion.text.clone(), window, cx);
-            state.set_selected_range(selection, cx);
-        });
-        self.template = (!session.stops.is_empty()).then_some(TemplateState { session, text: new_text, syncing: false });
-        cx.notify();
+        self.insert_template(start..cursor, expansion.text.clone(), 0, &expansion, imports, window, cx);
         true
     }
 
-    /// Fills in `session`'s places one by one, as a template's (the text
-    /// already written, the first place selected).
-    pub(super) fn start_template(&mut self, session: Session, cx: &mut Context<Self>) {
-        let text = self.state.read(cx).value().to_string();
-        self.template = (!session.stops.is_empty()).then_some(TemplateState { session, text, syncing: false });
-        cx.notify();
-    }
-
-    /// Surrounds `range` (whole lines, or text within a line) with a
-    /// surround template, its qualified names shortened and imported, and
-    /// fills in its variables.
-    pub(super) fn surround_with_template(&mut self, template: Template, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Writes a template's `insert` (its expansion at `lead` bytes in) over
+    /// `range`, imports its classes, in one edit, and starts filling in
+    /// its variables.
+    #[allow(clippy::too_many_arguments)]
+    fn insert_template(&mut self, range: std::ops::Range<usize>, insert: String, lead: usize, expansion: &Expansion, imports: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         let Some((_, style)) = self.jvm_style() else { return };
         let text = self.text(cx);
-        let (template, imports) = shortened(&template);
-        let line_start = text[..range.start].rfind('\n').map_or(0, |i| i + 1);
-        let whole_lines = range.start == line_start && (range.end == text.len() || text[..range.end].ends_with('\n'));
-        let selection = &text[range.clone()];
-        let indent: String = text[line_start..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-        let expansion = expand_around(&template, selection, &indent, &crate::domain::surround::indent_unit(&text));
-        let lead = if whole_lines { indent.as_str() } else { "" };
-        let mut insert = format!("{lead}{}", expansion.text);
-        if whole_lines && selection.ends_with('\n') && !insert.ends_with('\n') {
-            insert.push('\n');
-        }
         let mut new_text = text.clone();
         new_text.replace_range(range.clone(), &insert);
-        let mut at = range.start + lead.len();
+        let mut at = range.start + lead;
         for qualified in imports {
             let header = crate::domain::imports::header(&new_text);
             let imported: Vec<String> = header.imports.iter().map(|(_, q)| q.clone()).chain(header.wildcards.iter().map(|w| format!("{w}.*"))).collect();
@@ -127,7 +103,7 @@ impl FileEditor {
         let suffix = text.bytes().rev().zip(new_text.bytes().rev()).take_while(|(a, b)| a == b).count().min(text.len() - range.end);
         let replaced = prefix..text.len() - suffix;
         let replacement = new_text[prefix..new_text.len() - suffix].to_owned();
-        let session = Session::new(&expansion, at);
+        let session = Session::new(expansion, at);
         let selection = session.selection().unwrap_or(session.end..session.end);
         self.state.update(cx, |state, cx| {
             state.set_selected_range(replaced, cx);
@@ -135,6 +111,35 @@ impl FileEditor {
             state.set_selected_range(selection, cx);
         });
         self.start_template(session, cx);
+    }
+
+    /// Fills in `session`'s places one by one, as a template's (the text
+    /// already written, the first place selected).
+    pub(super) fn start_template(&mut self, session: Session, cx: &mut Context<Self>) {
+        let text = self.state.read(cx).value().to_string();
+        self.template = (!session.stops.is_empty()).then_some(TemplateState { session, text, syncing: false });
+        cx.notify();
+    }
+
+    /// Surrounds `range` (whole lines, or text within a line) with a
+    /// surround template, its qualified names shortened and imported, and
+    /// fills in its variables.
+    pub(super) fn surround_with_template(&mut self, template: Template, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((lang, _)) = self.jvm_style() else { return };
+        let text = self.text(cx);
+        let template = resolved(&template, &crate::index::introduce::template_scope(lang, &text, range.start));
+        let (template, imports) = shortened(&template);
+        let line_start = text[..range.start].rfind('\n').map_or(0, |i| i + 1);
+        let whole_lines = range.start == line_start && (range.end == text.len() || text[..range.end].ends_with('\n'));
+        let selection = &text[range.clone()];
+        let indent: String = text[line_start..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let expansion = expand_around(&template, selection, &indent, &crate::domain::surround::indent_unit(&text));
+        let lead = if whole_lines { indent.as_str() } else { "" };
+        let mut insert = format!("{lead}{}", expansion.text);
+        if whole_lines && selection.ends_with('\n') && !insert.ends_with('\n') {
+            insert.push('\n');
+        }
+        self.insert_template(range, insert, lead.len(), &expansion, imports, window, cx);
     }
 
     /// Enter in a template: to the next variable, as Tab.
