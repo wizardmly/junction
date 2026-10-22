@@ -243,7 +243,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 7. ✅ Android 资源（2026-10-15，FEATURES.md 第 19 节）：`R.x.y` / `@x/y` 跳转、悬停显示值、Find Usages、颜色和图片 gutter 预览。Translations Editor 已补上（2026-10-16，第 31 节，单个 res 目录）。vector drawable 预览已补上（2026-10-16，第 32 节）。shape / selector / layer-list 等 drawable 预览已补上（2026-10-16，第 39 节）。Merged Manifest 已补上（2026-10-16，第 41 节，本地模块 + debug 覆盖，未含 AAR）。
 8. ✅ 测试（2026-10-15，FEATURES.md 第 21 节）：gutter ▶ / ▶▶ 和结果图标、Ctrl+Shift+F10、Gradle test 任务 + init script 实时事件 + JUnit XML、Run 窗口的测试标签页（结果树、状态行、Rerun Failed Tests、控制台）。Project 窗口右键运行目录 / 文件的测试已补上（2026-10-20，FEATURES.md 第 21 节）。断言对比窗口（`<Click to see difference>`）已补上（2026-10-20）。运行配置下拉里的临时测试配置已补上（2026-10-20）。Run with Coverage（JaCoCo、Coverage 工具窗口、编辑器绿 / 黄 / 红条）已补上（2026-10-21，单元测试和仪器测试）。测试历史和 Import Tests from File 已补上（2026-10-22）。剩覆盖率和仪器测试的真机验证（Debug 测试已随第 5 项完成）。
 9. ✅ Gradle 文件辅助（2026-10-15，FEATURES.md 第 20 节）：version catalog 跳转、悬停、Find Usages、`libs.` 补全，依赖和插件新版本警告 + Alt+Enter “Change to …”。Project Structure 对话框已补上（第 61 节），Alt+Enter 的 “改用 version catalog” 迁移修复也已完成（2026-10-20）。
-10. ✅ Problems / TODO 工具窗口、Local History（2026-10-15，FEATURES.md 第 18 节）。
+10. ✅ Problems / TODO 工具窗口、Local History（2026-10-15，FEATURES.md 第 18 节）；外部修改自动记版本、Show History for Selection、版本搜索已补上（2026-10-22）。
 11. ✅ 代码生成：✅ Surround With（Ctrl+Alt+T，FEATURES.md 第 28 节，照 IntelliJ 的 Kotlin / Java surround descriptor）。✅ Live Templates（Tab 展开、变量间跳转与同步，FEATURES.md 第 29 节，模板取自 IntelliJ 的 Kotlin.xml / Java.xml）。✅ Generate（Alt+Insert：toString、equals / hashCode，Java 的构造函数、getter / setter，FEATURES.md 第 30 节，照 IntelliJ 默认模板）。✅ Override / Implement Methods（Ctrl+O / Ctrl+I，2026-10-16，FEATURES.md 第 36 节）。模板进补全列表已补上（2026-10-20，FEATURES.md 第 29 节）。自定义模板、关闭内置模板已补上（2026-10-20，Settings › Editor › Live Templates，存 `live-templates.json`，FEATURES.md 第 29 节）。
 
 **P2：重，可以长期留给 AS**
@@ -280,7 +280,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 2026-10-19 | 控制台 ANSI 颜色和 1 MB 输出上限；Inline Property / Field（顺带修了 Inline Variable 把成员属性当局部变量的 bug） |
 | 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release；签名打包的 Remember passwords（系统密码库）和 Destination Folder；Live Templates 进补全列表；Build 窗口 Sync 标签页；HotSwap / Apply Code Changes；Logcat 分屏；Gradle user home / Offline work / Distribution 设置，修复 Gradle JDK 设置不保存 |
 | 2026-10-21 | 仓库改为公开；HANDOFF 6.1 菜单补齐；APK Analyzer、Lint、SDK Manager、Layout Inspector（含 3D）、Profiler（内存、CPU 方法跟踪、System Trace）、App Inspection（数据库、后台任务、网络）；Logcat 导出导入、R8 反混淆、`name:` 键、标签页重启恢复；Attach Debugger 对话框 |
-| 2026-10-22 | 测试历史（最近 10 次运行结果，IntelliJ 格式）和 Import Tests from File；运行配置的 Logcat 选项（启动后自动显示 Logcat、启动前清空日志） |
+| 2026-10-22 | 测试历史（最近 10 次运行结果，IntelliJ 格式）和 Import Tests from File；运行配置的 Logcat 选项（启动后自动显示 Logcat、启动前清空日志）；Local History 的外部修改版本、选区历史和版本搜索 |
 
 更细的历史看 `git log`，每个提交的标题都写明了用户可见的变化。
 

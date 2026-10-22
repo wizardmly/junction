@@ -401,7 +401,9 @@ Linux 实测（假 adb 模拟日志流和进程表）：打开窗口即显示 pa
 | Local History › Show History（File 菜单、编辑器右键、Find Action）：独立窗口，左边版本列表（时间到秒、标签），右边所选版本和当前文件的对比（当前文件可编辑）；Revert 把文件恢复到所选版本，打开的编辑器同步刷新 | ✅ |
 | Local History 的目录和项目历史（2026-10-21）：Project 窗口右键目录 › Local History › Show History…、Show Project History…（也在 File › Local History）：左边是目录下各文件的版本（带文件名）和标签，中间列出所选时刻之后改过的文件，右边是所选文件当时与现在的对比；Revert 把这些文件一起恢复。Recent Changes（Alt+Shift+C）：最近 40 条记录（时间、文件、所在目录），点一条打开该文件的历史并选中那个版本，标签打开项目历史 | ✅ |
 | Local History › Put Label…：给整个项目在此刻打标签，出现在每个文件的历史里 | ✅ |
-| 外部修改（Git 操作、其他程序）自动记版本、目录的历史、Show History for Selection、按内容搜索版本 | ❌ 未做 |
+| 外部修改自动记版本（2026-10-22）：Git 操作或其他程序改了有历史的文件，仓库刷新时记一个 “External change” 版本（只比较 mtime 变了的文件，后台单线程排队，和保存记录不会抢先后） | ✅ |
+| Show History for Selection…（2026-10-22，编辑器右键 › Local History）：窗口标题 “Local History for Selection of X (lines a–b)”，只列出这几行有变化的版本，按 diff 把选区跟到旧版本里的对应行，右边是那几行当时与现在的对比；Revert Selection 只把这几行改回去 | ✅ |
+| 历史窗口顶部搜索框（2026-10-22）：文件和选区历史 “Search by content”（按版本内容过滤），目录和项目历史 “Search by file name” | ✅ |
 
 Linux 实测：TODO 窗口找到 3 条（含未跟踪文件），双击跳到对应行；Make Project 后 Problems 的 File 和 Project Errors 都列出 Util.kt 的类型错误，双击跳到 2:18；保存三次加一个标签后 Show History 列出全部版本，Revert 到最早版本后磁盘内容恢复。截图：reports/Problems-TODO-LocalHistory-2026-10-15/。
 
