@@ -3,6 +3,8 @@
 //! run on its module; the results tree fills in as tests start and finish,
 //! and the Run window shows it. Rerun and Rerun Failed Tests repeat the
 //! last run. Remembers each test's last outcome for the gutter icons.
+//! Each finished run is saved to the Test History, which opens it again
+//! (as does Import Tests from File).
 //! Composition root of the run-tests use case over Gradle.
 
 use std::collections::HashMap;
@@ -15,8 +17,10 @@ use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, Shar
 
 use crate::domain::coverage::CoverageReport;
 use crate::domain::run::{BuildResult, ModuleInfo};
+use crate::domain::test_history::SavedRun;
 use crate::domain::testing::{self, Outcome, TestEvent, TestMark, TestRequest, TestResults};
 use crate::infra::gradle_tests::GradleTests;
+use crate::infra::test_history_store::{self, TestHistoryStore};
 use crate::ui::sync_service::{self, SyncService};
 use crate::usecase::run_tests;
 
@@ -106,6 +110,62 @@ impl TestService {
 
     pub fn is_running(&self) -> bool {
         self.run.as_ref().is_some_and(|r| r.running)
+    }
+
+    /// Rerun: there's a run to repeat (an opened history run's
+    /// configuration may be gone).
+    pub fn can_rerun(&self) -> bool {
+        self.last.is_some() && !self.is_running()
+    }
+
+    /// Where this project's Test History is: the last run's build, else
+    /// the first synced one.
+    fn history_store(&self, cx: &App) -> Option<TestHistoryStore> {
+        let root = self.last.as_ref().map(|l| l.build_root.clone()).or_else(|| SyncService::try_global(cx).and_then(|s| s.read(cx).builds().first().map(|(root, _)| root.clone())))?;
+        TestHistoryStore::for_project(&root)
+    }
+
+    /// The Test History popup's runs, newest first: each file and its text.
+    pub fn history_entries(&self, cx: &App) -> Vec<(PathBuf, String)> {
+        self.history_store(cx).map(|s| s.list()).unwrap_or_default()
+    }
+
+    /// Opens a history file, or one picked with Import Tests from File, in
+    /// the test tab; its configuration (when still there) is what Rerun
+    /// runs.
+    pub fn open_saved(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.is_running() {
+            return;
+        }
+        let loaded = cx.background_spawn(async move { test_history_store::import(&path) });
+        cx.spawn(async move |this, cx| {
+            let loaded = loaded.await;
+            this.update(cx, |this, cx| match loaded {
+                Ok(saved) => this.show_saved(saved, cx),
+                Err(message) => cx.emit(TestServiceEvent::Error { title: "Import Failed".into(), message }),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn show_saved(&mut self, saved: SavedRun, cx: &mut Context<Self>) {
+        if self.is_running() {
+            return;
+        }
+        self.last = self.temporary.iter().find(|l| l.request.name == saved.name).cloned();
+        self.run = Some(TestRun {
+            name: saved.name,
+            results: saved.results,
+            lines: saved.lines.into_iter().map(SharedString::from).collect(),
+            running: false,
+            started: Instant::now(),
+            took: saved.duration_ms.map(Duration::from_millis),
+            build_failed: false,
+            cancelled: false,
+        });
+        cx.emit(TestServiceEvent::Show);
+        cx.notify();
     }
 
     /// The last outcome of a test class or method, as the gutter shows it.
@@ -225,7 +285,7 @@ impl TestService {
     }
 
     pub fn has_failed(&self) -> bool {
-        self.run.as_ref().is_some_and(|r| !r.running && r.results.counts().failed > 0)
+        self.last.is_some() && self.run.as_ref().is_some_and(|r| !r.running && r.results.counts().failed > 0)
     }
 
     pub fn stop(&mut self, cx: &mut Context<Self>) {
@@ -337,6 +397,7 @@ impl TestService {
         self.drain();
         self.receiver = None;
         let covered = self.last.as_ref().is_some_and(|l| l.request.coverage);
+        let store = self.history_store(cx);
         let Some(run) = self.run.as_mut() else { return };
         // The use case's tree has the XML reports merged in and the
         // stopped tests terminated.
@@ -353,6 +414,18 @@ impl TestService {
                     self.history.insert((suite.class.clone(), Some(test.method().to_owned())), outcome);
                 }
             }
+        }
+        // Into the Test History, as IntelliJ saves each run with tests.
+        if !run.results.suites.is_empty()
+            && let Some(store) = store
+        {
+            let saved = SavedRun { name: run.name.clone(), results: run.results.clone(), lines: run.lines.iter().map(|l| l.to_string()).collect(), duration_ms: run.results.duration_ms().or(run.took.map(|t| t.as_millis() as u64)) };
+            cx.background_spawn(async move {
+                if let Err(e) = store.save(&saved) {
+                    eprintln!("test history: {e}");
+                }
+            })
+            .detach();
         }
         // The editors mark a failed build's errors, as after Make Project.
         if run.build_failed {

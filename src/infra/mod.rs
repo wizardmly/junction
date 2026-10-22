@@ -23,6 +23,7 @@ pub mod adb_logcat;
 pub mod logcat_filter_store;
 pub mod r8_mapping;
 pub mod template_store;
+pub mod test_history_store;
 pub mod catalog_files;
 pub mod gradle;
 pub mod gradle_sync;
