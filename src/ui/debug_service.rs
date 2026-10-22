@@ -538,6 +538,16 @@ impl DebugService {
         }, cx);
     }
 
+    /// Debug with a saved JUnit configuration selected in the toolbar.
+    pub fn debug_configured(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, mut request: crate::domain::testing::TestRequest, cx: &mut Context<Self>) {
+        let name = request.name.clone();
+        self.debug_tests(name, move |port, cx| {
+            request.debug_port = Some(port);
+            TestService::global(cx).update(cx, |s, cx| s.run_configured(build_root, module, request, cx));
+            true
+        }, cx);
+    }
+
     /// Debug with a temporary test configuration selected in the toolbar.
     pub fn debug_temporary(&mut self, name: String, cx: &mut Context<Self>) {
         let n = name.clone();

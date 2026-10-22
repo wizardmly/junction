@@ -103,6 +103,79 @@ pub struct RunConfiguration {
     /// A Gradle configuration: its Run line (tasks and arguments,
     /// `clean :app:lint --info`); none for an Android App one.
     pub gradle: Option<String>,
+    /// A JUnit configuration: the module's unit tests it runs.
+    pub junit: Option<JUnitTarget>,
+}
+
+/// IntelliJ's JUnit configuration: its Test kind and what it names.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct JUnitTarget {
+    pub kind: JUnitKind,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub class: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub method: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum JUnitKind {
+    #[default]
+    Package,
+    Class,
+    Method,
+}
+
+impl JUnitKind {
+    pub const ALL: [JUnitKind; 3] = [JUnitKind::Package, JUnitKind::Class, JUnitKind::Method];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            JUnitKind::Package => "All in package",
+            JUnitKind::Class => "Class",
+            JUnitKind::Method => "Method",
+        }
+    }
+}
+
+impl JUnitTarget {
+    /// What keeps it from running, in IntelliJ's words.
+    pub fn problem(&self) -> Option<&'static str> {
+        match self.kind {
+            JUnitKind::Package => None,
+            _ if self.class.trim().is_empty() => Some("No test class specified"),
+            JUnitKind::Method if self.method.trim().is_empty() => Some("Method name not specified"),
+            _ => None,
+        }
+    }
+
+    /// What a test run's filters name, as a configuration: a package
+    /// (`com.ex.*`, or nothing for all), a class or a method; none for
+    /// several (Rerun Failed Tests' runs).
+    pub fn from_filters(filters: &[(String, Option<String>)]) -> Option<Self> {
+        match filters {
+            [] => Some(Self::default()),
+            [(class, None)] => Some(match class.strip_suffix(".*") {
+                Some(package) => Self { kind: JUnitKind::Package, package: package.into(), ..Default::default() },
+                None => Self { kind: JUnitKind::Class, class: class.clone(), ..Default::default() },
+            }),
+            [(class, Some(method))] => Some(Self { kind: JUnitKind::Method, class: class.clone(), method: method.clone(), ..Default::default() }),
+            _ => None,
+        }
+    }
+
+    /// The `(class, method)` filters a test run takes: none runs every
+    /// test of the module (an empty package is the default one's, all).
+    pub fn filters(&self) -> Vec<(String, Option<String>)> {
+        let (package, class, method) = (self.package.trim(), self.class.trim(), self.method.trim());
+        match self.kind {
+            JUnitKind::Package if package.is_empty() => Vec::new(),
+            JUnitKind::Package => vec![(format!("{package}.*"), None)],
+            JUnitKind::Class => vec![(class.to_owned(), None)],
+            JUnitKind::Method => vec![(class.to_owned(), Some(method.to_owned()))],
+        }
+    }
 }
 
 /// What Launch starts, as the configuration's Launch Options say.
@@ -236,6 +309,9 @@ pub struct SavedRunConfiguration {
     /// A Gradle configuration's Run line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradle: Option<String>,
+    /// A JUnit configuration's tests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub junit: Option<JUnitTarget>,
     #[serde(flatten)]
     pub options: LaunchOptions,
 }
@@ -314,18 +390,20 @@ pub fn run_configurations(build_root: &std::path::Path, modules: &[ModuleInfo], 
             .iter()
             .filter_map(|s| {
                 // A Gradle configuration runs in the build's root project.
-                let module = match &s.gradle {
-                    Some(_) => ModuleInfo { path: ":".into(), dir: build_root.to_path_buf(), kind: ModuleType::Other, variants: Vec::new() },
-                    None => modules.iter().find(|m| m.path == s.module && m.kind == ModuleType::Application)?.clone(),
+                let module = match (&s.gradle, &s.junit) {
+                    (Some(_), _) => ModuleInfo { path: ":".into(), dir: build_root.to_path_buf(), kind: ModuleType::Other, variants: Vec::new() },
+                    // A JUnit configuration's module is any with tests.
+                    (None, Some(_)) => modules.iter().find(|m| m.path == s.module)?.clone(),
+                    (None, None) => modules.iter().find(|m| m.path == s.module && m.kind == ModuleType::Application)?.clone(),
                 };
-                Some(RunConfiguration { name: s.name.clone(), build_root: build_root.to_path_buf(), module, options: s.options.clone(), gradle: s.gradle.clone() })
+                Some(RunConfiguration { name: s.name.clone(), build_root: build_root.to_path_buf(), module, options: s.options.clone(), gradle: s.gradle.clone(), junit: s.junit.clone() })
             })
             .collect();
     }
     let mut out: Vec<RunConfiguration> = modules
         .iter()
         .filter(|m| m.kind == ModuleType::Application)
-        .map(|m| RunConfiguration { name: m.name(), build_root: build_root.to_path_buf(), module: m.clone(), options: LaunchOptions::default(), gradle: None })
+        .map(|m| RunConfiguration { name: m.name(), build_root: build_root.to_path_buf(), module: m.clone(), options: LaunchOptions::default(), gradle: None, junit: None })
         .collect();
     out.sort_by(|a, b| a.module.path.cmp(&b.module.path));
     out
@@ -362,13 +440,18 @@ mod tests {
         let mut settings = LaunchOptions { launch: LaunchTarget::Activity(".SettingsActivity".into()), ..Default::default() };
         settings.flags = "-W".into();
         let saved = [
-            SavedRunConfiguration { name: "Settings".into(), module: ":app".into(), gradle: None, options: settings.clone() },
-            SavedRunConfiguration { name: "Old".into(), module: ":gone".into(), gradle: None, options: LaunchOptions::default() },
-            SavedRunConfiguration { name: "lint".into(), module: String::new(), gradle: Some(":app:lint".into()), options: LaunchOptions { before_launch: Vec::new(), ..Default::default() } },
+            SavedRunConfiguration { name: "Settings".into(), module: ":app".into(), gradle: None, junit: None, options: settings.clone() },
+            SavedRunConfiguration { name: "Old".into(), module: ":gone".into(), gradle: None, junit: None, options: LaunchOptions::default() },
+            SavedRunConfiguration { name: "lint".into(), module: String::new(), gradle: Some(":app:lint".into()), junit: None, options: LaunchOptions { before_launch: Vec::new(), ..Default::default() } },
         ];
         let configs = run_configurations(std::path::Path::new("/p"), &[m(":app", ModuleType::Application, &["debug"])], &saved);
         assert_eq!((configs.len(), configs[0].name.as_str(), &configs[0].options), (2, "Settings", &settings));
         assert_eq!((configs[1].gradle.as_deref(), configs[1].module.dir.as_path()), (Some(":app:lint"), std::path::Path::new("/p")));
+        // A JUnit configuration takes any module.
+        let junit = JUnitTarget { kind: JUnitKind::Class, class: "com.ex.CalcTest".into(), ..Default::default() };
+        let saved = [SavedRunConfiguration { name: "CalcTest".into(), module: ":core".into(), gradle: None, junit: Some(junit.clone()), options: LaunchOptions::default() }];
+        let configs = run_configurations(std::path::Path::new("/p"), &[m(":core", ModuleType::Jvm, &[])], &saved);
+        assert_eq!((configs[0].module.path.as_str(), configs[0].junit.as_ref()), (":core", Some(&junit)));
         assert_eq!(activity_component("com.ex", ".SettingsActivity"), "com.ex/.SettingsActivity");
         assert_eq!(activity_component("com.ex", "com.lib.Scan"), "com.ex/com.lib.Scan");
         assert_eq!(activity_component("com.ex", "other/.Main"), "other/.Main");
@@ -380,17 +463,40 @@ mod tests {
     }
 
     #[test]
+    fn junit_targets() {
+        let mut t = JUnitTarget::default();
+        assert_eq!((t.problem(), t.filters()), (None, vec![]));
+        t.package = "com.ex".into();
+        assert_eq!(t.filters(), vec![("com.ex.*".to_owned(), None)]);
+        t.kind = JUnitKind::Class;
+        assert_eq!(t.problem(), Some("No test class specified"));
+        t.class = "com.ex.CalcTest".into();
+        assert_eq!(t.filters(), vec![("com.ex.CalcTest".to_owned(), None)]);
+        t.kind = JUnitKind::Method;
+        assert_eq!(t.problem(), Some("Method name not specified"));
+        t.method = "adds".into();
+        assert_eq!((t.problem(), t.filters()), (None, vec![("com.ex.CalcTest".to_owned(), Some("adds".to_owned()))]));
+        let json = serde_json::to_string(&t).unwrap();
+        assert_eq!(serde_json::from_str::<JUnitTarget>(&json).unwrap(), t);
+        // A temporary configuration's filters, back.
+        for target in [JUnitTarget { package: String::new(), ..t.clone() }, JUnitTarget { kind: JUnitKind::Package, package: "com.ex".into(), ..Default::default() }, JUnitTarget::default()] {
+            assert_eq!(JUnitTarget::from_filters(&target.filters()), Some(target));
+        }
+        assert_eq!(JUnitTarget::from_filters(&[("A".into(), None), ("B".into(), None)]), None);
+    }
+
+    #[test]
     fn before_launch_tasks() {
         assert_eq!(split_command_line(r#"clean  :app:lint "a b"c"#), ["clean", ":app:lint", "a bc"]);
         assert_eq!(split_command_line(r#"x "" y"#), ["x", "", "y"]);
         let module = ModuleInfo { path: ":app".into(), dir: "/p/app".into(), kind: ModuleType::Application, variants: vec!["debug".into()] };
-        let mut config = RunConfiguration { name: "app".into(), build_root: "/p".into(), module, options: LaunchOptions::default(), gradle: None };
+        let mut config = RunConfiguration { name: "app".into(), build_root: "/p".into(), module, options: LaunchOptions::default(), gradle: None, junit: None };
         assert_eq!(config.gradle_tasks("debug"), [":app:assembleDebug"]);
         config.options.before_launch = vec![BeforeLaunch::Gradle("clean".into()), BeforeLaunch::External("echo hi".into()), BeforeLaunch::Make];
         assert_eq!(config.gradle_tasks("debug"), ["clean", ":app:assembleDebug"]);
         assert_eq!(BeforeLaunch::Gradle(":app:lint".into()).label(), "Run Gradle task ':app:lint'");
         // Only a changed list is saved.
-        let saved = |options: LaunchOptions| serde_json::to_string(&SavedRunConfiguration { name: "a".into(), module: ":app".into(), gradle: None, options }).unwrap();
+        let saved = |options: LaunchOptions| serde_json::to_string(&SavedRunConfiguration { name: "a".into(), module: ":app".into(), gradle: None, junit: None, options }).unwrap();
         assert!(!saved(LaunchOptions::default()).contains("before_launch"));
         let json = saved(config.options.clone());
         let read: SavedRunConfiguration = serde_json::from_str(&json).unwrap();

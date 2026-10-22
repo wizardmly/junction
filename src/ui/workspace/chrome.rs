@@ -387,6 +387,7 @@ impl Workspace {
         let devices = service.devices(cx);
         let (busy, can_stop) = (service.is_busy(), service.can_stop_any(cx));
         let tests = service.test_configurations(cx);
+        let save_test = service.save_test_label(cx);
         let selected_test = service.selected_test(cx);
         let running = service.console.as_ref().is_some_and(|c| c.active);
         let multiple = service.multiple(cx);
@@ -399,7 +400,7 @@ impl Workspace {
             _ => icons::PHYSICAL_DEVICE_PHONE,
         };
         let config_name = selected_test.clone().or_else(|| config.as_ref().map(|c| c.name.clone()));
-        let config_icon = if selected_test.is_some() {
+        let config_icon = if selected_test.is_some() || config.as_ref().is_some_and(|c| c.junit.is_some()) {
             icons::TEST_ROOT
         } else if config.as_ref().is_some_and(|c| c.gradle.is_some()) {
             icons::GRADLE
@@ -413,6 +414,7 @@ impl Workspace {
         let selected_config = config.filter(|_| selected_test.is_none()).map(|c| (c.build_root, c.name));
         let pick_test = run.clone();
         let edit_configs = run.clone();
+        let save_config = run.clone();
         h_flex()
             .gap_1()
             .child(
@@ -461,14 +463,25 @@ impl Workspace {
                     .tooltip("Run / Debug Configurations")
                     .dropdown_menu(move |mut menu, _, _| {
                         let edit = edit_configs.clone();
-                        menu = menu.item(PopupMenuItem::new("Edit Configurations…").on_click(move |_, window, cx| edit.update(cx, |r, cx| r.edit_configurations(window, cx)))).separator();
+                        menu = menu.item(PopupMenuItem::new("Edit Configurations…").on_click(move |_, window, cx| edit.update(cx, |r, cx| r.edit_configurations(window, cx))));
+                        if let Some(label) = &save_test {
+                            let save = save_config.clone();
+                            menu = menu.item(PopupMenuItem::new(label.clone()).on_click(move |_, _, cx| save.update(cx, |r, cx| r.save_test(cx))));
+                        }
+                        menu = menu.separator();
                         if configs.is_empty() {
                             menu = menu.item(PopupMenuItem::new("No application modules").disabled(true));
                         }
                         for c in &configs {
                             let checked = selected_config.as_ref().is_some_and(|(b, n)| *b == c.build_root && *n == c.name);
                             let (c2, run) = (c.clone(), pick_config.clone());
-                            let icon = if c.gradle.is_some() { icons::GRADLE } else { icons::MODULE_ANDROID };
+                            let icon = if c.gradle.is_some() {
+                                icons::GRADLE
+                            } else if c.junit.is_some() {
+                                icons::TEST_ROOT
+                            } else {
+                                icons::MODULE_ANDROID
+                            };
                             menu = menu.item(PopupMenuItem::new(c.name.clone()).icon(icon).checked(checked).on_click(move |_, _, cx| {
                                 let c = c2.clone();
                                 run.update(cx, |r, cx| r.pick_configuration(&c, cx))

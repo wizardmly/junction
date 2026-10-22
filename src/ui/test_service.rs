@@ -241,6 +241,12 @@ impl TestService {
         Some((build_root, module, request))
     }
 
+    /// Runs a saved JUnit configuration's tests; it stays out of the
+    /// temporary ones.
+    pub fn run_configured(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, request: TestRequest, cx: &mut Context<Self>) {
+        self.start(Launch { build_root, module, request, source: None }, cx);
+    }
+
     /// Runs a folder's tests (Project window › Run 'Tests in …').
     pub fn run_folder(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, mut request: TestRequest, debug_port: Option<u16>, cx: &mut Context<Self>) {
         request.debug_port = debug_port;
@@ -252,6 +258,18 @@ impl TestService {
     /// The temporary configurations' names, oldest first.
     pub fn temporary_names(&self) -> Vec<String> {
         self.temporary.iter().map(|l| l.request.name.clone()).collect()
+    }
+
+    /// A temporary configuration's build, module and tests, for Save
+    /// Configuration.
+    pub fn temporary(&self, name: &str) -> Option<(PathBuf, crate::domain::run::ModuleInfo, TestRequest)> {
+        self.temporary.iter().find(|l| l.request.name == name).map(|l| (l.build_root.clone(), l.module.clone(), l.request.clone()))
+    }
+
+    /// Drops a temporary configuration (it was saved).
+    pub fn forget_temporary(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.temporary.retain(|l| l.request.name != name);
+        cx.notify();
     }
 
     /// Runs a temporary configuration again (the toolbar's Run or Debug
