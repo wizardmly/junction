@@ -280,7 +280,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 2026-10-19 | 控制台 ANSI 颜色和 1 MB 输出上限；Inline Property / Field（顺带修了 Inline Variable 把成员属性当局部变量的 bug） |
 | 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release；签名打包的 Remember passwords（系统密码库）和 Destination Folder；Live Templates 进补全列表；Build 窗口 Sync 标签页；HotSwap / Apply Code Changes；Logcat 分屏；Gradle user home / Offline work / Distribution 设置，修复 Gradle JDK 设置不保存 |
 | 2026-10-21 | 仓库改为公开；HANDOFF 6.1 菜单补齐；APK Analyzer、Lint、SDK Manager、Layout Inspector（含 3D）、Profiler（内存、CPU 方法跟踪、System Trace）、App Inspection（数据库、后台任务、网络）；Logcat 导出导入、R8 反混淆、`name:` 键、标签页重启恢复；Attach Debugger 对话框 |
-| 2026-10-22 | 测试历史（最近 10 次运行结果，IntelliJ 格式）和 Import Tests from File；运行配置的 Logcat 选项（启动后自动显示 Logcat、启动前清空日志）；Local History 的外部修改版本、选区历史和版本搜索；运行配置的 Before launch 任务列表；多设备同时运行；Gradle 类型的运行配置；Settings 的 Auto Import 页（保存时自动优化 import）；资源 gutter 图标可点击（颜色字面量取色器、引用跳到声明）；Groovy build.gradle 里 buildSrc 常量的跳转和补全；JUnit 类型的运行配置，临时测试配置可存为正式配置；Android Instrumented Tests 类型的运行配置；Compose `Color(0x…)` 字面量的 gutter 色块和取色器；框架资源 `android.R` / `@android:` 的跳转、悬停和色块；buildSrc 常量的 Find Usages 含 Groovy 脚本 |
+| 2026-10-22 | 测试历史（最近 10 次运行结果，IntelliJ 格式）和 Import Tests from File；运行配置的 Logcat 选项（启动后自动显示 Logcat、启动前清空日志）；Local History 的外部修改版本、选区历史和版本搜索；运行配置的 Before launch 任务列表；多设备同时运行；Gradle 类型的运行配置；Settings 的 Auto Import 页（保存时自动优化 import）；资源 gutter 图标可点击（颜色字面量取色器、引用跳到声明）；Groovy build.gradle 里 buildSrc 常量的跳转和补全；JUnit 类型的运行配置，临时测试配置可存为正式配置；Android Instrumented Tests 类型的运行配置；Compose `Color(0x…)` 字面量的 gutter 色块和取色器；框架资源 `android.R` / `@android:` 的跳转、悬停和色块；buildSrc 常量的 Find Usages 和 Rename 含 Groovy 脚本，buildSrc 依赖字符串的新版本警告 |
 
 更细的历史看 `git log`，每个提交的标题都写明了用户可见的变化。
 

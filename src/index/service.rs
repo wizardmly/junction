@@ -567,8 +567,11 @@ impl CodeIndex {
                 // The server's for code; the index's in comments and strings.
                 occurrences.retain(|o| !o.code);
                 occurrences.extend(hits);
-                occurrences.sort_by(|a, b| (&a.path, a.line, a.col).cmp(&(&b.path, b.line, b.col)));
             }
+            // A `buildSrc` name's uses in Groovy build scripts (not indexed).
+            let groovy = super::groovy_scripts::usages(&index, &root, &word, &[(declaration.clone(), line)]);
+            occurrences.extend(groovy.into_iter().map(|u| crate::domain::rename::Occurrence { path: u.path, line: u.line, col: u.col, text: u.text, code: true }));
+            occurrences.sort_by(|a, b| (&a.path, a.line, a.col).cmp(&(&b.path, b.line, b.col)));
             if occurrences.is_empty() {
                 return Err(NOT_A_NAME.into());
             }
