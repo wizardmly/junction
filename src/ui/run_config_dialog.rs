@@ -6,7 +6,9 @@
 //! automatically, Clear log before launch) and the Before launch list
 //! (Gradle-aware Make, Run Gradle task, Run External tool; + − ✎ ↑ ↓) on
 //! the right. Gradle configurations (+ › Gradle) run a line of tasks and
-//! arguments in a build instead. OK saves them for the project.
+//! arguments in a build instead, JUnit ones (+ › JUnit) a module's unit
+//! tests: all in a package, a class or a method. OK saves them for the
+//! project.
 
 use std::path::PathBuf;
 
@@ -23,7 +25,7 @@ use gpui_kit::{
     Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::domain::run::{BeforeLaunch, LaunchOptions, LaunchTarget, ModuleInfo, SavedRunConfiguration};
+use crate::domain::run::{BeforeLaunch, JUnitKind, JUnitTarget, LaunchOptions, LaunchTarget, ModuleInfo, ModuleType, SavedRunConfiguration};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
@@ -36,18 +38,58 @@ struct Draft {
     saved: SavedRunConfiguration,
 }
 
+/// The configuration types, in the list's order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfigType {
+    App,
+    Gradle,
+    JUnit,
+}
+
+impl ConfigType {
+    const ALL: [ConfigType; 3] = [ConfigType::App, ConfigType::Gradle, ConfigType::JUnit];
+
+    fn of(saved: &SavedRunConfiguration) -> Self {
+        match (&saved.gradle, &saved.junit) {
+            (Some(_), _) => ConfigType::Gradle,
+            (None, Some(_)) => ConfigType::JUnit,
+            (None, None) => ConfigType::App,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ConfigType::App => "Android App",
+            ConfigType::Gradle => "Gradle",
+            ConfigType::JUnit => "JUnit",
+        }
+    }
+
+    fn icon(self) -> icons::AsIcon {
+        match self {
+            ConfigType::App => icons::MODULE_ANDROID,
+            ConfigType::Gradle => icons::GRADLE,
+            ConfigType::JUnit => icons::TEST_ROOT,
+        }
+    }
+}
+
 pub struct RunConfigView {
     drafts: Vec<Draft>,
     selected: Option<usize>,
     /// The project's Gradle builds.
     roots: Vec<PathBuf>,
-    /// The application modules, by build.
+    /// The modules, by build.
     modules: Vec<(PathBuf, ModuleInfo)>,
     name: Entity<InputState>,
     activity: Entity<InputState>,
     flags: Entity<InputState>,
     /// A Gradle configuration's Run line.
     gradle_run: Entity<InputState>,
+    /// A JUnit configuration's Package, Class and Method.
+    junit_package: Entity<InputState>,
+    junit_class: Entity<InputState>,
+    junit_method: Entity<InputState>,
     /// The selected row of the Before launch list.
     before_selected: Option<usize>,
     _subscriptions: Vec<Subscription>,
@@ -67,6 +109,11 @@ fn unique_name(base: &str, taken: &[String]) -> String {
 }
 
 impl RunConfigView {
+    /// The application modules, what Android App configurations run.
+    fn app_modules(&self) -> Vec<(PathBuf, ModuleInfo)> {
+        self.modules.iter().filter(|(_, m)| m.kind == ModuleType::Application).cloned().collect()
+    }
+
     fn names(&self) -> Vec<String> {
         self.drafts.iter().map(|d| d.saved.name.clone()).collect()
     }
@@ -84,6 +131,10 @@ impl RunConfigView {
                 (d.saved.name.clone(), activity, d.saved.options.flags.clone(), d.saved.gradle.clone().unwrap_or_default())
             })
             .unwrap_or_default();
+        let junit = self.selected.and_then(|i| self.drafts.get(i)).and_then(|d| d.saved.junit.clone()).unwrap_or_default();
+        self.junit_package.update(cx, |s, cx| s.set_value(junit.package, window, cx));
+        self.junit_class.update(cx, |s, cx| s.set_value(junit.class, window, cx));
+        self.junit_method.update(cx, |s, cx| s.set_value(junit.method, window, cx));
         self.name.update(cx, |s, cx| s.set_value(name, window, cx));
         self.gradle_run.update(cx, |s, cx| s.set_value(run, window, cx));
         self.activity.update(cx, |s, cx| s.set_value(activity, window, cx));
@@ -98,6 +149,11 @@ impl RunConfigView {
         if let Some(run) = &mut d.saved.gradle {
             *run = self.gradle_run.read(cx).value().trim().to_owned();
         }
+        if let Some(junit) = &mut d.saved.junit {
+            junit.package = self.junit_package.read(cx).value().trim().to_owned();
+            junit.class = self.junit_class.read(cx).value().trim().to_owned();
+            junit.method = self.junit_method.read(cx).value().trim().to_owned();
+        }
         if let LaunchTarget::Activity(a) = &mut d.saved.options.launch {
             *a = self.activity.read(cx).value().trim().to_owned();
         }
@@ -111,20 +167,29 @@ impl RunConfigView {
         cx.notify();
     }
 
-    /// + (`gradle`: + › Gradle) or Copy.
-    fn add(&mut self, copy: bool, gradle: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// + › a type, or Copy (`None`).
+    fn add(&mut self, new: Option<ConfigType>, window: &mut Window, cx: &mut Context<Self>) {
         self.store_fields(cx);
-        let draft = match (copy, self.selected.and_then(|i| self.drafts.get(i))) {
-            (true, Some(d)) => Draft { root: d.root.clone(), saved: SavedRunConfiguration { name: unique_name(&d.saved.name, &self.names()), ..d.saved.clone() } },
-            _ if gradle => {
+        let name = unique_name("Unnamed", &self.names());
+        // Gradle and JUnit configurations have no Before launch tasks: the
+        // Gradle run builds what it needs.
+        let bare = LaunchOptions { before_launch: Vec::new(), ..Default::default() };
+        let draft = match (new, self.selected.and_then(|i| self.drafts.get(i))) {
+            (None, Some(d)) => Draft { root: d.root.clone(), saved: SavedRunConfiguration { name: unique_name(&d.saved.name, &self.names()), ..d.saved.clone() } },
+            (None, None) => return,
+            (Some(ConfigType::Gradle), _) => {
                 let Some(root) = self.roots.first() else { return };
-                // Android Studio's Gradle configurations have no Before launch tasks.
-                let options = LaunchOptions { before_launch: Vec::new(), ..Default::default() };
-                Draft { root: root.clone(), saved: SavedRunConfiguration { name: unique_name("Unnamed", &self.names()), module: String::new(), gradle: Some(String::new()), options } }
+                Draft { root: root.clone(), saved: SavedRunConfiguration { name, module: String::new(), gradle: Some(String::new()), junit: None, options: bare } }
             }
-            _ => {
-                let Some((root, module)) = self.modules.first() else { return };
-                Draft { root: root.clone(), saved: SavedRunConfiguration { name: unique_name("Unnamed", &self.names()), module: module.path.clone(), gradle: None, options: LaunchOptions::default() } }
+            (Some(ConfigType::JUnit), _) => {
+                // The first module with unit tests' source set, else the first.
+                let pick = self.modules.iter().find(|(_, m)| m.dir.join("src/test").is_dir()).or(self.modules.first());
+                let Some((root, module)) = pick else { return };
+                Draft { root: root.clone(), saved: SavedRunConfiguration { name, module: module.path.clone(), gradle: None, junit: Some(JUnitTarget::default()), options: bare } }
+            }
+            (Some(ConfigType::App), _) => {
+                let Some((root, module)) = self.app_modules().into_iter().next() else { return };
+                Draft { root, saved: SavedRunConfiguration { name, module: module.path.clone(), gradle: None, junit: None, options: LaunchOptions::default() } }
             }
         };
         self.drafts.push(draft);
@@ -334,6 +399,17 @@ impl RunConfigView {
         if selected.is_some_and(|d| d.saved.gradle.is_some()) && self.gradle_run.read(cx).value().trim().is_empty() {
             return Some("No tasks specified".into());
         }
+        if let Some(kind) = selected.and_then(|d| d.saved.junit.as_ref()).map(|j| j.kind) {
+            let typed = JUnitTarget {
+                kind,
+                package: self.junit_package.read(cx).value().to_string(),
+                class: self.junit_class.read(cx).value().to_string(),
+                method: self.junit_method.read(cx).value().to_string(),
+            };
+            if let Some(problem) = typed.problem() {
+                return Some(problem.into());
+            }
+        }
         let activity_missing = self.selected.and_then(|i| self.drafts.get(i)).is_some_and(|d| matches!(d.saved.options.launch, LaunchTarget::Activity(_))) && self.activity.read(cx).value().trim().is_empty();
         activity_missing.then(|| "Activity not specified".into())
     }
@@ -357,7 +433,7 @@ impl RunConfigView {
     fn render_settings(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let palette = cx.palette().clone();
         let Some(d) = self.selected.and_then(|i| self.drafts.get(i)).cloned() else {
-            return div().p_4().text_sm().text_color(palette.text_secondary).child("Press + to add an Android App or Gradle configuration.").into_any_element();
+            return div().p_4().text_sm().text_color(palette.text_secondary).child("Press + to add an Android App, Gradle or JUnit configuration.").into_any_element();
         };
         let label = |text: &'static str| div().w(px(110.)).flex_none().text_sm().text_color(palette.text_secondary).child(text);
         let heading = |text: &'static str| div().pt_2().text_sm().font_weight(FontWeight::SEMIBOLD).child(text);
@@ -393,14 +469,16 @@ impl RunConfigView {
                 .child(self.render_before_launch(&d, cx))
                 .into_any_element();
         }
-        let modules = self.modules.clone();
+        let modules = if d.saved.junit.is_some() { self.modules.clone() } else { self.app_modules() };
         let module_label = modules.iter().find(|(r, m)| *r == d.root && m.path == d.saved.module).map_or_else(|| format!("{} (missing)", d.saved.module), |(_, m)| m.name());
-        let module = Button::new("rc-module").outline().small().icon(Icon::new(icons::MODULE_ANDROID).small()).label(module_label).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
+        let android = modules.iter().find(|(r, m)| *r == d.root && m.path == d.saved.module).is_none_or(|(_, m)| m.kind.is_android());
+        let module = Button::new("rc-module").outline().small().icon(Icon::new(if android { icons::MODULE_ANDROID } else { icons::MODULE }).small()).label(module_label).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
             let this = this.clone();
             move |mut menu, _, _| {
                 for (root, m) in &modules {
                     let (root, path, this) = (root.clone(), m.path.clone(), this.clone());
-                    menu = menu.item(PopupMenuItem::new(m.name()).on_click(move |_, _, cx| {
+                    let icon = if m.kind.is_android() { icons::MODULE_ANDROID } else { icons::MODULE };
+                    menu = menu.item(PopupMenuItem::new(m.name()).icon(icon).on_click(move |_, _, cx| {
                         let (root, path) = (root.clone(), path.clone());
                         this.update(cx, |v, cx| v.change(|d| {
                             d.root = root;
@@ -423,6 +501,43 @@ impl RunConfigView {
                 menu
             })
         };
+        if let Some(junit) = &d.saved.junit {
+            let kind = junit.kind;
+            let kinds = Button::new("rc-junit-kind").outline().small().label(kind.label()).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
+                let this = this.clone();
+                move |mut menu, _, _| {
+                    for k in JUnitKind::ALL {
+                        let this = this.clone();
+                        menu = menu.item(PopupMenuItem::new(k.label()).checked(k == kind).on_click(move |_, _, cx| {
+                            this.update(cx, |v, cx| v.change(|d| {
+                                if let Some(j) = &mut d.saved.junit {
+                                    j.kind = k;
+                                }
+                            }, cx)).ok();
+                        }));
+                    }
+                    menu
+                }
+            });
+            return v_flex()
+                .id("rc-settings")
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .overflow_y_scroll()
+                .p_3()
+                .gap_2()
+                .child(h_flex().gap_2().child(label("Name:")).child(div().flex_1().child(Input::new(&self.name).small())))
+                .child(h_flex().gap_2().child(label("Module:")).child(module))
+                .child(h_flex().gap_2().child(label("Test kind:")).child(kinds))
+                .when(kind == JUnitKind::Package, |el| el.child(h_flex().gap_2().child(label("Package:")).child(div().flex_1().child(Input::new(&self.junit_package).small()))))
+                .when(kind != JUnitKind::Package, |el| el.child(h_flex().gap_2().child(label("Class:")).child(div().flex_1().child(Input::new(&self.junit_class).small()))))
+                .when(kind == JUnitKind::Method, |el| el.child(h_flex().gap_2().child(label("Method:")).child(div().flex_1().child(Input::new(&self.junit_method).small()))))
+                .child(div().text_xs().text_color(palette.text_secondary).child("Runs the module's unit tests through Gradle; an empty package runs them all."))
+                .child(heading("Before launch"))
+                .child(self.render_before_launch(&d, cx))
+                .into_any_element();
+        }
         let deploy = choice(
             "rc-deploy",
             if d.saved.options.deploy { "Default APK" } else { "Nothing" },
@@ -497,19 +612,14 @@ impl Render for RunConfigView {
         };
         let mut list = v_flex().id("rc-list").flex_1().min_h_0().overflow_y_scroll().py_1();
         let group = |icon, title: &'static str| h_flex().h(px(24.)).px_2().gap_1().text_sm().font_weight(FontWeight::SEMIBOLD).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).child(Icon::new(icon).xsmall()).child(title);
-        let apps: Vec<usize> = (0..self.drafts.len()).filter(|i| self.drafts[*i].saved.gradle.is_none()).collect();
-        let gradle: Vec<usize> = (0..self.drafts.len()).filter(|i| self.drafts[*i].saved.gradle.is_some()).collect();
-        let mut rows: Vec<(usize, bool)> = Vec::new();
-        if !apps.is_empty() || gradle.is_empty() {
-            list = list.child(group(icons::MODULE_ANDROID, "Android App"));
-            rows.extend(apps.iter().map(|i| (*i, false)));
-        }
-        let first_gradle = rows.len();
-        rows.extend(gradle.iter().map(|i| (*i, true)));
-        for (n, &(ix, is_gradle)) in rows.iter().enumerate() {
-            if n == first_gradle && is_gradle {
-                list = list.child(group(icons::GRADLE, "Gradle"));
+        // Each type's group, Android App's even when empty.
+        for ty in ConfigType::ALL {
+            let rows: Vec<usize> = (0..self.drafts.len()).filter(|i| ConfigType::of(&self.drafts[*i].saved) == ty).collect();
+            if rows.is_empty() && (ty != ConfigType::App || !self.drafts.is_empty()) {
+                continue;
             }
+            list = list.child(group(ty.icon(), ty.label()));
+            for ix in rows {
             let name = &names_now[ix];
             let selected = self.selected == Some(ix);
             list = list.child(
@@ -522,10 +632,11 @@ impl Render for RunConfigView {
                     .text_sm()
                     .when(selected, |el| el.bg(palette.selection))
                     .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
-                    .child(Icon::new(if is_gradle { icons::GRADLE } else { icons::MODULE_ANDROID }).xsmall())
+                    .child(Icon::new(ty.icon()).xsmall())
                     .child(SharedString::from(name.clone()))
                     .on_click(cx.listener(move |this, _, window, cx| this.select(ix, window, cx))),
             );
+            }
         }
         let has = self.selected.is_some();
         v_flex()
@@ -552,21 +663,27 @@ impl Render for RunConfigView {
                                     .border_b_1()
                                     .border_color(palette.border)
                                     .child(tool_button("rc-add", icons::ADD, "Add New Configuration").dropdown_menu({
-                                        let (app, gradle) = (cx.entity().downgrade(), cx.entity().downgrade());
-                                        let no_apps = self.modules.is_empty();
-                                        move |menu, _, _| {
-                                            let (app, gradle) = (app.clone(), gradle.clone());
-                                            menu.label("Add New Configuration")
-                                                .item(PopupMenuItem::new("Android App").icon(Icon::new(icons::MODULE_ANDROID)).disabled(no_apps).on_click(move |_, window, cx| {
-                                                    app.update(cx, |v, cx| v.add(false, false, window, cx)).ok();
-                                                }))
-                                                .item(PopupMenuItem::new("Gradle").icon(Icon::new(icons::GRADLE)).on_click(move |_, window, cx| {
-                                                    gradle.update(cx, |v, cx| v.add(false, true, window, cx)).ok();
-                                                }))
+                                        let this = cx.entity().downgrade();
+                                        let no_apps = self.app_modules().is_empty();
+                                        let no_modules = self.modules.is_empty();
+                                        move |mut menu, _, _| {
+                                            menu = menu.label("Add New Configuration");
+                                            for ty in ConfigType::ALL {
+                                                let this = this.clone();
+                                                let disabled = match ty {
+                                                    ConfigType::App => no_apps,
+                                                    ConfigType::JUnit => no_modules,
+                                                    ConfigType::Gradle => false,
+                                                };
+                                                menu = menu.item(PopupMenuItem::new(ty.label()).icon(Icon::new(ty.icon())).disabled(disabled).on_click(move |_, window, cx| {
+                                                    this.update(cx, |v, cx| v.add(Some(ty), window, cx)).ok();
+                                                }));
+                                            }
+                                            menu
                                         }
                                     }))
                                     .child(tool_button("rc-remove", icons::REMOVE, "Remove Configuration").disabled(!has).on_click(cx.listener(|this, _, window, cx| this.remove(window, cx))))
-                                    .child(tool_button("rc-copy", icons::COPY, "Copy Configuration").disabled(!has).on_click(cx.listener(|this, _, window, cx| this.add(true, false, window, cx)))),
+                                    .child(tool_button("rc-copy", icons::COPY, "Copy Configuration").disabled(!has).on_click(cx.listener(|this, _, window, cx| this.add(None, window, cx)))),
                             )
                             .child(list),
                     )
@@ -585,15 +702,18 @@ pub fn open(roots: Vec<PathBuf>, modules: Vec<(PathBuf, ModuleInfo)>, current: V
         let activity = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. .SettingsActivity"));
         let flags = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. --ez demo true"));
         let gradle_run = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. clean build"));
+        let junit_package = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. com.example"));
+        let junit_class = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. com.example.ExampleUnitTest"));
+        let junit_method = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. addition_isCorrect"));
         let notify = |_: &mut RunConfigView, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<RunConfigView>| {
             if matches!(e, InputEvent::Change) {
                 cx.notify();
             }
         };
-        let _subscriptions = vec![cx.subscribe(&name, notify), cx.subscribe(&activity, notify), cx.subscribe(&flags, notify), cx.subscribe(&gradle_run, notify)];
+        let _subscriptions = vec![cx.subscribe(&name, notify), cx.subscribe(&activity, notify), cx.subscribe(&flags, notify), cx.subscribe(&gradle_run, notify), cx.subscribe(&junit_class, notify), cx.subscribe(&junit_method, notify)];
         let drafts: Vec<Draft> = current.into_iter().map(|(root, saved)| Draft { root, saved }).collect();
         let selected_ix = selected.and_then(|n| drafts.iter().position(|d| d.saved.name == n)).or((!drafts.is_empty()).then_some(0));
-        let mut view = RunConfigView { drafts, selected: selected_ix, roots, modules, name, activity, flags, gradle_run, before_selected: None, _subscriptions };
+        let mut view = RunConfigView { drafts, selected: selected_ix, roots, modules, name, activity, flags, gradle_run, junit_package, junit_class, junit_method, before_selected: None, _subscriptions };
         view.load_fields(window, cx);
         view
     });

@@ -399,7 +399,7 @@ impl Workspace {
             _ => icons::PHYSICAL_DEVICE_PHONE,
         };
         let config_name = selected_test.clone().or_else(|| config.as_ref().map(|c| c.name.clone()));
-        let config_icon = if selected_test.is_some() {
+        let config_icon = if selected_test.is_some() || config.as_ref().is_some_and(|c| c.junit.is_some()) {
             icons::TEST_ROOT
         } else if config.as_ref().is_some_and(|c| c.gradle.is_some()) {
             icons::GRADLE
@@ -468,7 +468,13 @@ impl Workspace {
                         for c in &configs {
                             let checked = selected_config.as_ref().is_some_and(|(b, n)| *b == c.build_root && *n == c.name);
                             let (c2, run) = (c.clone(), pick_config.clone());
-                            let icon = if c.gradle.is_some() { icons::GRADLE } else { icons::MODULE_ANDROID };
+                            let icon = if c.gradle.is_some() {
+                                icons::GRADLE
+                            } else if c.junit.is_some() {
+                                icons::TEST_ROOT
+                            } else {
+                                icons::MODULE_ANDROID
+                            };
                             menu = menu.item(PopupMenuItem::new(c.name.clone()).icon(icon).checked(checked).on_click(move |_, _, cx| {
                                 let c = c2.clone();
                                 run.update(cx, |r, cx| r.pick_configuration(&c, cx))

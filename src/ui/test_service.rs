@@ -241,6 +241,12 @@ impl TestService {
         Some((build_root, module, request))
     }
 
+    /// Runs a saved JUnit configuration's tests; it stays out of the
+    /// temporary ones.
+    pub fn run_configured(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, request: TestRequest, cx: &mut Context<Self>) {
+        self.start(Launch { build_root, module, request, source: None }, cx);
+    }
+
     /// Runs a folder's tests (Project window › Run 'Tests in …').
     pub fn run_folder(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, mut request: TestRequest, debug_port: Option<u16>, cx: &mut Context<Self>) {
         request.debug_port = debug_port;

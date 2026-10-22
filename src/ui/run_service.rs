@@ -169,11 +169,11 @@ impl RunService {
     pub fn edit_configurations(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
         let builds = SyncService::try_global(cx).map(|s| s.read(cx).builds().to_vec()).unwrap_or_default();
         let modules: Vec<(std::path::PathBuf, run::ModuleInfo)> =
-            builds.iter().flat_map(|(root, modules)| modules.iter().filter(|m| m.kind == run::ModuleType::Application).map(move |m| (root.clone(), m.clone()))).collect();
+            builds.iter().flat_map(|(root, modules)| modules.iter().map(move |m| (root.clone(), m.clone()))).collect();
         let current: Vec<(std::path::PathBuf, run::SavedRunConfiguration)> = self
             .configurations(cx)
             .into_iter()
-            .map(|c| (c.build_root.clone(), run::SavedRunConfiguration { name: c.name, module: if c.gradle.is_some() { String::new() } else { c.module.path }, gradle: c.gradle, options: c.options }))
+            .map(|c| (c.build_root.clone(), run::SavedRunConfiguration { name: c.name, module: if c.gradle.is_some() { String::new() } else { c.module.path }, gradle: c.gradle, junit: c.junit, options: c.options }))
             .collect();
         let selected = self.configuration(cx).map(|c| c.name);
         let this = cx.entity().downgrade();
@@ -341,12 +341,25 @@ impl RunService {
     /// Run '…' with Coverage: for a test configuration, its tests with
     /// JaCoCo measuring them.
     pub fn run_with_coverage(&mut self, cx: &mut Context<Self>) {
+        if let Some((config, mut request)) = self.selected_test(cx).is_none().then(|| self.junit_request(cx)).flatten() {
+            request.coverage = true;
+            TestService::global(cx).update(cx, |t, cx| t.run_configured(config.build_root, config.module, request, cx));
+            return;
+        }
         match self.selected_test(cx) {
             Some(name) => {
                 TestService::global(cx).update(cx, |t, cx| t.run_temporary(&name, None, true, cx));
             }
             None => cx.emit(RunEvent::Error { title: "Run with Coverage".into(), message: "Coverage is measured for test configurations. Run a test from the editor's gutter first.".into() }),
         }
+    }
+
+    /// The picked configuration when it is a JUnit one, and its tests.
+    fn junit_request(&self, cx: &App) -> Option<(RunConfiguration, crate::domain::testing::TestRequest)> {
+        let config = self.configuration(cx)?;
+        let target = config.junit.as_ref()?;
+        let request = crate::domain::testing::TestRequest { kind: crate::domain::testing::TestKind::Unit, filters: target.filters(), name: config.name.clone(), debug_port: None, coverage: false };
+        Some((config, request))
     }
 
     fn launch(&mut self, debug: bool, cx: &mut Context<Self>) {
@@ -365,6 +378,18 @@ impl RunService {
             cx.emit(RunEvent::Error { title: "Error running app".into(), message: "No run configuration: the project has no Android application module.".into() });
             return;
         };
+        if let Some(problem) = config.junit.as_ref().and_then(|t| t.problem()) {
+            cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: problem.into() });
+            return;
+        }
+        if let Some((config, request)) = self.junit_request(cx) {
+            if debug {
+                crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.debug_configured(config.build_root, config.module, request, cx));
+            } else {
+                TestService::global(cx).update(cx, |t, cx| t.run_configured(config.build_root, config.module, request, cx));
+            }
+            return;
+        }
         if config.gradle.is_some() {
             if debug {
                 cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: "Debugging Gradle configurations is not supported.".into() });

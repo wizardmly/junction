@@ -249,7 +249,7 @@ mod tests {
 
     fn config() -> RunConfiguration {
         let module = ModuleInfo { path: ":app".into(), dir: "/p/app".into(), kind: ModuleType::Application, variants: vec!["debug".into()] };
-        RunConfiguration { name: "app".into(), build_root: "/p".into(), module, options: Default::default(), gradle: None }
+        RunConfiguration { name: "app".into(), build_root: "/p".into(), module, options: Default::default(), gradle: None, junit: None }
     }
 
     #[test]
