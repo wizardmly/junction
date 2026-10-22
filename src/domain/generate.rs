@@ -1,6 +1,7 @@
 //! Generate (Alt+Insert), as IntelliJ's: `toString()`, `equals()` and
-//! `hashCode()` for Kotlin and Java, and Java's constructor, getters and
-//! setters, written as IntelliJ's default templates write them (Kotlin's
+//! `hashCode()` for Kotlin and Java (calling `super`'s when a superclass
+//! overrides them), Kotlin's secondary constructor, and Java's
+//! constructor, getters and setters, written as IntelliJ's default templates write them (Kotlin's
 //! singleExpr.vm / defaultEquals.vm / defaultHashcode.vm, Java's
 //! DefaultConcatMember.vm / objectsEquals.vm / objectsHashCode.vm /
 //! defaultGetter.vm / defaultSetter.vm), then indented for the class.
@@ -20,6 +21,8 @@ pub struct Field {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Member {
     Constructor,
+    /// Kotlin's, for a class without a primary constructor.
+    SecondaryConstructor,
     Getter,
     Setter,
     GetterAndSetter,
@@ -31,6 +34,7 @@ impl Member {
     pub fn label(self) -> &'static str {
         match self {
             Member::Constructor => "Constructor",
+            Member::SecondaryConstructor => "Secondary Constructor",
             Member::Getter => "Getter",
             Member::Setter => "Setter",
             Member::GetterAndSetter => "Getter and Setter",
@@ -43,6 +47,7 @@ impl Member {
     pub fn chooser_title(self, style: ImportStyle) -> &'static str {
         match (self, style) {
             (Member::Constructor, _) => "Choose Fields to Initialize by Constructor",
+            (Member::SecondaryConstructor, _) => "Choose Properties to Initialize by Constructor",
             (Member::Getter, _) => "Select Fields to Generate Getters",
             (Member::Setter, _) => "Select Fields to Generate Setters",
             (Member::GetterAndSetter, _) => "Select Fields to Generate Getters and Setters",
@@ -57,7 +62,7 @@ impl Member {
 /// The Generate popup's items for a class, in IntelliJ's order.
 pub fn members(style: ImportStyle) -> &'static [Member] {
     match style {
-        ImportStyle::Kotlin => &[Member::EqualsHashCode, Member::ToString],
+        ImportStyle::Kotlin => &[Member::SecondaryConstructor, Member::EqualsHashCode, Member::ToString],
         ImportStyle::Java => &[Member::Constructor, Member::Getter, Member::Setter, Member::GetterAndSetter, Member::EqualsHashCode, Member::ToString],
     }
 }
@@ -94,9 +99,22 @@ pub struct Generated {
     pub imports: Vec<&'static str>,
 }
 
+/// What the superclass (not `Any` / `Object`) already overrides: the
+/// generated `equals()` / `hashCode()` call it first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Supers {
+    pub equals: bool,
+    pub hash_code: bool,
+}
+
 /// Generates `member` for class `class` (with `type_params` type
 /// parameters) from `fields` (already chosen).
 pub fn generate(style: ImportStyle, member: Member, class: &str, type_params: usize, fields: &[Field], unit: &str) -> Generated {
+    generate_with(style, member, class, type_params, fields, Supers::default(), unit)
+}
+
+/// [`generate`], `super`'s `equals()` / `hashCode()` called as `supers` says.
+pub fn generate_with(style: ImportStyle, member: Member, class: &str, type_params: usize, fields: &[Field], supers: Supers, unit: &str) -> Generated {
     let u = unit;
     let mut imports = Vec::new();
     let members = match (style, member) {
@@ -105,7 +123,7 @@ pub fn generate(style: ImportStyle, member: Member, class: &str, type_params: us
             // Properties of primitive types first, as IntelliJ sorts them.
             let mut sorted: Vec<&Field> = fields.iter().collect();
             sorted.sort_by_key(|f| !KOTLIN_PRIMITIVES.contains(&f.base()));
-            vec![kotlin_equals(class, type_params, &sorted, u), kotlin_hash_code(&sorted, u)]
+            vec![kotlin_equals(class, type_params, &sorted, supers.equals, u), kotlin_hash_code(&sorted, supers.hash_code, u)]
         }
         (ImportStyle::Java, Member::ToString) => {
             if fields.iter().any(|f| f.java_array()) {
@@ -118,13 +136,14 @@ pub fn generate(style: ImportStyle, member: Member, class: &str, type_params: us
             if fields.iter().any(|f| f.java_array()) {
                 imports.push("java.util.Arrays");
             }
-            vec![java_equals(class, type_params, fields, u), java_hash_code(fields, u)]
+            vec![java_equals(class, type_params, fields, supers.equals, u), java_hash_code(fields, supers.hash_code, u)]
         }
         (ImportStyle::Java, Member::Constructor) => vec![java_constructor(class, fields, u)],
+        (ImportStyle::Kotlin, Member::SecondaryConstructor) => vec![kotlin_secondary_constructor(fields, u)],
         (ImportStyle::Java, Member::Getter) => fields.iter().map(|f| java_getter(f, u)).collect(),
         (ImportStyle::Java, Member::Setter) => fields.iter().map(|f| java_setter(class, f, u)).collect(),
         (ImportStyle::Java, Member::GetterAndSetter) => fields.iter().flat_map(|f| [java_getter(f, u), java_setter(class, f, u)]).collect(),
-        (ImportStyle::Kotlin, _) => Vec::new(),
+        (ImportStyle::Kotlin, _) | (ImportStyle::Java, Member::SecondaryConstructor) => Vec::new(),
     };
     Generated { members, imports }
 }
@@ -145,8 +164,11 @@ fn wildcards(n: usize, wildcard: &str) -> String {
     if n == 0 { String::new() } else { format!("<{}>", vec![wildcard; n].join(", ")) }
 }
 
-fn kotlin_equals(class: &str, type_params: usize, fields: &[&Field], u: &str) -> String {
+fn kotlin_equals(class: &str, type_params: usize, fields: &[&Field], call_super: bool, u: &str) -> String {
     let mut out = format!("override fun equals(other: Any?): Boolean {{\n{u}if (this === other) return true\n{u}if (javaClass != other?.javaClass) return false\n");
+    if call_super {
+        out.push_str(&format!("{u}if (!super.equals(other)) return false\n"));
+    }
     if !fields.is_empty() {
         out.push_str(&format!("\n{u}other as {class}{}\n\n", wildcards(type_params, "*")));
         for f in fields {
@@ -176,7 +198,7 @@ fn kotlin_field_hash(f: &Field) -> String {
     format!("{n}.hashCode()")
 }
 
-fn kotlin_hash_code(fields: &[&Field], u: &str) -> String {
+fn kotlin_hash_code(fields: &[&Field], call_super: bool, u: &str) -> String {
     // Alone, `(x?.contentHashCode() ?: 0)` needs no parentheses.
     let alone = |f: &Field| {
         let h = kotlin_field_hash(f);
@@ -186,6 +208,13 @@ fn kotlin_hash_code(fields: &[&Field], u: &str) -> String {
         }
     };
     let body = match fields {
+        [] if call_super => format!("{u}return super.hashCode()"),
+        _ if call_super => {
+            let mut lines = vec![format!("{u}var result = super.hashCode()")];
+            lines.extend(fields.iter().map(|f| format!("{u}result = 31 * result + {}", kotlin_field_hash(f))));
+            lines.push(format!("{u}return result"));
+            lines.join("\n")
+        }
         [] => format!("{u}return javaClass.hashCode()"),
         [f] => format!("{u}return {}", alone(f)),
         [first, rest @ ..] => {
@@ -233,7 +262,7 @@ fn decapitalize(name: &str) -> String {
     chars.next().map(|c| c.to_lowercase().chain(chars).collect()).unwrap_or_default()
 }
 
-fn java_equals(class: &str, type_params: usize, fields: &[Field], u: &str) -> String {
+fn java_equals(class: &str, type_params: usize, fields: &[Field], call_super: bool, u: &str) -> String {
     let param = unique("o", fields);
     let instance = unique(&decapitalize(class), fields);
     let ty = format!("{class}{}", wildcards(type_params, "?"));
@@ -251,14 +280,17 @@ fn java_equals(class: &str, type_params: usize, fields: &[Field], u: &str) -> St
         })
         .collect();
     let result = if conditions.is_empty() { "true".to_owned() } else { conditions.join(" && ") };
+    let sup = if call_super { format!("{u}if (!super.equals({param})) return false;\n") } else { String::new() };
     format!(
-        "@Override\npublic boolean equals(Object {param}) {{\n{u}if ({param} == null || getClass() != {param}.getClass()) return false;\n{u}{ty} {instance} = ({ty}) {param};\n{u}return {result};\n}}"
+        "@Override\npublic boolean equals(Object {param}) {{\n{u}if ({param} == null || getClass() != {param}.getClass()) return false;\n{sup}{u}{ty} {instance} = ({ty}) {param};\n{u}return {result};\n}}"
     )
 }
 
-fn java_hash_code(fields: &[Field], u: &str) -> String {
+fn java_hash_code(fields: &[Field], call_super: bool, u: &str) -> String {
     let array_hash = |f: &Field| if f.ty.ends_with("[][]") { format!("Arrays.deepHashCode({})", f.name) } else { format!("Arrays.hashCode({})", f.name) };
     let body = match fields {
+        [] if call_super => "super.hashCode()".to_owned(),
+        _ if call_super => format!("Objects.hash(super.hashCode(), {})", fields.iter().map(|f| if f.java_array() { array_hash(f) } else { f.name.clone() }).collect::<Vec<_>>().join(", ")),
         [f] if !f.java_array() => format!("Objects.hashCode({})", f.name),
         [f] => array_hash(f),
         _ => format!("Objects.hash({})", fields.iter().map(|f| if f.java_array() { array_hash(f) } else { f.name.clone() }).collect::<Vec<_>>().join(", ")),
@@ -273,6 +305,12 @@ fn java_constructor(class: &str, fields: &[Field], u: &str) -> String {
         return format!("public {class}() {{\n}}");
     }
     format!("public {class}({}) {{\n{}\n}}", params.join(", "), body.join("\n"))
+}
+
+fn kotlin_secondary_constructor(fields: &[Field], u: &str) -> String {
+    let params: Vec<String> = fields.iter().map(|f| format!("{}: {}", f.name, f.ty)).collect();
+    let body: Vec<String> = fields.iter().map(|f| format!("{u}this.{0} = {0}\n", f.name)).collect();
+    format!("constructor({}) {{\n{}}}", params.join(", "), body.concat())
 }
 
 /// `name` → `Name`, as JavaBeans capitalize (`xValue` stays `xValue`).
@@ -343,5 +381,20 @@ mod tests {
         assert_eq!(g.members, ["public boolean isActive() {\n    return active;\n}", "public void setActive(boolean active) {\n    this.active = active;\n}"]);
         let g = generate(ImportStyle::Java, Member::Constructor, "Person", 0, &fields[..2], "    ");
         assert_eq!(g.members[0], "public Person(String name, int age) {\n    this.name = name;\n    this.age = age;\n}");
+    }
+
+    #[test]
+    fn calls_super_and_secondary_constructors() {
+        let supers = Supers { equals: true, hash_code: true };
+        let g = generate_with(ImportStyle::Kotlin, Member::EqualsHashCode, "Dog", 0, &[f("name", "String")], supers, "    ");
+        assert!(g.members[0].contains("if (javaClass != other?.javaClass) return false\n    if (!super.equals(other)) return false\n\n    other as Dog"));
+        assert_eq!(g.members[1], "override fun hashCode(): Int {\n    var result = super.hashCode()\n    result = 31 * result + name.hashCode()\n    return result\n}");
+        let g = generate_with(ImportStyle::Java, Member::EqualsHashCode, "Dog", 0, &[f("name", "String"), f("age", "int")], supers, "    ");
+        assert!(g.members[0].contains("getClass() != o.getClass()) return false;\n    if (!super.equals(o)) return false;\n    Dog dog = (Dog) o;"));
+        assert_eq!(g.members[1], "@Override\npublic int hashCode() {\n    return Objects.hash(super.hashCode(), name, age);\n}");
+        let g = generate(ImportStyle::Kotlin, Member::SecondaryConstructor, "Dog", 0, &[f("name", "String"), f("age", "Int")], "    ");
+        assert_eq!(g.members[0], "constructor(name: String, age: Int) {\n    this.name = name\n    this.age = age\n}");
+        let g = generate(ImportStyle::Kotlin, Member::SecondaryConstructor, "Dog", 0, &[], "    ");
+        assert_eq!(g.members[0], "constructor() {\n}");
     }
 }

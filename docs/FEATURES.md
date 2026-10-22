@@ -653,7 +653,11 @@ Linux 实测（Xvfb）：Kotlin 函数体里输入 `iter` 按 Tab 得到 `for (i
 | 生成代码照 IntelliJ 默认模板：Kotlin 的 singleExpr.vm（`"Person(name='$name', age=$age)"`，数组 `contentToString()`）、defaultEquals.vm / defaultHashcode.vm（`javaClass` 比较、`other as Person`、基本类型属性排前、数组 `contentEquals` / `contentHashCode`）；Java 的 DefaultConcatMember.vm、java.util.Objects 版 equals / hashCode（`Double.compare`、`Objects.deepEquals`、`Objects.hash`）、defaultGetter / defaultSetter（boolean 用 `is`）、构造函数 | ✅ |
 | 插在光标所在成员之后（否则类体开头），空行隔开；没有类体的 Kotlin 类补上 `{ }`；Java 需要的 `java.util.Objects` / `Arrays` import 自动加上 | ✅ |
 | 已有 toString() / equals() 时先问 IntelliJ 的 “… are already defined for class … Do you want to delete them and proceed?”，确认后替换 | ✅ |
-| Override / Implement Methods（需要父类成员）、Kotlin Secondary Constructor、Test…、equals 的父类 `super.equals`、toString 模板切换 | ❌ 未做 |
+| Kotlin 的 Secondary Constructor（类没有主构造函数时才列出）：选属性对话框 “Choose Properties to Initialize by Constructor”，候选是 `var` 和必须初始化的 `val`（没有初始值、getter、委托），生成 `constructor(name: String) { this.name = name }`，没有候选时直接生成 `constructor() {}` | ✅ |
+| 父类（项目或外部库源码里，不算 `Any` / `Object`）覆盖了 equals / hashCode 时，生成的代码先调用父类的：Kotlin `if (!super.equals(other)) return false`、`var result = super.hashCode()`；Java `if (!super.equals(o)) return false;`、`Objects.hash(super.hashCode(), …)` | ✅ |
+| Override / Implement Methods 见第 36 节；Test…、toString 模板切换、Secondary Constructor 选父类构造函数（`: super(…)`） | ❌ 未做 |
+
+Linux 实测（Xvfb，Secondary Constructor / super）：`class Dog : Animal { val name: String; var age: Int = 0 }`（Animal 覆盖了 equals / hashCode）里 Alt+Insert 第一项是 Secondary Constructor，对话框列 name、age 全选，生成 `constructor(name: String, age: Int)`，前后空行正确；再生成 equals / hashCode 得到 `if (!super.equals(other)) return false` 和 `var result = super.hashCode()`；Java `class Cat extends Base`（Base 覆盖了两者）生成 `if (!super.equals(o)) return false;` 和 `Objects.hash(super.hashCode(), name, lives)`。
 
 Linux 实测（Xvfb）：Java 类 Alt+Insert → equals() and hashCode()，生成 Objects 版 equals / hashCode 并加上两个 import；toString() 生成后再生成一次，弹出 “Method 'String toString()' is already defined…”，确认后替换；Kotlin 类 `Point(val x: Int, val y: Int)` 生成与 IntelliJ 一致的 equals / hashCode。
 

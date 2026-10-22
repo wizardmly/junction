@@ -20,6 +20,11 @@ pub struct ClassInfo {
     pub type_params: usize,
     /// Kotlin `object`: toString() only.
     pub is_object: bool,
+    /// Kotlin: it has a primary constructor (else Secondary Constructor).
+    pub primary_constructor: bool,
+    /// Kotlin: body properties that must be initialized (no initializer,
+    /// getter or delegate), for Secondary Constructor with the `var`s.
+    pub uninitialized: Vec<String>,
     pub fields: Vec<Field>,
     /// Names of the methods it declares.
     pub methods: Vec<String>,
@@ -29,6 +34,8 @@ pub struct ClassInfo {
     /// line; `body` false: the class has no body and gets ` { … }`.
     pub insert_at: usize,
     pub after_member: bool,
+    /// Another member follows right after (no blank line): one is added.
+    pub tight: bool,
     pub body: bool,
     /// The members' indentation, and the class line's.
     pub indent: String,
@@ -113,6 +120,8 @@ pub fn class_at(lang: Lang, text: &str, offset: usize, unit: &str) -> Result<Cla
     let mut fields = Vec::new();
     let mut methods = Vec::new();
     let mut method_ranges = Vec::new();
+    let mut uninitialized = Vec::new();
+    let primary_constructor = lang == Lang::Kotlin && child_of_kind(class, "primary_constructor").is_some();
     match lang {
         Lang::Kotlin => {
             if let Some(ctor) = child_of_kind(class, "primary_constructor") {
@@ -144,6 +153,10 @@ pub fn class_at(lang: Lang, text: &str, offset: usize, unit: &str) -> Result<Cla
                             if let Some(id) = child_of_kind(m, "variable_declaration").and_then(|v| child_of_kind(v, "simple_identifier")) {
                                 let decl = &t[id.start_byte() - m.start_byte()..];
                                 let decl = decl.lines().next().unwrap_or(decl);
+                                let words: Vec<&str> = modifiers.split_whitespace().collect();
+                                if !decl.contains('=') && !decl.contains(" by ") && child_of_kind(m, "getter").is_none() && !words.contains(&"abstract") && !words.contains(&"lateinit") {
+                                    uninitialized.push(text_of(id, text).to_owned());
+                                }
                                 fields.push(Field { name: text_of(id, text).to_owned(), ty: kotlin_type(decl), is_static: false, is_final: t.trim_start_matches(modifiers).trim_start().starts_with("val") });
                             }
                         }
@@ -194,11 +207,14 @@ pub fn class_at(lang: Lang, text: &str, offset: usize, unit: &str) -> Result<Cla
             name,
             type_params,
             is_object: class.kind() == "object_declaration",
+            primary_constructor,
+            uninitialized,
             fields,
             methods,
             method_ranges,
             insert_at: class.end_byte(),
             after_member: false,
+            tight: false,
             body: false,
             indent,
             class_indent,
@@ -212,12 +228,13 @@ pub fn class_at(lang: Lang, text: &str, offset: usize, unit: &str) -> Result<Cla
     // After the member the caret is in or after; else first in the body.
     let anchor = members.iter().filter(|m| m.start_byte() <= offset).last();
     let indent = members.first().map_or(indent, |m| line_indent(text, m.start_byte()));
+    let tight = anchor.and_then(|a| members.iter().find(|m| m.start_byte() >= a.end_byte()).map(|m| text[a.end_byte()..m.start_byte()].matches('\n').count() == 1)).unwrap_or(false);
     let (insert_at, after_member, empty_body) = match anchor {
         Some(m) => (m.end_byte(), true, None),
         None if members.is_empty() => (body.start_byte() + 1, false, Some(body.byte_range())),
         None => (body.start_byte() + 1, false, None),
     };
-    Ok(ClassInfo { header: header.to_owned(), name, type_params, is_object: class.kind() == "object_declaration", fields, methods, method_ranges, insert_at, after_member, body: true, indent, class_indent, empty_body })
+    Ok(ClassInfo { header: header.to_owned(), name, type_params, is_object: class.kind() == "object_declaration", primary_constructor, uninitialized, fields, methods, method_ranges, insert_at, after_member, tight, body: true, indent, class_indent, empty_body })
 }
 
 /// The text to insert for generated members at `info`'s place.
@@ -231,7 +248,11 @@ pub fn insertion(info: &ClassInfo, members: &[String]) -> (Range<usize>, String)
         return (body.clone(), format!("{{\n{}\n{}}}", all.join("\n\n"), info.class_indent));
     }
     if info.after_member {
-        (info.insert_at..info.insert_at, all.iter().map(|m| format!("\n\n{m}")).collect())
+        let mut insert: String = all.iter().map(|m| format!("\n\n{m}")).collect();
+        if info.tight {
+            insert.push('\n');
+        }
+        (info.insert_at..info.insert_at, insert)
     } else {
         (info.insert_at..info.insert_at, all.iter().map(|m| format!("\n{m}\n")).collect())
     }
@@ -261,6 +282,15 @@ mod tests {
         out.replace_range(range, &insert);
         assert_eq!(out, "data class P(val x: Int) {\n    fun a() = 1\n}\n");
         assert!(class_at(Lang::Kotlin, "interface I {\n}\n", 12, "    ").is_err());
+        assert!(info.primary_constructor);
+        let kt = "class Q : Base {\n    val a: String\n    var b: Int = 0\n    lateinit var c: String\n    val d by lazy { 1 }\n}\n";
+        let info = class_at(Lang::Kotlin, kt, kt.find("a:").unwrap(), "    ").unwrap();
+        assert!(!info.primary_constructor);
+        assert_eq!(info.uninitialized, ["a"]);
+        let (range, insert) = insertion(&info, &["fun f() = 1".into()]);
+        let mut out = kt.to_owned();
+        out.replace_range(range, &insert);
+        assert!(out.contains("    val a: String\n\n    fun f() = 1\n\n    var b"));
     }
 
     #[test]

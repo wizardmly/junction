@@ -2,14 +2,17 @@
 //! popup of what the class can have generated, the member chooser, and
 //! the members written after the one the caret is in (an existing
 //! `toString()` / `equals()` replaced once confirmed), with any imports
-//! they need, as one undoable edit.
+//! they need, as one undoable edit. `equals()` / `hashCode()` call
+//! `super`'s when a superclass in the project or its libraries overrides
+//! them.
 
 use std::ops::Range;
 
 use gpui_kit::{Context, Window};
 
 use super::FileEditor;
-use crate::domain::generate::{generate, members, Field, Member};
+use crate::domain::generate::{generate, generate_with, members, Field, Member, Supers};
+use crate::index::lang::Lang;
 use crate::domain::imports::{import_edit, ImportStyle};
 use crate::index::generate::{class_at, insertion};
 
@@ -23,7 +26,12 @@ impl FileEditor {
             Ok(info) => info,
             Err(message) => return Self::hint("Generate", message, window, cx),
         };
-        let items: Vec<Member> = members(style).iter().copied().filter(|m| !info.is_object || *m == Member::ToString).collect();
+        let items: Vec<Member> = members(style)
+            .iter()
+            .copied()
+            .filter(|m| !info.is_object || *m == Member::ToString)
+            .filter(|m| *m != Member::SecondaryConstructor || !info.primary_constructor)
+            .collect();
         self.choose_generate(items, window, cx);
     }
 
@@ -44,6 +52,9 @@ impl FileEditor {
             .fields
             .iter()
             .filter(|f| match (style, member) {
+                // IntelliJ's: the `var`s and the properties that must be
+                // initialized.
+                (ImportStyle::Kotlin, Member::SecondaryConstructor) => !f.ty.is_empty() && (!f.is_final || info.uninitialized.contains(&f.name)),
                 (ImportStyle::Kotlin, _) => true,
                 (_, Member::Getter) => missing_getter(f),
                 (_, Member::Setter) => missing_setter(f),
@@ -99,7 +110,21 @@ impl FileEditor {
                 });
             }, window, cx);
         };
+        if member == Member::SecondaryConstructor && candidates.is_empty() {
+            return self.apply_generated(member, Vec::new(), Vec::new(), window, cx);
+        }
         crate::ui::generate_dialog::choose(title, candidates, run, window, cx);
+    }
+
+    /// Whether a superclass (not `Any` / `Object`) of the class with
+    /// `header` overrides `equals()` / `hashCode()`.
+    fn supers(&self, lang: Lang, header: &str, cx: &mut Context<Self>) -> Supers {
+        let Some(index) = self.code_index.clone() else { return Supers::default() };
+        let root = index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
+        let index = index.read(cx).index.clone();
+        let members = index.read().map(|index| crate::index::overrides::super_members(&index, &root, lang, header)).unwrap_or_default();
+        let overrides = |name: &str| members.iter().any(|(owner, m)| m.name == name && !m.is_abstract && owner != "Any" && owner != "Object");
+        Supers { equals: overrides("equals"), hash_code: overrides("hashCode") }
     }
 
     /// Writes the chosen members into the class, replacing `replace`.
@@ -138,6 +163,9 @@ impl FileEditor {
                 }
             }
             crate::domain::generate::Generated { members: out, imports: Vec::new() }
+        } else if member == Member::EqualsHashCode {
+            let supers = self.supers(lang, &info.header, cx);
+            generate_with(style, member, &info.name, info.type_params, &fields, supers, &unit)
         } else {
             generate(style, member, &info.name, info.type_params, &fields, &unit)
         };
