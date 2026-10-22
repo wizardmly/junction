@@ -257,6 +257,27 @@ pub fn format_color(rgba: u32, like: &str) -> String {
     if like.chars().any(|c| c.is_ascii_lowercase()) { hex.to_ascii_lowercase() } else { hex }
 }
 
+/// A Compose `Color(0xFF6200EE)` literal's RGBA: the number is ARGB, so
+/// `0x6200EE` is fully transparent, as Compose reads it.
+pub fn parse_compose_color(literal: &str) -> Option<u32> {
+    let hex = literal.trim().strip_prefix("0x").or_else(|| literal.trim().strip_prefix("0X"))?;
+    let hex = hex.trim_end_matches(['L', 'u', 'U']);
+    if hex.is_empty() || hex.len() > 8 {
+        return None;
+    }
+    let argb = u32::from_str_radix(hex, 16).ok()?;
+    Some(argb.rotate_left(8))
+}
+
+/// An RGBA color written back over a Compose literal the way Android
+/// Studio's picker writes it: `0xAARRGGBB`, in the literal's letter case.
+pub fn format_compose_color(rgba: u32, like: &str) -> String {
+    let hex = format!("{:08X}", rgba.rotate_right(8));
+    let digits = like.trim().get(2..).unwrap_or("");
+    let hex = if digits.chars().any(|c| c.is_ascii_lowercase()) { hex.to_ascii_lowercase() } else { hex };
+    format!("{}{hex}", like.trim().get(..2).unwrap_or("0x"))
+}
+
 /// The folder Android uses when no qualifier matches comes first, then the rest by name.
 pub fn folder_order(folder: &str) -> (bool, &str) {
     (folder.contains('-'), folder)
@@ -273,6 +294,18 @@ mod tests {
         assert_eq!(format_color(0x11223380, "#6200EE"), "#80112233");
         assert_eq!(format_color(0xAABBCCFF, "#abc"), "#aabbcc");
         assert_eq!(parse_color(&format_color(0x12345678, "#000")), Some(0x12345678));
+    }
+
+    #[test]
+    fn compose_colors() {
+        assert_eq!(parse_compose_color("0xFF6200EE"), Some(0x6200EEFF));
+        assert_eq!(parse_compose_color("0x806200EEL"), Some(0x6200EE80));
+        // No alpha digits: transparent, as Compose reads the number.
+        assert_eq!(parse_compose_color("0x6200EE"), Some(0x6200EE00));
+        assert_eq!(parse_compose_color("0x1FF6200EE"), None);
+        assert_eq!(format_compose_color(0x112233FF, "0xFF6200EE"), "0xFF112233");
+        assert_eq!(format_compose_color(0x11223380, "0xff6200ee"), "0x80112233");
+        assert_eq!(format_compose_color(0xAABBCCFF, "0Xff6200ee"), "0Xffaabbcc");
     }
 
     #[test]

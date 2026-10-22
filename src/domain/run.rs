@@ -103,11 +103,13 @@ pub struct RunConfiguration {
     /// A Gradle configuration: its Run line (tasks and arguments,
     /// `clean :app:lint --info`); none for an Android App one.
     pub gradle: Option<String>,
-    /// A JUnit configuration: the module's unit tests it runs.
+    /// A JUnit or Android Instrumented Tests configuration: the module's
+    /// tests it runs.
     pub junit: Option<JUnitTarget>,
 }
 
-/// IntelliJ's JUnit configuration: its Test kind and what it names.
+/// IntelliJ's JUnit configuration (and Android Studio's Android
+/// Instrumented Tests one): its Test kind and what it names.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct JUnitTarget {
     pub kind: JUnitKind,
@@ -117,6 +119,10 @@ pub struct JUnitTarget {
     pub class: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub method: String,
+    /// An Android Instrumented Tests configuration: the module's
+    /// `androidTest` tests, on the connected devices.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub instrumented: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -125,13 +131,25 @@ pub enum JUnitKind {
     Package,
     Class,
     Method,
+    /// Android Instrumented Tests' All in Module.
+    Module,
 }
 
 impl JUnitKind {
-    pub const ALL: [JUnitKind; 3] = [JUnitKind::Package, JUnitKind::Class, JUnitKind::Method];
+    /// The Test kind dropdown's choices: JUnit's, or Android Instrumented
+    /// Tests'.
+    pub fn choices(instrumented: bool) -> &'static [JUnitKind] {
+        if instrumented {
+            &[JUnitKind::Module, JUnitKind::Package, JUnitKind::Class, JUnitKind::Method]
+        } else {
+            &[JUnitKind::Package, JUnitKind::Class, JUnitKind::Method]
+        }
+    }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self, instrumented: bool) -> &'static str {
         match self {
+            JUnitKind::Module => "All in Module",
+            JUnitKind::Package if instrumented => "All in Package",
             JUnitKind::Package => "All in package",
             JUnitKind::Class => "Class",
             JUnitKind::Method => "Method",
@@ -143,6 +161,8 @@ impl JUnitTarget {
     /// What keeps it from running, in IntelliJ's words.
     pub fn problem(&self) -> Option<&'static str> {
         match self.kind {
+            JUnitKind::Module => None,
+            JUnitKind::Package if self.instrumented && self.package.trim().is_empty() => Some("Package name not specified"),
             JUnitKind::Package => None,
             _ if self.class.trim().is_empty() => Some("No test class specified"),
             JUnitKind::Method if self.method.trim().is_empty() => Some("Method name not specified"),
@@ -152,9 +172,11 @@ impl JUnitTarget {
 
     /// What a test run's filters name, as a configuration: a package
     /// (`com.ex.*`, or nothing for all), a class or a method; none for
-    /// several (Rerun Failed Tests' runs).
-    pub fn from_filters(filters: &[(String, Option<String>)]) -> Option<Self> {
-        match filters {
+    /// several (Rerun Failed Tests' runs). All of an instrumented run's
+    /// tests are All in Module.
+    pub fn from_filters(filters: &[(String, Option<String>)], instrumented: bool) -> Option<Self> {
+        let target = match filters {
+            [] if instrumented => Some(Self { kind: JUnitKind::Module, ..Default::default() }),
             [] => Some(Self::default()),
             [(class, None)] => Some(match class.strip_suffix(".*") {
                 Some(package) => Self { kind: JUnitKind::Package, package: package.into(), ..Default::default() },
@@ -162,7 +184,8 @@ impl JUnitTarget {
             }),
             [(class, Some(method))] => Some(Self { kind: JUnitKind::Method, class: class.clone(), method: method.clone(), ..Default::default() }),
             _ => None,
-        }
+        };
+        target.map(|t| Self { instrumented, ..t })
     }
 
     /// The `(class, method)` filters a test run takes: none runs every
@@ -170,6 +193,7 @@ impl JUnitTarget {
     pub fn filters(&self) -> Vec<(String, Option<String>)> {
         let (package, class, method) = (self.package.trim(), self.class.trim(), self.method.trim());
         match self.kind {
+            JUnitKind::Module => Vec::new(),
             JUnitKind::Package if package.is_empty() => Vec::new(),
             JUnitKind::Package => vec![(format!("{package}.*"), None)],
             JUnitKind::Class => vec![(class.to_owned(), None)],
@@ -480,9 +504,18 @@ mod tests {
         assert_eq!(serde_json::from_str::<JUnitTarget>(&json).unwrap(), t);
         // A temporary configuration's filters, back.
         for target in [JUnitTarget { package: String::new(), ..t.clone() }, JUnitTarget { kind: JUnitKind::Package, package: "com.ex".into(), ..Default::default() }, JUnitTarget::default()] {
-            assert_eq!(JUnitTarget::from_filters(&target.filters()), Some(target));
+            assert_eq!(JUnitTarget::from_filters(&target.filters(), false), Some(target));
         }
-        assert_eq!(JUnitTarget::from_filters(&[("A".into(), None), ("B".into(), None)]), None);
+        assert_eq!(JUnitTarget::from_filters(&[("A".into(), None), ("B".into(), None)], false), None);
+        // Android Instrumented Tests: All in Module, and a package must be named.
+        let module = JUnitTarget { kind: JUnitKind::Module, instrumented: true, ..Default::default() };
+        assert_eq!(JUnitTarget::from_filters(&[], true), Some(module.clone()));
+        assert_eq!((module.filters(), module.problem()), (Vec::new(), None));
+        let package = JUnitTarget { kind: JUnitKind::Package, instrumented: true, ..Default::default() };
+        assert_eq!(package.problem(), Some("Package name not specified"));
+        let json = serde_json::to_string(&module).unwrap();
+        assert_eq!(serde_json::from_str::<JUnitTarget>(&json).unwrap(), module);
+        assert!(!serde_json::to_string(&JUnitTarget::default()).unwrap().contains("instrumented"));
     }
 
     #[test]

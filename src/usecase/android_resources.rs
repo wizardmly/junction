@@ -120,9 +120,17 @@ mod tests {
         assert_eq!(marks, vec![(1, Preview::Color(0x6200EEFF))]);
         let marks = previews(&t, "res/layout/a.xml", "<View android:background=\"#F00\"\n android:tint=\"@color/purple\"/>");
         assert_eq!(marks, vec![(0, Preview::Color(0xFF0000FF)), (1, Preview::Color(0x6200EEFF))]);
-        assert_eq!(color_literal("<View android:background=\"#F00\""), Some(26..30));
-        assert_eq!(color_literal("    <color name=\"a\">#FF6200EE</color>"), Some(20..29));
-        assert_eq!(color_literal(" android:tint=\"@color/purple\"/>"), None);
+        assert_eq!(color_literal("a.xml", "<View android:background=\"#F00\""), Some(26..30));
+        assert_eq!(color_literal("a.xml", "    <color name=\"a\">#FF6200EE</color>"), Some(20..29));
+        assert_eq!(color_literal("a.xml", " android:tint=\"@color/purple\"/>"), None);
+        // Compose literals.
+        let code = "val Purple = Color(0xFF6200EE)\nval Clear = Color(color = 0x00000000L)\nColor(0xFF000000).copy(alpha = 0.5f)\nColor(red = 1f, green = 0f, blue = 0f)";
+        assert_eq!(previews(&t, "ui/Theme.kt", code), vec![(0, Preview::Color(0x6200EEFF)), (1, Preview::Color(0)), (2, Preview::Color(0x000000FF))]);
+        assert!(previews(&t, "ui/Theme.java", code).is_empty());
+        assert_eq!(color_literal("ui/Theme.kt", "val Purple = Color(0xFF6200EE)"), Some(19..29));
+        assert_eq!(color_literal("ui/Theme.kt", "val c = R.color.primary"), None);
+        assert_eq!(format_color_literal(0x112233FF, "0xff6200ee"), "0xff112233");
+        assert_eq!(format_color_literal(0x112233FF, "#6200EE"), "#112233");
         assert_eq!(preview_reference("a.xml", " android:tint=\"@color/purple\"/>"), Some(22));
         assert_eq!(preview_reference("a.kt", "val c = R.color.primary"), Some(16));
     }
@@ -140,11 +148,28 @@ pub enum Preview {
     Vector(String),
 }
 
-/// The byte range of the color literal (`#FF6200EE`) whose swatch an XML
-/// line shows, the text a color picker rewrites.
-pub fn color_literal(line: &str) -> Option<std::ops::Range<usize>> {
+/// The byte range of the color literal whose swatch a line shows, the
+/// text a color picker rewrites: `#FF6200EE` in XML, a Compose
+/// `Color(0xFF6200EE)` in Kotlin.
+pub fn color_literal(path: &str, line: &str) -> Option<std::ops::Range<usize>> {
+    if path.ends_with(".kt") {
+        // A resource reference comes first on the line, as its preview does.
+        if CODE.is_match(line) {
+            return None;
+        }
+        let hex = COMPOSE.captures(line)?.get(1)?;
+        return res::parse_compose_color(hex.as_str()).map(|_| hex.range());
+    }
+    if !path.ends_with(".xml") {
+        return None;
+    }
     let hex = XML.captures(line)?.get(3)?;
     res::parse_color(hex.as_str()).map(|_| hex.range())
+}
+
+/// A picked RGBA color as the literal at `like` takes it.
+pub fn format_color_literal(rgba: u32, like: &str) -> String {
+    if like.starts_with('#') { res::format_color(rgba, like) } else { res::format_compose_color(rgba, like) }
 }
 
 /// Where on a Kotlin, Java or XML line the previewed resource's name
@@ -156,6 +181,7 @@ pub fn preview_reference(path: &str, line: &str) -> Option<usize> {
 }
 
 static CODE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?:^|[^\w.])R\.(color|drawable|mipmap)\.(\w+)").unwrap());
+static COMPOSE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\bColor\(\s*(?:color\s*=\s*)?(0[xX][0-9a-fA-F]{1,8}L?)\s*\)").unwrap());
 static XML: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"@(color|drawable|mipmap)/([\w.]+)|[">](#[0-9a-fA-F]{3,8})["<]"#).unwrap());
 
 /// The first previewable resource of each line of a Kotlin, Java or XML file.
@@ -167,7 +193,13 @@ pub fn previews(table: &ResourceTable, path: &str, text: &str) -> Vec<(u32, Prev
     let mut out = Vec::new();
     for (line, content) in text.lines().enumerate() {
         let caps = if code { CODE.captures(content) } else { XML.captures(content) };
-        let Some(c) = caps else { continue };
+        let Some(c) = caps else {
+            // A Compose `Color(0xFF6200EE)`.
+            if let Some(rgba) = path.ends_with(".kt").then(|| COMPOSE.captures(content)).flatten().and_then(|c| res::parse_compose_color(c.get(1)?.as_str())) {
+                out.push((line as u32, Preview::Color(rgba)));
+            }
+            continue;
+        };
         let preview = match (c.get(1), c.get(2), c.get(3)) {
             (_, _, Some(hex)) => res::parse_color(hex.as_str()).map(Preview::Color),
             (Some(kind), Some(name), _) => {
