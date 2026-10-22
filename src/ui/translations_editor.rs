@@ -1,5 +1,6 @@
 //! The Translations Editor, as Android Studio's: a tab in the editor area
-//! with a module's string resources as a table (Key, Resource Folder,
+//! with the project's string resources (every module's and source set's
+//! res folder, a row per key and folder) as a table (Key, Resource Folder,
 //! Untranslatable, Default Value, then a column per locale), missing
 //! translations in red; the toolbar's Add Key, Remove Keys, Add Locale,
 //! the key filter and Reload; and the Key / Default Value / Translation
@@ -69,17 +70,20 @@ const DEFAULT_W: f32 = 220.;
 const LOCALE_W: f32 = 200.;
 const ROW_H: f32 = 24.;
 
+/// A row: its res folder (an index into the editor's) and key.
+type RowId = (usize, String);
+
 pub struct TranslationsEditor {
-    res: PathBuf,
-    /// "app/src/main/res", for the Resource Folder column.
-    folder_label: String,
+    /// The res folders and their labels ("app/src/main/res"), the one it
+    /// was opened for first: Add Key and Add Locale write there.
+    folders: Vec<(PathBuf, String)>,
     table: Table,
     filter: KeyFilter,
     /// Indexes into `table.rows` the filter lets through.
     shown: Vec<usize>,
-    /// The selected keys (Remove Keys acts on them) and the current cell.
-    selected: BTreeSet<String>,
-    cell: Option<(String, Column)>,
+    /// The selected rows (Remove Keys acts on them) and the current cell.
+    selected: BTreeSet<RowId>,
+    cell: Option<(RowId, Column)>,
     key_field: Entity<InputState>,
     default_field: Entity<InputState>,
     translation_field: Entity<InputState>,
@@ -99,7 +103,7 @@ impl Focusable for TranslationsEditor {
 }
 
 impl TranslationsEditor {
-    pub fn new(res: PathBuf, folder_label: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(folders: Vec<(PathBuf, String)>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let key_field = cx.new(|cx| InputState::new(window, cx));
         let default_field = cx.new(|cx| InputState::new(window, cx));
         let translation_field = cx.new(|cx| InputState::new(window, cx));
@@ -116,8 +120,7 @@ impl TranslationsEditor {
             }),
         ];
         let mut this = Self {
-            res,
-            folder_label,
+            folders,
             table: Table::default(),
             filter: KeyFilter::All,
             shown: Vec::new(),
@@ -136,21 +139,24 @@ impl TranslationsEditor {
         this
     }
 
-    pub fn res(&self) -> &PathBuf {
-        &self.res
+    /// Whether it shows this res folder.
+    pub fn covers(&self, res: &std::path::Path) -> bool {
+        self.folders.iter().any(|(r, _)| r == res)
     }
 
     pub fn title(&self) -> String {
         "Translations Editor".into()
     }
 
-    fn files(&self) -> DiskRes {
-        DiskRes { res: self.res.clone() }
+    fn files(&self, folder: usize) -> DiskRes {
+        DiskRes { res: self.folders.get(folder).map(|f| f.0.clone()).unwrap_or_default() }
     }
 
     /// Reads the values files again (Reload, and after each edit).
     pub fn reload(&mut self, cx: &mut Context<Self>) {
-        self.table = usecase::load(&self.files());
+        let files: Vec<DiskRes> = (0..self.folders.len()).map(|f| self.files(f)).collect();
+        let files: Vec<&dyn usecase::ResFiles> = files.iter().map(|f| f as &dyn usecase::ResFiles).collect();
+        self.table = usecase::load_many(&files);
         self.refilter();
         cx.notify();
     }
@@ -167,24 +173,24 @@ impl TranslationsEditor {
                 }
             })
             .collect();
-        let keys: BTreeSet<&str> = self.table.rows.iter().map(|r| r.key.as_str()).collect();
-        self.selected.retain(|k| keys.contains(k.as_str()));
+        let rows: BTreeSet<(usize, &str)> = self.table.rows.iter().map(|r| (r.folder, r.key.as_str())).collect();
+        self.selected.retain(|(f, k)| rows.contains(&(*f, k.as_str())));
     }
 
-    fn row(&self, key: &str) -> Option<&Row> {
-        self.table.rows.iter().find(|r| r.key == key)
+    fn row(&self, (folder, key): &RowId) -> Option<&Row> {
+        self.table.rows.iter().find(|r| r.folder == *folder && r.key == *key)
     }
 
-    /// The files of a column's folder that changed, as project paths.
-    fn changed(&self, before: &[(String, String, Option<String>)], cx: &mut Context<Self>) {
-        let files = self.files();
+    /// The files of a res folder that changed, as project paths.
+    fn changed(&self, folder: usize, before: &[(String, String, Option<String>)], cx: &mut Context<Self>) {
+        let files = self.files(folder);
         use crate::usecase::translations::ResFiles as _;
         let mut paths: Vec<PathBuf> = Vec::new();
         for (folder, file) in files.values_files() {
             let now = files.read(&folder, &file);
             let old = before.iter().find(|(f, n, _)| *f == folder && *n == file).and_then(|(_, _, t)| t.clone());
             if now != old {
-                paths.push(self.res.join(&folder).join(&file));
+                paths.push(files.res.join(&folder).join(&file));
             }
         }
         if !paths.is_empty() {
@@ -192,29 +198,37 @@ impl TranslationsEditor {
         }
     }
 
-    /// Runs an edit of the values files, then shows the new table.
-    fn edit(&mut self, f: impl FnOnce(&DiskRes) -> Result<(), String>, cx: &mut Context<Self>) {
+    /// Runs an edit of a res folder's values files, then shows the new
+    /// table.
+    fn edit(&mut self, folder: usize, f: impl FnOnce(&DiskRes) -> Result<(), String>, cx: &mut Context<Self>) {
+        self.edit_quietly(folder, f, cx);
+        self.reload(cx);
+    }
+
+    /// An edit without reloading the table.
+    fn edit_quietly(&mut self, folder: usize, f: impl FnOnce(&DiskRes) -> Result<(), String>, cx: &mut Context<Self>) {
         use crate::usecase::translations::ResFiles as _;
-        let files = self.files();
+        let files = self.files(folder);
         let before: Vec<(String, String, Option<String>)> = files.values_files().into_iter().map(|(folder, file)| {
             let text = files.read(&folder, &file);
             (folder, file, text)
         }).collect();
-        self.error = f(&files).err();
-        self.changed(&before, cx);
-        self.reload(cx);
+        if let Err(e) = f(&files) {
+            self.error = Some(e);
+        }
+        self.changed(folder, &before, cx);
     }
 
     /// Selects a cell and shows it in the fields below.
-    fn select(&mut self, key: String, column: Column, extend: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn select(&mut self, id: RowId, column: Column, extend: bool, window: &mut Window, cx: &mut Context<Self>) {
         if extend {
-            if !self.selected.remove(&key) {
-                self.selected.insert(key.clone());
+            if !self.selected.remove(&id) {
+                self.selected.insert(id.clone());
             }
         } else {
-            self.selected = BTreeSet::from([key.clone()]);
+            self.selected = BTreeSet::from([id.clone()]);
         }
-        self.cell = Some((key, column));
+        self.cell = Some((id, column));
         self.fill_fields(window, cx);
         window.focus(&self.focus, cx);
         cx.notify();
@@ -222,14 +236,14 @@ impl TranslationsEditor {
 
     fn fill_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (key, default, translation) = match &self.cell {
-            Some((key, column)) => {
-                let row = self.row(key);
+            Some((id, column)) => {
+                let row = self.row(id);
                 let default = row.and_then(|r| r.default.clone()).unwrap_or_default();
                 let translation = match column {
                     Column::Locale(l) => row.and_then(|r| r.values.get(*l).cloned().flatten()).unwrap_or_default(),
                     _ => String::new(),
                 };
-                (key.clone(), default, translation)
+                (id.1.clone(), default, translation)
             }
             None => Default::default(),
         };
@@ -240,8 +254,8 @@ impl TranslationsEditor {
 
     /// Enter (or leaving) in the Default Value or Translation field.
     fn apply_field(&mut self, translation: bool, cx: &mut Context<Self>) {
-        let Some((key, column)) = self.cell.clone() else { return };
-        let Some(row) = self.row(&key).cloned() else { return };
+        let Some(((folder, key), column)) = self.cell.clone() else { return };
+        let Some(row) = self.row(&(folder, key.clone())).cloned() else { return };
         let (value, current, locale) = if translation {
             let Column::Locale(l) = column else { return };
             (self.translation_field.read(cx).value().to_string(), row.values.get(l).cloned().flatten().unwrap_or_default(), self.table.locales.get(l).cloned())
@@ -251,15 +265,18 @@ impl TranslationsEditor {
         if value == current {
             return;
         }
-        self.edit(|files| usecase::set_value(files, &key, locale.as_ref(), &value), cx);
+        self.error = None;
+        self.edit(folder, |files| usecase::set_value(files, &key, locale.as_ref(), &value), cx);
     }
 
-    fn toggle_translatable(&mut self, key: String, translatable: bool, cx: &mut Context<Self>) {
-        self.edit(|files| usecase::set_translatable(files, &key, translatable), cx);
+    fn toggle_translatable(&mut self, (folder, key): RowId, translatable: bool, cx: &mut Context<Self>) {
+        self.error = None;
+        self.edit(folder, |files| usecase::set_translatable(files, &key, translatable), cx);
     }
 
     fn add_locale(&mut self, locale: Locale, cx: &mut Context<Self>) {
-        self.edit(|files| usecase::add_locale(files, &locale), cx);
+        self.error = None;
+        self.edit(0, |files| usecase::add_locale(files, &locale), cx);
     }
 
     fn set_filter(&mut self, filter: KeyFilter, cx: &mut Context<Self>) {
@@ -270,20 +287,26 @@ impl TranslationsEditor {
 
     /// Remove Keys: the selected keys, from every locale, once confirmed.
     fn remove_keys(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let keys: Vec<String> = self.selected.iter().cloned().collect();
-        if keys.is_empty() {
+        let ids: Vec<RowId> = self.selected.iter().cloned().collect();
+        if ids.is_empty() {
             return;
         }
-        let message = match keys.as_slice() {
-            [key] => format!("Delete string resource \"{key}\" from all locales?"),
-            _ => format!("Delete {} string resources from all locales?", keys.len()),
+        let message = match ids.as_slice() {
+            [(_, key)] => format!("Delete string resource \"{key}\" from all locales?"),
+            _ => format!("Delete {} string resources from all locales?", ids.len()),
         };
         let this = cx.entity().downgrade();
         dialogs::confirm("Remove Keys", message, "Delete", move |cx| {
-            let keys = keys.clone();
+            let ids = ids.clone();
             this.update(cx, |this, cx| {
                 this.cell = None;
-                this.edit(|files| usecase::remove_keys(files, &keys), cx);
+                this.error = None;
+                let folders: BTreeSet<usize> = ids.iter().map(|(f, _)| *f).collect();
+                for folder in folders {
+                    let keys: Vec<String> = ids.iter().filter(|(f, _)| *f == folder).map(|(_, k)| k.clone()).collect();
+                    this.edit_quietly(folder, |files| usecase::remove_keys(files, &keys), cx);
+                }
+                this.reload(cx);
             })
             .ok();
         }, window, cx);
@@ -295,12 +318,28 @@ impl TranslationsEditor {
         let value = cx.new(|cx| InputState::new(window, cx));
         let error: Entity<Option<String>> = cx.new(|_| None);
         let this = cx.entity().downgrade();
-        let folder = self.folder_label.clone();
+        let labels: Vec<String> = self.folders.iter().map(|f| f.1.clone()).collect();
+        // The Resource Folder picked: the current row's, else the first.
+        let folder: Entity<usize> = cx.new(|_| self.cell.as_ref().map_or(0, |((f, _), _)| *f));
         let palette = cx.palette().clone();
         let focus_key = key.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
             let label = |text: &'static str| div().w(px(110.)).text_sm().child(text);
-            let (key_ok, value_ok, error_ok, this) = (key.clone(), value.clone(), error.clone(), this.clone());
+            let (key_ok, value_ok, error_ok, this, folder_ok) = (key.clone(), value.clone(), error.clone(), this.clone(), folder.clone());
+            let picked = *folder.read(cx);
+            let (labels_menu, folder_menu) = (labels.clone(), folder.clone());
+            let folder_picker = Button::new("tr-add-key-folder").outline().small().w_full().label(labels.get(picked).cloned().unwrap_or_default()).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu(move |mut menu, _, _| {
+                for (ix, l) in labels_menu.iter().enumerate() {
+                    let folder = folder_menu.clone();
+                    menu = menu.item(PopupMenuItem::new(l.clone()).checked(ix == picked).on_click(move |_, _, cx| {
+                        folder.update(cx, |f, cx| {
+                            *f = ix;
+                            cx.notify();
+                        });
+                    }));
+                }
+                menu
+            });
             dialog
                 .title("Add Key")
                 .w(px(460.))
@@ -309,14 +348,15 @@ impl TranslationsEditor {
                         .gap_2()
                         .child(h_flex().gap_2().child(label("Key:")).child(div().flex_1().child(Input::new(&key))))
                         .child(h_flex().gap_2().child(label("Default Value:")).child(div().flex_1().child(Input::new(&value))))
-                        .child(h_flex().gap_2().child(label("Resource Folder:")).child(div().flex_1().text_sm().child(folder.clone())))
+                        .child(h_flex().gap_2().child(label("Resource Folder:")).child(div().flex_1().child(folder_picker)))
                         .when_some(error.read(cx).clone(), |el, e| el.child(div().text_sm().text_color(palette.status_conflict).child(e))),
                 )
                 .footer(dialogs::footer("OK"))
                 .on_ok(move |_, window, cx| {
                     let (k, v) = (key_ok.read(cx).value().trim().to_owned(), value_ok.read(cx).value().to_string());
                     let Some(this) = this.upgrade() else { return true };
-                    let result = this.update(cx, |this, _| usecase::add_key(&this.files(), &k, &v).err());
+                    let folder = *folder_ok.read(cx);
+                    let result = this.update(cx, |this, _| usecase::add_key(&this.files(folder), &k, &v).err());
                     match result {
                         Some(e) => {
                             error_ok.update(cx, |slot, cx| {
@@ -328,10 +368,10 @@ impl TranslationsEditor {
                         None => {
                             this.update(cx, |this, cx| {
                                 // Written already: show it, selected.
-                                this.changed(&[], cx);
+                                this.changed(folder, &[], cx);
                                 this.reload(cx);
-                                this.selected = BTreeSet::from([k.clone()]);
-                                this.cell = Some((k, Column::Default));
+                                this.selected = BTreeSet::from([(folder, k.clone())]);
+                                this.cell = Some(((folder, k), Column::Default));
                                 this.fill_fields(window, cx);
                             });
                             true
@@ -365,10 +405,11 @@ impl TranslationsEditor {
         let mut out = Vec::new();
         for ix in range {
             let Some(row) = self.shown.get(ix).and_then(|r| self.table.rows.get(*r)).cloned() else { continue };
-            let selected = self.selected.contains(&row.key);
-            let current = self.cell.as_ref().filter(|(k, _)| *k == row.key).map(|(_, c)| *c);
+            let row_id: RowId = (row.folder, row.key.clone());
+            let selected = self.selected.contains(&row_id);
+            let current = self.cell.as_ref().filter(|(id, _)| *id == row_id).map(|(_, c)| *c);
             let cell = |id: (&'static str, usize), width: f32, column: Column, cx: &mut Context<Self>| {
-                let key = row.key.clone();
+                let key = row_id.clone();
                 div()
                     .id(id)
                     .w(px(width))
@@ -401,8 +442,8 @@ impl TranslationsEditor {
                 .border_color(palette.border)
                 .when(selected, |el| el.bg(palette.selection))
                 .child(cell(("tr-key", ix), KEY_W, Column::Key, cx).text_color(key_color).child(row.key.clone()))
-                .child(cell(("tr-folder", ix), FOLDER_W, Column::Key, cx).text_color(palette.text_secondary).child(self.folder_label.clone()));
-            let key = row.key.clone();
+                .child(cell(("tr-folder", ix), FOLDER_W, Column::Key, cx).text_color(palette.text_secondary).child(self.folders.get(row.folder).map(|f| f.1.clone()).unwrap_or_default()));
+            let key = row_id.clone();
             line = line.child(
                 div().w(px(UNTRANSLATABLE_W)).flex_none().h_full().flex().items_center().justify_center().border_r_1().border_color(palette.border).child(
                     Checkbox::new(("tr-untranslatable", ix)).checked(!row.translatable).disabled(row.default.is_none()).on_click(cx.listener(move |this, checked: &bool, _, cx| {

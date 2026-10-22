@@ -13,7 +13,8 @@ pub struct ResFolders {
 const SKIP: [&str; 9] = [".git", "build", ".gradle", ".idea", "node_modules", "target", "Pods", ".dart_tool", ".cxx"];
 
 impl ResFolders {
-    fn res_dirs(&self) -> Vec<PathBuf> {
+    /// Every module's and source set's `res` folder.
+    pub fn res_dirs(&self) -> Vec<PathBuf> {
         fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             let Ok(entries) = std::fs::read_dir(dir) else { return };
             for entry in entries.flatten() {

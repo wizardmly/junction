@@ -1,5 +1,6 @@
 //! The Translations Editor's table, as Android Studio builds it: every
-//! `<string>` key of a res folder with its default value and each locale's
+//! `<string>` key of the project's res folders (a row per key and folder)
+//! with its default value and each locale's
 //! translation, and the edits it makes to the values files (a translation
 //! set or cleared, a key added or removed, Untranslatable, a locale added).
 
@@ -12,6 +13,8 @@ pub use crate::domain::translations::ResFiles;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub key: String,
+    /// The res folder it is in: an index into the folders loaded.
+    pub folder: usize,
     pub translatable: bool,
     pub default: Option<String>,
     /// The translation in each of the table's locales.
@@ -33,12 +36,34 @@ impl Row {
 pub struct Table {
     /// Sorted by label, as the columns are.
     pub locales: Vec<Locale>,
-    /// Sorted by key.
+    /// Sorted by key, then folder.
     pub rows: Vec<Row>,
 }
 
 /// Reads the folder's strings into the table.
 pub fn load(files: &dyn ResFiles) -> Table {
+    load_many(&[files])
+}
+
+/// Reads several res folders' strings into one table: the locales of
+/// them all, a row per key and folder.
+pub fn load_many(folders: &[&dyn ResFiles]) -> Table {
+    let tables: Vec<Table> = folders.iter().map(|f| load_one(*f)).collect();
+    let mut locales: Vec<Locale> = tables.iter().flat_map(|t| t.locales.iter().cloned()).collect();
+    locales.sort_by_key(|l| l.label());
+    locales.dedup();
+    let mut rows: Vec<Row> = Vec::new();
+    for (folder, table) in tables.into_iter().enumerate() {
+        for row in table.rows {
+            let values = locales.iter().map(|l| table.locales.iter().position(|t| t == l).and_then(|i| row.values[i].clone())).collect();
+            rows.push(Row { folder, values, ..row });
+        }
+    }
+    rows.sort_by(|a, b| a.key.cmp(&b.key).then(a.folder.cmp(&b.folder)));
+    Table { locales, rows }
+}
+
+fn load_one(files: &dyn ResFiles) -> Table {
     let mut defaults: BTreeMap<String, (String, bool)> = BTreeMap::new();
     let mut translations: BTreeMap<Locale, BTreeMap<String, String>> = BTreeMap::new();
     for (folder, file) in files.values_files() {
@@ -74,7 +99,7 @@ pub fn load(files: &dyn ResFiles) -> Table {
                 None => (None, true),
             };
             let values = locales.iter().map(|l| translations.get(l).and_then(|m| m.get(&key)).cloned()).collect();
-            Row { key, translatable, default, values }
+            Row { key, folder: 0, translatable, default, values }
         })
         .collect();
     Table { locales, rows }
@@ -217,6 +242,23 @@ mod tests {
         assert!(!table.rows[0].needs_translation());
         // A translation without a default.
         assert_eq!(table.rows[2].default, None);
+    }
+
+    #[test]
+    fn merges_res_folders() {
+        let main = project();
+        let lib = Fake::with(&[
+            ("values", "strings.xml", &file("<string name=\"hello\">Hello lib</string>\n    <string name=\"lib\">Lib</string>")),
+            ("values-de", "strings.xml", &file("<string name=\"lib\">Bibliothek</string>")),
+        ]);
+        let table = load_many(&[&main, &lib]);
+        let labels: Vec<String> = table.locales.iter().map(Locale::label).collect();
+        assert_eq!(labels, ["Chinese (zh) in China (CN)", "French (fr)", "German (de)"]);
+        let rows: Vec<(&str, usize)> = table.rows.iter().map(|r| (r.key.as_str(), r.folder)).collect();
+        assert_eq!(rows, [("app_name", 0), ("bye", 0), ("extra", 0), ("hello", 0), ("hello", 1), ("lib", 1)]);
+        let lib_row = &table.rows[5];
+        assert_eq!(lib_row.values, vec![None, None, Some("Bibliothek".to_owned())]);
+        assert!(table.rows[3].missing(2));
     }
 
     #[test]
