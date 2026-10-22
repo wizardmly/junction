@@ -120,6 +120,11 @@ mod tests {
         assert_eq!(marks, vec![(1, Preview::Color(0x6200EEFF))]);
         let marks = previews(&t, "res/layout/a.xml", "<View android:background=\"#F00\"\n android:tint=\"@color/purple\"/>");
         assert_eq!(marks, vec![(0, Preview::Color(0xFF0000FF)), (1, Preview::Color(0x6200EEFF))]);
+        assert_eq!(color_literal("<View android:background=\"#F00\""), Some(26..30));
+        assert_eq!(color_literal("    <color name=\"a\">#FF6200EE</color>"), Some(20..29));
+        assert_eq!(color_literal(" android:tint=\"@color/purple\"/>"), None);
+        assert_eq!(preview_reference("a.xml", " android:tint=\"@color/purple\"/>"), Some(22));
+        assert_eq!(preview_reference("a.kt", "val c = R.color.primary"), Some(16));
     }
 }
 
@@ -135,11 +140,26 @@ pub enum Preview {
     Vector(String),
 }
 
+/// The byte range of the color literal (`#FF6200EE`) whose swatch an XML
+/// line shows, the text a color picker rewrites.
+pub fn color_literal(line: &str) -> Option<std::ops::Range<usize>> {
+    let hex = XML.captures(line)?.get(3)?;
+    res::parse_color(hex.as_str()).map(|_| hex.range())
+}
+
+/// Where on a Kotlin, Java or XML line the previewed resource's name
+/// starts, for Go to Declaration from its gutter icon.
+pub fn preview_reference(path: &str, line: &str) -> Option<usize> {
+    let code = path.ends_with(".kt") || path.ends_with(".java");
+    let caps = if code { CODE.captures(line) } else { XML.captures(line) }?;
+    caps.get(2).map(|m| m.start())
+}
+
+static CODE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?:^|[^\w.])R\.(color|drawable|mipmap)\.(\w+)").unwrap());
+static XML: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"@(color|drawable|mipmap)/([\w.]+)|[">](#[0-9a-fA-F]{3,8})["<]"#).unwrap());
+
 /// The first previewable resource of each line of a Kotlin, Java or XML file.
 pub fn previews(table: &ResourceTable, path: &str, text: &str) -> Vec<(u32, Preview)> {
-    use std::sync::LazyLock;
-    static CODE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?:^|[^\w.])R\.(color|drawable|mipmap)\.(\w+)").unwrap());
-    static XML: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"@(color|drawable|mipmap)/([\w.]+)|[">](#[0-9a-fA-F]{3,8})["<]"#).unwrap());
     let code = path.ends_with(".kt") || path.ends_with(".java");
     if !code && !path.ends_with(".xml") {
         return Vec::new();

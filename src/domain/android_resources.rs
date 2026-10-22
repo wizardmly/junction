@@ -247,6 +247,16 @@ pub fn parse_color(value: &str) -> Option<u32> {
     Some((r << 24) | (g << 16) | (b << 8) | a)
 }
 
+/// An RGBA color written back over the literal `like` the way Android
+/// Studio's picker writes it: `#RRGGBB` when opaque and the literal had no
+/// alpha, else `#AARRGGBB`, in the literal's letter case.
+pub fn format_color(rgba: u32, like: &str) -> String {
+    let (r, g, b, a) = (rgba >> 24, (rgba >> 16) & 0xFF, (rgba >> 8) & 0xFF, rgba & 0xFF);
+    let digits = like.trim().trim_start_matches('#').len();
+    let hex = if a == 0xFF && matches!(digits, 3 | 6) { format!("#{r:02X}{g:02X}{b:02X}") } else { format!("#{a:02X}{r:02X}{g:02X}{b:02X}") };
+    if like.chars().any(|c| c.is_ascii_lowercase()) { hex.to_ascii_lowercase() } else { hex }
+}
+
 /// The folder Android uses when no qualifier matches comes first, then the rest by name.
 pub fn folder_order(folder: &str) -> (bool, &str) {
     (folder.contains('-'), folder)
@@ -255,6 +265,15 @@ pub fn folder_order(folder: &str) -> (bool, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formats_colors_like_the_literal() {
+        assert_eq!(format_color(0x112233FF, "#FF6200EE"), "#FF112233");
+        assert_eq!(format_color(0x112233FF, "#6200ee"), "#112233");
+        assert_eq!(format_color(0x11223380, "#6200EE"), "#80112233");
+        assert_eq!(format_color(0xAABBCCFF, "#abc"), "#aabbcc");
+        assert_eq!(parse_color(&format_color(0x12345678, "#000")), Some(0x12345678));
+    }
 
     #[test]
     fn reads_values() {

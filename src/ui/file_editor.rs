@@ -447,6 +447,8 @@ pub struct FileEditor {
     test_marks: Vec<crate::domain::testing::TestMark>,
     test_marks_task: Option<gpui_kit::Task<()>>,
     test_menu: Option<(crate::domain::testing::TestMark, Point<Pixels>)>,
+    /// The color picker a click on a color literal's gutter swatch opens.
+    color_edit: Option<previews::ColorEdit>,
     /// A breakpoint's properties popup (a right-click on it).
     breakpoint_popup: Option<breakpoints::BreakpointPopup>,
     /// Lines before the last edit: breakpoints below it move along.
@@ -773,6 +775,7 @@ impl FileEditor {
             test_marks: Vec::new(),
             test_marks_task: None,
             test_menu: None,
+            color_edit: None,
             line_count: 0,
             breakpoint_text: None,
             breakpoint_popup: None,
@@ -2783,7 +2786,7 @@ impl Render for FileEditor {
         let (preview_strip, test_strip) = if crate::settings::Settings::get(cx).diff.show_gutter_icons {
             let bookmarked = self.bookmark_file().is_some_and(|f| crate::bookmarks::Bookmarks::get(cx).of_file(&f).next().is_some());
             let slot = self.hierarchy_slots + bookmarked as usize;
-            (self.preview_strip(slot), self.test_strip(slot + !self.previews.is_empty() as usize, cx))
+            (self.preview_strip(slot, cx), self.test_strip(slot + !self.previews.is_empty() as usize, cx))
         } else {
             (None, None)
         };
@@ -3095,6 +3098,7 @@ impl Render for FileEditor {
                 .children(self.render_parameter_info(cx))
                 .children(self.render_context_actions(cx))
                 .children(self.render_test_menu(cx))
+                .children(self.render_color_edit(cx))
                 .children(self.render_breakpoint_popup(cx))
                 .children(self.render_hot_swap(cx)),
             ))
