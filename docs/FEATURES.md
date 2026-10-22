@@ -558,7 +558,9 @@ Linux 实测（Xvfb，示例 Gradle 项目）：类 `Calc` 改为 `Calculator`�
 | 删掉文件里没用到的 import、重复的 import、本包的 import、Java 的 `java.lang.*` 单类 import；`*` 导入保留；Kotlin 运算符和委托函数（`getValue`、`setValue`、`plus`、`invoke`、`contains` 等）不写名字也会用到，保留；`import a.B as C` 按别名判断 | ✅ |
 | 按 IntelliJ 默认代码风格排序：Kotlin 为其他、`java.*`、`javax.*`、`kotlin.*`、别名导入，组间不空行；Java 为其他，空行，`javax.*` 与 `java.*`，空行，`import static` | ✅ |
 | 结果用提示显示：“Removed 3 unused imports”、“Rearranged imports”、“Unused imports not found” | ✅ |
-| import 块中间夹注释时不改动；Project 窗口对目录批量优化、保存时自动优化（Settings 里的 “Optimize imports on the fly”） | ❌ 未做 |
+| Project 窗口对目录批量优化（2026-10-21，见第 11 节 Project 窗口右键） | ✅ |
+| Settings › Editor › Auto Import 页（2026-10-22）：Java、Kotlin 各一个 “Optimize imports on the fly”（默认关，同 IntelliJ）；勾上后 Ctrl+S 保存时静默删未用的 import 并排序，光标在 import 块里（正在写 import）时不动；IntelliJ 是编辑过程中随高亮完成就做，这里改在保存时做，切标签等自动保存不触发 | ✅ |
+| import 块中间夹注释时保留注释原位 | ❌ 未做（现在不改动这样的 import 块） |
 
 “是否用到”按文件里出现的整词判断（注释里出现也算用到），不做类型解析：只在注释里提到的类，其 import 会被保留。
 
