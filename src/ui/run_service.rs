@@ -183,6 +183,50 @@ impl RunService {
         }, window, cx);
     }
 
+    /// The picked temporary configuration as a saved JUnit one, when it
+    /// can be: unit tests of a package, a class or a method.
+    fn savable_test(&self, cx: &App) -> Option<(std::path::PathBuf, run::SavedRunConfiguration)> {
+        let name = self.selected_test(cx)?;
+        let (root, module, request) = TestService::try_global(cx)?.read(cx).temporary(&name)?;
+        if request.kind != crate::domain::testing::TestKind::Unit {
+            return None;
+        }
+        let junit = run::JUnitTarget::from_filters(&request.filters)?;
+        let options = run::LaunchOptions { before_launch: Vec::new(), ..Default::default() };
+        Some((root, run::SavedRunConfiguration { name, module: module.path, gradle: None, junit: Some(junit), options }))
+    }
+
+    /// The dropdown's Save '…' Configuration: its name, when the picked
+    /// temporary configuration can be saved.
+    pub fn save_test_label(&self, cx: &App) -> Option<String> {
+        self.savable_test(cx).map(|(_, s)| format!("Save '{}' Configuration", s.name))
+    }
+
+    /// Save '…' Configuration: the temporary configuration becomes a saved
+    /// JUnit one, picked.
+    pub fn save_test(&mut self, cx: &mut Context<Self>) {
+        let Some((root, mut saved)) = self.savable_test(cx) else { return };
+        let temporary = saved.name.clone();
+        // A build on its defaults keeps them alongside.
+        let mut list = crate::infra::run_config_store::load(&root);
+        if list.is_empty() {
+            list = self
+                .configurations(cx)
+                .into_iter()
+                .filter(|c| c.build_root == root)
+                .map(|c| run::SavedRunConfiguration { name: c.name, module: c.module.path, gradle: c.gradle, junit: c.junit, options: c.options })
+                .collect();
+        }
+        let base = saved.name.clone();
+        saved.name = (0..).map(|i| if i == 0 { base.clone() } else { format!("{base} ({i})") }).find(|n| !list.iter().any(|c| c.name == *n)).unwrap_or(base);
+        list.push(saved.clone());
+        crate::infra::run_config_store::save(&root, &list);
+        TestService::global(cx).update(cx, |t, cx| t.forget_temporary(&temporary, cx));
+        if let Some(config) = self.configurations(cx).into_iter().find(|c| c.build_root == root && c.name == saved.name) {
+            self.pick_configuration(&config, cx);
+        }
+    }
+
     pub fn pick_configuration(&mut self, config: &RunConfiguration, cx: &mut Context<Self>) {
         self.config = Some(config_key(config));
         self.test = None;

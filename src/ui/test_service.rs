@@ -260,6 +260,18 @@ impl TestService {
         self.temporary.iter().map(|l| l.request.name.clone()).collect()
     }
 
+    /// A temporary configuration's build, module and tests, for Save
+    /// Configuration.
+    pub fn temporary(&self, name: &str) -> Option<(PathBuf, crate::domain::run::ModuleInfo, TestRequest)> {
+        self.temporary.iter().find(|l| l.request.name == name).map(|l| (l.build_root.clone(), l.module.clone(), l.request.clone()))
+    }
+
+    /// Drops a temporary configuration (it was saved).
+    pub fn forget_temporary(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.temporary.retain(|l| l.request.name != name);
+        cx.notify();
+    }
+
     /// Runs a temporary configuration again (the toolbar's Run or Debug
     /// with it selected); whether it still exists.
     pub fn run_temporary(&mut self, name: &str, debug_port: Option<u16>, coverage: bool, cx: &mut Context<Self>) -> bool {

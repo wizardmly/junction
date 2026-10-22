@@ -150,6 +150,21 @@ impl JUnitTarget {
         }
     }
 
+    /// What a test run's filters name, as a configuration: a package
+    /// (`com.ex.*`, or nothing for all), a class or a method; none for
+    /// several (Rerun Failed Tests' runs).
+    pub fn from_filters(filters: &[(String, Option<String>)]) -> Option<Self> {
+        match filters {
+            [] => Some(Self::default()),
+            [(class, None)] => Some(match class.strip_suffix(".*") {
+                Some(package) => Self { kind: JUnitKind::Package, package: package.into(), ..Default::default() },
+                None => Self { kind: JUnitKind::Class, class: class.clone(), ..Default::default() },
+            }),
+            [(class, Some(method))] => Some(Self { kind: JUnitKind::Method, class: class.clone(), method: method.clone(), ..Default::default() }),
+            _ => None,
+        }
+    }
+
     /// The `(class, method)` filters a test run takes: none runs every
     /// test of the module (an empty package is the default one's, all).
     pub fn filters(&self) -> Vec<(String, Option<String>)> {
@@ -463,6 +478,11 @@ mod tests {
         assert_eq!((t.problem(), t.filters()), (None, vec![("com.ex.CalcTest".to_owned(), Some("adds".to_owned()))]));
         let json = serde_json::to_string(&t).unwrap();
         assert_eq!(serde_json::from_str::<JUnitTarget>(&json).unwrap(), t);
+        // A temporary configuration's filters, back.
+        for target in [JUnitTarget { package: String::new(), ..t.clone() }, JUnitTarget { kind: JUnitKind::Package, package: "com.ex".into(), ..Default::default() }, JUnitTarget::default()] {
+            assert_eq!(JUnitTarget::from_filters(&target.filters()), Some(target));
+        }
+        assert_eq!(JUnitTarget::from_filters(&[("A".into(), None), ("B".into(), None)]), None);
     }
 
     #[test]

@@ -387,6 +387,7 @@ impl Workspace {
         let devices = service.devices(cx);
         let (busy, can_stop) = (service.is_busy(), service.can_stop_any(cx));
         let tests = service.test_configurations(cx);
+        let save_test = service.save_test_label(cx);
         let selected_test = service.selected_test(cx);
         let running = service.console.as_ref().is_some_and(|c| c.active);
         let multiple = service.multiple(cx);
@@ -413,6 +414,7 @@ impl Workspace {
         let selected_config = config.filter(|_| selected_test.is_none()).map(|c| (c.build_root, c.name));
         let pick_test = run.clone();
         let edit_configs = run.clone();
+        let save_config = run.clone();
         h_flex()
             .gap_1()
             .child(
@@ -461,7 +463,12 @@ impl Workspace {
                     .tooltip("Run / Debug Configurations")
                     .dropdown_menu(move |mut menu, _, _| {
                         let edit = edit_configs.clone();
-                        menu = menu.item(PopupMenuItem::new("Edit Configurations…").on_click(move |_, window, cx| edit.update(cx, |r, cx| r.edit_configurations(window, cx)))).separator();
+                        menu = menu.item(PopupMenuItem::new("Edit Configurations…").on_click(move |_, window, cx| edit.update(cx, |r, cx| r.edit_configurations(window, cx))));
+                        if let Some(label) = &save_test {
+                            let save = save_config.clone();
+                            menu = menu.item(PopupMenuItem::new(label.clone()).on_click(move |_, _, cx| save.update(cx, |r, cx| r.save_test(cx))));
+                        }
+                        menu = menu.separator();
                         if configs.is_empty() {
                             menu = menu.item(PopupMenuItem::new("No application modules").disabled(true));
                         }
