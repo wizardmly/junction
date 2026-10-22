@@ -421,7 +421,8 @@ Linux 实测：TODO 窗口找到 3 条（含未跟踪文件），双击跳到对
 | 悬停：显示资源的值（跟随 `@color/a` → `@color/b` 引用链）和所在目录、文件 | ✅ |
 | Find Usages（Alt+F7）：分 Declarations、代码里的引用、XML 里的引用三组 | ✅ |
 | gutter 预览：代码和 XML 里引用颜色的行显示色块，引用 png / webp / jpg 图片的行显示缩略图（取最高密度目录的那张）；colors.xml 里每个颜色定义也显示色块 | ✅ |
-| shape / selector 预览、点击色块打开取色器、字符串折叠显示值、Manifest 合并视图、框架资源 `android.R` / `@android:` | ❌ 未做（Translations Editor 见第 31 节，vector drawable 见第 32 节） |
+| 点击 gutter 图标（2026-10-22）：XML 里颜色字面量（`#FF6200EE`、`"#0f0"`）的色块弹出取色器（调色板、HSLA 滑块、十六进制输入），选中后写回原处，保持原来的位数和大小写（不透明且原来没写 alpha 时写 `#RRGGBB`，否则 `#AARRGGBB`），可 Ctrl+Z 撤销；资源引用（`@color/x`、`R.color.x`、`@drawable/x` 等）的色块和缩略图跳到资源声明 | ✅ |
+| 字符串折叠显示值、框架资源 `android.R` / `@android:`、取色器的 “选资源” 页和 Compose `Color(0x…)` 字面量 | ❌ 未做（Translations Editor 见第 31 节，vector drawable 见第 32 节，shape / selector 预览见第 39 节，Merged Manifest 见第 41 节；字符串折叠需要编辑器支持行内折叠，现在只有整行折叠） |
 
 Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 values-zh 两个声明，悬停显示值；Ctrl+B `R.color.purple_500` 打开 colors.xml 第 2 行；Alt+F7 分组正确；MainActivity.kt 和 activity_main.xml 的 gutter 显示紫色、青色色块（`@color/accent` 跟随到 teal_200）和 ic_logo 缩略图。截图：reports/Android资源-2026-10-15/。
 

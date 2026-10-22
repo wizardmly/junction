@@ -3,8 +3,12 @@
 //! (`R.color.primary`, `@drawable/ic_logo`, `#FF6200EE`), a drawable
 //! XML (vector, shape, selector, layer list) drawn from its XML.
 
+use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::input::RopeExt as _;
-use gpui_kit::{AppContext as _, Bounds, Context, IntoElement, Pixels, Styled as _, canvas, point, px, size};
+use gpui_kit::{
+    AppContext as _, Bounds, Context, DispatchPhase, Entity, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, Styled as _, Subscription, Window,
+    anchored, canvas, deferred, div, point, px, size,
+};
 
 use super::{FileEditor, GUTTER_ICON, GUTTER_ICON_GAP, GUTTER_ICON_SLOT};
 use crate::domain::drawable;
@@ -81,18 +85,19 @@ impl FileEditor {
     }
 
     /// The previews' column, after the implementation markers and bookmarks.
-    pub(super) fn preview_strip(&self, slot: usize) -> Option<impl IntoElement + use<>> {
+    pub(super) fn preview_strip(&self, slot: usize, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         if self.previews.is_empty() {
             return None;
         }
         let marks = self.previews.clone();
         let state = self.state.clone();
+        let this = cx.entity().downgrade();
         let vectors = self.vector_icons.clone();
         Some(
             canvas(
                 |_, _, _| {},
                 move |bounds, _, window, cx| {
-                    let placed: Vec<(Bounds<Pixels>, Preview)> = {
+                    let placed: Vec<(Bounds<Pixels>, u32, Preview)> = {
                         let state = state.read(cx);
                         let (Some(line_height), Some(visible), Some(left)) = (state.line_height(), state.visible_row_range(), state.gutter_extra_left()) else { return };
                         let rope = state.text();
@@ -105,11 +110,13 @@ impl FileEditor {
                                 let top = state.range_to_bounds(&(at..at))?.top();
                                 let icon = px(GUTTER_ICON - 2.);
                                 let rect = Bounds::new(point(left + px(GUTTER_ICON_GAP + 2. + GUTTER_ICON_SLOT * slot as f32), top + (line_height - icon) / 2.), size(icon, icon));
-                                bounds.contains(&rect.center()).then(|| (rect, preview.clone()))
+                                bounds.contains(&rect.center()).then(|| (rect, *line, preview.clone()))
                             })
                             .collect()
                     };
-                    for (rect, preview) in placed {
+                    let mut hits: Vec<(Bounds<Pixels>, u32, Preview)> = Vec::new();
+                    for (rect, line, preview) in placed {
+                        hits.push((rect, line, preview.clone()));
                         match preview {
                             Preview::Color(rgba) => {
                                 let color: gpui_kit::Hsla = gpui_kit::rgba(rgba).into();
@@ -129,10 +136,81 @@ impl FileEditor {
                             }
                         }
                     }
+                    let this = this.clone();
+                    window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Bubble || e.button != MouseButton::Left {
+                            return;
+                        }
+                        let Some((rect, line, preview)) = hits.iter().find(|(r, _, _)| r.dilate(px(2.)).contains(&e.position)) else { return };
+                        cx.stop_propagation();
+                        let (line, preview, at) = (*line, preview.clone(), rect.bottom_left() + point(px(0.), px(2.)));
+                        this.update(cx, |this, cx| this.preview_clicked(line, preview, at, window, cx)).ok();
+                    });
                 },
             )
             .absolute()
             .inset_0(),
         )
     }
+
+    /// A gutter preview clicked, as in Android Studio: a color literal's
+    /// swatch opens a color picker that rewrites it, any other preview goes
+    /// to the resource's declaration.
+    fn preview_clicked(&mut self, line: u32, preview: Preview, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.line_text(line as usize, cx);
+        let start = self.state.read(cx).text().line_start_offset(line as usize);
+        if let Preview::Color(rgba) = preview
+            && !self.read_only()
+            && self.path.ends_with(".xml")
+            && android_resources::color_literal(&text).is_some()
+        {
+            let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(gpui_kit::rgba(rgba)));
+            picker.update(cx, |p, cx| p.set_open(true, cx));
+            let changed = cx.subscribe_in(&picker, window, move |this, _, event: &ColorPickerEvent, window, cx| {
+                let ColorPickerEvent::Change(Some(color)) = event else { return };
+                this.set_color_literal(line, *color, window, cx);
+            });
+            // Kept after it closes: committing closes it before the change
+            // is delivered.
+            let closed = cx.observe(&picker, |_, _, cx| cx.notify());
+            self.color_edit = Some(ColorEdit { picker, at, _subscriptions: [changed, closed] });
+            cx.notify();
+            return;
+        }
+        let Some(column) = android_resources::preview_reference(&self.path, &text) else { return };
+        let offset = start + column;
+        self.state.update(cx, |state, cx| state.set_selected_range(offset..offset, cx));
+        self.goto_declaration(&super::GotoDeclaration, window, cx);
+    }
+
+    /// Writes a picked color over the line's literal, in its format.
+    fn set_color_literal(&mut self, line: u32, color: gpui_kit::Hsla, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.line_text(line as usize, cx);
+        let Some(range) = android_resources::color_literal(&text) else { return };
+        let rgb = color.to_rgb();
+        let channel = |v: f32| (v.clamp(0., 1.) * 255.).round() as u32;
+        let rgba = (channel(rgb.r) << 24) | (channel(rgb.g) << 16) | (channel(rgb.b) << 8) | channel(rgb.a);
+        let new = crate::domain::android_resources::format_color(rgba, &text[range.clone()]);
+        if new == text[range.clone()] {
+            return;
+        }
+        let start = self.state.read(cx).text().line_start_offset(line as usize);
+        self.state.update(cx, |state, cx| {
+            let cursor = state.cursor();
+            state.set_selected_range(start + range.start..start + range.end, cx);
+            state.replace(&new, window, cx);
+            state.set_selected_range(cursor..cursor, cx);
+        });
+    }
+
+    pub(super) fn render_color_edit(&self, cx: &gpui_kit::App) -> Option<impl IntoElement + use<>> {
+        let edit = self.color_edit.as_ref().filter(|e| e.picker.read(cx).is_open())?;
+        Some(deferred(anchored().position(edit.at).child(div().size(px(1.)).child(ColorPicker::new(&edit.picker)))).with_priority(1))
+    }
+}
+
+pub(super) struct ColorEdit {
+    picker: Entity<ColorPickerState>,
+    at: Point<Pixels>,
+    _subscriptions: [Subscription; 2],
 }
