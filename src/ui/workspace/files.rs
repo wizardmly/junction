@@ -197,6 +197,13 @@ impl Workspace {
             }
             FileEditorEvent::Annotate { path, revision } => self.annotate(path.clone(), revision.clone(), window, cx),
             FileEditorEvent::ShowHistory(path) => self.show_history(path.clone(), cx),
+            FileEditorEvent::LocalSelectionHistory { path, lines } => {
+                use crate::ui::local_history_window::{self as lh, Scope};
+                let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+                let current = view.read(cx).current_text(cx);
+                let scope = Scope::Selection { path: path.clone(), start: lines.0.saturating_sub(1), end: lines.1, current };
+                lh::open(root, scope, None, self.model.clone(), cx.entity().downgrade(), window.window_handle(), cx);
+            }
             FileEditorEvent::SelectionHistory { path, lines } => {
                 let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
                 let filter = crate::git::LogFilter {

@@ -53,6 +53,7 @@ actions!(
     [
         SaveFile,
         ShowSelectionHistory,
+        ShowLocalSelectionHistory,
         AnnotateFile,
         ShowFileHistory,
         ShowCurrentRevision,
@@ -180,6 +181,8 @@ pub enum FileEditorEvent {
     Annotate { path: String, revision: Option<String> },
     ShowHistory(String),
     SelectionHistory { path: String, lines: (usize, usize) },
+    /// Local History › Show History for Selection: 1-based lines, inclusive.
+    LocalSelectionHistory { path: String, lines: (usize, usize) },
     SelectCommit(String),
     OpenDiff(DiffSource),
     FilesChanged,
@@ -2289,6 +2292,22 @@ impl FileEditor {
         cx.emit(FileEditorEvent::SelectionHistory { path: self.path.clone(), lines });
     }
 
+    /// Local History › Show History for Selection: saved first, so the
+    /// history's newest version is what the editor shows.
+    fn show_local_selection_history(&mut self, _: &ShowLocalSelectionHistory, _: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only() {
+            return;
+        }
+        self.save_now(cx);
+        let lines = self.selected_lines(cx);
+        cx.emit(FileEditorEvent::LocalSelectionHistory { path: self.path.clone(), lines });
+    }
+
+    /// The editor's whole text.
+    pub fn current_text(&self, cx: &gpui_kit::App) -> String {
+        self.text(cx)
+    }
+
     /// Annotate with Git Blame toggles the gutter annotations, as in IntelliJ.
     fn annotate(&mut self, _: &AnnotateFile, _: &mut Window, cx: &mut Context<Self>) {
         if self.annotation.is_some() {
@@ -2861,6 +2880,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(|this, _: &OpenReplace, window, cx| this.open_find(true, window, cx)))
             .on_action(cx.listener(Self::find_previous))
             .on_action(cx.listener(Self::show_selection_history))
+            .on_action(cx.listener(Self::show_local_selection_history))
             .on_action(cx.listener(Self::annotate))
             .on_action(cx.listener(Self::toggle_line_numbers))
             .on_action(cx.listener(Self::toggle_bookmark))
@@ -3020,7 +3040,11 @@ impl Render for FileEditor {
                                 .menu("Create Gist…", Box::new(CreateGist));
                             menu.submenu("Git", git).submenu(
                                 "Local History",
-                                NativeMenu::new().menu("Show History", Box::new(crate::ui::workspace::ShowLocalHistory)).menu("Put Label…", Box::new(crate::ui::workspace::PutLocalHistoryLabel)),
+                                NativeMenu::new()
+                                    .menu("Show History", Box::new(crate::ui::workspace::ShowLocalHistory))
+                                    .menu_with_disabled("Show History for Selection…", read_only, Box::new(ShowLocalSelectionHistory))
+                                    .separator()
+                                    .menu("Put Label…", Box::new(crate::ui::workspace::PutLocalHistoryLabel)),
                             )
                         }),
                 )).children(vector_pane).children(manifest_pane))

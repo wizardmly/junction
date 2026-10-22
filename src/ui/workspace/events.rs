@@ -12,6 +12,10 @@ impl Workspace {
             for tab in &this.editors {
                 tab.view.update(cx, |editor, cx| editor.sync_with_disk(window, cx));
             }
+            // What git (or another program) changed goes into Local History.
+            if let Some(root) = this.model.read(cx).project_root() {
+                crate::ui::local_history_window::record_external(root.to_path_buf());
+            }
             // Text reloaded from disk has other lines: counted again from here.
             for tab in &this.editors {
                 let editor = tab.view.read(cx);

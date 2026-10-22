@@ -2,13 +2,18 @@
 //! versions (and the project's labels) on the left, newest first, and the
 //! selected version against the current text on the right. For a folder
 //! (or the whole project) the middle lists the files that changed since
-//! the selected moment. Revert puts the selected version back.
+//! the selected moment. Revert puts the selected version back. Show
+//! History for Selection follows a block of lines back through the
+//! versions and lists those that changed it (Revert Selection puts the
+//! block back). The field above the list searches the versions by content
+//! (a folder's by file name).
 
 use std::path::PathBuf;
 
 use gpui_kit::component::{
     Icon, Sizable as _, TitleBar, h_flex,
     button::{Button, ButtonVariants as _},
+    input::{Input, InputEvent, InputState},
     v_flex,
 };
 use gpui_kit::{
@@ -31,12 +36,14 @@ pub enum Scope {
     File(String),
     /// A folder relative to the project; empty for the whole project.
     Folder(String),
+    /// Lines `start..end` of a file, as the editor has it now.
+    Selection { path: String, start: usize, end: usize, current: String },
 }
 
 impl Scope {
     fn path(&self) -> &str {
         match self {
-            Scope::File(p) | Scope::Folder(p) => p,
+            Scope::File(p) | Scope::Folder(p) | Scope::Selection { path: p, .. } => p,
         }
     }
 }
@@ -54,6 +61,14 @@ pub struct LocalHistoryWindow {
     diff: Entity<DiffView>,
     workspace: WeakEntity<Workspace>,
     home: AnyWindowHandle,
+    /// Show History for Selection: each row's lines then, and now.
+    blocks: Vec<String>,
+    now_block: String,
+    /// Search by content (by file name for a folder).
+    search: Entity<InputState>,
+    /// The rows the search leaves, as indices into `revisions`.
+    visible: Vec<usize>,
+    _search: gpui_kit::Subscription,
 }
 
 /// Opens the history of a file or folder of the project at `root`, with
@@ -67,17 +82,48 @@ pub fn open(root: PathBuf, scope: Scope, select: Option<i64>, model: Entity<Repo
         ..TitleBar::window_options()
     };
     let opened = gpui_kit::open_window(options, cx, move |window, cx| {
-        window.set_window_title(&format!("Local History for {} – {APP_NAME}", name_of(&root, &scope)));
+        window.set_window_title(&format!("{} – {APP_NAME}", title_of(&root, &scope)));
         cx.new(|cx| {
             let diff = cx.new(DiffView::new);
             diff.update(cx, |view, _| view.set_in_window());
-            let mut this = LocalHistoryWindow { root, scope, model, revisions: Vec::new(), selected: None, changes: Vec::new(), shown: None, diff, workspace, home };
+            let placeholder = if matches!(scope, Scope::Folder(_)) { "Search by file name" } else { "Search by content" };
+            let search = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+            let _search = cx.subscribe(&search, |this: &mut LocalHistoryWindow, _, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    this.filter(cx);
+                }
+            });
+            let mut this = LocalHistoryWindow {
+                root,
+                scope,
+                model,
+                revisions: Vec::new(),
+                selected: None,
+                changes: Vec::new(),
+                shown: None,
+                diff,
+                workspace,
+                home,
+                blocks: Vec::new(),
+                now_block: String::new(),
+                search,
+                visible: Vec::new(),
+                _search,
+            };
             this.load(select, cx);
             this
         })
     });
     if let Err(error) = opened {
         eprintln!("cannot open Local History: {error}");
+    }
+}
+
+/// The window's title: IntelliJ's "Local History for X", "… for Selection".
+fn title_of(root: &std::path::Path, scope: &Scope) -> String {
+    match scope {
+        Scope::Selection { start, end, .. } => format!("Local History for Selection of {} (lines {}–{})", name_of(root, scope), start + 1, end),
+        _ => format!("Local History for {}", name_of(root, scope)),
     }
 }
 
@@ -96,18 +142,36 @@ impl LocalHistoryWindow {
     fn folder(&self) -> Option<&str> {
         match &self.scope {
             Scope::Folder(dir) => Some(dir),
-            Scope::File(_) => None,
+            _ => None,
         }
     }
 
     fn load(&mut self, select: Option<i64>, cx: &mut Context<Self>) {
-        self.revisions = self
-            .store()
-            .map(|s| match &self.scope {
-                Scope::File(path) => local_history::history(&s, path),
-                Scope::Folder(dir) => local_history::folder_history(&s, dir),
-            })
-            .unwrap_or_default();
+        self.blocks.clear();
+        self.revisions = match (self.store(), &self.scope) {
+            (None, _) => Vec::new(),
+            (Some(s), Scope::File(path)) => local_history::history(&s, path),
+            (Some(s), Scope::Folder(dir)) => local_history::folder_history(&s, dir),
+            (Some(s), Scope::Selection { path, start, end, current }) => {
+                let (rows, now) = local_history::selection_history(&s, path, current, *start, *end);
+                self.now_block = now;
+                let (revisions, blocks) = rows.into_iter().unzip();
+                self.blocks = blocks;
+                revisions
+            }
+        };
+        self.filter(cx);
+        // The selection's rows are the versions that changed it: the first.
+        if matches!(self.scope, Scope::Selection { .. }) {
+            self.selected = None;
+            if !self.revisions.is_empty() {
+                self.select(0, cx);
+            } else {
+                self.diff.update(cx, |view, cx| view.clear(cx));
+            }
+            cx.notify();
+            return;
+        }
         // The newest version is the current text; IntelliJ selects the one before.
         let first = self.revisions.iter().position(|r| r.kind != Kind::Label);
         let before = self.revisions.iter().enumerate().skip(first.map_or(0, |i| i + 1)).find(|(_, r)| r.kind != Kind::Label).map(|(i, _)| i).or(first);
@@ -118,8 +182,47 @@ impl LocalHistoryWindow {
         cx.notify();
     }
 
+    /// The rows the search leaves: versions whose text (a selection's
+    /// lines; a folder's file name) holds it, ignoring case; labels go.
+    fn filter(&mut self, cx: &mut Context<Self>) {
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        if query.is_empty() {
+            self.visible = (0..self.revisions.len()).collect();
+            cx.notify();
+            return;
+        }
+        let store = self.store();
+        let mut texts: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+        self.visible = (0..self.revisions.len())
+            .filter(|&ix| {
+                let r = &self.revisions[ix];
+                if r.kind == Kind::Label {
+                    return false;
+                }
+                match &self.scope {
+                    Scope::Folder(_) => r.path.to_lowercase().contains(&query),
+                    Scope::Selection { .. } => self.blocks[ix].to_lowercase().contains(&query),
+                    Scope::File(_) => *texts
+                        .entry(r.content.clone())
+                        .or_insert_with(|| store.as_ref().and_then(|s| s.content(&r.content)).is_some_and(|t| t.to_lowercase().contains(&query))),
+                }
+            })
+            .collect();
+        cx.notify();
+    }
+
     fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(row) = self.revisions.get(ix).cloned() else { return };
+        if let Scope::Selection { path, .. } = &self.scope {
+            self.selected = Some(ix);
+            let (path, old, new) = (path.clone(), self.blocks[ix].clone(), self.now_block.clone());
+            let model = self.model.read(cx);
+            let Some((repository, own)) = model.route(&path).or_else(|| model.project_repository().cloned().map(|r| (r, path.clone()))) else { return };
+            let source = DiffSource::Texts { path: own, old, new, old_title: time_label(row.time), new_title: "Current".into() };
+            self.diff.update(cx, |view, cx| view.show(repository, source, cx));
+            cx.notify();
+            return;
+        }
         match self.folder().map(str::to_owned) {
             Some(dir) => {
                 self.selected = Some(ix);
@@ -165,6 +268,15 @@ impl LocalHistoryWindow {
         let Some(store) = self.store() else { return };
         let (time, files): (i64, Vec<(String, String)>) = match &self.scope {
             Scope::Folder(_) => (self.revisions[ix].time, self.changes.clone()),
+            // Revert Selection: the lines put back as they were, the rest kept.
+            Scope::Selection { path, start, end, current } => {
+                let block = self.blocks[ix].clone();
+                let text = crate::domain::local_history::replace_block(current, *start, *end, &block);
+                let lines = block.split_inclusive('\n').count();
+                let (path, start) = (path.clone(), *start);
+                self.scope = Scope::Selection { path: path.clone(), start, end: start + lines.max(1), current: text.clone() };
+                (self.revisions[ix].time, vec![(path, text)])
+            }
             Scope::File(path) => {
                 let Some(version) = self.revisions.iter().skip(ix).find(|r| r.kind != Kind::Label).cloned() else { return };
                 let Some(text) = store.content(&version.content) else { return };
@@ -198,7 +310,7 @@ impl LocalHistoryWindow {
     fn label(r: &Revision) -> String {
         match r.kind {
             Kind::Saved => String::new(),
-            Kind::Before | Kind::Label => r.label.clone(),
+            Kind::Before | Kind::Label | Kind::External => r.label.clone(),
         }
     }
 
@@ -214,10 +326,11 @@ impl LocalHistoryWindow {
 impl Render for LocalHistoryWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
-        let name = name_of(&self.root, &self.scope);
         let folder = self.folder().is_some();
+        let selection = matches!(self.scope, Scope::Selection { .. });
         let mut list = v_flex().id("lh-list").size_full().overflow_y_scroll().text_sm();
-        for (ix, r) in self.revisions.iter().enumerate() {
+        for &ix in &self.visible {
+            let r = &self.revisions[ix];
             let selected = self.selected == Some(ix);
             let label = Self::label(r);
             let is_label = r.kind == Kind::Label;
@@ -235,14 +348,18 @@ impl Render for LocalHistoryWindow {
                             .gap_1()
                             .when(is_label, |el| el.child(Icon::new(icons::TAG).xsmall()))
                             .child(time_label(r.time))
-                            .when(ix == 0 && !is_label, |el| el.child(div().text_color(palette.text_secondary).child("Current"))),
+                            .when(ix == 0 && !is_label && !selection, |el| el.child(div().text_color(palette.text_secondary).child("Current"))),
                     )
                     .when_some(file, |el, file| el.child(div().text_color(palette.text_secondary).overflow_hidden().whitespace_nowrap().text_ellipsis().child(file)))
                     .when(!label.is_empty(), |el| el.child(div().text_color(if is_label { palette.text } else { palette.text_secondary }).when(is_label, |el| el.font_weight(FontWeight::SEMIBOLD)).child(label)))
                     .on_click(cx.listener(move |this, _, _, cx| this.select(ix, cx))),
             );
         }
-        if self.revisions.is_empty() {
+        if self.revisions.is_empty() && selection {
+            list = list.child(div().p_4().text_color(palette.text_secondary).child("No local changes recorded for these lines."));
+        } else if self.visible.is_empty() && !self.revisions.is_empty() {
+            list = list.child(div().p_4().text_color(palette.text_secondary).child("Nothing found"));
+        } else if self.revisions.is_empty() {
             let empty = if folder { "No local changes recorded here yet. Versions are kept each time a file is saved." } else { "No local changes recorded for this file yet. Versions are kept each time it is saved." };
             list = list.child(div().p_4().text_color(palette.text_secondary).child(empty));
         }
@@ -269,12 +386,19 @@ impl Render for LocalHistoryWindow {
             }
             div().w(px(240.)).flex_none().border_r_1().border_color(palette.border).child(files)
         });
-        let revert_tip = if folder { "Revert the changed files to the selected version" } else { "Revert the file to the selected version" };
+        let selection = matches!(self.scope, Scope::Selection { .. });
+        let revert_tip = if folder {
+            "Revert the changed files to the selected version"
+        } else if selection {
+            "Put the selected lines back as they were in the selected version"
+        } else {
+            "Revert the file to the selected version"
+        };
         v_flex()
             .size_full()
             .bg(palette.window)
             .text_color(palette.text)
-            .child(TitleBar::new().child(div().text_sm().child(format!("Local History for {name}"))))
+            .child(TitleBar::new().child(div().text_sm().child(title_of(&self.root, &self.scope))))
             .child(
                 h_flex()
                     .h(px(32.))
@@ -283,7 +407,7 @@ impl Render for LocalHistoryWindow {
                     .bg(palette.panel)
                     .border_b_1()
                     .border_color(palette.border)
-                    .child(Button::new("lh-revert").ghost().small().icon(Icon::new(icons::DIFF_REVERT)).label("Revert").tooltip(revert_tip).on_click(cx.listener(|this, _, _, cx| this.revert(cx)))),
+                    .child(Button::new("lh-revert").ghost().small().icon(Icon::new(icons::DIFF_REVERT)).label(if selection { "Revert Selection" } else { "Revert" }).tooltip(revert_tip).on_click(cx.listener(|this, _, _, cx| this.revert(cx)))),
             )
             .child(
                 h_flex()
@@ -291,7 +415,7 @@ impl Render for LocalHistoryWindow {
                     .min_h_0()
                     .items_stretch()
                     .bg(palette.panel)
-                    .child(div().w(px(260.)).flex_none().border_r_1().border_color(palette.border).child(list))
+                    .child(v_flex().w(px(260.)).flex_none().border_r_1().border_color(palette.border).child(div().p_1().child(Input::new(&self.search).small().cleanable(true))).child(div().flex_1().min_h_0().child(list)))
                     .children(files)
                     .child(div().flex_1().min_w_0().child(self.diff.clone())),
             )
@@ -371,11 +495,32 @@ pub fn put_label(root: PathBuf, window: &mut Window, cx: &mut App) {
     crate::ui::dialogs::focus_input(&focus, window, cx);
 }
 
+type Job = Box<dyn FnOnce(&mut std::collections::HashMap<PathBuf, std::time::SystemTime>) + Send>;
+
+/// Recording runs on one thread, in order: a save is recorded before the
+/// external-change check its reload sets off, so it isn't taken for one.
+/// The thread keeps each checked file's modification time.
+fn enqueue(job: Job) {
+    use std::sync::{Mutex, OnceLock, mpsc};
+    static WORKER: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
+    let sender = WORKER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Job>();
+        std::thread::spawn(move || {
+            let mut seen = std::collections::HashMap::new();
+            for job in rx {
+                job(&mut seen);
+            }
+        });
+        Mutex::new(tx)
+    });
+    let _ = sender.lock().unwrap().send(job);
+}
+
 /// Records a file's text on disk as its newest version (in the background):
 /// after a save, or when it opens with no history yet (`only_new`), so the
 /// first save has something to compare with.
 pub fn record_file(root: PathBuf, path: String, only_new: bool) {
-    std::thread::spawn(move || {
+    enqueue(Box::new(move |_| {
         let Some(store) = DiskHistory::for_project(&root) else { return };
         if only_new && local_history::has_history(&store, &path) {
             return;
@@ -383,16 +528,36 @@ pub fn record_file(root: PathBuf, path: String, only_new: bool) {
         if let Ok(text) = std::fs::read_to_string(root.join(&path)) {
             let _ = local_history::record(&store, &path, &text, Kind::Saved, "");
         }
-    });
+    }));
+}
+
+/// After the working tree changed outside the editor (a Git operation,
+/// another program): files with a history whose text changed get an
+/// "External change" version. Only files whose modification time moved
+/// since the last look are read.
+pub fn record_external(root: PathBuf) {
+    enqueue(Box::new(move |seen| {
+        let Some(store) = DiskHistory::for_project(&root) else { return };
+        let seen = std::cell::RefCell::new(seen);
+        let read = |path: &str| {
+            let file = root.join(path);
+            let modified = std::fs::metadata(&file).and_then(|m| m.modified()).ok()?;
+            if seen.borrow_mut().insert(file.clone(), modified) == Some(modified) {
+                return None;
+            }
+            std::fs::read_to_string(&file).ok()
+        };
+        local_history::record_external(&store, &read);
+    }));
 }
 
 /// Once per project opening: drops versions older than the kept working days.
 pub fn prune(root: PathBuf) {
-    std::thread::spawn(move || {
+    enqueue(Box::new(move |_| {
         if let Some(store) = DiskHistory::for_project(&root) {
             let _ = local_history::prune(&store);
         }
-    });
+    }));
 }
 
 /// "Today 14:32:05", "Yesterday 09:15:40", or the date: saves come seconds apart.

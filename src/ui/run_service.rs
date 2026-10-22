@@ -13,7 +13,6 @@ use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, SharedString
 use crate::android::{Device, Kind};
 use crate::domain::diagnostics::FileProblem;
 use crate::domain::run::{self, BuildResult, RunConfiguration};
-use crate::domain::run::DeviceBridge as _;
 use crate::infra::adb_device::AdbDevice;
 use crate::infra::gradle::GradleBuild;
 use crate::settings::Settings;
