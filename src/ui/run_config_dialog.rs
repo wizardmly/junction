@@ -2,13 +2,16 @@
 //! Configurations…) for Android App configurations: the list on the left
 //! (+ adds one, − removes, Copy duplicates), the selected one's Name,
 //! Module, Installation Options (Deploy) and Launch Options (Launch,
-//! Activity, Launch Flags) on the right. OK saves them for the project.
+//! Activity, Launch Flags) and Miscellaneous › Logcat (Show logcat
+//! automatically, Clear log before launch) on the right. OK saves them for
+//! the project.
 
 use std::path::PathBuf;
 
 use gpui_kit::component::{
     Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex,
     button::Button,
+    checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
@@ -230,6 +233,21 @@ impl RunConfigView {
                 el.child(h_flex().gap_2().child(label("Activity:")).child(div().flex_1().child(Input::new(&self.activity).small())))
             })
             .child(h_flex().gap_2().child(label("Launch Flags:")).child(div().flex_1().child(Input::new(&self.flags).small())))
+            .child(heading("Logcat"))
+            .child(Checkbox::new("rc-show-logcat").label("Show logcat automatically").checked(d.saved.options.show_logcat).on_change({
+                let this = this.clone();
+                move |value: &bool, _, cx| {
+                    let value = *value;
+                    this.update(cx, |v, cx| v.change(|d| d.saved.options.show_logcat = value, cx)).ok();
+                }
+            }))
+            .child(Checkbox::new("rc-clear-logcat").label("Clear log before launch").checked(d.saved.options.clear_logcat).on_change({
+                let this = this.clone();
+                move |value: &bool, _, cx| {
+                    let value = *value;
+                    this.update(cx, |v, cx| v.change(|d| d.saved.options.clear_logcat = value, cx)).ok();
+                }
+            }))
             .into_any_element()
     }
 }

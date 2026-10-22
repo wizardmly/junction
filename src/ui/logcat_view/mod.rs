@@ -451,11 +451,7 @@ impl LogcatView {
 
     /// Clear Logcat: the device's buffers and the view.
     fn clear(&mut self, cx: &mut Context<Self>) {
-        self.first += self.entries.len() as u64;
-        self.entries.clear();
-        self.shown.clear();
-        self.bytes = 0;
-        self.generation += 1;
+        self.clear_view();
         if let (Some((_, serial)), Some(adb), None) = (self.following.clone(), self.devices.read(cx).adb(), &self.file) {
             cx.background_executor()
                 .spawn(async move {
@@ -465,6 +461,23 @@ impl LogcatView {
                 .detach();
         }
         cx.notify();
+    }
+
+    fn clear_view(&mut self) {
+        self.first += self.entries.len() as u64;
+        self.entries.clear();
+        self.shown.clear();
+        self.bytes = 0;
+        self.generation += 1;
+    }
+
+    /// A launch cleared the device's log ("Clear log before launch"): a
+    /// panel reading that device empties.
+    pub fn clear_device(&mut self, serial: &str, cx: &mut Context<Self>) {
+        if self.file.is_none() && self.following.as_ref().is_some_and(|(_, s)| s == serial) {
+            self.clear_view();
+            cx.notify();
+        }
     }
 
     fn restart(&mut self, cx: &mut Context<Self>) {

@@ -498,7 +498,7 @@ Android 单元测试（`testDebugUnitTest`）和仪器测试未实测（容器�
 | Attach debugger：Device Explorer 进程页右键 “Attach debugger”，附加到已在运行的可调试进程 | 🟡（同上） |
 | Disconnect：Debug 工具栏 Stop 右边的按钮（expui `exit` 图标），JDWP `VirtualMachine.Dispose` 后断开，程序去掉断点继续运行（测试照常跑完出结果）；Console 显示 “Disconnected from the target VM, address: '127.0.0.1:…', transport: 'socket'” | ✅ |
 | Attach Debugger to Android Process 对话框（2026-10-21，`src/ui/attach_debugger_dialog.rs`，照 AS 的 `AndroidProcessChooserDialog`）：Run 菜单和 Find Action 打开 “Choose Process”；在线设备下列出可调试进程（`track-jdwp` 加 DDM `HELO`），默认只列项目的进程（进程名以项目 applicationId 开头），勾 “Show all processes” 列全部；非 0 用户显示 “(user N)”；对话框开着时每两秒刷新；记住上次选的设备和进程（重新打开时选中）；OK 或双击附加调试器。“Use Android Debugger Settings from” 和 “Debug Type” 只有 “[Use default settings]” 和 “Java Only”（没有原生调试）。实测（Xvfb，模拟 adb 服务端）：默认只列 com.example.psd.debug 的三个进程，勾选后多出 systemui；双击后 Debug 窗口开始附加 pid 12400 | 🟡（未在真机验证） |
-| Debug 'app' 时的 Logcat 联动 | ❌ 未做 |
+| Run / Debug 时的 Logcat 联动（2026-10-22，照 AS 运行配置 Miscellaneous 页的 Logcat 选项和 `LogcatToolWindowFactory.showLogcat`）：Edit Configurations 新增 Logcat 区，两个选项默认都关（同 AS）。勾 “Show logcat automatically” 后，Run 或 Debug 启动应用后打开 Logcat 窗口，选中名为 “应用ID (设备序列号)” 的标签，没有就新建一个，读那台设备、过滤 `package:应用ID`。勾 “Clear log before launch” 后，在 `am start` 之前执行 `adb logcat -c`，正在读那台设备的 Logcat 面板一起清空（AS 的 `ClearLogcatListener`）。实测（Xvfb，假 adb）：Run 后出现标签 “com.example.run (emulator-5554)”，过滤 `package:com.example.run`；`logcat -c` 在 `am start` 前 0.3 秒；切到别的标签再 Run，会回到同一个标签而不新建，面板被清空 | ✅（未在真机验证） |
 
 求值扩展的实测：JDWP 集成测试（真实 JVM）覆盖上面每个例子；界面上（Xvfb，JUnit 4 示例停在 `CalcTest.java:10`）在求值框输入 `first = (int) 2.9 + new java.util.ArrayList().size()`，结果 `= 2`，下面的 Variables 随即显示 `first = 2`。
 

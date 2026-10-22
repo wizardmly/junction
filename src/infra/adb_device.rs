@@ -56,6 +56,10 @@ impl DeviceBridge for AdbDevice {
     fn pid(&self, serial: &str, application_id: &str) -> Option<u32> {
         self.shell(serial, &format!("pidof {application_id}")).split_whitespace().next()?.parse().ok()
     }
+
+    fn clear_logcat(&self, serial: &str) {
+        let _ = self.adb.run(&["-s", serial, "logcat", "-c"], QUICK);
+    }
 }
 
 /// `Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: …]` → the bracketed part.
