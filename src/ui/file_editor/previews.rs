@@ -161,8 +161,7 @@ impl FileEditor {
         let start = self.state.read(cx).text().line_start_offset(line as usize);
         if let Preview::Color(rgba) = preview
             && !self.read_only()
-            && self.path.ends_with(".xml")
-            && android_resources::color_literal(&text).is_some()
+            && android_resources::color_literal(&self.path, &text).is_some()
         {
             let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(gpui_kit::rgba(rgba)));
             picker.update(cx, |p, cx| p.set_open(true, cx));
@@ -186,11 +185,11 @@ impl FileEditor {
     /// Writes a picked color over the line's literal, in its format.
     fn set_color_literal(&mut self, line: u32, color: gpui_kit::Hsla, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.line_text(line as usize, cx);
-        let Some(range) = android_resources::color_literal(&text) else { return };
+        let Some(range) = android_resources::color_literal(&self.path, &text) else { return };
         let rgb = color.to_rgb();
         let channel = |v: f32| (v.clamp(0., 1.) * 255.).round() as u32;
         let rgba = (channel(rgb.r) << 24) | (channel(rgb.g) << 16) | (channel(rgb.b) << 8) | channel(rgb.a);
-        let new = crate::domain::android_resources::format_color(rgba, &text[range.clone()]);
+        let new = android_resources::format_color_literal(rgba, &text[range.clone()]);
         if new == text[range.clone()] {
             return;
         }

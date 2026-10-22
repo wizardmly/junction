@@ -361,7 +361,7 @@ Android Studio 的 Make Project、Run 'app'、Stop，以及 Build、Run、Build 
 | JUnit 运行配置（2026-10-22）：Edit Configurations 的 + › JUnit，填 Name、Module（任一模块）、Test kind（All in package / Class / Method）和对应的 Package、Class、Method；类或方法没填时提示 IntelliJ 的 “No test class specified” / “Method name not specified”；左边列表多一个 JUnit 组，标题栏下拉带测试图标。Run、Debug、Run with Coverage 都走与 gutter 相同的 Gradle 单元测试流程（结果树、调试器连到测试 JVM、覆盖率），不进临时配置列表 | ✅ |
 | 临时配置存为正式配置（2026-10-22）：选中从 gutter / Project 窗口跑出来的测试临时配置时，下拉里多一项 “Save 'CalcTest' Configuration”，存成 JUnit 配置（包、类或方法照原样）并选中，临时列表里去掉；构建原来用默认配置时默认的 app 配置一并保存；Rerun Failed Tests 那种多个过滤条件的不能存 | ✅ |
 | Android Instrumented Tests 运行配置（2026-10-22）：Edit Configurations 的 + › Android Instrumented Tests，Module 只列 Android 模块（默认第一个有 `src/androidTest` 的），Test kind 为 All in Module / All in Package / Class / Method，包名没填时提示 “Package name not specified”；左边列表多一个 Android Instrumented Tests 组。Run 和 Run with Coverage 走与 gutter 相同的 `connected…AndroidTest` 流程（`class` / `package` 作为 instrumentation runner 参数，在所有连接的设备上跑），从 gutter 跑出的仪器测试临时配置也能 Save 成这种配置 | ✅（容器里没有 AGP 工程，只验证到 Gradle 收到 `:app:connectedDebugAndroidTest`） |
-| Apply Changes 运行方式；Android Instrumented Tests 配置的 Debug、Deployment Target Options、Instrumentation 参数 | ❌ 未做（Debug 会提示不支持） |
+| Android Instrumented Tests 配置的 Debug、Deployment Target Options、Instrumentation 参数 | ❌ 未做（Debug 会提示不支持；Apply Changes 见第 60 节）|
 
 Linux 实测（容器无法下载 Android SDK，用假 adb 和一个模拟 assembleDebug 的 Gradle 项目）：Run 走完构建、安装、启动、找到进程；Stop 发出 force-stop；Make Project 把 Kotlin 类型错误列在 Build 窗口，点击跳到 Util.kt 2:18 并在编辑器标红。真实 AGP 项目和真机需要在 Windows / macOS 上验证。
 
@@ -425,7 +425,8 @@ Linux 实测：TODO 窗口找到 3 条（含未跟踪文件），双击跳到对
 | Find Usages（Alt+F7）：分 Declarations、代码里的引用、XML 里的引用三组 | ✅ |
 | gutter 预览：代码和 XML 里引用颜色的行显示色块，引用 png / webp / jpg 图片的行显示缩略图（取最高密度目录的那张）；colors.xml 里每个颜色定义也显示色块 | ✅ |
 | 点击 gutter 图标（2026-10-22）：XML 里颜色字面量（`#FF6200EE`、`"#0f0"`）的色块弹出取色器（调色板、HSLA 滑块、十六进制输入），选中后写回原处，保持原来的位数和大小写（不透明且原来没写 alpha 时写 `#RRGGBB`，否则 `#AARRGGBB`），可 Ctrl+Z 撤销；资源引用（`@color/x`、`R.color.x`、`@drawable/x` 等）的色块和缩略图跳到资源声明 | ✅ |
-| 字符串折叠显示值、框架资源 `android.R` / `@android:`、取色器的 “选资源” 页和 Compose `Color(0x…)` 字面量 | ❌ 未做（Translations Editor 见第 31 节，vector drawable 见第 32 节，shape / selector 预览见第 39 节，Merged Manifest 见第 41 节；字符串折叠需要编辑器支持行内折叠，现在只有整行折叠） |
+| Compose 颜色字面量（2026-10-22）：Kotlin 里 `Color(0xFF6200EE)`（也认 `Color(color = 0x…L)`）的行显示色块，按 Compose 的 ARGB 读（`0x6200EE` 没写 alpha 即透明）；点色块弹出同一个取色器，写回 `0xAARRGGBB`，保持原来的大小写 | ✅ |
+| 字符串折叠显示值、框架资源 `android.R` / `@android:`、取色器的 “选资源” 页、Compose `Color(red, green, blue)` 分量写法 | ❌ 未做（Translations Editor 见第 31 节，vector drawable 见第 32 节，shape / selector 预览见第 39 节，Merged Manifest 见第 41 节；字符串折叠需要编辑器支持行内折叠，现在只有整行折叠） |
 
 Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 values-zh 两个声明，悬停显示值；Ctrl+B `R.color.purple_500` 打开 colors.xml 第 2 行；Alt+F7 分组正确；MainActivity.kt 和 activity_main.xml 的 gutter 显示紫色、青色色块（`@color/accent` 跟随到 teal_200）和 ic_logo 缩略图。截图：reports/Android资源-2026-10-15/。
 
