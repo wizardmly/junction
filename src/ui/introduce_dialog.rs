@@ -2,7 +2,10 @@
 //! Constant (Ctrl+Alt+C) dialogs: the name, with the names IntelliJ
 //! suggests for the expression; "Replace all occurrences" when the
 //! expression is there more than once; for a variable "Declare with var"
-//! in Kotlin, "Declare final" in Java.
+//! in Kotlin, "Declare final" in Java; Kotlin's "Specify type
+//! explicitly" when the expression shows its type; a Java constant's
+//! visibility (the last one chosen, as JavaRefactoringSettings'
+//! INTRODUCE_CONSTANT_VISIBILITY, for this session).
 
 use std::rc::Rc;
 
@@ -10,6 +13,7 @@ use gpui_kit::component::{
     WindowExt as _, h_flex,
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
+    radio::RadioGroup,
     v_flex,
 };
 use gpui_kit::{
@@ -18,6 +22,7 @@ use gpui_kit::{
 };
 
 use crate::domain::imports::ImportStyle;
+use crate::domain::introduce_variable::Visibility;
 use crate::domain::rename::check_name;
 use crate::theme::ActivePalette as _;
 use crate::ui::dialogs;
@@ -28,6 +33,15 @@ pub struct IntroduceRequest {
     pub all: bool,
     /// Kotlin `var`, Java `final`.
     pub modifier: bool,
+    /// Kotlin `val name: Type`.
+    pub explicit_type: bool,
+    /// A Java constant's.
+    pub visibility: Visibility,
+}
+
+thread_local! {
+    /// The visibility last chosen for a Java constant.
+    static LAST_VISIBILITY: std::cell::Cell<Visibility> = const { std::cell::Cell::new(Visibility::Public) };
 }
 
 pub struct IntroduceView {
@@ -39,6 +53,12 @@ pub struct IntroduceView {
     occurrences: usize,
     all: bool,
     modifier: bool,
+    /// "Specify type explicitly" offered: the type is known.
+    typed: bool,
+    explicit_type: bool,
+    /// The visibility panel shown (a Java constant outside an interface).
+    choose_visibility: bool,
+    visibility: Visibility,
     _subscription: Subscription,
 }
 
@@ -50,7 +70,7 @@ impl IntroduceView {
     fn request(&self, cx: &App) -> Result<IntroduceRequest, String> {
         let name = self.name.read(cx).value().trim().to_owned();
         check_name(self.extension(), &name)?;
-        Ok(IntroduceRequest { name, all: self.all, modifier: self.modifier })
+        Ok(IntroduceRequest { name, all: self.all, modifier: self.modifier, explicit_type: self.explicit_type, visibility: self.visibility })
     }
 }
 
@@ -101,6 +121,23 @@ impl Render for IntroduceView {
                     cx.notify();
                 })))
             })
+            .when(self.choose_visibility, |el| {
+                let selected = Visibility::ALL.iter().position(|v| *v == self.visibility);
+                el.child(div().text_sm().child("Visibility")).child(
+                    RadioGroup::horizontal("introduce-visibility").children(Visibility::ALL.map(Visibility::label)).selected_index(selected).on_change(cx.listener(
+                        |this, ix: &usize, _, cx| {
+                            this.visibility = Visibility::ALL[*ix];
+                            cx.notify();
+                        },
+                    )),
+                )
+            })
+            .when(self.typed, |el| {
+                el.child(Checkbox::new("introduce-type").label("Specify type explicitly").checked(self.explicit_type).on_change(cx.listener(|this, v: &bool, _, cx| {
+                    this.explicit_type = *v;
+                    cx.notify();
+                })))
+            })
     }
 }
 
@@ -118,6 +155,8 @@ pub fn open(
     style: ImportStyle,
     suggestions: Vec<String>,
     occurrences: usize,
+    typed: bool,
+    choose_visibility: bool,
     on_ok: impl Fn(IntroduceRequest, &mut Window, &mut App) + 'static,
     window: &mut Window,
     cx: &mut App,
@@ -138,7 +177,8 @@ pub fn open(
         // Android Studio's defaults: replace all, except a Java constant's
         // (JavaRefactoringSettings.INTRODUCE_CONSTANT_REPLACE_ALL).
         let all = occurrences > 1 && !(kind == Introduce::Constant && style == ImportStyle::Java);
-        IntroduceView { style, modifier_label, name, suggestions, occurrences, all, modifier: false, _subscription }
+        let visibility = LAST_VISIBILITY.with(|v| v.get());
+        IntroduceView { style, modifier_label, name, suggestions, occurrences, all, modifier: false, typed, explicit_type: false, choose_visibility, visibility, _subscription }
     });
     let focus = view.read(cx).name.clone();
     let on_ok = Rc::new(on_ok);
@@ -146,6 +186,9 @@ pub fn open(
         let (view_ok, on_ok) = (view.clone(), on_ok.clone());
         dialog.title(if kind == Introduce::Constant { "Introduce Constant" } else { "Introduce Variable" }).w(px(440.)).child(view.clone()).footer(dialogs::footer("Refactor")).on_ok(move |_, window, cx| {
             let Ok(request) = view_ok.read(cx).request(cx) else { return false };
+            if view_ok.read(cx).choose_visibility {
+                LAST_VISIBILITY.with(|v| v.set(request.visibility));
+            }
             on_ok(request, window, cx);
             true
         })

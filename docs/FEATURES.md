@@ -556,7 +556,8 @@ Linux 实测：去掉 `JAVA_HOME`、PATH 中不含 `java` 启动（即用户截�
 | 类名与文件名相同（`Foo.kt` / `Foo.java`）时 “Rename file 'Foo.java'”，默认勾选，用 `git mv` 改名，打开的标签页跟着改 | ✅ |
 | 开始前保存所有编辑器，改完刷新索引、Git 状态，未修改的标签页从磁盘重载并保持光标 | ✅ |
 | 光标不在名字上时提示 AS 的 “Cannot perform refactoring. Caret should be positioned at the name of element to be refactored.” | ✅ |
-| 语义级精确匹配（同名的不同符号，例如别的类的 `add`）、Preview 窗口、Undo | ❌ 文本整词匹配，同名不同符号要在列表里手动取消勾选 |
+| Undo | ✅ 重命名后右下角通知「Renamed 'a' to 'b'」带 Undo 按钮：文件名改回、每个文件恢复原文；之后文件又被改过就拒绝并提示（AS 用 Ctrl+Z，这里放在通知里） |
+| 语义级精确匹配（同名的不同符号，例如别的类的 `add`）、Preview 窗口 | ❌ 文本整词匹配，同名不同符号要在列表里手动取消勾选 |
 
 Linux 实测（Xvfb，示例 Gradle 项目）：类 `Calc` 改为 `Calculator`，`Calc.java` 改名为 `Calculator.java`（Git 显示为重命名），测试里的 `Calc.add` 跟着改，勾选注释后 Javadoc 里的 `Calc` 也改了，标签页跟到新文件；局部变量 `sum` 改为 `total`，三处全改；方法 `add` 列出声明和两处调用；输入 `class` 时显示错误且不能提交。
 
@@ -586,8 +587,10 @@ Linux 实测（Xvfb）：`Shapes.kt` 里 7 条 import（含重复的 `java.io.Fi
 | Introduce Variable 对话框：名字、建议名（点击即填入）、“Replace all occurrences (N occurrences)”（同一代码块里出现多次时，默认全部替换）、Kotlin 的 “Declare with var”、Java 的 “Declare final”；名字非法时提示并不能提交 | ✅ |
 | 声明插在第一个被替换处所在语句之前，沿用该语句的缩进；表达式本身就是一条语句（如单独一行的 `foo()`）时整条语句变成声明；一次 Ctrl+Z 撤销 | ✅ |
 | Java 的类型从表达式可见的信息推出：字面量、`new Foo<T>(…)`、强转、比较和逻辑运算（`boolean`）、含字符串的 `+`（`String`）；推不出时提示 “Cannot perform refactoring without a type” | ✅ |
-| 不在代码块里（类属性初始化、表达式体函数 `fun f() = …`）时提示 “Cannot refactor in this place” | ✅ |
-| AS 的就地模式（直接在代码里改名、各处同步）、“Specify type explicitly”、Java 方法调用结果的类型推断、把表达式体函数转成代码块 | ❌ 未做 |
+| 不在代码块里（类属性初始化）时提示 “Cannot refactor in this place” | ✅ |
+| 表达式体函数 `fun f(a: Int) = a * 2 + a * 2` 先转成代码块（IntelliJ 的 ConvertToBlockBody）：`{ val value = a * 2; return value + value }`，没写返回类型时按表达式补上 `: Int`；推不出类型时提示 “Cannot convert to a block body without the function's return type” | ✅ |
+| Kotlin 的 “Specify type explicitly”（`val x: Int = …`）：类型从表达式推出时才出现，默认不勾：字面量、`Foo<T>(…)` 构造调用（Compose 文件里不算，大写函数多是 composable）、`as` / `as?`、比较和逻辑运算、字符串拼接、函数参数，以及数字四则运算取最宽的类型 | ✅ |
+| AS 的就地模式（直接在代码里改名、各处同步）、Java / Kotlin 方法调用结果的类型推断 | ❌ 未做 |
 
 Linux 实测（Xvfb）：Kotlin 里光标在 `user.getName()` 上按 Ctrl+Alt+V，弹出 Expressions 列表（`user`、`user.getName()`、`"Hello " + user.getName()`、`println(…)`），选第二项时代码里对应高亮；对话框建议 `name`、`value`，3 处出现默认全部替换；Refactor 后在第一处语句前插入 `val name = user.getName()`，三处都换成 `name`。
 
@@ -600,7 +603,11 @@ Linux 实测（Xvfb）：Kotlin 里光标在 `user.getName()` 上按 Ctrl+Alt+V�
 | Java：表达式不能用到局部变量、参数、`this` 或实例字段，否则提示 “Selected expression cannot be a constant initializer”；生成 `public static final 类型 NAME = …;`，放在最近的可含静态成员的类的第一个成员之前（IntelliJ 默认可见性 public） | ✅ |
 | 名字照 IntelliJ：字符串常量先用其内容（`"Hello, world"` → `HELLO_WORLD`，NameUtil.capitalizeAndUnderscore），再是变量名建议的大写形式（`STRING`、`STR`、`I`…）；与文件中已有名字冲突时加数字 | ✅ |
 | 同一文件里相同的表达式全部列为可替换处；“Replace all occurrences” 默认值照 AS：Kotlin 勾选，Java 不勾选（INTRODUCE_CONSTANT_REPLACE_ALL） | ✅ |
-| 放进 `companion object` / 其他类、可见性选择、Java 前向引用时放到被引用字段之后、Kotlin 模板中的常量 | ❌ 未做 |
+| Java 的 Visibility 单选（Public / Protected / Package private / Private），默认 Public，记住本次会话里上次的选择（AS 记在 INTRODUCE_CONSTANT_VISIBILITY 里，跨重启）；放进接口时不显示，生成 `类型 NAME = …;`（接口字段本来就是 public static final） | ✅ |
+| Java 表达式用到本类的字段（如 `MAX`）时，常量放在最后一个被用到的字段之后，避免前向引用 | ✅ |
+| Kotlin 只引用 `const val` 的字符串模板（`"v$VERSION ${K + 1}"`）也算常量；名字建议不取模板内容 | ✅ |
+| Kotlin 放进 `companion object` | ➖ AS 的 K2 实现也只放在文件顶层（KotlinIntroduceConstantHandler 只保留 KtFile 作为目标） |
+| Java 的 “Move to another class”（放到别的类）、枚举常量选项 | ❌ 未做 |
 
 Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+Alt+C，建议 `HELLO_WORLD`，两处出现全部替换，`private const val HELLO_WORLD = "Hello, world"` 插在带 KDoc 的函数之前；选 `"Hello, world" + name` 时提示 “Can't introduce constant for non constant expression”；Ctrl+Z 一步恢复。
 

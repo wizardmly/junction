@@ -465,6 +465,37 @@ impl Workspace {
     /// Refactor › Rename (Shift+F6), as Android Studio's: every open file
     /// saved first, the dialog, then the occurrences renamed on disk and a
     /// class's file renamed along with it, its open tabs following.
+    /// "Renamed 'a' to 'b'" with an Undo button: Android Studio undoes a
+    /// refactoring with Ctrl+Z; here the notification carries it.
+    fn offer_rename_undo(&mut self, files: crate::infra::project_files::DiskFiles, renamed: crate::usecase::rename_symbol::Renamed, old: &str, new: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let entity = cx.entity().downgrade();
+        let undo = std::rc::Rc::new((files, renamed));
+        let notification = Notification::success(format!("Renamed \u{2018}{old}\u{2019} to \u{2018}{new}\u{2019}")).title("Rename").action(move |_, _, _| {
+            let entity = entity.clone();
+            let undo = undo.clone();
+            Button::new("notify-undo-rename").label("Undo").small().outline().on_click(move |_, window, cx| {
+                let (files, renamed) = &*undo;
+                let result = crate::usecase::rename_symbol::undo(files, renamed);
+                entity
+                    .update(cx, |this, cx| match result {
+                        Err(message) => window.push_notification(Notification::error(message).title("Undo Rename"), cx),
+                        Ok(()) => {
+                            let mut changed = renamed.changed.clone();
+                            if let Some((from, to)) = &renamed.file {
+                                this.retarget_tabs(to, from, window, cx);
+                                changed.retain(|p| p != from);
+                                changed.push(from.clone());
+                            }
+                            this.files_changed(changed, window, cx);
+                            window.push_notification(Notification::info("Rename undone").title("Rename"), cx);
+                        }
+                    })
+                    .ok();
+            })
+        });
+        window.push_notification(notification, cx);
+    }
+
     fn rename_symbol(&mut self, path: String, text: String, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
         let editors: Vec<_> = self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).collect();
         for editor in editors {
@@ -490,12 +521,15 @@ impl Workspace {
                                     if let Some((from, to)) = &renamed.file {
                                         this.retarget_tabs(from, to, window, cx);
                                     }
-                                    let mut changed = renamed.changed;
-                                    if let Some((from, to)) = renamed.file {
+                                    let mut changed = renamed.changed.clone();
+                                    if let Some((from, to)) = renamed.file.clone() {
                                         changed.retain(|p| *p != from);
                                         changed.push(to);
                                     }
                                     this.files_changed(changed, window, cx);
+                                    if renamed.replaced > 0 || renamed.file.is_some() {
+                                        this.offer_rename_undo(files, renamed, &request.old, &request.new, window, cx);
+                                    }
                                     // The reloaded tab keeps the keyboard, as Android Studio's editor
                                     // does: once the dialog has closed and given its focus back (to the
                                     // replaced editor).

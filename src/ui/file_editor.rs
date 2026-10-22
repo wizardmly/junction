@@ -1696,36 +1696,43 @@ impl FileEditor {
         let text = self.text(cx);
         let fail = |message: String, window: &mut Window, cx: &mut Context<Self>| Self::hint(title, format!("Cannot perform refactoring.\n{message}"), window, cx);
         // The plan, its names and occurrences, and the edit it makes.
-        type Edit = Box<dyn Fn(&str, bool, &str, bool) -> Result<crate::domain::introduce_variable::Introduced, String>>;
+        type Edit = Box<dyn Fn(&str, &crate::ui::introduce_dialog::IntroduceRequest) -> Result<crate::domain::introduce_variable::Introduced, String>>;
+        let (mut typed, mut visibility) = (false, false);
         let (suggestions, occurrences, has_type, edit): (Vec<String>, usize, bool, Edit) = match kind {
             Introduce::Variable => match crate::index::introduce::extraction(lang, &text, range) {
                 Err(message) => return fail(message, window, cx),
-                Ok((extraction, taken)) => (
-                    suggest_names(style, &extraction.source, &|n| taken.iter().any(|t| t == n)),
-                    extraction.occurrences.len(),
-                    extraction.java_type.is_some(),
-                    Box::new(move |text, all, name, modifier| introduce(style, text, &extraction, all, name, modifier)),
-                ),
+                Ok((extraction, taken)) => {
+                    typed = extraction.kotlin_type.is_some();
+                    (
+                        suggest_names(style, &extraction.source, &|n| taken.iter().any(|t| t == n)),
+                        extraction.occurrences.len(),
+                        extraction.java_type.is_some(),
+                        Box::new(move |text, r| introduce(style, text, &extraction, r.all, &r.name, r.modifier, r.explicit_type)),
+                    )
+                }
             },
             Introduce::Constant => match crate::index::introduce::constant(lang, &text, range) {
                 Err(message) => return fail(message, window, cx),
-                Ok((plan, taken)) => (
-                    suggest_constant_names(style, &plan.source, plan.string_content.as_deref(), &|n| taken.iter().any(|t| t == n)),
-                    plan.occurrences.len(),
-                    plan.java_type.is_some(),
-                    Box::new(move |text, all, name, _| introduce_constant(style, text, &plan, all, name)),
-                ),
+                Ok((plan, taken)) => {
+                    visibility = style == ImportStyle::Java && !plan.interface;
+                    (
+                        suggest_constant_names(style, &plan.source, plan.string_content.as_deref(), &|n| taken.iter().any(|t| t == n)),
+                        plan.occurrences.len(),
+                        plan.java_type.is_some(),
+                        Box::new(move |text, r| introduce_constant(style, text, &plan, r.all, &r.name, r.visibility)),
+                    )
+                }
             },
         };
         if style == ImportStyle::Java && !has_type {
             return fail("Cannot perform refactoring without a type".into(), window, cx);
         }
         let editor = cx.entity().downgrade();
-        crate::ui::introduce_dialog::open(kind, style, suggestions, occurrences, move |request, window, cx| {
+        crate::ui::introduce_dialog::open(kind, style, suggestions, occurrences, typed, visibility, move |request, window, cx| {
             editor
                 .update(cx, |this, cx| {
                     let text = this.text(cx);
-                    match edit(&text, request.all, &request.name, request.modifier) {
+                    match edit(&text, &request) {
                         Err(message) => Self::hint(title, message, window, cx),
                         Ok(done) => this.state.update(cx, |state, cx| {
                             state.set_selected_range(done.range.clone(), cx);

@@ -10,11 +10,12 @@ use tree_sitter::Node;
 
 use super::lang::Lang;
 use super::symbols;
-use crate::domain::introduce_variable::{ConstantPlan, Extraction, Literal, NameSource, Occurrence};
+use crate::domain::introduce_variable::{ConstantPlan, ExpressionBody, Extraction, Literal, NameSource, Occurrence};
 
 const NO_EXPRESSION: &str = "Cannot find an expression to introduce";
 const NOT_AN_EXPRESSION: &str = "Selected block should represent an expression";
 const NO_CONTAINER: &str = "Cannot refactor in this place";
+const NO_RETURN_TYPE: &str = "Cannot convert to a block body without the function's return type";
 
 fn literal(lang: Lang, node: Node, text: &str) -> Option<Literal> {
     let t = &text[node.byte_range()];
@@ -236,6 +237,94 @@ pub(crate) fn java_type(node: Node, text: &str) -> Option<String> {
     }
 }
 
+/// The Kotlin type an expression shows: a literal's, a constructor
+/// call's (`Foo<Int>(…)`; not in Compose files, whose capitalized calls
+/// are composables), a cast's, a comparison's or a string concatenation's.
+pub(crate) fn kotlin_type(node: Node, text: &str) -> Option<String> {
+    if node.kind() == "unsigned_literal" {
+        return None;
+    }
+    if let Some(l) = literal(Lang::Kotlin, node, text) {
+        return Some(l.kotlin_type().to_owned());
+    }
+    match node.kind() {
+        "call_expression" => {
+            let callee = node.named_child(0).filter(|c| c.kind() == "simple_identifier")?;
+            let name = &text[callee.byte_range()];
+            if !name.starts_with(|c: char| c.is_uppercase()) || text.contains("import androidx.compose") {
+                return None;
+            }
+            let suffix = node.named_child(1)?;
+            let mut cursor = suffix.walk();
+            let arguments = suffix.named_children(&mut cursor).find(|c| c.kind() == "type_arguments").map(|t| &text[t.byte_range()]).unwrap_or_default();
+            Some(format!("{name}{arguments}"))
+        }
+        "as_expression" => {
+            let ty = node.named_child((node.named_child_count() as u32).checked_sub(1)?)?;
+            let safe = text[node.byte_range()].contains("as?");
+            Some(format!("{}{}", &text[ty.byte_range()], if safe { "?" } else { "" }))
+        }
+        "parenthesized_expression" => node.named_child(0).and_then(|n| kotlin_type(n, text)),
+        "simple_identifier" => parameter_type(node, text),
+        "additive_expression" | "multiplicative_expression" if boolean_or_string(Lang::Kotlin, node, text).is_none() => {
+            // Arithmetic on numbers: the widest of its operands' types.
+            const NUMBERS: [&str; 4] = ["Int", "Long", "Float", "Double"];
+            let (left, right) = (node.named_child(0)?, node.named_child(1)?);
+            let rank = |n: Node| kotlin_type(n, text).and_then(|t| NUMBERS.iter().position(|x| *x == t));
+            Some(NUMBERS[rank(left)?.max(rank(right)?)].to_owned())
+        }
+        _ => boolean_or_string(Lang::Kotlin, node, text).map(|l| l.kotlin_type().to_owned()),
+    }
+}
+
+/// The declared type of the parameter of the enclosing function `name` is.
+fn parameter_type(name: Node, text: &str) -> Option<String> {
+    let wanted = &text[name.byte_range()];
+    let mut function = name.parent()?;
+    while function.kind() != "function_declaration" {
+        if matches!(function.kind(), "lambda_literal" | "class_body") {
+            return None;
+        }
+        function = function.parent()?;
+    }
+    let mut cursor = function.walk();
+    let parameters = function.named_children(&mut cursor).find(|c| c.kind() == "function_value_parameters")?;
+    let mut cursor = parameters.walk();
+    let found = parameters.named_children(&mut cursor).filter(|p| p.kind() == "parameter").find_map(|p| {
+        let (n, t) = (p.named_child(0)?, p.named_child(1)?);
+        (&text[n.byte_range()] == wanted).then(|| text[t.byte_range()].to_owned())
+    });
+    found
+}
+
+/// Kotlin: the expression body (`fun f() = …`) `node` is in, unless a
+/// block around it is closer.
+fn expression_body<'t>(node: Node<'t>) -> Option<Node<'t>> {
+    let mut n = node;
+    while let Some(p) = n.parent() {
+        match p.kind() {
+            "statements" | "class_body" | "lambda_literal" => return None,
+            "function_body" => return (p.child(0).is_some_and(|c| c.kind() == "=") && p.parent().is_some_and(|f| f.kind() == "function_declaration")).then_some(p),
+            _ => n = p,
+        }
+    }
+    None
+}
+
+/// The block body an expression body becomes: its range, expression,
+/// the function's indentation and the return type to write.
+fn block_body(body: Node, text: &str) -> Result<ExpressionBody, String> {
+    let function = body.parent().ok_or(NO_CONTAINER)?;
+    let expression = body.named_child(0).ok_or(NO_CONTAINER)?;
+    let line = text[..function.start_byte()].rfind('\n').map_or(0, |i| i + 1);
+    let indent = text[line..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    let mut cursor = function.walk();
+    let parameters = function.named_children(&mut cursor).find(|c| c.kind() == "function_value_parameters").ok_or(NO_CONTAINER)?;
+    let declared = text[parameters.end_byte()..body.start_byte()].contains(':');
+    let return_type = if declared { None } else { Some((parameters.end_byte(), kotlin_type(expression, text).ok_or(NO_RETURN_TYPE)?)) };
+    Ok(ExpressionBody { range: body.byte_range(), expression: expression.byte_range(), indent, return_type })
+}
+
 /// Names declared in the function around `node` (parameters and locals):
 /// the new variable must not clash with them.
 fn declared_names(lang: Lang, node: Node, text: &str) -> Vec<String> {
@@ -273,8 +362,12 @@ pub fn extraction(lang: Lang, text: &str, range: Range<usize>) -> Result<(Extrac
     let tree = symbols::parse(lang, text).ok_or(NO_EXPRESSION)?;
     let root = tree.root_node();
     let node = expression_node(lang, root, text, range).ok_or(NOT_AN_EXPRESSION)?;
-    let statement = statement_of(lang, node).ok_or(NO_CONTAINER)?;
-    let block = statement.parent().ok_or(NO_CONTAINER)?;
+    let body = if lang == Lang::Kotlin { expression_body(node) } else { None };
+    let block = match body {
+        Some(body) => body,
+        None => statement_of(lang, node).and_then(|s| s.parent()).ok_or(NO_CONTAINER)?,
+    };
+    let body = body.map(|b| block_body(b, text)).transpose()?;
     let wanted = (node.kind(), normalized(&text[node.byte_range()]));
     let mut occurrences = Vec::new();
     let mut stack = vec![block];
@@ -301,7 +394,7 @@ pub fn extraction(lang: Lang, text: &str, range: Range<usize>) -> Result<(Extrac
         if n.id() == node.id() {
             selected = occurrences.len();
         }
-        let whole = is_whole(lang, n, s);
+        let whole = if body.is_some() { s.id() == n.id() } else { is_whole(lang, n, s) };
         occurrences.push(Occurrence { range: n.byte_range(), statement: s.byte_range(), whole });
     }
     let extraction = Extraction {
@@ -309,6 +402,8 @@ pub fn extraction(lang: Lang, text: &str, range: Range<usize>) -> Result<(Extrac
         selected,
         source: name_source(lang, node, text),
         java_type: (lang == Lang::Java).then(|| java_type(node, text)).flatten(),
+        kotlin_type: (lang == Lang::Kotlin).then(|| kotlin_type(node, text)).flatten(),
+        body,
     };
     Ok((extraction, declared_names(lang, node, text)))
 }
@@ -346,8 +441,12 @@ fn kotlin_constant(node: Node, text: &str, consts: &[String]) -> bool {
         node.named_children(&mut cursor).collect()
     };
     match node.kind() {
-        // Templates (`"$x"`) are not constant here.
-        "string_literal" => named.iter().all(|c| matches!(c.kind(), "string_content" | "escape_sequence" | "character_escape_seq")),
+        // Templates of constants (`"v$VERSION"`) are constant too.
+        "string_literal" => named.iter().all(|c| match c.kind() {
+            "interpolated_identifier" => consts.iter().any(|k| k == &text[c.byte_range()]),
+            "interpolated_expression" => c.named_child(0).is_some_and(|e| kotlin_constant(e, text, consts)),
+            _ => true,
+        }),
         _ if literal(Lang::Kotlin, node, text).is_some() => true,
         "simple_identifier" => consts.iter().any(|c| c == &text[node.byte_range()]),
         "parenthesized_expression" | "prefix_expression" | "additive_expression" | "multiplicative_expression" | "comparison_expression"
@@ -424,6 +523,7 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
         _ => {}
     }
     let line_start = |at: usize| text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let mut interface = false;
     let (insert_at, indent) = match lang {
         Lang::Kotlin => {
             // Before the top-level declaration holding it, its doc comment
@@ -446,7 +546,7 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
             let mut n = node;
             let body = loop {
                 let p = n.parent().ok_or(NO_CONTAINER)?;
-                if p.kind() == "class_body" || p.kind() == "interface_body" || p.kind() == "enum_body" {
+                if matches!(p.kind(), "class_body" | "interface_body" | "enum_body" | "annotation_type_body") {
                     let class = p.parent().ok_or(NO_CONTAINER)?;
                     let top_level = class.parent().is_some_and(|g| g.kind() == "program");
                     let is_static = class.named_child(0).is_some_and(|m| m.kind() == "modifiers" && text[m.byte_range()].split_whitespace().any(|w| w == "static"));
@@ -459,6 +559,23 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
             let first = body.named_child(0).ok_or(NO_CONTAINER)?;
             let at = line_start(first.start_byte());
             let indent: String = text[at..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            // After the last field of the class it uses: no forward reference.
+            let used = identifiers(node, text);
+            let mut cursor = body.walk();
+            let after = body
+                .named_children(&mut cursor)
+                .filter(|m| m.kind() == "field_declaration" || m.kind() == "constant_declaration")
+                .filter(|m| {
+                    let mut c = m.walk();
+                    m.named_children(&mut c).filter(|d| d.kind() == "variable_declarator").any(|d| d.child_by_field_name("name").is_some_and(|n| used.contains(&&text[n.byte_range()])))
+                })
+                .map(|m| m.end_byte())
+                .max();
+            let at = match after {
+                Some(end) => text[end..].find('\n').map_or(text.len(), |i| end + i + 1),
+                None => at,
+            };
+            interface = matches!(body.kind(), "interface_body" | "annotation_type_body");
             (at, indent)
         }
     };
@@ -475,7 +592,8 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
     }
     found.sort_by_key(|n| n.start_byte());
     let selected = found.iter().position(|n| n.id() == node.id()).unwrap_or(0);
-    let string_content = (node.kind() == "string_literal").then(|| text[node.byte_range()].trim_matches('"').to_owned());
+    let plain = node.named_child_count() <= 1 || lang == Lang::Java;
+    let string_content = (node.kind() == "string_literal" && plain).then(|| text[node.byte_range()].trim_matches('"').to_owned());
     let plan = ConstantPlan {
         occurrences: found.iter().map(|n| n.byte_range()).collect(),
         selected,
@@ -484,10 +602,25 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
         source: name_source(lang, node, text),
         java_type: (lang == Lang::Java).then(|| java_type(node, text)).flatten(),
         string_content,
+        interface,
     };
     // Every name in the file: a new constant must not shadow or clash.
     let taken = text.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).map(str::to_owned).collect();
     Ok((plan, taken))
+}
+
+/// The names an expression uses.
+fn identifiers<'a>(node: Node, text: &'a str) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "identifier" {
+            out.push(&text[n.byte_range()]);
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    out
 }
 
 /// Where a live template's abbreviation starting at `offset` is, as
@@ -593,12 +726,22 @@ mod tests {
         assert!(constant(Lang::Kotlin, kt, at(kt, "K * 2")).is_ok());
         assert_eq!(constant(Lang::Kotlin, kt, at(kt, "K * 2 + a")).unwrap_err(), NON_CONSTANT_KOTLIN);
         assert_eq!(constant(Lang::Kotlin, kt, at(kt, "\"Hi $a\"")).unwrap_err(), NON_CONSTANT_KOTLIN);
+        let templated = "const val K = 1\nfun f() = g(\"v$K ${K + 1}\")\n";
+        let (plan, _) = constant(Lang::Kotlin, templated, at(templated, "\"v$K ${K + 1}\"")).unwrap();
+        assert_eq!((plan.occurrences.len(), plan.string_content), (1, None));
         let java = "class Test {\n\n  int count;\n  static final int MAX = 3;\n\n  int get(int n) {\n    return Math.max(MAX, 4) + n + count;\n  }\n}\n";
         let (plan, _) = constant(Lang::Java, java, at(java, "Math.max(MAX, 4)")).unwrap();
-        assert_eq!(plan.insert_at, java.find("  int count").unwrap());
+        // After `MAX`, the field it uses.
+        assert_eq!(plan.insert_at, java.find("\n\n  int get").unwrap() + 1);
         assert_eq!(plan.indent, "  ");
         assert_eq!(constant(Lang::Java, java, at(java, "Math.max(MAX, 4) + n")).unwrap_err(), NON_CONSTANT_JAVA);
         assert_eq!(constant(Lang::Java, java, at(java, "Math.max(MAX, 4) + n + count")).unwrap_err(), NON_CONSTANT_JAVA);
+        let (plan, _) = constant(Lang::Java, java, at(java, "4")).unwrap();
+        assert_eq!((plan.insert_at, plan.interface), (java.find("  int count").unwrap(), false));
+        // An interface's.
+        let java = "interface I {\n  int A = 1;\n  int B = 2;\n  default int f() { return A + 1; }\n}\n";
+        let (plan, _) = constant(Lang::Java, java, at(java, "A + 1")).unwrap();
+        assert_eq!((plan.insert_at, plan.interface), (java.find("  int B").unwrap(), true));
     }
 
     #[test]
@@ -624,5 +767,37 @@ mod tests {
         // Outside a block: nowhere to declare it.
         let field = "class A { val x = 1 + 2 }\n";
         assert_eq!(extraction(Lang::Kotlin, field, at(field, "1 + 2")).unwrap_err(), NO_CONTAINER);
+        // Kotlin types for "Specify type explicitly".
+        let kt = "fun f() {\n    g(\"a\" + b, Box<Int>(1), c > 2, d as? Foo, 1L, h(), 2u)\n}\n";
+        let ty = |e: &str| extraction(Lang::Kotlin, kt, at(kt, e)).unwrap().0.kotlin_type;
+        assert_eq!(ty("\"a\" + b").as_deref(), Some("String"));
+        assert_eq!(ty("Box<Int>(1)").as_deref(), Some("Box<Int>"));
+        assert_eq!(ty("c > 2").as_deref(), Some("Boolean"));
+        assert_eq!(ty("d as? Foo").as_deref(), Some("Foo?"));
+        assert_eq!(ty("1L").as_deref(), Some("Long"));
+        assert_eq!(ty("h()"), None);
+        assert_eq!(ty("2u"), None);
+        let kt = "fun f(a: Int, d: Double) = a * 2 + a * d\n";
+        let ty = |e: &str| extraction(Lang::Kotlin, kt, at(kt, e)).unwrap().0.kotlin_type;
+        assert_eq!(ty("a * 2").as_deref(), Some("Int"));
+        assert_eq!(ty("a * 2 + a * d").as_deref(), Some("Double"));
+    }
+
+    #[test]
+    fn plans_expression_bodies() {
+        let kt = "class A {\n    fun f(a: Int): Int = a * 2 + a * 2\n    fun g(s: String) = \"<\" + s\n    fun h() = run { 1 + 2 }\n    fun k(x: X) = x.y + 1\n}\n";
+        let (ex, _) = extraction(Lang::Kotlin, kt, at(kt, "a * 2")).unwrap();
+        assert_eq!(ex.occurrences.len(), 2);
+        let body = ex.body.unwrap();
+        assert_eq!(&kt[body.range.clone()], "= a * 2 + a * 2");
+        assert_eq!(&kt[body.expression.clone()], "a * 2 + a * 2");
+        assert_eq!((body.indent.as_str(), body.return_type), ("    ", None));
+        let (ex, _) = extraction(Lang::Kotlin, kt, at(kt, "\"<\"")).unwrap();
+        let (at_, ty) = ex.body.unwrap().return_type.unwrap();
+        assert_eq!((&kt[..at_].rsplit('\n').next().unwrap()[4..], ty.as_str()), ("fun g(s: String)", "String"));
+        // In a lambda: its block, not the body.
+        assert!(extraction(Lang::Kotlin, kt, at(kt, "1 + 2")).unwrap().0.body.is_none());
+        // The return type isn't known.
+        assert_eq!(extraction(Lang::Kotlin, kt, at(kt, "x.y")).unwrap_err(), NO_RETURN_TYPE);
     }
 }
