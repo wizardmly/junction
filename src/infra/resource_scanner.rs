@@ -39,6 +39,9 @@ impl ResFolders {
     }
 
     fn rel(&self, path: &Path) -> String {
+        if self.root.as_os_str().is_empty() {
+            return path.to_string_lossy().replace('\\', "/");
+        }
         path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/")
     }
 }
@@ -155,6 +158,33 @@ impl ResourceSource for ResFolders {
             })).collect();
             workers.into_iter().flat_map(|w| w.join().unwrap_or_default()).collect()
         })
+    }
+}
+
+/// The Android framework's resources (`android.R`, `@android:`): an SDK
+/// platform's `data/res`. Only the default `values` folder (thousands of
+/// translations are not needed to navigate) and the file resources.
+pub struct FrameworkRes {
+    pub res: PathBuf,
+}
+
+impl ResourceSource for FrameworkRes {
+    fn scan(&self) -> Vec<Declaration> {
+        // Paths stay absolute: the SDK is outside the project.
+        let reader = ResFolders { root: PathBuf::new() };
+        let mut names = Interner::default();
+        let mut out = Vec::new();
+        for folder in std::fs::read_dir(&self.res).into_iter().flatten().flatten() {
+            let name = folder.file_name().to_string_lossy().into_owned();
+            if name.starts_with("values") && name != "values" {
+                continue;
+            }
+            let name: Arc<str> = name.into();
+            for file in std::fs::read_dir(folder.path()).into_iter().flatten().flatten() {
+                out.extend(reader.scan_file(&file.path(), &name, &mut names));
+            }
+        }
+        out
     }
 }
 

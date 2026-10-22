@@ -284,7 +284,7 @@ fn bench_android() {
     time("catalogs load", || crate::infra::catalog_files::load(&root, &files));
     if let Ok(rel) = std::env::var("JUNCTION_BENCH_FILE") {
         let text = std::fs::read_to_string(root.join(&rel)).unwrap();
-        let n = time("previews", || crate::usecase::android_resources::previews(&table, &rel, &text).len());
+        let n = time("previews", || crate::usecase::android_resources::previews(&table, None, &rel, &text).len());
         println!("  {n} previews");
         time("version sites", || crate::usecase::dependency_updates::sites(&rel, &text).len());
     }

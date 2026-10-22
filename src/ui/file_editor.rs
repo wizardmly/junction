@@ -2737,7 +2737,8 @@ impl FileEditor {
     }
 
     fn strings_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        if self.strings_banner_hidden || self.revision.is_some() || !self.path.ends_with(".xml") {
+        // Not for read-only files (the SDK's framework strings).
+        if self.strings_banner_hidden || self.revision.is_some() || self.read_only() || !self.path.ends_with(".xml") {
             return None;
         }
         let folder = std::path::Path::new(&self.path).parent()?.file_name()?.to_string_lossy().into_owned();

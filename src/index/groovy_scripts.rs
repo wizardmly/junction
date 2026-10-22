@@ -69,6 +69,28 @@ pub fn targets(index: &ProjectIndex, text: &str, offset: usize) -> Vec<Target> {
     }
 }
 
+/// Find Usages from a `buildSrc` declaration: the Groovy build scripts'
+/// uses of `word` that resolve to one of `declarations` (path, line).
+pub fn usages(index: &ProjectIndex, root: &std::path::Path, word: &str, declarations: &[(String, u32)]) -> Vec<super::nav::Usage> {
+    let mut out = Vec::new();
+    for path in index.all_files.iter().filter(|p| is_groovy_script(p)) {
+        let Ok(text) = std::fs::read_to_string(root.join(path)) else { continue };
+        for (at, _) in text.match_indices(word) {
+            let whole = |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+            if !whole(text[..at].chars().next_back()) || !whole(text[at + word.len()..].chars().next()) {
+                continue;
+            }
+            if !targets(index, &text, at).iter().any(|t| declarations.iter().any(|(p, l)| *p == t.path && *l == t.line)) {
+                continue;
+            }
+            let (line, col) = super::nav::position(&text, at);
+            let line_text = text.lines().nth(line as usize).unwrap_or_default().trim().to_owned();
+            out.push(super::nav::Usage { path: path.clone(), line, col, text: line_text, group: "Groovy build scripts".into() });
+        }
+    }
+    out
+}
+
 /// Completion after `Deps.` in a Groovy build script: the byte range the
 /// typed name takes and the type's members, with their kinds and types.
 pub fn completions(index: &ProjectIndex, text: &str, offset: usize) -> Option<(std::ops::Range<usize>, Vec<(String, SymbolKind, String)>)> {
@@ -111,6 +133,19 @@ mod tests {
         assert_eq!(targets(&index, script, at).iter().map(|t| t.line).collect::<Vec<_>>(), vec![0]);
         // `libs.x` and plain words are not buildSrc names.
         assert!(targets(&index, "implementation libs.coreKtx", 22).is_empty());
+    }
+
+    #[test]
+    fn finds_script_usages() {
+        let mut index = index();
+        let dir = std::env::temp_dir().join(format!("junction-groovy-usages-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(dir.join("app/build.gradle"), "dependencies {\n    implementation Deps.coreKtx\n    implementation libs.coreKtx\n}\n").unwrap();
+        index.all_files = vec!["app/build.gradle".into(), "buildSrc/src/main/kotlin/Deps.kt".into()];
+        let found = usages(&index, &dir, "coreKtx", &[("buildSrc/src/main/kotlin/Deps.kt".into(), 1)]);
+        assert_eq!(found.iter().map(|u| (u.path.as_str(), u.line, u.col)).collect::<Vec<_>>(), vec![("app/build.gradle", 1, 24)]);
+        assert!(usages(&index, &dir, "coreKtx", &[("other.kt".into(), 1)]).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

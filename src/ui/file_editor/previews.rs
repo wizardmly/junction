@@ -25,6 +25,7 @@ impl FileEditor {
         let path = self.path.clone();
         let text = self.text(cx);
         let table = index.read(cx).resources.clone();
+        let framework = index.read(cx).framework_table();
         let root = index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
         self.previews_task = Some(cx.spawn(async move |this, cx| {
             if debounce {
@@ -33,7 +34,7 @@ impl FileEditor {
             let (marks, vectors) = cx
                 .background_spawn(async move {
                     let table = table.read().unwrap();
-                    let marks: Vec<(u32, Preview)> = android_resources::previews(&table, &path, &text)
+                    let marks: Vec<(u32, Preview)> = android_resources::previews(&table, framework.as_deref(), &path, &text)
                         .into_iter()
                         .map(|(line, p)| match p {
                             Preview::Image(rel) => (line, Preview::Image(root.join(rel).to_string_lossy().into_owned())),

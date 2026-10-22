@@ -116,17 +116,24 @@ mod tests {
         assert_eq!(&*t.declarations(&name)[0].folder, "values");
         assert_eq!(t.value(&name).as_deref(), Some("App"));
         assert_eq!(t.color(&ResourceRef::new("color", "primary")), Some(0x6200EEFF));
-        let marks = previews(&t, "a/Main.kt", "x\nval c = R.color.primary\nR.color.none");
+        let marks = previews(&t, None, "a/Main.kt", "x\nval c = R.color.primary\nR.color.none");
         assert_eq!(marks, vec![(1, Preview::Color(0x6200EEFF))]);
-        let marks = previews(&t, "res/layout/a.xml", "<View android:background=\"#F00\"\n android:tint=\"@color/purple\"/>");
+        let marks = previews(&t, None, "res/layout/a.xml", "<View android:background=\"#F00\"\n android:tint=\"@color/purple\"/>");
         assert_eq!(marks, vec![(0, Preview::Color(0xFF0000FF)), (1, Preview::Color(0x6200EEFF))]);
         assert_eq!(color_literal("a.xml", "<View android:background=\"#F00\""), Some(26..30));
         assert_eq!(color_literal("a.xml", "    <color name=\"a\">#FF6200EE</color>"), Some(20..29));
         assert_eq!(color_literal("a.xml", " android:tint=\"@color/purple\"/>"), None);
         // Compose literals.
         let code = "val Purple = Color(0xFF6200EE)\nval Clear = Color(color = 0x00000000L)\nColor(0xFF000000).copy(alpha = 0.5f)\nColor(red = 1f, green = 0f, blue = 0f)";
-        assert_eq!(previews(&t, "ui/Theme.kt", code), vec![(0, Preview::Color(0x6200EEFF)), (1, Preview::Color(0)), (2, Preview::Color(0x000000FF))]);
-        assert!(previews(&t, "ui/Theme.java", code).is_empty());
+        assert_eq!(previews(&t, None, "ui/Theme.kt", code), vec![(0, Preview::Color(0x6200EEFF)), (1, Preview::Color(0)), (2, Preview::Color(0x000000FF))]);
+        assert!(previews(&t, None, "ui/Theme.java", code).is_empty());
+        // The framework's colors, from its own table.
+        let framework = ResourceTable::build(&Fake(vec![decl("color", "white", "values", Some("#ffffffff"))]));
+        let code = "a(android.R.color.white)\nb(R.color.white)";
+        assert_eq!(previews(&t, Some(&framework), "a/Main.kt", code), vec![(0, Preview::Color(0xFFFFFFFF))]);
+        assert!(previews(&t, None, "a/Main.kt", code).is_empty());
+        let xml = "<View android:background=\"@android:color/white\"\n android:tint=\"@color/purple\"/>";
+        assert_eq!(previews(&t, Some(&framework), "a/res/layout/a.xml", xml), vec![(0, Preview::Color(0xFFFFFFFF)), (1, Preview::Color(0x6200EEFF))]);
         assert_eq!(color_literal("ui/Theme.kt", "val Purple = Color(0xFF6200EE)"), Some(19..29));
         assert_eq!(color_literal("ui/Theme.kt", "val c = R.color.primary"), None);
         assert_eq!(format_color_literal(0x112233FF, "0xff6200ee"), "0xff112233");
@@ -180,12 +187,13 @@ pub fn preview_reference(path: &str, line: &str) -> Option<usize> {
     caps.get(2).map(|m| m.start())
 }
 
-static CODE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?:^|[^\w.])R\.(color|drawable|mipmap)\.(\w+)").unwrap());
+static CODE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?:^|[^\w.]|\bandroid\.)R\.(color|drawable|mipmap)\.(\w+)").unwrap());
 static COMPOSE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\bColor\(\s*(?:color\s*=\s*)?(0[xX][0-9a-fA-F]{1,8}L?)\s*\)").unwrap());
-static XML: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"@(color|drawable|mipmap)/([\w.]+)|[">](#[0-9a-fA-F]{3,8})["<]"#).unwrap());
+static XML: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"@(?:android:)?(color|drawable|mipmap)/([\w.]+)|[">](#[0-9a-fA-F]{3,8})["<]"#).unwrap());
 
-/// The first previewable resource of each line of a Kotlin, Java or XML file.
-pub fn previews(table: &ResourceTable, path: &str, text: &str) -> Vec<(u32, Preview)> {
+/// The first previewable resource of each line of a Kotlin, Java or XML
+/// file; `framework` resolves `android.R.color.x` and `@android:color/x`.
+pub fn previews(table: &ResourceTable, framework: Option<&ResourceTable>, path: &str, text: &str) -> Vec<(u32, Preview)> {
     let code = path.ends_with(".kt") || path.ends_with(".java");
     if !code && !path.ends_with(".xml") {
         return Vec::new();
@@ -204,6 +212,8 @@ pub fn previews(table: &ResourceTable, path: &str, text: &str) -> Vec<(u32, Prev
             (_, _, Some(hex)) => res::parse_color(hex.as_str()).map(Preview::Color),
             (Some(kind), Some(name), _) => {
                 let r = ResourceRef::new(kind.as_str(), name.as_str());
+                let framework_ref = c.get(0).is_some_and(|m| m.as_str().contains("android"));
+                let Some(table) = (if framework_ref { framework } else { Some(table) }) else { continue };
                 match kind.as_str() {
                     "color" => table.color(&r).map(Preview::Color),
                     _ => table.image(&r).map(|d| Preview::Image(d.path.to_string())).or_else(|| table.drawable_xml(&r).map(|d| Preview::Vector(d.path.to_string()))),
