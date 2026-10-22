@@ -76,6 +76,7 @@ actions!(
         TypeHierarchy,
         MethodHierarchy,
         SurroundWith,
+        SurroundWithLiveTemplate,
         Generate,
         FindNext,
         FindPrevious,
@@ -143,6 +144,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-h", TypeHierarchy, Some("FileEditor > Input")),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-shift-h" } else { "ctrl-shift-h" }, MethodHierarchy, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-t" } else { "ctrl-alt-t" }, SurroundWith, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-j" } else { "ctrl-alt-j" }, SurroundWithLiveTemplate, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-n" } else { "alt-insert" }, Generate, Some(CONTEXT)),
         // Bookmarks: F11, Ctrl+F11 (F3 / ⌥F3 in the macOS keymap).
         KeyBinding::new(if cfg!(target_os = "macos") { "f3" } else { "f11" }, ToggleBookmark, Some(CONTEXT)),
@@ -1774,17 +1776,39 @@ impl FileEditor {
         self.choose_surrounder(style, lines, expression, window, cx);
     }
 
+    /// Code › Surround with Live Template (Ctrl+Alt+J): the popup of the
+    /// templates with `$SELECTION$`, for the selection (whole lines when
+    /// it spans them, else the selected text) or the caret's line.
+    pub fn surround_with_live_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
+        let text = self.text(cx);
+        let selection = self.state.read(cx).selected_range();
+        let lines = crate::domain::surround::lines_of(&text, selection.clone());
+        let partial = !selection.is_empty() && !text[selection.clone()].contains('\n') && text[selection.clone()].trim() != text[lines.clone()].trim();
+        let range = if partial { selection } else { lines };
+        let templates = crate::domain::live_templates::surrounding(style == crate::domain::imports::ImportStyle::Kotlin);
+        if templates.is_empty() || text[range.clone()].trim().is_empty() {
+            return Self::hint("Surround with Live Template", "No templates", window, cx);
+        }
+        self.choose_live_template(templates, range, window, cx);
+    }
+
     /// Applies a surrounder to the lines or the expression at `range`.
     pub(super) fn surround(&mut self, surrounder: crate::domain::surround::Surrounder, range: Range<usize>, expression: bool, window: &mut Window, cx: &mut Context<Self>) {
         use crate::domain::surround::{indent_unit, surround_expression, surround_lines};
         let Some((_, style)) = self.jvm_style() else { return };
         let text = self.text(cx);
         let done = if expression { surround_expression(surrounder, &text, range) } else { surround_lines(style, surrounder, &text, range, &indent_unit(&text)) };
+        let select = done.stops.first().cloned().unwrap_or(done.select.clone());
         self.state.update(cx, |state, cx| {
             state.set_selected_range(done.range.clone(), cx);
             state.replace(&done.text, window, cx);
-            state.set_selected_range(done.select.clone(), cx);
+            state.set_selected_range(select, cx);
         });
+        if done.stops.len() > 1 {
+            let stops = done.stops.into_iter().map(|r| vec![r]).collect();
+            self.start_template(crate::domain::live_templates::Session { stops, current: 0, end: done.end }, cx);
+        }
     }
 
     pub fn selected_text(&self, cx: &gpui_kit::App) -> Option<String> {
@@ -2914,6 +2938,7 @@ impl Render for FileEditor {
                 cx.emit(FileEditorEvent::MethodHierarchy { text, offset });
             }))
             .on_action(cx.listener(Self::surround_with_action))
+            .on_action(cx.listener(|this, _: &SurroundWithLiveTemplate, window, cx| this.surround_with_live_template(window, cx)))
             .on_action(cx.listener(|this, _: &Generate, window, cx| this.generate(window, cx)))
             .on_action(cx.listener(Self::find_next))
             .on_action(cx.listener(|this, _: &OpenFind, window, cx| this.open_find(false, window, cx)))
