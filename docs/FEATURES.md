@@ -426,7 +426,8 @@ Linux 实测：TODO 窗口找到 3 条（含未跟踪文件），双击跳到对
 | gutter 预览：代码和 XML 里引用颜色的行显示色块，引用 png / webp / jpg 图片的行显示缩略图（取最高密度目录的那张）；colors.xml 里每个颜色定义也显示色块 | ✅ |
 | 点击 gutter 图标（2026-10-22）：XML 里颜色字面量（`#FF6200EE`、`"#0f0"`）的色块弹出取色器（调色板、HSLA 滑块、十六进制输入），选中后写回原处，保持原来的位数和大小写（不透明且原来没写 alpha 时写 `#RRGGBB`，否则 `#AARRGGBB`），可 Ctrl+Z 撤销；资源引用（`@color/x`、`R.color.x`、`@drawable/x` 等）的色块和缩略图跳到资源声明 | ✅ |
 | Compose 颜色字面量（2026-10-22）：Kotlin 里 `Color(0xFF6200EE)`（也认 `Color(color = 0x…L)`）的行显示色块，按 Compose 的 ARGB 读（`0x6200EE` 没写 alpha 即透明）；点色块弹出同一个取色器，写回 `0xAARRGGBB`，保持原来的大小写 | ✅ |
-| 字符串折叠显示值、框架资源 `android.R` / `@android:`、取色器的 “选资源” 页、Compose `Color(red, green, blue)` 分量写法 | ❌ 未做（Translations Editor 见第 31 节，vector drawable 见第 32 节，shape / selector 预览见第 39 节，Merged Manifest 见第 41 节；字符串折叠需要编辑器支持行内折叠，现在只有整行折叠） |
+| 框架资源（2026-10-22）：读 compileSdk 对应平台（没有就取最新装的）的 `platforms/android-N/data/res`，只读默认 `values` 和文件资源；Kotlin / Java 的 `android.R.string.ok`、XML 的 `@android:color/white`、`?android:attr/x`、`?android:x` 可 Ctrl+B 跳到 SDK 里的声明（只读打开）、悬停显示值，`android.R.color.x` / `@android:color/x` 的行显示色块 | ✅（用假 SDK 平台目录验证；真 SDK 的大小和内存未实测） |
+| 字符串折叠显示值、框架资源的 Find Usages 和翻译、取色器的 “选资源” 页、Compose `Color(red, green, blue)` 分量写法 | ❌ 未做（Translations Editor 见第 31 节，vector drawable 见第 32 节，shape / selector 预览见第 39 节，Merged Manifest 见第 41 节；字符串折叠需要编辑器支持行内折叠，现在只有整行折叠） |
 
 Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 values-zh 两个声明，悬停显示值；Ctrl+B `R.color.purple_500` 打开 colors.xml 第 2 行；Alt+F7 分组正确；MainActivity.kt 和 activity_main.xml 的 gutter 显示紫色、青色色块（`@color/accent` 跟随到 teal_200）和 ic_logo 缩略图。截图：reports/Android资源-2026-10-15/。
 

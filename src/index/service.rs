@@ -33,6 +33,9 @@ pub struct CodeIndex {
     pub resources: Arc<RwLock<crate::usecase::android_resources::ResourceTable>>,
     /// The Gradle version catalogs (`gradle/libs.versions.toml`).
     pub catalogs: Arc<RwLock<Vec<Catalog>>>,
+    /// The Android framework's resources (`android.R`, `@android:`) of the
+    /// compileSdk platform, and the folder they were read from.
+    pub framework: Arc<RwLock<Option<(PathBuf, Arc<crate::usecase::android_resources::ResourceTable>)>>>,
     /// The res files' stamp the resource table was built from.
     resources_stamp: Arc<std::sync::atomic::AtomicU64>,
     /// (done, total) while files are being indexed.
@@ -79,6 +82,7 @@ impl CodeIndex {
             lsp: Arc::default(),
             resources: Arc::default(),
             catalogs: Arc::default(),
+            framework: Arc::default(),
             resources_stamp: Arc::default(),
             progress: None,
             updating: false,
@@ -105,6 +109,7 @@ impl CodeIndex {
         self.index = Arc::default();
         self.resources = Arc::default();
         self.catalogs = Arc::default();
+        self.framework = Arc::default();
         self.resources_stamp = Arc::default();
         self.lsp = Arc::new(LspManager::new(root.clone().unwrap_or_default()));
         self.progress = None;
@@ -133,6 +138,7 @@ impl CodeIndex {
         let index = self.index.clone();
         let resources = self.resources.clone();
         let catalogs = self.catalogs.clone();
+        let framework = self.framework.clone();
         let resources_stamp = self.resources_stamp.clone();
         let phase = self.library_phase.clone();
         let rescan = self.rescan_libraries.clone();
@@ -194,6 +200,7 @@ impl CodeIndex {
                     (index.all_files.clone(), index.external.clone())
                 };
                 *catalogs.write().unwrap() = crate::infra::catalog_files::load(&root, &files);
+                load_framework(&root, &files, &framework);
                 let stamp = super::libraries::inputs_stamp(&root, &files);
                 if rescan.swap(false, std::sync::atomic::Ordering::Relaxed) || !previous.scanned || previous.stamp != stamp {
                     phase.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -290,6 +297,11 @@ impl CodeIndex {
         })
     }
 
+    /// The framework's resource table, once read.
+    pub fn framework_table(&self) -> Option<Arc<crate::usecase::android_resources::ResourceTable>> {
+        self.framework.read().ok()?.as_ref().map(|(_, t)| t.clone())
+    }
+
     /// Go to Declaration / Ctrl+click: where the identifier at `offset` is
     /// declared, or that it is a declaration itself (IntelliJ then shows
     /// its usages). Locals first, then bridges, the language server and the
@@ -301,6 +313,10 @@ impl CodeIndex {
         }
         // An Android resource: its declarations in the res folders.
         if let Some(nav) = resource_nav(&self.resources.read().unwrap(), &path, &text, offset) {
+            return Task::ready(nav);
+        }
+        // The framework's (`android.R.string.ok`, `@android:color/white`): in the SDK.
+        if let Some(nav) = self.framework_table().and_then(|t| framework_nav(&t, &path, &text, offset)) {
             return Task::ready(nav);
         }
         // A Groovy build script's `buildSrc` names (`Deps.coreKtx`).
@@ -393,6 +409,12 @@ impl CodeIndex {
             if let Some(first) = table.declarations(&r).first() {
                 let value = table.value(&r).map(|v| format!(" = {v}")).unwrap_or_default();
                 return Task::ready(Some(format!("`{}`{value}\n\n{} · {}", r.xml(), first.folder, first.path)));
+            }
+        }
+        if let (Some(r), Some(table)) = (crate::domain::android_resources::framework_reference_at(&path, &text, offset), self.framework_table()) {
+            if let Some(first) = table.declarations(&r).first() {
+                let value = table.value(&r).map(|v| format!(" = {v}")).unwrap_or_default();
+                return Task::ready(Some(format!("`@android:{}/{}`{value}\n\n{} · {}", r.kind, r.name, first.folder, first.path)));
             }
         }
         let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(None) };
@@ -902,6 +924,28 @@ fn resource_nav(table: &crate::usecase::android_resources::ResourceTable, path: 
         return Some(Nav::Declaration);
     }
     Some(Nav::Targets(decls.iter().map(|d| Target { path: d.path.to_string(), line: d.line, col: d.col, name: r.name.to_string(), label: d.folder.to_string(), container: None }).collect()))
+}
+
+/// Go to Declaration on a framework resource: its declarations in the SDK.
+fn framework_nav(table: &crate::usecase::android_resources::ResourceTable, path: &str, text: &str, offset: usize) -> Option<Nav> {
+    let r = crate::domain::android_resources::framework_reference_at(path, text, offset)?;
+    let decls = table.declarations(&r);
+    (!decls.is_empty()).then(|| Nav::Targets(decls.iter().map(|d| Target { path: d.path.to_string(), line: d.line, col: d.col, name: r.name.to_string(), label: d.folder.to_string(), container: None }).collect()))
+}
+
+/// Reads the framework's resources when the project's platform changed
+/// (a few thousand values and drawables; read once).
+fn load_framework(root: &Path, files: &[String], framework: &RwLock<Option<(PathBuf, Arc<crate::usecase::android_resources::ResourceTable>)>>) {
+    let dir = super::libraries::android_platform_res(root, files);
+    let current = framework.read().unwrap().as_ref().map(|(d, _)| d.clone());
+    if current == dir {
+        return;
+    }
+    let table = dir.map(|res| {
+        let table = crate::usecase::android_resources::ResourceTable::build(&crate::infra::resource_scanner::FrameworkRes { res: res.clone() });
+        (res, Arc::new(table))
+    });
+    *framework.write().unwrap() = table;
 }
 
 /// Find Usages of a resource: `R.type.name` in code and `@type/name` in

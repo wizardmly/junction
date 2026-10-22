@@ -208,6 +208,33 @@ pub fn xml_reference_at(text: &str, offset: usize) -> Option<(ResourceRef, bool)
     Some((ResourceRef::new(kind, &c[5]), c.get(2).is_some()))
 }
 
+/// The framework's resource at `offset`: `android.R.string.ok` in Kotlin or
+/// Java, `@android:color/white`, `?android:attr/textColorPrimary` or
+/// `?android:textColorPrimary` in XML.
+pub fn framework_reference_at(path: &str, text: &str, offset: usize) -> Option<ResourceRef> {
+    if path.ends_with(".xml") {
+        let offset = offset.min(text.len());
+        let stop = |c: char| c == '"' || c == '\'' || c == '>' || c == '<' || c.is_whitespace();
+        let start = text[..offset].rfind(stop).map_or(0, |i| i + 1);
+        let end = text[offset..].find(stop).map_or(text.len(), |i| offset + i);
+        static REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(@|\?)android:(?:(\w+)/)?([\w.]+)$").unwrap());
+        let c = REF.captures(&text[start..end])?;
+        let kind = match (c.get(2), &c[1]) {
+            (Some(k), _) => k.as_str(),
+            (None, "?") => "attr",
+            (None, _) => return None,
+        };
+        return Some(ResourceRef::new(kind, &c[3]));
+    }
+    let (start, end) = word_around(text, offset)?;
+    let rest = text[..start].strip_suffix('.')?;
+    let type_start = rest.rfind(|c: char| !(c.is_alphanumeric() || c == '_')).map_or(0, |i| i + 1);
+    let kind = &rest[type_start..];
+    let qualifier = rest[..type_start].strip_suffix("android.R.")?;
+    let whole = !qualifier.ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.');
+    (whole && !kind.is_empty()).then(|| ResourceRef::new(kind, &text[start..end]))
+}
+
 /// On a values declaration's name (`<string name="app_name">`): the resource.
 pub fn declaration_at(path: &str, text: &str, offset: usize) -> Option<ResourceRef> {
     values_folder(path)?;
@@ -353,6 +380,21 @@ mod tests {
         assert_eq!(parse_color("#806200EE"), Some(0x6200EE80));
         let xml = r#"<string name="app_name">x</string>"#;
         assert_eq!(declaration_at("a/res/values/strings.xml", xml, xml.find("app").unwrap() + 1), Some(ResourceRef::new("string", "app_name")));
+    }
+
+    #[test]
+    fn framework_references() {
+        let kt = "val a = android.R.string.ok\nval b = R.string.ok\nval c = my.android.R.string.ok";
+        assert_eq!(framework_reference_at("a.kt", kt, kt.find("ok").unwrap() + 1), Some(ResourceRef::new("string", "ok")));
+        assert_eq!(framework_reference_at("a.kt", kt, kt.rfind("R.string.ok\nval").map_or(0, |i| i + 9)), None);
+        assert_eq!(framework_reference_at("a.kt", kt, kt.len() - 1), None);
+        let xml = r#"<View android:background="@android:color/white" android:textColor="?android:attr/textColorPrimary" android:tint="?android:colorAccent" style="@style/Mine"/>"#;
+        assert_eq!(framework_reference_at("a.xml", xml, xml.find("white").unwrap()), Some(ResourceRef::new("color", "white")));
+        assert_eq!(framework_reference_at("a.xml", xml, xml.find("textColorPrimary").unwrap()), Some(ResourceRef::new("attr", "textColorPrimary")));
+        assert_eq!(framework_reference_at("a.xml", xml, xml.find("colorAccent").unwrap()), Some(ResourceRef::new("attr", "colorAccent")));
+        assert_eq!(framework_reference_at("a.xml", xml, xml.find("Mine").unwrap()), None);
+        // The attribute's own name is not a reference.
+        assert_eq!(framework_reference_at("a.xml", xml, xml.find("background").unwrap()), None);
     }
 }
 

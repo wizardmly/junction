@@ -913,6 +913,22 @@ fn android_sdk(ctx: &Project, out: &mut Vec<Library>) -> Option<PathBuf> {
     Some(sdk)
 }
 
+/// The compileSdk platform's resources (`platforms/android-35/data/res`),
+/// else the newest installed platform's, for an Android project.
+pub fn android_platform_res(root: &Path, files: &[String]) -> Option<PathBuf> {
+    let ctx = Project::new(root, files);
+    let texts = gradle_texts(&ctx);
+    if texts.is_empty() || !is_android(&texts) {
+        return None;
+    }
+    let platforms = sdk_dir(&ctx)?.join("platforms");
+    static COMPILE_SDK: OnceLock<Regex> = OnceLock::new();
+    let re = regex(&COMPILE_SDK, r#"(?i)compileSdk(?:Version)?\s*(?:=|\(|\s)\s*"?(?:android-)?(\d+)"#);
+    let wanted = texts.iter().flat_map(|(_, t)| re.captures_iter(t).filter_map(|c| c[1].parse::<u32>().ok()).collect::<Vec<_>>()).max();
+    let res = |p: PathBuf| p.join("data/res");
+    wanted.map(|n| res(platforms.join(format!("android-{n}")))).filter(|p| p.is_dir()).or_else(|| newest_subdir(&platforms, "android-").map(res).filter(|p| p.is_dir()))
+}
+
 /// "< Android API 34, extension level 7 Platform >", the SDK table name
 /// Android Studio gives a platform.
 fn android_platform_name(sdk: &Path, api: &str) -> String {
