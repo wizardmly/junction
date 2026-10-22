@@ -303,6 +303,11 @@ impl CodeIndex {
         if let Some(nav) = resource_nav(&self.resources.read().unwrap(), &path, &text, offset) {
             return Task::ready(nav);
         }
+        // A Groovy build script's `buildSrc` names (`Deps.coreKtx`).
+        if super::groovy_scripts::is_groovy_script(&path) {
+            let index = self.index.clone();
+            return cx.background_spawn(async move { Nav::Targets(super::groovy_scripts::targets(&index.read().unwrap(), &text, offset)) });
+        }
         let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(Nav::Targets(Vec::new())) };
         let (index, lsp) = (self.index.clone(), self.lsp.clone());
         cx.background_spawn(async move {

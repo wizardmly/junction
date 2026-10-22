@@ -35,6 +35,9 @@ impl CompletionProvider for IndexCompletion {
         if let Some(items) = catalog_completions(&self.index.read(cx).catalogs.read().unwrap(), &self.path, &text, offset, rope) {
             return Task::ready(Ok(CompletionResponse::Array(items)));
         }
+        if crate::index::groovy_scripts::is_groovy_script(&self.path) {
+            return Task::ready(Ok(CompletionResponse::Array(groovy_completions(&self.index.read(cx).index.read().unwrap(), &text, offset, rope))));
+        }
         let Some(lang) = CodeIndex::lang_of(&self.path, &text) else { return Task::ready(Ok(CompletionResponse::Array(Vec::new()))) };
         let explicit = trigger.trigger_kind == CompletionTriggerKind::INVOKED;
         let index = self.index.read(cx).index.clone();
@@ -145,6 +148,33 @@ fn kind_of(kind: CandidateKind) -> CompletionItemKind {
         CandidateKind::Module => CompletionItemKind::MODULE,
         CandidateKind::Macro => CompletionItemKind::FUNCTION,
     }
+}
+
+/// In a Groovy build script, after a `buildSrc` type (`Deps.`): its members.
+fn groovy_completions(index: &crate::index::store::ProjectIndex, text: &str, offset: usize, rope: &Rope) -> Vec<CompletionItem> {
+    let Some((replace, members)) = crate::index::groovy_scripts::completions(index, text, offset) else { return Vec::new() };
+    let typed = &text[replace.clone()];
+    let range = lsp_types::Range { start: rope.offset_to_position(replace.start), end: rope.offset_to_position(replace.end) };
+    let mut members: Vec<(i32, String, crate::index::symbols::SymbolKind, String)> = members
+        .into_iter()
+        .filter_map(|(name, kind, owner)| Some((crate::domain::completion::match_score(typed, &name)?, name, kind, owner)))
+        .collect();
+    members.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    members
+        .into_iter()
+        .map(|(_, name, kind, owner)| CompletionItem {
+            label: name.clone(),
+            filter_text: Some(typed.to_owned()),
+            kind: Some(match kind {
+                crate::index::symbols::SymbolKind::Function | crate::index::symbols::SymbolKind::Method => CompletionItemKind::METHOD,
+                crate::index::symbols::SymbolKind::Class | crate::index::symbols::SymbolKind::Interface | crate::index::symbols::SymbolKind::Enum => CompletionItemKind::CLASS,
+                _ => CompletionItemKind::PROPERTY,
+            }),
+            detail: Some(owner),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: name })),
+            ..Default::default()
+        })
+        .collect()
 }
 
 /// In a build script, after `libs.`: the version catalog's next accessor
