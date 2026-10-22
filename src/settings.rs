@@ -257,6 +257,10 @@ pub struct DiffSettings {
     pub tab_multiple_rows: bool,
     /// Editor Tabs: the least recently used tab closes past this many.
     pub tab_limit: usize,
+    /// Editor › General › Auto Import › Java: Optimize imports on the fly.
+    pub optimize_imports_java: bool,
+    /// The same for Kotlin.
+    pub optimize_imports_kotlin: bool,
 }
 
 impl Default for DiffSettings {
@@ -275,6 +279,8 @@ impl Default for DiffSettings {
             tab_mark_modified: false,
             tab_multiple_rows: false,
             tab_limit: 10,
+            optimize_imports_java: false,
+            optimize_imports_kotlin: false,
         }
     }
 }
@@ -339,8 +345,10 @@ impl Breadcrumbs {
 }
 
 impl DiffSettings {
-    fn fields(&mut self) -> [(&'static str, &mut bool); 9] {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 11] {
         [
+            ("diff_optimize_imports_java", &mut self.optimize_imports_java),
+            ("diff_optimize_imports_kotlin", &mut self.optimize_imports_kotlin),
             ("diff_tab_close_button", &mut self.tab_close_button),
             ("diff_tab_multiple_rows", &mut self.tab_multiple_rows),
             ("diff_tab_mark_modified", &mut self.tab_mark_modified),

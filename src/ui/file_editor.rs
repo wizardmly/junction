@@ -2171,8 +2171,37 @@ impl FileEditor {
         (start, end.max(start))
     }
 
-    fn save(&mut self, _: &SaveFile, _: &mut Window, cx: &mut Context<Self>) {
+    fn save(&mut self, _: &SaveFile, window: &mut Window, cx: &mut Context<Self>) {
+        self.optimize_imports_on_the_fly(window, cx);
         self.save_now(cx);
+    }
+
+    /// Settings › Editor › Auto Import › Optimize imports on the fly: a
+    /// save drops unused imports and sorts the rest, silently, unless the
+    /// caret is in the import list (someone is typing one).
+    fn optimize_imports_on_the_fly(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::index::lang::Lang;
+        let lang = Lang::from_path(&self.path);
+        let diff = &crate::settings::Settings::get(cx).diff;
+        let on = match lang {
+            Some(Lang::Java) => diff.optimize_imports_java,
+            Some(Lang::Kotlin) => diff.optimize_imports_kotlin,
+            _ => false,
+        };
+        let style = lang.filter(|_| on && !self.read_only()).and_then(crate::infra::index_code_model::IndexCodeModel::import_style);
+        let Some(style) = style else { return };
+        let text = self.text(cx);
+        let Some(edit) = crate::domain::imports::optimize(style, &text) else { return };
+        let cursor = self.state.read(cx).cursor();
+        if edit.range.contains(&cursor) {
+            return;
+        }
+        let cursor = if cursor >= edit.range.end { cursor + edit.text.len() - edit.range.len() } else { cursor };
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(edit.range.clone(), cx);
+            state.replace(&edit.text, window, cx);
+            state.set_selected_range(cursor..cursor, cx);
+        });
     }
 
     /// Shows a failed action's message for a few seconds.

@@ -38,6 +38,7 @@ enum Page {
     System,
     Keymap,
     EditorGeneral,
+    AutoImport,
     EditorFont,
     GutterIcons,
     EditorTabs,
@@ -57,7 +58,7 @@ enum Page {
 const TREE: &[(&str, Option<Page>, &[Page])] = &[
     ("Appearance & Behavior", None, &[Page::Appearance, Page::System]),
     ("Keymap", Some(Page::Keymap), &[]),
-    ("Editor", None, &[Page::EditorGeneral, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::LiveTemplates]),
+    ("Editor", None, &[Page::EditorGeneral, Page::AutoImport, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::LiveTemplates]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
     ("Build, Execution, Deployment", None, &[Page::Gradle, Page::Compiler]),
     ("Languages & Frameworks", Some(Page::Languages), &[Page::AndroidSdk]),
@@ -70,6 +71,7 @@ impl Page {
             Page::System => "System Settings",
             Page::Keymap => "Keymap",
             Page::EditorGeneral => "General",
+            Page::AutoImport => "Auto Import",
             Page::EditorFont => "Font",
             Page::GutterIcons => "Gutter Icons",
             Page::EditorTabs => "Editor Tabs",
@@ -100,6 +102,7 @@ impl Page {
             Page::System => &["System", "Startup", "Reopen projects on startup", "Confirm before exiting", "Exit"],
             Page::Keymap => &["Shortcut", "Keyboard"],
             Page::EditorGeneral => &["Soft-wrap", "Show line numbers", "Show whitespaces", "Show indent guides", "Appearance", "Diff", "Merge"],
+            Page::AutoImport => &["Auto Import", "Java", "Kotlin", "Optimize imports on the fly", "Imports"],
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
@@ -440,6 +443,8 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.diff.tab_mark_modified = from.diff.tab_mark_modified;
     to.diff.tab_multiple_rows = from.diff.tab_multiple_rows;
     to.diff.tab_limit = from.diff.tab_limit;
+    to.diff.optimize_imports_java = from.diff.optimize_imports_java;
+    to.diff.optimize_imports_kotlin = from.diff.optimize_imports_kotlin;
     to.project.preview_tab = from.project.preview_tab;
 }
 
@@ -549,6 +554,7 @@ impl Render for SettingsView {
                 Page::System => self.system(&query, cx).into_any_element(),
                 Page::Keymap => self.keymap_page(&query, cx).into_any_element(),
                 Page::EditorGeneral => self.editor_general(&query, cx).into_any_element(),
+                Page::AutoImport => self.auto_import(&query, cx).into_any_element(),
                 Page::EditorFont => self.editor_font(&query, cx).into_any_element(),
                 Page::GutterIcons => self.gutter_icons(&query, cx).into_any_element(),
                 Page::EditorTabs => self.editor_tabs(&query, cx).into_any_element(),
@@ -1091,6 +1097,17 @@ impl SettingsView {
             .child(self.check("settings-line-numbers", "Show line numbers", d.show_line_numbers, query, |s, v| s.diff.show_line_numbers = v, cx))
             .child(self.check("settings-whitespaces", "Show whitespaces", d.show_whitespaces, query, |s, v| s.diff.show_whitespaces = v, cx))
             .child(self.check("settings-indent-guides", "Show indent guides", d.show_indent_guides, query, |s, v| s.diff.show_indent_guides = v, cx))
+    }
+
+    fn auto_import(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let d = &self.draft.diff;
+        v_flex()
+            .gap_2()
+            .child(self.section("Java", cx))
+            .child(self.check("settings-optimize-java", "Optimize imports on the fly", d.optimize_imports_java, query, |s, v| s.diff.optimize_imports_java = v, cx))
+            .child(self.section("Kotlin", cx))
+            .child(self.check("settings-optimize-kotlin", "Optimize imports on the fly", d.optimize_imports_kotlin, query, |s, v| s.diff.optimize_imports_kotlin = v, cx))
+            .child(self.note("Unused imports are removed and the rest sorted when the file is saved, unless the caret is in the import list", cx))
     }
 
     fn gutter_icons(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
