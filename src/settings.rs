@@ -106,6 +106,9 @@ pub struct Settings {
     pub gradle_offline: bool,
     /// The device the last run used (its Device Manager id).
     pub run_device: String,
+    /// Select Multiple Devices…: the devices a run targets together (their
+    /// Device Manager ids); empty runs on `run_device`.
+    pub run_devices: Vec<String>,
     /// Per-language server command overrides (`rust` → `rust-analyzer`);
     /// "off" disables that language's server.
     pub language_servers: std::collections::BTreeMap<String, String>,
@@ -402,6 +405,7 @@ impl Default for Settings {
             gradle_user_home: String::new(),
             gradle_offline: false,
             run_device: String::new(),
+            run_devices: Vec::new(),
             language_servers: Default::default(),
             auto_update_on_push_rejected: false,
             warn_crlf: true,
@@ -634,6 +638,7 @@ impl Settings {
                 "use_language_servers" => settings.use_language_servers = flag,
                 "compile_on_save" => settings.compile_on_save = flag,
                 "run_device" => settings.run_device = value.to_owned(),
+                "run_devices" => settings.run_devices = value.split('\t').filter(|v| !v.is_empty()).map(str::to_owned).collect(),
                 key if key.starts_with("variant_") => {
                     settings.build_variants.insert(key["variant_".len()..].to_owned(), value.to_owned());
                 }
@@ -729,6 +734,9 @@ impl Settings {
         ));
         text.push_str(&format!("use_language_servers={}\nlarge_file_mb={}\n", self.use_language_servers, self.large_file_mb));
         text.push_str(&format!("compile_on_save={}\nrun_device={}\n", self.compile_on_save, self.run_device));
+        if !self.run_devices.is_empty() {
+            text.push_str(&format!("run_devices={}\n", self.run_devices.join("\t")));
+        }
         for (module, variant) in &self.build_variants {
             text.push_str(&format!("variant_{module}={variant}\n"));
         }

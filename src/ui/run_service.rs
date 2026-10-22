@@ -68,7 +68,8 @@ pub struct BuildLog {
 pub struct Console {
     pub name: String,
     pub lines: Vec<ConsoleLine>,
-    pub serial: String,
+    /// The devices it was launched on.
+    pub serials: Vec<String>,
     pub application_id: Option<String>,
     /// Launching, or the app runs.
     pub active: bool,
@@ -216,14 +217,39 @@ impl RunService {
         out
     }
 
+    /// The device Run targets; with several selected, the first.
     pub fn device(&self, cx: &App) -> Option<Device> {
+        self.targets(cx).into_iter().next()
+    }
+
+    /// The devices Run targets: those picked with Select Multiple
+    /// Devices… that are still there, else the one picked.
+    pub fn targets(&self, cx: &App) -> Vec<Device> {
         let all = self.devices(cx);
+        let several: Vec<Device> = Settings::get(cx).run_devices.iter().filter_map(|id| all.iter().find(|d| d.id == *id).cloned()).collect();
+        if !several.is_empty() {
+            return several;
+        }
         let saved = Settings::get(cx).run_device.clone();
-        all.iter().find(|d| d.id == saved).cloned().or_else(|| all.into_iter().find(|d| d.online))
+        all.iter().find(|d| d.id == saved).cloned().or_else(|| all.into_iter().find(|d| d.online)).into_iter().collect()
+    }
+
+    /// Several devices picked: how many (the toolbar's "Multiple Devices (2)").
+    pub fn multiple(&self, cx: &App) -> Option<usize> {
+        (!Settings::get(cx).run_devices.is_empty()).then(|| self.targets(cx).len()).filter(|n| *n > 0)
     }
 
     pub fn pick_device(&mut self, id: String, cx: &mut Context<Self>) {
-        Settings::update(cx, |s| s.run_device = id);
+        Settings::update(cx, |s| {
+            s.run_device = id;
+            s.run_devices.clear();
+        });
+        cx.notify();
+    }
+
+    /// Select Multiple Devices…: OK with the checked ones.
+    pub fn pick_devices(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
+        Settings::update(cx, |s| s.run_devices = ids);
         cx.notify();
     }
 
@@ -338,32 +364,42 @@ impl RunService {
             cx.emit(RunEvent::Error { title: "Error running app".into(), message: "No run configuration: the project has no Android application module.".into() });
             return;
         };
-        let Some(device) = self.device(cx) else {
+        let mut targets = self.targets(cx);
+        if targets.is_empty() {
             cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: "No target device found.".into() });
             return;
-        };
+        }
+        // The debugger attaches to one app.
+        if debug {
+            targets.truncate(1);
+        }
         let variant = sync_service::variant_of(&config.build_root, &config.module, cx);
         let tasks = config.gradle_tasks(&variant);
         let (send, cancel) = self.start_build(format!("Run '{}'", config.name), tasks, cx);
-        self.console = Some(Console { name: config.name.clone(), lines: Vec::new(), serial: device.serial.clone().unwrap_or_default(), application_id: None, active: true });
-        let launch_line = format!("{}: Launching '{}' on {}.", chrono::Local::now().format("%m/%d %H:%M:%S"), config.name, device.name);
+        self.console = Some(Console { name: config.name.clone(), lines: Vec::new(), serials: targets.iter().filter_map(|d| d.serial.clone()).collect(), application_id: None, active: true });
+        let on = if targets.len() > 1 { "Multiple Devices".to_owned() } else { targets[0].name.clone() };
+        let launch_line = format!("{}: Launching '{}' on {on}.", chrono::Local::now().format("%m/%d %H:%M:%S"), config.name);
         let devices = self.devices.clone();
         let root = config.build_root.clone();
-        let start_avd = !device.online;
-        if start_avd {
+        for device in targets.iter().filter(|d| !d.online) {
             devices.update(cx, |d, cx| d.launch(&device.id, cx));
         }
-        let id = device.id.clone();
         cx.spawn(async move |this, cx| {
-            // A virtual device that wasn't running: wait for it to boot.
-            let mut serial = device.serial.clone().filter(|_| device.online);
+            // Virtual devices that weren't running: wait for them to boot.
+            let serial_of = |d: &Device, cx: &mut gpui_kit::AsyncApp| devices.read_with(cx, |m, _| m.devices().iter().find(|x| x.id == d.id && x.online).and_then(|x| x.serial.clone()));
+            let mut serials: Vec<Option<String>> = targets.iter().map(|d| d.serial.clone().filter(|_| d.online)).collect();
             let deadline = Instant::now() + Duration::from_secs(300);
-            while serial.is_none() && Instant::now() < deadline && !cancel.load(Ordering::Relaxed) {
+            while serials.iter().any(Option::is_none) && Instant::now() < deadline && !cancel.load(Ordering::Relaxed) {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                serial = devices.read_with(cx, |d, _| d.devices().iter().find(|d| d.id == id && d.online).and_then(|d| d.serial.clone()));
+                for (serial, d) in serials.iter_mut().zip(&targets) {
+                    if serial.is_none() {
+                        *serial = serial_of(d, cx);
+                    }
+                }
             }
             let adb = devices.read_with(cx, |d, _| d.adb());
-            let (Some(serial), Some(adb)) = (serial, adb) else {
+            let ready: Option<Vec<String>> = serials.into_iter().collect();
+            let (Some(serials), Some(adb)) = (ready, adb) else {
                 this.update(cx, |this, cx| {
                     this.end_build(&root, BuildResult { cancelled: true, ..Default::default() }, cx);
                     let message = if cancel.load(Ordering::Relaxed) { "Cancelled." } else { "The device didn't come online." };
@@ -372,27 +408,42 @@ impl RunService {
                 .ok();
                 return;
             };
-            let name = device.name.clone();
+            this.update(cx, |this, _| {
+                if let Some(console) = this.console.as_mut() {
+                    console.serials = serials.clone();
+                }
+            })
+            .ok();
+            let names: Vec<String> = targets.iter().map(|d| d.name.clone()).collect();
             let c = cancel.clone();
             let cfg = config.clone();
-            let attach_to = (serial.clone(), adb.clone());
-            let (outcome, build) = cx
+            let launched = serials.clone();
+            let (outcomes, build) = cx
                 .background_spawn(async move {
                     let mut console_started = false;
                     let bridge = LaunchBridge { adb: AdbDevice { adb }, tx: send.clone() };
                     let console_tx = send.clone();
-                    run_app::run(
+                    let several = serials.len() > 1;
+                    let run_targets: Vec<run_app::Target> = serials.iter().zip(&names).map(|(serial, name)| run_app::Target { serial, name, debug }).collect();
+                    run_app::run_on(
                         &GradleBuild,
                         &bridge,
                         &cfg,
                         &variant,
-                        run_app::Target { serial: &serial, name: &name, debug },
+                        &run_targets,
                         &mut |l| drop(send.send(Message::Build(l.to_owned()))),
-                        &mut |l| {
+                        &mut |i, l| {
                             if !console_started {
                                 console_started = true;
                                 console_tx.send(Message::Console(ConsoleLine::Info(launch_line.clone()))).ok();
                             }
+                            // Several devices: each line says which.
+                            let l = match l {
+                                _ if !several => l,
+                                ConsoleLine::Info(t) => ConsoleLine::Info(format!("[{}] {t}", names[i])),
+                                ConsoleLine::Command(t) => ConsoleLine::Command(format!("[{}] {t}", names[i])),
+                                ConsoleLine::Error(t) => ConsoleLine::Error(format!("[{}] {t}", names[i])),
+                            };
                             console_tx.send(Message::Console(l)).ok();
                         },
                         &|| c.load(Ordering::Relaxed),
@@ -402,27 +453,33 @@ impl RunService {
             this.update(cx, |this, cx| {
                 // Lines still in the channel come first.
                 this.drain();
-                let failed = matches!(outcome, RunOutcome::BuildFailed);
+                let failed = outcomes.iter().all(|o| matches!(o, RunOutcome::BuildFailed));
                 this.end_build(&root, build, cx);
+                let running = outcomes.iter().zip(&launched).find_map(|(o, serial)| match o {
+                    RunOutcome::Running { application_id, pid } => Some((serial.clone(), application_id.clone(), *pid)),
+                    _ => None,
+                });
                 if let Some(console) = this.console.as_mut() {
-                    match &outcome {
-                        RunOutcome::Running { application_id, .. } => console.application_id = Some(application_id.clone()),
-                        _ => console.active = false,
+                    match &running {
+                        Some((_, application_id, _)) => console.application_id = Some(application_id.clone()),
+                        None => console.active = false,
                     }
                 }
                 // After the Run window, so Logcat is the one showing.
-                let show_logcat = match &outcome {
-                    RunOutcome::Running { application_id, .. } if config.options.show_logcat => Some(RunEvent::ShowLogcat { serial: attach_to.0.clone(), application_id: application_id.clone() }),
+                let show_logcat = match &running {
+                    Some((serial, application_id, _)) if config.options.show_logcat => Some(RunEvent::ShowLogcat { serial: serial.clone(), application_id: application_id.clone() }),
                     _ => None,
                 };
-                match outcome {
-                    RunOutcome::Running { pid: Some(pid), .. } if debug => {
+                match (&running, outcomes.iter().any(|o| matches!(o, RunOutcome::Failed))) {
+                    (Some((serial, _, Some(pid))), _) if debug => {
                         cx.emit(RunEvent::ShowRun);
-                        let (serial, adb) = attach_to;
-                        cx.emit(RunEvent::Attach { name: config.name.clone(), serial, pid, adb });
+                        let adb = this.devices.read(cx).adb();
+                        if let Some(adb) = adb {
+                            cx.emit(RunEvent::Attach { name: config.name.clone(), serial: serial.clone(), pid: *pid, adb });
+                        }
                     }
-                    RunOutcome::Running { .. } | RunOutcome::Failed => cx.emit(RunEvent::ShowRun),
-                    RunOutcome::BuildFailed if failed => {
+                    (Some(_), _) | (None, true) => cx.emit(RunEvent::ShowRun),
+                    (None, false) if failed => {
                         cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: "Gradle build failed. See the Build window.".into() })
                     }
                     _ => {}
@@ -446,9 +503,11 @@ impl RunService {
         let Some(console) = self.console.as_mut().filter(|c| c.active) else { return };
         console.active = false;
         if let (Some(id), Some(adb)) = (console.application_id.clone(), self.devices.read(cx).adb()) {
-            let serial = console.serial.clone();
+            let serials = console.serials.clone();
             cx.background_spawn(async move {
-                let _ = adb.run(&["-s", &serial, "shell", &format!("am force-stop {id}")], Duration::from_secs(10));
+                for serial in serials {
+                    let _ = adb.run(&["-s", &serial, "shell", &format!("am force-stop {id}")], Duration::from_secs(10));
+                }
             })
             .detach();
         }
