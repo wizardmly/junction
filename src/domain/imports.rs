@@ -90,9 +90,19 @@ struct Import<'a> {
     /// `a.b.C`, `a.b.*`.
     path: &'a str,
     alias: Option<&'a str>,
+    /// A comment after it on its line (`// for tests`), kept with it.
+    comment: Option<&'a str>,
 }
 
 impl Import<'_> {
+    /// The line as written back: the import and its comment.
+    fn written(&self, style: ImportStyle) -> String {
+        match self.comment {
+            Some(c) => format!("{} {c}", self.line(style)),
+            None => self.line(style),
+        }
+    }
+
     fn line(&self, style: ImportStyle) -> String {
         let alias = self.alias.map(|a| format!(" as {a}")).unwrap_or_default();
         match style {
@@ -122,6 +132,10 @@ impl Import<'_> {
 
 fn parse_import(line: &str) -> Option<Import<'_>> {
     let rest = line.trim().strip_prefix("import ")?.trim();
+    let (rest, comment) = match rest.find("//").into_iter().chain(rest.find("/*")).min() {
+        Some(at) => (rest[..at].trim(), Some(rest[at..].trim())),
+        None => (rest, None),
+    };
     let rest = rest.strip_suffix(';').unwrap_or(rest).trim();
     let (is_static, rest) = match rest.strip_prefix("static ") {
         Some(r) => (true, r.trim()),
@@ -131,19 +145,21 @@ fn parse_import(line: &str) -> Option<Import<'_>> {
         Some((p, a)) => (p.trim(), Some(a.trim())),
         None => (rest, None),
     };
-    (!path.is_empty() && !path.contains(char::is_whitespace)).then_some(Import { is_static, path, alias })
+    (!path.is_empty() && !path.contains(char::is_whitespace)).then_some(Import { is_static, path, alias, comment })
 }
 
 /// Optimize Imports, as IntelliJ's with its default code style: imports
 /// nothing in the file names are removed (star imports and Kotlin operator
 /// imports stay), so are duplicates, ones of the file's own package and
 /// Java's `java.lang`; the rest sorted into the default layout. `None`
-/// when the block is already optimized or can't be rewritten safely (a
-/// comment inside it).
+/// when the block is already optimized. As IntelliJ's, a comment after an
+/// import stays on its line; comment lines among the imports move after
+/// them.
 pub fn optimize(style: ImportStyle, text: &str) -> Option<ImportsEdit> {
     let mut package = None;
     let mut block: Option<Range<usize>> = None;
     let mut imports = Vec::new();
+    let mut comments: Vec<&str> = Vec::new();
     let mut offset = 0;
     for raw in text.split_inclusive('\n') {
         let trimmed = raw.trim();
@@ -161,12 +177,12 @@ pub fn optimize(style: ImportStyle, text: &str) -> Option<ImportsEdit> {
                 return None;
             }
         } else {
-            if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
-                // A comment among the imports: leave the block alone,
-                // unless the imports are over.
-                if text[offset..].lines().any(|l| l.trim().starts_with("import ")) {
-                    return None;
-                }
+            // A comment among the imports (not after the last one).
+            let comment = trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*');
+            if comment && text[offset..].lines().any(|l| l.trim().starts_with("import ")) {
+                comments.push(raw.trim_end());
+                offset += raw.len();
+                continue;
             }
             break;
         }
@@ -205,11 +221,15 @@ pub fn optimize(style: ImportStyle, text: &str) -> Option<ImportsEdit> {
             out.push('\n');
         }
         last_group = Some(group);
-        out.push_str(&import.line(style));
+        out.push_str(&import.written(style));
+        out.push('\n');
+    }
+    for comment in &comments {
+        out.push_str(comment);
         out.push('\n');
     }
     let mut range = block;
-    if kept.is_empty() {
+    if kept.is_empty() && comments.is_empty() {
         // No imports left: their blank lines go too.
         while text[range.end..].starts_with('\n') {
             range.end += 1;
@@ -449,8 +469,17 @@ mod tests {
         let mut out = "package a\n\nimport b.C\n\nclass A\n".to_owned();
         out.replace_range(edit.range, &edit.text);
         assert_eq!(out, "package a\n\nclass A\n");
-        // A comment among the imports: left alone.
-        assert_eq!(optimize(ImportStyle::Kotlin, "import b.C\n// keep\nimport d.E\n\nval x = 1\n"), None);
+        // A comment line among the imports moves after them (IntelliJ's
+        // ImportHelper); one after an import stays with it.
+        let text = "import d.E\n// keep\nimport b.C // for C\nimport x.Unused // gone\n\nval x: C = E()\n";
+        let edit = optimize(ImportStyle::Kotlin, text).unwrap();
+        let mut out = text.to_owned();
+        out.replace_range(edit.range, &edit.text);
+        assert_eq!(out, "import b.C // for C\nimport d.E\n// keep\n\nval x: C = E()\n");
+        assert_eq!(optimize(ImportStyle::Kotlin, &out), None);
+        let java = "import java.util.List; /* lists */\n/* block\n * comment */\nimport a.B;\n\nclass A { B b; List l; }\n";
+        let edit = optimize(ImportStyle::Java, java).unwrap();
+        assert_eq!(edit.text, "import a.B;\n\nimport java.util.List; /* lists */\n/* block\n * comment */\n");
         // No imports: nothing in the body is taken for one.
         assert_eq!(optimize(ImportStyle::Kotlin, "package a\n\nval s = \"\"\"\nimport b.C\n\"\"\"\n"), None);
     }

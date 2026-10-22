@@ -19,6 +19,11 @@ pub fn sites(path: &str, text: &str) -> Vec<VersionSite> {
     if catalog::is_build_script(path) {
         return versions::script_sites(text);
     }
+    // `buildSrc` constants (`const val coreKtx = "g:a:v"`) are dependency
+    // strings too.
+    if (path.starts_with("buildSrc/") || path.contains("/buildSrc/")) && (path.ends_with(".kt") || path.ends_with(".java")) {
+        return versions::script_sites(text).into_iter().filter(|s| !s.plugin).collect();
+    }
     Vec::new()
 }
 
@@ -80,5 +85,10 @@ mod tests {
         assert_eq!((p.start, p.end), (Pos::new(1, 43), Pos::new(1, 49)));
         assert_eq!(p.fix.as_ref().unwrap().title, "Change to 1.13.1");
         assert!(super::sites("src/Main.kt", text).is_empty());
+        // buildSrc constants.
+        let deps = "object Deps {\n    const val coreKtx = \"androidx.core:core-ktx:1.10.1\"\n}\n";
+        let sites = super::sites("buildSrc/src/main/kotlin/Deps.kt", deps);
+        assert_eq!(check(&Fake, deps, &sites).len(), 1);
+        assert_eq!(super::sites("lib/buildSrc/src/main/java/Deps.java", deps).len(), 1);
     }
 }

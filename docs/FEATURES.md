@@ -449,7 +449,8 @@ Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 
 | Groovy 脚本（`build.gradle`）里的 `libs.` 补全和跳转：与 Kotlin 脚本相同 | ✅ |
 | `buildSrc` 常量（2026-10-22）：Kotlin 脚本里本来按索引解析；Groovy 脚本不建索引，另按名字解析：`Deps.coreKtx`、`Deps.Android.minSdk` 这样以类名开头的限定名 Ctrl+B 跳到 buildSrc（或工程里任一 Kotlin / Java 类）的成员，类名本身跳到类；`Deps.` 后补全该类的成员 | ✅ |
 | buildSrc 常量的 Find Usages（2026-10-22）：在 `Deps.kt` 里 Alt+F7，结果多一组 “Groovy build scripts”，列出 `build.gradle` 里解析到该声明的 `Deps.coreKtx`（同名的 `libs.coreKtx` 等不算） | ✅ |
-| buildSrc 里依赖字符串的新版本警告、Rename buildSrc 常量时同步改 Groovy 脚本 | ❌ 未做 |
+| buildSrc 补充（2026-10-22）：Rename（Shift+F6）buildSrc 常量时，Groovy `build.gradle` 里解析到它的 `Deps.coreKtx` 一并列出并改名；buildSrc 下 Kotlin / Java 文件里的 `"g:a:v"` 依赖字符串也有新版本警告和 “Change to …” | ✅ |
+| buildSrc 里用字符串模板拼出的版本（`"g:a:${Versions.x}"`） | ❌ 未做 |
 
 Linux 实测（容器访问不了 dl.google.com，androidx 和 AGP 用预先写入的缓存，其他是实际联网结果）：build.gradle.kts 里 Ctrl+B `libs.androidx.core.ktx` 跳到 toml 第 9 行；toml 里所有旧版本都有警告，Alt+Enter 选 “Change to 1.13.1” 后版本被替换；`version.ref` 跳到 `[versions]`；Alt+F7 列出 build 脚本里的用法；`libs.andr` → `androidx` → `core.` → `ktx` 逐段补全。截图：reports/Gradle文件辅助-2026-10-15/。
 
@@ -569,7 +570,7 @@ Linux 实测（Xvfb，示例 Gradle 项目）：类 `Calc` 改为 `Calculator`�
 | 结果用提示显示：“Removed 3 unused imports”、“Rearranged imports”、“Unused imports not found” | ✅ |
 | Project 窗口对目录批量优化（2026-10-21，见第 11 节 Project 窗口右键） | ✅ |
 | Settings › Editor › Auto Import 页（2026-10-22）：Java、Kotlin 各一个 “Optimize imports on the fly”（默认关，同 IntelliJ）；勾上后 Ctrl+S 保存时静默删未用的 import 并排序，光标在 import 块里（正在写 import）时不动；IntelliJ 是编辑过程中随高亮完成就做，这里改在保存时做，切标签等自动保存不触发 | ✅ |
-| import 块中间夹注释时保留注释原位 | ❌ 未做（现在不改动这样的 import 块） |
+| import 块里的注释（2026-10-22，照 IntelliJ 的 `ImportHelper`）：写在 import 行尾的注释跟着这行 import 一起排序（import 被删时注释一起删）；夹在 import 之间的整行注释（含多行 `/* */`）移到排好的 import 后面 | ✅ |
 
 “是否用到”按文件里出现的整词判断（注释里出现也算用到），不做类型解析：只在注释里提到的类，其 import 会被保留。
 
