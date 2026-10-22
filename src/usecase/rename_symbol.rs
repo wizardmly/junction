@@ -16,6 +16,8 @@ pub struct Renamed {
     pub replaced: usize,
     /// A class's file renamed along with it: (from, to).
     pub file: Option<(String, String)>,
+    /// Each changed file's (path, text before, text after), for Undo.
+    pub edits: Vec<(String, String, String)>,
 }
 
 /// Renames `old` to `new` at the given occurrences. `declaration` is the
@@ -39,6 +41,7 @@ pub fn rename(files: &dyn ProjectFiles, occurrences: &[Occurrence], old: &str, n
             files.write(path, &new_text)?;
             result.changed.push(path.to_owned());
             result.replaced += count;
+            result.edits.push((path.to_owned(), text, new_text));
         }
     }
     if rename_file {
@@ -48,6 +51,29 @@ pub fn rename(files: &dyn ProjectFiles, occurrences: &[Occurrence], old: &str, n
         }
     }
     Ok(result)
+}
+
+/// Undoes a rename, as Ctrl+Z after Android Studio's refactoring: the
+/// file goes back to its old name and every changed file to its old
+/// text. Refuses, touching nothing, when a file changed since.
+pub fn undo(files: &dyn ProjectFiles, renamed: &Renamed) -> Result<(), String> {
+    let moved = |path: &str| match &renamed.file {
+        Some((from, to)) if from == path => to.clone(),
+        _ => path.to_owned(),
+    };
+    for (path, _, after) in &renamed.edits {
+        let current = moved(path);
+        if files.read(&current)? != *after {
+            return Err(format!("Cannot undo: {current} has changed since the rename"));
+        }
+    }
+    if let Some((from, to)) = &renamed.file {
+        files.rename(to, from)?;
+    }
+    for (path, before, _) in &renamed.edits {
+        files.write(path, before)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -97,6 +123,30 @@ mod tests {
         assert_eq!(result.file, Some(("a/Foo.kt".into(), "a/Bar.kt".into())));
         assert_eq!(files.read("a/Bar.kt").unwrap(), "class Bar {\n  fun make() = Bar()\n}\n");
         assert_eq!(files.read("a/Use.kt").unwrap(), "val f: Bar = Bar()\n");
+    }
+
+    #[test]
+    fn undoes_a_rename() {
+        let files = Files::default();
+        files.write("a/Foo.kt", "class Foo\n").unwrap();
+        files.write("a/Use.kt", "val f = Foo()\n").unwrap();
+        let result = rename(&files, &[at("a/Foo.kt", 0, 6), at("a/Use.kt", 0, 8)], "Foo", "Bar", "a/Foo.kt", true).unwrap();
+        undo(&files, &result).unwrap();
+        let mut list = files.list();
+        list.sort();
+        assert_eq!(list, ["a/Foo.kt", "a/Use.kt"]);
+        assert_eq!(files.read("a/Foo.kt").unwrap(), "class Foo\n");
+        assert_eq!(files.read("a/Use.kt").unwrap(), "val f = Foo()\n");
+    }
+
+    #[test]
+    fn undo_refuses_after_later_edits() {
+        let files = Files::default();
+        files.write("A.kt", "val x = 1\nval y = x\n").unwrap();
+        let result = rename(&files, &[at("A.kt", 0, 4), at("A.kt", 1, 8)], "x", "z", "A.kt", false).unwrap();
+        files.write("A.kt", "val z = 2\nval y = z\n").unwrap();
+        assert_eq!(undo(&files, &result), Err("Cannot undo: A.kt has changed since the rename".into()));
+        assert_eq!(files.read("A.kt").unwrap(), "val z = 2\nval y = z\n");
     }
 
     #[test]

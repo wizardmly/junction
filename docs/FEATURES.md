@@ -556,7 +556,8 @@ Linux 实测：去掉 `JAVA_HOME`、PATH 中不含 `java` 启动（即用户截�
 | 类名与文件名相同（`Foo.kt` / `Foo.java`）时 “Rename file 'Foo.java'”，默认勾选，用 `git mv` 改名，打开的标签页跟着改 | ✅ |
 | 开始前保存所有编辑器，改完刷新索引、Git 状态，未修改的标签页从磁盘重载并保持光标 | ✅ |
 | 光标不在名字上时提示 AS 的 “Cannot perform refactoring. Caret should be positioned at the name of element to be refactored.” | ✅ |
-| 语义级精确匹配（同名的不同符号，例如别的类的 `add`）、Preview 窗口、Undo | ❌ 文本整词匹配，同名不同符号要在列表里手动取消勾选 |
+| Undo | ✅ 重命名后右下角通知「Renamed 'a' to 'b'」带 Undo 按钮：文件名改回、每个文件恢复原文；之后文件又被改过就拒绝并提示（AS 用 Ctrl+Z，这里放在通知里） |
+| 语义级精确匹配（同名的不同符号，例如别的类的 `add`）、Preview 窗口 | ❌ 文本整词匹配，同名不同符号要在列表里手动取消勾选 |
 
 Linux 实测（Xvfb，示例 Gradle 项目）：类 `Calc` 改为 `Calculator`，`Calc.java` 改名为 `Calculator.java`（Git 显示为重命名），测试里的 `Calc.add` 跟着改，勾选注释后 Javadoc 里的 `Calc` 也改了，标签页跟到新文件；局部变量 `sum` 改为 `total`，三处全改；方法 `add` 列出声明和两处调用；输入 `class` 时显示错误且不能提交。
 
