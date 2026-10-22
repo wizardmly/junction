@@ -248,10 +248,21 @@ impl Workspace {
             editor.update(cx, |e, cx| e.save_now(cx));
         }
         match &self.translations {
-            Some((view, _)) if *view.read(cx).res() == res => view.update(cx, |v, cx| v.reload(cx)),
+            Some((view, _)) if view.read(cx).covers(&res) => view.update(cx, |v, cx| v.reload(cx)),
             _ => {
-                let label = res.strip_prefix(&root).unwrap_or(&res).to_string_lossy().replace('\\', "/");
-                let view = cx.new(|cx| TranslationsEditor::new(res, label, window, cx));
+                // Every res folder with values, this one first.
+                let mut others: Vec<std::path::PathBuf> = crate::infra::resource_scanner::ResFolders { root: root.clone() }
+                    .res_dirs()
+                    .into_iter()
+                    .filter(|r| *r != res && std::fs::read_dir(r).is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("values"))))
+                    .collect();
+                others.sort();
+                let label = |r: &std::path::Path| r.strip_prefix(&root).unwrap_or(r).to_string_lossy().replace('\\', "/");
+                let folders = std::iter::once(res).chain(others).map(|r| {
+                    let l = label(&r);
+                    (r, l)
+                }).collect();
+                let view = cx.new(|cx| TranslationsEditor::new(folders, window, cx));
                 let subscription = cx.subscribe_in(&view, window, move |this, _, event: &TranslationsEvent, window, cx| match event {
                     TranslationsEvent::FilesChanged(paths) => {
                         let Some(root) = this.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
@@ -271,7 +282,7 @@ impl Workspace {
     fn reload_translations(&mut self, path: &str, cx: &mut Context<Self>) {
         let Some((view, _)) = &self.translations else { return };
         let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
-        if crate::ui::translations_editor::res_of(&root.join(path)).as_ref() == Some(view.read(cx).res()) {
+        if crate::ui::translations_editor::res_of(&root.join(path)).is_some_and(|res| view.read(cx).covers(&res)) {
             view.update(cx, |v, cx| v.reload(cx));
         }
     }
