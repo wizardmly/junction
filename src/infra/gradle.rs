@@ -53,6 +53,21 @@ impl TaskRunner for GradleBuild {
         BuildResult { succeeded, cancelled: was_cancelled, problems: parse_output(&output), failure }
     }
 
+    fn run_program(&self, dir: &Path, command: &[String], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
+        let Some((program, args)) = command.split_first() else {
+            return BuildResult { succeeded: true, ..Default::default() };
+        };
+        let mut process = Command::new(program);
+        process.args(args).current_dir(dir);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            process.creation_flags(0x0800_0000);
+        }
+        let (succeeded, cancelled, output) = stream_named(process, program, line, cancelled);
+        BuildResult { succeeded, cancelled, failure: (!succeeded && !cancelled).then(|| format!("External tool '{program}' failed")), problems: parse_output(&output) }
+    }
+
     fn apk_output(&self, module: &ModuleInfo, variant: &str) -> Option<ApkOutput> {
         apk_output(&module.dir.join("build/outputs/apk"), variant)
     }
@@ -61,13 +76,18 @@ impl TaskRunner for GradleBuild {
 /// Runs Gradle, passing its output (both pipes, in the order lines
 /// arrive) a line at a time; stops it when `cancelled` says so. Whether it
 /// succeeded, whether it was stopped, and the whole output.
-pub fn stream(mut command: Command, line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> (bool, bool, String) {
+pub fn stream(command: Command, line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> (bool, bool, String) {
+    stream_named(command, "Gradle", line, cancelled)
+}
+
+/// [`stream`] for any program, `what` naming it when it can't start.
+fn stream_named(mut command: Command, what: &str, line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> (bool, bool, String) {
     use std::io::BufRead as _;
     command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {
-            let message = format!("Could not run Gradle: {e}");
+            let message = format!("Could not run {what}: {e}");
             line(&message);
             return (false, false, message);
         }
