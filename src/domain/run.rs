@@ -100,6 +100,9 @@ pub struct RunConfiguration {
     pub build_root: PathBuf,
     pub module: ModuleInfo,
     pub options: LaunchOptions,
+    /// A Gradle configuration: its Run line (tasks and arguments,
+    /// `clean :app:lint --info`); none for an Android App one.
+    pub gradle: Option<String>,
 }
 
 /// What Launch starts, as the configuration's Launch Options say.
@@ -230,6 +233,9 @@ pub struct SavedRunConfiguration {
     pub name: String,
     /// ":app".
     pub module: String,
+    /// A Gradle configuration's Run line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradle: Option<String>,
     #[serde(flatten)]
     pub options: LaunchOptions,
 }
@@ -307,15 +313,19 @@ pub fn run_configurations(build_root: &std::path::Path, modules: &[ModuleInfo], 
         return saved
             .iter()
             .filter_map(|s| {
-                let module = modules.iter().find(|m| m.path == s.module && m.kind == ModuleType::Application)?;
-                Some(RunConfiguration { name: s.name.clone(), build_root: build_root.to_path_buf(), module: module.clone(), options: s.options.clone() })
+                // A Gradle configuration runs in the build's root project.
+                let module = match &s.gradle {
+                    Some(_) => ModuleInfo { path: ":".into(), dir: build_root.to_path_buf(), kind: ModuleType::Other, variants: Vec::new() },
+                    None => modules.iter().find(|m| m.path == s.module && m.kind == ModuleType::Application)?.clone(),
+                };
+                Some(RunConfiguration { name: s.name.clone(), build_root: build_root.to_path_buf(), module, options: s.options.clone(), gradle: s.gradle.clone() })
             })
             .collect();
     }
     let mut out: Vec<RunConfiguration> = modules
         .iter()
         .filter(|m| m.kind == ModuleType::Application)
-        .map(|m| RunConfiguration { name: m.name(), build_root: build_root.to_path_buf(), module: m.clone(), options: LaunchOptions::default() })
+        .map(|m| RunConfiguration { name: m.name(), build_root: build_root.to_path_buf(), module: m.clone(), options: LaunchOptions::default(), gradle: None })
         .collect();
     out.sort_by(|a, b| a.module.path.cmp(&b.module.path));
     out
@@ -352,11 +362,13 @@ mod tests {
         let mut settings = LaunchOptions { launch: LaunchTarget::Activity(".SettingsActivity".into()), ..Default::default() };
         settings.flags = "-W".into();
         let saved = [
-            SavedRunConfiguration { name: "Settings".into(), module: ":app".into(), options: settings.clone() },
-            SavedRunConfiguration { name: "Old".into(), module: ":gone".into(), options: LaunchOptions::default() },
+            SavedRunConfiguration { name: "Settings".into(), module: ":app".into(), gradle: None, options: settings.clone() },
+            SavedRunConfiguration { name: "Old".into(), module: ":gone".into(), gradle: None, options: LaunchOptions::default() },
+            SavedRunConfiguration { name: "lint".into(), module: String::new(), gradle: Some(":app:lint".into()), options: LaunchOptions { before_launch: Vec::new(), ..Default::default() } },
         ];
         let configs = run_configurations(std::path::Path::new("/p"), &[m(":app", ModuleType::Application, &["debug"])], &saved);
-        assert_eq!((configs.len(), configs[0].name.as_str(), &configs[0].options), (1, "Settings", &settings));
+        assert_eq!((configs.len(), configs[0].name.as_str(), &configs[0].options), (2, "Settings", &settings));
+        assert_eq!((configs[1].gradle.as_deref(), configs[1].module.dir.as_path()), (Some(":app:lint"), std::path::Path::new("/p")));
         assert_eq!(activity_component("com.ex", ".SettingsActivity"), "com.ex/.SettingsActivity");
         assert_eq!(activity_component("com.ex", "com.lib.Scan"), "com.ex/com.lib.Scan");
         assert_eq!(activity_component("com.ex", "other/.Main"), "other/.Main");
@@ -372,13 +384,13 @@ mod tests {
         assert_eq!(split_command_line(r#"clean  :app:lint "a b"c"#), ["clean", ":app:lint", "a bc"]);
         assert_eq!(split_command_line(r#"x "" y"#), ["x", "", "y"]);
         let module = ModuleInfo { path: ":app".into(), dir: "/p/app".into(), kind: ModuleType::Application, variants: vec!["debug".into()] };
-        let mut config = RunConfiguration { name: "app".into(), build_root: "/p".into(), module, options: LaunchOptions::default() };
+        let mut config = RunConfiguration { name: "app".into(), build_root: "/p".into(), module, options: LaunchOptions::default(), gradle: None };
         assert_eq!(config.gradle_tasks("debug"), [":app:assembleDebug"]);
         config.options.before_launch = vec![BeforeLaunch::Gradle("clean".into()), BeforeLaunch::External("echo hi".into()), BeforeLaunch::Make];
         assert_eq!(config.gradle_tasks("debug"), ["clean", ":app:assembleDebug"]);
         assert_eq!(BeforeLaunch::Gradle(":app:lint".into()).label(), "Run Gradle task ':app:lint'");
         // Only a changed list is saved.
-        let saved = |options: LaunchOptions| serde_json::to_string(&SavedRunConfiguration { name: "a".into(), module: ":app".into(), options }).unwrap();
+        let saved = |options: LaunchOptions| serde_json::to_string(&SavedRunConfiguration { name: "a".into(), module: ":app".into(), gradle: None, options }).unwrap();
         assert!(!saved(LaunchOptions::default()).contains("before_launch"));
         let json = saved(config.options.clone());
         let read: SavedRunConfiguration = serde_json::from_str(&json).unwrap();

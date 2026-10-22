@@ -173,11 +173,12 @@ impl RunService {
         let current: Vec<(std::path::PathBuf, run::SavedRunConfiguration)> = self
             .configurations(cx)
             .into_iter()
-            .map(|c| (c.build_root.clone(), run::SavedRunConfiguration { name: c.name, module: c.module.path, options: c.options }))
+            .map(|c| (c.build_root.clone(), run::SavedRunConfiguration { name: c.name, module: if c.gradle.is_some() { String::new() } else { c.module.path }, gradle: c.gradle, options: c.options }))
             .collect();
         let selected = self.configuration(cx).map(|c| c.name);
         let this = cx.entity().downgrade();
-        crate::ui::run_config_dialog::open(modules, current, selected, move |_, cx| {
+        let roots: Vec<std::path::PathBuf> = builds.iter().map(|(root, _)| root.clone()).collect();
+        crate::ui::run_config_dialog::open(roots, modules, current, selected, move |_, cx| {
             this.update(cx, |_, cx| cx.notify()).ok();
         }, window, cx);
     }
@@ -364,6 +365,14 @@ impl RunService {
             cx.emit(RunEvent::Error { title: "Error running app".into(), message: "No run configuration: the project has no Android application module.".into() });
             return;
         };
+        if config.gradle.is_some() {
+            if debug {
+                cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: "Debugging Gradle configurations is not supported.".into() });
+            } else {
+                self.run_gradle(config, cx);
+            }
+            return;
+        }
         let mut targets = self.targets(cx);
         if targets.is_empty() {
             cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: "No target device found.".into() });
@@ -516,13 +525,51 @@ impl RunService {
 
     // --- Internals ------------------------------------------------------
 
+    /// A Gradle configuration: its Run line's tasks in the Run window,
+    /// as IntelliJ's "Executing '…'" / "Execution finished '…'".
+    fn run_gradle(&mut self, config: RunConfiguration, cx: &mut Context<Self>) {
+        let run_line = config.gradle.clone().unwrap_or_default();
+        let time = || chrono::Local::now().format("%H:%M:%S").to_string();
+        self.console = Some(Console { name: config.name.clone(), lines: vec![ConsoleLine::Info(format!("{}: Executing '{run_line}'…", time()))], serials: Vec::new(), application_id: None, active: true });
+        cx.emit(RunEvent::ShowRun);
+        let (send, cancel) = self.open_channel(cx);
+        let variant = sync_service::variant_of(&config.build_root, &config.module, cx);
+        let cfg = config.clone();
+        let work = cx.background_spawn(async move {
+            run_app::run_gradle(&GradleBuild, &cfg, &variant, &mut |l| drop(send.send(Message::Console(ConsoleLine::Info(l.to_owned())))), &|| cancel.load(Ordering::Relaxed))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            this.update(cx, |this, cx| {
+                this.drain();
+                this.busy = false;
+                if let Some(console) = this.console.as_mut() {
+                    console.active = false;
+                    let end = if result.cancelled { "Execution cancelled" } else { "Execution finished" };
+                    console.lines.push(ConsoleLine::Info(format!("{}: {end} '{run_line}'.", time())));
+                }
+                if !result.cancelled {
+                    crate::ui::compile_service::CompileService::global(cx).update(cx, |c, cx| c.set_build_problems(&config.build_root, result.problems, cx));
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn start_build(&mut self, title: String, tasks: Vec<String>, cx: &mut Context<Self>) -> (std::sync::mpsc::Sender<Message>, Arc<AtomicBool>) {
-        self.cancel = Arc::default();
-        self.busy = true;
         // Android Studio's first line.
         let first = format!("Executing tasks: [{}]", tasks.join(", "));
         self.build = Some(BuildLog { title, lines: vec![first.into()], problems: Vec::new(), failure: None, status: BuildStatus::Running, started: chrono::Local::now(), took: None, warnings: Vec::new() });
         cx.emit(RunEvent::ShowBuild);
+        self.open_channel(cx)
+    }
+
+    /// Background work's lines in, ten times a second; Stop's flag.
+    fn open_channel(&mut self, cx: &mut Context<Self>) -> (std::sync::mpsc::Sender<Message>, Arc<AtomicBool>) {
+        self.cancel = Arc::default();
+        self.busy = true;
         cx.notify();
         let (tx, rx) = std::sync::mpsc::channel();
         self.receiver = Some(rx);
