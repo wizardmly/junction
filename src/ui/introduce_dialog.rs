@@ -2,7 +2,8 @@
 //! Constant (Ctrl+Alt+C) dialogs: the name, with the names IntelliJ
 //! suggests for the expression; "Replace all occurrences" when the
 //! expression is there more than once; for a variable "Declare with var"
-//! in Kotlin, "Declare final" in Java.
+//! in Kotlin, "Declare final" in Java; Kotlin's "Specify type
+//! explicitly" when the expression shows its type.
 
 use std::rc::Rc;
 
@@ -28,6 +29,8 @@ pub struct IntroduceRequest {
     pub all: bool,
     /// Kotlin `var`, Java `final`.
     pub modifier: bool,
+    /// Kotlin `val name: Type`.
+    pub explicit_type: bool,
 }
 
 pub struct IntroduceView {
@@ -39,6 +42,9 @@ pub struct IntroduceView {
     occurrences: usize,
     all: bool,
     modifier: bool,
+    /// "Specify type explicitly" offered: the type is known.
+    typed: bool,
+    explicit_type: bool,
     _subscription: Subscription,
 }
 
@@ -50,7 +56,7 @@ impl IntroduceView {
     fn request(&self, cx: &App) -> Result<IntroduceRequest, String> {
         let name = self.name.read(cx).value().trim().to_owned();
         check_name(self.extension(), &name)?;
-        Ok(IntroduceRequest { name, all: self.all, modifier: self.modifier })
+        Ok(IntroduceRequest { name, all: self.all, modifier: self.modifier, explicit_type: self.explicit_type })
     }
 }
 
@@ -101,6 +107,12 @@ impl Render for IntroduceView {
                     cx.notify();
                 })))
             })
+            .when(self.typed, |el| {
+                el.child(Checkbox::new("introduce-type").label("Specify type explicitly").checked(self.explicit_type).on_change(cx.listener(|this, v: &bool, _, cx| {
+                    this.explicit_type = *v;
+                    cx.notify();
+                })))
+            })
     }
 }
 
@@ -118,6 +130,7 @@ pub fn open(
     style: ImportStyle,
     suggestions: Vec<String>,
     occurrences: usize,
+    typed: bool,
     on_ok: impl Fn(IntroduceRequest, &mut Window, &mut App) + 'static,
     window: &mut Window,
     cx: &mut App,
@@ -138,7 +151,7 @@ pub fn open(
         // Android Studio's defaults: replace all, except a Java constant's
         // (JavaRefactoringSettings.INTRODUCE_CONSTANT_REPLACE_ALL).
         let all = occurrences > 1 && !(kind == Introduce::Constant && style == ImportStyle::Java);
-        IntroduceView { style, modifier_label, name, suggestions, occurrences, all, modifier: false, _subscription }
+        IntroduceView { style, modifier_label, name, suggestions, occurrences, all, modifier: false, typed, explicit_type: false, _subscription }
     });
     let focus = view.read(cx).name.clone();
     let on_ok = Rc::new(on_ok);

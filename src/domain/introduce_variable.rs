@@ -45,6 +45,19 @@ impl Literal {
         }
     }
 
+    /// The Kotlin type a declaration of it takes.
+    pub fn kotlin_type(self) -> &'static str {
+        match self {
+            Literal::Int => "Int",
+            Literal::Long => "Long",
+            Literal::Float => "Float",
+            Literal::Double => "Double",
+            Literal::Boolean => "Boolean",
+            Literal::Char => "Char",
+            Literal::String => "String",
+        }
+    }
+
     /// The Java type a declaration of it takes.
     pub fn java_type(self) -> &'static str {
         match self {
@@ -159,6 +172,26 @@ pub struct Extraction {
     pub source: NameSource,
     /// Java: the declaration's type, if known from the expression.
     pub java_type: Option<String>,
+    /// Kotlin: the type "Specify type explicitly" writes, if known.
+    pub kotlin_type: Option<String>,
+    /// Kotlin: the expression is in an expression body (`fun f() = …`),
+    /// which becomes a block body to declare the variable in.
+    pub body: Option<ExpressionBody>,
+}
+
+/// A Kotlin function's expression body, as IntelliJ converts it to a
+/// block (ConvertToBlockBodyIntention): `= expression` becomes
+/// `{ return expression }`, with the return type written if it wasn't.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpressionBody {
+    /// From the `=` to the expression's end.
+    pub range: Range<usize>,
+    pub expression: Range<usize>,
+    /// The function's line's indentation.
+    pub indent: String,
+    /// `: Type` to insert at that offset (after the parameters) when the
+    /// function doesn't declare its return type.
+    pub return_type: Option<(usize, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -182,22 +215,30 @@ pub struct Introduced {
 /// Declares `name` for the expression before the statement of the first
 /// occurrence replaced (`all`, or the selected one only), with that
 /// statement's indentation, and puts the name in each. `modifier`: a
-/// Kotlin `var`, a Java `final`.
-pub fn introduce(style: ImportStyle, text: &str, extraction: &Extraction, all: bool, name: &str, modifier: bool) -> Result<Introduced, String> {
+/// Kotlin `var`, a Java `final`. `explicit_type`: Kotlin's "Specify
+/// type explicitly", `val name: Type = …`.
+pub fn introduce(style: ImportStyle, text: &str, extraction: &Extraction, all: bool, name: &str, modifier: bool, explicit_type: bool) -> Result<Introduced, String> {
     let chosen: Vec<&Occurrence> = if all { extraction.occurrences.iter().collect() } else { extraction.occurrences.get(extraction.selected).into_iter().collect() };
     let first = *chosen.first().ok_or("Cannot find an expression to introduce")?;
     let expression = &text[first.range.clone()];
-    let declaration = match style {
-        ImportStyle::Kotlin => format!("{} {name} = {expression}", if modifier { "var" } else { "val" }),
+    // The declaration, and where the name is in it.
+    let (declaration, name_in_decl) = match style {
+        ImportStyle::Kotlin => {
+            let ty = extraction.kotlin_type.as_deref().filter(|_| explicit_type).map(|t| format!(": {t}")).unwrap_or_default();
+            (format!("{} {name}{ty} = {expression}", if modifier { "var" } else { "val" }), 4)
+        }
         ImportStyle::Java => {
             let ty = extraction.java_type.as_deref().ok_or("Cannot perform refactoring without a type")?;
-            format!("{}{ty} {name} = {expression};", if modifier { "final " } else { "" })
+            let prefix = format!("{}{ty} ", if modifier { "final " } else { "" });
+            (format!("{prefix}{name} = {expression};"), prefix.len())
         }
     };
     // (range, replacement, where the name is in the replacement if it
     // declares it), in order.
     let mut edits: Vec<(Range<usize>, String, Option<usize>)> = Vec::new();
-    let name_in_decl = declaration.find(&format!(" {name} ")).map_or(0, |i| i + 1);
+    if let Some(body) = &extraction.body {
+        return Ok(into_block(text, body, &chosen, &declaration, name_in_decl, name));
+    }
     if first.whole {
         edits.push((first.statement.clone(), declaration, Some(name_in_decl)));
     } else {
@@ -210,6 +251,27 @@ pub fn introduce(style: ImportStyle, text: &str, extraction: &Extraction, all: b
         edits.push((o.range.clone(), name.to_owned(), None));
     }
     Ok(apply_edits(text, edits, name))
+}
+
+/// Declares the variable in the block an expression body becomes:
+/// `= a + b` → `{\n    val x = a\n    return x + b\n}`.
+fn into_block(text: &str, body: &ExpressionBody, chosen: &[&Occurrence], declaration: &str, name_in_decl: usize, name: &str) -> Introduced {
+    let unit = super::surround::indent_unit(text);
+    let inner = format!("{}{unit}", body.indent);
+    let mut expression = String::new();
+    let mut last = body.expression.start;
+    for o in chosen {
+        expression.push_str(&text[last..o.range.start]);
+        expression.push_str(name);
+        last = o.range.end;
+    }
+    expression.push_str(&text[last..body.expression.end]);
+    let block = format!("{{\n{inner}{declaration}\n{inner}return {expression}\n{}}}", body.indent);
+    let mut edits = vec![(body.range.clone(), block, Some(2 + inner.len() + name_in_decl))];
+    if let Some((at, ty)) = &body.return_type {
+        edits.push((*at..*at, format!(": {ty}"), None));
+    }
+    apply_edits(text, edits, name)
 }
 
 /// The words of a name or text: `userName` → [user, Name], `URLConnection`
@@ -410,16 +472,43 @@ mod tests {
             selected: 1,
             source: NameSource::Name("x".into()),
             java_type: None,
+            kotlin_type: Some("Int".into()),
+            body: None,
         };
-        let all = introduce(ImportStyle::Kotlin, text, &ex, true, "x", false).unwrap();
+        let all = introduce(ImportStyle::Kotlin, text, &ex, true, "x", false, false).unwrap();
         let out = apply(text, &all);
         assert_eq!(out, "fun f(p: Point) {\n    val x = p.x\n    println(x + 1)\n    show(x)\n}\n");
         // `name_at` is in the new text: the declared name.
         assert_eq!(out.find("val x").unwrap() + 4, all.name_at.start);
         assert_eq!(&out[all.name_at.clone()], "x");
         // Only the selected one: declared before its own statement.
-        let one = introduce(ImportStyle::Kotlin, text, &ex, false, "x", true).unwrap();
+        let one = introduce(ImportStyle::Kotlin, text, &ex, false, "x", true, false).unwrap();
         assert_eq!(apply(text, &one), "fun f(p: Point) {\n    println(p.x + 1)\n    var x = p.x\n    show(x)\n}\n");
+        let typed = introduce(ImportStyle::Kotlin, text, &ex, true, "x", false, true).unwrap();
+        let out = apply(text, &typed);
+        assert!(out.contains("    val x: Int = p.x\n"));
+        assert_eq!(&out[typed.name_at.clone()], "x");
+    }
+
+    #[test]
+    fn turns_an_expression_body_into_a_block() {
+        let text = "class A {\n    fun f(a: Int) = a * 2 + a * 2\n}\n";
+        let eq = text.find("= a").unwrap();
+        let end = text.find("\n}").unwrap();
+        let start = eq + 2;
+        let ex = Extraction {
+            occurrences: vec![occurrence(text, "a * 2", 0, "a * 2 + a * 2"), occurrence(text, "a * 2", 1, "a * 2 + a * 2")],
+            selected: 0,
+            source: NameSource::Unknown,
+            java_type: None,
+            kotlin_type: None,
+            body: Some(ExpressionBody { range: eq..end, expression: start..end, indent: "    ".into(), return_type: Some((text.find(") =").unwrap() + 1, "Int".into())) }),
+        };
+        let done = introduce(ImportStyle::Kotlin, text, &ex, true, "value", false, false).unwrap();
+        let out = apply(text, &done);
+        assert_eq!(out, "class A {\n    fun f(a: Int): Int {\n        val value = a * 2\n        return value + value\n    }\n}\n");
+        assert_eq!(&out[done.name_at.clone()], "value");
+        assert_eq!(out.find("val value").unwrap() + 4, done.name_at.start);
     }
 
     #[test]
@@ -432,9 +521,11 @@ mod tests {
             selected: 0,
             source: NameSource::Literal(Literal::String),
             java_type: Some("String".into()),
+            kotlin_type: None,
+            body: None,
         };
-        assert_eq!(apply(text, &introduce(ImportStyle::Java, text, &ex, false, "s", false).unwrap()), "void f() {\n  String s = \"a\" + b;\n  foo(s);\n  bar();\n}\n");
-        assert!(apply(text, &introduce(ImportStyle::Java, text, &ex, false, "s", true).unwrap()).contains("  final String s = "));
+        assert_eq!(apply(text, &introduce(ImportStyle::Java, text, &ex, false, "s", false, false).unwrap()), "void f() {\n  String s = \"a\" + b;\n  foo(s);\n  bar();\n}\n");
+        assert!(apply(text, &introduce(ImportStyle::Java, text, &ex, false, "s", true, false).unwrap()).contains("  final String s = "));
         // The whole statement becomes the declaration.
         let at = text.find("bar()").unwrap();
         let ex = Extraction {
@@ -442,12 +533,14 @@ mod tests {
             selected: 0,
             source: NameSource::Name("bar".into()),
             java_type: Some("int".into()),
+            kotlin_type: None,
+            body: None,
         };
-        let done = introduce(ImportStyle::Java, text, &ex, false, "bar", false).unwrap();
+        let done = introduce(ImportStyle::Java, text, &ex, false, "bar", false, false).unwrap();
         let out = apply(text, &done);
         assert_eq!(out, "void f() {\n  foo(\"a\" + b);\n  int bar = bar();\n}\n");
         assert_eq!(&out[done.name_at.clone()], "bar");
         let ex = Extraction { java_type: None, ..ex };
-        assert_eq!(introduce(ImportStyle::Java, text, &ex, false, "bar", false), Err("Cannot perform refactoring without a type".into()));
+        assert_eq!(introduce(ImportStyle::Java, text, &ex, false, "bar", false, false), Err("Cannot perform refactoring without a type".into()));
     }
 }

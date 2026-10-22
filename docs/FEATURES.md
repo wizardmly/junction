@@ -587,8 +587,10 @@ Linux 实测（Xvfb）：`Shapes.kt` 里 7 条 import（含重复的 `java.io.Fi
 | Introduce Variable 对话框：名字、建议名（点击即填入）、“Replace all occurrences (N occurrences)”（同一代码块里出现多次时，默认全部替换）、Kotlin 的 “Declare with var”、Java 的 “Declare final”；名字非法时提示并不能提交 | ✅ |
 | 声明插在第一个被替换处所在语句之前，沿用该语句的缩进；表达式本身就是一条语句（如单独一行的 `foo()`）时整条语句变成声明；一次 Ctrl+Z 撤销 | ✅ |
 | Java 的类型从表达式可见的信息推出：字面量、`new Foo<T>(…)`、强转、比较和逻辑运算（`boolean`）、含字符串的 `+`（`String`）；推不出时提示 “Cannot perform refactoring without a type” | ✅ |
-| 不在代码块里（类属性初始化、表达式体函数 `fun f() = …`）时提示 “Cannot refactor in this place” | ✅ |
-| AS 的就地模式（直接在代码里改名、各处同步）、“Specify type explicitly”、Java 方法调用结果的类型推断、把表达式体函数转成代码块 | ❌ 未做 |
+| 不在代码块里（类属性初始化）时提示 “Cannot refactor in this place” | ✅ |
+| 表达式体函数 `fun f(a: Int) = a * 2 + a * 2` 先转成代码块（IntelliJ 的 ConvertToBlockBody）：`{ val value = a * 2; return value + value }`，没写返回类型时按表达式补上 `: Int`；推不出类型时提示 “Cannot convert to a block body without the function's return type” | ✅ |
+| Kotlin 的 “Specify type explicitly”（`val x: Int = …`）：类型从表达式推出时才出现，默认不勾：字面量、`Foo<T>(…)` 构造调用（Compose 文件里不算，大写函数多是 composable）、`as` / `as?`、比较和逻辑运算、字符串拼接、函数参数，以及数字四则运算取最宽的类型 | ✅ |
+| AS 的就地模式（直接在代码里改名、各处同步）、Java / Kotlin 方法调用结果的类型推断 | ❌ 未做 |
 
 Linux 实测（Xvfb）：Kotlin 里光标在 `user.getName()` 上按 Ctrl+Alt+V，弹出 Expressions 列表（`user`、`user.getName()`、`"Hello " + user.getName()`、`println(…)`），选第二项时代码里对应高亮；对话框建议 `name`、`value`，3 处出现默认全部替换；Refactor 后在第一处语句前插入 `val name = user.getName()`，三处都换成 `name`。
 
