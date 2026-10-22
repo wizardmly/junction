@@ -441,8 +441,12 @@ fn kotlin_constant(node: Node, text: &str, consts: &[String]) -> bool {
         node.named_children(&mut cursor).collect()
     };
     match node.kind() {
-        // Templates (`"$x"`) are not constant here.
-        "string_literal" => named.iter().all(|c| matches!(c.kind(), "string_content" | "escape_sequence" | "character_escape_seq")),
+        // Templates of constants (`"v$VERSION"`) are constant too.
+        "string_literal" => named.iter().all(|c| match c.kind() {
+            "interpolated_identifier" => consts.iter().any(|k| k == &text[c.byte_range()]),
+            "interpolated_expression" => c.named_child(0).is_some_and(|e| kotlin_constant(e, text, consts)),
+            _ => true,
+        }),
         _ if literal(Lang::Kotlin, node, text).is_some() => true,
         "simple_identifier" => consts.iter().any(|c| c == &text[node.byte_range()]),
         "parenthesized_expression" | "prefix_expression" | "additive_expression" | "multiplicative_expression" | "comparison_expression"
@@ -519,6 +523,7 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
         _ => {}
     }
     let line_start = |at: usize| text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let mut interface = false;
     let (insert_at, indent) = match lang {
         Lang::Kotlin => {
             // Before the top-level declaration holding it, its doc comment
@@ -541,7 +546,7 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
             let mut n = node;
             let body = loop {
                 let p = n.parent().ok_or(NO_CONTAINER)?;
-                if p.kind() == "class_body" || p.kind() == "interface_body" || p.kind() == "enum_body" {
+                if matches!(p.kind(), "class_body" | "interface_body" | "enum_body" | "annotation_type_body") {
                     let class = p.parent().ok_or(NO_CONTAINER)?;
                     let top_level = class.parent().is_some_and(|g| g.kind() == "program");
                     let is_static = class.named_child(0).is_some_and(|m| m.kind() == "modifiers" && text[m.byte_range()].split_whitespace().any(|w| w == "static"));
@@ -554,6 +559,23 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
             let first = body.named_child(0).ok_or(NO_CONTAINER)?;
             let at = line_start(first.start_byte());
             let indent: String = text[at..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            // After the last field of the class it uses: no forward reference.
+            let used = identifiers(node, text);
+            let mut cursor = body.walk();
+            let after = body
+                .named_children(&mut cursor)
+                .filter(|m| m.kind() == "field_declaration" || m.kind() == "constant_declaration")
+                .filter(|m| {
+                    let mut c = m.walk();
+                    m.named_children(&mut c).filter(|d| d.kind() == "variable_declarator").any(|d| d.child_by_field_name("name").is_some_and(|n| used.contains(&&text[n.byte_range()])))
+                })
+                .map(|m| m.end_byte())
+                .max();
+            let at = match after {
+                Some(end) => text[end..].find('\n').map_or(text.len(), |i| end + i + 1),
+                None => at,
+            };
+            interface = matches!(body.kind(), "interface_body" | "annotation_type_body");
             (at, indent)
         }
     };
@@ -570,7 +592,8 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
     }
     found.sort_by_key(|n| n.start_byte());
     let selected = found.iter().position(|n| n.id() == node.id()).unwrap_or(0);
-    let string_content = (node.kind() == "string_literal").then(|| text[node.byte_range()].trim_matches('"').to_owned());
+    let plain = node.named_child_count() <= 1 || lang == Lang::Java;
+    let string_content = (node.kind() == "string_literal" && plain).then(|| text[node.byte_range()].trim_matches('"').to_owned());
     let plan = ConstantPlan {
         occurrences: found.iter().map(|n| n.byte_range()).collect(),
         selected,
@@ -579,10 +602,25 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
         source: name_source(lang, node, text),
         java_type: (lang == Lang::Java).then(|| java_type(node, text)).flatten(),
         string_content,
+        interface,
     };
     // Every name in the file: a new constant must not shadow or clash.
     let taken = text.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).map(str::to_owned).collect();
     Ok((plan, taken))
+}
+
+/// The names an expression uses.
+fn identifiers<'a>(node: Node, text: &'a str) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "identifier" {
+            out.push(&text[n.byte_range()]);
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    out
 }
 
 /// Where a live template's abbreviation starting at `offset` is, as
@@ -688,12 +726,22 @@ mod tests {
         assert!(constant(Lang::Kotlin, kt, at(kt, "K * 2")).is_ok());
         assert_eq!(constant(Lang::Kotlin, kt, at(kt, "K * 2 + a")).unwrap_err(), NON_CONSTANT_KOTLIN);
         assert_eq!(constant(Lang::Kotlin, kt, at(kt, "\"Hi $a\"")).unwrap_err(), NON_CONSTANT_KOTLIN);
+        let templated = "const val K = 1\nfun f() = g(\"v$K ${K + 1}\")\n";
+        let (plan, _) = constant(Lang::Kotlin, templated, at(templated, "\"v$K ${K + 1}\"")).unwrap();
+        assert_eq!((plan.occurrences.len(), plan.string_content), (1, None));
         let java = "class Test {\n\n  int count;\n  static final int MAX = 3;\n\n  int get(int n) {\n    return Math.max(MAX, 4) + n + count;\n  }\n}\n";
         let (plan, _) = constant(Lang::Java, java, at(java, "Math.max(MAX, 4)")).unwrap();
-        assert_eq!(plan.insert_at, java.find("  int count").unwrap());
+        // After `MAX`, the field it uses.
+        assert_eq!(plan.insert_at, java.find("\n\n  int get").unwrap() + 1);
         assert_eq!(plan.indent, "  ");
         assert_eq!(constant(Lang::Java, java, at(java, "Math.max(MAX, 4) + n")).unwrap_err(), NON_CONSTANT_JAVA);
         assert_eq!(constant(Lang::Java, java, at(java, "Math.max(MAX, 4) + n + count")).unwrap_err(), NON_CONSTANT_JAVA);
+        let (plan, _) = constant(Lang::Java, java, at(java, "4")).unwrap();
+        assert_eq!((plan.insert_at, plan.interface), (java.find("  int count").unwrap(), false));
+        // An interface's.
+        let java = "interface I {\n  int A = 1;\n  int B = 2;\n  default int f() { return A + 1; }\n}\n";
+        let (plan, _) = constant(Lang::Java, java, at(java, "A + 1")).unwrap();
+        assert_eq!((plan.insert_at, plan.interface), (java.find("  int B").unwrap(), true));
     }
 
     #[test]

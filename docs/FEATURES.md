@@ -603,7 +603,11 @@ Linux 实测（Xvfb）：Kotlin 里光标在 `user.getName()` 上按 Ctrl+Alt+V�
 | Java：表达式不能用到局部变量、参数、`this` 或实例字段，否则提示 “Selected expression cannot be a constant initializer”；生成 `public static final 类型 NAME = …;`，放在最近的可含静态成员的类的第一个成员之前（IntelliJ 默认可见性 public） | ✅ |
 | 名字照 IntelliJ：字符串常量先用其内容（`"Hello, world"` → `HELLO_WORLD`，NameUtil.capitalizeAndUnderscore），再是变量名建议的大写形式（`STRING`、`STR`、`I`…）；与文件中已有名字冲突时加数字 | ✅ |
 | 同一文件里相同的表达式全部列为可替换处；“Replace all occurrences” 默认值照 AS：Kotlin 勾选，Java 不勾选（INTRODUCE_CONSTANT_REPLACE_ALL） | ✅ |
-| 放进 `companion object` / 其他类、可见性选择、Java 前向引用时放到被引用字段之后、Kotlin 模板中的常量 | ❌ 未做 |
+| Java 的 Visibility 单选（Public / Protected / Package private / Private），默认 Public，记住本次会话里上次的选择（AS 记在 INTRODUCE_CONSTANT_VISIBILITY 里，跨重启）；放进接口时不显示，生成 `类型 NAME = …;`（接口字段本来就是 public static final） | ✅ |
+| Java 表达式用到本类的字段（如 `MAX`）时，常量放在最后一个被用到的字段之后，避免前向引用 | ✅ |
+| Kotlin 只引用 `const val` 的字符串模板（`"v$VERSION ${K + 1}"`）也算常量；名字建议不取模板内容 | ✅ |
+| Kotlin 放进 `companion object` | ➖ AS 的 K2 实现也只放在文件顶层（KotlinIntroduceConstantHandler 只保留 KtFile 作为目标） |
+| Java 的 “Move to another class”（放到别的类）、枚举常量选项 | ❌ 未做 |
 
 Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+Alt+C，建议 `HELLO_WORLD`，两处出现全部替换，`private const val HELLO_WORLD = "Hello, world"` 插在带 KDoc 的函数之前；选 `"Hello, world" + name` 时提示 “Can't introduce constant for non constant expression”；Ctrl+Z 一步恢复。
 

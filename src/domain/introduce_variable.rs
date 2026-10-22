@@ -338,12 +338,47 @@ pub struct ConstantPlan {
     pub java_type: Option<String>,
     /// A string literal's text, for its name.
     pub string_content: Option<String>,
+    /// Java: the constant goes into an interface (or annotation type),
+    /// where fields are implicitly `public static final`.
+    pub interface: bool,
+}
+
+/// A Java constant's visibility, as IntelliJ's JavaVisibilityPanel offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visibility {
+    Public,
+    Protected,
+    PackageLocal,
+    Private,
+}
+
+impl Visibility {
+    pub const ALL: [Visibility; 4] = [Visibility::Public, Visibility::Protected, Visibility::PackageLocal, Visibility::Private];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Visibility::Public => "Public",
+            Visibility::Protected => "Protected",
+            Visibility::PackageLocal => "Package private",
+            Visibility::Private => "Private",
+        }
+    }
+
+    /// The modifier and its space (none for package-private).
+    fn modifier(self) -> &'static str {
+        match self {
+            Visibility::Public => "public ",
+            Visibility::Protected => "protected ",
+            Visibility::PackageLocal => "",
+            Visibility::Private => "private ",
+        }
+    }
 }
 
 /// Declares the constant (Kotlin `private const val` before the top-level
-/// declaration, Java `public static final` first in the class, a blank
+/// declaration, Java `<visibility> static final` in the class, a blank
 /// line after it) and puts its name at the occurrences replaced.
-pub fn introduce_constant(style: ImportStyle, text: &str, plan: &ConstantPlan, all: bool, name: &str) -> Result<Introduced, String> {
+pub fn introduce_constant(style: ImportStyle, text: &str, plan: &ConstantPlan, all: bool, name: &str, visibility: Visibility) -> Result<Introduced, String> {
     let chosen: Vec<&Range<usize>> = if all { plan.occurrences.iter().collect() } else { plan.occurrences.get(plan.selected).into_iter().collect() };
     let first = *chosen.first().ok_or("Cannot find an expression to introduce")?;
     let expression = &text[first.clone()];
@@ -351,11 +386,17 @@ pub fn introduce_constant(style: ImportStyle, text: &str, plan: &ConstantPlan, a
         ImportStyle::Kotlin => format!("private const val {name} = {expression}"),
         ImportStyle::Java => {
             let ty = plan.java_type.as_deref().ok_or("Cannot perform refactoring without a type")?;
-            format!("public static final {ty} {name} = {expression};")
+            if plan.interface {
+                format!("{ty} {name} = {expression};")
+            } else {
+                format!("{}static final {ty} {name} = {expression};", visibility.modifier())
+            }
         }
     };
-    let name_in_decl = plan.indent.len() + declaration.find(&format!(" {name} ")).map_or(0, |i| i + 1);
-    let mut edits: Vec<(Range<usize>, String, Option<usize>)> = vec![(plan.insert_at..plan.insert_at, format!("{}{declaration}\n\n", plan.indent), Some(name_in_decl))];
+    let name_in_decl = plan.indent.len() + declaration.find(&format!(" {name} = ")).map_or(0, |i| i + 1);
+    // A blank line after it, unless one is already there.
+    let blank = if text[plan.insert_at..].starts_with('\n') { "" } else { "\n" };
+    let mut edits: Vec<(Range<usize>, String, Option<usize>)> = vec![(plan.insert_at..plan.insert_at, format!("{}{declaration}\n{blank}", plan.indent), Some(name_in_decl))];
     edits.extend(chosen.iter().map(|r| ((*r).clone(), name.to_owned(), None)));
     Ok(apply_edits(text, edits, name))
 }
@@ -417,8 +458,9 @@ mod tests {
             source: NameSource::Literal(Literal::Int),
             java_type: None,
             string_content: None,
+            interface: false,
         };
-        let done = introduce_constant(ImportStyle::Kotlin, text, &plan, true, "I").unwrap();
+        let done = introduce_constant(ImportStyle::Kotlin, text, &plan, true, "I", Visibility::Public).unwrap();
         let mut out = text.to_owned();
         out.replace_range(done.range.clone(), &done.text);
         // As IntelliJ's test data (introduceConstant/extractInteger.kt).
@@ -434,11 +476,24 @@ mod tests {
             source: NameSource::Literal(Literal::Int),
             java_type: Some("int".into()),
             string_content: None,
+            interface: false,
         };
-        let done = introduce_constant(ImportStyle::Java, java, &plan, false, "ANSWER").unwrap();
+        let done = introduce_constant(ImportStyle::Java, java, &plan, false, "ANSWER", Visibility::Public).unwrap();
         let mut out = java.to_owned();
         out.replace_range(done.range.clone(), &done.text);
         assert_eq!(out, "class Test {\n\n  public static final int ANSWER = 42;\n\n  int get() {\n    return ANSWER;\n  }\n}\n");
+        let java_out = |plan: &ConstantPlan, v| {
+            let done = introduce_constant(ImportStyle::Java, java, plan, false, "ANSWER", v).unwrap();
+            let mut out = java.to_owned();
+            out.replace_range(done.range.clone(), &done.text);
+            assert_eq!(&out[done.name_at.clone()], "ANSWER");
+            out
+        };
+        assert!(java_out(&plan, Visibility::PackageLocal).contains("\n  static final int ANSWER = 42;"));
+        assert!(java_out(&plan, Visibility::Private).contains("\n  private static final int ANSWER = 42;"));
+        // An interface's fields are implicitly public static final.
+        let plan = ConstantPlan { interface: true, ..plan };
+        assert!(java_out(&plan, Visibility::Private).contains("\n  int ANSWER = 42;"));
     }
 
     #[test]
