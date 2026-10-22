@@ -343,8 +343,8 @@ impl RunService {
             return;
         };
         let variant = sync_service::variant_of(&config.build_root, &config.module, cx);
-        let task = config.module.assemble_task(&variant);
-        let (send, cancel) = self.start_build(format!("Run '{}'", config.name), vec![task], cx);
+        let tasks = config.gradle_tasks(&variant);
+        let (send, cancel) = self.start_build(format!("Run '{}'", config.name), tasks, cx);
         self.console = Some(Console { name: config.name.clone(), lines: Vec::new(), serial: device.serial.clone().unwrap_or_default(), application_id: None, active: true });
         let launch_line = format!("{}: Launching '{}' on {}.", chrono::Local::now().format("%m/%d %H:%M:%S"), config.name, device.name);
         let devices = self.devices.clone();

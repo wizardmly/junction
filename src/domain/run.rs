@@ -133,6 +133,85 @@ pub struct LaunchOptions {
     /// "Clear log before launch" (`CLEAR_LOGCAT`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub clear_logcat: bool,
+    /// Before launch: what runs, in order, before the APK is installed.
+    #[serde(default = "make_only", skip_serializing_if = "is_make_only")]
+    pub before_launch: Vec<BeforeLaunch>,
+}
+
+/// A Before launch task of a run configuration.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum BeforeLaunch {
+    /// Gradle-aware Make: the module's assemble task for the variant.
+    Make,
+    /// Run Gradle task: task names as typed (`clean :app:lint`).
+    Gradle(String),
+    /// Run External tool: a command line, run in the build's directory.
+    External(String),
+}
+
+impl BeforeLaunch {
+    /// The row in the Before launch list, as Android Studio words it.
+    pub fn label(&self) -> String {
+        match self {
+            BeforeLaunch::Make => "Gradle-aware Make".into(),
+            BeforeLaunch::Gradle(tasks) => format!("Run Gradle task '{}'", tasks.trim()),
+            BeforeLaunch::External(command) => format!("Run External tool '{}'", command.trim()),
+        }
+    }
+}
+
+fn make_only() -> Vec<BeforeLaunch> {
+    vec![BeforeLaunch::Make]
+}
+
+fn is_make_only(tasks: &Vec<BeforeLaunch>) -> bool {
+    *tasks == make_only()
+}
+
+/// The words of a command line: split at spaces, except inside double
+/// quotes (which are dropped).
+pub fn split_command_line(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let (mut quoted, mut any) = (false, false);
+    for c in line.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                any = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if any {
+                    words.push(std::mem::take(&mut word));
+                    any = false;
+                }
+            }
+            c => {
+                word.push(c);
+                any = true;
+            }
+        }
+    }
+    if any {
+        words.push(word);
+    }
+    words
+}
+
+impl RunConfiguration {
+    /// The Gradle tasks its Before launch list runs, in order: the first
+    /// line of the Build window.
+    pub fn gradle_tasks(&self, variant: &str) -> Vec<String> {
+        self.options
+            .before_launch
+            .iter()
+            .flat_map(|task| match task {
+                BeforeLaunch::Make => vec![self.module.assemble_task(variant)],
+                BeforeLaunch::Gradle(tasks) => split_command_line(tasks),
+                BeforeLaunch::External(_) => Vec::new(),
+            })
+            .collect()
+    }
 }
 
 fn yes() -> bool {
@@ -141,7 +220,7 @@ fn yes() -> bool {
 
 impl Default for LaunchOptions {
     fn default() -> Self {
-        Self { deploy: true, launch: LaunchTarget::DefaultActivity, flags: String::new(), show_logcat: false, clear_logcat: false }
+        Self { deploy: true, launch: LaunchTarget::DefaultActivity, flags: String::new(), show_logcat: false, clear_logcat: false, before_launch: make_only() }
     }
 }
 
@@ -197,6 +276,9 @@ pub struct ApkOutput {
 pub trait TaskRunner {
     /// Runs the tasks with Gradle properties (`-Pname=value`) set.
     fn run_tasks(&self, build_root: &std::path::Path, tasks: &[String], properties: &[(String, String)], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult;
+    /// Run External tool: runs `command` (program, then arguments) in
+    /// `dir`, streaming its output.
+    fn run_program(&self, dir: &std::path::Path, command: &[String], line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult;
     /// The APKs of a module's variant, after it was assembled.
     fn apk_output(&self, module: &ModuleInfo, variant: &str) -> Option<ApkOutput>;
 }
@@ -283,5 +365,23 @@ mod tests {
         assert_eq!(read.options, LaunchOptions::default());
         assert_eq!(duration_label(Duration::from_millis(1230)), "1 s 230 ms");
         assert_eq!(duration_label(Duration::from_millis(95)), "95 ms");
+    }
+
+    #[test]
+    fn before_launch_tasks() {
+        assert_eq!(split_command_line(r#"clean  :app:lint "a b"c"#), ["clean", ":app:lint", "a bc"]);
+        assert_eq!(split_command_line(r#"x "" y"#), ["x", "", "y"]);
+        let module = ModuleInfo { path: ":app".into(), dir: "/p/app".into(), kind: ModuleType::Application, variants: vec!["debug".into()] };
+        let mut config = RunConfiguration { name: "app".into(), build_root: "/p".into(), module, options: LaunchOptions::default() };
+        assert_eq!(config.gradle_tasks("debug"), [":app:assembleDebug"]);
+        config.options.before_launch = vec![BeforeLaunch::Gradle("clean".into()), BeforeLaunch::External("echo hi".into()), BeforeLaunch::Make];
+        assert_eq!(config.gradle_tasks("debug"), ["clean", ":app:assembleDebug"]);
+        assert_eq!(BeforeLaunch::Gradle(":app:lint".into()).label(), "Run Gradle task ':app:lint'");
+        // Only a changed list is saved.
+        let saved = |options: LaunchOptions| serde_json::to_string(&SavedRunConfiguration { name: "a".into(), module: ":app".into(), options }).unwrap();
+        assert!(!saved(LaunchOptions::default()).contains("before_launch"));
+        let json = saved(config.options.clone());
+        let read: SavedRunConfiguration = serde_json::from_str(&json).unwrap();
+        assert_eq!(read.options.before_launch, config.options.before_launch);
     }
 }

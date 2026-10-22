@@ -121,6 +121,9 @@ mod tests {
             assert_eq!(tasks, ["--continue", ":app:lintDebug"]);
             crate::domain::run::BuildResult { succeeded: false, cancelled: false, problems: Vec::new(), failure: Some("Lint found errors".into()) }
         }
+        fn run_program(&self, _: &std::path::Path, _: &[String], _: &mut dyn FnMut(&str), _: &dyn Fn() -> bool) -> crate::domain::run::BuildResult {
+            unreachable!()
+        }
         fn apk_output(&self, _: &crate::domain::run::ModuleInfo, _: &str) -> Option<crate::domain::run::ApkOutput> {
             None
         }

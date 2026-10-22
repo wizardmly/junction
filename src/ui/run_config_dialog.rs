@@ -3,8 +3,9 @@
 //! (+ adds one, − removes, Copy duplicates), the selected one's Name,
 //! Module, Installation Options (Deploy) and Launch Options (Launch,
 //! Activity, Launch Flags) and Miscellaneous › Logcat (Show logcat
-//! automatically, Clear log before launch) on the right. OK saves them for
-//! the project.
+//! automatically, Clear log before launch) and the Before launch list
+//! (Gradle-aware Make, Run Gradle task, Run External tool; + − ✎ ↑ ↓) on
+//! the right. OK saves them for the project.
 
 use std::path::PathBuf;
 
@@ -21,7 +22,7 @@ use gpui_kit::{
     Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::domain::run::{LaunchOptions, LaunchTarget, ModuleInfo, SavedRunConfiguration};
+use crate::domain::run::{BeforeLaunch, LaunchOptions, LaunchTarget, ModuleInfo, SavedRunConfiguration};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
@@ -42,6 +43,8 @@ pub struct RunConfigView {
     name: Entity<InputState>,
     activity: Entity<InputState>,
     flags: Entity<InputState>,
+    /// The selected row of the Before launch list.
+    before_selected: Option<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -89,6 +92,7 @@ impl RunConfigView {
     fn select(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.store_fields(cx);
         self.selected = Some(ix);
+        self.before_selected = None;
         self.load_fields(window, cx);
         cx.notify();
     }
@@ -122,6 +126,173 @@ impl RunConfigView {
             f(d);
         }
         cx.notify();
+    }
+
+    /// Run Gradle task / Run External tool: asks for the tasks or the
+    /// command line, then adds the task (or changes row `edit`).
+    fn prompt_task(&mut self, edit: Option<usize>, gradle: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let initial = edit
+            .and_then(|i| self.selected.and_then(|s| self.drafts.get(s)).and_then(|d| d.saved.options.before_launch.get(i).cloned()))
+            .map(|task| match task {
+                BeforeLaunch::Gradle(t) | BeforeLaunch::External(t) => t,
+                BeforeLaunch::Make => String::new(),
+            })
+            .unwrap_or_default();
+        let this = cx.entity().downgrade();
+        let title = if gradle { "Run Gradle Task (e.g. clean :app:lint)" } else { "Run External Tool (program and arguments)" };
+        crate::ui::file_menus::prompt_name(
+            title.into(),
+            initial,
+            "OK",
+            move |value, _, cx| {
+                this.update(cx, |v, cx| {
+                    let task = if gradle { BeforeLaunch::Gradle(value) } else { BeforeLaunch::External(value) };
+                    let mut at = None;
+                    v.change(
+                        |d| {
+                            let list = &mut d.saved.options.before_launch;
+                            match edit {
+                                Some(i) if i < list.len() => {
+                                    list[i] = task;
+                                    at = Some(i);
+                                }
+                                _ => {
+                                    list.push(task);
+                                    at = Some(list.len() - 1);
+                                }
+                            }
+                        },
+                        cx,
+                    );
+                    v.before_selected = at;
+                })
+                .ok();
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Edit (✎ or a double click): Gradle and external tool rows.
+    fn edit_task(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let task = self.selected.and_then(|s| self.drafts.get(s)).and_then(|d| d.saved.options.before_launch.get(ix).cloned());
+        match task {
+            Some(BeforeLaunch::Gradle(_)) => self.prompt_task(Some(ix), true, window, cx),
+            Some(BeforeLaunch::External(_)) => self.prompt_task(Some(ix), false, window, cx),
+            _ => {}
+        }
+    }
+
+    /// − / ↑ / ↓ on the selected Before launch row.
+    fn move_task(&mut self, by: Option<isize>, cx: &mut Context<Self>) {
+        let Some(ix) = self.before_selected else { return };
+        let mut at = None;
+        self.change(
+            |d| {
+                let list = &mut d.saved.options.before_launch;
+                if ix >= list.len() {
+                    return;
+                }
+                match by {
+                    None => {
+                        list.remove(ix);
+                        at = (!list.is_empty()).then(|| ix.min(list.len() - 1));
+                    }
+                    Some(by) => {
+                        let to = ix as isize + by;
+                        if (0..list.len() as isize).contains(&to) {
+                            list.swap(ix, to as usize);
+                            at = Some(to as usize);
+                        } else {
+                            at = Some(ix);
+                        }
+                    }
+                }
+            },
+            cx,
+        );
+        self.before_selected = at;
+    }
+
+    fn render_before_launch(&self, d: &Draft, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let palette = cx.palette().clone();
+        let tasks = d.saved.options.before_launch.clone();
+        let selected = self.before_selected.filter(|i| *i < tasks.len());
+        let has_make = tasks.contains(&BeforeLaunch::Make);
+        let this = cx.entity().downgrade();
+        let add = tool_button("rc-bl-add", icons::ADD, "Add").dropdown_menu(move |menu, _, _| {
+            let (make, gradle, tool) = (this.clone(), this.clone(), this.clone());
+            menu.item(PopupMenuItem::new("Gradle-aware Make").icon(Icon::new(icons::GRADLE)).disabled(has_make).on_click(move |_, _, cx| {
+                make.update(cx, |v, cx| {
+                    let mut at = None;
+                    v.change(
+                        |d| {
+                            d.saved.options.before_launch.push(BeforeLaunch::Make);
+                            at = Some(d.saved.options.before_launch.len() - 1);
+                        },
+                        cx,
+                    );
+                    v.before_selected = at;
+                })
+                .ok();
+            }))
+            .item(PopupMenuItem::new("Run Gradle task").icon(Icon::new(icons::GRADLE)).on_click(move |_, window, cx| {
+                gradle.update(cx, |v, cx| v.prompt_task(None, true, window, cx)).ok();
+            }))
+            .item(PopupMenuItem::new("Run External tool").icon(Icon::new(icons::TW_TERMINAL)).on_click(move |_, window, cx| {
+                tool.update(cx, |v, cx| v.prompt_task(None, false, window, cx)).ok();
+            }))
+        });
+        let editable = selected.is_some_and(|i| tasks[i] != BeforeLaunch::Make);
+        let mut rows = v_flex().id("rc-bl-list").h(px(84.)).overflow_y_scroll();
+        if tasks.is_empty() {
+            rows = rows.child(div().p_2().text_sm().text_color(palette.text_secondary).child("There are no tasks to run before launch"));
+        }
+        for (ix, task) in tasks.iter().enumerate() {
+            let chosen = selected == Some(ix);
+            let icon = if matches!(task, BeforeLaunch::External(_)) { icons::TW_TERMINAL } else { icons::GRADLE };
+            rows = rows.child(
+                h_flex()
+                    .id(("rc-bl-row", ix))
+                    .h(px(22.))
+                    .px_2()
+                    .gap_1()
+                    .text_sm()
+                    .when(chosen, |el| el.bg(palette.selection))
+                    .when(!chosen, |el| el.hover(|s| s.bg(palette.hover)))
+                    .child(Icon::new(icon).xsmall())
+                    .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().child(task.label()))
+                    .on_click(cx.listener(move |this, e: &gpui_kit::ClickEvent, window, cx| {
+                        this.before_selected = Some(ix);
+                        if e.click_count() == 2 {
+                            this.edit_task(ix, window, cx);
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        v_flex()
+            .border_1()
+            .border_color(palette.border)
+            .rounded_sm()
+            .child(
+                h_flex()
+                    .h(px(26.))
+                    .px_1()
+                    .border_b_1()
+                    .border_color(palette.border)
+                    .child(add)
+                    .child(tool_button("rc-bl-remove", icons::REMOVE, "Remove").disabled(selected.is_none()).on_click(cx.listener(|this, _, _, cx| this.move_task(None, cx))))
+                    .child(tool_button("rc-bl-edit", icons::EDIT, "Edit").disabled(!editable).on_click(cx.listener(|this, _, window, cx| {
+                        if let Some(ix) = this.before_selected {
+                            this.edit_task(ix, window, cx);
+                        }
+                    })))
+                    .child(tool_button("rc-bl-up", icons::MOVE_UP, "Move Up").disabled(selected.is_none_or(|i| i == 0)).on_click(cx.listener(|this, _, _, cx| this.move_task(Some(-1), cx))))
+                    .child(tool_button("rc-bl-down", icons::MOVE_DOWN, "Move Down").disabled(selected.is_none_or(|i| i + 1 >= tasks.len())).on_click(cx.listener(|this, _, _, cx| this.move_task(Some(1), cx)))),
+            )
+            .child(rows)
+            .into_any_element()
     }
 
     /// The problem with the configurations, as the dialog shows it.
@@ -219,8 +390,11 @@ impl RunConfigView {
             ],
         );
         v_flex()
+            .id("rc-settings")
             .flex_1()
             .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
             .p_3()
             .gap_2()
             .child(h_flex().gap_2().child(label("Name:")).child(div().flex_1().child(Input::new(&self.name).small())))
@@ -248,6 +422,8 @@ impl RunConfigView {
                     this.update(cx, |v, cx| v.change(|d| d.saved.options.clear_logcat = value, cx)).ok();
                 }
             }))
+            .child(heading("Before launch"))
+            .child(self.render_before_launch(&d, cx))
             .into_any_element()
     }
 }
@@ -288,7 +464,7 @@ impl Render for RunConfigView {
             .child(
                 h_flex()
                     .items_start()
-                    .h(px(380.))
+                    .h(px(470.))
                     .border_1()
                     .border_color(palette.border)
                     .rounded_md()
@@ -334,7 +510,7 @@ pub fn open(modules: Vec<(PathBuf, ModuleInfo)>, current: Vec<(PathBuf, SavedRun
         let _subscriptions = vec![cx.subscribe(&name, notify), cx.subscribe(&activity, notify), cx.subscribe(&flags, notify)];
         let drafts: Vec<Draft> = current.into_iter().map(|(root, saved)| Draft { root, saved }).collect();
         let selected_ix = selected.and_then(|n| drafts.iter().position(|d| d.saved.name == n)).or((!drafts.is_empty()).then_some(0));
-        let mut view = RunConfigView { drafts, selected: selected_ix, modules, name, activity, flags, _subscriptions };
+        let mut view = RunConfigView { drafts, selected: selected_ix, modules, name, activity, flags, before_selected: None, _subscriptions };
         view.load_fields(window, cx);
         view
     });

@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::domain::run::{activity_component, duration_label, start_command, BuildResult, DeviceBridge, LaunchTarget, RunConfiguration, TaskRunner};
+use crate::domain::run::{activity_component, split_command_line, BeforeLaunch, duration_label, start_command, BuildResult, DeviceBridge, LaunchTarget, RunConfiguration, TaskRunner};
 
 /// A line of the Run console.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,12 +57,33 @@ pub fn run(
     console: &mut dyn FnMut(ConsoleLine),
     cancelled: &dyn Fn() -> bool,
 ) -> (RunOutcome, BuildResult) {
-    let build = runner.run_tasks(&config.build_root, &[config.module.assemble_task(variant)], &[], build_line, cancelled);
-    if build.cancelled || cancelled() {
-        return (RunOutcome::Cancelled, build);
-    }
-    if !build.succeeded {
-        return (RunOutcome::BuildFailed, build);
+    // Before launch, in order; the first failure stops the run.
+    let mut build = BuildResult { succeeded: true, ..Default::default() };
+    for task in &config.options.before_launch {
+        let step = match task {
+            BeforeLaunch::Make => runner.run_tasks(&config.build_root, &[config.module.assemble_task(variant)], &[], build_line, cancelled),
+            BeforeLaunch::Gradle(tasks) => {
+                let tasks = split_command_line(tasks);
+                if tasks.is_empty() {
+                    continue;
+                }
+                runner.run_tasks(&config.build_root, &tasks, &[], build_line, cancelled)
+            }
+            BeforeLaunch::External(command) => {
+                build_line(&format!("> Run External tool: {}", command.trim()));
+                runner.run_program(&config.build_root, &split_command_line(command), build_line, cancelled)
+            }
+        };
+        build.problems.extend(step.problems);
+        build.succeeded = step.succeeded;
+        build.cancelled = step.cancelled;
+        build.failure = step.failure;
+        if build.cancelled || cancelled() {
+            return (RunOutcome::Cancelled, build);
+        }
+        if !build.succeeded {
+            return (RunOutcome::BuildFailed, build);
+        }
     }
     let Some(output) = runner.apk_output(&config.module, variant) else {
         console(ConsoleLine::Error(format!("Error running '{}': The APK file for the {variant} variant was not found. Was it built?", config.name)));
@@ -139,6 +160,10 @@ mod tests {
             self.tasks.borrow_mut().extend(tasks.iter().cloned());
             line("BUILD SUCCESSFUL in 1s");
             BuildResult { succeeded: self.ok, ..Default::default() }
+        }
+        fn run_program(&self, _: &Path, command: &[String], _: &mut dyn FnMut(&str), _: &dyn Fn() -> bool) -> BuildResult {
+            self.tasks.borrow_mut().push(format!("$ {}", command.join(" ")));
+            BuildResult { succeeded: command.first().is_some_and(|p| p != "false"), ..Default::default() }
         }
         fn apk_output(&self, _: &ModuleInfo, _: &str) -> Option<ApkOutput> {
             Some(ApkOutput { application_id: "com.example".into(), apks: vec![PathBuf::from("/p/app.apk")] })
@@ -232,5 +257,29 @@ mod tests {
         let (outcome, _) = run(&gradle, &phone, &config, "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |_| {}, &|| false);
         assert_eq!(outcome, RunOutcome::Running { application_id: "com.example".into(), pid: None });
         assert!(phone.0.borrow().is_empty());
+    }
+
+    #[test]
+    fn runs_the_before_launch_tasks_in_order() {
+        use crate::domain::run::BeforeLaunch;
+        let (gradle, phone) = (Gradle { ok: true, tasks: RefCell::default() }, Phone(RefCell::default()));
+        let mut config = config();
+        config.options.before_launch = vec![BeforeLaunch::Gradle("clean :app:lint".into()), BeforeLaunch::External("gen \"a b\"".into()), BeforeLaunch::Make];
+        let (outcome, _) = run(&gradle, &phone, &config, "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |_| {}, &|| false);
+        assert!(matches!(outcome, RunOutcome::Running { .. }));
+        assert_eq!(gradle.tasks.borrow().as_slice(), ["clean", ":app:lint", "$ gen a b", ":app:assembleDebug"]);
+        // A failing tool stops the run; no Make, nothing installed.
+        let (gradle, phone) = (Gradle { ok: true, tasks: RefCell::default() }, Phone(RefCell::default()));
+        config.options.before_launch = vec![BeforeLaunch::External("false".into()), BeforeLaunch::Make];
+        let (outcome, _) = run(&gradle, &phone, &config, "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |_| {}, &|| false);
+        assert_eq!(outcome, RunOutcome::BuildFailed);
+        assert_eq!(gradle.tasks.borrow().as_slice(), ["$ false"]);
+        assert!(phone.0.borrow().is_empty());
+        // Without Make the APK already there is deployed.
+        let (gradle, phone) = (Gradle { ok: true, tasks: RefCell::default() }, Phone(RefCell::default()));
+        config.options.before_launch.clear();
+        run(&gradle, &phone, &config, "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |_| {}, &|| false);
+        assert!(gradle.tasks.borrow().is_empty());
+        assert_eq!(phone.0.borrow()[0], "install 1");
     }
 }
