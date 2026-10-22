@@ -636,7 +636,9 @@ Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+
 | Settings › Editor › Live Templates：按 Kotlin / Java 列出全部缩写和说明（可搜索） | ✅ |
 | 模板出现在代码补全列表里（2026-10-20，照 IntelliJ 的 `LiveTemplateCompletionContributor`）：缩写以已输入的词开头、当前位置适用的模板列出来，右侧是描述；和缩写完全一致的排第一，其余排在名字同样以这个词开头的符号之后；选中后直接展开并进入模板变量编辑。Linux 实测：`so` 列出 sout / soutv，`sout` 回车得到 `println()`，`soutv` 回车后变量同步编辑 | ✅ |
 | 自定义模板（2026-10-20，照 IntelliJ 的 User 组）：Settings › Editor › Live Templates 里 User 组 + / − 新建、删除；选中后编辑 Abbreviation、Description、Template text（`$NAME$` 变量按出现顺序停留，同名的多处同步，`$END$` 是结束位置），每个变量的默认值，以及适用位置（Kotlin：Statement、Expression、Class、Top-level、Object declaration；Java：Statement、Expression、Declaration）；每个模板（含内置模板）前的勾选框可关闭它；Apply / OK 后存到设置目录的 `live-templates.json`，下次启动读回。自定义模板与内置模板同名时优先 | ✅ |
-| IntelliJ 根据代码计算的变量（`kotlinVariable()`、`suggestIndexName()`、`iterableComponentType()` 等）用固定默认值（`i`、`iterable`、`Object`…）；soutp、soutf 等依赖这些计算的模板未收录；自定义模板的变量表达式（只有默认值）、模板分组 / 导入导出、Surround with Live Template | ❌ 未做 |
+| 根据代码计算的变量（照 IntelliJ 的 template expression）：`className()` / `methodName()`（Kotlin 的 kotlinClassName / kotlinFunctionName）、`parameterInfo()`（Java soutp 的 `"a = " + a + ", b = " + b`）、Kotlin soutp 的 `a = [${a}], b = [${b}]`、`suggestIndexName()`（i、j、k…跳过已用的名字）、`variableOfType(…)` / `arrayVariable()` / `kotlinVariable()`（取最近的局部变量、参数、字段，按数组 / 集合 / List / Map / 数字分类）、`componentTypeOf` / `iterableComponentType` / `guessElementType`、`typeParameterOf`；类型来自声明，Kotlin 没写类型时按初始化表达式推（`listOf(…)` → List、`Foo()` → Foo）；找不到时用原来的默认值 | ✅ |
+| 新增依赖这些变量的模板：Kotlin soutf、soutp；Java soutm、soutp、ritar、itli、itm、lst、mn、mx、geti；已有的 fori、itar、iter、ifn、inn 也改用计算值。全限定名照 toShortenFQNames 缩短并补 import（itm 的 `Map.Entry`） | ✅ |
+| 需要真实类型推断的变量（`subtypes()`、`expectedType()`、方法调用结果的类型）及依赖它们的 inst、lazy、toar、itco；自定义模板的变量表达式（只有默认值）、模板分组 / 导入导出 | ❌ 未做 |
 
 Linux 实测（Xvfb，自定义模板）：新建 `pv`，文本 `System.out.println("$NAME$ = " + $NAME$);$END$`，NAME 默认值 `value`；Java 方法体里输入 `pv` 按 Tab（补全弹窗开着）展开，输入 `sum` 两处同步，得到 `System.out.println("sum = " + sum);`；关掉 Java 的 `sout` 后按 Tab 不再展开；`live-templates.json` 内容正确。
 

@@ -672,6 +672,155 @@ pub fn template_contexts(lang: Lang, text: &str, offset: usize) -> Vec<crate::do
     if lang == Lang::Kotlin { vec![Context::TopLevel] } else { Vec::new() }
 }
 
+/// What a live template's computed variables see at `offset`: the
+/// enclosing class and function, its parameters, the locals declared
+/// before the place in the blocks around it, and the class's fields; each
+/// with its type as written, or as a Kotlin initializer shows it
+/// (`listOf(…)` → `List`, `Foo()` → `Foo`).
+pub fn template_scope(lang: Lang, text: &str, offset: usize) -> crate::domain::live_templates::Scope {
+    let mut scope = crate::domain::live_templates::Scope::default();
+    let Some(tree) = symbols::parse(lang, text) else { return scope };
+    let Some(node) = tree.root_node().descendant_for_byte_range(offset, offset) else { return scope };
+    let t = |n: Node| text[n.byte_range()].to_owned();
+    fn named<'t>(n: Node<'t>) -> Vec<Node<'t>> {
+        let mut c = n.walk();
+        n.named_children(&mut c).collect()
+    }
+    let mut function: Option<Node> = None;
+    let mut class: Option<Node> = None;
+    let mut n = Some(node);
+    while let Some(x) = n {
+        match x.kind() {
+            "function_declaration" | "method_declaration" | "constructor_declaration" | "secondary_constructor" if function.is_none() && class.is_none() => function = Some(x),
+            "class_declaration" | "object_declaration" | "interface_declaration" | "enum_declaration" | "record_declaration" if class.is_none() => class = Some(x),
+            _ => {}
+        }
+        n = x.parent();
+    }
+    if let Some(c) = class {
+        let name = c.child_by_field_name("name").or_else(|| named(c).into_iter().find(|k| k.kind() == "type_identifier"));
+        scope.class_name = name.map(t).unwrap_or_default();
+        let body = named(c).into_iter().find(|k| matches!(k.kind(), "class_body" | "enum_class_body" | "interface_body" | "enum_body"));
+        for member in body.map(named).unwrap_or_default() {
+            match (lang, member.kind()) {
+                (Lang::Java, "field_declaration") => {
+                    let ty = member.child_by_field_name("type").map(t).unwrap_or_default();
+                    for d in named(member).into_iter().filter(|d| d.kind() == "variable_declarator") {
+                        if let Some(name) = d.child_by_field_name("name") {
+                            scope.fields.push((t(name), ty.clone()));
+                        }
+                    }
+                }
+                (Lang::Kotlin, "property_declaration") => scope.fields.extend(kotlin_property(member, text)),
+                _ => {}
+            }
+        }
+        // Kotlin's primary constructor `val`s are properties too.
+        if lang == Lang::Kotlin {
+            for p in named(c).into_iter().filter(|k| k.kind() == "primary_constructor").flat_map(named).filter(|k| k.kind() == "class_parameter") {
+                if text[p.byte_range()].trim_start().starts_with(['v']) || text[p.byte_range()].contains("val ") || text[p.byte_range()].contains("var ") {
+                    let parts = named(p);
+                    let name = parts.iter().find(|k| k.kind() == "simple_identifier").map(|k| t(*k));
+                    let ty = parts.iter().find(|k| k.kind().ends_with("type")).map(|k| t(*k)).unwrap_or_default();
+                    scope.fields.extend(name.map(|n| (n, ty)));
+                }
+            }
+        }
+    }
+    let Some(f) = function else { return scope };
+    scope.method_name = match lang {
+        Lang::Java => f.child_by_field_name("name").map(t).unwrap_or_default(),
+        _ => named(f).into_iter().find(|k| k.kind() == "simple_identifier").map(t).unwrap_or_default(),
+    };
+    let params = match lang {
+        Lang::Java => f.child_by_field_name("parameters"),
+        _ => named(f).into_iter().find(|k| k.kind() == "function_value_parameters"),
+    };
+    for p in params.map(named).unwrap_or_default() {
+        match (lang, p.kind()) {
+            (Lang::Java, "formal_parameter" | "spread_parameter") => {
+                let ty = p.child_by_field_name("type").map(t).unwrap_or_default();
+                let name = p.child_by_field_name("name").or_else(|| named(p).into_iter().rev().find(|k| k.kind() == "variable_declarator" || k.kind() == "identifier"));
+                if let Some(name) = name {
+                    let name = name.child_by_field_name("name").unwrap_or(name);
+                    scope.parameters.push((t(name), if p.kind() == "spread_parameter" { format!("{ty}[]") } else { ty }));
+                }
+            }
+            (Lang::Kotlin, "parameter") => {
+                let parts = named(p);
+                if let (Some(name), Some(ty)) = (parts.first(), parts.get(1)) {
+                    scope.parameters.push((t(*name), t(*ty)));
+                }
+            }
+            _ => {}
+        }
+    }
+    // Locals before the place, in a block around it.
+    let mut stack = vec![f];
+    let mut locals: Vec<(usize, (String, String))> = Vec::new();
+    while let Some(x) = stack.pop() {
+        if x.start_byte() >= offset {
+            continue;
+        }
+        let visible = x.parent().is_some_and(|b| b.start_byte() <= offset && offset <= b.end_byte()) && x.end_byte() <= offset;
+        match (lang, x.kind()) {
+            (Lang::Java, "local_variable_declaration") if visible => {
+                let ty = x.child_by_field_name("type").map(t).unwrap_or_default();
+                for d in named(x).into_iter().filter(|d| d.kind() == "variable_declarator") {
+                    if let Some(name) = d.child_by_field_name("name") {
+                        let ty = if ty == "var" { d.child_by_field_name("value").and_then(|v| v.child_by_field_name("type")).map(t).unwrap_or_default() } else { ty.clone() };
+                        locals.push((x.start_byte(), (t(name), ty)));
+                    }
+                }
+            }
+            (Lang::Kotlin, "property_declaration") if visible => locals.extend(kotlin_property(x, text).map(|v| (x.start_byte(), v))),
+            _ => {}
+        }
+        stack.extend(named(x));
+    }
+    locals.sort_by_key(|(at, _)| *at);
+    scope.variables = locals.into_iter().map(|(_, v)| v).collect();
+    scope
+}
+
+/// A Kotlin property's name and type: declared, or as its initializer
+/// shows (`listOf(…)` → `List`, `arrayOf` → `Array`, `Foo()` → `Foo`).
+fn kotlin_property(p: Node, text: &str) -> Option<(String, String)> {
+    let mut c = p.walk();
+    let parts: Vec<Node> = p.named_children(&mut c).collect();
+    let decl = parts.iter().find(|k| k.kind() == "variable_declaration")?;
+    let name = decl.named_child(0)?;
+    if let Some(ty) = decl.named_child(1) {
+        return Some((text[name.byte_range()].to_owned(), text[ty.byte_range()].to_owned()));
+    }
+    let init = parts.iter().rev().find(|k| k.start_byte() > decl.end_byte()).map(|k| text[k.byte_range()].trim().to_owned()).unwrap_or_default();
+    let callee = init.split(['(', '{', '<']).next().unwrap_or("").trim();
+    let ty = match callee {
+        "listOf" | "mutableListOf" | "arrayListOf" | "emptyList" | "listOfNotNull" => format!("List{}", generic_part(&init)),
+        "setOf" | "mutableSetOf" | "hashSetOf" | "emptySet" => format!("Set{}", generic_part(&init)),
+        "mapOf" | "mutableMapOf" | "hashMapOf" | "emptyMap" => format!("Map{}", generic_part(&init)),
+        "arrayOf" | "emptyArray" | "arrayOfNulls" => format!("Array{}", generic_part(&init)),
+        "intArrayOf" => "IntArray".into(),
+        "longArrayOf" => "LongArray".into(),
+        "doubleArrayOf" => "DoubleArray".into(),
+        "floatArrayOf" => "FloatArray".into(),
+        "booleanArrayOf" => "BooleanArray".into(),
+        "charArrayOf" => "CharArray".into(),
+        c if c.starts_with(|ch: char| ch.is_uppercase()) && c.chars().all(|ch| ch.is_alphanumeric() || ch == '_') => format!("{c}{}", generic_part(&init)),
+        _ => match literal(Lang::Kotlin, parts.last().copied()?, text) {
+            Some(l) => l.kotlin_type().to_owned(),
+            None => String::new(),
+        },
+    };
+    Some((text[name.byte_range()].to_owned(), ty))
+}
+
+/// `listOf<String>(…)` → `<String>`; nothing without type arguments.
+fn generic_part(init: &str) -> String {
+    let head = init.split('(').next().unwrap_or("");
+    head.find('<').map(|i| head[i..].trim().to_owned()).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,6 +860,22 @@ mod tests {
         assert_eq!(template_contexts(Lang::Java, java, java.find("psvm").unwrap()), vec![Context::Class]);
         assert!(template_contexts(Lang::Java, java, java.find("else-if").unwrap()).contains(&Context::Else));
         assert!(template_contexts(Lang::Java, java, java.find("sout").unwrap()).contains(&Context::Statement));
+    }
+
+    #[test]
+    fn finds_template_scopes() {
+        let java = "class Shop {\n  int[] prices;\n  java.util.Map<String, Integer> stock;\n  void sell(String item, int count) {\n    List<String> names = load();\n    int i = 0;\n    soutp\n  }\n}\n";
+        let s = template_scope(Lang::Java, java, java.find("soutp").unwrap());
+        assert_eq!((s.class_name.as_str(), s.method_name.as_str()), ("Shop", "sell"));
+        assert_eq!(s.parameters, [("item".to_owned(), "String".to_owned()), ("count".to_owned(), "int".to_owned())]);
+        assert_eq!(s.variables, [("names".to_owned(), "List<String>".to_owned()), ("i".to_owned(), "int".to_owned())]);
+        assert_eq!(s.fields.len(), 2);
+        let kt = "class Cart(val items: List<Item>) {\n    fun total(tax: Double): Double {\n        val names = listOf(\"a\")\n        if (tax > 0) {\n            val hidden = 1\n        }\n        soutp\n    }\n}\n";
+        let s = template_scope(Lang::Kotlin, kt, kt.find("soutp").unwrap());
+        assert_eq!((s.class_name.as_str(), s.method_name.as_str()), ("Cart", "total"));
+        assert_eq!(s.parameters, [("tax".to_owned(), "Double".to_owned())]);
+        assert_eq!(s.variables, [("names".to_owned(), "List".to_owned())]);
+        assert_eq!(s.fields, [("items".to_owned(), "List<Item>".to_owned())]);
     }
 
     #[test]
