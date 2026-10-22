@@ -3,8 +3,11 @@
 //! res folder, a row per key and folder) as a table (Key, Resource Folder,
 //! Untranslatable, Default Value, then a column per locale), missing
 //! translations in red; the toolbar's Add Key, Remove Keys, Add Locale,
-//! the key filter and Reload; and the Key / Default Value / Translation
-//! fields under the table, which write the values files on Enter.
+//! the key and locale filters and Reload; the Key / Default Value /
+//! Translation fields under the table, which write the values files on
+//! Enter. The columns before the locales stay put while those scroll
+//! sideways; Delete removes the selected translations (or, in the key
+//! columns, the keys).
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -20,7 +23,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px,
     uniform_list,
 };
 
@@ -38,19 +41,25 @@ pub enum TranslationsEvent {
 }
 
 /// Android Studio's key filter.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum KeyFilter {
     All,
     Translatable,
     NeedingTranslations,
+    /// Keys missing this locale's translation.
+    NeedingTranslationFor(Locale),
+    /// Filter by Text: in the key, default value or a translation.
+    Text(String),
 }
 
 impl KeyFilter {
-    fn label(self) -> &'static str {
+    fn label(&self) -> String {
         match self {
-            KeyFilter::All => "Show All Keys",
-            KeyFilter::Translatable => "Show Translatable Keys",
-            KeyFilter::NeedingTranslations => "Show Keys Needing Translations",
+            KeyFilter::All => "Show All Keys".into(),
+            KeyFilter::Translatable => "Show Translatable Keys".into(),
+            KeyFilter::NeedingTranslations => "Show Keys Needing Translations".into(),
+            KeyFilter::NeedingTranslationFor(l) => format!("Show Keys Needing a Translation for {}", l.label()),
+            KeyFilter::Text(t) => format!("Show Keys with Values Containing \"{t}\""),
         }
     }
 }
@@ -79,8 +88,14 @@ pub struct TranslationsEditor {
     folders: Vec<(PathBuf, String)>,
     table: Table,
     filter: KeyFilter,
+    /// Show All Locales (none) or one locale's column.
+    locale_filter: Option<Locale>,
     /// Indexes into `table.rows` the filter lets through.
     shown: Vec<usize>,
+    /// How far the locale columns are scrolled sideways.
+    h_offset: f32,
+    /// The locale columns' visible width, as last laid out.
+    h_visible: f32,
     /// The selected rows (Remove Keys acts on them) and the current cell.
     selected: BTreeSet<RowId>,
     cell: Option<(RowId, Column)>,
@@ -89,7 +104,6 @@ pub struct TranslationsEditor {
     translation_field: Entity<InputState>,
     error: Option<String>,
     scroll: UniformListScrollHandle,
-    h_scroll: ScrollHandle,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -123,7 +137,10 @@ impl TranslationsEditor {
             folders,
             table: Table::default(),
             filter: KeyFilter::All,
+            locale_filter: None,
             shown: Vec::new(),
+            h_offset: 0.,
+            h_visible: 0.,
             selected: BTreeSet::new(),
             cell: None,
             key_field,
@@ -131,7 +148,6 @@ impl TranslationsEditor {
             translation_field,
             error: None,
             scroll: UniformListScrollHandle::new(),
-            h_scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
             _subscriptions,
         };
@@ -156,13 +172,22 @@ impl TranslationsEditor {
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let files: Vec<DiskRes> = (0..self.folders.len()).map(|f| self.files(f)).collect();
         let files: Vec<&dyn usecase::ResFiles> = files.iter().map(|f| f as &dyn usecase::ResFiles).collect();
+        // The current cell's locale may move (or go) with the columns.
+        let locale = match &self.cell {
+            Some((_, Column::Locale(l))) => self.table.locales.get(*l).cloned(),
+            _ => None,
+        };
         self.table = usecase::load_many(&files);
+        if let (Some((_, column)), Some(locale)) = (&mut self.cell, locale) {
+            *column = self.table.locales.iter().position(|l| *l == locale).map_or(Column::Default, Column::Locale);
+        }
         self.refilter();
         cx.notify();
     }
 
     fn refilter(&mut self) {
-        let filter = self.filter;
+        let filter = &self.filter;
+        let locales = &self.table.locales;
         self.shown = (0..self.table.rows.len())
             .filter(|ix| {
                 let row = &self.table.rows[*ix];
@@ -170,9 +195,18 @@ impl TranslationsEditor {
                     KeyFilter::All => true,
                     KeyFilter::Translatable => row.translatable,
                     KeyFilter::NeedingTranslations => row.needs_translation(),
+                    KeyFilter::NeedingTranslationFor(l) => locales.iter().position(|x| x == l).is_some_and(|l| row.missing(l)),
+                    KeyFilter::Text(t) => {
+                        let t = t.to_lowercase();
+                        let has = |v: &str| v.to_lowercase().contains(&t);
+                        has(&row.key) || row.default.as_deref().is_some_and(has) || row.values.iter().flatten().any(|v| has(v))
+                    }
                 }
             })
             .collect();
+        if self.locale_filter.as_ref().is_some_and(|l| !locales.contains(l)) {
+            self.locale_filter = None;
+        }
         let rows: BTreeSet<(usize, &str)> = self.table.rows.iter().map(|r| (r.folder, r.key.as_str())).collect();
         self.selected.retain(|(f, k)| rows.contains(&(*f, k.as_str())));
     }
@@ -283,6 +317,62 @@ impl TranslationsEditor {
         self.filter = filter;
         self.refilter();
         cx.notify();
+    }
+
+    /// The locale columns shown: all, or the filter's one.
+    fn shown_locales(&self) -> Vec<usize> {
+        match &self.locale_filter {
+            Some(l) => self.table.locales.iter().position(|x| x == l).into_iter().collect(),
+            None => (0..self.table.locales.len()).collect(),
+        }
+    }
+
+    fn set_locale_filter(&mut self, locale: Option<Locale>, cx: &mut Context<Self>) {
+        self.locale_filter = locale;
+        self.h_offset = 0.;
+        cx.notify();
+    }
+
+    /// Filter by Text: a dialog asking for the text.
+    fn filter_by_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = cx.new(|cx| InputState::new(window, cx));
+        let this = cx.entity().downgrade();
+        let focus = text.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (text_ok, this) = (text.clone(), this.clone());
+            dialog.title("Filter by Text").w(px(360.)).child(Input::new(&text)).footer(dialogs::footer("OK")).on_ok(move |_, _, cx| {
+                let t = text_ok.read(cx).value().trim().to_owned();
+                let filter = if t.is_empty() { KeyFilter::All } else { KeyFilter::Text(t) };
+                this.update(cx, |v, cx| v.set_filter(filter, cx)).ok();
+                true
+            })
+        });
+        dialogs::focus_input(&focus, window, cx);
+    }
+
+    /// Delete: in a locale column, the selected rows' translations there;
+    /// in the key columns, Remove Keys.
+    fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, column)) = self.cell.clone() else { return };
+        let Column::Locale(l) = column else { return self.remove_keys(window, cx) };
+        let Some(locale) = self.table.locales.get(l).cloned() else { return };
+        self.error = None;
+        for (folder, key) in self.selected.clone() {
+            self.edit_quietly(folder, |files| usecase::set_value(files, &key, Some(&locale), ""), cx);
+        }
+        self.reload(cx);
+        self.fill_fields(window, cx);
+    }
+
+    /// Scrolls the locale columns sideways by `dx`.
+    fn scroll_locales(&mut self, dx: f32, cx: &mut Context<Self>) {
+        let total = LOCALE_W * self.shown_locales().len() as f32;
+        let max = (total - self.h_visible).max(0.);
+        let offset = (self.h_offset + dx).clamp(0., max);
+        if offset != self.h_offset {
+            self.h_offset = offset;
+            cx.notify();
+        }
     }
 
     /// Remove Keys: the selected keys, from every locale, once confirmed.
@@ -452,20 +542,22 @@ impl TranslationsEditor {
                 ),
             );
             line = line.child(cell(("tr-default", ix), DEFAULT_W, Column::Default, cx).when(row.default.is_none(), |el| el.bg(missing_bg)).child(row.default.clone().unwrap_or_default()));
-            for (l, value) in row.values.iter().enumerate() {
+            let mut locales = h_flex().h_full().flex_none().ml(px(-self.h_offset));
+            for l in self.shown_locales() {
+                let Some(value) = row.values.get(l) else { continue };
                 let missing = row.missing(l);
-                line = line.child(cell(("tr-locale", ix * 1000 + l), LOCALE_W, Column::Locale(l), cx).when(missing, |el| el.bg(missing_bg)).child(value.clone().unwrap_or_default()));
+                locales = locales.child(cell(("tr-locale", ix * 1000 + l), LOCALE_W, Column::Locale(l), cx).when(missing, |el| el.bg(missing_bg)).child(value.clone().unwrap_or_default()));
             }
+            line = line.child(div().flex_1().min_w_0().h_full().overflow_hidden().child(locales));
             out.push(line.into_any_element());
         }
         out
     }
 }
 
-/// The table's width: the fixed columns and one per locale.
-fn table_width(locales: usize) -> Pixels {
-    px(KEY_W + FOLDER_W + UNTRANSLATABLE_W + DEFAULT_W + LOCALE_W * locales as f32)
-}
+/// The frozen columns' width: Key, Resource Folder, Untranslatable,
+/// Default Value.
+const FROZEN_W: f32 = KEY_W + FOLDER_W + UNTRANSLATABLE_W + DEFAULT_W;
 
 impl Render for TranslationsEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -487,13 +579,39 @@ impl Render for TranslationsEditor {
             }
             menu
         });
-        let filter = self.filter;
+        let filter = self.filter.clone();
         let this = cx.entity().downgrade();
+        let locales = self.table.locales.clone();
         let filter_button = Button::new("tr-filter").ghost().small().label(filter.label()).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu(move |mut menu, _, _| {
-            for f in [KeyFilter::All, KeyFilter::Translatable, KeyFilter::NeedingTranslations] {
+            let mut filters = vec![KeyFilter::All, KeyFilter::Translatable, KeyFilter::NeedingTranslations];
+            filters.extend(locales.iter().cloned().map(KeyFilter::NeedingTranslationFor));
+            for f in filters {
                 let this = this.clone();
-                menu = menu.item(PopupMenuItem::new(f.label()).checked(f == filter).on_click(move |_, _, cx| {
+                let checked = f == filter;
+                menu = menu.item(PopupMenuItem::new(f.label()).checked(checked).on_click(move |_, _, cx| {
+                    let f = f.clone();
                     this.update(cx, |v, cx| v.set_filter(f, cx)).ok();
+                }));
+            }
+            let this = this.clone();
+            menu.separator().item(PopupMenuItem::new("Filter by Text").checked(matches!(filter, KeyFilter::Text(_))).on_click(move |_, window, cx| {
+                this.update(cx, |v, cx| v.filter_by_text(window, cx)).ok();
+            }))
+        });
+        let locale_filter = self.locale_filter.clone();
+        let this = cx.entity().downgrade();
+        let locales = self.table.locales.clone();
+        let locale_label = locale_filter.as_ref().map_or("Show All Locales".to_owned(), |l| format!("Show {}", l.label()));
+        let locale_button = Button::new("tr-locale-filter").ghost().small().label(locale_label).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu(move |mut menu, _, _| {
+            let all = this.clone();
+            menu = menu.item(PopupMenuItem::new("Show All Locales").checked(locale_filter.is_none()).on_click(move |_, _, cx| {
+                all.update(cx, |v, cx| v.set_locale_filter(None, cx)).ok();
+            }));
+            for l in &locales {
+                let (this, locale) = (this.clone(), l.clone());
+                menu = menu.item(PopupMenuItem::new(format!("Show {}", l.label())).checked(locale_filter.as_ref() == Some(l)).on_click(move |_, _, cx| {
+                    let locale = locale.clone();
+                    this.update(cx, |v, cx| v.set_locale_filter(Some(locale), cx)).ok();
                 }));
             }
             menu
@@ -510,6 +628,7 @@ impl Render for TranslationsEditor {
             .child(add_locale)
             .child(div().w(px(1.)).h(px(16.)).mx_1().bg(palette.border))
             .child(filter_button)
+            .child(locale_button)
             .child(tool_button("tr-reload", icons::REFRESH, "Reload").on_click(cx.listener(|this, _, _, cx| this.reload(cx))))
             .child(div().flex_1())
             .when_some(self.error.clone(), |el, e| el.child(div().text_sm().text_color(palette.status_conflict).child(e)));
@@ -523,22 +642,52 @@ impl Render for TranslationsEditor {
             .child(Self::header_cell("Resource Folder", FOLDER_W, &palette))
             .child(Self::header_cell("Untranslatable", UNTRANSLATABLE_W, &palette))
             .child(Self::header_cell("Default Value", DEFAULT_W, &palette));
-        for locale in &self.table.locales {
-            header = header.child(Self::header_cell(locale.label(), LOCALE_W, &palette));
+        let mut locale_headers = h_flex().h_full().flex_none().ml(px(-self.h_offset));
+        for l in self.shown_locales() {
+            locale_headers = locale_headers.child(Self::header_cell(self.table.locales[l].label(), LOCALE_W, &palette));
         }
-        let width = table_width(self.table.locales.len());
+        header = header.child(div().flex_1().min_w_0().h_full().overflow_hidden().child(locale_headers));
         let body: AnyElement = if self.table.rows.is_empty() {
             div().p_4().text_color(palette.text_secondary).child("No string resources").into_any_element()
         } else {
             uniform_list("translations", self.shown.len(), cx.processor(Self::render_rows)).track_scroll(&self.scroll).flex_1().into_any_element()
         };
-        let table = div()
-            .id("translations-h-scroll")
+        // The frozen columns stay; the locale columns scroll sideways with
+        // the wheel (Shift+wheel, or a horizontal wheel).
+        let entity = cx.entity().downgrade();
+        let table = v_flex()
+            .id("translations-table")
+            .relative()
             .flex_1()
             .min_h_0()
-            .overflow_x_scroll()
-            .track_scroll(&self.h_scroll)
-            .child(v_flex().w(width).h_full().child(header).child(body));
+            .w_full()
+            .overflow_hidden()
+            .on_scroll_wheel(cx.listener(|this, e: &gpui_kit::ScrollWheelEvent, _, cx| {
+                let d = e.delta.pixel_delta(px(ROW_H));
+                let dx = if e.modifiers.shift && f32::from(d.x) == 0. { -f32::from(d.y) } else { -f32::from(d.x) };
+                if dx != 0. {
+                    this.scroll_locales(dx, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(header)
+            .child(body)
+            .child(
+                gpui_kit::canvas(
+                    move |bounds, _, cx| {
+                        let visible = (f32::from(bounds.size.width) - FROZEN_W).max(0.);
+                        entity.update(cx, |this, cx| {
+                            if (this.h_visible - visible).abs() > 0.5 {
+                                this.h_visible = visible;
+                                this.scroll_locales(0., cx);
+                            }
+                        }).ok();
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            );
         let label = |text: &'static str| div().w(px(100.)).flex_none().text_sm().child(text);
         let translation_label = match &self.cell {
             Some((_, Column::Locale(l))) => self.table.locales.get(*l).map(|l| l.label()).unwrap_or_default(),
@@ -560,7 +709,20 @@ impl Render for TranslationsEditor {
                     .child(div().flex_1().child(Input::new(&self.translation_field).small().disabled(!editing_translation)))
                     .child(div().w(px(200.)).text_xs().text_color(palette.text_secondary).child(translation_label)),
             );
-        v_flex().size_full().bg(palette.panel).track_focus(&self.focus).text_sm().child(toolbar).child(table).child(fields)
+        v_flex()
+            .size_full()
+            .bg(palette.panel)
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                if matches!(e.keystroke.key.as_str(), "delete" | "backspace") && this.cell.is_some() && this.focus.is_focused(window) {
+                    cx.stop_propagation();
+                    this.delete_selected(window, cx);
+                }
+            }))
+            .text_sm()
+            .child(toolbar)
+            .child(table)
+            .child(fields)
     }
 }
 

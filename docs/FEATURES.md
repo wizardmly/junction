@@ -683,11 +683,15 @@ Android Studio 的 Translations Editor。代码：`src/domain/translations.rs`�
 | 编辑：点单元格选中，下方 Key / Default Value / Translation 显示内容，Translation 右侧注明语言；双击单元格直接编辑下方对应字段，回车或离开字段时写回 XML（转义 `'` `"` `&` `<`、开头的 `@` `?`，首尾空格加引号），清空某语言的翻译即删除该条；没有该语言目录时新建 `values-xx/strings.xml`；写入后打开的编辑器重新加载、重新索引；编辑器里保存 values 文件时表格跟着刷新 | ✅ |
 | 工具栏：+ Add Key（Key、Default Value、Resource Folder 对话框，照 AS 校验 “Key cannot be empty”、“Key 'x' already exists”、非法字符）、− Remove Keys（选中的键，Ctrl / Shift 点击多选，确认后从所有语言删除）、Add Locale（语言下拉，新建 `values-xx/strings.xml` 并放入 `app_name`，不可翻译时放第一个可翻译的键，同 AS 不留空目录）、Show All Keys / Show Translatable Keys / Show Keys Needing Translations 过滤、Reload | ✅ |
 | 多个 res 目录合并显示：项目里每个模块、每个源集（flavor 等）的 `res` 目录都进表，每个键和目录一行，Resource Folder 列注明 `lib/src/main/res`、`app/src/free/res`；语言列取所有目录的并集；编辑、Untranslatable、Remove Keys 都写到该行所在目录；Add Key 对话框的 Resource Folder 是下拉框（默认当前行的目录），Add Locale 写到打开编辑器时所在的目录 | ✅ |
-| Key 列冻结、单元格内直接编辑、`plurals` / `string-array`、Order a translation、按语言过滤列、删除时查找引用（Safe Delete） | ❌ 未做 |
+| 前四列（Key、Resource Folder、Untranslatable、Default Value）固定，语言列用滚轮（Shift+滚轮或横向滚轮）左右滚动；“Show All Locales” 下拉按语言只显示一列（“Show French (fr)”）；键过滤加上 AS 的 “Show Keys Needing a Translation for French (fr)” 和 “Filter by Text”（键、默认值、译文里含该文本，不分大小写）；Delete 在语言列删除选中行的该语言译文，在前几列等同 Remove Keys | ✅ |
+| `plurals` / `string-array`、Order a translation | ➖ AS 的 StringResourceRepository 只读 `ResourceType.STRING`，工具栏也没有 Order a translation |
+| 单元格内直接编辑、删除时查找引用（Safe Delete）、右键菜单（Go to Declaration、Copy） | ❌ 未做 |
 
 Linux 实测（Xvfb，含 values、values-fr、values-zh-rCN、values-night 的示例项目）：打开 `values/strings.xml` 出现横幅，点 Open editor 打开表格，settings 的法语和 welcome 的中法两列标红；双击 settings 的法语格输入 `Parametres d'app` 回车，`values-fr/strings.xml` 写入 `Parametres d\'app`，该行恢复正常；Add Key 输入已存在的 `hello` 提示 “Key 'hello' already exists”，改为 `about` 后写入并选中；Show Keys Needing Translations 只剩 about、welcome；Remove Keys 确认后 about 从文件删除；Add Locale 选 German 新建 `values-de/strings.xml`，出现 “German (de)” 列，其余键变红；勾选 welcome 的 Untranslatable 写入 `translatable="false"`。
 
 Linux 实测（Xvfb，多目录）：项目含 `app/src/main/res`（values、values-fr）、`app/src/free/res`（覆盖 app_name）、`lib/src/main/res`（values、values-de）；表格出现 French、German 两列，app_name 有 main 和 free 两行；在 lib_title 的法语格输入 `Bibliotheque` 新建了 `lib/src/main/res/values-fr/strings.xml`；Add Key 把 Resource Folder 选成 `app/src/free/res`，`promo` 写进 free 的 strings.xml；Ctrl 多选 free 的 app_name 和 promo 后 Remove Keys，只从 free 删除，main 的 app_name 保留。
+
+Linux 实测（Xvfb，过滤与固定列）：9 个语言列时 Shift+滚轮向右滚，Key 到 Default Value 四列不动、语言列滚到 Italian / Japanese；Show Japanese (ja) 后只剩日语一列，选中 hello 的日语格按 Delete，`values-ja/strings.xml` 里的 hello 被删除；Filter by Text 输入 `bibli` 只剩 lib_title 一行。
 
 ## 32. Vector drawable 预览（2026-10-16）
 
