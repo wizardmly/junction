@@ -570,7 +570,7 @@ Linux 实测（Xvfb，示例 Gradle 项目）：类 `Calc` 改为 `Calculator`�
 | 结果用提示显示：“Removed 3 unused imports”、“Rearranged imports”、“Unused imports not found” | ✅ |
 | Project 窗口对目录批量优化（2026-10-21，见第 11 节 Project 窗口右键） | ✅ |
 | Settings › Editor › Auto Import 页（2026-10-22）：Java、Kotlin 各一个 “Optimize imports on the fly”（默认关，同 IntelliJ）；勾上后 Ctrl+S 保存时静默删未用的 import 并排序，光标在 import 块里（正在写 import）时不动；IntelliJ 是编辑过程中随高亮完成就做，这里改在保存时做，切标签等自动保存不触发 | ✅ |
-| import 块中间夹注释时保留注释原位 | ❌ 未做（现在不改动这样的 import 块） |
+| import 块里的注释（2026-10-22，照 IntelliJ 的 `ImportHelper`）：写在 import 行尾的注释跟着这行 import 一起排序（import 被删时注释一起删）；夹在 import 之间的整行注释（含多行 `/* */`）移到排好的 import 后面 | ✅ |
 
 “是否用到”按文件里出现的整词判断（注释里出现也算用到），不做类型解析：只在注释里提到的类，其 import 会被保留。
 
