@@ -620,7 +620,9 @@ Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+
 | 包住选中的整行（没有选区时是光标所在行），里面缩进一级（按文件的缩进单位）；catch 照 IntelliJ 的默认：Kotlin `catch (e: Exception) { throw e }`，Java `catch (Exception e) { throw new RuntimeException(e); }` | ✅ |
 | 选中一行中的一部分时，前面多出表达式项：Kotlin `!(expr)`、`"${expr}"`、`(expr)`，Java `(expr)`、`!(expr)` | ✅ |
 | 套用后光标停在模板要填的地方（`if (|)`、`for (|; ; )`）或选中占位内容（`true`、`Exception`、`item in items`）；一次 Ctrl+Z 撤销 | ✅ |
-| Live Template 式的占位跳转（Tab 到下一个）、把块内声明移到外面（MoveDeclarationsOutHelper）、按调用推断 catch 的异常类型、when / if 表达式等其余表达式模板、Surround with Live Template | ❌ 未做 |
+| 有多处要填的 for（Kotlin `for (item in items)` 的 item、items；Java `for (; ; )` 的三处）照 Live Template 逐个停留：Tab 到下一处，最后停在头部行末 | ✅ |
+| Code › Surround with Live Template（Ctrl+Alt+J，Find Action 里也有）：列出含 `$SELECTION$` 的模板，编号选择；Surround With 弹窗里也排在 surrounder 之后。内置的是 IntelliJ Java.xml 的 C（Callable）、RL / WL（ReadWriteLock 读写锁）、I（for-each）；自定义模板含 `$SELECTION$` 的也列出来。选中内容按模板层级重新缩进，之后照 Live Template 逐个填变量；模板里的全限定类名照 toShortenFQNames 缩短并补 import（`Callable` → `import java.util.concurrent.Callable;`）。这类模板不按缩写展开、也不进补全列表 | ✅ |
+| 把块内声明移到外面（MoveDeclarationsOutHelper）、按调用推断 catch 的异常类型、when / if 表达式等其余表达式模板 | ❌ 未做 |
 
 ## 29. Live Templates（2026-10-15）
 

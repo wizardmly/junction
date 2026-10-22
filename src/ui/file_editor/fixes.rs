@@ -65,6 +65,8 @@ pub(super) enum Choice {
     Server(crate::index::lsp::CodeAction),
     /// Unwrap/Remove: one way to take a statement apart.
     Unwrap(crate::domain::intentions::Intention),
+    /// A surround live template, numbered after the surrounders.
+    LiveTemplate(crate::domain::live_templates::Template, char),
 }
 
 /// The byte offset of a line and character column.
@@ -183,9 +185,26 @@ impl FileEditor {
         for s in statement_surrounders(style) {
             items.push((lines.clone(), Choice::Surround(*s, mnemonic(items.len()), false)));
         }
+        // The surround live templates after them, as IntelliJ's popup.
+        let range = expression.clone().unwrap_or_else(|| lines.clone());
+        for t in crate::domain::live_templates::surrounding(style == crate::domain::imports::ImportStyle::Kotlin) {
+            let key = mnemonic(items.len());
+            items.push((range.clone(), Choice::LiveTemplate(t, key)));
+        }
         let cursor = self.state.read(cx).cursor();
         let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
         self.context_actions = Some(ContextActions { items, title: Some("Surround With"), selected: 0, at, caret: None });
+        window.focus(&self.context_focus, cx);
+        cx.notify();
+    }
+
+    /// Surround with Live Template's popup: the templates, numbered.
+    pub(super) fn choose_live_template(&mut self, templates: Vec<crate::domain::live_templates::Template>, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::surround::mnemonic;
+        let items = templates.into_iter().enumerate().map(|(i, t)| (range.clone(), Choice::LiveTemplate(t, mnemonic(i)))).collect();
+        let cursor = self.state.read(cx).cursor();
+        let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
+        self.context_actions = Some(ContextActions { items, title: Some("Surround with Live Template"), selected: 0, at, caret: None });
         window.focus(&self.context_focus, cx);
         cx.notify();
     }
@@ -249,6 +268,7 @@ impl FileEditor {
                 state.replace(&fix.replacement, window, cx);
             }),
             Choice::Surround(surrounder, _, expression) => self.surround(surrounder, range, expression, window, cx),
+            Choice::LiveTemplate(template, _) => self.surround_with_template(template, range, window, cx),
             Choice::Generate(member) => self.generate_member(member, window, cx),
             Choice::Expression(_, kind) => {
                 if let Some(caret) = popup.caret {
@@ -443,6 +463,7 @@ impl FileEditor {
                 Choice::Fix(fix) => (Some(icons::INTENTION_BULB), fix.title.clone()),
                 Choice::Expression(text, _) => (None, text.clone()),
                 Choice::Surround(s, key, _) => (None, format!("{key}. {}", s.label())),
+                Choice::LiveTemplate(t, key) => (None, format!("{key}. {}  {}", t.name, t.description)),
                 Choice::Generate(m) => (None, m.label().to_owned()),
                 Choice::ImportClass(name, _) => (Some(icons::INTENTION_BULB), format!("Import class '{name}'")),
                 Choice::Import(qualified) => (Some(icons::CLASS), qualified.clone()),
@@ -484,7 +505,7 @@ impl FileEditor {
                             // Surround With's numbers and letters choose an item.
                             let Some(key) = e.keystroke.key.chars().next().filter(|_| e.keystroke.key.chars().count() == 1) else { return };
                             let key = key.to_ascii_uppercase();
-                            let ix = this.context_actions.as_ref().and_then(|p| p.items.iter().position(|(_, c)| matches!(c, Choice::Surround(_, k, _) if *k == key)));
+                            let ix = this.context_actions.as_ref().and_then(|p| p.items.iter().position(|(_, c)| matches!(c, Choice::Surround(_, k, _) | Choice::LiveTemplate(_, k) if *k == key)));
                             if let Some(ix) = ix {
                                 cx.stop_propagation();
                                 this.apply_context_action(ix, window, cx);

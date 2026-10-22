@@ -86,6 +86,11 @@ pub struct Surrounded {
     pub range: Range<usize>,
     pub text: String,
     pub select: Range<usize>,
+    /// More than one place to fill in (`for (item in items)`, Java's
+    /// `for (; ; )`): each one, in order, Tab going from one to the next as
+    /// in a live template, and where the caret ends (the header's end).
+    pub stops: Vec<Range<usize>>,
+    pub end: usize,
 }
 
 /// The whole lines the selection touches (to their line break), or the
@@ -167,7 +172,19 @@ pub fn surround_lines(style: ImportStyle, surrounder: Surrounder, text: &str, ra
             None => header_at..header_at,
         },
     };
-    Surrounded { range, text: out, select }
+    let header_end = header_at + header.find('\n').unwrap_or(header.len());
+    let stops: Vec<Range<usize>> = match (surrounder, kotlin) {
+        (Surrounder::For, true) => {
+            let at = header_at + "for (".len();
+            vec![at..at + "item".len(), at + "item in ".len()..at + "item in items".len()]
+        }
+        (Surrounder::For, false) => {
+            let at = header_at + "for (".len();
+            vec![at..at, at + "; ".len()..at + "; ".len(), at + "; ; ".len()..at + "; ; ".len()]
+        }
+        _ => Vec::new(),
+    };
+    Surrounded { range, text: out, select, stops, end: header_end }
 }
 
 /// Wraps an expression (within a line) with an expression surrounder.
@@ -179,7 +196,7 @@ pub fn surround_expression(surrounder: Surrounder, text: &str, range: Range<usiz
         _ => format!("({expr})"),
     };
     let end = range.start + out.len();
-    Surrounded { range, text: out, select: end..end }
+    Surrounded { range, text: out, select: end..end, stops: Vec::new(), end }
 }
 
 #[cfg(test)]
@@ -207,6 +224,10 @@ mod tests {
         let (out, selected) = apply(text, &surround_lines(ImportStyle::Kotlin, Surrounder::DoWhile, text, lines, &unit));
         assert_eq!(out, "fun f() {\n    do {\n        val a = 1\n        println(a)\n    } while (true)\n}\n");
         assert_eq!(selected, "true");
+        let s = surround_lines(ImportStyle::Kotlin, Surrounder::For, text, lines_of(text, 14..14), &unit);
+        let (out, selected) = apply(text, &s);
+        assert_eq!(selected, "item in items");
+        assert_eq!(s.stops.iter().map(|r| &out[r.clone()]).collect::<Vec<_>>(), ["item", "items"]);
     }
 
     #[test]
@@ -219,6 +240,10 @@ mod tests {
         let s = surround_lines(ImportStyle::Java, Surrounder::For, text, lines.clone(), &unit);
         let (out, _) = apply(text, &s);
         assert_eq!(out, "  void f() {\n    for (; ; ) {\n      run();\n    }\n  }\n");
+        // Tab: the initializer, the condition, the update, then the header's end.
+        let header = out.find("for").unwrap();
+        assert_eq!(s.stops.iter().map(|r| r.start - header).collect::<Vec<_>>(), [5, 7, 9]);
+        assert_eq!(&out[s.end - 3..s.end], ") {");
         assert_eq!(&out[s.select.start..s.select.start + 1], ";");
         let (out, _) = apply(text, &surround_lines(ImportStyle::Java, Surrounder::Runnable, text, lines, &unit));
         assert_eq!(out, "  void f() {\n    Runnable runnable = new Runnable() {\n      public void run() {\n        run();\n      }\n    };\n  }\n");

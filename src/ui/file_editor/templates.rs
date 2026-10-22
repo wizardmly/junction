@@ -8,7 +8,7 @@
 use gpui_kit::{Context, IntoElement, ParentElement as _, Styled as _, Window, anchored, deferred, div, px};
 
 use super::FileEditor;
-use crate::domain::live_templates::{expand, find, Session};
+use crate::domain::live_templates::{expand, expand_around, find, shortened, Session, Template};
 use crate::theme::ActivePalette as _;
 
 pub(super) struct TemplateState {
@@ -80,6 +80,61 @@ impl FileEditor {
         self.template = (!session.stops.is_empty()).then_some(TemplateState { session, text: new_text, syncing: false });
         cx.notify();
         true
+    }
+
+    /// Fills in `session`'s places one by one, as a template's (the text
+    /// already written, the first place selected).
+    pub(super) fn start_template(&mut self, session: Session, cx: &mut Context<Self>) {
+        let text = self.state.read(cx).value().to_string();
+        self.template = (!session.stops.is_empty()).then_some(TemplateState { session, text, syncing: false });
+        cx.notify();
+    }
+
+    /// Surrounds `range` (whole lines, or text within a line) with a
+    /// surround template, its qualified names shortened and imported, and
+    /// fills in its variables.
+    pub(super) fn surround_with_template(&mut self, template: Template, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, style)) = self.jvm_style() else { return };
+        let text = self.text(cx);
+        let (template, imports) = shortened(&template);
+        let line_start = text[..range.start].rfind('\n').map_or(0, |i| i + 1);
+        let whole_lines = range.start == line_start && (range.end == text.len() || text[..range.end].ends_with('\n'));
+        let selection = &text[range.clone()];
+        let indent: String = text[line_start..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let expansion = expand_around(&template, selection, &indent, &crate::domain::surround::indent_unit(&text));
+        let lead = if whole_lines { indent.as_str() } else { "" };
+        let mut insert = format!("{lead}{}", expansion.text);
+        if whole_lines && selection.ends_with('\n') && !insert.ends_with('\n') {
+            insert.push('\n');
+        }
+        let mut new_text = text.clone();
+        new_text.replace_range(range.clone(), &insert);
+        let mut at = range.start + lead.len();
+        for qualified in imports {
+            let header = crate::domain::imports::header(&new_text);
+            let imported: Vec<String> = header.imports.iter().map(|(_, q)| q.clone()).chain(header.wildcards.iter().map(|w| format!("{w}.*"))).collect();
+            if crate::domain::imports::is_visible(&qualified, Some(&header.package), &imported, &[]) {
+                continue;
+            }
+            let (offset, line) = crate::domain::imports::import_edit(style, &new_text, &qualified);
+            new_text.insert_str(offset, &line);
+            if offset <= at {
+                at += line.len();
+            }
+        }
+        // One edit from the first change to the last.
+        let prefix = text.bytes().zip(new_text.bytes()).take_while(|(a, b)| a == b).count().min(range.start);
+        let suffix = text.bytes().rev().zip(new_text.bytes().rev()).take_while(|(a, b)| a == b).count().min(text.len() - range.end);
+        let replaced = prefix..text.len() - suffix;
+        let replacement = new_text[prefix..new_text.len() - suffix].to_owned();
+        let session = Session::new(&expansion, at);
+        let selection = session.selection().unwrap_or(session.end..session.end);
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(replaced, cx);
+            state.replace(replacement, window, cx);
+            state.set_selected_range(selection, cx);
+        });
+        self.start_template(session, cx);
     }
 
     /// Enter in a template: to the next variable, as Tab.

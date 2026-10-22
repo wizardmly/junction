@@ -99,6 +99,10 @@ const JAVA: &[Template] = &[
     Template { name: s("psfs"), description: s("public static final String"), value: s("public static final String "), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Class]) },
     Template { name: s("thr"), description: s("throw new"), value: s("throw new "), vars: Cow::Borrowed(&[]), contexts: Cow::Borrowed(&[Context::Statement]) },
     Template { name: s("else-if"), description: s("Add else-if branch"), value: s("else if($CONDITION$){\n$END$\n} "), vars: Cow::Borrowed(&[Var { name: s("CONDITION"), default: s(""), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Else]) },
+    Template { name: s("C"), description: s("Surround with Callable"), value: s("java.util.concurrent.Callable<$RET$> callable = new java.util.concurrent.Callable<$RET$>() {\n  public $RET$ call() throws Exception {\n    $SELECTION$\n    $END$ \n  }\n};"), vars: Cow::Borrowed(&[Var { name: s("RET"), default: s("java.lang.Object"), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("RL"), description: s("Surround with ReadWriteLock.readLock"), value: s("$LOCK$.readLock().lock();\ntry { \n  $SELECTION$\n} finally {\n  $LOCK$.readLock().unlock();\n}\n"), vars: Cow::Borrowed(&[Var { name: s("LOCK"), default: s(""), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("WL"), description: s("Surround with ReadWriteLock.writeLock"), value: s("$LOCK$.writeLock().lock();\ntry { \n  $SELECTION$\n} finally {\n  $LOCK$.writeLock().unlock();\n}\n"), vars: Cow::Borrowed(&[Var { name: s("LOCK"), default: s(""), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("I"), description: s("Iterate Iterable or array"), value: s("for ($ELEMENT_TYPE$ $VAR$ : $SELECTION$) {\n  $END$\n}\n"), vars: Cow::Borrowed(&[Var { name: s("ELEMENT_TYPE"), default: s("java.lang.Object"), stop: false, copy_of: None }, Var { name: s("VAR"), default: s(""), stop: true, copy_of: None }]), contexts: Cow::Borrowed(&[Context::Statement]) },
 ];
 
 /// The built-in templates of a language: `kotlin` or Java.
@@ -220,9 +224,54 @@ fn templates_in(custom: &CustomTemplates, kotlin: bool) -> Vec<Template> {
     out
 }
 
+impl Template {
+    /// A surround template (`$SELECTION$` in it): it wraps the selection
+    /// (Code › Surround With… / Surround with Live Template) and doesn't
+    /// expand from its abbreviation.
+    pub fn surrounds(&self) -> bool {
+        self.value.contains("$SELECTION$")
+    }
+}
+
 /// The template an abbreviation expands to here.
 pub fn find(kotlin: bool, abbreviation: &str, contexts: &[Context]) -> Option<Template> {
-    templates(kotlin).into_iter().find(|t| t.name == abbreviation && t.contexts.iter().any(|c| contexts.contains(c)))
+    templates(kotlin).into_iter().find(|t| t.name == abbreviation && !t.surrounds() && t.contexts.iter().any(|c| contexts.contains(c)))
+}
+
+/// The surround templates of a language that are on, once per
+/// abbreviation (the person's first).
+pub fn surrounding(kotlin: bool) -> Vec<Template> {
+    let mut out: Vec<Template> = Vec::new();
+    for t in templates(kotlin) {
+        if t.surrounds() && !out.iter().any(|o| o.name == t.name) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// IntelliJ's toShortenFQNames: each qualified class name in the
+/// template's text and defaults (`java.util.concurrent.Callable`) becomes
+/// its simple name; the names to import (none for `java.lang` and
+/// `kotlin`).
+pub fn shortened(template: &Template) -> (Template, Vec<String>) {
+    static FQN: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\b(?:java|javax|kotlin|android|androidx)(?:\.[a-z_][a-z0-9_]*)*\.([A-Z][A-Za-z0-9_]*)\b").unwrap());
+    let mut imports: Vec<String> = Vec::new();
+    let mut short = |text: &str| -> String {
+        FQN.replace_all(text, |c: &regex::Captures| {
+            let qualified = c[0].to_owned();
+            let package = &qualified[..qualified.len() - c[1].len() - 1];
+            if package != "java.lang" && package != "kotlin" && !imports.contains(&qualified) {
+                imports.push(qualified.clone());
+            }
+            c[1].to_owned()
+        })
+        .into_owned()
+    };
+    let value = short(&template.value);
+    let vars: Vec<Var> = template.vars.iter().map(|v| Var { default: Cow::Owned(short(&v.default)), ..v.clone() }).collect();
+    (Template { value: Cow::Owned(value), vars: Cow::Owned(vars), ..template.clone() }, imports)
 }
 
 /// The templates code completion offers for the word typed before the
@@ -235,7 +284,7 @@ pub fn completing(kotlin: bool, typed: &str, contexts: &[Context]) -> Vec<Templa
     }
     let mut out: Vec<Template> = Vec::new();
     for t in templates(kotlin) {
-        if t.name.starts_with(typed) && t.contexts.iter().any(|c| contexts.contains(c)) && !out.iter().any(|o| o.name == t.name) {
+        if t.name.starts_with(typed) && !t.surrounds() && t.contexts.iter().any(|c| contexts.contains(c)) && !out.iter().any(|o| o.name == t.name) {
             out.push(t);
         }
     }
@@ -245,7 +294,7 @@ pub fn completing(kotlin: bool, typed: &str, contexts: &[Context]) -> Vec<Templa
 /// Whether any template's abbreviation starts with the word: when none
 /// does, completion needn't work out where the caret is.
 pub fn any_starts_with(kotlin: bool, typed: &str) -> bool {
-    !typed.is_empty() && templates(kotlin).iter().any(|t| t.name.starts_with(typed))
+    !typed.is_empty() && templates(kotlin).iter().any(|t| t.name.starts_with(typed) && !t.surrounds())
 }
 
 /// The completion command that expands the template just completed.
@@ -263,6 +312,14 @@ pub struct Expansion {
 /// Writes a template out at a line indented `indent`: each following line
 /// indented by its brace depth in steps of `unit`.
 pub fn expand(template: &Template, indent: &str, unit: &str) -> Expansion {
+    expand_around(template, "", indent, unit)
+}
+
+/// `expand` with `selection` at `$SELECTION$`: its lines keep their
+/// indentation relative to each other, at the template's level there.
+pub fn expand_around(template: &Template, selection: &str, indent: &str, unit: &str) -> Expansion {
+    let selection_lines: Vec<&str> = selection.trim_end_matches('\n').split('\n').collect();
+    let base = selection_lines.iter().filter(|l| !l.trim().is_empty()).map(|l| l.len() - l.trim_start().len()).min().unwrap_or(0);
     let value_of = |name: &str| -> &str {
         let var = template.vars.iter().find(|v| v.name == name);
         let source = var.and_then(|v| v.copy_of.as_deref()).and_then(|c| template.vars.iter().find(|v| v.name == c));
@@ -274,10 +331,10 @@ pub fn expand(template: &Template, indent: &str, unit: &str) -> Expansion {
     let mut depth: usize = 0;
     for (n, line) in template.value.split('\n').enumerate() {
         let line = if n == 0 { line } else { line.trim_start() };
+        let closing = line.starts_with('}');
+        let level = if closing { depth.saturating_sub(1) } else { depth };
         if n > 0 {
             out.push('\n');
-            let closing = line.starts_with('}');
-            let level = if closing { depth.saturating_sub(1) } else { depth };
             if !line.trim().is_empty() || line.contains("$END$") {
                 out.push_str(indent);
                 out.push_str(&unit.repeat(level));
@@ -296,7 +353,19 @@ pub fn expand(template: &Template, indent: &str, unit: &str) -> Expansion {
             out.push_str(&rest[..at]);
             match name {
                 "END" => end = Some(out.len()),
-                "SELECTION" => {}
+                "SELECTION" => {
+                    for (i, l) in selection_lines.iter().enumerate() {
+                        let l = l.get(base..).unwrap_or(l.trim_start());
+                        if i > 0 {
+                            out.push('\n');
+                            if !l.trim().is_empty() {
+                                out.push_str(indent);
+                                out.push_str(&unit.repeat(if n == 0 { 0 } else { level }));
+                            }
+                        }
+                        out.push_str(if i == 0 { l.trim_start() } else { l });
+                    }
+                }
                 _ => {
                     let start = out.len();
                     out.push_str(value_of(name));
@@ -455,6 +524,24 @@ mod tests {
 
     fn template(kotlin: bool, name: &str) -> &'static Template {
         builtin(kotlin).iter().find(|t| t.name == name).unwrap()
+    }
+
+    #[test]
+    fn surrounds_with_templates() {
+        let wl = builtin(false).iter().find(|t| t.name == "WL").unwrap();
+        assert!(wl.surrounds() && find(false, "WL", &[Context::Statement]).is_none());
+        let e = expand_around(wl, "    a();\n    if (b) {\n        c();\n    }\n", "    ", "    ");
+        assert_eq!(e.text, "$LOCK$.writeLock().lock();\n    try { \n        a();\n        if (b) {\n            c();\n        }\n    } finally {\n        $LOCK$.writeLock().unlock();\n    }\n".replace("$LOCK$", ""));
+        assert_eq!(e.stops, vec![vec![0..0, e.text.find(".writeLock().unlock").unwrap()..e.text.find(".writeLock().unlock").unwrap()]]);
+        let (c, imports) = shortened(builtin(false).iter().find(|t| t.name == "C").unwrap());
+        assert_eq!(imports, ["java.util.concurrent.Callable"]);
+        let e = expand_around(&c, "run();", "  ", "  ");
+        assert_eq!(e.text, "Callable<Object> callable = new Callable<Object>() {\n    public Object call() throws Exception {\n      run();\n       \n    }\n  };");
+        assert_eq!(e.stops.len(), 1);
+        let i = builtin(false).iter().find(|t| t.name == "I").unwrap();
+        let (i, imports) = shortened(i);
+        assert!(imports.is_empty());
+        assert_eq!(expand_around(&i, "names", "", "  ").text, "for (Object  : names) {\n  \n}\n");
     }
 
     #[test]
