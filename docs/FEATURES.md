@@ -448,7 +448,8 @@ Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 
 | Alt+Enter “Replace with new library catalog declaration for x”（AS 的 UseTomlInstead）：build 脚本里写死的 `"g:a:v"` 依赖和 `id("x") version "v"` 插件改成 `libs.x` / `alias(libs.plugins.x)`，同时在 `libs.versions.toml` 加 `[versions]` 和 `[libraries]`/`[plugins]` 条目（缺的段按 Gradle 顺序新建）；catalog 已有同坐标条目时改为 “Replace with existing version catalog reference 'x'” | ✅ |
 | Groovy 脚本（`build.gradle`）里的 `libs.` 补全和跳转：与 Kotlin 脚本相同 | ✅ |
 | `buildSrc` 常量（2026-10-22）：Kotlin 脚本里本来按索引解析；Groovy 脚本不建索引，另按名字解析：`Deps.coreKtx`、`Deps.Android.minSdk` 这样以类名开头的限定名 Ctrl+B 跳到 buildSrc（或工程里任一 Kotlin / Java 类）的成员，类名本身跳到类；`Deps.` 后补全该类的成员 | ✅ |
-| buildSrc 常量的 Find Usages 不含 Groovy 脚本、buildSrc 里依赖字符串的新版本警告 | ❌ 未做 |
+| buildSrc 常量的 Find Usages（2026-10-22）：在 `Deps.kt` 里 Alt+F7，结果多一组 “Groovy build scripts”，列出 `build.gradle` 里解析到该声明的 `Deps.coreKtx`（同名的 `libs.coreKtx` 等不算） | ✅ |
+| buildSrc 里依赖字符串的新版本警告、Rename buildSrc 常量时同步改 Groovy 脚本 | ❌ 未做 |
 
 Linux 实测（容器访问不了 dl.google.com，androidx 和 AGP 用预先写入的缓存，其他是实际联网结果）：build.gradle.kts 里 Ctrl+B `libs.androidx.core.ktx` 跳到 toml 第 9 行；toml 里所有旧版本都有警告，Alt+Enter 选 “Change to 1.13.1” 后版本被替换；`version.ref` 跳到 `[versions]`；Alt+F7 列出 build 脚本里的用法；`libs.andr` → `androidx` → `core.` → `ktx` 逐段补全。截图：reports/Gradle文件辅助-2026-10-15/。
 

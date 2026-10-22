@@ -488,6 +488,12 @@ impl CodeIndex {
                 }
                 found
             };
+            // `buildSrc` names used in Groovy build scripts (not indexed).
+            let declared: Vec<(String, u32)> = found.iter().filter(|u| u.group == "Declarations" && !super::groovy_scripts::is_groovy_script(&u.path)).map(|u| (u.path.clone(), u.line)).collect();
+            if !declared.is_empty() {
+                let index = index.read().unwrap();
+                found.extend(super::groovy_scripts::usages(&index, &root, &word, &declared));
+            }
             // The server's references are exact; mark them and add any the
             // text search missed.
             if let Some(lang) = lang {
