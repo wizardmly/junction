@@ -21,7 +21,7 @@ use gpui_kit::{
 
 use super::{LogcatEvent, LogcatView};
 use crate::domain::logcat::tab_name;
-use crate::domain::logcat_layout::{LogcatLayout, PaneLayout, TabLayout};
+use crate::domain::logcat_layout::{LogcatLayout, PaneLayout, PanelState, TabLayout};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
@@ -348,6 +348,36 @@ impl LogcatTabs {
         });
         dialogs::focus_input(&focus, window, cx);
         focus.update(cx, |s, cx| s.select_all(window, cx));
+    }
+
+    /// "Show logcat automatically" after a launch, as Android Studio's
+    /// `LogcatToolWindowFactory.showLogcat`: the tab named "<app> (<serial>)"
+    /// is selected, else made, reading that device with `package:<app>`.
+    pub fn show_logcat(&mut self, serial: &str, application_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let name = format!("{application_id} ({serial})");
+        if let Some(ix) = self.tabs.iter().position(|t| t.name == name) {
+            self.active = ix;
+        } else {
+            let device = self.devices.read(cx).devices().iter().find(|d| d.serial.as_deref() == Some(serial)).map(|d| d.id.clone());
+            let view = self.new_log(window, cx);
+            let state = PanelState { filter: format!("package:{application_id}"), device, ..Default::default() };
+            view.update(cx, |v, cx| v.restore_state(state, window, cx));
+            self.tabs.push(Tab { name, pane: Pane::Log(view) });
+            self.active = self.tabs.len() - 1;
+            cx.emit(LogcatEvent::LayoutChanged);
+        }
+        cx.notify();
+    }
+
+    /// A launch cleared a device's log: its panels empty.
+    pub fn clear_device(&mut self, serial: &str, cx: &mut Context<Self>) {
+        let mut logs = Vec::new();
+        for tab in &self.tabs {
+            tab.pane.logs(&mut logs);
+        }
+        for view in logs {
+            view.update(cx, |v, cx| v.clear_device(serial, cx));
+        }
     }
 
     /// The tool window showed or hid: every tab's log keeps reading.

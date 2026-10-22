@@ -13,6 +13,7 @@ use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, SharedString
 use crate::android::{Device, Kind};
 use crate::domain::diagnostics::FileProblem;
 use crate::domain::run::{self, BuildResult, RunConfiguration};
+use crate::domain::run::DeviceBridge as _;
 use crate::infra::adb_device::AdbDevice;
 use crate::infra::gradle::GradleBuild;
 use crate::settings::Settings;
@@ -33,6 +34,12 @@ pub enum RunEvent {
     Generated { title: String, message: String, folder: PathBuf },
     /// Debug 'app' started the app waiting for the debugger: attach.
     Attach { name: String, serial: String, pid: u32, adb: crate::android::adb::Adb },
+    /// "Clear log before launch" cleared the device's log: its Logcat
+    /// panels empty too (Android Studio's `ClearLogcatListener`).
+    ClearLogcat { serial: String },
+    /// "Show logcat automatically": the Logcat tab of the launched app
+    /// (Android Studio's `ShowLogcatListener`).
+    ShowLogcat { serial: String, application_id: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +78,38 @@ pub struct Console {
 enum Message {
     Build(String),
     Console(ConsoleLine),
+    ClearLogcat(String),
+}
+
+/// The device port, telling the Logcat panels when the log was cleared.
+struct LaunchBridge {
+    adb: AdbDevice,
+    tx: std::sync::mpsc::Sender<Message>,
+}
+
+impl run::DeviceBridge for LaunchBridge {
+    fn install(&self, serial: &str, apks: &[PathBuf]) -> Result<Duration, String> {
+        self.adb.install(serial, apks)
+    }
+    fn force_stop(&self, serial: &str, application_id: &str) {
+        self.adb.force_stop(serial, application_id)
+    }
+    fn launcher_activity(&self, serial: &str, application_id: &str) -> Option<String> {
+        self.adb.launcher_activity(serial, application_id)
+    }
+    fn start(&self, serial: &str, component: &str, debug: bool, flags: &str) -> Result<(), String> {
+        self.adb.start(serial, component, debug, flags)
+    }
+    fn pid(&self, serial: &str, application_id: &str) -> Option<u32> {
+        self.adb.pid(serial, application_id)
+    }
+    fn clear_logcat(&self, serial: &str) {
+        self.adb.clear_logcat(serial);
+        self.tx.send(Message::ClearLogcat(serial.to_owned())).ok();
+        // The panels empty (they're drained ten times a second) before the
+        // app logs anything.
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 pub struct RunService {
@@ -86,6 +125,8 @@ pub struct RunService {
     busy: bool,
     /// Lines the background work sends.
     receiver: Option<std::sync::mpsc::Receiver<Message>>,
+    /// Devices whose log a launch cleared, for the Logcat panels.
+    cleared: Vec<String>,
     _task: Option<Task<()>>,
 }
 
@@ -93,7 +134,7 @@ impl EventEmitter<RunEvent> for RunService {}
 
 impl RunService {
     pub fn new(devices: Entity<DeviceManager>) -> Self {
-        Self { devices, config: None, test: None, build: None, console: None, cancel: Arc::default(), busy: false, receiver: None, _task: None }
+        Self { devices, config: None, test: None, build: None, console: None, cancel: Arc::default(), busy: false, receiver: None, cleared: Vec::new(), _task: None }
     }
 
     /// The Build window's Clear All: its output text (the problems stay).
@@ -339,7 +380,7 @@ impl RunService {
             let (outcome, build) = cx
                 .background_spawn(async move {
                     let mut console_started = false;
-                    let bridge = AdbDevice { adb };
+                    let bridge = LaunchBridge { adb: AdbDevice { adb }, tx: send.clone() };
                     let console_tx = send.clone();
                     run_app::run(
                         &GradleBuild,
@@ -370,6 +411,11 @@ impl RunService {
                         _ => console.active = false,
                     }
                 }
+                // After the Run window, so Logcat is the one showing.
+                let show_logcat = match &outcome {
+                    RunOutcome::Running { application_id, .. } if config.options.show_logcat => Some(RunEvent::ShowLogcat { serial: attach_to.0.clone(), application_id: application_id.clone() }),
+                    _ => None,
+                };
                 match outcome {
                     RunOutcome::Running { pid: Some(pid), .. } if debug => {
                         cx.emit(RunEvent::ShowRun);
@@ -381,6 +427,9 @@ impl RunService {
                         cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: "Gradle build failed. See the Build window.".into() })
                     }
                     _ => {}
+                }
+                if let Some(event) = show_logcat {
+                    cx.emit(event);
                 }
                 cx.notify();
             })
@@ -427,6 +476,9 @@ impl RunService {
                     if this.drain() {
                         cx.notify();
                     }
+                    for serial in std::mem::take(&mut this.cleared) {
+                        cx.emit(RunEvent::ClearLogcat { serial });
+                    }
                     this.receiver.is_some()
                 }) else {
                     break;
@@ -451,6 +503,7 @@ impl RunService {
                         b.lines.push(line.into());
                     }
                 }
+                Ok(Message::ClearLogcat(serial)) => self.cleared.push(serial),
                 Ok(Message::Console(line)) => {
                     any = true;
                     if let Some(c) = self.console.as_mut() {

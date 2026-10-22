@@ -82,6 +82,10 @@ pub fn run(
     if cancelled() {
         return (RunOutcome::Cancelled, build);
     }
+    // Before the app starts, so its log is all there is.
+    if config.options.clear_logcat {
+        device.clear_logcat(target.serial);
+    }
     let component = match &config.options.launch {
         // Launch: "Nothing".
         LaunchTarget::Nothing => return (RunOutcome::Running { application_id: output.application_id, pid: None }, build),
@@ -160,6 +164,9 @@ mod tests {
         fn pid(&self, _: &str, _: &str) -> Option<u32> {
             Some(4242)
         }
+        fn clear_logcat(&self, _: &str) {
+            self.0.borrow_mut().push("logcat -c".into());
+        }
     }
 
     fn config() -> RunConfiguration {
@@ -189,6 +196,15 @@ mod tests {
     }
 
     #[test]
+    fn clears_the_log_before_launch() {
+        let (gradle, phone) = (Gradle { ok: true, tasks: RefCell::default() }, Phone(RefCell::default()));
+        let mut config = config();
+        config.options.clear_logcat = true;
+        run(&gradle, &phone, &config, "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |_| {}, &|| false);
+        assert_eq!(phone.0.borrow().as_slice(), ["install 1", "logcat -c", "stop com.example", "start com.example/.MainActivity"]);
+    }
+
+    #[test]
     fn debug_waits_for_the_debugger() {
         let (gradle, phone) = (Gradle { ok: true, tasks: RefCell::default() }, Phone(RefCell::default()));
         let mut lines = Vec::new();
@@ -205,14 +221,14 @@ mod tests {
         // A specified activity with launch flags.
         let (gradle, phone) = (Gradle { ok: true, tasks: RefCell::default() }, Phone(RefCell::default()));
         let mut config = config();
-        config.options = LaunchOptions { deploy: true, launch: LaunchTarget::Activity(".SettingsActivity".into()), flags: "--ez demo true".into() };
+        config.options = LaunchOptions { deploy: true, launch: LaunchTarget::Activity(".SettingsActivity".into()), flags: "--ez demo true".into(), ..Default::default() };
         let mut lines = Vec::new();
         run(&gradle, &phone, &config, "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |l| lines.push(l), &|| false);
         assert_eq!(phone.0.borrow().as_slice(), ["install 1", "stop com.example", "start com.example/.SettingsActivity --ez demo true"]);
         assert!(matches!(&lines[1], ConsoleLine::Command(c) if c.ends_with("LAUNCHER --ez demo true")));
         // Deploy and Launch "Nothing": built only.
         let phone = Phone(RefCell::default());
-        config.options = LaunchOptions { deploy: false, launch: LaunchTarget::Nothing, flags: String::new() };
+        config.options = LaunchOptions { deploy: false, launch: LaunchTarget::Nothing, flags: String::new(), ..Default::default() };
         let (outcome, _) = run(&gradle, &phone, &config, "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |_| {}, &|| false);
         assert_eq!(outcome, RunOutcome::Running { application_id: "com.example".into(), pid: None });
         assert!(phone.0.borrow().is_empty());

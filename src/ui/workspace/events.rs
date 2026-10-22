@@ -346,6 +346,11 @@ impl Workspace {
                 let pid = *pid;
                 crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.attach_android(name, adb, serial, pid, cx));
             }
+            RunEvent::ClearLogcat { serial } => self.logcat_view.update(cx, |l, cx| l.clear_device(serial, cx)),
+            RunEvent::ShowLogcat { serial, application_id } => {
+                self.tools.open(ToolWindow::Logcat);
+                self.logcat_view.update(cx, |l, cx| l.show_logcat(serial, application_id, window, cx));
+            }
         }
         cx.notify();
     }

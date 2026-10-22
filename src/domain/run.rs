@@ -125,6 +125,14 @@ pub struct LaunchOptions {
     /// Launch Flags: added to `am start` (`--es key value`, `-W`).
     #[serde(default)]
     pub flags: String,
+    /// Miscellaneous › Logcat: "Show logcat automatically" (Android
+    /// Studio's `SHOW_LOGCAT_AUTOMATICALLY`): Run and Debug open the app's
+    /// Logcat tab.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub show_logcat: bool,
+    /// "Clear log before launch" (`CLEAR_LOGCAT`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clear_logcat: bool,
 }
 
 fn yes() -> bool {
@@ -133,7 +141,7 @@ fn yes() -> bool {
 
 impl Default for LaunchOptions {
     fn default() -> Self {
-        Self { deploy: true, launch: LaunchTarget::DefaultActivity, flags: String::new() }
+        Self { deploy: true, launch: LaunchTarget::DefaultActivity, flags: String::new(), show_logcat: false, clear_logcat: false }
     }
 }
 
@@ -206,6 +214,8 @@ pub trait DeviceBridge {
     /// `flags`: the configuration's Launch Flags, added to the command.
     fn start(&self, serial: &str, component: &str, debug: bool, flags: &str) -> Result<(), String>;
     fn pid(&self, serial: &str, application_id: &str) -> Option<u32>;
+    /// `adb logcat -c`: Clear log before launch.
+    fn clear_logcat(&self, serial: &str);
 }
 
 /// The run configurations of a build: the saved ones (whose module is
