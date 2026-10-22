@@ -88,6 +88,7 @@ pub mod evaluate_dialog;
 pub mod change_signature_dialog;
 pub mod extract_method_dialog;
 pub mod introduce_parameter_dialog;
+pub mod multi_device_dialog;
 pub mod run_config_dialog;
 pub mod project_structure_dialog;
 pub mod jdk_download_panel;

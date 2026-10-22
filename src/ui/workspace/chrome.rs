@@ -389,7 +389,11 @@ impl Workspace {
         let tests = service.test_configurations(cx);
         let selected_test = service.selected_test(cx);
         let running = service.console.as_ref().is_some_and(|c| c.active);
-        let device_label = device.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| "No Devices".into());
+        let multiple = service.multiple(cx);
+        let device_label = match multiple {
+            Some(n) => format!("Multiple Devices ({n})"),
+            None => device.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| "No Devices".into()),
+        };
         let device_icon = match device.as_ref() {
             Some(d) if d.kind == crate::android::Kind::Virtual => icons::VIRTUAL_DEVICE_PHONE,
             _ => icons::PHYSICAL_DEVICE_PHONE,
@@ -398,7 +402,8 @@ impl Workspace {
         let config_icon = if selected_test.is_some() { icons::TEST_ROOT } else { icons::MODULE_ANDROID };
         let (make, pick_device, pick_config, start, stop, debug, cover) = (run.clone(), run.clone(), run.clone(), run.clone(), run.clone(), run.clone(), run.clone());
         let cover_label = format!("Run '{}' with Coverage", config_name.as_deref().unwrap_or("app"));
-        let selected_device = device.map(|d| d.id);
+        let selected_device = device.map(|d| d.id).filter(|_| multiple.is_none());
+        let pick_several = run.clone();
         let selected_config = config.filter(|_| selected_test.is_none()).map(|c| (c.build_root, c.name));
         let pick_test = run.clone();
         let edit_configs = run.clone();
@@ -434,7 +439,10 @@ impl Workspace {
                                 run.update(cx, |r, cx| r.pick_device(id, cx))
                             }));
                         }
-                        menu
+                        let several = pick_several.clone();
+                        menu.separator().item(PopupMenuItem::new("Select Multiple Devices…").checked(multiple.is_some()).on_click(move |_, window, cx| {
+                            crate::ui::multi_device_dialog::open(several.clone(), window, cx)
+                        }))
                     }),
             )
             .child(

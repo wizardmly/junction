@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::domain::run::{activity_component, split_command_line, BeforeLaunch, duration_label, start_command, BuildResult, DeviceBridge, LaunchTarget, RunConfiguration, TaskRunner};
+use crate::domain::run::{activity_component, split_command_line, ApkOutput, BeforeLaunch, duration_label, start_command, BuildResult, DeviceBridge, LaunchTarget, RunConfiguration, TaskRunner};
 
 /// A line of the Run console.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +37,7 @@ pub fn build_signed(runner: &dyn TaskRunner, build_root: &std::path::Path, task:
     runner.run_tasks(build_root, &[task.to_owned()], &crate::domain::signing::properties(request), line, cancelled)
 }
 
+#[derive(Clone, Copy)]
 pub struct Target<'a> {
     pub serial: &'a str,
     /// "Google Pixel 9a".
@@ -57,6 +58,24 @@ pub fn run(
     console: &mut dyn FnMut(ConsoleLine),
     cancelled: &dyn Fn() -> bool,
 ) -> (RunOutcome, BuildResult) {
+    let (mut outcomes, build) = run_on(runner, device, config, variant, &[target], build_line, &mut |_, line| console(line), cancelled);
+    (outcomes.remove(0), build)
+}
+
+/// Run on Multiple Devices: builds once, then installs and starts on each
+/// target in turn. `console` gets each line with its target's index; the
+/// outcomes are the targets'.
+pub fn run_on(
+    runner: &dyn TaskRunner,
+    device: &dyn DeviceBridge,
+    config: &RunConfiguration,
+    variant: &str,
+    targets: &[Target],
+    build_line: &mut dyn FnMut(&str),
+    console: &mut dyn FnMut(usize, ConsoleLine),
+    cancelled: &dyn Fn() -> bool,
+) -> (Vec<RunOutcome>, BuildResult) {
+    let all = |outcome: RunOutcome| vec![outcome; targets.len().max(1)];
     // Before launch, in order; the first failure stops the run.
     let mut build = BuildResult { succeeded: true, ..Default::default() };
     for task in &config.options.before_launch {
@@ -79,16 +98,26 @@ pub fn run(
         build.cancelled = step.cancelled;
         build.failure = step.failure;
         if build.cancelled || cancelled() {
-            return (RunOutcome::Cancelled, build);
+            return (all(RunOutcome::Cancelled), build);
         }
         if !build.succeeded {
-            return (RunOutcome::BuildFailed, build);
+            return (all(RunOutcome::BuildFailed), build);
         }
     }
     let Some(output) = runner.apk_output(&config.module, variant) else {
-        console(ConsoleLine::Error(format!("Error running '{}': The APK file for the {variant} variant was not found. Was it built?", config.name)));
-        return (RunOutcome::Failed, build);
+        console(0, ConsoleLine::Error(format!("Error running '{}': The APK file for the {variant} variant was not found. Was it built?", config.name)));
+        return (all(RunOutcome::Failed), build);
     };
+    let outcomes = targets
+        .iter()
+        .enumerate()
+        .map(|(i, target)| if cancelled() { RunOutcome::Cancelled } else { deploy(device, config, &output, *target, &mut |line| console(i, line), cancelled) })
+        .collect();
+    (outcomes, build)
+}
+
+/// Installs and starts the built app on one device.
+fn deploy(device: &dyn DeviceBridge, config: &RunConfiguration, output: &ApkOutput, target: Target, console: &mut dyn FnMut(ConsoleLine), cancelled: &dyn Fn() -> bool) -> RunOutcome {
     // Deploy: "Nothing" leaves what's installed.
     if config.options.deploy {
         match device.install(target.serial, &output.apks) {
@@ -96,12 +125,12 @@ pub fn run(
             Err(reason) => {
                 console(ConsoleLine::Error("Installation did not succeed.".into()));
                 console(ConsoleLine::Error(format!("The application could not be installed: {reason}")));
-                return (RunOutcome::Failed, build);
+                return RunOutcome::Failed;
             }
         }
     }
     if cancelled() {
-        return (RunOutcome::Cancelled, build);
+        return RunOutcome::Cancelled;
     }
     // Before the app starts, so its log is all there is.
     if config.options.clear_logcat {
@@ -109,14 +138,14 @@ pub fn run(
     }
     let component = match &config.options.launch {
         // Launch: "Nothing".
-        LaunchTarget::Nothing => return (RunOutcome::Running { application_id: output.application_id, pid: None }, build),
+        LaunchTarget::Nothing => return RunOutcome::Running { application_id: output.application_id.clone(), pid: None },
         LaunchTarget::Activity(name) => activity_component(&output.application_id, name),
         LaunchTarget::DefaultActivity => match device.launcher_activity(target.serial, &output.application_id) {
             Some(component) => component,
             None => {
                 console(ConsoleLine::Error("Could not identify launch activity: Default Activity not found".into()));
                 console(ConsoleLine::Error("Error while Launching activity".into()));
-                return (RunOutcome::Failed, build);
+                return RunOutcome::Failed;
             }
         },
     };
@@ -125,7 +154,7 @@ pub fn run(
     if let Err(reason) = device.start(target.serial, &component, target.debug, &config.options.flags) {
         console(ConsoleLine::Error(reason));
         console(ConsoleLine::Error("Error while Launching activity".into()));
-        return (RunOutcome::Failed, build);
+        return RunOutcome::Failed;
     }
     // The process shows up once the activity starts.
     let mut pid = None;
@@ -141,7 +170,7 @@ pub fn run(
         Some(pid) => console(ConsoleLine::Info(format!("Connected to process {pid} on device '{}'.", target.name))),
         None => console(ConsoleLine::Info(format!("The process of {} didn't start on '{}'.", output.application_id, target.name))),
     }
-    (RunOutcome::Running { application_id: output.application_id, pid }, build)
+    RunOutcome::Running { application_id: output.application_id.clone(), pid }
 }
 
 #[cfg(test)]
@@ -281,5 +310,17 @@ mod tests {
         run(&gradle, &phone, &config, "debug", Target { serial: "s", name: "Pixel", debug: false }, &mut |_| {}, &mut |_| {}, &|| false);
         assert!(gradle.tasks.borrow().is_empty());
         assert_eq!(phone.0.borrow()[0], "install 1");
+    }
+
+    #[test]
+    fn builds_once_for_several_devices() {
+        let (gradle, phone) = (Gradle { ok: true, tasks: RefCell::default() }, Phone(RefCell::default()));
+        let targets = [Target { serial: "a", name: "Pixel", debug: false }, Target { serial: "b", name: "Tablet", debug: false }];
+        let mut lines = Vec::new();
+        let (outcomes, _) = run_on(&gradle, &phone, &config(), "debug", &targets, &mut |_| {}, &mut |i, l| lines.push((i, l)), &|| false);
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(gradle.tasks.borrow().as_slice(), [":app:assembleDebug"]);
+        assert_eq!(phone.0.borrow().iter().filter(|c| c.starts_with("install")).count(), 2);
+        assert_eq!(lines.last(), Some(&(1, ConsoleLine::Info("Connected to process 4242 on device 'Tablet'.".into()))));
     }
 }
