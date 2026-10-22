@@ -76,7 +76,28 @@ pub fn run_on(
     cancelled: &dyn Fn() -> bool,
 ) -> (Vec<RunOutcome>, BuildResult) {
     let all = |outcome: RunOutcome| vec![outcome; targets.len().max(1)];
-    // Before launch, in order; the first failure stops the run.
+    let build = before_launch(runner, config, variant, build_line, cancelled);
+    if build.cancelled || cancelled() {
+        return (all(RunOutcome::Cancelled), build);
+    }
+    if !build.succeeded {
+        return (all(RunOutcome::BuildFailed), build);
+    }
+    let Some(output) = runner.apk_output(&config.module, variant) else {
+        console(0, ConsoleLine::Error(format!("Error running '{}': The APK file for the {variant} variant was not found. Was it built?", config.name)));
+        return (all(RunOutcome::Failed), build);
+    };
+    let outcomes = targets
+        .iter()
+        .enumerate()
+        .map(|(i, target)| if cancelled() { RunOutcome::Cancelled } else { deploy(device, config, &output, *target, &mut |line| console(i, line), cancelled) })
+        .collect();
+    (outcomes, build)
+}
+
+/// The configuration's Before launch tasks, in order; the first failure
+/// stops them.
+fn before_launch(runner: &dyn TaskRunner, config: &RunConfiguration, variant: &str, build_line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
     let mut build = BuildResult { succeeded: true, ..Default::default() };
     for task in &config.options.before_launch {
         let step = match task {
@@ -97,23 +118,26 @@ pub fn run_on(
         build.succeeded = step.succeeded;
         build.cancelled = step.cancelled;
         build.failure = step.failure;
-        if build.cancelled || cancelled() {
-            return (all(RunOutcome::Cancelled), build);
-        }
-        if !build.succeeded {
-            return (all(RunOutcome::BuildFailed), build);
+        if build.cancelled || cancelled() || !build.succeeded {
+            break;
         }
     }
-    let Some(output) = runner.apk_output(&config.module, variant) else {
-        console(0, ConsoleLine::Error(format!("Error running '{}': The APK file for the {variant} variant was not found. Was it built?", config.name)));
-        return (all(RunOutcome::Failed), build);
-    };
-    let outcomes = targets
-        .iter()
-        .enumerate()
-        .map(|(i, target)| if cancelled() { RunOutcome::Cancelled } else { deploy(device, config, &output, *target, &mut |line| console(i, line), cancelled) })
-        .collect();
-    (outcomes, build)
+    build
+}
+
+/// Runs a Gradle configuration: its Before launch tasks, then the tasks
+/// and arguments of its Run line, all output to `line`.
+pub fn run_gradle(runner: &dyn TaskRunner, config: &RunConfiguration, variant: &str, line: &mut dyn FnMut(&str), cancelled: &dyn Fn() -> bool) -> BuildResult {
+    let build = before_launch(runner, config, variant, line, cancelled);
+    if !build.succeeded || build.cancelled || cancelled() {
+        return build;
+    }
+    let tasks = split_command_line(config.gradle.as_deref().unwrap_or_default());
+    let mut result = runner.run_tasks(&config.build_root, &tasks, &[], line, cancelled);
+    let mut problems = build.problems;
+    problems.append(&mut result.problems);
+    result.problems = problems;
+    result
 }
 
 /// Installs and starts the built app on one device.
@@ -225,7 +249,7 @@ mod tests {
 
     fn config() -> RunConfiguration {
         let module = ModuleInfo { path: ":app".into(), dir: "/p/app".into(), kind: ModuleType::Application, variants: vec!["debug".into()] };
-        RunConfiguration { name: "app".into(), build_root: "/p".into(), module, options: Default::default() }
+        RunConfiguration { name: "app".into(), build_root: "/p".into(), module, options: Default::default(), gradle: None }
     }
 
     #[test]
@@ -322,5 +346,16 @@ mod tests {
         assert_eq!(gradle.tasks.borrow().as_slice(), [":app:assembleDebug"]);
         assert_eq!(phone.0.borrow().iter().filter(|c| c.starts_with("install")).count(), 2);
         assert_eq!(lines.last(), Some(&(1, ConsoleLine::Info("Connected to process 4242 on device 'Tablet'.".into()))));
+    }
+
+    #[test]
+    fn runs_a_gradle_configuration() {
+        let gradle = Gradle { ok: true, tasks: RefCell::default() };
+        let mut config = config();
+        config.gradle = Some("clean :app:lint --info".into());
+        config.options.before_launch = vec![crate::domain::run::BeforeLaunch::External("gen".into())];
+        let result = run_gradle(&gradle, &config, "debug", &mut |_| {}, &|| false);
+        assert!(result.succeeded);
+        assert_eq!(gradle.tasks.borrow().as_slice(), ["$ gen", "clean", ":app:lint", "--info"]);
     }
 }

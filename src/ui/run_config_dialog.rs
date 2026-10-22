@@ -5,7 +5,8 @@
 //! Activity, Launch Flags) and Miscellaneous › Logcat (Show logcat
 //! automatically, Clear log before launch) and the Before launch list
 //! (Gradle-aware Make, Run Gradle task, Run External tool; + − ✎ ↑ ↓) on
-//! the right. OK saves them for the project.
+//! the right. Gradle configurations (+ › Gradle) run a line of tasks and
+//! arguments in a build instead. OK saves them for the project.
 
 use std::path::PathBuf;
 
@@ -38,14 +39,23 @@ struct Draft {
 pub struct RunConfigView {
     drafts: Vec<Draft>,
     selected: Option<usize>,
+    /// The project's Gradle builds.
+    roots: Vec<PathBuf>,
     /// The application modules, by build.
     modules: Vec<(PathBuf, ModuleInfo)>,
     name: Entity<InputState>,
     activity: Entity<InputState>,
     flags: Entity<InputState>,
+    /// A Gradle configuration's Run line.
+    gradle_run: Entity<InputState>,
     /// The selected row of the Before launch list.
     before_selected: Option<usize>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// A build in the Gradle project picker: its folder's name.
+fn root_label(root: &std::path::Path) -> String {
+    root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
 /// "Unnamed", "Unnamed (1)"… as IntelliJ names a new configuration.
@@ -63,7 +73,7 @@ impl RunConfigView {
 
     /// The fields into the selected configuration.
     fn load_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (name, activity, flags) = self
+        let (name, activity, flags, run) = self
             .selected
             .and_then(|i| self.drafts.get(i))
             .map(|d| {
@@ -71,10 +81,11 @@ impl RunConfigView {
                     LaunchTarget::Activity(a) => a.clone(),
                     _ => String::new(),
                 };
-                (d.saved.name.clone(), activity, d.saved.options.flags.clone())
+                (d.saved.name.clone(), activity, d.saved.options.flags.clone(), d.saved.gradle.clone().unwrap_or_default())
             })
             .unwrap_or_default();
         self.name.update(cx, |s, cx| s.set_value(name, window, cx));
+        self.gradle_run.update(cx, |s, cx| s.set_value(run, window, cx));
         self.activity.update(cx, |s, cx| s.set_value(activity, window, cx));
         self.flags.update(cx, |s, cx| s.set_value(flags, window, cx));
     }
@@ -84,6 +95,9 @@ impl RunConfigView {
         let Some(d) = self.selected.and_then(|i| self.drafts.get_mut(i)) else { return };
         d.saved.name = self.name.read(cx).value().trim().to_owned();
         d.saved.options.flags = self.flags.read(cx).value().trim().to_owned();
+        if let Some(run) = &mut d.saved.gradle {
+            *run = self.gradle_run.read(cx).value().trim().to_owned();
+        }
         if let LaunchTarget::Activity(a) = &mut d.saved.options.launch {
             *a = self.activity.read(cx).value().trim().to_owned();
         }
@@ -97,13 +111,20 @@ impl RunConfigView {
         cx.notify();
     }
 
-    fn add(&mut self, copy: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// + (`gradle`: + › Gradle) or Copy.
+    fn add(&mut self, copy: bool, gradle: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.store_fields(cx);
         let draft = match (copy, self.selected.and_then(|i| self.drafts.get(i))) {
             (true, Some(d)) => Draft { root: d.root.clone(), saved: SavedRunConfiguration { name: unique_name(&d.saved.name, &self.names()), ..d.saved.clone() } },
+            _ if gradle => {
+                let Some(root) = self.roots.first() else { return };
+                // Android Studio's Gradle configurations have no Before launch tasks.
+                let options = LaunchOptions { before_launch: Vec::new(), ..Default::default() };
+                Draft { root: root.clone(), saved: SavedRunConfiguration { name: unique_name("Unnamed", &self.names()), module: String::new(), gradle: Some(String::new()), options } }
+            }
             _ => {
                 let Some((root, module)) = self.modules.first() else { return };
-                Draft { root: root.clone(), saved: SavedRunConfiguration { name: unique_name("Unnamed", &self.names()), module: module.path.clone(), options: LaunchOptions::default() } }
+                Draft { root: root.clone(), saved: SavedRunConfiguration { name: unique_name("Unnamed", &self.names()), module: module.path.clone(), gradle: None, options: LaunchOptions::default() } }
             }
         };
         self.drafts.push(draft);
@@ -309,6 +330,10 @@ impl RunConfigView {
                 return Some(format!("Configuration '{n}' already exists"));
             }
         }
+        let selected = self.selected.and_then(|i| self.drafts.get(i));
+        if selected.is_some_and(|d| d.saved.gradle.is_some()) && self.gradle_run.read(cx).value().trim().is_empty() {
+            return Some("No tasks specified".into());
+        }
         let activity_missing = self.selected.and_then(|i| self.drafts.get(i)).is_some_and(|d| matches!(d.saved.options.launch, LaunchTarget::Activity(_))) && self.activity.read(cx).value().trim().is_empty();
         activity_missing.then(|| "Activity not specified".into())
     }
@@ -319,7 +344,8 @@ impl RunConfigView {
             return false;
         }
         self.store_fields(cx);
-        let mut roots: Vec<PathBuf> = self.modules.iter().map(|(r, _)| r.clone()).collect();
+        let mut roots: Vec<PathBuf> = self.roots.iter().cloned().chain(self.modules.iter().map(|(r, _)| r.clone())).collect();
+        roots.sort();
         roots.dedup();
         for root in roots {
             let list: Vec<SavedRunConfiguration> = self.drafts.iter().filter(|d| d.root == root).map(|d| d.saved.clone()).collect();
@@ -331,11 +357,42 @@ impl RunConfigView {
     fn render_settings(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let palette = cx.palette().clone();
         let Some(d) = self.selected.and_then(|i| self.drafts.get(i)).cloned() else {
-            return div().p_4().text_sm().text_color(palette.text_secondary).child("Press + to add an Android App configuration.").into_any_element();
+            return div().p_4().text_sm().text_color(palette.text_secondary).child("Press + to add an Android App or Gradle configuration.").into_any_element();
         };
         let label = |text: &'static str| div().w(px(110.)).flex_none().text_sm().text_color(palette.text_secondary).child(text);
         let heading = |text: &'static str| div().pt_2().text_sm().font_weight(FontWeight::SEMIBOLD).child(text);
         let this = cx.entity().downgrade();
+        if d.saved.gradle.is_some() {
+            let roots = self.roots.clone();
+            let project = Button::new("rc-project").outline().small().icon(Icon::new(icons::GRADLE).small()).label(root_label(&d.root)).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
+                let this = this.clone();
+                move |mut menu, _, _| {
+                    for root in &roots {
+                        let (root, this) = (root.clone(), this.clone());
+                        menu = menu.item(PopupMenuItem::new(root_label(&root)).on_click(move |_, _, cx| {
+                            let root = root.clone();
+                            this.update(cx, |v, cx| v.change(|d| d.root = root, cx)).ok();
+                        }));
+                    }
+                    menu
+                }
+            });
+            return v_flex()
+                .id("rc-settings")
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .overflow_y_scroll()
+                .p_3()
+                .gap_2()
+                .child(h_flex().gap_2().child(label("Name:")).child(div().flex_1().child(Input::new(&self.name).small())))
+                .child(h_flex().gap_2().child(label("Gradle project:")).child(project))
+                .child(h_flex().gap_2().child(label("Run:")).child(div().flex_1().child(Input::new(&self.gradle_run).small())))
+                .child(div().text_xs().text_color(palette.text_secondary).child("Tasks and arguments, e.g. clean :app:lint --info"))
+                .child(heading("Before launch"))
+                .child(self.render_before_launch(&d, cx))
+                .into_any_element();
+        }
         let modules = self.modules.clone();
         let module_label = modules.iter().find(|(r, m)| *r == d.root && m.path == d.saved.module).map_or_else(|| format!("{} (missing)", d.saved.module), |(_, m)| m.name());
         let module = Button::new("rc-module").outline().small().icon(Icon::new(icons::MODULE_ANDROID).small()).label(module_label).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
@@ -438,10 +495,22 @@ impl Render for RunConfigView {
             }
             n
         };
-        let mut list = v_flex().id("rc-list").flex_1().min_h_0().overflow_y_scroll().py_1().child(
-            h_flex().h(px(24.)).px_2().gap_1().text_sm().font_weight(FontWeight::SEMIBOLD).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).child(Icon::new(icons::MODULE_ANDROID).xsmall()).child("Android App"),
-        );
-        for (ix, name) in names_now.iter().enumerate() {
+        let mut list = v_flex().id("rc-list").flex_1().min_h_0().overflow_y_scroll().py_1();
+        let group = |icon, title: &'static str| h_flex().h(px(24.)).px_2().gap_1().text_sm().font_weight(FontWeight::SEMIBOLD).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).child(Icon::new(icon).xsmall()).child(title);
+        let apps: Vec<usize> = (0..self.drafts.len()).filter(|i| self.drafts[*i].saved.gradle.is_none()).collect();
+        let gradle: Vec<usize> = (0..self.drafts.len()).filter(|i| self.drafts[*i].saved.gradle.is_some()).collect();
+        let mut rows: Vec<(usize, bool)> = Vec::new();
+        if !apps.is_empty() || gradle.is_empty() {
+            list = list.child(group(icons::MODULE_ANDROID, "Android App"));
+            rows.extend(apps.iter().map(|i| (*i, false)));
+        }
+        let first_gradle = rows.len();
+        rows.extend(gradle.iter().map(|i| (*i, true)));
+        for (n, &(ix, is_gradle)) in rows.iter().enumerate() {
+            if n == first_gradle && is_gradle {
+                list = list.child(group(icons::GRADLE, "Gradle"));
+            }
+            let name = &names_now[ix];
             let selected = self.selected == Some(ix);
             list = list.child(
                 h_flex()
@@ -453,7 +522,7 @@ impl Render for RunConfigView {
                     .text_sm()
                     .when(selected, |el| el.bg(palette.selection))
                     .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
-                    .child(Icon::new(icons::MODULE_ANDROID).xsmall())
+                    .child(Icon::new(if is_gradle { icons::GRADLE } else { icons::MODULE_ANDROID }).xsmall())
                     .child(SharedString::from(name.clone()))
                     .on_click(cx.listener(move |this, _, window, cx| this.select(ix, window, cx))),
             );
@@ -482,9 +551,22 @@ impl Render for RunConfigView {
                                     .flex_none()
                                     .border_b_1()
                                     .border_color(palette.border)
-                                    .child(tool_button("rc-add", icons::ADD, "Add New Configuration").on_click(cx.listener(|this, _, window, cx| this.add(false, window, cx))))
+                                    .child(tool_button("rc-add", icons::ADD, "Add New Configuration").dropdown_menu({
+                                        let (app, gradle) = (cx.entity().downgrade(), cx.entity().downgrade());
+                                        let no_apps = self.modules.is_empty();
+                                        move |menu, _, _| {
+                                            let (app, gradle) = (app.clone(), gradle.clone());
+                                            menu.label("Add New Configuration")
+                                                .item(PopupMenuItem::new("Android App").icon(Icon::new(icons::MODULE_ANDROID)).disabled(no_apps).on_click(move |_, window, cx| {
+                                                    app.update(cx, |v, cx| v.add(false, false, window, cx)).ok();
+                                                }))
+                                                .item(PopupMenuItem::new("Gradle").icon(Icon::new(icons::GRADLE)).on_click(move |_, window, cx| {
+                                                    gradle.update(cx, |v, cx| v.add(false, true, window, cx)).ok();
+                                                }))
+                                        }
+                                    }))
                                     .child(tool_button("rc-remove", icons::REMOVE, "Remove Configuration").disabled(!has).on_click(cx.listener(|this, _, window, cx| this.remove(window, cx))))
-                                    .child(tool_button("rc-copy", icons::COPY, "Copy Configuration").disabled(!has).on_click(cx.listener(|this, _, window, cx| this.add(true, window, cx)))),
+                                    .child(tool_button("rc-copy", icons::COPY, "Copy Configuration").disabled(!has).on_click(cx.listener(|this, _, window, cx| this.add(true, false, window, cx)))),
                             )
                             .child(list),
                     )
@@ -497,20 +579,21 @@ impl Render for RunConfigView {
 
 /// Opens Edit Configurations: the saved configurations, else the default
 /// one per application module; `on_saved` after OK (to pick one again).
-pub fn open(modules: Vec<(PathBuf, ModuleInfo)>, current: Vec<(PathBuf, SavedRunConfiguration)>, selected: Option<String>, on_saved: impl Fn(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
+pub fn open(roots: Vec<PathBuf>, modules: Vec<(PathBuf, ModuleInfo)>, current: Vec<(PathBuf, SavedRunConfiguration)>, selected: Option<String>, on_saved: impl Fn(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
     let view = cx.new(|cx| {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let activity = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. .SettingsActivity"));
         let flags = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. --ez demo true"));
+        let gradle_run = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. clean build"));
         let notify = |_: &mut RunConfigView, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<RunConfigView>| {
             if matches!(e, InputEvent::Change) {
                 cx.notify();
             }
         };
-        let _subscriptions = vec![cx.subscribe(&name, notify), cx.subscribe(&activity, notify), cx.subscribe(&flags, notify)];
+        let _subscriptions = vec![cx.subscribe(&name, notify), cx.subscribe(&activity, notify), cx.subscribe(&flags, notify), cx.subscribe(&gradle_run, notify)];
         let drafts: Vec<Draft> = current.into_iter().map(|(root, saved)| Draft { root, saved }).collect();
         let selected_ix = selected.and_then(|n| drafts.iter().position(|d| d.saved.name == n)).or((!drafts.is_empty()).then_some(0));
-        let mut view = RunConfigView { drafts, selected: selected_ix, modules, name, activity, flags, before_selected: None, _subscriptions };
+        let mut view = RunConfigView { drafts, selected: selected_ix, roots, modules, name, activity, flags, gradle_run, before_selected: None, _subscriptions };
         view.load_fields(window, cx);
         view
     });

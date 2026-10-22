@@ -357,7 +357,8 @@ Android Studio 的 Make Project、Run 'app'、Stop，以及 Build、Run、Build 
 | Run/Debug Configurations 对话框（2026-10-16，`src/ui/run_config_dialog.rs`）：标题栏配置下拉顶部和 Run 菜单的 “Edit Configurations…”；左边 Android App 组的配置列表，+ 新建（“Unnamed”）、− 删除、复制（“app (1)”）；右边 Name、Module（项目的 application 模块）、Installation Options 的 Deploy（Default APK / Nothing）、Launch Options 的 Launch（Default Activity / Specified Activity + Activity / Nothing）和 Launch Flags；名称为空或重名、Specified Activity 没填时提示且不能确定。OK 后存到 `run-configurations.json`（按构建根目录），标题栏下拉列出它们；保存过就不再按模块自动生成。Run / Debug 照配置：Deploy Nothing 不安装，Specified Activity 用 `pkg/.SettingsActivity`（以 `.` 开头补包名，含 `/` 原样），Launch Nothing 只构建安装，Launch Flags 追加到 `am start` 命令行（控制台显示的命令同步） | ✅ |
 | Before launch 任务列表（2026-10-22，Edit Configurations 右侧最下面）：默认 “Gradle-aware Make”（模块的 assemble 任务）；+ 可加 Run Gradle task（输入任务名，如 `clean :app:lint`）和 Run External tool（输入程序和参数，双引号包住含空格的参数，在构建根目录运行）；− 删除、✎ 或双击修改、↑ ↓ 调整顺序。Run / Debug 按顺序执行，输出进 Build 窗口，任一项失败就不再安装；去掉 Make 时直接部署已有的 APK | ✅ |
 | 多设备同时运行（2026-10-22）：设备下拉最下面的 “Select Multiple Devices…” 对话框勾选几台（含没开的模拟器，运行时先启动），下拉显示 “Multiple Devices (2)”；Run 只构建一次，再逐台安装、启动，Run 窗口首行 “Launching 'app' on Multiple Devices.”，每行前面标出设备名；Stop 停掉所有设备上的应用；Debug 只调试其中第一台；在下拉里点单台设备即退出多设备模式 | ✅（用假 adb 的两台设备验证） |
-| Apply Changes、Gradle / JUnit 等其他配置类型 | ❌ 未做 |
+| Gradle 运行配置（2026-10-22）：Edit Configurations 的 + › Gradle，填 Name、Gradle project（工程里的 Gradle 构建）和 Run（任务和参数，如 `test --tests com.example.CalcTest`、`clean :app:lint --info`），左边列表分 Android App / Gradle 两组，标题栏下拉带 Gradle 图标；Run 在 Run 窗口执行，首尾是 IntelliJ 的 “Executing '…'…” 和 “Execution finished '…'.”，Stop 可取消，编译错误同样标到编辑器；默认没有 Before launch 任务（可加）；Debug 不支持 | ✅ |
+| Apply Changes、JUnit 等其他配置类型 | ❌ 未做（JUnit 测试可从 gutter / Project 窗口运行，作为临时配置出现在下拉里） |
 
 Linux 实测（容器无法下载 Android SDK，用假 adb 和一个模拟 assembleDebug 的 Gradle 项目）：Run 走完构建、安装、启动、找到进程；Stop 发出 force-stop；Make Project 把 Kotlin 类型错误列在 Build 窗口，点击跳到 Util.kt 2:18 并在编辑器标红。真实 AGP 项目和真机需要在 Windows / macOS 上验证。
 
