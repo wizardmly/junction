@@ -2,7 +2,8 @@
 //! XML turned into SVG, its paths (`pathData` is SVG path syntax) with
 //! their fill and stroke, groups with their pivot / rotate / scale /
 //! translate, clip paths, gradients (`<aapt:attr>`), the vector's tint and
-//! alpha; `@color/…` resolved by the caller.
+//! alpha, a stroke's `trimPathStart` / `End` / `Offset`; `@color/…`
+//! resolved by the caller.
 
 use std::fmt::Write as _;
 
@@ -133,7 +134,11 @@ impl Writer<'_> {
             out.push_str(" fill-rule=\"evenodd\"");
         }
         let width = num("strokeWidth", 0.);
-        if let Some(paint) = stroke.filter(|_| width > 0.) {
+        // Trimmed: only that part of the stroke, as dashes; none left,
+        // no stroke.
+        let (start, end, offset) = (num("trimPathStart", 0.), num("trimPathEnd", 1.), num("trimPathOffset", 0.));
+        let trim = if stroke.is_some() && width > 0. { crate::domain::path_length::trim_dashes(crate::domain::path_length::length(data), start, end, offset) } else { None };
+        if let Some(paint) = stroke.filter(|_| width > 0. && trim.as_ref().is_none_or(|(d, _)| !d.is_empty())) {
             let _ = write!(out, " stroke=\"{}\" stroke-opacity=\"{}\" stroke-width=\"{width}\"", paint.0, paint.1 * num("strokeAlpha", 1.));
             let cap = match attr("strokeLineCap") {
                 Some("round") => "round",
@@ -146,6 +151,9 @@ impl Writer<'_> {
                 _ => "miter",
             };
             let _ = write!(out, " stroke-linecap=\"{cap}\" stroke-linejoin=\"{join}\" stroke-miterlimit=\"{}\"", num("strokeMiterLimit", 4.));
+            if let Some((dashes, dash_offset)) = &trim {
+                let _ = write!(out, " stroke-dasharray=\"{dashes}\" stroke-dashoffset=\"{dash_offset}\"");
+            }
         }
         out.push_str("/>");
         self.out.push_str(&out);
@@ -304,5 +312,17 @@ mod tests {
         assert!(svg.contains("<clipPath id=\"clip1\">") && svg.contains("clip-path=\"url(#clip1)\""), "{svg}");
         assert!(roxmltree::Document::parse(&svg).is_ok(), "{svg}");
         assert_eq!(to_svg("<selector/>", 1., &colors), Err("Not a vector drawable".into()));
+    }
+
+    #[test]
+    fn trims_strokes() {
+        let v = |trim: &str| format!(r##"<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="10dp" android:height="10dp" android:viewportWidth="10" android:viewportHeight="10">
+            <path android:strokeColor="#f00" android:strokeWidth="1" android:pathData="M0,5 L10,5" {trim}/></vector>"##);
+        let svg = to_svg(&v("android:trimPathStart=\"0.2\" android:trimPathEnd=\"0.7\""), 1., &colors).unwrap().svg;
+        assert!(svg.contains("stroke-dasharray=\"5 20\" stroke-dashoffset=\"-2\""), "{svg}");
+        let svg = to_svg(&v("android:trimPathEnd=\"0\""), 1., &colors).unwrap().svg;
+        assert!(!svg.contains("stroke="), "{svg}");
+        let svg = to_svg(&v(""), 1., &colors).unwrap().svg;
+        assert!(!svg.contains("dasharray"), "{svg}");
     }
 }

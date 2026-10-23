@@ -2,9 +2,12 @@
 //! `<shape>` (rectangle with its corners, oval, line, ring; solid fill or
 //! gradient; stroke with dashes; `<size>`), a `<selector>` in its default
 //! state (and each item's state for the state list), `<layer-list>` and
-//! `<ripple>` layers with their insets, `<inset>`, `<color>`; drawables
-//! they reference are loaded and drawn in place, vectors through
-//! `vector_drawable`. Everything as SVG in dp.
+//! `<ripple>` layers with their insets, `<inset>`, `<color>`; at level 0
+//! and not running, as Android first draws them: an `<animated-vector>`'s
+//! vector, an `<animated-selector>` as a selector, an `<animation-list>`'s
+//! first frame, a `<rotate>` at its `fromDegrees`, and nothing for
+//! `<clip>` and `<scale>`. Drawables they reference are loaded and drawn
+//! in place, vectors through `vector_drawable`. Everything as SVG in dp.
 
 use std::fmt::Write as _;
 
@@ -27,7 +30,23 @@ pub struct Lookup<'a> {
 }
 
 /// The roots this module draws.
-const ROOTS: &[&str] = &["vector", "shape", "selector", "layer-list", "ripple", "inset", "color", "level-list", "transition"];
+const ROOTS: &[&str] = &[
+    "vector",
+    "shape",
+    "selector",
+    "layer-list",
+    "ripple",
+    "inset",
+    "color",
+    "level-list",
+    "transition",
+    "animated-vector",
+    "animated-selector",
+    "animation-list",
+    "rotate",
+    "scale",
+    "clip",
+];
 
 /// Whether an XML file is a drawable the preview can draw.
 pub fn is_previewable(text: &str) -> bool {
@@ -54,7 +73,7 @@ pub fn render(text: &str, scale: f32, lookup: &Lookup) -> Result<VectorImage, St
 pub fn states(text: &str, size: f32, lookup: &Lookup) -> Vec<(String, String)> {
     let Ok(doc) = roxmltree::Document::parse(text) else { return Vec::new() };
     let root = doc.root_element();
-    if root.tag_name().name() != "selector" {
+    if !matches!(root.tag_name().name(), "selector" | "animated-selector") {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -162,7 +181,7 @@ impl Writer<'_, '_> {
                 let (w, h) = (self.dimen(attr(size, "width")), self.dimen(attr(size, "height")));
                 Some((w.or(h)?, h.or(w)?))
             }
-            "selector" | "level-list" => {
+            "selector" | "level-list" | "animated-selector" | "animation-list" => {
                 let item = node.children().filter(|n| n.has_tag_name("item")).find(|n| matches_default(*n)).or_else(|| node.children().find(|n| n.has_tag_name("item")))?;
                 self.item_intrinsic(item, text)
             }
@@ -182,6 +201,11 @@ impl Writer<'_, '_> {
                 }
                 size
             }
+            "animated-vector" => match attr(node, "drawable") {
+                Some(r) => self.reference_intrinsic(r),
+                None => self.intrinsic(inline_drawable(node)?, text),
+            },
+            "rotate" | "scale" | "clip" => self.item_intrinsic(node, text),
             "inset" => {
                 let (w, h) = match attr(node, "drawable") {
                     Some(r) => self.reference_intrinsic(r)?,
@@ -241,7 +265,7 @@ impl Writer<'_, '_> {
                 }
                 Ok(())
             }
-            "selector" | "level-list" => {
+            "selector" | "level-list" | "animated-selector" | "animation-list" => {
                 let items: Vec<Node> = node.children().filter(|n| n.has_tag_name("item")).collect();
                 match items.iter().find(|n| matches_default(**n)).or(items.first()) {
                     Some(item) => self.draw_item(*item, text, rect, out),
@@ -293,7 +317,32 @@ impl Writer<'_, '_> {
                     },
                 }
             }
-            // A bitmap or nine-patch: not drawn here.
+            "animated-vector" => match attr(node, "drawable") {
+                Some(r) => self.draw_reference(r, rect, out),
+                None => match inline_drawable(node) {
+                    Some(child) => self.draw(child, text, rect, out),
+                    None => Ok(()),
+                },
+            },
+            "rotate" => {
+                // RotateDrawable at level 0: fromDegrees about the pivot
+                // (a fraction or `50%` of the bounds, else px; default the
+                // centre).
+                let degrees = attr(node, "fromDegrees").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.);
+                let pivot = |name: &str, size: f32| match attr(node, name) {
+                    Some(v) if v.ends_with('%') => v.trim_end_matches('%').parse::<f32>().ok().map(|p| p / 100. * size),
+                    Some(v) => self.dimen(Some(v)),
+                    None => Some(size / 2.),
+                };
+                let (x, y, w, h) = rect;
+                let (px, py) = (x + pivot("pivotX", w).unwrap_or(w / 2.), y + pivot("pivotY", h).unwrap_or(h / 2.));
+                let _ = write!(out, "<g transform=\"rotate({degrees} {px} {py})\">");
+                let result = self.draw_item(node, text, rect, out);
+                out.push_str("</g>");
+                result
+            }
+            // ClipDrawable and ScaleDrawable draw nothing at level 0; a
+            // bitmap or nine-patch isn't drawn here.
             _ => Ok(()),
         }
     }
@@ -437,6 +486,11 @@ impl Writer<'_, '_> {
     }
 }
 
+/// An `<animated-vector>`'s inline drawable: `<aapt:attr name="android:drawable">`.
+fn inline_drawable<'n>(node: Node<'n, 'n>) -> Option<Node<'n, 'n>> {
+    node.children().find(|c| c.tag_name().name() == "attr" && c.attribute("name") == Some("android:drawable"))?.children().find(|n| n.is_element())
+}
+
 /// A layer-list's or ripple's items; a ripple's mask isn't drawn.
 fn layers<'n>(node: Node<'n, 'n>) -> impl Iterator<Item = Node<'n, 'n>> {
     node.children().filter(|n| n.has_tag_name("item") && attr(*n, "id") != Some("@android:id/mask"))
@@ -542,5 +596,33 @@ mod tests {
         let looped = [("@drawable/me", format!("<inset {NS} android:drawable=\"@drawable/me\" android:inset=\"1dp\"/>"))];
         assert!(render_with(&looped[0].1, &looped).is_err());
         assert!(is_previewable(&selector) && !is_previewable("<bitmap/>"));
+    }
+
+    #[test]
+    fn draws_animated_and_level_drawables() {
+        let vector = format!("<vector {NS} android:width=\"24dp\" android:height=\"24dp\" android:viewportWidth=\"24\" android:viewportHeight=\"24\"><path android:fillColor=\"#f00\" android:pathData=\"M0,0h24v24h-24z\"/></vector>");
+        // An animated vector: its vector, by reference or inline.
+        let by_ref = format!("<animated-vector {NS} android:drawable=\"@drawable/v\"><target android:name=\"a\" android:animation=\"@animator/x\"/></animated-vector>");
+        let image = render_with(&by_ref, &[("@drawable/v", vector.clone())]).unwrap();
+        assert_eq!((image.width, image.height), (24., 24.));
+        assert!(image.svg.contains("fill=\"#ff0000\""), "{}", image.svg);
+        let inline = format!(
+            "<animated-vector {NS} xmlns:aapt=\"http://schemas.android.com/aapt\"><aapt:attr name=\"android:drawable\">{}</aapt:attr></animated-vector>",
+            vector.replace(&format!(" {NS}"), "")
+        );
+        let image = render_with(&inline, &[]).unwrap();
+        assert!(image.svg.contains("fill=\"#ff0000\"") && roxmltree::Document::parse(&image.svg).is_ok(), "{}", image.svg);
+        // A rotate at fromDegrees about its centre; clip draws nothing.
+        let rotate = format!("<rotate {NS} android:fromDegrees=\"45\" android:drawable=\"@drawable/v\"/>");
+        let image = render_with(&rotate, &[("@drawable/v", vector.clone())]).unwrap();
+        assert!(image.svg.contains("<g transform=\"rotate(45 12 12)\">"), "{}", image.svg);
+        let clip = format!("<clip {NS} android:drawable=\"@drawable/v\"/>");
+        let image = render_with(&clip, &[("@drawable/v", vector.clone())]).unwrap();
+        assert_eq!(image.width, 24.);
+        assert!(!image.svg.contains("path"), "{}", image.svg);
+        // An animation list: its first frame.
+        let frames = format!("<animation-list {NS}><item android:drawable=\"@color/accent\" android:duration=\"100\"/><item android:drawable=\"#000\" android:duration=\"100\"/></animation-list>");
+        assert!(render_with(&frames, &[]).unwrap().svg.contains("#3574f0"));
+        assert!(is_previewable(&rotate) && is_previewable(&inline));
     }
 }
