@@ -1,6 +1,7 @@
 //! Adapters implementing the domain's ports over the outside world: the
 //! code index, Gradle, adb.
 
+pub mod editorconfig;
 pub mod adb_device;
 pub mod adb_layout;
 pub mod adb_profiler;

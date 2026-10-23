@@ -68,7 +68,14 @@ struct Element {
 
 /// The reformatted text, or the text unchanged when it isn't well-formed.
 pub fn reformat_xml(kind: XmlKind, text: &str) -> String {
+    reformat_xml_indented(kind, text, None)
+}
+
+/// `reformat_xml` with the indent unit given (`.editorconfig`'s), else 4
+/// spaces.
+pub fn reformat_xml_indented(kind: XmlKind, text: &str, indent: Option<&str>) -> String {
     let Some(nodes) = parse(text) else { return text.to_owned() };
+    let ind = indent.unwrap_or(INDENT);
     let mut out = String::new();
     let mut first = true;
     for node in &nodes {
@@ -84,7 +91,7 @@ pub fn reformat_xml(kind: XmlKind, text: &str) -> String {
                     out.push('\n');
                 }
                 first = false;
-                write_node(kind, node, 0, true, &mut out);
+                write_node(kind, ind, node, 0, true, &mut out);
             }
         }
     }
@@ -94,27 +101,27 @@ pub fn reformat_xml(kind: XmlKind, text: &str) -> String {
     out
 }
 
-fn write_node(kind: XmlKind, node: &Node, depth: usize, root: bool, out: &mut String) {
+fn write_node(kind: XmlKind, ind: &str, node: &Node, depth: usize, root: bool, out: &mut String) {
     match node {
-        Node::Element(e) => write_element(kind, e, depth, root, out),
+        Node::Element(e) => write_element(kind, ind, e, depth, root, out),
         Node::Raw(raw) => {
-            out.push_str(&INDENT.repeat(depth));
+            out.push_str(&ind.repeat(depth));
             out.push_str(raw.trim());
         }
         Node::Text(t) => {
-            out.push_str(&INDENT.repeat(depth));
+            out.push_str(&ind.repeat(depth));
             out.push_str(t.trim());
         }
     }
 }
 
-fn write_element(kind: XmlKind, e: &Element, depth: usize, root: bool, out: &mut String) {
-    let indent = INDENT.repeat(depth);
+fn write_element(kind: XmlKind, ind: &str, e: &Element, depth: usize, root: bool, out: &mut String) {
+    let indent = ind.repeat(depth);
     out.push_str(&indent);
     out.push('<');
     out.push_str(&e.name);
     let column = out.len() - out.rfind('\n').map_or(0, |i| i + 1) + 1;
-    write_attributes(kind, e, depth, column, out);
+    write_attributes(kind, ind, e, depth, column, out);
     if e.self_closing {
         out.push_str(" />");
         return;
@@ -149,7 +156,7 @@ fn write_element(kind: XmlKind, e: &Element, depth: usize, root: bool, out: &mut
             out.push('\n');
             out.push_str(&"\n".repeat(kept.max(usize::from(wanted))));
             kept = 0;
-            write_node(kind, child, depth + 1, false, out);
+            write_node(kind, ind, child, depth + 1, false, out);
         }
         out.push('\n');
         out.push_str(&indent);
@@ -189,14 +196,14 @@ fn blank_before(kind: XmlKind, siblings: &[Option<&str>], i: usize) -> bool {
     }
 }
 
-fn write_attributes(kind: XmlKind, e: &Element, depth: usize, column: usize, out: &mut String) {
+fn write_attributes(kind: XmlKind, ind: &str, e: &Element, depth: usize, column: usize, out: &mut String) {
     if e.attrs.is_empty() {
         return;
     }
     if kind == XmlKind::Plain {
         // Kept in order, on the lines they were on, aligned with the first.
         let first_wrapped = e.attrs[0].2;
-        let continuation = if first_wrapped { " ".repeat((depth + 2) * INDENT.len()) } else { " ".repeat(column) };
+        let continuation = if first_wrapped { " ".repeat((depth + 2) * ind.len()) } else { " ".repeat(column) };
         for (i, (name, value, wrapped)) in e.attrs.iter().enumerate() {
             if *wrapped {
                 out.push('\n');
@@ -212,7 +219,7 @@ fn write_attributes(kind: XmlKind, e: &Element, depth: usize, column: usize, out
     }
     let mut attrs: Vec<&(String, String, bool)> = e.attrs.iter().collect();
     attrs.sort_by(|a, b| arrangement(&a.0).cmp(&arrangement(&b.0)));
-    let continuation = INDENT.repeat(depth + 1);
+    let continuation = ind.repeat(depth + 1);
     // AndroidXmlPolicy: WRAP_ALWAYS, and a break before the first attribute
     // when there are several and none declares a namespace; values: DO_NOT_WRAP.
     let namespaces = attrs.iter().any(|a| a.0 == "xmlns" || a.0.starts_with("xmlns:"));
@@ -463,6 +470,11 @@ mod tests {
         let want = "<manifest xmlns:android=\"a\"\n    package=\"p\">\n\n    <uses-permission android:name=\"A\" />\n    <uses-permission android:name=\"B\" />\n\n    <application\n        android:icon=\"I\"\n        android:label=\"L\">\n        <activity android:name=\".Main\" />\n    </application>\n</manifest>";
         let got = reformat_xml(XmlKind::Manifest, manifest);
         assert_eq!(got, want, "\n{got}");
+    }
+
+    #[test]
+    fn editorconfig_indent() {
+        assert_eq!(reformat_xml_indented(XmlKind::Values, "<resources>\n<string name=\"a\">A</string>\n</resources>", Some("  ")), "<resources>\n  <string name=\"a\">A</string>\n</resources>");
     }
 
     #[test]

@@ -303,13 +303,15 @@ impl Workspace {
         let open: Vec<Entity<FileEditor>> = self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).filter(|v| v.read(cx).revision().is_none()).collect();
         let mut changed = 0;
         for path in usecase::targets(&files, items, clean_up) {
+            let indent = crate::infra::editorconfig::indent_for(&files.root, &files.root.join(&path));
+            let indent = indent.as_deref();
             if let Some(editor) = open.iter().find(|v| v.read(cx).path() == path) {
                 let (text, saved) = editor.read(cx).buffer(cx);
-                if let Some(new) = usecase::cleaned(&path, &text, clean_up) {
+                if let Some(new) = usecase::cleaned(&path, &text, clean_up, indent) {
                     editor.update(cx, |e, cx| e.mirror(&new, &saved, window, cx));
                     changed += 1;
                 }
-            } else if let Some(new) = files.read(&path).ok().and_then(|text| usecase::cleaned(&path, &text, clean_up)) {
+            } else if let Some(new) = files.read(&path).ok().and_then(|text| usecase::cleaned(&path, &text, clean_up, indent)) {
                 if files.write(&path, &new).is_ok() {
                     changed += 1;
                 }
