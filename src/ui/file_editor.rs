@@ -1249,11 +1249,15 @@ impl FileEditor {
         };
         ranges.sort_by_key(|r| std::cmp::Reverse(r.start));
         let whole = options.scope == ReformatScope::WholeFile || (options.scope == ReformatScope::Selected && ranges.is_empty());
+        // `.editorconfig`'s indent, over the file's own.
+        let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(std::path::Path::to_path_buf)).unwrap_or_else(|| self.repository.root().to_path_buf());
+        let indent = crate::infra::editorconfig::indent_for(&root, &self.absolute_path());
+        let indent = indent.as_deref();
         let mut new = match style {
-            Some(style) if whole => crate::domain::reformat::reformat(style, &text, None),
-            Some(style) => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat(style, &t, Some(r.clone()))),
+            Some(style) if whole => crate::domain::reformat::reformat_indented(style, &text, None, indent),
+            Some(style) => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat_indented(style, &t, Some(r.clone()), indent)),
             // XML: the whole file (its tags and attributes don't follow lines).
-            None => crate::domain::xml_reformat::reformat_xml(crate::domain::xml_reformat::XmlKind::of(&self.path), &text),
+            None => crate::domain::xml_reformat::reformat_xml_indented(crate::domain::xml_reformat::XmlKind::of(&self.path), &text, indent),
         };
         // The lines the reformat itself changed, for the notice.
         let formatted = new.clone();

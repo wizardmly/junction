@@ -57,14 +57,15 @@ pub fn targets(files: &dyn ProjectFiles, items: &[(String, bool)], clean_up: Cle
 }
 
 /// A file's text after the clean-up; `None` when nothing changes.
-pub fn cleaned(path: &str, text: &str, clean_up: CleanUp) -> Option<String> {
+/// `indent`: the indent unit `.editorconfig` gives the file.
+pub fn cleaned(path: &str, text: &str, clean_up: CleanUp, indent: Option<&str>) -> Option<String> {
     if path.ends_with(".xml") {
-        let new = (clean_up == CleanUp::Reformat).then(|| xml_reformat::reformat_xml(XmlKind::of(path), text))?;
+        let new = (clean_up == CleanUp::Reformat).then(|| xml_reformat::reformat_xml_indented(XmlKind::of(path), text, indent))?;
         return (new != text).then_some(new);
     }
     let style = style_of(path)?;
     let new = match clean_up {
-        CleanUp::Reformat => reformat::reformat(style, text, None),
+        CleanUp::Reformat => reformat::reformat_indented(style, text, None, indent),
         CleanUp::OptimizeImports | CleanUp::CodeCleanup => {
             let edit = imports::optimize(style, text)?;
             format!("{}{}{}", &text[..edit.range.start], edit.text, &text[edit.range.end..])
@@ -110,12 +111,12 @@ mod tests {
         assert_eq!(targets(&files, &[("app".into(), true), ("lib/C.java".into(), false)], CleanUp::OptimizeImports), ["app/src/A.java", "app/src/B.kt", "lib/C.java"]);
         assert_eq!(targets(&files, &[("".into(), true)], CleanUp::OptimizeImports).len(), 4);
         assert_eq!(targets(&files, &[("".into(), true)], CleanUp::Reformat).len(), 5);
-        assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::Reformat).as_deref(), Some("<a>\n\n    <b />\n</a>"));
-        assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::OptimizeImports), None);
+        assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::Reformat, None).as_deref(), Some("<a>\n\n    <b />\n</a>"));
+        assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::OptimizeImports, None), None);
         let text = "package a;\n\nimport java.util.List;\nimport java.util.Map;\n\nclass A { Map m; }\n";
-        assert_eq!(cleaned("A.java", text, CleanUp::OptimizeImports).unwrap(), "package a;\n\nimport java.util.Map;\n\nclass A { Map m; }\n");
-        assert!(cleaned("build.gradle", text, CleanUp::Reformat).is_none());
-        assert_eq!(cleaned("A.java", "class A {\nint x;\n}\n", CleanUp::Reformat).unwrap(), "class A {\n    int x;\n}\n");
+        assert_eq!(cleaned("A.java", text, CleanUp::OptimizeImports, None).unwrap(), "package a;\n\nimport java.util.Map;\n\nclass A { Map m; }\n");
+        assert!(cleaned("build.gradle", text, CleanUp::Reformat, None).is_none());
+        assert_eq!(cleaned("A.java", "class A {\nint x;\n}\n", CleanUp::Reformat, None).unwrap(), "class A {\n    int x;\n}\n");
         assert_eq!(summary(CleanUp::Reformat, 2), "2 files changed");
     }
 }

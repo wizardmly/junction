@@ -97,11 +97,12 @@ fn scan(text: &str, kotlin: bool) -> Vec<Line> {
                             line.brackets.push((i, c as char));
                             line.code[i] = true;
                         }
-                        _ if top == State::Code => {
+                        // A template's expression (`${a + b}`) is spaced as code;
+                        // its brackets don't indent.
+                        _ => {
                             let n = char_len(raw, i);
                             line.code[i..i + n].iter_mut().for_each(|b| *b = true);
                         }
-                        _ => {}
                     }
                     i += char_len(raw, i);
                 }
@@ -215,11 +216,17 @@ struct Open {
 /// The reformatted text. `only`: the 0-based lines to change (a
 /// selection); the others keep their text.
 pub fn reformat(style: ImportStyle, text: &str, only: Option<Range<usize>>) -> String {
+    reformat_indented(style, text, only, None)
+}
+
+/// `reformat` with the indent unit given (`.editorconfig`'s), else the
+/// file's.
+pub fn reformat_indented(style: ImportStyle, text: &str, only: Option<Range<usize>>, indent: Option<&str>) -> String {
     let kotlin = style == ImportStyle::Kotlin;
     // The project's code style is the file's: its indent unit (4 spaces
     // when it has none yet). Columns count units when it's a tab.
     let lines = scan(text, kotlin);
-    let unit = indent_unit(text, &lines);
+    let unit = indent.map_or_else(|| indent_unit(text, &lines), str::to_owned);
     let tabs = unit == "\t";
     let step = if tabs { 1 } else { unit.len() };
     // Kotlin's official style continues by one indent; Java by 8 (two).
@@ -499,7 +506,9 @@ fn normalize(line: &str, info: &Line, lead: usize, kotlin: bool, closes_header: 
                 }
                 let following = chars.get(m).map(|(_, ch)| *ch);
                 let following_code = chars.get(m).is_some_and(|(j, _)| is_code(*j));
-                if m < chars.len() && !(following_code && matches!(following, Some(',' | ';'))) {
+                // None inside parentheses and brackets (`foo( a )` → `foo(a)`).
+                let after_open = out.ends_with('(') || out.ends_with('[');
+                if m < chars.len() && !(following_code && matches!(following, Some(',' | ';' | ')' | ']'))) && !(after_open && following_code) {
                     push_space(&mut out);
                 }
                 k = m;
@@ -784,6 +793,14 @@ mod tests {
     }
 
     #[test]
+    fn parentheses_and_templates() {
+        assert_eq!(kt("fun a( x:Int ):Int = foo( x [ 0 ] , y )"), "fun a(x: Int): Int = foo(x [0], y)");
+        assert_eq!(java("if ( x ) { f( /* c */ a ); }"), "if (x) { f( /* c */ a); }");
+        assert_eq!(kt("val s = \"${a==b} ${foo( a,b )} ${map[\"k\"]} $x { y }\""), "val s = \"${a == b} ${foo(a, b)} ${map[\"k\"]} $x { y }\"");
+        assert_eq!(kt("val s = \"${if (a>0) \"p\" else \"n\"}\""), "val s = \"${if (a > 0) \"p\" else \"n\"}\"");
+    }
+
+    #[test]
     fn strings_and_comments_keep_their_text() {
         let text = "fun f() {\nval s = \"a=b,c  {\"\nval t = \"\"\"\n  raw=1\n    {\n\"\"\"\n/* a=b\n   * x\n */\nval u = \"${map[\"k\"]}=\"\n}";
         assert_eq!(kt(text), "fun f() {\n    val s = \"a=b,c  {\"\n    val t = \"\"\"\n  raw=1\n    {\n\"\"\"\n    /* a=b\n     * x\n     */\n    val u = \"${map[\"k\"]}=\"\n}");
@@ -801,6 +818,12 @@ mod tests {
             java(text),
             "class A {\n    void f(int x) {\n        switch (x) {\n            case 1:\n                foo();\n                break;\n            default:\n                bar(1,\n                        2);\n        }\n        String s = new StringBuilder()\n                .append(1)\n                .toString();\n    }\n}"
         );
+    }
+
+    #[test]
+    fn editorconfig_indent() {
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\nval a = 1\n}", None, Some("\t")), "fun f() {\n\tval a = 1\n}");
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\n    val a = 1\n}", None, Some("  ")), "fun f() {\n  val a = 1\n}");
     }
 
     #[test]
