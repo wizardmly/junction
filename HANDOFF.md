@@ -2,7 +2,7 @@
 
 写给接手这个仓库继续开发的人或 AI。读完这一份，再按需看 [docs/FEATURES.md](docs/FEATURES.md)（逐项功能状态）和 [docs/DIFF_MERGE.md](docs/DIFF_MERGE.md)（Diff/Merge 规格），就能接着做。
 
-最后更新：2026-10-20，对应 master `cdf5451`。
+最后更新：2026-10-23（Parameter Info 补全，PR #81）。
 
 ---
 
@@ -42,7 +42,7 @@
 
 - 2026-10-09 做过一次全量回归（358 项对照 AS），之后全部修复并复测：旧问题 127/135 通过，0 崩溃。
 - 2026-10-12 做过一次“所有右键菜单 / 弹出菜单 / 主菜单每一项”的回归：首轮 518 项通过、42 个问题，已全部修复并复测两轮。
-- `cargo test` 当前 441 个单元测试通过（另有 15 个 `#[ignore]` 的基准、探针和需要外部工具的测试，如调用 keytool 的 `creates_a_keystore`）。
+- `cargo test` 当前 607 个单元测试通过（2026-10-23；另有 18 个 `#[ignore]` 的基准、探针和需要外部工具的测试，如调用 keytool 的 `creates_a_keystore`）。
 - 绝大多数功能**只在 Linux（Xvfb）下测过**。Windows 上验证过的：启动、任务栏点击最小化、旧索引缓存崩溃修复、Device Manager 的 Wi-Fi 自动连接，以及维护者在 Windows 11（10.0.26200，Gradle JDK 用 AS 自带的 JBR 21.0.9）上编译 mytv-android 的 APK。macOS 基本未在真机验证。
 - CI 每次推分支都在 `windows-latest` 上跑一次 `cargo check --release`，只在 Windows 下编译的代码（`#[cfg(windows)]`）在合并前就能发现编译错误，但不等于在 Windows 上跑过。
 
@@ -260,6 +260,21 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 - macOS：钥匙串保存签名密码；.app 能否正常运行、macOS keymap、打包脚本、符号链接路径下的多仓库行为。
 - 容器里测不了：跟随系统主题、GPG 密钥列表、原生文件选择框、外部修改后自动刷新。
 
+### 6.4 交接时的进度（2026-10-23）
+
+上一位接手者按 docs/FEATURES.md 里 ❌ 的行，从第 32 节往后逐节做，每做完一项就开 PR、CI（linux + windows）绿了自己 squash 合并（PR #30–#81）。最后合并的是 #81：Parameter Info 的构造函数列表、`this(` / `super(`、注解参数和按实参选中重载。手上没有未合并的改动。
+
+下一步照顺序接着做（`grep -n "❌" docs/FEATURES.md` 可列出全部）：
+
+1. 第 35 节 Alt+Enter 意图：需要类型的意图（Specify type explicitly、Add names to call arguments、Convert to string template 等）、Import function / 扩展函数。
+2. 第 36 节 Override / Implement：签名里类型的 import、同名不同参数的重载区分、Kotlin `super<Interface>` 限定、Copy JavaDoc。
+3. 第 37 节语言服务器：诊断显示到编辑器和 Problems、补全改用服务器、需要对话框的服务器重构、文件创建 / 重命名。
+4. 第 33 节 Reformat 的大项：右边界 120 换行、Rearrange code、Do not keep line breaks、Gradle Groovy 格式化、代码风格设置页。
+5. 第 34 节剩下的：按表达式推断的类型选重载（现在只看字面量）、文档注释。
+6. 第 64 节以后的 P2 工具（Layout Inspector、Profiler、App Inspection 等）剩下的 ❌ 多数要应用内 agent 或真机，优先级低；Compose Preview 维护者已决定跳过。
+
+测试习惯：容器里用 Xvfb 跑 release 版本，造一个最小 Android 项目（manifest、res、Kotlin / Java 源码）手动点；格式化类的改动用 Signal 仓库里最大的 60 个 .kt 文件做回归（`src/domain/reformat.rs` 里 `#[ignore]` 的 `corpus` 测试，`JUNCTION_FMT_DIR` 指向目录），对比改动行数不变。
+
 ## 7. 时间线（关键节点）
 
 | 日期 | 内容 |
@@ -280,7 +295,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 | 2026-10-19 | 控制台 ANSI 颜色和 1 MB 输出上限；Inline Property / Field（顺带修了 Inline Variable 把成员属性当局部变量的 bug） |
 | 2026-10-20 | 构件额度占满导致发版失败；发布流程改为直接上传到草稿 Release；签名打包的 Remember passwords（系统密码库）和 Destination Folder；Live Templates 进补全列表；Build 窗口 Sync 标签页；HotSwap / Apply Code Changes；Logcat 分屏；Gradle user home / Offline work / Distribution 设置，修复 Gradle JDK 设置不保存 |
 | 2026-10-21 | 仓库改为公开；HANDOFF 6.1 菜单补齐；APK Analyzer、Lint、SDK Manager、Layout Inspector（含 3D）、Profiler（内存、CPU 方法跟踪、System Trace）、App Inspection（数据库、后台任务、网络）；Logcat 导出导入、R8 反混淆、`name:` 键、标签页重启恢复；Attach Debugger 对话框 |
-| 2026-10-22 | 测试历史（最近 10 次运行结果，IntelliJ 格式）和 Import Tests from File；运行配置的 Logcat 选项（启动后自动显示 Logcat、启动前清空日志）；Local History 的外部修改版本、选区历史和版本搜索；运行配置的 Before launch 任务列表；多设备同时运行；Gradle 类型的运行配置；Settings 的 Auto Import 页（保存时自动优化 import）；资源 gutter 图标可点击（颜色字面量取色器、引用跳到声明）；Groovy build.gradle 里 buildSrc 常量的跳转和补全；JUnit 类型的运行配置，临时测试配置可存为正式配置；Android Instrumented Tests 类型的运行配置；Compose `Color(0x…)` 字面量的 gutter 色块和取色器；框架资源 `android.R` / `@android:` 的跳转、悬停和色块；buildSrc 常量的 Find Usages 和 Rename 含 Groovy 脚本，buildSrc 依赖字符串的新版本警告；Optimize Imports 保留 import 块里的注释；Rename 可从通知撤销；Introduce Variable 支持表达式体函数和 Specify type explicitly；Introduce Constant 的 Java 可见性、前向引用和 Kotlin 模板常量；Surround with Live Template（Ctrl+Alt+J）和 Surround 的 Tab 跳转；Live Templates 的计算变量和 soutp / soutf / soutm / itm 等模板；Generate 的 Kotlin Secondary Constructor，equals / hashCode 调用父类的；Translations Editor 合并显示项目里所有 res 目录，固定前几列、语言列过滤、Filter by Text、Delete 删除译文；drawable 预览的 trimPath、animated-vector、animated-selector、rotate 等和缩放；drawable 预览按项目主题解析 `?attr/`、透明棋盘格；XML 文件的 Reformat Code（AS 的 Android XML 风格和属性重排）；Reformat File 对话框（Ctrl+Alt+Shift+L：VCS 改动 / 选中 / 整个文件，Optimize imports、Code cleanup）；格式化去掉括号内空格、`${…}` 表达式加空格、按 `.editorconfig` 缩进 |
+| 2026-10-22 | 测试历史（最近 10 次运行结果，IntelliJ 格式）和 Import Tests from File；运行配置的 Logcat 选项（启动后自动显示 Logcat、启动前清空日志）；Local History 的外部修改版本、选区历史和版本搜索；运行配置的 Before launch 任务列表；多设备同时运行；Gradle 类型的运行配置；Settings 的 Auto Import 页（保存时自动优化 import）；资源 gutter 图标可点击（颜色字面量取色器、引用跳到声明）；Groovy build.gradle 里 buildSrc 常量的跳转和补全；JUnit 类型的运行配置，临时测试配置可存为正式配置；Android Instrumented Tests 类型的运行配置；Compose `Color(0x…)` 字面量的 gutter 色块和取色器；框架资源 `android.R` / `@android:` 的跳转、悬停和色块；buildSrc 常量的 Find Usages 和 Rename 含 Groovy 脚本，buildSrc 依赖字符串的新版本警告；Optimize Imports 保留 import 块里的注释；Rename 可从通知撤销；Introduce Variable 支持表达式体函数和 Specify type explicitly；Introduce Constant 的 Java 可见性、前向引用和 Kotlin 模板常量；Surround with Live Template（Ctrl+Alt+J）和 Surround 的 Tab 跳转；Live Templates 的计算变量和 soutp / soutf / soutm / itm 等模板；Generate 的 Kotlin Secondary Constructor，equals / hashCode 调用父类的；Translations Editor 合并显示项目里所有 res 目录，固定前几列、语言列过滤、Filter by Text、Delete 删除译文；drawable 预览的 trimPath、animated-vector、animated-selector、rotate 等和缩放；drawable 预览按项目主题解析 `?attr/`、透明棋盘格；XML 文件的 Reformat Code（AS 的 Android XML 风格和属性重排）；Reformat File 对话框（Ctrl+Alt+Shift+L：VCS 改动 / 选中 / 整个文件，Optimize imports、Code cleanup）；格式化去掉括号内空格、`${…}` 表达式加空格、按 `.editorconfig` 缩进；Parameter Info 的构造函数列表、`this(` / `super(`、注解参数和按实参选中重载 |
 
 更细的历史看 `git log`，每个提交的标题都写明了用户可见的变化。
 
