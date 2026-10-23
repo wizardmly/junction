@@ -14,8 +14,11 @@ pub struct Call {
     pub open: usize,
     /// 0-based, counting the commas before the caret.
     pub argument: usize,
-    /// `name = ` before the caret in its argument (Kotlin).
+    /// `name = ` before the caret in its argument (Kotlin, annotations);
+    /// a Java annotation's unnamed argument is its `value`.
     pub named: Option<String>,
+    /// `@Name(`: an annotation's arguments.
+    pub annotation: bool,
 }
 
 /// The innermost call whose parentheses hold `caret`; none inside a
@@ -104,15 +107,17 @@ pub fn call_from(text: &str, from: usize, caret: usize, kotlin: bool) -> Option<
     if name.is_empty() || KEYWORDS.contains(&name.as_str()) || name.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
     }
+    let annotation = text[..start].ends_with('@');
     let current = text[arg_start..caret].trim_start();
-    let named = kotlin
+    let named = (kotlin || annotation)
         .then(|| {
             let (n, _) = current.split_once('=')?;
             let n = n.trim();
             (!n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || c == '_') && !current.contains("==")).then(|| n.to_owned())
         })
-        .flatten();
-    Some(Call { name, name_at: start, open, argument, named })
+        .flatten()
+        .or_else(|| (annotation && !kotlin && argument == 0).then(|| "value".to_owned()));
+    Some(Call { name, name_at: start, open, argument, named, annotation })
 }
 
 /// A declaration's parameters, from its name at `at` in its source: the
@@ -231,6 +236,10 @@ pub fn parameters(source: &str, at: usize) -> Option<Vec<String>> {
 /// vararg taking the rest.
 pub fn current_parameter(params: &[String], call: &Call) -> Option<usize> {
     let name_of = |p: &str| -> String {
+        // A Java annotation's `int value() default 0`.
+        if let Some((head, _)) = p.split_once("()") {
+            return head.rsplit(' ').next().unwrap_or("").to_owned();
+        }
         let p = p.trim_start_matches("vararg ").trim_start_matches("noinline ").trim_start_matches("crossinline ");
         p.split([':', ' ']).next().unwrap_or("").to_owned()
     };
@@ -246,7 +255,378 @@ pub fn current_parameter(params: &[String], call: &Call) -> Option<usize> {
 /// A declaration whose parameter count can't take the call's arguments,
 /// grayed out as IntelliJ grays them.
 pub fn fits(params: &[String], call: &Call) -> bool {
-    call.argument < params.len().max(1) || params.iter().any(|p| p.starts_with("vararg ") || p.contains("..."))
+    call.argument < params.len().max(1) || params.iter().any(|p| p.starts_with("vararg ") || p.contains("...") || p.contains("()"))
+}
+
+/// Past a comment or string starting at `i`, or None when none starts there.
+fn skip_literal(text: &str, i: usize) -> Option<usize> {
+    let rest = &text[i..];
+    if rest.starts_with("//") {
+        return Some(i + rest.find('\n').unwrap_or(rest.len()));
+    }
+    if rest.starts_with("/*") {
+        return Some(i + rest.find("*/").map_or(rest.len(), |e| e + 2));
+    }
+    if let Some(body) = rest.strip_prefix("\"\"\"") {
+        return Some(i + 3 + body.find("\"\"\"").map_or(body.len(), |e| e + 3));
+    }
+    let bytes = text.as_bytes();
+    let quote = bytes[i];
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    let mut j = i + 1;
+    while j < bytes.len() && bytes[j] != quote && bytes[j] != b'\n' {
+        j += if bytes[j] == b'\\' { 2 } else { 1 };
+    }
+    Some((j + 1).min(text.len()))
+}
+
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '$'
+}
+
+/// The word before `at`, past whitespace.
+fn word_before(text: &str, at: usize) -> &str {
+    let head = text[..at].trim_end();
+    let start = head.char_indices().rev().take_while(|(_, c)| is_word(*c) || *c == '@').last().map_or(head.len(), |(j, _)| j);
+    &head[start..]
+}
+
+/// The class body's `{` after a class header from `from`, past type
+/// parameters, a primary constructor and supertypes; None for a header
+/// that ends without a body (a Kotlin `class A(val x: Int)`).
+fn class_body(source: &str, from: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = from;
+    while i < source.len() {
+        if let Some(end) = skip_literal(source, i) {
+            i = end;
+            continue;
+        }
+        let c = source[i..].chars().next()?;
+        match c {
+            '(' | '<' | '[' => depth += 1,
+            ')' | '>' | ']' => depth -= 1,
+            '{' if depth <= 0 => return Some(i),
+            ';' | '}' | '=' if depth <= 0 => return None,
+            '\n' if depth <= 0 => {
+                // Kotlin ends a header at a line break unless the next line
+                // (or this one) carries it on.
+                let prev = source[..i].trim_end().chars().last();
+                let next = source[i..].trim_start();
+                let goes_on = matches!(prev, Some(':' | ',' | '<' | '(')) || next.starts_with([':', ',', '{', '<', '(']) || ["extends", "implements", "where", "throws", "permits"].iter().any(|w| next.starts_with(w));
+                if !goes_on {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        i += c.len_utf8();
+    }
+    None
+}
+
+/// What a class's constructors take, from its name at `at`: Kotlin's
+/// primary and `constructor(…)`s, Java's `Name(…)`s (a class declaring
+/// none has the default one), a Java `@interface`'s elements one per row
+/// (`String value() default ""`, as IntelliJ lists them). None when `at`
+/// isn't a class's name.
+pub fn constructors(source: &str, at: usize) -> Option<Vec<Vec<String>>> {
+    let keyword = word_before(source, at);
+    if !matches!(keyword, "class" | "record" | "@interface" | "enum") {
+        return None;
+    }
+    let name: String = source[at..].chars().take_while(|c| is_word(*c)).collect();
+    let mut out = Vec::new();
+    if let Some(primary) = parameters(source, at) {
+        out.push(primary);
+    }
+    let Some(body) = class_body(source, at + name.len()) else {
+        return Some(if out.is_empty() { vec![Vec::new()] } else { out });
+    };
+    let mut depth = 0;
+    let mut i = body;
+    while i < source.len() {
+        if let Some(end) = skip_literal(source, i) {
+            i = end;
+            continue;
+        }
+        let c = source[i..].chars().next()?;
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            c if depth == 1 && is_word(c) && !source[..i].ends_with(is_word) => {
+                let word: String = source[i..].chars().take_while(|c| is_word(*c)).collect();
+                let after = source[i + word.len()..].trim_start();
+                let before = source[..i].trim_end();
+                if keyword == "@interface" && after.starts_with("()") && !before.ends_with(['.', '=']) && word_before(source, i) != "new" {
+                    // `Type name() [default value];`: its type is the text since the last `;` / `{`.
+                    let start = before.rfind([';', '{', '}']).map_or(0, |s| s + 1);
+                    let ty = before[start..].split_whitespace().filter(|w| !w.starts_with('@') && !matches!(*w, "public" | "abstract")).collect::<Vec<_>>().join(" ");
+                    let tail = after[2..].split(';').next().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
+                    let element = if tail.is_empty() { format!("{ty} {word}()") } else { format!("{ty} {word}() {tail}") };
+                    out.push(vec![element]);
+                } else if after.starts_with('(')
+                    && (word == "constructor" || (word == name && declares(source, i)))
+                    && let Some(params) = parameters(source, i)
+                {
+                    out.push(params);
+                }
+                i += word.len();
+                continue;
+            }
+            _ => {}
+        }
+        i += c.len_utf8();
+    }
+    if out.is_empty() && keyword != "@interface" {
+        out.push(Vec::new());
+    }
+    Some(out)
+}
+
+/// Whether a Java `Name(` at `i` starts a declaration (a constructor),
+/// not a call: after a modifier, an annotation or a statement's end.
+fn declares(source: &str, i: usize) -> bool {
+    let before = source[..i].trim_end();
+    let prev = word_before(source, i);
+    before.is_empty() || before.ends_with([';', '{', '}']) || matches!(prev, "public" | "private" | "protected") || prev.starts_with('@')
+}
+
+/// A declaration's parameter lists: a class's constructors, else its own.
+pub fn declaration_parameters(source: &str, at: usize) -> Vec<Vec<String>> {
+    constructors(source, at).unwrap_or_else(|| vec![parameters(source, at).unwrap_or_default()])
+}
+
+/// The name of the class whose body holds `at` (for `this(`).
+pub fn enclosing_class(text: &str, at: usize) -> Option<usize> {
+    let mut braces = Vec::new();
+    let mut i = 0;
+    let at = at.min(text.len());
+    while i < at {
+        if let Some(end) = skip_literal(text, i) {
+            i = end;
+            continue;
+        }
+        match text.as_bytes()[i] {
+            b'{' => braces.push(i),
+            b'}' => {
+                braces.pop();
+            }
+            _ => {}
+        }
+        i += text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    let header = regex::Regex::new(r"(?:^|[^\w@])(?:class|interface|record|enum)\s+([A-Za-z_$][\w$]*)").ok()?;
+    braces.iter().rev().find_map(|&brace| {
+        let start = text[..brace].rfind([';', '{', '}']).map_or(0, |s| s + 1);
+        let found = header.captures_iter(&text[start..brace]).last()?;
+        let name = found.get(1)?;
+        (class_body(text, start + name.end()) == Some(brace)).then_some(start + name.start())
+    })
+}
+
+/// Where the superclass is named in the header of the class named at
+/// `at` (for `super(`): Java's `extends X`; Kotlin's supertype with a
+/// constructor call (`: Base(x), I`), else its first.
+pub fn superclass(text: &str, at: usize) -> Option<usize> {
+    let name_end = at + text[at..].chars().take_while(|c| is_word(*c)).map(char::len_utf8).sum::<usize>();
+    let end = class_body(text, name_end).unwrap_or_else(|| text[name_end..].find('\n').map_or(text.len(), |e| name_end + e));
+    let header = &text[name_end..end];
+    // Top-level `:` / `extends`, outside type parameters and the constructor.
+    let mut depth = 0i32;
+    let mut list = None;
+    for (j, c) in header.char_indices() {
+        match c {
+            '(' | '<' | '[' => depth += 1,
+            ')' | '>' | ']' => depth -= 1,
+            ':' if depth == 0 => {
+                list = Some(j + 1);
+                break;
+            }
+            'e' if depth == 0 && header[j..].starts_with("extends") && !header[..j].ends_with(is_word) && !header[j + 7..].starts_with(is_word) => {
+                list = Some(j + 7);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let list = list?;
+    // The supertypes, split at top-level commas: (start of the name, followed by `(`).
+    let mut items: Vec<(usize, bool)> = Vec::new();
+    let mut depth = 0i32;
+    let mut item = list;
+    let push = |from: usize, to: usize, items: &mut Vec<(usize, bool)>| {
+        let part = &header[from..to];
+        let lead = part.len() - part.trim_start().len();
+        let mut k = from + lead;
+        // Past annotations.
+        while header[k..].starts_with('@') {
+            k += 1 + header[k + 1..].chars().take_while(|c| is_word(*c) || *c == '.').map(char::len_utf8).sum::<usize>();
+            k += header[k..].len() - header[k..].trim_start().len();
+        }
+        let dotted = header[k..].chars().take_while(|c| is_word(*c) || *c == '.').map(char::len_utf8).sum::<usize>();
+        if dotted == 0 {
+            return;
+        }
+        let name = &header[k..k + dotted];
+        let last = k + name.rfind('.').map_or(0, |d| d + 1);
+        items.push((last, header[k + dotted..to].contains('(')));
+    };
+    for (j, c) in header[list..].char_indices() {
+        let j = j + list;
+        match c {
+            '(' | '<' | '[' => depth += 1,
+            ')' | '>' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                push(item, j, &mut items);
+                item = j + 1;
+            }
+            _ => {}
+        }
+        if depth == 0 && header[j..].starts_with("implements") && !header[..j].ends_with(is_word) {
+            break;
+        }
+    }
+    let tail = header[item..].find("implements").map_or(header.len(), |e| item + e);
+    push(item, tail.max(item), &mut items);
+    let (found, _) = items.iter().find(|(_, call)| *call).or(items.first())?;
+    Some(name_end + found)
+}
+
+/// A call's argument expressions as written, to its `)` (or as far as
+/// the text goes).
+pub fn arguments(text: &str, open: usize) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut depth = 0;
+    let mut current = open + 1;
+    let mut i = open;
+    while i < text.len() {
+        if let Some(end) = skip_literal(text, i) {
+            i = end;
+            continue;
+        }
+        let c = text[i..].chars().next().unwrap_or(' ');
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    args.push(text[current..i].trim().to_owned());
+                    break;
+                }
+            }
+            ',' if depth == 1 => {
+                args.push(text[current..i].trim().to_owned());
+                current = i + 1;
+            }
+            ';' if depth == 1 => {
+                args.push(text[current..i].trim().to_owned());
+                break;
+            }
+            _ => {}
+        }
+        i += c.len_utf8();
+    }
+    if i >= text.len() {
+        args.push(text[current.min(text.len())..].trim().to_owned());
+    }
+    if args.len() == 1 && args[0].is_empty() {
+        args.clear();
+    }
+    args
+}
+
+/// Whether an argument as written can go to a parameter of this type, as
+/// far as a literal shows (anything else may).
+fn accepts(ty: &str, arg: &str) -> bool {
+    let ty = ty.trim();
+    let base = ty.trim_end_matches('?').rsplit('.').next().unwrap_or(ty);
+    let base = base.split('<').next().unwrap_or(base).trim();
+    if base.is_empty() || matches!(base, "Any" | "Object") || (base.len() == 1 && base.chars().all(|c| c.is_ascii_uppercase())) {
+        return true;
+    }
+    let arg = arg.trim();
+    let numeric = |kinds: &[&str]| kinds.contains(&base);
+    if arg == "null" {
+        return ty.ends_with('?') || !matches!(base, "int" | "long" | "short" | "byte" | "char" | "boolean" | "float" | "double" | "Int" | "Long" | "Short" | "Byte" | "Char" | "Boolean" | "Float" | "Double");
+    }
+    if arg == "true" || arg == "false" {
+        return matches!(base, "Boolean" | "boolean");
+    }
+    if arg.starts_with('"') {
+        return matches!(base, "String" | "CharSequence" | "Comparable" | "Serializable");
+    }
+    if arg.starts_with('\'') && arg.len() <= 4 {
+        return matches!(base, "Char" | "char" | "int" | "long" | "Character");
+    }
+    if arg.starts_with(|c: char| c.is_ascii_digit()) && arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_') {
+        let lower = arg.to_ascii_lowercase();
+        let hex = lower.starts_with("0x") || lower.starts_with("0b");
+        if !hex && (lower.contains('.') || lower.ends_with('f') || lower.ends_with('d') || lower.contains('e')) {
+            return if lower.ends_with('f') { numeric(&["Float", "float", "double", "Double", "Number"]) } else { numeric(&["Double", "double", "Number"]) };
+        }
+        if lower.ends_with('l') {
+            return numeric(&["Long", "long", "float", "double", "Number"]);
+        }
+        return numeric(&["Int", "Long", "Short", "Byte", "int", "long", "short", "byte", "char", "float", "double", "Integer", "Number"]);
+    }
+    if arg.starts_with('{') {
+        return ty.contains("->") || !matches!(base, "String" | "Int" | "Long" | "Boolean" | "Double" | "Float" | "Char" | "int" | "long" | "boolean" | "double" | "float" | "char");
+    }
+    true
+}
+
+/// A parameter's type: Kotlin's after `:`, Java's before the name.
+fn parameter_type(param: &str) -> &str {
+    if let Some((_, ty)) = param.split_once(':') {
+        return ty.split(" = ").next().unwrap_or(ty);
+    }
+    let param = param.trim();
+    param.rsplit_once(' ').map_or("", |(ty, _)| ty).trim_start_matches("final ")
+}
+
+/// Which overload the call's written arguments pick, as IntelliJ
+/// highlights the one the call resolves to: the first that takes their
+/// number and whose types the literals fit. None for a single overload or
+/// when none (or, with nothing written, several) fit.
+pub fn best_overload(overloads: &[Vec<String>], args: &[String]) -> Option<usize> {
+    if overloads.len() < 2 {
+        return None;
+    }
+    let takes = |params: &[String]| {
+        let vararg = params.iter().any(|p| p.starts_with("vararg ") || p.contains("..."));
+        let required = params.iter().filter(|p| !p.contains(" = ") && !p.starts_with("vararg ") && !p.contains("...")).count();
+        if args.iter().any(|a| named_argument(a).is_some()) {
+            return args.iter().all(|a| named_argument(a).is_none_or(|n| params.iter().any(|p| p.trim_start_matches("vararg ").split([':', ' ']).next() == Some(n))));
+        }
+        if args.len() < required || (!vararg && args.len() > params.len()) {
+            return false;
+        }
+        args.iter().enumerate().all(|(i, a)| {
+            let p = params.get(i).or_else(|| params.last());
+            p.is_none_or(|p| accepts(parameter_type(p).trim_end_matches("...").trim(), a))
+        })
+    };
+    let fitting: Vec<usize> = (0..overloads.len()).filter(|&i| takes(&overloads[i])).collect();
+    match fitting.as_slice() {
+        [one] => Some(*one),
+        [first, ..] if !args.is_empty() => Some(*first),
+        _ => None,
+    }
+}
+
+/// `name = value` → `name` (a Kotlin named argument).
+fn named_argument(arg: &str) -> Option<&str> {
+    let (n, rest) = arg.split_once('=')?;
+    let n = n.trim();
+    (!rest.starts_with('=') && !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || c == '_')).then_some(n)
 }
 
 #[cfg(test)]
@@ -299,5 +679,55 @@ mod tests {
         assert!(fits(&params, &call("greet(a, b, c, d, ")));
         let two: Vec<String> = vec!["a: Int".into(), "b: Int".into()];
         assert!(!fits(&two, &call("f(1, 2, ")) && fits(&[], &call("f(")));
+    }
+
+    #[test]
+    fn constructors_and_delegation() {
+        let kt = "class Point(val x: Int) : Base(x), Shape {\n    constructor(x: Int, y: Int) : this(x)\n    fun f() = Point(1)\n}\n";
+        let at = kt.find("Point").unwrap();
+        assert_eq!(constructors(kt, at), Some(vec![vec!["x: Int".to_owned()], vec!["x: Int".to_owned(), "y: Int".into()]]));
+        assert_eq!(enclosing_class(kt, kt.find("this(x").unwrap() + 5), Some(at));
+        assert_eq!(&kt[superclass(kt, at).unwrap()..][..4], "Base");
+        let java = "public class Foo extends a.Bar implements Baz {\n  private final Foo self = new Foo(1);\n  public Foo(int a) { super(a); }\n  Foo(String s, int b) throws IOException { this(b); }\n  void foo() { Foo(); }\n}";
+        let at = java.find("Foo").unwrap();
+        assert_eq!(constructors(java, at), Some(vec![vec!["int a".to_owned()], vec!["String s".to_owned(), "int b".into()]]));
+        assert_eq!(enclosing_class(java, java.find("super(a").unwrap()), Some(at));
+        assert_eq!(&java[superclass(java, at).unwrap()..][..3], "Bar");
+        // No constructor written: the default one; a function isn't a class.
+        assert_eq!(constructors("class Plain {\n  void f() {}\n}", 6), Some(vec![vec![]]));
+        assert_eq!(constructors("class A(val x: Int)\nfun main() { A(1) }", 6), Some(vec![vec!["x: Int".to_owned()]]));
+        assert_eq!(constructors("fun f(a: Int) {}", 4), None);
+        assert_eq!(declaration_parameters("fun f(a: Int) {}", 4), vec![vec!["a: Int".to_owned()]]);
+        // Kotlin: a class with no primary constructor calls `super(` on its supertype.
+        let sec = "class V : View {\n    constructor(c: Context) : super(c)\n}";
+        assert_eq!(&sec[superclass(sec, 6).unwrap()..][..4], "View");
+    }
+
+    #[test]
+    fn annotation_elements() {
+        let java = "public @interface Route {\n  String value() default \"\";\n  int[] codes();\n}";
+        let rows = constructors(java, java.find("Route").unwrap()).unwrap();
+        assert_eq!(rows, vec![vec!["String value() default \"\"".to_owned()], vec!["int[] codes()".to_owned()]]);
+        let call = call_at("@Route(", 7, false).unwrap();
+        assert!(call.annotation && call.named.as_deref() == Some("value"));
+        assert_eq!(current_parameter(&rows[0], &call), Some(0));
+        assert_eq!(current_parameter(&rows[1], &call), None);
+        let named = call_at("@Route(codes = ", 15, false).unwrap();
+        assert_eq!(current_parameter(&rows[1], &named), Some(0));
+        assert!(fits(&rows[1], &call_at("@Route(\"a\", codes = ", 20, false).unwrap()));
+    }
+
+    #[test]
+    fn picks_the_overload() {
+        let ov: Vec<Vec<String>> = vec![vec!["int x".into()], vec!["String s".into()], vec!["String s".into(), "int n".into()]];
+        assert_eq!(best_overload(&ov, &arguments("f(\"a\")", 1)), Some(1));
+        assert_eq!(best_overload(&ov, &arguments("f(\"a\", 2)", 1)), Some(2));
+        assert_eq!(best_overload(&ov, &arguments("f(3", 1)), Some(0));
+        assert_eq!(best_overload(&ov, &arguments("f()", 1)), None);
+        assert_eq!(best_overload(&ov[..1], &arguments("f(1)", 1)), None);
+        let kt: Vec<Vec<String>> = vec![vec!["a: Int".into()], vec!["b: String = \"\"".into(), "c: Boolean".into()]];
+        assert_eq!(best_overload(&kt, &arguments("f(c = true)", 1)), Some(1));
+        assert_eq!(best_overload(&kt, &arguments("f(x, true)", 1)), Some(1));
+        assert_eq!(arguments("f(a, g(b, c), \"),\")", 1), vec!["a".to_owned(), "g(b, c)".into(), "\"),\"".into()]);
     }
 }

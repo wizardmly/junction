@@ -736,9 +736,13 @@ IntelliJ 的 View › Parameter Info（Ctrl+P，macOS ⌘P），Kotlin / Java。
 | 当前参数加粗：按光标前的逗号数（跳过字符串、字符、注释、内层括号和 lambda），Kotlin 命名实参（`times = `）按名字，vararg 收下多余的实参；实参比参数多的重载灰显 | ✅ |
 | 跟随光标：移动或输入时更新加粗的参数，光标离开这次调用就关闭，Esc 关闭（补全菜单打开时 Esc 先关补全） | ✅ |
 | 自动弹出：在名字后输入 `(` 1 秒后（IntelliJ 的 Autopopup 默认 1000 ms）光标仍在这次调用里就自动显示 | ✅ |
-| 按实参类型选中最匹配的重载、文档注释、`super(` / `this(` 委托、Java `new` 匿名类的构造函数、注解参数 | ❌ 未做 |
+| 类名调用（Kotlin `Point(`、Java `new Base(`，包括匿名类 `new Base(…) {`）列出所有构造函数：Kotlin 主构造函数和 `constructor(…)`，Java 的 `Name(…)`；没写构造函数的类显示 `<no parameters>` | ✅ |
+| `this(` 列出当前类的构造函数，`super(` 列出父类的（Java `extends X`；Kotlin 带括号的父类型 `: Base(x)`，没有主构造函数时取第一个父类型），Kotlin 次构造函数的 `: this(…)` / `: super(…)` 也一样 | ✅ |
+| 注解参数：Kotlin `annotation class` 按主构造函数；Java `@interface` 每个元素一行（IntelliJ 写法 `String value() default ""`），按 `name = ` 或不写名字时的 `value` 加粗 | ✅ |
+| 按已写实参选中重载：参数个数和字面量类型（字符串、数字、`L` / `f` 后缀、布尔、`null`、字符、lambda）都对得上的第一个重载加底色，命名实参按名字 | ✅ |
+| 按表达式推断的类型选重载（现在只看字面量）、文档注释 | ❌ 未做 |
 
-Linux 实测（Xvfb）：Kotlin 两个 `greet` 重载，光标在 `greet("a", true)` 的第二个实参上按 Ctrl+P，弹出两行，`times: Int = 1` 和 `loud: Boolean` 加粗；按 End 离开调用后关闭；新输入 `greet(` 后约 1 秒自动弹出。Java 的 `Calc.add(2, 2)` 显示 `int a, int b`；`assertEquals(` 显示 JUnit 源码里的 12 个重载。
+Linux 实测（Xvfb）：Kotlin 两个 `greet` 重载，光标在 `greet("a", true)` 的第二个实参上按 Ctrl+P，弹出两行，`times: Int = 1` 和 `loud: Boolean` 加粗；按 End 离开调用后关闭；新输入 `greet(` 后约 1 秒自动弹出。Java 的 `Calc.add(2, 2)` 显示 `int a, int b`；`assertEquals(` 显示 JUnit 源码里的 12 个重载。2026-10-23：`super("a", 1)` 显示父类两个构造函数并给 `String name, int size` 加底色，`this()` 显示 `<no parameters>` 和 `int n`，`new Base(3)` 选中 `int size`，`@Route()` 显示两个元素、`value` 加粗。
 
 ## 35. Alt+Enter：Import class 与意图操作（2026-10-16）
 

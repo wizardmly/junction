@@ -37,23 +37,40 @@ impl FileEditor {
         let caret = self.state.read(cx).cursor();
         let Some(call) = pi::call_at(&text, caret, kotlin) else { return };
         let root = index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
-        let task = index.read(cx).go_to(self.path.clone(), text.clone(), call.name_at, cx);
+        // `this(`: this class's constructors; `super(`: its superclass's.
+        let class = matches!(call.name.as_str(), "this" | "super").then(|| pi::enclosing_class(&text, call.name_at)).flatten();
+        let local = (call.name == "this").then(|| class.map(|at| pi::declaration_parameters(&text, at))).flatten();
+        let lookup = match call.name.as_str() {
+            "this" => None,
+            "super" => class.and_then(|at| pi::superclass(&text, at)),
+            _ => Some(call.name_at),
+        };
+        let task = lookup.map(|at| index.read(cx).go_to(self.path.clone(), text.clone(), at, cx));
         self.parameter_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let targets = match task.await {
-                Nav::Targets(targets) => targets,
-                Nav::Declaration => Vec::new(),
+            let targets = match task {
+                Some(task) => match task.await {
+                    Nav::Targets(targets) => targets,
+                    Nav::Declaration => Vec::new(),
+                },
+                None => Vec::new(),
             };
             // Each declaration's parameters, from its source.
             let overloads = cx
                 .background_spawn(async move {
                     let mut out: Vec<Vec<String>> = Vec::new();
+                    for params in local.into_iter().flatten() {
+                        if !out.contains(&params) {
+                            out.push(params);
+                        }
+                    }
                     for t in targets {
                         let Ok(source) = std::fs::read_to_string(root.join(&t.path)) else { continue };
                         let Some(at) = offset_of(&source, t.line, t.col) else { continue };
-                        // A class without a primary constructor takes none.
-                        let params = pi::parameters(&source, at).unwrap_or_default();
-                        if !out.contains(&params) {
-                            out.push(params);
+                        // A class: its constructors (none written takes none).
+                        for params in pi::declaration_parameters(&source, at) {
+                            if !out.contains(&params) {
+                                out.push(params);
+                            }
                         }
                     }
                     out
@@ -148,12 +165,14 @@ impl FileEditor {
         let call: Call = pi::call_from(&text, info.open, caret, info.kotlin)?;
         let at = state.range_to_bounds(&(info.open..info.open))?;
         let palette = cx.palette().clone();
+        // The overload the written arguments pick, highlighted.
+        let best = pi::best_overload(&info.overloads, &pi::arguments(&text, info.open));
         let mut rows = v_flex().gap_0p5();
-        for params in &info.overloads {
+        for (ix, params) in info.overloads.iter().enumerate() {
             let fits = pi::fits(params, &call);
             let current = pi::current_parameter(params, &call).filter(|_| fits);
             let color = if fits { palette.text } else { palette.text_disabled };
-            let mut row = h_flex().text_color(color).whitespace_nowrap();
+            let mut row = h_flex().text_color(color).whitespace_nowrap().px_1().rounded_sm().when(best == Some(ix), |el| el.bg(palette.selection_inactive));
             if params.is_empty() {
                 row = row.child("<no parameters>");
             }
@@ -170,7 +189,7 @@ impl FileEditor {
             deferred(
                 anchored().position(point(at.left() - px(8.), at.top() - height - px(2.))).snap_to_window_with_margin(px(8.)).child(
                     div()
-                        .px_2()
+                        .px_1()
                         .py_1()
                         .text_sm()
                         .bg(gpui_kit::component::ActiveTheme::theme(&**cx).popover)
