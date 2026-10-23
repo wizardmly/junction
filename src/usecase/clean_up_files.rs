@@ -1,10 +1,12 @@
 //! Reformat Code and Optimize Imports on the Project view's selection, as
 //! IntelliJ runs them on files and directories: every Java and Kotlin file
-//! under the selected items, each given its new text.
+//! (and for Reformat Code, XML file) under the selected items, each given
+//! its new text.
 
 use crate::domain::imports::{self, ImportStyle};
 use crate::domain::project_files::ProjectFiles;
 use crate::domain::reformat;
+use crate::domain::xml_reformat::{self, XmlKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CleanUp {
@@ -37,14 +39,15 @@ fn style_of(path: &str) -> Option<ImportStyle> {
 
 /// The Java and Kotlin files of the selection (project-relative paths and
 /// whether each is a folder; the empty path is the project), in order.
-pub fn targets(files: &dyn ProjectFiles, items: &[(String, bool)]) -> Vec<String> {
+pub fn targets(files: &dyn ProjectFiles, items: &[(String, bool)], clean_up: CleanUp) -> Vec<String> {
+    let applies = |p: &str| style_of(p).is_some() || (clean_up == CleanUp::Reformat && p.ends_with(".xml"));
     let mut out: Vec<String> = Vec::new();
     let listed = items.iter().any(|(_, dir)| *dir).then(|| files.list()).unwrap_or_default();
     for (path, dir) in items {
         if *dir {
             let prefix = if path.is_empty() { String::new() } else { format!("{}/", path.trim_end_matches('/')) };
-            out.extend(listed.iter().filter(|p| p.starts_with(&prefix) && style_of(p).is_some()).cloned());
-        } else if style_of(path).is_some() {
+            out.extend(listed.iter().filter(|p| p.starts_with(&prefix) && applies(p)).cloned());
+        } else if applies(path) {
             out.push(path.clone());
         }
     }
@@ -55,6 +58,10 @@ pub fn targets(files: &dyn ProjectFiles, items: &[(String, bool)]) -> Vec<String
 
 /// A file's text after the clean-up; `None` when nothing changes.
 pub fn cleaned(path: &str, text: &str, clean_up: CleanUp) -> Option<String> {
+    if path.ends_with(".xml") {
+        let new = (clean_up == CleanUp::Reformat).then(|| xml_reformat::reformat_xml(XmlKind::of(path), text))?;
+        return (new != text).then_some(new);
+    }
     let style = style_of(path)?;
     let new = match clean_up {
         CleanUp::Reformat => reformat::reformat(style, text, None),
@@ -99,9 +106,12 @@ mod tests {
 
     #[test]
     fn picks_jvm_files_and_cleans_them() {
-        let files = Files(vec!["app/src/A.java", "app/src/B.kt", "app/build.gradle", "lib/C.java", "appx/D.java"]);
-        assert_eq!(targets(&files, &[("app".into(), true), ("lib/C.java".into(), false)]), ["app/src/A.java", "app/src/B.kt", "lib/C.java"]);
-        assert_eq!(targets(&files, &[("".into(), true)]).len(), 4);
+        let files = Files(vec!["app/src/A.java", "app/src/B.kt", "app/build.gradle", "app/src/main/res/layout/a.xml", "lib/C.java", "appx/D.java"]);
+        assert_eq!(targets(&files, &[("app".into(), true), ("lib/C.java".into(), false)], CleanUp::OptimizeImports), ["app/src/A.java", "app/src/B.kt", "lib/C.java"]);
+        assert_eq!(targets(&files, &[("".into(), true)], CleanUp::OptimizeImports).len(), 4);
+        assert_eq!(targets(&files, &[("".into(), true)], CleanUp::Reformat).len(), 5);
+        assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::Reformat).as_deref(), Some("<a>\n\n    <b />\n</a>"));
+        assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::OptimizeImports), None);
         let text = "package a;\n\nimport java.util.List;\nimport java.util.Map;\n\nclass A { Map m; }\n";
         assert_eq!(cleaned("A.java", text, CleanUp::OptimizeImports).unwrap(), "package a;\n\nimport java.util.Map;\n\nclass A { Map m; }\n");
         assert!(cleaned("build.gradle", text, CleanUp::Reformat).is_none());

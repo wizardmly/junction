@@ -1190,7 +1190,11 @@ impl FileEditor {
     /// lines, else the file, in IntelliJ's default code style, as one
     /// undoable edit; the caret stays on its text.
     pub fn reformat_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((_, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
+        let xml = self.path.ends_with(".xml");
+        let style = self.jvm_style().map(|(_, s)| s);
+        if self.read_only() || (style.is_none() && !xml) {
+            return;
+        }
         let text = self.text(cx);
         let (selection, cursor) = {
             let state = self.state.read(cx);
@@ -1202,7 +1206,11 @@ impl FileEditor {
             let end = if selection.end > 0 && text[..selection.end].ends_with('\n') { selection.end - 1 } else { selection.end };
             line_of(selection.start)..line_of(end) + 1
         });
-        let new = crate::domain::reformat::reformat(style, &text, only);
+        let new = match style {
+            Some(style) => crate::domain::reformat::reformat(style, &text, only),
+            // XML: the whole file (its tags and attributes don't follow lines).
+            None => crate::domain::xml_reformat::reformat_xml(crate::domain::xml_reformat::XmlKind::of(&self.path), &text),
+        };
         let hint = |message: String, window: &mut Window, cx: &mut Context<Self>| Self::hint("Reformat Code", message, window, cx);
         if new == text {
             return hint("No lines changed: content is already properly formatted".into(), window, cx);
