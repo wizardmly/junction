@@ -6,6 +6,7 @@
 //! `ui` → `usecase` → `domain` ← `infra`.
 
 pub mod android_resources;
+pub mod android_theme;
 pub mod path_length;
 pub mod ansi;
 pub mod excluded_folders;

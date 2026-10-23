@@ -5,6 +5,7 @@
 //! project's resources.
 
 use std::hash::{Hash as _, Hasher as _};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::{Selectable as _, h_flex, v_flex};
@@ -12,6 +13,7 @@ use gpui_kit::{AnyElement, Context, InteractiveElement as _, IntoElement, Parent
 
 use super::FileEditor;
 use crate::domain::android_resources::ResourceRef;
+use crate::domain::android_theme;
 use crate::domain::drawable::{self, Lookup};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
@@ -34,6 +36,8 @@ pub(super) struct VectorPreview {
     /// The picture, its size in dp and the px per dp it was drawn at, or
     /// why there's none.
     result: Result<(Arc<gpui_kit::Image>, f32, f32, f32), String>,
+    /// The transparency chessboard behind the picture, when shown.
+    chessboard: Option<Arc<gpui_kit::Image>>,
     /// A selector's items: their states and pictures.
     states: Vec<(String, Arc<gpui_kit::Image>)>,
 }
@@ -42,25 +46,88 @@ pub(super) struct VectorPreview {
 const STATE: f32 = 48.;
 
 /// Color, value and drawable lookups in the project's resources, for
-/// `drawable::Lookup`.
+/// `drawable::Lookup`; theme attributes (`?attr/colorPrimary`) from the
+/// theme in the manifest of `file`'s module.
 #[allow(clippy::type_complexity)]
 pub(super) fn resource_lookups(
     table: Option<std::sync::Arc<std::sync::RwLock<crate::usecase::android_resources::ResourceTable>>>,
     root: std::path::PathBuf,
+    file: &str,
 ) -> (impl Fn(&str) -> Option<u32>, impl Fn(&str) -> Option<String>, impl Fn(&str) -> Option<String>) {
     let reference = |value: &str| -> Option<ResourceRef> {
         let (kind, name) = value.strip_prefix('@')?.split_once('/')?;
         Some(ResourceRef::new(kind, name))
     };
+    let theme = Rc::new(Theme::new(table.clone(), root.clone(), file));
     let (t1, t2, t3) = (table.clone(), table.clone(), table);
+    let (th1, th2) = (theme.clone(), theme);
     (
-        move |value: &str| t1.as_ref()?.read().ok()?.color(&reference(value)?),
-        move |value: &str| t2.as_ref()?.read().ok()?.value(&reference(value)?),
+        move |value: &str| {
+            let color = |v: &str| t1.as_ref()?.read().ok()?.color(&reference(v)?);
+            if value.starts_with('?') {
+                let v = th1.value(value)?;
+                return crate::domain::vector_drawable::resolve(&v, &color);
+            }
+            color(value)
+        },
+        move |value: &str| {
+            let value = if value.starts_with('?') { th2.value(value)? } else { value.to_owned() };
+            if !value.starts_with('@') {
+                return Some(value);
+            }
+            t2.as_ref()?.read().ok()?.value(&reference(&value)?)
+        },
         move |value: &str| {
             let path = t3.as_ref()?.read().ok()?.drawable_xml(&reference(value)?)?.path.to_string();
             std::fs::read_to_string(root.join(path)).ok()
         },
     )
+}
+
+/// The app theme's attributes, its styles read from the project's values
+/// files as they're asked for.
+struct Theme {
+    table: Option<std::sync::Arc<std::sync::RwLock<crate::usecase::android_resources::ResourceTable>>>,
+    root: std::path::PathBuf,
+    name: Option<String>,
+    /// Styles by file read so far.
+    files: std::cell::RefCell<std::collections::HashMap<String, Vec<(String, android_theme::Style)>>>,
+}
+
+impl Theme {
+    fn new(table: Option<std::sync::Arc<std::sync::RwLock<crate::usecase::android_resources::ResourceTable>>>, root: std::path::PathBuf, file: &str) -> Self {
+        // The module's main manifest (`app/src/main/res/…` → `app/src/main/AndroidManifest.xml`),
+        // else the app module's.
+        let file = root.join(file);
+        let text = file.to_string_lossy().into_owned();
+        let module = text.rfind("/src/").map(|i| std::path::PathBuf::from(&text[..i]));
+        let name = module
+            .into_iter()
+            .chain([root.join("app")])
+            .find_map(|m| std::fs::read_to_string(m.join("src/main/AndroidManifest.xml")).ok().and_then(|t| android_theme::manifest_theme(&t)));
+        Self { table, root, name, files: Default::default() }
+    }
+
+    fn style(&self, name: &str) -> Option<android_theme::Style> {
+        let path = {
+            let table = self.table.as_ref()?.read().ok()?;
+            table.declarations(&ResourceRef::new("style", name)).first()?.path.to_string()
+        };
+        let mut files = self.files.borrow_mut();
+        let styles = files.entry(path.clone()).or_insert_with(|| std::fs::read_to_string(self.root.join(&path)).map(|t| android_theme::parse_styles(&t)).unwrap_or_default());
+        styles.iter().find(|(n, _)| n == name).map(|(_, s)| s.clone())
+    }
+
+    /// `?attr/x`'s value, following attributes that point at others.
+    fn value(&self, value: &str) -> Option<String> {
+        let theme = self.name.as_deref()?;
+        let mut value = value.to_owned();
+        for _ in 0..8 {
+            let Some(attr) = android_theme::attr_name(&value) else { return Some(value) };
+            value = android_theme::attr_value(theme, &attr, &|n| self.style(n))?;
+        }
+        None
+    }
 }
 
 impl FileEditor {
@@ -80,6 +147,7 @@ impl FileEditor {
         let mut hasher = std::hash::DefaultHasher::new();
         text.hash(&mut hasher);
         self.vector_zoom.map(f32::to_bits).hash(&mut hasher);
+        self.vector_chessboard.hash(&mut hasher);
         let hash = hasher.finish();
         if self.vector.as_ref().map(|v| v.hash) != Some(hash) {
             if !drawable::is_previewable(&text) {
@@ -89,7 +157,7 @@ impl FileEditor {
             let index = self.code_index.as_ref().map(|i| i.read(cx));
             let table = index.as_ref().map(|i| i.resources.clone());
             let root = index.and_then(|i| i.root().map(|r| r.to_path_buf())).unwrap_or_default();
-            let lookups = resource_lookups(table, root);
+            let lookups = resource_lookups(table, root, &self.path);
             let lookup = Lookup { color: &lookups.0, value: &lookups.1, drawable: &lookups.2 };
             // Measure first, then draw at the zoom (or the preview's size).
             let zoom = self.vector_zoom;
@@ -102,7 +170,11 @@ impl FileEditor {
                 .into_iter()
                 .map(|(label, svg)| (label, Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, svg.into_bytes()))))
                 .collect();
-            self.vector = Some(VectorPreview { hash, result, states });
+            let chessboard = match (&result, self.vector_chessboard) {
+                (Ok((_, w, h, scale)), true) => Some(Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, chessboard_svg(w * scale, h * scale).into_bytes()))),
+                _ => None,
+            };
+            self.vector = Some(VectorPreview { hash, result, chessboard, states });
         }
         self.vector.as_ref()
     }
@@ -140,6 +212,7 @@ impl FileEditor {
         let palette = cx.palette().clone();
         let design = self.vector_mode == VectorMode::Design;
         let zoomed = self.vector_zoom.is_some();
+        let chessboard = self.vector_chessboard;
         let preview = self.vector_preview(cx)?;
         let body = match &preview.result {
             Ok((image, w, h, scale)) => {
@@ -148,7 +221,17 @@ impl FileEditor {
                 v_flex()
                     .items_center()
                     .gap_2()
-                    .child(gpui_kit::img(image.clone()).w(px(w * scale)).h(px(h * scale)).flex_none().border_1().border_color(palette.border))
+                    .child(
+                        div()
+                            .relative()
+                            .w(px(w * scale))
+                            .h(px(h * scale))
+                            .flex_none()
+                            .border_1()
+                            .border_color(palette.border)
+                            .children(preview.chessboard.clone().map(|c| gpui_kit::img(c).absolute().top_0().left_0().size_full()))
+                            .child(gpui_kit::img(image.clone()).absolute().top_0().left_0().size_full()),
+                    )
                     .child(div().text_xs().text_color(palette.text_secondary).child(label))
                     .into_any_element()
             }
@@ -182,7 +265,11 @@ impl FileEditor {
             .child(zoom_button("vector-zoom-out", icons::ZOOM_OUT, "Zoom Out", Some(step(current, false)), cx))
             .child(zoom_button("vector-zoom-in", icons::ZOOM_IN, "Zoom In", Some(step(current, true)), cx))
             .child(zoom_button("vector-zoom-actual", icons::ACTUAL_ZOOM, "Zoom to Actual Size (100%)", Some(1.), cx))
-            .child(zoom_button("vector-zoom-fit", icons::FIT_CONTENT, "Zoom to Fit Screen", None, cx).selected(!zoomed));
+            .child(zoom_button("vector-zoom-fit", icons::FIT_CONTENT, "Zoom to Fit Screen", None, cx).selected(!zoomed))
+            .child(tool_button("vector-chessboard", icons::GRID, "Toggle Transparency Chessboard").selected(chessboard).on_click(cx.listener(|this, _, _, cx| {
+                this.vector_chessboard = !this.vector_chessboard;
+                cx.notify();
+            })));
         Some(
             v_flex()
                 .when(design, |el| el.flex_1())
@@ -201,6 +288,13 @@ impl FileEditor {
                 .into_any_element(),
         )
     }
+}
+
+/// IntelliJ's transparency chessboard: 5 px cells, white and light gray.
+fn chessboard_svg(width: f32, height: f32) -> String {
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}"><defs><pattern id="c" width="10" height="10" patternUnits="userSpaceOnUse"><rect width="10" height="10" fill="#ffffff"/><rect width="5" height="5" fill="#c0c0c0"/><rect x="5" y="5" width="5" height="5" fill="#c0c0c0"/></pattern></defs><rect width="{width}" height="{height}" fill="url(#c)"/></svg>"##
+    )
 }
 
 /// The preview's own size: the longer side `PREVIEW` px.
