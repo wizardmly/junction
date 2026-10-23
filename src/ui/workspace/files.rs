@@ -302,7 +302,7 @@ impl Workspace {
         let files = crate::infra::project_files::DiskFiles { root, repository: None };
         let open: Vec<Entity<FileEditor>> = self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).filter(|v| v.read(cx).revision().is_none()).collect();
         let mut changed = 0;
-        for path in usecase::targets(&files, items) {
+        for path in usecase::targets(&files, items, clean_up) {
             if let Some(editor) = open.iter().find(|v| v.read(cx).path() == path) {
                 let (text, saved) = editor.read(cx).buffer(cx);
                 if let Some(new) = usecase::cleaned(&path, &text, clean_up) {
