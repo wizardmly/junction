@@ -437,6 +437,8 @@ pub struct FileEditor {
     vector_mode: vector_preview::VectorMode,
     /// The preview's zoom, px per dp; none: fit.
     vector_zoom: Option<f32>,
+    /// The drawable preview's transparency chessboard (off, as IntelliJ's image viewer starts).
+    vector_chessboard: bool,
     /// The manifest editor's Merged Manifest tab is selected.
     manifest_merged: bool,
     merged: Option<merged_manifest::MergedManifest>,
@@ -771,6 +773,7 @@ impl FileEditor {
             vector: None,
             vector_mode: Default::default(),
             vector_zoom: None,
+            vector_chessboard: false,
             manifest_merged: false,
             merged: None,
             vector_icons: Rc::default(),

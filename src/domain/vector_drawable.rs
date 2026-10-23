@@ -245,10 +245,10 @@ pub(crate) fn resolve(value: &str, color: &dyn Fn(&str) -> Option<u32>) -> Optio
             _ => return None,
         });
     }
-    // A theme attribute (`?attr/colorControlNormal`) has no value here:
-    // Android Studio's default theme draws it near black.
+    // A theme attribute (`?attr/colorControlNormal`): the caller's theme,
+    // else near black as Android Studio's default theme draws it.
     if value.starts_with('?') {
-        return Some(0x000000_8a);
+        return color(value).or(Some(0x000000_8a));
     }
     color(value)
 }

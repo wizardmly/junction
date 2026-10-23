@@ -131,7 +131,7 @@ fn attr<'n>(node: Node<'n, 'n>, name: &str) -> Option<&'n str> {
 impl Writer<'_, '_> {
     fn dimen(&self, value: Option<&str>) -> Option<f32> {
         let value = value?.trim();
-        let value = if value.starts_with('@') { (self.lookup.value)(value)? } else { value.to_owned() };
+        let value = if value.starts_with('@') || value.starts_with('?') { (self.lookup.value)(value)? } else { value.to_owned() };
         let number = value.trim_end_matches(|c: char| c.is_ascii_alphabetic());
         number.parse::<f32>().ok()
     }
