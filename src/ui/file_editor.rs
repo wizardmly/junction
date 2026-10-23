@@ -435,6 +435,8 @@ pub struct FileEditor {
     /// A vector drawable's preview, and Code / Split / Design.
     vector: Option<vector_preview::VectorPreview>,
     vector_mode: vector_preview::VectorMode,
+    /// The preview's zoom, px per dp; none: fit.
+    vector_zoom: Option<f32>,
     /// The manifest editor's Merged Manifest tab is selected.
     manifest_merged: bool,
     merged: Option<merged_manifest::MergedManifest>,
@@ -768,6 +770,7 @@ impl FileEditor {
             server_actions_task: None,
             vector: None,
             vector_mode: Default::default(),
+            vector_zoom: None,
             manifest_merged: false,
             merged: None,
             vector_icons: Rc::default(),

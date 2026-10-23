@@ -1,13 +1,14 @@
 //! A vector drawable's preview, as Android Studio's drawable editor shows
 //! it: Code / Split / Design at the top right, the picture beside the XML
 //! (Split, the default) or alone (Design), its size in dp, redrawn as the
-//! XML is edited; `@color/…` from the project's resources.
+//! XML is edited; zoom in / out, 1:1 and fit; `@color/…` from the
+//! project's resources.
 
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::Arc;
 
 use gpui_kit::component::{Selectable as _, h_flex, v_flex};
-use gpui_kit::{AnyElement, Context, IntoElement, ParentElement as _, Styled as _, div, prelude::FluentBuilder as _, px};
+use gpui_kit::{AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, prelude::FluentBuilder as _, px};
 
 use super::FileEditor;
 use crate::domain::android_resources::ResourceRef;
@@ -30,8 +31,9 @@ const PREVIEW: f32 = 256.;
 
 pub(super) struct VectorPreview {
     hash: u64,
-    /// The picture and its size in dp, or why there's none.
-    result: Result<(Arc<gpui_kit::Image>, f32, f32), String>,
+    /// The picture, its size in dp and the px per dp it was drawn at, or
+    /// why there's none.
+    result: Result<(Arc<gpui_kit::Image>, f32, f32, f32), String>,
     /// A selector's items: their states and pictures.
     states: Vec<(String, Arc<gpui_kit::Image>)>,
 }
@@ -77,6 +79,7 @@ impl FileEditor {
         let text = self.state.read(cx).value().to_string();
         let mut hasher = std::hash::DefaultHasher::new();
         text.hash(&mut hasher);
+        self.vector_zoom.map(f32::to_bits).hash(&mut hasher);
         let hash = hasher.finish();
         if self.vector.as_ref().map(|v| v.hash) != Some(hash) {
             if !drawable::is_previewable(&text) {
@@ -88,11 +91,12 @@ impl FileEditor {
             let root = index.and_then(|i| i.root().map(|r| r.to_path_buf())).unwrap_or_default();
             let lookups = resource_lookups(table, root);
             let lookup = Lookup { color: &lookups.0, value: &lookups.1, drawable: &lookups.2 };
-            // Measure first, then draw at the preview's size.
+            // Measure first, then draw at the zoom (or the preview's size).
+            let zoom = self.vector_zoom;
             let result = drawable::render(&text, 1., &lookup).and_then(|first| {
-                let scale = PREVIEW / first.width.max(first.height).max(1.);
+                let scale = zoom.unwrap_or_else(|| fit(first.width, first.height));
                 let image = drawable::render(&text, scale, &lookup)?;
-                Ok((Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, image.svg.into_bytes())), image.width, image.height))
+                Ok((Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Svg, image.svg.into_bytes())), image.width, image.height, scale))
             });
             let states = drawable::states(&text, STATE, &lookup)
                 .into_iter()
@@ -135,15 +139,17 @@ impl FileEditor {
         }
         let palette = cx.palette().clone();
         let design = self.vector_mode == VectorMode::Design;
+        let zoomed = self.vector_zoom.is_some();
         let preview = self.vector_preview(cx)?;
         let body = match &preview.result {
-            Ok((image, w, h)) => {
-                let scale = PREVIEW / w.max(*h).max(1.);
+            Ok((image, w, h, scale)) => {
+                let scale = *scale;
+                let label = if zoomed { format!("{} × {} dp · {}%", trim(*w), trim(*h), (scale * 100.).round()) } else { format!("{} × {} dp", trim(*w), trim(*h)) };
                 v_flex()
                     .items_center()
                     .gap_2()
                     .child(gpui_kit::img(image.clone()).w(px(w * scale)).h(px(h * scale)).flex_none().border_1().border_color(palette.border))
-                    .child(div().text_xs().text_color(palette.text_secondary).child(format!("{} × {} dp", trim(*w), trim(*h))))
+                    .child(div().text_xs().text_color(palette.text_secondary).child(label))
                     .into_any_element()
             }
             Err(e) => div().text_sm().text_color(palette.status_conflict).child(format!("Cannot render the drawable: {e}")).into_any_element(),
@@ -159,20 +165,56 @@ impl FileEditor {
             }))
         });
         let body = v_flex().items_center().child(body).children(states).into_any_element();
+        // Zoom: out, in, 1:1 (a px per dp), fit.
+        let current = match &preview.result {
+            Ok((_, _, _, scale)) => *scale,
+            Err(_) => 1.,
+        };
+        let zoom_button = |id: &'static str, icon, tip: &'static str, to: Option<f32>, cx: &mut Context<Self>| {
+            tool_button(id, icon, tip).on_click(cx.listener(move |this, _, _, cx| {
+                this.vector_zoom = to;
+                cx.notify();
+            }))
+        };
+        let zoom_bar = h_flex()
+            .gap_0p5()
+            .flex_none()
+            .child(zoom_button("vector-zoom-out", icons::ZOOM_OUT, "Zoom Out", Some(step(current, false)), cx))
+            .child(zoom_button("vector-zoom-in", icons::ZOOM_IN, "Zoom In", Some(step(current, true)), cx))
+            .child(zoom_button("vector-zoom-actual", icons::ACTUAL_ZOOM, "Zoom to Actual Size (100%)", Some(1.), cx))
+            .child(zoom_button("vector-zoom-fit", icons::FIT_CONTENT, "Zoom to Fit Screen", None, cx).selected(!zoomed));
         Some(
-            div()
+            v_flex()
                 .when(design, |el| el.flex_1())
                 .when(!design, |el| el.w(px(PREVIEW + 80.)).flex_none().border_l_1().border_color(palette.border))
                 .h_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .p_4()
                 .bg(palette.panel)
-                .child(body)
+                .child(h_flex().justify_end().p_1().child(zoom_bar))
+                .child(
+                    div()
+                        .id("vector-preview-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_scroll()
+                        .child(div().min_w_full().min_h_full().flex().items_center().justify_center().p_4().child(body)),
+                )
                 .into_any_element(),
         )
     }
+}
+
+/// The preview's own size: the longer side `PREVIEW` px.
+fn fit(width: f32, height: f32) -> f32 {
+    PREVIEW / width.max(height).max(1.)
+}
+
+/// The next zoom in (or out) from `scale`, in IntelliJ's image viewer
+/// steps: doubling and halving, from 1/16 to 64.
+fn step(scale: f32, zoom_in: bool) -> f32 {
+    let next = if zoom_in { scale * 2. } else { scale / 2. };
+    // Snap to a power of two so 1:1 stays reachable.
+    let snapped = 2f32.powf(next.log2().round());
+    snapped.clamp(1. / 16., 64.)
 }
 
 /// `24` rather than `24.0`.

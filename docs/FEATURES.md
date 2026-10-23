@@ -702,7 +702,8 @@ Android Studio 打开 `res/drawable*/`、`mipmap*/` 下的 vector XML 时的预�
 | 编辑器右上角 Code / Split / Design 三个按钮（默认 Split）：Split 在 XML 右侧显示预览，Design 只显示预览（不显示 gutter），Code 只有 XML；预览按长边 256 px 缩放，下方注明 “24 × 24 dp”；编辑 XML 时即时重画；无法渲染时显示原因 | ✅ |
 | 转换：`pathData`（与 SVG 路径语法相同）、`fillColor` / `strokeColor`（`#RGB` `#ARGB` `#RRGGBB` `#AARRGGBB`、`@color/…` 按项目资源解析、`@android:color/white` 等、`?attr/…` 按默认主题近黑色）、`fillAlpha` / `strokeAlpha`、`strokeWidth`、`strokeLineCap` / `strokeLineJoin` / `strokeMiterLimit`、`fillType="evenOdd"`；`<group>` 的 pivot / rotation / scale / translate（Android 的变换顺序）、`<clip-path>`；`<aapt:attr>` 里的线性 / 径向渐变（`<item>` 或 start / center / endColor，sweep 用首色）；`<vector>` 的 `android:tint`、`android:alpha` | ✅ |
 | gutter 预览：布局 XML 的 `@drawable/ic_star`、代码里的 `R.drawable.ic_star` 指向 vector 时，行号旁画出缩略图（以前只有位图） | ✅ |
-| shape / selector / layer-list / animated-vector 预览、trimPath、主题属性按真实主题解析、预览缩放和背景切换 | ❌ 未做 |
+| trimPathStart / End / Offset（按路径实际长度画成虚线）；animated-vector 画初始帧；预览缩放：放大、缩小、1:1、适应窗口（shape / selector / layer-list 见第 39 节）。Xvfb 实测：环形 trimPathEnd 0.75、勾号 trimPathEnd 0.6、rotate 45° 都对，缩放到 1600% / 100% 正常 | ✅ |
+| 主题属性按真实主题解析、预览背景切换 | ❌ 未做 |
 
 Linux 实测（Xvfb）：打开 `drawable/ic_star.xml`（填充 `@color/accent` 的五角星，里面一个按 pivot 缩放 0.4 的白色圆），右侧显示橙色星和白色圆，注明 “24 × 24 dp”；把圆的 `#FFFFFF` 改成 `#D50000`，预览立即变红；点 Design 只显示预览、gutter 色块和改动标记不再显示；打开 `layout/main.xml`，`android:src="@drawable/ic_star"` 那一行的 gutter 出现星形图标。
 
@@ -806,7 +807,8 @@ Linux 实测（Xvfb，calc 示例的 JUnit 测试）：Breakpoints 对话框 + �
 | `<selector>`：画默认状态下会选中的那一项（View 默认是 enabled + window_focused，其他状态为 false，取第一个匹配项），预览下面列出每一项的缩略图和状态（“pressed”、“not enabled”、“default”）；`<level-list>` 同样取匹配项 | ✅ |
 | `<layer-list>`、`<ripple>`（不画 `@android:id/mask` 那一层）、`<transition>`：各层按 `left` / `top` / `right` / `bottom` 内缩，带 `width` / `height` 的层按 `gravity` 摆放（默认居中）；`<inset>`（`inset` 和四边）；`<color>` | ✅ |
 | 引用：`android:drawable="@drawable/…"` 读取并画出所引用的 drawable XML（vector 经第 32 节的转换嵌入，id 改成唯一的），`@color/…` 和 `@dimen/…` 从项目资源解析；互相引用成环时报错 | ✅ |
-| 位图（`<bitmap>`、PNG 引用、`.9.png`）在组合 drawable 里不画；sweep 渐变按 linear 画（SVG 没有锥形渐变）；`<animated-vector>`、`<animated-selector>`、`<clip>`、`<scale>`、`<rotate>`；按主题解析 `?attr/` | ⬜ |
+| `<animated-vector>`（画 `android:drawable` 或内联 `aapt:attr` 的初始帧）、`<animated-selector>` 和 `<animation-list>`（按 selector 画各项）、`<rotate>`（fromDegrees 和 pivot）、`<clip>` / `<scale>`（按 level 0 画，即不显示，尺寸取子项） | ✅ |
+| 位图（`<bitmap>`、PNG 引用、`.9.png`）在组合 drawable 里不画；sweep 渐变按 linear 画（SVG 没有锥形渐变）；按主题解析 `?attr/` | ⬜ |
 
 Linux 实测（Xvfb，trans 示例）：`bg_button.xml`（pressed 引用渐变 shape、not enabled 是内联灰色 shape、默认引用 `@color/accent` 填充加 2dp 绿色描边的圆角 shape）的 Split 视图画出默认状态的 120 × 48 dp 圆角按钮，下面三个缩略图依次为橙黄渐变、灰色、默认；`badge.xml`（径向渐变圆、内缩 16dp 的 `@drawable/ic_star` vector、带虚线描边的 ring）画成 64 × 64 dp 的徽章；`layout/main.xml` 里 `android:background="@drawable/bg_button"` 和 `android:foreground="@drawable/badge"` 两行的 gutter 显示这两个 drawable 的缩略图。修正过一处：嵌入 vector 时 `preserveAspectRatio` 重复导致整张 SVG 无法解析，测试现在检查每张输出都是合法 XML。
 
