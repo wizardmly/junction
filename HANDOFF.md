@@ -2,7 +2,7 @@
 
 写给接手这个仓库继续开发的人或 AI。读完这一份，再按需看 [docs/FEATURES.md](docs/FEATURES.md)（逐项功能状态）和 [docs/DIFF_MERGE.md](docs/DIFF_MERGE.md)（Diff/Merge 规格），就能接着做。
 
-最后更新：2026-10-20，对应 master `cdf5451`。
+最后更新：2026-10-23（Parameter Info 补全，PR #81）。
 
 ---
 
@@ -42,7 +42,7 @@
 
 - 2026-10-09 做过一次全量回归（358 项对照 AS），之后全部修复并复测：旧问题 127/135 通过，0 崩溃。
 - 2026-10-12 做过一次“所有右键菜单 / 弹出菜单 / 主菜单每一项”的回归：首轮 518 项通过、42 个问题，已全部修复并复测两轮。
-- `cargo test` 当前 441 个单元测试通过（另有 15 个 `#[ignore]` 的基准、探针和需要外部工具的测试，如调用 keytool 的 `creates_a_keystore`）。
+- `cargo test` 当前 607 个单元测试通过（2026-10-23；另有 18 个 `#[ignore]` 的基准、探针和需要外部工具的测试，如调用 keytool 的 `creates_a_keystore`）。
 - 绝大多数功能**只在 Linux（Xvfb）下测过**。Windows 上验证过的：启动、任务栏点击最小化、旧索引缓存崩溃修复、Device Manager 的 Wi-Fi 自动连接，以及维护者在 Windows 11（10.0.26200，Gradle JDK 用 AS 自带的 JBR 21.0.9）上编译 mytv-android 的 APK。macOS 基本未在真机验证。
 - CI 每次推分支都在 `windows-latest` 上跑一次 `cargo check --release`，只在 Windows 下编译的代码（`#[cfg(windows)]`）在合并前就能发现编译错误，但不等于在 Windows 上跑过。
 
@@ -259,6 +259,21 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 - Windows：签名对话框的 Remember passwords（DPAPI）；Terminal（PowerShell / ConPTY）、Running Devices 和 Device Explorer 的完整流程、双击 Shift、大部分 2026-10-12 之后的功能。2026-10-17 之后只在 Windows 编译检查过、没在 Windows 上跑过的：直接运行 `gradlew.bat`（参数转义）、`SetErrorMode` 和缺 DLL 提示、`RtlGetVersion` 取系统版本（这一项维护者的构建输出里已经看到了）、keytool.exe 新建 keystore。
 - macOS：钥匙串保存签名密码；.app 能否正常运行、macOS keymap、打包脚本、符号链接路径下的多仓库行为。
 - 容器里测不了：跟随系统主题、GPG 密钥列表、原生文件选择框、外部修改后自动刷新。
+
+### 6.4 交接时的进度（2026-10-23）
+
+上一位接手者按 docs/FEATURES.md 里 ❌ 的行，从第 32 节往后逐节做，每做完一项就开 PR、CI（linux + windows）绿了自己 squash 合并（PR #30–#81）。最后合并的是 #81：Parameter Info 的构造函数列表、`this(` / `super(`、注解参数和按实参选中重载。手上没有未合并的改动。
+
+下一步照顺序接着做（`grep -n "❌" docs/FEATURES.md` 可列出全部）：
+
+1. 第 35 节 Alt+Enter 意图：需要类型的意图（Specify type explicitly、Add names to call arguments、Convert to string template 等）、Import function / 扩展函数。
+2. 第 36 节 Override / Implement：签名里类型的 import、同名不同参数的重载区分、Kotlin `super<Interface>` 限定、Copy JavaDoc。
+3. 第 37 节语言服务器：诊断显示到编辑器和 Problems、补全改用服务器、需要对话框的服务器重构、文件创建 / 重命名。
+4. 第 33 节 Reformat 的大项：右边界 120 换行、Rearrange code、Do not keep line breaks、Gradle Groovy 格式化、代码风格设置页。
+5. 第 34 节剩下的：按表达式推断的类型选重载（现在只看字面量）、文档注释。
+6. 第 64 节以后的 P2 工具（Layout Inspector、Profiler、App Inspection 等）剩下的 ❌ 多数要应用内 agent 或真机，优先级低；Compose Preview 维护者已决定跳过。
+
+测试习惯：容器里用 Xvfb 跑 release 版本，造一个最小 Android 项目（manifest、res、Kotlin / Java 源码）手动点；格式化类的改动用 Signal 仓库里最大的 60 个 .kt 文件做回归（`src/domain/reformat.rs` 里 `#[ignore]` 的 `corpus` 测试，`JUNCTION_FMT_DIR` 指向目录），对比改动行数不变。
 
 ## 7. 时间线（关键节点）
 
