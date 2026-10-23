@@ -66,6 +66,7 @@ actions!(
         RenameElement,
         OptimizeImports,
         ReformatCode,
+        ReformatFile,
         ParameterInfo,
         IntroduceVariable,
         IntroduceConstant,
@@ -132,6 +133,7 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("shift-f6", RenameElement, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-o", OptimizeImports, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-l" } else { "ctrl-alt-l" }, ReformatCode, Some(CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-shift-l" } else { "ctrl-alt-shift-l" }, ReformatFile, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-p" } else { "ctrl-p" }, ParameterInfo, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-v" } else { "ctrl-alt-v" }, IntroduceVariable, Some(CONTEXT)),
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-alt-c" } else { "ctrl-alt-c" }, IntroduceConstant, Some(CONTEXT)),
@@ -1188,8 +1190,42 @@ impl FileEditor {
 
     /// Code › Reformat Code (Ctrl+Alt+L), as IntelliJ's: the selected
     /// lines, else the file, in IntelliJ's default code style, as one
-    /// undoable edit; the caret stays on its text.
+    /// undoable edit; the caret stays on its text. Imports are optimized
+    /// when the last Reformat File run asked for it, as IntelliJ does.
     pub fn reformat_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::reformat_dialog::{ReformatOptions, ReformatScope, last_options};
+        let selected = !self.state.read(cx).selected_range().is_empty();
+        let (optimize_imports, code_cleanup) = last_options();
+        let scope = if selected { ReformatScope::Selected } else { ReformatScope::WholeFile };
+        self.run_reformat(ReformatOptions { scope, optimize_imports, code_cleanup }, window, cx);
+    }
+
+    /// Code › Reformat File… (Ctrl+Alt+Shift+L): the scope and options in
+    /// IntelliJ's dialog, then the reformat.
+    pub fn reformat_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let style = self.jvm_style();
+        if self.read_only() || (style.is_none() && !self.path.ends_with(".xml")) {
+            return;
+        }
+        let name = std::path::Path::new(&self.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let selected = !self.state.read(cx).selected_range().is_empty();
+        let changed = self.hunks.iter().any(|h| !h.new.is_empty());
+        let this = cx.entity().downgrade();
+        crate::ui::reformat_dialog::open(
+            &name,
+            selected,
+            changed,
+            style.is_some(),
+            move |options, window, cx| {
+                let _ = this.update(cx, |editor, cx| editor.run_reformat(options, window, cx));
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn run_reformat(&mut self, options: crate::ui::reformat_dialog::ReformatOptions, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::reformat_dialog::ReformatScope;
         let xml = self.path.ends_with(".xml");
         let style = self.jvm_style().map(|(_, s)| s);
         if self.read_only() || (style.is_none() && !xml) {
@@ -1201,16 +1237,34 @@ impl FileEditor {
             (state.selected_range(), state.cursor())
         };
         let line_of = |offset: usize| text[..offset.min(text.len())].matches('\n').count();
-        let only = (!selection.is_empty()).then(|| {
-            // A selection ending at a line's start doesn't take that line.
-            let end = if selection.end > 0 && text[..selection.end].ends_with('\n') { selection.end - 1 } else { selection.end };
-            line_of(selection.start)..line_of(end) + 1
-        });
-        let new = match style {
-            Some(style) => crate::domain::reformat::reformat(style, &text, only),
+        // The lines to reformat, last first so earlier ones keep their place; none: the file.
+        let mut ranges: Vec<std::ops::Range<usize>> = match options.scope {
+            ReformatScope::Selected if !selection.is_empty() => {
+                // A selection ending at a line's start doesn't take that line.
+                let end = if selection.end > 0 && text[..selection.end].ends_with('\n') { selection.end - 1 } else { selection.end };
+                vec![line_of(selection.start)..line_of(end) + 1]
+            }
+            ReformatScope::VcsChanged => self.hunks.iter().map(|h| h.new.clone()).filter(|r| !r.is_empty()).collect(),
+            _ => Vec::new(),
+        };
+        ranges.sort_by_key(|r| std::cmp::Reverse(r.start));
+        let whole = options.scope == ReformatScope::WholeFile || (options.scope == ReformatScope::Selected && ranges.is_empty());
+        let mut new = match style {
+            Some(style) if whole => crate::domain::reformat::reformat(style, &text, None),
+            Some(style) => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat(style, &t, Some(r.clone()))),
             // XML: the whole file (its tags and attributes don't follow lines).
             None => crate::domain::xml_reformat::reformat_xml(crate::domain::xml_reformat::XmlKind::of(&self.path), &text),
         };
+        // The lines the reformat itself changed, for the notice.
+        let formatted = new.clone();
+        // Optimize imports / Code cleanup (Junction's clean-up removes unused imports).
+        let mut removed = 0;
+        if let Some(style) = style.filter(|_| options.optimize_imports || options.code_cleanup) {
+            if let Some(edit) = crate::domain::imports::optimize(style, &new) {
+                removed = edit.removed;
+                new = format!("{}{}{}", &new[..edit.range.start], edit.text, &new[edit.range.end..]);
+            }
+        }
         let hint = |message: String, window: &mut Window, cx: &mut Context<Self>| Self::hint("Reformat Code", message, window, cx);
         if new == text {
             return hint("No lines changed: content is already properly formatted".into(), window, cx);
@@ -1222,7 +1276,9 @@ impl FileEditor {
         let line_start = text[..cursor].rfind('\n').map_or(0, |i| i + 1);
         let old_line = old_lines.get(caret_line).copied().unwrap_or("");
         let into_text = (cursor - line_start).saturating_sub(old_line.len() - old_line.trim_start().len());
-        let rank = old_lines[..caret_line].iter().filter(|l| !l.trim().is_empty()).count();
+        // Removed imports above the caret are lines fewer before it.
+        let below_imports = old_lines[..caret_line].iter().any(|l| l.trim_start().starts_with("import "));
+        let rank = old_lines[..caret_line].iter().filter(|l| !l.trim().is_empty()).count().saturating_sub(if below_imports { removed } else { 0 });
         let target = new_lines.iter().enumerate().filter(|(_, l)| !l.trim().is_empty()).nth(rank).map(|(i, _)| i).unwrap_or(new_lines.len().saturating_sub(1));
         let new_start: usize = new_lines[..target].iter().map(|l| l.len() + 1).sum();
         let target_line = new_lines.get(target).copied().unwrap_or("");
@@ -1232,12 +1288,13 @@ impl FileEditor {
             caret -= 1;
         }
         let changed = {
+            let formatted_lines: Vec<&str> = formatted.split('\n').collect();
             let mut count = 0;
-            let (mut a, mut b) = (old_lines.iter().filter(|l| !l.trim().is_empty()), new_lines.iter().filter(|l| !l.trim().is_empty()));
+            let (mut a, mut b) = (old_lines.iter().filter(|l| !l.trim().is_empty()), formatted_lines.iter().filter(|l| !l.trim().is_empty()));
             while let (Some(x), Some(y)) = (a.next(), b.next()) {
                 count += usize::from(x != y);
             }
-            count + old_lines.len().abs_diff(new_lines.len())
+            count + old_lines.len().abs_diff(formatted_lines.len())
         };
         // One edit: the changed span.
         let prefix = text.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
@@ -1257,7 +1314,15 @@ impl FileEditor {
             state.set_selected_range(caret..caret, cx);
         });
         cx.notify();
-        hint(format!("Formatted {changed} {}", if changed == 1 { "line" } else { "lines" }), window, cx);
+        let imports = match removed {
+            0 => String::new(),
+            1 => ", removed 1 import".to_owned(),
+            n => format!(", removed {n} imports"),
+        };
+        if changed == 0 {
+            return hint(format!("Removed {removed} unused {}", if removed == 1 { "import" } else { "imports" }), window, cx);
+        }
+        hint(format!("Formatted {changed} {}{imports}", if changed == 1 { "line" } else { "lines" }), window, cx);
     }
 
     /// A refactoring's result or why it can't run, as Android Studio's
@@ -2934,6 +2999,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::rename_element))
             .on_action(cx.listener(Self::optimize_imports_action))
             .on_action(cx.listener(|this, _: &ReformatCode, window, cx| this.reformat_code(window, cx)))
+            .on_action(cx.listener(|this, _: &ReformatFile, window, cx| this.reformat_file(window, cx)))
             .on_action(cx.listener(Self::introduce_variable_action))
             .on_action(cx.listener(Self::introduce_constant_action))
             .on_action(cx.listener(Self::extract_method_action))
@@ -3091,6 +3157,7 @@ impl Render for FileEditor {
                                 .menu_with_disabled("Surround With…", read_only, Box::new(SurroundWith))
                                 .menu_with_disabled("Unwrap/Remove…", read_only, Box::new(editing::UnwrapRemove))
                                 .menu_with_disabled("Reformat Code", read_only, Box::new(ReformatCode))
+                                .menu_with_disabled("Reformat File…", read_only, Box::new(ReformatFile))
                                 .submenu(
                                     "Refactor",
                                     NativeMenu::new()
