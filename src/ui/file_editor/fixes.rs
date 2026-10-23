@@ -5,7 +5,7 @@
 
 use gpui_kit::component::{Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    Context, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Pixels, Point, StatefulInteractiveElement as _, Styled as _, Window, actions, anchored, deferred, div,
+    AppContext as _, Context, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Pixels, Point, StatefulInteractiveElement as _, Styled as _, Window, actions, anchored, deferred, div,
     point, prelude::FluentBuilder as _, px,
 };
 
@@ -108,6 +108,12 @@ impl FileEditor {
             }
             for intention in crate::domain::intentions::intentions(style, &text, cursor) {
                 items.push((intention.range.clone(), Choice::Intention(intention)));
+            }
+            if style == crate::domain::imports::ImportStyle::Kotlin {
+                for intention in crate::index::intentions::intentions(&text, cursor) {
+                    items.push((intention.range.clone(), Choice::Intention(intention)));
+                }
+                self.request_argument_names(&text, cursor, window, cx);
             }
         }
         // A build script's dependency or plugin into the version catalog.
@@ -308,6 +314,50 @@ impl FileEditor {
     /// Asks the file's language server for its code actions at the caret
     /// (the selection when there is one); they go after the editor's own,
     /// or open the popup when there were none.
+    /// Add names to call arguments: the callee's declaration is found
+    /// first (as Parameter Info finds it), so the intention joins the
+    /// popup when it's known.
+    fn request_argument_names(&mut self, text: &str, cursor: usize, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::parameter_info as pi;
+        let Some(index) = self.code_index.clone() else { return };
+        let Some(call) = pi::call_at(text, cursor, true).filter(|c| !c.annotation && !matches!(c.name.as_str(), "this" | "super")) else { return };
+        let root = index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
+        let task = index.read(cx).go_to(self.path.clone(), text.to_owned(), call.name_at, cx);
+        let text = text.to_owned();
+        self.argument_names_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let crate::index::service::Nav::Targets(targets) = task.await else { return };
+            let found = cx
+                .background_spawn(async move {
+                    let mut overloads: Vec<Vec<String>> = Vec::new();
+                    for t in targets {
+                        let Ok(source) = std::fs::read_to_string(root.join(&t.path)) else { continue };
+                        let Some(at) = super::parameter_info::offset_of(&source, t.line, t.col) else { continue };
+                        for params in pi::declaration_parameters(&source, at) {
+                            if !overloads.contains(&params) {
+                                overloads.push(params);
+                            }
+                        }
+                    }
+                    // One declaration needs no choosing.
+                    let best = if overloads.len() == 1 { 0 } else { pi::best_overload(&overloads, &pi::arguments(&text, call.open))? };
+                    crate::index::intentions::add_argument_names(&text, call.open, &overloads[best])
+                })
+                .await;
+            let Some(intention) = found else { return };
+            this.update_in(cx, |this, _, cx| {
+                // Still open on the same text.
+                if this.state.read(cx).cursor() != cursor {
+                    return;
+                }
+                if let Some(popup) = this.context_actions.as_mut().filter(|p| p.title.is_none()) {
+                    popup.items.push((intention.range.clone(), Choice::Intention(intention)));
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
     fn request_server_actions(&mut self, text: &str, cursor: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.code_index.clone() else { return };
         let selection = self.state.read(cx).selected_range();

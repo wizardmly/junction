@@ -754,7 +754,13 @@ IntelliJ 的 Show Context Actions（Alt+Enter）在问题修复之外，补上�
 | Convert to block body / Convert to expression body（Kotlin）：`fun f(x: Int): Int = x * 2` ↔ `fun f(x: Int): Int {\n    return x * 2\n}`（`: Unit` 时不加 `return`）；没写返回类型时不提供转为块体（块体的类型会变成 Unit）；函数体有多条语句时不提供转为表达式体 | ✅ |
 | Add braces to 'if' / 'else' / 'for' / 'while' statement、Remove braces from … statement（Kotlin / Java）：语句体在同一行或下一行；同一行的 `if (a) b() else c()` 只给 `if` 部分加；只有一条语句且不是声明时才能去掉括号 | ✅ |
 | Put arguments / parameters on separate lines、Put arguments / parameters on one line（Kotlin）：至少两个实参或参数；每个一行，`)` 单独一行；字符串里的逗号不拆 | ✅ |
-| 需要类型的意图（Specify type explicitly、Add names to call arguments、Convert to string template 等）、Import function / 扩展函数、自动导入提示（“? java.util.Date? Alt+Enter”）、意图设置页 | ❌ 未做 |
+| Convert concatenation to template（Kotlin）：最左边是字符串字面量的 `+` 链（这样每个 `+` 都是字符串拼接，不用类型）变成模板：`"a" + x + "b"` → `"a${x}b"`，名字后面紧跟字母或数字时写成 `${x}`，整数 / 布尔 / null 和字符字面量直接写进字符串（`'"'`、`'$'` 转义），其他表达式写成 `${…}`；原始字符串 `"""` 不处理。代码：`src/index/intentions.rs` | ✅ |
+| Convert template to concatenated string（Kotlin）：反过来，`"x=$x, n=${n.length}"` → `"x=" + x + ", n=" + n.length`，带运算的表达式加括号，模板以值开头时前面补 `"" +` | ✅ |
+| Specify type explicitly / Specify return type explicitly（Kotlin）：`val p = Point(1, 2)` → `val p: Point = …`、`fun twice(x: Int) = x * 2` → `fun twice(x: Int): Int = …`；只在表达式能看出类型时提供（字面量、构造调用、字符串拼接、比较、算术，复用 Introduce Variable 的推断），`g()` 这种不提供 | ✅ |
+| Add names to call arguments（Kotlin）：调用括号里的位置实参按被调函数的参数名写成 `price = 10.0, count = 3`；声明像 Parameter Info 一样经索引找到（重载按实参选），找到后才加进 Alt+Enter 列表；遇到 vararg、展开 `*`、已具名实参后面的位置实参、Java 方法（Kotlin 不能用具名实参调用）时不提供 | ✅ |
+| 其他需要类型的意图、Import function / 扩展函数、自动导入提示（“? java.util.Date? Alt+Enter”）、意图设置页 | ❌ 未做 |
+
+Linux 实测（Xvfb，`ip` 工程 Main.kt，2026-10-23）：`"total " + cart.total(1.0, 2) + "!"` 上 Alt+Enter → Convert concatenation to template 得到 `"total ${cart.total(1.0, 2)}!"`；`cart.total(10.0, 3)` 括号里 → Add names to call arguments 得到 `cart.total(price = 10.0, count = 3)`（`total` 声明在 Cart.kt）；`val cart = Cart(0.2)` 的 `cart` 上 → Specify type explicitly 得到 `val cart: Cart = Cart(0.2)`。
 
 Linux 实测（Xvfb）：`com.example.a.Item` 和 `com.example.b.Item` 两个同名类，光标在 `Item()` 上 Alt+Enter 出现 “Import class 'Item'”，回车后弹出 “Class to Import” 两项，选第二个后插入 `import com.example.b.Item`；`if (n > 1) println(n)` 上 Alt+Enter → “Add braces to 'if' statement” 变为三行块；`fun price(n: Int): Int = n * 2` 上 → “Convert to block body” 变为 `return n * 2` 的块体。
 
