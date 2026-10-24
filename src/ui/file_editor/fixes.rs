@@ -54,6 +54,11 @@ pub(super) enum Choice {
     ImportClass(String, Vec<String>),
     /// One class of the "Class to Import" chooser.
     Import(String),
+    /// Import function 'greet' / Import extension function
+    /// 'String.shout' (Kotlin): its title and the functions to choose from.
+    ImportFunction(String, Vec<String>),
+    /// One function of the "Imports" chooser.
+    ImportMember(String),
     /// An intention: its edit.
     Intention(crate::domain::intentions::Intention),
     /// Generate › Override Methods… (false) / Implement Methods… (true).
@@ -105,6 +110,12 @@ impl FileEditor {
             });
             if let Some((name, classes)) = found {
                 items.push((cursor..cursor, Choice::ImportClass(name, classes)));
+            }
+            if style == crate::domain::imports::ImportStyle::Kotlin {
+                let found = index.read().ok().and_then(|index| crate::index::import_function::candidates(&index, &self.path, &text, cursor));
+                if let Some(f) = found {
+                    items.push((cursor..cursor, Choice::ImportFunction(f.title, f.qualified)));
+                }
             }
             for intention in crate::domain::intentions::intentions(style, &text, cursor) {
                 items.push((intention.range.clone(), Choice::Intention(intention)));
@@ -289,7 +300,14 @@ impl FileEditor {
                 self.context_actions = Some(ContextActions { items, title: Some("Class to Import"), selected: 0, at: popup.at, caret: None });
                 window.focus(&self.context_focus, cx);
             }
-            Choice::Import(qualified) => self.import_class(&qualified, window, cx),
+            Choice::Import(qualified) | Choice::ImportMember(qualified) => self.import_class(&qualified, window, cx),
+            Choice::ImportFunction(_, functions) if functions.len() == 1 => self.import_class(&functions[0], window, cx),
+            Choice::ImportFunction(_, functions) => {
+                // Kotlin's "Imports" chooser, where the popup was.
+                let items = functions.into_iter().map(|q| (range.clone(), Choice::ImportMember(q))).collect();
+                self.context_actions = Some(ContextActions { items, title: Some("Imports"), selected: 0, at: popup.at, caret: None });
+                window.focus(&self.context_focus, cx);
+            }
             Choice::Override(implement) => self.override_methods(implement, window, cx),
             Choice::Server(action) => self.apply_server_action(action, window, cx),
             Choice::Catalog(fix, file) => {
@@ -517,6 +535,8 @@ impl FileEditor {
                 Choice::Generate(m) => (None, m.label().to_owned()),
                 Choice::ImportClass(name, _) => (Some(icons::INTENTION_BULB), format!("Import class '{name}'")),
                 Choice::Import(qualified) => (Some(icons::CLASS), qualified.clone()),
+                Choice::ImportFunction(title, _) => (Some(icons::INTENTION_BULB), title.clone()),
+                Choice::ImportMember(qualified) => (Some(icons::FUNCTION), qualified.clone()),
                 Choice::Intention(i) => (Some(icons::INTENTION_BULB), i.title.clone()),
                 Choice::Catalog(fix, _) => (Some(icons::INTENTION_BULB), fix.title.clone()),
                 Choice::Unwrap(i) => (None, i.title.clone()),

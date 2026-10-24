@@ -74,13 +74,7 @@ impl CodeModel for IndexCodeModel<'_> {
         let in_comment_or_string = nav::comments_and_strings(text, self.lang).iter().any(|r| r.start < offset && offset <= r.end);
         let receivers = nav::member_receivers(self.index, self.lang, text, start);
         let (package, imports) = if self.jvm() { (package_line(text), import_lines(text)) } else { (None, Vec::new()) };
-        let implicit_packages = match self.lang {
-            Lang::Java => vec!["java.lang".to_owned()],
-            Lang::Kotlin => ["kotlin", "kotlin.annotation", "kotlin.collections", "kotlin.comparisons", "kotlin.io", "kotlin.ranges", "kotlin.sequences", "kotlin.text", "kotlin.jvm", "java.lang"]
-                .map(str::to_owned)
-                .to_vec(),
-            _ => Vec::new(),
-        };
+        let implicit_packages = Self::import_style(self.lang).map(crate::domain::imports::implicit_packages).unwrap_or_default();
         CodeContext { prefix: start..offset, member_access: receivers.is_some(), receivers: receivers.unwrap_or_default(), in_comment_or_string, package, imports, implicit_packages }
     }
 

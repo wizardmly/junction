@@ -12,6 +12,16 @@ pub enum ImportStyle {
     Kotlin,
 }
 
+/// The packages every file of the language sees without an import:
+/// Kotlin's default imports, Java's `java.lang`.
+pub fn implicit_packages(style: ImportStyle) -> Vec<String> {
+    let packages: &[&str] = match style {
+        ImportStyle::Java => &["java.lang"],
+        ImportStyle::Kotlin => &["kotlin", "kotlin.annotation", "kotlin.collections", "kotlin.comparisons", "kotlin.io", "kotlin.ranges", "kotlin.sequences", "kotlin.text", "kotlin.jvm", "java.lang"],
+    };
+    packages.iter().map(|p| p.to_string()).collect()
+}
+
 /// Whether `qualified` (`a.b.C`) is visible in a file of `package` with
 /// these imports and implicitly imported packages.
 pub fn is_visible(qualified: &str, package: Option<&str>, imports: &[String], implicit: &[String]) -> bool {
