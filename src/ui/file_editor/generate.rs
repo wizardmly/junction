@@ -122,7 +122,7 @@ impl FileEditor {
         let Some(index) = self.code_index.clone() else { return Supers::default() };
         let root = index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
         let index = index.read(cx).index.clone();
-        let members = index.read().map(|index| crate::index::overrides::super_members(&index, &root, lang, header)).unwrap_or_default();
+        let members = index.read().map(|index| crate::index::overrides::super_members(&index, &root, lang, &self.path, header)).unwrap_or_default();
         let overrides = |name: &str| members.iter().any(|(owner, m)| m.name == name && !m.is_abstract && owner != "Any" && owner != "Object");
         Supers { equals: overrides("equals"), hash_code: overrides("hashCode") }
     }

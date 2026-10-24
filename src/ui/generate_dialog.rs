@@ -17,6 +17,8 @@ use crate::ui::dialogs;
 pub struct ChooserView {
     fields: Vec<Field>,
     checked: Vec<bool>,
+    /// Checkboxes under the list (Override Methods' "Insert @Override").
+    options: Vec<(&'static str, bool)>,
 }
 
 impl Render for ChooserView {
@@ -35,9 +37,17 @@ impl Render for ChooserView {
                     .when(!f.ty.is_empty(), |el| el.child(div().text_sm().text_color(palette.text_secondary).child(f.ty.clone()))),
             );
         }
+        let mut options = h_flex().gap_3();
+        for (ix, (label, on)) in self.options.iter().enumerate() {
+            options = options.child(Checkbox::new(SharedString::from(format!("generate-option-{ix}"))).label(*label).checked(*on).on_change(cx.listener(move |this, v: &bool, _, cx| {
+                this.options[ix].1 = *v;
+                cx.notify();
+            })));
+        }
         v_flex()
             .gap_2()
             .child(list)
+            .when(!self.options.is_empty(), |el| el.child(options))
             .child(
                 h_flex()
                     .gap_2()
@@ -61,17 +71,32 @@ pub fn choose(title: &'static str, fields: Vec<Field>, on_ok: impl Fn(Vec<Field>
 /// `choose`, the items checked or not to start with (Override Methods
 /// starts with none, Implement Methods with all, as IntelliJ's).
 pub fn choose_checked(title: &'static str, fields: Vec<Field>, all_checked: bool, on_ok: impl Fn(Vec<Field>, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
+    choose_with_options(title, fields, all_checked, Vec::new(), move |chosen, _, window, cx| on_ok(chosen, window, cx), window, cx);
+}
+
+/// `choose_checked` with checkboxes under the list; `on_ok` gets their
+/// states in order too.
+pub fn choose_with_options(
+    title: &'static str,
+    fields: Vec<Field>,
+    all_checked: bool,
+    options: Vec<(&'static str, bool)>,
+    on_ok: impl Fn(Vec<Field>, Vec<bool>, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let checked = vec![all_checked; fields.len()];
-    let view = cx.new(|_| ChooserView { fields, checked });
+    let view = cx.new(|_| ChooserView { fields, checked, options });
     let on_ok = Rc::new(on_ok);
     window.open_dialog(cx, move |dialog, _, _| {
         let (view_ok, on_ok) = (view.clone(), on_ok.clone());
         dialog.title(title).w(px(540.)).child(view.clone()).footer(dialogs::footer("OK")).on_ok(move |_, window, cx| {
             let v = view_ok.read(cx);
             let chosen: Vec<Field> = v.fields.iter().zip(&v.checked).filter(|(_, c)| **c).map(|(f, _)| f.clone()).collect();
+            let options: Vec<bool> = v.options.iter().map(|(_, on)| *on).collect();
             // After this dialog closes: what follows may open another one.
             let on_ok = on_ok.clone();
-            window.defer(cx, move |window, cx| on_ok(chosen, window, cx));
+            window.defer(cx, move |window, cx| on_ok(chosen, options, window, cx));
             true
         })
     });
