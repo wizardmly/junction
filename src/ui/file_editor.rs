@@ -434,6 +434,8 @@ pub struct FileEditor {
     selection_steps: Vec<std::ops::Range<usize>>,
     /// The language server's code actions being asked for (Alt+Enter).
     server_actions_task: Option<gpui_kit::Task<()>>,
+    /// Add names to call arguments, waiting on the callee's declaration.
+    argument_names_task: Option<gpui_kit::Task<()>>,
     /// A vector drawable's preview, and Code / Split / Design.
     vector: Option<vector_preview::VectorPreview>,
     vector_mode: vector_preview::VectorMode,
@@ -772,6 +774,7 @@ impl FileEditor {
             sources_status: None,
             selection_steps: Vec::new(),
             server_actions_task: None,
+            argument_names_task: None,
             vector: None,
             vector_mode: Default::default(),
             vector_zoom: None,

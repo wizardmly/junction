@@ -206,7 +206,7 @@ impl FileEditor {
 }
 
 /// A 0-based line and UTF-16 column as a byte offset.
-fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
+pub(super) fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
     let start: usize = text.split_inclusive('\n').take(line as usize).map(str::len).sum();
     let line_text = text.get(start..)?.split('\n').next()?;
     let mut units = 0;
