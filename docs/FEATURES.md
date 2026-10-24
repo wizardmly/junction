@@ -761,6 +761,8 @@ IntelliJ 的 Show Context Actions（Alt+Enter）在问题修复之外，补上�
 | Import function 'greet' / Import extension function 'String.shout'（Kotlin）：光标在文件解析不到的调用上（`greet(…)`、`x.shout()`、带尾随 lambda 的 `x.f { }`），从项目和外部库找同名的顶层函数；普通调用找普通函数（在类里时也找接收者是这个类的扩展函数），`x.f()` 找接收者类型和 `x` 的类型或其父类型相符的扩展函数（`T.` / `Any.` 都算，`x` 类型推断不出时不过滤）；文件已经能看到同名函数（同包、已导入、`.*`、Kotlin 默认导入）、名字是接收者或外围类的成员、局部变量或本文件的声明、正在声明的 `fun f(`、`::f` 时不提供；只有一个时直接导入，多个时弹出 Kotlin 的 “Imports” 选择列表。代码：`src/domain/import_function.rs`、`src/index/import_function.rs` | ✅ |
 | 其他需要类型的意图、Java 的 Import static method、`object` 成员函数的导入、自动导入提示（“? java.util.Date? Alt+Enter”）、意图设置页 | ❌ 未做 |
 
+Linux 实测（Xvfb，2026-10-24）：`util/Text.kt` 里有 `fun greet(name: String)` 和 `fun String.shout()`，`other/Greet.kt` 里还有一个 `greet`；Main.kt 里 `s.shout()`（`val s: String`）上 Alt+Enter 出现 “Import extension function 'String.shout'”，回车后插入 `import com.example.util.shout`；`greet("a")` 上出现 “Import function 'greet'”，回车弹出 “Imports” 两项，选 `com.example.util.greet` 后插入对应的 import；导入后再按 Alt+Enter 不再提供。
+
 Linux 实测（Xvfb，`ip` 工程 Main.kt，2026-10-23）：`"total " + cart.total(1.0, 2) + "!"` 上 Alt+Enter → Convert concatenation to template 得到 `"total ${cart.total(1.0, 2)}!"`；`cart.total(10.0, 3)` 括号里 → Add names to call arguments 得到 `cart.total(price = 10.0, count = 3)`（`total` 声明在 Cart.kt）；`val cart = Cart(0.2)` 的 `cart` 上 → Specify type explicitly 得到 `val cart: Cart = Cart(0.2)`。
 
 Linux 实测（Xvfb）：`com.example.a.Item` 和 `com.example.b.Item` 两个同名类，光标在 `Item()` 上 Alt+Enter 出现 “Import class 'Item'”，回车后弹出 “Class to Import” 两项，选第二个后插入 `import com.example.b.Item`；`if (n > 1) println(n)` 上 Alt+Enter → “Add braces to 'if' statement” 变为三行块；`fun price(n: Int): Int = n * 2` 上 → “Convert to block body” 变为 `return n * 2` 的块体。
