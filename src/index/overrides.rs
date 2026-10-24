@@ -3,6 +3,8 @@
 //! (nearest first, so a class's own override of an interface's member
 //! wins), read from the project's and libraries' sources, type
 //! parameters replaced by the class's arguments; then `Any` / `Object`.
+//! Of several types of a name, the one in the referring file wins, then
+//! one in its directory (its package), then any.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -12,20 +14,27 @@ use super::store::ProjectIndex;
 use super::symbols::SymbolKind;
 use crate::domain::overrides::{self as ov, Member, SuperType};
 
-/// (owner's simple name, member) for each member, nearest owner first.
-pub fn super_members(index: &ProjectIndex, root: &Path, lang: Lang, class_header: &str) -> Vec<(String, Member)> {
+/// The directory part of a project path.
+fn dir_of(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(d, _)| d)
+}
+
+/// (owner's simple name, member) for each member, nearest owner first;
+/// `from` is the class's file.
+pub fn super_members(index: &ProjectIndex, root: &Path, lang: Lang, from: &str, class_header: &str) -> Vec<(String, Member)> {
     let kotlin = lang == Lang::Kotlin;
     let family = lang.family();
     let mut sources: HashMap<String, Option<String>> = HashMap::new();
-    let mut queue: VecDeque<(SuperType, Vec<(String, String)>)> = ov::supertypes(class_header, kotlin).into_iter().map(|s| (s, Vec::new())).collect();
+    let mut queue: VecDeque<(SuperType, Vec<(String, String)>, String)> = ov::supertypes(class_header, kotlin).into_iter().map(|s| (s, Vec::new(), from.to_owned())).collect();
     let mut visited = HashSet::new();
     let mut out: Vec<(String, Member)> = Vec::new();
-    while let Some((sup, outer)) = queue.pop_front() {
+    while let Some((sup, outer, referrer)) = queue.pop_front() {
         if !visited.insert(sup.name.clone()) || visited.len() > 64 {
             continue;
         }
         let args: Vec<String> = sup.args.iter().map(|a| ov::substitute(a, &outer)).collect();
-        let Some((path, entry, symbol)) = index.symbols_named(&sup.name).find(|(_, e, s)| s.kind.is_type() && family.contains(&e.lang)) else { continue };
+        let rank = |path: &str| if path == referrer { 0 } else if dir_of(path) == dir_of(&referrer) { 1 } else { 2 };
+        let Some((path, entry, symbol)) = index.symbols_named(&sup.name).filter(|(_, e, s)| s.kind.is_type() && family.contains(&e.lang)).min_by_key(|(p, _, _)| rank(p)) else { continue };
         let source = sources.entry(path.to_owned()).or_insert_with(|| std::fs::read_to_string(root.join(path)).ok());
         let Some(source) = source.as_deref() else { continue };
         let lines: Vec<&str> = source.split('\n').collect();
@@ -46,7 +55,7 @@ pub fn super_members(index: &ProjectIndex, root: &Path, lang: Lang, class_header
             }
         }
         for next in ov::supertypes(&header, kotlin) {
-            queue.push_back((next, map.clone()));
+            queue.push_back((next, map.clone(), path.to_owned()));
         }
     }
     out.extend(ov::root_members(kotlin));

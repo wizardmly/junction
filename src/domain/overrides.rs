@@ -294,8 +294,84 @@ fn default_value(ty: &str) -> Option<&'static str> {
     })
 }
 
-/// The override, unindented (one `unit` inside), in IntelliJ's templates.
+/// A parameter's type as overloads differ by it: Kotlin's after the
+/// `:` (with `vararg`), Java's without the name and `final`; package
+/// qualifiers and spaces dropped (`java.util.List<String>` is
+/// `List<String>`).
+fn parameter_type(p: &str, kotlin: bool) -> String {
+    let p = p.split(" = ").next().unwrap_or(p);
+    let ty = if kotlin {
+        let ty = p.split_once(':').map_or(p, |(_, t)| t).trim().to_owned();
+        if p.trim_start().starts_with("vararg ") { format!("vararg {ty}") } else { ty }
+    } else {
+        let words: Vec<&str> = p.split_whitespace().filter(|w| *w != "final" && !w.starts_with('@')).collect();
+        words[..words.len().saturating_sub(1)].join(" ")
+    };
+    // `a.b.C` → `C`, inside type arguments too.
+    let mut out = String::new();
+    let mut word = String::new();
+    for c in ty.chars().chain(std::iter::once(' ')) {
+        if c.is_alphanumeric() || c == '_' || c == '.' {
+            word.push(c);
+        } else {
+            out.push_str(word.rsplit('.').next().unwrap_or(&word));
+            word.clear();
+            if !c.is_whitespace() {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// The name and parameter types of a method the class declares, from its
+/// source (annotations, modifiers and body included); none for a
+/// property.
+pub fn declared_signature(source: &str) -> Option<(String, Vec<String>, bool)> {
+    let open = source.find('(')?;
+    let before = source[..open].trim_end();
+    let name_len = before.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '`').map(char::len_utf8).sum::<usize>();
+    let name = before[before.len() - name_len..].trim_matches('`').to_owned();
+    let kotlin = before.split_whitespace().any(|w| w == "fun");
+    if name.is_empty() || !kotlin && before.split_whitespace().count() < 2 {
+        return None;
+    }
+    let params = crate::domain::parameter_info::parameters(source, before.len() - name_len)?;
+    Some((name, params.iter().map(|p| parameter_type(p, kotlin)).collect(), kotlin))
+}
+
+/// Whether a declared method (`declared_signature`) overrides `m`: the
+/// same name and parameter types.
+pub fn overrides(declared: &(String, Vec<String>, bool), m: &Member, kotlin: bool) -> bool {
+    m.kind == MemberKind::Fun && declared.0 == m.name && declared.1 == m.params.iter().map(|p| parameter_type(p, kotlin)).collect::<Vec<_>>()
+}
+
+/// What the chooser sets for the members it writes: Java's Insert
+/// @Override (on by default), and Kotlin's `super<Interface>` when more
+/// than one direct supertype could be meant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Options {
+    pub insert_override: bool,
+    pub qualifier: Option<String>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { insert_override: true, qualifier: None }
+    }
+}
+
+/// The override, unindented (one `unit` inside), in IntelliJ's templates,
+/// with the default options.
+#[cfg(test)]
 pub fn generate(m: &Member, kotlin: bool, unit: &str) -> String {
+    generate_with(m, kotlin, unit, &Options::default())
+}
+
+/// The override, unindented (one `unit` inside), in IntelliJ's templates,
+/// with the chooser's options.
+pub fn generate_with(m: &Member, kotlin: bool, unit: &str, options: &Options) -> String {
+    let sup = options.qualifier.as_ref().map_or_else(|| "super".to_owned(), |q| format!("super<{q}>"));
     let keep = if m.keep.is_empty() { String::new() } else { format!("{} ", m.keep.join(" ")) };
     if kotlin {
         let todo = "TODO(\"Not yet implemented\")";
@@ -306,19 +382,19 @@ pub fn generate(m: &Member, kotlin: bool, unit: &str) -> String {
                 let body = if m.is_abstract {
                     todo.to_owned()
                 } else if unit_returning {
-                    format!("super.{}({})", m.name, arguments(m, true))
+                    format!("{sup}.{}({})", m.name, arguments(m, true))
                 } else {
-                    format!("return super.{}({})", m.name, arguments(m, true))
+                    format!("return {sup}.{}({})", m.name, arguments(m, true))
                 };
                 format!("{keep}override fun {}({}){ty} {{\n{unit}{body}\n}}", m.name, m.params.join(", "))
             }
             MemberKind::Val | MemberKind::Var => {
                 let keyword = if m.kind == MemberKind::Var { "var" } else { "val" };
                 let ty = m.ty.as_ref().map(|t| format!(": {t}")).unwrap_or_default();
-                let getter = if m.is_abstract { todo.to_owned() } else { format!("super.{}", m.name) };
+                let getter = if m.is_abstract { todo.to_owned() } else { format!("{sup}.{}", m.name) };
                 let mut out = format!("{keep}override {keyword} {}{ty}\n{unit}get() = {getter}", m.name);
                 if m.kind == MemberKind::Var {
-                    let setter = if m.is_abstract { "{}".to_owned() } else { format!("{{\n{unit}{unit}super.{} = value\n{unit}}}", m.name) };
+                    let setter = if m.is_abstract { "{}".to_owned() } else { format!("{{\n{unit}{unit}{sup}.{} = value\n{unit}}}", m.name) };
                     out.push_str(&format!("\n{unit}set(value) {setter}"));
                 }
                 out
@@ -335,7 +411,8 @@ pub fn generate(m: &Member, kotlin: bool, unit: &str) -> String {
             (false, None) => format!("{call};"),
         };
         let body = if body.is_empty() { String::new() } else { format!("{unit}{body}\n") };
-        format!("@Override\n{keep}{ty} {}({}){throws} {{\n{body}}}", m.name, m.params.join(", "))
+        let annotation = if options.insert_override { "@Override\n" } else { "" };
+        format!("{annotation}{keep}{ty} {}({}){throws} {{\n{body}}}", m.name, m.params.join(", "))
     }
 }
 
@@ -388,7 +465,28 @@ mod tests {
         assert_eq!(generate(&java, false, "    "), "@Override\npublic int compute(int a, String b) {\n    return 0;\n}");
         let (_, equals) = root_members(false).into_iter().find(|(_, m)| m.name == "equals").unwrap();
         assert_eq!(generate(&equals, false, "    "), "@Override\npublic boolean equals(Object obj) {\n    return super.equals(obj);\n}");
+        // Options: no @Override; Kotlin's super<Interface>.
+        let no_annotation = Options { insert_override: false, qualifier: None };
+        assert!(generate_with(&java, false, "    ", &no_annotation).starts_with("public int compute("));
+        let qualified = Options { insert_override: true, qualifier: Some("Runnable".into()) };
+        assert_eq!(generate_with(&run, true, "    ", &qualified), "override fun run(vararg xs: Int) {\n    super<Runnable>.run(*xs)\n}");
         let void = member("public abstract void reset();", false, false, false).unwrap();
         assert_eq!(generate(&void, false, "    "), "@Override\npublic void reset() {\n}");
+    }
+
+    #[test]
+    fn tells_overloads_apart() {
+        let by_int = member("open fun f(x: Int): Int", true, false, true).unwrap();
+        let by_list = member("open fun f(items: List<String>)", true, false, true).unwrap();
+        let declared = declared_signature("    override fun f(n: Int): Int {\n        return 1\n    }").unwrap();
+        assert!(overrides(&declared, &by_int, true));
+        assert!(!overrides(&declared, &by_list, true));
+        let declared = declared_signature("override fun f(items: kotlin.collections.List<String>) = Unit").unwrap();
+        assert!(overrides(&declared, &by_list, true));
+        let java = member("public void put(String key, java.util.Map<String, Integer> m);", false, true, false).unwrap();
+        let declared = declared_signature("@Override\npublic void put(final String k, Map<String, Integer> values) {}").unwrap();
+        assert!(overrides(&declared, &java, false));
+        let other = declared_signature("public void put(int k, Map<String, Integer> values) {}").unwrap();
+        assert!(!overrides(&other, &java, false));
     }
 }
