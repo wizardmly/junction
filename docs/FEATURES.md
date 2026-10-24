@@ -774,7 +774,11 @@ IntelliJ 的 Code › Override Methods（Ctrl+O）和 Implement Methods（Ctrl+I
 | 规则：Kotlin 类成员默认 final，只有 `open` / `abstract` / `override` 和接口成员可覆盖，接口里没有函数体（或属性没有初始值）的是抽象的；Java 排除 `private` / `static` / `final`，接口里非 `default` 的是抽象的；Implement 只列抽象成员，Override 只列有实现的 | ✅ |
 | 选择对话框：Kotlin “Implement Members” / “Override Members”，Java “Select Methods to Implement” / “Select Methods to Override”；每项显示签名（Kotlin `area(scale: Double): Double`、Java `compute(int, String):int`）和所属类，Implement 默认全选、Override 默认不选，Select All / Select None；没有可选时提示 “No members to implement have been found” 等 | ✅ |
 | 生成（IntelliJ 默认模板）：Kotlin 抽象成员 `override fun …` 里写 `TODO("Not yet implemented")`，有实现的写 `return super.f(…)`（Unit 不写 `return`，vararg 传 `*xs`），属性生成 `override val x: T` + `get() = …`（var 还有 `set(value)`），去掉参数默认值，保留 `suspend` / `operator` / `protected` 等修饰；Java 加 `@Override`，接口方法为 `public`，抽象的返回默认值（`return 0;` / `false` / `null`，void 为空），有实现的 `return super.f(…);`，保留 `throws`；插在光标所在成员之后，一次可撤销的编辑 | ✅ |
-| 签名里类型的 import、同名不同参数的重载区分（按名字排除已有成员）、Kotlin `super<Interface>` 限定、Copy JavaDoc、按类分组的树形列表、Insert @Override 选项 | ❌ 未做 |
+| 重载区分：已有成员按名字和参数类型比较（`a.b.C` 与 `C` 视为同一类型，参数名不算），类里已覆盖 `f(x: Int)` 时 `f(s: String)` 仍在列表里 | ✅ |
+| Kotlin `super<Interface>` 限定：类有多个直接超类型时，调用直接超类型的成员写成 `super<Base>.f(s)` / `super<Greeter>.hello()`（同名成员来自多个超类型时不写会编译不过） | ✅ |
+| Java 的 Insert @Override 选项（对话框列表下方，默认勾选） | ✅ |
+| 顺带修正：超类型同名时（如两个文件里都有 `Base`），以前取索引里的第一个，可能列出别人的成员；现在依次优先同一文件、同一目录（同包），父类的父类从声明它的文件出发找 | ✅ |
+| 签名里类型的 import、Copy JavaDoc、按类分组的树形列表 | ❌ 未做 |
 
 Linux 实测（Xvfb）：接口 `Shape`（`val label`、`fun area(scale: Double = 1.0)`、有默认实现的 `describe()`）、抽象类 `Base<T> : Shape`（`abstract fun accept(item: T)`、`open fun reset()`）、`class Circle : Base<Int>()`；在 Circle 里 Ctrl+I 列出 `accept(item: Int) Base`、`label: String Shape`、`area(scale: Double): Double Shape` 且全选，确定后生成三段 `TODO("Not yet implemented")`；Ctrl+O 列出 `reset()`、`describe()`、`equals`、`hashCode`、`toString`，选 describe 和 toString 后生成 `return super.describe()` / `return super.toString()`。
 
