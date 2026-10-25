@@ -27,6 +27,11 @@ pub struct Member {
     /// Java's `throws …` clause.
     pub throws: Option<String>,
     pub is_abstract: bool,
+    /// Its doc comment (`/** … */`), unindented, for Copy JavaDoc.
+    pub doc: Option<String>,
+    /// Qualified names of the classes its signature names, as the
+    /// supertype's file imports them, for the subclass to import.
+    pub imports: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,7 +191,7 @@ pub fn member(header: &str, kotlin: bool, in_interface: bool, has_body: bool) ->
                 let params = params.into_iter().map(|p| p.split(" = ").next().unwrap_or(&p).trim().to_owned()).collect();
                 let close = crate::domain::intentions::matching(header, open)?;
                 let ty = header[close + 1..].trim().strip_prefix(':').map(|t| t.split(" where ").next().unwrap_or(t).trim().to_owned()).filter(|t| !t.is_empty());
-                Some(Member { name, params, ty, kind, keep, throws: None, is_abstract })
+                Some(Member { name, params, ty, kind, keep, throws: None, is_abstract, doc: None, imports: Vec::new() })
             }
             _ => {
                 let decl = header.split(if kind == MemberKind::Var { " var " } else { " val " }).last().unwrap_or(header);
@@ -195,7 +200,7 @@ pub fn member(header: &str, kotlin: bool, in_interface: bool, has_body: bool) ->
                     Some((n, t)) => (n.trim(), Some(t.split(" = ").next().unwrap_or(t).split(" by ").next().unwrap_or(t).trim().to_owned())),
                     None => (decl.split(" = ").next().unwrap_or(decl).trim(), None),
                 };
-                Some(Member { name: name.to_owned(), params: Vec::new(), ty, kind, keep, throws: None, is_abstract })
+                Some(Member { name: name.to_owned(), params: Vec::new(), ty, kind, keep, throws: None, is_abstract, doc: None, imports: Vec::new() })
             }
         }
     } else {
@@ -217,7 +222,7 @@ pub fn member(header: &str, kotlin: bool, in_interface: bool, has_body: bool) ->
         // An interface's members are public.
         let visibility = if in_interface || before.contains(&"public") { "public" } else if before.contains(&"protected") { "protected" } else { "" };
         let keep = (!visibility.is_empty()).then(|| vec![visibility.to_owned()]).unwrap_or_default();
-        Some(Member { name, params, ty: Some(ty), kind: MemberKind::Fun, keep, throws, is_abstract })
+        Some(Member { name, params, ty: Some(ty), kind: MemberKind::Fun, keep, throws, is_abstract, doc: None, imports: Vec::new() })
     }
 }
 
@@ -231,6 +236,8 @@ pub fn root_members(kotlin: bool) -> Vec<(String, Member)> {
         keep: keep.iter().map(|k| k.to_string()).collect(),
         throws: None,
         is_abstract: false,
+        doc: None,
+        imports: Vec::new(),
     };
     if kotlin {
         vec![
@@ -347,18 +354,62 @@ pub fn overrides(declared: &(String, Vec<String>, bool), m: &Member, kotlin: boo
 }
 
 /// What the chooser sets for the members it writes: Java's Insert
-/// @Override (on by default), and Kotlin's `super<Interface>` when more
-/// than one direct supertype could be meant.
+/// @Override (on by default), Copy JavaDoc (off by default), and
+/// Kotlin's `super<Interface>` when more than one direct supertype could
+/// be meant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
     pub insert_override: bool,
+    pub copy_doc: bool,
     pub qualifier: Option<String>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { insert_override: true, qualifier: None }
+        Self { insert_override: true, copy_doc: false, qualifier: None }
     }
+}
+
+/// The class names a member's signature uses (`Map<Key, List<Item>>` →
+/// Map, Key, List, Item), not ones after a `.` (nested or qualified).
+pub fn type_names(m: &Member, kotlin: bool) -> Vec<String> {
+    let mut texts: Vec<&str> = m.params.iter().map(|p| if kotlin { p.split_once(':').map_or("", |(_, t)| t) } else { p.trim_end().rsplit_once(' ').map_or("", |(t, _)| t) }).collect();
+    texts.extend(m.ty.as_deref());
+    texts.extend(m.throws.as_deref());
+    let mut out: Vec<String> = Vec::new();
+    for text in texts {
+        let mut at = 0;
+        for word in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            let qualified = text.get(..at).is_some_and(|t| t.ends_with('.'));
+            at += word.len() + 1;
+            if !qualified && word.starts_with(|c: char| c.is_uppercase()) && !out.iter().any(|w| w == word) {
+                out.push(word.to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// The doc comment (`/** … */`) ending just above line `line`, past
+/// annotations, unindented with its `*` lines one space in.
+pub fn doc_comment(lines: &[&str], line: usize) -> Option<String> {
+    let mut end = line.min(lines.len());
+    while end > 0 && lines[end - 1].trim_start().starts_with('@') {
+        end -= 1;
+    }
+    if end == 0 || !lines[end - 1].trim_end().ends_with("*/") {
+        return None;
+    }
+    let mut start = end - 1;
+    while !lines[start].trim_start().starts_with("/**") {
+        // Another comment's end, or a plain `/* */` comment.
+        if start == 0 || start + 1 < end && lines[start].contains("*/") || lines[start].trim_start().starts_with("/*") || end - start > 200 {
+            return None;
+        }
+        start -= 1;
+    }
+    let doc: Vec<String> = lines[start..end].iter().map(|l| if l.trim_start().starts_with('*') { format!(" {}", l.trim()) } else { l.trim().to_owned() }).collect();
+    Some(doc.join("\n"))
 }
 
 /// The override, unindented (one `unit` inside), in IntelliJ's templates,
@@ -369,8 +420,16 @@ pub fn generate(m: &Member, kotlin: bool, unit: &str) -> String {
 }
 
 /// The override, unindented (one `unit` inside), in IntelliJ's templates,
-/// with the chooser's options.
+/// with the chooser's options: its doc comment first with Copy JavaDoc.
 pub fn generate_with(m: &Member, kotlin: bool, unit: &str, options: &Options) -> String {
+    let code = generate_code(m, kotlin, unit, options);
+    match m.doc.as_deref().filter(|_| options.copy_doc) {
+        Some(doc) => format!("{doc}\n{code}"),
+        None => code,
+    }
+}
+
+fn generate_code(m: &Member, kotlin: bool, unit: &str, options: &Options) -> String {
     let sup = options.qualifier.as_ref().map_or_else(|| "super".to_owned(), |q| format!("super<{q}>"));
     let keep = if m.keep.is_empty() { String::new() } else { format!("{} ", m.keep.join(" ")) };
     if kotlin {
@@ -466,12 +525,29 @@ mod tests {
         let (_, equals) = root_members(false).into_iter().find(|(_, m)| m.name == "equals").unwrap();
         assert_eq!(generate(&equals, false, "    "), "@Override\npublic boolean equals(Object obj) {\n    return super.equals(obj);\n}");
         // Options: no @Override; Kotlin's super<Interface>.
-        let no_annotation = Options { insert_override: false, qualifier: None };
+        let no_annotation = Options { insert_override: false, ..Options::default() };
         assert!(generate_with(&java, false, "    ", &no_annotation).starts_with("public int compute("));
-        let qualified = Options { insert_override: true, qualifier: Some("Runnable".into()) };
+        let qualified = Options { qualifier: Some("Runnable".into()), ..Options::default() };
         assert_eq!(generate_with(&run, true, "    ", &qualified), "override fun run(vararg xs: Int) {\n    super<Runnable>.run(*xs)\n}");
         let void = member("public abstract void reset();", false, false, false).unwrap();
         assert_eq!(generate(&void, false, "    "), "@Override\npublic void reset() {\n}");
+    }
+
+    #[test]
+    fn copies_docs_and_names_types() {
+        let lines = ["interface Shape {", "    /**", "     * The area.", "     */", "    @Deprecated(\"x\")", "    fun area(scale: Double): Double", "    /* plain */", "    fun other()", "}"];
+        assert_eq!(doc_comment(&lines, 5).as_deref(), Some("/**\n * The area.\n */"));
+        assert_eq!(doc_comment(&lines, 7), None);
+        assert_eq!(doc_comment(&["/** One line. */", "fun f()"], 1).as_deref(), Some("/** One line. */"));
+        let mut area = member("abstract fun area(scale: Double): Double", true, false, false).unwrap();
+        area.doc = doc_comment(&lines, 5);
+        let copied = Options { copy_doc: true, ..Options::default() };
+        assert!(generate_with(&area, true, "    ", &copied).starts_with("/**\n * The area.\n */\noverride fun area("));
+        assert!(generate_with(&area, true, "    ", &Options::default()).starts_with("override fun"));
+        let m = member("fun load(key: Key, into: MutableMap<String, List<Item>>): Result<a.b.Nested>", true, true, false).unwrap();
+        assert_eq!(type_names(&m, true), ["Key", "MutableMap", "String", "List", "Item", "Result"]);
+        let java = member("Item find(Key key) throws IOException;", false, true, false).unwrap();
+        assert_eq!(type_names(&java, false), ["Key", "Item", "IOException"]);
     }
 
     #[test]

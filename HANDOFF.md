@@ -2,7 +2,7 @@
 
 写给接手这个仓库继续开发的人或 AI。读完这一份，再按需看 [docs/FEATURES.md](docs/FEATURES.md)（逐项功能状态）和 [docs/DIFF_MERGE.md](docs/DIFF_MERGE.md)（Diff/Merge 规格），就能接着做。
 
-最后更新：2026-10-24（Alt+Enter 的 Import function / 扩展函数）。
+最后更新：2026-10-25（Override / Implement 的类型 import、Copy JavaDoc、按类分组）。
 
 ---
 
@@ -262,12 +262,12 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 
 ### 6.4 交接时的进度（2026-10-24）
 
-上一位接手者按 docs/FEATURES.md 里 ❌ 的行，从第 32 节往后逐节做，每做完一项就开 PR、CI（linux + windows）绿了自己 squash 合并（PR #30–#81）。之后 #82 做了第 35 节需要类型的 Kotlin 意图，#83 做了第 36 节的重载区分、Kotlin `super<Interface>` 和 Insert @Override；另一个并行线程做了第 35 节的 Import function / Import extension function（Kotlin）。两个会话并行时各挑不同的节，避免改同一批文件。
+上一位接手者按 docs/FEATURES.md 里 ❌ 的行，从第 32 节往后逐节做，每做完一项就开 PR、CI（linux + windows）绿了自己 squash 合并（PR #30–#81）。之后 #82 做了第 35 节需要类型的 Kotlin 意图，#83 做了第 36 节的重载区分、Kotlin `super<Interface>` 和 Insert @Override；#84 做了第 35 节的 Import function / Import extension function（Kotlin），之后一个 PR 补完了第 36 节剩下的签名类型 import、Copy JavaDoc 和按类分组。两个会话并行时各挑不同的节，避免改同一批文件。
 
 下一步照顺序接着做（`grep -n "❌" docs/FEATURES.md` 可列出全部）：
 
 1. 第 35 节 Alt+Enter 剩下的：Java 的 Import static method、自动导入提示（“? java.util.Date? Alt+Enter”）、其他需要类型的意图。
-2. 第 36 节 Override / Implement 剩下的：签名里类型的 import、Copy JavaDoc、按类分组的树形列表。
+2. 第 36 节 Override / Implement 剩下的小项：Java 接口默认方法的 `Shape.super.f()`、排序 / 分组切换按钮。
 3. 第 37 节语言服务器：诊断显示到编辑器和 Problems、补全改用服务器、需要对话框的服务器重构、文件创建 / 重命名。
 4. 第 33 节 Reformat 的大项：右边界 120 换行、Rearrange code、Do not keep line breaks、Gradle Groovy 格式化、代码风格设置页。
 5. 第 34 节剩下的：按表达式推断的类型选重载（现在只看字面量）、文档注释。

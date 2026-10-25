@@ -781,7 +781,12 @@ IntelliJ 的 Code › Override Methods（Ctrl+O）和 Implement Methods（Ctrl+I
 | Kotlin `super<Interface>` 限定：类有多个直接超类型时，调用直接超类型的成员写成 `super<Base>.f(s)` / `super<Greeter>.hello()`（同名成员来自多个超类型时不写会编译不过） | ✅ |
 | Java 的 Insert @Override 选项（对话框列表下方，默认勾选） | ✅ |
 | 顺带修正：超类型同名时（如两个文件里都有 `Base`），以前取索引里的第一个，可能列出别人的成员；现在依次优先同一文件、同一目录（同包），父类的父类从声明它的文件出发找 | ✅ |
-| 签名里类型的 import、Copy JavaDoc、按类分组的树形列表 | ❌ 未做 |
+| 签名里类型的 import：生成的签名用到的类（参数、返回值、`throws`）按超类型所在文件的 import 或它的包找到全名，当前文件看不到的（不同包、没导入、不是 `.*` 或默认导入）就在同一次编辑里加上 import；类型参数换成的实参来自当前类，不另外导入。代码：`ov::type_names`、`index::overrides::qualified_name` | ✅ |
+| Copy JavaDoc 选项（Kotlin / Java 对话框都有，默认不勾）：勾上后把超类型成员上方的 `/** … */` 文档注释（跳过注解）复制到生成的成员前面 | ✅ |
+| 按类分组：对话框按所属类分组，每组一个带类图标的标题行，成员缩进列在下面，近的类在前 | ✅ |
+| Java 接口默认方法的 `Shape.super.f()` 写法、可切换的排序 / 分组按钮 | ❌ 未做 |
+
+Linux 实测（Xvfb，2026-10-25）：`lib/Shape.kt`（import 了 `com.example.model.Item`，`area` 上有多行 KDoc，`accept(item: Item)` 上有单行 KDoc）、`app/Circle.kt` 里 `class Circle : Shape`；Ctrl+I 弹出 “Implement Members”，列表按类分组（标题行 Shape，下面两项缩进），勾上 Copy JavaDoc 确定后，两段文档注释和成员一起生成，同时插入 `import com.example.model.Item`。Java `DiskStore implements Store`（`Item load(String key) throws IOException`）上 Ctrl+I，下方有 Copy JavaDoc 和 Insert @Override，确定后加上 `com.example.model.Item` 和 `java.io.IOException` 两个 import；Ctrl+Z 一次全部撤销。
 
 Linux 实测（Xvfb）：接口 `Shape`（`val label`、`fun area(scale: Double = 1.0)`、有默认实现的 `describe()`）、抽象类 `Base<T> : Shape`（`abstract fun accept(item: T)`、`open fun reset()`）、`class Circle : Base<Int>()`；在 Circle 里 Ctrl+I 列出 `accept(item: Int) Base`、`label: String Shape`、`area(scale: Double): Double Shape` 且全选，确定后生成三段 `TODO("Not yet implemented")`；Ctrl+O 列出 `reset()`、`describe()`、`equals`、`hashCode`、`toString`，选 describe 和 toString 后生成 `return super.describe()` / `return super.toString()`。
 
