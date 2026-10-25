@@ -188,6 +188,20 @@ pub fn parse_diagnostics(list: &Value) -> Vec<ServerDiagnostic> {
         .collect()
 }
 
+/// A completion answer's items: a list, or `{ isIncomplete, items }`;
+/// items that don't parse are left out.
+pub fn parse_completions(result: &Value) -> Vec<lsp_types::CompletionItem> {
+    let items = match result {
+        Value::Array(items) => items,
+        Value::Object(list) => match list.get("items") {
+            Some(Value::Array(items)) => items,
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    items.iter().filter_map(|i| serde_json::from_value(i.clone()).ok()).collect()
+}
+
 /// A text edit a server answered with: 0-based line and UTF-16 column.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextEdit {
@@ -440,6 +454,10 @@ impl LspClient {
                         "implementation": { "linkSupport": true },
                         "references": {},
                         "hover": { "contentFormat": ["markdown", "plaintext"] },
+                        "completion": {
+                            "contextSupport": true,
+                            "completionItem": { "snippetSupport": false, "labelDetailsSupport": true, "deprecatedSupport": true, "resolveSupport": { "properties": ["additionalTextEdits"] } }
+                        },
                         "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
                         "rename": { "prepareSupport": true },
                         "publishDiagnostics": {},
@@ -568,6 +586,23 @@ impl LspClient {
             other => piece(other),
         };
         Ok((!text.trim().is_empty()).then_some(text))
+    }
+
+    /// Completions at a position (0-based line, UTF-16 column): `after_dot`
+    /// says the caret follows a `.`, the trigger character.
+    pub fn completion(&self, path: &Path, lang: Lang, text: &str, line: u32, col: u32, after_dot: bool, timeout: Duration) -> Result<Vec<lsp_types::CompletionItem>> {
+        let mut params = self.position_params(path, lang, text, line, col)?;
+        params["context"] = if after_dot { json!({ "triggerKind": 2, "triggerCharacter": "." }) } else { json!({ "triggerKind": 1 }) };
+        let result = self.request("textDocument/completion", params, timeout)?;
+        Ok(parse_completions(&result))
+    }
+
+    /// The edits a completion brings once resolved (an auto-import that the
+    /// server computes only for the picked item), 0-based lines and UTF-16
+    /// columns.
+    pub fn resolve_completion(&self, item: &lsp_types::CompletionItem, timeout: Duration) -> Result<Vec<TextEdit>> {
+        let result = self.request("completionItem/resolve", serde_json::to_value(item)?, timeout)?;
+        Ok(result.get("additionalTextEdits").map(parse_text_edits).unwrap_or_default())
     }
 
     /// The code actions for a range (0-based lines, UTF-16 columns), with
@@ -804,6 +839,21 @@ mod tests {
                 ServerDiagnostic { start: (5, 0), end: (5, 3), severity: 1, message: "Unresolved reference: foo".into() },
             ]
         );
+    }
+
+    #[test]
+    fn parses_completions() {
+        let list = json!({ "isIncomplete": false, "items": [
+            { "label": "greet", "kind": 3, "sortText": "09.0001", "textEdit": { "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 2 } }, "newText": "greet" } },
+            { "label": "Path", "kind": 7, "additionalTextEdits": [{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }, "newText": "from pathlib import Path\n" }] },
+            { "kind": 3 }
+        ] });
+        let items = parse_completions(&list);
+        assert_eq!(items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["greet", "Path"]);
+        assert_eq!(items[0].kind, Some(lsp_types::CompletionItemKind::FUNCTION));
+        assert_eq!(items[1].additional_text_edits.as_ref().map(Vec::len), Some(1));
+        assert_eq!(parse_completions(&json!([{ "label": "x" }])).len(), 1);
+        assert!(parse_completions(&Value::Null).is_empty());
     }
 
     #[test]

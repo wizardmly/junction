@@ -175,9 +175,120 @@ pub fn rank(prefix: &str, candidates: Vec<Candidate>, limit: usize) -> Vec<Candi
         .collect()
 }
 
+/// A language server's completions in the popup's order, as indices into
+/// `items` (label, filter text, sort text): those matching the typed
+/// `prefix`, better matches first and, within the same match quality, in
+/// the server's own order (it knows which are locals and which need an
+/// import); items whose label isn't what they filter by (rust-analyzer's
+/// `iter().le` for `le`) after the rest. At most `limit`.
+pub fn order_server(prefix: &str, items: &[(&str, &str, &str)], limit: usize) -> Vec<usize> {
+    let mut scored: Vec<(bool, i32, usize)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (label, filter, _))| Some((!label.starts_with(filter), match_score(prefix, filter)? / 100, i)))
+        .collect();
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(items[a.2].2.cmp(items[b.2].2)).then(a.2.cmp(&b.2)));
+    scored.into_iter().map(|(_, _, i)| i).take(limit).collect()
+}
+
+/// A snippet's text without its tab stops (`${1:x}` → `x`, `${2|a,b|}` →
+/// `a`, `$1` and `$0` dropped, `\$` → `$`), and where the first tab stop
+/// is (else `$0`), for the caret.
+pub fn plain_snippet(snippet: &str) -> (String, Option<usize>) {
+    let chars: Vec<char> = snippet.chars().collect();
+    let mut out = String::new();
+    // (tab stop number, where it is in `out`)
+    let mut stops: Vec<(u32, usize)> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' && i + 1 < chars.len() {
+            out.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        if c != '$' {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let digits = |from: usize| chars[from..].iter().take_while(|c| c.is_ascii_digit()).count();
+        let n = digits(i + 1);
+        if n > 0 {
+            stops.push((chars[i + 1..i + 1 + n].iter().collect::<String>().parse().unwrap_or(0), out.len()));
+            i += 1 + n;
+            continue;
+        }
+        let m = if chars.get(i + 1) == Some(&'{') { digits(i + 2) } else { 0 };
+        if m == 0 {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let number = chars[i + 2..i + 2 + m].iter().collect::<String>().parse().unwrap_or(0);
+        // The placeholder's text, through its closing brace.
+        let mut j = i + 2 + m;
+        let mut depth = 1;
+        let mut inner = String::new();
+        while j < chars.len() {
+            match chars[j] {
+                '\\' if j + 1 < chars.len() => {
+                    inner.push('\\');
+                    inner.push(chars[j + 1]);
+                    j += 1;
+                }
+                '{' => {
+                    depth += 1;
+                    inner.push('{');
+                }
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    inner.push('}');
+                }
+                c => inner.push(c),
+            }
+            j += 1;
+        }
+        stops.push((number, out.len()));
+        let text = match (inner.strip_prefix(':'), inner.strip_prefix('|')) {
+            (Some(text), _) => plain_snippet(text).0,
+            (_, Some(choices)) => choices.split([',', '|']).next().unwrap_or("").to_owned(),
+            _ => String::new(),
+        };
+        out.push_str(&text);
+        i = j + 1;
+    }
+    let caret = stops.iter().filter(|(n, _)| *n > 0).min_by_key(|(n, _)| *n).or_else(|| stops.iter().find(|(n, _)| *n == 0)).map(|(_, at)| *at);
+    (out, caret)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orders_server_items() {
+        let items = [("print", "print", "09.9999.print"), ("price", "price", "09.0001.price"), ("Path", "Path", "12.0001.Path"), ("xprice", "xprice", "09.0000"), ("pr", "pr", "10")];
+        // The exact match, then the server's order among prefix matches.
+        assert_eq!(order_server("pr", &items, 10), [4, 1, 0]);
+        assert_eq!(order_server("", &items, 2), [3, 1]);
+        assert_eq!(order_server("P", &items, 10), [2, 1, 0, 4]);
+        // A derived item goes after the plain ones.
+        let items = [("iter().le", "le", "0"), ("len", "len", "1"), ("le", "le", "2")];
+        assert_eq!(order_server("le", &items, 10), [2, 1, 0]);
+    }
+
+    #[test]
+    fn reads_snippets() {
+        assert_eq!(plain_snippet("greet(${1:name})$0"), ("greet(name)".to_owned(), Some(6)));
+        assert_eq!(plain_snippet("foo($0)"), ("foo()".to_owned(), Some(4)));
+        assert_eq!(plain_snippet("for ${1:x} in ${2|a,b|} {\n\t$0\n}"), ("for x in a {\n\t\n}".to_owned(), Some(4)));
+        assert_eq!(plain_snippet("cost \\$5 ${1:a${2:b}}"), ("cost $5 ab".to_owned(), Some(8)));
+        assert_eq!(plain_snippet("plain"), ("plain".to_owned(), None));
+    }
 
     #[test]
     fn camel_humps_like_intellij() {
