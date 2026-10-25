@@ -17,6 +17,7 @@ pub mod call_hierarchy;
 pub mod inline;
 pub mod inline_field;
 pub mod intentions;
+pub mod import_function;
 pub mod inline_function;
 pub mod safe_delete;
 pub mod unwrap;

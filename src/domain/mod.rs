@@ -37,6 +37,7 @@ pub mod expression;
 pub mod generate;
 pub mod hotswap;
 pub mod imports;
+pub mod import_function;
 pub mod line_edit;
 pub mod navigation_history;
 pub mod project_files;
