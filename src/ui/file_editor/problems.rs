@@ -1,6 +1,7 @@
 //! The editor's problem highlighting: syntax errors re-checked a moment
-//! after typing, plus the compiler's problems from the last build, as
-//! IntelliJ's wavy underlines with the message on hover.
+//! after typing, the file's language server's errors and warnings, plus
+//! the compiler's problems from the last build, as IntelliJ's wavy
+//! underlines with the message on hover.
 
 use gpui_kit::component::input::{Diagnostic, DiagnosticSeverity, RopeExt as _};
 use gpui_kit::{AppContext as _, Context};
@@ -71,6 +72,58 @@ impl FileEditor {
         }));
     }
 
+    /// Follows the file's language server, when one is set up for its
+    /// language: sends the text after each edit (the server starts on
+    /// first use) and shows what the server publishes for the file, which
+    /// may come any time (after its indexing, after a save's build check).
+    pub(super) fn watch_server(&mut self, cx: &mut Context<Self>) {
+        if self.read_only() || self.image.is_some() {
+            return;
+        }
+        let Some(index) = self.code_index.clone() else { return };
+        let text = self.text(cx);
+        let Some(lang) = CodeIndex::lang_of(&self.path, &text) else { return };
+        if crate::index::lsp::command_for(lang).is_none() {
+            return;
+        }
+        self.server_dirty = true;
+        let path = self.path.clone();
+        self.server_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let Ok(request) = this.update(cx, |this, cx| {
+                    let text = this.server_dirty.then(|| this.text(cx));
+                    let sent = text.is_some().then_some(this.server_edits);
+                    (index.read(cx).server_diagnostics(path.clone(), text, this.server_revision, cx), sent)
+                }) else {
+                    return;
+                };
+                let (task, sent) = request;
+                let answer = task.await;
+                let Ok(()) = this.update(cx, |this, cx| {
+                    let Some((revision, published)) = answer else { return };
+                    // A restarted server: it hasn't seen the text.
+                    if revision < this.server_revision {
+                        this.server_dirty = true;
+                    } else if sent == Some(this.server_edits) {
+                        this.server_dirty = false;
+                    }
+                    this.server_revision = revision;
+                    if let Some(published) = published {
+                        let text = this.text(cx);
+                        let problems: Vec<Problem> = published.iter().filter_map(|d| crate::domain::diagnostics::from_server(&text, d.start, d.end, d.severity, &d.message)).collect();
+                        if this.server_problems.as_ref() != Some(&problems) {
+                            this.server_problems = Some(problems);
+                            this.show_problems(cx);
+                        }
+                    }
+                }) else {
+                    return;
+                };
+                cx.background_executor().timer(std::time::Duration::from_millis(700)).await;
+            }
+        }));
+    }
+
     /// Follows compile on save: this file's problems from its module's
     /// last compile.
     pub(super) fn attach_compiler(&mut self, cx: &mut Context<Self>) {
@@ -97,9 +150,12 @@ impl FileEditor {
         }
     }
 
-    /// What the editor marks: syntax errors and the compiler's problems, in order.
+    /// What the editor marks, in order: syntax errors (the language
+    /// server's problems instead once it has published for the file, as
+    /// they include them), the compiler's problems and the inspections'.
     pub fn problems(&self) -> Vec<Problem> {
-        let mut all: Vec<Problem> = self.syntax_problems.iter().chain(&self.compiler_problems).chain(&self.inspection_problems).cloned().collect();
+        let own = self.server_problems.as_ref().unwrap_or(&self.syntax_problems);
+        let mut all: Vec<Problem> = own.iter().chain(&self.compiler_problems).chain(&self.inspection_problems).cloned().collect();
         all.sort_by_key(|p| (p.start, p.end));
         all
     }
