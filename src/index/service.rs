@@ -603,6 +603,34 @@ impl CodeIndex {
         })
     }
 
+    /// A language server's completions at `offset`; `None` without a
+    /// running server for the file or when it doesn't answer in time, so
+    /// the caller completes from the index instead.
+    pub fn server_completions(&self, path: String, text: String, offset: usize, cx: &App) -> Task<Option<Vec<lsp_types::CompletionItem>>> {
+        let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(None) };
+        if ProjectIndex::is_external(&path) || super::lsp::command_for(lang).is_none() {
+            return Task::ready(None);
+        }
+        let lsp = self.lsp.clone();
+        cx.background_spawn(async move {
+            let file = root.join(&path);
+            let client = lsp.client(lang, &file)?;
+            let (line, col) = nav::position(&text, offset);
+            let word = text[..offset].trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '$');
+            client.completion(&file, lang, &text, line, col, word.ends_with('.'), Duration::from_millis(1500)).ok()
+        })
+    }
+
+    /// The edits a picked server completion brings once resolved.
+    pub fn resolve_completion(&self, path: String, text: &str, item: lsp_types::CompletionItem, cx: &App) -> Task<Vec<super::lsp::TextEdit>> {
+        let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, text)) else { return Task::ready(Vec::new()) };
+        let lsp = self.lsp.clone();
+        cx.background_spawn(async move {
+            let Some(client) = lsp.client(lang, &root.join(&path)) else { return Vec::new() };
+            client.resolve_completion(&item, Duration::from_secs(3)).unwrap_or_default()
+        })
+    }
+
     /// A language server's code actions (quick fixes, refactorings) for a
     /// range of the file; none without a running server.
     pub fn code_actions(&self, path: String, text: String, range: std::ops::Range<usize>, cx: &App) -> Task<Vec<super::lsp::CodeAction>> {

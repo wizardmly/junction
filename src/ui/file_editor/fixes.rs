@@ -454,6 +454,27 @@ impl FileEditor {
         .detach();
     }
 
+    /// Applies the edits a picked server completion brings once resolved
+    /// (an import above the completed word).
+    pub(super) fn resolve_completion(&mut self, item: lsp_types::CompletionItem, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.code_index.clone() else { return };
+        let task = index.read(cx).resolve_completion(self.path.clone(), &self.text(cx), item, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let edits = task.await;
+            if edits.is_empty() {
+                return;
+            }
+            this.update_in(cx, |this, window, cx| {
+                let text = this.text(cx);
+                let caret = this.state.read(cx).cursor();
+                let (new, caret) = apply_text_edits(&text, &edits, caret);
+                this.replace_text(&text, &new, caret, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Replaces the text with `new` as one undoable edit (the changed span),
     /// the caret at `caret`.
     pub(super) fn replace_text(&mut self, old: &str, new: &str, caret: usize, window: &mut Window, cx: &mut Context<Self>) {

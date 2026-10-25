@@ -757,6 +757,12 @@ impl FileEditor {
                 InputEvent::CompletionCommand { command, .. } if command == crate::domain::live_templates::EXPAND_COMMAND => {
                     this.expand_template(window, cx);
                 }
+                // A server completion's auto-import, computed once picked.
+                InputEvent::CompletionCommand { command, argument } if command == crate::ui::completion::RESOLVE_COMMAND => {
+                    if let Some(item) = argument.as_deref().and_then(|a| serde_json::from_str(a).ok()) {
+                        this.resolve_completion(item, window, cx);
+                    }
+                }
                 _ => {}
             }
         })];
