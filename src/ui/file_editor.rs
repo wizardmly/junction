@@ -484,6 +484,15 @@ pub struct FileEditor {
     /// the last build (see `problems.rs`).
     syntax_problems: Vec<crate::domain::diagnostics::Problem>,
     compiler_problems: Vec<crate::domain::diagnostics::Problem>,
+    /// The language server's problems, once it has published for the
+    /// file; whether it has yet to see the latest text (edits are counted
+    /// so one made while the text was on its way isn't missed), and the
+    /// server's publish count last read (see `watch_server`).
+    server_problems: Option<Vec<crate::domain::diagnostics::Problem>>,
+    server_dirty: bool,
+    server_edits: u64,
+    server_revision: u64,
+    server_task: Option<gpui_kit::Task<()>>,
     problems_task: Option<gpui_kit::Task<()>>,
     /// Annotate with Git Blame, shown in the gutter.
     annotation: Option<Annotation>,
@@ -722,6 +731,8 @@ impl FileEditor {
                 this.update_hierarchy(true, cx);
                 this.update_problems(true, cx);
                 this.update_inspections(true, cx);
+                this.server_edits += 1;
+                this.server_dirty = true;
                 this.update_previews(true, cx);
                 this.update_test_marks(true, cx);
                 this.follow_breakpoints(cx);
@@ -803,6 +814,11 @@ impl FileEditor {
             code_index: None,
             syntax_problems: Vec::new(),
             compiler_problems: Vec::new(),
+            server_problems: None,
+            server_dirty: false,
+            server_edits: 0,
+            server_revision: 0,
+            server_task: None,
             problems_task: None,
             annotation: None,
             annotation_task: None,
@@ -992,6 +1008,7 @@ impl FileEditor {
         self.update_inspections(false, cx);
         self.update_previews(false, cx);
         self.attach_compiler(cx);
+        self.watch_server(cx);
     }
 
     /// The gutter's implementation markers, recomputed from the text after

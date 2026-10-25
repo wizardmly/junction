@@ -579,6 +579,30 @@ impl CodeIndex {
         })
     }
 
+    /// Keeps a file's language server up to date for the editor's
+    /// problems: sends `text` when given (the server starts on first use),
+    /// then, when the server has published anything since revision
+    /// `since`, reads what it last published for the file. `None` while no
+    /// server runs for the file (the text wasn't sent); otherwise the
+    /// server's revision and the file's diagnostics when they may have
+    /// changed (`None`: unchanged, or nothing published for it yet).
+    pub fn server_diagnostics(&self, path: String, text: Option<String>, since: u64, cx: &App) -> Task<Option<(u64, Option<Vec<super::lsp::ServerDiagnostic>>)>> {
+        let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, text.as_deref().unwrap_or(""))) else { return Task::ready(None) };
+        if ProjectIndex::is_external(&path) {
+            return Task::ready(None);
+        }
+        let lsp = self.lsp.clone();
+        cx.background_spawn(async move {
+            let file = root.join(&path);
+            let client = lsp.client(lang, &file)?;
+            if let Some(text) = &text {
+                client.sync(&file, lang, text).ok()?;
+            }
+            let revision = client.diagnostics_revision();
+            Some((revision, (revision != since).then(|| client.published_diagnostics(&file)).flatten()))
+        })
+    }
+
     /// A language server's code actions (quick fixes, refactorings) for a
     /// range of the file; none without a running server.
     pub fn code_actions(&self, path: String, text: String, range: std::ops::Range<usize>, cx: &App) -> Task<Vec<super::lsp::CodeAction>> {

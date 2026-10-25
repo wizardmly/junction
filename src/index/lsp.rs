@@ -1,12 +1,13 @@
 //! A minimal Language Server Protocol client: one server process per
 //! command and project, JSON-RPC over stdio, used for Go to Declaration,
-//! Find Usages and Quick Documentation when the server is installed.
+//! Find Usages and Quick Documentation when the server is installed, and
+//! the problems it publishes for the editor.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -155,8 +156,36 @@ pub struct LspClient {
     /// Edits the server asked to apply (`workspace/applyEdit`) while one
     /// of its commands ran.
     applied: Arc<Mutex<Vec<FileEdit>>>,
-    /// The diagnostics it published, by URI, for code actions' context.
+    /// The diagnostics it published, by URI, for code actions' context
+    /// and the editor.
     diagnostics: Arc<Mutex<HashMap<String, Value>>>,
+    /// Counts the diagnostics it has published, so a reader can tell
+    /// whether anything changed.
+    diagnostics_rev: Arc<AtomicU64>,
+}
+
+/// A problem a server published: 0-based lines and UTF-16 columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerDiagnostic {
+    pub start: (u32, u32),
+    pub end: (u32, u32),
+    /// 1 error, 2 warning, 3 information, 4 hint (LSP's DiagnosticSeverity;
+    /// a missing one is an error).
+    pub severity: u8,
+    pub message: String,
+}
+
+/// The diagnostics of a `publishDiagnostics` notification.
+pub fn parse_diagnostics(list: &Value) -> Vec<ServerDiagnostic> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|d| {
+            let pos = |p: &str| Some((d.pointer(&format!("/range/{p}/line"))?.as_u64()? as u32, d.pointer(&format!("/range/{p}/character"))?.as_u64()? as u32));
+            let severity = d.get("severity").and_then(Value::as_u64).unwrap_or(1).clamp(1, 4) as u8;
+            Some(ServerDiagnostic { start: pos("start")?, end: pos("end")?, severity, message: d.get("message")?.as_str()?.to_owned() })
+        })
+        .collect()
 }
 
 /// A text edit a server answered with: 0-based line and UTF-16 column.
@@ -291,7 +320,8 @@ impl LspClient {
         let progress: Arc<Mutex<Option<String>>> = Arc::default();
         let applied: Arc<Mutex<Vec<FileEdit>>> = Arc::default();
         let diagnostics: Arc<Mutex<HashMap<String, Value>>> = Arc::default();
-        let (applied_rx, diagnostics_rx) = (applied.clone(), diagnostics.clone());
+        let diagnostics_rev: Arc<AtomicU64> = Arc::default();
+        let (applied_rx, diagnostics_rx, rev_rx) = (applied.clone(), diagnostics.clone(), diagnostics_rev.clone());
         let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let client = Arc::new(Self {
             stdin: Mutex::new(stdin),
@@ -303,6 +333,7 @@ impl LspClient {
             alive: alive.clone(),
             applied,
             diagnostics,
+            diagnostics_rev,
         });
         let weak = Arc::downgrade(&client);
         std::thread::Builder::new().name(format!("lsp {program}")).spawn(move || {
@@ -347,6 +378,7 @@ impl LspClient {
                     (Some("textDocument/publishDiagnostics"), None) => {
                         if let (Some(uri), Some(list)) = (message.pointer("/params/uri").and_then(Value::as_str), message.pointer("/params/diagnostics")) {
                             diagnostics_rx.lock().unwrap().insert(uri.to_owned(), list.clone());
+                            rev_rx.fetch_add(1, Ordering::SeqCst);
                         }
                     }
                     (Some("$/progress"), None) => {
@@ -476,6 +508,20 @@ impl LspClient {
             Some(_) => {}
         }
         Ok(uri)
+    }
+
+    /// How many times the server has published diagnostics.
+    pub fn diagnostics_revision(&self) -> u64 {
+        self.diagnostics_rev.load(Ordering::SeqCst)
+    }
+
+    /// What the server last published for a file; none before it has.
+    pub fn published_diagnostics(&self, path: &Path) -> Option<Vec<ServerDiagnostic>> {
+        let uri = path_to_uri(path);
+        let all = self.diagnostics.lock().ok()?;
+        // Servers spell URIs their own way (`c%3A`, `C:`): compare paths too.
+        let list = all.get(&uri).or_else(|| all.iter().find(|(u, _)| uri_to_path(u).as_deref() == Some(path)).map(|(_, l)| l))?;
+        Some(parse_diagnostics(list))
     }
 
     fn position_params(&self, path: &Path, lang: Lang, text: &str, line: u32, col: u32) -> Result<Value> {
@@ -742,6 +788,22 @@ mod tests {
         assert_eq!(uri, "file:///home/me/my%20project/src/a%23b.rs");
         assert_eq!(uri_to_path(&uri).unwrap(), p);
         assert_eq!(uri_to_path("file:///C:/x/y.rs").unwrap(), PathBuf::from("C:/x/y.rs"));
+    }
+
+    #[test]
+    fn parses_diagnostics() {
+        let list = json!([
+            { "range": { "start": { "line": 2, "character": 4 }, "end": { "line": 2, "character": 9 } }, "severity": 2, "message": "Variable 'x' is never used", "source": "kotlin" },
+            { "range": { "start": { "line": 5, "character": 0 }, "end": { "line": 5, "character": 3 } }, "message": "Unresolved reference: foo" },
+            { "message": "no range" }
+        ]);
+        assert_eq!(
+            parse_diagnostics(&list),
+            [
+                ServerDiagnostic { start: (2, 4), end: (2, 9), severity: 2, message: "Variable 'x' is never used".into() },
+                ServerDiagnostic { start: (5, 0), end: (5, 3), severity: 1, message: "Unresolved reference: foo".into() },
+            ]
+        );
     }
 
     #[test]

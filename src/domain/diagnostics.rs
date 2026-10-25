@@ -1,6 +1,6 @@
 //! Problems shown in the editor and the Problems tool window: syntax
-//! errors found while typing, and the compiler's errors and warnings from
-//! the last build of the module.
+//! errors found while typing, the compiler's errors and warnings from
+//! the last build of the module, and a language server's.
 
 use std::path::PathBuf;
 
@@ -17,6 +17,8 @@ pub enum Origin {
     Compiler,
     /// An inspection of the file (a newer dependency version).
     Inspection,
+    /// The file's language server (`textDocument/publishDiagnostics`).
+    Server,
 }
 
 /// A 0-based line and column; the column counts characters.
@@ -38,6 +40,28 @@ impl Pos {
         let line_start = before.rfind('\n').map_or(0, |i| i + 1);
         Self { line: before.matches('\n').count() as u32, col: before[line_start..].chars().count() as u32 }
     }
+}
+
+/// A language server's problem in the editor's terms: its UTF-16
+/// columns as characters of `text`'s lines. Errors and warnings only:
+/// IntelliJ doesn't highlight a server's information and hints.
+pub fn from_server(text: &str, start: (u32, u32), end: (u32, u32), severity: u8, message: &str) -> Option<Problem> {
+    let severity = match severity {
+        1 => Severity::Error,
+        2 => Severity::Warning,
+        _ => return None,
+    };
+    let lines: Vec<&str> = text.split('\n').collect();
+    let pos = |(line, col): (u32, u32)| {
+        let text = lines.get(line as usize).copied().unwrap_or("");
+        let mut units = 0;
+        let chars = text.chars().take_while(|c| {
+            units += c.len_utf16() as u32;
+            units <= col
+        });
+        Pos::new(line, chars.count() as u32)
+    };
+    Some(Problem { start: pos(start), end: pos(end), severity, message: message.to_owned(), origin: Origin::Server, fix: None })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,6 +138,16 @@ pub fn file_key(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_server_problems() {
+        // "😀" is two UTF-16 units, one character.
+        let text = "fun main() {\n    val s = \"😀\" + x\n}";
+        let p = from_server(text, (1, 19), (1, 20), 1, "Unresolved reference 'x'.").unwrap();
+        assert_eq!((p.start, p.end, p.severity, p.origin), (Pos::new(1, 18), Pos::new(1, 19), Severity::Error, Origin::Server));
+        assert_eq!(from_server(text, (1, 8), (1, 9), 2, "unused").map(|p| p.severity), Some(Severity::Warning));
+        assert_eq!(from_server(text, (0, 0), (0, 3), 4, "hint"), None);
+    }
 
     #[test]
     fn store_replaces_a_module() {

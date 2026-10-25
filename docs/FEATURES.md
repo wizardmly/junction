@@ -799,13 +799,16 @@ Linux 实测（Xvfb）：接口 `Shape`（`val label`、`fun area(scale: Double 
 | Rename（Shift+F6）语义化：有语言服务器时，对话框里的代码出现位置改用服务器的 `textDocument/references`（只列这个符号，不再整词匹配同名的其他符号），注释和字符串里的仍由索引给出供勾选；服务器还在索引时最多等 20 秒；没有服务器时照旧按索引整词匹配 | ✅ |
 | Alt+Enter 加入服务器的代码操作：先显示编辑器自己的修复和意图，服务器的 `textDocument/codeAction`（快速修复、重构）返回后追加到列表（原本没有项时直接弹出）；服务器标记的首选修复和 quickfix 排在前面；请求带上服务器发布的该行诊断 | ✅ |
 | 应用：操作自带的编辑、`codeAction/resolve` 后的编辑、或执行其命令时服务器通过 `workspace/applyEdit` 发来的编辑；当前文件作为一次可撤销的编辑（光标随之移动），其他文件写盘后重新加载、重新索引 | ✅ |
-| 服务器诊断显示在编辑器和 Problems 里、补全改用服务器、Inline / Extract Method 等需要对话框的重构、文件创建 / 重命名类的 workspace edit、Code › Optimize Imports 走服务器 | ❌ 未做 |
+| 服务器诊断显示在编辑器和 Problems 里：打开文件时把文本发给该语言的服务器（第一次用时在后台启动），之后每次编辑都同步（`didOpen` / `didChange`）；服务器任何时候发来的 `publishDiagnostics`（索引完成后、保存后的构建检查）都会更新编辑器的波浪线和悬停提示，以及 Problems 的 File 页；只显示错误和警告（信息和提示 IntelliJ 不标），UTF-16 列换算成字符列；服务器为这个文件发布过诊断后，就用它代替 tree-sitter 的语法错误，避免重复。代码：`index::lsp::parse_diagnostics` / `published_diagnostics`、`CodeIndex::server_diagnostics`、`domain::diagnostics::from_server`、`ui/file_editor/problems.rs` 的 `watch_server` | ✅ |
+| 补全改用服务器、Inline / Extract Method 等需要对话框的重构、文件创建 / 重命名类的 workspace edit、Code › Optimize Imports 走服务器、Project Errors 页列出服务器对未打开文件的诊断 | ❌ 未做 |
 
 Kotlin 说明：Junction 默认不常驻 Kotlin 语言服务（省 1–2 GB 内存）；要语义 Rename 和类型相关的快速修复，安装 JetBrains 的 kotlin-lsp（github.com/Kotlin/kotlin-lsp，或 VS Code / Open VSX 上 “Kotlin by JetBrains” 扩展的 server-bundle.json 里给出的 kotlin-server 压缩包）并让 `kotlin-lsp` 或新版的启动器 `intellij-server`（压缩包里的 `bin/intellij-server`，`kotlin-lsp.sh` 已标为弃用）在 PATH 上，或在 Settings 的 Language Servers 里填它的启动命令。kotlin-lsp 先用 Gradle 导入工程（首次约 40 秒，要能下载 Gradle 和插件），导入前只认得当前文件，Rename 和快速修复会不完整；导入失败（如 AGP 插件下载不到）时文件不在任何模块里，没有诊断也没有 Import 修复。
 
 Linux 实测（Xvfb，kotlin-server 263.6379.0）：Kotlin/JVM Gradle 工程里 `val item = Item()`（`demo.a.Item` 和 `demo.b.Item` 两个同名类）上 Alt+Enter，在编辑器自己的 “Import class 'Item'” 之后列出服务器的 “Remove invocation”、“Import class 'Item' → demo.a.Item” / “→ demo.b.Item”、“Extract to local variable”、“Organize imports”，选 demo.b 后文件加上 `import demo.b.Item`；Shift+F6 重命名 `Shop.price` 为 `cost`，对话框列出 3 处（声明、`price(n)`、`Shop().price(3)`），`Other` 里的同名方法 `price()` 及其调用不在其中（整词匹配会列出 5 处），应用后只改这 3 处。
 
 Linux 实测（Xvfb，rust-analyzer 1.97）：Rust 项目里 Shift+F6 重命名函数 `compute`，对话框列出 main.rs 两处和 util.rs 的 `super::compute(x)`，而 util.rs 里另一个函数的同名参数 `compute` 没有列入（整词匹配会列入）；`BTreeMap::new()` 上 Alt+Enter 出现服务器的 “Import `std::collections::BTreeMap`” / “Qualify as …”，回车后文件顶部加上 `use std::collections::BTreeMap;`；`compute(2)` 的 `2` 上出现 “Extract into variable” 等重构，选中后（经 codeAction/resolve）生成 `let x = 2;` 并替换。
+
+Linux 实测（Xvfb，pyright-langserver，2026-10-25）：打开 main.py 后几秒内，`print(greet(42))` 的 `42` 和 `print(undefined_name)` 的 `undefined_name` 出现红色波浪线，Problems 的 File 页列出 “Argument of type "Literal[42]" cannot be assigned to parameter "name" …” 和 “"undefined_name" is not defined” 两项；把 `42` 改成 `"x"` 后第一项的波浪线随即消失。
 
 ## 38. Debugger：Evaluate Expression 对话框与 Breakpoints 对话框（2026-10-16）
 
