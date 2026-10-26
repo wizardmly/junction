@@ -1184,10 +1184,18 @@ impl FileEditor {
     }
 
     /// Code › Optimize Imports (Ctrl+Alt+O) of a Java or Kotlin file, an
-    /// undoable edit, its result in a hint as Android Studio shows it.
+    /// undoable edit, its result in a hint as Android Studio shows it; of
+    /// another language's file, by its language server.
     pub fn optimize_imports(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only() {
+            return;
+        }
         let style = crate::index::lang::Lang::from_path(&self.path).and_then(crate::infra::index_code_model::IndexCodeModel::import_style);
-        let Some(style) = style.filter(|_| !self.read_only()) else { return };
+        let Some(style) = style else {
+            // Other languages: their language server's Organize Imports.
+            self.server_optimize_imports(window, cx);
+            return;
+        };
         let text = self.text(cx);
         let hint = |message: String, window: &mut Window, cx: &mut Context<Self>| Self::hint("Optimize Imports", message, window, cx);
         let Some(edit) = crate::domain::imports::optimize(style, &text) else {

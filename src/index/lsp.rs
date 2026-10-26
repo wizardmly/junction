@@ -162,6 +162,8 @@ pub struct LspClient {
     /// Counts the diagnostics it has published, so a reader can tell
     /// whether anything changed.
     diagnostics_rev: Arc<AtomicU64>,
+    /// The code action kinds it says it offers, when it says.
+    code_action_kinds: Mutex<Option<Vec<String>>>,
 }
 
 /// A problem a server published: 0-based lines and UTF-16 columns.
@@ -216,6 +218,9 @@ pub struct FileEdit {
     pub path: PathBuf,
     pub edits: Vec<TextEdit>,
 }
+
+/// The code action kind of a server's Organize Imports.
+pub const ORGANIZE_IMPORTS: &str = "source.organizeImports";
 
 /// A code action a server offers: a quick fix, a refactoring.
 #[derive(Clone, Debug)]
@@ -348,6 +353,7 @@ impl LspClient {
             applied,
             diagnostics,
             diagnostics_rev,
+            code_action_kinds: Mutex::default(),
         });
         let weak = Arc::downgrade(&client);
         std::thread::Builder::new().name(format!("lsp {program}")).spawn(move || {
@@ -430,7 +436,7 @@ impl LspClient {
 
         let root_uri = path_to_uri(root);
         let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        client.request(
+        let initialized = client.request(
             "initialize",
             json!({
                 "processId": std::process::id(),
@@ -472,6 +478,9 @@ impl LspClient {
             }),
             Duration::from_secs(90),
         )?;
+        if let (Ok(mut kinds), Some(list)) = (client.code_action_kinds.lock(), initialized.pointer("/capabilities/codeActionProvider/codeActionKinds").and_then(Value::as_array)) {
+            *kinds = Some(list.iter().filter_map(Value::as_str).map(str::to_owned).collect());
+        }
         client.notify("initialized", json!({}))?;
         Ok(client)
     }
@@ -626,6 +635,24 @@ impl LspClient {
         let params = json!({ "textDocument": { "uri": uri }, "range": range, "context": { "diagnostics": diagnostics, "triggerKind": 1 } });
         let result = self.request("textDocument/codeAction", params, timeout)?;
         Ok(result.as_array().into_iter().flatten().filter_map(parse_code_action).collect())
+    }
+
+    /// Whether the server offers code actions of this kind; `None` when
+    /// it didn't list its kinds.
+    pub fn offers(&self, kind: &str) -> Option<bool> {
+        let kinds = self.code_action_kinds.lock().ok()?;
+        Some(kinds.as_ref()?.iter().any(|k| k == kind || k.starts_with(&format!("{kind}."))))
+    }
+
+    /// The server's Organize Imports for the whole file (a code action of
+    /// kind `source.organizeImports`); none when it has no such action.
+    pub fn organize_imports(&self, path: &Path, lang: Lang, text: &str, timeout: Duration) -> Result<Option<CodeAction>> {
+        let uri = self.sync(path, lang, text)?;
+        let lines = text.split('\n').count() as u32;
+        let range = json!({ "start": { "line": 0, "character": 0 }, "end": { "line": lines, "character": 0 } });
+        let params = json!({ "textDocument": { "uri": uri }, "range": range, "context": { "diagnostics": [], "only": [ORGANIZE_IMPORTS], "triggerKind": 1 } });
+        let result = self.request("textDocument/codeAction", params, timeout)?;
+        Ok(result.as_array().into_iter().flatten().filter_map(parse_code_action).find(|a| a.kind.as_deref().is_some_and(|k| k == ORGANIZE_IMPORTS || k.starts_with("source.organizeImports."))))
     }
 
     /// The edits of a code action: its own, resolved, or what its command
