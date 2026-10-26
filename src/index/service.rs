@@ -648,6 +648,27 @@ impl CodeIndex {
         })
     }
 
+    /// The language server's Organize Imports for the file: its edits to
+    /// the file, or why there are none.
+    pub fn organize_imports(&self, path: String, text: String, cx: &App) -> Task<Result<Vec<super::lsp::TextEdit>, String>> {
+        let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(Err("No language server for this file".into())) };
+        if ProjectIndex::is_external(&path) || super::lsp::command_for(lang).is_none() {
+            return Task::ready(Err("No language server for this file".into()));
+        }
+        let lsp = self.lsp.clone();
+        cx.background_spawn(async move {
+            let file = root.join(&path);
+            let client = lsp.client_within(lang, &file, Duration::from_secs(10)).ok_or("The language server isn't running")?;
+            if client.offers(super::lsp::ORGANIZE_IMPORTS) == Some(false) {
+                return Err("The language server can't optimize imports".into());
+            }
+            // A server that can offers nothing when the imports are in order.
+            let Some(action) = client.organize_imports(&file, lang, &text, Duration::from_secs(5)).map_err(|e| e.to_string())? else { return Ok(Vec::new()) };
+            let edits = client.code_action_edits(&action).map_err(|e| e.to_string())?;
+            Ok(edits.into_iter().filter(|f| f.path == file).flat_map(|f| f.edits).collect())
+        })
+    }
+
     /// A code action's edits: its own, resolved, or its command's.
     pub fn code_action_edits(&self, path: String, text: String, action: super::lsp::CodeAction, cx: &App) -> Task<Result<Vec<super::lsp::FileEdit>, String>> {
         let (Some(root), Some(lang)) = (self.root.clone(), Self::lang_of(&path, &text)) else { return Task::ready(Err("No language server".into())) };

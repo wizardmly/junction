@@ -454,6 +454,30 @@ impl FileEditor {
         .detach();
     }
 
+    /// Optimize Imports by the file's language server (gopls, the
+    /// TypeScript server…), as one undoable edit, the result in a hint.
+    pub(super) fn server_optimize_imports(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.code_index.clone() else { return };
+        let task = index.read(cx).organize_imports(self.path.clone(), self.text(cx), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let edits = task.await;
+            this.update_in(cx, |this, window, cx| {
+                let edits = match edits {
+                    Ok(edits) => edits,
+                    Err(message) => return Self::hint("Optimize Imports", message, window, cx),
+                };
+                let text = this.text(cx);
+                let caret = this.state.read(cx).cursor();
+                let (new, caret) = apply_text_edits(&text, &edits, caret);
+                let notice = if new == text { "Unused imports not found" } else { "Imports optimized" };
+                this.replace_text(&text, &new, caret, window, cx);
+                Self::hint("Optimize Imports", notice.to_owned(), window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Applies the edits a picked server completion brings once resolved
     /// (an import above the completed word).
     pub(super) fn resolve_completion(&mut self, item: lsp_types::CompletionItem, window: &mut Window, cx: &mut Context<Self>) {
