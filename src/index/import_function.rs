@@ -1,6 +1,7 @@
 //! Alt+Enter › Import function / Import extension function (Kotlin): the
-//! top-level functions of the called name in the project and libraries
-//! that the file doesn't see, as IntelliJ's ImportFix finds them. A plain
+//! top-level functions (and `object` members) of the called name in the
+//! project and libraries that the file doesn't see, as IntelliJ's
+//! ImportFix finds them. A plain
 //! call wants a plain function (or, inside a class, an extension on it);
 //! `x.name()` wants an extension whose receiver fits `x`'s type. Nothing
 //! is offered when the file already sees one, or the name is a member of
@@ -65,9 +66,21 @@ pub fn candidates(index: &ProjectIndex, path: &str, text: &str, offset: usize) -
     let mut sources: HashMap<&str, Option<String>> = HashMap::new();
     let mut found: Vec<(String, Option<String>)> = Vec::new();
     for (file, entry, s) in index.symbols_named(name) {
-        if entry.lang != Lang::Kotlin || s.kind != SymbolKind::Function || s.container.is_some() || file == path {
+        if entry.lang != Lang::Kotlin || !matches!(s.kind, SymbolKind::Function | SymbolKind::Method) || file == path {
             continue;
         }
+        // A top-level function, or a member of an `object` (`import a.Util.greet`).
+        let object = match s.container.as_deref() {
+            None => None,
+            Some(c) => {
+                let (outer, last) = c.rsplit_once('.').map_or((None, c), |(o, l)| (Some(o), l));
+                let is_object = entry.symbols.iter().any(|o| o.name == last && o.detail.as_deref() == Some("object") && o.container.as_deref() == outer);
+                if !is_object || call.member {
+                    continue;
+                }
+                Some(c)
+            }
+        };
         let source = sources.entry(file).or_insert_with(|| {
             let full = if ProjectIndex::is_external(file) { PathBuf::from(file) } else { index.root.join(file) };
             std::fs::read_to_string(full).ok()
@@ -76,6 +89,7 @@ pub fn candidates(index: &ProjectIndex, path: &str, text: &str, offset: usize) -
         let decl = source.lines().skip(s.line as usize).take(4).collect::<Vec<_>>().join(" ");
         let receiver = imf::receiver(&decl, name);
         let fits = match &receiver {
+            _ if object.is_some() => receiver.is_none(),
             None => !call.member,
             // Inside a class, `shout()` may call an extension on it.
             Some(r) => (call.member || !types.is_empty()) && imf::receiver_fits(r, &imf::type_params(&decl), &types),
@@ -84,7 +98,10 @@ pub fn candidates(index: &ProjectIndex, path: &str, text: &str, offset: usize) -
         if !fits || pkg.is_empty() {
             continue;
         }
-        let qualified = format!("{pkg}.{name}");
+        let qualified = match object {
+            Some(object) => format!("{pkg}.{object}.{name}"),
+            None => format!("{pkg}.{name}"),
+        };
         // The file sees it already: the call resolves.
         if imports::is_visible(&qualified, package, &imported, &implicit) {
             return None;
@@ -204,6 +221,7 @@ mod tests {
             ("util/Text.kt", "package com.example.util\n\nfun greet(name: String) = \"hi $name\"\n\nfun String.shout(): String = uppercase()\n\nfun Cart.clear() {}\n"),
             ("other/Text.kt", "package com.example.other\n\nfun greet(n: Int) = n\n"),
             ("app/Cart.kt", "package com.example.app\n\nclass Cart {\n    fun total() = 1\n}\n"),
+            ("util/Log.kt", "package com.example.util\n\nobject Log {\n    fun info(msg: String) {}\n    object Tags {\n        fun tag() = \"t\"\n    }\n}\n\nclass Plain {\n    fun warn() {}\n}\n"),
         ]);
         let main = "package com.example.app\n\nfun main() {\n    greet(\"a\")\n    val s: String = \"x\"\n    s.shout()\n    val cart = Cart()\n    cart.total()\n    cart.clear()\n}\n";
         let at = |s: &str| main.find(s).unwrap() + 1;
@@ -213,6 +231,16 @@ mod tests {
         let got = candidates(&index, "app/Main.kt", main, at("shout")).unwrap();
         assert_eq!((got.title.as_str(), got.qualified.as_slice()), ("Import extension function 'String.shout'", &["com.example.util.shout".to_owned()][..]));
         assert_eq!(candidates(&index, "app/Main.kt", main, at("clear")).map(|f| f.qualified), Some(vec!["com.example.util.clear".to_owned()]));
+        // An object's function; not a class's, nor a call on a receiver.
+        let objects = "package com.example.app\n\nfun main() {\n    info(\"a\")\n    tag()\n    warn()\n    x.info(\"b\")\n}\n";
+        let on = |s: &str| objects.find(s).unwrap() + 1;
+        let got = candidates(&index, "app/Main.kt", objects, on("info")).unwrap();
+        assert_eq!((got.title.as_str(), got.qualified.as_slice()), ("Import function 'info'", &["com.example.util.Log.info".to_owned()][..]));
+        assert_eq!(candidates(&index, "app/Main.kt", objects, on("tag")).map(|f| f.qualified), Some(vec!["com.example.util.Log.Tags.tag".to_owned()]));
+        assert_eq!(candidates(&index, "app/Main.kt", objects, on("warn")), None);
+        assert_eq!(candidates(&index, "app/Main.kt", objects, objects.find("info(\"b").unwrap()), None);
+        let imported = objects.replace("package com.example.app\n", "package com.example.app\n\nimport com.example.util.Log.*\n");
+        assert_eq!(candidates(&index, "app/Main.kt", &imported, imported.find("info").unwrap()), None);
         // A member, and a function the file imports.
         assert_eq!(candidates(&index, "app/Main.kt", main, at("total")), None);
         let imported = main.replace("package com.example.app\n", "package com.example.app\n\nimport com.example.util.*\n");
