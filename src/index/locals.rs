@@ -125,6 +125,14 @@ fn binding_of(node: Node) -> Option<Node> {
     }
 }
 
+/// Whether `node` is in the value a declaration starts with (`let x =
+/// x(1)`: the outer `x`), where the name isn't bound yet.
+fn in_own_value(binding: Node, node: Node) -> bool {
+    ["value", "initializer", "right", "default_value"]
+        .iter()
+        .any(|f| binding.child_by_field_name(f).is_some_and(|v| v.start_byte() <= node.start_byte() && node.end_byte() <= v.end_byte()))
+}
+
 /// The first identifier under a node, skipping modifiers and annotations.
 fn first_ident(node: Node) -> Option<Node> {
     let mut cursor = node.walk();
@@ -249,7 +257,7 @@ pub fn resolve(lang: Lang, text: &str, offset: usize) -> Option<Local> {
         if !(scope.start_byte() <= at.start_byte() && at.end_byte() <= scope.end_byte()) {
             continue;
         }
-        if ident.start_byte() > at.start_byte() && !binds_whole_scope(binding.kind()) {
+        if ident.start_byte() > at.start_byte() && !binds_whole_scope(binding.kind()) || in_own_value(binding, at) {
             continue;
         }
         let better = match best {
@@ -265,12 +273,14 @@ pub fn resolve(lang: Lang, text: &str, offset: usize) -> Option<Local> {
         }
     }
     let (decl, scope) = best?;
+    let own = binding_of(decl);
     let uses = same
         .iter()
         .filter(|n| n.id() != decl.id() && scope.start_byte() <= n.start_byte() && n.end_byte() <= scope.end_byte() && n.start_byte() >= decl.start_byte().min(scope.start_byte()))
         .filter(|n| !is_member_access(text, n.start_byte()))
         // A nearer declaration of the same name shadows this one.
         .filter(|n| binding_of(**n).is_none())
+        .filter(|n| !own.is_some_and(|b| in_own_value(b, **n)))
         .map(|n| n.start_byte())
         .collect();
     let member = matches!(scope.kind(), "class_declaration" | "class_body");
@@ -280,6 +290,15 @@ pub fn resolve(lang: Lang, text: &str, offset: usize) -> Option<Local> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn not_bound_in_its_own_value() {
+        let text = "fn main() {\n    let area = area(3);\n    println!(\"{}\", area);\n}\n";
+        // The call is the function's, not the variable's.
+        assert!(resolve(Lang::Rust, text, text.find("area(").unwrap()).is_none());
+        let local = resolve(Lang::Rust, text, text.find("area =").unwrap()).unwrap();
+        assert_eq!(local.uses, [text.find("area);").unwrap()]);
+    }
 
     #[test]
     fn string_template_uses() {

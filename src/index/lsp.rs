@@ -291,6 +291,50 @@ pub struct CodeAction {
     pub preferred: bool,
 }
 
+/// The refactorings Junction's own shortcuts ask a server for, in files
+/// it doesn't refactor itself (Extract Method, Introduce Variable /
+/// Constant, Inline).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerRefactor {
+    ExtractFunction,
+    ExtractVariable,
+    ExtractConstant,
+    Inline,
+}
+
+impl ServerRefactor {
+    pub fn title(self) -> &'static str {
+        match self {
+            ServerRefactor::ExtractFunction => "Extract Function",
+            ServerRefactor::ExtractVariable => "Introduce Variable",
+            ServerRefactor::ExtractConstant => "Introduce Constant",
+            ServerRefactor::Inline => "Inline",
+        }
+    }
+
+    /// Whether the server's action is this refactoring: by its kind
+    /// (`refactor.extract.function`…), else by its title ("Extract into
+    /// function", "Inline `x`").
+    pub fn matches(self, action: &CodeAction) -> bool {
+        let kind = action.kind.as_deref().unwrap_or("");
+        let title = action.title.to_lowercase();
+        if self == ServerRefactor::Inline {
+            return kind.starts_with("refactor.inline") || title.starts_with("inline");
+        }
+        if !(kind.starts_with("refactor.extract") || (kind.is_empty() && title.starts_with("extract"))) {
+            return false;
+        }
+        let sub = kind.strip_prefix("refactor.extract.").unwrap_or("");
+        let named = |words: &[&str]| words.iter().any(|w| sub == *w || (sub.is_empty() && title.contains(w)));
+        match self {
+            ServerRefactor::ExtractFunction => named(&["function", "method"]),
+            ServerRefactor::ExtractVariable => named(&["variable", "local"]),
+            ServerRefactor::ExtractConstant => named(&["constant"]),
+            ServerRefactor::Inline => false,
+        }
+    }
+}
+
 fn parse_text_edits(value: &Value) -> Vec<TextEdit> {
     value
         .as_array()
@@ -942,6 +986,23 @@ impl LspManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matches_server_refactorings() {
+        let action = |title: &str, kind: Option<&str>| CodeAction { title: title.into(), kind: kind.map(Into::into), edit: None, command: None, raw: Value::Null, preferred: false };
+        // rust-analyzer: plain kinds, told apart by title.
+        assert!(ServerRefactor::ExtractFunction.matches(&action("Extract into function", Some("refactor.extract"))));
+        assert!(!ServerRefactor::ExtractFunction.matches(&action("Extract module to file", Some("refactor.extract"))));
+        assert!(ServerRefactor::ExtractVariable.matches(&action("Extract into variable", Some("refactor.extract"))));
+        assert!(ServerRefactor::ExtractConstant.matches(&action("Extract into constant", Some("refactor.extract"))));
+        assert!(ServerRefactor::Inline.matches(&action("Inline `x`", Some("refactor.inline"))));
+        assert!(!ServerRefactor::Inline.matches(&action("Extract into variable", Some("refactor.extract"))));
+        // gopls: the kind says which.
+        assert!(ServerRefactor::ExtractFunction.matches(&action("Extract function", Some("refactor.extract.function"))));
+        assert!(ServerRefactor::ExtractVariable.matches(&action("Extract variable", Some("refactor.extract.variable"))));
+        assert!(!ServerRefactor::ExtractVariable.matches(&action("Extract all occurrences of len(s)", Some("refactor.extract.variable-all"))));
+        assert!(!ServerRefactor::ExtractFunction.matches(&action("Fix import", Some("quickfix"))));
+    }
 
     #[test]
     fn uris_round_trip() {

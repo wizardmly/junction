@@ -157,6 +157,9 @@ impl FileEditor {
             return;
         }
         let Some(lang) = crate::index::lang::Lang::from_path(&self.path) else { return };
+        if self.jvm_style().is_none() {
+            return self.server_refactor(crate::index::lsp::ServerRefactor::Inline, window, cx);
+        }
         let text = self.text(cx);
         let offset = self.state.read(cx).cursor();
         match crate::index::inline::inline_variable(lang, &text, offset) {
