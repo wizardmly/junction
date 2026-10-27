@@ -1,11 +1,14 @@
 //! Generate's member chooser, as IntelliJ's: the class's properties or
 //! fields with their types, all checked, Select All / Select None; OK
 //! generates with the checked ones. Override / Implement Methods lists
-//! the members under their classes, as IntelliJ's tree.
+//! the members under their classes, as IntelliJ's tree, with its toolbar's
+//! Sort Alphabetically and Show Classes toggles (remembered, as IntelliJ
+//! keeps them: unsorted and grouped at first).
 
+use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui_kit::component::{Icon, Sizable as _, WindowExt as _, button::{Button, ButtonVariants as _}, checkbox::Checkbox, h_flex, v_flex};
+use gpui_kit::component::{Icon, Selectable as _, Sizable as _, WindowExt as _, button::{Button, ButtonVariants as _}, checkbox::Checkbox, h_flex, v_flex};
 use gpui_kit::{
     App, AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
     div, prelude::FluentBuilder as _, px,
@@ -13,6 +16,7 @@ use gpui_kit::{
 
 use crate::domain::generate::Field;
 use crate::theme::ActivePalette as _;
+use crate::ui::common::tool_button;
 use crate::ui::dialogs;
 
 pub struct ChooserView {
@@ -23,20 +27,50 @@ pub struct ChooserView {
     /// Each field's `ty` is its group (a member's class): a heading row
     /// over each group, the rows under it indented.
     grouped: bool,
+    /// The grouped list's toggles: Sort Alphabetically, Show Classes.
+    sorted: bool,
+    show_classes: bool,
+}
+
+thread_local! {
+    /// The toggles as last left, for the next chooser.
+    static TOGGLES: Cell<(bool, bool)> = const { Cell::new((false, true)) };
+}
+
+impl ChooserView {
+    /// The fields in the order shown: by group (when shown), then by name
+    /// when sorted, else as given.
+    fn order(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.fields.len()).collect();
+        if !self.grouped {
+            return order;
+        }
+        let group = |ix: usize| if self.show_classes { self.fields.iter().position(|f| f.ty == self.fields[ix].ty).unwrap_or(ix) } else { 0 };
+        if self.sorted {
+            order.sort_by(|&a, &b| group(a).cmp(&group(b)).then_with(|| self.fields[a].name.to_lowercase().cmp(&self.fields[b].name.to_lowercase())));
+        } else {
+            order.sort_by_key(|&ix| group(ix));
+        }
+        order
+    }
 }
 
 impl Render for ChooserView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let mut list = v_flex().id("generate-fields").max_h(px(280.)).min_h(px(60.)).overflow_y_scroll().p_1().border_1().border_color(palette.border).rounded_md();
-        for (ix, f) in self.fields.iter().enumerate() {
-            if self.grouped && (ix == 0 || self.fields[ix - 1].ty != f.ty) {
+        let headings = self.grouped && self.show_classes;
+        let mut previous: Option<&str> = None;
+        for ix in self.order() {
+            let f = &self.fields[ix];
+            if headings && previous != Some(f.ty.as_str()) {
                 list = list.child(h_flex().gap_1p5().py_0p5().child(Icon::new(crate::ui::as_icons::CLASS).xsmall()).child(div().text_sm().child(f.ty.clone())));
             }
+            previous = Some(f.ty.as_str());
             list = list.child(
                 h_flex()
                     .gap_2()
-                    .when(self.grouped, |el| el.pl_5())
+                    .when(headings, |el| el.pl_5())
                     .child(Checkbox::new(SharedString::from(format!("generate-{ix}"))).checked(self.checked[ix]).on_change(cx.listener(move |this, v: &bool, _, cx| {
                         this.checked[ix] = *v;
                         cx.notify();
@@ -52,8 +86,21 @@ impl Render for ChooserView {
                 cx.notify();
             })));
         }
+        let toolbar = h_flex()
+            .gap_0p5()
+            .child(tool_button("generate-sort", crate::ui::as_icons::SORT_ALPHABETICALLY, "Sort Alphabetically").selected(self.sorted).on_click(cx.listener(|this, _, _, cx| {
+                this.sorted = !this.sorted;
+                TOGGLES.set((this.sorted, this.show_classes));
+                cx.notify();
+            })))
+            .child(tool_button("generate-classes", crate::ui::as_icons::CLASS, "Show Classes").selected(self.show_classes).on_click(cx.listener(|this, _, _, cx| {
+                this.show_classes = !this.show_classes;
+                TOGGLES.set((this.sorted, this.show_classes));
+                cx.notify();
+            })));
         v_flex()
             .gap_2()
+            .when(self.grouped, |el| el.child(toolbar))
             .child(list)
             .when(!self.options.is_empty(), |el| el.child(options))
             .child(
@@ -109,7 +156,8 @@ fn open(
     cx: &mut App,
 ) {
     let checked = vec![all_checked; fields.len()];
-    let view = cx.new(|_| ChooserView { fields, checked, options, grouped });
+    let (sorted, show_classes) = TOGGLES.get();
+    let view = cx.new(|_| ChooserView { fields, checked, options, grouped, sorted, show_classes });
     let on_ok = Rc::new(on_ok);
     window.open_dialog(cx, move |dialog, _, _| {
         let (view_ok, on_ok) = (view.clone(), on_ok.clone());
@@ -123,4 +171,20 @@ fn open(
             true
         })
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sorts_and_groups() {
+        let field = |name: &str, ty: &str| Field { name: name.into(), ty: ty.into(), is_static: false, is_final: false };
+        let fields = vec![field("zeta()", "Shape"), field("area()", "Shape"), field("toString()", "Object"), field("equals(Object)", "Object")];
+        let view = |sorted, show_classes| ChooserView { checked: vec![false; 4], fields: fields.clone(), options: Vec::new(), grouped: true, sorted, show_classes };
+        assert_eq!(view(false, true).order(), [0, 1, 2, 3]);
+        assert_eq!(view(true, true).order(), [1, 0, 3, 2]);
+        assert_eq!(view(true, false).order(), [1, 3, 2, 0]);
+        assert_eq!(view(false, false).order(), [0, 1, 2, 3]);
+    }
 }
