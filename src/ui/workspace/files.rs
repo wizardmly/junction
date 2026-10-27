@@ -306,9 +306,14 @@ impl Workspace {
         use crate::usecase::clean_up_files as usecase;
         let Some(root) = self.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
         let files = crate::infra::project_files::DiskFiles { root, repository: None };
-        let open: Vec<Entity<FileEditor>> = self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).filter(|v| v.read(cx).revision().is_none()).collect();
+        let open: Vec<Entity<FileEditor>> = self.open_editors(cx);
         let mut changed = 0;
-        for path in usecase::targets(&files, items, clean_up) {
+        let mut by_server = Vec::new();
+        for path in usecase::targets(&files, items, clean_up, &server_organizes) {
+            if !usecase::built_in(&path) {
+                by_server.push(path);
+                continue;
+            }
             let indent = crate::infra::editorconfig::indent_for(&files.root, &files.root.join(&path));
             let indent = indent.as_deref();
             if let Some(editor) = open.iter().find(|v| v.read(cx).path() == path) {
@@ -323,8 +328,65 @@ impl Workspace {
                 }
             }
         }
-        window.push_notification(Notification::info(usecase::summary(clean_up, changed)).title(clean_up.title()), cx);
-        self.file_action(crate::ui::file_menus::FileAction::FilesChanged, window, cx);
+        if by_server.is_empty() {
+            window.push_notification(Notification::info(usecase::summary(clean_up, changed)).title(clean_up.title()), cx);
+            self.file_action(crate::ui::file_menus::FileAction::FilesChanged, window, cx);
+            return;
+        }
+        // The other files one by one through their language servers; a
+        // language whose server can't is skipped after its first file.
+        cx.spawn_in(window, async move |this, cx| {
+            let mut skipped: Vec<(crate::index::lang::Lang, String)> = Vec::new();
+            for path in by_server {
+                let Some(lang) = crate::index::lang::Lang::from_path(&path) else { continue };
+                if skipped.iter().any(|(l, _)| *l == lang) {
+                    continue;
+                }
+                let Ok(Some((text, task))) = this.update(cx, |this, cx| {
+                    let text = this.open_editors(cx).iter().find(|v| v.read(cx).path() == path).map(|v| v.read(cx).buffer(cx).0).or_else(|| files.read(&path).ok())?;
+                    Some((text.clone(), this.code_index.read(cx).organize_imports(path.clone(), text, cx)))
+                }) else {
+                    continue;
+                };
+                let edits = match task.await {
+                    Ok(edits) if edits.is_empty() => continue,
+                    Ok(edits) => edits,
+                    Err(message) => {
+                        skipped.push((lang, message));
+                        continue;
+                    }
+                };
+                let (new, _) = crate::ui::file_editor::apply_text_edits(&text, &edits, 0);
+                if new == text {
+                    continue;
+                }
+                // Only onto the text the server saw.
+                let done = this
+                    .update_in(cx, |this, window, cx| match this.open_editors(cx).into_iter().find(|v| v.read(cx).path() == path) {
+                        Some(editor) => {
+                            let (now, saved) = editor.read(cx).buffer(cx);
+                            (now == text).then(|| editor.update(cx, |e, cx| e.mirror(&new, &saved, window, cx))).is_some()
+                        }
+                        None => files.read(&path).ok().as_deref() == Some(text.as_str()) && files.write(&path, &new).is_ok(),
+                    })
+                    .unwrap_or(false);
+                changed += usize::from(done);
+            }
+            this.update_in(cx, |this, window, cx| {
+                window.push_notification(Notification::info(usecase::summary(clean_up, changed)).title(clean_up.title()), cx);
+                for (lang, message) in skipped {
+                    window.push_notification(Notification::warning(format!("{} files skipped: {message}", lang.name())).title(clean_up.title()), cx);
+                }
+                this.file_action(crate::ui::file_menus::FileAction::FilesChanged, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The open editors of both splits, past revisions left out.
+    fn open_editors(&self, cx: &App) -> Vec<Entity<FileEditor>> {
+        self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).filter(|v| v.read(cx).revision().is_none()).collect()
     }
 
     /// Analyze › Inspect Code… on a scope: every open file saved first, the
@@ -992,4 +1054,11 @@ fn lint_plan(root: &std::path::Path, items: &[(String, bool)], cx: &mut gpui_kit
         }
     }
     out
+}
+
+/// Whether Optimize Imports goes to the file's language server: a language
+/// Junction doesn't organize itself, with a server configured.
+fn server_organizes(path: &str) -> bool {
+    use crate::index::lang::Lang;
+    Lang::from_path(path).is_some_and(|lang| !matches!(lang, Lang::Java | Lang::Kotlin) && crate::index::lsp::command_for(lang).is_some())
 }

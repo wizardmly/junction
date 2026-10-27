@@ -8,6 +8,7 @@ mod breakpoints;
 mod coverage;
 mod editing;
 mod fixes;
+pub(crate) use fixes::apply_text_edits;
 mod generate;
 mod templates;
 pub use breakpoints::RunToCursor;

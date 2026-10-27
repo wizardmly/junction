@@ -1019,7 +1019,8 @@ fn clean_up(target: &ProjectTarget, clean_up: crate::usecase::clean_up_files::Cl
     };
     let window_handle = window.window_handle();
     let run = Rc::new(run);
-    dialogs::confirm(clean_up.title(), format!("{verb} the Java and Kotlin files in {what}?"), "Run", move |cx| {
+    let kind = if clean_up == crate::usecase::clean_up_files::CleanUp::OptimizeImports { "source" } else { "Java and Kotlin" };
+    dialogs::confirm(clean_up.title(), format!("{verb} the {kind} files in {what}?"), "Run", move |cx| {
         let run = run.clone();
         cx.defer(move |cx| {
             window_handle.update(cx, |_, window, cx| run(window, cx)).ok();

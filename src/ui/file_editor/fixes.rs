@@ -686,7 +686,7 @@ mod tests {
 
 /// A language server's text edits applied to `text` (0-based lines,
 /// UTF-16 columns), and where `caret` moves with them.
-pub(super) fn apply_text_edits(text: &str, edits: &[crate::index::lsp::TextEdit], caret: usize) -> (String, usize) {
+pub(crate) fn apply_text_edits(text: &str, edits: &[crate::index::lsp::TextEdit], caret: usize) -> (String, usize) {
     let offset = |(line, col): (u32, u32)| -> usize {
         let start: usize = text.split_inclusive('\n').take(line as usize).map(str::len).sum();
         let rest = &text[start.min(text.len())..];
