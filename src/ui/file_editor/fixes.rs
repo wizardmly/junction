@@ -114,11 +114,13 @@ impl FileEditor {
             if let Some((name, classes)) = found {
                 items.push((cursor..cursor, Choice::ImportClass(name, classes)));
             }
-            if style == crate::domain::imports::ImportStyle::Kotlin {
-                let found = index.read().ok().and_then(|index| crate::index::import_function::candidates(&index, &self.path, &text, cursor));
-                if let Some(f) = found {
-                    items.push((cursor..cursor, Choice::ImportFunction(f.title, f.qualified)));
-                }
+            // Import function (Kotlin) or Import static method (Java).
+            let found = index.read().ok().and_then(|index| match style {
+                crate::domain::imports::ImportStyle::Kotlin => crate::index::import_function::candidates(&index, &self.path, &text, cursor),
+                crate::domain::imports::ImportStyle::Java => crate::index::import_function::static_methods(&index, &self.path, &text, cursor),
+            });
+            if let Some(f) = found {
+                items.push((cursor..cursor, Choice::ImportFunction(f.title, f.qualified)));
             }
             for intention in crate::domain::intentions::intentions(style, &text, cursor) {
                 items.push((intention.range.clone(), Choice::Intention(intention)));
@@ -306,9 +308,10 @@ impl FileEditor {
             Choice::Import(qualified) | Choice::ImportMember(qualified) => self.import_class(&qualified, window, cx),
             Choice::ImportFunction(_, functions) if functions.len() == 1 => self.import_class(&functions[0], window, cx),
             Choice::ImportFunction(_, functions) => {
-                // Kotlin's "Imports" chooser, where the popup was.
+                // Kotlin's "Imports" chooser (Java's "Method to Import"), where the popup was.
+                let title = if functions[0].starts_with("static ") { "Method to Import" } else { "Imports" };
                 let items = functions.into_iter().map(|q| (range.clone(), Choice::ImportMember(q))).collect();
-                self.context_actions = Some(ContextActions { items, title: Some("Imports"), selected: 0, at: popup.at, caret: None });
+                self.context_actions = Some(ContextActions { items, title: Some(title), selected: 0, at: popup.at, caret: None });
                 window.focus(&self.context_focus, cx);
             }
             Choice::Override(implement) => self.override_methods(implement, window, cx),
@@ -644,7 +647,7 @@ impl FileEditor {
                 Choice::ImportClass(name, _) => (Some(icons::INTENTION_BULB), format!("Import class '{name}'")),
                 Choice::Import(qualified) => (Some(icons::CLASS), qualified.clone()),
                 Choice::ImportFunction(title, _) => (Some(icons::INTENTION_BULB), title.clone()),
-                Choice::ImportMember(qualified) => (Some(icons::FUNCTION), qualified.clone()),
+                Choice::ImportMember(qualified) => (Some(icons::FUNCTION), qualified.trim_start_matches("static ").to_owned()),
                 Choice::Intention(i) => (Some(icons::INTENTION_BULB), i.title.clone()),
                 Choice::Catalog(fix, _) => (Some(icons::INTENTION_BULB), fix.title.clone()),
                 Choice::Unwrap(i) => (None, i.title.clone()),

@@ -717,20 +717,7 @@ pub fn best_overload(overloads: &[Vec<String>], args: &[String]) -> Option<usize
     if overloads.len() < 2 {
         return None;
     }
-    let takes = |params: &[String]| {
-        let vararg = params.iter().any(|p| p.starts_with("vararg ") || p.contains("..."));
-        let required = params.iter().filter(|p| !p.contains(" = ") && !p.starts_with("vararg ") && !p.contains("...")).count();
-        if args.iter().any(|a| named_argument(a).is_some()) {
-            return args.iter().all(|a| named_argument(a).is_none_or(|n| params.iter().any(|p| p.trim_start_matches("vararg ").split([':', ' ']).next() == Some(n))));
-        }
-        if args.len() < required || (!vararg && args.len() > params.len()) {
-            return false;
-        }
-        args.iter().enumerate().all(|(i, a)| {
-            let p = params.get(i).or_else(|| params.last());
-            p.is_none_or(|p| accepts(parameter_type(p).trim_end_matches("...").trim(), a))
-        })
-    };
+    let takes = |params: &[String]| takes_arguments(params, args);
     let fitting: Vec<usize> = (0..overloads.len()).filter(|&i| takes(&overloads[i])).collect();
     // Of several, the one whose types the variables have exactly (a
     // project class may or may not implement a library interface).
@@ -744,6 +731,24 @@ pub fn best_overload(overloads: &[Vec<String>], args: &[String]) -> Option<usize
         [_, ..] if !args.is_empty() => best,
         _ => None,
     }
+}
+
+/// Whether a declaration with these parameters takes the call's written
+/// arguments: their number (defaults, vararg), Kotlin names, and the types
+/// the literals and variables show.
+pub fn takes_arguments(params: &[String], args: &[String]) -> bool {
+    let vararg = params.iter().any(|p| p.starts_with("vararg ") || p.contains("..."));
+    let required = params.iter().filter(|p| !p.contains(" = ") && !p.starts_with("vararg ") && !p.contains("...")).count();
+    if args.iter().any(|a| named_argument(a).is_some()) {
+        return args.iter().all(|a| named_argument(a).is_none_or(|n| params.iter().any(|p| p.trim_start_matches("vararg ").split([':', ' ']).next() == Some(n))));
+    }
+    if args.len() < required || (!vararg && args.len() > params.len()) {
+        return false;
+    }
+    args.iter().enumerate().all(|(i, a)| {
+        let p = params.get(i).or_else(|| params.last());
+        p.is_none_or(|p| accepts(parameter_type(p).trim_end_matches("...").trim(), a))
+    })
 }
 
 /// `name = value` → `name` (a Kotlin named argument).

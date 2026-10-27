@@ -770,9 +770,12 @@ IntelliJ 的 Show Context Actions（Alt+Enter）在问题修复之外，补上�
 | Specify type explicitly / Specify return type explicitly（Kotlin）：`val p = Point(1, 2)` → `val p: Point = …`、`fun twice(x: Int) = x * 2` → `fun twice(x: Int): Int = …`；只在表达式能看出类型时提供（字面量、构造调用、字符串拼接、比较、算术，复用 Introduce Variable 的推断），`g()` 这种不提供 | ✅ |
 | Add names to call arguments（Kotlin）：调用括号里的位置实参按被调函数的参数名写成 `price = 10.0, count = 3`；声明像 Parameter Info 一样经索引找到（重载按实参选），找到后才加进 Alt+Enter 列表；遇到 vararg、展开 `*`、已具名实参后面的位置实参、Java 方法（Kotlin 不能用具名实参调用）时不提供 | ✅ |
 | Import function 'greet' / Import extension function 'String.shout'（Kotlin）：光标在文件解析不到的调用上（`greet(…)`、`x.shout()`、带尾随 lambda 的 `x.f { }`），从项目和外部库找同名的顶层函数；普通调用找普通函数（在类里时也找接收者是这个类的扩展函数），`x.f()` 找接收者类型和 `x` 的类型或其父类型相符的扩展函数（`T.` / `Any.` 都算，`x` 类型推断不出时不过滤）；文件已经能看到同名函数（同包、已导入、`.*`、Kotlin 默认导入）、名字是接收者或外围类的成员、局部变量或本文件的声明、正在声明的 `fun f(`、`::f` 时不提供；只有一个时直接导入，多个时弹出 Kotlin 的 “Imports” 选择列表。代码：`src/domain/import_function.rs`、`src/index/import_function.rs` | ✅ |
-| 其他需要类型的意图、Java 的 Import static method、`object` 成员函数的导入、自动导入提示（“? java.util.Date? Alt+Enter”）、意图设置页 | ❌ 未做 |
+| Import static method（Java，IntelliJ 的 StaticImportMethodFix）：光标在文件解析不到的无限定调用上（`greet("a")`，不是本文件或父类的方法、局部变量，也没有 `import static` 过），从项目和外部库找同名的 static 方法（public，或同包里的包级可见方法），每个类一个；参数个数和实参类型（字面量、变量声明）对得上的优先，都对不上时全部列出；只有一个时标题是 “Import static method 'com.example.util.Text.greet'”，回车直接加 `import static …;`，多个时标题是 “Import static method...”，回车弹出 “Method to Import” 选择列表；`import static` 按 IntelliJ 默认布局放在普通 import 之后、空一行，彼此按名字排序 | ✅ |
+| 其他需要类型的意图、`object` 成员函数的导入、自动导入提示（“? java.util.Date? Alt+Enter”）、意图设置页 | ❌ 未做 |
 
 Linux 实测（Xvfb，2026-10-24）：`util/Text.kt` 里有 `fun greet(name: String)` 和 `fun String.shout()`，`other/Greet.kt` 里还有一个 `greet`；Main.kt 里 `s.shout()`（`val s: String`）上 Alt+Enter 出现 “Import extension function 'String.shout'”，回车后插入 `import com.example.util.shout`；`greet("a")` 上出现 “Import function 'greet'”，回车弹出 “Imports” 两项，选 `com.example.util.greet` 后插入对应的 import；导入后再按 Alt+Enter 不再提供。
+
+Linux 实测（Xvfb，2026-10-27）：Java 工程 `util/Text.java` 有 `static greet(String)` 和 `static twice(int)`，`util/Nums.java` 有 `static twice(long)`；Main.java 的 `greet("a")` 上 Alt+Enter 出现 “Import static method 'com.example.util.Text.greet'”，回车后在 `import java.util.List;` 下空一行插入 `import static com.example.util.Text.greet;`；`twice()`（没有实参，两个都对不上）回车弹出 “Method to Import” 两项，选 `Text.twice` 后插在上一条 static import 下面。
 
 Linux 实测（Xvfb，`ip` 工程 Main.kt，2026-10-23）：`"total " + cart.total(1.0, 2) + "!"` 上 Alt+Enter → Convert concatenation to template 得到 `"total ${cart.total(1.0, 2)}!"`；`cart.total(10.0, 3)` 括号里 → Add names to call arguments 得到 `cart.total(price = 10.0, count = 3)`（`total` 声明在 Cart.kt）；`val cart = Cart(0.2)` 的 `cart` 上 → Specify type explicitly 得到 `val cart: Cart = Cart(0.2)`。
 

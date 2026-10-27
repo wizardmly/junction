@@ -63,6 +63,22 @@ pub fn import_edit(style: ImportStyle, text: &str, qualified: &str) -> (usize, S
         }
         offset += raw.len();
     }
+    // `static a.B.f`: among the static imports, which IntelliJ's layout
+    // puts last after a blank line.
+    let is_static = |start: usize| text[start..].trim_start().trim_start_matches("import").trim_start().starts_with("static ");
+    if let Some(member) = qualified.strip_prefix("static ") {
+        let statics: Vec<&(usize, usize, &str)> = imports.iter().filter(|(start, _, _)| is_static(*start)).collect();
+        if let Some(&&(_, last_end, _)) = statics.last() {
+            let at = statics.iter().find(|(_, _, name)| *name > member).map_or(last_end, |(start, _, _)| *start);
+            let newline = if at == text.len() && !text.ends_with('\n') { "\n" } else { "" };
+            return (at, format!("{newline}{line}\n"));
+        }
+        if let Some(&(_, last_end, _)) = imports.last() {
+            let newline = if last_end == text.len() && !text.ends_with('\n') { "\n" } else { "" };
+            return (last_end, format!("{newline}\n{line}\n"));
+        }
+    }
+    let imports: Vec<(usize, usize, &str)> = imports.into_iter().filter(|(start, _, _)| !is_static(*start)).collect();
     if let Some(&(_, last_end, _)) = imports.last() {
         // Before the first import sorting after it, else after the last.
         let at = imports.iter().find(|(_, _, name)| *name > qualified).map_or(last_end, |(start, _, _)| *start);
@@ -501,6 +517,24 @@ mod tests {
         let mut out = text.to_owned();
         out.insert_str(at, &add);
         assert_eq!(out, "package a\n\nimport android.view.View\nimport android.widget.TextView\nimport java.io.File\n\nclass A\n");
+    }
+
+    #[test]
+    fn static_imports_go_last() {
+        let edit = |text: &str, q: &str| {
+            let (at, add) = import_edit(ImportStyle::Java, text, q);
+            let mut out = text.to_owned();
+            out.insert_str(at, &add);
+            out
+        };
+        let text = "package a;\n\nimport java.util.List;\n\nclass A {}\n";
+        let one = edit(text, "static a.util.Text.greet");
+        assert_eq!(one, "package a;\n\nimport java.util.List;\n\nimport static a.util.Text.greet;\n\nclass A {}\n");
+        let two = edit(&one, "static a.util.Math.max");
+        assert_eq!(two, "package a;\n\nimport java.util.List;\n\nimport static a.util.Math.max;\nimport static a.util.Text.greet;\n\nclass A {}\n");
+        // A class still goes among the classes.
+        assert_eq!(edit(&one, "java.util.Map"), "package a;\n\nimport java.util.List;\nimport java.util.Map;\n\nimport static a.util.Text.greet;\n\nclass A {}\n");
+        assert_eq!(edit("package a;\n\nclass A {}\n", "static a.B.f"), "package a;\n\nimport static a.B.f;\n\nclass A {}\n");
     }
 
     #[test]
