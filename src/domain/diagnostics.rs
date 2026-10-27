@@ -135,9 +135,42 @@ pub fn file_key(path: &std::path::Path) -> String {
     if cfg!(windows) { s.to_lowercase() } else { s }
 }
 
+/// Two reports of problems by file in one (a build's and the language
+/// servers'), sorted by file; a problem the first already has on the same
+/// line with the same message isn't repeated.
+pub fn merge_files(mut first: Vec<(PathBuf, Vec<Problem>)>, second: &[(PathBuf, Vec<Problem>)]) -> Vec<(PathBuf, Vec<Problem>)> {
+    for (path, problems) in second {
+        let key = file_key(path);
+        match first.iter_mut().find(|(p, _)| file_key(p) == key) {
+            Some((_, existing)) => {
+                let new: Vec<Problem> = problems.iter().filter(|p| !existing.iter().any(|e| e.start.line == p.start.line && e.message == p.message)).cloned().collect();
+                existing.extend(new);
+                existing.sort_by_key(|p| (p.start, p.end));
+            }
+            None => first.push((path.clone(), problems.clone())),
+        }
+    }
+    first.sort_by(|a, b| a.0.cmp(&b.0));
+    first
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merges_reports() {
+        let p = |line, message: &str, origin| Problem { start: Pos::new(line, 0), end: Pos::new(line, 1), severity: Severity::Error, message: message.into(), origin, fix: None };
+        let build = vec![(PathBuf::from("/p/b.kt"), vec![p(3, "Unresolved reference: x", Origin::Compiler)])];
+        let server = vec![
+            (PathBuf::from("/p/b.kt"), vec![p(3, "Unresolved reference: x", Origin::Server), p(1, "Type mismatch", Origin::Server)]),
+            (PathBuf::from("/p/a.kt"), vec![p(0, "Expecting '}'", Origin::Server)]),
+        ];
+        let merged = merge_files(build, &server);
+        assert_eq!(merged.iter().map(|(f, ps)| (f.to_str().unwrap(), ps.len())).collect::<Vec<_>>(), [("/p/a.kt", 1), ("/p/b.kt", 2)]);
+        assert_eq!(merged[1].1[0].message, "Type mismatch");
+        assert_eq!(merged[1].1[1].origin, Origin::Compiler);
+    }
 
     #[test]
     fn reads_server_problems() {

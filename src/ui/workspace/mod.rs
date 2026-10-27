@@ -685,6 +685,12 @@ impl Workspace {
                 }
             }),
             cx.subscribe(&code_index, |_, index, event: &IndexEvent, cx| {
+                // Project Errors lists what the language servers report.
+                if matches!(event, IndexEvent::ServerProblems) {
+                    let problems = index.read(cx).server_problems.clone();
+                    let compile = crate::ui::compile_service::CompileService::global(cx);
+                    compile.update(cx, |c, cx| c.set_server_problems(problems, cx));
+                }
                 if matches!(event, IndexEvent::Changed) {
                     // Sync Project with Gradle Files follows the build files.
                     let index = index.read(cx);
