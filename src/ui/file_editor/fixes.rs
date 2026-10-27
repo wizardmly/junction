@@ -420,7 +420,7 @@ impl FileEditor {
         let text = self.text(cx);
         let title = action.title.clone();
         let task = index.read(cx).code_action_edits(self.path.clone(), text, action, cx);
-        let own = root.join(&self.path);
+        let mut own = root.join(&self.path);
         cx.spawn_in(window, async move |this, cx| {
             let edits = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -428,8 +428,28 @@ impl FileEditor {
                     Ok(edits) => edits,
                     Err(message) => return Self::hint(&title, message, window, cx),
                 };
-                let mut written = Vec::new();
+                let rel = |path: &std::path::Path| path.strip_prefix(&root).ok().map(|r| r.to_string_lossy().replace('\\', "/"));
+                let (mut written, mut moved) = (Vec::new(), Vec::new());
                 for file in edits {
+                    // A file created, renamed or deleted, in its turn.
+                    if let Some(op) = &file.op {
+                        if let Err(error) = crate::index::lsp::apply_file_op(&file.path, op) {
+                            Self::hint(&title, error.to_string(), window, cx);
+                            break;
+                        }
+                        match op {
+                            crate::index::lsp::FileOp::Rename { to, .. } => {
+                                if file.path == own {
+                                    own = to.clone();
+                                }
+                                if let Some(pair) = rel(&file.path).zip(rel(to)) {
+                                    moved.push(pair);
+                                }
+                            }
+                            _ => written.extend(rel(&file.path)),
+                        }
+                        continue;
+                    }
                     if file.path == own {
                         let text = this.text(cx);
                         let caret = this.state.read(cx).cursor();
@@ -438,11 +458,12 @@ impl FileEditor {
                     } else if let Ok(old) = std::fs::read_to_string(&file.path) {
                         let (new, _) = apply_text_edits(&old, &file.edits, 0);
                         if std::fs::write(&file.path, new).is_ok() {
-                            if let Ok(rel) = file.path.strip_prefix(&root) {
-                                written.push(rel.to_string_lossy().replace('\\', "/"));
-                            }
+                            written.extend(rel(&file.path));
                         }
                     }
+                }
+                if !moved.is_empty() {
+                    cx.emit(super::FileEditorEvent::FilesMoved(moved));
                 }
                 if !written.is_empty() {
                     cx.emit(super::FileEditorEvent::FilesWritten(written));

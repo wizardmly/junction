@@ -209,6 +209,9 @@ pub enum FileEditorEvent {
     Saved(String),
     /// Other files written (a language server's code action): reload them.
     FilesWritten(Vec<String>),
+    /// Files a language server's code action renamed (from, to): their
+    /// tabs follow them.
+    FilesMoved(Vec<(String, String)>),
     /// The text was edited (a preview tab becomes a normal one).
     Edited,
     /// The text changed, saved or not: the same file in the other split
