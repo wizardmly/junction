@@ -152,6 +152,57 @@ impl FileEditor {
     }
 
     /// Whether the project or its libraries declare this class.
+    /// Generate › Test…: IntelliJ's Create Test for the class at the
+    /// caret, the test class written to the module's `src/test` root and
+    /// opened.
+    pub(super) fn create_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::create_test::{libraries_in, test_candidate, test_class, test_root, TestLibrary};
+        let Some((lang, style)) = self.jvm_style() else { return };
+        let text = self.text(cx);
+        let caret = self.state.read(cx).cursor();
+        let unit = crate::domain::surround::indent_unit(&text);
+        let Ok(info) = class_at(lang, &text, caret, &unit) else { return };
+        let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(std::path::Path::to_path_buf)).unwrap_or_else(|| self.repository.root().to_path_buf());
+        let kotlin = style == ImportStyle::Kotlin;
+        let Some(tests) = test_root(&self.path, kotlin, |dir| root.join(dir).is_dir()) else {
+            return Self::hint("Create Test", "Cannot find a test source root for this file", window, cx);
+        };
+        let module = self.path.split("src/").next().unwrap_or("").to_owned();
+        let mut build = String::new();
+        for file in ["build.gradle.kts", "build.gradle"] {
+            build.extend(std::fs::read_to_string(root.join(&module).join(file)).ok());
+        }
+        build.extend(std::fs::read_to_string(root.join("gradle/libs.versions.toml")).ok());
+        let mut found = libraries_in(&build);
+        for (library, class) in [(TestLibrary::JUnit4, "org.junit.Test"), (TestLibrary::JUnit5, "org.junit.jupiter.api.Test")] {
+            if !found.contains(&library) && self.has_class(class, cx) {
+                found.push(library);
+            }
+        }
+        found.sort_by_key(|l| TestLibrary::ALL.iter().position(|a| a == l));
+        let methods: Vec<(String, String)> = info.method_ranges.iter().filter_map(|(name, range)| test_candidate(style, &text[range.clone()], name)).collect();
+        let package = crate::domain::debugger::package_of(&text);
+        let extension = if kotlin { "kt" } else { "java" };
+        let this = cx.entity().downgrade();
+        let tests = root.join(&tests);
+        let on_ok = move |request: crate::domain::create_test::TestRequest, file: std::path::PathBuf, window: &mut Window, cx: &mut gpui_kit::App| {
+            let content = test_class(style, &request, &unit);
+            let written = file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&file, &content));
+            this.update(cx, |_, cx| {
+                if let Err(e) = written {
+                    return Self::hint("Create Test", format!("Cannot create {}: {e}", file.display()), window, cx);
+                }
+                let rel = file.strip_prefix(&root).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+                let line = content.lines().position(|l| l.contains(&format!("class {} ", request.class_name))).unwrap_or(0) as u32;
+                cx.emit(super::FileEditorEvent::FilesWritten(vec![rel.clone()]));
+                let target = crate::index::nav::Target { path: rel, line, col: 0, name: request.class_name.clone(), label: "class".into(), container: None };
+                cx.emit(super::FileEditorEvent::Navigate { targets: vec![target], at: None });
+            })
+            .ok();
+        };
+        crate::ui::create_test_dialog::open(&info.name, &package, methods, found, tests, extension, on_ok, window, cx);
+    }
+
     fn has_class(&self, qualified: &str, cx: &mut Context<Self>) -> bool {
         let Some(index) = self.code_index.clone() else { return false };
         let index = index.read(cx).index.clone();
