@@ -185,6 +185,8 @@ enum Reason {
     Binary,
     /// After `=` or Kotlin's `->`.
     Assign,
+    /// A line after one ending with an arithmetic operator: `"a" +`.
+    Operator,
     /// A Kotlin property's `get()` / `set(…)`.
     Accessor,
     /// A Kotlin class header's supertypes after `:`.
@@ -365,6 +367,8 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                             Reason::Binary
                         } else if prev.ends_with('=') && !prev.ends_with("==") || kotlin && prev.ends_with("->") {
                             Reason::Assign
+                        } else if ends_with_operator(prev) {
+                            Reason::Operator
                         } else if kotlin && prev.ends_with(':') && !prev.ends_with("::") || p.reason == Reason::Header && prev.ends_with(',') {
                             Reason::Header
                         } else if flavor == Flavor::Groovy && prev.ends_with(',') && stack.last().is_none_or(|o| o.brace) {
@@ -719,6 +723,21 @@ fn header_paren(before: &str) -> bool {
 /// A `<` / `>` (or `<=` / `>=`) comparing, not a generic's bracket: a
 /// number on either side, or lower-case names (`i<n`, `a.size>0`), never
 /// `List<Int>` or `listOf<String>`.
+/// A line ending with a binary `+ - * / %`, not `++`, `--`, `->`, an
+/// `import a.*` or a comment's end.
+fn ends_with_operator(line: &str) -> bool {
+    let Some(last) = line.chars().last() else { return false };
+    let before = line[..line.len() - 1].chars().last();
+    match last {
+        '+' => before != Some('+'),
+        '-' => before != Some('-'),
+        '*' => !matches!(before, Some('.' | '/')),
+        '/' => before != Some('*') && before != Some('/'),
+        '%' => true,
+        _ => false,
+    }
+}
+
 fn comparison(chars: &[(usize, char)], k: usize, is_code: &dyn Fn(usize) -> bool) -> bool {
     let c = chars[k].1;
     let next = chars.get(k + 1).filter(|(j, _)| is_code(*j)).map(|(_, ch)| *ch);
@@ -877,6 +896,13 @@ mod tests {
     #[test]
     fn blank_lines_and_trailing_spaces() {
         assert_eq!(kt("a()   \n\n\n\n\nb()\n"), "a()\n\n\nb()\n");
+    }
+
+    #[test]
+    fn operator_at_line_end_continues() {
+        let text = "fun f() {\nval s = \"a\" +\n\"b\" +\n\"c\"\ni++\nfoo()\n}";
+        assert_eq!(kt(text), "fun f() {\n    val s = \"a\" +\n        \"b\" +\n        \"c\"\n    i++\n    foo()\n}");
+        assert_eq!(java("class A {\nint n = 1 *\n2;\nint m = 3;\n}"), "class A {\n    int n = 1 *\n            2;\n    int m = 3;\n}");
     }
 
     #[test]
