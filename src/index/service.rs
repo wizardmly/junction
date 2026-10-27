@@ -23,6 +23,8 @@ pub enum IndexEvent {
     Changed,
     /// Only the progress or the language servers' status did.
     Progress,
+    /// The language servers published other problems (`server_problems`).
+    ServerProblems,
 }
 
 pub struct CodeIndex {
@@ -49,6 +51,12 @@ pub struct CodeIndex {
     rescan_libraries: Arc<std::sync::atomic::AtomicBool>,
     _task: Option<Task<()>>,
     _poll: Option<Task<()>>,
+    /// What the language servers report for the project's files, open or
+    /// not, for the Problems window's Project Errors; the revision of
+    /// their diagnostics it was read at, and the read under way.
+    pub server_problems: Vec<(PathBuf, Vec<crate::domain::diagnostics::Problem>)>,
+    server_revision: u64,
+    server_task: Option<Task<()>>,
     /// "N files, M symbols indexed…", counted once per change rather than
     /// on every frame of the status bar.
     counts: std::cell::RefCell<Option<String>>,
@@ -71,7 +79,13 @@ impl CodeIndex {
         let poll = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                if this.update(cx, |this, cx| if !this.lsp.status().is_empty() { cx.emit(IndexEvent::Progress) }).is_err() {
+                let alive = this.update(cx, |this, cx| {
+                    if !this.lsp.status().is_empty() {
+                        cx.emit(IndexEvent::Progress);
+                        this.read_server_problems(cx);
+                    }
+                });
+                if alive.is_err() {
                     break;
                 }
             }
@@ -91,8 +105,49 @@ impl CodeIndex {
             rescan_libraries: Arc::default(),
             _task: None,
             _poll: Some(poll),
+            server_problems: Vec::new(),
+            server_revision: 0,
+            server_task: None,
             counts: Default::default(),
         }
+    }
+
+    /// Reads what the servers published again when it changed: their
+    /// errors and warnings in the project's files, columns counted on the
+    /// text on disk.
+    fn read_server_problems(&mut self, cx: &mut Context<Self>) {
+        let revision = self.lsp.diagnostics_revision();
+        let Some(root) = self.root.clone() else { return };
+        if revision == self.server_revision || self.server_task.is_some() {
+            return;
+        }
+        self.server_revision = revision;
+        let lsp = self.lsp.clone();
+        let read = cx.background_spawn(async move {
+            let mut files: Vec<(PathBuf, Vec<crate::domain::diagnostics::Problem>)> = lsp
+                .all_diagnostics()
+                .into_iter()
+                .filter(|(path, list)| !list.is_empty() && path.starts_with(&root))
+                .filter_map(|(path, list)| {
+                    let text = std::fs::read_to_string(&path).ok()?;
+                    let problems: Vec<_> = list.iter().filter_map(|d| crate::domain::diagnostics::from_server(&text, d.start, d.end, d.severity, &d.message)).collect();
+                    (!problems.is_empty()).then_some((path, problems))
+                })
+                .collect();
+            files.sort_by(|a, b| a.0.cmp(&b.0));
+            files
+        });
+        self.server_task = Some(cx.spawn(async move |this, cx| {
+            let files = read.await;
+            this.update(cx, |this, cx| {
+                this.server_task = None;
+                if this.server_problems != files {
+                    this.server_problems = files;
+                    cx.emit(IndexEvent::ServerProblems);
+                }
+            })
+            .ok();
+        }));
     }
 
     pub fn root(&self) -> Option<&Path> {
@@ -112,6 +167,10 @@ impl CodeIndex {
         self.framework = Arc::default();
         self.resources_stamp = Arc::default();
         self.lsp = Arc::new(LspManager::new(root.clone().unwrap_or_default()));
+        self.server_problems.clear();
+        self.server_revision = 0;
+        self.server_task = None;
+        cx.emit(IndexEvent::ServerProblems);
         self.progress = None;
         self.updating = false;
         self._task = None;

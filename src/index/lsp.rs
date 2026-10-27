@@ -551,6 +551,13 @@ impl LspClient {
         Some(parse_diagnostics(list))
     }
 
+    /// Everything the server has published, by file: open or not (a
+    /// project-wide check after indexing or a save).
+    pub fn all_published(&self) -> Vec<(PathBuf, Vec<ServerDiagnostic>)> {
+        let Ok(all) = self.diagnostics.lock() else { return Vec::new() };
+        all.iter().filter_map(|(uri, list)| Some((uri_to_path(uri)?, parse_diagnostics(list)))).collect()
+    }
+
     fn position_params(&self, path: &Path, lang: Lang, text: &str, line: u32, col: u32) -> Result<Value> {
         let uri = self.sync(path, lang, text)?;
         Ok(json!({ "textDocument": { "uri": uri }, "position": { "line": line, "character": col } }))
@@ -825,6 +832,29 @@ impl LspManager {
             })
             .collect();
         out.sort();
+        out
+    }
+
+    /// Counts what the running servers have published, so a reader can
+    /// tell whether anything changed.
+    pub fn diagnostics_revision(&self) -> u64 {
+        let Ok(slots) = self.slots.lock() else { return 0 };
+        slots.values().map(|s| if let Slot::Running(c) = s { c.diagnostics_revision() } else { 0 }).sum()
+    }
+
+    /// What every running server has published, by file.
+    pub fn all_diagnostics(&self) -> Vec<(PathBuf, Vec<ServerDiagnostic>)> {
+        let clients: Vec<Arc<LspClient>> = match self.slots.lock() {
+            Ok(slots) => slots.values().filter_map(|s| if let Slot::Running(c) = s { Some(c.clone()) } else { None }).collect(),
+            Err(_) => return Vec::new(),
+        };
+        let mut out: Vec<(PathBuf, Vec<ServerDiagnostic>)> = Vec::new();
+        for (path, list) in clients.iter().flat_map(|c| c.all_published()) {
+            match out.iter_mut().find(|(p, _)| *p == path) {
+                Some((_, existing)) => existing.extend(list),
+                None => out.push((path, list)),
+            }
+        }
         out
     }
 

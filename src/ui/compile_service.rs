@@ -29,6 +29,8 @@ pub struct CompileService {
     /// Module directories compiling now, and those saved again meanwhile.
     running: HashSet<PathBuf>,
     again: HashSet<PathBuf>,
+    /// What the language servers report, by file (open or not).
+    server: Vec<(PathBuf, Vec<Problem>)>,
 }
 
 impl EventEmitter<CompileEvent> for CompileService {}
@@ -52,9 +54,15 @@ impl CompileService {
     }
 
     /// The Problems window's Project Errors: every file the last builds and
-    /// compiles reported.
+    /// compiles reported, and those the language servers do.
     pub fn all_problems(&self) -> Vec<(PathBuf, Vec<Problem>)> {
-        self.store.all()
+        crate::domain::diagnostics::merge_files(self.store.all(), &self.server)
+    }
+
+    /// The language servers' problems, replacing what they said before.
+    pub fn set_server_problems(&mut self, problems: Vec<(PathBuf, Vec<Problem>)>, cx: &mut Context<Self>) {
+        self.server = problems;
+        cx.emit(CompileEvent::ProblemsChanged);
     }
 
     /// A build's problems (Make, Run) replace what the last one said under
