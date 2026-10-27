@@ -60,6 +60,7 @@ pub mod password_safe;
 pub mod project_structure;
 pub mod parameter_info;
 pub mod reformat;
+pub mod code_style;
 pub mod xml_reformat;
 pub mod rename;
 pub mod retrace;

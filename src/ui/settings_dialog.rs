@@ -29,6 +29,7 @@ use crate::settings::{Settings, UpdateMethod};
 use crate::theme::ActivePalette as _;
 use crate::ui::accounts_dialog::AccountsView;
 use crate::ui::as_icons as icons;
+use crate::domain::code_style::{LangStyle, StyleLang};
 use crate::ui::keymap;
 use crate::ui::mappings_dialog::MappingsView;
 
@@ -42,6 +43,7 @@ enum Page {
     EditorFont,
     GutterIcons,
     EditorTabs,
+    CodeStyle,
     LiveTemplates,
     Commit,
     Mappings,
@@ -58,7 +60,7 @@ enum Page {
 const TREE: &[(&str, Option<Page>, &[Page])] = &[
     ("Appearance & Behavior", None, &[Page::Appearance, Page::System]),
     ("Keymap", Some(Page::Keymap), &[]),
-    ("Editor", None, &[Page::EditorGeneral, Page::AutoImport, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::LiveTemplates]),
+    ("Editor", None, &[Page::EditorGeneral, Page::AutoImport, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::CodeStyle, Page::LiveTemplates]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
     ("Build, Execution, Deployment", None, &[Page::Gradle, Page::Compiler]),
     ("Languages & Frameworks", Some(Page::Languages), &[Page::AndroidSdk]),
@@ -75,6 +77,7 @@ impl Page {
             Page::EditorFont => "Font",
             Page::GutterIcons => "Gutter Icons",
             Page::EditorTabs => "Editor Tabs",
+            Page::CodeStyle => "Code Style",
             Page::LiveTemplates => "Live Templates",
             Page::Commit => "Commit",
             Page::Mappings => "Directory Mappings",
@@ -106,6 +109,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
+            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "sout", "fori", "iter", "main", "psvm"],
             Page::Commit => &[
                 "Use non-modal commit interface",
@@ -171,6 +175,8 @@ pub struct SettingsView {
     git_path: Entity<InputState>,
     font_size: Entity<InputState>,
     tab_limit: Entity<InputState>,
+    /// Code Style: each language's indent and continuation indent.
+    indents: Vec<(StyleLang, Entity<InputState>, Entity<InputState>)>,
     large_file: Entity<InputState>,
     /// Languages & Frameworks: a server command per language, and what
     /// runs when it is left empty.
@@ -225,6 +231,13 @@ impl SettingsView {
         let fetch_interval = input(initial.fetch_interval_minutes.max(1).to_string(), window, cx);
         let font_size = input(format!("{}", initial.editor_font_size()), window, cx);
         let tab_limit = input(initial.diff.tab_limit.to_string(), window, cx);
+        let indents = StyleLang::ALL
+            .into_iter()
+            .map(|lang| {
+                let style = initial.code_style.get(lang);
+                (lang, input(style.indent.to_string(), window, cx), input(style.continuation.to_string(), window, cx))
+            })
+            .collect();
         let large_file = input(if initial.large_file_mb > 0 { initial.large_file_mb } else { 50 }.to_string(), window, cx);
         let git_path = cx.new(|cx| {
             InputState::new(window, cx)
@@ -309,6 +322,7 @@ impl SettingsView {
             git_path,
             font_size,
             tab_limit,
+            indents,
             large_file,
             servers,
             git_test: None,
@@ -370,6 +384,11 @@ impl SettingsView {
         }
         if let Ok(limit) = self.tab_limit.read(cx).value().trim().parse::<usize>() {
             next.diff.tab_limit = limit.clamp(1, 100);
+        }
+        for (lang, indent, continuation) in &self.indents {
+            let style = next.code_style.get(*lang);
+            let number = |input: &Entity<InputState>, or: usize| input.read(cx).value().trim().parse::<usize>().unwrap_or(or);
+            next.code_style.set(*lang, LangStyle { indent: number(indent, style.indent), continuation: number(continuation, style.continuation), ..style });
         }
         if let Ok(size) = self.font_size.read(cx).value().trim().parse::<f32>() {
             next.editor_font_tenths = (size.clamp(8., 32.) * 10.).round() as u32;
@@ -443,6 +462,7 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.diff.tab_mark_modified = from.diff.tab_mark_modified;
     to.diff.tab_multiple_rows = from.diff.tab_multiple_rows;
     to.diff.tab_limit = from.diff.tab_limit;
+    to.code_style = from.code_style.clone();
     to.diff.optimize_imports_java = from.diff.optimize_imports_java;
     to.diff.optimize_imports_kotlin = from.diff.optimize_imports_kotlin;
     to.project.preview_tab = from.project.preview_tab;
@@ -558,6 +578,7 @@ impl Render for SettingsView {
                 Page::EditorFont => self.editor_font(&query, cx).into_any_element(),
                 Page::GutterIcons => self.gutter_icons(&query, cx).into_any_element(),
                 Page::EditorTabs => self.editor_tabs(&query, cx).into_any_element(),
+                Page::CodeStyle => self.code_style_page(&query, cx).into_any_element(),
                 Page::Commit => self.commit_page(&query, cx).into_any_element(),
                 Page::Mappings => match &self.mappings {
                     Some(view) => view.clone().into_any_element(),
@@ -1132,6 +1153,40 @@ impl SettingsView {
             .child(self.section("Closing Policy", cx))
             .child(self.row("Tab limit:", query, div().w(px(70.)).child(Input::new(&self.tab_limit).small()), cx))
             .child(self.note("Past the limit the least recently used unpinned, unmodified tab closes", cx))
+    }
+
+    /// Editor › Code Style: General's indent detection, and each
+    /// language's Tabs and Indents, what Reformat Code indents with.
+    fn code_style_page(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let d = &self.draft.code_style;
+        let mut page = v_flex()
+            .gap_2()
+            .child(self.section("General", cx))
+            .child(self.check("settings-detect-indents", "Detect and use existing file indents for editing", d.detect_indents, query, |s, v| s.code_style.detect_indents = v, cx))
+            .child(self.note("Reformat keeps a file's own indent unit; .editorconfig's indent wins over both", cx));
+        for (lang, indent, continuation) in &self.indents {
+            let lang = *lang;
+            let entity = cx.entity();
+            page = page
+                .child(self.section(lang.name(), cx))
+                .child(self.found("Use tab character", query, cx).child(
+                    Checkbox::new(SharedString::from(format!("settings-tab-{}", lang.name()))).label("Use tab character").checked(d.get(lang).use_tab).on_change(move |v, _, cx| {
+                        let v = *v;
+                        entity.update(cx, |this, cx| {
+                            this.set(
+                                |s| {
+                                    let style = s.code_style.get(lang);
+                                    s.code_style.set(lang, LangStyle { use_tab: v, ..style })
+                                },
+                                cx,
+                            )
+                        })
+                    }),
+                ))
+                .child(self.row("Indent:", query, div().w(px(70.)).child(Input::new(indent).small()), cx))
+                .child(self.row("Continuation indent:", query, div().w(px(70.)).child(Input::new(continuation).small()), cx));
+        }
+        page
     }
 
     fn editor_font(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {

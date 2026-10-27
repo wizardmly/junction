@@ -6,7 +6,7 @@
 
 use crate::domain::imports::{self, ImportStyle};
 use crate::domain::project_files::ProjectFiles;
-use crate::domain::reformat;
+use crate::domain::reformat::{self, IndentStyle};
 use crate::domain::xml_reformat::{self, XmlKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,19 +64,19 @@ pub fn built_in(path: &str) -> bool {
 }
 
 /// A file's text after the clean-up; `None` when nothing changes.
-/// `indent`: the indent unit `.editorconfig` gives the file.
-pub fn cleaned(path: &str, text: &str, clean_up: CleanUp, indent: Option<&str>) -> Option<String> {
+/// `indents`: what the code style and `.editorconfig` give the file.
+pub fn cleaned(path: &str, text: &str, clean_up: CleanUp, indents: &IndentStyle) -> Option<String> {
     if path.ends_with(".xml") {
-        let new = (clean_up == CleanUp::Reformat).then(|| xml_reformat::reformat_xml_indented(XmlKind::of(path), text, indent))?;
+        let new = (clean_up == CleanUp::Reformat).then(|| xml_reformat::reformat_xml_indented(XmlKind::of(path), text, indents.unit.as_deref()))?;
         return (new != text).then_some(new);
     }
     if path.ends_with(".gradle") {
-        let new = (clean_up == CleanUp::Reformat).then(|| reformat::reformat_groovy(text, None, indent))?;
+        let new = (clean_up == CleanUp::Reformat).then(|| reformat::reformat_groovy(text, None, indents))?;
         return (new != text).then_some(new);
     }
     let style = style_of(path)?;
     let new = match clean_up {
-        CleanUp::Reformat => reformat::reformat_indented(style, text, None, indent),
+        CleanUp::Reformat => reformat::reformat_indented(style, text, None, indents),
         CleanUp::OptimizeImports | CleanUp::CodeCleanup => {
             let edit = imports::optimize(style, text)?;
             format!("{}{}{}", &text[..edit.range.start], edit.text, &text[edit.range.end..])
@@ -122,13 +122,13 @@ mod tests {
         assert_eq!(targets(&files, &[("app".into(), true), ("lib/C.java".into(), false)], CleanUp::OptimizeImports, &|_| false), ["app/src/A.java", "app/src/B.kt", "lib/C.java"]);
         assert_eq!(targets(&files, &[("".into(), true)], CleanUp::OptimizeImports, &|_| false).len(), 4);
         assert_eq!(targets(&files, &[("".into(), true)], CleanUp::Reformat, &|_| false).len(), 6);
-        assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::Reformat, None).as_deref(), Some("<a>\n\n    <b />\n</a>"));
-        assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::OptimizeImports, None), None);
+        assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::Reformat, &IndentStyle::default()).as_deref(), Some("<a>\n\n    <b />\n</a>"));
+        assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::OptimizeImports, &IndentStyle::default()), None);
         let text = "package a;\n\nimport java.util.List;\nimport java.util.Map;\n\nclass A { Map m; }\n";
-        assert_eq!(cleaned("A.java", text, CleanUp::OptimizeImports, None).unwrap(), "package a;\n\nimport java.util.Map;\n\nclass A { Map m; }\n");
-        assert_eq!(cleaned("build.gradle", "android {\nminSdk 24\n}", CleanUp::Reformat, None).as_deref(), Some("android {\n    minSdk 24\n}"));
-        assert!(cleaned("build.gradle", "android {\n    minSdk 24\n}", CleanUp::OptimizeImports, None).is_none());
-        assert_eq!(cleaned("A.java", "class A {\nint x;\n}\n", CleanUp::Reformat, None).unwrap(), "class A {\n    int x;\n}\n");
+        assert_eq!(cleaned("A.java", text, CleanUp::OptimizeImports, &IndentStyle::default()).unwrap(), "package a;\n\nimport java.util.Map;\n\nclass A { Map m; }\n");
+        assert_eq!(cleaned("build.gradle", "android {\nminSdk 24\n}", CleanUp::Reformat, &IndentStyle::default()).as_deref(), Some("android {\n    minSdk 24\n}"));
+        assert!(cleaned("build.gradle", "android {\n    minSdk 24\n}", CleanUp::OptimizeImports, &IndentStyle::default()).is_none());
+        assert_eq!(cleaned("A.java", "class A {\nint x;\n}\n", CleanUp::Reformat, &IndentStyle::default()).unwrap(), "class A {\n    int x;\n}\n");
         assert_eq!(summary(CleanUp::Reformat, 2), "2 files changed");
     }
 

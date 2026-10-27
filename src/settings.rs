@@ -15,6 +15,8 @@ pub enum UpdateMethod {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub dark: bool,
+    /// Editor › Code Style.
+    pub code_style: crate::domain::code_style::CodeStyle,
     /// Appearance › Theme: "Sync with OS" (then `dark` follows the system).
     pub theme_follows_system: bool,
     /// Appearance › "Compact mode": smaller toolbars, stripes and rows.
@@ -393,6 +395,7 @@ impl LogSettings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            code_style: Default::default(),
             dark: true,
             theme_follows_system: false,
             compact: false,
@@ -547,6 +550,9 @@ impl Settings {
             let Some((key, value)) = line.split_once('=') else { continue };
             let (key, value) = (key.trim(), value.trim());
             let flag = value == "true";
+            if settings.code_style.read(key, value) {
+                continue;
+            }
             match key {
                 "theme" => {
                     settings.dark = value != "light";
@@ -716,6 +722,7 @@ impl Settings {
         }
         text.push_str(&format!("diff_context_lines={}\n", self.diff.context_lines));
         text.push_str(&format!("diff_tab_limit={}\n", self.diff.tab_limit));
+        text.push_str(&self.code_style.lines());
         text.push_str(&format!("diff_highlighting_level={}\n", self.diff.highlighting.key()));
         text.push_str(&format!("diff_breadcrumbs={}\n", self.diff.breadcrumbs.key()));
         let [a, d, h] = self.log.columns;

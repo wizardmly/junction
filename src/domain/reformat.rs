@@ -227,36 +227,53 @@ enum Flavor {
     Groovy,
 }
 
-/// The reformatted text. `only`: the 0-based lines to change (a
-/// selection); the others keep their text.
-pub fn reformat(style: ImportStyle, text: &str, only: Option<Range<usize>>) -> String {
-    reformat_indented(style, text, only, None)
+/// What a reformat indents with (Settings › Code Style, `.editorconfig`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndentStyle {
+    /// The indent unit; `None`: the file's own.
+    pub unit: Option<String>,
+    /// The unit for a file without one of its own (4 spaces when `None`).
+    pub fallback: Option<String>,
+    /// The continuation indent and the indent it goes with, in columns:
+    /// a continuation is that many indents (`None`: the language's).
+    pub continuation: Option<(usize, usize)>,
 }
 
-/// `reformat` with the indent unit given (`.editorconfig`'s), else the
-/// file's.
-pub fn reformat_indented(style: ImportStyle, text: &str, only: Option<Range<usize>>, indent: Option<&str>) -> String {
-    reformat_with(if style == ImportStyle::Kotlin { Flavor::Kotlin } else { Flavor::Java }, text, only, indent)
+/// The reformatted text. `only`: the 0-based lines to change (a
+/// selection); the others keep their text.
+#[cfg(test)]
+pub fn reformat(style: ImportStyle, text: &str, only: Option<Range<usize>>) -> String {
+    reformat_indented(style, text, only, &IndentStyle::default())
+}
+
+/// `reformat` with the code style's indents.
+pub fn reformat_indented(style: ImportStyle, text: &str, only: Option<Range<usize>>, indents: &IndentStyle) -> String {
+    reformat_with(if style == ImportStyle::Kotlin { Flavor::Kotlin } else { Flavor::Java }, text, only, indents)
 }
 
 /// A Gradle Groovy script (`build.gradle`, `settings.gradle`) reformatted
-/// with IntelliJ's Groovy defaults; `indent` as in `reformat_indented`.
-pub fn reformat_groovy(text: &str, only: Option<Range<usize>>, indent: Option<&str>) -> String {
-    reformat_with(Flavor::Groovy, text, only, indent)
+/// with IntelliJ's Groovy defaults; `indents` as in `reformat_indented`.
+pub fn reformat_groovy(text: &str, only: Option<Range<usize>>, indents: &IndentStyle) -> String {
+    reformat_with(Flavor::Groovy, text, only, indents)
 }
 
-fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indent: Option<&str>) -> String {
+fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents: &IndentStyle) -> String {
     let kotlin = flavor == Flavor::Kotlin;
     // Kotlin's and Groovy's strings and colons.
     let templates = flavor != Flavor::Java;
     // The project's code style is the file's: its indent unit (4 spaces
     // when it has none yet). Columns count units when it's a tab.
     let lines = scan(text, templates);
-    let unit = indent.map_or_else(|| indent_unit(text, &lines), str::to_owned);
+    let unit = indents.unit.clone().unwrap_or_else(|| indent_unit(text, &lines, indents.fallback.as_deref()));
     let tabs = unit == "\t";
     let step = if tabs { 1 } else { unit.len() };
-    // Kotlin's official style continues by one indent; Java by 8 (two).
-    let cont = if kotlin { step } else { 2 * step };
+    // Kotlin's official style continues by one indent; Java by 8 (two);
+    // the code style's in proportion to the unit.
+    let cont = match indents.continuation {
+        Some((continuation, indent)) if indent > 0 => ((continuation * step) as f32 / indent as f32).round() as usize,
+        _ if kotlin => step,
+        _ => 2 * step,
+    };
     let raw: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(raw.len());
     let mut stack: Vec<Open> = Vec::new();
@@ -363,9 +380,9 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indent:
             };
             if reason != Reason::None {
                 let size = match reason {
-                    _ if !kotlin => 2 * step,
-                    Reason::Binary => 2 * step,
-                    _ => step,
+                    _ if !kotlin => cont,
+                    Reason::Binary => 2 * cont,
+                    _ => cont,
                 };
                 // Under a continuation of the same statement: a sibling
                 // (another `.call`, `&& b`) lines up with it; anything else
@@ -402,7 +419,7 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indent:
             let lead_out = line_out.len() - line_out.trim_start().len();
             // An unselected line keeps its indent: its brackets go by it.
             let at = if selected { indent } else { lead_out };
-            let base = if header { at.saturating_sub(step * if kotlin { 1 } else { 2 }) } else { at };
+            let base = if header { at.saturating_sub(cont) } else { at };
             let align = (flavor == Flavor::Java && !tabs).then(|| declaration_paren(&line_out)).flatten();
             apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, &line_out);
         } else {
@@ -430,7 +447,7 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indent:
 /// The file's indent unit: a tab, else 4 spaces unless the code's indents
 /// are mostly not multiples of 4 (a 2-space file); comments' ` * ` don't
 /// count.
-fn indent_unit(text: &str, lines: &[Line]) -> String {
+fn indent_unit(text: &str, lines: &[Line], fallback: Option<&str>) -> String {
     // Code lines only: not a string's or a comment's.
     let code: Vec<&str> = text.split('\n').zip(lines).filter(|(_, l)| l.starts_in == Some(State::Code)).map(|(t, _)| t).collect();
     if code.iter().any(|l| l.starts_with('\t')) {
@@ -446,7 +463,7 @@ fn indent_unit(text: &str, lines: &[Line]) -> String {
     // columns; a messy file has those too, and gets IntelliJ's 4.
     let odd_twos = indents.iter().filter(|n| *n % 4 == 2).count();
     let odd = indents.iter().filter(|n| *n % 2 == 1).count();
-    if !indents.is_empty() && odd_twos * 5 >= indents.len() && odd * 20 <= indents.len() { "  ".into() } else { "    ".into() }
+    if !indents.is_empty() && odd_twos * 5 >= indents.len() && odd * 20 <= indents.len() { "  ".into() } else { fallback.unwrap_or("    ").into() }
 }
 
 /// Java aligns a declaration's parameters under the first one: the column
@@ -811,12 +828,12 @@ mod tests {
     fn gradle_groovy() {
         let text = "plugins {\nid 'com.android.application'\n}\nandroid {\ncompileSdk=34\ndefaultConfig{\nminSdk 24\nversionName \"${major}.0\"\n}\n}\ndependencies {\nimplementation fileTree(dir:'libs',include:['*.jar'])\nimplementation 'a:b:1'\n}\ntask clean(type:Delete){\ndelete rootProject.buildDir\n}\ndef v = a ? 'x' :'y'";
         assert_eq!(
-            reformat_groovy(text, None, None),
+            reformat_groovy(text, None, &IndentStyle::default()),
             "plugins {\n    id 'com.android.application'\n}\nandroid {\n    compileSdk = 34\n    defaultConfig {\n        minSdk 24\n        versionName \"${major}.0\"\n    }\n}\ndependencies {\n    implementation fileTree(dir: 'libs', include: ['*.jar'])\n    implementation 'a:b:1'\n}\ntask clean(type: Delete) {\n    delete rootProject.buildDir\n}\ndef v = a ? 'x' : 'y'"
         );
-        assert_eq!(reformat_groovy("release {\nproguardFiles a,\n'b',\n'c'\nminify true\n}", None, None), "release {\n    proguardFiles a,\n            'b',\n            'c'\n    minify true\n}");
+        assert_eq!(reformat_groovy("release {\nproguardFiles a,\n'b',\n'c'\nminify true\n}", None, &IndentStyle::default()), "release {\n    proguardFiles a,\n            'b',\n            'c'\n    minify true\n}");
         // Java's continuation for an argument list.
-        assert_eq!(reformat_groovy("foo(\na,\nb)", None, None), "foo(\n        a,\n        b)");
+        assert_eq!(reformat_groovy("foo(\na,\nb)", None, &IndentStyle::default()), "foo(\n        a,\n        b)");
     }
 
     #[test]
@@ -873,8 +890,11 @@ mod tests {
 
     #[test]
     fn editorconfig_indent() {
-        assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\nval a = 1\n}", None, Some("\t")), "fun f() {\n\tval a = 1\n}");
-        assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\n    val a = 1\n}", None, Some("  ")), "fun f() {\n  val a = 1\n}");
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\nval a = 1\n}", None, &IndentStyle { unit: Some("\t".into()), ..Default::default() }), "fun f() {\n\tval a = 1\n}");
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\n    val a = 1\n}", None, &IndentStyle { unit: Some("  ".into()), ..Default::default() }), "fun f() {\n  val a = 1\n}");
+        // The code style's: Kotlin continuing by 8, a new file's unit 2.
+        let style = IndentStyle { unit: None, fallback: Some("  ".into()), continuation: Some((8, 4)) };
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\nval a =\n1\n}", None, &style), "fun f() {\n  val a =\n      1\n}");
     }
 
     #[test]
