@@ -725,7 +725,8 @@ IntelliJ 的 Code › Reformat Code（Ctrl+Alt+L，macOS ⌘⌥L），Kotlin / J
 | 行尾是 `+` `-` `*` `/` `%` 的下一行按续行缩进（2026-10-27；Kotlin 续一级、Java 8），之后并列的行对齐（`"a" +` / `"b" +` / `"c"`）；`i++`、`--`、`->`、`import a.*` 不算。nowinandroid 310 个 Kotlin 文件对照：与原文不同的行从 268 降到 209，运算符后的行全部与原文一致 | ✅ |
 | Kotlin 右边界 120 换行（2026-10-27，按 IntelliJ 源码 `KotlinOfficialStyleGuide`：CALL_PARAMETERS_WRAP / METHOD_PARAMETERS_WRAP 为 chop down if long，`(` 后和 `)` 前换行，不加尾逗号；METHOD_CALL_CHAIN_WRAP 为 wrap if long）：一行超过 120 列时，最外层的、最后一项超出边界的实参 / 形参列表逐项一行（缩进一级），拆出的行仍超长就继续拆里层；声明的参数没超出但返回类型超出时拆参数；都不行时在边界内最后一个链式调用 `.call(` 前换行（续一级）；长字符串、`if (` 等条件不拆；Java / Groovy 按 IntelliJ 默认不换行。nowinandroid 310 个文件：53 行超长里拆了 4 行，结果与 IntelliJ 一致；再格式化一遍不变 | ✅ |
 | 注解的使用处目标 `@get:Rule`、`@field:JvmField`、`@file:JvmName` 冒号两边不加空格；声明的类型参数 `fun <reified T>`、`class <T>` 的 `<` 不当比较符加空格（2026-10-27，nowinandroid 回归时发现的旧问题） | ✅ |
-| 换行的其他情况（表达式体 `=` 后、赋值、父类列表的 wrap if long）、Rearrange code（Kotlin / Java）、Do not keep line breaks、代码风格设置页的其他页签（Spaces、Wrapping、Blank Lines、Imports）（`.editorconfig` 里的其他属性如 max_line_length 不读） | ❌ 未做 |
+| Kotlin 超长行在 `=` 后换行（2026-10-27，ASSIGNMENT_WRAP、WRAP_EXPRESSION_BODY_FUNCTIONS 为 wrap if long）：列表和链式调用都拆不了时，表达式体函数和属性的值移到下一行（缩进一级），只在移过去能放下时才换（单个长字符串不动）。nowinandroid 里 `override fun getSearchContentsCount(): Flow<Int> = combine(…) { … }` 换成两行，其余不变，再格式化一遍不变 | ✅ |
+| 换行的其他情况（父类列表的 wrap if long、值移过去仍超长时）、Rearrange code（Kotlin / Java）、Do not keep line breaks、代码风格设置页的其他页签（Spaces、Wrapping、Blank Lines、Imports）（`.editorconfig` 里的其他属性如 max_line_length 不读） | ❌ 未做 |
 
 Gradle Groovy 的 Linux 实测（Xvfb，2026-10-27）：缩进混乱的 `build.gradle`（`compileSdk=34`、`defaultConfig{`、`fileTree(dir:'libs',include:['*.jar'])`、`proguardFiles getDefaultProguardFile(…),` 换行 `'proguard-rules.pro'`）按 Ctrl+Alt+L 后各块按括号缩进（该文件的缩进多为 2 / 6 列，按文件的 2 空格），`compileSdk = 34`、`defaultConfig {`、`fileTree(dir: 'libs', include: ['*.jar'])`，`'proguard-rules.pro'` 在 `proguardFiles` 下续一级，提示 “Formatted 13 lines”。
 

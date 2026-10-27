@@ -577,9 +577,44 @@ fn chain_break(line: &str, info: &Line, unit: &str) -> Option<Vec<String>> {
             _ => {}
         }
     }
-    let cut = cut?;
+    let Some(cut) = cut else { return assignment_break(line, info, unit) };
     let indent = &line[..lead];
     Some(vec![line[..cut].trim_end().to_owned(), format!("{indent}{unit}{}", &line[cut..])])
+}
+
+/// ASSIGNMENT_WRAP and WRAP_EXPRESSION_BODY_FUNCTIONS "wrap if long": the
+/// line broken after its first `=` outside brackets, the value an indent
+/// deeper, when the value then fits.
+fn assignment_break(line: &str, info: &Line, unit: &str) -> Option<Vec<String>> {
+    let lead = line.len() - line.trim_start().len();
+    let bytes = line.as_bytes();
+    let mut depth = 0usize;
+    for (i, c) in line.char_indices().skip_while(|(i, _)| *i < lead) {
+        if !info.code.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '=' if depth == 0 => {
+                let before = if i > 0 { bytes[i - 1] } else { b' ' };
+                let after = bytes.get(i + 1).copied().unwrap_or(b' ');
+                // `==`, `!=`, `<=`, `>=`, `=>`, `+=` and the like stay.
+                if matches!(before, b'=' | b'!' | b'<' | b'>' | b'+' | b'-' | b'*' | b'/' | b'%') || matches!(after, b'=' | b'>') {
+                    return None;
+                }
+                let value = line[i + 1..].trim();
+                let wrapped = format!("{}{unit}{value}", &line[..lead]);
+                // Only where it helps: a long string stays on its line.
+                if value.is_empty() || width(&wrapped) > RIGHT_MARGIN {
+                    return None;
+                }
+                return Some(vec![line[..=i].to_owned(), wrapped]);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The line's first `(` and its `)`, when they pair on the line.
@@ -1081,6 +1116,10 @@ mod tests {
         let chain = format!("fun f() {{\ncomposeTestRule.onNodeWithText(getString(R.string.{})).assertIsSelected()\n}}", "a".repeat(60));
         assert_eq!(kt(&chain), format!("fun f() {{\n    composeTestRule.onNodeWithText(getString(R.string.{}))\n        .assertIsSelected()\n}}", "a".repeat(60)));
         assert_eq!(kt(&kt(&chain)), kt(&chain));
+        // Else after `=`: an expression body, a property's value.
+        let body = format!("fun f(): Flow<Int> = combine(topics, news) {{ topics, news -> topics.size + news.size + {} }}", "n".repeat(40));
+        assert_eq!(kt(&body), format!("fun f(): Flow<Int> =\n    combine(topics, news) {{ topics, news -> topics.size + news.size + {} }}", "n".repeat(40)));
+        assert_eq!(kt(&kt(&body)), kt(&body));
         // A long string or a condition isn't a list to chop; Java never chops.
         let string = format!("val s = \"{}\"", "y".repeat(130));
         assert_eq!(kt(&string), string);
