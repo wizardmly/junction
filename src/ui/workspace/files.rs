@@ -314,8 +314,8 @@ impl Workspace {
                 by_server.push(path);
                 continue;
             }
-            let indent = crate::infra::editorconfig::indent_for(&files.root, &files.root.join(&path));
-            let indent = indent.as_deref();
+            let editorconfig = crate::infra::editorconfig::indent_for(&files.root, &files.root.join(&path));
+            let indent = &crate::domain::code_style::StyleLang::of_path(&path).map(|l| crate::settings::Settings::get(cx).code_style.indents(l, editorconfig)).unwrap_or_default();
             if let Some(editor) = open.iter().find(|v| v.read(cx).path() == path) {
                 let (text, saved) = editor.read(cx).buffer(cx);
                 if let Some(new) = usecase::cleaned(&path, &text, clean_up, indent) {
