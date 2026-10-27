@@ -152,6 +152,11 @@ impl Workspace {
                     editor.update(cx, |e, cx| e.reformat_file(window, cx));
                 }
             })),
+            ("Rearrange Code", "", op(|this, window, cx| {
+                if let Some(editor) = this.editor().cloned() {
+                    editor.update(cx, |e, cx| e.rearrange_code(window, cx));
+                }
+            })),
             ("Introduce Variable…", "Ctrl+Alt+V", op(|this, window, cx| {
                 if let Some(editor) = this.editor().cloned() {
                     editor.update(cx, |e, cx| e.introduce(crate::ui::introduce_dialog::Introduce::Variable, window, cx));

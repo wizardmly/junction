@@ -68,6 +68,7 @@ actions!(
         OptimizeImports,
         ReformatCode,
         ReformatFile,
+        RearrangeCode,
         ParameterInfo,
         IntroduceVariable,
         IntroduceConstant,
@@ -1261,6 +1262,37 @@ impl FileEditor {
             window,
             cx,
         );
+    }
+
+    /// Code › Rearrange Code: a Java file's members in IntelliJ's default
+    /// arrangement, as one undoable edit, without reformatting.
+    pub fn rearrange_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only() || !self.path.ends_with(".java") {
+            return;
+        }
+        let text = self.text(cx);
+        let new = crate::domain::rearrange::rearrange_java(&text);
+        if new == text {
+            return Self::hint("Rearrange Code", "Nothing to rearrange", window, cx);
+        }
+        let prefix = text.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+        let suffix = text.bytes().rev().zip(new.bytes().rev()).take_while(|(a, b)| a == b).count().min(text.len().min(new.len()) - prefix);
+        let (mut start, mut old_end) = (prefix, text.len() - suffix);
+        while !text.is_char_boundary(start) || !new.is_char_boundary(start) {
+            start -= 1;
+        }
+        while !text.is_char_boundary(old_end) {
+            old_end += 1;
+        }
+        let new_end = new.len() - (text.len() - old_end);
+        let replacement = new[start..new_end].to_owned();
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(start..old_end, cx);
+            state.replace(replacement, window, cx);
+            state.set_selected_range(start..start, cx);
+        });
+        cx.notify();
+        Self::hint("Rearrange Code", "Rearranged code", window, cx);
     }
 
     fn run_reformat(&mut self, options: crate::ui::reformat_dialog::ReformatOptions, window: &mut Window, cx: &mut Context<Self>) {
@@ -2950,6 +2982,7 @@ impl Render for FileEditor {
         let palette = cx.palette().clone();
         let dirty = self.is_dirty(cx);
         let read_only = self.read_only();
+        let not_java = !self.path.ends_with(".java");
         let title = match &self.revision {
             Some(rev) => format!("{} ({})", self.path, &rev[..rev.len().min(8)]),
             None => self.library_title(cx).unwrap_or_else(|| self.path.clone()),
@@ -3067,6 +3100,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::optimize_imports_action))
             .on_action(cx.listener(|this, _: &ReformatCode, window, cx| this.reformat_code(window, cx)))
             .on_action(cx.listener(|this, _: &ReformatFile, window, cx| this.reformat_file(window, cx)))
+            .on_action(cx.listener(|this, _: &RearrangeCode, window, cx| this.rearrange_code(window, cx)))
             .on_action(cx.listener(Self::introduce_variable_action))
             .on_action(cx.listener(Self::introduce_constant_action))
             .on_action(cx.listener(Self::extract_method_action))
@@ -3225,6 +3259,7 @@ impl Render for FileEditor {
                                 .menu_with_disabled("Unwrap/Remove…", read_only, Box::new(editing::UnwrapRemove))
                                 .menu_with_disabled("Reformat Code", read_only, Box::new(ReformatCode))
                                 .menu_with_disabled("Reformat File…", read_only, Box::new(ReformatFile))
+                                .menu_with_disabled("Rearrange Code", read_only || not_java, Box::new(RearrangeCode))
                                 .submenu(
                                     "Refactor",
                                     NativeMenu::new()
