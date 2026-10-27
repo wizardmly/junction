@@ -361,7 +361,7 @@ impl FileEditor {
                         }
                     }
                     // One declaration needs no choosing.
-                    let best = if overloads.len() == 1 { 0 } else { pi::best_overload(&overloads, &pi::arguments(&text, call.open))? };
+                    let best = if overloads.len() == 1 { 0 } else { pi::best_overload(&overloads, &pi::typed_arguments(&text, call.open, true))? };
                     crate::index::intentions::add_argument_names(&text, call.open, &overloads[best])
                 })
                 .await;

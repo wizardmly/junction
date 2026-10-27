@@ -166,7 +166,7 @@ impl FileEditor {
         let at = state.range_to_bounds(&(info.open..info.open))?;
         let palette = cx.palette().clone();
         // The overload the written arguments pick, highlighted.
-        let best = pi::best_overload(&info.overloads, &pi::arguments(&text, info.open));
+        let best = pi::best_overload(&info.overloads, &pi::typed_arguments(&text, info.open, info.kotlin));
         let mut rows = v_flex().gap_0p5();
         for (ix, params) in info.overloads.iter().enumerate() {
             let fits = pi::fits(params, &call);

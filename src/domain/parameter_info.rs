@@ -543,6 +543,120 @@ pub fn arguments(text: &str, open: usize) -> Vec<String> {
     args
 }
 
+/// Marks an argument rewritten to its declared type (`\u{1}String`).
+const TYPED: char = '\u{1}';
+
+/// `arguments`, with a bare variable replaced by what its nearest
+/// declaration before the call says it is: its declared type, or the
+/// literal it's initialized with (`val n = 3` → `3`), or the class it's
+/// constructed from (`val p = Point(…)`); anything else stays as written.
+pub fn typed_arguments(text: &str, open: usize, kotlin: bool) -> Vec<String> {
+    let before = &text[..open.min(text.len())];
+    arguments(text, open)
+        .into_iter()
+        .map(|arg| {
+            let is_name = arg.starts_with(|c: char| c.is_alphabetic() || c == '_') && arg.chars().all(|c| c.is_alphanumeric() || c == '_');
+            if !is_name || matches!(arg.as_str(), "true" | "false" | "null" | "this") {
+                return arg;
+            }
+            declared_type(before, &arg, kotlin).unwrap_or(arg)
+        })
+        .collect()
+}
+
+/// The last declaration of `name` in `text`: a `TYPED` type, or a literal.
+fn declared_type(text: &str, name: &str, kotlin: bool) -> Option<String> {
+    let name = regex::escape(name);
+    let pattern = if kotlin {
+        // `val name = value`, or `val name: Type` and a parameter `name: Type`.
+        format!(r"\b(?:val|var)\s+{name}\s*=\s*([^\s;]+)|\b{name}\s*:\s*([A-Za-z_][\w.]*(?:<[^=\n;]*?>)?\??)")
+    } else {
+        format!(r"(?:^|[^\w.])((?:[A-Za-z_][\w.]*(?:<[^;=()]*?>)?)(?:\[\])*)\s+{name}\s*([=;,)])")
+    };
+    let re = regex::Regex::new(&pattern).ok()?;
+    let caps = re.captures_iter(text).last()?;
+    if kotlin {
+        return match (caps.get(1), caps.get(2)) {
+            (_, Some(ty)) => Some(format!("{TYPED}{}", ty.as_str())),
+            (Some(value), _) => value_type(value.as_str()),
+            _ => None,
+        };
+    }
+    let ty = caps.get(1)?.as_str();
+    if matches!(ty, "return" | "new" | "throw" | "else" | "case" | "instanceof" | "yield") {
+        return None;
+    }
+    // `var x = …`: the value's.
+    if ty == "var" {
+        let rest = &text[caps.get(0)?.end()..];
+        return value_type(rest.split([';', '\n']).next()?.trim().trim_start_matches("new "));
+    }
+    Some(format!("{TYPED}{ty}"))
+}
+
+/// What an initializer shows of its type: a literal as is, `Foo(`'s class.
+fn value_type(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.starts_with(['"', '\'']) || value.starts_with(|c: char| c.is_ascii_digit()) || matches!(value, "true" | "false") {
+        let end = value.find([',', ')', ';']).unwrap_or(value.len());
+        return Some(value[..end].trim().to_owned());
+    }
+    let class = value.split(['(', '<']).next()?;
+    let simple = class.rsplit('.').next()?;
+    (value.len() > class.len() && simple.starts_with(|c: char| c.is_uppercase()) && simple.chars().all(|c| c.is_alphanumeric() || c == '_')).then(|| format!("{TYPED}{class}"))
+}
+
+/// Whether a value of a declared type can go to a parameter of this type,
+/// as far as names show: the same type (boxed or not), a Java primitive
+/// widening, a supertype of every String or number; a class of the
+/// project may be a subtype of any other.
+fn accepts_type(ty: &str, arg: &str) -> bool {
+    let base = |t: &str| {
+        let t = t.trim().trim_end_matches('?');
+        let t = t.split('<').next().unwrap_or(t);
+        t.rsplit('.').next().unwrap_or(t).trim().to_owned()
+    };
+    let (param, value) = (base(ty), base(arg));
+    if param.is_empty() || value.is_empty() || matches!(param.as_str(), "Any" | "Object") {
+        return true;
+    }
+    if ty.contains("[]") != arg.contains("[]") {
+        return false;
+    }
+    let primitive = |t: &str| -> Option<&'static str> {
+        Some(match t {
+            "int" | "Int" | "Integer" => "int",
+            "long" | "Long" => "long",
+            "short" | "Short" => "short",
+            "byte" | "Byte" => "byte",
+            "char" | "Char" | "Character" => "char",
+            "boolean" | "Boolean" => "boolean",
+            "float" | "Float" => "float",
+            "double" | "Double" => "double",
+            "String" => "String",
+            _ => return None,
+        })
+    };
+    match (primitive(&param), primitive(&value)) {
+        (Some(p), Some(v)) if p == v => true,
+        (Some(p), Some(v)) => {
+            // Java widens a primitive to a wider one (not a boxed type, nor in Kotlin).
+            let order = ["byte", "short", "int", "long", "float", "double"];
+            let rank = |t: &str| order.iter().position(|o| *o == t);
+            let java_primitive = param.chars().next().is_some_and(|c| c.is_ascii_lowercase());
+            java_primitive && (rank(p).zip(rank(v)).is_some_and(|(p, v)| v < p) || (v == "char" && rank(p).is_some_and(|p| p >= 2)))
+        }
+        (None, Some(v)) => match param.as_str() {
+            "Any" | "Object" | "Comparable" | "Serializable" => true,
+            "CharSequence" => v == "String",
+            "Number" => !matches!(v, "String" | "char" | "boolean"),
+            _ => false,
+        },
+        (Some(_), None) => false,
+        (None, None) => true,
+    }
+}
+
 /// Whether an argument as written can go to a parameter of this type, as
 /// far as a literal shows (anything else may).
 fn accepts(ty: &str, arg: &str) -> bool {
@@ -553,6 +667,9 @@ fn accepts(ty: &str, arg: &str) -> bool {
         return true;
     }
     let arg = arg.trim();
+    if let Some(declared) = arg.strip_prefix(TYPED) {
+        return accepts_type(ty, declared);
+    }
     let numeric = |kinds: &[&str]| kinds.contains(&base);
     if arg == "null" {
         return ty.ends_with('?') || !matches!(base, "int" | "long" | "short" | "byte" | "char" | "boolean" | "float" | "double" | "Int" | "Long" | "Short" | "Byte" | "Char" | "Boolean" | "Float" | "Double");
@@ -615,9 +732,16 @@ pub fn best_overload(overloads: &[Vec<String>], args: &[String]) -> Option<usize
         })
     };
     let fitting: Vec<usize> = (0..overloads.len()).filter(|&i| takes(&overloads[i])).collect();
+    // Of several, the one whose types the variables have exactly (a
+    // project class may or may not implement a library interface).
+    let exact = |params: &[String]| {
+        let simple = |t: &str| t.trim().trim_end_matches('?').split('<').next().unwrap_or("").rsplit('.').next().unwrap_or("").to_owned();
+        args.iter().zip(params).filter(|(a, p)| a.strip_prefix(TYPED).is_some_and(|t| simple(t) == simple(parameter_type(p)))).count()
+    };
+    let best = fitting.iter().copied().rev().max_by_key(|&i| exact(&overloads[i]));
     match fitting.as_slice() {
         [one] => Some(*one),
-        [first, ..] if !args.is_empty() => Some(*first),
+        [_, ..] if !args.is_empty() => best,
         _ => None,
     }
 }
@@ -728,6 +852,24 @@ mod tests {
         let kt: Vec<Vec<String>> = vec![vec!["a: Int".into()], vec!["b: String = \"\"".into(), "c: Boolean".into()]];
         assert_eq!(best_overload(&kt, &arguments("f(c = true)", 1)), Some(1));
         assert_eq!(best_overload(&kt, &arguments("f(x, true)", 1)), Some(1));
+        // A variable: what its declaration says.
+        let java = "void g(String name, long big) {\n  int n = 3;\n  f(name); f(n); f(big); f(name, n);\n  return n;\n}";
+        let at = |call: &str| java.find(call).unwrap() + 1;
+        assert_eq!(best_overload(&ov, &typed_arguments(java, at("f(name)"), false)), Some(1));
+        assert_eq!(best_overload(&ov, &typed_arguments(java, at("f(n)"), false)), Some(0));
+        assert_eq!(best_overload(&ov, &typed_arguments(java, at("f(big)"), false)), None);
+        assert_eq!(best_overload(&ov, &typed_arguments(java, at("f(name, n)"), false)), Some(2));
+        let longs: Vec<Vec<String>> = vec![vec!["String s".into()], vec!["long x".into()], vec!["Object o".into()]];
+        assert_eq!(best_overload(&longs, &typed_arguments(java, at("f(n)"), false)), Some(1));
+        let kotlin = "fun g(flag: Boolean) {\n    val n = 3\n    var s: String? = null\n    val p = Point(1, 2)\n    f(s); f(n); f(flag); f(p); f(other)\n}";
+        let at = |call: &str| kotlin.find(call).unwrap() + 1;
+        let kt: Vec<Vec<String>> = vec![vec!["x: Int".into()], vec!["s: CharSequence?".into()], vec!["b: Boolean".into()], vec!["p: Point".into()]];
+        assert_eq!(best_overload(&kt, &typed_arguments(kotlin, at("f(s)"), true)), Some(1));
+        assert_eq!(best_overload(&kt, &typed_arguments(kotlin, at("f(n)"), true)), Some(0));
+        assert_eq!(best_overload(&kt, &typed_arguments(kotlin, at("f(flag)"), true)), Some(2));
+        assert_eq!(best_overload(&kt, &typed_arguments(kotlin, at("f(p)"), true)), Some(3));
+        // Unknown: the first that takes one argument, as before.
+        assert_eq!(best_overload(&kt, &typed_arguments(kotlin, at("f(other)"), true)), Some(0));
         assert_eq!(arguments("f(a, g(b, c), \"),\")", 1), vec!["a".to_owned(), "g(b, c)".into(), "\"),\"".into()]);
     }
 }
