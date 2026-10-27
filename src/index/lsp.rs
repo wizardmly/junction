@@ -212,11 +212,68 @@ pub struct TextEdit {
     pub text: String,
 }
 
-/// A file's edits from a workspace edit.
+/// A file's edits from a workspace edit, or (with `op`) a file it
+/// creates, renames or deletes; in the order the server gave them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileEdit {
     pub path: PathBuf,
     pub edits: Vec<TextEdit>,
+    pub op: Option<FileOp>,
+}
+
+/// A resource operation of a workspace edit, on `FileEdit::path`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOp {
+    Create { overwrite: bool, ignore_if_exists: bool },
+    Rename { to: PathBuf, overwrite: bool, ignore_if_exists: bool },
+    Delete { recursive: bool, ignore_if_not_exists: bool },
+}
+
+impl FileEdit {
+    fn text(path: PathBuf, edits: Vec<TextEdit>) -> Self {
+        Self { path, edits, op: None }
+    }
+}
+
+/// Carries out a resource operation on disk, as the LSP specifies it: an
+/// existing target is left alone unless `overwrite` (an error unless
+/// `ignore_if_exists`), a missing parent folder is created.
+pub fn apply_file_op(path: &Path, op: &FileOp) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    // Whether to leave an existing target alone (or fail on it).
+    let keep = |target: &Path, overwrite: bool, ignore: bool| -> std::io::Result<bool> {
+        if overwrite || !target.try_exists()? {
+            return Ok(false);
+        }
+        if ignore { Ok(true) } else { Err(Error::new(ErrorKind::AlreadyExists, format!("{} already exists", target.display()))) }
+    };
+    match op {
+        FileOp::Create { overwrite, ignore_if_exists } => {
+            if keep(path, *overwrite, *ignore_if_exists)? {
+                return Ok(());
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, "")
+        }
+        FileOp::Rename { to, overwrite, ignore_if_exists } => {
+            if keep(to, *overwrite, *ignore_if_exists)? {
+                return Ok(());
+            }
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::rename(path, to)
+        }
+        FileOp::Delete { recursive, ignore_if_not_exists } => match std::fs::metadata(path) {
+            Err(e) if e.kind() == ErrorKind::NotFound && *ignore_if_not_exists => Ok(()),
+            Err(e) => Err(e),
+            Ok(m) if m.is_dir() && *recursive => std::fs::remove_dir_all(path),
+            Ok(m) if m.is_dir() => std::fs::remove_dir(path),
+            Ok(_) => std::fs::remove_file(path),
+        },
+    }
 }
 
 /// The code action kind of a server's Organize Imports.
@@ -248,20 +305,33 @@ fn parse_text_edits(value: &Value) -> Vec<TextEdit> {
 }
 
 /// A WorkspaceEdit's text edits (`changes` or `documentChanges`; file
-/// creations and renames aren't applied).
+/// files created, renamed or deleted among them, in order).
 pub fn parse_workspace_edit(value: &Value) -> Vec<FileEdit> {
     let mut out = Vec::new();
     if let Some(changes) = value.get("changes").and_then(Value::as_object) {
         for (uri, edits) in changes {
             if let Some(path) = uri_to_path(uri) {
-                out.push(FileEdit { path, edits: parse_text_edits(edits) });
+                out.push(FileEdit::text(path, parse_text_edits(edits)));
             }
         }
     }
     for change in value.get("documentChanges").and_then(Value::as_array).into_iter().flatten() {
-        let Some(uri) = change.pointer("/textDocument/uri").and_then(Value::as_str) else { continue };
-        if let Some(path) = uri_to_path(uri) {
-            out.push(FileEdit { path, edits: parse_text_edits(change.get("edits").unwrap_or(&Value::Null)) });
+        let flag = |name: &str| change.pointer(&format!("/options/{name}")).and_then(Value::as_bool).unwrap_or(false);
+        let path_of = |key: &str| change.get(key).and_then(Value::as_str).and_then(uri_to_path);
+        let op = match change.get("kind").and_then(Value::as_str) {
+            Some("create") => path_of("uri").map(|p| (p, FileOp::Create { overwrite: flag("overwrite"), ignore_if_exists: flag("ignoreIfExists") })),
+            Some("rename") => path_of("oldUri").zip(path_of("newUri")).map(|(from, to)| (from, FileOp::Rename { to, overwrite: flag("overwrite"), ignore_if_exists: flag("ignoreIfExists") })),
+            Some("delete") => path_of("uri").map(|p| (p, FileOp::Delete { recursive: flag("recursive"), ignore_if_not_exists: flag("ignoreIfNotExists") })),
+            _ => {
+                let Some(uri) = change.pointer("/textDocument/uri").and_then(Value::as_str) else { continue };
+                if let Some(path) = uri_to_path(uri) {
+                    out.push(FileEdit::text(path, parse_text_edits(change.get("edits").unwrap_or(&Value::Null))));
+                }
+                continue;
+            }
+        };
+        if let Some((path, op)) = op {
+            out.push(FileEdit { path, edits: Vec::new(), op: Some(op) });
         }
     }
     out
@@ -451,7 +521,7 @@ impl LspClient {
                         "workspaceFolders": true,
                         "configuration": true,
                         "applyEdit": true,
-                        "workspaceEdit": { "documentChanges": true }
+                        "workspaceEdit": { "documentChanges": true, "resourceOperations": ["create", "rename", "delete"], "failureHandling": "abort" }
                     },
                     "textDocument": {
                         "synchronization": { "didSave": true, "dynamicRegistration": false },
@@ -896,6 +966,36 @@ mod tests {
                 ServerDiagnostic { start: (5, 0), end: (5, 3), severity: 1, message: "Unresolved reference: foo".into() },
             ]
         );
+    }
+
+    #[test]
+    fn parses_and_applies_file_operations() {
+        let dir = std::env::temp_dir().join(format!("junction-file-ops-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let uri = |name: &str| path_to_uri(&dir.join(name));
+        let edit = json!({ "documentChanges": [
+            { "kind": "create", "uri": uri("src/foo.rs") },
+            { "textDocument": { "uri": uri("src/foo.rs"), "version": null }, "edits": [{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }, "newText": "fn f() {}\n" }] },
+            { "kind": "rename", "oldUri": uri("src/foo.rs"), "newUri": uri("src/foo/mod.rs") },
+            { "kind": "delete", "uri": uri("gone.rs"), "options": { "ignoreIfNotExists": true } }
+        ] });
+        let changes = parse_workspace_edit(&edit);
+        assert_eq!(changes.len(), 4);
+        assert_eq!(changes[0].op, Some(FileOp::Create { overwrite: false, ignore_if_exists: false }));
+        assert_eq!((changes[1].op.is_none(), changes[1].edits.len()), (true, 1));
+        assert_eq!(changes[2].op, Some(FileOp::Rename { to: dir.join("src/foo/mod.rs"), overwrite: false, ignore_if_exists: false }));
+        apply_file_op(&changes[0].path, changes[0].op.as_ref().unwrap()).unwrap();
+        assert!(dir.join("src/foo.rs").is_file());
+        // Creating it again fails unless told to ignore or overwrite.
+        assert!(apply_file_op(&changes[0].path, changes[0].op.as_ref().unwrap()).is_err());
+        assert!(apply_file_op(&changes[0].path, &FileOp::Create { overwrite: false, ignore_if_exists: true }).is_ok());
+        apply_file_op(&changes[2].path, changes[2].op.as_ref().unwrap()).unwrap();
+        assert!(dir.join("src/foo/mod.rs").is_file() && !dir.join("src/foo.rs").exists());
+        apply_file_op(&changes[3].path, changes[3].op.as_ref().unwrap()).unwrap();
+        apply_file_op(&dir.join("src/foo/mod.rs"), &FileOp::Delete { recursive: false, ignore_if_not_exists: false }).unwrap();
+        assert!(!dir.join("src/foo/mod.rs").exists());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

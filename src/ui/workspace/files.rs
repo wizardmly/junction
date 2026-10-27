@@ -134,6 +134,12 @@ impl Workspace {
                 let paths = paths.clone();
                 self.files_changed(paths, window, cx);
             }
+            FileEditorEvent::FilesMoved(moves) => {
+                for (from, to) in moves.clone() {
+                    self.retarget_tabs(&from, &to, window, cx);
+                    self.files_changed(vec![from, to], window, cx);
+                }
+            }
             FileEditorEvent::CallHierarchy { text, offset } => {
                 let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
                 let (text, offset) = (text.clone(), *offset);
