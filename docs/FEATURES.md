@@ -802,9 +802,11 @@ IntelliJ 的 Code › Override Methods（Ctrl+O）和 Implement Methods（Ctrl+I
 | Copy JavaDoc 选项（Kotlin / Java 对话框都有，默认不勾）：勾上后把超类型成员上方的 `/** … */` 文档注释（跳过注解）复制到生成的成员前面 | ✅ |
 | 按类分组：对话框按所属类分组，每组一个带类图标的标题行，成员缩进列在下面，近的类在前 | ✅ |
 | Java 接口默认方法的 `Shape.super.f()` 写法：覆盖从直接实现（或 `extends`）的接口来的默认方法时调用写成 `Shape.super.name()`（Java 里 `super.f()` 只指父类）；经另一个接口继承来的写成那个直接接口 `Round.super.name()`；经父类继承来的仍写 `super.name()` | ✅ |
-| 可切换的排序 / 分组按钮 | ❌ 未做 |
+| 对话框工具栏的 Sort Alphabetically / Show Classes 开关（IntelliJ MemberChooser）：排序时按名字排（分组时组内排），关掉 Show Classes 时去掉类标题行、所有成员平铺；两个开关记住上次的状态（这次运行内），默认不排序、显示类 | ✅ |
 
 Linux 实测（Xvfb，2026-10-27）：Java `interface Shape { default String name() … }`，`class Circle implements Shape` 里 Ctrl+O 勾 `name():String` 和 `toString():String`，生成 `return Shape.super.name();` 和 `return super.toString();`。
+
+Linux 实测（Xvfb，2026-10-27）：Ctrl+O 对话框点 Sort Alphabetically 后 Object 组内变成 clone、equals、hashCode、toString；再关掉 Show Classes，五个方法平铺按名字排列；Esc 关掉再按 Ctrl+O，仍是排序、平铺。
 
 Linux 实测（Xvfb，2026-10-25）：`lib/Shape.kt`（import 了 `com.example.model.Item`，`area` 上有多行 KDoc，`accept(item: Item)` 上有单行 KDoc）、`app/Circle.kt` 里 `class Circle : Shape`；Ctrl+I 弹出 “Implement Members”，列表按类分组（标题行 Shape，下面两项缩进），勾上 Copy JavaDoc 确定后，两段文档注释和成员一起生成，同时插入 `import com.example.model.Item`。Java `DiskStore implements Store`（`Item load(String key) throws IOException`）上 Ctrl+I，下方有 Copy JavaDoc 和 Insert @Override，确定后加上 `com.example.model.Item` 和 `java.io.IOException` 两个 import；Ctrl+Z 一次全部撤销。
 
