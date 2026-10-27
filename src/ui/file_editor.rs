@@ -1242,7 +1242,7 @@ impl FileEditor {
     /// IntelliJ's dialog, then the reformat.
     pub fn reformat_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let style = self.jvm_style();
-        if self.read_only() || (style.is_none() && !self.path.ends_with(".xml")) {
+        if self.read_only() || (style.is_none() && !self.path.ends_with(".xml") && !self.path.ends_with(".gradle")) {
             return;
         }
         let name = std::path::Path::new(&self.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1265,8 +1265,9 @@ impl FileEditor {
     fn run_reformat(&mut self, options: crate::ui::reformat_dialog::ReformatOptions, window: &mut Window, cx: &mut Context<Self>) {
         use crate::ui::reformat_dialog::ReformatScope;
         let xml = self.path.ends_with(".xml");
+        let groovy = self.path.ends_with(".gradle");
         let style = self.jvm_style().map(|(_, s)| s);
-        if self.read_only() || (style.is_none() && !xml) {
+        if self.read_only() || (style.is_none() && !xml && !groovy) {
             return;
         }
         let text = self.text(cx);
@@ -1294,6 +1295,8 @@ impl FileEditor {
         let mut new = match style {
             Some(style) if whole => crate::domain::reformat::reformat_indented(style, &text, None, indent),
             Some(style) => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat_indented(style, &t, Some(r.clone()), indent)),
+            None if groovy && whole => crate::domain::reformat::reformat_groovy(&text, None, indent),
+            None if groovy => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat_groovy(&t, Some(r.clone()), indent)),
             // XML: the whole file (its tags and attributes don't follow lines).
             None => crate::domain::xml_reformat::reformat_xml_indented(crate::domain::xml_reformat::XmlKind::of(&self.path), &text, indent),
         };

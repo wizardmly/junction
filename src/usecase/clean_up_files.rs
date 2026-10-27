@@ -1,6 +1,6 @@
 //! Reformat Code and Optimize Imports on the Project view's selection, as
 //! IntelliJ runs them on files and directories: every Java and Kotlin file
-//! (and for Reformat Code, XML file) under the selected items, each given
+//! (and for Reformat Code, XML and Gradle Groovy file) under the selected items, each given
 //! its new text. Optimize Imports also takes the files a language server
 //! organizes (Go, Rust, TypeScript…).
 
@@ -42,7 +42,7 @@ fn style_of(path: &str) -> Option<ImportStyle> {
 /// whether each is a folder; the empty path is the project), in order; for
 /// Optimize Imports, also those `by_server` takes.
 pub fn targets(files: &dyn ProjectFiles, items: &[(String, bool)], clean_up: CleanUp, by_server: &dyn Fn(&str) -> bool) -> Vec<String> {
-    let applies = |p: &str| style_of(p).is_some() || (clean_up == CleanUp::Reformat && p.ends_with(".xml")) || (clean_up == CleanUp::OptimizeImports && by_server(p));
+    let applies = |p: &str| style_of(p).is_some() || (clean_up == CleanUp::Reformat && (p.ends_with(".xml") || p.ends_with(".gradle"))) || (clean_up == CleanUp::OptimizeImports && by_server(p));
     let mut out: Vec<String> = Vec::new();
     let listed = items.iter().any(|(_, dir)| *dir).then(|| files.list()).unwrap_or_default();
     for (path, dir) in items {
@@ -60,7 +60,7 @@ pub fn targets(files: &dyn ProjectFiles, items: &[(String, bool)], clean_up: Cle
 
 /// Whether Junction cleans the file itself (else its language server does).
 pub fn built_in(path: &str) -> bool {
-    style_of(path).is_some() || path.ends_with(".xml")
+    style_of(path).is_some() || path.ends_with(".xml") || path.ends_with(".gradle")
 }
 
 /// A file's text after the clean-up; `None` when nothing changes.
@@ -68,6 +68,10 @@ pub fn built_in(path: &str) -> bool {
 pub fn cleaned(path: &str, text: &str, clean_up: CleanUp, indent: Option<&str>) -> Option<String> {
     if path.ends_with(".xml") {
         let new = (clean_up == CleanUp::Reformat).then(|| xml_reformat::reformat_xml_indented(XmlKind::of(path), text, indent))?;
+        return (new != text).then_some(new);
+    }
+    if path.ends_with(".gradle") {
+        let new = (clean_up == CleanUp::Reformat).then(|| reformat::reformat_groovy(text, None, indent))?;
         return (new != text).then_some(new);
     }
     let style = style_of(path)?;
@@ -117,12 +121,13 @@ mod tests {
         let files = Files(vec!["app/src/A.java", "app/src/B.kt", "app/build.gradle", "app/src/main/res/layout/a.xml", "lib/C.java", "appx/D.java"]);
         assert_eq!(targets(&files, &[("app".into(), true), ("lib/C.java".into(), false)], CleanUp::OptimizeImports, &|_| false), ["app/src/A.java", "app/src/B.kt", "lib/C.java"]);
         assert_eq!(targets(&files, &[("".into(), true)], CleanUp::OptimizeImports, &|_| false).len(), 4);
-        assert_eq!(targets(&files, &[("".into(), true)], CleanUp::Reformat, &|_| false).len(), 5);
+        assert_eq!(targets(&files, &[("".into(), true)], CleanUp::Reformat, &|_| false).len(), 6);
         assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::Reformat, None).as_deref(), Some("<a>\n\n    <b />\n</a>"));
         assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::OptimizeImports, None), None);
         let text = "package a;\n\nimport java.util.List;\nimport java.util.Map;\n\nclass A { Map m; }\n";
         assert_eq!(cleaned("A.java", text, CleanUp::OptimizeImports, None).unwrap(), "package a;\n\nimport java.util.Map;\n\nclass A { Map m; }\n");
-        assert!(cleaned("build.gradle", text, CleanUp::Reformat, None).is_none());
+        assert_eq!(cleaned("build.gradle", "android {\nminSdk 24\n}", CleanUp::Reformat, None).as_deref(), Some("android {\n    minSdk 24\n}"));
+        assert!(cleaned("build.gradle", "android {\n    minSdk 24\n}", CleanUp::OptimizeImports, None).is_none());
         assert_eq!(cleaned("A.java", "class A {\nint x;\n}\n", CleanUp::Reformat, None).unwrap(), "class A {\n    int x;\n}\n");
         assert_eq!(summary(CleanUp::Reformat, 2), "2 files changed");
     }

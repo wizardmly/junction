@@ -5,7 +5,8 @@
 //! label, a space after commas, after `if` / `for` / `while`… and before
 //! `{`, single spaces around assignments and comparisons, at most 2 blank
 //! lines kept, no trailing spaces. Strings, comments and raw strings keep
-//! their text.
+//! their text. Gradle's Groovy scripts take the same with Groovy's
+//! defaults (`reformat_groovy`).
 
 use std::ops::Range;
 
@@ -211,6 +212,19 @@ struct Open {
     case_body: bool,
     /// A Kotlin class's or constructor's parameters: `) : Base()` after.
     header: bool,
+    /// A `{`, not a `(` or `[`.
+    brace: bool,
+}
+
+/// The language a reformat follows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Flavor {
+    Java,
+    Kotlin,
+    /// Groovy (Gradle scripts): Java's indents and continuations, Kotlin's
+    /// `${…}` templates and `name: value` colons (map entries, named
+    /// arguments).
+    Groovy,
 }
 
 /// The reformatted text. `only`: the 0-based lines to change (a
@@ -222,10 +236,22 @@ pub fn reformat(style: ImportStyle, text: &str, only: Option<Range<usize>>) -> S
 /// `reformat` with the indent unit given (`.editorconfig`'s), else the
 /// file's.
 pub fn reformat_indented(style: ImportStyle, text: &str, only: Option<Range<usize>>, indent: Option<&str>) -> String {
-    let kotlin = style == ImportStyle::Kotlin;
+    reformat_with(if style == ImportStyle::Kotlin { Flavor::Kotlin } else { Flavor::Java }, text, only, indent)
+}
+
+/// A Gradle Groovy script (`build.gradle`, `settings.gradle`) reformatted
+/// with IntelliJ's Groovy defaults; `indent` as in `reformat_indented`.
+pub fn reformat_groovy(text: &str, only: Option<Range<usize>>, indent: Option<&str>) -> String {
+    reformat_with(Flavor::Groovy, text, only, indent)
+}
+
+fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indent: Option<&str>) -> String {
+    let kotlin = flavor == Flavor::Kotlin;
+    // Kotlin's and Groovy's strings and colons.
+    let templates = flavor != Flavor::Java;
     // The project's code style is the file's: its indent unit (4 spaces
     // when it has none yet). Columns count units when it's a tab.
-    let lines = scan(text, kotlin);
+    let lines = scan(text, templates);
     let unit = indent.map_or_else(|| indent_unit(text, &lines), str::to_owned);
     let tabs = unit == "\t";
     let step = if tabs { 1 } else { unit.len() };
@@ -324,6 +350,10 @@ pub fn reformat_indented(style: ImportStyle, text: &str, only: Option<Range<usiz
                             Reason::Assign
                         } else if kotlin && prev.ends_with(':') && !prev.ends_with("::") || p.reason == Reason::Header && prev.ends_with(',') {
                             Reason::Header
+                        } else if flavor == Flavor::Groovy && prev.ends_with(',') && stack.last().is_none_or(|o| o.brace) {
+                            // A command's arguments without parentheses:
+                            // `proguardFiles a,` then `b`.
+                            Reason::Binary
                         } else {
                             Reason::None
                         }
@@ -351,7 +381,7 @@ pub fn reformat_indented(style: ImportStyle, text: &str, only: Option<Range<usiz
             // A class header's supertypes: its body belongs to the class.
             header = reason == Reason::Header;
         }
-        let body: String = if is_code_line && selected { normalize(text_line, info, lead, kotlin, closes_header) } else { text_line.trim_start().to_owned() };
+        let body: String = if is_code_line && selected { normalize(text_line, info, lead, flavor, closes_header) } else { text_line.trim_start().to_owned() };
         let new_line = match starts {
             // A block comment's later lines: ` * …` under its `/*`.
             State::Block(_) if body.starts_with('*') => format!("{} {body}", pad(indent)),
@@ -368,12 +398,12 @@ pub fn reformat_indented(style: ImportStyle, text: &str, only: Option<Range<usiz
         // The rest of the line's brackets, where they are in the new line.
         let depth = stack.len();
         if is_code_line {
-            let placed = scan(&line_out, kotlin).into_iter().next().map(|l| l.brackets).unwrap_or_default();
+            let placed = scan(&line_out, templates).into_iter().next().map(|l| l.brackets).unwrap_or_default();
             let lead_out = line_out.len() - line_out.trim_start().len();
             // An unselected line keeps its indent: its brackets go by it.
             let at = if selected { indent } else { lead_out };
             let base = if header { at.saturating_sub(step * if kotlin { 1 } else { 2 }) } else { at };
-            let align = (!kotlin && !tabs).then(|| declaration_paren(&line_out)).flatten();
+            let align = (flavor == Flavor::Java && !tabs).then(|| declaration_paren(&line_out)).flatten();
             apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, &line_out);
         } else {
             apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, text_line);
@@ -453,7 +483,7 @@ fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize
     let mut first_paren = true;
     for (at, c) in brackets.iter().skip(skip) {
         match c {
-            '{' => stack.push(Open { line_indent: base, content: base + step, line, case_body: false, header: false }),
+            '{' => stack.push(Open { line_indent: base, content: base + step, line, case_body: false, header: false, brace: true }),
             '(' | '[' => {
                 let content = match align.filter(|_| *c == '(' && first_paren) {
                     Some(col) => col,
@@ -463,7 +493,7 @@ fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize
                     first_paren = false;
                 }
                 let header = *c == '(' && header_paren(text.get(..*at).unwrap_or(""));
-                stack.push(Open { line_indent, content, line, case_body: false, header });
+                stack.push(Open { line_indent, content, line, case_body: false, header, brace: false });
             }
             _ => {
                 if let Some(open) = stack.pop() {
@@ -478,7 +508,8 @@ fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize
 }
 
 /// The line's code with IntelliJ's spacing; strings and comments as written.
-fn normalize(line: &str, info: &Line, lead: usize, kotlin: bool, closes_header: bool) -> String {
+fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header: bool) -> String {
+    let kotlin = flavor == Flavor::Kotlin;
     let chars: Vec<(usize, char)> = line.char_indices().filter(|(i, _)| *i >= lead).collect();
     let is_code = |i: usize| info.code.get(i).copied().unwrap_or(false);
     let mut out = String::with_capacity(line.len() + 8);
@@ -545,7 +576,15 @@ fn normalize(line: &str, info: &Line, lead: usize, kotlin: bool, closes_header: 
                 }
                 out.push('(');
             }
-            ':' if kotlin && !out.ends_with(':') && !out.ends_with('?') && next.is_none_or(|(_, ch)| ch != ':') => {
+            // Groovy's `a ? b : c`: spaced as an operator.
+            ':' if flavor == Flavor::Groovy && out.contains(" ? ") => {
+                push_space(&mut out);
+                out.push(':');
+                if next.is_some_and(|(j, ch)| !(is_code(j) && ch == ' ')) {
+                    out.push(' ');
+                }
+            }
+            ':' if flavor != Flavor::Java && !out.ends_with(':') && !out.ends_with('?') && next.is_none_or(|(_, ch)| ch != ':') => {
                 // `name: Type`, `fun f(): Int`; supertypes `A : B`, bounds.
                 let typed = out.chars().last().is_some_and(|p| p.is_alphanumeric() || matches!(p, '_' | ')' | '>' | '?' | '`' | ' '));
                 if !typed {
@@ -766,6 +805,18 @@ mod tests {
     fn when_branches_and_elvis() {
         let text = "val s = when (x) {\n1 ->\n\"one\"\nelse -> \"many\"\n}\nval n = a\n?: b";
         assert_eq!(kt(text), "val s = when (x) {\n    1 ->\n        \"one\"\n    else -> \"many\"\n}\nval n = a\n    ?: b");
+    }
+
+    #[test]
+    fn gradle_groovy() {
+        let text = "plugins {\nid 'com.android.application'\n}\nandroid {\ncompileSdk=34\ndefaultConfig{\nminSdk 24\nversionName \"${major}.0\"\n}\n}\ndependencies {\nimplementation fileTree(dir:'libs',include:['*.jar'])\nimplementation 'a:b:1'\n}\ntask clean(type:Delete){\ndelete rootProject.buildDir\n}\ndef v = a ? 'x' :'y'";
+        assert_eq!(
+            reformat_groovy(text, None, None),
+            "plugins {\n    id 'com.android.application'\n}\nandroid {\n    compileSdk = 34\n    defaultConfig {\n        minSdk 24\n        versionName \"${major}.0\"\n    }\n}\ndependencies {\n    implementation fileTree(dir: 'libs', include: ['*.jar'])\n    implementation 'a:b:1'\n}\ntask clean(type: Delete) {\n    delete rootProject.buildDir\n}\ndef v = a ? 'x' : 'y'"
+        );
+        assert_eq!(reformat_groovy("release {\nproguardFiles a,\n'b',\n'c'\nminify true\n}", None, None), "release {\n    proguardFiles a,\n            'b',\n            'c'\n    minify true\n}");
+        // Java's continuation for an argument list.
+        assert_eq!(reformat_groovy("foo(\na,\nb)", None, None), "foo(\n        a,\n        b)");
     }
 
     #[test]
