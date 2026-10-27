@@ -1389,7 +1389,10 @@ impl FileEditor {
     /// dialog; the new method's name selected after.
     fn extract_method_action(&mut self, _: &ExtractMethod, window: &mut Window, cx: &mut Context<Self>) {
         use crate::domain::imports::ImportStyle;
-        let Some((lang, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
+        if self.read_only() {
+            return;
+        }
+        let Some((lang, style)) = self.jvm_style() else { return self.server_refactor(crate::index::lsp::ServerRefactor::ExtractFunction, window, cx) };
         let title = if style == ImportStyle::Java { "Extract Method" } else { "Extract Function" };
         let text = self.text(cx);
         let selection = self.state.read(cx).selected_range();
@@ -1791,7 +1794,15 @@ impl FileEditor {
     /// the selected expression, or with none the one chosen from those at
     /// the caret.
     pub fn introduce(&mut self, kind: crate::ui::introduce_dialog::Introduce, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((lang, _)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
+        use crate::index::lsp::ServerRefactor;
+        use crate::ui::introduce_dialog::Introduce;
+        if self.read_only() {
+            return;
+        }
+        let Some((lang, _)) = self.jvm_style() else {
+            let refactor = if kind == Introduce::Variable { ServerRefactor::ExtractVariable } else { ServerRefactor::ExtractConstant };
+            return self.server_refactor(refactor, window, cx);
+        };
         let text = self.text(cx);
         let selection = self.state.read(cx).selected_range();
         match crate::index::introduce::expressions_at(lang, &text, selection) {

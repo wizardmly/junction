@@ -68,6 +68,9 @@ pub(super) enum Choice {
     Catalog(crate::domain::catalog_migration::CatalogMove, std::path::PathBuf),
     /// A language server's code action.
     Server(crate::index::lsp::CodeAction),
+    /// A server refactoring picked for a shortcut (Extract Function…);
+    /// whether the name it makes up goes to Rename after.
+    Refactor(crate::index::lsp::CodeAction, bool),
     /// Unwrap/Remove: one way to take a statement apart.
     Unwrap(crate::domain::intentions::Intention),
     /// A surround live template, numbered after the surrounders.
@@ -309,7 +312,8 @@ impl FileEditor {
                 window.focus(&self.context_focus, cx);
             }
             Choice::Override(implement) => self.override_methods(implement, window, cx),
-            Choice::Server(action) => self.apply_server_action(action, window, cx),
+            Choice::Server(action) => self.apply_server_action(action, false, window, cx),
+            Choice::Refactor(action, rename) => self.apply_server_action(action, rename, window, cx),
             Choice::Catalog(fix, file) => {
                 if let Err(e) = std::fs::write(&file, &fix.catalog_text) {
                     gpui_kit::component::WindowExt::push_notification(window, gpui_kit::component::notification::Notification::error(format!("Cannot write {}: {e}", file.display())), cx);
@@ -412,15 +416,49 @@ impl FileEditor {
         }));
     }
 
+    /// Extract Function, Introduce Variable / Constant and Inline in a
+    /// file Junction doesn't refactor itself: the server's action of that
+    /// kind at the selection (a chooser when it has several); the name an
+    /// extraction makes up goes straight to Rename, as IntelliJ asks for it.
+    pub(super) fn server_refactor(&mut self, refactor: crate::index::lsp::ServerRefactor, window: &mut Window, cx: &mut Context<Self>) {
+        let title = refactor.title();
+        let has_server = crate::index::lang::Lang::from_path(&self.path).and_then(crate::index::lsp::command_for).is_some();
+        let Some(index) = self.code_index.clone().filter(|_| has_server) else {
+            return Self::hint(title, "Cannot perform refactoring.\nNo language server for this file", window, cx);
+        };
+        let range = self.state.read(cx).selected_range();
+        let task = index.read(cx).code_actions(self.path.clone(), self.text(cx), range, cx);
+        let rename = refactor != crate::index::lsp::ServerRefactor::Inline;
+        cx.spawn_in(window, async move |this, cx| {
+            let actions: Vec<_> = task.await.into_iter().filter(|a| refactor.matches(a)).collect();
+            this.update_in(cx, |this, window, cx| match actions.len() {
+                0 => Self::hint(title, "Cannot perform refactoring.\nThe language server offers none here", window, cx),
+                1 => this.apply_server_action(actions.into_iter().next().expect("one"), rename, window, cx),
+                _ => {
+                    let cursor = this.state.read(cx).cursor();
+                    let at = this.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
+                    let items = actions.into_iter().map(|a| (cursor..cursor, Choice::Refactor(a, rename))).collect();
+                    this.context_actions = Some(ContextActions { items, title: Some(title), selected: 0, at, caret: None });
+                    window.focus(&this.context_focus, cx);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// A server action: its edits applied, in this file's text (one edit,
-    /// the caret staying on its text) and on disk for other files.
-    fn apply_server_action(&mut self, action: crate::index::lsp::CodeAction, window: &mut Window, cx: &mut Context<Self>) {
+    /// the caret staying on its text) and on disk for other files; with
+    /// `rename`, Rename on the name the edit brought in.
+    fn apply_server_action(&mut self, action: crate::index::lsp::CodeAction, rename: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.code_index.clone() else { return };
         let Some(root) = index.read(cx).root().map(|r| r.to_path_buf()) else { return };
         let text = self.text(cx);
         let title = action.title.clone();
         let task = index.read(cx).code_action_edits(self.path.clone(), text, action, cx);
         let mut own = root.join(&self.path);
+        let selection = self.state.read(cx).selected_range();
         cx.spawn_in(window, async move |this, cx| {
             let edits = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -454,7 +492,11 @@ impl FileEditor {
                         let text = this.text(cx);
                         let caret = this.state.read(cx).cursor();
                         let (new, caret) = apply_text_edits(&text, &file.edits, caret);
-                        this.replace_text(&text, &new, caret, window, cx);
+                        let named = introduced_name(&text, &file.edits, selection.clone()).filter(|_| rename);
+                        this.replace_text(&text, &new, named.unwrap_or(caret), window, cx);
+                        if named.is_some() {
+                            this.rename(cx);
+                        }
                     } else if let Ok(old) = std::fs::read_to_string(&file.path) {
                         let (new, _) = apply_text_edits(&old, &file.edits, 0);
                         if std::fs::write(&file.path, new).is_ok() {
@@ -607,6 +649,7 @@ impl FileEditor {
                 Choice::Catalog(fix, _) => (Some(icons::INTENTION_BULB), fix.title.clone()),
                 Choice::Unwrap(i) => (None, i.title.clone()),
                 Choice::Server(action) => (Some(icons::INTENTION_BULB), action.title.clone()),
+                Choice::Refactor(action, _) => (None, action.title.clone()),
                 Choice::Override(false) => (None, "Override Methods…".to_owned()),
                 Choice::Override(true) => (None, "Implement Methods…".to_owned()),
             };
@@ -684,9 +727,41 @@ mod tests {
     }
 }
 
-/// A language server's text edits applied to `text` (0-based lines,
-/// UTF-16 columns), and where `caret` moves with them.
-pub(crate) fn apply_text_edits(text: &str, edits: &[crate::index::lsp::TextEdit], caret: usize) -> (String, usize) {
+/// Where the name an extraction made up lands in the edited text: in
+/// the edit that replaced the selection (the extracted function's call,
+/// the new variable's use), its first identifier the old text lacks, else
+/// its first one (rust-analyzer names a function after the variable).
+fn introduced_name(old: &str, edits: &[crate::index::lsp::TextEdit], selection: std::ops::Range<usize>) -> Option<usize> {
+    let words = |t: &str| -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        let mut start = None;
+        for (i, c) in t.char_indices().chain(std::iter::once((t.len(), ' '))) {
+            match (start, c.is_alphanumeric() || c == '_') {
+                (None, true) => start = Some(i),
+                (Some(s), false) => {
+                    if !t[s..i].starts_with(|c: char| c.is_numeric()) {
+                        out.push((s, t[s..i].to_owned()));
+                    }
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        out
+    };
+    let ranged = edit_offsets(old, edits);
+    let (chosen, &(start, _, text)) = ranged.iter().enumerate().find(|(_, (start, end, text))| *start <= selection.end && *end >= selection.start && !words(text).is_empty())?;
+    let known: std::collections::HashSet<String> = words(old).into_iter().map(|(_, w)| w).collect();
+    let found = words(text);
+    let (at, _) = found.iter().find(|(_, w)| !known.contains(w)).or(found.first())?;
+    // Shifted by the edits before it.
+    let shift: isize = ranged.iter().enumerate().filter(|(i, (_, end, _))| *i != chosen && *end <= start).map(|(_, (s, e, t))| t.len() as isize - (e - s) as isize).sum();
+    Some((start as isize + shift) as usize + at)
+}
+
+/// Language server edits (0-based lines, UTF-16 columns) as byte ranges
+/// of `text`, with their new text.
+fn edit_offsets<'a>(text: &str, edits: &'a [crate::index::lsp::TextEdit]) -> Vec<(usize, usize, &'a str)> {
     let offset = |(line, col): (u32, u32)| -> usize {
         let start: usize = text.split_inclusive('\n').take(line as usize).map(str::len).sum();
         let rest = &text[start.min(text.len())..];
@@ -700,7 +775,13 @@ pub(crate) fn apply_text_edits(text: &str, edits: &[crate::index::lsp::TextEdit]
         }
         start + line_text.len()
     };
-    let mut ranged: Vec<(usize, usize, &str)> = edits.iter().map(|e| (offset(e.start), offset(e.end), e.text.as_str())).collect();
+    edits.iter().map(|e| (offset(e.start), offset(e.end), e.text.as_str())).collect()
+}
+
+/// A language server's text edits applied to `text` (0-based lines,
+/// UTF-16 columns), and where `caret` moves with them.
+pub(crate) fn apply_text_edits(text: &str, edits: &[crate::index::lsp::TextEdit], caret: usize) -> (String, usize) {
+    let mut ranged = edit_offsets(text, edits);
     // From the end, so earlier offsets stay valid.
     ranged.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
     let mut out = text.to_owned();
@@ -723,6 +804,22 @@ pub(crate) fn apply_text_edits(text: &str, edits: &[crate::index::lsp::TextEdit]
 mod server_edit_tests {
     use super::*;
     use crate::index::lsp::TextEdit;
+
+    #[test]
+    fn finds_the_name_an_extraction_made_up() {
+        let old = "fn main() {\n    let w = 3;\n    let area = w * w + 1;\n}\n";
+        let selection = old.find("w * w").unwrap()..old.find(";\n}").unwrap();
+        let edit = |start: (u32, u32), end: (u32, u32), text: &str| TextEdit { start, end, text: text.into() };
+        let at = |edits: &[TextEdit]| introduced_name(old, edits, selection.clone()).map(|i| apply_text_edits(old, edits, 0).0[i..].split(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap().to_owned());
+        // rust-analyzer's Extract into function, named after the variable.
+        let function = [edit((2, 15), (2, 24), "area(w)"), edit((3, 1), (3, 1), "\n\nfn area(w: i32) -> i32 {\n    w * w + 1\n}")];
+        assert_eq!(at(&function).as_deref(), Some("area"));
+        // A variable put before the statement shifts the call.
+        let variable = [edit((2, 4), (2, 4), "let var_name = w * w + 1;\n    "), edit((2, 15), (2, 24), "var_name")];
+        let edits = introduced_name(old, &variable, selection.clone()).unwrap();
+        assert_eq!(&apply_text_edits(old, &variable, 0).0[edits..edits + 8], "var_name");
+        assert_eq!(at(&[edit((0, 0), (0, 0), "// x\n")]), None);
+    }
 
     #[test]
     fn applies_server_edits() {
