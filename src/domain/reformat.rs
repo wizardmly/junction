@@ -768,7 +768,10 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
             }
             ':' if flavor != Flavor::Java && !out.ends_with(':') && !out.ends_with('?') && next.is_none_or(|(_, ch)| ch != ':') => {
                 // `name: Type`, `fun f(): Int`; supertypes `A : B`, bounds.
-                let typed = out.chars().last().is_some_and(|p| p.is_alphanumeric() || matches!(p, '_' | ')' | '>' | '?' | '`' | ' '));
+                // An annotation's use-site target: `@get:Rule`.
+                let word = out.trim_end_matches(|p: char| p.is_alphanumeric() || p == '_');
+                let use_site = word.ends_with('@') && word.len() < out.len();
+                let typed = !use_site && out.chars().last().is_some_and(|p| p.is_alphanumeric() || matches!(p, '_' | ')' | '>' | '?' | '`' | ' '));
                 if !typed {
                     out.push(':');
                 } else {
@@ -944,7 +947,8 @@ fn comparison(chars: &[(usize, char)], k: usize, is_code: &dyn Fn(usize) -> bool
     }
     let number = |w: &str| w.trim_start_matches('-').starts_with(|ch: char| ch.is_ascii_digit());
     let lower = |w: &str| w.starts_with(|ch: char| ch.is_lowercase() || ch == '_' || ch == '(') || w.ends_with(')') || w.ends_with(']');
-    if left.is_empty() || right.is_empty() {
+    // A declaration's type parameters: `fun <reified T>`, `class <T>`.
+    if left.is_empty() || right.is_empty() || matches!(left.as_str(), "fun" | "class" | "interface" | "typealias" | "val" | "var") {
         return false;
     }
     number(&left) || number(&right) || lower(&left) && lower(&right) && !right.ends_with('(')
@@ -1082,6 +1086,12 @@ mod tests {
         assert_eq!(kt(&string), string);
         let java_line = format!("class A {{\n    void f() {{\n        call(aaaa, \"{}\");\n    }}\n}}", "z".repeat(120));
         assert_eq!(java(&java_line), java_line);
+    }
+
+    #[test]
+    fn annotation_targets_and_type_parameters_keep_their_text() {
+        let text = "class A {\n@get:Rule\nval r = 1\n@field:JvmField val f = 2\n}\nprivate inline fun <reified T : Any> Project.f() = g<T>()\nfun <T> h(a: Int) = a < b";
+        assert_eq!(kt(text), "class A {\n    @get:Rule\n    val r = 1\n    @field:JvmField val f = 2\n}\nprivate inline fun <reified T : Any> Project.f() = g<T>()\nfun <T> h(a: Int) = a < b");
     }
 
     #[test]
