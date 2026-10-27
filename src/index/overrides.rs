@@ -81,6 +81,47 @@ pub fn super_members(index: &ProjectIndex, root: &Path, lang: Lang, from: &str, 
     out
 }
 
+/// The superclass (not an interface, `Any` or `Object`) of the class
+/// with `class_header` and its constructors, as their parameter lists are
+/// written, for Generate's constructors to call; none when it has only a
+/// no-argument one (or isn't found).
+pub fn super_constructors(index: &ProjectIndex, root: &Path, lang: Lang, from: &str, class_header: &str) -> Option<(String, Vec<Vec<String>>)> {
+    let kotlin = lang == Lang::Kotlin;
+    let family = lang.family();
+    let header = class_header.split('{').next().unwrap_or(class_header);
+    // Java names it after `extends`; Kotlin's is the supertype that's a class.
+    let names: Vec<String> = if kotlin {
+        ov::supertypes(header, true).into_iter().map(|s| s.name).collect()
+    } else if header.split_whitespace().any(|w| w == "interface") {
+        Vec::new()
+    } else {
+        header.split_once(" extends ").and_then(|(_, rest)| ov::supertypes(&format!("class X extends {}", rest.split(" implements ").next().unwrap_or(rest)), false).into_iter().next()).map(|s| s.name).into_iter().collect()
+    };
+    let rank = |path: &str| if path == from { 0 } else if dir_of(path) == dir_of(from) { 1 } else { 2 };
+    for name in names {
+        let Some((path, _, symbol)) = index.symbols_named(&name).filter(|(_, e, s)| s.kind.is_type() && s.container.is_none() && family.contains(&e.lang)).min_by_key(|(p, _, _)| rank(p)) else { continue };
+        if symbol.kind == SymbolKind::Interface {
+            continue;
+        }
+        let full = if ProjectIndex::is_external(path) { std::path::PathBuf::from(path) } else { root.join(path) };
+        let Ok(source) = std::fs::read_to_string(full) else { continue };
+        let line_start: usize = source.split_inclusive('\n').take(symbol.line as usize).map(str::len).sum();
+        let Some(at) = source[line_start..].find(name.as_str()).map(|i| line_start + i) else { continue };
+        let declaration = &source[line_start..at];
+        if declaration.split_whitespace().any(|w| w == "interface") {
+            continue;
+        }
+        let constructors = crate::domain::parameter_info::constructors(&source, at).unwrap_or_default();
+        if constructors.iter().all(|c| c.is_empty()) {
+            return None;
+        }
+        // Kotlin defaults aren't part of the type.
+        let constructors = constructors.into_iter().map(|c| c.into_iter().map(|p| p.split(" = ").next().unwrap_or(&p).trim().to_owned()).collect()).collect();
+        return Some((name, constructors));
+    }
+    None
+}
+
 /// The qualified name of a class a file of `header` names by its simple
 /// name: imported by name, or a top-level class of the file's package.
 fn qualified_name(index: &ProjectIndex, root: &Path, sources: &mut HashMap<String, Option<String>>, header: &imports::Header, name: &str, family: &[Lang]) -> Option<String> {
@@ -181,6 +222,15 @@ mod tests {
         assert_eq!(through("public class C extends Base {", "toString"), Some(None));
         let m = super_members(&index, &dir, Lang::Java, "a/C.java", "public class C implements Shape {").into_iter().find(|(_, m)| m.name == "name").unwrap().1;
         assert_eq!(ov::generate(&m, false, "    "), "@Override\npublic String name() {\n    return Shape.super.name();\n}");
+        // Generate's constructors: the superclass's, not an interface's.
+        let supers = |lang, header: &str| super_constructors(&index, &dir, lang, "a/C.java", header);
+        assert_eq!(supers(Lang::Java, "public class C extends Base implements Shape {"), None);
+        std::fs::write(dir.join("a/Animal.java"), "package a;\n\npublic class Animal {\n    public Animal(String name) {}\n    protected Animal(String name, int age) {}\n}\n").unwrap();
+        std::fs::write(dir.join("a/Pet.kt"), "package a\n\nopen class Pet(val name: String, age: Int = 0) {\n    constructor(n: Int) : this(\"x\")\n}\n").unwrap();
+        index.update(&|_, _| {});
+        let supers = |lang, header: &str| super_constructors(&index, &dir, lang, "a/C.java", header);
+        assert_eq!(supers(Lang::Java, "public class C extends Animal implements Shape {"), Some(("Animal".into(), vec![vec!["String name".into()], vec!["String name".into(), "int age".into()]])));
+        assert_eq!(supers(Lang::Kotlin, "class Dog : Round, Pet {"), Some(("Pet".into(), vec![vec!["name: String".into(), "age: Int".into()], vec!["n: Int".into()]])));
         std::fs::remove_dir_all(dir).ok();
     }
 }

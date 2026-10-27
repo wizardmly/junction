@@ -72,6 +72,9 @@ impl FileEditor {
         if let Some(message) = none.filter(|_| candidates.is_empty()) {
             return Self::hint("Generate", message, window, cx);
         }
+        if matches!(member, Member::Constructor | Member::SecondaryConstructor) {
+            return self.choose_super_constructors(member, candidates, &info.header, window, cx);
+        }
         // What already exists and would be replaced.
         let replaced: Vec<String> = match member {
             Member::ToString => vec!["toString"],
@@ -89,7 +92,7 @@ impl FileEditor {
         let run = move |chosen: Vec<Field>, window: &mut Window, cx: &mut gpui_kit::App| {
             let editor = editor.clone();
             let apply = move |replace: Vec<String>, window: &mut Window, cx: &mut gpui_kit::App| {
-                editor.update(cx, |this, cx| this.apply_generated(member, chosen.clone(), replace, window, cx)).ok();
+                editor.update(cx, |this, cx| this.apply_generated(member, chosen.clone(), replace, Vec::new(), window, cx)).ok();
             };
             if replaced.is_empty() {
                 return apply(Vec::new(), window, cx);
@@ -110,10 +113,61 @@ impl FileEditor {
                 });
             }, window, cx);
         };
-        if member == Member::SecondaryConstructor && candidates.is_empty() {
-            return self.apply_generated(member, Vec::new(), Vec::new(), window, cx);
-        }
         crate::ui::generate_dialog::choose(title, candidates, run, window, cx);
+    }
+
+    /// A constructor: when the superclass has several, IntelliJ's "Choose
+    /// Super Class Constructor" first (one constructor for each chosen),
+    /// then the fields, the final ones (Kotlin's `val`s) checked.
+    fn choose_super_constructors(&mut self, member: Member, candidates: Vec<Field>, header: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((lang, style)) = self.jvm_style() else { return };
+        let (class, constructors) = self.super_constructors(lang, header, cx).unwrap_or_default();
+        if constructors.len() < 2 {
+            return self.choose_constructor_fields(member, candidates, constructors, window, cx);
+        }
+        let kotlin = style == ImportStyle::Kotlin;
+        // `Animal(name: String)` in Kotlin, `Animal(String, int)` in Java.
+        let label = move |params: &[String]| {
+            let shown: Vec<&str> = params.iter().map(|p| if kotlin { p.as_str() } else { p.rsplit_once(' ').map_or(p.as_str(), |(ty, _)| ty) }).collect();
+            format!("{class}({})", shown.join(", "))
+        };
+        let fields: Vec<Field> = constructors.iter().map(|c| Field { name: label(c), ty: String::new(), is_static: false, is_final: false }).collect();
+        let mut checked = vec![false; fields.len()];
+        checked[0] = true;
+        let editor = cx.entity().downgrade();
+        let run = move |chosen: Vec<Field>, window: &mut Window, cx: &mut gpui_kit::App| {
+            let picked: Vec<Vec<String>> = constructors.iter().filter(|c| chosen.iter().any(|f| f.name == label(c))).cloned().collect();
+            if picked.is_empty() {
+                return;
+            }
+            let candidates = candidates.clone();
+            editor.update(cx, |this, cx| this.choose_constructor_fields(member, candidates, picked, window, cx)).ok();
+        };
+        crate::ui::generate_dialog::choose_preselected("Choose Super Class Constructor", fields, checked, run, window, cx);
+    }
+
+    /// The constructor's fields chosen (none to choose: written at once).
+    fn choose_constructor_fields(&mut self, member: Member, candidates: Vec<Field>, supers: Vec<Vec<String>>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, style)) = self.jvm_style() else { return };
+        if candidates.is_empty() {
+            return self.apply_generated(member, Vec::new(), Vec::new(), supers, window, cx);
+        }
+        let checked: Vec<bool> = candidates.iter().map(|f| f.is_final).collect();
+        let editor = cx.entity().downgrade();
+        let run = move |chosen: Vec<Field>, window: &mut Window, cx: &mut gpui_kit::App| {
+            let supers = supers.clone();
+            editor.update(cx, |this, cx| this.apply_generated(member, chosen, Vec::new(), supers, window, cx)).ok();
+        };
+        crate::ui::generate_dialog::choose_preselected(member.chooser_title(style), candidates, checked, run, window, cx);
+    }
+
+    /// The superclass's constructors, when it has some taking arguments.
+    fn super_constructors(&self, lang: Lang, header: &str, cx: &mut Context<Self>) -> Option<(String, Vec<Vec<String>>)> {
+        let index = self.code_index.clone()?;
+        let root = index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
+        let index = index.read(cx).index.clone();
+        let index = index.read().ok()?;
+        crate::index::overrides::super_constructors(&index, &root, lang, &self.path, header)
     }
 
     /// Whether a superclass (not `Any` / `Object`) of the class with
@@ -128,7 +182,7 @@ impl FileEditor {
     }
 
     /// Writes the chosen members into the class, replacing `replace`.
-    fn apply_generated(&mut self, member: Member, fields: Vec<Field>, replace: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_generated(&mut self, member: Member, fields: Vec<Field>, replace: Vec<String>, supers: Vec<Vec<String>>, window: &mut Window, cx: &mut Context<Self>) {
         let Some((lang, style)) = self.jvm_style() else { return };
         let old = self.text(cx);
         let unit = crate::domain::surround::indent_unit(&old);
@@ -163,6 +217,8 @@ impl FileEditor {
                 }
             }
             crate::domain::generate::Generated { members: out, imports: Vec::new() }
+        } else if matches!(member, Member::Constructor | Member::SecondaryConstructor) {
+            crate::domain::generate::Generated { members: crate::domain::generate::constructors(style, &info.name, &fields, &supers, &unit), imports: Vec::new() }
         } else if member == Member::EqualsHashCode {
             let supers = self.supers(lang, &info.header, cx);
             generate_with(style, member, &info.name, info.type_params, &fields, supers, &unit)

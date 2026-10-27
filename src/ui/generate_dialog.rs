@@ -126,7 +126,14 @@ pub fn choose(title: &'static str, fields: Vec<Field>, on_ok: impl Fn(Vec<Field>
 /// `choose`, the items checked or not to start with (Override Methods
 /// starts with none, Implement Methods with all, as IntelliJ's).
 pub fn choose_checked(title: &'static str, fields: Vec<Field>, all_checked: bool, on_ok: impl Fn(Vec<Field>, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
-    open(title, fields, all_checked, Vec::new(), false, move |chosen, _, window, cx| on_ok(chosen, window, cx), window, cx);
+    let checked = vec![all_checked; fields.len()];
+    choose_preselected(title, fields, checked, on_ok, window, cx);
+}
+
+/// `choose`, with these items checked to start with (IntelliJ preselects
+/// a constructor's final fields).
+pub fn choose_preselected(title: &'static str, fields: Vec<Field>, checked: Vec<bool>, on_ok: impl Fn(Vec<Field>, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
+    open(title, fields, checked, Vec::new(), false, move |chosen, _, window, cx| on_ok(chosen, window, cx), window, cx);
 }
 
 /// `choose_checked` with checkboxes under the list (`on_ok` gets their
@@ -141,21 +148,21 @@ pub fn choose_grouped(
     window: &mut Window,
     cx: &mut App,
 ) {
-    open(title, fields, all_checked, options, true, on_ok, window, cx);
+    let checked = vec![all_checked; fields.len()];
+    open(title, fields, checked, options, true, on_ok, window, cx);
 }
 
 #[allow(clippy::too_many_arguments)]
 fn open(
     title: &'static str,
     fields: Vec<Field>,
-    all_checked: bool,
+    checked: Vec<bool>,
     options: Vec<(&'static str, bool)>,
     grouped: bool,
     on_ok: impl Fn(Vec<Field>, Vec<bool>, &mut Window, &mut App) + 'static,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let checked = vec![all_checked; fields.len()];
     let (sorted, show_classes) = TOGGLES.get();
     let view = cx.new(|_| ChooserView { fields, checked, options, grouped, sorted, show_classes });
     let on_ok = Rc::new(on_ok);

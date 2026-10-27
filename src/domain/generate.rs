@@ -299,18 +299,79 @@ fn java_hash_code(fields: &[Field], call_super: bool, u: &str) -> String {
 }
 
 fn java_constructor(class: &str, fields: &[Field], u: &str) -> String {
-    let params: Vec<String> = fields.iter().map(|f| format!("{} {}", f.ty, f.name)).collect();
-    let body: Vec<String> = fields.iter().map(|f| format!("{u}this.{0} = {0};", f.name)).collect();
+    constructor_calling(ImportStyle::Java, class, fields, &[], u)
+}
+
+fn kotlin_secondary_constructor(fields: &[Field], u: &str) -> String {
+    constructor_calling(ImportStyle::Kotlin, "", fields, &[], u)
+}
+
+/// A constructor or Kotlin secondary constructor for each chosen
+/// superclass constructor (one without when none), as IntelliJ writes
+/// them: the super constructor's parameters first, then one per field
+/// (renamed `name1` when the super constructor took the name); Java's
+/// `super(…);` before the assignments, Kotlin's `: super(…)` after the
+/// parameters and no body without fields.
+pub fn constructors(style: ImportStyle, class: &str, fields: &[Field], supers: &[Vec<String>], u: &str) -> Vec<String> {
+    if supers.is_empty() {
+        return vec![constructor_calling(style, class, fields, &[], u)];
+    }
+    supers.iter().map(|params| constructor_calling(style, class, fields, params, u)).collect()
+}
+
+fn constructor_calling(style: ImportStyle, class: &str, fields: &[Field], super_params: &[String], u: &str) -> String {
+    let kotlin = style == ImportStyle::Kotlin;
+    // (declaration, name, vararg) of each super parameter.
+    let supers: Vec<(String, String, bool)> = super_params
+        .iter()
+        .map(|p| {
+            let p = p.trim();
+            if kotlin {
+                let vararg = p.starts_with("vararg ");
+                let name = p.trim_start_matches("vararg ").split(':').next().unwrap_or("").trim().to_owned();
+                (p.to_owned(), name, vararg)
+            } else {
+                let name = p.rsplit(' ').next().unwrap_or("").to_owned();
+                (p.trim_start_matches("final ").to_owned(), name, p.contains("..."))
+            }
+        })
+        .collect();
+    let mut taken: Vec<String> = supers.iter().map(|(_, n, _)| n.clone()).collect();
+    let fields: Vec<(&Field, String)> = fields
+        .iter()
+        .map(|f| {
+            let mut name = f.name.clone();
+            let mut n = 1;
+            while taken.contains(&name) {
+                name = format!("{}{n}", f.name);
+                n += 1;
+            }
+            taken.push(name.clone());
+            (f, name)
+        })
+        .collect();
+    let field_params: Vec<String> = fields.iter().map(|(f, n)| if kotlin { format!("{n}: {}", f.ty) } else { format!("{} {n}", f.ty) }).collect();
+    let mut params: Vec<String> = supers.iter().map(|(d, _, _)| d.clone()).collect();
+    // Java's fields go before a trailing vararg.
+    let vararg_last = !kotlin && supers.last().is_some_and(|(_, _, v)| *v);
+    let at = if vararg_last { params.len() - 1 } else { params.len() };
+    params.splice(at..at, field_params);
+    let arguments: Vec<String> = supers.iter().map(|(_, n, v)| if kotlin && *v { format!("*{n}") } else { n.clone() }).collect();
+    let assignments: Vec<String> = fields.iter().map(|(f, n)| if kotlin { format!("{u}this.{} = {n}", f.name) } else { format!("{u}this.{} = {n};", f.name) }).collect();
+    if kotlin {
+        let call = if supers.is_empty() { String::new() } else { format!(" : super({})", arguments.join(", ")) };
+        let body = if assignments.is_empty() { String::new() } else { format!(" {{\n{}\n}}", assignments.join("\n")) };
+        return format!("constructor({}){call}{body}", params.join(", "));
+    }
+    let mut body: Vec<String> = Vec::new();
+    if !supers.is_empty() {
+        body.push(format!("{u}super({});", arguments.join(", ")));
+    }
+    body.extend(assignments);
     if body.is_empty() {
         return format!("public {class}() {{\n}}");
     }
     format!("public {class}({}) {{\n{}\n}}", params.join(", "), body.join("\n"))
-}
-
-fn kotlin_secondary_constructor(fields: &[Field], u: &str) -> String {
-    let params: Vec<String> = fields.iter().map(|f| format!("{}: {}", f.name, f.ty)).collect();
-    let body: Vec<String> = fields.iter().map(|f| format!("{u}this.{0} = {0}\n", f.name)).collect();
-    format!("constructor({}) {{\n{}}}", params.join(", "), body.concat())
 }
 
 /// `name` → `Name`, as JavaBeans capitalize (`xValue` stays `xValue`).
@@ -395,6 +456,20 @@ mod tests {
         let g = generate(ImportStyle::Kotlin, Member::SecondaryConstructor, "Dog", 0, &[f("name", "String"), f("age", "Int")], "    ");
         assert_eq!(g.members[0], "constructor(name: String, age: Int) {\n    this.name = name\n    this.age = age\n}");
         let g = generate(ImportStyle::Kotlin, Member::SecondaryConstructor, "Dog", 0, &[], "    ");
-        assert_eq!(g.members[0], "constructor() {\n}");
+        assert_eq!(g.members[0], "constructor()");
+    }
+
+    #[test]
+    fn constructors_call_the_super_constructor() {
+        let fields = [f("name", "String"), f("age", "Int")];
+        let supers = vec![vec!["name: String".to_owned(), "vararg tags: String".into()], vec![]];
+        let got = constructors(ImportStyle::Kotlin, "Dog", &fields, &supers, "    ");
+        assert_eq!(got[0], "constructor(name: String, vararg tags: String, name1: String, age: Int) : super(name, *tags) {\n    this.name = name1\n    this.age = age\n}");
+        assert_eq!(got[1], "constructor(name: String, age: Int) {\n    this.name = name\n    this.age = age\n}");
+        assert_eq!(constructors(ImportStyle::Kotlin, "Dog", &[], &supers[..1], "    "), ["constructor(name: String, vararg tags: String) : super(name, *tags)"]);
+        let java = [f("lives", "int")];
+        let got = constructors(ImportStyle::Java, "Cat", &java, &[vec!["String name".to_owned(), "int... ids".into()]], "    ");
+        assert_eq!(got, ["public Cat(String name, int lives, int... ids) {\n    super(name, ids);\n    this.lives = lives;\n}"]);
+        assert_eq!(constructors(ImportStyle::Java, "Cat", &java, &[], "    "), ["public Cat(int lives) {\n    this.lives = lives;\n}"]);
     }
 }
