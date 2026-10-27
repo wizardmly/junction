@@ -59,6 +59,7 @@ pub mod overrides;
 pub mod password_safe;
 pub mod project_structure;
 pub mod parameter_info;
+pub mod rearrange;
 pub mod reformat;
 pub mod code_style;
 pub mod xml_reformat;

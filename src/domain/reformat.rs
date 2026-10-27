@@ -47,6 +47,18 @@ fn char_len(text: &str, i: usize) -> usize {
     text[i..].chars().next().map_or(1, char::len_utf8)
 }
 
+/// Which bytes of a Java file are code (not in a string, char or comment).
+pub(crate) fn java_code_mask(text: &str) -> Vec<bool> {
+    let mut mask = Vec::with_capacity(text.len());
+    for (ix, line) in scan(text, false).into_iter().enumerate() {
+        if ix > 0 {
+            mask.push(false);
+        }
+        mask.extend(line.code);
+    }
+    mask
+}
+
 fn scan(text: &str, kotlin: bool) -> Vec<Line> {
     let mut lines = Vec::new();
     let mut stack = vec![State::Code];

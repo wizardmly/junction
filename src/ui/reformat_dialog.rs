@@ -1,7 +1,7 @@
 //! IntelliJ's Reformat File dialog (Code › Reformat File…, Ctrl+Alt+Shift+L,
 //! `LayoutCodeDialog`): the scope (only changes uncommitted to VCS, the
 //! selected text, the whole file) and what runs with the reformat
-//! (optimize imports, code cleanup); the last run's choices come back next
+//! (optimize imports, rearrange code, code cleanup); the last run's choices come back next
 //! time, as `LastRunReformatCodeOptionsProvider` keeps them.
 
 use std::cell::Cell;
@@ -31,20 +31,22 @@ pub enum ReformatScope {
 pub struct ReformatOptions {
     pub scope: ReformatScope,
     pub optimize_imports: bool,
+    /// Java's members in the default arrangement first.
+    pub rearrange: bool,
     pub code_cleanup: bool,
 }
 
 thread_local! {
-    /// The last run's options: optimize imports, code cleanup, and whether
-    /// it processed the changed text.
-    static LAST: Cell<(bool, bool, bool)> = const { Cell::new((false, false, false)) };
+    /// The last run's options: optimize imports, code cleanup, whether it
+    /// processed the changed text, and rearrange code.
+    static LAST: Cell<(bool, bool, bool, bool)> = const { Cell::new((false, false, false, false)) };
 }
 
-/// Optimize imports and code cleanup as the last Reformat File run chose
-/// them, for Reformat Code without the dialog.
-pub fn last_options() -> (bool, bool) {
-    let (imports, cleanup, _) = LAST.with(Cell::get);
-    (imports, cleanup)
+/// Optimize imports, code cleanup and rearrange code as the last Reformat
+/// File run chose them, for Reformat Code without the dialog.
+pub fn last_options() -> (bool, bool, bool) {
+    let (imports, cleanup, _, rearrange) = LAST.with(Cell::get);
+    (imports, cleanup, rearrange)
 }
 
 struct ReformatView {
@@ -53,12 +55,15 @@ struct ReformatView {
     changed: bool,
     imports: bool,
     optimize_imports: bool,
+    /// Java: Rearrange code is offered.
+    java: bool,
+    rearrange: bool,
     code_cleanup: bool,
 }
 
 impl ReformatView {
     fn options(&self) -> ReformatOptions {
-        ReformatOptions { scope: self.scope, optimize_imports: self.imports && self.optimize_imports, code_cleanup: self.code_cleanup }
+        ReformatOptions { scope: self.scope, optimize_imports: self.imports && self.optimize_imports, rearrange: self.java && self.rearrange, code_cleanup: self.code_cleanup }
     }
 }
 
@@ -89,6 +94,12 @@ impl Render for ReformatView {
                     cx.notify();
                 })))
             })
+            .when(self.java, |el| {
+                el.child(Checkbox::new("reformat-rearrange").label("Rearrange code").checked(self.rearrange).on_change(cx.listener(|this, v: &bool, _, cx| {
+                    this.rearrange = *v;
+                    cx.notify();
+                })))
+            })
             .child(Checkbox::new("reformat-cleanup").label("Code cleanup").checked(self.code_cleanup).on_change(cx.listener(|this, v: &bool, _, cx| {
                 this.code_cleanup = *v;
                 cx.notify();
@@ -98,9 +109,10 @@ impl Render for ReformatView {
 
 /// Opens "Reformat File: `name`". `selected`: the editor has a selection;
 /// `changed`: the file has changes against VCS; `imports`: the language has
-/// imports to optimize.
-pub fn open(name: &str, selected: bool, changed: bool, imports: bool, on_run: impl Fn(ReformatOptions, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
-    let (optimize_imports, code_cleanup, last_changed) = LAST.with(Cell::get);
+/// imports to optimize; `java`: its code can be rearranged.
+#[allow(clippy::too_many_arguments)]
+pub fn open(name: &str, selected: bool, changed: bool, imports: bool, java: bool, on_run: impl Fn(ReformatOptions, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
+    let (optimize_imports, code_cleanup, last_changed, rearrange) = LAST.with(Cell::get);
     // A selection is what's reformatted; else the changed text when the
     // last run took it and there is some; else the file.
     let scope = if selected {
@@ -110,7 +122,7 @@ pub fn open(name: &str, selected: bool, changed: bool, imports: bool, on_run: im
     } else {
         ReformatScope::WholeFile
     };
-    let view = cx.new(|_| ReformatView { scope, selected, changed, imports, optimize_imports, code_cleanup });
+    let view = cx.new(|_| ReformatView { scope, selected, changed, imports, optimize_imports, java, rearrange, code_cleanup });
     let on_run = Rc::new(on_run);
     let title = SharedString::from(format!("Reformat File: {name}"));
     window.open_dialog(cx, move |dialog, _, _| {
@@ -118,7 +130,10 @@ pub fn open(name: &str, selected: bool, changed: bool, imports: bool, on_run: im
         dialog.title(title.clone()).w(px(380.)).child(view.clone()).footer(dialogs::footer("Run")).on_ok(move |_, window, cx| {
             let view = view.read(cx);
             let options = view.options();
-            LAST.with(|l| l.set((if view.imports { view.optimize_imports } else { l.get().0 }, view.code_cleanup, options.scope == ReformatScope::VcsChanged)));
+            LAST.with(|l| {
+                let last = l.get();
+                l.set((if view.imports { view.optimize_imports } else { last.0 }, view.code_cleanup, options.scope == ReformatScope::VcsChanged, if view.java { view.rearrange } else { last.3 }))
+            });
             on_run(options, window, cx);
             true
         })

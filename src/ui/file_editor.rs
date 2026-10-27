@@ -1233,9 +1233,9 @@ impl FileEditor {
     pub fn reformat_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::ui::reformat_dialog::{ReformatOptions, ReformatScope, last_options};
         let selected = !self.state.read(cx).selected_range().is_empty();
-        let (optimize_imports, code_cleanup) = last_options();
+        let (optimize_imports, code_cleanup, rearrange) = last_options();
         let scope = if selected { ReformatScope::Selected } else { ReformatScope::WholeFile };
-        self.run_reformat(ReformatOptions { scope, optimize_imports, code_cleanup }, window, cx);
+        self.run_reformat(ReformatOptions { scope, optimize_imports, rearrange, code_cleanup }, window, cx);
     }
 
     /// Code › Reformat File… (Ctrl+Alt+Shift+L): the scope and options in
@@ -1254,6 +1254,7 @@ impl FileEditor {
             selected,
             changed,
             style.is_some(),
+            self.path.ends_with(".java"),
             move |options, window, cx| {
                 let _ = this.update(cx, |editor, cx| editor.run_reformat(options, window, cx));
             },
@@ -1288,12 +1289,17 @@ impl FileEditor {
         };
         ranges.sort_by_key(|r| std::cmp::Reverse(r.start));
         let whole = options.scope == ReformatScope::WholeFile || (options.scope == ReformatScope::Selected && ranges.is_empty());
+        // Rearrange code: Java's members in the default arrangement, before
+        // the reformat (the whole file's; IntelliJ's for a scope is its
+        // entries, here only the whole file is rearranged).
+        let rearranged = (options.rearrange && whole && self.path.ends_with(".java")).then(|| crate::domain::rearrange::rearrange_java(&text)).filter(|r| *r != text);
+        let source = rearranged.clone().unwrap_or_else(|| text.clone());
         // `.editorconfig`'s indent, over the file's own.
         let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(std::path::Path::to_path_buf)).unwrap_or_else(|| self.repository.root().to_path_buf());
         let editorconfig = crate::infra::editorconfig::indent_for(&root, &self.absolute_path());
         let indent = &crate::domain::code_style::StyleLang::of_path(&self.path).map(|l| crate::settings::Settings::get(cx).code_style.indents(l, editorconfig)).unwrap_or_default();
         let mut new = match style {
-            Some(style) if whole => crate::domain::reformat::reformat_indented(style, &text, None, indent),
+            Some(style) if whole => crate::domain::reformat::reformat_indented(style, &source, None, indent),
             Some(style) => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat_indented(style, &t, Some(r.clone()), indent)),
             None if groovy && whole => crate::domain::reformat::reformat_groovy(&text, None, indent),
             None if groovy => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat_groovy(&t, Some(r.clone()), indent)),
@@ -1333,6 +1339,7 @@ impl FileEditor {
             caret -= 1;
         }
         let changed = {
+            let old_lines: Vec<&str> = source.split('\n').collect();
             let formatted_lines: Vec<&str> = formatted.split('\n').collect();
             let mut count = 0;
             let (mut a, mut b) = (old_lines.iter().filter(|l| !l.trim().is_empty()), formatted_lines.iter().filter(|l| !l.trim().is_empty()));
@@ -1364,10 +1371,14 @@ impl FileEditor {
             1 => ", removed 1 import".to_owned(),
             n => format!(", removed {n} imports"),
         };
-        if changed == 0 {
+        let rearranged = if rearranged.is_some() { ", rearranged code" } else { "" };
+        if changed == 0 && removed > 0 && rearranged.is_empty() {
             return hint(format!("Removed {removed} unused {}", if removed == 1 { "import" } else { "imports" }), window, cx);
         }
-        hint(format!("Formatted {changed} {}{imports}", if changed == 1 { "line" } else { "lines" }), window, cx);
+        if changed == 0 && removed == 0 {
+            return hint("Rearranged code".to_owned(), window, cx);
+        }
+        hint(format!("Formatted {changed} {}{imports}{rearranged}", if changed == 1 { "line" } else { "lines" }), window, cx);
     }
 
     /// A refactoring's result or why it can't run, as Android Studio's
