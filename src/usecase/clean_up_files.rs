@@ -1,7 +1,8 @@
 //! Reformat Code and Optimize Imports on the Project view's selection, as
 //! IntelliJ runs them on files and directories: every Java and Kotlin file
 //! (and for Reformat Code, XML file) under the selected items, each given
-//! its new text.
+//! its new text. Optimize Imports also takes the files a language server
+//! organizes (Go, Rust, TypeScript…).
 
 use crate::domain::imports::{self, ImportStyle};
 use crate::domain::project_files::ProjectFiles;
@@ -38,9 +39,10 @@ fn style_of(path: &str) -> Option<ImportStyle> {
 }
 
 /// The Java and Kotlin files of the selection (project-relative paths and
-/// whether each is a folder; the empty path is the project), in order.
-pub fn targets(files: &dyn ProjectFiles, items: &[(String, bool)], clean_up: CleanUp) -> Vec<String> {
-    let applies = |p: &str| style_of(p).is_some() || (clean_up == CleanUp::Reformat && p.ends_with(".xml"));
+/// whether each is a folder; the empty path is the project), in order; for
+/// Optimize Imports, also those `by_server` takes.
+pub fn targets(files: &dyn ProjectFiles, items: &[(String, bool)], clean_up: CleanUp, by_server: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let applies = |p: &str| style_of(p).is_some() || (clean_up == CleanUp::Reformat && p.ends_with(".xml")) || (clean_up == CleanUp::OptimizeImports && by_server(p));
     let mut out: Vec<String> = Vec::new();
     let listed = items.iter().any(|(_, dir)| *dir).then(|| files.list()).unwrap_or_default();
     for (path, dir) in items {
@@ -54,6 +56,11 @@ pub fn targets(files: &dyn ProjectFiles, items: &[(String, bool)], clean_up: Cle
     out.sort();
     out.dedup();
     out
+}
+
+/// Whether Junction cleans the file itself (else its language server does).
+pub fn built_in(path: &str) -> bool {
+    style_of(path).is_some() || path.ends_with(".xml")
 }
 
 /// A file's text after the clean-up; `None` when nothing changes.
@@ -108,9 +115,9 @@ mod tests {
     #[test]
     fn picks_jvm_files_and_cleans_them() {
         let files = Files(vec!["app/src/A.java", "app/src/B.kt", "app/build.gradle", "app/src/main/res/layout/a.xml", "lib/C.java", "appx/D.java"]);
-        assert_eq!(targets(&files, &[("app".into(), true), ("lib/C.java".into(), false)], CleanUp::OptimizeImports), ["app/src/A.java", "app/src/B.kt", "lib/C.java"]);
-        assert_eq!(targets(&files, &[("".into(), true)], CleanUp::OptimizeImports).len(), 4);
-        assert_eq!(targets(&files, &[("".into(), true)], CleanUp::Reformat).len(), 5);
+        assert_eq!(targets(&files, &[("app".into(), true), ("lib/C.java".into(), false)], CleanUp::OptimizeImports, &|_| false), ["app/src/A.java", "app/src/B.kt", "lib/C.java"]);
+        assert_eq!(targets(&files, &[("".into(), true)], CleanUp::OptimizeImports, &|_| false).len(), 4);
+        assert_eq!(targets(&files, &[("".into(), true)], CleanUp::Reformat, &|_| false).len(), 5);
         assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::Reformat, None).as_deref(), Some("<a>\n\n    <b />\n</a>"));
         assert_eq!(cleaned("app/src/main/res/layout/a.xml", "<a><b/></a>", CleanUp::OptimizeImports, None), None);
         let text = "package a;\n\nimport java.util.List;\nimport java.util.Map;\n\nclass A { Map m; }\n";
@@ -118,5 +125,14 @@ mod tests {
         assert!(cleaned("build.gradle", text, CleanUp::Reformat, None).is_none());
         assert_eq!(cleaned("A.java", "class A {\nint x;\n}\n", CleanUp::Reformat, None).unwrap(), "class A {\n    int x;\n}\n");
         assert_eq!(summary(CleanUp::Reformat, 2), "2 files changed");
+    }
+
+    #[test]
+    fn optimize_imports_takes_server_files() {
+        let files = Files(vec!["a/A.java", "a/main.go", "a/lib.rs", "a/notes.txt"]);
+        let go = |p: &str| p.ends_with(".go");
+        assert_eq!(targets(&files, &[("a".into(), true)], CleanUp::OptimizeImports, &go), ["a/A.java", "a/main.go"]);
+        assert_eq!(targets(&files, &[("a".into(), true)], CleanUp::Reformat, &go), ["a/A.java"]);
+        assert!(built_in("a/A.java") && !built_in("a/main.go"));
     }
 }
