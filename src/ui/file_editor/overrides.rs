@@ -7,7 +7,8 @@
 //! name and parameter types (an overload doesn't); Java's chooser has
 //! Copy JavaDoc and Insert @Override, and a Kotlin class with several
 //! direct supertypes calls an interface's member through
-//! `super<Interface>`. The chooser groups the members by class; the
+//! `super<Interface>` (Java a default method through `Interface.super`).
+//! The chooser groups the members by class; the
 //! classes the written signatures name are imported in the same edit.
 
 use gpui_kit::{Context, KeyBinding, Window, actions};
