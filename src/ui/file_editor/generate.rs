@@ -11,10 +11,30 @@ use std::ops::Range;
 use gpui_kit::{Context, Window};
 
 use super::FileEditor;
-use crate::domain::generate::{generate, generate_with, members, Field, Member, Supers};
+use crate::domain::generate::{generate, generate_with, members, to_string_template_class, to_string_templates, Field, Member, Supers};
 use crate::index::lang::Lang;
 use crate::domain::imports::{import_edit, ImportStyle};
 use crate::index::generate::{class_at, insertion};
+
+/// What some members are generated with: the superclass constructors
+/// a constructor calls, toString()'s template.
+#[derive(Default)]
+struct Extra {
+    supers: Vec<Vec<String>>,
+    template: &'static str,
+}
+
+thread_local! {
+    /// toString()'s template last used, per language, as IntelliJ keeps it.
+    static TO_STRING_TEMPLATE: std::cell::RefCell<std::collections::HashMap<u8, &'static str>> = std::cell::RefCell::default();
+}
+
+fn style_key(style: ImportStyle) -> u8 {
+    match style {
+        ImportStyle::Java => 0,
+        ImportStyle::Kotlin => 1,
+    }
+}
 
 impl FileEditor {
     /// Alt+Insert: the Generate popup for the class at the caret.
@@ -89,10 +109,11 @@ impl FileEditor {
         let editor = cx.entity().downgrade();
         let window_handle = window.window_handle();
         let title = member.chooser_title(style);
-        let run = move |chosen: Vec<Field>, window: &mut Window, cx: &mut gpui_kit::App| {
+        let run = move |chosen: Vec<Field>, template: &'static str, window: &mut Window, cx: &mut gpui_kit::App| {
             let editor = editor.clone();
             let apply = move |replace: Vec<String>, window: &mut Window, cx: &mut gpui_kit::App| {
-                editor.update(cx, |this, cx| this.apply_generated(member, chosen.clone(), replace, Vec::new(), window, cx)).ok();
+                let extra = Extra { template, ..Extra::default() };
+                editor.update(cx, |this, cx| this.apply_generated(member, chosen.clone(), replace, extra, window, cx)).ok();
             };
             if replaced.is_empty() {
                 return apply(Vec::new(), window, cx);
@@ -113,7 +134,30 @@ impl FileEditor {
                 });
             }, window, cx);
         };
-        crate::ui::generate_dialog::choose(title, candidates, run, window, cx);
+        if member != Member::ToString {
+            return crate::ui::generate_dialog::choose(title, candidates, move |chosen, window, cx| run(chosen, "", window, cx), window, cx);
+        }
+        // IntelliJ's templates (a library's when the project has it), the
+        // last one used chosen.
+        let templates: Vec<&'static str> = to_string_templates(style).iter().copied().filter(|t| to_string_template_class(t).is_none_or(|c| self.has_class(c, cx))).collect();
+        let last = TO_STRING_TEMPLATE.with_borrow(|t| t.get(&style_key(style)).copied());
+        let selected = last.and_then(|l| templates.iter().position(|t| *t == l)).unwrap_or(0);
+        let names = templates.clone();
+        let on_ok = move |chosen: Vec<Field>, ix: usize, window: &mut Window, cx: &mut gpui_kit::App| {
+            let template = templates.get(ix).copied().unwrap_or_default();
+            TO_STRING_TEMPLATE.with_borrow_mut(|t| t.insert(style_key(style), template));
+            run(chosen, template, window, cx)
+        };
+        crate::ui::generate_dialog::choose_template(title, candidates, names, selected, on_ok, window, cx);
+    }
+
+    /// Whether the project or its libraries declare this class.
+    fn has_class(&self, qualified: &str, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self.code_index.clone() else { return false };
+        let index = index.read(cx).index.clone();
+        let Some((package, name)) = qualified.rsplit_once('.') else { return false };
+        let dir = format!("{}/{name}.", package.replace('.', "/"));
+        index.read().is_ok_and(|index| index.symbols_named(name).any(|(path, _, s)| s.kind.is_type() && path.contains(&dir)))
     }
 
     /// A constructor: when the superclass has several, IntelliJ's "Choose
@@ -150,13 +194,13 @@ impl FileEditor {
     fn choose_constructor_fields(&mut self, member: Member, candidates: Vec<Field>, supers: Vec<Vec<String>>, window: &mut Window, cx: &mut Context<Self>) {
         let Some((_, style)) = self.jvm_style() else { return };
         if candidates.is_empty() {
-            return self.apply_generated(member, Vec::new(), Vec::new(), supers, window, cx);
+            return self.apply_generated(member, Vec::new(), Vec::new(), Extra { supers, ..Extra::default() }, window, cx);
         }
         let checked: Vec<bool> = candidates.iter().map(|f| f.is_final).collect();
         let editor = cx.entity().downgrade();
         let run = move |chosen: Vec<Field>, window: &mut Window, cx: &mut gpui_kit::App| {
             let supers = supers.clone();
-            editor.update(cx, |this, cx| this.apply_generated(member, chosen, Vec::new(), supers, window, cx)).ok();
+            editor.update(cx, |this, cx| this.apply_generated(member, chosen, Vec::new(), Extra { supers, ..Extra::default() }, window, cx)).ok();
         };
         crate::ui::generate_dialog::choose_preselected(member.chooser_title(style), candidates, checked, run, window, cx);
     }
@@ -178,11 +222,11 @@ impl FileEditor {
         let index = index.read(cx).index.clone();
         let members = index.read().map(|index| crate::index::overrides::super_members(&index, &root, lang, &self.path, header)).unwrap_or_default();
         let overrides = |name: &str| members.iter().any(|(owner, m)| m.name == name && !m.is_abstract && owner != "Any" && owner != "Object");
-        Supers { equals: overrides("equals"), hash_code: overrides("hashCode") }
+        Supers { equals: overrides("equals"), hash_code: overrides("hashCode"), to_string: overrides("toString") }
     }
 
     /// Writes the chosen members into the class, replacing `replace`.
-    fn apply_generated(&mut self, member: Member, fields: Vec<Field>, replace: Vec<String>, supers: Vec<Vec<String>>, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_generated(&mut self, member: Member, fields: Vec<Field>, replace: Vec<String>, extra: Extra, window: &mut Window, cx: &mut Context<Self>) {
         let Some((lang, style)) = self.jvm_style() else { return };
         let old = self.text(cx);
         let unit = crate::domain::surround::indent_unit(&old);
@@ -218,7 +262,15 @@ impl FileEditor {
             }
             crate::domain::generate::Generated { members: out, imports: Vec::new() }
         } else if matches!(member, Member::Constructor | Member::SecondaryConstructor) {
-            crate::domain::generate::Generated { members: crate::domain::generate::constructors(style, &info.name, &fields, &supers, &unit), imports: Vec::new() }
+            crate::domain::generate::Generated { members: crate::domain::generate::constructors(style, &info.name, &fields, &extra.supers, &unit), imports: Vec::new() }
+        } else if member == Member::ToString && !extra.template.is_empty() {
+            // Kotlin's super call when a superclass overrides Any's; Java's
+            // whenever there's a superclass.
+            let call_super = match style {
+                ImportStyle::Kotlin => self.supers(lang, &info.header, cx).to_string,
+                ImportStyle::Java => info.header.split('{').next().unwrap_or("").contains(" extends "),
+            };
+            crate::domain::generate::to_string(style, extra.template, &info.name, &fields, call_super, &unit)
         } else if member == Member::EqualsHashCode {
             let supers = self.supers(lang, &info.header, cx);
             generate_with(style, member, &info.name, info.type_params, &fields, supers, &unit)
