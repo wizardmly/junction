@@ -89,6 +89,10 @@ impl FileEditor {
         if self.read_only() {
             return;
         }
+        // The import hint's question answered: its class imported.
+        if self.accept_import_hint(window, cx) {
+            return;
+        }
         let text = self.text(cx);
         let cursor = self.state.read(cx).cursor();
         let cursor_line = Pos::of(&text, cursor).line;
@@ -595,6 +599,19 @@ impl FileEditor {
 
     /// Adds `import qualified` where IntelliJ puts it; the caret stays on
     /// its text.
+    /// Imports the one class, or opens IntelliJ's "Class to Import"
+    /// chooser at `at` for several (the import hint's Alt+Enter).
+    pub(super) fn import_one_of(&mut self, classes: Vec<String>, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        if let [one] = classes.as_slice() {
+            return self.import_class(one, window, cx);
+        }
+        let cursor = self.state.read(cx).cursor();
+        let items = classes.into_iter().map(|q| (cursor..cursor, Choice::Import(q))).collect();
+        self.context_actions = Some(ContextActions { items, title: Some("Class to Import"), selected: 0, at, caret: None });
+        window.focus(&self.context_focus, cx);
+        cx.notify();
+    }
+
     fn import_class(&mut self, qualified: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some((_, style)) = self.jvm_style() else { return };
         let text = self.text(cx);

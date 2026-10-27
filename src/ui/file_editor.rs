@@ -16,6 +16,7 @@ mod previews;
 mod vector_preview;
 mod merged_manifest;
 mod parameter_info;
+mod import_hint;
 mod overrides;
 mod problems;
 mod test_marks;
@@ -457,6 +458,13 @@ pub struct FileEditor {
     /// Parameter Info (Ctrl+P) shown, and its lookup or autopopup.
     parameter_info: Option<parameter_info::ParameterInfo>,
     parameter_task: Option<gpui_kit::Task<()>>,
+    /// The auto-import hint over a class name on the caret's line, the
+    /// look for one after a pause (and what it was for: text length and
+    /// caret), and the names Esc dismissed it for.
+    import_hint: Option<import_hint::ImportHint>,
+    import_hint_task: Option<gpui_kit::Task<()>>,
+    import_hint_key: (usize, usize),
+    import_hint_dismissed: Vec<String>,
     /// The test classes and methods of a test file, for the gutter's run
     /// icons, and the popup a click on one opens.
     test_marks: Vec<crate::domain::testing::TestMark>,
@@ -727,7 +735,7 @@ impl FileEditor {
             this.apply_gutter_extra(cx);
             cx.notify();
         });
-        let subscriptions = vec![settings, bookmarks, cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
+        let subscriptions = vec![settings, bookmarks, cx.observe(&state, |this, _, cx| this.follow_import_hint(cx)), cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 // IntelliJ closes the change popup on typing.
                 this.popup = None;
@@ -807,6 +815,10 @@ impl FileEditor {
             previews_task: None,
             parameter_info: None,
             parameter_task: None,
+            import_hint: None,
+            import_hint_task: None,
+            import_hint_key: (0, 0),
+            import_hint_dismissed: Vec::new(),
             test_marks: Vec::new(),
             test_marks_task: None,
             test_menu: None,
@@ -3041,7 +3053,7 @@ impl Render for FileEditor {
             .capture_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, _, cx| {
                 if this.template_escape(cx) {
                     cx.stop_propagation();
-                } else if !this.state.read(cx).is_completion_menu_open(cx) && this.close_parameter_info(cx) {
+                } else if !this.state.read(cx).is_completion_menu_open(cx) && (this.close_parameter_info(cx) || this.dismiss_import_hint(cx)) {
                     cx.stop_propagation();
                 }
             }))
@@ -3312,6 +3324,7 @@ impl Render for FileEditor {
                 .children(self.render_expression_highlight(cx))
                 .children(self.render_template_stops(cx))
                 .children(self.render_parameter_info(cx))
+                .children(self.render_import_hint(cx))
                 .children(self.render_context_actions(cx))
                 .children(self.render_test_menu(cx))
                 .children(self.render_color_edit(cx))
