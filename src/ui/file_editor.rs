@@ -68,6 +68,7 @@ actions!(
         OptimizeImports,
         ReformatCode,
         ReformatFile,
+        RearrangeCode,
         ParameterInfo,
         IntroduceVariable,
         IntroduceConstant,
@@ -1233,9 +1234,9 @@ impl FileEditor {
     pub fn reformat_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::ui::reformat_dialog::{ReformatOptions, ReformatScope, last_options};
         let selected = !self.state.read(cx).selected_range().is_empty();
-        let (optimize_imports, code_cleanup) = last_options();
+        let (optimize_imports, code_cleanup, rearrange) = last_options();
         let scope = if selected { ReformatScope::Selected } else { ReformatScope::WholeFile };
-        self.run_reformat(ReformatOptions { scope, optimize_imports, code_cleanup }, window, cx);
+        self.run_reformat(ReformatOptions { scope, optimize_imports, rearrange, code_cleanup }, window, cx);
     }
 
     /// Code › Reformat File… (Ctrl+Alt+Shift+L): the scope and options in
@@ -1254,12 +1255,44 @@ impl FileEditor {
             selected,
             changed,
             style.is_some(),
+            self.path.ends_with(".java"),
             move |options, window, cx| {
                 let _ = this.update(cx, |editor, cx| editor.run_reformat(options, window, cx));
             },
             window,
             cx,
         );
+    }
+
+    /// Code › Rearrange Code: a Java file's members in IntelliJ's default
+    /// arrangement, as one undoable edit, without reformatting.
+    pub fn rearrange_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only() || !self.path.ends_with(".java") {
+            return;
+        }
+        let text = self.text(cx);
+        let new = crate::domain::rearrange::rearrange_java(&text);
+        if new == text {
+            return Self::hint("Rearrange Code", "Nothing to rearrange", window, cx);
+        }
+        let prefix = text.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+        let suffix = text.bytes().rev().zip(new.bytes().rev()).take_while(|(a, b)| a == b).count().min(text.len().min(new.len()) - prefix);
+        let (mut start, mut old_end) = (prefix, text.len() - suffix);
+        while !text.is_char_boundary(start) || !new.is_char_boundary(start) {
+            start -= 1;
+        }
+        while !text.is_char_boundary(old_end) {
+            old_end += 1;
+        }
+        let new_end = new.len() - (text.len() - old_end);
+        let replacement = new[start..new_end].to_owned();
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(start..old_end, cx);
+            state.replace(replacement, window, cx);
+            state.set_selected_range(start..start, cx);
+        });
+        cx.notify();
+        Self::hint("Rearrange Code", "Rearranged code", window, cx);
     }
 
     fn run_reformat(&mut self, options: crate::ui::reformat_dialog::ReformatOptions, window: &mut Window, cx: &mut Context<Self>) {
@@ -1288,12 +1321,17 @@ impl FileEditor {
         };
         ranges.sort_by_key(|r| std::cmp::Reverse(r.start));
         let whole = options.scope == ReformatScope::WholeFile || (options.scope == ReformatScope::Selected && ranges.is_empty());
+        // Rearrange code: Java's members in the default arrangement, before
+        // the reformat (the whole file's; IntelliJ's for a scope is its
+        // entries, here only the whole file is rearranged).
+        let rearranged = (options.rearrange && whole && self.path.ends_with(".java")).then(|| crate::domain::rearrange::rearrange_java(&text)).filter(|r| *r != text);
+        let source = rearranged.clone().unwrap_or_else(|| text.clone());
         // `.editorconfig`'s indent, over the file's own.
         let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(std::path::Path::to_path_buf)).unwrap_or_else(|| self.repository.root().to_path_buf());
         let editorconfig = crate::infra::editorconfig::indent_for(&root, &self.absolute_path());
         let indent = &crate::domain::code_style::StyleLang::of_path(&self.path).map(|l| crate::settings::Settings::get(cx).code_style.indents(l, editorconfig)).unwrap_or_default();
         let mut new = match style {
-            Some(style) if whole => crate::domain::reformat::reformat_indented(style, &text, None, indent),
+            Some(style) if whole => crate::domain::reformat::reformat_indented(style, &source, None, indent),
             Some(style) => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat_indented(style, &t, Some(r.clone()), indent)),
             None if groovy && whole => crate::domain::reformat::reformat_groovy(&text, None, indent),
             None if groovy => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat_groovy(&t, Some(r.clone()), indent)),
@@ -1333,6 +1371,7 @@ impl FileEditor {
             caret -= 1;
         }
         let changed = {
+            let old_lines: Vec<&str> = source.split('\n').collect();
             let formatted_lines: Vec<&str> = formatted.split('\n').collect();
             let mut count = 0;
             let (mut a, mut b) = (old_lines.iter().filter(|l| !l.trim().is_empty()), formatted_lines.iter().filter(|l| !l.trim().is_empty()));
@@ -1364,10 +1403,14 @@ impl FileEditor {
             1 => ", removed 1 import".to_owned(),
             n => format!(", removed {n} imports"),
         };
-        if changed == 0 {
+        let rearranged = if rearranged.is_some() { ", rearranged code" } else { "" };
+        if changed == 0 && removed > 0 && rearranged.is_empty() {
             return hint(format!("Removed {removed} unused {}", if removed == 1 { "import" } else { "imports" }), window, cx);
         }
-        hint(format!("Formatted {changed} {}{imports}", if changed == 1 { "line" } else { "lines" }), window, cx);
+        if changed == 0 && removed == 0 {
+            return hint("Rearranged code".to_owned(), window, cx);
+        }
+        hint(format!("Formatted {changed} {}{imports}{rearranged}", if changed == 1 { "line" } else { "lines" }), window, cx);
     }
 
     /// A refactoring's result or why it can't run, as Android Studio's
@@ -2939,6 +2982,7 @@ impl Render for FileEditor {
         let palette = cx.palette().clone();
         let dirty = self.is_dirty(cx);
         let read_only = self.read_only();
+        let not_java = !self.path.ends_with(".java");
         let title = match &self.revision {
             Some(rev) => format!("{} ({})", self.path, &rev[..rev.len().min(8)]),
             None => self.library_title(cx).unwrap_or_else(|| self.path.clone()),
@@ -3056,6 +3100,7 @@ impl Render for FileEditor {
             .on_action(cx.listener(Self::optimize_imports_action))
             .on_action(cx.listener(|this, _: &ReformatCode, window, cx| this.reformat_code(window, cx)))
             .on_action(cx.listener(|this, _: &ReformatFile, window, cx| this.reformat_file(window, cx)))
+            .on_action(cx.listener(|this, _: &RearrangeCode, window, cx| this.rearrange_code(window, cx)))
             .on_action(cx.listener(Self::introduce_variable_action))
             .on_action(cx.listener(Self::introduce_constant_action))
             .on_action(cx.listener(Self::extract_method_action))
@@ -3214,6 +3259,7 @@ impl Render for FileEditor {
                                 .menu_with_disabled("Unwrap/Remove…", read_only, Box::new(editing::UnwrapRemove))
                                 .menu_with_disabled("Reformat Code", read_only, Box::new(ReformatCode))
                                 .menu_with_disabled("Reformat File…", read_only, Box::new(ReformatFile))
+                                .menu_with_disabled("Rearrange Code", read_only || not_java, Box::new(RearrangeCode))
                                 .submenu(
                                     "Refactor",
                                     NativeMenu::new()
