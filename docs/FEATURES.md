@@ -656,7 +656,8 @@ Linux 实测（Xvfb）：Kotlin 函数体里输入 `iter` 按 Tab 得到 `for (i
 | Kotlin 的 Secondary Constructor（类没有主构造函数时才列出）：选属性对话框 “Choose Properties to Initialize by Constructor”，候选是 `var` 和必须初始化的 `val`（没有初始值、getter、委托），生成 `constructor(name: String) { this.name = name }`，没有候选时直接生成 `constructor()`；对话框只预选 `val`（IntelliJ 的预选），Java 的 Constructor 只预选 final 字段 | ✅ |
 | 父类（项目或外部库源码里，不算 `Any` / `Object`）覆盖了 equals / hashCode 时，生成的代码先调用父类的：Kotlin `if (!super.equals(other)) return false`、`var result = super.hashCode()`；Java `if (!super.equals(o)) return false;`、`Objects.hash(super.hashCode(), …)` | ✅ |
 | 调用父类构造函数（Kotlin Secondary Constructor、Java Constructor）：父类（项目或外部库源码里的类，不是接口）有带参数的构造函数时，生成的构造函数先接父类构造函数的参数再接字段，Kotlin 写 `: super(name, *tags)`、Java 在赋值前写 `super(name);`（Java 字段参数插在末尾的 vararg 之前）；字段名和父类参数重名时参数改叫 `name1`；父类有多个构造函数时先弹 “Choose Super Class Constructor”（预选第一个），选几个就生成几个构造函数 | ✅ |
-| Override / Implement Methods 见第 36 节；Test…、toString 模板切换 | ❌ 未做 |
+| toString 模板切换：Generate toString 对话框顶部有 Template 下拉框。Java 有 9 个模板（String concat、带 super.toString()、StringBuffer、StringBuilder、Apache commons-lang / lang3 ToStringBuilder、Guava Objects / MoreObjects.toStringHelper、StringJoiner），用到第三方库的模板只在索引里有对应类时列出；Kotlin 有 4 个（单模板 / 拼接，各带或不带 super 调用）。每种语言记住上次选的模板；带 super 的模板只在类有父类时调用 super.toString()。需要的 import 自动加上（Xvfb 验证：Circle.java 选 StringJoiner 生成 `new StringJoiner(", ", Circle.class.getSimpleName() + "[", "]")` 并导入 java.util.StringJoiner） | ✅ |
+| Override / Implement Methods 见第 36 节；Test… | ❌ 未做 |
 
 Linux 实测（Xvfb，Secondary Constructor / super）：`class Dog : Animal { val name: String; var age: Int = 0 }`（Animal 覆盖了 equals / hashCode）里 Alt+Insert 第一项是 Secondary Constructor，对话框列 name、age 全选，生成 `constructor(name: String, age: Int)`，前后空行正确；再生成 equals / hashCode 得到 `if (!super.equals(other)) return false` 和 `var result = super.hashCode()`；Java `class Cat extends Base`（Base 覆盖了两者）生成 `if (!super.equals(o)) return false;` 和 `Objects.hash(super.hashCode(), name, lives)`。
 

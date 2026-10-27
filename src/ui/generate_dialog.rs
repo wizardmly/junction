@@ -8,7 +8,14 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui_kit::component::{Icon, Selectable as _, Sizable as _, WindowExt as _, button::{Button, ButtonVariants as _}, checkbox::Checkbox, h_flex, v_flex};
+use gpui_kit::component::{
+    Icon, Selectable as _, Sizable as _, WindowExt as _,
+    button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
+    h_flex,
+    menu::{DropdownMenu as _, PopupMenuItem},
+    v_flex,
+};
 use gpui_kit::{
     App, AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
     div, prelude::FluentBuilder as _, px,
@@ -30,6 +37,9 @@ pub struct ChooserView {
     /// The grouped list's toggles: Sort Alphabetically, Show Classes.
     sorted: bool,
     show_classes: bool,
+    /// toString()'s "Template:" choices over the list, and the one chosen.
+    templates: Vec<&'static str>,
+    template: usize,
 }
 
 thread_local! {
@@ -98,8 +108,30 @@ impl Render for ChooserView {
                 TOGGLES.set((this.sorted, this.show_classes));
                 cx.notify();
             })));
+        let entity = cx.entity();
+        let templates = self.templates.clone();
+        let template = h_flex().gap_2().items_center().child(div().text_sm().child("Template:")).child(
+            Button::new("generate-template")
+                .outline()
+                .small()
+                .label(self.templates.get(self.template).copied().unwrap_or_default())
+                .child(Icon::new(crate::ui::as_icons::CHEVRON_DOWN).xsmall())
+                .dropdown_menu(move |mut menu, _, _| {
+                    for (ix, name) in templates.iter().enumerate() {
+                        let entity = entity.clone();
+                        menu = menu.item(PopupMenuItem::new(*name).on_click(move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.template = ix;
+                                cx.notify();
+                            })
+                        }));
+                    }
+                    menu
+                }),
+        );
         v_flex()
             .gap_2()
+            .when(!self.templates.is_empty(), |el| el.child(template))
             .when(self.grouped, |el| el.child(toolbar))
             .child(list)
             .when(!self.options.is_empty(), |el| el.child(options))
@@ -133,7 +165,22 @@ pub fn choose_checked(title: &'static str, fields: Vec<Field>, all_checked: bool
 /// `choose`, with these items checked to start with (IntelliJ preselects
 /// a constructor's final fields).
 pub fn choose_preselected(title: &'static str, fields: Vec<Field>, checked: Vec<bool>, on_ok: impl Fn(Vec<Field>, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
-    open(title, fields, checked, Vec::new(), false, move |chosen, _, window, cx| on_ok(chosen, window, cx), window, cx);
+    open(title, fields, checked, Vec::new(), false, (Vec::new(), 0), move |chosen, _, _, window, cx| on_ok(chosen, window, cx), window, cx);
+}
+
+/// `choose` with IntelliJ's "Template:" choice over the list (Generate
+/// toString()); `on_ok` gets the chosen template's position too.
+pub fn choose_template(
+    title: &'static str,
+    fields: Vec<Field>,
+    templates: Vec<&'static str>,
+    template: usize,
+    on_ok: impl Fn(Vec<Field>, usize, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let checked = vec![true; fields.len()];
+    open(title, fields, checked, Vec::new(), false, (templates, template), move |chosen, _, template, window, cx| on_ok(chosen, template, window, cx), window, cx);
 }
 
 /// `choose_checked` with checkboxes under the list (`on_ok` gets their
@@ -149,7 +196,7 @@ pub fn choose_grouped(
     cx: &mut App,
 ) {
     let checked = vec![all_checked; fields.len()];
-    open(title, fields, checked, options, true, on_ok, window, cx);
+    open(title, fields, checked, options, true, (Vec::new(), 0), move |chosen, options, _, window, cx| on_ok(chosen, options, window, cx), window, cx);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -159,12 +206,13 @@ fn open(
     checked: Vec<bool>,
     options: Vec<(&'static str, bool)>,
     grouped: bool,
-    on_ok: impl Fn(Vec<Field>, Vec<bool>, &mut Window, &mut App) + 'static,
+    (templates, template): (Vec<&'static str>, usize),
+    on_ok: impl Fn(Vec<Field>, Vec<bool>, usize, &mut Window, &mut App) + 'static,
     window: &mut Window,
     cx: &mut App,
 ) {
     let (sorted, show_classes) = TOGGLES.get();
-    let view = cx.new(|_| ChooserView { fields, checked, options, grouped, sorted, show_classes });
+    let view = cx.new(|_| ChooserView { fields, checked, options, grouped, sorted, show_classes, templates, template });
     let on_ok = Rc::new(on_ok);
     window.open_dialog(cx, move |dialog, _, _| {
         let (view_ok, on_ok) = (view.clone(), on_ok.clone());
@@ -174,7 +222,8 @@ fn open(
             let options: Vec<bool> = v.options.iter().map(|(_, on)| *on).collect();
             // After this dialog closes: what follows may open another one.
             let on_ok = on_ok.clone();
-            window.defer(cx, move |window, cx| on_ok(chosen, options, window, cx));
+            let template = v.template;
+            window.defer(cx, move |window, cx| on_ok(chosen, options, template, window, cx));
             true
         })
     });
@@ -188,7 +237,7 @@ mod tests {
     fn sorts_and_groups() {
         let field = |name: &str, ty: &str| Field { name: name.into(), ty: ty.into(), is_static: false, is_final: false };
         let fields = vec![field("zeta()", "Shape"), field("area()", "Shape"), field("toString()", "Object"), field("equals(Object)", "Object")];
-        let view = |sorted, show_classes| ChooserView { checked: vec![false; 4], fields: fields.clone(), options: Vec::new(), grouped: true, sorted, show_classes };
+        let view = |sorted, show_classes| ChooserView { checked: vec![false; 4], fields: fields.clone(), options: Vec::new(), grouped: true, sorted, show_classes, templates: Vec::new(), template: 0 };
         assert_eq!(view(false, true).order(), [0, 1, 2, 3]);
         assert_eq!(view(true, true).order(), [1, 0, 3, 2]);
         assert_eq!(view(true, false).order(), [1, 3, 2, 0]);

@@ -105,6 +105,7 @@ pub struct Generated {
 pub struct Supers {
     pub equals: bool,
     pub hash_code: bool,
+    pub to_string: bool,
 }
 
 /// Generates `member` for class `class` (with `type_params` type
@@ -246,6 +247,170 @@ fn java_to_string(class: &str, fields: &[Field], u: &str) -> String {
     }
     lines.push(format!("{c}'}}';"));
     format!("@Override\npublic String toString() {{\n{}\n}}", lines.join("\n"))
+}
+
+/// Generate toString()'s templates, as IntelliJ's chooser names them
+/// (the first is the default).
+pub fn to_string_templates(style: ImportStyle) -> &'static [&'static str] {
+    match style {
+        ImportStyle::Kotlin => &[
+            "Single template",
+            "Single template with super call",
+            "Multiple templates with concatenation",
+            "Multiple templates with concatenation and super call",
+        ],
+        ImportStyle::Java => &[
+            "String concat (+)",
+            "String concat (+) and super.toString()",
+            "StringBuffer",
+            "StringBuilder (JDK 1.5)",
+            "ToStringBuilder (Apache commons-lang)",
+            "ToStringBuilder (Apache commons-lang 3)",
+            "Objects.toStringHelper (Guava)",
+            "MoreObjects.toStringHelper (Guava 18+)",
+            "StringJoiner (JDK 1.8)",
+        ],
+    }
+}
+
+/// The class a library template needs (only offered when it's there).
+pub fn to_string_template_class(template: &str) -> Option<&'static str> {
+    match template {
+        "ToStringBuilder (Apache commons-lang)" => Some("org.apache.commons.lang.builder.ToStringBuilder"),
+        "ToStringBuilder (Apache commons-lang 3)" => Some("org.apache.commons.lang3.builder.ToStringBuilder"),
+        "Objects.toStringHelper (Guava)" => Some("com.google.common.base.Objects"),
+        "MoreObjects.toStringHelper (Guava 18+)" => Some("com.google.common.base.MoreObjects"),
+        _ => None,
+    }
+}
+
+/// toString() from a template of [`to_string_templates`], as IntelliJ's
+/// .vm writes it once reformatted; `call_super`: the class has a
+/// superclass whose toString() the super-call templates add (Kotlin's
+/// only when it overrides Any's).
+pub fn to_string(style: ImportStyle, template: &str, class: &str, fields: &[Field], call_super: bool, u: &str) -> Generated {
+    let c = format!("{u}{u}{u}");
+    let mut imports: Vec<&'static str> = Vec::new();
+    let member = match (style, template) {
+        (ImportStyle::Kotlin, _) => {
+            let multiple = template.starts_with("Multiple");
+            let with_super = template.ends_with("super call") && call_super;
+            let parts: Vec<String> = fields
+                .iter()
+                .map(|f| {
+                    let quote = if f.base() == "String" && !f.nullable() { "'" } else { "" };
+                    let value = if f.kotlin_array() { format!("${{{}.contentToString()}}", f.name) } else { format!("${}", f.name) };
+                    format!("{}={quote}{value}{quote}", f.name)
+                })
+                .collect();
+            let sup = if with_super { " ${super.toString()}" } else { "" };
+            if !multiple || parts.is_empty() {
+                let body = if multiple && with_super { format!("\"{class}()\" +\n{u}{u}\"{sup}\"") } else { format!("\"{class}({}){sup}\"", parts.join(", ")) };
+                format!("override fun toString(): String {{\n{u}return {body}\n}}")
+            } else {
+                let k = format!("{u}{u}");
+                let mut lines = vec![format!("{u}return \"{class}(\" +")];
+                for (i, part) in parts.iter().enumerate() {
+                    let sep = if i + 1 < parts.len() { ", " } else { "" };
+                    lines.push(format!("{k}\"{part}{sep}\" +"));
+                }
+                if with_super {
+                    lines.push(format!("{k}\")\" +"));
+                    lines.push(format!("{k}\"{sup}\""));
+                } else {
+                    lines.push(format!("{k}\")\""));
+                }
+                format!("override fun toString(): String {{\n{}\n}}", lines.join("\n"))
+            }
+        }
+        (ImportStyle::Java, "String concat (+)") => {
+            if fields.iter().any(|f| f.java_array()) {
+                imports.push("java.util.Arrays");
+            }
+            java_to_string(class, fields, u)
+        }
+        (ImportStyle::Java, "String concat (+) and super.toString()") => {
+            if fields.iter().any(|f| f.java_array()) {
+                imports.push("java.util.Arrays");
+            }
+            let plain = java_to_string(class, fields, u);
+            if !call_super {
+                plain
+            } else if fields.is_empty() {
+                plain.replace(&format!("\"{class}{{}}\""), &format!("\"{class}{{}} \" + super.toString()"))
+            } else {
+                plain.replace(&format!("{c}'}}';"), &format!("{c}\"}} \" + super.toString();"))
+            }
+        }
+        (ImportStyle::Java, "StringBuffer" | "StringBuilder (JDK 1.5)") => {
+            let ty = if template == "StringBuffer" { "StringBuffer" } else { "StringBuilder" };
+            let mut lines = vec![format!("{u}final {ty} sb = new {ty}(\"{class}{{\");")];
+            for (i, f) in fields.iter().enumerate() {
+                let sep = if i == 0 { "" } else { ", " };
+                let string = f.ty == "String" || f.ty == "java.lang.String";
+                let label = if string { format!("{sep}{}='", f.name) } else { format!("{sep}{}=", f.name) };
+                let primitive_array = f.java_array() && JAVA_PRIMITIVES.contains(&f.ty.trim_end_matches("[]"));
+                let n = &f.name;
+                if ty == "StringBuffer" && primitive_array {
+                    lines.push(format!("{u}sb.append(\"{label}\");"));
+                    lines.push(format!("{u}if ({n} == null) sb.append(\"null\");"));
+                    lines.push(format!("{u}else {{"));
+                    lines.push(format!("{u}{u}sb.append('[');"));
+                    lines.push(format!("{u}{u}for (int i = 0; i < {n}.length; ++i)"));
+                    lines.push(format!("{u}{u}{u}sb.append(i == 0 ? \"\" : \", \").append({n}[i]);"));
+                    lines.push(format!("{u}{u}sb.append(']');"));
+                    lines.push(format!("{u}}}"));
+                } else if ty == "StringBuffer" && f.java_array() {
+                    imports.push("java.util.Arrays");
+                    lines.push(format!("{u}sb.append(\"{label}\").append({n} == null ? \"null\" : Arrays.asList({n}).toString());"));
+                } else if f.java_array() {
+                    imports.push("java.util.Arrays");
+                    lines.push(format!("{u}sb.append(\"{label}\").append(Arrays.toString({n}));"));
+                } else if string {
+                    lines.push(format!("{u}sb.append(\"{label}\").append({n}).append('\\'');"));
+                } else {
+                    lines.push(format!("{u}sb.append(\"{label}\").append({n});"));
+                }
+            }
+            lines.push(format!("{u}sb.append('}}');"));
+            lines.push(format!("{u}return sb.toString();"));
+            format!("@Override\npublic String toString() {{\n{}\n}}", lines.join("\n"))
+        }
+        (ImportStyle::Java, "StringJoiner (JDK 1.8)") => {
+            imports.push("java.util.StringJoiner");
+            let mut lines = vec![format!("{u}return new StringJoiner(\", \", {class}.class.getSimpleName() + \"[\", \"]\")")];
+            for f in fields.iter().filter(|f| !f.is_static) {
+                let n = &f.name;
+                let add = if f.java_array() {
+                    imports.push("java.util.Arrays");
+                    format!("\"{n}=\" + Arrays.toString({n})")
+                } else if f.ty == "String" || f.ty == "java.lang.String" {
+                    format!("\"{n}='\" + {n} + \"'\"")
+                } else {
+                    format!("\"{n}=\" + {n}")
+                };
+                lines.push(format!("{c}.add({add})"));
+            }
+            lines.push(format!("{c}.toString();"));
+            format!("@Override\npublic String toString() {{\n{}\n}}", lines.join("\n"))
+        }
+        (ImportStyle::Java, _) => {
+            // The libraries' builders: `.add` / `.append` of each name and value.
+            let (start, add, import) = match template {
+                "ToStringBuilder (Apache commons-lang)" => ("new ToStringBuilder(this)", "append", "org.apache.commons.lang.builder.ToStringBuilder"),
+                "ToStringBuilder (Apache commons-lang 3)" => ("new ToStringBuilder(this)", "append", "org.apache.commons.lang3.builder.ToStringBuilder"),
+                "Objects.toStringHelper (Guava)" => ("Objects.toStringHelper(this)", "add", "com.google.common.base.Objects"),
+                _ => ("MoreObjects.toStringHelper(this)", "add", "com.google.common.base.MoreObjects"),
+            };
+            imports.push(import);
+            let mut lines = vec![format!("{u}return {start}")];
+            lines.extend(fields.iter().map(|f| format!("{c}.{add}(\"{0}\", {0})", f.name)));
+            lines.push(format!("{c}.toString();"));
+            format!("@Override\npublic String toString() {{\n{}\n}}", lines.join("\n"))
+        }
+    };
+    imports.dedup();
+    Generated { members: vec![member], imports }
 }
 
 /// IntelliJ's unique local name: `base`, else `base1`, `base2`… not a
@@ -446,7 +611,7 @@ mod tests {
 
     #[test]
     fn calls_super_and_secondary_constructors() {
-        let supers = Supers { equals: true, hash_code: true };
+        let supers = Supers { equals: true, hash_code: true, to_string: false };
         let g = generate_with(ImportStyle::Kotlin, Member::EqualsHashCode, "Dog", 0, &[f("name", "String")], supers, "    ");
         assert!(g.members[0].contains("if (javaClass != other?.javaClass) return false\n    if (!super.equals(other)) return false\n\n    other as Dog"));
         assert_eq!(g.members[1], "override fun hashCode(): Int {\n    var result = super.hashCode()\n    result = 31 * result + name.hashCode()\n    return result\n}");
@@ -457,6 +622,29 @@ mod tests {
         assert_eq!(g.members[0], "constructor(name: String, age: Int) {\n    this.name = name\n    this.age = age\n}");
         let g = generate(ImportStyle::Kotlin, Member::SecondaryConstructor, "Dog", 0, &[], "    ");
         assert_eq!(g.members[0], "constructor()");
+    }
+
+    #[test]
+    fn to_string_templates() {
+        let fields = [f("name", "String"), f("age", "Int")];
+        let kt = |t: &str, sup: bool| to_string(ImportStyle::Kotlin, t, "Dog", &fields, sup, "    ").members.remove(0);
+        assert_eq!(kt("Single template", true), "override fun toString(): String {\n    return \"Dog(name='$name', age=$age)\"\n}");
+        assert_eq!(kt("Single template with super call", true), "override fun toString(): String {\n    return \"Dog(name='$name', age=$age) ${super.toString()}\"\n}");
+        assert_eq!(kt("Single template with super call", false), kt("Single template", true));
+        assert_eq!(kt("Multiple templates with concatenation", false), "override fun toString(): String {\n    return \"Dog(\" +\n        \"name='$name', \" +\n        \"age=$age\" +\n        \")\"\n}");
+        assert_eq!(kt("Multiple templates with concatenation and super call", true), "override fun toString(): String {\n    return \"Dog(\" +\n        \"name='$name', \" +\n        \"age=$age\" +\n        \")\" +\n        \" ${super.toString()}\"\n}");
+        let fields = [f("name", "String"), f("ids", "int[]"), f("tags", "String[]")];
+        let java = |t: &str| to_string(ImportStyle::Java, t, "Cat", &fields, true, "    ");
+        let g = java("String concat (+) and super.toString()");
+        assert!(g.members[0].ends_with("            \", tags=\" + Arrays.toString(tags) +\n            \"} \" + super.toString();\n}"), "{}", g.members[0]);
+        let g = java("StringBuffer");
+        assert_eq!(g.members[0], "@Override\npublic String toString() {\n    final StringBuffer sb = new StringBuffer(\"Cat{\");\n    sb.append(\"name='\").append(name).append('\\'');\n    sb.append(\", ids=\");\n    if (ids == null) sb.append(\"null\");\n    else {\n        sb.append('[');\n        for (int i = 0; i < ids.length; ++i)\n            sb.append(i == 0 ? \"\" : \", \").append(ids[i]);\n        sb.append(']');\n    }\n    sb.append(\", tags=\").append(tags == null ? \"null\" : Arrays.asList(tags).toString());\n    sb.append('}');\n    return sb.toString();\n}");
+        assert_eq!(g.imports, ["java.util.Arrays"]);
+        let g = java("StringJoiner (JDK 1.8)");
+        assert_eq!(g.members[0], "@Override\npublic String toString() {\n    return new StringJoiner(\", \", Cat.class.getSimpleName() + \"[\", \"]\")\n            .add(\"name='\" + name + \"'\")\n            .add(\"ids=\" + Arrays.toString(ids))\n            .add(\"tags=\" + Arrays.toString(tags))\n            .toString();\n}");
+        assert_eq!(g.imports, ["java.util.StringJoiner", "java.util.Arrays"]);
+        let g = java("MoreObjects.toStringHelper (Guava 18+)");
+        assert!(g.members[0].contains("    return MoreObjects.toStringHelper(this)\n            .add(\"name\", name)\n") && g.imports == ["com.google.common.base.MoreObjects"]);
     }
 
     #[test]
