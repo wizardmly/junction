@@ -32,6 +32,9 @@ pub struct Member {
     /// Qualified names of the classes its signature names, as the
     /// supertype's file imports them, for the subclass to import.
     pub imports: Vec<String>,
+    /// Java: the direct superinterface a default method comes through,
+    /// called as `Shape.super.f()` (plain `super` means the superclass).
+    pub through: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,7 +194,7 @@ pub fn member(header: &str, kotlin: bool, in_interface: bool, has_body: bool) ->
                 let params = params.into_iter().map(|p| p.split(" = ").next().unwrap_or(&p).trim().to_owned()).collect();
                 let close = crate::domain::intentions::matching(header, open)?;
                 let ty = header[close + 1..].trim().strip_prefix(':').map(|t| t.split(" where ").next().unwrap_or(t).trim().to_owned()).filter(|t| !t.is_empty());
-                Some(Member { name, params, ty, kind, keep, throws: None, is_abstract, doc: None, imports: Vec::new() })
+                Some(Member { name, params, ty, kind, keep, throws: None, is_abstract, doc: None, imports: Vec::new(), through: None })
             }
             _ => {
                 let decl = header.split(if kind == MemberKind::Var { " var " } else { " val " }).last().unwrap_or(header);
@@ -200,7 +203,7 @@ pub fn member(header: &str, kotlin: bool, in_interface: bool, has_body: bool) ->
                     Some((n, t)) => (n.trim(), Some(t.split(" = ").next().unwrap_or(t).split(" by ").next().unwrap_or(t).trim().to_owned())),
                     None => (decl.split(" = ").next().unwrap_or(decl).trim(), None),
                 };
-                Some(Member { name: name.to_owned(), params: Vec::new(), ty, kind, keep, throws: None, is_abstract, doc: None, imports: Vec::new() })
+                Some(Member { name: name.to_owned(), params: Vec::new(), ty, kind, keep, throws: None, is_abstract, doc: None, imports: Vec::new(), through: None })
             }
         }
     } else {
@@ -222,7 +225,7 @@ pub fn member(header: &str, kotlin: bool, in_interface: bool, has_body: bool) ->
         // An interface's members are public.
         let visibility = if in_interface || before.contains(&"public") { "public" } else if before.contains(&"protected") { "protected" } else { "" };
         let keep = (!visibility.is_empty()).then(|| vec![visibility.to_owned()]).unwrap_or_default();
-        Some(Member { name, params, ty: Some(ty), kind: MemberKind::Fun, keep, throws, is_abstract, doc: None, imports: Vec::new() })
+        Some(Member { name, params, ty: Some(ty), kind: MemberKind::Fun, keep, throws, is_abstract, doc: None, imports: Vec::new(), through: None })
     }
 }
 
@@ -238,6 +241,7 @@ pub fn root_members(kotlin: bool) -> Vec<(String, Member)> {
         is_abstract: false,
         doc: None,
         imports: Vec::new(),
+        through: None,
     };
     if kotlin {
         vec![
@@ -462,7 +466,8 @@ fn generate_code(m: &Member, kotlin: bool, unit: &str, options: &Options) -> Str
     } else {
         let ty = m.ty.clone().unwrap_or_else(|| "void".into());
         let throws = m.throws.as_ref().map(|t| format!(" throws {t}")).unwrap_or_default();
-        let call = format!("super.{}({})", m.name, arguments(m, false));
+        let sup = m.through.as_ref().map_or_else(|| "super".to_owned(), |i| format!("{i}.super"));
+        let call = format!("{sup}.{}({})", m.name, arguments(m, false));
         let body = match (m.is_abstract, default_value(&ty)) {
             (true, Some(v)) => format!("return {v};"),
             (true, None) => String::new(),

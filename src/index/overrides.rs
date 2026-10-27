@@ -26,10 +26,13 @@ pub fn super_members(index: &ProjectIndex, root: &Path, lang: Lang, from: &str, 
     let kotlin = lang == Lang::Kotlin;
     let family = lang.family();
     let mut sources: HashMap<String, Option<String>> = HashMap::new();
-    let mut queue: VecDeque<(SuperType, Vec<(String, String)>, String)> = ov::supertypes(class_header, kotlin).into_iter().map(|s| (s, Vec::new(), from.to_owned())).collect();
+    // (supertype, its outer type arguments, the file naming it, the direct
+    // supertype it's reached through when that is a Java interface).
+    let mut queue: VecDeque<(SuperType, Vec<(String, String)>, String, Option<String>)> = ov::supertypes(class_header, kotlin).into_iter().map(|s| (s, Vec::new(), from.to_owned(), None)).collect();
+    let direct: Vec<String> = queue.iter().map(|(s, ..)| s.name.clone()).collect();
     let mut visited = HashSet::new();
     let mut out: Vec<(String, Member)> = Vec::new();
-    while let Some((sup, outer, referrer)) = queue.pop_front() {
+    while let Some((sup, outer, referrer, through)) = queue.pop_front() {
         if !visited.insert(sup.name.clone()) || visited.len() > 64 {
             continue;
         }
@@ -45,6 +48,8 @@ pub fn super_members(index: &ProjectIndex, root: &Path, lang: Lang, from: &str, 
         let header = header.split('{').next().unwrap_or(&header).to_owned();
         let map: Vec<(String, String)> = ov::type_params(&header, &sup.name).into_iter().zip(args).collect();
         let in_interface = symbol.kind == SymbolKind::Interface || header.split_whitespace().any(|w| w == "interface");
+        // A Java default method reached through a direct superinterface.
+        let through = through.or_else(|| (!kotlin && in_interface && direct.contains(&sup.name)).then(|| sup.name.clone()));
         for m in &entry.symbols {
             let owner = m.container.as_deref().and_then(|c| c.rsplit(['.', ':']).next());
             if owner != Some(sup.name.as_str()) || !matches!(m.kind, SymbolKind::Method | SymbolKind::Function | SymbolKind::Property) {
@@ -53,6 +58,7 @@ pub fn super_members(index: &ProjectIndex, root: &Path, lang: Lang, from: &str, 
             let Some((member_header, has_body)) = member_header(&lines, m.line as usize, kotlin) else { continue };
             let Some(mut member) = ov::member(&ov::substitute(&member_header, &map), kotlin, in_interface, has_body) else { continue };
             member.doc = ov::doc_comment(&lines, m.line as usize);
+            member.through = through.clone();
             // The classes its signature names as the supertype's file sees
             // them; type arguments come from the class itself.
             if let Some(declared) = ov::member(&member_header, kotlin, in_interface, has_body) {
@@ -65,7 +71,7 @@ pub fn super_members(index: &ProjectIndex, root: &Path, lang: Lang, from: &str, 
             out.push((sup.name.clone(), member));
         }
         for next in ov::supertypes(&header, kotlin) {
-            queue.push_back((next, map.clone(), path.to_owned()));
+            queue.push_back((next, map.clone(), path.to_owned(), through.clone()));
         }
     }
     out.extend(ov::root_members(kotlin));
@@ -142,6 +148,39 @@ mod tests {
         assert_eq!(owner, "Shape");
         assert_eq!(area.doc.as_deref(), Some("/** The area. */"));
         assert_eq!(area.imports, ["com.example.model.Item", "com.example.lib.Unit2"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn java_default_methods_go_through_their_interface() {
+        let dir = std::env::temp_dir().join(format!("junction-overrides-java-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let files = [
+            ("a/Shape.java", "package a;\n\npublic interface Shape {\n    default String name() { return \"shape\"; }\n    double area();\n}\n"),
+            ("a/Round.java", "package a;\n\npublic interface Round extends Shape {\n    default double radius() { return 1; }\n}\n"),
+            ("a/Base.java", "package a;\n\npublic class Base implements Shape {\n    public double area() { return 0; }\n}\n"),
+        ];
+        for (path, text) in files {
+            let full = dir.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, text).unwrap();
+        }
+        std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).output().unwrap();
+        let mut index = ProjectIndex::load(&dir);
+        index.update(&|_, _| {});
+        let through = |header: &str, name: &str| {
+            let members = super_members(&index, &dir, Lang::Java, "a/C.java", header);
+            members.into_iter().find(|(_, m)| m.name == name).map(|(_, m)| m.through)
+        };
+        // Directly, and inherited through another interface.
+        assert_eq!(through("public class C implements Shape {", "name"), Some(Some("Shape".into())));
+        assert_eq!(through("public class C implements Round {", "name"), Some(Some("Round".into())));
+        assert_eq!(through("public class C implements Round {", "radius"), Some(Some("Round".into())));
+        // Through a superclass: plain `super`.
+        assert_eq!(through("public class C extends Base {", "name"), Some(None));
+        assert_eq!(through("public class C extends Base {", "toString"), Some(None));
+        let m = super_members(&index, &dir, Lang::Java, "a/C.java", "public class C implements Shape {").into_iter().find(|(_, m)| m.name == "name").unwrap().1;
+        assert_eq!(ov::generate(&m, false, "    "), "@Override\npublic String name() {\n    return Shape.super.name();\n}");
         std::fs::remove_dir_all(dir).ok();
     }
 }

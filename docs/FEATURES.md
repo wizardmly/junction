@@ -801,7 +801,10 @@ IntelliJ 的 Code › Override Methods（Ctrl+O）和 Implement Methods（Ctrl+I
 | 签名里类型的 import：生成的签名用到的类（参数、返回值、`throws`）按超类型所在文件的 import 或它的包找到全名，当前文件看不到的（不同包、没导入、不是 `.*` 或默认导入）就在同一次编辑里加上 import；类型参数换成的实参来自当前类，不另外导入。代码：`ov::type_names`、`index::overrides::qualified_name` | ✅ |
 | Copy JavaDoc 选项（Kotlin / Java 对话框都有，默认不勾）：勾上后把超类型成员上方的 `/** … */` 文档注释（跳过注解）复制到生成的成员前面 | ✅ |
 | 按类分组：对话框按所属类分组，每组一个带类图标的标题行，成员缩进列在下面，近的类在前 | ✅ |
-| Java 接口默认方法的 `Shape.super.f()` 写法、可切换的排序 / 分组按钮 | ❌ 未做 |
+| Java 接口默认方法的 `Shape.super.f()` 写法：覆盖从直接实现（或 `extends`）的接口来的默认方法时调用写成 `Shape.super.name()`（Java 里 `super.f()` 只指父类）；经另一个接口继承来的写成那个直接接口 `Round.super.name()`；经父类继承来的仍写 `super.name()` | ✅ |
+| 可切换的排序 / 分组按钮 | ❌ 未做 |
+
+Linux 实测（Xvfb，2026-10-27）：Java `interface Shape { default String name() … }`，`class Circle implements Shape` 里 Ctrl+O 勾 `name():String` 和 `toString():String`，生成 `return Shape.super.name();` 和 `return super.toString();`。
 
 Linux 实测（Xvfb，2026-10-25）：`lib/Shape.kt`（import 了 `com.example.model.Item`，`area` 上有多行 KDoc，`accept(item: Item)` 上有单行 KDoc）、`app/Circle.kt` 里 `class Circle : Shape`；Ctrl+I 弹出 “Implement Members”，列表按类分组（标题行 Shape，下面两项缩进），勾上 Copy JavaDoc 确定后，两段文档注释和成员一起生成，同时插入 `import com.example.model.Item`。Java `DiskStore implements Store`（`Item load(String key) throws IOException`）上 Ctrl+I，下方有 Copy JavaDoc 和 Insert @Override，确定后加上 `com.example.model.Item` 和 `java.io.IOException` 两个 import；Ctrl+Z 一次全部撤销。
 
