@@ -278,6 +278,8 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     };
     let raw: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    // Per line out: code the selection reformats, which may be chopped.
+    let mut choppable: Vec<bool> = Vec::with_capacity(raw.len());
     let mut stack: Vec<Open> = Vec::new();
     // The last code line.
     let mut previous: Option<Previous> = None;
@@ -290,6 +292,7 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         // Inside a raw string or a template: the text is the string's.
         if !matches!(starts, State::Code | State::Block(_)) {
             out.push((*text_line).to_owned());
+            choppable.push(false);
             let lead = text_line.len() - text_line.trim_start().len();
             apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, text_line);
             blank_run = 0;
@@ -301,6 +304,7 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 continue;
             }
             out.push(if selected { String::new() } else { (*text_line).to_owned() });
+            choppable.push(false);
             continue;
         }
         blank_run = 0;
@@ -430,6 +434,7 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, text_line);
         }
         out.push(line_out);
+        choppable.push(selected && is_code_line);
         if is_code_line {
             let code_text: String = text_line
                 .char_indices()
@@ -445,7 +450,163 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             }
         }
     }
+    if kotlin {
+        out = chop_long_lines(out, choppable, &unit);
+    }
     out.join("\n")
+}
+
+/// IntelliJ's right margin.
+const RIGHT_MARGIN: usize = 120;
+
+/// Kotlin's official style chops a list of arguments or parameters down
+/// when it runs past the right margin (CALL_PARAMETERS_WRAP and
+/// METHOD_PARAMETERS_WRAP "chop down if long", `(` and `)` on their own
+/// lines, no trailing comma): the outermost such list first, then each
+/// line it makes that is still long.
+fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, unit: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut todo: Vec<(String, bool)> = lines.into_iter().zip(choppable).rev().collect();
+    while let Some((line, choppable)) = todo.pop() {
+        match choppable.then(|| chop(&line, unit)).flatten() {
+            Some(parts) => todo.extend(parts.into_iter().rev().map(|p| (p, true))),
+            None => out.push(line),
+        }
+    }
+    out
+}
+
+/// Columns, a tab as 4.
+fn width(text: &str) -> usize {
+    text.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum()
+}
+
+/// A code line split at its outermost argument or parameter list whose
+/// last item ends past the margin; `None` when there is none.
+fn chop(line: &str, unit: &str) -> Option<Vec<String>> {
+    if width(line) <= RIGHT_MARGIN {
+        return None;
+    }
+    let info = scan(line, true).into_iter().next()?;
+    let is_code = |i: usize| info.code.get(i).copied().unwrap_or(false);
+    // (depth, open, close) of the list to chop.
+    let mut best: Option<(usize, usize, usize)> = None;
+    let mut stack: Vec<(usize, char)> = Vec::new();
+    for &(at, c) in &info.brackets {
+        if matches!(c, '(' | '[' | '{') {
+            stack.push((at, c));
+            continue;
+        }
+        let Some((open, opener)) = stack.pop() else { continue };
+        let inner = &line[open + 1..at];
+        let past = width(&line[..at]) > RIGHT_MARGIN;
+        let commented = info.comment[open..at].iter().any(|c| *c);
+        if opener == '(' && c == ')' && past && !inner.trim().is_empty() && !commented && is_call_or_declaration(&line[..open]) {
+            let depth = stack.len();
+            if best.is_none_or(|(d, o, _)| depth < d || depth == d && open < o) {
+                best = Some((depth, open, at));
+            }
+        }
+    }
+    // A declaration whose parameters fit but not what follows them
+    // (`): Result<String> {`): its parameters.
+    let declaration = || {
+        let (open, close) = paren_pair(&info.brackets)?;
+        let head = &line[..open];
+        let declares = head.split_whitespace().any(|w| matches!(w, "fun" | "class" | "constructor" | "interface") || w.starts_with("fun<"));
+        (declares && !line[open + 1..close].trim().is_empty() && width(head) < RIGHT_MARGIN).then_some((0, open, close))
+    };
+    let Some((_, open, close)) = best.or_else(declaration) else {
+        return chain_break(line, &info, unit);
+    };
+    // The items: commas outside nested brackets, strings and `<…>`.
+    let mut items = Vec::new();
+    let mut depth = 0usize;
+    let mut angle = 0usize;
+    let mut start = open + 1;
+    for (i, c) in line[open + 1..close].char_indices().map(|(i, c)| (i + open + 1, c)) {
+        if !is_code(i) {
+            continue;
+        }
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '<' if line[..i].ends_with(|p: char| p.is_alphanumeric() || p == '_') => angle += 1,
+            '>' if angle > 0 && !line[..i].ends_with('-') => angle -= 1,
+            ',' if depth == 0 && angle == 0 => {
+                items.push(line[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    items.push(line[start..close].trim());
+    let indent = &line[..line.len() - line.trim_start().len()];
+    let mut parts = vec![line[..=open].trim_end().to_owned()];
+    let last = items.len() - 1;
+    for (n, item) in items.into_iter().enumerate() {
+        parts.push(format!("{indent}{unit}{item}{}", if n < last { "," } else { "" }));
+    }
+    parts.push(format!("{indent}{}", &line[close..]));
+    Some(parts)
+}
+
+/// METHOD_CALL_CHAIN_WRAP "wrap if long": the line broken before its last
+/// chained call (`.name(` or `?.name {`, outside brackets) that starts
+/// within the margin, the call an indent deeper.
+fn chain_break(line: &str, info: &Line, unit: &str) -> Option<Vec<String>> {
+    let lead = line.len() - line.trim_start().len();
+    let mut depth = 0usize;
+    let mut cut = None;
+    for (i, c) in line.char_indices().skip_while(|(i, _)| *i < lead) {
+        if !info.code.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '.' if depth == 0 && i > lead && width(&line[..i]) < RIGHT_MARGIN => {
+                let at = if line[..i].ends_with('?') { i - 1 } else { i };
+                let after_receiver = line[..at].ends_with(|p: char| p.is_alphanumeric() || p == '_' || p == ')' || p == '}');
+                let name: String = line[i + 1..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                let calls = !name.is_empty() && line[i + 1 + name.len()..].trim_start().starts_with(['(', '{']);
+                if after_receiver && calls && at > lead {
+                    cut = Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    let cut = cut?;
+    let indent = &line[..lead];
+    Some(vec![line[..cut].trim_end().to_owned(), format!("{indent}{unit}{}", &line[cut..])])
+}
+
+/// The line's first `(` and its `)`, when they pair on the line.
+fn paren_pair(brackets: &[(usize, char)]) -> Option<(usize, usize)> {
+    let first = brackets.iter().position(|(_, c)| *c == '(')?;
+    let mut depth = 0;
+    for &(at, c) in &brackets[first..] {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            _ => {
+                depth -= 1;
+                if depth == 0 {
+                    return (c == ')').then_some((brackets[first].0, at));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether a `(` after this text opens a call's arguments or a
+/// declaration's parameters: after a name, `>` or `)`, not a keyword's
+/// condition.
+fn is_call_or_declaration(before: &str) -> bool {
+    let word = before.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+    let ends_name = before.ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ')') || before.ends_with('>') && !before.ends_with("->");
+    ends_name && !matches!(word, "if" | "when" | "for" | "while" | "catch" | "return" | "in" | "is" | "else" | "throw")
 }
 
 /// The file's indent unit: a tab, else 4 spaces unless the code's indents
@@ -896,6 +1057,31 @@ mod tests {
     #[test]
     fn blank_lines_and_trailing_spaces() {
         assert_eq!(kt("a()   \n\n\n\n\nb()\n"), "a()\n\n\nb()\n");
+    }
+
+    #[test]
+    fn chops_long_argument_and_parameter_lists() {
+        let long = format!("fun f() {{\nval result = repository.loadEverything(firstArgument, \"{}\", listOf(1, 2), third = mapOf<String, Int>())\n}}", "x".repeat(40));
+        assert_eq!(
+            kt(&long),
+            format!("fun f() {{\n    val result = repository.loadEverything(\n        firstArgument,\n        \"{}\",\n        listOf(1, 2),\n        third = mapOf<String, Int>()\n    )\n}}", "x".repeat(40))
+        );
+        // Reformatting again changes nothing.
+        assert_eq!(kt(&kt(&long)), kt(&long));
+        let decl = "class Repository {\nfun loadEverything(firstArgument: String, secondArgument: Map<String, Int>, thirdArgument: Int = 1): Result<String> {\nreturn x\n}\n}";
+        assert_eq!(
+            kt(decl),
+            "class Repository {\n    fun loadEverything(\n        firstArgument: String,\n        secondArgument: Map<String, Int>,\n        thirdArgument: Int = 1\n    ): Result<String> {\n        return x\n    }\n}"
+        );
+        // A chained call past the margin goes to the next line.
+        let chain = format!("fun f() {{\ncomposeTestRule.onNodeWithText(getString(R.string.{})).assertIsSelected()\n}}", "a".repeat(60));
+        assert_eq!(kt(&chain), format!("fun f() {{\n    composeTestRule.onNodeWithText(getString(R.string.{}))\n        .assertIsSelected()\n}}", "a".repeat(60)));
+        assert_eq!(kt(&kt(&chain)), kt(&chain));
+        // A long string or a condition isn't a list to chop; Java never chops.
+        let string = format!("val s = \"{}\"", "y".repeat(130));
+        assert_eq!(kt(&string), string);
+        let java_line = format!("class A {{\n    void f() {{\n        call(aaaa, \"{}\");\n    }}\n}}", "z".repeat(120));
+        assert_eq!(java(&java_line), java_line);
     }
 
     #[test]
