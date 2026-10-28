@@ -52,11 +52,14 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Add names to call arguments", "Names a call's positional arguments after the parameters"),
     ("Kotlin", "Add indices to 'for' loop", "Iterates with withIndex(), adding an index variable to a for loop"),
     ("Kotlin", "Remove indices in 'for' loop", "Drops an unused index variable and withIndex() from a for loop"),
+    ("Kotlin", "Replace size zero check with 'isEmpty()'", "Replaces size == 0 on a collection, array or string with isEmpty()"),
+    ("Kotlin", "Replace size check with 'isNotEmpty()'", "Replaces size != 0 or size > 0 with isNotEmpty()"),
     ("Kotlin", "Iterate over collection", "Wraps an expression of a collection, array, map or string in a for loop over it"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
     ("Java", "Replace 'for each' loop with indexed 'for' loop", "Loops over a list or an array by index instead of with for each"),
     ("Java", "Replace with enhanced 'for'", "Turns an indexed for loop over a list or an array into a for each loop"),
+    ("Java", "Replace size check with 'isEmpty()'", "Replaces size() == 0 (or length() of a string) with isEmpty(), != 0 and > 0 with !isEmpty()"),
 ];
 
 /// The family an intention's title belongs to (`Add braces to 'if'
@@ -66,6 +69,8 @@ pub fn family(title: &str) -> &str {
         "Add braces to statement"
     } else if title.starts_with("Remove braces from ") {
         "Remove braces from statement"
+    } else if title == "Replace with 'isEmpty()'" || title == "Replace with '!isEmpty()'" {
+        "Replace size check with 'isEmpty()'"
     } else if title.starts_with("Iterate over '") {
         "Iterate over collection"
     } else {

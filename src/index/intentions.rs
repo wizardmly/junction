@@ -392,6 +392,80 @@ fn replace_access(text: &str, collection: &str, index: &str, array: bool, name: 
     out
 }
 
+/// A size compared with 0 (or 1) → `isEmpty()` / `isNotEmpty()`: Kotlin's
+/// ReplaceSizeZeroCheckWithIsEmpty and ReplaceSizeCheckWithIsNotEmpty
+/// fixes (`list.size == 0`, `text.length > 0`), Java's
+/// SizeReplaceableByIsEmpty fix (`list.size() == 0` → `list.isEmpty()`,
+/// `!= 0` / `> 0` → `!list.isEmpty()`), when the receiver is declared a
+/// collection, map, array (Kotlin) or string.
+pub fn size_check(text: &str, caret: usize, kotlin: bool, classes: super::catches::Classes) -> Option<Intention> {
+    let lang = if kotlin { Lang::Kotlin } else { Lang::Java };
+    let tree = symbols::parse(lang, text)?;
+    let at = innermost(tree.root_node(), caret)?;
+    let comparison = ancestors(at)
+        .take_while(|n| !matches!(n.kind(), "statements" | "block" | "class_body" | "lambda_literal"))
+        .find(|n| matches!(n.kind(), "equality_expression" | "comparison_expression" | "binary_expression") && n.named_child_count() == 2)?;
+    let (left, right) = (comparison.named_child(0)?, comparison.named_child(1)?);
+    let op = text[left.end_byte()..right.start_byte()].trim();
+    let number = |n: Node| -> Option<u32> { matches!(n.kind(), "integer_literal" | "decimal_integer_literal").then(|| text[n.byte_range()].parse().ok()).flatten() };
+    // `size` on the left, the number on the right.
+    let (access, op, value) = match (number(left), number(right)) {
+        (None, Some(v)) => (left, op.to_owned(), v),
+        (Some(v), None) => (right, match op { "<" => ">", ">" => "<", "<=" => ">=", ">=" => "<=", o => o }.to_owned(), v),
+        _ => return None,
+    };
+    let empty = match (op.as_str(), value) {
+        ("==", 0) | ("<", 1) => true,
+        ("!=", 0) | (">", 0) | (">=", 1) => false,
+        _ => return None,
+    };
+    // `x.size` / `x.length` (Kotlin), `x.size()` / `x.length()` (Java).
+    let (receiver, member) = if kotlin {
+        if access.kind() != "navigation_expression" || text[access.byte_range()].contains("?.") {
+            return None;
+        }
+        let suffix = access.named_child(1)?;
+        (access.named_child(0)?, text[suffix.byte_range()].trim_start_matches('.').to_owned())
+    } else {
+        if access.kind() != "method_invocation" || access.child_by_field_name("arguments").is_some_and(|a| a.named_child_count() > 0) {
+            return None;
+        }
+        (access.child_by_field_name("object")?, text[access.child_by_field_name("name")?.byte_range()].to_owned())
+    };
+    let declared = if kotlin {
+        super::introduce::kotlin_type(receiver, text).filter(|t| !t.is_empty())
+    } else {
+        super::surround::expression_type(Lang::Java, receiver, text)
+    }
+    .or_else(|| super::types::type_of(lang, text, receiver.byte_range(), classes).map(|t| t.ty))?;
+    if declared.ends_with('?') {
+        return None;
+    }
+    let head = declared.split('<').next().unwrap_or(&declared);
+    let head = head.rsplit('.').next().unwrap_or(head);
+    let sized = matches!(
+        head,
+        "List" | "MutableList" | "ArrayList" | "LinkedList" | "Set" | "MutableSet" | "HashSet" | "LinkedHashSet" | "TreeSet" | "Collection" | "MutableCollection" | "Map" | "MutableMap" | "HashMap"
+            | "LinkedHashMap" | "TreeMap"
+    ) || kotlin && (head == "Array" || head.ends_with("Array"));
+    let ok = match member.as_str() {
+        "size" => sized,
+        "length" => head == "String" || kotlin && matches!(head, "CharSequence" | "StringBuilder"),
+        _ => false,
+    };
+    if !ok || !kotlin && declared.ends_with("[]") {
+        return None;
+    }
+    let receiver_text = &text[receiver.byte_range()];
+    let (title, replacement) = match (kotlin, empty) {
+        (true, true) => ("Replace size zero check with 'isEmpty()'", format!("{receiver_text}.isEmpty()")),
+        (true, false) => ("Replace size check with 'isNotEmpty()'", format!("{receiver_text}.isNotEmpty()")),
+        (false, true) => ("Replace with 'isEmpty()'", format!("{receiver_text}.isEmpty()")),
+        (false, false) => ("Replace with '!isEmpty()'", format!("!{receiver_text}.isEmpty()")),
+    };
+    Some(Intention { title: title.into(), range: comparison.byte_range(), caret: comparison.start_byte() + replacement.len(), replacement })
+}
+
 type Typing<'a> = dyn Fn(Node) -> Option<(String, Vec<String>)> + 'a;
 
 /// `val x = 1` → `val x: Int = 1`; `fun f() = 1` → `fun f(): Int = 1`;
@@ -746,6 +820,32 @@ mod tests {
         let each = "class A {\n    void f(java.util.List<String> names) {\n        for (String name : names) {\n            print(name);\n        }\n    }\n}\n";
         let indexed = apply(each, &indexed_for_loop(each, each.find("name :").unwrap(), &classes).unwrap());
         assert_eq!(apply(&indexed, &enhanced_for_loop(&indexed, indexed.find("int i").unwrap(), &classes).unwrap()), each);
+    }
+
+    #[test]
+    fn replaces_size_checks() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let kt = "fun f(l: List<Int>, s: String, a: IntArray, n: Int, m: List<Int>?) {\n    if (l.size == 0 || 0 < s.length || a.size >= 1 || n == 0 || l.size == 2) {}\n    m?.size == 0\n}\n";
+        let at = |text: &str, s: &str| text.find(s).unwrap();
+        let get = |text: &str, s: &str, kotlin: bool| size_check(text, at(text, s), kotlin, &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = get(kt, "l.size == 0", true).unwrap();
+        assert_eq!(title, "Replace size zero check with 'isEmpty()'");
+        assert!(out.contains("if (l.isEmpty() || 0 < s.length"));
+        let (title, out) = get(kt, "s.length", true).unwrap();
+        assert_eq!(title, "Replace size check with 'isNotEmpty()'");
+        assert!(out.contains("|| s.isNotEmpty() ||"));
+        assert!(get(kt, "a.size", true).unwrap().1.contains("|| a.isNotEmpty() ||"));
+        assert_eq!(get(kt, "n == 0", true), None);
+        assert_eq!(get(kt, "l.size == 2", true), None);
+        assert_eq!(get(kt, "m?.size", true), None);
+        let java = "class A {\n    void f(java.util.List<String> l, String s, int[] a) {\n        if (l.size() == 0 || s.length() > 0 || a.length == 0) {}\n    }\n}\n";
+        let (title, out) = get(java, "l.size()", false).unwrap();
+        assert_eq!(title, "Replace with 'isEmpty()'");
+        assert!(out.contains("if (l.isEmpty() ||"));
+        let (title, out) = get(java, "s.length()", false).unwrap();
+        assert_eq!(title, "Replace with '!isEmpty()'");
+        assert!(out.contains("|| !s.isEmpty() ||"));
+        assert_eq!(get(java, "a.length", false), None);
     }
 
     #[test]
