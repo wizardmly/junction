@@ -390,6 +390,27 @@ pub fn surround_expression(style: ImportStyle, surrounder: Surrounder, text: &st
     expression_edit(range, out, select)
 }
 
+/// A try / catch's one `catch (… Exception …)` made one per exception
+/// the wrapped code throws (simple names, IntelliJ's order), the first
+/// one's type selected; unchanged for none.
+pub fn with_catches(done: Surrounded, catches: &[String]) -> Surrounded {
+    let Some(first) = catches.first() else { return done };
+    let Some(start) = done.text.find("catch (") else { return done };
+    let line = done.text[..start].rfind('\n').map_or(0, |i| i + 1);
+    let base: String = done.text[line..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    let close = format!("\n{base}}}");
+    let Some(end) = done.text[start..].find(&close).map(|i| start + i + close.len()) else { return done };
+    let clause = &done.text[start..end];
+    let replacement = catches.iter().map(|c| clause.replacen("Exception", c, 1)).collect::<Vec<_>>().join(" ");
+    let at = done.range.start + start + clause.find("Exception").unwrap_or(0);
+    // `select` is in the document: the first type, or moved past the clauses.
+    let (from, to) = (done.range.start + start, done.range.start + end);
+    let shift = |p: usize| if p >= to { p + replacement.len() - clause.len() } else { p };
+    let select = if (from..to).contains(&done.select.start) { at..at + first.len() } else { shift(done.select.start)..shift(done.select.end) };
+    let text = format!("{}{replacement}{}", &done.text[..start], &done.text[end..]);
+    Surrounded { range: done.range, text, select, stops: done.stops, end: done.end }
+}
+
 /// The edit replacing `range` with `text`, `select` in it.
 fn expression_edit(range: Range<usize>, text: String, select: Range<usize>) -> Surrounded {
     let select = range.start + select.start..range.start + select.end;
@@ -524,5 +545,25 @@ mod tests {
         let unknown = ExpressionContext { enclosing: Some(0..1), ..Default::default() };
         assert_eq!(expression_surrounders(ImportStyle::Java, Some(&unknown)), [Parentheses, Cast, Not, NotInstanceof, NullCheck]);
         assert_eq!(expression_surrounders(ImportStyle::Java, None), [Parentheses, Not]);
+    }
+
+    #[test]
+    fn catches_each_exception() {
+        // IntelliJ's surroundWith tryCatch with two exceptions thrown.
+        let text = "  void f() {\n    run();\n  }\n";
+        let caret = text.find("run").unwrap();
+        let done = surround_lines(ImportStyle::Java, Surrounder::TryCatchFinally, text, lines_of(text, caret..caret), "  ");
+        let (out, selected) = apply(text, &with_catches(done, &["InterruptedException".into(), "IOException".into()]));
+        assert_eq!(
+            out,
+            "  void f() {\n    try {\n      run();\n    } catch (InterruptedException e) {\n      throw new RuntimeException(e);\n    } catch (IOException e) {\n      throw new RuntimeException(e);\n    } finally {\n      \n    }\n  }\n"
+        );
+        assert_eq!(selected, "InterruptedException");
+        let text = "fun f() {\n    val a = load()\n}\n";
+        let at = text.find("load()").unwrap();
+        let done = surround_expression(ImportStyle::Kotlin, Surrounder::TryCatchExpression, text, at..at + 6, "    ", &ExpressionContext::default());
+        let (out, selected) = apply(text, &with_catches(done, &["IOException".into()]));
+        assert_eq!(out, "fun f() {\n    val a = try {\n        load()\n    } catch (e: IOException) {\n        throw e\n    }\n}\n");
+        assert_eq!(selected, "IOException");
     }
 }

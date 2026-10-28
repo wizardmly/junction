@@ -2090,21 +2090,57 @@ impl FileEditor {
         let done = match out {
             _ if expression => {
                 let context = crate::index::surround::expression_context(lang, &text, range.clone()).unwrap_or_default();
-                surround_expression(style, surrounder, &text, range, &indent_unit(&text), &context)
+                surround_expression(style, surrounder, &text, range.clone(), &indent_unit(&text), &context)
             }
-            Some(out) => surround_lines_moving(style, surrounder, &text, range, &indent_unit(&text), &out),
-            None => surround_lines(style, surrounder, &text, range, &indent_unit(&text)),
+            Some(out) => surround_lines_moving(style, surrounder, &text, range.clone(), &indent_unit(&text), &out),
+            None => surround_lines(style, surrounder, &text, range.clone(), &indent_unit(&text)),
         };
-        let select = done.stops.first().cloned().unwrap_or(done.select.clone());
+        // A catch for each exception the code throws, their classes imported.
+        use crate::domain::surround::Surrounder::{TryCatch, TryCatchExpression, TryCatchFinally, TryCatchFinallyExpression};
+        let thrown = if matches!(surrounder, TryCatch | TryCatchFinally | TryCatchExpression | TryCatchFinallyExpression) { self.thrown_exceptions(lang, &text, range, cx) } else { Vec::new() };
+        let done = crate::domain::surround::with_catches(done, &thrown.iter().map(|t| t.name.clone()).collect::<Vec<_>>());
+        let mut new_text = text.clone();
+        new_text.replace_range(done.range.clone(), &done.text);
+        let (mut start, mut shift) = (done.range.start, 0);
+        for t in &thrown {
+            let header = crate::domain::imports::header(&new_text);
+            let imported: Vec<String> = header.imports.iter().map(|(_, q)| q.clone()).chain(header.wildcards.iter().map(|w| format!("{w}.*"))).collect();
+            if crate::domain::imports::is_visible(&t.qualified, Some(&header.package), &imported, &crate::domain::imports::implicit_packages(style)) {
+                continue;
+            }
+            let (at, line) = crate::domain::imports::import_edit(style, &new_text, &t.qualified);
+            new_text.insert_str(at, &line);
+            start = start.min(at);
+            shift += line.len();
+        }
+        let moved = |r: &Range<usize>| r.start + shift..r.end + shift;
+        let replaced = start..done.range.end;
+        let replacement = new_text[start..done.range.start + shift + done.text.len()].to_owned();
+        let select = moved(&done.stops.first().cloned().unwrap_or(done.select.clone()));
         self.state.update(cx, |state, cx| {
-            state.set_selected_range(done.range.clone(), cx);
-            state.replace(&done.text, window, cx);
+            state.set_selected_range(replaced, cx);
+            state.replace(&replacement, window, cx);
             state.set_selected_range(select, cx);
         });
         if done.stops.len() > 1 {
-            let stops = done.stops.into_iter().map(|r| vec![r]).collect();
-            self.start_template(crate::domain::live_templates::Session { stops, current: 0, end: done.end }, cx);
+            let stops = done.stops.iter().map(|r| vec![moved(r)]).collect();
+            self.start_template(crate::domain::live_templates::Session { stops, current: 0, end: done.end + shift }, cx);
         }
+    }
+
+    /// What the code at `range` throws to be caught, looking callees up
+    /// in the project's and the libraries' classes.
+    fn thrown_exceptions(&self, lang: crate::index::lang::Lang, text: &str, range: Range<usize>, cx: &gpui_kit::App) -> Vec<crate::index::catches::Thrown> {
+        let Some(index) = self.code_index.as_ref() else { return crate::index::catches::caught_exceptions(lang, text, range, &|_| Vec::new()) };
+        let root = index.read(cx).root().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let store = index.read(cx).index.clone();
+        let Ok(store) = store.read() else { return Vec::new() };
+        let classes = |name: &str| -> Vec<String> {
+            let mut paths: Vec<&str> = store.symbols_named(name).filter(|(p, _, s)| s.kind.is_type() && (p.ends_with(".java") || p.ends_with(".kt"))).map(|(p, _, _)| p).collect();
+            paths.dedup();
+            paths.into_iter().filter_map(|p| std::fs::read_to_string(if crate::index::store::ProjectIndex::is_external(p) { std::path::PathBuf::from(p) } else { root.join(p) }).ok()).collect()
+        };
+        crate::index::catches::caught_exceptions(lang, text, range, &classes)
     }
 
     pub fn selected_text(&self, cx: &gpui_kit::App) -> Option<String> {
