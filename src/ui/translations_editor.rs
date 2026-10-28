@@ -86,6 +86,8 @@ const ROW_H: f32 = 24.;
 type RowId = (usize, String);
 
 pub struct TranslationsEditor {
+    /// The project root: Remove Keys looks for uses of the keys there.
+    root: PathBuf,
     /// The res folders and their labels ("app/src/main/res"), the one it
     /// was opened for first: Add Key and Add Locale write there.
     folders: Vec<(PathBuf, String)>,
@@ -123,7 +125,7 @@ impl Focusable for TranslationsEditor {
 }
 
 impl TranslationsEditor {
-    pub fn new(folders: Vec<(PathBuf, String)>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(root: PathBuf, folders: Vec<(PathBuf, String)>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let key_field = cx.new(|cx| InputState::new(window, cx));
         let default_field = cx.new(|cx| InputState::new(window, cx));
         let translation_field = cx.new(|cx| InputState::new(window, cx));
@@ -140,6 +142,7 @@ impl TranslationsEditor {
             }),
         ];
         let mut this = Self {
+            root,
             folders,
             table: Table::default(),
             filter: KeyFilter::All,
@@ -483,25 +486,46 @@ impl TranslationsEditor {
         if ids.is_empty() {
             return;
         }
-        let message = match ids.as_slice() {
-            [(_, key)] => format!("Delete string resource \"{key}\" from all locales?"),
-            _ => format!("Delete {} string resources from all locales?", ids.len()),
-        };
-        let this = cx.entity().downgrade();
-        dialogs::confirm("Remove Keys", message, "Delete", move |cx| {
-            let ids = ids.clone();
-            this.update(cx, |this, cx| {
-                this.cell = None;
-                this.error = None;
-                let folders: BTreeSet<usize> = ids.iter().map(|(f, _)| *f).collect();
-                for folder in folders {
-                    let keys: Vec<String> = ids.iter().filter(|(f, _)| *f == folder).map(|(_, k)| k.clone()).collect();
-                    this.edit_quietly(folder, |files| usecase::remove_keys(files, &keys), cx);
+        // Safe Delete, as Android Studio's Remove Keys: the project's uses
+        // of the keys first.
+        let (root, keys) = (self.root.clone(), ids.iter().map(|(_, k)| k.clone()).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>());
+        let task = cx.background_spawn(async move { crate::index::service::string_uses(&root, &keys) });
+        cx.spawn_in(window, async move |this, cx| {
+            let uses = task.await;
+            this.update_in(cx, |_, window, cx| {
+                let entity = cx.entity().downgrade();
+                let delete: std::rc::Rc<dyn Fn(&mut Window, &mut App)> = {
+                    let ids = ids.clone();
+                    std::rc::Rc::new(move |_, cx| {
+                        entity.update(cx, |this, cx| this.delete_keys(&ids, cx)).ok();
+                    })
+                };
+                let what = match ids.as_slice() {
+                    [(_, key)] => format!("string resource \"{key}\""),
+                    _ => format!("{} string resources", ids.len()),
+                };
+                if uses.is_empty() {
+                    dialogs::choose("Remove Keys", format!("Delete {what} from all locales?"), Vec::new(), "Cancel", vec![("Delete", delete)], window, cx);
+                    return;
                 }
-                this.reload(cx);
+                let n = uses.len();
+                let message = format!("The {what} {} {n} usage{} that {} not safe to delete.", if ids.len() == 1 { "has" } else { "have" }, if n == 1 { "" } else { "s" }, if n == 1 { "is" } else { "are" });
+                dialogs::choose("Usages Detected", message, uses, "Cancel", vec![("Delete Anyway", delete)], window, cx);
             })
             .ok();
-        }, window, cx);
+        })
+        .detach();
+    }
+
+    fn delete_keys(&mut self, ids: &[RowId], cx: &mut Context<Self>) {
+        self.cell = None;
+        self.error = None;
+        let folders: BTreeSet<usize> = ids.iter().map(|(f, _)| *f).collect();
+        for folder in folders {
+            let keys: Vec<String> = ids.iter().filter(|(f, _)| *f == folder).map(|(_, k)| k.clone()).collect();
+            self.edit_quietly(folder, |files| usecase::remove_keys(files, &keys), cx);
+        }
+        self.reload(cx);
     }
 
     /// Add Key: Key, Default Value; OK checks the key as Android Studio does.
