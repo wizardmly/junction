@@ -503,6 +503,16 @@ pub fn superclass(text: &str, at: usize) -> Option<usize> {
 /// A call's argument expressions as written, to its `)` (or as far as
 /// the text goes).
 pub fn arguments(text: &str, open: usize) -> Vec<String> {
+    argument_ranges(text, open).into_iter().map(|r| text[r].to_owned()).collect()
+}
+
+/// Where each of a call's arguments is, trimmed.
+pub fn argument_ranges(text: &str, open: usize) -> Vec<std::ops::Range<usize>> {
+    let trimmed = |r: std::ops::Range<usize>| {
+        let s = &text[r.clone()];
+        let start = r.start + (s.len() - s.trim_start().len());
+        start..start + s.trim().len()
+    };
     let mut args = Vec::new();
     let mut depth = 0;
     let mut current = open + 1;
@@ -518,16 +528,16 @@ pub fn arguments(text: &str, open: usize) -> Vec<String> {
             ')' | ']' | '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    args.push(text[current..i].trim().to_owned());
+                    args.push(trimmed(current..i));
                     break;
                 }
             }
             ',' if depth == 1 => {
-                args.push(text[current..i].trim().to_owned());
+                args.push(trimmed(current..i));
                 current = i + 1;
             }
             ';' if depth == 1 => {
-                args.push(text[current..i].trim().to_owned());
+                args.push(trimmed(current..i));
                 break;
             }
             _ => {}
@@ -535,7 +545,7 @@ pub fn arguments(text: &str, open: usize) -> Vec<String> {
         i += c.len_utf8();
     }
     if i >= text.len() {
-        args.push(text[current.min(text.len())..].trim().to_owned());
+        args.push(trimmed(current.min(text.len())..text.len()));
     }
     if args.len() == 1 && args[0].is_empty() {
         args.clear();
@@ -545,6 +555,24 @@ pub fn arguments(text: &str, open: usize) -> Vec<String> {
 
 /// Marks an argument rewritten to its declared type (`\u{1}String`).
 const TYPED: char = '\u{1}';
+/// Follows a typed argument's type with all its supertypes, when they are
+/// known (`\u{1}Dog\u{2}Pet,Animal`).
+const SUPERS: char = '\u{2}';
+
+/// An argument whose type is known (from more than its declaration, e.g.
+/// a call's declared return type), with its supertypes when all are known.
+pub fn typed(ty: &str, supertypes: Option<&[String]>) -> String {
+    match supertypes {
+        Some(s) => format!("{TYPED}{ty}{SUPERS}{}", s.join(",")),
+        None => format!("{TYPED}{ty}"),
+    }
+}
+
+/// A typed argument's type (without its supertypes); None for one as
+/// written.
+pub fn typed_type(arg: &str) -> Option<&str> {
+    arg.strip_prefix(TYPED).map(|t| t.split(SUPERS).next().unwrap_or(t))
+}
 
 /// `arguments`, with a bare variable replaced by what its nearest
 /// declaration before the call says it is: its declared type, or the
@@ -611,6 +639,10 @@ fn value_type(value: &str) -> Option<String> {
 /// widening, a supertype of every String or number; a class of the
 /// project may be a subtype of any other.
 fn accepts_type(ty: &str, arg: &str) -> bool {
+    let (arg, supers) = match arg.split_once(SUPERS) {
+        Some((a, s)) => (a, Some(s.split(',').filter(|s| !s.is_empty()).collect::<Vec<_>>())),
+        None => (arg, None),
+    };
     let base = |t: &str| {
         let t = t.trim().trim_end_matches('?');
         let t = t.split('<').next().unwrap_or(t);
@@ -653,7 +685,8 @@ fn accepts_type(ty: &str, arg: &str) -> bool {
             _ => false,
         },
         (Some(_), None) => false,
-        (None, None) => true,
+        // A class: its own or a supertype, when they're all known.
+        (None, None) => param == value || supers.is_none_or(|s| s.contains(&param.as_str())),
     }
 }
 
@@ -721,9 +754,21 @@ pub fn best_overload(overloads: &[Vec<String>], args: &[String]) -> Option<usize
     let fitting: Vec<usize> = (0..overloads.len()).filter(|&i| takes(&overloads[i])).collect();
     // Of several, the one whose types the variables have exactly (a
     // project class may or may not implement a library interface).
+    // The nearer a supertype, the better (IntelliJ's most specific).
     let exact = |params: &[String]| {
         let simple = |t: &str| t.trim().trim_end_matches('?').split('<').next().unwrap_or("").rsplit('.').next().unwrap_or("").to_owned();
-        args.iter().zip(params).filter(|(a, p)| a.strip_prefix(TYPED).is_some_and(|t| simple(t) == simple(parameter_type(p)))).count()
+        args.iter()
+            .zip(params)
+            .map(|(a, p)| {
+                let param = simple(parameter_type(p));
+                let Some(t) = typed_type(a) else { return 0 };
+                if simple(t) == param {
+                    return 1000;
+                }
+                let supers = a.split_once(SUPERS).map_or("", |(_, s)| s);
+                supers.split(',').position(|s| s == param).map_or(0, |i| 999 - i.min(998))
+            })
+            .sum::<usize>()
     };
     let best = fitting.iter().copied().rev().max_by_key(|&i| exact(&overloads[i]));
     match fitting.as_slice() {
@@ -876,5 +921,17 @@ mod tests {
         // Unknown: the first that takes one argument, as before.
         assert_eq!(best_overload(&kt, &typed_arguments(kotlin, at("f(other)"), true)), Some(0));
         assert_eq!(arguments("f(a, g(b, c), \"),\")", 1), vec!["a".to_owned(), "g(b, c)".into(), "\"),\"".into()]);
+        let text = "f( a ,  g(b) )";
+        assert_eq!(argument_ranges(text, 1).into_iter().map(|r| &text[r]).collect::<Vec<_>>(), vec!["a", "g(b)"]);
+        // An inferred type with its supertypes: the most specific overload
+        // that takes it, none that doesn't.
+        let pets: Vec<Vec<String>> = vec![vec!["c: Car".into()], vec!["a: Animal".into()], vec!["p: Pet".into()], vec!["s: String".into()]];
+        let dog = typed("Dog", Some(&["Pet".to_owned(), "Animal".into()]));
+        assert_eq!(best_overload(&pets, std::slice::from_ref(&dog)), Some(2));
+        assert!(!takes_arguments(&pets[0], std::slice::from_ref(&dog)));
+        assert_eq!(best_overload(&pets[..2], std::slice::from_ref(&dog)), Some(1));
+        // Supertypes unknown: any class may take it.
+        assert!(takes_arguments(&pets[0], &[typed("Dog", None)]));
+        assert_eq!(typed_type(&dog), Some("Dog"));
     }
 }

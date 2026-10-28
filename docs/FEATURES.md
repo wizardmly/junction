@@ -777,7 +777,8 @@ IntelliJ 的 View › Parameter Info（Ctrl+P，macOS ⌘P），Kotlin / Java。
 | 注解参数：Kotlin `annotation class` 按主构造函数；Java `@interface` 每个元素一行（IntelliJ 写法 `String value() default ""`），按 `name = ` 或不写名字时的 `value` 加粗 | ✅ |
 | 按已写实参选中重载：参数个数和字面量类型（字符串、数字、`L` / `f` 后缀、布尔、`null`、字符、lambda）都对得上的第一个重载加底色，命名实参按名字 | ✅ |
 | 按变量的类型选重载：实参是变量名时，取调用前离它最近的声明（Kotlin `val x: T`、参数 `x: T`、`val x = 3` / `= Point(…)`；Java `T x =` / `T x;`、参数 `T x`、`var x = …`），类型对得上才算（同一类型含装箱、Java 基本类型的放宽转换、`Any` / `Object` / 泛型 `T`、`String` → `CharSequence`、数字 → `Number`）；几个都对得上时优先类型完全一样的那个 | ✅ |
-| 按任意表达式的推断类型选重载（方法调用的返回值、字段访问、子类关系）、文档注释 | ❌ 未做 |
+| 按任意表达式的推断类型选重载：实参是方法调用、字段 / 属性读取时取其声明的类型（同 Introduce Variable 的推断），再按父类和接口（Java `extends` / `implements`，Kotlin 父类型，逐层在项目和外部库源码里找）判断哪个重载能接收，几个都能时取最具体的（类型完全一样 > 最近的父类型）；父类型有找不到源码的就不排除任何类 | ✅（Linux 实测：Java `show(user.getDog())` 在 `Car` / `Animal` / `Pet` / `String` 四个重载里选中 `Pet p`；Kotlin `show(owner.pet())` 选中 `p: Pet`） |
+| Parameter Info 里的文档注释 | ❌ 未做 |
 
 Linux 实测（Xvfb）：Kotlin 两个 `greet` 重载，光标在 `greet("a", true)` 的第二个实参上按 Ctrl+P，弹出两行，`times: Int = 1` 和 `loud: Boolean` 加粗；按 End 离开调用后关闭；新输入 `greet(` 后约 1 秒自动弹出。Java 的 `Calc.add(2, 2)` 显示 `int a, int b`；`assertEquals(` 显示 JUnit 源码里的 12 个重载。2026-10-23：`super("a", 1)` 显示父类两个构造函数并给 `String name, int size` 加底色，`this()` 显示 `<no parameters>` 和 `int n`，`new Base(3)` 选中 `int size`，`@Route()` 显示两个元素、`value` 加粗。
 2026-10-27：三个 `show` 重载（`Int` / `String` / `Boolean`），`show(title)`（`val title: String`）选中 `label: String`，`show(on)`（`val on = true`）选中 `flag: Boolean`，`show(n)`（`val n = 3`）选中 `count: Int`。

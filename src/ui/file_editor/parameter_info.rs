@@ -24,6 +24,9 @@ pub(super) struct ParameterInfo {
     kotlin: bool,
     /// Each declaration's parameters.
     overloads: Vec<Vec<String>>,
+    /// The arguments with the types their declarations show, and the
+    /// text they were read from.
+    arguments: (Vec<String>, String),
     _observe: Subscription,
 }
 
@@ -90,7 +93,8 @@ impl FileEditor {
                     return;
                 }
                 let _observe = cx.observe(&this.state, |this, _, cx| this.follow_parameter_info(cx));
-                this.parameter_info = Some(ParameterInfo { open: call.open, kotlin, overloads, _observe });
+                let arguments = (this.inferred_arguments(&text, call.open, kotlin, cx), text.to_string());
+                this.parameter_info = Some(ParameterInfo { open: call.open, kotlin, overloads, arguments, _observe });
                 cx.notify();
             })
             .ok();
@@ -107,8 +111,37 @@ impl FileEditor {
         let still = caret > open && text.as_bytes().get(open) == Some(&b'(') && pi::call_from(&text, open, caret, kotlin).is_some_and(|c| c.open == open);
         if !still {
             self.parameter_info = None;
+        } else if info.arguments.1 != text.as_str() {
+            let text = text.to_string();
+            let arguments = self.inferred_arguments(&text, open, kotlin, cx);
+            if let Some(info) = &mut self.parameter_info {
+                info.arguments = (arguments, text);
+            }
         }
         cx.notify();
+    }
+
+    /// The call's arguments, each typed as far as declarations show: a
+    /// variable's, a call's return type or a field's (with its
+    /// supertypes, to pick the most specific overload).
+    fn inferred_arguments(&self, text: &str, open: usize, kotlin: bool, cx: &mut Context<Self>) -> Vec<String> {
+        let lang = if kotlin { crate::index::lang::Lang::Kotlin } else { crate::index::lang::Lang::Java };
+        let classes = |n: &str| self.class_texts(n, false, cx);
+        let mut args = pi::typed_arguments(text, open, kotlin);
+        for (arg, range) in args.iter_mut().zip(pi::argument_ranges(text, open)) {
+            let ty = match pi::typed_type(arg) {
+                Some(ty) => ty.to_owned(),
+                // Literals and lambdas speak for themselves.
+                None if !arg.starts_with(|c: char| c.is_alphabetic() || c == '_' || c == '(') || matches!(arg.as_str(), "true" | "false" | "null") => continue,
+                None => match crate::index::types::type_of(lang, text, range, &classes) {
+                    Some(found) => found.ty,
+                    None => continue,
+                },
+            };
+            let supertypes = crate::index::types::supertypes(&ty, text, &classes);
+            *arg = pi::typed(&ty, supertypes.as_deref());
+        }
+        args
     }
 
     /// After a `(` typed after a name: Parameter Info a moment later, if
@@ -166,7 +199,7 @@ impl FileEditor {
         let at = state.range_to_bounds(&(info.open..info.open))?;
         let palette = cx.palette().clone();
         // The overload the written arguments pick, highlighted.
-        let best = pi::best_overload(&info.overloads, &pi::typed_arguments(&text, info.open, info.kotlin));
+        let best = pi::best_overload(&info.overloads, &info.arguments.0);
         let mut rows = v_flex().gap_0p5();
         for (ix, params) in info.overloads.iter().enumerate() {
             let fits = pi::fits(params, &call);
