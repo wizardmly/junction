@@ -67,6 +67,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Replace Java static method with Kotlin analog", "Writes Math.max(a, b) as maxOf(a, b), Integer.parseInt(s) as s.toInt(), String.valueOf(x) as x.toString() and System.out.println(x) as println(x)"),
     ("Kotlin", "Replace with 'lastIndex'", "Writes xs.size - 1 on a list or an array, and s.length - 1 on a string, as lastIndex"),
     ("Kotlin", "Replace 'substring' call with 'take' call", "Writes s.substring(0, n) as s.take(n) and s.substring(0, s.length - n) as s.dropLast(n)"),
+    ("Kotlin", "Convert two comparisons to range check", "Writes x >= a && x <= b as x in a..b, and x >= a && x < b as x in a until b"),
     ("Kotlin", "Replace with 'isNullOrEmpty()'", "Writes s == null || s.isEmpty() as s.isNullOrEmpty(), s != null && s.isNotEmpty() as !s.isNullOrEmpty(), and isBlank likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),

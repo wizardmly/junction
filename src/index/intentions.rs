@@ -592,6 +592,67 @@ pub fn null_or_empty(text: &str, caret: usize, classes: super::catches::Classes)
     None
 }
 
+/// Convert two comparisons to range check (IntelliJ's
+/// ConvertTwoComparisonsToRangeCheckInspection): `x >= a && x <= b` →
+/// `x in a..b` (either order, either side of each comparison), and
+/// `x >= a && x < b` → `x in a until b` for whole numbers and chars, when
+/// `x` is a non-null number or char; the caret anywhere on the check.
+pub fn range_check(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let check = innermost(tree.root_node(), caret)
+        .into_iter()
+        .flat_map(ancestors)
+        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body"))
+        .find(|n| n.kind() == "conjunction_expression")?;
+    let [first, second] = children(check)[..] else { return None };
+    // A comparison as (subject, bound, is a lower bound, inclusive).
+    fn bound<'t>(c: Node<'t>, text: &str) -> Option<(Node<'t>, Node<'t>, bool, bool)> {
+        let [a, b] = children(c)[..] else { return None };
+        if c.kind() != "comparison_expression" {
+            return None;
+        }
+        let (flipped, inclusive) = match text[a.end_byte()..b.start_byte()].trim() {
+            ">=" => (false, true),
+            "<=" => (true, true),
+            ">" => (false, false),
+            "<" => (true, false),
+            _ => return None,
+        };
+        // `x >= a`: x is the subject on the left and a is its lower bound.
+        Some((a, b, !flipped, inclusive))
+    }
+    // A comparison read either way round: (subject, bound, lower, inclusive).
+    fn ways<'t>(a: Node<'t>, b: Node<'t>, lower: bool, inclusive: bool) -> [(Node<'t>, Node<'t>, bool, bool); 2] {
+        [(a, b, lower, inclusive), (b, a, !lower, inclusive)]
+    }
+    let (a0, b0, lower0, inclusive0) = bound(first, text)?;
+    let (a1, b1, lower1, inclusive1) = bound(second, text)?;
+    let same = |x: Node, y: Node| text[x.byte_range()].trim() == text[y.byte_range()].trim();
+    let (subject, low, high) = ways(a0, b0, lower0, inclusive0).into_iter().find_map(|(s0, x0, l0, i0)| {
+        let (_, x1, _, i1) = ways(a1, b1, lower1, inclusive1).into_iter().find(|&(s1, _, l1, _)| same(s0, s1) && l1 != l0)?;
+        Some(if l0 { (s0, (x0, i0), (x1, i1)) } else { (s0, (x1, i1), (x0, i0)) })
+    })?;
+    if !low.1 || subject.kind() == "integer_literal" {
+        return None;
+    }
+    let ty = receiver_type(subject, text, classes)?;
+    let whole = matches!(ty.as_str(), "Int" | "Long" | "Short" | "Byte" | "Char");
+    if !(whole || matches!(ty.as_str(), "Double" | "Float")) || !high.1 && !whole {
+        return None;
+    }
+    let operand = |n: Node| {
+        let t = text[n.byte_range()].trim();
+        if matches!(n.kind(), "simple_identifier" | "integer_literal" | "character_literal" | "real_literal" | "call_expression" | "navigation_expression" | "parenthesized_expression") { t.to_owned() } else { format!("({t})") }
+    };
+    let range = if high.1 { format!("{}..{}", operand(low.0), operand(high.0)) } else { format!("{} until {}", operand(low.0), operand(high.0)) };
+    Some(Intention {
+        title: "Convert two comparisons to range check".into(),
+        range: check.byte_range(),
+        caret: check.start_byte(),
+        replacement: format!("{} in {range}", text[subject.byte_range()].trim()),
+    })
+}
+
 /// Merge call chain to 'first' (IntelliJ's SimplifiableCallChainInspection):
 /// `xs.filter { … }.first()` → `xs.first { … }`, and likewise `firstOrNull`,
 /// `last`, `lastOrNull`, `single`, `singleOrNull`, `count`, `any`, `none`,
@@ -1818,6 +1879,24 @@ mod tests {
         assert_eq!(run("s.substring(1"), None);
         assert_eq!(run("t?.substring"), None);
         assert_eq!(run("s.substring(n)"), None);
+    }
+
+    #[test]
+    fn converts_two_comparisons_to_range_check() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(x: Int, d: Double, n: Int?, s: String, lo: Int, hi: Int) {\n    if (x >= 1 && x <= 10) return\n    if (10 >= x && 1 <= x) return\n    if (x >= lo && x < hi + 1) return\n    if (d >= 0.0 && d <= 1.0) return\n    if (d >= 0.0 && d < 1.0) return\n    if (x > 1 && x <= 10) return\n    if (n >= 1 && n <= 10) return\n    if (x >= 1 && lo <= 10) return\n}\n";
+        let run = |at: &str| range_check(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("x >= 1 && x <= 10").unwrap();
+        assert_eq!(title, "Convert two comparisons to range check");
+        assert!(out.contains("    if (x in 1..10) return\n"), "{out}");
+        assert!(run("10 >= x").unwrap().1.contains("    if (x in 1..10) return\n"));
+        assert!(run("x >= lo").unwrap().1.contains("    if (x in lo until (hi + 1)) return\n"));
+        assert!(run("d >= 0.0 && d <= 1.0").unwrap().1.contains("    if (d in 0.0..1.0) return\n"));
+        // No `until` for doubles; a strict lower bound; nullable; different subjects.
+        assert_eq!(run("d >= 0.0 && d < 1.0"), None);
+        assert_eq!(run("x > 1"), None);
+        assert_eq!(run("n >= 1"), None);
+        assert_eq!(run("lo <= 10"), None);
     }
 
     #[test]
