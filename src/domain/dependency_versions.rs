@@ -53,6 +53,34 @@ pub fn script_sites(text: &str) -> Vec<VersionSite> {
     out
 }
 
+static TEMPLATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"["']([\w.\-]+):([\w.\-]+):\$(?:\{(?:\w+\.)*(\w+)\}|(\w+))["']"#).unwrap());
+static CONSTANT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\b(?:val\s+(\w+)\s*(?::\s*String\s*)?|String\s+(\w+)\s*)=\s*"(\d[\w.\-+]*)""#).unwrap());
+
+/// `buildSrc` versions kept in constants: a dependency string built from
+/// one (`"g:a:${Versions.core}"`, `"g:a:$core"`) in any of the buildSrc
+/// files `all` makes the constant's value in `text` (`const val core =
+/// "1.12.0"`, Java's `String core = "1.12.0"`) a site for `g:a`, the first
+/// module that uses it.
+pub fn constant_sites(text: &str, all: &[&str]) -> Vec<VersionSite> {
+    let mut users: Vec<(String, String)> = Vec::new();
+    for file in all {
+        for c in TEMPLATE.captures_iter(file) {
+            let name = c.get(3).or(c.get(4)).map_or("", |m| m.as_str()).to_owned();
+            if !users.iter().any(|(n, _)| *n == name) {
+                users.push((name, format!("{}:{}", &c[1], &c[2])));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for c in CONSTANT.captures_iter(text) {
+        let Some(name) = c.get(1).or(c.get(2)) else { continue };
+        let Some((_, module)) = users.iter().find(|(n, _)| n == name.as_str()) else { continue };
+        let v = c.get(3).unwrap();
+        out.push(VersionSite { module: module.clone(), plugin: false, version: v.as_str().to_owned(), range: v.range() });
+    }
+    out
+}
+
 /// The versions a catalog pins: a library's or plugin's own `version`,
 /// and a `[versions]` entry for the first library or plugin that uses it.
 pub fn catalog_sites(catalog: &Catalog) -> Vec<VersionSite> {

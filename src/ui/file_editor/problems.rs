@@ -43,7 +43,8 @@ impl FileEditor {
             return;
         }
         let text = self.text(cx);
-        let sites = dependency_updates::sites(&self.path, &text);
+        let others = buildsrc_sources(&self.path, &self.absolute_path());
+        let sites = dependency_updates::sites_with(&self.path, &text, &others);
         if sites.is_empty() {
             if !self.inspection_problems.is_empty() {
                 self.inspection_problems.clear();
@@ -208,4 +209,26 @@ fn token_end(text: &gpui_kit::component::input::Rope, at: usize) -> usize {
         _ => 0,
     };
     at + len
+}
+
+/// The other Kotlin / Java files of the `buildSrc` a file is in (their
+/// version constants and dependency strings), none for other files.
+fn buildsrc_sources(path: &str, absolute: &std::path::Path) -> Vec<String> {
+    let Some(at) = path.find("buildSrc/").filter(|at| *at == 0 || path[..*at].ends_with('/')) else { return Vec::new() };
+    let depth = path[at..].matches('/').count();
+    let Some(dir) = absolute.ancestors().nth(depth) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut stack = vec![dir.join("src")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p != absolute && p.extension().is_some_and(|e| e == "kt" || e == "java") && out.len() < 200 {
+                out.extend(std::fs::read_to_string(&p).ok());
+            }
+        }
+    }
+    out
 }

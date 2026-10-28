@@ -450,7 +450,7 @@ Linux 实测：MainActivity.kt 里 Ctrl+B `R.string.app_name` 弹出 values 和 
 | `buildSrc` 常量（2026-10-22）：Kotlin 脚本里本来按索引解析；Groovy 脚本不建索引，另按名字解析：`Deps.coreKtx`、`Deps.Android.minSdk` 这样以类名开头的限定名 Ctrl+B 跳到 buildSrc（或工程里任一 Kotlin / Java 类）的成员，类名本身跳到类；`Deps.` 后补全该类的成员 | ✅ |
 | buildSrc 常量的 Find Usages（2026-10-22）：在 `Deps.kt` 里 Alt+F7，结果多一组 “Groovy build scripts”，列出 `build.gradle` 里解析到该声明的 `Deps.coreKtx`（同名的 `libs.coreKtx` 等不算） | ✅ |
 | buildSrc 补充（2026-10-22）：Rename（Shift+F6）buildSrc 常量时，Groovy `build.gradle` 里解析到它的 `Deps.coreKtx` 一并列出并改名；buildSrc 下 Kotlin / Java 文件里的 `"g:a:v"` 依赖字符串也有新版本警告和 “Change to …” | ✅ |
-| buildSrc 里用字符串模板拼出的版本（`"g:a:${Versions.x}"`） | ❌ 未做 |
+| buildSrc 里用字符串模板拼出的版本（2026-10-28，`dependency_versions::constant_sites`）：buildSrc 的任一 Kotlin / Java 文件里有 `"g:a:${Versions.core}"` 或 `"g:a:$coreVersion"`，被引用的版本常量（`const val core = "1.10.1"`、Java 的 `String core = "1.10.1"`，同文件或别的 buildSrc 文件）就按 `g:a` 查新版本，黄色波浪线标在常量的值上，Alt+Enter “Change to …” 改常量；一个常量被多个依赖用时按第一个。Linux 实测（本机连不上 Google Maven，预先写了版本缓存）：`Deps.kt` 里 `"androidx.core:core-ktx:${Versions.core}"`，打开 `Versions.kt` 后 `const val core = "1.10.1"` 的值上出现 “A newer version of androidx.core:core-ktx than 1.10.1 is available: 1.13.1”，没被引用的 `unused` 不标；Alt+Enter 选 Change to 1.13.1 后文件里改成 `"1.13.1"` | ✅ |
 
 Linux 实测（容器访问不了 dl.google.com，androidx 和 AGP 用预先写入的缓存，其他是实际联网结果）：build.gradle.kts 里 Ctrl+B `libs.androidx.core.ktx` 跳到 toml 第 9 行；toml 里所有旧版本都有警告，Alt+Enter 选 “Change to 1.13.1” 后版本被替换；`version.ref` 跳到 `[versions]`；Alt+F7 列出 build 脚本里的用法；`libs.andr` → `androidx` → `core.` → `ktx` 逐段补全。截图：reports/Gradle文件辅助-2026-10-15/。
 

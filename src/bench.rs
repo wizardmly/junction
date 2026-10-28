@@ -286,7 +286,7 @@ fn bench_android() {
         let text = std::fs::read_to_string(root.join(&rel)).unwrap();
         let n = time("previews", || crate::usecase::android_resources::previews(&table, None, &rel, &text).len());
         println!("  {n} previews");
-        time("version sites", || crate::usecase::dependency_updates::sites(&rel, &text).len());
+        time("version sites", || crate::usecase::dependency_updates::sites_with(&rel, &text, &[]).len());
     }
 }
 
