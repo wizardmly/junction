@@ -549,7 +549,7 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                             Reason::Assign
                         } else if ends_with_operator(prev) {
                             Reason::Operator
-                        } else if kotlin && prev.ends_with(':') && !prev.ends_with("::") || p.reason == Reason::Header && prev.ends_with(',') {
+                        } else if kotlin && prev.ends_with(':') && !prev.ends_with("::") || (p.reason == Reason::Header || kotlin && supertypes_wrapped(prev)) && prev.ends_with(',') {
                             Reason::Header
                         } else if flavor == Flavor::Groovy && prev.ends_with(',') && stack.last().is_none_or(|o| o.brace) {
                             // A command's arguments without parentheses:
@@ -692,6 +692,11 @@ fn chop(line: &str, unit: &str, margin: usize) -> Option<Vec<String>> {
         let declares = head.split_whitespace().any(|w| matches!(w, "fun" | "class" | "constructor" | "interface") || w.starts_with("fun<"));
         (declares && !line[open + 1..close].trim().is_empty() && width(head) < margin).then_some((0, open, close))
     };
+    if best.is_none() {
+        if let Some(parts) = supertype_break(line, &info, unit, margin) {
+            return Some(parts);
+        }
+    }
     let Some((_, open, close)) = best.or_else(declaration) else {
         return chain_break(line, &info, unit, margin);
     };
@@ -725,6 +730,87 @@ fn chop(line: &str, unit: &str, margin: usize) -> Option<Vec<String>> {
     }
     parts.push(format!("{indent}{}", &line[close..]));
     Some(parts)
+}
+
+/// EXTENDS_LIST_WRAP "wrap if long": a class, interface or object
+/// header's supertypes (after its `:`) put on as few lines as fit, each
+/// next line an indent deeper; `None` when the header has none or no
+/// break helps.
+fn supertype_break(line: &str, info: &Line, unit: &str, margin: usize) -> Option<Vec<String>> {
+    let lead = line.len() - line.trim_start().len();
+    let words = declaration_words(&line[lead..]);
+    let declares = match words.as_slice() {
+        ["class" | "interface" | "object", ..] => true,
+        ["fun", "interface"] => true,
+        _ => false,
+    };
+    if !declares {
+        return None;
+    }
+    let is_code = |i: usize| info.code.get(i).copied().unwrap_or(false);
+    // The supertypes: from the header's `:` to its `{` (or `where`, or the line's end).
+    let mut depth = 0usize;
+    let mut angle = 0usize;
+    let mut colon = None;
+    let mut end = line.trim_end().len();
+    let mut commas = Vec::new();
+    for (i, c) in line.char_indices().skip_while(|(i, _)| *i < lead) {
+        if !is_code(i) {
+            continue;
+        }
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            '<' if line[..i].ends_with(|p: char| p.is_alphanumeric() || p == '_') => angle += 1,
+            '>' if angle > 0 && !line[..i].ends_with('-') => angle -= 1,
+            '{' if depth == 0 && angle == 0 => {
+                end = i;
+                break;
+            }
+            ':' if depth == 0 && angle == 0 && colon.is_none() && !line[i + 1..].starts_with(':') && !line[..i].ends_with(':') => colon = Some(i),
+            ',' if depth == 0 && angle == 0 && colon.is_some() => commas.push(i),
+            _ => {}
+        }
+    }
+    let colon = colon?;
+    if let Some(at) = line[colon..end].find(" where ") {
+        end = colon + at;
+        commas.retain(|c| *c < end);
+    }
+    let mut items = Vec::new();
+    let mut start = colon + 1;
+    for comma in commas {
+        items.push(format!("{},", line[start..comma].trim()));
+        start = comma + 1;
+    }
+    items.push(line[start..end].trim().to_owned());
+    if items.iter().any(|i| i.is_empty() || i == ",") {
+        return None;
+    }
+    let indent = &line[..lead];
+    let tail = line[end..].trim_end();
+    let mut parts = Vec::new();
+    let mut current = line[..=colon].to_owned();
+    for item in items {
+        let joined = format!("{current} {item}");
+        if width(&joined) > margin {
+            parts.push(current);
+            current = format!("{indent}{unit}{item}");
+        } else {
+            current = joined;
+        }
+    }
+    if !tail.is_empty() {
+        current = format!("{current} {}", tail.trim_start());
+    }
+    parts.push(current);
+    (parts.len() > 1).then_some(parts)
+}
+
+/// Whether a line is a class header whose supertypes go on past it
+/// (`class A : B(),`).
+fn supertypes_wrapped(code: &str) -> bool {
+    matches!(declaration_words(code).as_slice(), ["class" | "interface" | "object", ..] | ["fun", "interface"]) && code.contains(':') && code.ends_with(',')
 }
 
 /// METHOD_CALL_CHAIN_WRAP "wrap if long": the line broken before its last
@@ -1790,6 +1876,21 @@ mod tests {
         assert_eq!(kt(&string), string);
         let java_line = format!("class A {{\n    void f() {{\n        call(aaaa, \"{}\");\n    }}\n}}", "z".repeat(120));
         assert_eq!(java(&java_line), java_line);
+    }
+
+    #[test]
+    fn wraps_a_long_supertype_list() {
+        let style = IndentStyle { right_margin: Some(60), ..Default::default() };
+        let text = "class SearchViewModel(repo: Repo) : ViewModel(), SearchActions, Closeable, Comparable<SearchViewModel> {\nval x = 1\n}";
+        let wrapped = "class SearchViewModel(repo: Repo) : ViewModel(),\n    SearchActions, Closeable, Comparable<SearchViewModel> {\n    val x = 1\n}";
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, text, None, &style), wrapped);
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, wrapped, None, &style), wrapped);
+        // An object's and an interface's too; a short one and Java's stay.
+        let object = "object DefaultSearchActionsImplementation : SearchActions, Closeable, Runnable";
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, object, None, &style), "object DefaultSearchActionsImplementation : SearchActions,\n    Closeable, Runnable");
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, "class A : B(), C", None, &style), "class A : B(), C");
+        let java = "class SearchViewModel extends ViewModel implements SearchActions, Closeable, Comparable<SearchViewModel> {\n}";
+        assert_eq!(reformat_indented(ImportStyle::Java, java, None, &style), java);
     }
 
     #[test]
