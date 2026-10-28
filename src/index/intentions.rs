@@ -355,6 +355,102 @@ pub fn for_each_to_loop(text: &str, caret: usize, classes: super::catches::Class
     })
 }
 
+/// The call `x.name(…)` whose `.name` holds `caret`, with `x`, `name`
+/// and the arguments; None for `?.`, a trailing lambda, named or spread
+/// arguments.
+fn method_call<'t>(root: Node<'t>, text: &'t str, caret: usize) -> Option<(Node<'t>, Node<'t>, &'t str, Vec<Node<'t>>)> {
+    let call = innermost(root, caret).into_iter().flat_map(ancestors).find(|n| {
+        n.kind() == "call_expression" && n.named_child(0).is_some_and(|c| c.kind() == "navigation_expression" && c.named_child(1).is_some_and(|s| s.start_byte() <= caret))
+            && n.named_child(1).is_some_and(|s| s.start_byte() >= caret)
+    })?;
+    let callee = call.named_child(0)?;
+    let target = callee.named_child(0)?;
+    let name = text[callee.named_child(1)?.byte_range()].trim().strip_prefix('.')?;
+    let [arguments] = children(call.named_child(1)?)[..] else { return None };
+    if arguments.kind() != "value_arguments" {
+        return None;
+    }
+    let values = children(arguments);
+    let plain = values.iter().all(|v| {
+        let mut cursor = v.walk();
+        let tokens: Vec<Node> = v.children(&mut cursor).collect();
+        tokens.len() == 1 && tokens[0].is_named()
+    });
+    plain.then_some((call, target, name, values))
+}
+
+/// The type of the receiver `node`, from what it shows or the
+/// declarations of its calls.
+fn receiver_type(node: Node, text: &str, classes: super::catches::Classes) -> Option<String> {
+    super::introduce::kotlin_type(node, text)
+        .filter(|t| !t.is_empty())
+        .or_else(|| super::types::type_of(Lang::Kotlin, text, node.byte_range(), classes).map(|t| t.ty))
+}
+
+/// `List` for `kotlin.collections.List<String>?`.
+fn type_head(ty: &str) -> &str {
+    let head = ty.split('<').next().unwrap_or(ty).trim_end_matches('?');
+    head.rsplit('.').next().unwrap_or(head)
+}
+
+/// Replace with '==' / 'in' / '!in' / '+' … (IntelliJ's
+/// ReplaceCallWithBinaryOperatorInspection and its 'contains' twin): the
+/// caret on the name, `a.equals(b)` → `a == b` (`!a.equals(b)` → `a != b`),
+/// `xs.contains(x)` → `x in xs` (`!…` → `x !in xs`), `a.plus(b)` → `a + b`
+/// and `minus` / `times` / `div` / `rem` likewise, when the receiver's type
+/// has those as operators: not nullable; `equals` not on Double / Float
+/// (`==` differs for NaN and -0.0); `contains` on collections, maps,
+/// arrays, ranges and strings; arithmetic on numbers, `plus` on strings,
+/// `plus` / `minus` on collections.
+pub fn binary_operator(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let (call, target, name, values) = method_call(tree.root_node(), text, caret)?;
+    let [argument] = values[..] else { return None };
+    let ty = receiver_type(target, text, classes)?;
+    if ty.ends_with('?') {
+        return None;
+    }
+    let head = type_head(&ty);
+    let number = matches!(head, "Int" | "Long" | "Short" | "Byte" | "Double" | "Float" | "BigDecimal" | "BigInteger");
+    let collection = matches!(head, "List" | "MutableList" | "ArrayList" | "Set" | "MutableSet" | "HashSet" | "LinkedHashSet" | "Collection" | "Iterable" | "Sequence");
+    let negated = call.parent().filter(|p| p.kind() == "prefix_expression" && text[p.byte_range()].starts_with('!'));
+    let operator = match name {
+        "equals" if !matches!(head, "Double" | "Float") => if negated.is_some() { "!=" } else { "==" },
+        "contains" if collection || matches!(head, "Map" | "MutableMap" | "HashMap" | "LinkedHashMap" | "String" | "CharSequence" | "IntRange" | "LongRange" | "CharRange") || element_type(&ty).is_some() && head.ends_with("Array") => {
+            if negated.is_some() { "!in" } else { "in" }
+        }
+        "plus" if number || collection || matches!(head, "String" | "Map" | "MutableMap" | "Array") => "+",
+        "minus" if number || collection || matches!(head, "Map" | "MutableMap") => "-",
+        "times" if number => "*",
+        "div" if number => "/",
+        "rem" if number => "%",
+        _ => return None,
+    };
+    let whole = if matches!(operator, "!=" | "!in") { negated? } else { call };
+    let operand = |n: Node| {
+        let t = &text[n.byte_range()];
+        let primary = matches!(
+            n.kind(),
+            "simple_identifier" | "integer_literal" | "long_literal" | "real_literal" | "string_literal" | "character_literal" | "boolean_literal" | "call_expression" | "navigation_expression" | "parenthesized_expression" | "indexing_expression" | "this_expression"
+        ) || t == "null";
+        if primary { t.to_owned() } else { format!("({t})") }
+    };
+    let (left, right) = (operand(target), operand(argument.named_child(0)?));
+    let expression = if operator.ends_with("in") { format!("{right} {operator} {left}") } else { format!("{left} {operator} {right}") };
+    let alone = whole.parent().is_some_and(|p| {
+        matches!(
+            p.kind(),
+            "statements" | "property_declaration" | "value_argument" | "assignment" | "parenthesized_expression" | "jump_expression" | "control_structure_body" | "function_body" | "if_expression" | "while_statement" | "do_while_statement" | "when_condition" | "conjunction_expression" | "disjunction_expression"
+        )
+    });
+    Some(Intention {
+        title: format!("Replace with '{operator}'"),
+        range: whole.byte_range(),
+        caret: whole.start_byte(),
+        replacement: if alone { expression } else { format!("({expression})") },
+    })
+}
+
 /// Replace 'get' call with indexing operator / Replace 'set' call with
 /// indexing operator (IntelliJ's ReplaceGetOrSetInspection): `xs.get(i)`
 /// → `xs[i]`, the statement `m.set(k, v)` → `m[k] = v`, when the
@@ -362,40 +458,20 @@ pub fn for_each_to_loop(text: &str, caret: usize, classes: super::catches::Class
 /// operators); the caret on `get` / `set`.
 pub fn indexing_operator(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
     let tree = symbols::parse(Lang::Kotlin, text)?;
-    let call = innermost(tree.root_node(), caret).into_iter().flat_map(ancestors).find(|n| {
-        n.kind() == "call_expression" && n.named_child(0).is_some_and(|c| c.kind() == "navigation_expression" && c.named_child(1).is_some_and(|s| s.start_byte() <= caret))
-            && n.named_child(1).is_some_and(|s| s.start_byte() >= caret)
-    })?;
-    let callee = call.named_child(0)?;
-    let target = callee.named_child(0)?;
-    let name = text[callee.named_child(1)?.byte_range()].trim();
+    let (call, target, name, values) = method_call(tree.root_node(), text, caret)?;
     let set = match name {
-        ".get" => false,
-        ".set" => true,
+        "get" => false,
+        "set" => true,
         _ => return None,
     };
-    let [arguments] = children(call.named_child(1)?)[..] else { return None };
-    if arguments.kind() != "value_arguments" {
-        return None;
-    }
-    let values = children(arguments);
-    // Named or spread arguments have no indexing form.
-    let mut plain = values.iter().map(|v| {
-        let mut cursor = v.walk();
-        let tokens: Vec<Node> = v.children(&mut cursor).collect();
-        tokens.len() == 1 && tokens[0].is_named()
-    });
-    if values.len() < 1 + set as usize || !plain.all(|p| p) {
+    if values.len() < 1 + set as usize {
         return None;
     }
     if set && call.parent()?.kind() != "statements" {
         return None;
     }
-    let ty = super::introduce::kotlin_type(target, text)
-        .filter(|t| !t.is_empty())
-        .or_else(|| super::types::type_of(Lang::Kotlin, text, target.byte_range(), classes).map(|t| t.ty))?;
-    let head = ty.split('<').next().unwrap_or(&ty);
-    let head = head.rsplit('.').next().unwrap_or(head);
+    let ty = receiver_type(target, text, classes)?;
+    let head = type_head(&ty);
     let readable = matches!(head, "List" | "Map" | "String" | "CharSequence" | "StringBuilder");
     let writable = matches!(head, "MutableList" | "ArrayList" | "MutableMap" | "HashMap" | "LinkedHashMap" | "Array")
         || head.ends_with("Array") && head != "Array" && head.len() > 5;
@@ -1033,6 +1109,30 @@ mod tests {
         assert_eq!(run("get(0)\n"), None);
         assert_eq!(run("set(\"b\""), None);
         assert_eq!(run("0) +"), None);
+    }
+
+    #[test]
+    fn replaces_calls_with_binary_operators() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(a: String, b: String, xs: List<Int>, n: Int, d: Double, m: Map<String, Int>, o: String?) {\n    if (a.equals(b)) return\n    val c = !a.equals(b)\n    val e = xs.contains(n + 1)\n    if (!m.contains(a)) return\n    val g = n.plus(2).toString()\n    val h = n.times(n - 1)\n    val i = d.equals(1.0)\n    val j = o.equals(a)\n    val k = a.plus(b, c)\n}\n";
+        let run = |at: &str| binary_operator(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("equals(b)) return").unwrap();
+        assert_eq!(title, "Replace with '=='");
+        assert!(out.contains("    if (a == b) return\n"), "{out}");
+        let (title, out) = run("equals(b)\n").unwrap();
+        assert_eq!(title, "Replace with '!='");
+        assert!(out.contains("    val c = a != b\n"), "{out}");
+        assert!(run("contains(n").unwrap().1.contains("    val e = (n + 1) in xs\n"));
+        let (title, out) = run("contains(a)").unwrap();
+        assert_eq!(title, "Replace with '!in'");
+        assert!(out.contains("    if (a !in m) return\n"), "{out}");
+        assert!(run("plus(2)").unwrap().1.contains("    val g = (n + 2).toString()\n"));
+        assert!(run("times").unwrap().1.contains("    val h = n * (n - 1)\n"));
+        // Double's equals isn't ==; a nullable receiver; two arguments; not on the receiver.
+        assert_eq!(run("equals(1.0)"), None);
+        assert_eq!(run("equals(a)"), None);
+        assert_eq!(run("plus(b, c)"), None);
+        assert_eq!(run("a.equals(b)) return"), None);
     }
 
     #[test]

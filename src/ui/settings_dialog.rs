@@ -117,7 +117,7 @@ impl Page {
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
             Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "Template Group", "Import", "Export", "sout", "fori", "iter", "main", "psvm"],
-            Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template", "Iterate over collection", "Add indices to 'for' loop", "indexed 'for' loop", "enhanced 'for'", "forEach", "indexing operator", "isEmpty()", "isNotEmpty()"],
+            Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template", "Iterate over collection", "Add indices to 'for' loop", "indexed 'for' loop", "enhanced 'for'", "forEach", "indexing operator", "binary operator", "isEmpty()", "isNotEmpty()"],
             Page::Commit => &[
                 "Use non-modal commit interface",
                 "Limit subject line length",
