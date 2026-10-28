@@ -211,6 +211,12 @@ pub fn resolved(template: &Template, scope: &Scope) -> Template {
     Template { vars: Cow::Owned(vars), ..template.clone() }
 }
 
+/// The variables whose value is `subtypes(…)`: their type and, as
+/// IntelliJ's SubtypesMacro lists them, its subclasses to pick from.
+pub fn subtype_variables(template: &Template) -> Vec<(&str, &str)> {
+    template.vars.iter().filter(|v| matches!(v.computed, Some(Computed::TypeOf(_))) && !v.default.is_empty()).map(|v| (&*v.name, &*v.default)).collect()
+}
+
 fn compute(c: Computed, scope: &Scope, values: &[(String, String)]) -> Option<String> {
     let value_of = |name: &str| values.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str());
     let non_empty = |s: &str| (!s.is_empty()).then(|| s.to_owned());
@@ -544,6 +550,8 @@ pub const EXPAND_COMMAND: &str = "junction.expandLiveTemplate";
 pub struct Expansion {
     pub text: String,
     pub stops: Vec<Vec<Range<usize>>>,
+    /// The variable each stop fills in.
+    pub names: Vec<String>,
     pub end: usize,
 }
 
@@ -615,18 +623,19 @@ pub fn expand_around(template: &Template, selection: &str, indent: &str, unit: &
         out.push_str(rest);
         depth = (depth + line.matches('{').count()).saturating_sub(line.matches('}').count());
     }
-    let stops = template
+    let (stops, names) = template
         .vars
         .iter()
         .filter(|v| v.stop)
         .map(|v| {
             let copies: Vec<&str> = template.vars.iter().filter(|c| c.copy_of.as_deref() == Some(&*v.name)).map(|c| &*c.name).collect();
-            ranges.iter().filter(|(n, _)| *n == v.name || copies.contains(n)).map(|(_, r)| r.clone()).collect()
+            let places: Vec<Range<usize>> = ranges.iter().filter(|(n, _)| *n == v.name || copies.contains(n)).map(|(_, r)| r.clone()).collect();
+            (places, v.name.to_string())
         })
-        .filter(|r: &Vec<Range<usize>>| !r.is_empty())
-        .collect();
+        .filter(|(r, _)| !r.is_empty())
+        .unzip();
     let end = end.unwrap_or(out.len());
-    Expansion { text: out, stops, end }
+    Expansion { text: out, stops, names, end }
 }
 
 /// A template being filled in, in document offsets.
@@ -781,6 +790,9 @@ mod tests {
         let item = Scope { variables: vec![("o".into(), "Object".into())], ..scope.clone() };
         let t = resolved(builtin(false).iter().find(|t| t.name == "inst").unwrap(), &item);
         assert_eq!(expand(&t, "", "  ").text, "if (o instanceof Object) {\n  Object o1 = (Object)o;\n  \n}");
+        // TYPE is `subtypes(…)`: the stop to offer the subclasses at.
+        assert_eq!(subtype_variables(&t), vec![("TYPE", "Object")]);
+        assert_eq!(expand(&t, "", "  ").names, vec!["EXPR", "TYPE", "VAR"]);
         let kotlin = Scope { parameters: vec![("tax".into(), "Double".into()), ("items".into(), "List<Item>".into())], ..scope.clone() };
         let kt = |name: &str| expand(&resolved(builtin(true).iter().find(|t| t.name == name).unwrap(), &kotlin), "", "    ").text;
         assert_eq!(kt("soutp"), "println(\"tax = [${tax}], items = [${items}]\")");

@@ -8,7 +8,7 @@
 use gpui_kit::{Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div, prelude::FluentBuilder as _, px};
 
 use super::FileEditor;
-use crate::domain::live_templates::{expand, expand_around, find, resolved, shortened, Expansion, Session, Template};
+use crate::domain::live_templates::{expand, expand_around, find, resolved, shortened, subtype_variables, Expansion, Session, Template};
 use crate::theme::ActivePalette as _;
 
 pub(super) struct TemplateState {
@@ -71,10 +71,16 @@ impl FileEditor {
         // shortened (imported).
         let template = resolved(&template, &crate::index::introduce::template_scope(lang, &text, start, &|n| self.class_texts(n, false, cx)));
         let (template, imports) = shortened(&template);
+        // `subtypes(…)`: the type and its subclasses to pick from.
+        let subtypes: Vec<(String, Vec<String>)> = subtype_variables(&template)
+            .into_iter()
+            .map(|(name, ty)| (name.to_owned(), std::iter::once(ty.to_owned()).chain(self.subclass_names(ty, cx)).collect()))
+            .collect();
         let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
         let indent: String = text[line_start..start].chars().take_while(|c| c.is_whitespace()).collect();
         let expansion = expand(&template, &indent, &crate::domain::surround::indent_unit(&text));
-        self.insert_template(start..cursor, expansion.text.clone(), 0, &expansion, imports, window, cx);
+        let lookups = expansion.names.iter().map(|n| subtypes.iter().find(|(v, _)| v == n).map(|(_, l)| l.clone()).unwrap_or_default()).collect();
+        self.insert_template(start..cursor, expansion.text.clone(), 0, &expansion, imports, lookups, window, cx);
         true
     }
 
@@ -82,7 +88,7 @@ impl FileEditor {
     /// `range`, imports its classes, in one edit, and starts filling in
     /// its variables.
     #[allow(clippy::too_many_arguments)]
-    fn insert_template(&mut self, range: std::ops::Range<usize>, insert: String, lead: usize, expansion: &Expansion, imports: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+    fn insert_template(&mut self, range: std::ops::Range<usize>, insert: String, lead: usize, expansion: &Expansion, imports: Vec<String>, lookups: Vec<Vec<String>>, window: &mut Window, cx: &mut Context<Self>) {
         let Some((_, style)) = self.jvm_style() else { return };
         let text = self.text(cx);
         let mut new_text = text.clone();
@@ -112,7 +118,7 @@ impl FileEditor {
             state.replace(replacement, window, cx);
             state.set_selected_range(selection, cx);
         });
-        self.start_template(session, cx);
+        self.start_template_with_lookup(session, lookups, cx);
     }
 
     /// Fills in `session`'s places one by one, as a template's (the text
@@ -184,7 +190,7 @@ impl FileEditor {
         if whole_lines && selection.ends_with('\n') && !insert.ends_with('\n') {
             insert.push('\n');
         }
-        self.insert_template(range, insert, lead.len(), &expansion, imports, window, cx);
+        self.insert_template(range, insert, lead.len(), &expansion, imports, Vec::new(), window, cx);
     }
 
     /// Enter in a template: to the next variable, as Tab.
