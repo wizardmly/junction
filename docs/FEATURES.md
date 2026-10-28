@@ -590,7 +590,8 @@ Linux 实测（Xvfb）：`Shapes.kt` 里 7 条 import（含重复的 `java.io.Fi
 | 不在代码块里（类属性初始化）时提示 “Cannot refactor in this place” | ✅ |
 | 表达式体函数 `fun f(a: Int) = a * 2 + a * 2` 先转成代码块（IntelliJ 的 ConvertToBlockBody）：`{ val value = a * 2; return value + value }`，没写返回类型时按表达式补上 `: Int`；推不出类型时提示 “Cannot convert to a block body without the function's return type” | ✅ |
 | Kotlin 的 “Specify type explicitly”（`val x: Int = …`）：类型从表达式推出时才出现，默认不勾：字面量、`Foo<T>(…)` 构造调用（Compose 文件里不算，大写函数多是 composable）、`as` / `as?`、比较和逻辑运算、字符串拼接、函数参数，以及数字四则运算取最宽的类型 | ✅ |
-| AS 的就地模式（直接在代码里改名、各处同步）、Java / Kotlin 方法调用结果的类型推断 | ❌ 未做 |
+| Java / Kotlin 方法调用、字段 / 属性读取的类型按声明推断（`user.getAddress()` → `Address address = …` 并补 import；Kotlin 的 “Specify type explicitly” 同样出现）：沿接收者链逐层解析（局部变量、参数、字段、类名、`this` / `super`），在本文件、项目和外部库源码里找声明，找不到时沿父类找；按接收者的类型实参替换类的类型参数（`Box<User>.get()` → `User`），方法自己的类型参数推不出时不写；Kotlin 里 Java 的 getter 当属性读、Java 类型换成 Kotlin 的（`int` → `Int`），没写类型的属性按初始化式推断 | ✅（Linux 实测：Java Introduce Variable 得到 `Address address = user.getAddress();` 并补 import，一次撤销全部还原；Kotlin 勾 Specify type 得到 `val toy: Toy = owner.toy` 并补 import） |
+| AS 的就地模式（直接在代码里改名、各处同步） | ❌ 未做 |
 
 Linux 实测（Xvfb）：Kotlin 里光标在 `user.getName()` 上按 Ctrl+Alt+V，弹出 Expressions 列表（`user`、`user.getName()`、`"Hello " + user.getName()`、`println(…)`），选第二项时代码里对应高亮；对话框建议 `name`、`value`，3 处出现默认全部替换；Refactor 后在第一处语句前插入 `val name = user.getName()`，三处都换成 `name`。
 
@@ -632,7 +633,8 @@ Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+
 | try / catch 按调用推断 catch 的异常类型（照 JavaWithTryCatchSurrounder / TryCatchExceptionUtil）：Java 取所包代码调用的方法、构造函数的 `throws` 和 `throw new X(…)` 里的受检异常（没有受检的就取非受检的，都没有才是 `Exception`），已被内层 try 捕获的、lambda / 匿名类里的不算；Kotlin 取被调 Java 方法的 `throws` 和 Kotlin 函数的 `@Throws(X::class)`。每个异常一个 catch，子类排在父类前，选中第一个的类型，需要时补 import；被调方法按接收者找：无接收者 / `this`（本类及父类）、`super`、类名（`Thread.sleep`）、局部变量 / 参数 / 字段的声明类型，在项目和外部库（JDK 源码）里找；没有 JDK 源码时认得常见的 JDK 受检异常（IOException、InterruptedException 等）的包名和继承关系 | ✅ |
 | Kotlin `when (expr) {}` 照 computeMissingCases 列出分支：enum（本文件、项目或外部库里的 Kotlin / Java enum）的每个常量 `Mode.ON -> TODO()`，sealed 类的子类 `is Shape.Circle -> TODO()` / object `Shape.Empty -> TODO()`（嵌套的带外层类名，子类在别的文件里也找），可空类型再加 `null -> TODO()`，光标停在第一个 TODO 前；类型来自参数 / 变量的声明或 `val a = Mode.ON` 这样的初始值 | ✅ |
 | Java `((Type)expr)` 照 GuessManager.guessTypeToCast 的控制流部分猜类型并选中：包住它的 `if` / `while` / `?:` 条件、`&&` 左边里 `expr instanceof T`（`!`、`||` 的否定也算），else 分支里取否定条件，同一块里前面的 `if (!(expr instanceof T)) return;` 这类守卫；猜不出时类型处留空 | ✅ |
-| 强转按容器元素 / 子类猜类型、方法调用结果作为接收者时的 catch 推断、when 对方法调用结果的类型推断 | ❌ 未做 |
+| catch 推断和 when 分支的接收者 / 表达式是方法调用结果时，按上面 Introduce Variable 的类型推断解析（`repo.load().read()` 的 throws、`when (shape())`） | ✅ |
+| 强转按容器元素 / 子类猜类型 | ❌ 未做 |
 
 Linux 实测（Xvfb，强转）：`if (o instanceof String) {` 里 `System.out.println(o.length());` 选中 `o` 套 ((Type)expr)，变成 `((String) o).length()`，String 处于选中状态。
 

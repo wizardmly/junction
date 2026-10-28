@@ -36,6 +36,13 @@ const UNCHECKED: &[&str] = &[
     "DateTimeException", "AssertionError", "OutOfMemoryError", "StackOverflowError",
 ];
 
+/// java.lang's common classes, for when the JDK's sources aren't there.
+const JAVA_LANG: &[&str] = &[
+    "String", "Object", "Integer", "Long", "Short", "Byte", "Double", "Float", "Character", "Boolean", "Number", "Void", "Math", "System", "Thread",
+    "Runnable", "Iterable", "Comparable", "CharSequence", "StringBuilder", "StringBuffer", "Class", "Enum", "Record", "Throwable", "Exception", "AutoCloseable",
+    "Cloneable", "Process", "Runtime", "ThreadLocal", "Override", "Deprecated", "SuppressWarnings", "FunctionalInterface",
+];
+
 /// Common JDK checked exceptions, (name, package, superclass), for when
 /// the JDK's sources aren't there.
 const JDK_CHECKED: &[(&str, &str, &str)] = &[
@@ -108,17 +115,17 @@ pub fn caught_exceptions(lang: Lang, text: &str, range: Range<usize>, classes: C
     order.into_iter().map(|i| found[i].clone()).collect()
 }
 
-struct Finder<'a> {
-    classes: Classes<'a>,
-    own: &'a str,
+pub(super) struct Finder<'a> {
+    pub(super) classes: Classes<'a>,
+    pub(super) own: &'a str,
 }
 
 /// The class declarations' node kinds.
-fn is_class(kind: &str) -> bool {
+pub(super) fn is_class(kind: &str) -> bool {
     matches!(kind, "class_declaration" | "interface_declaration" | "enum_declaration" | "record_declaration" | "object_declaration")
 }
 
-fn class_name<'t>(node: Node<'t>, text: &'t str) -> Option<&'t str> {
+pub(super) fn class_name<'t>(node: Node<'t>, text: &'t str) -> Option<&'t str> {
     let name = node.child_by_field_name("name").or_else(|| {
         let mut c = node.walk();
         node.named_children(&mut c).find(|n| n.kind() == "type_identifier")
@@ -127,7 +134,7 @@ fn class_name<'t>(node: Node<'t>, text: &'t str) -> Option<&'t str> {
 }
 
 /// The class named `name` in a file.
-fn find_class<'t>(root: Node<'t>, text: &str, name: &str) -> Option<Node<'t>> {
+pub(super) fn find_class<'t>(root: Node<'t>, text: &str, name: &str) -> Option<Node<'t>> {
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
         if is_class(n.kind()) && class_name(n, text) == Some(name) {
@@ -140,12 +147,12 @@ fn find_class<'t>(root: Node<'t>, text: &str, name: &str) -> Option<Node<'t>> {
 }
 
 /// `Foo<Bar>[]` → `Foo`; `a.b.Foo` stays qualified.
-fn bare_type(ty: &str) -> &str {
+pub(super) fn bare_type(ty: &str) -> &str {
     let ty = ty.split('<').next().unwrap_or(ty);
     ty.trim_end_matches("[]").trim_end_matches('?').trim()
 }
 
-fn argument_count(arguments: Option<Node>) -> usize {
+pub(super) fn argument_count(arguments: Option<Node>) -> usize {
     arguments.map_or(0, |a| {
         let mut c = a.walk();
         a.named_children(&mut c).filter(|n| !n.kind().contains("comment") && n.kind() != "annotated_lambda").count()
@@ -155,7 +162,7 @@ fn argument_count(arguments: Option<Node>) -> usize {
 impl Finder<'_> {
     /// The text of the class `name` as `context` (a file's text) sees it,
     /// with that class's simple name.
-    fn class_text(&self, name: &str, context: &str) -> Option<String> {
+    pub(super) fn class_text(&self, name: &str, context: &str) -> Option<String> {
         let simple = name.rsplit('.').next().unwrap_or(name);
         if symbols::parse(lang_of(context), context).is_some_and(|t| find_class(t.root_node(), context, simple).is_some()) {
             return Some(context.to_owned());
@@ -170,7 +177,7 @@ impl Finder<'_> {
     /// The qualified name `name` has in `context`: its import, its file's
     /// package, java.lang or a wildcard import's package where a class of
     /// that name is.
-    fn qualify(&self, name: &str, context: &str) -> String {
+    pub(super) fn qualify(&self, name: &str, context: &str) -> String {
         if name.contains('.') {
             return name.to_owned();
         }
@@ -190,7 +197,7 @@ impl Finder<'_> {
             if let Some((_, p, _)) = JDK_CHECKED.iter().find(|(n, _, _)| *n == name) {
                 return in_package(p);
             }
-            if UNCHECKED.contains(&name) {
+            if UNCHECKED.contains(&name) || JAVA_LANG.contains(&name) {
                 return in_package("java.lang");
             }
         }
@@ -348,7 +355,7 @@ impl Finder<'_> {
     }
 
     /// The class a receiver expression is, by name or declared type.
-    fn receiver_type(&self, lang: Lang, receiver: Node, call: Node) -> Option<String> {
+    pub(super) fn receiver_type(&self, lang: Lang, receiver: Node, call: Node) -> Option<String> {
         let text = self.own;
         let name = &text[receiver.byte_range()];
         if matches!(receiver.kind(), "identifier" | "simple_identifier") {
@@ -367,11 +374,11 @@ impl Finder<'_> {
             let last = name.rsplit('.').next()?;
             return last.starts_with(|c: char| c.is_uppercase()).then(|| name.to_owned());
         }
-        let ty = if lang == Lang::Kotlin { super::introduce::kotlin_type(receiver, text) } else { super::introduce::java_type(receiver, text) };
-        ty.map(|t| bare_type(&t).to_owned())
+        // A call's result, a member: by their declarations.
+        super::types::declared(self, lang, receiver, text).map(|t| bare_type(&t).to_owned())
     }
 
-    fn superclass_of(&self, class: &str, context: &str) -> Option<String> {
+    pub(super) fn superclass_of(&self, class: &str, context: &str) -> Option<String> {
         let text = self.class_text(class, context)?;
         let tree = symbols::parse(Lang::Java, &text)?;
         let node = find_class(tree.root_node(), &text, class.rsplit('.').next()?)?;
@@ -411,7 +418,7 @@ impl Finder<'_> {
 }
 
 /// Java or Kotlin, by the file's text (the callers have no path).
-fn lang_of(text: &str) -> Lang {
+pub(super) fn lang_of(text: &str) -> Lang {
     let kotlin = text.lines().any(|l| {
         let l = l.trim_start();
         l.starts_with("fun ") || l.contains(" fun ") || l.starts_with("val ") || l.starts_with("object ") || l.starts_with("import ") && !l.ends_with(';') || l.starts_with("package ") && !l.ends_with(';')
@@ -419,7 +426,7 @@ fn lang_of(text: &str) -> Lang {
     if kotlin { Lang::Kotlin } else { Lang::Java }
 }
 
-fn enclosing_class_node(node: Node) -> Option<Node> {
+pub(super) fn enclosing_class_node(node: Node) -> Option<Node> {
     let mut n = node.parent();
     while let Some(p) = n {
         if is_class(p.kind()) {
@@ -430,12 +437,12 @@ fn enclosing_class_node(node: Node) -> Option<Node> {
     None
 }
 
-fn enclosing_class(node: Node, text: &str) -> Option<String> {
+pub(super) fn enclosing_class(node: Node, text: &str) -> Option<String> {
     enclosing_class_node(node).and_then(|c| class_name(c, text)).map(str::to_owned)
 }
 
 /// A field's declared type in a class.
-fn field_type(lang: Lang, class: Node, text: &str, name: &str) -> Option<String> {
+pub(super) fn field_type(lang: Lang, class: Node, text: &str, name: &str) -> Option<String> {
     let body = class.child_by_field_name("body").or_else(|| {
         let mut c = class.walk();
         class.named_children(&mut c).find(|b| b.kind() == "class_body")
@@ -498,7 +505,7 @@ fn java_throws(class: Node, text: &str, name: Option<&str>, arity: usize) -> Opt
 }
 
 /// The Kotlin functions named `name` with `arity` parameters under `scope`.
-fn kotlin_functions<'t>(scope: Node<'t>, text: &str, name: &str, arity: usize) -> Vec<Node<'t>> {
+pub(super) fn kotlin_functions<'t>(scope: Node<'t>, text: &str, name: &str, arity: usize) -> Vec<Node<'t>> {
     let mut out = Vec::new();
     let mut stack = vec![scope];
     while let Some(n) = stack.pop() {
@@ -573,6 +580,14 @@ mod tests {
         // Caught inside, or in a lambda: nothing.
         let text = "class A {\n    void f() {\n        try {\n            Thread.sleep(1);\n        } catch (InterruptedException e) {\n        }\n        Runnable r = () -> Thread.sleep(1);\n        throw new IOException();\n    }\n}\n";
         assert_eq!(caught(Lang::Java, text, "try {", "throw new IOException();", &files), ["java.io.IOException"]);
+    }
+
+    #[test]
+    fn follows_calls_to_their_receivers() {
+        let opener = "package app;\n\npublic class Opener {\n    public FileReader open() { return null; }\n}\n";
+        let files = [IO, NOT_FOUND, READER, opener];
+        let text = "package app;\n\nclass A {\n    void f(Opener o) {\n        o.open().read();\n    }\n}\n";
+        assert_eq!(caught(Lang::Java, text, "o.open()", "read();", &files), ["java.io.IOException"]);
     }
 
     #[test]

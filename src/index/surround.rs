@@ -405,7 +405,8 @@ fn enum_entry_type(node: Node, text: &str) -> Option<String> {
 pub fn when_branches(text: &str, range: Range<usize>, classes: super::catches::Classes, subtypes: super::catches::Classes) -> Vec<String> {
     let Some(tree) = symbols::parse(Lang::Kotlin, text) else { return Vec::new() };
     let Some(node) = expression_node(Lang::Kotlin, tree.root_node(), text, range) else { return Vec::new() };
-    let Some(ty) = expression_type(Lang::Kotlin, node, text) else { return Vec::new() };
+    let finder = super::catches::Finder { classes, own: text };
+    let Some(ty) = super::types::declared(&finder, Lang::Kotlin, node, text) else { return Vec::new() };
     let nullable = ty.ends_with('?');
     let name = ty.trim_end_matches('?').split('<').next().unwrap_or_default().rsplit('.').next().unwrap_or_default().to_owned();
     let mut files = vec![text.to_owned()];
