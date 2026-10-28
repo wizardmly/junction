@@ -635,7 +635,7 @@ Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+
 | Kotlin `when (expr) {}` 照 computeMissingCases 列出分支：enum（本文件、项目或外部库里的 Kotlin / Java enum）的每个常量 `Mode.ON -> TODO()`，sealed 类的子类 `is Shape.Circle -> TODO()` / object `Shape.Empty -> TODO()`（嵌套的带外层类名，子类在别的文件里也找），可空类型再加 `null -> TODO()`，光标停在第一个 TODO 前；类型来自参数 / 变量的声明或 `val a = Mode.ON` 这样的初始值 | ✅ |
 | Java `((Type)expr)` 照 GuessManager.guessTypeToCast 的控制流部分猜类型并选中：包住它的 `if` / `while` / `?:` 条件、`&&` 左边里 `expr instanceof T`（`!`、`||` 的否定也算），else 分支里取否定条件，同一块里前面的 `if (!(expr instanceof T)) return;` 这类守卫；猜不出时类型处留空 | ✅ |
 | catch 推断和 when 分支的接收者 / 表达式是方法调用结果时，按上面 Introduce Variable 的类型推断解析（`repo.load().read()` 的 throws、`when (shape())`） | ✅ |
-| 强转按容器元素 / 子类猜类型 | ❌ 未做 |
+| 强转按容器元素 / 子类猜类型（照 guessTypeToCast 的其余两步）：`list.get(i)` / `elementAt` / `firstElement` / `lastElement` 取容器声明的唯一类型参数（`List<Dog>` → `Dog`），没有时取文件里往同名变量放的东西的类型（`add(x)`、`add(i, x)`、`set(i, x)`、`contains(x)`、`addElement` 等，基本类型不算）；再加上表达式类型的所有子类（任意层，项目和外部库，超过 5 个就不加）。猜出多个时类型处弹出候选列表（模板字段的 lookup），上下键或点击换，回车确定，光标停在强转之后 | ✅（Linux 实测：`Animal a` 套 ((Type)expr) 列出 `Pet` / `Dog`，下键换成 `Dog` 回车；原始 `List pets` 放过 `new Car()` 和 `user.getAddress()`，`pets.get(0)` 列出 `Car` / `Address`） |
 
 Linux 实测（Xvfb，强转）：`if (o instanceof String) {` 里 `System.out.println(o.length());` 选中 `o` 套 ((Type)expr)，变成 `((String) o).length()`，String 处于选中状态。
 

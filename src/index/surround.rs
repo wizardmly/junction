@@ -345,6 +345,66 @@ fn cast_types(node: Node, text: &str) -> Vec<String> {
     out
 }
 
+/// The element types of the container a Java `list.get(i)` (or
+/// `elementAt`, `firstElement`, `lastElement`) reads (GuessManager's
+/// guessContainerElementType): its declared type's single type argument
+/// (`List<Dog>`), else the types of what the file puts into a variable of
+/// that name (`list.add(new Dog())`, `set(i, x)`, `contains(x)`…).
+pub fn container_types(text: &str, range: Range<usize>, classes: super::catches::Classes) -> Vec<String> {
+    let Some(tree) = symbols::parse(Lang::Java, text) else { return Vec::new() };
+    let Some(node) = expression_node(Lang::Java, tree.root_node(), text, range) else { return Vec::new() };
+    if node.kind() != "method_invocation" {
+        return Vec::new();
+    }
+    let name = node.child_by_field_name("name").map_or("", |n| &text[n.byte_range()]);
+    let count = node.child_by_field_name("arguments").map_or(0, |a| a.named_child_count());
+    let reads = matches!((name, count), ("get" | "elementAt", 1) | ("firstElement" | "lastElement", 0));
+    let Some(container) = node.child_by_field_name("object").filter(|_| reads) else { return Vec::new() };
+    if let Some(declared) = expression_type(Lang::Java, container, text) {
+        // `List<Dog>`: one type argument.
+        if let Some((_, args)) = declared.split_once('<') {
+            let args = args.trim_end().trim_end_matches('>');
+            if !args.contains(',') && !args.trim().is_empty() && !args.contains('?') {
+                return vec![args.trim().to_owned()];
+            }
+        }
+    }
+    if container.kind() != "identifier" {
+        return Vec::new();
+    }
+    let var = &text[container.byte_range()];
+    // A call on the variable and which argument is the element.
+    let element = |name: &str, count: usize| match (name, count) {
+        ("add" | "contains" | "remove" | "addElement" | "indexOf" | "lastIndexOf" | "removeElement", 1) => Some(0),
+        ("add" | "set", 2) => Some(1),
+        ("indexOf" | "lastIndexOf" | "insertElementAt" | "setElementAt", 2) => Some(0),
+        _ => None,
+    };
+    let mut root = node;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "method_invocation"
+            && n.child_by_field_name("object").is_some_and(|o| o.kind() == "identifier" && &text[o.byte_range()] == var)
+            && let Some(args) = n.child_by_field_name("arguments")
+            && let Some(at) = element(n.child_by_field_name("name").map_or("", |m| &text[m.byte_range()]), args.named_child_count())
+            && let Some(arg) = args.named_child(at)
+            && let Some(ty) = expression_type(Lang::Java, arg, text).or_else(|| super::types::type_of(Lang::Java, text, arg.byte_range(), classes).map(|t| t.ty))
+            && !matches!(ty.as_str(), "boolean" | "int" | "long" | "short" | "byte" | "char" | "float" | "double" | "null")
+            && !out.contains(&ty)
+        {
+            out.push(ty);
+        }
+        let mut c = n.walk();
+        let children: Vec<Node> = n.named_children(&mut c).collect();
+        stack.extend(children.into_iter().rev());
+    }
+    out
+}
+
 /// What the type of an expression is known to be: a literal's, a
 /// comparison's, a constructor call's or a cast's, or a local variable's
 /// or parameter's as declared.
@@ -616,6 +676,18 @@ mod tests {
         let text = "fun f(n: Int) {\n    n\n}\n";
         let at = text.rfind("n\n").unwrap();
         assert!(when_branches(text, at..at + 1, &none, &none).is_empty());
+    }
+
+    #[test]
+    fn guesses_container_elements() {
+        let text = "class A {\n  void f(List<Dog> dogs) {\n    List pets = new ArrayList();\n    pets.add(new Cat());\n    Dog d = new Dog();\n    pets.add(0, d);\n    pets.add(3);\n    use(pets.get(0)); use(dogs.get(0)); use(pets.size());\n  }\n}";
+        let cast = |expr: &str| {
+            let at = text.find(expr).unwrap();
+            container_types(text, at..at + expr.len(), &|_| Vec::new())
+        };
+        assert_eq!(cast("pets.get(0)"), vec!["Cat".to_owned(), "Dog".into()]);
+        assert_eq!(cast("dogs.get(0)"), vec!["Dog".to_owned()]);
+        assert!(cast("pets.size()").is_empty());
     }
 
     #[test]

@@ -2118,11 +2118,22 @@ impl FileEditor {
         let text = self.text(cx);
         // Declarations the code after still uses go above the new block.
         let out = (!expression).then(|| moves_declarations(style, surrounder)).flatten().and_then(|defaults| crate::index::surround::declarations_out(lang, &text, range.clone(), defaults));
+        let mut cast_types = Vec::new();
         let done = match out {
             _ if expression => {
                 let mut context = crate::index::surround::expression_context(lang, &text, range.clone()).unwrap_or_default();
                 if surrounder == crate::domain::surround::Surrounder::When {
                     context.when_branches = crate::index::surround::when_branches(&text, range.clone(), &|n| self.class_texts(n, false, cx), &|n| self.class_texts(n, true, cx));
+                }
+                if surrounder == crate::domain::surround::Surrounder::Cast && lang == crate::index::lang::Lang::Java {
+                    let classes = |n: &str| self.class_texts(n, false, cx);
+                    let guessed = crate::index::surround::container_types(&text, range.clone(), &classes).into_iter().chain(self.derived_types(lang, &text, range.clone(), cx));
+                    for ty in guessed {
+                        if !context.cast_types.contains(&ty) {
+                            context.cast_types.push(ty);
+                        }
+                    }
+                    cast_types = context.cast_types.clone();
                 }
                 surround_expression(style, surrounder, &text, range.clone(), &indent_unit(&text), &context)
             }
@@ -2140,12 +2151,49 @@ impl FileEditor {
         self.state.update(cx, |state, cx| {
             state.set_selected_range(replaced, cx);
             state.replace(&replacement, window, cx);
-            state.set_selected_range(select, cx);
+            state.set_selected_range(select.clone(), cx);
         });
         if done.stops.len() > 1 {
             let stops = done.stops.iter().map(|r| vec![moved(r)]).collect();
             self.start_template(crate::domain::live_templates::Session { stops, current: 0, end: done.end + shift }, cx);
+        } else if cast_types.len() > 1 {
+            // Several guessed types: a list to pick one from, the
+            // template field's lookup; done at the cast's end.
+            let session = crate::domain::live_templates::Session { stops: vec![vec![select]], current: 0, end: done.range.start + shift + done.text.len() };
+            self.start_template_with_lookup(session, vec![cast_types], cx);
         }
+    }
+
+    /// The classes deriving from the Java expression's type, as cast
+    /// guesses (GuessManager's addExprTypesByDerivedClasses): all of them
+    /// at any depth, none when there are more than 5.
+    fn derived_types(&self, lang: crate::index::lang::Lang, text: &str, range: Range<usize>, cx: &gpui_kit::App) -> Vec<String> {
+        const LIMIT: usize = 5;
+        if lang != crate::index::lang::Lang::Java {
+            return Vec::new();
+        }
+        let Some(found) = crate::index::types::type_of(lang, text, range, &|n| self.class_texts(n, false, cx)) else { return Vec::new() };
+        let name = found.ty.split('<').next().unwrap_or_default().rsplit('.').next().unwrap_or_default().to_owned();
+        if name.is_empty() || name.starts_with(|c: char| c.is_lowercase()) || name.contains('[') {
+            return Vec::new();
+        }
+        let Some(index) = self.code_index.as_ref() else { return Vec::new() };
+        let store = index.read(cx).index.clone();
+        let Ok(store) = store.read() else { return Vec::new() };
+        let mut out: Vec<String> = Vec::new();
+        let mut queue = vec![name.clone()];
+        while let Some(parent) = queue.pop() {
+            for (_, _, symbol) in store.subtypes_of(&parent) {
+                if symbol.name != name && !out.contains(&symbol.name) {
+                    if out.len() == LIMIT {
+                        return Vec::new();
+                    }
+                    out.push(symbol.name.clone());
+                    queue.push(symbol.name.clone());
+                }
+            }
+        }
+        out
     }
 
     /// What the code at `range` throws to be caught, looking callees up
@@ -3221,19 +3269,20 @@ impl Render for FileEditor {
                     cx.stop_propagation();
                 }
             }))
-            // In-place Introduce Variable: its options' Alt keys, its names' Up / Down.
+            // In-place Introduce Variable: its options' Alt keys, its names' Up / Down
+            // (a template field's lookup too).
             .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
                 if this.in_place_key(&e.keystroke, window, cx) {
                     cx.stop_propagation();
                 }
             }))
             .capture_action(cx.listener(|this, _: &gpui_kit::component::input::MoveUp, window, cx| {
-                if this.in_place_step(-1, window, cx) {
+                if this.in_place_step(-1, window, cx) || this.lookup_step(-1, window, cx) {
                     cx.stop_propagation();
                 }
             }))
             .capture_action(cx.listener(|this, _: &gpui_kit::component::input::MoveDown, window, cx| {
-                if this.in_place_step(1, window, cx) {
+                if this.in_place_step(1, window, cx) || this.lookup_step(1, window, cx) {
                     cx.stop_propagation();
                 }
             }))
@@ -3511,6 +3560,7 @@ impl Render for FileEditor {
                 .children(self.render_expression_highlight(cx))
                 .children(self.render_template_stops(cx))
                 .children(self.render_in_place(cx))
+                .children(self.render_template_lookup(cx))
                 .children(self.render_parameter_info(cx))
                 .children(self.render_import_hint(cx))
                 .children(self.render_context_actions(cx))
