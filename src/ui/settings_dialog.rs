@@ -30,7 +30,7 @@ use crate::theme::ActivePalette as _;
 use crate::ui::accounts_dialog::AccountsView;
 use crate::ui::as_icons as icons;
 use crate::domain::code_style::{LangStyle, StyleLang};
-use crate::domain::reformat::{KeepBlankLines, MinBlankLines};
+use crate::domain::reformat::{KeepBlankLines, MinBlankLines, Spaces};
 use crate::ui::keymap;
 use crate::ui::mappings_dialog::MappingsView;
 
@@ -115,7 +115,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
-            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
+            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Before comma", "After comma", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "Template Group", "Import", "Export", "sout", "fori", "iter", "main", "psvm"],
             Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template", "Iterate over collection", "Add indices to 'for' loop", "indexed 'for' loop", "enhanced 'for'", "forEach", "indexing operator", "binary operator", "equals()", "orEmpty()", "call chain", "redundant call", "indices", "isEmpty()", "isNotEmpty()"],
             Page::Commit => &[
@@ -1526,6 +1526,32 @@ impl SettingsView {
                 page = page.child(h_flex().text_sm().child(self.found("Minimum blank lines", query, cx).child("Blank Lines › Minimum blank lines:")));
                 for (i, input) in inputs {
                     page = page.child(self.row(MinBlankLines::LABELS[*i], query, div().w(px(70.)).child(Input::new(input).small()), cx));
+                }
+            }
+            let shown: &[usize] = match lang {
+                StyleLang::Java => &Spaces::JAVA,
+                StyleLang::Kotlin => &Spaces::KOTLIN,
+                _ => &[],
+            };
+            if !shown.is_empty() {
+                page = page.child(h_flex().text_sm().child(self.found("Spaces", query, cx).child("Spaces:")));
+                let values = d.spaces(lang).values();
+                for &i in shown {
+                    let entity = cx.entity();
+                    let label = Spaces::LABELS[i];
+                    page = page.child(self.found(label, query, cx).child(Checkbox::new(SharedString::from(format!("settings-spaces-{}-{i}", lang.name()))).label(label).checked(values[i]).on_change(move |v, _, cx| {
+                        let v = *v;
+                        entity.update(cx, |this, cx| {
+                            this.set(
+                                |s| {
+                                    let mut values = s.code_style.spaces(lang).values();
+                                    values[i] = v;
+                                    s.code_style.set_spaces(lang, Spaces::from_values(values))
+                                },
+                                cx,
+                            )
+                        })
+                    })));
                 }
             }
         }
