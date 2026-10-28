@@ -47,6 +47,66 @@ pub fn type_of(lang: Lang, text: &str, range: Range<usize>, classes: Classes) ->
     Some(Typed { ty, imports })
 }
 
+/// The simple names of a class's supertypes (superclasses and
+/// interfaces, nearest first), as `text` names the class; None when one
+/// of them can't be found, so the list may be incomplete.
+pub fn supertypes(ty: &str, text: &str, classes: Classes) -> Option<Vec<String>> {
+    let finder = Finder { classes, own: text };
+    let mut out: Vec<String> = Vec::new();
+    let mut queue = std::collections::VecDeque::from([(finder.qualify(bare_type(ty), text), text.to_owned())]);
+    let mut seen = 0;
+    while let Some((qualified, context)) = queue.pop_front() {
+        seen += 1;
+        if seen > 32 {
+            return None;
+        }
+        let simple = qualified.rsplit('.').next().unwrap_or(&qualified).to_owned();
+        if matches!(simple.as_str(), "Object" | "Any") {
+            continue;
+        }
+        let file = finder.class_text(&qualified, &context)?;
+        let tree = symbols::parse(lang_of(&file), &file)?;
+        let class = find_class(tree.root_node(), &file, &simple)?;
+        for name in super_names(class, &file) {
+            let short = name.rsplit('.').next().unwrap_or(&name).to_owned();
+            if !out.contains(&short) {
+                out.push(short);
+                queue.push_back((finder.qualify(&name, &file), file.clone()));
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The types a class declaration extends and implements, as written
+/// (without type arguments).
+fn super_names(class: Node, text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut c = class.walk();
+    for child in class.named_children(&mut c) {
+        if matches!(child.kind(), "class_body" | "enum_class_body" | "interface_body" | "enum_body") {
+            continue;
+        }
+        if !matches!(child.kind(), "superclass" | "super_interfaces" | "extends_interfaces" | "delegation_specifier" | "delegation_specifiers") {
+            continue;
+        }
+        let mut stack = vec![child];
+        while let Some(n) = stack.pop() {
+            if matches!(n.kind(), "type_identifier" | "scoped_type_identifier" | "user_type") {
+                out.push(bare_type(&text[n.byte_range()]).to_owned());
+                continue;
+            }
+            if matches!(n.kind(), "value_arguments" | "type_arguments") {
+                continue;
+            }
+            let mut d = n.walk();
+            let children: Vec<Node> = n.named_children(&mut d).collect();
+            stack.extend(children.into_iter().rev());
+        }
+    }
+    out
+}
+
 /// Kotlin's own types, and the Java collections Kotlin maps to them.
 const KOTLIN_BUILTINS: &[&str] = &[
     "Int", "Long", "Short", "Byte", "Double", "Float", "Char", "Boolean", "String", "Unit", "Any", "Nothing", "List", "MutableList", "Map", "MutableMap", "Set",
@@ -409,5 +469,24 @@ mod tests {
         // A property typed by its initializer, read through a local.
         let text = "package app\n\nimport app.data.Repo\n\nfun f() {\n    val repo = Repo()\n    g(repo.cache)\n}\n";
         assert_eq!(typed(Lang::Kotlin, text, "repo.cache", &files), Some(("Cache".into(), vec!["app.data.Cache".into()])));
+    }
+
+    #[test]
+    fn lists_supertypes() {
+        let pet = "package com.pets\n\nopen class Pet : Animal(), Named\n\nopen class Animal\n\ninterface Named : Comparable<Named>\n";
+        let dog = "package com.pets\n\nclass Dog(name: String) : Pet()\n";
+        let user = "package com.model;\n\npublic class Admin extends User implements java.io.Serializable, Cloneable {}\n";
+        let files = [pet, dog, USER, PERSON, user];
+        let classes = |name: &str| -> Vec<String> { files.iter().filter(|t| t.contains(&format!("class {name}")) || t.contains(&format!("interface {name}"))).map(|s| s.to_string()).collect() };
+        let text = "package app\n\nimport com.pets.Dog\n";
+        // Comparable's source isn't there: incomplete.
+        assert_eq!(supertypes("Dog", text, &classes), None);
+        let named = "package com.pets\n\nopen class Pet : Animal()\n\nopen class Animal\n";
+        let files = [named, dog];
+        let classes = |name: &str| -> Vec<String> { files.iter().filter(|t| t.contains(&format!("class {name}"))).map(|s| s.to_string()).collect() };
+        assert_eq!(supertypes("Dog", text, &classes), Some(vec!["Pet".into(), "Animal".into()]));
+        let files = [USER, PERSON];
+        let classes = |name: &str| -> Vec<String> { files.iter().filter(|t| t.contains(&format!("class {name}"))).map(|s| s.to_string()).collect() };
+        assert_eq!(supertypes("User", "package com.model;\n", &classes), Some(vec!["Person".into()]));
     }
 }
