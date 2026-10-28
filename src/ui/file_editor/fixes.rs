@@ -63,6 +63,8 @@ pub(super) enum Choice {
     Intention(crate::domain::intentions::Intention),
     /// Generate › Override Methods… (false) / Implement Methods… (true).
     Override(bool),
+    /// Generate › Test…: Create Test.
+    Test,
     /// Use version catalog instead: the edit, and the catalog's file
     /// (absolute) with its new text.
     Catalog(crate::domain::catalog_migration::CatalogMove, std::path::PathBuf),
@@ -264,6 +266,9 @@ impl FileEditor {
         // IntelliJ's Generate lists these after the members.
         items.push((cursor..cursor, Choice::Override(false)));
         items.push((cursor..cursor, Choice::Override(true)));
+        if !crate::domain::hotswap::is_test_source(std::path::Path::new(&format!("/{}", self.path))) {
+            items.push((cursor..cursor, Choice::Test));
+        }
         self.context_actions = Some(ContextActions { items, title: Some("Generate"), selected: 0, at, caret: None });
         window.focus(&self.context_focus, cx);
         cx.notify();
@@ -319,6 +324,7 @@ impl FileEditor {
                 window.focus(&self.context_focus, cx);
             }
             Choice::Override(implement) => self.override_methods(implement, window, cx),
+            Choice::Test => self.create_test(window, cx),
             Choice::Server(action) => self.apply_server_action(action, false, window, cx),
             Choice::Refactor(action, rename) => self.apply_server_action(action, rename, window, cx),
             Choice::Catalog(fix, file) => {
@@ -672,6 +678,7 @@ impl FileEditor {
                 Choice::Refactor(action, _) => (None, action.title.clone()),
                 Choice::Override(false) => (None, "Override Methods…".to_owned()),
                 Choice::Override(true) => (None, "Implement Methods…".to_owned()),
+                Choice::Test => (None, "Test…".to_owned()),
             };
             h_flex()
                 .id(("context-action", ix))
