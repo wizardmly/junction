@@ -527,6 +527,71 @@ pub fn negated_emptiness(text: &str, caret: usize, classes: super::catches::Clas
     })
 }
 
+/// Replace with 'isNullOrEmpty()' (IntelliJ's
+/// ReplaceIsEmptyWithIsNullOrEmpty twin): `s == null || s.isEmpty()` →
+/// `s.isNullOrEmpty()`, `s != null && s.isNotEmpty()` →
+/// `!s.isNullOrEmpty()`, and `isBlank` / `isNotBlank` → `isNullOrBlank`,
+/// when `s` is a nullable string, collection, map or array; the caret
+/// anywhere on the check. The null check may end a longer `||` / `&&`.
+pub fn null_or_empty(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let operator = |left: Node, right: Node| text[left.end_byte()..right.start_byte()].trim().to_owned();
+    for node in innermost(tree.root_node(), caret)
+        .into_iter()
+        .flat_map(ancestors)
+        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body"))
+    {
+        let (or, wanted) = match node.kind() {
+            "disjunction_expression" => (true, "=="),
+            "conjunction_expression" => (false, "!="),
+            _ => continue,
+        };
+        let [left, call] = children(node)[..] else { continue };
+        // `a || s == null || s.isEmpty()`: the null check is the left's last operand.
+        let check = if left.kind() == node.kind() { *children(left).last()? } else { left };
+        let [a, b] = children(check)[..] else { continue };
+        if check.kind() != "equality_expression" || operator(a, b) != wanted {
+            continue;
+        }
+        let subject = match (text[a.byte_range()].trim(), text[b.byte_range()].trim()) {
+            ("null", s) | (s, "null") if s != "null" => s,
+            _ => continue,
+        };
+        let [callee, suffix] = children(call)[..] else { continue };
+        if call.kind() != "call_expression" || callee.kind() != "navigation_expression" || text[suffix.byte_range()].replace(' ', "") != "()" {
+            continue;
+        }
+        let target = callee.named_child(0)?;
+        let name = text[callee.named_child(1)?.byte_range()].trim().strip_prefix('.')?;
+        let replaced = match (or, name) {
+            (true, "isEmpty") | (false, "isNotEmpty") => "isNullOrEmpty",
+            (true, "isBlank") | (false, "isNotBlank") => "isNullOrBlank",
+            _ => continue,
+        };
+        if text[target.byte_range()].trim() != subject {
+            continue;
+        }
+        let ty = receiver_type(target, text, classes).or_else(|| receiver_type(if subject == text[a.byte_range()].trim() { a } else { b }, text, classes))?;
+        let head = type_head(&ty);
+        let string = matches!(head, "String" | "CharSequence");
+        let fits = if replaced == "isNullOrBlank" {
+            string
+        } else {
+            string || matches!(head, "List" | "MutableList" | "ArrayList" | "Set" | "MutableSet" | "HashSet" | "LinkedHashSet" | "Collection" | "MutableCollection" | "Map" | "MutableMap" | "HashMap" | "LinkedHashMap" | "Array")
+        };
+        if !ty.ends_with('?') || !fits {
+            continue;
+        }
+        return Some(Intention {
+            title: format!("Replace with '{replaced}()'"),
+            range: check.start_byte()..call.end_byte(),
+            caret: check.start_byte(),
+            replacement: format!("{}{subject}.{replaced}()", if or { "" } else { "!" }),
+        });
+    }
+    None
+}
+
 /// Merge call chain to 'first' (IntelliJ's SimplifiableCallChainInspection):
 /// `xs.filter { … }.first()` → `xs.first { … }`, and likewise `firstOrNull`,
 /// `last`, `lastOrNull`, `single`, `singleOrNull`, `count`, `any`, `none`,
@@ -1424,6 +1489,24 @@ mod tests {
         assert_eq!(run("o == a"), None);
         assert_eq!(run("n == 1"), None);
         assert_eq!(run("o.equals"), None);
+    }
+
+    #[test]
+    fn replaces_null_checks_with_is_null_or_empty() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(s: String?, xs: List<Int>?, t: String, ys: List<Int>?, a: Boolean) {\n    if (s == null || s.isEmpty()) return\n    val b = xs != null && xs.isNotEmpty()\n    val c = a || null == s || s.isBlank()\n    val d = t == null || t.isEmpty()\n    val e = xs == null || xs.isBlank()\n    val g = ys == null || xs.isEmpty()\n}\n";
+        let run = |at: &str| null_or_empty(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("s.isEmpty").unwrap();
+        assert_eq!(title, "Replace with 'isNullOrEmpty()'");
+        assert!(out.contains("    if (s.isNullOrEmpty()) return\n"), "{out}");
+        assert!(run("xs != null").unwrap().1.contains("    val b = !xs.isNullOrEmpty()\n"));
+        let (title, out) = run("null == s").unwrap();
+        assert_eq!(title, "Replace with 'isNullOrBlank()'");
+        assert!(out.contains("    val c = a || s.isNullOrBlank()\n"), "{out}");
+        // Not nullable; a list isn't blank; another variable.
+        assert_eq!(run("t == null"), None);
+        assert_eq!(run("xs == null || xs.isBlank"), None);
+        assert_eq!(run("ys == null"), None);
     }
 
     #[test]
