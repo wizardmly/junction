@@ -35,6 +35,7 @@ pub fn intentions(text: &str, caret: usize) -> Vec<Intention> {
     out.extend(to_template(root, text, caret));
     out.extend(to_concatenation(root, text, caret));
     out.extend(remove_loop_indices(root, text, caret));
+    out.extend(to_for_each(root, text, caret));
     out
 }
 
@@ -198,12 +199,7 @@ pub fn add_loop_indices(text: &str, caret: usize, classes: super::catches::Class
     }
     let loop_text = &text[statement.byte_range()];
     let index = std::iter::once("index".to_owned()).chain((1..).map(|n| format!("index{n}"))).find(|name| !mentions(loop_text, name))?;
-    let expression = &text[iterated.byte_range()];
-    let expression = if matches!(iterated.kind(), "simple_identifier" | "navigation_expression" | "call_expression" | "parenthesized_expression" | "this_expression") {
-        expression.to_owned()
-    } else {
-        format!("({expression})")
-    };
+    let expression = receiver(iterated, text);
     let middle = &text[variable.end_byte()..iterated.start_byte()];
     let start = variable.start_byte();
     Some(Intention {
@@ -211,6 +207,151 @@ pub fn add_loop_indices(text: &str, caret: usize, classes: super::catches::Class
         range: start..iterated.end_byte(),
         replacement: format!("({index}, {}){middle}{expression}.withIndex()", &text[variable.byte_range()]),
         caret: start + 1 + index.len(),
+    })
+}
+
+/// The expression as the receiver of a call: `(1..10)`, `list`.
+fn receiver(node: Node, text: &str) -> String {
+    let expression = &text[node.byte_range()];
+    if matches!(node.kind(), "simple_identifier" | "navigation_expression" | "call_expression" | "parenthesized_expression" | "this_expression" | "indexing_expression") {
+        expression.to_owned()
+    } else {
+        format!("({expression})")
+    }
+}
+
+/// The `break` / `continue` in `node` that leave or repeat the loop
+/// labelled `label` (or unlabelled, outside `nested` loops and lambdas).
+fn loop_jumps<'t>(node: Node<'t>, text: &str, label: Option<&str>, nested: bool, out: &mut Vec<Node<'t>>) {
+    for child in children(node) {
+        if child.kind() == "jump_expression" {
+            let t = &text[child.byte_range()];
+            if t.starts_with("break") || t.starts_with("continue") {
+                let target = t.split_once('@').map(|(_, l)| l.trim());
+                if target.is_none() && !nested || target.is_some() && target == label {
+                    out.push(child);
+                }
+            }
+        }
+        let inner = nested || matches!(child.kind(), "for_statement" | "while_statement" | "do_while_statement" | "lambda_literal" | "anonymous_function" | "function_declaration" | "class_declaration" | "object_literal");
+        loop_jumps(child, text, label, inner, out);
+    }
+}
+
+/// `text[range]` with the ranges in `edits` replaced by `with`.
+fn replaced(text: &str, range: std::ops::Range<usize>, edits: &[Node], with: &str) -> String {
+    let mut out = String::new();
+    let mut at = range.start;
+    for edit in edits {
+        out.push_str(&text[at..edit.start_byte()]);
+        out.push_str(with);
+        at = edit.end_byte();
+    }
+    out.push_str(&text[at..range.end]);
+    out
+}
+
+/// Replace with a 'forEach' function call (IntelliJ's
+/// ConvertToForEachFunctionCallIntention): `for (x in xs) { … }` →
+/// `xs.forEach { x -> … }`, the loop's `continue` becoming
+/// `return@forEach`; not when the loop has a `break`.
+fn to_for_each(root: Node, text: &str, caret: usize) -> Option<Intention> {
+    let (variable, iterated, statement, body) = for_header(root, caret)?;
+    let body = body?;
+    let label = statement.prev_named_sibling().filter(|l| l.kind() == "label" && text[l.end_byte()..statement.start_byte()].trim().is_empty());
+    let name = label.map(|l| text[l.byte_range()].trim().trim_end_matches('@'));
+    let mut jumps = Vec::new();
+    loop_jumps(body, text, name, false, &mut jumps);
+    if jumps.iter().any(|j| text[j.byte_range()].starts_with("break")) {
+        return None;
+    }
+    let block = &text[body.byte_range()];
+    let inner = if block.starts_with('{') && block.ends_with('}') {
+        replaced(text, body.start_byte() + 1..body.end_byte() - 1, &jumps, "return@forEach")
+    } else {
+        format!(" {} ", replaced(text, body.byte_range(), &jumps, "return@forEach"))
+    };
+    let inner = if inner.trim().is_empty() { " ".to_owned() } else { inner };
+    let start = label.map_or(statement.start_byte(), |l| l.start_byte());
+    Some(Intention {
+        title: "Replace with a 'forEach' function call".into(),
+        range: start..statement.end_byte(),
+        replacement: format!("{}.forEach {{ {} ->{inner}}}", receiver(iterated, text), &text[variable.byte_range()]),
+        caret: start,
+    })
+}
+
+/// Replace with a 'for' loop (IntelliJ's ConvertForEachToForLoopIntention):
+/// the statement `xs.forEach { x -> … }` (`it` when the lambda names no
+/// parameter) → `for (x in xs) { … }`, its `return@forEach` becoming
+/// `continue`, when `xs` is a collection, array, sequence, map or string.
+pub fn for_each_to_loop(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let call = innermost(tree.root_node(), caret)
+        .into_iter()
+        .flat_map(ancestors)
+        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body"))
+        .find(|n| n.kind() == "call_expression")?;
+    if call.parent()?.kind() != "statements" {
+        return None;
+    }
+    let [callee, suffix] = children(call).into_iter().filter(|c| c.is_named()).collect::<Vec<_>>()[..] else { return None };
+    let [annotated] = children(suffix).into_iter().filter(|c| c.is_named()).collect::<Vec<_>>()[..] else { return None };
+    let [lambda] = children(annotated).into_iter().filter(|c| c.is_named()).collect::<Vec<_>>()[..] else { return None };
+    if callee.kind() != "navigation_expression" || lambda.kind() != "lambda_literal" {
+        return None;
+    }
+    let target = callee.named_child(0)?;
+    let name = callee.named_child(1)?;
+    if text[name.byte_range()].trim() != ".forEach" {
+        return None;
+    }
+    let typed = if target.kind() == "parenthesized_expression" { target.named_child(0)? } else { target };
+    // `1..3`, `0 until n`: a range.
+    let range = typed.kind() == "range_expression" || typed.kind() == "infix_expression" && [" until ", " downTo "].iter().any(|w| text[typed.byte_range()].contains(w));
+    let ty = super::introduce::kotlin_type(typed, text)
+        .filter(|t| !t.is_empty())
+        .or_else(|| range.then(|| "IntRange".to_owned()))
+        .or_else(|| super::types::type_of(Lang::Kotlin, text, typed.byte_range(), classes).map(|t| t.ty))?;
+    element_type(&ty)?;
+    let mut cursor = lambda.walk();
+    let parts: Vec<Node> = lambda.children(&mut cursor).collect();
+    let parameters = parts.iter().find(|c| c.kind() == "lambda_parameters");
+    if parameters.is_some_and(|p| p.named_child_count() != 1) {
+        return None;
+    }
+    let variable = parameters.map_or("it", |p| &text[p.byte_range()]);
+    let open = parts.iter().find(|c| c.kind() == "->").or(parts.first())?.end_byte();
+    let close = lambda.end_byte() - 1;
+    // `return@forEach` becomes `continue`; not inside a loop or lambda of
+    // its own, where it would mean something else.
+    let mut returns = Vec::new();
+    let mut misplaced = false;
+    fn walk<'t>(node: Node<'t>, text: &str, nested: bool, returns: &mut Vec<Node<'t>>, misplaced: &mut bool) {
+        for child in children(node) {
+            if child.kind() == "jump_expression" && text[child.byte_range()].starts_with("return@forEach") {
+                if nested || text[child.byte_range()].trim() != "return@forEach" {
+                    *misplaced = true;
+                }
+                returns.push(child);
+            }
+            let inner = nested || matches!(child.kind(), "for_statement" | "while_statement" | "do_while_statement" | "lambda_literal" | "anonymous_function" | "function_declaration" | "class_declaration" | "object_literal");
+            walk(child, text, inner, returns, misplaced);
+        }
+    }
+    walk(lambda, text, false, &mut returns, &mut misplaced);
+    if misplaced {
+        return None;
+    }
+    let inner = replaced(text, open..close, &returns, "continue");
+    let inner = if inner.trim().is_empty() { " ".to_owned() } else { inner };
+    let range_text = &text[target.byte_range()];
+    let range_text = if target.kind() == "parenthesized_expression" { range_text[1..range_text.len() - 1].trim() } else { range_text };
+    Some(Intention {
+        title: "Replace with a 'for' loop".into(),
+        range: call.byte_range(),
+        replacement: format!("for ({variable} in {range_text}) {{{inner}}}"),
+        caret: call.start_byte(),
     })
 }
 
@@ -786,6 +927,32 @@ mod tests {
         assert_eq!(find(&out, "index,", "Remove indices in 'for' loop").unwrap(), text);
         let used = "fun f(list: List<String>) {\n    for ((i, x) in list.withIndex()) { println(i) }\n}\n";
         assert_eq!(find(used, "i,", "Remove indices in 'for' loop"), None);
+    }
+
+    #[test]
+    fn converts_between_for_loops_and_for_each() {
+        let text = "fun f(xs: List<Int>) {\n    for (x in xs) {\n        if (x < 0) continue\n        for (y in xs) { if (y > x) break; continue }\n        println(x)\n    }\n    for (i in 1..10) println(i)\n    for (x in xs) { if (x > 2) break }\n    outer@ for (x in xs) { for (y in xs) { if (y == x) continue@outer } }\n}\n";
+        let out = find(text, "x in xs) {\n", "Replace with a 'forEach' function call").unwrap();
+        assert!(out.contains("    xs.forEach { x ->\n        if (x < 0) return@forEach\n        for (y in xs) { if (y > x) break; continue }\n        println(x)\n    }\n"), "{out}");
+        assert!(find(text, "i in", "Replace with a 'forEach' function call").unwrap().contains("    (1..10).forEach { i -> println(i) }\n"));
+        // A `break` out of the loop can't be kept; a labelled `continue` can.
+        assert_eq!(find(text, "x in xs) { if", "Replace with a 'forEach' function call"), None);
+        assert!(find(text, "x in xs) { for", "Replace with a 'forEach' function call").unwrap().contains("    xs.forEach { x -> for (y in xs) { if (y == x) return@forEach } }\n"));
+        // Not in the body.
+        assert_eq!(find(text, "println(x)", "Replace with a 'forEach' function call"), None);
+
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let back = |text: &str, at: &str| for_each_to_loop(text, text.find(at).unwrap(), &classes).map(|i| apply(text, &i));
+        assert_eq!(back(&out, "forEach").unwrap(), text);
+        let text = "fun f(xs: List<Int>, m: Map<String, Int>, n: Int) {\n    (1..3).forEach { i -> if (i == 2) return@forEach }\n    xs.forEach { println(it) }\n    m.forEach { (k, v) -> println(k) }\n    m.forEach { k, v -> println(k) }\n    xs.forEach { x -> xs.map { return@forEach } }\n    val u = xs.forEach { }\n}\n";
+        assert!(back(text, "xs.forEach { p").unwrap().contains("    for (it in xs) { println(it) }\n"));
+        assert!(back(text, "forEach { (k").unwrap().contains("    for ((k, v) in m) { println(k) }\n"));
+        assert!(back(text, "(1..3)").unwrap().contains("    for (i in 1..3) { if (i == 2) continue }\n"));
+        // Two parameters (Java's BiConsumer), a return from a lambda inside, not a statement, inside the lambda.
+        assert_eq!(back(text, "forEach { k,"), None);
+        assert_eq!(back(text, "forEach { x"), None);
+        assert_eq!(back(text, "forEach { }"), None);
+        assert_eq!(back(text, "println(it)"), None);
     }
 
     #[test]

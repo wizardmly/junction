@@ -55,6 +55,8 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Replace size zero check with 'isEmpty()'", "Replaces size == 0 on a collection, array or string with isEmpty()"),
     ("Kotlin", "Replace size check with 'isNotEmpty()'", "Replaces size != 0 or size > 0 with isNotEmpty()"),
     ("Kotlin", "Iterate over collection", "Wraps an expression of a collection, array, map or string in a for loop over it"),
+    ("Kotlin", "Replace with a 'forEach' function call", "Turns a for loop into a forEach call, continue becoming return@forEach"),
+    ("Kotlin", "Replace with a 'for' loop", "Turns a forEach call on a collection, array, map or string into a for loop"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
     ("Java", "Replace 'for each' loop with indexed 'for' loop", "Loops over a list or an array by index instead of with for each"),
