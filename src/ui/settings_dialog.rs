@@ -114,7 +114,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
-            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
+            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "sout", "fori", "iter", "main", "psvm"],
             Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template"],
             Page::Commit => &[
@@ -183,6 +183,7 @@ pub struct SettingsView {
     tab_limit: Entity<InputState>,
     /// Code Style: each language's indent and continuation indent.
     indents: Vec<(StyleLang, Entity<InputState>, Entity<InputState>)>,
+    hard_wrap: Entity<InputState>,
     large_file: Entity<InputState>,
     /// Languages & Frameworks: a server command per language, and what
     /// runs when it is left empty.
@@ -244,6 +245,7 @@ impl SettingsView {
                 (lang, input(style.indent.to_string(), window, cx), input(style.continuation.to_string(), window, cx))
             })
             .collect();
+        let hard_wrap = input(initial.code_style.hard_wrap.to_string(), window, cx);
         let large_file = input(if initial.large_file_mb > 0 { initial.large_file_mb } else { 50 }.to_string(), window, cx);
         let git_path = cx.new(|cx| {
             InputState::new(window, cx)
@@ -329,6 +331,7 @@ impl SettingsView {
             font_size,
             tab_limit,
             indents,
+            hard_wrap,
             large_file,
             servers,
             git_test: None,
@@ -390,6 +393,9 @@ impl SettingsView {
         }
         if let Ok(limit) = self.tab_limit.read(cx).value().trim().parse::<usize>() {
             next.diff.tab_limit = limit.clamp(1, 100);
+        }
+        if let Ok(column) = self.hard_wrap.read(cx).value().trim().parse::<usize>() {
+            next.code_style.hard_wrap = column.clamp(10, 1000);
         }
         for (lang, indent, continuation) in &self.indents {
             let style = next.code_style.get(*lang);
@@ -1272,7 +1278,9 @@ impl SettingsView {
             .gap_2()
             .child(self.section("General", cx))
             .child(self.check("settings-detect-indents", "Detect and use existing file indents for editing", d.detect_indents, query, |s, v| s.code_style.detect_indents = v, cx))
-            .child(self.note("Reformat keeps a file's own indent unit; .editorconfig's indent wins over both", cx));
+            .child(self.note("Reformat keeps a file's own indent unit; .editorconfig's indent wins over both", cx))
+            .child(self.row("Hard wrap at:", query, h_flex().gap_2().items_center().child(div().w(px(70.)).child(Input::new(&self.hard_wrap).small())).child(div().text_xs().text_color(cx.palette().text_secondary).child("columns")), cx))
+            .child(self.note("Where Reformat Code chops long Kotlin calls; .editorconfig's max_line_length wins", cx));
         for (lang, indent, continuation) in &self.indents {
             let lang = *lang;
             let entity = cx.entity();
