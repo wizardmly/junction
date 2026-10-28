@@ -30,6 +30,7 @@ use crate::theme::ActivePalette as _;
 use crate::ui::accounts_dialog::AccountsView;
 use crate::ui::as_icons as icons;
 use crate::domain::code_style::{LangStyle, StyleLang};
+use crate::domain::reformat::KeepBlankLines;
 use crate::ui::keymap;
 use crate::ui::mappings_dialog::MappingsView;
 
@@ -114,7 +115,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
-            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
+            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "Template Group", "Import", "Export", "sout", "fori", "iter", "main", "psvm"],
             Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template"],
             Page::Commit => &[
@@ -183,6 +184,8 @@ pub struct SettingsView {
     tab_limit: Entity<InputState>,
     /// Code Style: each language's indent and continuation indent.
     indents: Vec<(StyleLang, Entity<InputState>, Entity<InputState>)>,
+    /// Blank Lines: in declarations, in code, before `}` (not XML).
+    keep_blank: Vec<(StyleLang, [Entity<InputState>; 3])>,
     hard_wrap: Entity<InputState>,
     large_file: Entity<InputState>,
     /// Languages & Frameworks: a server command per language, and what
@@ -253,6 +256,13 @@ impl SettingsView {
             })
             .collect();
         let hard_wrap = input(initial.code_style.hard_wrap.to_string(), window, cx);
+        let keep_blank = [StyleLang::Java, StyleLang::Kotlin, StyleLang::Groovy]
+            .into_iter()
+            .map(|lang| {
+                let k = initial.code_style.keep_blank(lang);
+                (lang, [k.declarations, k.code, k.before_rbrace].map(|n| input(n.to_string(), window, cx)))
+            })
+            .collect();
         let large_file = input(if initial.large_file_mb > 0 { initial.large_file_mb } else { 50 }.to_string(), window, cx);
         let git_path = cx.new(|cx| {
             InputState::new(window, cx)
@@ -338,6 +348,7 @@ impl SettingsView {
             font_size,
             tab_limit,
             indents,
+            keep_blank,
             hard_wrap,
             large_file,
             servers,
@@ -411,6 +422,11 @@ impl SettingsView {
             let style = next.code_style.get(*lang);
             let number = |input: &Entity<InputState>, or: usize| input.read(cx).value().trim().parse::<usize>().unwrap_or(or);
             next.code_style.set(*lang, LangStyle { indent: number(indent, style.indent), continuation: number(continuation, style.continuation), ..style });
+        }
+        for (lang, [declarations, code, before_rbrace]) in &self.keep_blank {
+            let k = next.code_style.keep_blank(*lang);
+            let number = |input: &Entity<InputState>, or: usize| input.read(cx).value().trim().parse::<usize>().unwrap_or(or);
+            next.code_style.set_keep_blank(*lang, KeepBlankLines { declarations: number(declarations, k.declarations), code: number(code, k.code), before_rbrace: number(before_rbrace, k.before_rbrace) });
         }
         if let Ok(size) = self.font_size.read(cx).value().trim().parse::<f32>() {
             next.editor_font_tenths = (size.clamp(8., 32.) * 10.).round() as u32;
@@ -1480,6 +1496,13 @@ impl SettingsView {
                 ))
                 .child(self.row("Indent:", query, div().w(px(70.)).child(Input::new(indent).small()), cx))
                 .child(self.row("Continuation indent:", query, div().w(px(70.)).child(Input::new(continuation).small()), cx));
+            if let Some((_, [declarations, code, before_rbrace])) = self.keep_blank.iter().find(|(l, _)| *l == lang) {
+                page = page
+                    .child(h_flex().text_sm().child(self.found("Keep maximum blank lines", query, cx).child("Blank Lines › Keep maximum blank lines:")))
+                    .child(self.row("In declarations:", query, div().w(px(70.)).child(Input::new(declarations).small()), cx))
+                    .child(self.row("In code:", query, div().w(px(70.)).child(Input::new(code).small()), cx))
+                    .child(self.row("Before '}':", query, div().w(px(70.)).child(Input::new(before_rbrace).small()), cx));
+            }
         }
         page
     }

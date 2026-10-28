@@ -12,8 +12,22 @@ use std::ops::Range;
 
 use crate::domain::imports::ImportStyle;
 
-/// IntelliJ keeps up to 2 blank lines in code and declarations.
-const KEEP_BLANK_LINES: usize = 2;
+/// Settings › Code Style › Blank Lines › "Keep maximum blank lines":
+/// how many blank lines a reformat leaves in a row between members of a
+/// class (or at the top level), between statements, and before a `}`.
+/// IntelliJ's are 2 each, for Java, Kotlin and Groovy alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeepBlankLines {
+    pub declarations: usize,
+    pub code: usize,
+    pub before_rbrace: usize,
+}
+
+impl Default for KeepBlankLines {
+    fn default() -> Self {
+        Self { declarations: 2, code: 2, before_rbrace: 2 }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
@@ -228,6 +242,9 @@ struct Open {
     header: bool,
     /// A `{`, not a `(` or `[`.
     brace: bool,
+    /// A class's (or object's, enum's…) body: its blank lines are in
+    /// declarations.
+    declarations: bool,
 }
 
 /// The language a reformat follows.
@@ -253,6 +270,7 @@ pub struct IndentStyle {
     pub continuation: Option<(usize, usize)>,
     /// Where long lines wrap (`None`: 120).
     pub right_margin: Option<usize>,
+    pub keep_blank: KeepBlankLines,
 }
 
 /// The reformatted text. `only`: the 0-based lines to change (a
@@ -298,6 +316,8 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     // The last code line.
     let mut previous: Option<Previous> = None;
     let mut blank_run = 0;
+    let bodies = declaration_braces(&raw, &lines);
+    let keep = indents.keep_blank;
     let pad = |cols: usize| if tabs { "\t".repeat(cols) } else { " ".repeat(cols) };
     for (ix, (text_line, info)) in raw.iter().zip(&lines).enumerate() {
         let selected = only.as_ref().is_none_or(|r| r.contains(&ix));
@@ -308,14 +328,25 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             out.push((*text_line).to_owned());
             choppable.push(false);
             let lead = text_line.len() - text_line.trim_start().len();
-            apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, text_line);
+            apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, text_line, &bodies[ix]);
             blank_run = 0;
             continue;
         }
         if trimmed.is_empty() {
             blank_run += 1;
-            if selected && blank_run > KEEP_BLANK_LINES && matches!(starts, State::Code) {
-                continue;
+            if selected && matches!(starts, State::Code) {
+                // Before a `}`, in a class body (or the file), or in code.
+                let next = raw.iter().zip(&lines).skip(ix + 1).find(|(l, _)| !l.trim().is_empty());
+                let limit = if next.is_some_and(|(l, i)| l.trim_start().starts_with('}') && i.starts_in == Some(State::Code)) {
+                    keep.before_rbrace
+                } else if stack.last().is_none_or(|open| open.declarations) {
+                    keep.declarations
+                } else {
+                    keep.code
+                };
+                if blank_run > limit {
+                    continue;
+                }
             }
             out.push(if selected { String::new() } else { (*text_line).to_owned() });
             choppable.push(false);
@@ -443,9 +474,9 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             let at = if selected { indent } else { lead_out };
             let base = if header { at.saturating_sub(cont) } else { at };
             let align = (flavor == Flavor::Java && !tabs).then(|| declaration_paren(&line_out)).flatten();
-            apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, &line_out);
+            apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, &line_out, &bodies[ix]);
         } else {
-            apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, text_line);
+            apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, text_line, &bodies[ix]);
         }
         out.push(line_out);
         choppable.push(selected && is_code_line);
@@ -704,17 +735,77 @@ fn declaration_paren(line: &str) -> Option<usize> {
     HEADER.is_match(before).then(|| line[..open + 1].chars().count())
 }
 
+/// Per line, for each of its `{` in order: whether it opens a class body
+/// (`class`, `interface`, `object`, `enum`, `record` or Java's `new X() {`
+/// since the last statement), where blank lines are between declarations.
+fn declaration_braces(raw: &[&str], lines: &[Line]) -> Vec<Vec<bool>> {
+    const KEYWORDS: [&str; 6] = ["class", "interface", "object", "enum", "record", "new"];
+    let mut out = Vec::with_capacity(lines.len());
+    // The bracket depth a keyword was seen at, until its body opens.
+    let mut pending: Option<usize> = None;
+    let mut depth = 0usize;
+    for (text, info) in raw.iter().zip(lines) {
+        let mut braces = Vec::new();
+        let bytes = text.as_bytes();
+        let mut word_start = None;
+        for i in 0..=bytes.len() {
+            let b = bytes.get(i).copied().unwrap_or(b' ');
+            let code = info.code.get(i).copied().unwrap_or(false);
+            let wordy = code && (b.is_ascii_alphanumeric() || b == b'_');
+            if wordy && word_start.is_none() {
+                word_start = Some(i);
+            }
+            if !wordy {
+                if let Some(start) = word_start.take() {
+                    let word = &text[start..i];
+                    // `X.class`, `foo.new`: not declarations.
+                    let qualified = start > 0 && bytes[start - 1] == b'.';
+                    if !qualified && KEYWORDS.contains(&word) {
+                        pending = Some(depth);
+                    } else if !qualified && pending == Some(depth) && matches!(word, "fun" | "val" | "var" | "return" | "if" | "when" | "for" | "while") {
+                        pending = None;
+                    }
+                }
+            }
+            if !code {
+                continue;
+            }
+            match b {
+                b'(' | b'[' => depth += 1,
+                b')' | b']' => {
+                    depth = depth.saturating_sub(1);
+                    if pending.is_some_and(|d| d > depth) {
+                        pending = None;
+                    }
+                }
+                b'{' => {
+                    let body = pending == Some(depth);
+                    if body {
+                        pending = None;
+                    }
+                    braces.push(body);
+                }
+                b'}' | b';' | b'=' if pending == Some(depth) => pending = None,
+                _ => {}
+            }
+        }
+        out.push(braces);
+    }
+    out
+}
+
 /// Applies the line's brackets after the first `skip` (already closed):
 /// `{` content one step past `base` (the line, or its statement when the
 /// line closed a bracket opened earlier); `(` / `[` a continuation past the
 /// line, or under the first parameter (`align`).
 #[allow(clippy::too_many_arguments)]
-fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize, line: usize, line_indent: usize, base: usize, cont: usize, step: usize, align: Option<usize>, text: &str) {
+fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize, line: usize, line_indent: usize, base: usize, cont: usize, step: usize, align: Option<usize>, text: &str, bodies: &[bool]) {
     let mut base = base;
     let mut first_paren = true;
+    let mut bodies = bodies.iter();
     for (at, c) in brackets.iter().skip(skip) {
         match c {
-            '{' => stack.push(Open { line_indent: base, content: base + step, line, case_body: false, header: false, brace: true }),
+            '{' => stack.push(Open { line_indent: base, content: base + step, line, case_body: false, header: false, brace: true, declarations: bodies.next().copied().unwrap_or(false) }),
             '(' | '[' => {
                 let content = match align.filter(|_| *c == '(' && first_paren) {
                     Some(col) => col,
@@ -724,7 +815,7 @@ fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize
                     first_paren = false;
                 }
                 let header = *c == '(' && header_paren(text.get(..*at).unwrap_or(""));
-                stack.push(Open { line_indent, content, line, case_body: false, header, brace: false });
+                stack.push(Open { line_indent, content, line, case_body: false, header, brace: false, declarations: false });
             }
             _ => {
                 if let Some(open) = stack.pop() {
@@ -1105,6 +1196,27 @@ mod tests {
     fn strings_and_comments_keep_their_text() {
         let text = "fun f() {\nval s = \"a=b,c  {\"\nval t = \"\"\"\n  raw=1\n    {\n\"\"\"\n/* a=b\n   * x\n */\nval u = \"${map[\"k\"]}=\"\n}";
         assert_eq!(kt(text), "fun f() {\n    val s = \"a=b,c  {\"\n    val t = \"\"\"\n  raw=1\n    {\n\"\"\"\n    /* a=b\n     * x\n     */\n    val u = \"${map[\"k\"]}=\"\n}");
+    }
+
+    #[test]
+    fn keeps_the_code_styles_blank_lines() {
+        let keep = |declarations, code, before_rbrace| IndentStyle { keep_blank: KeepBlankLines { declarations, code, before_rbrace }, ..Default::default() };
+        let kotlin = "class A {\n\n\n    val a = 1\n\n\n    fun f() {\n        g()\n\n\n        h()\n\n\n    }\n\n\n}\n\n\nfun top() {}\n";
+        // Declarations keep 1, code 0, nothing before `}`.
+        assert_eq!(
+            reformat_indented(ImportStyle::Kotlin, kotlin, None, &keep(1, 0, 0)),
+            "class A {\n\n    val a = 1\n\n    fun f() {\n        g()\n        h()\n    }\n}\n\nfun top() {}\n"
+        );
+        // The defaults keep 2 everywhere.
+        assert_eq!(reformat(ImportStyle::Kotlin, kotlin, None), kotlin);
+        // An object expression's and an anonymous class's bodies are declarations; a lambda's is code.
+        let java = "class A {\n    void f() {\n        run(new Runnable() {\n\n\n            void x() {}\n        });\n        list.forEach(x -> {\n\n\n            g(x);\n        });\n    }\n}";
+        assert_eq!(
+            reformat_indented(ImportStyle::Java, java, None, &keep(2, 0, 2)),
+            "class A {\n    void f() {\n        run(new Runnable() {\n\n\n            void x() {}\n        });\n        list.forEach(x -> {\n            g(x);\n        });\n    }\n}"
+        );
+        let object = "val r = object : Runnable {\n\n    override fun run() {}\n}\nfun f() {\n    val c = A::class.java\n\n    g()\n}";
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, object, None, &keep(1, 0, 2)), "val r = object : Runnable {\n\n    override fun run() {}\n}\nfun f() {\n    val c = A::class.java\n    g()\n}");
     }
 
     #[test]
