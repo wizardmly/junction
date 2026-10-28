@@ -156,8 +156,8 @@ impl CodeStyle {
         }
         if let Some(lang) = key.strip_prefix("code_style_").and_then(|k| k.strip_suffix("_min_blank")).and_then(|k| StyleLang::ALL.into_iter().find(|l| l.key() == k)) {
             let n: Option<Vec<usize>> = value.split(',').map(|n| n.trim().parse().ok()).collect();
-            if let Some(values) = n.and_then(|n| <[usize; 12]>::try_from(n).ok()) {
-                self.set_min_blank(lang, MinBlankLines::from_values(values));
+            if let Some(min) = n.and_then(|n| MinBlankLines::from_prefix(&n)) {
+                self.set_min_blank(lang, min);
             }
             return true;
         }
@@ -212,7 +212,7 @@ mod tests {
         assert!(style.lines().contains("code_style_kotlin_blank=1,0,0\n") && !style.lines().contains("java_blank"));
         assert_eq!(style.indents(StyleLang::Kotlin, None, None).keep_blank.code, 0);
         style.set_min_blank(StyleLang::Java, MinBlankLines { around_field: 1, ..Default::default() });
-        assert!(style.lines().contains("code_style_java_min_blank=1,1,1,1,0,0,1,1,1,1,0,1\n") && !style.lines().contains("kotlin_min_blank"));
+        assert!(style.lines().contains("code_style_java_min_blank=1,1,1,1,0,0,1,1,1,1,0,1,0,0,0,0\n") && !style.lines().contains("kotlin_min_blank"));
         assert_eq!(style.indents(StyleLang::Java, None, None).min_blank.around_field, 1);
         let mut read = CodeStyle::default();
         for line in style.lines().lines() {
@@ -221,6 +221,9 @@ mod tests {
         }
         assert_eq!(read, style);
         assert!(!read.read("code_subject", "1"));
+        // An older file's twelve values: the rest the defaults.
+        assert!(read.read("code_style_kotlin_min_blank", "1,1,1,1,2,0,0,1,1,1,0,1"));
+        assert_eq!(read.min_blank(StyleLang::Kotlin), MinBlankLines { after_class_header: 2, ..Default::default() });
         assert_eq!(StyleLang::of_path("app/build.gradle.kts"), Some(StyleLang::Kotlin));
         assert_eq!(StyleLang::of_path("build.gradle"), Some(StyleLang::Groovy));
     }

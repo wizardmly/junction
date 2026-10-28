@@ -31,9 +31,11 @@ impl Default for KeepBlankLines {
 
 /// Settings › Code Style › Blank Lines › "Minimum blank lines": how many
 /// blank lines a reformat puts between members at least. Java shows all
-/// but the last; Kotlin "After class header" (before a first function or
-/// property) and the last, its other minimums being fixed at 1
-/// (`kotlinSpacingRules.kt`). IntelliJ's defaults.
+/// but the Kotlin ones; Kotlin "After class header" (before a first
+/// function or property), "Around 'when' branches with {}" and "Before
+/// declaration with comment or annotation", its other minimums being fixed
+/// at 1 (`kotlinSpacingRules.kt`). IntelliJ's defaults. The settings added
+/// later come last in `values`, so older settings files still read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MinBlankLines {
     pub after_package: usize,
@@ -49,17 +51,25 @@ pub struct MinBlankLines {
     pub before_class_end: usize,
     /// Kotlin's "Before declaration with comment or annotation".
     pub before_commented_declaration: usize,
+    /// Java's, when a comment comes before the `package`.
+    pub before_package: usize,
+    /// Java's, before the first member of `new X() { … }`.
+    pub after_anonymous_class_header: usize,
+    /// Java's, before a method's first statement.
+    pub before_method_body: usize,
+    /// Kotlin's, between `when` branches when one of them is a `{ … }` block.
+    pub around_when_branch_with_block: usize,
 }
 
 impl Default for MinBlankLines {
     fn default() -> Self {
-        Self::from_values([1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1])
+        Self::from_values([1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0])
     }
 }
 
 impl MinBlankLines {
     /// The settings' labels, in `values` order.
-    pub const LABELS: [&'static str; 12] = [
+    pub const LABELS: [&'static str; 16] = [
         "After package:",
         "Before imports:",
         "After imports:",
@@ -72,12 +82,16 @@ impl MinBlankLines {
         "Around initializer:",
         "Before class end:",
         "Before declaration with comment or annotation:",
+        "Before package:",
+        "After anonymous class header:",
+        "Before method body:",
+        "Around 'when' branches with {}:",
     ];
-    /// Which of `values` each language's page shows.
-    pub const JAVA: [usize; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    pub const KOTLIN: [usize; 2] = [4, 11];
+    /// Which of `values` each language's page shows, in IntelliJ's order.
+    pub const JAVA: [usize; 14] = [12, 0, 1, 2, 3, 4, 13, 5, 6, 7, 8, 14, 9, 10];
+    pub const KOTLIN: [usize; 3] = [4, 15, 11];
 
-    pub fn values(&self) -> [usize; 12] {
+    pub fn values(&self) -> [usize; 16] {
         [
             self.after_package,
             self.before_imports,
@@ -91,12 +105,43 @@ impl MinBlankLines {
             self.around_initializer,
             self.before_class_end,
             self.before_commented_declaration,
+            self.before_package,
+            self.after_anonymous_class_header,
+            self.before_method_body,
+            self.around_when_branch_with_block,
         ]
     }
 
-    pub fn from_values(v: [usize; 12]) -> Self {
-        let [after_package, before_imports, after_imports, around_class, after_class_header, around_field_in_interface, around_field, around_method_in_interface, around_method, around_initializer, before_class_end, before_commented_declaration] = v;
-        Self { after_package, before_imports, after_imports, around_class, after_class_header, around_field_in_interface, around_field, around_method_in_interface, around_method, around_initializer, before_class_end, before_commented_declaration }
+    pub fn from_values(v: [usize; 16]) -> Self {
+        let [after_package, before_imports, after_imports, around_class, after_class_header, around_field_in_interface, around_field, around_method_in_interface, around_method, around_initializer, before_class_end, before_commented_declaration, before_package, after_anonymous_class_header, before_method_body, around_when_branch_with_block] = v;
+        Self {
+            after_package,
+            before_imports,
+            after_imports,
+            around_class,
+            after_class_header,
+            around_field_in_interface,
+            around_field,
+            around_method_in_interface,
+            around_method,
+            around_initializer,
+            before_class_end,
+            before_commented_declaration,
+            before_package,
+            after_anonymous_class_header,
+            before_method_body,
+            around_when_branch_with_block,
+        }
+    }
+
+    /// `values`, or a prefix of them (an older settings file's) with the
+    /// rest the defaults.
+    pub fn from_prefix(v: &[usize]) -> Option<Self> {
+        let mut values = Self::default().values();
+        (v.len() >= 12 && v.len() <= values.len()).then(|| {
+            values[..v.len()].copy_from_slice(v);
+            Self::from_values(values)
+        })
     }
 }
 
@@ -966,6 +1011,8 @@ struct Members {
     depth: usize,
     class_body: bool,
     interface: bool,
+    /// Java's `new X() { … }`.
+    anonymous: bool,
     /// The last member: what it is, its declaration's line, whether it's an interface.
     last: Option<(Member, usize, bool)>,
     /// The last line of the last member.
@@ -976,6 +1023,26 @@ struct Members {
     pending: Option<usize>,
 }
 
+/// A Kotlin `when`'s branches for "Around 'when' branches with {}".
+struct WhenBranches {
+    /// The bracket depth its branches are at.
+    depth: usize,
+    /// Whether the last branch's body is a `{ … }` block.
+    last_block: Option<bool>,
+    /// A comment on its own line: the next branch's start.
+    pending: Option<usize>,
+}
+
+/// Whether the code before a `{` (`line[..at]`) is a `when`'s head.
+fn when_head(line: &str, info: &Line, at: usize) -> bool {
+    let head = line[..at].trim_end();
+    let Some(start) = head.rfind("when") else { return false };
+    let word = |i: usize| head[i..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_');
+    info.code.get(start).copied().unwrap_or(false)
+        && (start == 0 || !head[..start].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.'))
+        && (head.len() == start + 4 || (!word(start + 4) && head.ends_with(')')))
+}
+
 /// Per line: the blank lines the code style wants before it at least,
 /// for a member (from its comments and annotations) of a class body or
 /// the file, and Java's `}` of a class.
@@ -983,7 +1050,12 @@ fn minimum_blank_lines(raw: &[&str], lines: &[Line], bodies: &[Vec<bool>], kotli
     let mut need = vec![0; raw.len()];
     // Open brackets: whether each is a class body.
     let mut brackets: Vec<bool> = Vec::new();
-    let mut scopes = vec![Members { depth: 0, class_body: false, interface: false, last: None, end: 0, open: false, pending: None }];
+    let mut scopes = vec![Members { depth: 0, class_body: false, interface: false, anonymous: false, last: None, end: 0, open: false, pending: None }];
+    let mut whens: Vec<WhenBranches> = Vec::new();
+    // Java: the depth of a method body just opened, until its first line.
+    let mut method_body: Option<usize> = None;
+    // Java: the last of `class`, `new`… seen, for whether a body is anonymous.
+    let mut last_keyword = "";
     let mut previous_code = String::new();
     for (ix, (text, info)) in raw.iter().zip(lines).enumerate() {
         let in_code = info.starts_in.unwrap_or(State::Code) == State::Code;
@@ -1000,6 +1072,30 @@ fn minimum_blank_lines(raw: &[&str], lines: &[Line], bodies: &[Vec<bool>], kotli
         let blank = text.trim().is_empty();
         let depth = brackets.len();
         let mut pending_line = false;
+        let continues = previous_code.ends_with("->") || previous_code.ends_with(|c: char| matches!(c, '=' | ',' | '(' | '.' | ':' | '+' | '-' | '*' | '/' | '%' | '&' | '|' | '?' | '!'));
+        if !blank {
+            if let Some(d) = method_body.take() {
+                if in_code && depth == d && !code.starts_with('}') {
+                    need[ix] = need[ix].max(min.before_method_body);
+                }
+            }
+        }
+        if let Some(w) = whens.last_mut().filter(|w| in_code && w.depth == depth) {
+            if blank {
+                w.pending = None;
+            } else if code.is_empty() {
+                w.pending.get_or_insert(ix);
+            } else if !code.starts_with('}') && !continues {
+                let block = code.contains("->") && code.ends_with('{');
+                let start = w.pending.take().unwrap_or(ix);
+                if w.last_block.is_some_and(|last| last || block) {
+                    need[start] = need[start].max(min.around_when_branch_with_block);
+                }
+                w.last_block = Some(block);
+            } else {
+                w.pending = None;
+            }
+        }
         let scope = scopes.last_mut().expect("the file's scope stays");
         if in_code && depth == scope.depth {
             if blank {
@@ -1017,7 +1113,6 @@ fn minimum_blank_lines(raw: &[&str], lines: &[Line], bodies: &[Vec<bool>], kotli
                 }
             } else {
                 let kind = member_kind(code, kotlin);
-                let continues = previous_code.ends_with("->") || previous_code.ends_with(|c: char| matches!(c, '=' | ',' | '(' | '.' | ':' | '+' | '-' | '*' | '/' | '%' | '&' | '|' | '?' | '!'));
                 let starts = match kind {
                     None => false,
                     Some(_) if kotlin => !continues,
@@ -1031,10 +1126,15 @@ fn minimum_blank_lines(raw: &[&str], lines: &[Line], bodies: &[Vec<bool>], kotli
                     let n = match scope.last {
                         Some((prev, line, _)) if kotlin => kotlin_blank_lines(prev, scope.end > line, kind, start < ix, min),
                         Some((prev, _, _)) => java_blank_lines(prev, kind, scope.interface, min),
+                        None if scope.anonymous => min.after_anonymous_class_header,
                         None if scope.class_body && (!kotlin || matches!(kind, Member::Fun | Member::Property)) => min.after_class_header,
                         None => 0,
                     };
                     need[start] = need[start].max(n);
+                    // Java's "Before package": after the file's header comment.
+                    if !kotlin && kind == Member::Package && !scope.class_body && raw[..ix].iter().any(|l| !l.trim().is_empty()) {
+                        need[ix] = need[ix].max(min.before_package);
+                    }
                     let interface = kind == Member::Class && declaration_words(code).iter().any(|w| *w == "interface" || *w == "@interface");
                     scope.last = Some((kind, ix, interface));
                 }
@@ -1051,23 +1151,36 @@ fn minimum_blank_lines(raw: &[&str], lines: &[Line], bodies: &[Vec<bool>], kotli
             }
         }
         let mut body = bodies[ix].iter();
-        for (_, c) in &info.brackets {
+        for (at, c) in &info.brackets {
             match c {
                 '{' => {
                     let class_body = body.next().copied().unwrap_or(false);
                     brackets.push(class_body);
                     if class_body {
                         let interface = scopes.last().and_then(|s| s.last).is_some_and(|(_, _, interface)| interface);
-                        scopes.push(Members { depth: brackets.len(), class_body: true, interface, last: None, end: ix, open: false, pending: None });
+                        let anonymous = !kotlin && last_declaration_keyword(text, info, *at).unwrap_or(last_keyword) == "new";
+                        scopes.push(Members { depth: brackets.len(), class_body: true, interface, anonymous, last: None, end: ix, open: false, pending: None });
+                    } else if kotlin && in_code && when_head(text, info, *at) {
+                        whens.push(WhenBranches { depth: brackets.len(), last_block: None, pending: None });
+                    } else if !kotlin {
+                        let scope = scopes.last().expect("the file's scope stays");
+                        let method = scope.class_body && scope.depth + 1 == brackets.len() && scope.last.is_some_and(|(k, _, _)| k == Member::Method);
+                        method_body = (method && text[*at + 1..].trim().is_empty()).then_some(brackets.len());
                     }
                 }
                 '(' | '[' => brackets.push(false),
                 _ => {
+                    if whens.last().is_some_and(|w| w.depth == brackets.len()) {
+                        whens.pop();
+                    }
                     if brackets.pop() == Some(true) && scopes.len() > 1 {
                         scopes.pop();
                     }
                 }
             }
+        }
+        if let Some(word) = last_declaration_keyword(text, info, text.len()) {
+            last_keyword = word;
         }
         if in_code && !code.is_empty() {
             previous_code = code.to_owned();
@@ -1080,6 +1193,27 @@ fn minimum_blank_lines(raw: &[&str], lines: &[Line], bodies: &[Vec<bool>], kotli
         }
     }
     need
+}
+
+/// The last of `class`, `interface`, `enum`, `record` and `new` in the
+/// code of `line[..end]`.
+fn last_declaration_keyword(line: &str, info: &Line, end: usize) -> Option<&'static str> {
+    const KEYWORDS: [&str; 5] = ["class", "interface", "enum", "record", "new"];
+    let bytes = line.as_bytes();
+    let mut found = None;
+    let mut start = None;
+    for i in 0..=end.min(bytes.len()) {
+        let wordy = i < end && info.code.get(i).copied().unwrap_or(false) && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_');
+        if wordy {
+            start.get_or_insert(i);
+        } else if let Some(s) = start.take() {
+            let qualified = s > 0 && bytes[s - 1] == b'.';
+            if let Some(k) = KEYWORDS.iter().find(|k| **k == &line[s..i]).filter(|_| !qualified) {
+                found = Some(*k);
+            }
+        }
+    }
+    found
 }
 
 /// Per line, for each of its `{` in order: whether it opens a class body
@@ -1598,6 +1732,30 @@ mod tests {
         assert_eq!(kt(script), script);
         // Only the selected lines get them.
         assert_eq!(reformat(ImportStyle::Java, "class A {\n    void f() {}\n    void g() {}\n}", Some(0..2)), "class A {\n    void f() {}\n    void g() {}\n}");
+    }
+
+    #[test]
+    fn the_later_minimum_blank_lines_settings() {
+        // Java: before the package (after a header comment), after an
+        // anonymous class's header, before a method's first statement.
+        let min = MinBlankLines { before_package: 1, after_anonymous_class_header: 1, before_method_body: 1, ..Default::default() };
+        let style = IndentStyle { min_blank: min, ..Default::default() };
+        let text = "/* Header. */\npackage a;\nclass A {\n    void f() {\n        run(new Runnable() {\n            public void run() {\n                g();\n            }\n        });\n    }\n    void e() {\n    }\n}";
+        assert_eq!(
+            reformat_indented(ImportStyle::Java, text, None, &style),
+            "/* Header. */\n\npackage a;\n\nclass A {\n    void f() {\n\n        run(new Runnable() {\n\n            public void run() {\n\n                g();\n            }\n        });\n    }\n\n    void e() {\n    }\n}"
+        );
+        // The defaults change nothing; a package on the first line gets none.
+        assert_eq!(java(text), "/* Header. */\npackage a;\n\nclass A {\n    void f() {\n        run(new Runnable() {\n            public void run() {\n                g();\n            }\n        });\n    }\n\n    void e() {\n    }\n}");
+        assert_eq!(reformat_indented(ImportStyle::Java, "package a;\nclass A {}", None, &style), "package a;\n\nclass A {}");
+        // Kotlin: around `when` branches with a block, not between one-liners.
+        let style = IndentStyle { min_blank: MinBlankLines { around_when_branch_with_block: 1, ..Default::default() }, ..Default::default() };
+        let text = "fun f(x: Int) {\n    when (x) {\n        1 -> a()\n        2 -> b()\n        // Three.\n        3 -> {\n            c()\n        }\n        else -> d()\n    }\n    when {\n        x > 0 -> e()\n        else -> g()\n    }\n}";
+        assert_eq!(
+            reformat_indented(ImportStyle::Kotlin, text, None, &style),
+            "fun f(x: Int) {\n    when (x) {\n        1 -> a()\n        2 -> b()\n\n        // Three.\n        3 -> {\n            c()\n        }\n\n        else -> d()\n    }\n    when {\n        x > 0 -> e()\n        else -> g()\n    }\n}"
+        );
+        assert_eq!(kt(text), text);
     }
 
     #[test]
