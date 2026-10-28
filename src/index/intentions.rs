@@ -52,6 +52,105 @@ pub fn specify_inferred_type(text: &str, caret: usize, classes: super::catches::
     specify_type(tree.root_node(), text, caret, &declared)
 }
 
+/// Iterate over 'List<User>' (IntelliJ's IterateExpressionIntention): an
+/// expression statement of a collection's type, the caret at its start or
+/// end, becomes `for (user in users) {` with the caret in the body. The
+/// variable is named after the expression (`users` → `user`) or the
+/// element type (`User` → `user`, `Int` → `i`, `String` → `s`), else `e`.
+pub fn iterate_over(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let root = tree.root_node();
+    let statement = [caret, caret.saturating_sub(1)]
+        .into_iter()
+        .filter_map(|at| innermost(root, at))
+        .flat_map(ancestors)
+        .find(|n| n.parent().is_some_and(|p| p.kind() == "statements") && (n.start_byte() == caret || n.end_byte() == caret))?;
+    if statement.kind().ends_with("declaration") || matches!(statement.kind(), "assignment" | "for_statement" | "while_statement" | "do_while_statement") {
+        return None;
+    }
+    let ty = super::introduce::kotlin_type(statement, text)
+        .filter(|t| !t.is_empty())
+        .or_else(|| super::types::type_of(Lang::Kotlin, text, statement.byte_range(), classes).map(|t| t.ty))?;
+    let element = element_type(&ty)?;
+    let expression = &text[statement.byte_range()];
+    let name = iteration_name(expression, &element);
+    let line = text[..statement.start_byte()].rfind('\n').map_or(0, |i| i + 1);
+    let indent: String = text[line..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    let unit = if indent.starts_with('\t') { "\t" } else { "    " };
+    let head = format!("for ({name} in {expression}) {{\n{indent}{unit}");
+    let replacement = format!("{head}\n{indent}}}");
+    Some(Intention { title: format!("Iterate over '{ty}'"), range: statement.byte_range(), caret: statement.start_byte() + head.len(), replacement })
+}
+
+/// What a `for` over a value of the type goes through; None when it
+/// isn't iterable (as far as the name shows).
+fn element_type(ty: &str) -> Option<String> {
+    let ty = ty.trim_end_matches('?');
+    let (head, args) = match ty.find('<') {
+        Some(i) if ty.ends_with('>') => (&ty[..i], &ty[i + 1..ty.len() - 1]),
+        Some(_) => return None,
+        None => (ty, ""),
+    };
+    let head = head.rsplit('.').next().unwrap_or(head);
+    let primitive = |p: &str| Some(p.to_owned());
+    match head {
+        "List" | "MutableList" | "ArrayList" | "Set" | "MutableSet" | "HashSet" | "LinkedHashSet" | "Collection" | "MutableCollection" | "Iterable" | "MutableIterable" | "Sequence" | "Array" | "Iterator" | "ArrayDeque"
+            if !args.is_empty() =>
+        {
+            Some(args.trim().trim_start_matches("out ").trim_start_matches("in ").to_owned())
+        }
+        "Map" | "MutableMap" | "HashMap" | "LinkedHashMap" if !args.is_empty() => Some(format!("Map.Entry<{args}>")),
+        "String" | "CharSequence" | "CharArray" | "CharRange" => primitive("Char"),
+        "IntArray" | "IntRange" | "IntProgression" => primitive("Int"),
+        "LongArray" | "LongRange" | "LongProgression" => primitive("Long"),
+        "ShortArray" => primitive("Short"),
+        "ByteArray" => primitive("Byte"),
+        "DoubleArray" => primitive("Double"),
+        "FloatArray" => primitive("Float"),
+        "BooleanArray" => primitive("Boolean"),
+        _ => None,
+    }
+}
+
+/// The loop variable's name, as Kotlin's name suggester gives it.
+fn iteration_name(expression: &str, element: &str) -> String {
+    // `users`, `repo.users`, `getUsers()`: the singular.
+    let last = expression.trim_end_matches("()").rsplit(['.', ' ']).next().unwrap_or("");
+    let last = last.strip_prefix("get").filter(|r| r.starts_with(|c: char| c.is_uppercase())).unwrap_or(last);
+    if last.chars().all(|c| c.is_alphanumeric() || c == '_') && last.starts_with(|c: char| c.is_alphabetic()) {
+        let singular = if let Some(stem) = last.strip_suffix("ies") {
+            Some(format!("{stem}y"))
+        } else if last.ends_with("ss") {
+            None
+        } else {
+            last.strip_suffix('s').map(str::to_owned)
+        };
+        if let Some(s) = singular.filter(|s| s.len() > 1) {
+            let mut chars = s.chars();
+            let first = chars.next().unwrap_or('e').to_lowercase().collect::<String>();
+            return first + chars.as_str();
+        }
+    }
+    let base = element.split('<').next().unwrap_or(element).trim_end_matches('?');
+    let base = base.rsplit('.').next().unwrap_or(base);
+    match base {
+        "Int" => "i".into(),
+        "Long" => "l".into(),
+        "Short" | "String" => "s".into(),
+        "Byte" | "Boolean" => "b".into(),
+        "Char" => "c".into(),
+        "Double" => "d".into(),
+        "Float" => "f".into(),
+        "Entry" => "entry".into(),
+        _ if base.starts_with(|c: char| c.is_uppercase()) && base.chars().all(|c| c.is_alphanumeric()) => {
+            let mut chars = base.chars();
+            let first = chars.next().unwrap_or('e').to_lowercase().collect::<String>();
+            first + chars.as_str()
+        }
+        _ => "e".into(),
+    }
+}
+
 type Typing<'a> = dyn Fn(Node) -> Option<(String, Vec<String>)> + 'a;
 
 /// `val x = 1` → `val x: Int = 1`; `fun f() = 1` → `fun f(): Int = 1`;
@@ -330,6 +429,28 @@ mod tests {
         assert_eq!((i.title.as_str(), i.range.start), ("Specify return type explicitly", at(") = user") + 1));
         // What the expression shows is offered already.
         assert_eq!(specify_inferred_type(text, at("n = 1"), &classes), None);
+    }
+
+    #[test]
+    fn iterates_over_a_collection() {
+        let user = "package com.model\n\nclass User\n\nclass Repo {\n    fun all(): List<User> = emptyList()\n}\n";
+        let classes = |name: &str| -> Vec<String> { if name == "User" || name == "Repo" { vec![user.to_owned()] } else { Vec::new() } };
+        let text = "fun f(repo: Repo, users: List<User>, names: Array<String>, word: String, n: Int) {\n    users\n    repo.all()\n    names\n    word\n    n\n    val x = users\n}\n";
+        let at = |s: &str| text.find(s).unwrap();
+        let i = iterate_over(text, at("users\n"), &classes).unwrap();
+        assert_eq!(i.title, "Iterate over 'List<User>'");
+        let out = apply(text, &i);
+        assert!(out.contains("    for (user in users) {\n        \n    }\n    repo.all()"), "{out}");
+        assert_eq!(&out[i.caret - 8..i.caret], "        ");
+        // At the end of the statement too; named after the element type.
+        let i = iterate_over(text, at("repo.all()") + "repo.all()".len(), &classes).unwrap();
+        assert!(apply(text, &i).contains("for (user in repo.all()) {"));
+        assert!(apply(text, &iterate_over(text, at("names\n"), &classes).unwrap()).contains("for (name in names) {"));
+        assert!(apply(text, &iterate_over(text, at("word\n"), &classes).unwrap()).contains("for (c in word) {"));
+        // Not an Int, not inside the statement, not a declaration.
+        assert_eq!(iterate_over(text, at("n\n    val"), &classes), None);
+        assert_eq!(iterate_over(text, at("all()"), &classes), None);
+        assert_eq!(iterate_over(text, at("val x"), &classes), None);
     }
 
     #[test]

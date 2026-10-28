@@ -147,6 +147,9 @@ impl FileEditor {
                 if let Some((intention, imports)) = crate::index::intentions::specify_inferred_type(&text, cursor, &|n| self.class_texts(n, false, cx)).filter(|(i, _)| on(i)) {
                     items.push((intention.range.clone(), Choice::Typed(intention, imports)));
                 }
+                if let Some(intention) = crate::index::intentions::iterate_over(&text, cursor, &|n| self.class_texts(n, false, cx)).filter(on) {
+                    items.push((intention.range.clone(), Choice::Intention(intention)));
+                }
                 if settings.intention_on(true, "Add names to call arguments") {
                     self.request_argument_names(&text, cursor, window, cx);
                 }
