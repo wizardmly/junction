@@ -623,12 +623,15 @@ Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+
 | Kotlin / Java 文件里 Ctrl+Alt+T，或右键 Surround With…、Find Action：AS 的 “Surround With” 弹窗，按 IntelliJ 的顺序和名字编号列出（1–9、0、A…），按编号直接套用，上下键 + 回车也可以 | ✅ |
 | Kotlin 语句：if、if / else、run { }、try / finally、try / catch / finally、try / catch、while、do / while、for；Java 语句：if、if / else、while、do / while、for、try / catch、try / finally、try / catch / finally、synchronized、Runnable、{ } | ✅ |
 | 包住选中的整行（没有选区时是光标所在行），里面缩进一级（按文件的缩进单位）；catch 照 IntelliJ 的默认：Kotlin `catch (e: Exception) { throw e }`，Java `catch (Exception e) { throw new RuntimeException(e); }` | ✅ |
-| 选中一行中的一部分时，前面多出表达式项：Kotlin `!(expr)`、`"${expr}"`、`(expr)`，Java `(expr)`、`!(expr)` | ✅ |
+| 选中一行中的一部分时，前面多出表达式项：Kotlin `!(expr)`、`"${expr}"`、`(expr)`，Java `(expr)`、`!(expr)`（其余见下面） | ✅ |
 | 套用后光标停在模板要填的地方（`if (|)`、`for (|; ; )`）或选中占位内容（`true`、`Exception`、`item in items`）；一次 Ctrl+Z 撤销 | ✅ |
 | 有多处要填的 for（Kotlin `for (item in items)` 的 item、items；Java `for (; ; )` 的三处）照 Live Template 逐个停留：Tab 到下一处，最后停在头部行末 | ✅ |
 | Code › Surround with Live Template（Ctrl+Alt+J，Find Action 里也有）：列出含 `$SELECTION$` 的模板，编号选择；Surround With 弹窗里也排在 surrounder 之后。内置的是 IntelliJ Java.xml 的 C（Callable）、RL / WL（ReadWriteLock 读写锁）、I（for-each）；自定义模板含 `$SELECTION$` 的也列出来。选中内容按模板层级重新缩进，之后照 Live Template 逐个填变量；模板里的全限定类名照 toShortenFQNames 缩短并补 import（`Callable` → `import java.util.concurrent.Callable;`）。这类模板不按缩写展开、也不进补全列表 | ✅ |
 | 把块内声明移到外面（MoveDeclarationsOutHelper）：块后还用到的局部变量把声明留在块前，块里改成赋值；Java 的 if / while / for / try-catch 和 Kotlin 的 if / run / try 按 IntelliJ 给默认值，Kotlin 最后一句的声明变成 `val x = try { … }` | ✅ |
-| 按调用推断 catch 的异常类型、when / if 表达式等其余表达式模板 | ❌ 未做 |
+| 其余表达式模板，照 IntelliJ 的顺序和名字：Kotlin `when (expr) {}`（Boolean 时列出 true / false 分支）、`if (expr) { ... }` / `... else { ... }`（Boolean）、`try { expr } catch {}` / `catch {} finally {}` / `finally {}` 和 `if () expr else` / `if () { expr } else {}`（值被用到时，不是单独一句）、放在运算数位置时整体加括号；Java `((Type)expr)`（光标停在类型处，二元 / 三元 / 赋值表达式加括号）、`!(expr instanceof Type)`、`if (expr) {...}` / `... else {...}`（整句是该表达式时）、`if (expr != null) {...}`（包住所在语句，光标停在语句末）。只有类型能确定时（字面量、比较、局部变量 / 参数声明的类型）才按类型过滤（`!(expr)` 和 if 只给 Boolean，instanceof / 判空不给基本类型），不确定时都列出；Kotlin 选中整行且是一个表达式时也列出表达式模板 | ✅ |
+| 按调用推断 catch 的异常类型（Java 的 throws、Kotlin 的 @Throws）、when 按 enum / sealed 类列出分支、强转的类型猜测 | ❌ 未做 |
+
+Linux 实测（Xvfb，表达式模板）：Java `greet(name).trim();` 选中 `greet(name)`，弹窗依次是 (expr)、((Type)expr)、!(expr)、!(expr instanceof Type)、if (expr != null) {...} 和语句模板，选判空后变成 `if (greet(name) != null) {` 换行 `greet(name).trim();`，光标在分号后；Kotlin 选中整行 `x || y && x` 时列出 when / if (expr) 等再接语句模板，if / else 后光标在空的 then 块里；`val a = "aaa"` 选中 `"aaa"` 套 try { expr } catch {} 变成 `val a = try {` … `} catch (e: Exception) {` `throw e` `}`。
 
 ## 29. Live Templates（2026-10-15）
 

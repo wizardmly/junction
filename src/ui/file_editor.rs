@@ -2035,7 +2035,7 @@ impl FileEditor {
     /// selected lines (or the caret's), and an expression's when the
     /// selection is part of a line.
     pub fn surround_with(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((_, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
+        let Some((lang, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
         let text = self.text(cx);
         let selection = self.state.read(cx).selected_range();
         let lines = crate::domain::surround::lines_of(&text, selection.clone());
@@ -2050,6 +2050,16 @@ impl FileEditor {
         if lines.is_empty() || line_text.trim().is_empty() && expression.is_none() {
             return Self::hint("Surround With", "Cannot perform refactoring.\nNothing to surround", window, cx);
         }
+        let expression = match expression {
+            Some(range) => Some((range.clone(), crate::index::surround::expression_context(lang, &text, range))),
+            // A whole line that is one expression (Kotlin's `x || y`): its surrounders too.
+            None if !selected.is_empty() && !selected.contains('\n') => {
+                let start = text[..lines.end].find(selected).filter(|s| *s >= lines.start).unwrap_or(lines.start);
+                let range = start..start + selected.len();
+                crate::index::surround::expression_context(lang, &text, range.clone()).map(|c| (range, Some(c)))
+            }
+            None => None,
+        };
         self.choose_surrounder(style, lines, expression, window, cx);
     }
 
@@ -2078,7 +2088,10 @@ impl FileEditor {
         // Declarations the code after still uses go above the new block.
         let out = (!expression).then(|| moves_declarations(style, surrounder)).flatten().and_then(|defaults| crate::index::surround::declarations_out(lang, &text, range.clone(), defaults));
         let done = match out {
-            _ if expression => surround_expression(surrounder, &text, range),
+            _ if expression => {
+                let context = crate::index::surround::expression_context(lang, &text, range.clone()).unwrap_or_default();
+                surround_expression(style, surrounder, &text, range, &indent_unit(&text), &context)
+            }
             Some(out) => surround_lines_moving(style, surrounder, &text, range, &indent_unit(&text), &out),
             None => surround_lines(style, surrounder, &text, range, &indent_unit(&text)),
         };

@@ -27,11 +27,25 @@ pub enum Surrounder {
     Not,
     StringTemplate,
     Parentheses,
+    Cast,
+    NotInstanceof,
+    /// `if (expr) {…}` for a whole statement (Java) or a Boolean (Kotlin).
+    IfExpression,
+    IfElseExpression,
+    NullCheck,
+    When,
+    TryCatchExpression,
+    TryCatchFinallyExpression,
+    TryFinallyExpression,
+    /// Kotlin `if () expr else` / `if () { expr } else {}`.
+    IfAround,
+    IfAroundBraces,
 }
 
 impl Surrounder {
     /// The popup's text for it.
-    pub fn label(self) -> &'static str {
+    pub fn label(self, style: ImportStyle) -> &'static str {
+        let kotlin = style == ImportStyle::Kotlin;
         match self {
             Surrounder::If => "if",
             Surrounder::IfElse => "if / else",
@@ -48,6 +62,19 @@ impl Surrounder {
             Surrounder::Not => "!(expr)",
             Surrounder::StringTemplate => "\"${expr}\"",
             Surrounder::Parentheses => "(expr)",
+            Surrounder::Cast => "((Type)expr)",
+            Surrounder::NotInstanceof => "!(expr instanceof Type)",
+            Surrounder::IfExpression if kotlin => "if (expr) { ... }",
+            Surrounder::IfExpression => "if (expr) {...}",
+            Surrounder::IfElseExpression if kotlin => "if (expr) { ... } else { ... }",
+            Surrounder::IfElseExpression => "if (expr) {...} else {...}",
+            Surrounder::NullCheck => "if (expr != null) {...}",
+            Surrounder::When => "when (expr) {}",
+            Surrounder::TryCatchExpression => "try { expr } catch {}",
+            Surrounder::TryCatchFinallyExpression => "try { expr } catch {} finally {}",
+            Surrounder::TryFinallyExpression => "try { expr } finally {}",
+            Surrounder::IfAround => "if () expr else",
+            Surrounder::IfAroundBraces => "if () { expr } else {}",
         }
     }
 }
@@ -61,13 +88,64 @@ pub fn statement_surrounders(style: ImportStyle) -> &'static [Surrounder] {
     }
 }
 
-/// The surrounders for an expression within a line.
-pub fn expression_surrounders(style: ImportStyle) -> &'static [Surrounder] {
-    use Surrounder::*;
-    match style {
-        ImportStyle::Kotlin => &[Not, StringTemplate, Parentheses],
-        ImportStyle::Java => &[Parentheses, Not],
+/// What the expression surrounders need to know of the expression.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExpressionContext {
+    /// Its type, when known (`Boolean`, `int`, `String`).
+    pub ty: Option<String>,
+    /// The statement it is all of, in a block: Java's with its `;`
+    /// (`if (expr) {...}` replaces it); Kotlin's its own range (a value
+    /// not used, so no `try` / `if () expr else` around it).
+    pub statement: Option<Range<usize>>,
+    /// Java: the expression statement in a block it is part of
+    /// (`if (expr != null) {...}` wraps it).
+    pub enclosing: Option<Range<usize>>,
+    /// Kotlin: an `if` / `when` / `try` in its place needs parentheses
+    /// (`(if (a) {…}).equals(true)`); Java: a cast needs them inside
+    /// (`((Type) (a + b))`).
+    pub parenthesize: bool,
+}
+
+impl ExpressionContext {
+    fn boolean(&self, kotlin: bool) -> bool {
+        // Unknown types aren't ruled out.
+        self.ty.as_deref().is_none_or(|t| if kotlin { t == "Boolean" } else { t == "boolean" || t == "Boolean" })
     }
+
+    fn primitive(&self) -> bool {
+        self.ty.as_deref().is_some_and(|t| matches!(t, "boolean" | "int" | "long" | "short" | "byte" | "char" | "float" | "double" | "void"))
+    }
+}
+
+/// The surrounders for an expression, in IntelliJ's order, those that
+/// apply to it (KotlinExpressionSurroundDescriptor,
+/// JavaExpressionSurroundDescriptor); without a context (the selection
+/// isn't one expression) the ones that only wrap its text.
+pub fn expression_surrounders(style: ImportStyle, context: Option<&ExpressionContext>) -> Vec<Surrounder> {
+    use Surrounder::*;
+    let kotlin = style == ImportStyle::Kotlin;
+    let Some(c) = context else {
+        return if kotlin { vec![Not, StringTemplate, Parentheses] } else { vec![Parentheses, Not] };
+    };
+    let all: &[Surrounder] = if kotlin {
+        &[Not, StringTemplate, Parentheses, When, IfExpression, IfElseExpression, TryCatchExpression, TryCatchFinallyExpression, TryFinallyExpression, IfAround, IfAroundBraces]
+    } else {
+        &[Parentheses, Cast, Not, NotInstanceof, IfExpression, IfElseExpression, NullCheck]
+    };
+    all.iter()
+        .copied()
+        .filter(|s| match s {
+            Not | IfExpression | IfElseExpression if kotlin => c.boolean(true),
+            Not => c.boolean(false),
+            IfExpression | IfElseExpression => c.statement.is_some() && c.boolean(false),
+            Cast => c.ty.as_deref() != Some("void"),
+            NotInstanceof => !c.primitive(),
+            NullCheck => !c.primitive() && c.statement.is_none() && c.enclosing.is_some(),
+            // A value not used: KotlinControlFlowExpressionSurrounderBase.
+            TryCatchExpression | TryCatchFinallyExpression | TryFinallyExpression | IfAround | IfAroundBraces => c.statement.is_none(),
+            _ => true,
+        })
+        .collect()
 }
 
 /// IntelliJ's popup numbering: 1–9, 0, then letters.
@@ -239,15 +317,84 @@ pub fn surround_lines_moving(style: ImportStyle, surrounder: Surrounder, text: &
 }
 
 /// Wraps an expression (within a line) with an expression surrounder.
-pub fn surround_expression(surrounder: Surrounder, text: &str, range: Range<usize>) -> Surrounded {
+pub fn surround_expression(style: ImportStyle, surrounder: Surrounder, text: &str, range: Range<usize>, unit: &str, context: &ExpressionContext) -> Surrounded {
     let expr = &text[range.clone()];
-    let out = match surrounder {
-        Surrounder::Not => format!("!({expr})"),
-        Surrounder::StringTemplate => format!("\"${{{expr}}}\""),
-        _ => format!("({expr})"),
+    let line = text[..range.start].rfind('\n').map_or(0, |i| i + 1);
+    let base: String = text[line..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    let inner = format!("{base}{unit}");
+    // (the text, where the caret goes or what is selected, in it).
+    let (out, select): (String, Range<usize>) = match surrounder {
+        Surrounder::Not => (format!("!({expr})"), usize::MAX..usize::MAX),
+        Surrounder::StringTemplate => (format!("\"${{{expr}}}\""), usize::MAX..usize::MAX),
+        Surrounder::Cast => {
+            let expr = if context.parenthesize { format!("({expr})") } else { expr.to_owned() };
+            (format!("(() {expr})"), 2..2)
+        }
+        Surrounder::NotInstanceof => {
+            let out = format!("!({expr} instanceof )");
+            let at = out.len() - 1;
+            (out, at..at)
+        }
+        Surrounder::IfExpression | Surrounder::IfElseExpression if style == ImportStyle::Java => {
+            let statement = context.statement.clone().unwrap_or(range.clone());
+            let otherwise = if surrounder == Surrounder::IfElseExpression { format!(" else {{\n{base}}}") } else { String::new() };
+            let out = format!("if ({expr}) {{\n{inner}\n{base}}}{otherwise}");
+            let at = out.find('\n').unwrap() + 1 + inner.len();
+            return expression_edit(statement, out, at..at);
+        }
+        Surrounder::NullCheck => {
+            let statement = context.enclosing.clone().unwrap_or(range.clone());
+            let out = format!("if ({expr} != null) {{\n{inner}{}\n{base}}}", &text[statement.clone()]);
+            let at = out.rfind('\n').unwrap();
+            return expression_edit(statement, out, at..at);
+        }
+        Surrounder::When => {
+            let (branches, at) = match context.ty.as_deref() {
+                // computeMissingCases: the caret on the first branch's value.
+                Some("Boolean") => (format!("{inner}true -> TODO()\n{inner}false -> TODO()\n"), inner.len() + "true -> ".len()),
+                _ => (format!("{inner} -> {{}}\n{inner}else -> {{}}\n"), inner.len()),
+            };
+            let head = format!("when ({expr}) {{\n");
+            let at = head.len() + at;
+            (format!("{head}{branches}{base}}}"), at..at)
+        }
+        Surrounder::IfExpression | Surrounder::IfElseExpression => {
+            let otherwise = if surrounder == Surrounder::IfElseExpression { format!(" else {{\n{base}}}") } else { String::new() };
+            let out = format!("if ({expr}) {{\n{inner}\n{base}}}{otherwise}");
+            let at = out.find('\n').unwrap() + 1 + inner.len();
+            (out, at..at)
+        }
+        Surrounder::TryCatchExpression | Surrounder::TryCatchFinallyExpression => {
+            let finally = if surrounder == Surrounder::TryCatchFinallyExpression { format!(" finally {{\n{base}}}") } else { String::new() };
+            let out = format!("try {{\n{inner}{expr}\n{base}}} catch (e: Exception) {{\n{inner}throw e\n{base}}}{finally}");
+            let at = out.find("Exception").unwrap();
+            (out, at..at + "Exception".len())
+        }
+        Surrounder::TryFinallyExpression => {
+            let out = format!("try {{\n{inner}{expr}\n{base}}} finally {{\n{inner}\n{base}}}");
+            let at = out.len() - 1 - base.len() - 1;
+            (out, at..at)
+        }
+        Surrounder::IfAround => {
+            let out = format!("if () {expr} else");
+            (out, 4..4)
+        }
+        Surrounder::IfAroundBraces => (format!("if () {{\n{inner}{expr}\n{base}}} else {{\n{base}}}"), 4..4),
+        _ => (format!("({expr})"), usize::MAX..usize::MAX),
     };
-    let end = range.start + out.len();
-    Surrounded { range, text: out, select: end..end, stops: Vec::new(), end }
+    // A Kotlin `if` / `when` / `try` taking an operand's place.
+    let wrapped = style == ImportStyle::Kotlin && context.parenthesize && !matches!(surrounder, Surrounder::Not | Surrounder::StringTemplate | Surrounder::Parentheses);
+    let (out, shift) = if wrapped { (format!("({out})"), 1) } else { (out, 0) };
+    // The caret after the new text unless placed.
+    let select = if select.start == usize::MAX { out.len()..out.len() } else { select.start + shift..select.end + shift };
+    expression_edit(range, out, select)
+}
+
+/// The edit replacing `range` with `text`, `select` in it.
+fn expression_edit(range: Range<usize>, text: String, select: Range<usize>) -> Surrounded {
+    let select = range.start + select.start..range.start + select.end;
+    let end = select.end;
+    Surrounded { range, text, select, stops: Vec::new(), end }
 }
 
 #[cfg(test)]
@@ -304,10 +451,78 @@ mod tests {
     fn surrounds_expressions() {
         let text = "val ok = a && b\n";
         let at = text.find("a && b").unwrap();
-        let (out, _) = apply(text, &surround_expression(Surrounder::Not, text, at..at + 6));
+        let c = ExpressionContext::default();
+        let (out, _) = apply(text, &surround_expression(ImportStyle::Kotlin, Surrounder::Not, text, at..at + 6, "    ", &c));
         assert_eq!(out, "val ok = !(a && b)\n");
-        let (out, _) = apply(text, &surround_expression(Surrounder::StringTemplate, text, at..at + 6));
+        let (out, _) = apply(text, &surround_expression(ImportStyle::Kotlin, Surrounder::StringTemplate, text, at..at + 6, "    ", &c));
         assert_eq!(out, "val ok = \"${a && b}\"\n");
         assert_eq!((mnemonic(0), mnemonic(9), mnemonic(10)), ('1', '0', 'A'));
+    }
+
+    #[test]
+    fn surrounds_expressions_as_intellij() {
+        let at = |text: &str, what: &str| {
+            let start = text.rfind(what).unwrap();
+            start..start + what.len()
+        };
+        let run = |style, s, text: &str, what: &str, c: ExpressionContext| {
+            let done = surround_expression(style, s, text, at(text, what), "    ", &c);
+            let (mut out, _) = apply(text, &done);
+            out.insert_str(done.select.end, "]");
+            out.insert_str(done.select.start, "[");
+            out
+        };
+        let k = ImportStyle::Kotlin;
+        let none = ExpressionContext::default;
+        // withIfExpression/complexBoolean.kt, withIfElseExpression/complexBoolean.kt.
+        let text = "fun foo(x: Boolean, y: Boolean) {\n    x || y && x\n}\n";
+        let statement = || ExpressionContext { ty: Some("Boolean".into()), statement: Some(at(text, "x || y && x")), ..Default::default() };
+        assert_eq!(run(k, Surrounder::IfExpression, text, "x || y && x", statement()), "fun foo(x: Boolean, y: Boolean) {\n    if (x || y && x) {\n        []\n    }\n}\n");
+        assert_eq!(run(k, Surrounder::IfElseExpression, text, "x || y && x", statement()), "fun foo(x: Boolean, y: Boolean) {\n    if (x || y && x) {\n        []\n    } else {\n    }\n}\n");
+        // withIfElseExpression/replaceWithParenthesized.kt.
+        let text = "fun test(some: Boolean) {\n    some.equals(true)\n}";
+        let c = ExpressionContext { ty: Some("Boolean".into()), parenthesize: true, ..Default::default() };
+        assert_eq!(run(k, Surrounder::IfElseExpression, text, "some", c), "fun test(some: Boolean) {\n    (if (some) {\n        []\n    } else {\n    }).equals(true)\n}");
+        // when/multiExpression.kt.
+        let text = "fun foo() {\n    val a = \"aa\"\n    a.capitalize()\n}";
+        assert_eq!(run(k, Surrounder::When, text, "a.capitalize()", none()), "fun foo() {\n    val a = \"aa\"\n    when (a.capitalize()) {\n        [] -> {}\n        else -> {}\n    }\n}");
+        // ifElseExpression/paranthesized.kt, ifElseExpressionBraces/singleExpression.kt.
+        let text = "fun foo() {\n    \"aaa\" + 1\n}";
+        assert_eq!(run(k, Surrounder::IfAround, text, "\"aaa\"", ExpressionContext { parenthesize: true, ..none() }), "fun foo() {\n    (if ([]) \"aaa\" else) + 1\n}");
+        let text = "fun foo() {\n    val a = \"aaa\"\n}";
+        assert_eq!(run(k, Surrounder::IfAroundBraces, text, "\"aaa\"", none()), "fun foo() {\n    val a = if ([]) {\n        \"aaa\"\n    } else {\n    }\n}");
+        // tryCatchExpression/singleExpression.kt, tryFinallyExpression/singleExpression.kt.
+        assert_eq!(run(k, Surrounder::TryCatchExpression, text, "\"aaa\"", none()), "fun foo() {\n    val a = try {\n        \"aaa\"\n    } catch (e: [Exception]) {\n        throw e\n    }\n}");
+        assert_eq!(run(k, Surrounder::TryFinallyExpression, text, "\"aaa\"", none()), "fun foo() {\n    val a = try {\n        \"aaa\"\n    } finally {\n        []\n    }\n}");
+
+        let j = ImportStyle::Java;
+        // SurroundBinaryWithCast.
+        let text = "    if (a + b + 1) {\n";
+        assert_eq!(run(j, Surrounder::Cast, text, "a + b + 1", ExpressionContext { parenthesize: true, ..none() }), "    if ((([]) (a + b + 1))) {\n");
+        assert_eq!(run(j, Surrounder::NotInstanceof, text, "a + b + 1", none()), "    if (!(a + b + 1 instanceof [])) {\n");
+        // SurroundWithNotNullCheck.
+        let text = "  void bar() {\n    foo().toLowerCase();\n  }\n";
+        let c = ExpressionContext { enclosing: Some(at(text, "foo().toLowerCase();")), ..none() };
+        assert_eq!(run(j, Surrounder::NullCheck, text, "foo()", c), "  void bar() {\n    if (foo() != null) {\n        foo().toLowerCase();[]\n    }\n  }\n");
+        let text = "  void bar() {\n    ok();\n  }\n";
+        let c = ExpressionContext { statement: Some(at(text, "ok();")), ..none() };
+        assert_eq!(run(j, Surrounder::IfElseExpression, text, "ok()", c), "  void bar() {\n    if (ok()) {\n        []\n    } else {\n    }\n  }\n");
+    }
+
+    #[test]
+    fn offers_the_expression_surrounders_that_apply() {
+        use Surrounder::*;
+        let boolean = ExpressionContext { ty: Some("Boolean".into()), statement: Some(0..1), ..Default::default() };
+        assert_eq!(expression_surrounders(ImportStyle::Kotlin, Some(&boolean)), [Not, StringTemplate, Parentheses, When, IfExpression, IfElseExpression]);
+        let string = ExpressionContext { ty: Some("String".into()), ..Default::default() };
+        assert_eq!(
+            expression_surrounders(ImportStyle::Kotlin, Some(&string)),
+            [StringTemplate, Parentheses, When, TryCatchExpression, TryCatchFinallyExpression, TryFinallyExpression, IfAround, IfAroundBraces]
+        );
+        let int = ExpressionContext { ty: Some("int".into()), enclosing: Some(0..1), ..Default::default() };
+        assert_eq!(expression_surrounders(ImportStyle::Java, Some(&int)), [Parentheses, Cast]);
+        let unknown = ExpressionContext { enclosing: Some(0..1), ..Default::default() };
+        assert_eq!(expression_surrounders(ImportStyle::Java, Some(&unknown)), [Parentheses, Cast, Not, NotInstanceof, NullCheck]);
+        assert_eq!(expression_surrounders(ImportStyle::Java, None), [Parentheses, Not]);
     }
 }

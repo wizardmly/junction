@@ -202,19 +202,29 @@ impl FileEditor {
     /// Surround With's popup at the caret: the statement surrounders for
     /// the lines, then (for an expression selected within a line) the
     /// expression ones, numbered; a number applies its item.
-    pub(super) fn choose_surrounder(&mut self, style: crate::domain::imports::ImportStyle, lines: std::ops::Range<usize>, expression: Option<std::ops::Range<usize>>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn choose_surrounder(
+        &mut self,
+        style: crate::domain::imports::ImportStyle,
+        lines: std::ops::Range<usize>,
+        expression: Option<(std::ops::Range<usize>, Option<crate::domain::surround::ExpressionContext>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use crate::domain::surround::{expression_surrounders, mnemonic, statement_surrounders};
         let mut items: Vec<(std::ops::Range<usize>, Choice)> = Vec::new();
+        let (expression, context) = expression.map_or((None, None), |(r, c)| (Some(r), c));
         if let Some(expr) = &expression {
-            for s in expression_surrounders(style) {
-                items.push((expr.clone(), Choice::Surround(*s, mnemonic(items.len()), true)));
+            for s in expression_surrounders(style, context.as_ref()) {
+                items.push((expr.clone(), Choice::Surround(s, mnemonic(items.len()), true)));
             }
         }
         for s in statement_surrounders(style) {
             items.push((lines.clone(), Choice::Surround(*s, mnemonic(items.len()), false)));
         }
         // The surround live templates after them, as IntelliJ's popup.
-        let range = expression.clone().unwrap_or_else(|| lines.clone());
+        // A whole line that is one expression: the templates take the line.
+        let text = self.text(cx);
+        let range = expression.clone().filter(|e| text[lines.clone()].trim() != &text[e.clone()]).unwrap_or_else(|| lines.clone());
         for t in crate::domain::live_templates::surrounding(style == crate::domain::imports::ImportStyle::Kotlin) {
             let key = mnemonic(items.len());
             items.push((range.clone(), Choice::LiveTemplate(t, key)));
@@ -664,7 +674,7 @@ impl FileEditor {
             let (icon, label) = match choice {
                 Choice::Fix(fix) => (Some(icons::INTENTION_BULB), fix.title.clone()),
                 Choice::Expression(text, _) => (None, text.clone()),
-                Choice::Surround(s, key, _) => (None, format!("{key}. {}", s.label())),
+                Choice::Surround(s, key, _) => (None, format!("{key}. {}", s.label(self.jvm_style().map_or(crate::domain::imports::ImportStyle::Java, |(_, style)| style)))),
                 Choice::LiveTemplate(t, key) => (None, format!("{key}. {}  {}", t.name, t.description)),
                 Choice::Generate(m) => (None, m.label().to_owned()),
                 Choice::ImportClass(name, _) => (Some(icons::INTENTION_BULB), format!("Import class '{name}'")),

@@ -3,16 +3,17 @@
 //! a declaration among the wrapped lines that the code after them uses
 //! goes in front of the new construct, its initializer left inside as an
 //! assignment (Kotlin's last line as the construct's value, `val b = if
-//! (…) { … }`).
+//! (…) { … }`); and what the expression surrounders need of a selected
+//! expression.
 
 use std::ops::Range;
 
 use tree_sitter::Node;
 
-use super::introduce::{java_type, kotlin_type};
+use super::introduce::{expression_node, java_type, kotlin_type};
 use super::lang::Lang;
 use super::symbols;
-use crate::domain::surround::DeclarationsOut;
+use crate::domain::surround::{DeclarationsOut, ExpressionContext};
 
 fn line_start(text: &str, at: usize) -> usize {
     text[..at].rfind('\n').map_or(0, |i| i + 1)
@@ -206,6 +207,89 @@ fn out_with(mut out: DeclarationsOut, block: String) -> DeclarationsOut {
     out
 }
 
+/// The context of the expression at exactly `range`, or None when it
+/// isn't one.
+pub fn expression_context(lang: Lang, text: &str, range: Range<usize>) -> Option<ExpressionContext> {
+    let tree = symbols::parse(lang, text)?;
+    let node = expression_node(lang, tree.root_node(), text, range)?;
+    let parent = node.parent()?;
+    let mut context = ExpressionContext { ty: expression_type(lang, node, text), ..Default::default() };
+    match lang {
+        Lang::Kotlin => {
+            if matches!(parent.kind(), "statements" | "control_structure_body") {
+                context.statement = Some(node.byte_range());
+            }
+            // Where an `if` / `when` / `try` can stand as it is.
+            context.parenthesize = !matches!(
+                parent.kind(),
+                "statements" | "control_structure_body" | "property_declaration" | "function_body" | "value_argument" | "jump_expression" | "parenthesized_expression"
+                    | "assignment" | "when_subject" | "if_expression" | "when_entry" | "interpolated_expression" | "source_file"
+            );
+        }
+        _ => {
+            if parent.kind() == "expression_statement" && parent.parent().is_some_and(|b| b.kind() == "block") {
+                context.statement = Some(parent.byte_range());
+            }
+            let mut up = Some(parent);
+            while let Some(n) = up {
+                if n.kind() == "expression_statement" {
+                    context.enclosing = n.parent().filter(|b| b.kind() == "block").map(|_| n.byte_range());
+                    break;
+                }
+                if matches!(n.kind(), "block" | "lambda_expression" | "class_body") {
+                    break;
+                }
+                up = n.parent();
+            }
+            context.parenthesize = matches!(node.kind(), "binary_expression" | "ternary_expression" | "assignment_expression" | "lambda_expression" | "instanceof_expression");
+        }
+    }
+    Some(context)
+}
+
+/// What the type of an expression is known to be: a literal's, a
+/// comparison's, a constructor call's or a cast's, or a local variable's
+/// or parameter's as declared.
+fn expression_type(lang: Lang, node: Node, text: &str) -> Option<String> {
+    let kotlin = lang == Lang::Kotlin;
+    if matches!(node.kind(), "prefix_expression" | "unary_expression") && text[node.byte_range()].starts_with('!') {
+        return Some(if kotlin { "Boolean" } else { "boolean" }.into());
+    }
+    if matches!(node.kind(), "simple_identifier" | "identifier") {
+        let local = super::locals::resolve(lang, text, node.start_byte())?;
+        let tree = symbols::parse(lang, text)?;
+        let mut decl = tree.root_node().descendant_for_byte_range(local.decl, local.decl)?;
+        while let Some(parent) = decl.parent() {
+            match (lang, parent.kind()) {
+                (Lang::Kotlin, "variable_declaration" | "parameter" | "class_parameter") => {
+                    if let Some((_, ty)) = text[parent.byte_range()].split_once(':') {
+                        return Some(ty.trim().to_owned());
+                    }
+                    let property = parent.parent().filter(|p| p.kind() == "property_declaration")?;
+                    let mut c = property.walk();
+                    let children: Vec<Node> = property.children(&mut c).collect();
+                    let eq = children.iter().position(|c| c.kind() == "=")?;
+                    return children[eq + 1..].iter().find(|c| c.is_named()).and_then(|v| kotlin_type(*v, text));
+                }
+                (Lang::Java, "formal_parameter" | "catch_formal_parameter") => {
+                    return parent.child_by_field_name("type").map(|t| text[t.byte_range()].to_owned());
+                }
+                (Lang::Java, "variable_declarator") => {
+                    let declaration = parent.parent()?;
+                    let ty = declaration.child_by_field_name("type").map(|t| text[t.byte_range()].to_owned())?;
+                    return if ty == "var" { parent.child_by_field_name("value").and_then(|v| java_type(v, text)) } else { Some(ty) };
+                }
+                _ => decl = parent,
+            }
+            if decl.kind().ends_with("_declaration") || decl.kind() == "block" {
+                break;
+            }
+        }
+        return None;
+    }
+    if kotlin { kotlin_type(node, text) } else { java_type(node, text) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +348,31 @@ mod tests {
             surround(Lang::Java, Surrounder::TryFinally, text, "var n", "g();"),
             "class A {\n    void f() {\n        int n;\n        try {\n            n = 5;\n            g();\n        } finally {\n            \n        }\n        use(n);\n    }\n}\n"
         );
+    }
+
+    #[test]
+    fn knows_expression_contexts() {
+        let at = |text: &str, what: &str| {
+            let start = text.find(what).unwrap();
+            start..start + what.len()
+        };
+        let text = "fun foo(x: Boolean, s: String) {\n    x || s.isEmpty()\n    val a = s\n    s.length + 1\n}\n";
+        let c = expression_context(Lang::Kotlin, text, at(text, "x || s.isEmpty()")).unwrap();
+        assert_eq!((c.ty.as_deref(), c.statement.is_some(), c.parenthesize), (Some("Boolean"), true, false));
+        let c = expression_context(Lang::Kotlin, text, at(text, "x ||").start..at(text, "x ||").start + 1).unwrap();
+        assert_eq!((c.ty.as_deref(), c.statement.is_some(), c.parenthesize), (Some("Boolean"), false, true));
+        let c = expression_context(Lang::Kotlin, text, text.rfind("= s").unwrap() + 2..text.rfind("= s").unwrap() + 3).unwrap();
+        assert_eq!((c.ty.as_deref(), c.statement.is_some(), c.parenthesize), (Some("String"), false, false));
+        assert_eq!(expression_context(Lang::Kotlin, text, at(text, "|| s")), None);
+
+        let text = "class A {\n    void f(String s, int n) {\n        s.isEmpty();\n        foo(s).trim();\n        int m = n + 1;\n    }\n}\n";
+        let c = expression_context(Lang::Java, text, at(text, "s.isEmpty()")).unwrap();
+        assert_eq!(c.statement.map(|r| &text[r]), Some("s.isEmpty();"));
+        let c = expression_context(Lang::Java, text, at(text, "foo(s)")).unwrap();
+        assert_eq!((c.statement, c.enclosing.map(|r| &text[r])), (None, Some("foo(s).trim();")));
+        let c = expression_context(Lang::Java, text, at(text, "n + 1")).unwrap();
+        assert_eq!((c.ty, c.enclosing, c.parenthesize), (None, None, true));
+        let c = expression_context(Lang::Java, text, text.rfind("n + 1").unwrap()..text.rfind("n + 1").unwrap() + 1).unwrap();
+        assert_eq!(c.ty.as_deref(), Some("int"));
     }
 }
