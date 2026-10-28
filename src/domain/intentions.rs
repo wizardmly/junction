@@ -75,6 +75,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Java", "Replace 'for each' loop with indexed 'for' loop", "Loops over a list or an array by index instead of with for each"),
     ("Java", "Replace with enhanced 'for'", "Turns an indexed for loop over a list or an array into a for each loop"),
     ("Java", "Replace size check with 'isEmpty()'", "Replaces size() == 0 (or length() of a string) and a string's equals(\"\") with isEmpty(), != 0 and > 0 with !isEmpty()"),
+    ("Java", "Replace 'indexOf()' with 'contains()'", "Writes s.indexOf(x) != -1 as s.contains(x) and s.indexOf(x) == -1 as !s.contains(x), on a string or a list"),
     ("Java", "Replace '==' with 'equals()'", "Compares strings with equals() instead of == or !="),
     ("Java", "Remove redundant 'String.valueOf()' call", "Drops String.valueOf() around a String, or around a value added to a string"),
     ("Java", "Remove redundant 'toString()' call", "Drops toString() called on a String"),

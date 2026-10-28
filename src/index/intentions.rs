@@ -1361,6 +1361,46 @@ pub fn string_comparison(text: &str, caret: usize, classes: super::catches::Clas
     Some(Intention { title: title.into(), range: comparison.byte_range(), caret: comparison.start_byte(), replacement })
 }
 
+/// Replace 'indexOf()' with 'contains()' (Java, IntelliJ's
+/// IndexOfReplaceableByContainsInspection): `s.indexOf(x) != -1` (or
+/// `>= 0`, `> -1`) → `s.contains(x)`, `s.indexOf(x) == -1` (or `< 0`) →
+/// `!s.contains(x)`, when `s` is a String (not with a `char`) or a List;
+/// the caret on the comparison.
+pub fn index_of_contains(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Java, text)?;
+    let comparison = ancestors(innermost(tree.root_node(), caret)?)
+        .take_while(|n| !matches!(n.kind(), "block" | "class_body" | "expression_statement" | "lambda_expression"))
+        .find(|n| n.kind() == "binary_expression" && n.child_by_field_name("left").is_some_and(|l| l.kind() == "method_invocation"))?;
+    let call = comparison.child_by_field_name("left")?;
+    let bound = text[comparison.child_by_field_name("right")?.byte_range()].replace(' ', "");
+    let negated = match (comparison.child_by_field_name("operator")?.kind(), bound.as_str()) {
+        ("!=" | ">", "-1") | (">=", "0") => false,
+        ("==", "-1") | ("<", "0") => true,
+        _ => return None,
+    };
+    let object = call.child_by_field_name("object")?;
+    let arguments = children(call.child_by_field_name("arguments")?);
+    if &text[call.child_by_field_name("name")?.byte_range()] != "indexOf" || arguments.len() != 1 {
+        return None;
+    }
+    let ty = java_type(object, text, classes)?;
+    let head = ty.split('<').next().unwrap_or(&ty).rsplit('.').next().unwrap_or(&ty).to_owned();
+    let fits = match head.as_str() {
+        "String" => arguments[0].kind() != "character_literal" && java_type(arguments[0], text, classes).is_none_or(|t| t != "char" && t != "int"),
+        "List" | "ArrayList" | "LinkedList" => true,
+        _ => false,
+    };
+    if !fits {
+        return None;
+    }
+    Some(Intention {
+        title: "Replace 'indexOf()' with 'contains()'".into(),
+        range: comparison.byte_range(),
+        caret: comparison.start_byte(),
+        replacement: format!("{}{}.contains({})", if negated { "!" } else { "" }, &text[object.byte_range()], &text[arguments[0].byte_range()]),
+    })
+}
+
 type Typing<'a> = dyn Fn(Node) -> Option<(String, Vec<String>)> + 'a;
 
 /// `val x = 1` → `val x: Int = 1`; `fun f() = 1` → `fun f(): Int = 1`;
@@ -1967,6 +2007,21 @@ mod tests {
         assert_eq!(run("xs.associate { it.length"), None);
         assert_eq!(run("m.associate"), None);
         assert_eq!(run("n?.associate"), None);
+    }
+
+    #[test]
+    fn replaces_index_of_with_contains() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "class A {\n    void f(String s, List<String> xs, int[] a) {\n        if (s.indexOf(\"x\") != -1) return;\n        if (s.indexOf(\"y\") < 0) return;\n        if (xs.indexOf(s) >= 0) return;\n        if (s.indexOf('c') != -1) return;\n        if (s.indexOf(\"z\") > 0) return;\n    }\n}\n";
+        let run = |at: &str| index_of_contains(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("s.indexOf(\"x").unwrap();
+        assert_eq!(title, "Replace 'indexOf()' with 'contains()'");
+        assert!(out.contains("        if (s.contains(\"x\")) return;\n"), "{out}");
+        assert!(run("s.indexOf(\"y").unwrap().1.contains("        if (!s.contains(\"y\")) return;\n"));
+        assert!(run("xs.indexOf").unwrap().1.contains("        if (xs.contains(s)) return;\n"));
+        // A char; `> 0` isn't "found".
+        assert_eq!(run("s.indexOf('c"), None);
+        assert_eq!(run("s.indexOf(\"z"), None);
     }
 
     #[test]
