@@ -527,6 +527,54 @@ pub fn negated_emptiness(text: &str, caret: usize, classes: super::catches::Clas
     })
 }
 
+/// Merge call chain to 'first' (IntelliJ's SimplifiableCallChainInspection):
+/// `xs.filter { … }.first()` → `xs.first { … }`, and likewise `firstOrNull`,
+/// `last`, `lastOrNull`, `single`, `singleOrNull`, `count`, `any`, `none`,
+/// `isNotEmpty()` → `any`, `isEmpty()` → `none`, `map { … }.filterNotNull()`
+/// → `mapNotNull { … }`, when `xs` is a collection, array, sequence or
+/// string; the caret on the chain, outside the lambda.
+pub fn merge_call_chain(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let calls = innermost(tree.root_node(), caret)
+        .into_iter()
+        .flat_map(ancestors)
+        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body"))
+        .filter(|n| n.kind() == "call_expression");
+    for outer in calls {
+        let [callee, suffix] = children(outer)[..] else { continue };
+        if callee.kind() != "navigation_expression" || text[suffix.byte_range()].replace(' ', "") != "()" {
+            continue;
+        }
+        let Some(inner) = callee.named_child(0).filter(|n| n.kind() == "call_expression") else { continue };
+        let second = text[callee.named_child(1)?.byte_range()].trim();
+        let [inner_callee, inner_suffix] = children(inner)[..] else { continue };
+        let [lambda] = children(inner_suffix)[..] else { continue };
+        if inner_callee.kind() != "navigation_expression" || lambda.kind() != "annotated_lambda" {
+            continue;
+        }
+        let first = text[inner_callee.named_child(1)?.byte_range()].trim();
+        let merged = match (first, second) {
+            (".filter", ".first" | ".firstOrNull" | ".last" | ".lastOrNull" | ".single" | ".singleOrNull" | ".count" | ".any" | ".none") => &second[1..],
+            (".filter", ".isNotEmpty") => "any",
+            (".filter", ".isEmpty") => "none",
+            (".map", ".filterNotNull") => "mapNotNull",
+            _ => continue,
+        };
+        let target = inner_callee.named_child(0)?;
+        let ty = receiver_type(target, text, classes)?;
+        if ty.ends_with('?') || element_type(&ty).is_none_or(|e| e.starts_with("Map.Entry")) {
+            return None;
+        }
+        return Some(Intention {
+            title: format!("Merge call chain to '{merged}'"),
+            range: outer.byte_range(),
+            caret: outer.start_byte(),
+            replacement: format!("{}.{merged} {}", &text[target.byte_range()], &text[lambda.byte_range()]),
+        });
+    }
+    None
+}
+
 /// Replace 'get' call with indexing operator / Replace 'set' call with
 /// indexing operator (IntelliJ's ReplaceGetOrSetInspection): `xs.get(i)`
 /// → `xs[i]`, the statement `m.set(k, v)` → `m[k] = v`, when the
@@ -1291,6 +1339,25 @@ mod tests {
         // A nullable receiver; a list isn't blank.
         assert_eq!(run("!s.isEmpty", negated_emptiness), None);
         assert_eq!(run("isBlank", negated_emptiness), None);
+    }
+
+    #[test]
+    fn merges_call_chains() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(xs: List<Int>, m: Map<String, Int>, s: String, q: List<Int>?) {\n    val a = xs.filter { it > 1 }.first()\n    val b = xs.map { it.toString() }.filterNotNull().size\n    if (s.filter { it.isDigit() }.isNotEmpty()) return\n    val c = m.filter { it.value > 1 }.count()\n    val d = xs.filter { it > 1 }.sum()\n    val e = q?.filter { it > 1 }?.first()\n}\n";
+        let run = |at: &str| merge_call_chain(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("first()").unwrap();
+        assert_eq!(title, "Merge call chain to 'first'");
+        assert!(out.contains("    val a = xs.first { it > 1 }\n"), "{out}");
+        // On the first call too; not in the lambda.
+        assert!(run("filter { it > 1 }.first").is_some());
+        assert_eq!(run("it > 1 }.first"), None);
+        assert!(run("filterNotNull").unwrap().1.contains("    val b = xs.mapNotNull { it.toString() }.size\n"));
+        assert!(run("isNotEmpty").unwrap().1.contains("    if (s.any { it.isDigit() }) return\n"));
+        // A map's filter is a map; sum has no predicate form; a nullable receiver.
+        assert_eq!(run("count()"), None);
+        assert_eq!(run("sum()"), None);
+        assert_eq!(run("?.first"), None);
     }
 
     #[test]
