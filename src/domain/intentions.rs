@@ -63,7 +63,8 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
     ("Java", "Replace 'for each' loop with indexed 'for' loop", "Loops over a list or an array by index instead of with for each"),
     ("Java", "Replace with enhanced 'for'", "Turns an indexed for loop over a list or an array into a for each loop"),
-    ("Java", "Replace size check with 'isEmpty()'", "Replaces size() == 0 (or length() of a string) with isEmpty(), != 0 and > 0 with !isEmpty()"),
+    ("Java", "Replace size check with 'isEmpty()'", "Replaces size() == 0 (or length() of a string) and a string's equals(\"\") with isEmpty(), != 0 and > 0 with !isEmpty()"),
+    ("Java", "Replace '==' with 'equals()'", "Compares strings with equals() instead of == or !="),
 ];
 
 /// The family an intention's title belongs to (`Add braces to 'if'
@@ -79,6 +80,8 @@ pub fn family(title: &str) -> &str {
         "Replace 'get' or 'set' call with indexing operator"
     } else if ["==", "!=", "in", "!in", "+", "-", "*", "/", "%"].iter().any(|o| title == format!("Replace with '{o}'")) {
         "Replace call with binary operator"
+    } else if title == "Replace '!=' with '!equals()'" {
+        "Replace '==' with 'equals()'"
     } else if title.starts_with("Iterate over '") {
         "Iterate over collection"
     } else {
