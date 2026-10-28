@@ -57,6 +57,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Iterate over collection", "Wraps an expression of a collection, array, map or string in a for loop over it"),
     ("Kotlin", "Replace with a 'forEach' function call", "Turns a for loop into a forEach call, continue becoming return@forEach"),
     ("Kotlin", "Replace with a 'for' loop", "Turns a forEach call on a collection, array, map or string into a for loop"),
+    ("Kotlin", "Replace 'get' or 'set' call with indexing operator", "Writes list.get(i) as list[i] and map.set(k, v) as map[k] = v"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
     ("Java", "Replace 'for each' loop with indexed 'for' loop", "Loops over a list or an array by index instead of with for each"),
@@ -73,6 +74,8 @@ pub fn family(title: &str) -> &str {
         "Remove braces from statement"
     } else if title == "Replace with 'isEmpty()'" || title == "Replace with '!isEmpty()'" {
         "Replace size check with 'isEmpty()'"
+    } else if title == "Replace 'get' call with indexing operator" || title == "Replace 'set' call with indexing operator" {
+        "Replace 'get' or 'set' call with indexing operator"
     } else if title.starts_with("Iterate over '") {
         "Iterate over collection"
     } else {

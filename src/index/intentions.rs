@@ -355,6 +355,63 @@ pub fn for_each_to_loop(text: &str, caret: usize, classes: super::catches::Class
     })
 }
 
+/// Replace 'get' call with indexing operator / Replace 'set' call with
+/// indexing operator (IntelliJ's ReplaceGetOrSetInspection): `xs.get(i)`
+/// → `xs[i]`, the statement `m.set(k, v)` → `m[k] = v`, when the
+/// receiver is a list, map, array or string (whose `get` / `set` are
+/// operators); the caret on `get` / `set`.
+pub fn indexing_operator(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let call = innermost(tree.root_node(), caret).into_iter().flat_map(ancestors).find(|n| {
+        n.kind() == "call_expression" && n.named_child(0).is_some_and(|c| c.kind() == "navigation_expression" && c.named_child(1).is_some_and(|s| s.start_byte() <= caret))
+            && n.named_child(1).is_some_and(|s| s.start_byte() >= caret)
+    })?;
+    let callee = call.named_child(0)?;
+    let target = callee.named_child(0)?;
+    let name = text[callee.named_child(1)?.byte_range()].trim();
+    let set = match name {
+        ".get" => false,
+        ".set" => true,
+        _ => return None,
+    };
+    let [arguments] = children(call.named_child(1)?)[..] else { return None };
+    if arguments.kind() != "value_arguments" {
+        return None;
+    }
+    let values = children(arguments);
+    // Named or spread arguments have no indexing form.
+    let mut plain = values.iter().map(|v| {
+        let mut cursor = v.walk();
+        let tokens: Vec<Node> = v.children(&mut cursor).collect();
+        tokens.len() == 1 && tokens[0].is_named()
+    });
+    if values.len() < 1 + set as usize || !plain.all(|p| p) {
+        return None;
+    }
+    if set && call.parent()?.kind() != "statements" {
+        return None;
+    }
+    let ty = super::introduce::kotlin_type(target, text)
+        .filter(|t| !t.is_empty())
+        .or_else(|| super::types::type_of(Lang::Kotlin, text, target.byte_range(), classes).map(|t| t.ty))?;
+    let head = ty.split('<').next().unwrap_or(&ty);
+    let head = head.rsplit('.').next().unwrap_or(head);
+    let readable = matches!(head, "List" | "Map" | "String" | "CharSequence" | "StringBuilder");
+    let writable = matches!(head, "MutableList" | "ArrayList" | "MutableMap" | "HashMap" | "LinkedHashMap" | "Array")
+        || head.ends_with("Array") && head != "Array" && head.len() > 5;
+    if ty.ends_with('?') || !(writable || readable && !set) {
+        return None;
+    }
+    let (keys, value) = if set { values.split_at(values.len() - 1) } else { (&values[..], &[][..]) };
+    let keys = keys.iter().map(|k| &text[k.byte_range()]).collect::<Vec<_>>().join(", ");
+    let mut replacement = format!("{}[{keys}]", &text[target.byte_range()]);
+    if let Some(v) = value.first() {
+        replacement.push_str(&format!(" = {}", &text[v.byte_range()]));
+    }
+    let word = if set { "set" } else { "get" };
+    Some(Intention { title: format!("Replace '{word}' call with indexing operator"), range: call.byte_range(), caret: call.start_byte(), replacement })
+}
+
 /// Remove indices in 'for' loop: `for ((index, x) in list.withIndex())`
 /// → `for (x in list)` when the loop doesn't use `index`.
 fn remove_loop_indices(root: Node, text: &str, caret: usize) -> Option<Intention> {
@@ -953,6 +1010,29 @@ mod tests {
         assert_eq!(back(text, "forEach { x"), None);
         assert_eq!(back(text, "forEach { }"), None);
         assert_eq!(back(text, "println(it)"), None);
+    }
+
+    #[test]
+    fn replaces_get_and_set_with_indexing() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(xs: List<Int>, m: MutableMap<String, Int>, s: String, set: Set<Int>, a: IntArray) {\n    val x = xs.get(0) + s.get(1).code\n    m.set(\"a\", xs.get(1))\n    a.set(0, 2)\n    val y = m.get(key = \"a\")\n    xs.set(0, 1)\n    set.get(0)\n    val z = m.set(\"b\", 1)\n}\n";
+        let run = |at: &str| indexing_operator(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("get(0)").unwrap();
+        assert_eq!(title, "Replace 'get' call with indexing operator");
+        assert!(out.contains("val x = xs[0] + s.get(1)"), "{out}");
+        assert!(run("get(1).code").unwrap().1.contains("xs.get(0) + s[1].code"));
+        let (title, out) = run("set(\"a\"").unwrap();
+        assert_eq!(title, "Replace 'set' call with indexing operator");
+        assert!(out.contains("    m[\"a\"] = xs.get(1)\n"), "{out}");
+        // The inner call when the caret is on its name.
+        assert!(run("get(1))").unwrap().1.contains("m.set(\"a\", xs[1])"));
+        assert!(run("set(0, 2)").unwrap().1.contains("    a[0] = 2\n"));
+        // Named arguments, a read-only list's set, a set's get, a set used as a value, inside the arguments.
+        assert_eq!(run("get(key"), None);
+        assert_eq!(run("set(0, 1)"), None);
+        assert_eq!(run("get(0)\n"), None);
+        assert_eq!(run("set(\"b\""), None);
+        assert_eq!(run("0) +"), None);
     }
 
     #[test]
