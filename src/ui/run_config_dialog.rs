@@ -26,7 +26,7 @@ use gpui_kit::{
     Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::domain::run::{BeforeLaunch, JUnitKind, JUnitTarget, LaunchOptions, LaunchTarget, ModuleInfo, ModuleType, SavedRunConfiguration};
+use crate::domain::run::{self as run, BeforeLaunch, JUnitKind, JUnitTarget, LaunchOptions, LaunchTarget, ModuleInfo, ModuleType, SavedRunConfiguration};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
@@ -92,6 +92,8 @@ pub struct RunConfigView {
     gradle_run: Entity<InputState>,
     /// A JUnit configuration's Package, Class and Method.
     junit_package: Entity<InputState>,
+    /// Android Instrumented Tests' instrumentation arguments, `-e key value`.
+    junit_args: Entity<InputState>,
     junit_class: Entity<InputState>,
     junit_method: Entity<InputState>,
     /// The selected row of the Before launch list.
@@ -144,6 +146,7 @@ impl RunConfigView {
         self.junit_package.update(cx, |s, cx| s.set_value(junit.package, window, cx));
         self.junit_class.update(cx, |s, cx| s.set_value(junit.class, window, cx));
         self.junit_method.update(cx, |s, cx| s.set_value(junit.method, window, cx));
+        self.junit_args.update(cx, |s, cx| s.set_value(run::format_instrumentation_arguments(&junit.arguments), window, cx));
         self.name.update(cx, |s, cx| s.set_value(name, window, cx));
         self.gradle_run.update(cx, |s, cx| s.set_value(run, window, cx));
         self.activity.update(cx, |s, cx| s.set_value(activity, window, cx));
@@ -162,6 +165,9 @@ impl RunConfigView {
             junit.package = self.junit_package.read(cx).value().trim().to_owned();
             junit.class = self.junit_class.read(cx).value().trim().to_owned();
             junit.method = self.junit_method.read(cx).value().trim().to_owned();
+            if junit.instrumented {
+                junit.arguments = run::parse_instrumentation_arguments(&self.junit_args.read(cx).value()).unwrap_or_default();
+            }
         }
         if let LaunchTarget::Activity(a) = &mut d.saved.options.launch {
             *a = self.activity.read(cx).value().trim().to_owned();
@@ -423,9 +429,15 @@ impl RunConfigView {
                 package: self.junit_package.read(cx).value().to_string(),
                 class: self.junit_class.read(cx).value().to_string(),
                 method: self.junit_method.read(cx).value().to_string(),
+                ..Default::default()
             };
             if let Some(problem) = typed.problem() {
                 return Some(problem.into());
+            }
+            if instrumented {
+                if let Err(problem) = run::parse_instrumentation_arguments(&self.junit_args.read(cx).value()) {
+                    return Some(problem);
+                }
             }
         }
         let activity_missing = self.selected.and_then(|i| self.drafts.get(i)).is_some_and(|d| matches!(d.saved.options.launch, LaunchTarget::Activity(_))) && self.activity.read(cx).value().trim().is_empty();
@@ -555,6 +567,10 @@ impl RunConfigView {
                 .when(kind == JUnitKind::Package, |el| el.child(h_flex().gap_2().child(label("Package:")).child(div().flex_1().child(Input::new(&self.junit_package).small()))))
                 .when(matches!(kind, JUnitKind::Class | JUnitKind::Method), |el| el.child(h_flex().gap_2().child(label("Class:")).child(div().flex_1().child(Input::new(&self.junit_class).small()))))
                 .when(kind == JUnitKind::Method, |el| el.child(h_flex().gap_2().child(label("Method:")).child(div().flex_1().child(Input::new(&self.junit_method).small()))))
+                .when(instrumented, |el| {
+                    el.child(h_flex().gap_2().child(label("Instrumentation arguments:")).child(div().flex_1().child(Input::new(&self.junit_args).small())))
+                        .child(div().text_xs().text_color(palette.text_secondary).child("Passed to the test runner as am instrument's -e key value (Gradle's android.testInstrumentationRunnerArguments)"))
+                })
                 .child(div().text_xs().text_color(palette.text_secondary).child(if instrumented {
                     "Runs the module's androidTest tests through Gradle on every connected device."
                 } else {
@@ -733,15 +749,16 @@ pub fn open(roots: Vec<PathBuf>, modules: Vec<(PathBuf, ModuleInfo)>, current: V
         let junit_package = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. com.example"));
         let junit_class = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. com.example.ExampleUnitTest"));
         let junit_method = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. addition_isCorrect"));
+        let junit_args = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. -e size small"));
         let notify = |_: &mut RunConfigView, _: Entity<InputState>, e: &InputEvent, cx: &mut Context<RunConfigView>| {
             if matches!(e, InputEvent::Change) {
                 cx.notify();
             }
         };
-        let _subscriptions = vec![cx.subscribe(&name, notify), cx.subscribe(&activity, notify), cx.subscribe(&flags, notify), cx.subscribe(&gradle_run, notify), cx.subscribe(&junit_class, notify), cx.subscribe(&junit_method, notify)];
+        let _subscriptions = vec![cx.subscribe(&name, notify), cx.subscribe(&activity, notify), cx.subscribe(&flags, notify), cx.subscribe(&gradle_run, notify), cx.subscribe(&junit_class, notify), cx.subscribe(&junit_method, notify), cx.subscribe(&junit_args, notify)];
         let drafts: Vec<Draft> = current.into_iter().map(|(root, saved)| Draft { root, saved }).collect();
         let selected_ix = selected.and_then(|n| drafts.iter().position(|d| d.saved.name == n)).or((!drafts.is_empty()).then_some(0));
-        let mut view = RunConfigView { drafts, selected: selected_ix, roots, modules, name, activity, flags, gradle_run, junit_package, junit_class, junit_method, before_selected: None, _subscriptions };
+        let mut view = RunConfigView { drafts, selected: selected_ix, roots, modules, name, activity, flags, gradle_run, junit_package, junit_args, junit_class, junit_method, before_selected: None, _subscriptions };
         view.load_fields(window, cx);
         view
     });

@@ -361,7 +361,8 @@ Android Studio 的 Make Project、Run 'app'、Stop，以及 Build、Run、Build 
 | JUnit 运行配置（2026-10-22）：Edit Configurations 的 + › JUnit，填 Name、Module（任一模块）、Test kind（All in package / Class / Method）和对应的 Package、Class、Method；类或方法没填时提示 IntelliJ 的 “No test class specified” / “Method name not specified”；左边列表多一个 JUnit 组，标题栏下拉带测试图标。Run、Debug、Run with Coverage 都走与 gutter 相同的 Gradle 单元测试流程（结果树、调试器连到测试 JVM、覆盖率），不进临时配置列表 | ✅ |
 | 临时配置存为正式配置（2026-10-22）：选中从 gutter / Project 窗口跑出来的测试临时配置时，下拉里多一项 “Save 'CalcTest' Configuration”，存成 JUnit 配置（包、类或方法照原样）并选中，临时列表里去掉；构建原来用默认配置时默认的 app 配置一并保存；Rerun Failed Tests 那种多个过滤条件的不能存 | ✅ |
 | Android Instrumented Tests 运行配置（2026-10-22）：Edit Configurations 的 + › Android Instrumented Tests，Module 只列 Android 模块（默认第一个有 `src/androidTest` 的），Test kind 为 All in Module / All in Package / Class / Method，包名没填时提示 “Package name not specified”；左边列表多一个 Android Instrumented Tests 组。Run 和 Run with Coverage 走与 gutter 相同的 `connected…AndroidTest` 流程（`class` / `package` 作为 instrumentation runner 参数，在所有连接的设备上跑），从 gutter 跑出的仪器测试临时配置也能 Save 成这种配置 | ✅（容器里没有 AGP 工程，只验证到 Gradle 收到 `:app:connectedDebugAndroidTest`） |
-| Android Instrumented Tests 配置的 Debug、Deployment Target Options、Instrumentation 参数 | ❌ 未做（Debug 会提示不支持；Apply Changes 见第 60 节）|
+| Android Instrumented Tests 配置的 Instrumentation arguments：`-e key value`（值可加引号），运行时变成 Gradle 的 `-Pandroid.testInstrumentationRunnerArguments.key=value`，格式不对时 OK 会报错 | ✅（Linux 实测：保存进 run-configurations.json，运行时 Gradle 收到两个参数；未在真机验证）|
+| Android Instrumented Tests 配置的 Debug、Deployment Target Options | ❌ 未做（Debug 会提示不支持；Apply Changes 见第 60 节）|
 
 Linux 实测（容器无法下载 Android SDK，用假 adb 和一个模拟 assembleDebug 的 Gradle 项目）：Run 走完构建、安装、启动、找到进程；Stop 发出 force-stop；Make Project 把 Kotlin 类型错误列在 Build 窗口，点击跳到 Util.kt 2:18 并在编辑器标红。真实 AGP 项目和真机需要在 Windows / macOS 上验证。
 
