@@ -45,6 +45,7 @@ pub mod editor_session;
 pub mod intentions;
 pub mod introduce_variable;
 pub mod live_templates;
+pub mod template_xml;
 pub mod catalog_migration;
 pub mod coverage;
 pub mod create_test;

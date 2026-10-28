@@ -533,10 +533,22 @@ pub struct UserTemplate {
     pub java: Vec<Context>,
     #[serde(default = "enabled")]
     pub enabled: bool,
+    /// The template group it is listed in (empty: IntelliJ's "user").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
 }
 
 fn enabled() -> bool {
     true
+}
+
+/// The group templates go into unless another is chosen.
+pub const USER_GROUP: &str = "user";
+
+impl UserTemplate {
+    pub fn group_name(&self) -> &str {
+        if self.group.is_empty() { USER_GROUP } else { &self.group }
+    }
 }
 
 /// The `$NAME$` variables of a template's text in order, once each
@@ -710,6 +722,9 @@ pub struct CustomTemplates {
     pub user: Vec<UserTemplate>,
     #[serde(default)]
     pub disabled: Vec<String>,
+    /// Template groups made with no templates in them yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
 }
 
 impl CustomTemplates {
@@ -721,9 +736,18 @@ impl CustomTemplates {
     pub fn is_enabled(&self, kotlin: bool, name: &str) -> bool {
         !self.disabled.contains(&Self::key(kotlin, name))
     }
+
+    /// The person's template groups, "user" first, then by name.
+    pub fn group_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.user.iter().map(|t| t.group_name().to_owned()).chain(self.groups.iter().cloned()).collect();
+        names.push(USER_GROUP.to_owned());
+        names.sort_by(|a, b| (a != USER_GROUP, a.to_lowercase()).cmp(&(b != USER_GROUP, b.to_lowercase())));
+        names.dedup();
+        names
+    }
 }
 
-static CUSTOM: RwLock<CustomTemplates> = RwLock::new(CustomTemplates { user: Vec::new(), disabled: Vec::new() });
+static CUSTOM: RwLock<CustomTemplates> = RwLock::new(CustomTemplates { user: Vec::new(), disabled: Vec::new(), groups: Vec::new() });
 
 /// The templates settings, as saved: what the editor expands from now on.
 pub fn set_custom(custom: CustomTemplates) {
@@ -1234,8 +1258,10 @@ mod tests {
                 kotlin: vec![Context::Statement],
                 java: vec![],
                 enabled: true,
+                group: String::new(),
             }],
             disabled: vec![CustomTemplates::key(true, "sout")],
+            groups: Vec::new(),
         };
         let kotlin = templates_in(&custom, true);
         assert_eq!(kotlin[0].name, "logd");
@@ -1249,7 +1275,7 @@ mod tests {
         assert_eq!(e.stops.len(), 2);
         assert_eq!(e.stops[1].len(), 2);
         assert_eq!(e.end, e.text.len());
-        let off = CustomTemplates { user: vec![UserTemplate { enabled: false, ..custom.user[0].clone() }], disabled: Vec::new() };
+        let off = CustomTemplates { user: vec![UserTemplate { enabled: false, ..custom.user[0].clone() }], disabled: Vec::new(), groups: Vec::new() };
         assert!(templates_in(&off, true).iter().all(|t| t.name != "logd"));
     }
 
