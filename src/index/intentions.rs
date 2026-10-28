@@ -685,15 +685,35 @@ pub fn redundant_conversion(text: &str, caret: usize, kotlin: bool, classes: sup
             .take_while(|n| !matches!(n.kind(), "block" | "class_body" | "expression_statement" | "lambda_expression"))
             .find(|n| n.kind() == "method_invocation" && n.child_by_field_name("name").is_some_and(|m| m.start_byte() <= caret && caret <= m.end_byte()))?;
         let object = call.child_by_field_name("object")?;
-        let empty = call.child_by_field_name("arguments").is_some_and(|a| a.named_child_count() == 0);
-        if &text[call.child_by_field_name("name")?.byte_range()] != "toString" || !empty {
-            return None;
+        let arguments = call.child_by_field_name("arguments")?;
+        let string = |n: Node| java_type(n, text, classes).is_some_and(|t| t == "String" || t == "java.lang.String");
+        match &text[call.child_by_field_name("name")?.byte_range()] {
+            "toString" if arguments.named_child_count() == 0 && string(object) => (call.byte_range(), object.byte_range(), "Remove redundant 'toString()' call".to_owned()),
+            // `String.valueOf(s)` of a string, or of anything but a `char[]`
+            // added to a string.
+            "valueOf" if &text[object.byte_range()] == "String" && arguments.named_child_count() == 1 => {
+                let value = arguments.named_child(0)?;
+                let parent = call.parent()?;
+                let concatenated = parent.kind() == "binary_expression"
+                    && parent.child_by_field_name("operator").is_some_and(|o| &text[o.byte_range()] == "+")
+                    && [parent.child_by_field_name("left"), parent.child_by_field_name("right")].into_iter().flatten().find(|n| n.id() != call.id()).is_some_and(string)
+                    && match java_type(value, text, classes) {
+                        Some(t) => t != "char[]",
+                        // An arithmetic expression or a literal isn't a `char[]`.
+                        None => value.kind() == "binary_expression" || value.kind().ends_with("_literal"),
+                    };
+                if !(string(value) || concatenated) {
+                    return None;
+                }
+                let title = "Remove redundant 'String.valueOf()' call".to_owned();
+                // `"n=" + String.valueOf(a + b)` keeps the sum's parentheses.
+                if concatenated && !string(value) && matches!(value.kind(), "binary_expression" | "ternary_expression" | "assignment_expression" | "lambda_expression" | "instanceof_expression") {
+                    return Some(Intention { title, caret: call.start_byte(), replacement: format!("({})", &text[value.byte_range()]), range: call.byte_range() });
+                }
+                (call.byte_range(), value.byte_range(), title)
+            }
+            _ => return None,
         }
-        let ty = java_type(object, text, classes)?;
-        if ty != "String" && ty != "java.lang.String" {
-            return None;
-        }
-        (call.byte_range(), object.byte_range(), "Remove redundant 'toString()' call".to_owned())
     };
     Some(Intention { title: name, caret: range.start, replacement: text[target].to_owned(), range })
 }
@@ -1587,6 +1607,22 @@ mod tests {
         assert_eq!(run("count()"), None);
         assert_eq!(run("sum()"), None);
         assert_eq!(run("?.first"), None);
+    }
+
+    #[test]
+    fn removes_redundant_string_value_of() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "class A {\n    String f(String s, int n, int m, char[] cs) {\n        String a = String.valueOf(s);\n        String b = \"n=\" + String.valueOf(n);\n        String c = \"n=\" + String.valueOf(n + m);\n        String d = String.valueOf(n);\n        String e = \"c=\" + String.valueOf(cs);\n        int g = 1 + Integer.valueOf(n);\n        return a;\n    }\n}\n";
+        let run = |at: &str| redundant_conversion(text, text.find(at).unwrap() + at.find("valueOf").unwrap_or(0), false, &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("String.valueOf(s)").unwrap();
+        assert_eq!(title, "Remove redundant 'String.valueOf()' call");
+        assert!(out.contains("        String a = s;\n"), "{out}");
+        assert!(run("String.valueOf(n);\n        String c").unwrap().1.contains("        String b = \"n=\" + n;\n"));
+        assert!(run("String.valueOf(n + m)").unwrap().1.contains("        String c = \"n=\" + (n + m);\n"));
+        // Converts an int on its own; a char[] is its chars; not String's.
+        assert_eq!(run("String.valueOf(n);\n        String e"), None);
+        assert_eq!(run("String.valueOf(cs)"), None);
+        assert_eq!(run("Integer.valueOf"), None);
     }
 
     #[test]
