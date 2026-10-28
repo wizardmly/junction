@@ -617,10 +617,43 @@ pub fn merge_call_chain(text: &str, caret: usize, classes: super::catches::Class
         let second = text[callee.named_child(1)?.byte_range()].trim();
         let [inner_callee, inner_suffix] = children(inner)[..] else { continue };
         let [lambda] = children(inner_suffix)[..] else { continue };
-        if inner_callee.kind() != "navigation_expression" || lambda.kind() != "annotated_lambda" {
+        // `listOf(a, b).filterNotNull()` → `listOfNotNull(a, b)`.
+        if inner_callee.kind() == "simple_identifier" && &text[inner_callee.byte_range()] == "listOf" && second == ".filterNotNull" && lambda.kind() == "value_arguments" {
+            return Some(Intention {
+                title: "Merge call chain to 'listOfNotNull'".into(),
+                range: outer.byte_range(),
+                caret: outer.start_byte(),
+                replacement: format!("listOfNotNull{}", &text[lambda.byte_range()]),
+            });
+        }
+        if inner_callee.kind() != "navigation_expression" {
             continue;
         }
         let first = text[inner_callee.named_child(1)?.byte_range()].trim();
+        // `xs.sorted().first()` → `xs.min()`.
+        if lambda.kind() == "value_arguments" && lambda.named_child_count() == 0 {
+            let merged = match (first, second) {
+                (".sorted", ".first") | (".sortedDescending", ".last") => "min",
+                (".sorted", ".firstOrNull") | (".sortedDescending", ".lastOrNull") => "minOrNull",
+                (".sorted", ".last") | (".sortedDescending", ".first") => "max",
+                (".sorted", ".lastOrNull") | (".sortedDescending", ".firstOrNull") => "maxOrNull",
+                _ => continue,
+            };
+            let target = inner_callee.named_child(0)?;
+            let ty = receiver_type(target, text, classes)?;
+            if ty.ends_with('?') || element_type(&ty).is_none_or(|e| e.starts_with("Map.Entry")) {
+                return None;
+            }
+            return Some(Intention {
+                title: format!("Merge call chain to '{merged}'"),
+                range: outer.byte_range(),
+                caret: outer.start_byte(),
+                replacement: format!("{}.{merged}()", &text[target.byte_range()]),
+            });
+        }
+        if lambda.kind() != "annotated_lambda" {
+            continue;
+        }
         let merged = match (first, second) {
             (".filter", ".first" | ".firstOrNull" | ".last" | ".lastOrNull" | ".single" | ".singleOrNull" | ".count" | ".any" | ".none") => &second[1..],
             (".filter", ".isNotEmpty") => "any",
@@ -628,6 +661,7 @@ pub fn merge_call_chain(text: &str, caret: usize, classes: super::catches::Class
             (".map", ".filterNotNull") => "mapNotNull",
             (".map", ".sum") => "sumOf",
             (".map", ".joinToString") => "joinToString",
+            (".map", ".toMap") => "associate",
             (".sortedBy", ".first") | (".sortedByDescending", ".last") => "minBy",
             (".sortedBy", ".firstOrNull") | (".sortedByDescending", ".lastOrNull") => "minByOrNull",
             (".sortedBy", ".last") | (".sortedByDescending", ".first") => "maxBy",
@@ -1630,6 +1664,20 @@ mod tests {
         // A nullable receiver; a list isn't blank.
         assert_eq!(run("!s.isEmpty", negated_emptiness), None);
         assert_eq!(run("isBlank", negated_emptiness), None);
+    }
+
+    #[test]
+    fn merges_sorted_and_list_of_chains() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(xs: List<Int>, a: String?, b: String?) {\n    val m = xs.sorted().first()\n    val n = xs.sortedDescending().firstOrNull()\n    val o = listOf(a, b).filterNotNull()\n    val p = xs.map { it to it }.toMap()\n    val q = xs.sorted().take(2)\n}\n";
+        let run = |at: &str| merge_call_chain(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run(".first()").unwrap();
+        assert_eq!(title, "Merge call chain to 'min'");
+        assert!(out.contains("    val m = xs.min()\n"), "{out}");
+        assert!(run(".firstOrNull").unwrap().1.contains("    val n = xs.maxOrNull()\n"));
+        assert!(run(".filterNotNull").unwrap().1.contains("    val o = listOfNotNull(a, b)\n"));
+        assert!(run(".toMap").unwrap().1.contains("    val p = xs.associate { it to it }\n"));
+        assert_eq!(run(".take"), None);
     }
 
     #[test]
