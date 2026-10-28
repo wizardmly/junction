@@ -767,6 +767,58 @@ pub fn range_to_indices(text: &str, caret: usize, classes: super::catches::Class
     Some(Intention { title: "Replace with indices".into(), range: range.byte_range(), caret: range.start_byte(), replacement: format!("{}.indices", &text[target.byte_range()]) })
 }
 
+/// Replace with 'maxOf' function (IntelliJ's
+/// ReplaceJavaStaticMethodWithKotlinAnalogInspection): `Math.max(a, b)` →
+/// `maxOf(a, b)` (`min` → `minOf`), `Integer.parseInt(s)` → `s.toInt()`
+/// (and `Long` / `Short` / `Byte` / `Double` / `Float`), `String.valueOf(x)`
+/// / `Integer.toString(x)` → `x.toString()` (not for a `CharArray`), and
+/// `System.out.println(x)` → `println(x)`; the caret on the method's
+/// name, when the file doesn't import a `Math` (…) of its own.
+pub fn kotlin_analog(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let (call, target, name, values) = method_call(tree.root_node(), text, caret)?;
+    let class = &text[target.byte_range()];
+    let own = text.lines().any(|l| l.trim_start().starts_with("import ") && (l.trim_end().ends_with(&format!(".{class}")) || l.contains(&format!(" as {class}"))));
+    if own {
+        return None;
+    }
+    let value = |i: usize| values.get(i).map(|v| &text[v.byte_range()]);
+    // A value written before `.toInt()` and the like.
+    let operand = |v: Node| {
+        let inner = v.named_child(0).unwrap_or(v);
+        if inner.kind().ends_with("_literal") || inner.kind() == "line_string_literal" { text[v.byte_range()].to_owned() } else { receiver(inner, text) }
+    };
+    let (function, replacement) = match (class, name, values.len()) {
+        ("Math", "max" | "min", 2) => {
+            let f = if name == "max" { "maxOf" } else { "minOf" };
+            (f, format!("{f}({}, {})", value(0)?, value(1)?))
+        }
+        ("Integer" | "Long" | "Short" | "Byte" | "Double" | "Float", _, 1) => {
+            let to = match (class, name) {
+                ("Integer", "parseInt") => "toInt",
+                ("Long", "parseLong") => "toLong",
+                ("Short", "parseShort") => "toShort",
+                ("Byte", "parseByte") => "toByte",
+                ("Double", "parseDouble") => "toDouble",
+                ("Float", "parseFloat") => "toFloat",
+                (_, "toString") => "toString",
+                _ => return None,
+            };
+            (to, format!("{}.{to}()", operand(values[0])))
+        }
+        ("String", "valueOf", 1) => {
+            let v = values[0];
+            if receiver_type(v.named_child(0).unwrap_or(v), text, classes).is_some_and(|t| type_head(&t) == "CharArray") {
+                return None;
+            }
+            ("toString", format!("{}.toString()", operand(v)))
+        }
+        ("System.out", "println" | "print", 0 | 1) => (name, format!("{name}({})", value(0).unwrap_or(""))),
+        _ => return None,
+    };
+    Some(Intention { title: format!("Replace with '{function}' function"), range: call.byte_range(), caret: call.start_byte(), replacement })
+}
+
 /// Replace with 'lastIndex' (IntelliJ's ReplaceWithLastIndex inspection):
 /// `xs.size - 1` → `xs.lastIndex` when `xs` is a list or an array, and
 /// `s.length - 1` when `s` is a string; the caret on the subtraction.
@@ -1644,6 +1696,26 @@ mod tests {
         assert_eq!(title, "Remove redundant 'toString()' call");
         assert!(out.contains("        return s.length() + o.toString().length();\n"), "{out}");
         assert_eq!(run("toString().length();"), None);
+    }
+
+    #[test]
+    fn replaces_java_static_methods_with_kotlin_analogs() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(a: Int, b: Int, s: String, cs: CharArray) {\n    val m = Math.max(a, b)\n    val n = Integer.parseInt(s)\n    val o = Integer.parseInt(\"12\")\n    val p = String.valueOf(a + b)\n    val q = String.valueOf(cs)\n    System.out.println(m)\n    val r = Math.abs(a)\n}\n";
+        let run = |at: &str| kotlin_analog(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("max(").unwrap();
+        assert_eq!(title, "Replace with 'maxOf' function");
+        assert!(out.contains("    val m = maxOf(a, b)\n"), "{out}");
+        assert!(run("parseInt(s").unwrap().1.contains("    val n = s.toInt()\n"));
+        assert!(run("parseInt(\"").unwrap().1.contains("    val o = \"12\".toInt()\n"));
+        assert!(run("valueOf(a").unwrap().1.contains("    val p = (a + b).toString()\n"));
+        assert!(run("println").unwrap().1.contains("    println(m)\n"));
+        // A CharArray's chars; a function without an analog here.
+        assert_eq!(run("valueOf(cs"), None);
+        assert_eq!(run("abs"), None);
+        // The file's own Math.
+        let own = "import com.example.Math\nval m = Math.max(1, 2)\n";
+        assert_eq!(kotlin_analog(own, own.find("max").unwrap(), &classes), None);
     }
 
     #[test]
