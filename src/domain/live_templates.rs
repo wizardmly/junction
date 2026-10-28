@@ -103,6 +103,10 @@ pub enum Computed {
     Clipboard,
     /// `camelCase(V)`, `snakeCase(V)`…: variable V's value recased.
     Case(Case, &'static str),
+    /// An expression that composes others (`concat(…)`,
+    /// `regularExpression(…)`, `capitalize(fileNameWithoutExtension())`…),
+    /// as written: worked out by [`evaluate`].
+    Script(&'static str),
 }
 
 /// IntelliJ's text-case template functions.
@@ -398,7 +402,200 @@ fn compute(c: Computed, scope: &Scope, values: &[(String, String)]) -> Option<St
         Computed::LineNumber => (scope.line > 0).then(|| scope.line.to_string()),
         Computed::Clipboard => non_empty(&scope.clipboard),
         Computed::Case(case, var) => non_empty(&recase(case, value_of(var)?)),
+        Computed::Script(text) => non_empty(&evaluate(&parse_node(text)?, scope, values)?),
     }
+}
+
+/// A composing expression: a quoted text, a variable, or a call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Node {
+    Text(String),
+    Var(String),
+    Call(String, Vec<Node>),
+}
+
+impl Node {
+    /// As IntelliJ writes it, for [`parse_simple`].
+    fn written(&self) -> String {
+        match self {
+            Node::Text(t) => format!("\"{t}\""),
+            Node::Var(v) => v.clone(),
+            Node::Call(f, args) => format!("{f}({})", args.iter().map(Node::written).collect::<Vec<_>>().join(", ")),
+        }
+    }
+}
+
+/// The whole of `text` as one expression; strings take Java's escapes.
+fn parse_node(text: &str) -> Option<Node> {
+    fn node(chars: &[char], i: &mut usize) -> Option<Node> {
+        let skip = |i: &mut usize| {
+            while chars.get(*i).is_some_and(|c| c.is_whitespace()) {
+                *i += 1;
+            }
+        };
+        skip(i);
+        if chars.get(*i) == Some(&'"') {
+            *i += 1;
+            let mut out = String::new();
+            loop {
+                match chars.get(*i)? {
+                    '"' => break,
+                    '\\' => {
+                        *i += 1;
+                        out.push(match chars.get(*i)? {
+                            'n' => '\n',
+                            't' => '\t',
+                            c => *c,
+                        });
+                    }
+                    c => out.push(*c),
+                }
+                *i += 1;
+            }
+            *i += 1;
+            return Some(Node::Text(out));
+        }
+        let start = *i;
+        while chars.get(*i).is_some_and(|c| c.is_alphanumeric() || *c == '_') {
+            *i += 1;
+        }
+        if start == *i || chars[start].is_ascii_digit() {
+            return None;
+        }
+        let name: String = chars[start..*i].iter().collect();
+        skip(i);
+        if chars.get(*i) != Some(&'(') {
+            return Some(Node::Var(name));
+        }
+        *i += 1;
+        let mut args = Vec::new();
+        skip(i);
+        if chars.get(*i) == Some(&')') {
+            *i += 1;
+            return Some(Node::Call(name, args));
+        }
+        loop {
+            args.push(node(chars, i)?);
+            skip(i);
+            match chars.get(*i)? {
+                ',' => *i += 1,
+                ')' => {
+                    *i += 1;
+                    return Some(Node::Call(name, args));
+                }
+                _ => return None,
+            }
+        }
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    let out = node(&chars, &mut i)?;
+    chars[i..].iter().all(|c| c.is_whitespace()).then_some(out)
+}
+
+/// The text functions a composing expression adds, by name and number of
+/// arguments (`None`: any).
+fn script_function(name: &str) -> Option<Option<usize>> {
+    Some(match name {
+        "concat" => None,
+        "substringBefore" => Some(2),
+        "regularExpression" => Some(3),
+        "firstWord" | "spacesToUnderscores" | "underscoresToSpaces" | "underscoresToCamelCase" | "escapeString" => Some(1),
+        "lineCommentStart" | "commentStart" | "commentEnd" | "blockCommentStart" | "blockCommentEnd" | "qualifiedClassName" | "expectedType" => Some(0),
+        n if case_function(n).is_some() => Some(1),
+        _ => return None,
+    })
+}
+
+fn case_function(name: &str) -> Option<Case> {
+    Some(match name {
+        "camelCase" => Case::Camel,
+        "capitalize" => Case::Capitalize,
+        "decapitalize" => Case::Decapitalize,
+        "snakeCase" => Case::Snake,
+        "lowercaseAndDash" => Case::LowerDash,
+        "capitalizeAndUnderscore" => Case::UpperUnderscore,
+        "spaceSeparated" => Case::Spaced,
+        "lowercase" => Case::Lower,
+        "uppercase" => Case::Upper,
+        _ => return None,
+    })
+}
+
+/// Whether the editor works out every part of `node`.
+fn supported(node: &Node) -> bool {
+    match node {
+        Node::Text(_) | Node::Var(_) => true,
+        Node::Call(f, args) => match script_function(f) {
+            Some(arity) => arity.is_none_or(|n| n == args.len()) && args.iter().all(supported),
+            None => matches!(parse_simple(&node.written()), Some(Expression::Computed(c)) if !matches!(c, Computed::Script(_))),
+        },
+    }
+}
+
+/// What a composing expression works out to, as IntelliJ's macros do:
+/// `concat` joins what its parts give, `substringBefore(s, d)` is what's
+/// before the first `d` (empty when `s` starts with it or has none),
+/// `regularExpression(s, pattern, replacement)` replaces every match.
+fn evaluate(node: &Node, scope: &Scope, values: &[(String, String)]) -> Option<String> {
+    let arg = |i: usize| match node {
+        Node::Call(_, args) => evaluate(args.get(i)?, scope, values),
+        _ => None,
+    };
+    let (name, args) = match node {
+        Node::Text(t) => return Some(t.clone()),
+        Node::Var(v) => return values.iter().find(|(n, _)| n == v).map(|(_, v)| v.clone()),
+        Node::Call(name, args) => (name.as_str(), args),
+    };
+    if let Some(case) = case_function(name) {
+        return Some(recase(case, &arg(0)?));
+    }
+    Some(match name {
+        "concat" => {
+            let joined: String = (0..args.len()).filter_map(arg).collect();
+            return (!joined.is_empty()).then_some(joined);
+        }
+        "substringBefore" => {
+            let (text, delimiter) = (arg(0)?, arg(1)?);
+            match text.find(&delimiter) {
+                Some(at) if at > 0 => text[..at].to_owned(),
+                _ => String::new(),
+            }
+        }
+        "regularExpression" => {
+            let pattern = regex::Regex::new(&arg(1)?).ok()?;
+            pattern.replace_all(&arg(0)?, arg(2)?.as_str()).into_owned()
+        }
+        "firstWord" => {
+            let text = arg(0)?;
+            text.split(' ').next().unwrap_or_default().to_owned()
+        }
+        "spacesToUnderscores" => arg(0)?.replace(' ', "_"),
+        "underscoresToSpaces" => arg(0)?.replace('_', " "),
+        "underscoresToCamelCase" => {
+            let text = arg(0)?;
+            let mut words = text.split('_');
+            let first = words.next().unwrap_or_default().to_lowercase();
+            first + &words.filter(|w| w.starts_with(char::is_alphanumeric)).map(|w| recase(Case::Capitalize, &w.to_lowercase())).collect::<String>()
+        }
+        "escapeString" => arg(0)?,
+        // Kotlin and Java comment with `//` and `/* */`.
+        "lineCommentStart" | "commentStart" => "//".to_owned(),
+        "commentEnd" => String::new(),
+        "blockCommentStart" => "/*".to_owned(),
+        "blockCommentEnd" => "*/".to_owned(),
+        "qualifiedClassName" if scope.class_name.is_empty() => return None,
+        "qualifiedClassName" if scope.package.is_empty() => scope.class_name.clone(),
+        "qualifiedClassName" => format!("{}.{}", scope.package, scope.class_name),
+        "expectedType" => (!scope.expected.trim().is_empty()).then(|| scope.expected.trim().to_owned())?,
+        _ => match parse_simple(&node.written())? {
+            Expression::Computed(Computed::Script(_)) => return None,
+            Expression::Computed(c) => compute(c, scope, values)?,
+            Expression::Copy(v) => values.iter().find(|(n, _)| *n == v).map(|(_, v)| v.clone())?,
+            Expression::Text(t) => t,
+            Expression::Choices(c) => c.first()?.clone(),
+        },
+    })
 }
 
 /// IntelliJ's first name for a variable of a type: `s` for a String, `o`
@@ -624,6 +821,14 @@ pub enum Expression {
 /// A template expression, as IntelliJ writes them, of those the editor
 /// works out (see [`Computed`]); none for others.
 pub fn parse_expression(expression: &str) -> Option<Expression> {
+    parse_simple(expression).or_else(|| {
+        let node = parse_node(expression)?;
+        (matches!(node, Node::Call(..)) && supported(&node)).then(|| Expression::Computed(Computed::Script(intern(expression.trim()))))
+    })
+}
+
+/// A single function of the code around or of other variables.
+fn parse_simple(expression: &str) -> Option<Expression> {
     let e = expression.trim();
     if let Some(text) = e.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
         return Some(Expression::Text(text.to_owned()));
@@ -636,18 +841,7 @@ pub fn parse_expression(expression: &str) -> Option<Expression> {
     let args = args.strip_suffix(')')?;
     let args: Vec<&str> = if args.trim().is_empty() { Vec::new() } else { args.split(',').map(str::trim).collect() };
     let quoted = |a: &str| a.strip_prefix('"').and_then(|a| a.strip_suffix('"')).map(str::to_owned);
-    let case = match function.trim() {
-        "camelCase" => Some(Case::Camel),
-        "capitalize" => Some(Case::Capitalize),
-        "decapitalize" => Some(Case::Decapitalize),
-        "snakeCase" => Some(Case::Snake),
-        "lowercaseAndDash" => Some(Case::LowerDash),
-        "capitalizeAndUnderscore" => Some(Case::UpperUnderscore),
-        "spaceSeparated" => Some(Case::Spaced),
-        "lowercase" => Some(Case::Lower),
-        "uppercase" => Some(Case::Upper),
-        _ => None,
-    };
+    let case = case_function(function.trim());
     if let (Some(case), [v]) = (case, args.as_slice()) {
         let v = v.trim();
         return is_name(v).then(|| Expression::Computed(Computed::Case(case, intern(v))));
@@ -1243,6 +1437,34 @@ mod tests {
         };
         let here = Scope { file_name: "MainView.java".into(), package: "com.x".into(), line: 7, clipboard: "copied".into(), ..Default::default() };
         assert_eq!(expand(&resolved(&files.template(false).unwrap(), &here), "", "  ").text, "// MainView in com.x (7), MAIN_VIEW: copied a");
+    }
+
+    #[test]
+    fn composing_expressions() {
+        assert_eq!(parse_expression("concat(F, \"Test\")"), Some(Expression::Computed(Computed::Script("concat(F, \"Test\")"))));
+        assert_eq!(parse_expression("concat(F, groovyScript(\"x\"))"), None);
+        assert_eq!(parse_expression("substringBefore(F)"), None);
+        assert_eq!(parse_expression("regularExpression(F, \"a\""), None);
+        let t = UserTemplate {
+            abbreviation: "ids".into(),
+            text: "$A$|$B$|$C$|$D$|$E$|$G$|$H$|$I$".into(),
+            expressions: vec![
+                ("A".into(), "concat(capitalize(fileNameWithoutExtension()), \"Test\")".into()),
+                ("B".into(), "substringBefore(fileName(), \".\")".into()),
+                ("C".into(), "regularExpression(qualifiedClassName(), \"\\\\.\", \"/\")".into()),
+                ("D".into(), "firstWord(\"hello big world\")".into()),
+                ("E".into(), "underscoresToCamelCase(\"MAX_COUNT\")".into()),
+                ("G".into(), "concat(lineCommentStart(), \" \", spacesToUnderscores(\"a b\"), blockCommentEnd())".into()),
+                ("H".into(), "substringBefore(\".x\", \".\")".into()),
+                ("I".into(), "snakeCase(concat(A, \"Case\"))".into()),
+            ],
+            java: vec![Context::Statement],
+            enabled: true,
+            ..Default::default()
+        };
+        let here = Scope { file_name: "mainView.java".into(), package: "com.x".into(), class_name: "MainView".into(), ..Default::default() };
+        // H is empty, so its default (none) stays.
+        assert_eq!(expand(&resolved(&t.template(false).unwrap(), &here), "", "  ").text, "MainViewTest|mainView|com/x/MainView|hello|maxCount|// a_b*/||main_view_test_case");
     }
 
     #[test]
