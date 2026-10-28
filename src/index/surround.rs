@@ -242,9 +242,107 @@ pub fn expression_context(lang: Lang, text: &str, range: Range<usize>) -> Option
                 up = n.parent();
             }
             context.parenthesize = matches!(node.kind(), "binary_expression" | "ternary_expression" | "assignment_expression" | "lambda_expression" | "instanceof_expression");
+            context.cast_types = cast_types(node, text);
         }
     }
     Some(context)
+}
+
+/// The types an `instanceof` shows the Java expression `node` to have
+/// where it is, nearest first: an `if` / `while` / `?:` / `&&` it is
+/// guarded by, or an earlier `if (!(x instanceof T)) return;` in its
+/// blocks (GuessManager's control flow conjuncts).
+fn cast_types(node: Node, text: &str) -> Vec<String> {
+    let squeeze = |s: &str| s.split_whitespace().collect::<String>();
+    let wanted = squeeze(&text[node.byte_range()]);
+    let mut out: Vec<String> = Vec::new();
+    // The `instanceof` checks a condition's truth (or falsehood) implies.
+    fn checks(cond: Node, text: &str, wanted: &str, truth: bool, out: &mut Vec<String>) {
+        let squeeze = |s: &str| s.split_whitespace().collect::<String>();
+        match cond.kind() {
+            "parenthesized_expression" => {
+                if let Some(inner) = cond.named_child(0) {
+                    checks(inner, text, wanted, truth, out);
+                }
+            }
+            "unary_expression" if text[cond.byte_range()].starts_with('!') => {
+                if let Some(inner) = cond.child_by_field_name("operand") {
+                    checks(inner, text, wanted, !truth, out);
+                }
+            }
+            "binary_expression" => {
+                let op = cond.child_by_field_name("operator").map(|o| &text[o.byte_range()]);
+                // a && b true: both; a || b false: neither.
+                if (op == Some("&&") && truth) || (op == Some("||") && !truth) {
+                    for side in ["left", "right"] {
+                        if let Some(s) = cond.child_by_field_name(side) {
+                            checks(s, text, wanted, truth, out);
+                        }
+                    }
+                }
+            }
+            "instanceof_expression" if truth => {
+                let left = cond.child_by_field_name("left").map(|l| squeeze(&text[l.byte_range()]));
+                let ty = cond.child_by_field_name("right").or_else(|| cond.named_child(1));
+                if left.as_deref() == Some(wanted) {
+                    if let Some(ty) = ty {
+                        let ty = text[ty.byte_range()].to_owned();
+                        if !out.contains(&ty) {
+                            out.push(ty);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let jumps = |s: Node| {
+        let body = s.child_by_field_name("consequence").map_or("", |b| &text[b.byte_range()]);
+        let body = body.trim().trim_start_matches('{').trim_start();
+        ["return", "throw", "continue", "break"].iter().any(|k| body.starts_with(k))
+    };
+    let mut child = node;
+    while let Some(parent) = child.parent() {
+        match parent.kind() {
+            "if_statement" | "while_statement" if parent.child_by_field_name("consequence").or_else(|| parent.child_by_field_name("body")).is_some_and(|b| b.id() == child.id()) => {
+                if let Some(c) = parent.child_by_field_name("condition") {
+                    checks(c, text, &wanted, true, &mut out);
+                }
+            }
+            "if_statement" if parent.child_by_field_name("alternative").is_some_and(|b| b.id() == child.id()) => {
+                if let Some(c) = parent.child_by_field_name("condition") {
+                    checks(c, text, &wanted, false, &mut out);
+                }
+            }
+            "ternary_expression" if parent.child_by_field_name("consequence").is_some_and(|b| b.id() == child.id()) => {
+                if let Some(c) = parent.child_by_field_name("condition") {
+                    checks(c, text, &wanted, true, &mut out);
+                }
+            }
+            "binary_expression" if parent.child_by_field_name("right").is_some_and(|r| r.id() == child.id()) => {
+                let op = parent.child_by_field_name("operator").map(|o| &text[o.byte_range()]);
+                if let Some(left) = parent.child_by_field_name("left") {
+                    checks(left, text, &wanted, op == Some("&&"), &mut out);
+                }
+            }
+            "block" => {
+                // An earlier guard leaving when the check fails.
+                let mut c = parent.walk();
+                let earlier: Vec<Node> = parent.named_children(&mut c).take_while(|s| s.id() != child.id()).collect();
+                for s in earlier.into_iter().rev() {
+                    if s.kind() == "if_statement" && s.child_by_field_name("alternative").is_none() && jumps(s) {
+                        if let Some(c) = s.child_by_field_name("condition") {
+                            checks(c, text, &wanted, false, &mut out);
+                        }
+                    }
+                }
+            }
+            "method_declaration" | "class_body" | "lambda_expression" => break,
+            _ => {}
+        }
+        child = parent;
+    }
+    out
 }
 
 /// What the type of an expression is known to be: a literal's, a
@@ -517,5 +615,19 @@ mod tests {
         let text = "fun f(n: Int) {\n    n\n}\n";
         let at = text.rfind("n\n").unwrap();
         assert!(when_branches(text, at..at + 1, &none, &none).is_empty());
+    }
+
+    #[test]
+    fn guesses_cast_types() {
+        let guess = |text: &str, nth: usize| {
+            let at = text.match_indices("o.x").nth(nth).unwrap().0;
+            expression_context(Lang::Java, text, at..at + 1).unwrap().cast_types
+        };
+        let text = "class A {\n    void f(Object o) {\n        if (o instanceof String && ok) {\n            o.x();\n        } else {\n            o.x();\n        }\n        if (!(o instanceof Integer)) return;\n        o.x();\n    }\n}\n";
+        assert_eq!(guess(text, 0), ["String"]);
+        assert!(guess(text, 1).is_empty());
+        assert_eq!(guess(text, 2), ["Integer"]);
+        let text = "class A {\n    boolean f(Object o) {\n        return o instanceof Number && o.x() > 0;\n    }\n}\n";
+        assert_eq!(guess(text, 0), ["Number"]);
     }
 }
