@@ -55,6 +55,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Iterate over collection", "Wraps an expression of a collection, array, map or string in a for loop over it"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
+    ("Java", "Replace 'for each' loop with indexed 'for' loop", "Loops over a list or an array by index instead of with for each"),
 ];
 
 /// The family an intention's title belongs to (`Add braces to 'if'
