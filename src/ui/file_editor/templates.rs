@@ -67,7 +67,7 @@ impl FileEditor {
         let Some(template) = find(kotlin, &text[start..cursor], &contexts) else { return false };
         // Its computed variables from the code here, its qualified names
         // shortened (imported).
-        let template = resolved(&template, &crate::index::introduce::template_scope(lang, &text, start));
+        let template = resolved(&template, &crate::index::introduce::template_scope(lang, &text, start, &|n| self.class_texts(n, false, cx)));
         let (template, imports) = shortened(&template);
         let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
         let indent: String = text[line_start..start].chars().take_while(|c| c.is_whitespace()).collect();
@@ -127,7 +127,7 @@ impl FileEditor {
     pub(super) fn surround_with_template(&mut self, template: Template, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
         let Some((lang, _)) = self.jvm_style() else { return };
         let text = self.text(cx);
-        let template = resolved(&template, &crate::index::introduce::template_scope(lang, &text, range.start));
+        let template = resolved(&template, &crate::index::introduce::template_scope(lang, &text, range.start, &|n| self.class_texts(n, false, cx)));
         let (template, imports) = shortened(&template);
         let line_start = text[..range.start].rfind('\n').map_or(0, |i| i + 1);
         let whole_lines = range.start == line_start && (range.end == text.len() || text[..range.end].ends_with('\n'));

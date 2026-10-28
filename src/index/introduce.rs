@@ -847,8 +847,10 @@ pub fn template_contexts(lang: Lang, text: &str, offset: usize) -> Vec<crate::do
 /// enclosing class and function, its parameters, the locals declared
 /// before the place in the blocks around it, and the class's fields; each
 /// with its type as written, or as a Kotlin initializer shows it
-/// (`listOf(…)` → `List`, `Foo()` → `Foo`).
-pub fn template_scope(lang: Lang, text: &str, offset: usize) -> crate::domain::live_templates::Scope {
+/// (`listOf(…)` → `List`, `Foo()` → `Foo`), or as the declaration of
+/// the call or field it is initialized from says; and the type the place
+/// expects.
+pub fn template_scope(lang: Lang, text: &str, offset: usize, classes: super::catches::Classes) -> crate::domain::live_templates::Scope {
     let mut scope = crate::domain::live_templates::Scope::default();
     let Some(tree) = symbols::parse(lang, text) else { return scope };
     let Some(node) = tree.root_node().descendant_for_byte_range(offset, offset) else { return scope };
@@ -861,6 +863,19 @@ pub fn template_scope(lang: Lang, text: &str, offset: usize) -> crate::domain::l
     let mut class: Option<Node> = None;
     let mut n = Some(node);
     while let Some(x) = n {
+        // What the place expects: a declaration's type, a return's.
+        if scope.expected.is_empty() && function.is_none() {
+            let declared = match x.kind() {
+                "variable_declarator" if x.child_by_field_name("value").is_some_and(|v| v.start_byte() <= offset) => x.parent().and_then(|d| d.child_by_field_name("type")),
+                "property_declaration" => {
+                    let mut c = x.walk();
+                    let v = x.named_children(&mut c).find(|v| v.kind() == "variable_declaration");
+                    v.filter(|v| v.end_byte() < offset).and_then(|v| v.named_child(1))
+                }
+                _ => None,
+            };
+            scope.expected = declared.map(t).unwrap_or_default();
+        }
         match x.kind() {
             "function_declaration" | "method_declaration" | "constructor_declaration" | "secondary_constructor" if function.is_none() && class.is_none() => function = Some(x),
             "class_declaration" | "object_declaration" | "interface_declaration" | "enum_declaration" | "record_declaration" if class.is_none() => class = Some(x),
@@ -926,6 +941,8 @@ pub fn template_scope(lang: Lang, text: &str, offset: usize) -> crate::domain::l
             _ => {}
         }
     }
+    // A call's or field's type, from its declaration.
+    let declared = |v: Node| super::types::type_of(lang, text, v.byte_range(), classes).map(|found| found.ty);
     // Locals before the place, in a block around it.
     let mut stack = vec![f];
     let mut locals: Vec<(usize, (String, String))> = Vec::new();
@@ -939,12 +956,24 @@ pub fn template_scope(lang: Lang, text: &str, offset: usize) -> crate::domain::l
                 let ty = x.child_by_field_name("type").map(t).unwrap_or_default();
                 for d in named(x).into_iter().filter(|d| d.kind() == "variable_declarator") {
                     if let Some(name) = d.child_by_field_name("name") {
-                        let ty = if ty == "var" { d.child_by_field_name("value").and_then(|v| v.child_by_field_name("type")).map(t).unwrap_or_default() } else { ty.clone() };
+                        let value = d.child_by_field_name("value");
+                        let ty = if ty == "var" { value.and_then(|v| v.child_by_field_name("type")).map(t).or_else(|| value.and_then(|v| declared(v))).unwrap_or_default() } else { ty.clone() };
                         locals.push((x.start_byte(), (t(name), ty)));
                     }
                 }
             }
-            (Lang::Kotlin, "property_declaration") if visible => locals.extend(kotlin_property(x, text).map(|v| (x.start_byte(), v))),
+            (Lang::Kotlin, "property_declaration") if visible => {
+                let property = kotlin_property(x, text).map(|(name, ty)| {
+                    let initializer = || {
+                        let mut c = x.walk();
+                        let found = x.named_children(&mut c).last().filter(|v| v.kind() != "variable_declaration");
+                        found
+                    };
+                    let ty = if ty.is_empty() { initializer().and_then(|v| declared(v)).unwrap_or_default() } else { ty };
+                    (name, ty)
+                });
+                locals.extend(property.map(|v| (x.start_byte(), v)));
+            }
             _ => {}
         }
         stack.extend(named(x));
@@ -1036,17 +1065,29 @@ mod tests {
     #[test]
     fn finds_template_scopes() {
         let java = "class Shop {\n  int[] prices;\n  java.util.Map<String, Integer> stock;\n  void sell(String item, int count) {\n    List<String> names = load();\n    int i = 0;\n    soutp\n  }\n}\n";
-        let s = template_scope(Lang::Java, java, java.find("soutp").unwrap());
+        let none = |_: &str| -> Vec<String> { Vec::new() };
+        let s = template_scope(Lang::Java, java, java.find("soutp").unwrap(), &none);
         assert_eq!((s.class_name.as_str(), s.method_name.as_str()), ("Shop", "sell"));
         assert_eq!(s.parameters, [("item".to_owned(), "String".to_owned()), ("count".to_owned(), "int".to_owned())]);
         assert_eq!(s.variables, [("names".to_owned(), "List<String>".to_owned()), ("i".to_owned(), "int".to_owned())]);
         assert_eq!(s.fields.len(), 2);
         let kt = "class Cart(val items: List<Item>) {\n    fun total(tax: Double): Double {\n        val names = listOf(\"a\")\n        if (tax > 0) {\n            val hidden = 1\n        }\n        soutp\n    }\n}\n";
-        let s = template_scope(Lang::Kotlin, kt, kt.find("soutp").unwrap());
+        let s = template_scope(Lang::Kotlin, kt, kt.find("soutp").unwrap(), &none);
         assert_eq!((s.class_name.as_str(), s.method_name.as_str()), ("Cart", "total"));
         assert_eq!(s.parameters, [("tax".to_owned(), "Double".to_owned())]);
         assert_eq!(s.variables, [("names".to_owned(), "List".to_owned())]);
         assert_eq!(s.fields, [("items".to_owned(), "List<Item>".to_owned())]);
+        // Typed from the declarations of what they're initialized from;
+        // what the place expects.
+        let repo = "package app;\n\npublic class Repo {\n    public java.util.List<String> names() { return null; }\n}\n";
+        let classes = |name: &str| -> Vec<String> { if name == "Repo" { vec![repo.to_owned()] } else { Vec::new() } };
+        let java = "package app;\n\nclass A {\n  String[] f(Repo repo) {\n    var names = repo.names();\n    String[] all = toar;\n  }\n}\n";
+        let s = template_scope(Lang::Java, java, java.find("toar").unwrap(), &classes);
+        assert_eq!(s.variables, [("names".to_owned(), "java.util.List<String>".to_owned())]);
+        assert_eq!(s.expected, "String[]");
+        let kt = "package app\n\nfun f(repo: Repo) {\n    val names = repo.names()\n    iter\n}\n";
+        let s = template_scope(Lang::Kotlin, kt, kt.find("iter").unwrap(), &classes);
+        assert_eq!(s.variables, [("names".to_owned(), "List<String>".to_owned())]);
     }
 
     #[test]
