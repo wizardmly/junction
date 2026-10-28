@@ -58,8 +58,10 @@ mod tests {
                 kotlin: vec![Context::Statement],
                 java: vec![],
                 enabled: true,
+                group: String::new(),
             }],
             disabled: vec![CustomTemplates::key(true, "sout")],
+            groups: Vec::new(),
         };
         save_to(&path, &custom);
         assert_eq!(load_from(&path), custom);

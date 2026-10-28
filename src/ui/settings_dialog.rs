@@ -115,7 +115,7 @@ impl Page {
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
             Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
-            Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "sout", "fori", "iter", "main", "psvm"],
+            Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "Template Group", "Import", "Export", "sout", "fori", "iter", "main", "psvm"],
             Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template"],
             Page::Commit => &[
                 "Use non-modal commit interface",
@@ -212,6 +212,13 @@ pub struct SettingsView {
     /// edited with its fields.
     templates: CustomTemplates,
     template: Option<(usize, TemplateFields)>,
+    /// The template group selected in the list (+ adds templates there,
+    /// Export writes it).
+    template_group: String,
+    /// Template Group…: the new group's name being typed.
+    new_group: Option<Entity<InputState>>,
+    /// What Import / Export did, or why it failed.
+    template_note: Option<String>,
     /// Languages & Frameworks › Android SDK, made when first shown.
     sdk_manager: Option<Entity<crate::ui::sdk_manager::SdkManagerView>>,
     project_root: Option<std::path::PathBuf>,
@@ -348,6 +355,9 @@ impl SettingsView {
             jdk_download: None,
             templates: crate::domain::live_templates::custom(),
             template: None,
+            template_group: crate::domain::live_templates::USER_GROUP.to_owned(),
+            new_group: None,
+            template_note: None,
             sdk_manager: None,
             project_root: sdk_project,
             _subscriptions: subscriptions,
@@ -837,48 +847,96 @@ impl SettingsView {
         let mut page = v_flex().gap_1().text_sm().child(
             div().text_color(palette.text_secondary).child("Type an abbreviation in a Kotlin or Java file and press Tab; Tab and Enter then move through the template's variables."),
         );
-        let add = view.clone();
-        let remove = view.clone();
+        let (add, add_group, remove, import, export) = (view.clone(), view.clone(), view.clone(), view.clone(), view.clone());
+        let group_selected = self.templates.group_names().contains(&self.template_group);
         page = page.child(
             h_flex()
-                .gap_2()
-                .child(self.section("User", cx))
-                .child(div().flex_1())
-                .child(Button::new("live-template-add").icon(Icon::new(icons::ADD).xsmall()).ghost().xsmall().tooltip("Add").on_click(move |_, window, cx| {
-                    add.update(cx, |this, cx| this.add_template(window, cx))
+                .gap_1()
+                .child(Button::new("live-template-add").icon(Icon::new(icons::ADD).xsmall()).ghost().xsmall().tooltip("Add").dropdown_menu(move |menu, _, _| {
+                    let (template, group) = (add.clone(), add_group.clone());
+                    menu.item(PopupMenuItem::new("1. Live Template").on_click(move |_, window, cx| template.update(cx, |this, cx| this.add_template(window, cx))))
+                        .item(PopupMenuItem::new("2. Template Group…").on_click(move |_, window, cx| group.update(cx, |this, cx| this.start_new_group(window, cx))))
                 }))
-                .child(Button::new("live-template-remove").icon(Icon::new(icons::REMOVE).xsmall()).ghost().xsmall().tooltip("Remove").disabled(selected.is_none()).on_click(
+                .child(Button::new("live-template-remove").icon(Icon::new(icons::REMOVE).xsmall()).ghost().xsmall().tooltip("Remove").disabled(selected.is_none() && !group_selected).on_click(
                     move |_, window, cx| remove.update(cx, |this, cx| this.remove_template(window, cx)),
-                )),
+                ))
+                .child(div().flex_1())
+                .child(Button::new("live-template-import").label("Import…").ghost().xsmall().tooltip("Import IntelliJ / Android Studio template files (.xml)").on_click(move |_, window, cx| {
+                    import.update(cx, |this, cx| this.import_templates(window, cx))
+                }))
+                .child(Button::new("live-template-export").label("Export…").ghost().xsmall().tooltip("Export the selected group as an IntelliJ template file").disabled(!group_selected).on_click(move |_, window, cx| {
+                    export.update(cx, |this, cx| this.export_templates(window, cx))
+                })),
         );
-        if self.templates.user.is_empty() {
-            page = page.child(div().pl_6().text_xs().text_color(palette.text_secondary).child("No templates of your own: + adds one."));
+        if let Some(note) = &self.template_note {
+            page = page.child(div().pl_1().text_xs().text_color(palette.text_secondary).child(note.clone()));
         }
-        for (ix, t) in self.templates.user.iter().enumerate() {
-            let (toggle, select) = (view.clone(), view.clone());
+        if let Some(name) = &self.new_group {
+            let (ok, cancel) = (view.clone(), view.clone());
             page = page.child(
                 h_flex()
-                    .id(("live-template-user", ix))
-                    .gap_3()
-                    .px_1()
-                    .rounded(px(3.))
-                    .when(selected == Some(ix), |el| el.bg(palette.selection))
-                    .on_click(move |_, window, cx| select.update(cx, |this, cx| this.select_template(Some(ix), window, cx)))
-                    .child(Checkbox::new(("live-template-on", ix)).checked(t.enabled).on_change(move |v, _, cx| {
-                        let v = *v;
-                        toggle.update(cx, |this, cx| {
-                            if let Some(t) = this.templates.user.get_mut(ix) {
-                                t.enabled = v;
-                            }
+                    .gap_2()
+                    .child("Template group name:")
+                    .child(div().w(px(200.)).child(Input::new(name).small()))
+                    .child(Button::new("live-template-group-ok").label("OK").primary().xsmall().on_click(move |_, window, cx| ok.update(cx, |this, cx| this.create_group(window, cx))))
+                    .child(Button::new("live-template-group-cancel").label("Cancel").outline().xsmall().on_click(move |_, _, cx| {
+                        cancel.update(cx, |this, cx| {
+                            this.new_group = None;
                             cx.notify();
                         })
-                    }))
-                    .child(self.found(&t.abbreviation, query, cx).w(px(90.)).font_family("monospace").child(t.abbreviation.clone()))
-                    .child(self.found(&t.description, query, cx).text_color(palette.text_secondary).child(t.description.clone())),
+                    })),
             );
         }
-        if let Some((_, fields)) = &self.template {
-            page = page.child(self.template_editor(fields, cx));
+        for (g, group) in self.templates.group_names().into_iter().enumerate() {
+            let select_group = view.clone();
+            let name = group.clone();
+            let count = self.templates.user.iter().filter(|t| t.group_name() == group).count();
+            page = page.child(
+                h_flex()
+                    .id(("live-template-group", g))
+                    .gap_2()
+                    .px_1()
+                    .rounded(px(3.))
+                    .when(selected.is_none() && self.template_group == group, |el| el.bg(palette.selection))
+                    .on_click(move |_, window, cx| {
+                        let name = name.clone();
+                        select_group.update(cx, |this, cx| {
+                            this.select_template(None, window, cx);
+                            this.template_group = name;
+                            cx.notify();
+                        })
+                    })
+                    .child(self.section_owned(group.clone(), cx))
+                    .child(div().pt_2().text_xs().text_color(palette.text_secondary).child(if count == 0 { "empty: + adds a template".to_owned() } else { count.to_string() })),
+            );
+            for (ix, t) in self.templates.user.iter().enumerate().filter(|(_, t)| t.group_name() == group) {
+                let (toggle, select) = (view.clone(), view.clone());
+                page = page.child(
+                    h_flex()
+                        .id(("live-template-user", ix))
+                        .gap_3()
+                        .px_1()
+                        .rounded(px(3.))
+                        .when(selected == Some(ix), |el| el.bg(palette.selection))
+                        .on_click(move |_, window, cx| select.update(cx, |this, cx| this.select_template(Some(ix), window, cx)))
+                        .child(Checkbox::new(("live-template-on", ix)).checked(t.enabled).on_change(move |v, _, cx| {
+                            let v = *v;
+                            toggle.update(cx, |this, cx| {
+                                if let Some(t) = this.templates.user.get_mut(ix) {
+                                    t.enabled = v;
+                                }
+                                cx.notify();
+                            })
+                        }))
+                        .child(self.found(&t.abbreviation, query, cx).w(px(90.)).font_family("monospace").child(t.abbreviation.clone()))
+                        .child(self.found(&t.description, query, cx).text_color(palette.text_secondary).child(t.description.clone())),
+                );
+                if selected == Some(ix) {
+                    if let Some((_, fields)) = &self.template {
+                        page = page.child(self.template_editor(fields, cx));
+                    }
+                }
+            }
         }
         for (group, kotlin) in [("Kotlin", true), ("Java", false)] {
             page = page.child(self.section(group, cx));
@@ -988,7 +1046,24 @@ impl SettingsView {
             .border_1()
             .border_color(palette.border)
             .rounded(px(4.))
-            .child(h_flex().gap_2().child(label("Abbreviation:")).child(div().w(px(160.)).child(Input::new(&fields.abbreviation).small())))
+            .child(h_flex().gap_2().child(label("Abbreviation:")).child(div().w(px(160.)).child(Input::new(&fields.abbreviation).small())).child(div().w(px(20.))).child("Group:").child({
+                let (view, ix, groups) = (cx.entity(), *ix, self.templates.group_names());
+                Button::new("live-template-group-pick").outline().xsmall().label(t.group_name().to_owned()).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu(move |mut menu, _, _| {
+                    for group in &groups {
+                        let (view, group) = (view.clone(), group.clone());
+                        menu = menu.item(PopupMenuItem::new(group.clone()).on_click(move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                if let Some(t) = this.templates.user.get_mut(ix) {
+                                    t.group = if group == crate::domain::live_templates::USER_GROUP { String::new() } else { group.clone() };
+                                    this.template_group = group.clone();
+                                }
+                                cx.notify();
+                            })
+                        }));
+                    }
+                    menu
+                })
+            }))
             .child(h_flex().gap_2().child(label("Description:")).child(div().flex_1().child(Input::new(&fields.description).small())))
             .child(v_flex().gap_1().child("Template text:").child(Textarea::new(&fields.text).font_family("monospace")))
             .child(div().text_xs().text_color(palette.text_secondary).child("$NAME$ is a variable Tab moves through; $END$ is where the caret ends; $SELECTION$ is the selected text (Surround With)."))
@@ -1007,13 +1082,21 @@ impl SettingsView {
             kotlin: vec![Where::Statement],
             java: vec![Where::Statement],
             enabled: true,
+            group: if self.template_group == crate::domain::live_templates::USER_GROUP { String::new() } else { self.template_group.clone() },
             ..Default::default()
         });
         self.select_template(Some(self.templates.user.len() - 1), window, cx);
     }
 
     fn remove_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((ix, _)) = self.template.take() else { return };
+        let Some((ix, _)) = self.template.take() else {
+            // A group selected: it goes with its templates.
+            let group = std::mem::replace(&mut self.template_group, crate::domain::live_templates::USER_GROUP.to_owned());
+            self.templates.user.retain(|t| t.group_name() != group);
+            self.templates.groups.retain(|g| *g != group);
+            cx.notify();
+            return;
+        };
         if ix < self.templates.user.len() {
             self.templates.user.remove(ix);
         }
@@ -1021,9 +1104,100 @@ impl SettingsView {
         self.select_template(next, window, cx);
     }
 
+    /// + › Template Group…: asks for the name in the page.
+    fn start_new_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| InputState::new(window, cx));
+        input.update(cx, |s, cx| s.focus(window, cx));
+        self.new_group = Some(input);
+        cx.notify();
+    }
+
+    fn create_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = &self.new_group else { return };
+        let name = input.read(cx).value().trim().to_owned();
+        if name.is_empty() {
+            return;
+        }
+        if !self.templates.group_names().contains(&name) {
+            self.templates.groups.push(name.clone());
+        }
+        self.new_group = None;
+        self.select_template(None, window, cx);
+        self.template_group = name;
+        cx.notify();
+    }
+
+    /// Import…: IntelliJ template files (`templates/*.xml` of an Android
+    /// Studio settings folder), each into its group.
+    fn import_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Import Live Templates".into()) });
+        cx.spawn_in(window, async move |this, cx| {
+            let picked = match paths.await {
+                Ok(Ok(Some(picked))) => picked,
+                Ok(Err(e)) => {
+                    this.update(cx, |this, cx| {
+                        this.template_note = Some(format!("Cannot open the file chooser: {e}"));
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+                _ => return,
+            };
+            this.update_in(cx, |this, window, cx| {
+                this.sync_template(window, cx);
+                let mut notes = Vec::new();
+                for path in picked {
+                    let read = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|text| crate::domain::template_xml::import(&text));
+                    let file = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                    match read {
+                        Ok(templates) => {
+                            notes.push(format!("{file}: {} template{}", templates.len(), if templates.len() == 1 { "" } else { "s" }));
+                            this.templates.user.extend(templates);
+                        }
+                        Err(e) => notes.push(format!("{file}: {e}")),
+                    }
+                }
+                this.template_note = Some(format!("Imported {}", notes.join("; ")));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Export…: the selected group as an IntelliJ template file.
+    fn export_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_template(window, cx);
+        let group = match &self.template {
+            Some((ix, _)) => self.templates.user.get(*ix).map(|t| t.group_name().to_owned()).unwrap_or_else(|| self.template_group.clone()),
+            None => self.template_group.clone(),
+        };
+        let templates: Vec<_> = self.templates.user.iter().filter(|t| t.group_name() == group).cloned().collect();
+        let xml = crate::domain::template_xml::export(&group, &templates);
+        let name = format!("{group}.xml");
+        let target = cx.prompt_for_new_path(&crate::ui::running_devices::default_save_dir(), Some(&name));
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(path) = crate::ui::running_devices::chosen_path(target.await, &name) else { return };
+            let note = match std::fs::write(&path, xml) {
+                Ok(()) => format!("Exported {} template{} of {group} to {}", templates.len(), if templates.len() == 1 { "" } else { "s" }, path.display()),
+                Err(e) => format!("Cannot export to {}: {e}", path.display()),
+            };
+            this.update(cx, |this, cx| {
+                this.template_note = Some(note);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Edits one of the person's templates below the list.
     fn select_template(&mut self, ix: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_template(window, cx);
+        if let Some(t) = ix.and_then(|ix| self.templates.user.get(ix)) {
+            self.template_group = t.group_name().to_owned();
+        }
         self.template = ix.and_then(|ix| {
             let t = self.templates.user.get(ix)?.clone();
             let abbreviation = cx.new(|cx| InputState::new(window, cx).default_value(t.abbreviation.clone()));
@@ -1099,6 +1273,10 @@ impl SettingsView {
             self.default_fields(&mut fields, &t, window, cx);
         }
         self.template = Some((ix, fields));
+    }
+
+    fn section_owned(&self, title: String, cx: &App) -> gpui_kit::Div {
+        div().pt_2().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(cx.palette().text).child(title)
     }
 
     fn section(&self, title: &'static str, cx: &App) -> gpui_kit::Div {
@@ -1652,6 +1830,13 @@ pub fn open_page(model: Option<Entity<RepoModel>>, page: &str, window: &mut Wind
                     .child(DialogAction::new().child(Button::new("settings-ok").label("OK").primary())),
             )
             .on_ok(move |_, window, cx| {
+                // Enter in a new template group's name makes the group
+                // rather than closing Settings.
+                let naming = ok_view.read(cx).new_group.as_ref().is_some_and(|g| gpui_kit::Focusable::focus_handle(g, cx).is_focused(window));
+                if naming {
+                    ok_view.update(cx, |this, cx| this.create_group(window, cx));
+                    return false;
+                }
                 ok_view.update(cx, |this, cx| this.apply(window, cx));
                 true
             })
