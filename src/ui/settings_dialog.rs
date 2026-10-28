@@ -39,6 +39,7 @@ enum Page {
     System,
     Keymap,
     EditorGeneral,
+    CodeEditing,
     AutoImport,
     EditorFont,
     GutterIcons,
@@ -60,7 +61,7 @@ enum Page {
 const TREE: &[(&str, Option<Page>, &[Page])] = &[
     ("Appearance & Behavior", None, &[Page::Appearance, Page::System]),
     ("Keymap", Some(Page::Keymap), &[]),
-    ("Editor", None, &[Page::EditorGeneral, Page::AutoImport, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::CodeStyle, Page::LiveTemplates]),
+    ("Editor", None, &[Page::EditorGeneral, Page::CodeEditing, Page::AutoImport, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::CodeStyle, Page::LiveTemplates]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
     ("Build, Execution, Deployment", None, &[Page::Gradle, Page::Compiler]),
     ("Languages & Frameworks", Some(Page::Languages), &[Page::AndroidSdk]),
@@ -73,6 +74,7 @@ impl Page {
             Page::System => "System Settings",
             Page::Keymap => "Keymap",
             Page::EditorGeneral => "General",
+            Page::CodeEditing => "Code Editing",
             Page::AutoImport => "Auto Import",
             Page::EditorFont => "Font",
             Page::GutterIcons => "Gutter Icons",
@@ -105,6 +107,7 @@ impl Page {
             Page::System => &["System", "Startup", "Reopen projects on startup", "Confirm before exiting", "Exit"],
             Page::Keymap => &["Shortcut", "Keyboard"],
             Page::EditorGeneral => &["Soft-wrap", "Show line numbers", "Show whitespaces", "Show indent guides", "Appearance", "Diff", "Merge"],
+            Page::CodeEditing => &["Code Editing", "Refactorings", "Specify refactoring options", "In modal dialogs", "In the editor"],
             Page::AutoImport => &["Auto Import", "Java", "Kotlin", "Optimize imports on the fly", "Imports"],
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
@@ -465,6 +468,7 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.code_style = from.code_style.clone();
     to.diff.optimize_imports_java = from.diff.optimize_imports_java;
     to.diff.optimize_imports_kotlin = from.diff.optimize_imports_kotlin;
+    to.diff.refactor_in_editor = from.diff.refactor_in_editor;
     to.project.preview_tab = from.project.preview_tab;
 }
 
@@ -574,6 +578,7 @@ impl Render for SettingsView {
                 Page::System => self.system(&query, cx).into_any_element(),
                 Page::Keymap => self.keymap_page(&query, cx).into_any_element(),
                 Page::EditorGeneral => self.editor_general(&query, cx).into_any_element(),
+                Page::CodeEditing => self.code_editing(&query, cx).into_any_element(),
                 Page::AutoImport => self.auto_import(&query, cx).into_any_element(),
                 Page::EditorFont => self.editor_font(&query, cx).into_any_element(),
                 Page::GutterIcons => self.gutter_icons(&query, cx).into_any_element(),
@@ -1118,6 +1123,26 @@ impl SettingsView {
             .child(self.check("settings-line-numbers", "Show line numbers", d.show_line_numbers, query, |s, v| s.diff.show_line_numbers = v, cx))
             .child(self.check("settings-whitespaces", "Show whitespaces", d.show_whitespaces, query, |s, v| s.diff.show_whitespaces = v, cx))
             .child(self.check("settings-indent-guides", "Show indent guides", d.show_indent_guides, query, |s, v| s.diff.show_indent_guides = v, cx))
+    }
+
+    fn code_editing(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        v_flex()
+            .gap_2()
+            .child(self.section("Refactorings", cx))
+            .child(self.row(
+                "Specify refactoring options:",
+                query,
+                RadioGroup::horizontal("settings-refactor-options")
+                    .children(["In modal dialogs", "In the editor"])
+                    .selected_index(Some(usize::from(self.draft.diff.refactor_in_editor)))
+                    .on_change(move |ix, _, cx| {
+                        let in_editor = *ix == 1;
+                        entity.update(cx, |this, cx| this.set(|s| s.diff.refactor_in_editor = in_editor, cx))
+                    }),
+                cx,
+            ))
+            .child(self.note("In the editor, Introduce Variable names the variable where it is declared, every use following", cx))
     }
 
     fn auto_import(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {

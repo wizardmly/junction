@@ -210,6 +210,8 @@ pub struct Introduced {
     pub range: Range<usize>,
     pub text: String,
     pub name_at: Range<usize>,
+    /// Where the name replaced the expression, in the text after the edit.
+    pub uses: Vec<Range<usize>>,
 }
 
 /// Declares `name` for the expression before the statement of the first
@@ -260,18 +262,25 @@ fn into_block(text: &str, body: &ExpressionBody, chosen: &[&Occurrence], declara
     let inner = format!("{}{unit}", body.indent);
     let mut expression = String::new();
     let mut last = body.expression.start;
+    let mut uses = Vec::new();
     for o in chosen {
         expression.push_str(&text[last..o.range.start]);
+        uses.push(expression.len());
         expression.push_str(name);
         last = o.range.end;
     }
     expression.push_str(&text[last..body.expression.end]);
-    let block = format!("{{\n{inner}{declaration}\n{inner}return {expression}\n{}}}", body.indent);
-    let mut edits = vec![(body.range.clone(), block, Some(2 + inner.len() + name_in_decl))];
+    let head = format!("{{\n{inner}{declaration}\n{inner}return ");
+    let block = format!("{head}{expression}\n{}}}", body.indent);
+    let in_block = 2 + inner.len() + name_in_decl;
+    let mut edits = vec![(body.range.clone(), block, Some(in_block))];
     if let Some((at, ty)) = &body.return_type {
         edits.push((*at..*at, format!(": {ty}"), None));
     }
-    apply_edits(text, edits, name)
+    let mut done = apply_edits(text, edits, name);
+    let block_at = done.name_at.start - in_block;
+    done.uses = uses.into_iter().map(|u| block_at + head.len() + u..block_at + head.len() + u + name.len()).collect();
+    done
 }
 
 /// The words of a name or text: `userName` → [user, Name], `URLConnection`
@@ -497,17 +506,20 @@ fn apply_edits(text: &str, mut edits: Vec<(Range<usize>, String, Option<usize>)>
     let mut out = String::new();
     let mut last = start;
     let mut name_at = 0..0;
+    let mut uses = Vec::new();
     for (range, with, decl) in &edits {
         out.push_str(&text[last..range.start]);
         if let Some(at) = decl {
             let at = start + out.len() + at;
             name_at = at..at + name.len();
+        } else if with == name {
+            uses.push(start + out.len()..start + out.len() + name.len());
         }
         out.push_str(with);
         last = range.end;
     }
     out.push_str(&text[last..end]);
-    Introduced { range: start..end, text: out, name_at }
+    Introduced { range: start..end, text: out, name_at, uses }
 }
 
 #[cfg(test)]
@@ -665,6 +677,7 @@ mod tests {
         // `name_at` is in the new text: the declared name.
         assert_eq!(out.find("val x").unwrap() + 4, all.name_at.start);
         assert_eq!(&out[all.name_at.clone()], "x");
+        assert_eq!(all.uses, vec![out.find("x + 1").unwrap()..out.find("x + 1").unwrap() + 1, out.find("x)").unwrap()..out.find("x)").unwrap() + 1]);
         // Only the selected one: declared before its own statement.
         let one = introduce(ImportStyle::Kotlin, text, &ex, false, "x", true, false).unwrap();
         assert_eq!(apply(text, &one), "fun f(p: Point) {\n    println(p.x + 1)\n    var x = p.x\n    show(x)\n}\n");
@@ -693,6 +706,8 @@ mod tests {
         assert_eq!(out, "class A {\n    fun f(a: Int): Int {\n        val value = a * 2\n        return value + value\n    }\n}\n");
         assert_eq!(&out[done.name_at.clone()], "value");
         assert_eq!(out.find("val value").unwrap() + 4, done.name_at.start);
+        let uses: Vec<&str> = done.uses.iter().map(|r| &out[r.start - 7..r.end]).collect();
+        assert_eq!(uses, ["return value", "alue + value"]);
     }
 
     #[test]
