@@ -9,9 +9,16 @@ use crate::domain::dependency_versions::{self as versions, VersionSite, VersionS
 use crate::domain::diagnostics::{Fix, Origin, Pos, Problem, Severity};
 use crate::domain::version_catalog::{self as catalog, Catalog};
 
-/// The sites to check in a file: a catalog's pinned versions, or a build
-/// script's. Other files have none.
+#[cfg(test)]
 pub fn sites(path: &str, text: &str) -> Vec<VersionSite> {
+    sites_with(path, text, &[])
+}
+
+/// The sites to check in a file: a catalog's pinned versions, or a build
+/// script's, or a `buildSrc` file's dependency strings and the version
+/// constants that the buildSrc files (this one and `others`' texts) build
+/// dependency strings from. Other files have none.
+pub fn sites_with(path: &str, text: &str, others: &[String]) -> Vec<VersionSite> {
     let file_name = path.rsplit('/').next().unwrap_or(path);
     if let Some(name) = catalog::name_of(file_name) {
         return versions::catalog_sites(&Catalog::parse(name, path, text));
@@ -22,7 +29,11 @@ pub fn sites(path: &str, text: &str) -> Vec<VersionSite> {
     // `buildSrc` constants (`const val coreKtx = "g:a:v"`) are dependency
     // strings too.
     if (path.starts_with("buildSrc/") || path.contains("/buildSrc/")) && (path.ends_with(".kt") || path.ends_with(".java")) {
-        return versions::script_sites(text).into_iter().filter(|s| !s.plugin).collect();
+        let mut found: Vec<VersionSite> = versions::script_sites(text).into_iter().filter(|s| !s.plugin).collect();
+        let all: Vec<&str> = std::iter::once(text).chain(others.iter().map(String::as_str)).collect();
+        found.extend(versions::constant_sites(text, &all));
+        found.sort_by_key(|s| s.range.start);
+        return found;
     }
     Vec::new()
 }
@@ -90,5 +101,19 @@ mod tests {
         let sites = super::sites("buildSrc/src/main/kotlin/Deps.kt", deps);
         assert_eq!(check(&Fake, deps, &sites).len(), 1);
         assert_eq!(super::sites("lib/buildSrc/src/main/java/Deps.java", deps).len(), 1);
+        // A version constant a dependency string is built from, here or in
+        // another buildSrc file.
+        let versions = "object Versions {\n    const val core = \"1.10.1\"\n    val other = \"2.0\"\n}\n";
+        let deps = "object Deps {\n    const val coreKtx = \"androidx.core:core-ktx:${Versions.core}\"\n}\n";
+        let sites = super::sites_with("buildSrc/src/main/kotlin/Versions.kt", versions, &[deps.to_owned()]);
+        assert_eq!(sites.len(), 1);
+        assert_eq!((sites[0].module.as_str(), &versions[sites[0].range.clone()]), ("androidx.core:core-ktx", "1.10.1"));
+        assert_eq!(check(&Fake, versions, &sites)[0].fix.as_ref().unwrap().replacement, "1.13.1");
+        let same = "val coreVersion = \"1.10.1\"\nval core = \"androidx.core:core-ktx:$coreVersion\"\n";
+        assert_eq!(super::sites("buildSrc/src/main/kotlin/Deps.kt", same).len(), 1);
+        let java = "class Versions {\n    public static final String core = \"1.10.1\";\n}\n";
+        assert_eq!(super::sites_with("buildSrc/src/main/java/Versions.java", java, &[deps.to_owned()]).len(), 1);
+        // Not in buildSrc: nothing.
+        assert!(super::sites_with("app/src/main/kotlin/V.kt", versions, &[deps.to_owned()]).is_empty());
     }
 }
