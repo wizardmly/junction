@@ -125,7 +125,7 @@ mod tests {
         assert_eq!(color_literal("a.xml", " android:tint=\"@color/purple\"/>"), None);
         // Compose literals.
         let code = "val Purple = Color(0xFF6200EE)\nval Clear = Color(color = 0x00000000L)\nColor(0xFF000000).copy(alpha = 0.5f)\nColor(red = 1f, green = 0f, blue = 0f)";
-        assert_eq!(previews(&t, None, "ui/Theme.kt", code), vec![(0, Preview::Color(0x6200EEFF)), (1, Preview::Color(0)), (2, Preview::Color(0x000000FF))]);
+        assert_eq!(previews(&t, None, "ui/Theme.kt", code), vec![(0, Preview::Color(0x6200EEFF)), (1, Preview::Color(0)), (2, Preview::Color(0x000000FF)), (3, Preview::Color(0xFF0000FF))]);
         assert!(previews(&t, None, "ui/Theme.java", code).is_empty());
         // The framework's colors, from its own table.
         let framework = ResourceTable::build(&Fake(vec![decl("color", "white", "values", Some("#ffffffff"))]));
@@ -138,6 +138,11 @@ mod tests {
         assert_eq!(color_literal("ui/Theme.kt", "val c = R.color.primary"), None);
         assert_eq!(format_color_literal(0x112233FF, "0xff6200ee"), "0xff112233");
         assert_eq!(format_color_literal(0x112233FF, "#6200EE"), "#112233");
+        let line = "val Red = Color(red = 255, green = 0, blue = 0)";
+        let args = color_literal("ui/Theme.kt", line).unwrap();
+        assert_eq!(&line[args.clone()], "red = 255, green = 0, blue = 0");
+        assert_eq!(format_color_literal(0x112233FF, &line[args]), "red = 17, green = 34, blue = 51, alpha = 255");
+        assert_eq!(color_literal("ui/Theme.kt", "Color(a, b, c)"), None);
         assert_eq!(preview_reference("a.xml", " android:tint=\"@color/purple\"/>"), Some(22));
         assert_eq!(preview_reference("a.kt", "val c = R.color.primary"), Some(16));
     }
@@ -164,8 +169,12 @@ pub fn color_literal(path: &str, line: &str) -> Option<std::ops::Range<usize>> {
         if CODE.is_match(line) {
             return None;
         }
-        let hex = COMPOSE.captures(line)?.get(1)?;
-        return res::parse_compose_color(hex.as_str()).map(|_| hex.range());
+        if let Some(hex) = COMPOSE.captures(line).and_then(|c| c.get(1)) {
+            return res::parse_compose_color(hex.as_str()).map(|_| hex.range());
+        }
+        // `Color(red, green, blue, alpha)`: the picker rewrites them all.
+        let args = COMPONENTS.captures(line)?.get(1)?;
+        return res::parse_compose_components(args.as_str()).map(|_| args.range());
     }
     if !path.ends_with(".xml") {
         return None;
@@ -176,7 +185,13 @@ pub fn color_literal(path: &str, line: &str) -> Option<std::ops::Range<usize>> {
 
 /// A picked RGBA color as the literal at `like` takes it.
 pub fn format_color_literal(rgba: u32, like: &str) -> String {
-    if like.starts_with('#') { res::format_color(rgba, like) } else { res::format_compose_color(rgba, like) }
+    if like.starts_with('#') {
+        res::format_color(rgba, like)
+    } else if like.contains(',') {
+        res::format_compose_components(rgba, like)
+    } else {
+        res::format_compose_color(rgba, like)
+    }
 }
 
 /// Where on a Kotlin, Java or XML line the previewed resource's name
@@ -189,6 +204,7 @@ pub fn preview_reference(path: &str, line: &str) -> Option<usize> {
 
 static CODE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?:^|[^\w.]|\bandroid\.)R\.(color|drawable|mipmap)\.(\w+)").unwrap());
 static COMPOSE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\bColor\(\s*(?:color\s*=\s*)?(0[xX][0-9a-fA-F]{1,8}L?)\s*\)").unwrap());
+static COMPONENTS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\bColor\(([^()]*,[^()]*)\)").unwrap());
 static XML: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"@(?:android:)?(color|drawable|mipmap)/([\w.]+)|[">](#[0-9a-fA-F]{3,8})["<]"#).unwrap());
 
 /// The first previewable resource of each line of a Kotlin, Java or XML
@@ -203,7 +219,13 @@ pub fn previews(table: &ResourceTable, framework: Option<&ResourceTable>, path: 
         let caps = if code { CODE.captures(content) } else { XML.captures(content) };
         let Some(c) = caps else {
             // A Compose `Color(0xFF6200EE)`.
-            if let Some(rgba) = path.ends_with(".kt").then(|| COMPOSE.captures(content)).flatten().and_then(|c| res::parse_compose_color(c.get(1)?.as_str())) {
+            let compose = || {
+                COMPOSE
+                    .captures(content)
+                    .and_then(|c| res::parse_compose_color(c.get(1)?.as_str()))
+                    .or_else(|| COMPONENTS.captures(content).and_then(|c| res::parse_compose_components(c.get(1)?.as_str())))
+            };
+            if let Some(rgba) = path.ends_with(".kt").then(compose).flatten() {
                 out.push((line as u32, Preview::Color(rgba)));
             }
             continue;

@@ -305,6 +305,87 @@ pub fn format_compose_color(rgba: u32, like: &str) -> String {
     format!("{}{hex}", like.trim().get(..2).unwrap_or("0x"))
 }
 
+/// A Compose `Color(red, green, blue[, alpha])`'s arguments as RGBA,
+/// as Android Studio's ComposeColorLineMarkerProviderDescriptor reads
+/// them: three or four Ints (0–255, decimal or `0x`) or Floats (0–1,
+/// `0.5f`), positional or named `red =` / `green =` / `blue =` / `alpha =`.
+pub fn parse_compose_components(args: &str) -> Option<u32> {
+    const NAMES: [&str; 4] = ["red", "green", "blue", "alpha"];
+    let parts: Vec<&str> = args.split(',').map(str::trim).collect();
+    if !matches!(parts.len(), 3 | 4) {
+        return None;
+    }
+    let float = parts[0].rsplit('=').next()?.trim().ends_with(['f', 'F']) && !parts[0].rsplit('=').next()?.trim().starts_with("0x");
+    let mut named: Vec<(&str, u32)> = Vec::new();
+    let mut positional = Vec::new();
+    for part in &parts {
+        let (name, value) = match part.split_once('=') {
+            Some((n, v)) => (Some(n.trim()), v.trim()),
+            None => (None, *part),
+        };
+        let channel = if float {
+            let v: f32 = value.strip_suffix(['f', 'F'])?.parse().ok()?;
+            if !(0.0..=1.0).contains(&v) {
+                return None;
+            }
+            // java.awt.Color's float constructor.
+            (v * 255. + 0.5) as u32
+        } else {
+            let v = match value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => value.parse().ok()?,
+            };
+            (v <= 255).then_some(v)?
+        };
+        match name {
+            Some(n) if NAMES.contains(&n) && !named.iter().any(|(m, _)| *m == n) => named.push((n, channel)),
+            Some(_) => return None,
+            None => positional.push(channel),
+        }
+    }
+    // Positional values fill the names not given, in order.
+    if named.iter().any(|(n, _)| !NAMES[..parts.len()].contains(n)) {
+        return None;
+    }
+    let unnamed: Vec<&str> = NAMES[..parts.len()].iter().copied().filter(|n| !named.iter().any(|(m, _)| m == n)).collect();
+    if unnamed.len() != positional.len() {
+        return None;
+    }
+    named.extend(unnamed.into_iter().zip(positional));
+    let get = |n: &str| named.iter().find(|(m, _)| *m == n).map(|(_, v)| *v);
+    let alpha = if parts.len() == 4 { get("alpha")? } else { 0xFF };
+    Some((get("red")? << 24) | (get("green")? << 16) | (get("blue")? << 8) | alpha)
+}
+
+/// A picked RGBA color as Android Studio writes it over `Color(…)`'s
+/// components: always with alpha, named when any argument was, `0x` Ints
+/// when any argument was hex, Floats rounded to 3 decimals.
+pub fn format_compose_components(rgba: u32, like: &str) -> String {
+    let parts: Vec<&str> = like.split(',').map(str::trim).collect();
+    let named = parts.iter().any(|p| p.contains('='));
+    let values: Vec<&str> = parts.iter().map(|p| p.rsplit('=').next().unwrap_or(p).trim()).collect();
+    let float = values.first().is_some_and(|v| v.ends_with(['f', 'F']) && !v.starts_with("0x"));
+    let hex = values.iter().any(|v| v.starts_with("0x"));
+    let channels = [rgba >> 24, (rgba >> 16) & 0xFF, (rgba >> 8) & 0xFF, rgba & 0xFF];
+    let text = channels.map(|c| {
+        if float {
+            // Kotlin's Float.toString of the rounded value: `0.5`, `1.0`.
+            let rounded: f32 = format!("{:.3}", c as f32 / 255.).parse().unwrap_or(0.);
+            let s = rounded.to_string();
+            format!("{}f", if s.contains('.') { s } else { format!("{s}.0") })
+        } else if hex {
+            format!("0x{c:X}")
+        } else {
+            c.to_string()
+        }
+    });
+    if named {
+        format!("red = {}, green = {}, blue = {}, alpha = {}", text[0], text[1], text[2], text[3])
+    } else {
+        text.join(", ")
+    }
+}
+
 /// The folder Android uses when no qualifier matches comes first, then the rest by name.
 pub fn folder_order(folder: &str) -> (bool, &str) {
     (folder.contains('-'), folder)
@@ -333,6 +414,21 @@ mod tests {
         assert_eq!(format_compose_color(0x112233FF, "0xFF6200EE"), "0xFF112233");
         assert_eq!(format_compose_color(0x11223380, "0xff6200ee"), "0x80112233");
         assert_eq!(format_compose_color(0xAABBCCFF, "0Xff6200ee"), "0Xffaabbcc");
+        // Components.
+        assert_eq!(parse_compose_components("255, 0, 0"), Some(0xFF0000FF));
+        assert_eq!(parse_compose_components("0xFF, 0x80, 0, 0x40"), Some(0xFF800040));
+        assert_eq!(parse_compose_components("red = 1f, green = 0.5f, blue = 0f"), Some(0xFF8000FF));
+        assert_eq!(parse_compose_components("blue = 0f, red = 1f, 0f, alpha = .5f"), Some(0xFF000080));
+        assert_eq!(parse_compose_components("256, 0, 0"), None);
+        assert_eq!(parse_compose_components("1.5f, 0f, 0f"), None);
+        assert_eq!(parse_compose_components("red, 0, 0"), None);
+        assert_eq!(parse_compose_components("1, 2"), None);
+        assert_eq!(parse_compose_components("1, 2, alpha = 3"), None);
+        assert_eq!(parse_compose_components("red = 1, red = 2, 3"), None);
+        assert_eq!(format_compose_components(0x11223380, "255, 0, 0"), "17, 34, 51, 128");
+        assert_eq!(format_compose_components(0x112233FF, "red = 0xFF, green = 0, blue = 0"), "red = 0x11, green = 0x22, blue = 0x33, alpha = 0xFF");
+        assert_eq!(format_compose_components(0xFF8000FF, "1f, 0f, 0f"), "1.0f, 0.502f, 0.0f, 1.0f");
+        assert_eq!(parse_compose_components(&format_compose_components(0x12345678, "0f, 0f, 0f")), Some(0x12345678));
     }
 
     #[test]
