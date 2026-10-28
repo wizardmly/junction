@@ -36,16 +36,28 @@ struct Entry {
     blank_before: usize,
     kind: Kind,
     rank: usize,
+    /// Where the member is (its comments and annotations, no blank lines
+    /// before), and its text as it was with those blank lines.
+    span: Range<usize>,
+    raw: String,
 }
 
 /// The file with every class's members in IntelliJ's default order.
 pub fn rearrange_java(text: &str) -> String {
+    rearrange_java_in(text, None)
+}
+
+/// `rearrange_java` for the members in `only` (byte ranges), as
+/// IntelliJ's rearranger with a selection or VCS changes: in each class,
+/// a run of members the ranges touch is put in order among itself; the
+/// other members, and the blank lines before a run, stay as they are.
+pub fn rearrange_java_in(text: &str, only: Option<&[Range<usize>]>) -> String {
     let mask = java_code_mask(text);
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
     for (open, close, kind) in type_bodies(text, &mask, 0..text.len()) {
         out.push_str(&text[at..=open]);
-        out.push_str(&arrange_body(text, &mask, open, close, &kind));
+        out.push_str(&arrange_body(text, &mask, open, close, &kind, only));
         at = close;
     }
     out.push_str(&text[at..]);
@@ -161,7 +173,7 @@ fn strip_annotations(text: &str) -> String {
 }
 
 /// A class body's new text, between its `{` at `open` and `}` at `close`.
-fn arrange_body(text: &str, mask: &[bool], open: usize, close: usize, (kind, name): &(Kind, String)) -> String {
+fn arrange_body(text: &str, mask: &[bool], open: usize, close: usize, (kind, name): &(Kind, String), only: Option<&[Range<usize>]>) -> String {
     let body = &text[open + 1..close];
     // The members start on the line after `{`; a one-line body stays.
     let Some(first_newline) = body.find('\n') else { return body.to_owned() };
@@ -227,15 +239,46 @@ fn arrange_body(text: &str, mask: &[bool], open: usize, close: usize, (kind, nam
         return body.to_owned();
     }
     let tail = &text[entry_start..close];
-    let mut ordered = order(entries);
-    // Nested classes are arranged too.
-    for e in &mut ordered {
+    // Nested classes are arranged too (in the ranges, theirs that are).
+    let nested = |e: &mut Entry| {
         if is_type(&e.kind) {
             let inner_mask = java_code_mask(&e.text);
-            e.text = rearrange_java_nested(&e.text, &inner_mask);
+            let inner: Option<Vec<Range<usize>>> = only.map(|ranges| ranges.iter().map(|r| r.start.saturating_sub(e.span.start)..r.end.saturating_sub(e.span.start)).filter(|r| !r.is_empty()).collect());
+            e.text = rearrange_java_nested(&e.text, &inner_mask, inner.as_deref());
         }
-    }
+    };
     let mut out = text[open + 1..start].to_owned();
+    if let Some(ranges) = only {
+        let touched = |e: &Entry| ranges.iter().any(|r| r.start < e.span.end && e.span.start < r.end);
+        let mut rest = entries.into_iter().peekable();
+        while let Some(e) = rest.next() {
+            if !touched(&e) {
+                out.push_str(&e.raw);
+                continue;
+            }
+            let mut run = vec![e];
+            while let Some(next) = rest.next_if(|n| touched(n)) {
+                run.push(next);
+            }
+            let lead = run[0].raw.len() - run[0].text.len();
+            out.push_str(&run[0].raw[..lead]);
+            let mut ordered = order(run);
+            ordered.iter_mut().for_each(nested);
+            push_entries(&mut out, &ordered);
+        }
+        out.push_str(tail);
+        return out;
+    }
+    let mut ordered = order(entries);
+    ordered.iter_mut().for_each(nested);
+    push_entries(&mut out, &ordered);
+    out.push_str(tail);
+    out
+}
+
+/// Ordered members, a blank line between them except between fields
+/// (which keep up to 2 they had).
+fn push_entries(out: &mut String, ordered: &[Entry]) {
     for (n, e) in ordered.iter().enumerate() {
         let blanks = if n == 0 {
             0
@@ -248,14 +291,12 @@ fn arrange_body(text: &str, mask: &[bool], open: usize, close: usize, (kind, nam
         }
         out.push_str(&e.text);
     }
-    out.push_str(tail);
-    out
 }
 
 /// A nested type's text with its body arranged.
-fn rearrange_java_nested(text: &str, mask: &[bool]) -> String {
+fn rearrange_java_nested(text: &str, mask: &[bool], only: Option<&[Range<usize>]>) -> String {
     match type_bodies(text, mask, 0..text.len()).into_iter().next() {
-        Some((open, close, kind)) => format!("{}{}{}", &text[..=open], arrange_body(text, mask, open, close, &kind), &text[close..]),
+        Some((open, close, kind)) => format!("{}{}{}", &text[..=open], arrange_body(text, mask, open, close, &kind, only), &text[close..]),
         None => text.to_owned(),
     }
 }
@@ -321,7 +362,7 @@ fn entry(text: &str, mask: &[bool], range: Range<usize>, class: &str, interface:
         Kind::Class if is_static => 24,
         Kind::Class => 25,
     };
-    Entry { text: raw[skip..].to_owned(), blank_before, kind, rank }
+    Entry { text: raw[skip..].to_owned(), blank_before, kind, rank, span: range.start + skip..range.end, raw: raw.to_owned() }
 }
 
 /// A member's kind from its code, and its modifiers.
@@ -507,6 +548,28 @@ public class A {
         assert_eq!(
             rearrange_java(text),
             "class B {\n    private int a = 2;\n    private int b = a + 1;\n\n    int other() { return 1; }\n\n    String getName() { return name; }\n\n    void setName(String n) { name = n; }\n}\n"
+        );
+    }
+
+    #[test]
+    fn rearranges_only_the_members_in_the_ranges() {
+        let text = "class C {\n    void a() {}\n\n    void b() {}\n    private int x;\n\n    C() {}\n    int y;\n}\n";
+        // The selection touches b, x and C(): they're ordered among themselves; a and y stay.
+        let from = text.find("void b").unwrap();
+        let to = text.find("C() {}").unwrap() + 2;
+        assert_eq!(
+            rearrange_java_in(text, Some(&[from..to])),
+            "class C {\n    void a() {}\n\n    private int x;\n\n    C() {}\n\n    void b() {}\n    int y;\n}\n"
+        );
+        // Nothing touched: unchanged; everything: as the whole file.
+        assert_eq!(rearrange_java_in(text, Some(&[0..5])), text);
+        assert_eq!(rearrange_java_in(text, Some(&[0..text.len()])), rearrange_java(text));
+        // A range inside a nested class arranges only that class's members.
+        let nested = "class O {\n    void f() {}\n    int a;\n    static class I {\n        void g() {}\n        int b;\n    }\n}\n";
+        let at = nested.find("void g").unwrap();
+        assert_eq!(
+            rearrange_java_in(nested, Some(&[at..at + 20])),
+            "class O {\n    void f() {}\n    int a;\n    static class I {\n        int b;\n\n        void g() {}\n    }\n}\n"
         );
     }
 
