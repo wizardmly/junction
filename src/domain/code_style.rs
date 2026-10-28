@@ -3,7 +3,7 @@
 //! use existing file indents", as IntelliJ keeps them; what Reformat Code
 //! indents with, under `.editorconfig`.
 
-use crate::domain::reformat::IndentStyle;
+use crate::domain::reformat::{IndentStyle, KeepBlankLines};
 
 /// The languages with a code style page.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -67,6 +67,8 @@ pub struct CodeStyle {
     /// General › "Hard wrap at": where Reformat Code wraps long lines.
     pub hard_wrap: usize,
     langs: [LangStyle; 4],
+    /// Blank Lines › "Keep maximum blank lines" (XML's are its own).
+    blank: [KeepBlankLines; 4],
 }
 
 impl Default for CodeStyle {
@@ -74,7 +76,7 @@ impl Default for CodeStyle {
     /// official style by 4, Android's XML style by 4.
     fn default() -> Self {
         let style = |continuation| LangStyle { use_tab: false, indent: 4, continuation };
-        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)] }
+        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)], blank: Default::default() }
     }
 }
 
@@ -87,6 +89,15 @@ impl CodeStyle {
         self.langs[lang.index()] = LangStyle { indent: style.indent.clamp(1, 16), continuation: style.continuation.clamp(0, 32), ..style };
     }
 
+    pub fn keep_blank(&self, lang: StyleLang) -> KeepBlankLines {
+        self.blank[lang.index()]
+    }
+
+    pub fn set_keep_blank(&mut self, lang: StyleLang, keep: KeepBlankLines) {
+        let clamp = |n: usize| n.min(99);
+        self.blank[lang.index()] = KeepBlankLines { declarations: clamp(keep.declarations), code: clamp(keep.code), before_rbrace: clamp(keep.before_rbrace) };
+    }
+
     /// What a file of `lang` is indented with: `.editorconfig`'s unit
     /// first, then the file's own when detecting (XML never does), else
     /// the language's; the continuation in proportion to the indent. Long
@@ -95,16 +106,21 @@ impl CodeStyle {
         let style = self.get(lang);
         let own = if style.use_tab { "\t".to_owned() } else { " ".repeat(style.indent) };
         let detect = self.detect_indents && lang != StyleLang::Xml;
-        IndentStyle { unit: editorconfig.or_else(|| (!detect).then(|| own.clone())), fallback: Some(own), continuation: Some((style.continuation, style.indent)), right_margin: Some(max_line.unwrap_or(self.hard_wrap)) }
+        IndentStyle { unit: editorconfig.or_else(|| (!detect).then(|| own.clone())), fallback: Some(own), continuation: Some((style.continuation, style.indent)), right_margin: Some(max_line.unwrap_or(self.hard_wrap)), keep_blank: self.keep_blank(lang) }
     }
 
     /// The settings file's lines: `code_style_java=false,4,8` (tab,
-    /// indent, continuation).
+    /// indent, continuation), `code_style_java_blank=2,2,2` (blank lines
+    /// kept in declarations, in code, before `}`) when not the defaults.
     pub fn lines(&self) -> String {
         let mut out = format!("code_style_detect_indents={}\ncode_style_hard_wrap={}\n", self.detect_indents, self.hard_wrap);
         for lang in StyleLang::ALL {
             let s = self.get(lang);
             out.push_str(&format!("code_style_{}={},{},{}\n", lang.key(), s.use_tab, s.indent, s.continuation));
+            let k = self.keep_blank(lang);
+            if k != KeepBlankLines::default() {
+                out.push_str(&format!("code_style_{}_blank={},{},{}\n", lang.key(), k.declarations, k.code, k.before_rbrace));
+            }
         }
         out
     }
@@ -118,6 +134,13 @@ impl CodeStyle {
         if key == "code_style_hard_wrap" {
             if let Ok(n) = value.trim().parse::<usize>() {
                 self.hard_wrap = n.clamp(10, 1000);
+            }
+            return true;
+        }
+        if let Some(lang) = key.strip_prefix("code_style_").and_then(|k| k.strip_suffix("_blank")).and_then(|k| StyleLang::ALL.into_iter().find(|l| l.key() == k)) {
+            let n: Vec<Option<usize>> = value.split(',').map(|n| n.trim().parse().ok()).collect();
+            if let [Some(declarations), Some(code), Some(before_rbrace)] = n.as_slice() {
+                self.set_keep_blank(lang, KeepBlankLines { declarations: *declarations, code: *code, before_rbrace: *before_rbrace });
             }
             return true;
         }
@@ -161,6 +184,9 @@ mod tests {
         style.detect_indents = false;
         style.hard_wrap = 80;
         style.set(StyleLang::Groovy, LangStyle { use_tab: false, indent: 2, continuation: 4 });
+        style.set_keep_blank(StyleLang::Kotlin, KeepBlankLines { declarations: 1, code: 0, before_rbrace: 0 });
+        assert!(style.lines().contains("code_style_kotlin_blank=1,0,0\n") && !style.lines().contains("java_blank"));
+        assert_eq!(style.indents(StyleLang::Kotlin, None, None).keep_blank.code, 0);
         let mut read = CodeStyle::default();
         for line in style.lines().lines() {
             let (k, v) = line.split_once('=').unwrap();
