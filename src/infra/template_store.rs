@@ -54,6 +54,7 @@ mod tests {
                 text: "Log.d(TAG, \"$MSG$\")$END$".into(),
                 defaults: vec![("MSG".into(), "\"here\"".into())],
                 expressions: vec![("MSG".into(), "methodName()".into())],
+                skip: vec!["MSG".into()],
                 kotlin: vec![Context::Statement],
                 java: vec![],
                 enabled: true,

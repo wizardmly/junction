@@ -8,7 +8,7 @@
 use gpui_kit::{Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div, prelude::FluentBuilder as _, px};
 
 use super::FileEditor;
-use crate::domain::live_templates::{expand, expand_around, find, resolved, shortened, subtype_variables, Expansion, Session, Template};
+use crate::domain::live_templates::{choice_variables, expand, expand_around, find, resolved, shortened, subtype_variables, Expansion, Session, Template};
 use crate::theme::ActivePalette as _;
 
 pub(super) struct TemplateState {
@@ -69,12 +69,14 @@ impl FileEditor {
         let Some(template) = find(kotlin, &text[start..cursor], &contexts) else { return false };
         // Its computed variables from the code here, its qualified names
         // shortened (imported).
-        let template = resolved(&template, &crate::index::introduce::template_scope(lang, &text, start, &|n| self.class_texts(n, false, cx)));
+        let choices = choice_variables(&template);
+        let template = resolved(&template, &self.template_scope(lang, &text, start, cx));
         let (template, imports) = shortened(&template);
-        // `subtypes(…)`: the type and its subclasses to pick from.
+        // `subtypes(…)`: the type and its subclasses to pick from; `enum(…)`: its values.
         let subtypes: Vec<(String, Vec<String>)> = subtype_variables(&template)
             .into_iter()
             .map(|(name, ty)| (name.to_owned(), std::iter::once(ty.to_owned()).chain(self.subclass_names(ty, cx)).collect()))
+            .chain(choices)
             .collect();
         let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
         let indent: String = text[line_start..start].chars().take_while(|c| c.is_whitespace()).collect();
@@ -82,6 +84,17 @@ impl FileEditor {
         let lookups = expansion.names.iter().map(|n| subtypes.iter().find(|(v, _)| v == n).map(|(_, l)| l.clone()).unwrap_or_default()).collect();
         self.insert_template(start..cursor, expansion.text.clone(), 0, &expansion, imports, lookups, window, cx);
         true
+    }
+
+    /// What the code at `offset` declares, with the file's name, package,
+    /// line and the clipboard, for the templates' expressions.
+    fn template_scope(&self, lang: crate::index::lang::Lang, text: &str, offset: usize, cx: &mut Context<Self>) -> crate::domain::live_templates::Scope {
+        let mut scope = crate::index::introduce::template_scope(lang, text, offset, &|n| self.class_texts(n, false, cx));
+        scope.file_name = self.path.rsplit('/').next().unwrap_or_default().to_owned();
+        scope.package = crate::domain::imports::header(text).package;
+        scope.line = text[..offset.min(text.len())].matches('\n').count() + 1;
+        scope.clipboard = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+        scope
     }
 
     /// Writes a template's `insert` (its expansion at `lead` bytes in) over
@@ -178,7 +191,7 @@ impl FileEditor {
     pub(super) fn surround_with_template(&mut self, template: Template, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
         let Some((lang, _)) = self.jvm_style() else { return };
         let text = self.text(cx);
-        let template = resolved(&template, &crate::index::introduce::template_scope(lang, &text, range.start, &|n| self.class_texts(n, false, cx)));
+        let template = resolved(&template, &self.template_scope(lang, &text, range.start, cx));
         let (template, imports) = shortened(&template);
         let line_start = text[..range.start].rfind('\n').map_or(0, |i| i + 1);
         let whole_lines = range.start == line_start && (range.end == text.len() || text[..range.end].ends_with('\n'));
