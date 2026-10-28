@@ -108,6 +108,9 @@ pub struct ExpressionContext {
     /// (`Color.RED`) or its sealed class's subclasses (`is Circle`,
     /// `Empty`), and `null` for a nullable type.
     pub when_branches: Vec<String>,
+    /// Java: the types a cast of it would likely take, from the
+    /// `instanceof` checks that hold where it is.
+    pub cast_types: Vec<String>,
 }
 
 impl ExpressionContext {
@@ -332,7 +335,9 @@ pub fn surround_expression(style: ImportStyle, surrounder: Surrounder, text: &st
         Surrounder::StringTemplate => (format!("\"${{{expr}}}\""), usize::MAX..usize::MAX),
         Surrounder::Cast => {
             let expr = if context.parenthesize { format!("({expr})") } else { expr.to_owned() };
-            (format!("(() {expr})"), 2..2)
+            // The type guessed first, selected (GuessManager.guessTypeToCast).
+            let ty = context.cast_types.first().map_or("", String::as_str);
+            (format!("(({ty}) {expr})"), 2..2 + ty.len())
         }
         Surrounder::NotInstanceof => {
             let out = format!("!({expr} instanceof )");
@@ -586,5 +591,14 @@ mod tests {
         let done = surround_expression(ImportStyle::Kotlin, Surrounder::When, text, at..at + 1, "    ", &c);
         let (out, _) = apply(text, &done);
         assert!(out[done.select.start..].starts_with("TODO()\n        MyEnum.SECOND"));
+    }
+
+    #[test]
+    fn casts_to_the_guessed_type() {
+        let text = "        use(o);\n";
+        let at = text.find("(o)").unwrap() + 1;
+        let c = ExpressionContext { cast_types: vec!["String".into()], ..Default::default() };
+        let (out, selected) = apply(text, &surround_expression(ImportStyle::Java, Surrounder::Cast, text, at..at + 1, "    ", &c));
+        assert_eq!((out.as_str(), selected.as_str()), ("        use(((String) o));\n", "String"));
     }
 }
