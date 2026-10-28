@@ -717,7 +717,8 @@ Android Studio 的 Translations Editor。代码：`src/domain/translations.rs`�
 | 多个 res 目录合并显示：项目里每个模块、每个源集（flavor 等）的 `res` 目录都进表，每个键和目录一行，Resource Folder 列注明 `lib/src/main/res`、`app/src/free/res`；语言列取所有目录的并集；编辑、Untranslatable、Remove Keys 都写到该行所在目录；Add Key 对话框的 Resource Folder 是下拉框（默认当前行的目录），Add Locale 写到打开编辑器时所在的目录 | ✅ |
 | 前四列（Key、Resource Folder、Untranslatable、Default Value）固定，语言列用滚轮（Shift+滚轮或横向滚轮）左右滚动；“Show All Locales” 下拉按语言只显示一列（“Show French (fr)”）；键过滤加上 AS 的 “Show Keys Needing a Translation for French (fr)” 和 “Filter by Text”（键、默认值、译文里含该文本，不分大小写）；Delete 在语言列删除选中行的该语言译文，在前几列等同 Remove Keys | ✅ |
 | `plurals` / `string-array`、Order a translation | ➖ AS 的 StringResourceRepository 只读 `ResourceType.STRING`，工具栏也没有 Order a translation |
-| 单元格内直接编辑、删除时查找引用（Safe Delete）、右键菜单（Go to Declaration、Copy） | ❌ 未做 |
+| 右键菜单（2026-10-28）：右键单元格先选中它，菜单有 Go to Declaration（打开该语言目录里声明这条 `<string>` 的文件并跳到那一行；Key 列跳默认值，没有默认值时跳第一个有译文的语言；缺译文的单元格置灰）和 Copy（复制单元格的文字：键、默认值或译文）；表格有焦点时 `Ctrl+B` 同 Go to Declaration，`Ctrl+C` 同 Copy。Linux 实测：右键 French 列的 “Au revoir” 选 Go to Declaration 打开 `values-fr/strings.xml` 停在第 5 行；Key 列 `hello` 上按 Ctrl+B 跳到 `values/strings.xml` 第 4 行；缺译文的单元格菜单里 Go to Declaration 置灰；菜单 Copy 和 Ctrl+C 复制的 “Goodbye”、“Animaux” 能粘贴到提交信息框 | ✅ |
+| 单元格内直接编辑、删除时查找引用（Safe Delete） | ❌ 未做 |
 
 Linux 实测（Xvfb，含 values、values-fr、values-zh-rCN、values-night 的示例项目）：打开 `values/strings.xml` 出现横幅，点 Open editor 打开表格，settings 的法语和 welcome 的中法两列标红；双击 settings 的法语格输入 `Parametres d'app` 回车，`values-fr/strings.xml` 写入 `Parametres d\'app`，该行恢复正常；Add Key 输入已存在的 `hello` 提示 “Key 'hello' already exists”，改为 `about` 后写入并选中；Show Keys Needing Translations 只剩 about、welcome；Remove Keys 确认后 about 从文件删除；Add Locale 选 German 新建 `values-de/strings.xml`，出现 “German (de)” 列，其余键变红；勾选 welcome 的 Untranslatable 写入 `translatable="false"`。
 
