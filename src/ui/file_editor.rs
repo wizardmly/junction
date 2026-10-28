@@ -1344,8 +1344,8 @@ impl FileEditor {
         let source = rearranged.clone().unwrap_or_else(|| text.clone());
         // `.editorconfig`'s indent, over the file's own.
         let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(std::path::Path::to_path_buf)).unwrap_or_else(|| self.repository.root().to_path_buf());
-        let editorconfig = crate::infra::editorconfig::indent_for(&root, &self.absolute_path());
-        let indent = &crate::domain::code_style::StyleLang::of_path(&self.path).map(|l| crate::settings::Settings::get(cx).code_style.indents(l, editorconfig)).unwrap_or_default();
+        let (editorconfig, max_line) = crate::infra::editorconfig::style_for(&root, &self.absolute_path());
+        let indent = &crate::domain::code_style::StyleLang::of_path(&self.path).map(|l| crate::settings::Settings::get(cx).code_style.indents(l, editorconfig, max_line)).unwrap_or_default();
         let mut new = match style {
             Some(style) if whole => crate::domain::reformat::reformat_indented(style, &source, None, indent),
             Some(style) => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat_indented(style, &t, Some(r.clone()), indent)),

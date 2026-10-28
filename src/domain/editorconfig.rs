@@ -114,6 +114,24 @@ pub fn indent(configs: &[(EditorConfig, String)]) -> Option<String> {
     }
 }
 
+/// The `max_line_length` the configs give `path` (as in [`indent`]);
+/// None when unset or `off`.
+pub fn max_line_length(configs: &[(EditorConfig, String)]) -> Option<usize> {
+    let mut out = None;
+    for (config, path) in configs {
+        for (glob, props) in &config.sections {
+            if matches(glob, path) {
+                for (key, value) in props {
+                    if key == "max_line_length" {
+                        out = value.trim().parse::<usize>().ok().filter(|n| *n > 0);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +157,8 @@ mod tests {
         assert_eq!(indent(&[(outer.clone(), "app/A.kt".into()), (inner, "A.kt".into())]).as_deref(), Some("\t"));
         assert_eq!(indent(&[(parse("[*]\nend_of_line = lf\n"), "A.kt".into())]), None);
         assert_eq!(indent(&[(parse("[*]\nindent_size = tab\ntab_width = 3\n"), "A.kt".into())]).as_deref(), Some("   "));
+        let lines = [(parse("[*]\nmax_line_length = 100\n"), "A.kt".into()), (parse("[*.java]\nmax_line_length = off\n"), "A.kt".into())];
+        assert_eq!(max_line_length(&lines), Some(100));
+        assert_eq!(max_line_length(&[(parse("[*]\nmax_line_length = 100\n[*.kt]\nmax_line_length = off\n"), "A.kt".into())]), None);
     }
 }

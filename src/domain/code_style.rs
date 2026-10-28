@@ -64,6 +64,8 @@ pub struct LangStyle {
 pub struct CodeStyle {
     /// General › "Detect and use existing file indents for editing".
     pub detect_indents: bool,
+    /// General › "Hard wrap at": where Reformat Code wraps long lines.
+    pub hard_wrap: usize,
     langs: [LangStyle; 4],
 }
 
@@ -72,7 +74,7 @@ impl Default for CodeStyle {
     /// official style by 4, Android's XML style by 4.
     fn default() -> Self {
         let style = |continuation| LangStyle { use_tab: false, indent: 4, continuation };
-        Self { detect_indents: true, langs: [style(8), style(4), style(8), style(4)] }
+        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)] }
     }
 }
 
@@ -87,18 +89,19 @@ impl CodeStyle {
 
     /// What a file of `lang` is indented with: `.editorconfig`'s unit
     /// first, then the file's own when detecting (XML never does), else
-    /// the language's; the continuation in proportion to the indent.
-    pub fn indents(&self, lang: StyleLang, editorconfig: Option<String>) -> IndentStyle {
+    /// the language's; the continuation in proportion to the indent. Long
+    /// lines wrap at `.editorconfig`'s `max_line_length`, else "Hard wrap at".
+    pub fn indents(&self, lang: StyleLang, editorconfig: Option<String>, max_line: Option<usize>) -> IndentStyle {
         let style = self.get(lang);
         let own = if style.use_tab { "\t".to_owned() } else { " ".repeat(style.indent) };
         let detect = self.detect_indents && lang != StyleLang::Xml;
-        IndentStyle { unit: editorconfig.or_else(|| (!detect).then(|| own.clone())), fallback: Some(own), continuation: Some((style.continuation, style.indent)) }
+        IndentStyle { unit: editorconfig.or_else(|| (!detect).then(|| own.clone())), fallback: Some(own), continuation: Some((style.continuation, style.indent)), right_margin: Some(max_line.unwrap_or(self.hard_wrap)) }
     }
 
     /// The settings file's lines: `code_style_java=false,4,8` (tab,
     /// indent, continuation).
     pub fn lines(&self) -> String {
-        let mut out = format!("code_style_detect_indents={}\n", self.detect_indents);
+        let mut out = format!("code_style_detect_indents={}\ncode_style_hard_wrap={}\n", self.detect_indents, self.hard_wrap);
         for lang in StyleLang::ALL {
             let s = self.get(lang);
             out.push_str(&format!("code_style_{}={},{},{}\n", lang.key(), s.use_tab, s.indent, s.continuation));
@@ -110,6 +113,12 @@ impl CodeStyle {
     pub fn read(&mut self, key: &str, value: &str) -> bool {
         if key == "code_style_detect_indents" {
             self.detect_indents = value == "true";
+            return true;
+        }
+        if key == "code_style_hard_wrap" {
+            if let Ok(n) = value.trim().parse::<usize>() {
+                self.hard_wrap = n.clamp(10, 1000);
+            }
             return true;
         }
         let Some(lang) = key.strip_prefix("code_style_").and_then(|k| StyleLang::ALL.into_iter().find(|l| l.key() == k)) else { return false };
@@ -131,21 +140,26 @@ mod tests {
     fn indents_by_editorconfig_file_then_settings() {
         let mut style = CodeStyle::default();
         // Detecting: the file's unit, 4 spaces when it has none.
-        let java = style.indents(StyleLang::Java, None);
+        let java = style.indents(StyleLang::Java, None, None);
         assert_eq!((java.unit, java.fallback.as_deref(), java.continuation), (None, Some("    "), Some((8, 4))));
         // `.editorconfig` wins.
-        assert_eq!(style.indents(StyleLang::Kotlin, Some("  ".into())).unit.as_deref(), Some("  "));
+        assert_eq!(style.indents(StyleLang::Kotlin, Some("  ".into()), None).unit.as_deref(), Some("  "));
         // XML never detects.
-        assert_eq!(style.indents(StyleLang::Xml, None).unit.as_deref(), Some("    "));
+        assert_eq!(style.indents(StyleLang::Xml, None, None).unit.as_deref(), Some("    "));
         style.detect_indents = false;
         style.set(StyleLang::Kotlin, LangStyle { use_tab: true, indent: 4, continuation: 4 });
-        assert_eq!(style.indents(StyleLang::Kotlin, None).unit.as_deref(), Some("\t"));
+        assert_eq!(style.indents(StyleLang::Kotlin, None, None).unit.as_deref(), Some("\t"));
+        // `max_line_length` wins over "Hard wrap at".
+        style.hard_wrap = 100;
+        assert_eq!(style.indents(StyleLang::Java, None, None).right_margin, Some(100));
+        assert_eq!(style.indents(StyleLang::Java, None, Some(80)).right_margin, Some(80));
     }
 
     #[test]
     fn round_trips_settings_lines() {
         let mut style = CodeStyle::default();
         style.detect_indents = false;
+        style.hard_wrap = 80;
         style.set(StyleLang::Groovy, LangStyle { use_tab: false, indent: 2, continuation: 4 });
         let mut read = CodeStyle::default();
         for line in style.lines().lines() {

@@ -5,8 +5,16 @@ use std::path::Path;
 
 use crate::domain::editorconfig::{self, EditorConfig};
 
-/// The indent unit `.editorconfig` gives `file` (absolute), if any.
-pub fn indent_for(root: &Path, file: &Path) -> Option<String> {
+/// What `.editorconfig` gives `file` (absolute): its indent unit and its
+/// `max_line_length`.
+pub fn style_for(root: &Path, file: &Path) -> (Option<String>, Option<usize>) {
+    let configs = configs_for(root, file);
+    (editorconfig::indent(&configs), editorconfig::max_line_length(&configs))
+}
+
+/// The configs that apply, from the farthest to the nearest, each with
+/// the file's path relative to its folder.
+fn configs_for(root: &Path, file: &Path) -> Vec<(EditorConfig, String)> {
     let mut configs: Vec<(EditorConfig, String)> = Vec::new();
     for dir in file.ancestors().skip(1) {
         if let Ok(text) = std::fs::read_to_string(dir.join(".editorconfig")) {
@@ -23,5 +31,5 @@ pub fn indent_for(root: &Path, file: &Path) -> Option<String> {
         }
     }
     configs.reverse();
-    editorconfig::indent(&configs)
+    configs
 }

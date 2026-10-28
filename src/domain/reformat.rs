@@ -251,6 +251,8 @@ pub struct IndentStyle {
     /// The continuation indent and the indent it goes with, in columns:
     /// a continuation is that many indents (`None`: the language's).
     pub continuation: Option<(usize, usize)>,
+    /// Where long lines wrap (`None`: 120).
+    pub right_margin: Option<usize>,
 }
 
 /// The reformatted text. `only`: the 0-based lines to change (a
@@ -463,24 +465,24 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         }
     }
     if kotlin {
-        out = chop_long_lines(out, choppable, &unit);
+        out = chop_long_lines(out, choppable, &unit, indents.right_margin.unwrap_or(RIGHT_MARGIN));
     }
     out.join("\n")
 }
 
-/// IntelliJ's right margin.
-const RIGHT_MARGIN: usize = 120;
+/// IntelliJ's default right margin (Code Style › General › Hard wrap at).
+pub const RIGHT_MARGIN: usize = 120;
 
 /// Kotlin's official style chops a list of arguments or parameters down
 /// when it runs past the right margin (CALL_PARAMETERS_WRAP and
 /// METHOD_PARAMETERS_WRAP "chop down if long", `(` and `)` on their own
 /// lines, no trailing comma): the outermost such list first, then each
 /// line it makes that is still long.
-fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, unit: &str) -> Vec<String> {
+fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, unit: &str, margin: usize) -> Vec<String> {
     let mut out = Vec::with_capacity(lines.len());
     let mut todo: Vec<(String, bool)> = lines.into_iter().zip(choppable).rev().collect();
     while let Some((line, choppable)) = todo.pop() {
-        match choppable.then(|| chop(&line, unit)).flatten() {
+        match choppable.then(|| chop(&line, unit, margin)).flatten() {
             Some(parts) => todo.extend(parts.into_iter().rev().map(|p| (p, true))),
             None => out.push(line),
         }
@@ -495,8 +497,8 @@ fn width(text: &str) -> usize {
 
 /// A code line split at its outermost argument or parameter list whose
 /// last item ends past the margin; `None` when there is none.
-fn chop(line: &str, unit: &str) -> Option<Vec<String>> {
-    if width(line) <= RIGHT_MARGIN {
+fn chop(line: &str, unit: &str, margin: usize) -> Option<Vec<String>> {
+    if width(line) <= margin {
         return None;
     }
     let info = scan(line, true).into_iter().next()?;
@@ -511,7 +513,7 @@ fn chop(line: &str, unit: &str) -> Option<Vec<String>> {
         }
         let Some((open, opener)) = stack.pop() else { continue };
         let inner = &line[open + 1..at];
-        let past = width(&line[..at]) > RIGHT_MARGIN;
+        let past = width(&line[..at]) > margin;
         let commented = info.comment[open..at].iter().any(|c| *c);
         if opener == '(' && c == ')' && past && !inner.trim().is_empty() && !commented && is_call_or_declaration(&line[..open]) {
             let depth = stack.len();
@@ -526,10 +528,10 @@ fn chop(line: &str, unit: &str) -> Option<Vec<String>> {
         let (open, close) = paren_pair(&info.brackets)?;
         let head = &line[..open];
         let declares = head.split_whitespace().any(|w| matches!(w, "fun" | "class" | "constructor" | "interface") || w.starts_with("fun<"));
-        (declares && !line[open + 1..close].trim().is_empty() && width(head) < RIGHT_MARGIN).then_some((0, open, close))
+        (declares && !line[open + 1..close].trim().is_empty() && width(head) < margin).then_some((0, open, close))
     };
     let Some((_, open, close)) = best.or_else(declaration) else {
-        return chain_break(line, &info, unit);
+        return chain_break(line, &info, unit, margin);
     };
     // The items: commas outside nested brackets, strings and `<…>`.
     let mut items = Vec::new();
@@ -566,7 +568,7 @@ fn chop(line: &str, unit: &str) -> Option<Vec<String>> {
 /// METHOD_CALL_CHAIN_WRAP "wrap if long": the line broken before its last
 /// chained call (`.name(` or `?.name {`, outside brackets) that starts
 /// within the margin, the call an indent deeper.
-fn chain_break(line: &str, info: &Line, unit: &str) -> Option<Vec<String>> {
+fn chain_break(line: &str, info: &Line, unit: &str, margin: usize) -> Option<Vec<String>> {
     let lead = line.len() - line.trim_start().len();
     let mut depth = 0usize;
     let mut cut = None;
@@ -577,7 +579,7 @@ fn chain_break(line: &str, info: &Line, unit: &str) -> Option<Vec<String>> {
         match c {
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            '.' if depth == 0 && i > lead && width(&line[..i]) < RIGHT_MARGIN => {
+            '.' if depth == 0 && i > lead && width(&line[..i]) < margin => {
                 let at = if line[..i].ends_with('?') { i - 1 } else { i };
                 let after_receiver = line[..at].ends_with(|p: char| p.is_alphanumeric() || p == '_' || p == ')' || p == '}');
                 let name: String = line[i + 1..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
@@ -589,7 +591,7 @@ fn chain_break(line: &str, info: &Line, unit: &str) -> Option<Vec<String>> {
             _ => {}
         }
     }
-    let Some(cut) = cut else { return assignment_break(line, info, unit) };
+    let Some(cut) = cut else { return assignment_break(line, info, unit, margin) };
     let indent = &line[..lead];
     Some(vec![line[..cut].trim_end().to_owned(), format!("{indent}{unit}{}", &line[cut..])])
 }
@@ -597,7 +599,7 @@ fn chain_break(line: &str, info: &Line, unit: &str) -> Option<Vec<String>> {
 /// ASSIGNMENT_WRAP and WRAP_EXPRESSION_BODY_FUNCTIONS "wrap if long": the
 /// line broken after its first `=` outside brackets, the value an indent
 /// deeper, when the value then fits.
-fn assignment_break(line: &str, info: &Line, unit: &str) -> Option<Vec<String>> {
+fn assignment_break(line: &str, info: &Line, unit: &str, margin: usize) -> Option<Vec<String>> {
     let lead = line.len() - line.trim_start().len();
     let bytes = line.as_bytes();
     let mut depth = 0usize;
@@ -618,7 +620,7 @@ fn assignment_break(line: &str, info: &Line, unit: &str) -> Option<Vec<String>> 
                 let value = line[i + 1..].trim();
                 let wrapped = format!("{}{unit}{value}", &line[..lead]);
                 // Only where it helps: a long string stays on its line.
-                if value.is_empty() || width(&wrapped) > RIGHT_MARGIN {
+                if value.is_empty() || width(&wrapped) > margin {
                     return None;
                 }
                 return Some(vec![line[..=i].to_owned(), wrapped]);
@@ -1140,6 +1142,17 @@ mod tests {
     }
 
     #[test]
+    fn chops_at_the_configured_margin() {
+        let text = "fun f() {\nval result = repository.load(firstArgument, secondArgument, third)\n}";
+        assert_eq!(kt(text), "fun f() {\n    val result = repository.load(firstArgument, secondArgument, third)\n}");
+        let style = IndentStyle { right_margin: Some(60), ..Default::default() };
+        assert_eq!(
+            reformat_indented(ImportStyle::Kotlin, text, None, &style),
+            "fun f() {\n    val result = repository.load(\n        firstArgument,\n        secondArgument,\n        third\n    )\n}"
+        );
+    }
+
+    #[test]
     fn annotation_targets_and_type_parameters_keep_their_text() {
         let text = "class A {\n@get:Rule\nval r = 1\n@field:JvmField val f = 2\n}\nprivate inline fun <reified T : Any> Project.f() = g<T>()\nfun <T> h(a: Int) = a < b";
         assert_eq!(kt(text), "class A {\n    @get:Rule\n    val r = 1\n    @field:JvmField val f = 2\n}\nprivate inline fun <reified T : Any> Project.f() = g<T>()\nfun <T> h(a: Int) = a < b");
@@ -1166,7 +1179,7 @@ mod tests {
         assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\nval a = 1\n}", None, &IndentStyle { unit: Some("\t".into()), ..Default::default() }), "fun f() {\n\tval a = 1\n}");
         assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\n    val a = 1\n}", None, &IndentStyle { unit: Some("  ".into()), ..Default::default() }), "fun f() {\n  val a = 1\n}");
         // The code style's: Kotlin continuing by 8, a new file's unit 2.
-        let style = IndentStyle { unit: None, fallback: Some("  ".into()), continuation: Some((8, 4)) };
+        let style = IndentStyle { unit: None, fallback: Some("  ".into()), continuation: Some((8, 4)), ..Default::default() };
         assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\nval a =\n1\n}", None, &style), "fun f() {\n  val a =\n      1\n}");
     }
 
