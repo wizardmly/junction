@@ -1923,11 +1923,24 @@ impl FileEditor {
         }
         let editor = cx.entity().downgrade();
         let can_move = movable.is_some();
-        crate::ui::introduce_dialog::open(kind, style, suggestions, occurrences, typed, visibility, can_move, move |request, window, cx| {
+        let enum_check: Option<crate::ui::introduce_dialog::EnumCheck> = movable.as_ref().and_then(|plan| {
+            let index = self.code_index.clone()?;
+            let ty = plan.java_type.clone()?;
+            let (own, own_text, class_name) = (self.path.clone(), text.clone(), plan.class_name.clone());
+            Some(Rc::new(move |class: Option<&str>, cx: &gpui_kit::App| {
+                let root = index.read(cx).root().map(std::path::Path::to_path_buf).unwrap_or_default();
+                match class {
+                    None => crate::index::introduce::enum_accepts(&own_text, &class_name, &ty),
+                    Some(class) => resolve_java_class(&index, &root, &own, &own_text, class, cx)
+                        .is_ok_and(|(_, target)| crate::index::introduce::enum_accepts(&target, class.rsplit('.').next().unwrap_or(class), &ty)),
+                }
+            }) as crate::ui::introduce_dialog::EnumCheck)
+        });
+        crate::ui::introduce_dialog::open(kind, style, suggestions, occurrences, typed, visibility, can_move, enum_check, move |request, window, cx| {
             editor
                 .update(cx, |this, cx| {
-                    if let (Some(class), Some(plan)) = (request.move_to.clone(), movable.as_ref()) {
-                        if let Err(message) = this.move_constant(plan, &request, &class, window, cx) {
+                    if let Some(plan) = movable.as_ref().filter(|_| request.move_to.is_some() || request.enum_constant) {
+                        if let Err(message) = this.place_constant(plan, &request, window, cx) {
                             Self::hint(title, message, window, cx);
                         }
                         return;
@@ -1949,50 +1962,57 @@ impl FileEditor {
         }, window, cx);
     }
 
-    /// Introduce Constant's "Move to another class": the constant declared
-    /// in the Java class `class` (simple or qualified, in this project),
-    /// this file's occurrences replaced by `Class.NAME` and the class
-    /// imported when it's in another package.
-    fn move_constant(&mut self, plan: &crate::domain::introduce_variable::ConstantPlan, request: &crate::ui::introduce_dialog::IntroduceRequest, class: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+    /// Introduce Constant's "Move to another class" and "Extract as enum
+    /// constant": the constant declared in the Java class `class` (simple
+    /// or qualified, in this project; none: this file's class, as an enum
+    /// constant), this file's occurrences replaced by `Class.NAME` (`NAME`
+    /// in that class) and the class imported when it's in another package.
+    fn place_constant(&mut self, plan: &crate::domain::introduce_variable::ConstantPlan, request: &crate::ui::introduce_dialog::IntroduceRequest, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
         use crate::domain::debugger::package_of;
         use crate::domain::imports::{import_edit, ImportStyle};
-        use crate::domain::introduce_variable::{insert_constant, moved_constant};
-        use crate::index::introduce::constant_slot;
-        let not_found = || format!("Class {class} does not exist");
-        let index = self.code_index.clone().ok_or_else(not_found)?;
-        let root = index.read(cx).root().map(std::path::Path::to_path_buf).ok_or_else(not_found)?;
+        use crate::domain::introduce_variable::{enum_constant, insert_constant, moved_constant};
+        use crate::index::introduce::{constant_slot, insert_enum_constant};
         let text = self.text(cx);
-        let simple = class.rsplit('.').next().unwrap_or(class);
-        let read = |path: &str| if path == self.path { Some(text.clone()) } else { std::fs::read_to_string(root.join(path)).ok() };
-        let paths: Vec<String> = {
-            let store = index.read(cx).index.clone();
-            let store = store.read().map_err(|_| not_found())?;
-            let mut paths: Vec<String> = store.project_symbols_named(simple).filter(|(p, _, s)| s.kind.is_type() && p.ends_with(".java")).map(|(p, _, _)| p.to_owned()).collect();
-            paths.dedup();
-            paths
+        let class = request.move_to.clone().unwrap_or_else(|| plan.class_name.clone());
+        let (path, target) = match &request.move_to {
+            Some(class) => {
+                let index = self.code_index.clone().ok_or_else(|| format!("Class {class} does not exist"))?;
+                let root = index.read(cx).root().map(std::path::Path::to_path_buf).unwrap_or_default();
+                resolve_java_class(&index, &root, &self.path, &text, class, cx)?
+            }
+            None => (self.path.clone(), text.clone()),
         };
-        // A qualified name: the class whose file's package it starts with.
-        let (path, target) = paths
-            .iter()
-            .filter_map(|p| read(p).map(|t| (p.clone(), t)))
-            .find(|(_, t)| !class.contains('.') || class.starts_with(&format!("{}.", package_of(t))))
-            .ok_or_else(not_found)?;
-        let slot = constant_slot(&target, simple)?;
-        let (declaration, done) = moved_constant(&text, plan, request.all, &request.name, request.visibility, simple, slot.interface)?;
+        let simple = class.rsplit('.').next().unwrap_or(&class).to_owned();
+        let (declaration, done) = if request.enum_constant {
+            enum_constant(&text, plan, request.all, &request.name, &simple)?
+        } else {
+            let slot = constant_slot(&target, &simple)?;
+            moved_constant(&text, plan, request.all, &request.name, request.visibility, &simple, slot.interface)?
+        };
+        let declare = |text: &str| -> Result<String, String> {
+            if request.enum_constant {
+                insert_enum_constant(text, &simple, &declaration)
+            } else {
+                Ok(insert_constant(text, &constant_slot(text, &simple)?, &declaration))
+            }
+        };
         let mut new = text.clone();
         new.replace_range(done.range.clone(), &done.text);
         let mut caret = done.name_at.end;
         if path == self.path {
-            let slot = constant_slot(&new, simple)?;
-            let declared = insert_constant(&new, &slot, &declaration);
-            if slot.insert_at <= caret {
+            let declared = declare(&new)?;
+            // The declaration went in before the caret unless it's after
+            // the first occurrence.
+            let first_change = new.bytes().zip(declared.bytes()).take_while(|(a, b)| a == b).count();
+            if first_change < caret {
                 caret += declared.len() - new.len();
             }
             new = declared;
         } else {
-            std::fs::write(root.join(&path), insert_constant(&target, &slot, &declaration)).map_err(|e| e.to_string())?;
+            let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(std::path::Path::to_path_buf)).unwrap_or_default();
+            std::fs::write(root.join(&path), declare(&target)?).map_err(|e| e.to_string())?;
             let package = package_of(&target);
-            let qualified = if class.contains('.') { class.to_owned() } else { format!("{package}.{simple}") };
+            let qualified = if class.contains('.') { class.clone() } else { format!("{package}.{simple}") };
             let imported = new.lines().any(|l| l.trim() == format!("import {qualified};") || l.trim() == format!("import {package}.*;"));
             if !package.is_empty() && package != package_of(&text) && !imported {
                 let (at, line) = import_edit(ImportStyle::Java, &new, &qualified);
@@ -3420,6 +3440,26 @@ mod tests {
 
 /// Every language Junction indexes, and the other files it opens, gets
 /// keywords (or tags) in the editor's keyword color.
+/// A Java class of the project by its simple or qualified name: its file
+/// (project-relative) and text, this file's own text when it's here.
+fn resolve_java_class(index: &Entity<CodeIndex>, root: &std::path::Path, own: &str, own_text: &str, class: &str, cx: &gpui_kit::App) -> Result<(String, String), String> {
+    let not_found = || format!("Class {class} does not exist");
+    let simple = class.rsplit('.').next().unwrap_or(class);
+    let paths: Vec<String> = {
+        let store = index.read(cx).index.clone();
+        let store = store.read().map_err(|_| not_found())?;
+        let mut paths: Vec<String> = store.project_symbols_named(simple).filter(|(p, _, s)| s.kind.is_type() && p.ends_with(".java")).map(|(p, _, _)| p.to_owned()).collect();
+        paths.dedup();
+        paths
+    };
+    // A qualified name: the class whose file's package it starts with.
+    paths
+        .iter()
+        .filter_map(|p| if p == own { Some(own_text.to_owned()) } else { std::fs::read_to_string(root.join(p)).ok() }.map(|t| (p.clone(), t)))
+        .find(|(_, t)| !class.contains('.') || class.starts_with(&format!("{}.", crate::domain::debugger::package_of(t))))
+        .ok_or_else(not_found)
+}
+
 #[cfg(test)]
 #[test]
 fn every_language_highlights() {
@@ -3496,3 +3536,4 @@ fn slotted(mut marks: Vec<crate::index::hierarchy::GutterMark>) -> Vec<(u32, usi
     }
     out
 }
+

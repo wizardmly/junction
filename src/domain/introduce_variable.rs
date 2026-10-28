@@ -422,11 +422,36 @@ pub fn introduce_constant(style: ImportStyle, text: &str, plan: &ConstantPlan, a
 /// expression's uses of its own class's fields qualified, `Calc.MAX`)
 /// and the file's occurrences replaced by `Class.NAME`.
 pub fn moved_constant(text: &str, plan: &ConstantPlan, all: bool, name: &str, visibility: Visibility, class: &str, interface: bool) -> Result<(String, Introduced), String> {
-    let chosen: Vec<&Range<usize>> = if all { plan.occurrences.iter().collect() } else { plan.occurrences.get(plan.selected).into_iter().collect() };
-    let first = *chosen.first().ok_or("Cannot find an expression to introduce")?;
+    let chosen = chosen_occurrences(plan, all)?;
     let ty = plan.java_type.as_deref().ok_or("Cannot perform refactoring without a type")?;
+    let expression = moved_expression(&text[chosen[0].clone()], plan, class);
+    let declaration = if interface { format!("{ty} {name} = {expression};") } else { format!("{}static final {ty} {name} = {expression};", visibility.modifier()) };
+    Ok((declaration, referenced(text, &chosen, &format!("{class}.{name}"), name)))
+}
+
+/// Java's "Extract as enum constant": the constant `NAME(expression)`
+/// for the enum `class`, and the occurrences replaced by it (`NAME` in
+/// the enum itself, else `Enum.NAME`), as IntelliJ's
+/// EnumConstantsUtil.createEnumConstant.
+pub fn enum_constant(text: &str, plan: &ConstantPlan, all: bool, name: &str, class: &str) -> Result<(String, Introduced), String> {
+    let chosen = chosen_occurrences(plan, all)?;
+    let expression = moved_expression(&text[chosen[0].clone()], plan, class);
+    let reference = if class == plan.class_name { name.to_owned() } else { format!("{class}.{name}") };
+    Ok((format!("{name}({expression})"), referenced(text, &chosen, &reference, name)))
+}
+
+fn chosen_occurrences(plan: &ConstantPlan, all: bool) -> Result<Vec<Range<usize>>, String> {
+    let chosen: Vec<Range<usize>> = if all { plan.occurrences.clone() } else { plan.occurrences.get(plan.selected).cloned().into_iter().collect() };
+    if chosen.is_empty() {
+        return Err("Cannot find an expression to introduce".into());
+    }
+    Ok(chosen)
+}
+
+/// The expression as written in `class`: the original class's fields it
+/// uses qualified (`Calc.MAX`) when that's another class.
+fn moved_expression(source: &str, plan: &ConstantPlan, class: &str) -> String {
     let mut expression = String::new();
-    let source = &text[first.clone()];
     let mut rest = source;
     // Whole words only, not after a `.` (already qualified).
     while let Some(i) = rest.find(|c: char| c.is_alphanumeric() || c == '_') {
@@ -441,14 +466,16 @@ pub fn moved_constant(text: &str, plan: &ConstantPlan, all: bool, name: &str, vi
         rest = &rest[i + len..];
     }
     expression.push_str(rest);
-    let declaration = if interface { format!("{ty} {name} = {expression};") } else { format!("{}static final {ty} {name} = {expression};", visibility.modifier()) };
-    let reference = format!("{class}.{name}");
-    let edits = chosen.iter().map(|r| ((*r).clone(), reference.clone(), None)).collect();
+    expression
+}
+
+/// The occurrences replaced by `reference`, the caret after the first.
+fn referenced(text: &str, chosen: &[Range<usize>], reference: &str, name: &str) -> Introduced {
+    let edits = chosen.iter().map(|r| (r.clone(), reference.to_owned(), None)).collect();
     let mut done = apply_edits(text, edits, name);
-    // The caret after the first reference.
-    let end = done.range.start + done.text.find(&reference).map_or(0, |i| i + reference.len());
+    let end = done.range.start + done.text.find(reference).map_or(0, |i| i + reference.len());
     done.name_at = end - name.len()..end;
-    Ok((declaration, done))
+    done
 }
 
 /// The declaration put at `slot` in a class's text, a blank line after
@@ -582,6 +609,13 @@ mod tests {
         assert!(out.contains("return Limits.LIMIT;"));
         assert_eq!(&out[done.name_at.clone()], "LIMIT");
         assert_eq!(moved_constant(java, &plan, true, "LIMIT", Visibility::Private, "Calc", true).unwrap().0, "int LIMIT = MAX * 2 + Calc.MAX;");
+        let (constant, done) = enum_constant(java, &plan, false, "BIG", "Size").unwrap();
+        assert_eq!(constant, "BIG(Calc.MAX * 2 + Calc.MAX)");
+        assert!(apply(java, &done).contains("return Size.BIG;"));
+        let plan = ConstantPlan { class_name: "Size".into(), ..plan };
+        let (constant, done) = enum_constant(java, &plan, false, "BIG", "Size").unwrap();
+        assert_eq!(constant, "BIG(MAX * 2 + Calc.MAX)");
+        assert!(apply(java, &done).contains("return BIG;"));
 
         let target = "class Limits {\n  void g() {}\n}\n";
         let slot = ConstantSlot { insert_at: target.find("  void").unwrap(), indent: "  ".into(), interface: false, blank_after: true, after: String::new() };
