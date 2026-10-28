@@ -531,14 +531,17 @@ pub fn negated_emptiness(text: &str, caret: usize, classes: super::catches::Clas
 /// `xs.filter { … }.first()` → `xs.first { … }`, and likewise `firstOrNull`,
 /// `last`, `lastOrNull`, `single`, `singleOrNull`, `count`, `any`, `none`,
 /// `isNotEmpty()` → `any`, `isEmpty()` → `none`, `map { … }.filterNotNull()`
-/// → `mapNotNull { … }`, when `xs` is a collection, array, sequence or
+/// → `mapNotNull { … }`, `map { }.sum()` → `sumOf { }`, `map { }.joinToString()`
+/// → `joinToString { }`, `sortedBy { }.first()` → `minBy { }` (and
+/// `last` → `maxBy`, `…OrNull`, `sortedByDescending` the other way), when `xs` is a collection, array, sequence or
 /// string; the caret on the chain, outside the lambda.
 pub fn merge_call_chain(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
     let tree = symbols::parse(Lang::Kotlin, text)?;
-    let calls = innermost(tree.root_node(), caret)
+    // Right after the chain's `)` too.
+    let calls = [caret, caret.saturating_sub(1)]
         .into_iter()
-        .flat_map(ancestors)
-        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body"))
+        .filter_map(|at| innermost(tree.root_node(), at))
+        .flat_map(|n| ancestors(n).take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body")))
         .filter(|n| n.kind() == "call_expression");
     for outer in calls {
         let [callee, suffix] = children(outer)[..] else { continue };
@@ -558,6 +561,12 @@ pub fn merge_call_chain(text: &str, caret: usize, classes: super::catches::Class
             (".filter", ".isNotEmpty") => "any",
             (".filter", ".isEmpty") => "none",
             (".map", ".filterNotNull") => "mapNotNull",
+            (".map", ".sum") => "sumOf",
+            (".map", ".joinToString") => "joinToString",
+            (".sortedBy", ".first") | (".sortedByDescending", ".last") => "minBy",
+            (".sortedBy", ".firstOrNull") | (".sortedByDescending", ".lastOrNull") => "minByOrNull",
+            (".sortedBy", ".last") | (".sortedByDescending", ".first") => "maxBy",
+            (".sortedBy", ".lastOrNull") | (".sortedByDescending", ".firstOrNull") => "maxByOrNull",
             _ => continue,
         };
         let target = inner_callee.named_child(0)?;
@@ -1452,6 +1461,16 @@ mod tests {
         assert_eq!(run("it > 1 }.first"), None);
         assert!(run("filterNotNull").unwrap().1.contains("    val b = xs.mapNotNull { it.toString() }.size\n"));
         assert!(run("isNotEmpty").unwrap().1.contains("    if (s.any { it.isDigit() }) return\n"));
+        let more = "fun g(xs: List<Int>) {\n    val a = xs.map { it * 2 }.sum()\n    val b = xs.sortedBy { -it }.lastOrNull()\n    val c = xs.map { \"<$it>\" }.joinToString()\n    val d = xs.map { it }.joinToString(\", \")\n}\n";
+        let more_run = |at: &str| merge_call_chain(more, more.find(at).unwrap(), &classes).map(|i| apply(more, &i));
+        assert!(more_run("sum()").unwrap().contains("    val a = xs.sumOf { it * 2 }\n"));
+        // Right after the last `)`.
+        let end = more.find("sum()").unwrap() + "sum()".len();
+        assert!(merge_call_chain(more, end, &classes).is_some());
+        assert!(more_run("lastOrNull").unwrap().contains("    val b = xs.maxByOrNull { -it }\n"));
+        assert!(more_run("joinToString()").unwrap().contains("    val c = xs.joinToString { \"<$it>\" }\n"));
+        // joinToString with a separator keeps its argument.
+        assert_eq!(more_run("joinToString(\","), None);
         // A map's filter is a map; sum has no predicate form; a nullable receiver.
         assert_eq!(run("count()"), None);
         assert_eq!(run("sum()"), None);
