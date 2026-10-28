@@ -250,7 +250,7 @@ pub fn expression_context(lang: Lang, text: &str, range: Range<usize>) -> Option
 /// What the type of an expression is known to be: a literal's, a
 /// comparison's, a constructor call's or a cast's, or a local variable's
 /// or parameter's as declared.
-fn expression_type(lang: Lang, node: Node, text: &str) -> Option<String> {
+pub(crate) fn expression_type(lang: Lang, node: Node, text: &str) -> Option<String> {
     let kotlin = lang == Lang::Kotlin;
     if matches!(node.kind(), "prefix_expression" | "unary_expression") && text[node.byte_range()].starts_with('!') {
         return Some(if kotlin { "Boolean" } else { "boolean" }.into());
