@@ -9,6 +9,7 @@
 //! "Move to another class" with its "To class:" (the class last moved
 //! to, for this session).
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui_kit::component::{
@@ -41,7 +42,13 @@ pub struct IntroduceRequest {
     pub visibility: Visibility,
     /// A Java constant's "Move to another class": the class typed.
     pub move_to: Option<String>,
+    /// "Extract as enum constant" (offered and checked).
+    pub enum_constant: bool,
 }
+
+/// Whether the constant can be an enum constant of the class it goes to:
+/// this file's (None) or the one typed.
+pub type EnumCheck = Rc<dyn Fn(Option<&str>, &App) -> bool>;
 
 thread_local! {
     /// The visibility last chosen for a Java constant.
@@ -70,12 +77,33 @@ pub struct IntroduceView {
     can_move: bool,
     move_to: bool,
     to_class: Entity<InputState>,
+    /// "Extract as enum constant": the check, its last answer (for the
+    /// class it was asked about), and the checkbox, checked at first as
+    /// IntelliJ's.
+    enum_check: Option<EnumCheck>,
+    enum_answer: RefCell<Option<(Option<String>, bool)>>,
+    enum_constant: bool,
     _subscriptions: Vec<Subscription>,
 }
 
 impl IntroduceView {
     fn extension(&self) -> &'static str {
         if self.style == ImportStyle::Java { "java" } else { "kt" }
+    }
+
+    /// "Extract as enum constant" is offered: the class the constant goes
+    /// to is an enum that takes it.
+    fn enum_offered(&self, cx: &App) -> bool {
+        let Some(check) = &self.enum_check else { return false };
+        let class = self.move_to.then(|| self.to_class.read(cx).value().trim().to_owned());
+        if let Some((asked, answer)) = &*self.enum_answer.borrow() {
+            if *asked == class {
+                return *answer;
+            }
+        }
+        let answer = check(class.as_deref(), cx);
+        *self.enum_answer.borrow_mut() = Some((class, answer));
+        answer
     }
 
     fn request(&self, cx: &App) -> Result<IntroduceRequest, String> {
@@ -91,7 +119,7 @@ impl IntroduceView {
         } else {
             None
         };
-        Ok(IntroduceRequest { name, all: self.all, modifier: self.modifier, explicit_type: self.explicit_type, visibility: self.visibility, move_to })
+        Ok(IntroduceRequest { name, all: self.all, modifier: self.modifier, explicit_type: self.explicit_type, visibility: self.visibility, move_to, enum_constant: self.enum_constant && self.enum_offered(cx) })
     }
 }
 
@@ -99,6 +127,7 @@ impl Render for IntroduceView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let error = self.request(cx).err();
+        let enum_offered = self.enum_offered(cx);
         let suggestions = self.suggestions.iter().enumerate().map(|(ix, s)| {
             let s = s.clone();
             div()
@@ -149,7 +178,13 @@ impl Render for IntroduceView {
                 })))
                 .when(self.move_to, |el| el.child(h_flex().gap_2().child(div().text_sm().child("To class:")).child(div().flex_1().child(Input::new(&self.to_class)))))
             })
-            .when(self.choose_visibility, |el| {
+            .when(enum_offered, |el| {
+                el.child(Checkbox::new("introduce-enum").label("Extract as enum constant").checked(self.enum_constant).on_change(cx.listener(|this, v: &bool, _, cx| {
+                    this.enum_constant = *v;
+                    cx.notify();
+                })))
+            })
+            .when(self.choose_visibility && !(enum_offered && self.enum_constant), |el| {
                 let selected = Visibility::ALL.iter().position(|v| *v == self.visibility);
                 el.child(div().text_sm().child("Visibility")).child(
                     RadioGroup::horizontal("introduce-visibility").children(Visibility::ALL.map(Visibility::label)).selected_index(selected).on_change(cx.listener(
@@ -186,6 +221,7 @@ pub fn open(
     typed: bool,
     choose_visibility: bool,
     can_move: bool,
+    enum_check: Option<EnumCheck>,
     on_ok: impl Fn(IntroduceRequest, &mut Window, &mut App) + 'static,
     window: &mut Window,
     cx: &mut App,
@@ -213,7 +249,7 @@ pub fn open(
         // (JavaRefactoringSettings.INTRODUCE_CONSTANT_REPLACE_ALL).
         let all = occurrences > 1 && !(kind == Introduce::Constant && style == ImportStyle::Java);
         let visibility = LAST_VISIBILITY.with(|v| v.get());
-        IntroduceView { style, modifier_label, name, suggestions, occurrences, all, modifier: false, typed, explicit_type: false, choose_visibility, visibility, can_move, move_to: false, to_class, _subscriptions }
+        IntroduceView { style, modifier_label, name, suggestions, occurrences, all, modifier: false, typed, explicit_type: false, choose_visibility, visibility, can_move, move_to: false, to_class, enum_check, enum_answer: RefCell::new(None), enum_constant: true, _subscriptions }
     });
     let focus = view.read(cx).name.clone();
     let on_ok = Rc::new(on_ok);

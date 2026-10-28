@@ -682,6 +682,104 @@ pub fn constant_slot(text: &str, class: &str) -> Result<crate::domain::introduce
     }
 }
 
+/// The Java enum named `class` (a nested one too) in a file.
+fn find_enum<'t>(tree: &'t tree_sitter::Tree, text: &str, class: &str) -> Option<Node<'t>> {
+    let mut stack = vec![tree.root_node()];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "enum_declaration" && n.child_by_field_name("name").is_some_and(|name| &text[name.byte_range()] == class) {
+            return Some(n);
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    None
+}
+
+/// Whether the expression's type `ty` can go to a parameter of type
+/// `param`: the same, boxed, widened, or a supertype IntelliJ's
+/// TypeConversionUtil.isAssignable would take.
+fn assignable(param: &str, ty: &str) -> bool {
+    const WIDER: &[(&str, &[&str])] = &[
+        ("byte", &["short", "int", "long", "float", "double"]),
+        ("short", &["int", "long", "float", "double"]),
+        ("char", &["int", "long", "float", "double"]),
+        ("int", &["long", "float", "double"]),
+        ("long", &["float", "double"]),
+        ("float", &["double"]),
+    ];
+    const BOXES: &[(&str, &str)] = &[("boolean", "Boolean"), ("byte", "Byte"), ("short", "Short"), ("char", "Character"), ("int", "Integer"), ("long", "Long"), ("float", "Float"), ("double", "Double")];
+    let boxed = BOXES.iter().find(|(p, _)| *p == ty).map_or(ty, |(_, b)| *b);
+    param == ty
+        || param == boxed
+        || param == "Object"
+        || WIDER.iter().any(|(from, to)| *from == ty && to.contains(&param))
+        || (ty == "String" && param == "CharSequence")
+        || (boxed != ty && boxed != "Boolean" && boxed != "Character" && param == "Number")
+}
+
+/// IntelliJ's EnumConstantsUtil.isSuitableForEnumConstant: `class` is an
+/// enum in this Java file with a one-parameter constructor taking `ty`.
+pub fn enum_accepts(text: &str, class: &str, ty: &str) -> bool {
+    let Some(tree) = symbols::parse(Lang::Java, text) else { return false };
+    let Some(body) = find_enum(&tree, text, class).and_then(|e| e.child_by_field_name("body")) else { return false };
+    let mut stack = vec![body];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "constructor_declaration" {
+            let params: Vec<Node> = n.child_by_field_name("parameters").map_or(Vec::new(), |p| {
+                let mut cursor = p.walk();
+                let params = p.named_children(&mut cursor).filter(|c| c.kind() == "formal_parameter").collect();
+                params
+            });
+            if let [param] = params.as_slice() {
+                if param.child_by_field_name("type").is_some_and(|t| assignable(&text[t.byte_range()], ty)) {
+                    return true;
+                }
+            }
+            continue;
+        }
+        if matches!(n.kind(), "enum_body" | "enum_body_declarations") {
+            let mut cursor = n.walk();
+            stack.extend(n.named_children(&mut cursor));
+        }
+    }
+    false
+}
+
+/// The enum constant `NAME(…)` added to the enum `class` after its last
+/// constant (on its own line when they are), or before the `;` when it
+/// has none.
+pub fn insert_enum_constant(text: &str, class: &str, constant: &str) -> Result<String, String> {
+    let tree = symbols::parse(Lang::Java, text).ok_or_else(|| format!("Class {class} not found"))?;
+    let body = find_enum(&tree, text, class).and_then(|e| e.child_by_field_name("body")).ok_or_else(|| format!("Class {class} not found"))?;
+    let line_start = |at: usize| text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let mut cursor = body.walk();
+    let constants: Vec<Node> = body.named_children(&mut cursor).filter(|c| c.kind() == "enum_constant").collect();
+    let mut out = text.to_owned();
+    if let Some(last) = constants.last() {
+        let own_lines = constants.len() == 1 && text[body.start_byte()..last.start_byte()].contains('\n') || constants.windows(2).all(|w| text[w[0].end_byte()..w[1].start_byte()].contains('\n')) && constants.len() > 1;
+        let insert = if own_lines {
+            let indent: String = text[line_start(last.start_byte())..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            format!(",\n{indent}{constant}")
+        } else {
+            format!(", {constant}")
+        };
+        out.insert_str(last.end_byte(), &insert);
+        return Ok(out);
+    }
+    let mut cursor = body.walk();
+    let semicolon = body.named_children(&mut cursor).find(|c| c.kind() == "enum_body_declarations").map(|d| d.start_byte()).ok_or_else(|| format!("Cannot add a constant to enum {class}"))?;
+    let start = line_start(semicolon);
+    if text[start..semicolon].trim().is_empty() {
+        let class_line = line_start(body.start_byte());
+        let class_indent: String = text[class_line..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let indent = format!("{class_indent}{}", crate::domain::surround::indent_unit(text));
+        out.replace_range(start..semicolon, &format!("{indent}{constant}"));
+    } else {
+        out.insert_str(semicolon, constant);
+    }
+    Ok(out)
+}
+
 /// The names an expression uses.
 fn identifiers<'a>(node: Node, text: &'a str) -> Vec<&'a str> {
     let mut out = Vec::new();
@@ -963,6 +1061,22 @@ mod tests {
         assert_eq!(put("class Calc {}\n", "Other"), Err("Class Other not found".into()));
         let slot = constant_slot("interface Keys {\n}\n", "Keys").unwrap();
         assert!(slot.interface);
+    }
+
+    #[test]
+    fn adds_enum_constants() {
+        let e = "public enum EnumConstant {\n  ;\n  EnumConstant(String s){}\n  void foo() {\n  }\n}\n";
+        assert!(enum_accepts(e, "EnumConstant", "String"));
+        assert!(!enum_accepts(e, "EnumConstant", "int"));
+        assert!(!enum_accepts(e, "Other", "String"));
+        assert!(enum_accepts("enum E {\n  A(1);\n  E(long v) {}\n}\n", "E", "int"));
+        assert!(enum_accepts("enum E {\n  A(1);\n  E(Number v) {}\n}\n", "E", "double"));
+        assert!(!enum_accepts("enum E {\n  A(1, 2);\n  E(int a, int b) {}\n}\n", "E", "int"));
+        // As IntelliJ's introduceConstant/EnumConstant_after.java, in this file's indentation.
+        assert_eq!(insert_enum_constant(e, "EnumConstant", "xxx(\"dddddd\")").unwrap(), "public enum EnumConstant {\n  xxx(\"dddddd\");\n  EnumConstant(String s){}\n  void foo() {\n  }\n}\n");
+        assert_eq!(insert_enum_constant("enum E {\n    A(1),\n    B(2);\n    E(int v) {}\n}\n", "E", "C(3)").unwrap(), "enum E {\n    A(1),\n    B(2),\n    C(3);\n    E(int v) {}\n}\n");
+        assert_eq!(insert_enum_constant("enum E {\n  A(1), B(2);\n  E(int v) {}\n}\n", "E", "C(3)").unwrap(), "enum E {\n  A(1), B(2), C(3);\n  E(int v) {}\n}\n");
+        assert_eq!(insert_enum_constant("enum E {\n  A(1);\n  E(int v) {}\n}\n", "E", "C(3)").unwrap(), "enum E {\n  A(1),\n  C(3);\n  E(int v) {}\n}\n");
     }
 
     #[test]
