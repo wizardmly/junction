@@ -147,6 +147,7 @@ impl FileEditor {
                     crate::index::intentions::enhanced_for_loop(&text, cursor, &classes),
                     crate::index::intentions::size_check(&text, cursor, false, &classes),
                     crate::index::intentions::string_comparison(&text, cursor, &classes),
+                    crate::index::intentions::redundant_conversion(&text, cursor, false, &classes),
                 ];
                 for intention in typed.into_iter().flatten().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));
@@ -170,6 +171,7 @@ impl FileEditor {
                     crate::index::intentions::or_empty(&text, cursor, &classes),
                     crate::index::intentions::negated_emptiness(&text, cursor, &classes),
                     crate::index::intentions::merge_call_chain(&text, cursor, &classes),
+                    crate::index::intentions::redundant_conversion(&text, cursor, true, &classes),
                 ];
                 for intention in typed.into_iter().flatten().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));

@@ -60,6 +60,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Replace 'get' or 'set' call with indexing operator", "Writes list.get(i) as list[i] and map.set(k, v) as map[k] = v"),
     ("Kotlin", "Replace call with binary operator", "Writes a.equals(b) as a == b, xs.contains(x) as x in xs and a.plus(b) as a + b"),
     ("Kotlin", "Merge call chain", "Merges filter { }.first() into first { }, map { }.filterNotNull() into mapNotNull { } and similar chains"),
+    ("Kotlin", "Remove redundant call", "Drops toString() on a String, toInt() on an Int and other conversions to the type the value has"),
     ("Kotlin", "Replace with 'orEmpty()'", "Writes s ?: \"\" and xs ?: emptyList() as orEmpty()"),
     ("Kotlin", "Replace negated 'isEmpty' with 'isNotEmpty'", "Writes !xs.isEmpty() as xs.isNotEmpty(), and !isNotEmpty() / !isBlank() / !isNotBlank() likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
@@ -68,6 +69,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Java", "Replace with enhanced 'for'", "Turns an indexed for loop over a list or an array into a for each loop"),
     ("Java", "Replace size check with 'isEmpty()'", "Replaces size() == 0 (or length() of a string) and a string's equals(\"\") with isEmpty(), != 0 and > 0 with !isEmpty()"),
     ("Java", "Replace '==' with 'equals()'", "Compares strings with equals() instead of == or !="),
+    ("Java", "Remove redundant 'toString()' call", "Drops toString() called on a String"),
 ];
 
 /// The family an intention's title belongs to (`Add braces to 'if'

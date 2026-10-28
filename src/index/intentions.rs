@@ -575,6 +575,55 @@ pub fn merge_call_chain(text: &str, caret: usize, classes: super::catches::Class
     None
 }
 
+/// Remove redundant call (Kotlin, IntelliJ's
+/// RemoveRedundantCallsOfConversionMethodsInspection): `s.toString()` on a
+/// String, `n.toInt()` on an Int, and the other conversions to the type the
+/// receiver already has, become the receiver; Java's Remove redundant
+/// 'toString()' call (RedundantStringOperationInspection) does the same for
+/// `s.toString()` on a String. Not on a nullable receiver, whose
+/// `toString()` gives "null".
+pub fn redundant_conversion(text: &str, caret: usize, kotlin: bool, classes: super::catches::Classes) -> Option<Intention> {
+    let (range, target, name) = if kotlin {
+        let tree = symbols::parse(Lang::Kotlin, text)?;
+        let (call, target, name, values) = method_call(tree.root_node(), text, caret)?;
+        if !values.is_empty() {
+            return None;
+        }
+        let ty = receiver_type(target, text, classes)?;
+        let wanted = match name {
+            "toString" => "String",
+            "toInt" => "Int",
+            "toLong" => "Long",
+            "toShort" => "Short",
+            "toByte" => "Byte",
+            "toDouble" => "Double",
+            "toFloat" => "Float",
+            "toChar" => "Char",
+            _ => return None,
+        };
+        if ty.ends_with('?') || type_head(&ty) != wanted {
+            return None;
+        }
+        (call.byte_range(), target.byte_range(), "Remove redundant call".to_owned())
+    } else {
+        let tree = symbols::parse(Lang::Java, text)?;
+        let call = ancestors(innermost(tree.root_node(), caret)?)
+            .take_while(|n| !matches!(n.kind(), "block" | "class_body" | "expression_statement" | "lambda_expression"))
+            .find(|n| n.kind() == "method_invocation" && n.child_by_field_name("name").is_some_and(|m| m.start_byte() <= caret && caret <= m.end_byte()))?;
+        let object = call.child_by_field_name("object")?;
+        let empty = call.child_by_field_name("arguments").is_some_and(|a| a.named_child_count() == 0);
+        if &text[call.child_by_field_name("name")?.byte_range()] != "toString" || !empty {
+            return None;
+        }
+        let ty = java_type(object, text, classes)?;
+        if ty != "String" && ty != "java.lang.String" {
+            return None;
+        }
+        (call.byte_range(), object.byte_range(), "Remove redundant 'toString()' call".to_owned())
+    };
+    Some(Intention { title: name, caret: range.start, replacement: text[target].to_owned(), range })
+}
+
 /// Replace 'get' call with indexing operator / Replace 'set' call with
 /// indexing operator (IntelliJ's ReplaceGetOrSetInspection): `xs.get(i)`
 /// → `xs[i]`, the statement `m.set(k, v)` → `m[k] = v`, when the
@@ -1358,6 +1407,27 @@ mod tests {
         assert_eq!(run("count()"), None);
         assert_eq!(run("sum()"), None);
         assert_eq!(run("?.first"), None);
+    }
+
+    #[test]
+    fn removes_redundant_conversions() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(s: String, n: Int, l: Long, q: String?) {\n    val a = s.toString().length\n    val b = n.toInt() + l.toInt()\n    val c = q.toString()\n}\n";
+        let run = |at: &str| redundant_conversion(text, text.find(at).unwrap(), true, &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("toString().length").unwrap();
+        assert_eq!(title, "Remove redundant call");
+        assert!(out.contains("    val a = s.length\n"), "{out}");
+        assert!(run("toInt() +").unwrap().1.contains("    val b = n + l.toInt()\n"));
+        // A Long's toInt converts; a nullable's toString gives \"null\".
+        assert_eq!(run("toInt()\n"), None);
+        assert_eq!(run("toString()\n"), None);
+
+        let text = "class A {\n    int f(String s, Object o) {\n        return s.toString().length() + o.toString().length();\n    }\n}\n";
+        let run = |at: &str| redundant_conversion(text, text.find(at).unwrap(), false, &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("toString().length() +").unwrap();
+        assert_eq!(title, "Remove redundant 'toString()' call");
+        assert!(out.contains("        return s.length() + o.toString().length();\n"), "{out}");
+        assert_eq!(run("toString().length();"), None);
     }
 
     #[test]
