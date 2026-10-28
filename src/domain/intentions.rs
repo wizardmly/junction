@@ -69,6 +69,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Replace 'substring' call with a simpler call", "Writes s.substring(0, n) as s.take(n), s.substring(0, s.length - n) as s.dropLast(n) and s.substring(0, s.indexOf(x)) as s.substringBefore(x)"),
     ("Kotlin", "Convert two comparisons to range check", "Writes x >= a && x <= b as x in a..b, and x >= a && x < b as x in a until b"),
     ("Kotlin", "Replace 'associate' with 'associateWith' or 'associateBy'", "Writes xs.associate { it to f(it) } as xs.associateWith { f(it) } and xs.associate { f(it) to it } as xs.associateBy { f(it) }"),
+    ("Kotlin", "Replace 'count' with 'size'", "Writes xs.count() on a collection, map or array as xs.size, and s.count() on a string as s.length"),
     ("Kotlin", "Replace with 'isNullOrEmpty()'", "Writes s == null || s.isEmpty() as s.isNullOrEmpty(), s != null && s.isNotEmpty() as !s.isNullOrEmpty(), and isBlank likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
@@ -107,6 +108,8 @@ pub fn family(title: &str) -> &str {
         "Replace 'substring' call with a simpler call"
     } else if title.starts_with("Replace 'associate' with '") {
         "Replace 'associate' with 'associateWith' or 'associateBy'"
+    } else if title == "Replace 'count' with 'length'" {
+        "Replace 'count' with 'size'"
     } else if title.starts_with("Merge call chain to '") {
         "Merge call chain"
     } else if title.starts_with("Iterate over '") {
