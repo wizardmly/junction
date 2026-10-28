@@ -17,6 +17,7 @@ mod vector_preview;
 mod merged_manifest;
 mod parameter_info;
 mod import_hint;
+mod in_place;
 mod overrides;
 mod problems;
 mod test_marks;
@@ -485,6 +486,8 @@ pub struct FileEditor {
     context_actions: Option<fixes::ContextActions>,
     /// A live template being filled in.
     template: Option<templates::TemplateState>,
+    /// In-place Introduce Variable, while its name is being edited.
+    in_place: Option<in_place::InPlace>,
     context_focus: gpui_kit::FocusHandle,
     popup_focus: gpui_kit::FocusHandle,
     /// The file couldn't be read: no editing, saving or reloading.
@@ -830,6 +833,7 @@ impl FileEditor {
             inspections_task: None,
             context_actions: None,
             template: None,
+            in_place: None,
             context_focus: cx.focus_handle(),
             popup_focus: cx.focus_handle(),
             error,
@@ -1937,9 +1941,9 @@ impl FileEditor {
         // In the editor (IntelliJ's default): the first name, renamed in place.
         if kind == Introduce::Variable && crate::settings::Settings::get(cx).diff.refactor_in_editor {
             let Some(name) = suggestions.first().cloned() else { return };
-            let plan = Rc::new(InPlaceIntroduce { edit, name, imports: if style == ImportStyle::Java { imports } else { Vec::new() }, style, occurrences });
+            let plan = Rc::new(in_place::InPlaceIntroduce { edit, name, suggestions: suggestions.clone(), imports, style, typed, occurrences });
             if occurrences < 2 {
-                return self.introduce_in_place(&plan, false, window, cx);
+                return self.introduce_in_place(plan, false, window, cx);
             }
             return self.choose_occurrences(plan, range, window, cx);
         }
@@ -1987,37 +1991,6 @@ impl FileEditor {
                 })
                 .ok();
         }, window, cx);
-    }
-
-    /// In-place Introduce Variable: the variable declared under the
-    /// plan's first name, then every occurrence of the name edited at once
-    /// in the text (Enter or Escape ends it).
-    pub(super) fn introduce_in_place(&mut self, plan: &InPlaceIntroduce, all: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.text(cx);
-        let request = crate::ui::introduce_dialog::IntroduceRequest {
-            name: plan.name.clone(),
-            all,
-            modifier: false,
-            explicit_type: false,
-            visibility: crate::domain::introduce_variable::Visibility::Public,
-            move_to: None,
-            enum_constant: false,
-        };
-        match (plan.edit)(&text, &request) {
-            Err(message) => Self::hint("Introduce Variable", format!("Cannot perform refactoring.\n{message}"), window, cx),
-            Ok(done) => {
-                let (replaced, replacement, shift) = with_imports(plan.style, &text, done.range.clone(), &done.text, &plan.imports);
-                let moved = |r: &Range<usize>| r.start + shift..r.end + shift;
-                let name_at = moved(&done.name_at);
-                self.state.update(cx, |state, cx| {
-                    state.set_selected_range(replaced, cx);
-                    state.replace(&replacement, window, cx);
-                    state.set_selected_range(name_at.clone(), cx);
-                });
-                let stops = vec![std::iter::once(name_at.clone()).chain(done.uses.iter().map(moved)).collect()];
-                self.start_template(crate::domain::live_templates::Session { stops, current: 0, end: name_at.end }, cx);
-            }
-        }
     }
 
     /// Introduce Constant's "Move to another class" and "Extract as enum
@@ -3248,6 +3221,22 @@ impl Render for FileEditor {
                     cx.stop_propagation();
                 }
             }))
+            // In-place Introduce Variable: its options' Alt keys, its names' Up / Down.
+            .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                if this.in_place_key(&e.keystroke, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &gpui_kit::component::input::MoveUp, window, cx| {
+                if this.in_place_step(-1, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &gpui_kit::component::input::MoveDown, window, cx| {
+                if this.in_place_step(1, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .capture_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, _, cx| {
                 if this.template_escape(cx) {
                     cx.stop_propagation();
@@ -3521,6 +3510,7 @@ impl Render for FileEditor {
                 .when_some(self.popup.zip(self.popup_anchor.get()), |el, (ix, at)| el.child(self.render_popup(ix, at, cx)))
                 .children(self.render_expression_highlight(cx))
                 .children(self.render_template_stops(cx))
+                .children(self.render_in_place(cx))
                 .children(self.render_parameter_info(cx))
                 .children(self.render_import_hint(cx))
                 .children(self.render_context_actions(cx))
@@ -3547,17 +3537,6 @@ mod tests {
         assert_eq!(line_start(text, 2), 5);
         assert_eq!(line_of(text, 5), 2);
     }
-}
-
-/// In-place Introduce Variable's plan: its edit, the name it starts
-/// with, the classes a Java declaration's type needs imported, and how
-/// many occurrences there are.
-pub(super) struct InPlaceIntroduce {
-    edit: Box<dyn Fn(&str, &crate::ui::introduce_dialog::IntroduceRequest) -> Result<crate::domain::introduce_variable::Introduced, String>>,
-    name: String,
-    imports: Vec<String>,
-    style: crate::domain::imports::ImportStyle,
-    pub(super) occurrences: usize,
 }
 
 /// `text` with `range` replaced by `with` and the classes `imports`
