@@ -23,6 +23,7 @@ pub mod safe_delete;
 pub mod unwrap;
 pub mod surround;
 pub mod catches;
+pub mod types;
 pub mod change_signature;
 pub mod extract_method;
 pub mod introduce_parameter;

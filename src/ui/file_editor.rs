@@ -1891,10 +1891,23 @@ impl FileEditor {
         type Edit = Box<dyn Fn(&str, &crate::ui::introduce_dialog::IntroduceRequest) -> Result<crate::domain::introduce_variable::Introduced, String>>;
         let (mut typed, mut visibility) = (false, false);
         let mut movable: Option<crate::domain::introduce_variable::ConstantPlan> = None;
+        // The classes a type found through declarations needs imported.
+        let mut imports: Vec<String> = Vec::new();
         let (suggestions, occurrences, has_type, edit): (Vec<String>, usize, bool, Edit) = match kind {
-            Introduce::Variable => match crate::index::introduce::extraction(lang, &text, range) {
+            Introduce::Variable => match crate::index::introduce::extraction(lang, &text, range.clone()) {
                 Err(message) => return fail(message, window, cx),
-                Ok((extraction, taken)) => {
+                Ok((mut extraction, taken)) => {
+                    // A call's or member's type, from its declaration.
+                    if extraction.java_type.is_none() && extraction.kotlin_type.is_none() {
+                        if let Some(found) = crate::index::types::type_of(lang, &text, range, &|n| self.class_texts(n, false, cx)) {
+                            if style == ImportStyle::Java {
+                                extraction.java_type = Some(found.ty);
+                            } else {
+                                extraction.kotlin_type = Some(found.ty);
+                            }
+                            imports = found.imports;
+                        }
+                    }
                     typed = extraction.kotlin_type.is_some();
                     (
                         suggest_names(style, &extraction.source, &|n| taken.iter().any(|t| t == n)),
@@ -1948,14 +1961,19 @@ impl FileEditor {
                     let text = this.text(cx);
                     match edit(&text, &request) {
                         Err(message) => Self::hint(title, message, window, cx),
-                        Ok(done) => this.state.update(cx, |state, cx| {
-                            state.set_selected_range(done.range.clone(), cx);
-                            state.replace(&done.text, window, cx);
-                            // The caret after the new name, nothing selected: the
-                            // dialog already named it (typing over a selected name
-                            // would rename the declaration alone).
-                            state.set_selected_range(done.name_at.end..done.name_at.end, cx);
-                        }),
+                        Ok(done) => {
+                            // Kotlin writes the type only when asked to.
+                            let imports: &[String] = if style == ImportStyle::Java || request.explicit_type { &imports } else { &[] };
+                            let (replaced, replacement, shift) = with_imports(style, &text, done.range.clone(), &done.text, imports);
+                            this.state.update(cx, |state, cx| {
+                                state.set_selected_range(replaced, cx);
+                                state.replace(&replacement, window, cx);
+                                // The caret after the new name, nothing selected: the
+                                // dialog already named it (typing over a selected name
+                                // would rename the declaration alone).
+                                state.set_selected_range(done.name_at.end + shift..done.name_at.end + shift, cx);
+                            })
+                        }
                     }
                 })
                 .ok();
@@ -2102,23 +2120,9 @@ impl FileEditor {
         use crate::domain::surround::Surrounder::{TryCatch, TryCatchExpression, TryCatchFinally, TryCatchFinallyExpression};
         let thrown = if matches!(surrounder, TryCatch | TryCatchFinally | TryCatchExpression | TryCatchFinallyExpression) { self.thrown_exceptions(lang, &text, range, cx) } else { Vec::new() };
         let done = crate::domain::surround::with_catches(done, &thrown.iter().map(|t| t.name.clone()).collect::<Vec<_>>());
-        let mut new_text = text.clone();
-        new_text.replace_range(done.range.clone(), &done.text);
-        let (mut start, mut shift) = (done.range.start, 0);
-        for t in &thrown {
-            let header = crate::domain::imports::header(&new_text);
-            let imported: Vec<String> = header.imports.iter().map(|(_, q)| q.clone()).chain(header.wildcards.iter().map(|w| format!("{w}.*"))).collect();
-            if crate::domain::imports::is_visible(&t.qualified, Some(&header.package), &imported, &crate::domain::imports::implicit_packages(style)) {
-                continue;
-            }
-            let (at, line) = crate::domain::imports::import_edit(style, &new_text, &t.qualified);
-            new_text.insert_str(at, &line);
-            start = start.min(at);
-            shift += line.len();
-        }
+        let qualified: Vec<String> = thrown.iter().map(|t| t.qualified.clone()).collect();
+        let (replaced, replacement, shift) = with_imports(style, &text, done.range.clone(), &done.text, &qualified);
         let moved = |r: &Range<usize>| r.start + shift..r.end + shift;
-        let replaced = start..done.range.end;
-        let replacement = new_text[start..done.range.start + shift + done.text.len()].to_owned();
         let select = moved(&done.stops.first().cloned().unwrap_or(done.select.clone()));
         self.state.update(cx, |state, cx| {
             state.set_selected_range(replaced, cx);
@@ -3503,6 +3507,32 @@ mod tests {
         assert_eq!(line_start(text, 2), 5);
         assert_eq!(line_of(text, 5), 2);
     }
+}
+
+/// `text` with `range` replaced by `with` and the classes `imports`
+/// imported where missing, as one edit: the range it replaces, its new
+/// text, and how far the replaced range's content moved down.
+fn with_imports(style: crate::domain::imports::ImportStyle, text: &str, range: Range<usize>, with: &str, imports: &[String]) -> (Range<usize>, String, usize) {
+    use crate::domain::imports::{header, implicit_packages, import_edit, is_visible};
+    let mut new_text = text.to_owned();
+    new_text.replace_range(range.clone(), with);
+    let (mut start, mut shift) = (range.start, 0);
+    for qualified in imports {
+        let h = header(&new_text);
+        let imported: Vec<String> = h.imports.iter().map(|(_, q)| q.clone()).chain(h.wildcards.iter().map(|w| format!("{w}.*"))).collect();
+        if is_visible(qualified, Some(&h.package), &imported, &implicit_packages(style)) {
+            continue;
+        }
+        let (at, line) = import_edit(style, &new_text, qualified);
+        if at > range.start + shift {
+            continue;
+        }
+        new_text.insert_str(at, &line);
+        start = start.min(at);
+        shift += line.len();
+    }
+    let replacement = new_text[start..range.start + shift + with.len()].to_owned();
+    (start..range.end, replacement, shift)
 }
 
 /// Every language Junction indexes, and the other files it opens, gets
