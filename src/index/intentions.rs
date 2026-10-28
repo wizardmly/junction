@@ -126,7 +126,7 @@ fn iteration_name(expression: &str, element: &str) -> String {
         } else {
             last.strip_suffix('s').map(str::to_owned)
         };
-        if let Some(s) = singular.filter(|s| s.len() > 1) {
+        if let Some(s) = singular.filter(|s| !s.is_empty()) {
             let mut chars = s.chars();
             let first = chars.next().unwrap_or('e').to_lowercase().collect::<String>();
             return first + chars.as_str();
@@ -135,13 +135,13 @@ fn iteration_name(expression: &str, element: &str) -> String {
     let base = element.split('<').next().unwrap_or(element).trim_end_matches('?');
     let base = base.rsplit('.').next().unwrap_or(base);
     match base {
-        "Int" => "i".into(),
-        "Long" => "l".into(),
-        "Short" | "String" => "s".into(),
-        "Byte" | "Boolean" => "b".into(),
-        "Char" => "c".into(),
-        "Double" => "d".into(),
-        "Float" => "f".into(),
+        "Int" | "int" | "Integer" => "i".into(),
+        "Long" | "long" => "l".into(),
+        "Short" | "short" | "String" => "s".into(),
+        "Byte" | "byte" | "Boolean" | "boolean" => "b".into(),
+        "Char" | "char" | "Character" => "c".into(),
+        "Double" | "double" => "d".into(),
+        "Float" | "float" => "f".into(),
         "Entry" => "entry".into(),
         _ if base.starts_with(|c: char| c.is_uppercase()) && base.chars().all(|c| c.is_alphanumeric()) => {
             let mut chars = base.chars();
@@ -255,10 +255,11 @@ pub fn indexed_for_loop(text: &str, caret: usize, classes: super::catches::Class
     }
     let collection = super::surround::expression_type(Lang::Java, value, text).or_else(|| super::types::type_of(Lang::Java, text, value.byte_range(), classes).map(|t| t.ty))?;
     let head = collection.split('<').next().unwrap_or(&collection);
+    let head = head.rsplit('.').next().unwrap_or(head);
     let expression = &text[value.byte_range()];
     let (bound, element) = if collection.ends_with("[]") {
         (format!("{expression}.length"), format!("{expression}[{{i}}]"))
-    } else if matches!(head, "List" | "ArrayList" | "LinkedList" | "MutableList" | "java.util.List" | "CopyOnWriteArrayList" | "Vector") {
+    } else if matches!(head, "List" | "ArrayList" | "LinkedList" | "CopyOnWriteArrayList" | "Vector") {
         (format!("{expression}.size()"), format!("{expression}.get({{i}})"))
     } else {
         return None;
@@ -281,6 +282,114 @@ pub fn indexed_for_loop(text: &str, caret: usize, classes: super::catches::Class
         format!("{{\n{indent}{unit}{declaration}\n{indent}{unit}{body_text}\n{indent}}}")
     };
     Some(Intention { title: "Replace 'for each' loop with indexed 'for' loop".into(), range: n.byte_range(), replacement: format!("{header}{new_body}"), caret: n.start_byte() })
+}
+
+/// Replace with enhanced 'for' (Java, IntelliJ's ForLoopReplaceableByForEach
+/// fix): `for (int i = 0; i < names.size(); i++)` (or `< names.length`)
+/// whose body reads `i` only in `names.get(i)` (`names[i]`) → `for (String
+/// name : names)`, a leading `String s = names.get(i);` giving the name.
+pub fn enhanced_for_loop(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Java, text)?;
+    let at = innermost(tree.root_node(), caret)?;
+    let n = ancestors(at).find(|n| matches!(n.kind(), "for_statement" | "block" | "class_body"))?;
+    let body = n.child_by_field_name("body").filter(|b| b.kind() == "block")?;
+    if n.kind() != "for_statement" || caret >= body.start_byte() {
+        return None;
+    }
+    let field = |name: &str| n.child_by_field_name(name).map(|c| text[c.byte_range()].split_whitespace().collect::<String>());
+    // `int i = 0`, `i < x.size()`, `i++`
+    let init = field("init")?;
+    let index = init.strip_prefix("int")?.strip_suffix("=0;").or_else(|| init.strip_prefix("int")?.strip_suffix("=0"))?.to_owned();
+    let condition = field("condition")?;
+    let bound = condition.strip_prefix(&format!("{index}<"))?;
+    let (collection, array) = match (bound.strip_suffix(".size()"), bound.strip_suffix(".length")) {
+        (Some(c), _) => (c.to_owned(), false),
+        (_, Some(c)) => (c.to_owned(), true),
+        _ => return None,
+    };
+    if !collection.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') || collection.is_empty() {
+        return None;
+    }
+    let update = field("update")?;
+    if ![format!("{index}++"), format!("++{index}"), format!("{index}+=1")].contains(&update) {
+        return None;
+    }
+    // The collection's element type, from its declaration.
+    let value = n.child_by_field_name("condition")?.child_by_field_name("right")?.child_by_field_name("object")?;
+    let declared = super::surround::expression_type(Lang::Java, value, text).or_else(|| super::types::type_of(Lang::Java, text, value.byte_range(), classes).map(|t| t.ty))?;
+    let element = if array {
+        declared.strip_suffix("[]")?.to_owned()
+    } else {
+        let (head, args) = declared.split_once('<')?;
+        if !matches!(head.rsplit('.').next().unwrap_or(head), "List" | "ArrayList" | "LinkedList" | "Vector" | "CopyOnWriteArrayList") {
+            return None;
+        }
+        args.strip_suffix('>')?.trim().to_owned()
+    };
+    let access = if array { format!("{collection}[{index}]") } else { format!("{collection}.get({index})") };
+    let body_text = &text[body.byte_range()];
+    // Every use of the index is an access; the list isn't changed.
+    let squeezed: String = body_text.split_whitespace().collect();
+    let uses = squeezed.match_indices(&index).filter(|(i, _)| {
+        let before = squeezed[..*i].chars().next_back();
+        let after = squeezed[i + index.len()..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric() || c == '_') && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+    });
+    if uses.count() != squeezed.matches(&access).count() || ["add", "remove", "set", "clear", "addAll", "removeIf"].iter().any(|m| squeezed.contains(&format!("{collection}.{m}("))) {
+        return None;
+    }
+    // A leading `T name = access;` names the loop's variable.
+    let inner = body_text[1..body_text.len() - 1].to_owned();
+    let first = inner.trim_start();
+    let leading = first.split_once(';').and_then(|(statement, _)| {
+        let (decl, value) = statement.split_once('=')?;
+        let name = decl.split_whitespace().last()?.to_owned();
+        (value.split_whitespace().collect::<String>() == access && name.chars().all(|c| c.is_alphanumeric() || c == '_')).then(|| (name, statement.len() + 1))
+    });
+    let (name, inner) = match leading {
+        Some((name, len)) => {
+            let rest = &first[len..];
+            // Drop the declaration's line.
+            let rest = rest.strip_prefix(|c: char| c == ' ' || c == '\t').map_or(rest, |r| r).trim_start_matches([' ', '\t']);
+            let rest = rest.strip_prefix('\n').unwrap_or(rest);
+            let lead = &inner[..inner.len() - first.len()];
+            let lead = lead.rfind('\n').map_or("", |i| &lead[..=i]);
+            (name, format!("{lead}{rest}"))
+        }
+        None => {
+            let base = iteration_name(&collection, &element);
+            let name = std::iter::once(base.clone()).chain((1..).map(|k| format!("{base}{k}"))).find(|c| !mentions(&inner, c))?;
+            (name, inner)
+        }
+    };
+    let inner = replace_access(&inner, &collection, &index, array, &name);
+    Some(Intention { title: "Replace with enhanced 'for'".into(), range: n.byte_range(), replacement: format!("for ({element} {name} : {collection}) {{{inner}}}"), caret: n.start_byte() })
+}
+
+/// `names.get(i)` / `names.get( i )` / `names[i]` → `name`.
+fn replace_access(text: &str, collection: &str, index: &str, array: bool, name: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let (open, close) = if array { ('[', ']') } else { ('(', ')') };
+    let prefix = if array { collection.to_owned() } else { format!("{collection}.get") };
+    while let Some(i) = rest.find(&prefix) {
+        let after = &rest[i + prefix.len()..];
+        let boundary = !rest[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
+        let arg = after.trim_start().strip_prefix(open).and_then(|a| a.split_once(close)).filter(|(a, _)| a.trim() == index);
+        match arg {
+            Some((_, tail)) if boundary => {
+                out.push_str(&rest[..i]);
+                out.push_str(name);
+                rest = tail;
+            }
+            _ => {
+                out.push_str(&rest[..i + prefix.len()]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 type Typing<'a> = dyn Fn(Node) -> Option<(String, Vec<String>)> + 'a;
@@ -619,6 +728,24 @@ mod tests {
         // Not an Iterable; not in the body.
         assert_eq!(indexed_for_loop(text, at("t : it"), &classes), None);
         assert_eq!(indexed_for_loop(text, at("println"), &classes), None);
+    }
+
+    #[test]
+    fn replaces_an_indexed_loop_with_for_each() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "class A {\n    void f(java.util.List<String> names, int[] ns, java.util.List<String> other) {\n        for (int i = 0; i < names.size(); i++) {\n            String s = names.get(i);\n            print(s);\n        }\n        for (int j = 0; j < ns.length; j++) {\n            total += ns[j] * ns[ j ];\n        }\n        for (int k = 0; k < other.size(); k++) {\n            print(k + other.get(k));\n        }\n    }\n}\n";
+        let at = |s: &str| text.find(s).unwrap();
+        let i = enhanced_for_loop(text, at("int i"), &classes).unwrap();
+        assert_eq!(i.title, "Replace with enhanced 'for'");
+        assert!(apply(text, &i).contains("        for (String s : names) {\n            print(s);\n        }\n"), "{}", apply(text, &i));
+        let out = apply(text, &enhanced_for_loop(text, at("int j"), &classes).unwrap());
+        assert!(out.contains("        for (int n : ns) {\n            total += n * n;\n        }\n"), "{out}");
+        // The index used on its own.
+        assert_eq!(enhanced_for_loop(text, at("int k"), &classes), None);
+        // Back and forth with the indexed loop.
+        let each = "class A {\n    void f(java.util.List<String> names) {\n        for (String name : names) {\n            print(name);\n        }\n    }\n}\n";
+        let indexed = apply(each, &indexed_for_loop(each, each.find("name :").unwrap(), &classes).unwrap());
+        assert_eq!(apply(&indexed, &enhanced_for_loop(&indexed, indexed.find("int i").unwrap(), &classes).unwrap()), each);
     }
 
     #[test]

@@ -56,6 +56,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
     ("Java", "Replace 'for each' loop with indexed 'for' loop", "Loops over a list or an array by index instead of with for each"),
+    ("Java", "Replace with enhanced 'for'", "Turns an indexed for loop over a list or an array into a for each loop"),
 ];
 
 /// The family an intention's title belongs to (`Add braces to 'if'
