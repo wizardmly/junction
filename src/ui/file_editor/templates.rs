@@ -118,6 +118,7 @@ impl FileEditor {
     pub(super) fn start_template(&mut self, session: Session, cx: &mut Context<Self>) {
         let text = self.state.read(cx).value().to_string();
         self.template = (!session.stops.is_empty()).then_some(TemplateState { session, text, syncing: false });
+        self.in_place = None;
         cx.notify();
     }
 
@@ -183,6 +184,12 @@ impl FileEditor {
             }
         }
         cx.notify();
+    }
+
+    /// The current variable's places, the first one first.
+    pub(super) fn template_places(&self) -> Option<&[std::ops::Range<usize>]> {
+        let t = self.template.as_ref()?;
+        t.session.stops.get(t.session.current).map(Vec::as_slice)
     }
 
     /// The current variable's places, outlined.

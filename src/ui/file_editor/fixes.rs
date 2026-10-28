@@ -65,7 +65,7 @@ pub(super) enum Choice {
     Typed(crate::domain::intentions::Intention, Vec<String>),
     /// In-place Introduce Variable's "Multiple occurrences found": this
     /// occurrence only (false) or all of them.
-    InPlace(std::rc::Rc<super::InPlaceIntroduce>, bool),
+    InPlace(std::rc::Rc<super::in_place::InPlaceIntroduce>, bool),
     /// Generate › Override Methods… (false) / Implement Methods… (true).
     Override(bool),
     /// Generate › Test…: Create Test.
@@ -277,7 +277,7 @@ impl FileEditor {
     }
 
     /// In-place Introduce Variable's "Multiple occurrences found" popup.
-    pub(super) fn choose_occurrences(&mut self, plan: std::rc::Rc<super::InPlaceIntroduce>, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn choose_occurrences(&mut self, plan: std::rc::Rc<super::in_place::InPlaceIntroduce>, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
         let cursor = self.state.read(cx).cursor();
         let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
         let items = vec![(range.clone(), Choice::InPlace(plan.clone(), false)), (range, Choice::InPlace(plan, true))];
@@ -365,7 +365,7 @@ impl FileEditor {
                     state.replace(&fix.replacement, window, cx);
                 });
             }
-            Choice::InPlace(plan, all) => self.introduce_in_place(&plan, all, window, cx),
+            Choice::InPlace(plan, all) => self.introduce_in_place(plan, all, window, cx),
             Choice::Typed(intention, imports) => {
                 let text = self.text(cx);
                 let (replaced, replacement, shift) = super::with_imports(crate::domain::imports::ImportStyle::Kotlin, &text, intention.range.clone(), &intention.replacement, &imports);
