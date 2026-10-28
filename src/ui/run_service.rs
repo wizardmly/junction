@@ -404,7 +404,7 @@ impl RunService {
         let config = self.configuration(cx)?;
         let target = config.junit.as_ref()?;
         let kind = if target.instrumented { TestKind::Instrumented } else { TestKind::Unit };
-        let request = crate::domain::testing::TestRequest { kind, filters: target.filters(), name: config.name.clone(), debug_port: None, coverage: false };
+        let request = crate::domain::testing::TestRequest { kind, filters: target.filters(), name: config.name.clone(), debug_port: None, coverage: false, arguments: if target.instrumented { target.arguments.clone() } else { Vec::new() } };
         Some((config, request))
     }
 

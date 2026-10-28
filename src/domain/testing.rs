@@ -410,11 +410,13 @@ pub struct TestRequest {
     pub debug_port: Option<u16>,
     /// Run with Coverage: JaCoCo records which code the tests ran.
     pub coverage: bool,
+    /// An instrumented run's extra runner arguments (`-e key value`).
+    pub arguments: Vec<(String, String)>,
 }
 
 impl TestRequest {
     pub fn of(kind: TestKind, mark: &TestMark) -> Self {
-        Self { kind, filters: vec![(mark.class.clone(), mark.method.clone())], name: mark.name(), debug_port: None, coverage: false }
+        Self { kind, filters: vec![(mark.class.clone(), mark.method.clone())], name: mark.name(), debug_port: None, coverage: false, arguments: Vec::new() }
     }
 }
 
@@ -426,7 +428,7 @@ impl TestRequest {
 /// relative to the module's; none outside test sources.
 pub fn folder_request(rel: &str, module: &ModuleInfo) -> Option<TestRequest> {
     let parts: Vec<&str> = rel.split(['/', '\\']).filter(|p| !p.is_empty() && *p != ".").collect();
-    let whole = |kind| Some(TestRequest { kind, filters: Vec::new(), name: format!("Tests in '{}'", module.name()), debug_port: None, coverage: false });
+    let whole = |kind| Some(TestRequest { kind, filters: Vec::new(), name: format!("Tests in '{}'", module.name()), debug_port: None, coverage: false, arguments: Vec::new() });
     match parts.as_slice() {
         [] | ["src"] => whole(TestKind::Unit),
         ["src", set, rest @ ..] => {
@@ -435,7 +437,7 @@ pub fn folder_request(rel: &str, module: &ModuleInfo) -> Option<TestRequest> {
                 [] | [_] => whole(kind),
                 [_, package @ ..] => {
                     let package = package.join(".");
-                    Some(TestRequest { kind, filters: vec![(format!("{package}.*"), None)], name: format!("Tests in '{package}'"), debug_port: None, coverage: false })
+                    Some(TestRequest { kind, filters: vec![(format!("{package}.*"), None)], name: format!("Tests in '{package}'"), debug_port: None, coverage: false, arguments: Vec::new() })
                 }
             }
         }
@@ -503,6 +505,10 @@ pub fn plan(build_root: &Path, module: &ModuleInfo, variant: &str, request: &Tes
             if !packages.is_empty() {
                 let packages: Vec<&str> = packages.iter().map(|(p, _)| p.trim_end_matches(".*")).collect();
                 args.push(format!("-Pandroid.testInstrumentationRunnerArguments.package={}", packages.join(",")));
+            }
+            // The configuration's instrumentation arguments, as `-e key value`.
+            for (key, value) in &request.arguments {
+                args.push(format!("-Pandroid.testInstrumentationRunnerArguments.{key}={value}"));
             }
             report_dir = module.dir.join("build/outputs/androidTest-results/connected");
             // The init script turns on the build types' androidTest coverage
@@ -986,14 +992,16 @@ abstract class BaseTest {
         let p = plan(Path::new("/p"), &app, "demoDebug", &TestRequest::of(TestKind::Unit, &mark));
         assert_eq!(p.args, [":app:testDemoDebugUnitTest", "--tests", "a.ExampleTest.adds"]);
         assert_eq!(p.report_dir, PathBuf::from("/p/app/build/test-results/testDemoDebugUnitTest"));
-        let request = TestRequest { kind: TestKind::Instrumented, filters: vec![("a.ATest".into(), None), ("a.BTest".into(), Some("b".into()))], name: "x".into(), debug_port: None, coverage: false };
+        let request = TestRequest { kind: TestKind::Instrumented, filters: vec![("a.ATest".into(), None), ("a.BTest".into(), Some("b".into()))], name: "x".into(), debug_port: None, coverage: false, arguments: Vec::new() };
         let p = plan(Path::new("/p"), &app, "demoDebug", &request);
         assert_eq!(p.args, [":app:connectedDemoDebugAndroidTest", "-Pandroid.testInstrumentationRunnerArguments.class=a.ATest,a.BTest#b"]);
         let covered = plan(Path::new("/p"), &app, "demoDebug", &TestRequest { coverage: true, ..request.clone() });
         assert_eq!(covered.args[2..], ["-Pjunction.coverage=connectedDemoDebugAndroidTest", ":app:junctionCoverage", "--continue"]);
         assert_eq!(covered.coverage_report, Some(PathBuf::from("/p/app/build/junction-coverage/connectedDemoDebugAndroidTest.xml")));
+        let with_args = plan(Path::new("/p"), &app, "demoDebug", &TestRequest { arguments: vec![("size".into(), "small".into()), ("note".into(), "a b".into())], ..request.clone() });
+        assert_eq!(with_args.args[2..], ["-Pandroid.testInstrumentationRunnerArguments.size=small", "-Pandroid.testInstrumentationRunnerArguments.note=a b"]);
         let core = ModuleInfo { path: ":".into(), dir: "/p".into(), kind: ModuleType::Jvm, variants: vec![] };
-        let mut all = TestRequest { kind: TestKind::Unit, filters: vec![], name: "All".into(), debug_port: None, coverage: false };
+        let mut all = TestRequest { kind: TestKind::Unit, filters: vec![], name: "All".into(), debug_port: None, coverage: false, arguments: Vec::new() };
         assert_eq!(plan(Path::new("/p"), &core, "debug", &all).args, [":test"]);
         all.debug_port = Some(5005);
         assert_eq!(plan(Path::new("/p"), &core, "debug", &all).args, [":test", "-Pjunction.debugPort=5005"]);

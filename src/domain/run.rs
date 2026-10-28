@@ -123,6 +123,10 @@ pub struct JUnitTarget {
     /// `androidTest` tests, on the connected devices.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub instrumented: bool,
+    /// Android Instrumented Tests' instrumentation arguments: what
+    /// `am instrument -e key value` passes the runner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<(String, String)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -155,6 +159,56 @@ impl JUnitKind {
             JUnitKind::Method => "Method",
         }
     }
+}
+
+/// Instrumentation arguments as `am instrument` takes them: `-e key value`
+/// pairs (a value with spaces in double quotes); the problem with the
+/// text otherwise.
+pub fn parse_instrumentation_arguments(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut words = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        let mut word = String::new();
+        if c == '"' {
+            chars.next();
+            loop {
+                match chars.next() {
+                    Some('"') => break,
+                    Some(c) => word.push(c),
+                    None => return Err("Unclosed quote in instrumentation arguments".into()),
+                }
+            }
+        } else {
+            while let Some(&c) = chars.peek().filter(|c| !c.is_whitespace()) {
+                word.push(c);
+                chars.next();
+            }
+        }
+        words.push(word);
+    }
+    let mut out = Vec::new();
+    let mut words = words.into_iter();
+    while let Some(flag) = words.next() {
+        if flag != "-e" {
+            return Err(format!("Expected -e key value, found '{flag}'"));
+        }
+        let (Some(key), Some(value)) = (words.next(), words.next()) else { return Err("Expected -e key value".into()) };
+        if key.is_empty() || !key.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-')) {
+            return Err(format!("Invalid instrumentation argument name '{key}'"));
+        }
+        out.push((key, value));
+    }
+    Ok(out)
+}
+
+/// The arguments as `parse_instrumentation_arguments` reads them.
+pub fn format_instrumentation_arguments(arguments: &[(String, String)]) -> String {
+    let quoted = |v: &str| if v.is_empty() || v.contains(char::is_whitespace) { format!("\"{v}\"") } else { v.to_owned() };
+    arguments.iter().map(|(k, v)| format!("-e {k} {}", quoted(v))).collect::<Vec<_>>().join(" ")
 }
 
 impl JUnitTarget {
@@ -448,6 +502,18 @@ pub fn duration_label(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instrumentation_arguments() {
+        let parsed = parse_instrumentation_arguments(r#"-e size small  -e note "two words" -e empty """#).unwrap();
+        assert_eq!(parsed, vec![("size".into(), "small".into()), ("note".into(), "two words".into()), ("empty".into(), String::new())]);
+        assert_eq!(format_instrumentation_arguments(&parsed), r#"-e size small -e note "two words" -e empty """#);
+        assert_eq!(parse_instrumentation_arguments("  ").unwrap(), Vec::new());
+        assert!(parse_instrumentation_arguments("size small").is_err());
+        assert!(parse_instrumentation_arguments("-e size").is_err());
+        assert!(parse_instrumentation_arguments("-e \"a b\" c").is_err());
+        assert!(parse_instrumentation_arguments("-e a \"open").is_err());
+    }
 
     #[test]
     fn modules_and_configurations() {
