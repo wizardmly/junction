@@ -145,6 +145,91 @@ impl MinBlankLines {
     }
 }
 
+/// Settings › Code Style › Spaces: which spaces a reformat puts (or
+/// takes out) before keywords' parentheses, around operators and at
+/// commas. IntelliJ's defaults: all but "Before comma".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Spaces {
+    /// Before Parentheses, in `values` order: `if`, `for`, `while`,
+    /// `switch`, `when`, `try`, `catch`, `synchronized`.
+    pub before_parens: [bool; 8],
+    /// `=`, `+=`, `-=`…
+    pub around_assignment: bool,
+    /// `&&`, `||`.
+    pub around_logical: bool,
+    /// `==`, `!=`, `===`, `!==`.
+    pub around_equality: bool,
+    /// `<`, `>`, `<=`, `>=`.
+    pub around_relational: bool,
+    pub before_comma: bool,
+    pub after_comma: bool,
+}
+
+impl Default for Spaces {
+    fn default() -> Self {
+        Self { before_parens: [true; 8], around_assignment: true, around_logical: true, around_equality: true, around_relational: true, before_comma: false, after_comma: true }
+    }
+}
+
+impl Spaces {
+    /// The keywords of `before_parens`, in order.
+    const KEYWORDS: [&'static str; 8] = ["if", "for", "while", "switch", "when", "try", "catch", "synchronized"];
+    /// The settings' labels, in `values` order.
+    pub const LABELS: [&'static str; 14] = [
+        "Before parentheses: 'if'",
+        "Before parentheses: 'for'",
+        "Before parentheses: 'while'",
+        "Before parentheses: 'switch'",
+        "Before parentheses: 'when'",
+        "Before parentheses: 'try'",
+        "Before parentheses: 'catch'",
+        "Before parentheses: 'synchronized'",
+        "Around operators: Assignment (=, +=, ...)",
+        "Around operators: Logical (&&, ||)",
+        "Around operators: Equality (==, !=)",
+        "Around operators: Relational (<, >, <=, >=)",
+        "Other: Before comma",
+        "Other: After comma",
+    ];
+    /// Which of `values` each language's page shows.
+    pub const JAVA: [usize; 13] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+    pub const KOTLIN: [usize; 11] = [0, 1, 2, 4, 6, 8, 9, 10, 11, 12, 13];
+
+    pub fn values(&self) -> [bool; 14] {
+        let p = self.before_parens;
+        [p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], self.around_assignment, self.around_logical, self.around_equality, self.around_relational, self.before_comma, self.after_comma]
+    }
+
+    pub fn from_values(v: [bool; 14]) -> Self {
+        Self {
+            before_parens: [v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]],
+            around_assignment: v[8],
+            around_logical: v[9],
+            around_equality: v[10],
+            around_relational: v[11],
+            before_comma: v[12],
+            after_comma: v[13],
+        }
+    }
+
+    /// Whether a `(` after `word` takes a space; `None`: not a keyword's
+    /// (Kotlin's `synchronized(…)` is a function, Java's `when(…)` a method).
+    fn before_paren(&self, word: &str, kotlin: bool) -> Option<bool> {
+        let shown: &[usize] = if kotlin { &Self::KOTLIN } else { &Self::JAVA };
+        Self::KEYWORDS.iter().position(|k| *k == word).filter(|i| shown.contains(i)).map(|i| self.before_parens[i])
+    }
+
+    /// Whether an operator of `normalize`'s takes spaces around it.
+    fn around(&self, op: &str) -> bool {
+        match op {
+            "&&" | "||" => self.around_logical,
+            "==" | "!=" | "===" | "!==" => self.around_equality,
+            "<" | ">" | "<=" | ">=" => self.around_relational,
+            _ => self.around_assignment,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
     Code,
@@ -389,6 +474,8 @@ pub struct IndentStyle {
     pub keep_blank: KeepBlankLines,
     /// Java's and Kotlin's (Groovy keeps its blank lines as they are).
     pub min_blank: MinBlankLines,
+    /// Java's and Kotlin's (Groovy's are IntelliJ's defaults).
+    pub spaces: Spaces,
 }
 
 /// The reformatted text. `only`: the 0-based lines to change (a
@@ -436,6 +523,7 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     let mut blank_run = 0;
     let bodies = declaration_braces(&raw, &lines);
     let keep = indents.keep_blank;
+    let spaces = if flavor == Flavor::Groovy { Spaces::default() } else { indents.spaces };
     let need = if flavor == Flavor::Groovy { vec![0; raw.len()] } else { minimum_blank_lines(&raw, &lines, &bodies, kotlin, &indents.min_blank) };
     // Blank lines just put out.
     let mut kept = 0;
@@ -582,7 +670,7 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             // A class header's supertypes: its body belongs to the class.
             header = reason == Reason::Header;
         }
-        let body: String = if is_code_line && selected { normalize(text_line, info, lead, flavor, closes_header) } else { text_line.trim_start().to_owned() };
+        let body: String = if is_code_line && selected { normalize(text_line, info, lead, flavor, closes_header, &spaces) } else { text_line.trim_start().to_owned() };
         let new_line = match starts {
             // A block comment's later lines: ` * …` under its `/*`.
             State::Block(_) if body.starts_with('*') => format!("{} {body}", pad(indent)),
@@ -1397,7 +1485,7 @@ fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize
 }
 
 /// The line's code with IntelliJ's spacing; strings and comments as written.
-fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header: bool) -> String {
+fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header: bool, spaces: &Spaces) -> String {
     let kotlin = flavor == Flavor::Kotlin;
     let chars: Vec<(usize, char)> = line.char_indices().filter(|(i, _)| *i >= lead).collect();
     let is_code = |i: usize| info.code.get(i).copied().unwrap_or(false);
@@ -1428,15 +1516,21 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
                 let following_code = chars.get(m).is_some_and(|(j, _)| is_code(*j));
                 // None inside parentheses and brackets (`foo( a )` → `foo(a)`).
                 let after_open = out.ends_with('(') || out.ends_with('[');
-                if m < chars.len() && !(following_code && matches!(following, Some(',' | ';' | ')' | ']'))) && !(after_open && following_code) {
+                // Spaces › After comma off; Before Parentheses off for a keyword.
+                let after_comma = out.ends_with(',') && !spaces.after_comma;
+                let keyword_paren = following_code && following == Some('(') && spaces.before_paren(last_word(&out), kotlin) == Some(false);
+                if m < chars.len() && !(following_code && matches!(following, Some(',' | ';' | ')' | ']'))) && !(after_open && following_code) && !(after_comma && following_code) && !keyword_paren {
                     push_space(&mut out);
                 }
                 k = m;
                 continue;
             }
             ',' => {
+                if spaces.before_comma {
+                    push_space(&mut out);
+                }
                 out.push(',');
-                if next.is_some_and(|(j, ch)| !(is_code(j) && matches!(ch, ' ' | '\t' | ')' | ']'))) {
+                if spaces.after_comma && next.is_some_and(|(j, ch)| !(is_code(j) && matches!(ch, ' ' | '\t' | ')' | ']'))) {
                     out.push(' ');
                 }
             }
@@ -1456,11 +1550,10 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
             }
             '(' => {
                 // `if(` → `if (`.
-                const KEYWORDS: &[&str] = &["if", "for", "while", "when", "catch", "switch", "synchronized", "try"];
-                let word: String = out.chars().rev().take_while(|ch| ch.is_alphanumeric() || *ch == '_').collect::<Vec<_>>().into_iter().rev().collect();
+                let word = last_word(&out);
                 let before_word = out.len() - word.len();
                 let boundary = out[..before_word].chars().last().is_none_or(|ch| !(ch.is_alphanumeric() || ch == '_' || ch == '.'));
-                if KEYWORDS.contains(&word.as_str()) && boundary && !(kotlin && word == "try") {
+                if spaces.before_paren(word, kotlin) == Some(true) && boundary {
                     out.push(' ');
                 }
                 out.push('(');
@@ -1497,16 +1590,19 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
             }
             '<' | '>' if comparison(&chars, k, &is_code) => {
                 let op = if chars.get(k + 1).is_some_and(|(j, ch)| is_code(*j) && *ch == '=') { if c == '<' { "<=" } else { ">=" } } else if c == '<' { "<" } else { ">" };
+                let spaced = spaces.around(op);
                 while out.ends_with(' ') {
                     out.pop();
                 }
-                out.push(' ');
+                if spaced {
+                    out.push(' ');
+                }
                 out.push_str(op);
                 k += op.len();
                 while chars.get(k).is_some_and(|(j, ch)| is_code(*j) && *ch == ' ') {
                     k += 1;
                 }
-                if k < chars.len() {
+                if k < chars.len() && spaced {
                     out.push(' ');
                 }
                 continue;
@@ -1514,6 +1610,17 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
             '=' | '!' | '+' | '-' | '*' | '/' | '%' | '&' | '|' | '<' | '>' => {
                 let op = operator(&chars, k, &is_code);
                 match op {
+                    Some(op) if !spaces.around(op) => {
+                        while out.ends_with(' ') {
+                            out.pop();
+                        }
+                        out.push_str(op);
+                        k += op.chars().count();
+                        while chars.get(k).is_some_and(|(j, ch)| is_code(*j) && *ch == ' ') {
+                            k += 1;
+                        }
+                        continue;
+                    }
                     Some(op) => {
                         push_space(&mut out);
                         out.push_str(op);
@@ -1543,6 +1650,12 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
         k += 1;
     }
     out
+}
+
+/// The word (letters, digits, `_`) `text` ends with.
+fn last_word(text: &str) -> &str {
+    let start = text.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_').len();
+    &text[start..]
 }
 
 /// Whether a Kotlin `:` takes a space before it, as IntelliJ spaces it:
@@ -1891,6 +2004,23 @@ mod tests {
         assert_eq!(reformat_indented(ImportStyle::Kotlin, "class A : B(), C", None, &style), "class A : B(), C");
         let java = "class SearchViewModel extends ViewModel implements SearchActions, Closeable, Comparable<SearchViewModel> {\n}";
         assert_eq!(reformat_indented(ImportStyle::Java, java, None, &style), java);
+    }
+
+    #[test]
+    fn spaces_settings() {
+        // IntelliJ's defaults: `if (`, `a == b`, `f(a, b)`; Mockito's `when(` in
+        // Java and Kotlin's `synchronized(` aren't keywords.
+        assert_eq!(java("class A {\nvoid f() {\nif(a==b&&c<d) x=f(a,b);\nwhen(m.get()).thenReturn(1);\n}\n}"), "class A {\n    void f() {\n        if (a == b && c < d) x = f(a, b);\n        when(m.get()).thenReturn(1);\n    }\n}");
+        assert_eq!(kt("fun f() {\nsynchronized(lock) {}\nwhen(x) {}\n}"), "fun f() {\n    synchronized(lock) {}\n    when (x) {}\n}");
+        // Each turned the other way.
+        let all_off = Spaces::from_values([false, false, false, false, false, false, false, false, false, false, false, false, true, false]);
+        let style = IndentStyle { spaces: all_off, ..Default::default() };
+        assert_eq!(
+            reformat_indented(ImportStyle::Java, "class A {\n    void f() {\n        if (a == b && c < d) x += f(a, b);\n        while (i >= 0) i -= 1;\n    }\n}", None, &style),
+            "class A {\n    void f() {\n        if(a==b&&c<d) x+=f(a ,b);\n        while(i>=0) i-=1;\n    }\n}"
+        );
+        let style = IndentStyle { spaces: Spaces { before_parens: [true, true, true, true, false, true, true, true], around_relational: false, ..Default::default() }, ..Default::default() };
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\n    when (x) {}\n    if (a < b) g()\n}", None, &style), "fun f() {\n    when(x) {}\n    if (a<b) g()\n}");
     }
 
     #[test]

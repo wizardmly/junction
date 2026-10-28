@@ -3,7 +3,7 @@
 //! use existing file indents", as IntelliJ keeps them; what Reformat Code
 //! indents with, under `.editorconfig`.
 
-use crate::domain::reformat::{IndentStyle, KeepBlankLines, MinBlankLines};
+use crate::domain::reformat::{IndentStyle, KeepBlankLines, MinBlankLines, Spaces};
 
 /// The languages with a code style page.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -71,6 +71,8 @@ pub struct CodeStyle {
     blank: [KeepBlankLines; 4],
     /// Blank Lines › "Minimum blank lines" (Java's and Kotlin's).
     min_blank: [MinBlankLines; 4],
+    /// Spaces (Java's and Kotlin's).
+    spaces: [Spaces; 4],
 }
 
 impl Default for CodeStyle {
@@ -78,7 +80,7 @@ impl Default for CodeStyle {
     /// official style by 4, Android's XML style by 4.
     fn default() -> Self {
         let style = |continuation| LangStyle { use_tab: false, indent: 4, continuation };
-        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)], blank: Default::default(), min_blank: Default::default() }
+        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)], blank: Default::default(), min_blank: Default::default(), spaces: Default::default() }
     }
 }
 
@@ -108,6 +110,14 @@ impl CodeStyle {
         self.min_blank[lang.index()] = MinBlankLines::from_values(min.values().map(|n| n.min(99)));
     }
 
+    pub fn spaces(&self, lang: StyleLang) -> Spaces {
+        self.spaces[lang.index()]
+    }
+
+    pub fn set_spaces(&mut self, lang: StyleLang, spaces: Spaces) {
+        self.spaces[lang.index()] = spaces;
+    }
+
     /// What a file of `lang` is indented with: `.editorconfig`'s unit
     /// first, then the file's own when detecting (XML never does), else
     /// the language's; the continuation in proportion to the indent. Long
@@ -116,13 +126,14 @@ impl CodeStyle {
         let style = self.get(lang);
         let own = if style.use_tab { "\t".to_owned() } else { " ".repeat(style.indent) };
         let detect = self.detect_indents && lang != StyleLang::Xml;
-        IndentStyle { unit: editorconfig.or_else(|| (!detect).then(|| own.clone())), fallback: Some(own), continuation: Some((style.continuation, style.indent)), right_margin: Some(max_line.unwrap_or(self.hard_wrap)), keep_blank: self.keep_blank(lang), min_blank: self.min_blank(lang) }
+        IndentStyle { unit: editorconfig.or_else(|| (!detect).then(|| own.clone())), fallback: Some(own), continuation: Some((style.continuation, style.indent)), right_margin: Some(max_line.unwrap_or(self.hard_wrap)), keep_blank: self.keep_blank(lang), min_blank: self.min_blank(lang), spaces: self.spaces(lang) }
     }
 
     /// The settings file's lines: `code_style_java=false,4,8` (tab,
     /// indent, continuation), `code_style_java_blank=2,2,2` (blank lines
     /// kept in declarations, in code, before `}`) and
-    /// `code_style_java_min_blank=1,1,…` (`MinBlankLines::values`) when not
+    /// `code_style_java_min_blank=1,1,…` (`MinBlankLines::values`) and
+    /// `code_style_java_spaces=1…10` (`Spaces::values`) when not
     /// the defaults.
     pub fn lines(&self) -> String {
         let mut out = format!("code_style_detect_indents={}\ncode_style_hard_wrap={}\n", self.detect_indents, self.hard_wrap);
@@ -138,6 +149,11 @@ impl CodeStyle {
                 let values: Vec<String> = m.values().iter().map(usize::to_string).collect();
                 out.push_str(&format!("code_style_{}_min_blank={}\n", lang.key(), values.join(",")));
             }
+            let spaces = self.spaces(lang);
+            if spaces != Spaces::default() {
+                let values: String = spaces.values().iter().map(|v| if *v { '1' } else { '0' }).collect();
+                out.push_str(&format!("code_style_{}_spaces={values}\n", lang.key()));
+            }
         }
         out
     }
@@ -151,6 +167,13 @@ impl CodeStyle {
         if key == "code_style_hard_wrap" {
             if let Ok(n) = value.trim().parse::<usize>() {
                 self.hard_wrap = n.clamp(10, 1000);
+            }
+            return true;
+        }
+        if let Some(lang) = key.strip_prefix("code_style_").and_then(|k| k.strip_suffix("_spaces")).and_then(|k| StyleLang::ALL.into_iter().find(|l| l.key() == k)) {
+            let values: Vec<bool> = value.trim().chars().map(|c| c == '1').collect();
+            if let Ok(values) = <[bool; 14]>::try_from(values) {
+                self.set_spaces(lang, Spaces::from_values(values));
             }
             return true;
         }
@@ -214,6 +237,9 @@ mod tests {
         style.set_min_blank(StyleLang::Java, MinBlankLines { around_field: 1, ..Default::default() });
         assert!(style.lines().contains("code_style_java_min_blank=1,1,1,1,0,0,1,1,1,1,0,1,0,0,0,0\n") && !style.lines().contains("kotlin_min_blank"));
         assert_eq!(style.indents(StyleLang::Java, None, None).min_blank.around_field, 1);
+        style.set_spaces(StyleLang::Kotlin, Spaces { after_comma: false, ..Default::default() });
+        assert!(style.lines().contains("code_style_kotlin_spaces=11111111111100\n"));
+        assert!(!style.indents(StyleLang::Kotlin, None, None).spaces.after_comma);
         let mut read = CodeStyle::default();
         for line in style.lines().lines() {
             let (k, v) = line.split_once('=').unwrap();
