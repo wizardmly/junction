@@ -133,17 +133,23 @@ impl FileEditor {
             if let Some(f) = found {
                 items.push((cursor..cursor, Choice::ImportFunction(f.title, f.qualified)));
             }
-            for intention in crate::domain::intentions::intentions(style, &text, cursor) {
+            // Those Settings › Editor › Intentions turned off aren't offered.
+            let kotlin = style == crate::domain::imports::ImportStyle::Kotlin;
+            let settings = crate::settings::Settings::get(cx).clone();
+            let on = |i: &crate::domain::intentions::Intention| settings.intention_on(kotlin, &i.title);
+            for intention in crate::domain::intentions::intentions(style, &text, cursor).into_iter().filter(on) {
                 items.push((intention.range.clone(), Choice::Intention(intention)));
             }
-            if style == crate::domain::imports::ImportStyle::Kotlin {
-                for intention in crate::index::intentions::intentions(&text, cursor) {
+            if kotlin {
+                for intention in crate::index::intentions::intentions(&text, cursor).into_iter().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));
                 }
-                if let Some((intention, imports)) = crate::index::intentions::specify_inferred_type(&text, cursor, &|n| self.class_texts(n, false, cx)) {
+                if let Some((intention, imports)) = crate::index::intentions::specify_inferred_type(&text, cursor, &|n| self.class_texts(n, false, cx)).filter(|(i, _)| on(i)) {
                     items.push((intention.range.clone(), Choice::Typed(intention, imports)));
                 }
-                self.request_argument_names(&text, cursor, window, cx);
+                if settings.intention_on(true, "Add names to call arguments") {
+                    self.request_argument_names(&text, cursor, window, cx);
+                }
             }
         }
         // A build script's dependency or plugin into the version catalog.
