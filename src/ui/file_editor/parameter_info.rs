@@ -24,6 +24,8 @@ pub(super) struct ParameterInfo {
     kotlin: bool,
     /// Each declaration's parameters.
     overloads: Vec<Vec<String>>,
+    /// Each declaration's doc comment.
+    docs: Vec<Option<pi::Doc>>,
     /// The arguments with the types their declarations show, and the
     /// text they were read from.
     arguments: (Vec<String>, String),
@@ -42,7 +44,7 @@ impl FileEditor {
         let root = index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
         // `this(`: this class's constructors; `super(`: its superclass's.
         let class = matches!(call.name.as_str(), "this" | "super").then(|| pi::enclosing_class(&text, call.name_at)).flatten();
-        let local = (call.name == "this").then(|| class.map(|at| pi::declaration_parameters(&text, at))).flatten();
+        let local = (call.name == "this").then(|| class.map(|at| pi::declarations(&text, at))).flatten();
         let lookup = match call.name.as_str() {
             "this" => None,
             "super" => class.and_then(|at| pi::superclass(&text, at)),
@@ -57,26 +59,25 @@ impl FileEditor {
                 },
                 None => Vec::new(),
             };
-            // Each declaration's parameters, from its source.
-            let overloads = cx
+            // Each declaration's parameters and doc, from its source.
+            let (overloads, docs): (Vec<_>, Vec<_>) = cx
                 .background_spawn(async move {
-                    let mut out: Vec<Vec<String>> = Vec::new();
-                    for params in local.into_iter().flatten() {
-                        if !out.contains(&params) {
-                            out.push(params);
+                    let mut out: Vec<(Vec<String>, Option<pi::Doc>)> = Vec::new();
+                    let mut add = |found: Vec<(Vec<String>, Option<pi::Doc>)>| {
+                        for (params, doc) in found {
+                            if !out.iter().any(|(p, _)| *p == params) {
+                                out.push((params, doc));
+                            }
                         }
-                    }
+                    };
+                    add(local.unwrap_or_default());
                     for t in targets {
                         let Ok(source) = std::fs::read_to_string(root.join(&t.path)) else { continue };
                         let Some(at) = offset_of(&source, t.line, t.col) else { continue };
                         // A class: its constructors (none written takes none).
-                        for params in pi::declaration_parameters(&source, at) {
-                            if !out.contains(&params) {
-                                out.push(params);
-                            }
-                        }
+                        add(pi::declarations(&source, at));
                     }
-                    out
+                    out.into_iter().unzip()
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {
@@ -94,7 +95,7 @@ impl FileEditor {
                 }
                 let _observe = cx.observe(&this.state, |this, _, cx| this.follow_parameter_info(cx));
                 let arguments = (this.inferred_arguments(&text, call.open, kotlin, cx), text.to_string());
-                this.parameter_info = Some(ParameterInfo { open: call.open, kotlin, overloads, arguments, _observe });
+                this.parameter_info = Some(ParameterInfo { open: call.open, kotlin, overloads, docs, arguments, _observe });
                 cx.notify();
             })
             .ok();
@@ -217,7 +218,29 @@ impl FileEditor {
             }
             rows = rows.child(row);
         }
-        let height = px(8.) + px(20.) * info.overloads.len() as f32;
+        // The doc of the overload the call picks (else the only one, else
+        // the first that fits): its summary and the current parameter's.
+        let shown = best.or_else(|| (info.overloads.len() == 1).then_some(0)).or_else(|| info.overloads.iter().position(|p| pi::fits(p, &call)));
+        let mut doc_lines = Vec::new();
+        if let Some(ix) = shown
+            && let Some(Some(doc)) = info.docs.get(ix)
+        {
+            let params = &info.overloads[ix];
+            if !doc.summary.is_empty() {
+                doc_lines.push(div().child(clipped(&doc.summary)));
+            }
+            if let Some(i) = pi::current_parameter(params, &call)
+                && let Some(text) = doc.parameter(&params[i])
+            {
+                let name = pi::parameter_name(&params[i]).to_owned();
+                doc_lines.push(h_flex().gap_1().child(div().font_weight(FontWeight::BOLD).child(name)).child(div().text_color(palette.text_secondary).child(clipped(text))));
+            }
+        }
+        let doc_height = if doc_lines.is_empty() { px(0.) } else { px(7.) + px(20.) * doc_lines.len() as f32 };
+        if !doc_lines.is_empty() {
+            rows = rows.child(v_flex().mt_1().pt_1().px_1().border_t_1().border_color(palette.border).whitespace_nowrap().children(doc_lines));
+        }
+        let height = px(8.) + px(20.) * info.overloads.len() as f32 + doc_height;
         Some(
             deferred(
                 anchored().position(point(at.left() - px(8.), at.top() - height - px(2.))).snap_to_window_with_margin(px(8.)).child(
@@ -235,6 +258,15 @@ impl FileEditor {
             )
             .with_priority(2),
         )
+    }
+}
+
+/// Doc text cut to one popup line.
+fn clipped(text: &str) -> String {
+    const MAX: usize = 100;
+    match text.char_indices().nth(MAX) {
+        Some((end, _)) => format!("{}…", text[..end].trim_end()),
+        None => text.to_owned(),
     }
 }
 

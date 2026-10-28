@@ -333,6 +333,12 @@ fn class_body(source: &str, from: usize) -> Option<usize> {
 /// (`String value() default ""`, as IntelliJ lists them). None when `at`
 /// isn't a class's name.
 pub fn constructors(source: &str, at: usize) -> Option<Vec<Vec<String>>> {
+    constructors_at(source, at).map(|all| all.into_iter().map(|(params, _)| params).collect())
+}
+
+/// [`constructors`], each with where it's declared (the class name for
+/// the primary or default one).
+fn constructors_at(source: &str, at: usize) -> Option<Vec<(Vec<String>, usize)>> {
     let keyword = word_before(source, at);
     if !matches!(keyword, "class" | "record" | "@interface" | "enum") {
         return None;
@@ -340,10 +346,10 @@ pub fn constructors(source: &str, at: usize) -> Option<Vec<Vec<String>>> {
     let name: String = source[at..].chars().take_while(|c| is_word(*c)).collect();
     let mut out = Vec::new();
     if let Some(primary) = parameters(source, at) {
-        out.push(primary);
+        out.push((primary, at));
     }
     let Some(body) = class_body(source, at + name.len()) else {
-        return Some(if out.is_empty() { vec![Vec::new()] } else { out });
+        return Some(if out.is_empty() { vec![(Vec::new(), at)] } else { out });
     };
     let mut depth = 0;
     let mut i = body;
@@ -371,12 +377,12 @@ pub fn constructors(source: &str, at: usize) -> Option<Vec<Vec<String>>> {
                     let ty = before[start..].split_whitespace().filter(|w| !w.starts_with('@') && !matches!(*w, "public" | "abstract")).collect::<Vec<_>>().join(" ");
                     let tail = after[2..].split(';').next().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
                     let element = if tail.is_empty() { format!("{ty} {word}()") } else { format!("{ty} {word}() {tail}") };
-                    out.push(vec![element]);
+                    out.push((vec![element], i));
                 } else if after.starts_with('(')
                     && (word == "constructor" || (word == name && declares(source, i)))
                     && let Some(params) = parameters(source, i)
                 {
-                    out.push(params);
+                    out.push((params, i));
                 }
                 i += word.len();
                 continue;
@@ -386,7 +392,7 @@ pub fn constructors(source: &str, at: usize) -> Option<Vec<Vec<String>>> {
         i += c.len_utf8();
     }
     if out.is_empty() && keyword != "@interface" {
-        out.push(Vec::new());
+        out.push((Vec::new(), at));
     }
     Some(out)
 }
@@ -401,7 +407,118 @@ fn declares(source: &str, i: usize) -> bool {
 
 /// A declaration's parameter lists: a class's constructors, else its own.
 pub fn declaration_parameters(source: &str, at: usize) -> Vec<Vec<String>> {
-    constructors(source, at).unwrap_or_else(|| vec![parameters(source, at).unwrap_or_default()])
+    declarations(source, at).into_iter().map(|(params, _)| params).collect()
+}
+
+/// [`declaration_parameters`], each with its doc comment.
+pub fn declarations(source: &str, at: usize) -> Vec<(Vec<String>, Option<Doc>)> {
+    let all = constructors_at(source, at).unwrap_or_else(|| vec![(parameters(source, at).unwrap_or_default(), at)]);
+    let lines: Vec<&str> = source.lines().collect();
+    all.into_iter()
+        .map(|(params, at)| {
+            let line = source[..at.min(source.len())].matches('\n').count();
+            let doc = super::overrides::doc_comment(&lines, line).map(|d| parse_doc(&d)).filter(|d| !d.summary.is_empty() || !d.params.is_empty());
+            (params, doc)
+        })
+        .collect()
+}
+
+/// A doc comment as Parameter Info shows it: the description's first
+/// sentence and each parameter's `@param` (KDoc's `@property` too).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Doc {
+    pub summary: String,
+    pub params: Vec<(String, String)>,
+}
+
+impl Doc {
+    /// What the doc says of the parameter written `param`.
+    pub fn parameter(&self, param: &str) -> Option<&str> {
+        let name = parameter_name(param);
+        self.params.iter().find(|(n, _)| *n == name).map(|(_, text)| text.as_str())
+    }
+}
+
+/// A `/** … */` comment's description and `@param` tags, as plain text:
+/// `{@code x}` / `{@link a#b}` and KDoc's `[x]` as their text, HTML tags
+/// dropped.
+pub fn parse_doc(doc: &str) -> Doc {
+    let body = doc.trim().trim_start_matches("/**").trim_end_matches("*/");
+    let mut description = Vec::new();
+    let mut tags: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        let line = line.strip_prefix('*').unwrap_or(line).trim();
+        if line.starts_with('@') {
+            tags.push(line.to_owned());
+        } else if let Some(tag) = tags.last_mut() {
+            if !line.is_empty() {
+                tag.push(' ');
+                tag.push_str(line);
+            }
+        } else {
+            description.push(line);
+        }
+    }
+    let description = plain(&description.join(" "));
+    // The first sentence: to a `.` followed by a space, as Javadoc's summary.
+    let summary = match description.find(". ") {
+        Some(end) => description[..=end].to_owned(),
+        None => description,
+    };
+    let params = tags
+        .iter()
+        .filter_map(|tag| {
+            let rest = tag.strip_prefix("@param").or_else(|| tag.strip_prefix("@property"))?;
+            if !rest.starts_with(char::is_whitespace) {
+                return None;
+            }
+            let rest = rest.trim_start();
+            let (name, text) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            Some((name.trim_matches(['[', ']']).to_owned(), plain(text)))
+        })
+        .collect();
+    Doc { summary, params }
+}
+
+/// Doc text without markup, its whitespace collapsed.
+fn plain(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(ch) = rest.chars().next() {
+        if let Some(inner) = rest.strip_prefix("{@") {
+            // `{@code x}`, `{@link Type#member label}`: the label, else the target.
+            let end = inner.find('}').unwrap_or(inner.len());
+            let (_, value) = inner[..end].split_once(char::is_whitespace).unwrap_or(("", ""));
+            let value = value.trim();
+            let shown = match value.split_once(char::is_whitespace) {
+                Some((target, label)) if inner.starts_with("link") => if label.trim().is_empty() { target } else { label.trim() },
+                _ => value,
+            };
+            out.push_str(&shown.replace('#', "."));
+            rest = inner.get(end + 1..).unwrap_or("");
+        } else if ch == '<' && rest[1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '/') {
+            rest = rest.find('>').map_or("", |e| &rest[e + 1..]);
+            out.push(' ');
+        } else if ch == '[' && let Some(end) = rest.find(']').filter(|&e| e > 1 && rest[1..e].chars().all(|c| is_word(c) || c == '.')) {
+            out.push_str(&rest[1..end]);
+            rest = &rest[end + 1..];
+        } else {
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+}
+
+/// A parameter's name: Kotlin's before `:`, Java's last word (an
+/// annotation element's before `()`).
+pub fn parameter_name(param: &str) -> &str {
+    let head = match param.split_once("()") {
+        Some((head, _)) => head,
+        None => param.split_once(':').map_or(param, |(name, _)| name),
+    };
+    head.split_whitespace().last().unwrap_or("")
 }
 
 /// The name of the class whose body holds `at` (for `this(`).
@@ -875,6 +992,33 @@ mod tests {
         // Kotlin: a class with no primary constructor calls `super(` on its supertype.
         let sec = "class V : View {\n    constructor(c: Context) : super(c)\n}";
         assert_eq!(&sec[superclass(sec, 6).unwrap()..][..4], "View");
+    }
+
+    #[test]
+    fn reads_docs() {
+        let kt = "/**\n * Says hello. Twice if asked.\n *\n * @param name who to greet, see [Person]\n *   in full\n * @param times how often\n */\nfun greet(name: String, times: Int = 1) {}\n";
+        let (params, doc) = &declarations(kt, kt.find("greet(").unwrap())[0];
+        assert_eq!(params.len(), 2);
+        let doc = doc.as_ref().unwrap();
+        assert_eq!(doc.summary, "Says hello.");
+        assert_eq!(doc.parameter("name: String"), Some("who to greet, see Person in full"));
+        assert_eq!(doc.parameter("times: Int = 1"), Some("how often"));
+        let java = "class Calc {\n  /** Adds {@code a} and <b>b</b>, see {@link Math#addExact}. */\n  @Deprecated\n  public int add(int a, int b) { return a + b; }\n  /**\n   * Makes one.\n   * @param seed the {@link Random seed value}\n   */\n  public Calc(final long seed) {}\n  int plain(int x) {}\n}";
+        let (_, doc) = &declarations(java, java.find("add(").unwrap())[0];
+        assert_eq!(doc.as_ref().unwrap().summary, "Adds a and b , see Math.addExact.");
+        let ctors = declarations(java, java.find("Calc").unwrap());
+        let doc = ctors[0].1.as_ref().unwrap();
+        assert_eq!((doc.summary.as_str(), doc.parameter("final long seed")), ("Makes one.", Some("the seed value")));
+        assert_eq!(declarations(java, java.find("plain").unwrap())[0].1, None);
+        // A Kotlin class's doc goes with its primary constructor.
+        let data = "/**\n * A point.\n * @property x across\n */\nclass P(val x: Int)\n";
+        let ctors = declarations(data, data.find("P(").unwrap());
+        assert_eq!(ctors[0].1.as_ref().unwrap().parameter("x: Int"), Some("across"));
+        let obj = "package a\n\nobject Log {\n    /**\n     * Writes a line. Buffered.\n     *\n     * @param msg the text\n     */\n    fun info(msg: String, tag: String = \"app\") {}\n}\n";
+        let found = declarations(obj, obj.find("info(").unwrap());
+        assert_eq!(found[0].1.as_ref().map(|d| d.summary.as_str()), Some("Writes a line."));
+        assert_eq!(parameter_name("String... rest"), "rest");
+        assert_eq!(parameter_name("int[] codes()"), "codes");
     }
 
     #[test]
