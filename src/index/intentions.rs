@@ -451,6 +451,82 @@ pub fn binary_operator(text: &str, caret: usize, classes: super::catches::Classe
     })
 }
 
+/// Replace with 'orEmpty()' (the fix of IntelliJ's Kotlin inspection for
+/// an elvis with an empty value): `s ?: ""` → `s.orEmpty()`, and
+/// `?: emptyList()` / `emptySet()` / `emptyMap()` / `emptySequence()` /
+/// `emptyArray()` likewise, when the left side's type is the nullable
+/// String / List / Set / Map / Sequence / Array.
+pub fn or_empty(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let elvis = innermost(tree.root_node(), caret)
+        .into_iter()
+        .flat_map(ancestors)
+        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body"))
+        .find(|n| n.kind() == "elvis_expression" && n.named_child_count() == 2)?;
+    let (left, right) = (elvis.named_child(0)?, elvis.named_child(1)?);
+    let wanted = match text[right.byte_range()].trim() {
+        "\"\"" => "String",
+        "emptyList()" => "List",
+        "emptySet()" => "Set",
+        "emptyMap()" => "Map",
+        "emptySequence()" => "Sequence",
+        "emptyArray()" => "Array",
+        _ => return None,
+    };
+    let ty = receiver_type(left, text, classes)?;
+    if !ty.ends_with('?') || type_head(&ty) != wanted {
+        return None;
+    }
+    let receiver = &text[left.byte_range()];
+    let primary = matches!(left.kind(), "simple_identifier" | "call_expression" | "navigation_expression" | "parenthesized_expression" | "indexing_expression" | "this_expression");
+    let receiver = if primary { receiver.to_owned() } else { format!("({receiver})") };
+    Some(Intention { title: "Replace with 'orEmpty()'".into(), range: elvis.byte_range(), caret: elvis.start_byte(), replacement: format!("{receiver}.orEmpty()") })
+}
+
+/// Replace negated 'isEmpty' with 'isNotEmpty' (IntelliJ's
+/// ReplaceNegatedIsEmptyWithIsNotEmptyInspection): `!xs.isEmpty()` →
+/// `xs.isNotEmpty()`, and `isNotEmpty` / `isBlank` / `isNotBlank` the other
+/// way, when `xs` is a collection, map, array or string (only strings for
+/// the blank checks).
+pub fn negated_emptiness(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let negation = innermost(tree.root_node(), caret)
+        .into_iter()
+        .flat_map(ancestors)
+        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body"))
+        .find(|n| n.kind() == "prefix_expression" && text[n.byte_range()].starts_with('!'))?;
+    let call = children(negation).into_iter().last()?;
+    let [callee, suffix] = children(call)[..] else { return None };
+    if call.kind() != "call_expression" || callee.kind() != "navigation_expression" || text[suffix.byte_range()].replace(' ', "") != "()" {
+        return None;
+    }
+    let target = callee.named_child(0)?;
+    let name = text[callee.named_child(1)?.byte_range()].trim().strip_prefix('.')?;
+    let opposite = match name {
+        "isEmpty" => "isNotEmpty",
+        "isNotEmpty" => "isEmpty",
+        "isBlank" => "isNotBlank",
+        "isNotBlank" => "isBlank",
+        _ => return None,
+    };
+    let ty = receiver_type(target, text, classes)?;
+    let head = type_head(&ty);
+    let string = matches!(head, "String" | "CharSequence" | "StringBuilder");
+    let sized = string
+        || matches!(head, "List" | "MutableList" | "ArrayList" | "Set" | "MutableSet" | "HashSet" | "LinkedHashSet" | "Collection" | "MutableCollection" | "Map" | "MutableMap" | "HashMap" | "LinkedHashMap")
+        || head.ends_with("Array");
+    if ty.ends_with('?') || !(if name.contains("Blank") { string } else { sized }) {
+        return None;
+    }
+    let short = |n: &str| n.trim_end_matches("()").to_owned();
+    Some(Intention {
+        title: format!("Replace negated '{}' with '{}'", short(name), short(opposite)),
+        range: negation.byte_range(),
+        caret: negation.start_byte(),
+        replacement: format!("{}.{opposite}()", &text[target.byte_range()]),
+    })
+}
+
 /// Replace 'get' call with indexing operator / Replace 'set' call with
 /// indexing operator (IntelliJ's ReplaceGetOrSetInspection): `xs.get(i)`
 /// → `xs[i]`, the statement `m.set(k, v)` → `m[k] = v`, when the
@@ -1193,6 +1269,28 @@ mod tests {
         assert_eq!(run("o == a"), None);
         assert_eq!(run("n == 1"), None);
         assert_eq!(run("o.equals"), None);
+    }
+
+    #[test]
+    fn replaces_elvis_with_or_empty_and_negations() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(s: String?, xs: List<Int>?, t: String, ys: List<Int>, m: Map<String, Int>?) {\n    val a = s ?: \"\"\n    val b = xs ?: emptyList()\n    val c = t ?: \"\"\n    val d = xs ?: emptySet()\n    val e = m ?: emptyMap()\n    if (!ys.isEmpty()) return\n    val g = !t.isNotBlank()\n    val h = !s.isEmpty()\n    val i = !ys.isBlank()\n}\n";
+        let run = |at: &str, f: fn(&str, usize, super::super::catches::Classes) -> Option<Intention>| f(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("?: \"\"", or_empty).unwrap();
+        assert_eq!(title, "Replace with 'orEmpty()'");
+        assert!(out.contains("    val a = s.orEmpty()\n"), "{out}");
+        assert!(run("emptyList", or_empty).unwrap().1.contains("    val b = xs.orEmpty()\n"));
+        assert!(run("emptyMap", or_empty).unwrap().1.contains("    val e = m.orEmpty()\n"));
+        // Not nullable; the wrong empty value.
+        assert_eq!(run("t ?:", or_empty), None);
+        assert_eq!(run("emptySet", or_empty), None);
+        let (title, out) = run("!ys.isEmpty", negated_emptiness).unwrap();
+        assert_eq!(title, "Replace negated 'isEmpty' with 'isNotEmpty'");
+        assert!(out.contains("    if (ys.isNotEmpty()) return\n"), "{out}");
+        assert!(run("isNotBlank", negated_emptiness).unwrap().1.contains("    val g = t.isBlank()\n"));
+        // A nullable receiver; a list isn't blank.
+        assert_eq!(run("!s.isEmpty", negated_emptiness), None);
+        assert_eq!(run("isBlank", negated_emptiness), None);
     }
 
     #[test]

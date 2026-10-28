@@ -167,6 +167,8 @@ impl FileEditor {
                     crate::index::intentions::for_each_to_loop(&text, cursor, &classes),
                     crate::index::intentions::indexing_operator(&text, cursor, &classes),
                     crate::index::intentions::binary_operator(&text, cursor, &classes),
+                    crate::index::intentions::or_empty(&text, cursor, &classes),
+                    crate::index::intentions::negated_emptiness(&text, cursor, &classes),
                 ];
                 for intention in typed.into_iter().flatten().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));

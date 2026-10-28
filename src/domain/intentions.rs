@@ -59,6 +59,8 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Replace with a 'for' loop", "Turns a forEach call on a collection, array, map or string into a for loop"),
     ("Kotlin", "Replace 'get' or 'set' call with indexing operator", "Writes list.get(i) as list[i] and map.set(k, v) as map[k] = v"),
     ("Kotlin", "Replace call with binary operator", "Writes a.equals(b) as a == b, xs.contains(x) as x in xs and a.plus(b) as a + b"),
+    ("Kotlin", "Replace with 'orEmpty()'", "Writes s ?: \"\" and xs ?: emptyList() as orEmpty()"),
+    ("Kotlin", "Replace negated 'isEmpty' with 'isNotEmpty'", "Writes !xs.isEmpty() as xs.isNotEmpty(), and !isNotEmpty() / !isBlank() / !isNotBlank() likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
     ("Java", "Replace 'for each' loop with indexed 'for' loop", "Loops over a list or an array by index instead of with for each"),
@@ -82,6 +84,8 @@ pub fn family(title: &str) -> &str {
         "Replace call with binary operator"
     } else if title == "Replace '!=' with '!equals()'" {
         "Replace '==' with 'equals()'"
+    } else if title.starts_with("Replace negated '") {
+        "Replace negated 'isEmpty' with 'isNotEmpty'"
     } else if title.starts_with("Iterate over '") {
         "Iterate over collection"
     } else {
