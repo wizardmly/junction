@@ -219,8 +219,8 @@ struct TemplateFields {
     abbreviation: Entity<InputState>,
     description: Entity<InputState>,
     text: Entity<TextareaState>,
-    /// A default value per variable, in the text's order.
-    defaults: Vec<(String, Entity<InputState>)>,
+    /// An expression and a default value per variable, in the text's order.
+    defaults: Vec<(String, Entity<InputState>, Entity<InputState>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -934,10 +934,26 @@ impl SettingsView {
         }
         let mut variables = v_flex().gap_1();
         if !fields.defaults.is_empty() {
-            variables = variables.child(div().text_color(palette.text_secondary).child("Default values of the variables:"));
+            let head = |w: f32, t: &'static str| div().w(px(w)).text_color(palette.text_secondary).child(t);
+            variables = variables.child(h_flex().gap_2().child(head(110., "Name")).child(head(260., "Expression")).child(head(200., "Default value")));
         }
-        for (name, input) in &fields.defaults {
-            variables = variables.child(h_flex().gap_2().child(div().w(px(110.)).font_family("monospace").child(format!("${name}$"))).child(div().w(px(260.)).child(Input::new(input).small())));
+        for (name, expression, input) in &fields.defaults {
+            // An expression the editor can't work out is marked.
+            let text = expression.read(cx).value().to_string();
+            let unknown = !text.trim().is_empty() && crate::domain::live_templates::parse_expression(&text).is_none();
+            variables = variables.child(
+                h_flex()
+                    .gap_2()
+                    .child(div().w(px(110.)).font_family("monospace").child(format!("${name}$")))
+                    .child(div().w(px(260.)).child(Input::new(expression).small()))
+                    .child(div().w(px(200.)).child(Input::new(input).small()))
+                    .when(unknown, |el| el.child(div().text_xs().text_color(palette.status_deleted).child("Not supported"))),
+            );
+        }
+        if !fields.defaults.is_empty() {
+            variables = variables.child(div().text_xs().text_color(palette.text_secondary).child(
+                "Expressions: className(), methodName(), methodParameters(), suggestIndexName(), variableOfType(\"Type\"), arrayVariable(), componentTypeOf(V), typeParameterOf(V, n), subtypes(typeOfVariable(V)), suggestVariableName(T), \"text\", or another variable's NAME. The default value is used when the expression gives nothing.",
+            ));
         }
         v_flex()
             .gap_2()
@@ -1010,21 +1026,27 @@ impl SettingsView {
     /// already there.
     fn default_fields(&self, fields: &mut TemplateFields, t: &crate::domain::live_templates::UserTemplate, window: &mut Window, cx: &mut Context<Self>) {
         let names = crate::domain::live_templates::variables(&t.text);
-        if fields.defaults.iter().map(|(n, _)| n).eq(names.iter()) {
+        if fields.defaults.iter().map(|(n, _, _)| n).eq(names.iter()) {
             return;
         }
         let mut old = std::mem::take(&mut fields.defaults);
         for name in names {
-            let input = match old.iter().position(|(n, _)| *n == name) {
-                Some(at) => old.remove(at).1,
+            let (expression, input) = match old.iter().position(|(n, _, _)| *n == name) {
+                Some(at) => {
+                    let (_, e, i) = old.remove(at);
+                    (e, i)
+                }
                 None => {
-                    let value = t.defaults.iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone()).unwrap_or_default();
-                    let input = cx.new(|cx| InputState::new(window, cx).placeholder("None").default_value(value));
+                    let value = |list: &[(String, String)]| list.iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone()).unwrap_or_default();
+                    let (expression, default) = (value(&t.expressions), value(&t.defaults));
+                    let expression = cx.new(|cx| InputState::new(window, cx).placeholder("None").default_value(expression));
+                    let input = cx.new(|cx| InputState::new(window, cx).placeholder("None").default_value(default));
+                    fields._subscriptions.push(cx.subscribe_in(&expression, window, Self::template_changed));
                     fields._subscriptions.push(cx.subscribe_in(&input, window, Self::template_changed));
-                    input
+                    (expression, input)
                 }
             };
-            fields.defaults.push((name, input));
+            fields.defaults.push((name, expression, input));
         }
     }
 
@@ -1038,7 +1060,13 @@ impl SettingsView {
             t.defaults = fields
                 .defaults
                 .iter()
-                .map(|(n, i)| (n.clone(), i.read(cx).value().to_string()))
+                .map(|(n, _, i)| (n.clone(), i.read(cx).value().to_string()))
+                .filter(|(_, v)| !v.is_empty())
+                .collect();
+            t.expressions = fields
+                .defaults
+                .iter()
+                .map(|(n, e, _)| (n.clone(), e.read(cx).value().trim().to_owned()))
                 .filter(|(_, v)| !v.is_empty())
                 .collect();
             let t = t.clone();
