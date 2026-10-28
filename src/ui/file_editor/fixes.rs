@@ -176,6 +176,7 @@ impl FileEditor {
                     crate::index::intentions::range_to_indices(&text, cursor, &classes),
                     crate::index::intentions::last_index(&text, cursor, &classes),
                     crate::index::intentions::kotlin_analog(&text, cursor, &classes),
+                    crate::index::intentions::substring_call(&text, cursor, &classes),
                 ];
                 for intention in typed.into_iter().flatten().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));
