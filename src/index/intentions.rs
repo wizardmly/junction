@@ -34,6 +34,7 @@ pub fn intentions(text: &str, caret: usize) -> Vec<Intention> {
     out.extend(specify_type(root, text, caret, &shown).map(|(i, _)| i));
     out.extend(to_template(root, text, caret));
     out.extend(to_concatenation(root, text, caret));
+    out.extend(remove_loop_indices(root, text, caret));
     out
 }
 
@@ -149,6 +150,88 @@ fn iteration_name(expression: &str, element: &str) -> String {
         }
         _ => "e".into(),
     }
+}
+
+/// The `for` loop whose header (before its body) holds `caret`, with its
+/// variable(s), the iterated expression and the body.
+fn for_header<'t>(root: Node<'t>, caret: usize) -> Option<(Node<'t>, Node<'t>, Node<'t>, Option<Node<'t>>)> {
+    let at = innermost(root, caret)?;
+    let n = ancestors(at).find(|n| matches!(n.kind(), "for_statement" | "statements" | "lambda_literal" | "class_body"))?;
+    if n.kind() != "for_statement" {
+        return None;
+    }
+    let mut cursor = n.walk();
+    let named: Vec<Node> = n.named_children(&mut cursor).collect();
+    let variable = *named.first()?;
+    let iterated = *named.get(1)?;
+    let body = named.get(2).copied();
+    if body.is_some_and(|b| caret >= b.start_byte()) {
+        return None;
+    }
+    Some((variable, iterated, n, body))
+}
+
+/// Whether `name` is a word in `text`.
+fn mentions(text: &str, name: &str) -> bool {
+    text.match_indices(name).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + name.len()..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric() || c == '_') && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
+/// Add indices to 'for' loop (IntelliJ's AddForLoopIndicesIntention):
+/// `for (x in list)` → `for ((index, x) in list.withIndex())`, when the
+/// loop goes through a collection, array, sequence or string.
+pub fn add_loop_indices(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let (variable, iterated, statement, _) = for_header(tree.root_node(), caret)?;
+    if variable.kind() != "variable_declaration" {
+        return None;
+    }
+    let ty = super::introduce::kotlin_type(iterated, text)
+        .filter(|t| !t.is_empty())
+        .or_else(|| super::types::type_of(Lang::Kotlin, text, iterated.byte_range(), classes).map(|t| t.ty))?;
+    // A map has no `withIndex()`.
+    if element_type(&ty)?.starts_with("Map.Entry") {
+        return None;
+    }
+    let loop_text = &text[statement.byte_range()];
+    let index = std::iter::once("index".to_owned()).chain((1..).map(|n| format!("index{n}"))).find(|name| !mentions(loop_text, name))?;
+    let expression = &text[iterated.byte_range()];
+    let expression = if matches!(iterated.kind(), "simple_identifier" | "navigation_expression" | "call_expression" | "parenthesized_expression" | "this_expression") {
+        expression.to_owned()
+    } else {
+        format!("({expression})")
+    };
+    let middle = &text[variable.end_byte()..iterated.start_byte()];
+    let start = variable.start_byte();
+    Some(Intention {
+        title: "Add indices to 'for' loop".into(),
+        range: start..iterated.end_byte(),
+        replacement: format!("({index}, {}){middle}{expression}.withIndex()", &text[variable.byte_range()]),
+        caret: start + 1 + index.len(),
+    })
+}
+
+/// Remove indices in 'for' loop: `for ((index, x) in list.withIndex())`
+/// → `for (x in list)` when the loop doesn't use `index`.
+fn remove_loop_indices(root: Node, text: &str, caret: usize) -> Option<Intention> {
+    let (variables, iterated, _, body) = for_header(root, caret)?;
+    if variables.kind() != "multi_variable_declaration" || variables.named_child_count() != 2 {
+        return None;
+    }
+    let index = &text[variables.named_child(0)?.byte_range()];
+    let value = &text[variables.named_child(1)?.byte_range()];
+    // `….withIndex()`
+    let call = text[iterated.byte_range()].strip_suffix(".withIndex()")?;
+    if iterated.kind() != "call_expression" || index != "_" && body.is_some_and(|b| mentions(&text[b.byte_range()], index)) {
+        return None;
+    }
+    let middle = &text[variables.end_byte()..iterated.start_byte()];
+    let call = call.strip_prefix('(').and_then(|c| c.strip_suffix(')')).filter(|c| !c.contains(['(', ')'])).unwrap_or(call);
+    let start = variables.start_byte();
+    Some(Intention { title: "Remove indices in 'for' loop".into(), range: start..iterated.end_byte(), replacement: format!("{value}{middle}{call}"), caret: start })
 }
 
 type Typing<'a> = dyn Fn(Node) -> Option<(String, Vec<String>)> + 'a;
@@ -451,6 +534,26 @@ mod tests {
         assert_eq!(iterate_over(text, at("n\n    val"), &classes), None);
         assert_eq!(iterate_over(text, at("all()"), &classes), None);
         assert_eq!(iterate_over(text, at("val x"), &classes), None);
+    }
+
+    #[test]
+    fn adds_and_removes_loop_indices() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(list: List<String>, m: Map<String, Int>, a: IntArray) {\n    for (x in list) { println(x) }\n    for (e in m) {}\n    for (n in a) { val index = n }\n}\n";
+        let at = |s: &str| text.find(s).unwrap();
+        let i = add_loop_indices(text, at("x in"), &classes).unwrap();
+        assert_eq!(i.title, "Add indices to 'for' loop");
+        let out = apply(text, &i);
+        assert!(out.contains("for ((index, x) in list.withIndex()) { println(x) }"), "{out}");
+        assert_eq!(&out[i.caret - 5..i.caret], "index");
+        // Not a map's; a name the loop uses already gets a number; not in the body.
+        assert_eq!(add_loop_indices(text, at("e in"), &classes), None);
+        assert!(apply(text, &add_loop_indices(text, at("n in"), &classes).unwrap()).contains("for ((index1, n) in a.withIndex())"));
+        assert_eq!(add_loop_indices(text, at("println"), &classes), None);
+        // Back, when the index isn't used.
+        assert_eq!(find(&out, "index,", "Remove indices in 'for' loop").unwrap(), text);
+        let used = "fun f(list: List<String>) {\n    for ((i, x) in list.withIndex()) { println(i) }\n}\n";
+        assert_eq!(find(used, "i,", "Remove indices in 'for' loop"), None);
     }
 
     #[test]
