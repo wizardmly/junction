@@ -940,9 +940,9 @@ impl SettingsView {
         let mut variables = v_flex().gap_1();
         if !fields.defaults.is_empty() {
             let head = |w: f32, t: &'static str| div().w(px(w)).text_color(palette.text_secondary).child(t);
-            variables = variables.child(h_flex().gap_2().child(head(110., "Name")).child(head(260., "Expression")).child(head(200., "Default value")));
+            variables = variables.child(h_flex().gap_2().child(head(110., "Name")).child(head(260., "Expression")).child(head(200., "Default value")).child(head(110., "Skip if defined")));
         }
-        for (name, expression, input) in &fields.defaults {
+        for (n, (name, expression, input)) in fields.defaults.iter().enumerate() {
             // An expression the editor can't work out is marked.
             let text = expression.read(cx).value().to_string();
             let unknown = !text.trim().is_empty() && crate::domain::live_templates::parse_expression(&text).is_none();
@@ -952,12 +952,27 @@ impl SettingsView {
                     .child(div().w(px(110.)).font_family("monospace").child(format!("${name}$")))
                     .child(div().w(px(260.)).child(Input::new(expression).small()))
                     .child(div().w(px(200.)).child(Input::new(input).small()))
+                    .child(div().w(px(110.)).child({
+                        let (view, ix, name) = (cx.entity(), *ix, name.clone());
+                        Checkbox::new(("live-template-skip", n)).checked(t.skip.contains(&name)).on_change(move |v, _, cx| {
+                            let v = *v;
+                            view.update(cx, |this, cx| {
+                                if let Some(t) = this.templates.user.get_mut(ix) {
+                                    t.skip.retain(|s| *s != name);
+                                    if v {
+                                        t.skip.push(name.clone());
+                                    }
+                                }
+                                cx.notify();
+                            })
+                        })
+                    }))
                     .when(unknown, |el| el.child(div().text_xs().text_color(palette.status_deleted).child("Not supported"))),
             );
         }
         if !fields.defaults.is_empty() {
             variables = variables.child(div().text_xs().text_color(palette.text_secondary).child(
-                "Expressions: className(), methodName(), methodParameters(), suggestIndexName(), variableOfType(\"Type\"), arrayVariable(), componentTypeOf(V), typeParameterOf(V, n), subtypes(typeOfVariable(V)), suggestVariableName(T), \"text\", or another variable's NAME. The default value is used when the expression gives nothing.",
+                "Expressions: className(), methodName(), methodParameters(), suggestIndexName(), variableOfType(\"Type\"), arrayVariable(), componentTypeOf(V), typeParameterOf(V, n), subtypes(typeOfVariable(V)), suggestVariableName(T), date(\"yyyy-MM-dd\"), time(), user(), fileName(), fileNameWithoutExtension(), currentPackage(), lineNumber(), clipboard(), enum(\"a\", \"b\"), camelCase(V), capitalize(V), decapitalize(V), snakeCase(V), lowercaseAndDash(V), capitalizeAndUnderscore(V), spaceSeparated(V), \"text\", or another variable's NAME. The default value is used when the expression gives nothing; Skip if defined doesn't stop at a variable whose expression gives a value.",
             ));
         }
         v_flex()
