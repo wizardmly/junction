@@ -174,6 +174,7 @@ impl FileEditor {
                     crate::index::intentions::merge_call_chain(&text, cursor, &classes),
                     crate::index::intentions::redundant_conversion(&text, cursor, true, &classes),
                     crate::index::intentions::range_to_indices(&text, cursor, &classes),
+                    crate::index::intentions::last_index(&text, cursor, &classes),
                 ];
                 for intention in typed.into_iter().flatten().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));
