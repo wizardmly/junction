@@ -740,6 +740,45 @@ pub fn size_check(text: &str, caret: usize, kotlin: bool, classes: super::catche
     Some(Intention { title: title.into(), range: comparison.byte_range(), caret: comparison.start_byte() + replacement.len(), replacement })
 }
 
+/// The type of a Java expression, from what it shows or the declarations.
+fn java_type(node: Node, text: &str, classes: super::catches::Classes) -> Option<String> {
+    super::surround::expression_type(Lang::Java, node, text).or_else(|| super::types::type_of(Lang::Java, text, node.byte_range(), classes).map(|t| t.ty))
+}
+
+/// Java string fixes: Replace '==' with 'equals()' / Replace '!=' with
+/// '!equals()' (IntelliJ's StringEqualityInspection) where both sides are
+/// strings, `a == b` → `a.equals(b)`; and Replace with 'isEmpty()'
+/// (StringEqualsEmptyStringInspection), `s.equals("")` → `s.isEmpty()`.
+pub fn string_comparison(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Java, text)?;
+    let at = innermost(tree.root_node(), caret)?;
+    let string = |n: Node| java_type(n, text, classes).is_some_and(|t| t == "String" || t == "java.lang.String");
+    let near = || ancestors(at).take_while(|n| !matches!(n.kind(), "block" | "class_body" | "expression_statement" | "lambda_expression"));
+    if let Some(call) = near().find(|n| n.kind() == "method_invocation") {
+        let name = call.child_by_field_name("name").map(|n| &text[n.byte_range()]);
+        let arguments = call.child_by_field_name("arguments").map(children).unwrap_or_default();
+        if name == Some("equals") && arguments.len() == 1 && &text[arguments[0].byte_range()] == "\"\"" {
+            let object = call.child_by_field_name("object")?;
+            if string(object) {
+                let replacement = format!("{}.isEmpty()", &text[object.byte_range()]);
+                return Some(Intention { title: "Replace with 'isEmpty()'".into(), range: call.byte_range(), caret: call.start_byte(), replacement });
+            }
+        }
+    }
+    let comparison = near().find(|n| n.kind() == "binary_expression" && n.named_child_count() == 2 && matches!(n.child_by_field_name("operator").map(|o| o.kind()), Some("==" | "!=")))?;
+    let (left, right) = (comparison.named_child(0)?, comparison.named_child(1)?);
+    let not = comparison.child_by_field_name("operator")?.kind() == "!=";
+    if [left, right].iter().any(|n| n.kind() == "null_literal") || !string(left) || !string(right) {
+        return None;
+    }
+    let object = &text[left.byte_range()];
+    let primary = matches!(left.kind(), "identifier" | "string_literal" | "method_invocation" | "field_access" | "parenthesized_expression" | "array_access" | "this");
+    let object = if primary { object.to_owned() } else { format!("({object})") };
+    let replacement = format!("{}{object}.equals({})", if not { "!" } else { "" }, &text[right.byte_range()]);
+    let title = if not { "Replace '!=' with '!equals()'" } else { "Replace '==' with 'equals()'" };
+    Some(Intention { title: title.into(), range: comparison.byte_range(), caret: comparison.start_byte(), replacement })
+}
+
 type Typing<'a> = dyn Fn(Node) -> Option<(String, Vec<String>)> + 'a;
 
 /// `val x = 1` → `val x: Int = 1`; `fun f() = 1` → `fun f(): Int = 1`;
@@ -1133,6 +1172,27 @@ mod tests {
         assert_eq!(run("equals(a)"), None);
         assert_eq!(run("plus(b, c)"), None);
         assert_eq!(run("a.equals(b)) return"), None);
+    }
+
+    #[test]
+    fn compares_java_strings_with_equals() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "class A {\n    boolean f(String a, String b, Object o, int n) {\n        if (a == b) return true;\n        boolean c = a + \"x\" != b;\n        boolean d = a == null || o == a || n == 1;\n        return a.equals(\"\") && o.equals(\"\");\n    }\n}\n";
+        let run = |at: &str| string_comparison(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("a == b").unwrap();
+        assert_eq!(title, "Replace '==' with 'equals()'");
+        assert!(out.contains("        if (a.equals(b)) return true;\n"), "{out}");
+        let (title, out) = run("!= b").unwrap();
+        assert_eq!(title, "Replace '!=' with '!equals()'");
+        assert!(out.contains("        boolean c = !(a + \"x\").equals(b);\n"), "{out}");
+        let (title, out) = run("equals(\"\") &&").unwrap();
+        assert_eq!(title, "Replace with 'isEmpty()'");
+        assert!(out.contains("        return a.isEmpty() && o.equals(\"\");\n"), "{out}");
+        // null, an Object, numbers.
+        assert_eq!(run("a == null"), None);
+        assert_eq!(run("o == a"), None);
+        assert_eq!(run("n == 1"), None);
+        assert_eq!(run("o.equals"), None);
     }
 
     #[test]
