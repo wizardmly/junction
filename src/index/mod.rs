@@ -21,6 +21,7 @@ pub mod import_function;
 pub mod inline_function;
 pub mod safe_delete;
 pub mod unwrap;
+pub mod surround;
 pub mod change_signature;
 pub mod extract_method;
 pub mod introduce_parameter;

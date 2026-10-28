@@ -187,6 +187,57 @@ pub fn surround_lines(style: ImportStyle, surrounder: Surrounder, text: &str, ra
     Surrounded { range, text: out, select, stops, end: header_end }
 }
 
+/// Whether a statement surrounder moves the declarations used after the
+/// lines out in front of them (IntelliJ's MoveDeclarationsOutHelper and
+/// SurroundWithUtil.moveDeclarationsOut), and whether a `var` (a non-final
+/// Java variable) moved out keeps a default value (`0`, `false`, `null`)
+/// as its initializer: `Some(default)`, or None for no move.
+pub fn moves_declarations(style: ImportStyle, surrounder: Surrounder) -> Option<bool> {
+    use Surrounder::*;
+    match (style, surrounder) {
+        (ImportStyle::Kotlin, If | Run | TryFinally | TryCatchFinally | TryCatch) => Some(true),
+        (ImportStyle::Kotlin, IfElse) => Some(false),
+        // The Kotlin loops don't move them (KotlinLoopSurrounderBase).
+        (ImportStyle::Kotlin, _) => None,
+        (ImportStyle::Java, If | While | For | TryCatch | TryCatchFinally) => Some(true),
+        (ImportStyle::Java, IfElse | DoWhile | TryFinally | Synchronized | Block) => Some(false),
+        (ImportStyle::Java, _) => None,
+    }
+}
+
+/// The declarations a surrounder moves out: the lines it wraps instead
+/// (`a = 1` for `val a = 1`), the declarations in front of the construct
+/// in order (`val a: Int`), and Kotlin's `val b = ` before it when the
+/// last line declared what is used after (`val b = if (…) { … }`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeclarationsOut {
+    pub block: String,
+    pub declarations: Vec<String>,
+    pub prefix: String,
+}
+
+/// `surround_lines` with the declarations moved out.
+pub fn surround_lines_moving(style: ImportStyle, surrounder: Surrounder, text: &str, range: Range<usize>, unit: &str, out: &DeclarationsOut) -> Surrounded {
+    let mut moved = String::with_capacity(text.len());
+    moved.push_str(&text[..range.start]);
+    moved.push_str(&out.block);
+    moved.push_str(&text[range.end..]);
+    let done = surround_lines(style, surrounder, &moved, range.start..range.start + out.block.len(), unit);
+    let base: String = done.text.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    let mut front: String = out.declarations.iter().map(|d| format!("{base}{d}\n")).collect();
+    front.push_str(&base);
+    front.push_str(&out.prefix);
+    let shift = front.len() - base.len();
+    let at = |r: &Range<usize>| r.start + shift..r.end + shift;
+    Surrounded {
+        range,
+        text: format!("{front}{}", &done.text[base.len()..]),
+        select: at(&done.select),
+        stops: done.stops.iter().map(at).collect(),
+        end: done.end + shift,
+    }
+}
+
 /// Wraps an expression (within a line) with an expression surrounder.
 pub fn surround_expression(surrounder: Surrounder, text: &str, range: Range<usize>) -> Surrounded {
     let expr = &text[range.clone()];

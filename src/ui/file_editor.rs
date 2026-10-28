@@ -2072,10 +2072,16 @@ impl FileEditor {
 
     /// Applies a surrounder to the lines or the expression at `range`.
     pub(super) fn surround(&mut self, surrounder: crate::domain::surround::Surrounder, range: Range<usize>, expression: bool, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::domain::surround::{indent_unit, surround_expression, surround_lines};
-        let Some((_, style)) = self.jvm_style() else { return };
+        use crate::domain::surround::{indent_unit, moves_declarations, surround_expression, surround_lines, surround_lines_moving};
+        let Some((lang, style)) = self.jvm_style() else { return };
         let text = self.text(cx);
-        let done = if expression { surround_expression(surrounder, &text, range) } else { surround_lines(style, surrounder, &text, range, &indent_unit(&text)) };
+        // Declarations the code after still uses go above the new block.
+        let out = (!expression).then(|| moves_declarations(style, surrounder)).flatten().and_then(|defaults| crate::index::surround::declarations_out(lang, &text, range.clone(), defaults));
+        let done = match out {
+            _ if expression => surround_expression(surrounder, &text, range),
+            Some(out) => surround_lines_moving(style, surrounder, &text, range, &indent_unit(&text), &out),
+            None => surround_lines(style, surrounder, &text, range, &indent_unit(&text)),
+        };
         let select = done.stops.first().cloned().unwrap_or(done.select.clone());
         self.state.update(cx, |state, cx| {
             state.set_selected_range(done.range.clone(), cx);
