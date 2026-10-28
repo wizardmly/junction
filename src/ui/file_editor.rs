@@ -1287,7 +1287,9 @@ impl FileEditor {
             return;
         }
         let text = self.text(cx);
-        let new = crate::domain::rearrange::rearrange_java(&text);
+        // A selection: only the members it touches.
+        let selection = self.state.read(cx).selected_range();
+        let new = crate::domain::rearrange::rearrange_java_in(&text, (!selection.is_empty()).then(|| std::slice::from_ref(&selection)));
         if new == text {
             return Self::hint("Rearrange Code", "Nothing to rearrange", window, cx);
         }
@@ -1338,17 +1340,54 @@ impl FileEditor {
         ranges.sort_by_key(|r| std::cmp::Reverse(r.start));
         let whole = options.scope == ReformatScope::WholeFile || (options.scope == ReformatScope::Selected && ranges.is_empty());
         // Rearrange code: Java's members in the default arrangement, before
-        // the reformat (the whole file's; IntelliJ's for a scope is its
-        // entries, here only the whole file is rearranged).
-        let rearranged = (options.rearrange && whole && self.path.ends_with(".java")).then(|| crate::domain::rearrange::rearrange_java(&text)).filter(|r| *r != text);
+        // the reformat; with a scope, the members its lines touch.
+        let rearranged = (options.rearrange && self.path.ends_with(".java"))
+            .then(|| {
+                if whole {
+                    return crate::domain::rearrange::rearrange_java(&text);
+                }
+                let starts: Vec<usize> = std::iter::once(0).chain(text.match_indices('\n').map(|(i, _)| i + 1)).collect();
+                let offset = |line: usize| starts.get(line).copied().unwrap_or(text.len());
+                let bytes: Vec<std::ops::Range<usize>> = ranges.iter().map(|r| offset(r.start)..offset(r.end)).collect();
+                crate::domain::rearrange::rearrange_java_in(&text, Some(&bytes))
+            })
+            .filter(|r| *r != text);
         let source = rearranged.clone().unwrap_or_else(|| text.clone());
+        // The scope's lines in the rearranged text: those around the moved
+        // members shift, those among them take all of them.
+        if !whole && rearranged.is_some() {
+            let (old, new): (Vec<&str>, Vec<&str>) = (text.split('\n').collect(), source.split('\n').collect());
+            let same_start = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+            let same_end = old.iter().rev().zip(new.iter().rev()).take_while(|(a, b)| a == b).count().min(old.len().min(new.len()) - same_start);
+            let (old_end, new_end) = (old.len() - same_end, new.len() - same_end);
+            for r in &mut ranges {
+                *r = if r.end <= same_start {
+                    r.clone()
+                } else if r.start >= old_end {
+                    r.start + new_end - old_end..r.end + new_end - old_end
+                } else {
+                    r.start.min(same_start)..if r.end > old_end { r.end + new_end - old_end } else { new_end }
+                };
+            }
+            // Merged where they now overlap, last first again.
+            ranges.sort_by_key(|r| r.start);
+            let mut merged: Vec<std::ops::Range<usize>> = Vec::new();
+            for r in ranges.drain(..) {
+                match merged.last_mut() {
+                    Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+                    _ => merged.push(r),
+                }
+            }
+            merged.reverse();
+            ranges = merged;
+        }
         // `.editorconfig`'s indent, over the file's own.
         let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(std::path::Path::to_path_buf)).unwrap_or_else(|| self.repository.root().to_path_buf());
         let (editorconfig, max_line) = crate::infra::editorconfig::style_for(&root, &self.absolute_path());
         let indent = &crate::domain::code_style::StyleLang::of_path(&self.path).map(|l| crate::settings::Settings::get(cx).code_style.indents(l, editorconfig, max_line)).unwrap_or_default();
         let mut new = match style {
             Some(style) if whole => crate::domain::reformat::reformat_indented(style, &source, None, indent),
-            Some(style) => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat_indented(style, &t, Some(r.clone()), indent)),
+            Some(style) => ranges.iter().fold(source.clone(), |t, r| crate::domain::reformat::reformat_indented(style, &t, Some(r.clone()), indent)),
             None if groovy && whole => crate::domain::reformat::reformat_groovy(&text, None, indent),
             None if groovy => ranges.iter().fold(text.clone(), |t, r| crate::domain::reformat::reformat_groovy(&t, Some(r.clone()), indent)),
             // XML: the whole file (its tags and attributes don't follow lines).
