@@ -882,6 +882,43 @@ pub fn last_index(text: &str, caret: usize, classes: super::catches::Classes) ->
     Some(Intention { title: "Replace with 'lastIndex'".into(), range: minus.byte_range(), caret: minus.start_byte(), replacement: format!("{}.lastIndex", &text[target.byte_range()]) })
 }
 
+/// Replace 'substring' call with 'take' call / with 'dropLast' call
+/// (IntelliJ's ReplaceSubstringWithTakeInspection and
+/// ReplaceSubstringWithDropLastInspection): `s.substring(0, n)` →
+/// `s.take(n)`, `s.substring(0, s.length - n)` → `s.dropLast(n)`, when `s`
+/// is a String; the caret on `substring`.
+pub fn substring_call(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let (call, target, name, values) = method_call(tree.root_node(), text, caret)?;
+    let [start, end] = values[..] else { return None };
+    if name != "substring" || &text[start.byte_range()] != "0" {
+        return None;
+    }
+    let ty = receiver_type(target, text, classes)?;
+    if ty != "String" {
+        return None;
+    }
+    let receiver = &text[target.byte_range()];
+    let end_text = &text[end.byte_range()];
+    let inner = end.named_child(0).unwrap_or(end);
+    let drop_last = (inner.kind() == "additive_expression")
+        .then(|| children(inner))
+        .and_then(|parts| match parts[..] {
+            [length, count] if text[length.byte_range()] == format!("{receiver}.length") && text[length.end_byte()..count.start_byte()].trim() == "-" => Some(count),
+            _ => None,
+        });
+    let (function, argument) = match drop_last {
+        Some(count) => ("dropLast", &text[count.byte_range()]),
+        None => ("take", end_text),
+    };
+    Some(Intention {
+        title: format!("Replace 'substring' call with '{function}' call"),
+        range: call.byte_range(),
+        caret: call.start_byte(),
+        replacement: format!("{receiver}.{function}({argument})"),
+    })
+}
+
 /// Replace 'get' call with indexing operator / Replace 'set' call with
 /// indexing operator (IntelliJ's ReplaceGetOrSetInspection): `xs.get(i)`
 /// → `xs[i]`, the statement `m.set(k, v)` → `m[k] = v`, when the
@@ -1764,6 +1801,23 @@ mod tests {
         // The file's own Math.
         let own = "import com.example.Math\nval m = Math.max(1, 2)\n";
         assert_eq!(kotlin_analog(own, own.find("max").unwrap(), &classes), None);
+    }
+
+    #[test]
+    fn replaces_substring_with_take_and_drop_last() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(s: String, t: String?, xs: List<Int>, n: Int) {\n    val a = s.substring(0, n)\n    val b = s.substring(0, s.length - 2)\n    val c = s.substring(1, n)\n    val d = t?.substring(0, n)\n    val e = s.substring(n)\n}\n";
+        let run = |at: &str| substring_call(text, text.find(at).unwrap() + 2, &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("s.substring(0, n)").unwrap();
+        assert_eq!(title, "Replace 'substring' call with 'take' call");
+        assert!(out.contains("    val a = s.take(n)\n"), "{out}");
+        let (title, out) = run("s.substring(0, s.length").unwrap();
+        assert_eq!(title, "Replace 'substring' call with 'dropLast' call");
+        assert!(out.contains("    val b = s.dropLast(2)\n"), "{out}");
+        // Not from 0; a nullable receiver; one argument.
+        assert_eq!(run("s.substring(1"), None);
+        assert_eq!(run("t?.substring"), None);
+        assert_eq!(run("s.substring(n)"), None);
     }
 
     #[test]
