@@ -108,6 +108,9 @@ pub struct TranslationsEditor {
     error: Option<String>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
+    /// A cell being edited in place, and its field's subscription.
+    in_cell: Option<(RowId, Column, Entity<InputState>)>,
+    _in_cell: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -152,6 +155,8 @@ impl TranslationsEditor {
             error: None,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
+            in_cell: None,
+            _in_cell: None,
             _subscriptions,
         };
         this.reload(cx);
@@ -258,6 +263,11 @@ impl TranslationsEditor {
 
     /// Selects a cell and shows it in the fields below.
     fn select(&mut self, id: RowId, column: Column, extend: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Another cell picked: the one being edited is written first.
+        if self.in_cell.as_ref().is_some_and(|(i, c, _)| (i, *c) == (&id, column)) {
+            return;
+        }
+        self.finish_in_cell(true, false, window, cx);
         if extend {
             if !self.selected.remove(&id) {
                 self.selected.insert(id.clone());
@@ -329,19 +339,70 @@ impl TranslationsEditor {
 
     /// Enter (or leaving) in the Default Value or Translation field.
     fn apply_field(&mut self, translation: bool, cx: &mut Context<Self>) {
-        let Some(((folder, key), column)) = self.cell.clone() else { return };
-        let Some(row) = self.row(&(folder, key.clone())).cloned() else { return };
-        let (value, current, locale) = if translation {
-            let Column::Locale(l) = column else { return };
-            (self.translation_field.read(cx).value().to_string(), row.values.get(l).cloned().flatten().unwrap_or_default(), self.table.locales.get(l).cloned())
+        let Some((id, column)) = self.cell.clone() else { return };
+        if translation {
+            if !matches!(column, Column::Locale(_)) {
+                return;
+            }
+            let value = self.translation_field.read(cx).value().to_string();
+            self.write_cell(&id, column, value, cx);
         } else {
-            (self.default_field.read(cx).value().to_string(), row.default.clone().unwrap_or_default(), None)
+            let value = self.default_field.read(cx).value().to_string();
+            self.write_cell(&id, Column::Default, value, cx);
+        }
+    }
+
+    /// A Default Value or translation written when it changed.
+    fn write_cell(&mut self, id: &RowId, column: Column, value: String, cx: &mut Context<Self>) {
+        let locale = match column {
+            Column::Key => return,
+            Column::Default => None,
+            Column::Locale(l) => Some(self.table.locales.get(l).cloned()),
         };
-        if value == current {
+        if self.row(id).is_none() || value == self.cell_text(&(id.clone(), column)) {
             return;
         }
+        let (folder, key) = id.clone();
         self.error = None;
-        self.edit(folder, |files| usecase::set_value(files, &key, locale.as_ref(), &value), cx);
+        self.edit(folder, |files| usecase::set_value(files, &key, locale.flatten().as_ref(), &value), cx);
+    }
+
+    /// Double-click, Enter or F2 on a Default Value or translation: edits
+    /// it in the cell.
+    fn edit_in_cell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, column)) = self.cell.clone() else { return };
+        if column == Column::Key {
+            return;
+        }
+        let text = self.cell_text(&(id.clone(), column));
+        let end = lsp_types::Position::new(0, text.encode_utf16().count() as u32);
+        let state = cx.new(|cx| InputState::new(window, cx).default_value(text));
+        state.update(cx, |s, cx| {
+            s.focus(window, cx);
+            s.set_cursor_position(end, window, cx);
+        });
+        self._in_cell = Some(cx.subscribe_in(&state, window, |this, state, e: &InputEvent, window, cx| {
+            if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) && this.in_cell.as_ref().is_some_and(|c| c.2 == *state) {
+                let refocus = matches!(e, InputEvent::PressEnter { .. });
+                this.finish_in_cell(true, refocus, window, cx);
+            }
+        }));
+        self.in_cell = Some((id, column, state));
+        cx.notify();
+    }
+
+    /// Enter or leaving the cell writes it; Escape drops the edit.
+    fn finish_in_cell(&mut self, write: bool, refocus: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, column, state)) = self.in_cell.take() else { return };
+        if write {
+            let value = state.read(cx).value().to_string();
+            self.write_cell(&id, column, value, cx);
+            self.fill_fields(window, cx);
+        }
+        if refocus {
+            window.focus(&self.focus, cx);
+        }
+        cx.notify();
     }
 
     fn toggle_translatable(&mut self, (folder, key): RowId, translatable: bool, cx: &mut Context<Self>) {
@@ -561,9 +622,12 @@ impl TranslationsEditor {
                         let extend = e.modifiers().control || e.modifiers().platform || e.modifiers().shift;
                         this.select(key.clone(), column, extend, window, cx);
                         if e.click_count() == 2 {
-                            // Double-click edits in the field below.
-                            let field = if matches!(column, Column::Locale(_)) { this.translation_field.clone() } else { this.default_field.clone() };
-                            field.update(cx, |s, cx| s.focus(window, cx));
+                            if column == Column::Key {
+                                // The key isn't edited in place: the Default Value field below.
+                                this.default_field.update(cx, |s, cx| s.focus(window, cx));
+                            } else {
+                                this.edit_in_cell(window, cx);
+                            }
                         }
                     }))
                     .on_mouse_down(
@@ -580,6 +644,22 @@ impl TranslationsEditor {
                         menu.item(PopupMenuItem::new("Go to Declaration").disabled(!found).on_click(move |_, _, cx| go.update(cx, |this, cx| this.go_to_declaration(cx))))
                             .item(PopupMenuItem::new("Copy").on_click(move |_, _, cx| copy.update(cx, |this, cx| this.copy(cx))))
                     })
+            };
+            let editing = self.in_cell.as_ref().filter(|(id, _, _)| *id == row_id).map(|(_, c, s)| (*c, s.clone()));
+            let body = |column: Column, text: String, cx: &mut Context<Self>| -> AnyElement {
+                match &editing {
+                    Some((c, state)) if *c == column => div()
+                        .w_full()
+                        .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                            if crate::ui::common::is_plain_escape(&e.keystroke) {
+                                cx.stop_propagation();
+                                this.finish_in_cell(false, true, window, cx);
+                            }
+                        }))
+                        .child(Input::new(state).small().appearance(false))
+                        .into_any_element(),
+                    _ => text.into_any_element(),
+                }
             };
             let key_color = if row.needs_translation() { missing_fg } else { palette.text };
             let mut line = h_flex()
@@ -598,12 +678,12 @@ impl TranslationsEditor {
                     })),
                 ),
             );
-            line = line.child(cell(("tr-default", ix), DEFAULT_W, Column::Default, cx).when(row.default.is_none(), |el| el.bg(missing_bg)).child(row.default.clone().unwrap_or_default()));
+            line = line.child(cell(("tr-default", ix), DEFAULT_W, Column::Default, cx).when(row.default.is_none(), |el| el.bg(missing_bg)).child(body(Column::Default, row.default.clone().unwrap_or_default(), cx)));
             let mut locales = h_flex().h_full().flex_none().ml(px(-self.h_offset));
             for l in self.shown_locales() {
                 let Some(value) = row.values.get(l) else { continue };
                 let missing = row.missing(l);
-                locales = locales.child(cell(("tr-locale", ix * 1000 + l), LOCALE_W, Column::Locale(l), cx).when(missing, |el| el.bg(missing_bg)).child(value.clone().unwrap_or_default()));
+                locales = locales.child(cell(("tr-locale", ix * 1000 + l), LOCALE_W, Column::Locale(l), cx).when(missing, |el| el.bg(missing_bg)).child(body(Column::Locale(l), value.clone().unwrap_or_default(), cx)));
             }
             line = line.child(div().flex_1().min_w_0().h_full().overflow_hidden().child(locales));
             out.push(line.into_any_element());
@@ -783,6 +863,10 @@ impl Render for TranslationsEditor {
                     "c" if m.secondary() && !m.shift && !m.alt => {
                         cx.stop_propagation();
                         this.copy(cx);
+                    }
+                    "enter" | "f2" if !m.modified() => {
+                        cx.stop_propagation();
+                        this.edit_in_cell(window, cx);
                     }
                     "b" if m.secondary() && !m.shift && !m.alt => {
                         cx.stop_propagation();
