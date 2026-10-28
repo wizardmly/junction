@@ -5,7 +5,9 @@
 //! in Kotlin, "Declare final" in Java; Kotlin's "Specify type
 //! explicitly" when the expression shows its type; a Java constant's
 //! visibility (the last one chosen, as JavaRefactoringSettings'
-//! INTRODUCE_CONSTANT_VISIBILITY, for this session).
+//! INTRODUCE_CONSTANT_VISIBILITY, for this session); a Java constant's
+//! "Move to another class" with its "To class:" (the class last moved
+//! to, for this session).
 
 use std::rc::Rc;
 
@@ -37,11 +39,15 @@ pub struct IntroduceRequest {
     pub explicit_type: bool,
     /// A Java constant's.
     pub visibility: Visibility,
+    /// A Java constant's "Move to another class": the class typed.
+    pub move_to: Option<String>,
 }
 
 thread_local! {
     /// The visibility last chosen for a Java constant.
     static LAST_VISIBILITY: std::cell::Cell<Visibility> = const { std::cell::Cell::new(Visibility::Public) };
+    /// The class a constant last moved to.
+    static LAST_CLASS: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
 pub struct IntroduceView {
@@ -59,7 +65,12 @@ pub struct IntroduceView {
     /// The visibility panel shown (a Java constant outside an interface).
     choose_visibility: bool,
     visibility: Visibility,
-    _subscription: Subscription,
+    /// "Move to another class" offered (a Java constant), checked, and
+    /// its class.
+    can_move: bool,
+    move_to: bool,
+    to_class: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl IntroduceView {
@@ -70,7 +81,17 @@ impl IntroduceView {
     fn request(&self, cx: &App) -> Result<IntroduceRequest, String> {
         let name = self.name.read(cx).value().trim().to_owned();
         check_name(self.extension(), &name)?;
-        Ok(IntroduceRequest { name, all: self.all, modifier: self.modifier, explicit_type: self.explicit_type, visibility: self.visibility })
+        let move_to = if self.move_to {
+            let class = self.to_class.read(cx).value().trim().to_owned();
+            if class.is_empty() {
+                return Err("Target class name is not specified".into());
+            }
+            crate::domain::create_test::check_package(self.extension(), &class).map_err(|_| format!("'{class}' is not a valid class name"))?;
+            Some(class)
+        } else {
+            None
+        };
+        Ok(IntroduceRequest { name, all: self.all, modifier: self.modifier, explicit_type: self.explicit_type, visibility: self.visibility, move_to })
     }
 }
 
@@ -121,6 +142,13 @@ impl Render for IntroduceView {
                     cx.notify();
                 })))
             })
+            .when(self.can_move, |el| {
+                el.child(Checkbox::new("introduce-move").label("Move to another class").checked(self.move_to).on_change(cx.listener(|this, v: &bool, _, cx| {
+                    this.move_to = *v;
+                    cx.notify();
+                })))
+                .when(self.move_to, |el| el.child(h_flex().gap_2().child(div().text_sm().child("To class:")).child(div().flex_1().child(Input::new(&self.to_class)))))
+            })
             .when(self.choose_visibility, |el| {
                 let selected = Visibility::ALL.iter().position(|v| *v == self.visibility);
                 el.child(div().text_sm().child("Visibility")).child(
@@ -157,6 +185,7 @@ pub fn open(
     occurrences: usize,
     typed: bool,
     choose_visibility: bool,
+    can_move: bool,
     on_ok: impl Fn(IntroduceRequest, &mut Window, &mut App) + 'static,
     window: &mut Window,
     cx: &mut App,
@@ -164,11 +193,17 @@ pub fn open(
     let view = cx.new(|cx| {
         let first = suggestions.first().cloned().unwrap_or_else(|| "value".into());
         let name = cx.new(|cx| InputState::new(window, cx).default_value(first));
-        let _subscription = cx.subscribe(&name, |_, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        });
+        let to_class = cx.new(|cx| InputState::new(window, cx).default_value(LAST_CLASS.with(|c| c.borrow().clone())));
+        let _subscriptions = [&name, &to_class]
+            .into_iter()
+            .map(|input| {
+                cx.subscribe(input, |_, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                })
+            })
+            .collect();
         let modifier_label = match (kind, style) {
             (Introduce::Constant, _) => None,
             (_, ImportStyle::Java) => Some("Declare final"),
@@ -178,7 +213,7 @@ pub fn open(
         // (JavaRefactoringSettings.INTRODUCE_CONSTANT_REPLACE_ALL).
         let all = occurrences > 1 && !(kind == Introduce::Constant && style == ImportStyle::Java);
         let visibility = LAST_VISIBILITY.with(|v| v.get());
-        IntroduceView { style, modifier_label, name, suggestions, occurrences, all, modifier: false, typed, explicit_type: false, choose_visibility, visibility, _subscription }
+        IntroduceView { style, modifier_label, name, suggestions, occurrences, all, modifier: false, typed, explicit_type: false, choose_visibility, visibility, can_move, move_to: false, to_class, _subscriptions }
     });
     let focus = view.read(cx).name.clone();
     let on_ok = Rc::new(on_ok);
@@ -188,6 +223,9 @@ pub fn open(
             let Ok(request) = view_ok.read(cx).request(cx) else { return false };
             if view_ok.read(cx).choose_visibility {
                 LAST_VISIBILITY.with(|v| v.set(request.visibility));
+            }
+            if let Some(class) = &request.move_to {
+                LAST_CLASS.with(|c| *c.borrow_mut() = class.clone());
             }
             on_ok(request, window, cx);
             true

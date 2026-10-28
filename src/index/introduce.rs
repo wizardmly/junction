@@ -524,6 +524,7 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
     }
     let line_start = |at: usize| text[..at].rfind('\n').map_or(0, |i| i + 1);
     let mut interface = false;
+    let (mut class_name, mut class_fields) = (String::new(), Vec::new());
     let (insert_at, indent) = match lang {
         Lang::Kotlin => {
             // Before the top-level declaration holding it, its doc comment
@@ -561,6 +562,16 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
             let indent: String = text[at..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
             // After the last field of the class it uses: no forward reference.
             let used = identifiers(node, text);
+            class_name = body.parent().and_then(|c| c.child_by_field_name("name")).map(|n| text[n.byte_range()].to_owned()).unwrap_or_default();
+            let mut cursor = body.walk();
+            for m in body.named_children(&mut cursor).filter(|m| m.kind() == "field_declaration" || m.kind() == "constant_declaration") {
+                let mut c = m.walk();
+                for d in m.named_children(&mut c).filter(|d| d.kind() == "variable_declarator") {
+                    if let Some(n) = d.child_by_field_name("name").map(|n| &text[n.byte_range()]).filter(|n| used.contains(n)) {
+                        class_fields.push(n.to_owned());
+                    }
+                }
+            }
             let mut cursor = body.walk();
             let after = body
                 .named_children(&mut cursor)
@@ -603,10 +614,72 @@ pub fn constant(lang: Lang, text: &str, range: Range<usize>) -> Result<(Constant
         java_type: (lang == Lang::Java).then(|| java_type(node, text)).flatten(),
         string_content,
         interface,
+        class_name,
+        class_fields,
     };
     // Every name in the file: a new constant must not shadow or clash.
     let taken = text.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).map(str::to_owned).collect();
     Ok((plan, taken))
+}
+
+/// Where Introduce Constant's "Move to another class" puts the constant
+/// in a Java file's class named `class` (a nested one too): before its
+/// first member (an enum's, after its constants), or in its empty body.
+pub fn constant_slot(text: &str, class: &str) -> Result<crate::domain::introduce_variable::ConstantSlot, String> {
+    use crate::domain::introduce_variable::ConstantSlot;
+    let not_found = || format!("Class {class} not found");
+    let tree = symbols::parse(Lang::Java, text).ok_or_else(not_found)?;
+    let mut stack = vec![tree.root_node()];
+    let declaration = loop {
+        let n = stack.pop().ok_or_else(not_found)?;
+        let is_class = matches!(n.kind(), "class_declaration" | "interface_declaration" | "enum_declaration" | "annotation_type_declaration");
+        if is_class && n.child_by_field_name("name").is_some_and(|name| &text[name.byte_range()] == class) {
+            break n;
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    };
+    let body = declaration.child_by_field_name("body").ok_or_else(not_found)?;
+    let interface = matches!(body.kind(), "interface_body" | "annotation_type_body");
+    let line_start = |at: usize| text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let class_indent: String = text[line_start(declaration.start_byte())..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    let unit = crate::domain::surround::indent_unit(text);
+    let members = if body.kind() == "enum_body" {
+        let mut cursor = body.walk();
+        let declarations = body.named_children(&mut cursor).find(|c| c.kind() == "enum_body_declarations");
+        match declarations {
+            Some(d) => d,
+            None => return Err(format!("Cannot add a constant to enum {class} without a ';' after its constants")),
+        }
+    } else {
+        body
+    };
+    let first = {
+        let mut cursor = members.walk();
+        let first = members.named_children(&mut cursor).find(|c| !c.kind().contains("comment"));
+        first
+    };
+    match first {
+        Some(first) if text[line_start(first.start_byte())..first.start_byte()].trim().is_empty() => {
+            let at = line_start(first.start_byte());
+            let indent = text[at..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            Ok(ConstantSlot { insert_at: at, indent, interface, blank_after: true, after: String::new() })
+        }
+        _ => {
+            // An empty body (or members on the brace's line): on a new
+            // line after the `{` (an enum's `;`).
+            let open = if members.kind() == "enum_body_declarations" { members.start_byte() } else { body.start_byte() };
+            let after = open + 1;
+            let ends_line = text[after..].starts_with('\n');
+            let at = if ends_line { after + 1 } else { after };
+            let indent = format!("{class_indent}{unit}");
+            if ends_line {
+                Ok(ConstantSlot { insert_at: at, indent, interface, blank_after: first.is_some(), after: String::new() })
+            } else {
+                Ok(ConstantSlot { insert_at: at, indent: format!("\n{indent}"), interface, blank_after: first.is_some(), after: class_indent })
+            }
+        }
+    }
 }
 
 /// The names an expression uses.
@@ -876,6 +949,20 @@ mod tests {
         assert_eq!(s.parameters, [("tax".to_owned(), "Double".to_owned())]);
         assert_eq!(s.variables, [("names".to_owned(), "List".to_owned())]);
         assert_eq!(s.fields, [("items".to_owned(), "List<Item>".to_owned())]);
+    }
+
+    #[test]
+    fn finds_constant_slots() {
+        use crate::domain::introduce_variable::insert_constant;
+        let put = |text: &str, class: &str| constant_slot(text, class).map(|slot| insert_constant(text, &slot, "static final int A = 1;"));
+        assert_eq!(put("class Calc {\n    // hi\n    int f() {}\n}\n", "Calc").unwrap(), "class Calc {\n    // hi\n    static final int A = 1;\n\n    int f() {}\n}\n");
+        assert_eq!(put("class Calc {\n}\n", "Calc").unwrap(), "class Calc {\n    static final int A = 1;\n}\n");
+        assert_eq!(put("class Out {\n  static class In {}\n  void g() {}\n}\n", "In").unwrap(), "class Out {\n  static class In {\n    static final int A = 1;\n  }\n  void g() {}\n}\n");
+        assert_eq!(put("enum E {\n  X, Y;\n\n  int v;\n}\n", "E").unwrap(), "enum E {\n  X, Y;\n\n  static final int A = 1;\n\n  int v;\n}\n");
+        assert!(put("enum E { X, Y }\n", "E").is_err());
+        assert_eq!(put("class Calc {}\n", "Other"), Err("Class Other not found".into()));
+        let slot = constant_slot("interface Keys {\n}\n", "Keys").unwrap();
+        assert!(slot.interface);
     }
 
     #[test]
