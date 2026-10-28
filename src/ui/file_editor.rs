@@ -1899,7 +1899,7 @@ impl FileEditor {
                 Ok((mut extraction, taken)) => {
                     // A call's or member's type, from its declaration.
                     if extraction.java_type.is_none() && extraction.kotlin_type.is_none() {
-                        if let Some(found) = crate::index::types::type_of(lang, &text, range, &|n| self.class_texts(n, false, cx)) {
+                        if let Some(found) = crate::index::types::type_of(lang, &text, range.clone(), &|n| self.class_texts(n, false, cx)) {
                             if style == ImportStyle::Java {
                                 extraction.java_type = Some(found.ty);
                             } else {
@@ -1917,7 +1917,7 @@ impl FileEditor {
                     )
                 }
             },
-            Introduce::Constant => match crate::index::introduce::constant(lang, &text, range) {
+            Introduce::Constant => match crate::index::introduce::constant(lang, &text, range.clone()) {
                 Err(message) => return fail(message, window, cx),
                 Ok((plan, taken)) => {
                     visibility = style == ImportStyle::Java && !plan.interface;
@@ -1933,6 +1933,15 @@ impl FileEditor {
         };
         if style == ImportStyle::Java && !has_type {
             return fail("Cannot perform refactoring without a type".into(), window, cx);
+        }
+        // In the editor (IntelliJ's default): the first name, renamed in place.
+        if kind == Introduce::Variable && crate::settings::Settings::get(cx).diff.refactor_in_editor {
+            let Some(name) = suggestions.first().cloned() else { return };
+            let plan = Rc::new(InPlaceIntroduce { edit, name, imports: if style == ImportStyle::Java { imports } else { Vec::new() }, style, occurrences });
+            if occurrences < 2 {
+                return self.introduce_in_place(&plan, false, window, cx);
+            }
+            return self.choose_occurrences(plan, range, window, cx);
         }
         let editor = cx.entity().downgrade();
         let can_move = movable.is_some();
@@ -1978,6 +1987,37 @@ impl FileEditor {
                 })
                 .ok();
         }, window, cx);
+    }
+
+    /// In-place Introduce Variable: the variable declared under the
+    /// plan's first name, then every occurrence of the name edited at once
+    /// in the text (Enter or Escape ends it).
+    pub(super) fn introduce_in_place(&mut self, plan: &InPlaceIntroduce, all: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.text(cx);
+        let request = crate::ui::introduce_dialog::IntroduceRequest {
+            name: plan.name.clone(),
+            all,
+            modifier: false,
+            explicit_type: false,
+            visibility: crate::domain::introduce_variable::Visibility::Public,
+            move_to: None,
+            enum_constant: false,
+        };
+        match (plan.edit)(&text, &request) {
+            Err(message) => Self::hint("Introduce Variable", format!("Cannot perform refactoring.\n{message}"), window, cx),
+            Ok(done) => {
+                let (replaced, replacement, shift) = with_imports(plan.style, &text, done.range.clone(), &done.text, &plan.imports);
+                let moved = |r: &Range<usize>| r.start + shift..r.end + shift;
+                let name_at = moved(&done.name_at);
+                self.state.update(cx, |state, cx| {
+                    state.set_selected_range(replaced, cx);
+                    state.replace(&replacement, window, cx);
+                    state.set_selected_range(name_at.clone(), cx);
+                });
+                let stops = vec![std::iter::once(name_at.clone()).chain(done.uses.iter().map(moved)).collect()];
+                self.start_template(crate::domain::live_templates::Session { stops, current: 0, end: name_at.end }, cx);
+            }
+        }
     }
 
     /// Introduce Constant's "Move to another class" and "Extract as enum
@@ -3507,6 +3547,17 @@ mod tests {
         assert_eq!(line_start(text, 2), 5);
         assert_eq!(line_of(text, 5), 2);
     }
+}
+
+/// In-place Introduce Variable's plan: its edit, the name it starts
+/// with, the classes a Java declaration's type needs imported, and how
+/// many occurrences there are.
+pub(super) struct InPlaceIntroduce {
+    edit: Box<dyn Fn(&str, &crate::ui::introduce_dialog::IntroduceRequest) -> Result<crate::domain::introduce_variable::Introduced, String>>,
+    name: String,
+    imports: Vec<String>,
+    style: crate::domain::imports::ImportStyle,
+    pub(super) occurrences: usize,
 }
 
 /// `text` with `range` replaced by `with` and the classes `imports`

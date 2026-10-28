@@ -63,6 +63,9 @@ pub(super) enum Choice {
     Intention(crate::domain::intentions::Intention),
     /// An intention whose edit names classes to import.
     Typed(crate::domain::intentions::Intention, Vec<String>),
+    /// In-place Introduce Variable's "Multiple occurrences found": this
+    /// occurrence only (false) or all of them.
+    InPlace(std::rc::Rc<super::InPlaceIntroduce>, bool),
     /// Generate › Override Methods… (false) / Implement Methods… (true).
     Override(bool),
     /// Generate › Test…: Create Test.
@@ -273,6 +276,16 @@ impl FileEditor {
         cx.notify();
     }
 
+    /// In-place Introduce Variable's "Multiple occurrences found" popup.
+    pub(super) fn choose_occurrences(&mut self, plan: std::rc::Rc<super::InPlaceIntroduce>, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let cursor = self.state.read(cx).cursor();
+        let at = self.state.read(cx).range_to_bounds(&(cursor..cursor)).map_or(point(px(80.), px(80.)), |b| b.bottom_left() + point(px(0.), px(4.)));
+        let items = vec![(range.clone(), Choice::InPlace(plan.clone(), false)), (range, Choice::InPlace(plan, true))];
+        self.context_actions = Some(ContextActions { items, title: Some("Multiple occurrences found"), selected: 0, at, caret: None });
+        window.focus(&self.context_focus, cx);
+        cx.notify();
+    }
+
     /// Generate's popup at the caret.
     pub(super) fn choose_generate(&mut self, items: Vec<crate::domain::generate::Member>, window: &mut Window, cx: &mut Context<Self>) {
         let cursor = self.state.read(cx).cursor();
@@ -352,6 +365,7 @@ impl FileEditor {
                     state.replace(&fix.replacement, window, cx);
                 });
             }
+            Choice::InPlace(plan, all) => self.introduce_in_place(&plan, all, window, cx),
             Choice::Typed(intention, imports) => {
                 let text = self.text(cx);
                 let (replaced, replacement, shift) = super::with_imports(crate::domain::imports::ImportStyle::Kotlin, &text, intention.range.clone(), &intention.replacement, &imports);
@@ -696,6 +710,8 @@ impl FileEditor {
                 Choice::ImportFunction(title, _) => (Some(icons::INTENTION_BULB), title.clone()),
                 Choice::ImportMember(qualified) => (Some(icons::FUNCTION), qualified.trim_start_matches("static ").to_owned()),
                 Choice::Intention(i) | Choice::Typed(i, _) => (Some(icons::INTENTION_BULB), i.title.clone()),
+                Choice::InPlace(plan, false) if plan.occurrences > 1 => (None, "Replace this occurrence only".to_owned()),
+                Choice::InPlace(plan, _) => (None, format!("Replace all {} occurrences", plan.occurrences)),
                 Choice::Catalog(fix, _) => (Some(icons::INTENTION_BULB), fix.title.clone()),
                 Choice::Unwrap(i) => (None, i.title.clone()),
                 Choice::Server(action) => (Some(icons::INTENTION_BULB), action.title.clone()),
