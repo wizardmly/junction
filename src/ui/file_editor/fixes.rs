@@ -183,6 +183,7 @@ impl FileEditor {
                     crate::index::intentions::range_check(&text, cursor, &classes),
                     crate::index::intentions::associate_function(&text, cursor, &classes),
                     crate::index::intentions::count_to_size(&text, cursor, &classes),
+                    crate::index::intentions::deprecated_call(&text, cursor, &classes),
                 ];
                 for intention in typed.into_iter().flatten().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));

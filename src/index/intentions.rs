@@ -992,6 +992,30 @@ pub fn count_to_size(text: &str, caret: usize, classes: super::catches::Classes)
     Some(Intention { title: format!("Replace 'count' with '{property}'"), range: call.byte_range(), caret: call.start_byte(), replacement: format!("{}.{property}", &text[target.byte_range()]) })
 }
 
+/// Replace deprecated call (the quick fix on Kotlin's deprecated
+/// conversions): `s.toLowerCase()` → `s.lowercase()` and `toUpperCase` →
+/// `uppercase` on a String, `c.toLowerCase()` → `c.lowercaseChar()` on a
+/// Char, and `c.toInt()` → `c.code`; the caret on the name.
+pub fn deprecated_call(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let (call, target, name, values) = method_call(tree.root_node(), text, caret)?;
+    if !values.is_empty() {
+        return None;
+    }
+    let ty = receiver_type(target, text, classes)?;
+    let replaced = match (type_head(&ty), name) {
+        ("String", "toLowerCase") => "lowercase()",
+        ("String", "toUpperCase") => "uppercase()",
+        ("Char", "toLowerCase") => "lowercaseChar()",
+        ("Char", "toUpperCase") => "uppercaseChar()",
+        ("Char", "toInt") => "code",
+        _ => return None,
+    };
+    // `s?.toLowerCase()` keeps its `?.`.
+    let dot = if text[target.end_byte()..call.end_byte()].trim_start().starts_with("?.") { "?." } else { "." };
+    Some(Intention { title: format!("Replace with '{replaced}'"), range: call.byte_range(), caret: call.start_byte(), replacement: format!("{}{dot}{replaced}", &text[target.byte_range()]) })
+}
+
 /// Replace with 'lastIndex' (IntelliJ's ReplaceWithLastIndex inspection):
 /// `xs.size - 1` → `xs.lastIndex` when `xs` is a list or an array, and
 /// `s.length - 1` when `s` is a string; the caret on the subtraction.
@@ -2212,6 +2236,20 @@ mod tests {
         // `a + b` adds numbers first; no concatenation.
         assert_eq!(run("sb.append(a + b"), None);
         assert_eq!(run("sb.append(s);"), None);
+    }
+
+    #[test]
+    fn replaces_deprecated_case_conversions() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(s: String, c: Char, n: Int) {\n    val a = s.toLowerCase()\n    val b = c.toUpperCase()\n    val d = c.toInt()\n    val e = n.toInt()\n}\n";
+        let run = |at: &str| deprecated_call(text, text.find(at).unwrap() + 2, &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("s.toLowerCase").unwrap();
+        assert_eq!(title, "Replace with 'lowercase()'");
+        assert!(out.contains("    val a = s.lowercase()\n"), "{out}");
+        assert!(run("c.toUpperCase").unwrap().1.contains("    val b = c.uppercaseChar()\n"));
+        assert!(run("c.toInt").unwrap().1.contains("    val d = c.code\n"));
+        // Int's toInt isn't deprecated.
+        assert_eq!(run("n.toInt"), None);
     }
 
     #[test]
