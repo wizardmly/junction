@@ -170,6 +170,7 @@ impl FileEditor {
                     crate::index::intentions::binary_operator(&text, cursor, &classes),
                     crate::index::intentions::or_empty(&text, cursor, &classes),
                     crate::index::intentions::negated_emptiness(&text, cursor, &classes),
+                    crate::index::intentions::null_or_empty(&text, cursor, &classes),
                     crate::index::intentions::merge_call_chain(&text, cursor, &classes),
                     crate::index::intentions::redundant_conversion(&text, cursor, true, &classes),
                     crate::index::intentions::range_to_indices(&text, cursor, &classes),
