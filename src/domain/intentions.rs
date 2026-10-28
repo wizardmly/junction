@@ -50,6 +50,8 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Specify type explicitly", "Writes the inferred type of a property or variable"),
     ("Kotlin", "Specify return type explicitly", "Writes the inferred return type of a function"),
     ("Kotlin", "Add names to call arguments", "Names a call's positional arguments after the parameters"),
+    ("Kotlin", "Add indices to 'for' loop", "Iterates with withIndex(), adding an index variable to a for loop"),
+    ("Kotlin", "Remove indices in 'for' loop", "Drops an unused index variable and withIndex() from a for loop"),
     ("Kotlin", "Iterate over collection", "Wraps an expression of a collection, array, map or string in a for loop over it"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
