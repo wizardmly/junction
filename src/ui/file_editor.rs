@@ -2164,6 +2164,37 @@ impl FileEditor {
         }
     }
 
+    /// The classes deriving from `ty` at any depth (the project's, then
+    /// the libraries'), nearest first, up to `limit` (None past it).
+    fn derived_names(&self, ty: &str, limit: usize, cx: &gpui_kit::App) -> Option<Vec<String>> {
+        let name = ty.split('<').next().unwrap_or_default().rsplit('.').next().unwrap_or_default().trim().to_owned();
+        if name.is_empty() || name.starts_with(|c: char| c.is_lowercase()) || name.contains('[') {
+            return Some(Vec::new());
+        }
+        let index = self.code_index.as_ref()?;
+        let store = index.read(cx).index.clone();
+        let store = store.read().ok()?;
+        let mut out: Vec<String> = Vec::new();
+        let mut queue = std::collections::VecDeque::from([name.clone()]);
+        while let Some(parent) = queue.pop_front() {
+            for (_, _, symbol) in store.subtypes_of(&parent) {
+                if symbol.name != name && !out.contains(&symbol.name) {
+                    if out.len() == limit {
+                        return None;
+                    }
+                    out.push(symbol.name.clone());
+                    queue.push_back(symbol.name.clone());
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// A template's `subtypes(…)` choices after the type itself.
+    pub(super) fn subclass_names(&self, ty: &str, cx: &gpui_kit::App) -> Vec<String> {
+        self.derived_names(ty, 50, cx).unwrap_or_default()
+    }
+
     /// The classes deriving from the Java expression's type, as cast
     /// guesses (GuessManager's addExprTypesByDerivedClasses): all of them
     /// at any depth, none when there are more than 5.
@@ -2173,27 +2204,7 @@ impl FileEditor {
             return Vec::new();
         }
         let Some(found) = crate::index::types::type_of(lang, text, range, &|n| self.class_texts(n, false, cx)) else { return Vec::new() };
-        let name = found.ty.split('<').next().unwrap_or_default().rsplit('.').next().unwrap_or_default().to_owned();
-        if name.is_empty() || name.starts_with(|c: char| c.is_lowercase()) || name.contains('[') {
-            return Vec::new();
-        }
-        let Some(index) = self.code_index.as_ref() else { return Vec::new() };
-        let store = index.read(cx).index.clone();
-        let Ok(store) = store.read() else { return Vec::new() };
-        let mut out: Vec<String> = Vec::new();
-        let mut queue = vec![name.clone()];
-        while let Some(parent) = queue.pop() {
-            for (_, _, symbol) in store.subtypes_of(&parent) {
-                if symbol.name != name && !out.contains(&symbol.name) {
-                    if out.len() == LIMIT {
-                        return Vec::new();
-                    }
-                    out.push(symbol.name.clone());
-                    queue.push(symbol.name.clone());
-                }
-            }
-        }
-        out
+        self.derived_names(&found.ty, LIMIT, cx).unwrap_or_default()
     }
 
     /// What the code at `range` throws to be caught, looking callees up

@@ -660,7 +660,8 @@ Linux 实测（Xvfb，表达式模板）：Java `greet(name).trim();` 选中 `gr
 | 根据代码计算的变量（照 IntelliJ 的 template expression）：`className()` / `methodName()`（Kotlin 的 kotlinClassName / kotlinFunctionName）、`parameterInfo()`（Java soutp 的 `"a = " + a + ", b = " + b`）、Kotlin soutp 的 `a = [${a}], b = [${b}]`、`suggestIndexName()`（i、j、k…跳过已用的名字）、`variableOfType(…)` / `arrayVariable()` / `kotlinVariable()`（取最近的局部变量、参数、字段，按数组 / 集合 / List / Map / 数字分类）、`componentTypeOf` / `iterableComponentType` / `guessElementType`、`typeParameterOf`；类型来自声明，Kotlin 没写类型时按初始化表达式推（`listOf(…)` → List、`Foo()` → Foo）；找不到时用原来的默认值 | ✅ |
 | 新增依赖这些变量的模板：Kotlin soutf、soutp；Java soutm、soutp、ritar、itli、itm、lst、mn、mx、geti；已有的 fori、itar、iter、ifn、inn 也改用计算值。全限定名照 toShortenFQNames 缩短并补 import（itm 的 `Map.Entry`） | ✅ |
 | 需要类型推断的变量：变量的类型也从它初始化用的方法调用 / 字段的声明推出（Java `var names = user.getNames();`、Kotlin `val names = repo.names()`，Java 集合在 Kotlin 里写成 `List`）；`subtypes(typeOfVariable(V))` 取 V 的类型（IntelliJ 的第一个候选）、`componentTypeOf(expectedType())` 取所在声明的数组元素类型、`suggestVariableName()` 按类型起名（String → `s`、数组 → 复数、其余小写驼峰，重名加数字）、`rightSideType()` 取 `Iterator<E>`；新增 Java 的 inst、lazy、toar、itco | ✅（Linux 实测：`var names = user.getNames();` 后 `itco` 展开成 `for(Iterator<String> iterator = names.iterator(); …)`、`String s = iterator.next();` 并补 `import java.util.Iterator`；`String[] all = toar` 展开成 `names.toArray(new String[0])`） |
-| `subtypes()` 的子类候选列表；自定义模板的变量表达式（只有默认值）、模板分组 / 导入导出 | ❌ 未做 |
+| `subtypes()` 的子类候选列表（照 SubtypesMacro）：inst / lazy 的 TYPE 停留时在下方列出类型本身和它的所有子类（任意层，项目和外部库，最多 50 个），上下键或点击换，几处副本跟着变，回车 / Tab 到下一个变量 | ✅（Linux 实测：`run(Animal a)` 里展开 inst，TYPE 处列出 `Animal` / `Pet` / `Dog`，按两次下键三处都变成 `Dog`。换类型后不会重算后面依赖它的变量名，IntelliJ 会重算） |
+| 自定义模板的变量表达式（只有默认值）、模板分组 / 导入导出 | ❌ 未做 |
 
 Linux 实测（Xvfb，自定义模板）：新建 `pv`，文本 `System.out.println("$NAME$ = " + $NAME$);$END$`，NAME 默认值 `value`；Java 方法体里输入 `pv` 按 Tab（补全弹窗开着）展开，输入 `sum` 两处同步，得到 `System.out.println("sum = " + sum);`；关掉 Java 的 `sout` 后按 Tab 不再展开；`live-templates.json` 内容正确。
 
