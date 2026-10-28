@@ -1,7 +1,8 @@
 //! Alt+Enter intentions that read the syntax tree (Kotlin), as IntelliJ's
 //! Kotlin plugin names them: Convert concatenation to template / Convert
 //! template to concatenated string, Specify type explicitly / Specify
-//! return type explicitly (when the expression shows its type), and Add
+//! return type explicitly (when the expression or the declarations of
+//! its calls show its type), and Add
 //! names to call arguments (given the callee's parameters).
 
 use tree_sitter::Node;
@@ -29,14 +30,33 @@ pub fn intentions(text: &str, caret: usize) -> Vec<Intention> {
     let Some(tree) = symbols::parse(Lang::Kotlin, text) else { return Vec::new() };
     let root = tree.root_node();
     let mut out = Vec::new();
-    out.extend(specify_type(root, text, caret));
+    let shown = |n: Node| super::introduce::kotlin_type(n, text).filter(|t| !t.is_empty()).map(|t| (t, Vec::new()));
+    out.extend(specify_type(root, text, caret, &shown).map(|(i, _)| i));
     out.extend(to_template(root, text, caret));
     out.extend(to_concatenation(root, text, caret));
     out
 }
 
-/// `val x = 1` → `val x: Int = 1`; `fun f() = 1` → `fun f(): Int = 1`.
-fn specify_type(root: Node, text: &str, caret: usize) -> Option<Intention> {
+/// Specify type explicitly / Specify return type explicitly where only
+/// the declarations of the calls show the type (`val a = user.getAddress()`
+/// → `val a: Address = …`), with the classes to import; None where the
+/// expression shows it itself (those are among `intentions`).
+pub fn specify_inferred_type(text: &str, caret: usize, classes: super::catches::Classes) -> Option<(Intention, Vec<String>)> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let declared = |n: Node| {
+        if super::introduce::kotlin_type(n, text).is_some_and(|t| !t.is_empty()) {
+            return None;
+        }
+        super::types::type_of(Lang::Kotlin, text, n.byte_range(), classes).map(|t| (t.ty, t.imports))
+    };
+    specify_type(tree.root_node(), text, caret, &declared)
+}
+
+type Typing<'a> = dyn Fn(Node) -> Option<(String, Vec<String>)> + 'a;
+
+/// `val x = 1` → `val x: Int = 1`; `fun f() = 1` → `fun f(): Int = 1`;
+/// the type (and its imports) from `typing`.
+fn specify_type(root: Node, text: &str, caret: usize, typing: &Typing) -> Option<(Intention, Vec<String>)> {
     let at = innermost(root, caret)?;
     for n in ancestors(at) {
         match n.kind() {
@@ -56,9 +76,9 @@ fn specify_type(root: Node, text: &str, caret: usize) -> Option<Intention> {
                     return None;
                 }
                 let init = eq.next_named_sibling()?;
-                let ty = super::introduce::kotlin_type(init, text).filter(|t| !t.is_empty())?;
+                let (ty, imports) = typing(init)?;
                 let end = variable.end_byte();
-                return Some(Intention { title: "Specify type explicitly".into(), range: end..end, replacement: format!(": {ty}"), caret: end + 2 + ty.len() });
+                return Some((Intention { title: "Specify type explicitly".into(), range: end..end, replacement: format!(": {ty}"), caret: end + 2 + ty.len() }, imports));
             }
             "function_declaration" => {
                 let parts = children(n);
@@ -72,9 +92,9 @@ fn specify_type(root: Node, text: &str, caret: usize) -> Option<Intention> {
                     return None;
                 }
                 let expression = body.named_child(0)?;
-                let ty = super::introduce::kotlin_type(expression, text).filter(|t| !t.is_empty())?;
+                let (ty, imports) = typing(expression)?;
                 let end = params.end_byte();
-                return Some(Intention { title: "Specify return type explicitly".into(), range: end..end, replacement: format!(": {ty}"), caret: end + 2 + ty.len() });
+                return Some((Intention { title: "Specify return type explicitly".into(), range: end..end, replacement: format!(": {ty}"), caret: end + 2 + ty.len() }, imports));
             }
             "statements" | "class_body" | "lambda_literal" => return None,
             _ => {}
@@ -299,7 +319,17 @@ mod tests {
         let text = "fun twice(x: Int) = x * 2\n";
         assert_eq!(find(text, "twice", "Specify return type explicitly").unwrap(), "fun twice(x: Int): Int = x * 2\n");
         let text = "fun twice(x: Int): Int = x * 2\n";
-        assert_eq!(find(text, "twice", "Specify return type explicitly"), None);
+        assert_eq!(find(text, "twice", "Specify return type explicitly"), None);        // From the declarations of the calls, with their imports.
+        let user = "package com.model\n\nclass User {\n    fun address(): Address = Address()\n}\n\nclass Address\n";
+        let classes = |name: &str| -> Vec<String> { if name == "User" || name == "Address" { vec![user.to_owned()] } else { Vec::new() } };
+        let text = "package app\n\nimport com.model.User\n\nfun f(user: User) {\n    val a = user.address()\n    val n = 1\n}\n\nfun g(user: User) = user.address()\n";
+        let at = |s: &str| text.find(s).unwrap();
+        let (i, imports) = specify_inferred_type(text, at("a ="), &classes).unwrap();
+        assert_eq!((i.title.as_str(), i.replacement.as_str(), imports), ("Specify type explicitly", ": Address", vec!["com.model.Address".to_owned()]));
+        let (i, _) = specify_inferred_type(text, at("g(user"), &classes).unwrap();
+        assert_eq!((i.title.as_str(), i.range.start), ("Specify return type explicitly", at(") = user") + 1));
+        // What the expression shows is offered already.
+        assert_eq!(specify_inferred_type(text, at("n = 1"), &classes), None);
     }
 
     #[test]

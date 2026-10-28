@@ -61,6 +61,8 @@ pub(super) enum Choice {
     ImportMember(String),
     /// An intention: its edit.
     Intention(crate::domain::intentions::Intention),
+    /// An intention whose edit names classes to import.
+    Typed(crate::domain::intentions::Intention, Vec<String>),
     /// Generate › Override Methods… (false) / Implement Methods… (true).
     Override(bool),
     /// Generate › Test…: Create Test.
@@ -134,6 +136,9 @@ impl FileEditor {
             if style == crate::domain::imports::ImportStyle::Kotlin {
                 for intention in crate::index::intentions::intentions(&text, cursor) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));
+                }
+                if let Some((intention, imports)) = crate::index::intentions::specify_inferred_type(&text, cursor, &|n| self.class_texts(n, false, cx)) {
+                    items.push((intention.range.clone(), Choice::Typed(intention, imports)));
                 }
                 self.request_argument_names(&text, cursor, window, cx);
             }
@@ -345,6 +350,15 @@ impl FileEditor {
                 self.state.update(cx, |state, cx| {
                     state.set_selected_range(fix.range.clone(), cx);
                     state.replace(&fix.replacement, window, cx);
+                });
+            }
+            Choice::Typed(intention, imports) => {
+                let text = self.text(cx);
+                let (replaced, replacement, shift) = super::with_imports(crate::domain::imports::ImportStyle::Kotlin, &text, intention.range.clone(), &intention.replacement, &imports);
+                self.state.update(cx, |state, cx| {
+                    state.set_selected_range(replaced, cx);
+                    state.replace(&replacement, window, cx);
+                    state.set_selected_range(intention.caret + shift..intention.caret + shift, cx);
                 });
             }
             Choice::Intention(intention) | Choice::Unwrap(intention) => self.state.update(cx, |state, cx| {
@@ -681,7 +695,7 @@ impl FileEditor {
                 Choice::Import(qualified) => (Some(icons::CLASS), qualified.clone()),
                 Choice::ImportFunction(title, _) => (Some(icons::INTENTION_BULB), title.clone()),
                 Choice::ImportMember(qualified) => (Some(icons::FUNCTION), qualified.trim_start_matches("static ").to_owned()),
-                Choice::Intention(i) => (Some(icons::INTENTION_BULB), i.title.clone()),
+                Choice::Intention(i) | Choice::Typed(i, _) => (Some(icons::INTENTION_BULB), i.title.clone()),
                 Choice::Catalog(fix, _) => (Some(icons::INTENTION_BULB), fix.title.clone()),
                 Choice::Unwrap(i) => (None, i.title.clone()),
                 Choice::Server(action) => (Some(icons::INTENTION_BULB), action.title.clone()),
