@@ -268,7 +268,7 @@ impl Workspace {
                     let l = label(&r);
                     (r, l)
                 }).collect();
-                let view = cx.new(|cx| TranslationsEditor::new(folders, window, cx));
+                let view = cx.new(|cx| TranslationsEditor::new(root.clone(), folders, window, cx));
                 let subscription = cx.subscribe_in(&view, window, move |this, _, event: &TranslationsEvent, window, cx| match event {
                     TranslationsEvent::FilesChanged(paths) => {
                         let Some(root) = this.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };

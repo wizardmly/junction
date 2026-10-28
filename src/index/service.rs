@@ -1110,6 +1110,23 @@ fn resource_usages(root: &Path, r: &crate::domain::android_resources::ResourceRe
     (r.name.to_string(), found)
 }
 
+/// Safe Delete of string resources (the Translations Editor's Remove
+/// Keys): each use of the keys, `R.string.x` in code or `@string/x` in XML,
+/// across the project as "path:line".
+pub fn string_uses(root: &Path, keys: &[String]) -> Vec<String> {
+    use super::text_search::{SearchContext, TextQuery};
+    use crate::domain::android_resources::{ResourceRef, usage_pattern};
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let pattern = keys.iter().map(|k| usage_pattern(&ResourceRef { kind: "string".into(), name: k.as_str().into() })).collect::<Vec<_>>().join("|");
+    let query = TextQuery { text: pattern, case_sensitive: true, whole_words: false, regex: true, mask: None, context: SearchContext::Anywhere };
+    let Ok(re) = super::text_search::compile(&query) else { return Vec::new() };
+    let files = super::store::list_files(root);
+    let result = super::text_search::search(root, &files, &query, &re, 1000, &std::sync::atomic::AtomicBool::new(false));
+    result.matches.into_iter().map(|m| format!("{}:{}", m.path, m.line + 1)).collect()
+}
+
 /// The version catalog entry at `offset`: an accessor in a build script
 /// (`libs.androidx.core.ktx`), or in a catalog an entry's key (a
 /// declaration, `true`) or a reference to one (`version.ref`, a bundle
