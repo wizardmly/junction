@@ -747,6 +747,35 @@ pub fn range_to_indices(text: &str, caret: usize, classes: super::catches::Class
     Some(Intention { title: "Replace with indices".into(), range: range.byte_range(), caret: range.start_byte(), replacement: format!("{}.indices", &text[target.byte_range()]) })
 }
 
+/// Replace with 'lastIndex' (IntelliJ's ReplaceWithLastIndex inspection):
+/// `xs.size - 1` → `xs.lastIndex` when `xs` is a list or an array, and
+/// `s.length - 1` when `s` is a string; the caret on the subtraction.
+pub fn last_index(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let minus = innermost(tree.root_node(), caret)
+        .into_iter()
+        .flat_map(ancestors)
+        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body"))
+        .find(|n| n.kind() == "additive_expression")?;
+    let [size, one] = children(minus)[..] else { return None };
+    if &text[one.byte_range()] != "1" || text[size.end_byte()..one.start_byte()].trim() != "-" || size.kind() != "navigation_expression" {
+        return None;
+    }
+    let target = size.named_child(0)?;
+    let member = text[size.named_child(1)?.byte_range()].trim();
+    let ty = receiver_type(target, text, classes)?;
+    let head = type_head(&ty);
+    let fits = match member {
+        ".size" => matches!(head, "List" | "MutableList" | "ArrayList") || head.ends_with("Array"),
+        ".length" => matches!(head, "String" | "CharSequence" | "StringBuilder"),
+        _ => false,
+    };
+    if ty.ends_with('?') || !fits {
+        return None;
+    }
+    Some(Intention { title: "Replace with 'lastIndex'".into(), range: minus.byte_range(), caret: minus.start_byte(), replacement: format!("{}.lastIndex", &text[target.byte_range()]) })
+}
+
 /// Replace 'get' call with indexing operator / Replace 'set' call with
 /// indexing operator (IntelliJ's ReplaceGetOrSetInspection): `xs.get(i)`
 /// → `xs[i]`, the statement `m.set(k, v)` → `m[k] = v`, when the
@@ -1579,6 +1608,22 @@ mod tests {
         assert_eq!(title, "Remove redundant 'toString()' call");
         assert!(out.contains("        return s.length() + o.toString().length();\n"), "{out}");
         assert_eq!(run("toString().length();"), None);
+    }
+
+    #[test]
+    fn replaces_size_minus_one_with_last_index() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(xs: List<Int>, a: IntArray, s: String, set: Set<Int>, n: Int) {\n    val i = xs.size - 1\n    val j = a.size - 1\n    val k = s.length - 1\n    val l = set.size - 1\n    val m = n - 1\n    val o = xs.size - 2\n}\n";
+        let run = |at: &str| last_index(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("xs.size - 1").unwrap();
+        assert_eq!(title, "Replace with 'lastIndex'");
+        assert!(out.contains("    val i = xs.lastIndex\n"), "{out}");
+        assert!(run("a.size").unwrap().1.contains("    val j = a.lastIndex\n"));
+        assert!(run("s.length").unwrap().1.contains("    val k = s.lastIndex\n"));
+        // A set has no lastIndex; not size; not 1.
+        assert_eq!(run("set.size"), None);
+        assert_eq!(run("n - 1"), None);
+        assert_eq!(run("xs.size - 2"), None);
     }
 
     #[test]

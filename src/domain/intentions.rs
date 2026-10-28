@@ -64,6 +64,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Replace with indices", "Writes 0 until xs.size and 0..xs.size - 1 as xs.indices"),
     ("Kotlin", "Replace with 'orEmpty()'", "Writes s ?: \"\" and xs ?: emptyList() as orEmpty()"),
     ("Kotlin", "Replace negated 'isEmpty' with 'isNotEmpty'", "Writes !xs.isEmpty() as xs.isNotEmpty(), and !isNotEmpty() / !isBlank() / !isNotBlank() likewise"),
+    ("Kotlin", "Replace with 'lastIndex'", "Writes xs.size - 1 on a list or an array, and s.length - 1 on a string, as lastIndex"),
     ("Kotlin", "Replace with 'isNullOrEmpty()'", "Writes s == null || s.isEmpty() as s.isNullOrEmpty(), s != null && s.isNotEmpty() as !s.isNullOrEmpty(), and isBlank likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
