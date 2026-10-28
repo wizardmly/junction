@@ -630,7 +630,10 @@ Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+
 | 把块内声明移到外面（MoveDeclarationsOutHelper）：块后还用到的局部变量把声明留在块前，块里改成赋值；Java 的 if / while / for / try-catch 和 Kotlin 的 if / run / try 按 IntelliJ 给默认值，Kotlin 最后一句的声明变成 `val x = try { … }` | ✅ |
 | 其余表达式模板，照 IntelliJ 的顺序和名字：Kotlin `when (expr) {}`（Boolean 时列出 true / false 分支）、`if (expr) { ... }` / `... else { ... }`（Boolean）、`try { expr } catch {}` / `catch {} finally {}` / `finally {}` 和 `if () expr else` / `if () { expr } else {}`（值被用到时，不是单独一句）、放在运算数位置时整体加括号；Java `((Type)expr)`（光标停在类型处，二元 / 三元 / 赋值表达式加括号）、`!(expr instanceof Type)`、`if (expr) {...}` / `... else {...}`（整句是该表达式时）、`if (expr != null) {...}`（包住所在语句，光标停在语句末）。只有类型能确定时（字面量、比较、局部变量 / 参数声明的类型）才按类型过滤（`!(expr)` 和 if 只给 Boolean，instanceof / 判空不给基本类型），不确定时都列出；Kotlin 选中整行且是一个表达式时也列出表达式模板 | ✅ |
 | try / catch 按调用推断 catch 的异常类型（照 JavaWithTryCatchSurrounder / TryCatchExceptionUtil）：Java 取所包代码调用的方法、构造函数的 `throws` 和 `throw new X(…)` 里的受检异常（没有受检的就取非受检的，都没有才是 `Exception`），已被内层 try 捕获的、lambda / 匿名类里的不算；Kotlin 取被调 Java 方法的 `throws` 和 Kotlin 函数的 `@Throws(X::class)`。每个异常一个 catch，子类排在父类前，选中第一个的类型，需要时补 import；被调方法按接收者找：无接收者 / `this`（本类及父类）、`super`、类名（`Thread.sleep`）、局部变量 / 参数 / 字段的声明类型，在项目和外部库（JDK 源码）里找；没有 JDK 源码时认得常见的 JDK 受检异常（IOException、InterruptedException 等）的包名和继承关系 | ✅ |
-| when 按 enum / sealed 类列出分支、强转的类型猜测、方法调用结果作为接收者时的 catch 推断 | ❌ 未做 |
+| Kotlin `when (expr) {}` 照 computeMissingCases 列出分支：enum（本文件、项目或外部库里的 Kotlin / Java enum）的每个常量 `Mode.ON -> TODO()`，sealed 类的子类 `is Shape.Circle -> TODO()` / object `Shape.Empty -> TODO()`（嵌套的带外层类名，子类在别的文件里也找），可空类型再加 `null -> TODO()`，光标停在第一个 TODO 前；类型来自参数 / 变量的声明或 `val a = Mode.ON` 这样的初始值 | ✅ |
+| 强转的类型猜测、方法调用结果作为接收者时的 catch 推断、when 对方法调用结果的类型推断 | ❌ 未做 |
+
+Linux 实测（Xvfb，when 分支）：`fun foo(s: Shape, m: Mode)` 里单独一行的 `s` 选中后套 when (expr) {}，得到 `is Shape.Circle -> TODO()` 和 `Shape.Empty -> TODO()`，光标在第一个 TODO 前；`m` 得到 `Mode.ON -> TODO()`、`Mode.OFF -> TODO()`。
 
 Linux 实测（Xvfb，catch 推断；本机 JDK 的 src.zip 是断开的符号链接，用 JAVA_HOME 指向一个含 Thread / FileReader 源码的 src.zip）：`Thread.sleep(10);` 和 `java.io.FileReader r = new java.io.FileReader(name);` 两行套 try / catch，生成 `catch (InterruptedException e)` 和 `catch (FileNotFoundException e)` 两个 catch，文件头加了 `import java.io.FileNotFoundException;`，一次 Ctrl+Z 全部恢复。
 

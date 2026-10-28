@@ -104,6 +104,10 @@ pub struct ExpressionContext {
     /// (`(if (a) {…}).equals(true)`); Java: a cast needs them inside
     /// (`((Type) (a + b))`).
     pub parenthesize: bool,
+    /// Kotlin: the branches a `when` on it needs, its enum's entries
+    /// (`Color.RED`) or its sealed class's subclasses (`is Circle`,
+    /// `Empty`), and `null` for a nullable type.
+    pub when_branches: Vec<String>,
 }
 
 impl ExpressionContext {
@@ -349,10 +353,14 @@ pub fn surround_expression(style: ImportStyle, surrounder: Surrounder, text: &st
             return expression_edit(statement, out, at..at);
         }
         Surrounder::When => {
-            let (branches, at) = match context.ty.as_deref() {
-                // computeMissingCases: the caret on the first branch's value.
-                Some("Boolean") => (format!("{inner}true -> TODO()\n{inner}false -> TODO()\n"), inner.len() + "true -> ".len()),
-                _ => (format!("{inner} -> {{}}\n{inner}else -> {{}}\n"), inner.len()),
+            let mut cases = context.when_branches.clone();
+            if cases.is_empty() && context.ty.as_deref() == Some("Boolean") {
+                cases = vec!["true".into(), "false".into()];
+            }
+            // computeMissingCases: a branch each, the caret on the first one's value.
+            let (branches, at) = match cases.first() {
+                Some(first) => (cases.iter().map(|c| format!("{inner}{c} -> TODO()\n")).collect::<String>(), inner.len() + first.len() + " -> ".len()),
+                None => (format!("{inner} -> {{}}\n{inner}else -> {{}}\n"), inner.len()),
             };
             let head = format!("when ({expr}) {{\n");
             let at = head.len() + at;
@@ -565,5 +573,18 @@ mod tests {
         let (out, selected) = apply(text, &with_catches(done, &["IOException".into()]));
         assert_eq!(out, "fun f() {\n    val a = try {\n        load()\n    } catch (e: IOException) {\n        throw e\n    }\n}\n");
         assert_eq!(selected, "IOException");
+    }
+
+    #[test]
+    fn when_lists_the_missing_cases() {
+        // when/enum.kt.
+        let text = "fun foo() {\n    val a = MyEnum.FIRST\n    a\n}\n";
+        let at = text.rfind("a\n").unwrap();
+        let c = ExpressionContext { when_branches: vec!["MyEnum.FIRST".into(), "MyEnum.SECOND".into()], statement: Some(at..at + 1), ..Default::default() };
+        let (out, _) = apply(text, &surround_expression(ImportStyle::Kotlin, Surrounder::When, text, at..at + 1, "    ", &c));
+        assert_eq!(out, "fun foo() {\n    val a = MyEnum.FIRST\n    when (a) {\n        MyEnum.FIRST -> TODO()\n        MyEnum.SECOND -> TODO()\n    }\n}\n");
+        let done = surround_expression(ImportStyle::Kotlin, Surrounder::When, text, at..at + 1, "    ", &c);
+        let (out, _) = apply(text, &done);
+        assert!(out[done.select.start..].starts_with("TODO()\n        MyEnum.SECOND"));
     }
 }

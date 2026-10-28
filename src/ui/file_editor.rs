@@ -2054,7 +2054,7 @@ impl FileEditor {
             Some(range) => Some((range.clone(), crate::index::surround::expression_context(lang, &text, range))),
             // A whole line that is one expression (Kotlin's `x || y`): its surrounders too.
             None if !selected.is_empty() && !selected.contains('\n') => {
-                let start = text[..lines.end].find(selected).filter(|s| *s >= lines.start).unwrap_or(lines.start);
+                let start = lines.start + text[lines.clone()].find(selected).unwrap_or(0);
                 let range = start..start + selected.len();
                 crate::index::surround::expression_context(lang, &text, range.clone()).map(|c| (range, Some(c)))
             }
@@ -2089,7 +2089,10 @@ impl FileEditor {
         let out = (!expression).then(|| moves_declarations(style, surrounder)).flatten().and_then(|defaults| crate::index::surround::declarations_out(lang, &text, range.clone(), defaults));
         let done = match out {
             _ if expression => {
-                let context = crate::index::surround::expression_context(lang, &text, range.clone()).unwrap_or_default();
+                let mut context = crate::index::surround::expression_context(lang, &text, range.clone()).unwrap_or_default();
+                if surrounder == crate::domain::surround::Surrounder::When {
+                    context.when_branches = crate::index::surround::when_branches(&text, range.clone(), &|n| self.class_texts(n, false, cx), &|n| self.class_texts(n, true, cx));
+                }
                 surround_expression(style, surrounder, &text, range.clone(), &indent_unit(&text), &context)
             }
             Some(out) => surround_lines_moving(style, surrounder, &text, range.clone(), &indent_unit(&text), &out),
@@ -2131,16 +2134,25 @@ impl FileEditor {
     /// What the code at `range` throws to be caught, looking callees up
     /// in the project's and the libraries' classes.
     fn thrown_exceptions(&self, lang: crate::index::lang::Lang, text: &str, range: Range<usize>, cx: &gpui_kit::App) -> Vec<crate::index::catches::Thrown> {
-        let Some(index) = self.code_index.as_ref() else { return crate::index::catches::caught_exceptions(lang, text, range, &|_| Vec::new()) };
+        crate::index::catches::caught_exceptions(lang, text, range, &|name| self.class_texts(name, false, cx))
+    }
+
+    /// The texts of the Java / Kotlin files (project's, then libraries')
+    /// declaring a class of this simple name, or with `subtypes` those
+    /// declaring classes that extend it.
+    fn class_texts(&self, name: &str, subtypes: bool, cx: &gpui_kit::App) -> Vec<String> {
+        let Some(index) = self.code_index.as_ref() else { return Vec::new() };
         let root = index.read(cx).root().map(std::path::Path::to_path_buf).unwrap_or_default();
         let store = index.read(cx).index.clone();
         let Ok(store) = store.read() else { return Vec::new() };
-        let classes = |name: &str| -> Vec<String> {
-            let mut paths: Vec<&str> = store.symbols_named(name).filter(|(p, _, s)| s.kind.is_type() && (p.ends_with(".java") || p.ends_with(".kt"))).map(|(p, _, _)| p).collect();
-            paths.dedup();
-            paths.into_iter().filter_map(|p| std::fs::read_to_string(if crate::index::store::ProjectIndex::is_external(p) { std::path::PathBuf::from(p) } else { root.join(p) }).ok()).collect()
+        let jvm = |p: &str| p.ends_with(".java") || p.ends_with(".kt");
+        let mut paths: Vec<&str> = if subtypes {
+            store.subtypes_of(name).filter(|(p, _, _)| jvm(p)).map(|(p, _, _)| p).collect()
+        } else {
+            store.symbols_named(name).filter(|(p, _, s)| s.kind.is_type() && jvm(p)).map(|(p, _, _)| p).collect()
         };
-        crate::index::catches::caught_exceptions(lang, text, range, &classes)
+        paths.dedup();
+        paths.into_iter().filter_map(|p| std::fs::read_to_string(if crate::index::store::ProjectIndex::is_external(p) { std::path::PathBuf::from(p) } else { root.join(p) }).ok()).collect()
     }
 
     pub fn selected_text(&self, cx: &gpui_kit::App) -> Option<String> {

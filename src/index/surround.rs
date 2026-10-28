@@ -269,7 +269,8 @@ pub(crate) fn expression_type(lang: Lang, node: Node, text: &str) -> Option<Stri
                     let mut c = property.walk();
                     let children: Vec<Node> = property.children(&mut c).collect();
                     let eq = children.iter().position(|c| c.kind() == "=")?;
-                    return children[eq + 1..].iter().find(|c| c.is_named()).and_then(|v| kotlin_type(*v, text));
+                    let value = children[eq + 1..].iter().find(|c| c.is_named())?;
+                    return kotlin_type(*value, text).or_else(|| enum_entry_type(*value, text));
                 }
                 (Lang::Java, "formal_parameter" | "catch_formal_parameter") => {
                     return parent.child_by_field_name("type").map(|t| text[t.byte_range()].to_owned());
@@ -287,7 +288,128 @@ pub(crate) fn expression_type(lang: Lang, node: Node, text: &str) -> Option<Stri
         }
         return None;
     }
-    if kotlin { kotlin_type(node, text) } else { java_type(node, text) }
+    if kotlin { kotlin_type(node, text).or_else(|| enum_entry_type(node, text)) } else { java_type(node, text) }
+}
+
+/// `Color.RED`'s type by the naming convention: `Color`.
+fn enum_entry_type(node: Node, text: &str) -> Option<String> {
+    let (class, entry) = text[node.byte_range()].split_once('.')?;
+    let upper = |s: &str| s.starts_with(|c: char| c.is_uppercase()) && s.chars().all(|c| c.is_alphanumeric() || c == '_');
+    (node.kind() == "navigation_expression" && upper(class) && upper(entry) && entry.chars().all(|c| !c.is_lowercase())).then(|| class.to_owned())
+}
+
+/// The branches a Kotlin `when` on the expression at `range` needs
+/// (computeMissingCases): its enum's entries, its sealed class's
+/// subclasses (`is A` for a class, `B` for an object, `Outer.C` nested),
+/// and `null` when it is nullable; empty otherwise. `classes` gives the
+/// texts of files declaring a class of a name, `subtypes` those of
+/// classes naming it as a supertype.
+pub fn when_branches(text: &str, range: Range<usize>, classes: super::catches::Classes, subtypes: super::catches::Classes) -> Vec<String> {
+    let Some(tree) = symbols::parse(Lang::Kotlin, text) else { return Vec::new() };
+    let Some(node) = expression_node(Lang::Kotlin, tree.root_node(), text, range) else { return Vec::new() };
+    let Some(ty) = expression_type(Lang::Kotlin, node, text) else { return Vec::new() };
+    let nullable = ty.ends_with('?');
+    let name = ty.trim_end_matches('?').split('<').next().unwrap_or_default().rsplit('.').next().unwrap_or_default().to_owned();
+    let mut files = vec![text.to_owned()];
+    files.extend(classes(&name));
+    let mut out = Vec::new();
+    for file in &files {
+        let lang = if file.contains("fun ") || !file.contains(';') { Lang::Kotlin } else { Lang::Java };
+        let Some(tree) = symbols::parse(lang, file) else { continue };
+        let Some(class) = declared_class(tree.root_node(), file, &name) else { continue };
+        let head = &file[class.start_byte()..class.child_by_field_name("body").or_else(|| class_body(class)).map_or(class.end_byte(), |b| b.start_byte())];
+        if class.kind() == "enum_declaration" || head.split_whitespace().any(|w| w == "enum") {
+            let mut stack = vec![class];
+            while let Some(n) = stack.pop() {
+                if matches!(n.kind(), "enum_entry" | "enum_constant") {
+                    let entry = n.child_by_field_name("name").or_else(|| n.named_child(0)).filter(|e| matches!(e.kind(), "simple_identifier" | "identifier"));
+                    if let Some(e) = entry {
+                        out.push(format!("{name}.{}", &file[e.byte_range()]));
+                    }
+                    continue;
+                }
+                let mut c = n.walk();
+                let children: Vec<Node> = n.named_children(&mut c).collect();
+                stack.extend(children.into_iter().rev());
+            }
+        } else if head.split_whitespace().any(|w| w == "sealed") {
+            let mut seen = Vec::new();
+            for sub_file in std::iter::once(text.to_owned()).chain(files.iter().skip(1).cloned()).chain(subtypes(&name)) {
+                let Some(tree) = symbols::parse(Lang::Kotlin, &sub_file) else { continue };
+                let mut stack = vec![tree.root_node()];
+                while let Some(n) = stack.pop() {
+                    let mut c = n.walk();
+                    let children: Vec<Node> = n.named_children(&mut c).collect();
+                    if matches!(n.kind(), "class_declaration" | "object_declaration") && extends(n, &sub_file, &name) {
+                        if let Some(sub) = class_name(n, &sub_file) {
+                            // Nested in the sealed class: `Outer.Sub`.
+                            let outer = enclosing_names(n, &sub_file);
+                            let shown = if outer.is_empty() { sub.to_owned() } else { format!("{}.{sub}", outer.join(".")) };
+                            if !seen.contains(&shown) {
+                                seen.push(shown.clone());
+                                out.push(if n.kind() == "object_declaration" { shown } else { format!("is {shown}") });
+                            }
+                        }
+                    }
+                    stack.extend(children.into_iter().rev());
+                }
+            }
+        }
+        break;
+    }
+    if !out.is_empty() && nullable {
+        out.push("null".into());
+    }
+    out
+}
+
+fn class_body(class: Node) -> Option<Node> {
+    let mut c = class.walk();
+    class.named_children(&mut c).find(|b| matches!(b.kind(), "class_body" | "enum_class_body"))
+}
+
+fn class_name<'t>(node: Node, text: &'t str) -> Option<&'t str> {
+    let name = node.child_by_field_name("name").or_else(|| {
+        let mut c = node.walk();
+        node.named_children(&mut c).find(|n| matches!(n.kind(), "type_identifier" | "simple_identifier"))
+    })?;
+    Some(&text[name.byte_range()])
+}
+
+fn declared_class<'t>(root: Node<'t>, text: &str, name: &str) -> Option<Node<'t>> {
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if matches!(n.kind(), "class_declaration" | "enum_declaration" | "interface_declaration") && class_name(n, text) == Some(name) {
+            return Some(n);
+        }
+        let mut c = n.walk();
+        stack.extend(n.named_children(&mut c));
+    }
+    None
+}
+
+/// Whether a Kotlin class or object names `name` among its supertypes.
+fn extends(class: Node, text: &str, name: &str) -> bool {
+    let mut c = class.walk();
+    class.named_children(&mut c).filter(|d| d.kind().starts_with("delegation_specifier")).any(|d| {
+        let s = &text[d.byte_range()];
+        s.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).any(|w| w == name || w.ends_with(&format!(".{name}")))
+    })
+}
+
+/// The names of the classes a declaration is nested in, outermost first.
+fn enclosing_names(node: Node, text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut n = node.parent();
+    while let Some(p) = n {
+        if matches!(p.kind(), "class_declaration" | "object_declaration") {
+            if let Some(name) = class_name(p, text) {
+                out.insert(0, name.to_owned());
+            }
+        }
+        n = p.parent();
+    }
+    out
 }
 
 #[cfg(test)]
@@ -374,5 +496,26 @@ mod tests {
         assert_eq!((c.ty, c.enclosing, c.parenthesize), (None, None, true));
         let c = expression_context(Lang::Java, text, text.rfind("n + 1").unwrap()..text.rfind("n + 1").unwrap() + 1).unwrap();
         assert_eq!(c.ty.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn lists_when_branches() {
+        let none = |_: &str| Vec::new();
+        // when/enum.kt (entries separated properly).
+        let text = "enum class MyEnum {\n    FIRST, SECOND\n}\n\nfun foo() {\n    val a = MyEnum.FIRST\n    a\n}\n";
+        let at = text.rfind("a\n").unwrap();
+        assert_eq!(when_branches(text, at..at + 1, &none, &none), ["MyEnum.FIRST", "MyEnum.SECOND"]);
+        let text = "sealed class Shape {\n    class Circle(val r: Int) : Shape()\n    object Empty : Shape()\n}\nclass Square : Shape()\n\nfun foo(s: Shape?) {\n    s\n}\n";
+        let at = text.rfind("s\n").unwrap();
+        assert_eq!(when_branches(text, at..at + 1, &none, &none), ["is Shape.Circle", "Shape.Empty", "is Square", "null"]);
+        // A class elsewhere: found through the lookups.
+        let color = "package a\nenum class Color { RED, GREEN }\n".to_owned();
+        let classes = move |n: &str| if n == "Color" { vec![color.clone()] } else { Vec::new() };
+        let text = "fun f(c: Color) {\n    c\n}\n";
+        let at = text.rfind("c\n").unwrap();
+        assert_eq!(when_branches(text, at..at + 1, &classes, &none), ["Color.RED", "Color.GREEN"]);
+        let text = "fun f(n: Int) {\n    n\n}\n";
+        let at = text.rfind("n\n").unwrap();
+        assert!(when_branches(text, at..at + 1, &none, &none).is_empty());
     }
 }
