@@ -148,6 +148,7 @@ impl FileEditor {
                     crate::index::intentions::size_check(&text, cursor, false, &classes),
                     crate::index::intentions::string_comparison(&text, cursor, &classes),
                     crate::index::intentions::index_of_contains(&text, cursor, &classes),
+                    crate::index::intentions::get_or_default(&text, cursor, &classes),
                     crate::index::intentions::redundant_conversion(&text, cursor, false, &classes),
                 ];
                 for intention in typed.into_iter().flatten().filter(on) {

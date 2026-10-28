@@ -1420,6 +1420,50 @@ pub fn index_of_contains(text: &str, caret: usize, classes: super::catches::Clas
     })
 }
 
+/// Replace with 'getOrDefault' method call (Java, IntelliJ's
+/// Java8MapApiInspection): `m.containsKey(k) ? m.get(k) : d` (or
+/// `!m.containsKey(k) ? d : m.get(k)`) → `m.getOrDefault(k, d)`, when `m`
+/// is a Map; the caret on the conditional.
+pub fn get_or_default(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Java, text)?;
+    let ternary = ancestors(innermost(tree.root_node(), caret)?)
+        .take_while(|n| !matches!(n.kind(), "block" | "class_body" | "expression_statement" | "lambda_expression"))
+        .find(|n| n.kind() == "ternary_expression")?;
+    let mut condition = ternary.child_by_field_name("condition")?;
+    while condition.kind() == "parenthesized_expression" {
+        condition = condition.named_child(0)?;
+    }
+    let (mut found, mut missing) = (ternary.child_by_field_name("consequence")?, ternary.child_by_field_name("alternative")?);
+    if condition.kind() == "unary_expression" && text[condition.byte_range()].starts_with('!') {
+        condition = condition.named_child(0)?;
+        std::mem::swap(&mut found, &mut missing);
+    }
+    // `m.containsKey(k)` and `m.get(k)`: the map and the key.
+    let call = |n: Node, name: &str| -> Option<(String, String)> {
+        let arguments = children(n.child_by_field_name("arguments")?);
+        if n.kind() != "method_invocation" || &text[n.child_by_field_name("name")?.byte_range()] != name || arguments.len() != 1 {
+            return None;
+        }
+        Some((text[n.child_by_field_name("object")?.byte_range()].to_owned(), text[arguments[0].byte_range()].to_owned()))
+    };
+    let (map, key) = call(condition, "containsKey")?;
+    if call(found, "get")? != (map.clone(), key.clone()) {
+        return None;
+    }
+    let object = condition.child_by_field_name("object")?;
+    let ty = java_type(object, text, classes)?;
+    let head = ty.split('<').next().unwrap_or(&ty).rsplit('.').next().unwrap_or(&ty).to_owned();
+    if !matches!(head.as_str(), "Map" | "HashMap" | "LinkedHashMap" | "TreeMap" | "SortedMap" | "NavigableMap" | "ConcurrentMap" | "ConcurrentHashMap") {
+        return None;
+    }
+    Some(Intention {
+        title: "Replace with 'getOrDefault' method call".into(),
+        range: ternary.byte_range(),
+        caret: ternary.start_byte(),
+        replacement: format!("{map}.getOrDefault({key}, {})", &text[missing.byte_range()]),
+    })
+}
+
 type Typing<'a> = dyn Fn(Node) -> Option<(String, Vec<String>)> + 'a;
 
 /// `val x = 1` → `val x: Int = 1`; `fun f() = 1` → `fun f(): Int = 1`;
@@ -2049,6 +2093,20 @@ mod tests {
         // A char; `> 0` isn't "found".
         assert_eq!(run("s.indexOf('c"), None);
         assert_eq!(run("s.indexOf(\"z"), None);
+    }
+
+    #[test]
+    fn replaces_contains_key_conditional_with_get_or_default() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "class A {\n    int f(Map<String, Integer> m, Map<String, Integer> o, String k) {\n        int a = m.containsKey(k) ? m.get(k) : 0;\n        int b = !m.containsKey(k) ? -1 : m.get(k);\n        int c = m.containsKey(k) ? o.get(k) : 0;\n        int d = m.containsKey(k) ? m.get(\"x\") : 0;\n        return a;\n    }\n}\n";
+        let run = |at: &str| get_or_default(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("m.containsKey(k) ? m.get(k)").unwrap();
+        assert_eq!(title, "Replace with 'getOrDefault' method call");
+        assert!(out.contains("        int a = m.getOrDefault(k, 0);\n"), "{out}");
+        assert!(run("!m.containsKey").unwrap().1.contains("        int b = m.getOrDefault(k, -1);\n"));
+        // Another map; another key.
+        assert_eq!(run("m.containsKey(k) ? o.get"), None);
+        assert_eq!(run("m.containsKey(k) ? m.get(\"x"), None);
     }
 
     #[test]
