@@ -141,7 +141,9 @@ impl FileEditor {
                 items.push((intention.range.clone(), Choice::Intention(intention)));
             }
             if !kotlin {
-                if let Some(intention) = crate::index::intentions::indexed_for_loop(&text, cursor, &|n| self.class_texts(n, false, cx)).filter(on) {
+                let classes = |n: &str| self.class_texts(n, false, cx);
+                let typed = [crate::index::intentions::indexed_for_loop(&text, cursor, &classes), crate::index::intentions::enhanced_for_loop(&text, cursor, &classes)];
+                for intention in typed.into_iter().flatten().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));
                 }
             }
