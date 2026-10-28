@@ -999,8 +999,10 @@ pub fn last_index(text: &str, caret: usize, classes: super::catches::Classes) ->
 /// Replace 'substring' call with 'take' call / with 'dropLast' call
 /// (IntelliJ's ReplaceSubstringWithTakeInspection and
 /// ReplaceSubstringWithDropLastInspection): `s.substring(0, n)` →
-/// `s.take(n)`, `s.substring(0, s.length - n)` → `s.dropLast(n)`, when `s`
-/// is a String; the caret on `substring`.
+/// `s.take(n)`, `s.substring(0, s.length - n)` → `s.dropLast(n)`, and
+/// (ReplaceSubstringWithSubstringBeforeInspection) `s.substring(0,
+/// s.indexOf(x))` → `s.substringBefore(x)` (`lastIndexOf` →
+/// `substringBeforeLast`), when `s` is a String; the caret on `substring`.
 pub fn substring_call(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
     let tree = symbols::parse(Lang::Kotlin, text)?;
     let (call, target, name, values) = method_call(tree.root_node(), text, caret)?;
@@ -1021,9 +1023,26 @@ pub fn substring_call(text: &str, caret: usize, classes: super::catches::Classes
             [length, count] if text[length.byte_range()] == format!("{receiver}.length") && text[length.end_byte()..count.start_byte()].trim() == "-" => Some(count),
             _ => None,
         });
-    let (function, argument) = match drop_last {
-        Some(count) => ("dropLast", &text[count.byte_range()]),
-        None => ("take", end_text),
+    // `s.substring(0, s.indexOf(x))` → `s.substringBefore(x)`.
+    let before = (inner.kind() == "call_expression")
+        .then(|| children(inner))
+        .and_then(|parts| match parts[..] {
+            [callee, suffix] if callee.kind() == "navigation_expression" && callee.named_child(0).is_some_and(|r| &text[r.byte_range()] == receiver) => {
+                let function = match text[callee.named_child(1)?.byte_range()].trim() {
+                    ".indexOf" => "substringBefore",
+                    ".lastIndexOf" => "substringBeforeLast",
+                    _ => return None,
+                };
+                let [arguments] = children(suffix)[..] else { return None };
+                let [value] = children(arguments)[..] else { return None };
+                (arguments.kind() == "value_arguments").then_some((function, &text[value.byte_range()]))
+            }
+            _ => None,
+        });
+    let (function, argument) = match (drop_last, before) {
+        (Some(count), _) => ("dropLast", &text[count.byte_range()]),
+        (_, Some(found)) => found,
+        _ => ("take", end_text),
     };
     Some(Intention {
         title: format!("Replace 'substring' call with '{function}' call"),
@@ -1968,6 +1987,14 @@ mod tests {
         let (title, out) = run("s.substring(0, s.length").unwrap();
         assert_eq!(title, "Replace 'substring' call with 'dropLast' call");
         assert!(out.contains("    val b = s.dropLast(2)\n"), "{out}");
+        let text2 = "fun g(s: String, t: String) {\n    val a = s.substring(0, s.indexOf('.'))\n    val b = s.substring(0, s.lastIndexOf(\"/\"))\n    val c = s.substring(0, t.indexOf('.'))\n}\n";
+        let run2 = |at: &str| substring_call(text2, text2.find(at).unwrap() + 2, &classes).map(|i| (i.title.clone(), apply(text2, &i)));
+        let (title, out) = run2("s.substring(0, s.indexOf").unwrap();
+        assert_eq!(title, "Replace 'substring' call with 'substringBefore' call");
+        assert!(out.contains("    val a = s.substringBefore('.')\n"), "{out}");
+        assert!(run2("s.substring(0, s.lastIndexOf").unwrap().1.contains("    val b = s.substringBeforeLast(\"/\")\n"));
+        // Another string's index: take.
+        assert_eq!(run2("s.substring(0, t.indexOf").unwrap().0, "Replace 'substring' call with 'take' call");
         // Not from 0; a nullable receiver; one argument.
         assert_eq!(run("s.substring(1"), None);
         assert_eq!(run("t?.substring"), None);
