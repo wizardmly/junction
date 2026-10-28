@@ -68,6 +68,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Replace with 'lastIndex'", "Writes xs.size - 1 on a list or an array, and s.length - 1 on a string, as lastIndex"),
     ("Kotlin", "Replace 'substring' call with 'take' call", "Writes s.substring(0, n) as s.take(n) and s.substring(0, s.length - n) as s.dropLast(n)"),
     ("Kotlin", "Convert two comparisons to range check", "Writes x >= a && x <= b as x in a..b, and x >= a && x < b as x in a until b"),
+    ("Kotlin", "Replace 'associate' with 'associateWith' or 'associateBy'", "Writes xs.associate { it to f(it) } as xs.associateWith { f(it) } and xs.associate { f(it) to it } as xs.associateBy { f(it) }"),
     ("Kotlin", "Replace with 'isNullOrEmpty()'", "Writes s == null || s.isEmpty() as s.isNullOrEmpty(), s != null && s.isNotEmpty() as !s.isNullOrEmpty(), and isBlank likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
@@ -102,6 +103,8 @@ pub fn family(title: &str) -> &str {
         "Replace Java static method with Kotlin analog"
     } else if title == "Replace 'substring' call with 'dropLast' call" {
         "Replace 'substring' call with 'take' call"
+    } else if title.starts_with("Replace 'associate' with '") {
+        "Replace 'associate' with 'associateWith' or 'associateBy'"
     } else if title.starts_with("Merge call chain to '") {
         "Merge call chain"
     } else if title.starts_with("Iterate over '") {
