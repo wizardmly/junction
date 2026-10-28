@@ -967,6 +967,31 @@ pub fn kotlin_analog(text: &str, caret: usize, classes: super::catches::Classes)
     Some(Intention { title: format!("Replace with '{function}' function"), range: call.byte_range(), caret: call.start_byte(), replacement })
 }
 
+/// Replace 'count' with 'size' (IntelliJ's ReplaceCollectionCountWithSize
+/// inspection): `xs.count()` → `xs.size` on a collection, map or array
+/// (not an Iterable or a Sequence, whose `count()` iterates), and
+/// `s.count()` → `s.length` on a string; the caret on `count`.
+pub fn count_to_size(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let (call, target, name, values) = method_call(tree.root_node(), text, caret)?;
+    if name != "count" || !values.is_empty() {
+        return None;
+    }
+    let ty = receiver_type(target, text, classes)?;
+    let head = type_head(&ty);
+    let property = if matches!(head, "String" | "CharSequence" | "StringBuilder") {
+        "length"
+    } else if matches!(head, "List" | "MutableList" | "ArrayList" | "Set" | "MutableSet" | "HashSet" | "LinkedHashSet" | "Collection" | "MutableCollection" | "Map" | "MutableMap" | "HashMap" | "LinkedHashMap") || head.ends_with("Array") {
+        "size"
+    } else {
+        return None;
+    };
+    if ty.ends_with('?') {
+        return None;
+    }
+    Some(Intention { title: format!("Replace 'count' with '{property}'"), range: call.byte_range(), caret: call.start_byte(), replacement: format!("{}.{property}", &text[target.byte_range()]) })
+}
+
 /// Replace with 'lastIndex' (IntelliJ's ReplaceWithLastIndex inspection):
 /// `xs.size - 1` → `xs.lastIndex` when `xs` is a list or an array, and
 /// `s.length - 1` when `s` is a string; the caret on the subtraction.
@@ -2107,6 +2132,24 @@ mod tests {
         // Another map; another key.
         assert_eq!(run("m.containsKey(k) ? o.get"), None);
         assert_eq!(run("m.containsKey(k) ? m.get(\"x"), None);
+    }
+
+    #[test]
+    fn replaces_count_with_size() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(xs: List<Int>, s: String, q: Sequence<Int>, m: Map<String, Int>, n: List<Int>?) {\n    val a = xs.count()\n    val b = s.count()\n    val c = q.count()\n    val d = m.count()\n    val e = xs.count { it > 1 }\n    val g = n?.count()\n}\n";
+        let run = |at: &str| count_to_size(text, text.find(at).unwrap() + 3, &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("xs.count()").unwrap();
+        assert_eq!(title, "Replace 'count' with 'size'");
+        assert!(out.contains("    val a = xs.size\n"), "{out}");
+        let (title, out) = run(" s.count()").unwrap();
+        assert_eq!(title, "Replace 'count' with 'length'");
+        assert!(out.contains("    val b = s.length\n"), "{out}");
+        assert!(run("m.count()").unwrap().1.contains("    val d = m.size\n"));
+        // A sequence iterates; a predicate; nullable.
+        assert_eq!(run("q.count()"), None);
+        assert_eq!(run("xs.count {"), None);
+        assert_eq!(run("n?.count"), None);
     }
 
     #[test]
