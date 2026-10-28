@@ -163,19 +163,37 @@ pub struct Spaces {
     pub around_relational: bool,
     pub before_comma: bool,
     pub after_comma: bool,
+    /// Java's Before Keywords: `} else`, `} while`, `} catch`, `} finally`.
+    pub before_keywords: [bool; 4],
+    /// Kotlin's colons: before / after a declaration's (`name: Type`,
+    /// default no / yes), before / after a new type's (`class A : B`,
+    /// `<T : Any>`, both yes).
+    pub colons: [bool; 4],
 }
 
 impl Default for Spaces {
     fn default() -> Self {
-        Self { before_parens: [true; 8], around_assignment: true, around_logical: true, around_equality: true, around_relational: true, before_comma: false, after_comma: true }
+        Self {
+            before_parens: [true; 8],
+            around_assignment: true,
+            around_logical: true,
+            around_equality: true,
+            around_relational: true,
+            before_comma: false,
+            after_comma: true,
+            before_keywords: [true; 4],
+            colons: [false, true, true, true],
+        }
     }
 }
 
 impl Spaces {
     /// The keywords of `before_parens`, in order.
     const KEYWORDS: [&'static str; 8] = ["if", "for", "while", "switch", "when", "try", "catch", "synchronized"];
+    /// The keywords of `before_keywords`, in order.
+    const AFTER_BRACE: [&'static str; 4] = ["else", "while", "catch", "finally"];
     /// The settings' labels, in `values` order.
-    pub const LABELS: [&'static str; 14] = [
+    pub const LABELS: [&'static str; 22] = [
         "Before parentheses: 'if'",
         "Before parentheses: 'for'",
         "Before parentheses: 'while'",
@@ -190,17 +208,29 @@ impl Spaces {
         "Around operators: Relational (<, >, <=, >=)",
         "Other: Before comma",
         "Other: After comma",
+        "Before keywords: 'else'",
+        "Before keywords: 'while'",
+        "Before keywords: 'catch'",
+        "Before keywords: 'finally'",
+        "Other: Before colon, after declaration name",
+        "Other: After colon, before declaration type",
+        "Other: Before colon in new type definition",
+        "Other: After colon in new type definition",
     ];
     /// Which of `values` each language's page shows.
-    pub const JAVA: [usize; 13] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13];
-    pub const KOTLIN: [usize; 11] = [0, 1, 2, 4, 6, 8, 9, 10, 11, 12, 13];
+    pub const JAVA: [usize; 17] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+    pub const KOTLIN: [usize; 15] = [0, 1, 2, 4, 6, 8, 9, 10, 11, 12, 13, 18, 19, 20, 21];
 
-    pub fn values(&self) -> [bool; 14] {
-        let p = self.before_parens;
-        [p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], self.around_assignment, self.around_logical, self.around_equality, self.around_relational, self.before_comma, self.after_comma]
+    pub fn values(&self) -> [bool; 22] {
+        let (p, k, c) = (self.before_parens, self.before_keywords, self.colons);
+        [
+            p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
+            self.around_assignment, self.around_logical, self.around_equality, self.around_relational, self.before_comma, self.after_comma,
+            k[0], k[1], k[2], k[3], c[0], c[1], c[2], c[3],
+        ]
     }
 
-    pub fn from_values(v: [bool; 14]) -> Self {
+    pub fn from_values(v: [bool; 22]) -> Self {
         Self {
             before_parens: [v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]],
             around_assignment: v[8],
@@ -209,7 +239,24 @@ impl Spaces {
             around_relational: v[11],
             before_comma: v[12],
             after_comma: v[13],
+            before_keywords: [v[14], v[15], v[16], v[17]],
+            colons: [v[18], v[19], v[20], v[21]],
         }
+    }
+
+    /// From saved values, older settings having fewer (the rest default).
+    pub fn from_prefix(values: &[bool]) -> Option<Self> {
+        let mut all = Self::default().values();
+        if !(14..=all.len()).contains(&values.len()) {
+            return None;
+        }
+        all[..values.len()].copy_from_slice(values);
+        Some(Self::from_values(all))
+    }
+
+    /// Whether `word` after a `}` takes a space (Java's Before Keywords).
+    fn before_keyword(&self, word: &str, kotlin: bool) -> bool {
+        kotlin || Self::AFTER_BRACE.iter().position(|k| *k == word).is_none_or(|i| self.before_keywords[i])
     }
 
     /// Whether a `(` after `word` takes a space; `None`: not a keyword's
@@ -1519,7 +1566,10 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
                 // Spaces › After comma off; Before Parentheses off for a keyword.
                 let after_comma = out.ends_with(',') && !spaces.after_comma;
                 let keyword_paren = following_code && following == Some('(') && spaces.before_paren(last_word(&out), kotlin) == Some(false);
-                if m < chars.len() && !(following_code && matches!(following, Some(',' | ';' | ')' | ']'))) && !(after_open && following_code) && !(after_comma && following_code) && !keyword_paren {
+                // Before Keywords off: `}else`.
+                let word: String = chars[m..].iter().take_while(|(j, ch)| is_code(*j) && ch.is_alphanumeric()).map(|(_, ch)| *ch).collect();
+                let brace_keyword = out.ends_with('}') && !spaces.before_keyword(&word, kotlin);
+                if m < chars.len() && !(following_code && matches!(following, Some(',' | ';' | ')' | ']'))) && !(after_open && following_code) && !(after_comma && following_code) && !keyword_paren && !brace_keyword {
                     push_space(&mut out);
                 }
                 k = m;
@@ -1544,7 +1594,8 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
             '}' => {
                 out.push('}');
                 // `}else`, `}catch`, `}finally`, `}while`.
-                if next.is_some_and(|(j, ch)| is_code(j) && ch.is_alphabetic()) {
+                let word: String = chars[k + 1..].iter().take_while(|(j, ch)| is_code(*j) && ch.is_alphanumeric()).map(|(_, ch)| *ch).collect();
+                if next.is_some_and(|(j, ch)| is_code(j) && ch.is_alphabetic()) && spaces.before_keyword(&word, kotlin) {
                     out.push(' ');
                 }
             }
@@ -1575,15 +1626,21 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
                 if !typed {
                     out.push(':');
                 } else {
-                    if spaced_colon(&out, closes_header) {
+                    // A new type's colon (`class A : B`, `<T : Any>`) or a declaration's.
+                    let new_type = spaced_colon(&out, closes_header);
+                    let (before, after) = if new_type { (spaces.colons[2], spaces.colons[3]) } else { (spaces.colons[0], spaces.colons[1]) };
+                    while out.ends_with(' ') {
+                        out.pop();
+                    }
+                    if before {
                         push_space(&mut out);
-                    } else {
-                        while out.ends_with(' ') {
-                            out.pop();
-                        }
                     }
                     out.push(':');
-                    if next.is_some_and(|(j, ch)| !(is_code(j) && ch == ' ')) {
+                    if !after {
+                        while chars.get(k + 1).is_some_and(|(j, ch)| is_code(*j) && *ch == ' ') {
+                            k += 1;
+                        }
+                    } else if next.is_some_and(|(j, ch)| !(is_code(j) && ch == ' ')) {
                         out.push(' ');
                     }
                 }
@@ -2013,7 +2070,9 @@ mod tests {
         assert_eq!(java("class A {\nvoid f() {\nif(a==b&&c<d) x=f(a,b);\nwhen(m.get()).thenReturn(1);\n}\n}"), "class A {\n    void f() {\n        if (a == b && c < d) x = f(a, b);\n        when(m.get()).thenReturn(1);\n    }\n}");
         assert_eq!(kt("fun f() {\nsynchronized(lock) {}\nwhen(x) {}\n}"), "fun f() {\n    synchronized(lock) {}\n    when (x) {}\n}");
         // Each turned the other way.
-        let all_off = Spaces::from_values([false, false, false, false, false, false, false, false, false, false, false, false, true, false]);
+        let mut values = [false; 22];
+        values[12] = true;
+        let all_off = Spaces::from_values(values);
         let style = IndentStyle { spaces: all_off, ..Default::default() };
         assert_eq!(
             reformat_indented(ImportStyle::Java, "class A {\n    void f() {\n        if (a == b && c < d) x += f(a, b);\n        while (i >= 0) i -= 1;\n    }\n}", None, &style),
@@ -2021,6 +2080,23 @@ mod tests {
         );
         let style = IndentStyle { spaces: Spaces { before_parens: [true, true, true, true, false, true, true, true], around_relational: false, ..Default::default() }, ..Default::default() };
         assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\n    when (x) {}\n    if (a < b) g()\n}", None, &style), "fun f() {\n    when(x) {}\n    if (a<b) g()\n}");
+    }
+
+    #[test]
+    fn before_keywords_and_colon_spaces() {
+        let text = "class A {\n    void f() {\n        try {\n            g();\n        } catch (Exception e) {\n        } finally {\n        }\n        if (a) {\n        } else {\n        }\n    }\n}";
+        let style = IndentStyle { spaces: Spaces { before_keywords: [false, true, true, false], ..Default::default() }, ..Default::default() };
+        assert_eq!(
+            reformat_indented(ImportStyle::Java, text, None, &style),
+            "class A {\n    void f() {\n        try {\n            g();\n        } catch (Exception e) {\n        }finally {\n        }\n        if (a) {\n        }else {\n        }\n    }\n}"
+        );
+        // Kotlin: IntelliJ's defaults, then each colon setting the other way.
+        let text = "class A<T : Any>(val name: String) : B() {\n    fun f(): Int = 1\n}";
+        assert_eq!(kt(text), text);
+        let style = IndentStyle { spaces: Spaces { colons: [true, false, false, false], ..Default::default() }, ..Default::default() };
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, text, None, &style), "class A<T:Any>(val name :String):B() {\n    fun f() :Int = 1\n}");
+        // Older settings had 14 values.
+        assert_eq!(Spaces::from_prefix(&[true; 14]).map(|s| s.colons), Some([false, true, true, true]));
     }
 
     #[test]
