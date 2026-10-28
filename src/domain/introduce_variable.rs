@@ -341,6 +341,23 @@ pub struct ConstantPlan {
     /// Java: the constant goes into an interface (or annotation type),
     /// where fields are implicitly `public static final`.
     pub interface: bool,
+    /// Java: the class it goes into, and that class's fields the
+    /// expression uses (qualified when the constant moves elsewhere).
+    pub class_name: String,
+    pub class_fields: Vec<String>,
+}
+
+/// Where a constant goes in a Java class: the start of the line it goes
+/// before and its indentation; `blank_after` false in an empty body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstantSlot {
+    pub insert_at: usize,
+    pub indent: String,
+    pub interface: bool,
+    pub blank_after: bool,
+    /// After the declaration's line: the closing brace's indentation when
+    /// the body was `{}` on one line.
+    pub after: String,
 }
 
 /// A Java constant's visibility, as IntelliJ's JavaVisibilityPanel offers.
@@ -401,6 +418,48 @@ pub fn introduce_constant(style: ImportStyle, text: &str, plan: &ConstantPlan, a
     Ok(apply_edits(text, edits, name))
 }
 
+/// Java's "Move to another class": the declaration for `class` (the
+/// expression's uses of its own class's fields qualified, `Calc.MAX`)
+/// and the file's occurrences replaced by `Class.NAME`.
+pub fn moved_constant(text: &str, plan: &ConstantPlan, all: bool, name: &str, visibility: Visibility, class: &str, interface: bool) -> Result<(String, Introduced), String> {
+    let chosen: Vec<&Range<usize>> = if all { plan.occurrences.iter().collect() } else { plan.occurrences.get(plan.selected).into_iter().collect() };
+    let first = *chosen.first().ok_or("Cannot find an expression to introduce")?;
+    let ty = plan.java_type.as_deref().ok_or("Cannot perform refactoring without a type")?;
+    let mut expression = String::new();
+    let source = &text[first.clone()];
+    let mut rest = source;
+    // Whole words only, not after a `.` (already qualified).
+    while let Some(i) = rest.find(|c: char| c.is_alphanumeric() || c == '_') {
+        let len = rest[i..].find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(rest.len() - i);
+        let word = &rest[i..i + len];
+        expression.push_str(&rest[..i]);
+        let qualified = plan.class_fields.iter().any(|f| f == word) && !expression.trim_end().ends_with('.') && class != plan.class_name;
+        if qualified {
+            expression.push_str(&format!("{}.", plan.class_name));
+        }
+        expression.push_str(word);
+        rest = &rest[i + len..];
+    }
+    expression.push_str(rest);
+    let declaration = if interface { format!("{ty} {name} = {expression};") } else { format!("{}static final {ty} {name} = {expression};", visibility.modifier()) };
+    let reference = format!("{class}.{name}");
+    let edits = chosen.iter().map(|r| ((*r).clone(), reference.clone(), None)).collect();
+    let mut done = apply_edits(text, edits, name);
+    // The caret after the first reference.
+    let end = done.range.start + done.text.find(&reference).map_or(0, |i| i + reference.len());
+    done.name_at = end - name.len()..end;
+    Ok((declaration, done))
+}
+
+/// The declaration put at `slot` in a class's text, a blank line after
+/// it (unless the body was empty or one is there).
+pub fn insert_constant(text: &str, slot: &ConstantSlot, declaration: &str) -> String {
+    let blank = if !slot.blank_after || text[slot.insert_at..].starts_with('\n') { "" } else { "\n" };
+    let mut out = text.to_owned();
+    out.insert_str(slot.insert_at, &format!("{}{declaration}\n{blank}{}", slot.indent, slot.after));
+    out
+}
+
 /// One edit covering `edits` (range, replacement, where the declared
 /// name is in the replacement); an insertion goes before a replacement
 /// at the same place.
@@ -459,6 +518,8 @@ mod tests {
             java_type: None,
             string_content: None,
             interface: false,
+            class_name: String::new(),
+            class_fields: Vec::new(),
         };
         let done = introduce_constant(ImportStyle::Kotlin, text, &plan, true, "I", Visibility::Public).unwrap();
         let mut out = text.to_owned();
@@ -477,6 +538,8 @@ mod tests {
             java_type: Some("int".into()),
             string_content: None,
             interface: false,
+            class_name: String::new(),
+            class_fields: Vec::new(),
         };
         let done = introduce_constant(ImportStyle::Java, java, &plan, false, "ANSWER", Visibility::Public).unwrap();
         let mut out = java.to_owned();
@@ -494,6 +557,38 @@ mod tests {
         // An interface's fields are implicitly public static final.
         let plan = ConstantPlan { interface: true, ..plan };
         assert!(java_out(&plan, Visibility::Private).contains("\n  int ANSWER = 42;"));
+    }
+
+    #[test]
+    fn moves_constants() {
+        let java = "class Calc {\n  static int MAX = 9;\n  int f() {\n    return MAX * 2 + Calc.MAX;\n  }\n}\n";
+        let i = java.find("MAX * 2").unwrap();
+        let plan = ConstantPlan {
+            occurrences: vec![i..i + "MAX * 2 + Calc.MAX".len()],
+            selected: 0,
+            insert_at: 0,
+            indent: "  ".into(),
+            source: NameSource::Literal(Literal::Int),
+            java_type: Some("int".into()),
+            string_content: None,
+            interface: false,
+            class_name: "Calc".into(),
+            class_fields: vec!["MAX".into()],
+        };
+        let (decl, done) = moved_constant(java, &plan, true, "LIMIT", Visibility::Public, "Limits", false).unwrap();
+        assert_eq!(decl, "public static final int LIMIT = Calc.MAX * 2 + Calc.MAX;");
+        let mut out = java.to_owned();
+        out.replace_range(done.range.clone(), &done.text);
+        assert!(out.contains("return Limits.LIMIT;"));
+        assert_eq!(&out[done.name_at.clone()], "LIMIT");
+        assert_eq!(moved_constant(java, &plan, true, "LIMIT", Visibility::Private, "Calc", true).unwrap().0, "int LIMIT = MAX * 2 + Calc.MAX;");
+
+        let target = "class Limits {\n  void g() {}\n}\n";
+        let slot = ConstantSlot { insert_at: target.find("  void").unwrap(), indent: "  ".into(), interface: false, blank_after: true, after: String::new() };
+        assert_eq!(insert_constant(target, &slot, "static final int A = 1;"), "class Limits {\n  static final int A = 1;\n\n  void g() {}\n}\n");
+        let empty = "class Limits {\n}\n";
+        let slot = ConstantSlot { insert_at: empty.find('}').unwrap(), indent: "  ".into(), interface: false, blank_after: false, after: String::new() };
+        assert_eq!(insert_constant(empty, &slot, "static final int A = 1;"), "class Limits {\n  static final int A = 1;\n}\n");
     }
 
     #[test]

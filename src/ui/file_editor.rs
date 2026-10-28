@@ -1890,6 +1890,7 @@ impl FileEditor {
         // The plan, its names and occurrences, and the edit it makes.
         type Edit = Box<dyn Fn(&str, &crate::ui::introduce_dialog::IntroduceRequest) -> Result<crate::domain::introduce_variable::Introduced, String>>;
         let (mut typed, mut visibility) = (false, false);
+        let mut movable: Option<crate::domain::introduce_variable::ConstantPlan> = None;
         let (suggestions, occurrences, has_type, edit): (Vec<String>, usize, bool, Edit) = match kind {
             Introduce::Variable => match crate::index::introduce::extraction(lang, &text, range) {
                 Err(message) => return fail(message, window, cx),
@@ -1907,6 +1908,7 @@ impl FileEditor {
                 Err(message) => return fail(message, window, cx),
                 Ok((plan, taken)) => {
                     visibility = style == ImportStyle::Java && !plan.interface;
+                    movable = (style == ImportStyle::Java).then(|| plan.clone());
                     (
                         suggest_constant_names(style, &plan.source, plan.string_content.as_deref(), &|n| taken.iter().any(|t| t == n)),
                         plan.occurrences.len(),
@@ -1920,9 +1922,16 @@ impl FileEditor {
             return fail("Cannot perform refactoring without a type".into(), window, cx);
         }
         let editor = cx.entity().downgrade();
-        crate::ui::introduce_dialog::open(kind, style, suggestions, occurrences, typed, visibility, move |request, window, cx| {
+        let can_move = movable.is_some();
+        crate::ui::introduce_dialog::open(kind, style, suggestions, occurrences, typed, visibility, can_move, move |request, window, cx| {
             editor
                 .update(cx, |this, cx| {
+                    if let (Some(class), Some(plan)) = (request.move_to.clone(), movable.as_ref()) {
+                        if let Err(message) = this.move_constant(plan, &request, &class, window, cx) {
+                            Self::hint(title, message, window, cx);
+                        }
+                        return;
+                    }
                     let text = this.text(cx);
                     match edit(&text, &request) {
                         Err(message) => Self::hint(title, message, window, cx),
@@ -1938,6 +1947,64 @@ impl FileEditor {
                 })
                 .ok();
         }, window, cx);
+    }
+
+    /// Introduce Constant's "Move to another class": the constant declared
+    /// in the Java class `class` (simple or qualified, in this project),
+    /// this file's occurrences replaced by `Class.NAME` and the class
+    /// imported when it's in another package.
+    fn move_constant(&mut self, plan: &crate::domain::introduce_variable::ConstantPlan, request: &crate::ui::introduce_dialog::IntroduceRequest, class: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        use crate::domain::debugger::package_of;
+        use crate::domain::imports::{import_edit, ImportStyle};
+        use crate::domain::introduce_variable::{insert_constant, moved_constant};
+        use crate::index::introduce::constant_slot;
+        let not_found = || format!("Class {class} does not exist");
+        let index = self.code_index.clone().ok_or_else(not_found)?;
+        let root = index.read(cx).root().map(std::path::Path::to_path_buf).ok_or_else(not_found)?;
+        let text = self.text(cx);
+        let simple = class.rsplit('.').next().unwrap_or(class);
+        let read = |path: &str| if path == self.path { Some(text.clone()) } else { std::fs::read_to_string(root.join(path)).ok() };
+        let paths: Vec<String> = {
+            let store = index.read(cx).index.clone();
+            let store = store.read().map_err(|_| not_found())?;
+            let mut paths: Vec<String> = store.project_symbols_named(simple).filter(|(p, _, s)| s.kind.is_type() && p.ends_with(".java")).map(|(p, _, _)| p.to_owned()).collect();
+            paths.dedup();
+            paths
+        };
+        // A qualified name: the class whose file's package it starts with.
+        let (path, target) = paths
+            .iter()
+            .filter_map(|p| read(p).map(|t| (p.clone(), t)))
+            .find(|(_, t)| !class.contains('.') || class.starts_with(&format!("{}.", package_of(t))))
+            .ok_or_else(not_found)?;
+        let slot = constant_slot(&target, simple)?;
+        let (declaration, done) = moved_constant(&text, plan, request.all, &request.name, request.visibility, simple, slot.interface)?;
+        let mut new = text.clone();
+        new.replace_range(done.range.clone(), &done.text);
+        let mut caret = done.name_at.end;
+        if path == self.path {
+            let slot = constant_slot(&new, simple)?;
+            let declared = insert_constant(&new, &slot, &declaration);
+            if slot.insert_at <= caret {
+                caret += declared.len() - new.len();
+            }
+            new = declared;
+        } else {
+            std::fs::write(root.join(&path), insert_constant(&target, &slot, &declaration)).map_err(|e| e.to_string())?;
+            let package = package_of(&target);
+            let qualified = if class.contains('.') { class.to_owned() } else { format!("{package}.{simple}") };
+            let imported = new.lines().any(|l| l.trim() == format!("import {qualified};") || l.trim() == format!("import {package}.*;"));
+            if !package.is_empty() && package != package_of(&text) && !imported {
+                let (at, line) = import_edit(ImportStyle::Java, &new, &qualified);
+                new.insert_str(at, &line);
+                if at <= caret {
+                    caret += line.len();
+                }
+            }
+            cx.emit(FileEditorEvent::FilesWritten(vec![path]));
+        }
+        self.replace_text(&text, &new, caret, window, cx);
+        Ok(())
     }
 
     fn surround_with_action(&mut self, _: &SurroundWith, window: &mut Window, cx: &mut Context<Self>) {

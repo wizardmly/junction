@@ -607,7 +607,10 @@ Linux 实测（Xvfb）：Kotlin 里光标在 `user.getName()` 上按 Ctrl+Alt+V�
 | Java 表达式用到本类的字段（如 `MAX`）时，常量放在最后一个被用到的字段之后，避免前向引用 | ✅ |
 | Kotlin 只引用 `const val` 的字符串模板（`"v$VERSION ${K + 1}"`）也算常量；名字建议不取模板内容 | ✅ |
 | Kotlin 放进 `companion object` | ➖ AS 的 K2 实现也只放在文件顶层（KotlinIntroduceConstantHandler 只保留 KtFile 作为目标） |
-| Java 的 “Move to another class”（放到别的类）、枚举常量选项 | ❌ 未做 |
+| Java 的 “Move to another class”：勾选后填 “To class:”（简单名或全限定名，本次会话记住上次的），常量放进项目里那个 Java 类（嵌套类也行）的第一个成员之前，enum 放在常量列表的 `;` 之后，空类体里单独一行；本文件的用处改成 `Nums.PI`，类在别的包且没导入时加 import；表达式用到原类的字段时写成 `Circle.MAX`；放进接口时省略修饰符；找不到类提示 “Class X does not exist”，没填时提示 “Target class name is not specified” | ✅ |
+| 枚举常量选项（Introduce as enum constant） | ❌ 未做 |
+
+Linux 实测（Xvfb，Move to another class）：com.example.app.Circle 里 `return r * r * 3.14159;` 选 `3.14159` 按 Ctrl+Alt+C，名字 PI，勾 Move to another class，To class 填 Nums，Refactor 后 com.example.util.Nums 第一个成员前多了 `public static final double PI = 3.14159;`（后面空一行），Circle 里变成 `Nums.PI` 并加了 `import com.example.util.Nums;`。
 
 Linux 实测（Xvfb）：Kotlin 文件里光标在 `"Hello, world"` 上按 Ctrl+Alt+C，建议 `HELLO_WORLD`，两处出现全部替换，`private const val HELLO_WORLD = "Hello, world"` 插在带 KDoc 的函数之前；选 `"Hello, world" + name` 时提示 “Can't introduce constant for non constant expression”；Ctrl+Z 一步恢复。
 
