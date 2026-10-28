@@ -119,6 +119,18 @@ fn folder_of(files: &dyn ResFiles, locale: Option<&Locale>) -> String {
     existing.into_iter().next().unwrap_or_else(|| locale.folder())
 }
 
+/// Go to Declaration: where a cell's `<string>` is, as its folder, file
+/// and 0-based line and UTF-16 column; the Default Value's (no locale)
+/// is in `values`.
+pub fn declaration(files: &dyn ResFiles, key: &str, locale: Option<&Locale>) -> Option<(String, String, u32, u32)> {
+    let folder = folder_of(files, locale);
+    let file = file_with(files, &folder, key)?;
+    let text = files.read(&folder, &file)?;
+    let at = tr::parse_strings(&text).into_iter().find(|e| e.name == key)?.range.start;
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    Some((folder, file, text[..at].matches('\n').count() as u32, text[line_start..at].encode_utf16().count() as u32))
+}
+
 /// A cell edited: the value written where the key is (else into the
 /// folder's `strings.xml`); an empty translation is removed, as Android
 /// Studio does.
@@ -282,6 +294,18 @@ mod tests {
         assert!(load(&files).rows[0].translatable);
         remove_keys(&files, &["hello".into()]).unwrap();
         assert!(!files.text("values-zh-rCN", "strings.xml").contains("hello") && !files.text("values", "strings.xml").contains("hello"));
+    }
+
+    #[test]
+    fn finds_declarations() {
+        let files = project();
+        let fr = Locale::new("fr", None);
+        let (folder, file, line, col) = declaration(&files, "hello", Some(&fr)).unwrap();
+        let text = files.text(&folder, &file);
+        assert_eq!(text.lines().nth(line as usize).map(|l| &l[col as usize..]).unwrap_or_default().split('>').next(), Some("<string name=\"hello\""));
+        assert_eq!(declaration(&files, "hello", None).map(|d| d.0), Some("values".into()));
+        // A translation that isn't there.
+        assert_eq!(declaration(&files, "bye", Some(&fr)), None);
     }
 
     #[test]

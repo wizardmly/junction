@@ -18,11 +18,11 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
+    AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px,
     uniform_list,
 };
@@ -38,6 +38,9 @@ use crate::usecase::translations::{self as usecase, Row, Table};
 pub enum TranslationsEvent {
     /// Values files written: the project's paths, for open editors.
     FilesChanged(Vec<PathBuf>),
+    /// Go to Declaration: a values file and the 0-based line and column of
+    /// the `<string>`.
+    GoTo(PathBuf, u32, u32),
 }
 
 /// Android Studio's key filter.
@@ -286,6 +289,44 @@ impl TranslationsEditor {
         self.translation_field.update(cx, |s, cx| s.set_value(translation, window, cx));
     }
 
+    /// What a cell shows: the key (Key and Resource Folder), the default
+    /// value or a translation.
+    fn cell_text(&self, (id, column): &(RowId, Column)) -> String {
+        let row = self.row(id);
+        match column {
+            Column::Key => id.1.clone(),
+            Column::Default => row.and_then(|r| r.default.clone()).unwrap_or_default(),
+            Column::Locale(l) => row.and_then(|r| r.values.get(*l).cloned().flatten()).unwrap_or_default(),
+        }
+    }
+
+    /// Copy: the current cell's text.
+    fn copy(&self, cx: &mut Context<Self>) {
+        if let Some(cell) = &self.cell {
+            cx.write_to_clipboard(ClipboardItem::new_string(self.cell_text(cell)));
+        }
+    }
+
+    /// Where the current cell's string is declared: a translation's in
+    /// its locale's folder, the key's at its default value (else its first
+    /// translation).
+    fn declaration(&self) -> Option<(PathBuf, u32, u32)> {
+        let ((folder, key), column) = self.cell.as_ref()?;
+        let files = self.files(*folder);
+        let found = match column {
+            Column::Locale(l) => usecase::declaration(&files, key, Some(self.table.locales.get(*l)?)),
+            Column::Default => usecase::declaration(&files, key, None),
+            Column::Key => usecase::declaration(&files, key, None).or_else(|| self.table.locales.iter().find_map(|l| usecase::declaration(&files, key, Some(l)))),
+        };
+        found.map(|(dir, file, line, col)| (files.res.join(dir).join(file), line, col))
+    }
+
+    fn go_to_declaration(&mut self, cx: &mut Context<Self>) {
+        if let Some((path, line, col)) = self.declaration() {
+            cx.emit(TranslationsEvent::GoTo(path, line, col));
+        }
+    }
+
     /// Enter (or leaving) in the Default Value or Translation field.
     fn apply_field(&mut self, translation: bool, cx: &mut Context<Self>) {
         let Some(((folder, key), column)) = self.cell.clone() else { return };
@@ -500,6 +541,8 @@ impl TranslationsEditor {
             let current = self.cell.as_ref().filter(|(id, _)| *id == row_id).map(|(_, c)| *c);
             let cell = |id: (&'static str, usize), width: f32, column: Column, cx: &mut Context<Self>| {
                 let key = row_id.clone();
+                let right = row_id.clone();
+                let entity = cx.entity();
                 div()
                     .id(id)
                     .w(px(width))
@@ -523,6 +566,20 @@ impl TranslationsEditor {
                             field.update(cx, |s, cx| s.focus(window, cx));
                         }
                     }))
+                    .on_mouse_down(
+                        gpui_kit::MouseButton::Right,
+                        cx.listener(move |this, _, window, cx| {
+                            if this.cell.as_ref().is_none_or(|c| *c != (right.clone(), column)) {
+                                this.select(right.clone(), column, false, window, cx);
+                            }
+                        }),
+                    )
+                    .context_menu(move |menu, _, cx| {
+                        let found = entity.read(cx).declaration().is_some();
+                        let (go, copy) = (entity.clone(), entity.clone());
+                        menu.item(PopupMenuItem::new("Go to Declaration").disabled(!found).on_click(move |_, _, cx| go.update(cx, |this, cx| this.go_to_declaration(cx))))
+                            .item(PopupMenuItem::new("Copy").on_click(move |_, _, cx| copy.update(cx, |this, cx| this.copy(cx))))
+                    })
             };
             let key_color = if row.needs_translation() { missing_fg } else { palette.text };
             let mut line = h_flex()
@@ -714,9 +771,24 @@ impl Render for TranslationsEditor {
             .bg(palette.panel)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
-                if matches!(e.keystroke.key.as_str(), "delete" | "backspace") && this.cell.is_some() && this.focus.is_focused(window) {
-                    cx.stop_propagation();
-                    this.delete_selected(window, cx);
+                if this.cell.is_none() || !this.focus.is_focused(window) {
+                    return;
+                }
+                let m = &e.keystroke.modifiers;
+                match e.keystroke.key.as_str() {
+                    "delete" | "backspace" => {
+                        cx.stop_propagation();
+                        this.delete_selected(window, cx);
+                    }
+                    "c" if m.secondary() && !m.shift && !m.alt => {
+                        cx.stop_propagation();
+                        this.copy(cx);
+                    }
+                    "b" if m.secondary() && !m.shift && !m.alt => {
+                        cx.stop_propagation();
+                        this.go_to_declaration(cx);
+                    }
+                    _ => {}
                 }
             }))
             .text_sm()

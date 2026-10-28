@@ -275,6 +275,11 @@ impl Workspace {
                         let paths = paths.iter().filter_map(|p| p.strip_prefix(&root).ok()).map(|p| p.to_string_lossy().replace('\\', "/")).collect();
                         this.files_changed(paths, window, cx);
                     }
+                    TranslationsEvent::GoTo(path, line, col) => {
+                        let Some(root) = this.model.read(cx).project_root().map(|r| r.to_path_buf()) else { return };
+                        let Ok(path) = path.strip_prefix(&root) else { return };
+                        this.open_at(path.to_string_lossy().replace('\\', "/"), *line, *col, window, cx);
+                    }
                 });
                 self.translations = Some((view, subscription));
             }
