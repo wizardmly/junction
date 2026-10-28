@@ -653,6 +653,59 @@ pub fn range_check(text: &str, caret: usize, classes: super::catches::Classes) -
     })
 }
 
+/// Replace 'associate' with 'associateWith' / 'associateBy' (IntelliJ's
+/// ReplaceAssociateFunctionInspection): `xs.associate { it to f(it) }` →
+/// `xs.associateWith { f(it) }`, `xs.associate { f(it) to it }` →
+/// `xs.associateBy { f(it) }` (a named parameter `x ->` too), when `xs` is
+/// a collection, array or sequence; the caret on the call, outside the lambda.
+pub fn associate_function(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let call = innermost(tree.root_node(), caret)
+        .into_iter()
+        .flat_map(ancestors)
+        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body"))
+        .find(|n| n.kind() == "call_expression")?;
+    fn named(n: Node) -> Vec<Node> {
+        children(n).into_iter().filter(|c| c.is_named()).collect()
+    }
+    let [callee, suffix] = named(call)[..] else { return None };
+    let [annotated] = named(suffix)[..] else { return None };
+    let [lambda] = named(annotated)[..] else { return None };
+    if callee.kind() != "navigation_expression" || lambda.kind() != "lambda_literal" || text[callee.named_child(1)?.byte_range()].trim() != ".associate" {
+        return None;
+    }
+    let parts = named(lambda);
+    let parameters = parts.iter().find(|c| c.kind() == "lambda_parameters");
+    if parameters.is_some_and(|p| p.named_child_count() != 1 || p.named_child(0).is_some_and(|v| v.kind() != "variable_declaration" || v.named_child_count() != 1)) {
+        return None;
+    }
+    let variable = parameters.map_or("it", |p| text[p.byte_range()].trim());
+    let [body] = named(*parts.iter().find(|c| c.kind() == "statements")?)[..] else { return None };
+    let [key, to, value] = named(body)[..] else { return None };
+    if body.kind() != "infix_expression" || &text[to.byte_range()] != "to" {
+        return None;
+    }
+    let (function, kept) = if text[key.byte_range()].trim() == variable {
+        ("associateWith", value)
+    } else if text[value.byte_range()].trim() == variable {
+        ("associateBy", key)
+    } else {
+        return None;
+    };
+    let target = callee.named_child(0)?;
+    let ty = receiver_type(target, text, classes)?;
+    if ty.ends_with('?') || element_type(&ty).is_none_or(|e| e.starts_with("Map.Entry")) {
+        return None;
+    }
+    let head = parameters.map_or(String::new(), |p| format!("{} -> ", &text[p.byte_range()]));
+    Some(Intention {
+        title: format!("Replace 'associate' with '{function}'"),
+        range: call.byte_range(),
+        caret: call.start_byte(),
+        replacement: format!("{}.{function} {{ {head}{} }}", &text[target.byte_range()], &text[kept.byte_range()]),
+    })
+}
+
 /// Merge call chain to 'first' (IntelliJ's SimplifiableCallChainInspection):
 /// `xs.filter { … }.first()` → `xs.first { … }`, and likewise `firstOrNull`,
 /// `last`, `lastOrNull`, `single`, `singleOrNull`, `count`, `any`, `none`,
@@ -1897,6 +1950,23 @@ mod tests {
         assert_eq!(run("x > 1"), None);
         assert_eq!(run("n >= 1"), None);
         assert_eq!(run("lo <= 10"), None);
+    }
+
+    #[test]
+    fn replaces_associate_with_associate_with_and_by() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(xs: List<String>, m: Map<String, Int>, n: List<String>?) {\n    val a = xs.associate { it to it.length }\n    val b = xs.associate { s -> s.length to s }\n    val c = xs.associate { it.length to it.first() }\n    val d = m.associate { it to 1 }\n    val e = n?.associate { it to 1 }\n}\n";
+        let run = |at: &str| associate_function(text, text.find(at).unwrap() + 4, &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("xs.associate { it to").unwrap();
+        assert_eq!(title, "Replace 'associate' with 'associateWith'");
+        assert!(out.contains("    val a = xs.associateWith { it.length }\n"), "{out}");
+        let (title, out) = run("xs.associate { s").unwrap();
+        assert_eq!(title, "Replace 'associate' with 'associateBy'");
+        assert!(out.contains("    val b = xs.associateBy { s -> s.length }\n"), "{out}");
+        // Neither side is the element; a map; nullable.
+        assert_eq!(run("xs.associate { it.length"), None);
+        assert_eq!(run("m.associate"), None);
+        assert_eq!(run("n?.associate"), None);
     }
 
     #[test]
