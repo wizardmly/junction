@@ -5,7 +5,7 @@
 //! the last one leaves the caret at its end. The current variable is
 //! outlined.
 
-use gpui_kit::{Context, IntoElement, ParentElement as _, Styled as _, Window, anchored, deferred, div, px};
+use gpui_kit::{Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div, prelude::FluentBuilder as _, px};
 
 use super::FileEditor;
 use crate::domain::live_templates::{expand, expand_around, find, resolved, shortened, Expansion, Session, Template};
@@ -17,6 +17,8 @@ pub(super) struct TemplateState {
     text: String,
     /// The copies' update is ours: its change isn't an edit.
     syncing: bool,
+    /// Each variable's lookup: the values to pick from (none for most).
+    lookups: Vec<Vec<String>>,
 }
 
 impl FileEditor {
@@ -116,10 +118,52 @@ impl FileEditor {
     /// Fills in `session`'s places one by one, as a template's (the text
     /// already written, the first place selected).
     pub(super) fn start_template(&mut self, session: Session, cx: &mut Context<Self>) {
+        self.start_template_with_lookup(session, Vec::new(), cx);
+    }
+
+    /// [`Self::start_template`], with values to pick each variable's from
+    /// (Up / Down, or a click), as IntelliJ's template lookups.
+    pub(super) fn start_template_with_lookup(&mut self, session: Session, lookups: Vec<Vec<String>>, cx: &mut Context<Self>) {
         let text = self.state.read(cx).value().to_string();
-        self.template = (!session.stops.is_empty()).then_some(TemplateState { session, text, syncing: false });
+        self.template = (!session.stops.is_empty()).then_some(TemplateState { session, text, syncing: false, lookups });
         self.in_place = None;
         cx.notify();
+    }
+
+    /// The current variable's lookup, if it has one to pick from.
+    fn lookup(&self) -> Option<&[String]> {
+        let t = self.template.as_ref()?;
+        t.lookups.get(t.session.current).map(Vec::as_slice).filter(|l| l.len() > 1)
+    }
+
+    /// Puts a lookup value in the current variable, selected.
+    fn pick_lookup(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(range) = self.template_places().and_then(|p| p.first().cloned()) else { return };
+        self.state.update(cx, |state, cx| {
+            state.set_selected_range(range.clone(), cx);
+            state.replace(value.clone(), window, cx);
+        });
+        // The template follows the edit; then the value is selected again.
+        self.template_edited(window, cx);
+        if let Some(range) = self.template_places().and_then(|p| p.first().cloned()) {
+            self.state.update(cx, |state, cx| state.set_selected_range(range, cx));
+        }
+        cx.notify();
+    }
+
+    /// Up / Down in a variable with a lookup: the previous or next value.
+    pub(super) fn lookup_step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.state.read(cx).is_completion_menu_open(cx) {
+            return false;
+        }
+        let Some(values) = self.lookup() else { return false };
+        let Some(range) = self.template_places().and_then(|p| p.first().cloned()) else { return false };
+        let current = self.state.read(cx).value().get(range).unwrap_or_default().to_owned();
+        let count = values.len() as isize;
+        let at = values.iter().position(|v| *v == current).map_or(if delta > 0 { 0 } else { count - 1 }, |i| (i as isize + delta).rem_euclid(count));
+        let value = values[at as usize].clone();
+        self.pick_lookup(value, window, cx);
+        true
     }
 
     /// Surrounds `range` (whole lines, or text within a line) with a
@@ -190,6 +234,49 @@ impl FileEditor {
     pub(super) fn template_places(&self) -> Option<&[std::ops::Range<usize>]> {
         let t = self.template.as_ref()?;
         t.session.stops.get(t.session.current).map(Vec::as_slice)
+    }
+
+    /// The current variable's lookup, under it, its value highlighted.
+    pub(super) fn render_template_lookup(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let values = self.lookup()?.to_vec();
+        let range = self.template_places()?.first()?.clone();
+        let state = self.state.read(cx);
+        let current = state.value().get(range.clone()).unwrap_or_default().to_owned();
+        let bounds = state.range_to_bounds(&(range.start..range.start))?;
+        let palette = cx.palette().clone();
+        let entity = cx.entity();
+        let rows = values.into_iter().enumerate().map(|(ix, value)| {
+            let entity = entity.clone();
+            let chosen = value == current;
+            gpui_kit::component::h_flex()
+                .id(("template-lookup", ix))
+                .px_1()
+                .rounded_sm()
+                .when(chosen, |el| el.bg(palette.selection_inactive))
+                .child(value.clone())
+                .on_click(move |_, window, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.pick_lookup(value.clone(), window, cx);
+                        this.focus(window, cx);
+                    })
+                })
+        });
+        Some(
+            deferred(
+                anchored().position(gpui_kit::point(bounds.left() - px(4.), bounds.bottom() + px(2.))).snap_to_window_with_margin(px(8.)).child(
+                    gpui_kit::component::v_flex()
+                        .p_1()
+                        .text_sm()
+                        .bg(gpui_kit::component::ActiveTheme::theme(&**cx).popover)
+                        .border_1()
+                        .border_color(palette.border)
+                        .rounded_md()
+                        .shadow_md()
+                        .children(rows),
+                ),
+            )
+            .with_priority(2),
+        )
     }
 
     /// The current variable's places, outlined.
