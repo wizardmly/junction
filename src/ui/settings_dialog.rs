@@ -46,6 +46,7 @@ enum Page {
     EditorTabs,
     CodeStyle,
     LiveTemplates,
+    Intentions,
     Commit,
     Mappings,
     Git,
@@ -61,7 +62,7 @@ enum Page {
 const TREE: &[(&str, Option<Page>, &[Page])] = &[
     ("Appearance & Behavior", None, &[Page::Appearance, Page::System]),
     ("Keymap", Some(Page::Keymap), &[]),
-    ("Editor", None, &[Page::EditorGeneral, Page::CodeEditing, Page::AutoImport, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::CodeStyle, Page::LiveTemplates]),
+    ("Editor", None, &[Page::EditorGeneral, Page::CodeEditing, Page::AutoImport, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::CodeStyle, Page::LiveTemplates, Page::Intentions]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
     ("Build, Execution, Deployment", None, &[Page::Gradle, Page::Compiler]),
     ("Languages & Frameworks", Some(Page::Languages), &[Page::AndroidSdk]),
@@ -81,6 +82,7 @@ impl Page {
             Page::EditorTabs => "Editor Tabs",
             Page::CodeStyle => "Code Style",
             Page::LiveTemplates => "Live Templates",
+            Page::Intentions => "Intentions",
             Page::Commit => "Commit",
             Page::Mappings => "Directory Mappings",
             Page::Git => "Git",
@@ -114,6 +116,7 @@ impl Page {
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
             Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "sout", "fori", "iter", "main", "psvm"],
+            Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template"],
             Page::Commit => &[
                 "Use non-modal commit interface",
                 "Limit subject line length",
@@ -469,6 +472,7 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.diff.optimize_imports_java = from.diff.optimize_imports_java;
     to.diff.optimize_imports_kotlin = from.diff.optimize_imports_kotlin;
     to.diff.refactor_in_editor = from.diff.refactor_in_editor;
+    to.disabled_intentions = from.disabled_intentions.clone();
     to.project.preview_tab = from.project.preview_tab;
 }
 
@@ -599,6 +603,7 @@ impl Render for SettingsView {
                     self.sdk_manager.get_or_insert_with(|| cx.new(|cx| crate::ui::sdk_manager::SdkManagerView::new(project, window, cx))).clone().into_any_element()
                 }
                 Page::LiveTemplates => self.live_templates_page(&query, cx).into_any_element(),
+                Page::Intentions => self.intentions_page(&query, cx).into_any_element(),
                 Page::Compiler => v_flex()
                     .gap_2()
                     .child(self.check(
@@ -1171,6 +1176,42 @@ impl SettingsView {
                 cx,
             ))
             .child(self.note("In the editor, Introduce Variable names the variable where it is declared, every use following", cx))
+    }
+
+    /// Editor › Intentions: each intention Alt+Enter offers, by language,
+    /// with a checkbox to turn it off.
+    fn intentions_page(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let palette = cx.palette().clone();
+        let mut page = v_flex().gap_2().child(self.note("Intentions Alt+Enter offers; unchecked ones aren't listed", cx));
+        for language in ["Kotlin", "Java"] {
+            page = page.child(self.section(if language == "Kotlin" { "Kotlin" } else { "Java" }, cx));
+            for (ix, (_, family, description)) in crate::domain::intentions::FAMILIES.iter().enumerate().filter(|(_, (l, _, _))| *l == language) {
+                let key = crate::domain::intentions::family_key(language == "Kotlin", family);
+                let on = !self.draft.disabled_intentions.contains(&key);
+                let entity = entity.clone();
+                page = page.child(
+                    h_flex()
+                        .gap_3()
+                        .child(self.found(family, query, cx).child(Checkbox::new(("settings-intention", ix)).label(*family).checked(on).on_change(move |v, _, cx| {
+                            let (v, key) = (*v, key.clone());
+                            entity.update(cx, |this, cx| {
+                                this.set(
+                                    |s| {
+                                        s.disabled_intentions.retain(|k| *k != key);
+                                        if !v {
+                                            s.disabled_intentions.push(key);
+                                        }
+                                    },
+                                    cx,
+                                )
+                            })
+                        })))
+                        .child(div().text_xs().text_color(palette.text_secondary).child(*description)),
+                );
+            }
+        }
+        page
     }
 
     fn auto_import(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {

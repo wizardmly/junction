@@ -806,7 +806,8 @@ IntelliJ 的 Show Context Actions（Alt+Enter）在问题修复之外，补上�
 | `object` 成员函数的导入（Kotlin）：普通调用 `info("a")` 也找声明在 `object`（包括嵌套的 `object Log.Tags`）里的同名函数，导入 `com.example.util.Log.info`；类的成员、`x.info()` 这种带接收者的调用不找；`import com.example.util.Log.*` 过时不提供 | ✅ |
 | 自动导入提示（IntelliJ 的 ShowAutoImportPass，新 UI 写法）：输入或移动光标停下约 0.5 秒后，光标所在行上第一个文件看不到、但项目或外部库里有的类名上方弹出 “Import class... com.example.util.Nums?  Alt+Enter”（同名类有多个时加 “(multiple choices...)”）；Alt+Enter 或点链接直接导入，多个时弹出 “Class to Import”；Esc 关掉后同一个名字不再提示；光标离开这一行、名字改了或已经导入后提示消失 | ✅ |
 | Specify type explicitly / Specify return type explicitly（Kotlin）对方法调用、属性读取也提供：类型按调用的声明推断（同 Introduce Variable，沿接收者链找，Java 的 getter 当属性、Java 类型换成 Kotlin 的），需要时补 import（`val toy = owner.toy` → `val toy: Toy = owner.toy` 并 `import com.example.model.Toy`） | ✅（Linux 实测：上例 Alt+Enter 选中后得到带 import 的结果） |
-| 其他需要类型的意图、意图设置页 | ❌ 未做 |
+| 意图设置页（Settings › Editor › Intentions）：按 Kotlin / Java 列出 Alt+Enter 的意图族（IntelliJ 的 family 名，`Add braces to 'if' statement` 等归为 Add braces to statement）和说明，取消勾选后 Alt+Enter 不再列出；存为 settings.conf 的 `disabled_intentions`；搜索框能按意图名找到这一页 | ✅（Linux 实测：Kotlin `fun twice(x: Int) = x * 2` 上 Alt+Enter 有 Specify return type explicitly，在设置页取消勾选按 OK 后不再出现，settings.conf 写入 `disabled_intentions=Kotlin/Specify return type explicitly`） |
+| 其他需要类型的意图 | ❌ 未做 |
 
 Linux 实测（Xvfb，2026-10-24）：`util/Text.kt` 里有 `fun greet(name: String)` 和 `fun String.shout()`，`other/Greet.kt` 里还有一个 `greet`；Main.kt 里 `s.shout()`（`val s: String`）上 Alt+Enter 出现 “Import extension function 'String.shout'”，回车后插入 `import com.example.util.shout`；`greet("a")` 上出现 “Import function 'greet'”，回车弹出 “Imports” 两项，选 `com.example.util.greet` 后插入对应的 import；导入后再按 Alt+Enter 不再提供。
 

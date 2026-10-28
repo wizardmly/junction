@@ -111,6 +111,9 @@ pub struct Settings {
     /// Select Multiple Devices…: the devices a run targets together (their
     /// Device Manager ids); empty runs on `run_device`.
     pub run_devices: Vec<String>,
+    /// Settings › Editor › Intentions: the families turned off
+    /// (`Kotlin/Convert to block body`).
+    pub disabled_intentions: Vec<String>,
     /// Per-language server command overrides (`rust` → `rust-analyzer`);
     /// "off" disables that language's server.
     pub language_servers: std::collections::BTreeMap<String, String>,
@@ -422,6 +425,7 @@ impl Default for Settings {
             gradle_offline: false,
             run_device: String::new(),
             run_devices: Vec::new(),
+            disabled_intentions: Vec::new(),
             language_servers: Default::default(),
             auto_update_on_push_rejected: false,
             warn_crlf: true,
@@ -549,6 +553,12 @@ fn glob(pattern: &str, text: &str) -> bool {
 }
 
 impl Settings {
+    /// Whether an intention (by its title) is on in Settings › Editor › Intentions.
+    pub fn intention_on(&self, kotlin: bool, title: &str) -> bool {
+        let key = crate::domain::intentions::family_key(kotlin, crate::domain::intentions::family(title));
+        !self.disabled_intentions.contains(&key)
+    }
+
     pub fn parse(text: &str) -> Self {
         let mut settings = Self::default();
         for line in text.lines() {
@@ -658,6 +668,7 @@ impl Settings {
                 "compile_on_save" => settings.compile_on_save = flag,
                 "run_device" => settings.run_device = value.to_owned(),
                 "run_devices" => settings.run_devices = value.split('\t').filter(|v| !v.is_empty()).map(str::to_owned).collect(),
+                "disabled_intentions" => settings.disabled_intentions = value.split('\t').filter(|v| !v.is_empty()).map(str::to_owned).collect(),
                 key if key.starts_with("variant_") => {
                     settings.build_variants.insert(key["variant_".len()..].to_owned(), value.to_owned());
                 }
@@ -754,6 +765,9 @@ impl Settings {
         ));
         text.push_str(&format!("use_language_servers={}\nlarge_file_mb={}\n", self.use_language_servers, self.large_file_mb));
         text.push_str(&format!("compile_on_save={}\nrun_device={}\n", self.compile_on_save, self.run_device));
+        if !self.disabled_intentions.is_empty() {
+            text.push_str(&format!("disabled_intentions={}\n", self.disabled_intentions.join("\t")));
+        }
         if !self.run_devices.is_empty() {
             text.push_str(&format!("run_devices={}\n", self.run_devices.join("\t")));
         }
@@ -856,9 +870,11 @@ mod tests {
             gradle_distribution: [("/p".to_owned(), "/opt/gradle".to_owned())].into(),
             gradle_user_home: "/data/gradle".into(),
             gradle_offline: true,
+            disabled_intentions: vec!["Kotlin/Convert to block body".into(), "Java/Add braces to statement".into()],
             ..Default::default()
         };
         assert_eq!(Settings::parse(&custom.serialize()), custom);
+        assert!(!custom.intention_on(false, "Add braces to 'if' statement") && custom.intention_on(true, "Add braces to 'if' statement"));
     }
 
     #[test]

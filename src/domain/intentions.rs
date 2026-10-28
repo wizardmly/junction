@@ -34,6 +34,43 @@ pub fn intentions(style: ImportStyle, text: &str, caret: usize) -> Vec<Intention
     out
 }
 
+/// The intentions Settings › Editor › Intentions lists, by language:
+/// IntelliJ's family name (what the settings turn off) and description.
+pub const FAMILIES: &[(&str, &str, &str)] = &[
+    ("Kotlin", "Convert to block body", "Converts a function's expression body (= …) to a block body with return"),
+    ("Kotlin", "Convert to expression body", "Converts a block body with a single return to an expression body"),
+    ("Kotlin", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
+    ("Kotlin", "Remove braces from statement", "Removes the braces around a single-statement body"),
+    ("Kotlin", "Put arguments on separate lines", "Puts each argument of a call on its own line"),
+    ("Kotlin", "Put arguments on one line", "Joins a call's arguments onto one line"),
+    ("Kotlin", "Put parameters on separate lines", "Puts each parameter of a declaration on its own line"),
+    ("Kotlin", "Put parameters on one line", "Joins a declaration's parameters onto one line"),
+    ("Kotlin", "Convert concatenation to template", "Converts a string concatenation to a string template"),
+    ("Kotlin", "Convert template to concatenated string", "Converts a string template to a concatenation"),
+    ("Kotlin", "Specify type explicitly", "Writes the inferred type of a property or variable"),
+    ("Kotlin", "Specify return type explicitly", "Writes the inferred return type of a function"),
+    ("Kotlin", "Add names to call arguments", "Names a call's positional arguments after the parameters"),
+    ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
+    ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
+];
+
+/// The family an intention's title belongs to (`Add braces to 'if'
+/// statement` → `Add braces to statement`).
+pub fn family(title: &str) -> &str {
+    if title.starts_with("Add braces to ") {
+        "Add braces to statement"
+    } else if title.starts_with("Remove braces from ") {
+        "Remove braces from statement"
+    } else {
+        title
+    }
+}
+
+/// A family's key in the settings' list of those turned off.
+pub fn family_key(kotlin: bool, family: &str) -> String {
+    format!("{}/{family}", if kotlin { "Kotlin" } else { "Java" })
+}
+
 /// The line holding `at`: its range (without the newline).
 fn line_at(text: &str, at: usize) -> Range<usize> {
     let start = text[..at.min(text.len())].rfind('\n').map_or(0, |i| i + 1);
@@ -350,6 +387,17 @@ mod tests {
         let mut out = text.to_owned();
         out.replace_range(i.range.clone(), &i.replacement);
         out
+    }
+
+    #[test]
+    fn families_name_every_title() {
+        assert_eq!(family("Add braces to 'else' statement"), "Add braces to statement");
+        assert_eq!(family("Remove braces from 'for' statement"), "Remove braces from statement");
+        assert_eq!(family("Put parameters on one line"), "Put parameters on one line");
+        for title in ["Convert to block body", "Put arguments on separate lines", "Specify type explicitly", "Add names to call arguments"] {
+            assert!(FAMILIES.iter().any(|(l, f, _)| *l == "Kotlin" && *f == family(title)), "{title}");
+        }
+        assert_eq!(family_key(false, "Add braces to statement"), "Java/Add braces to statement");
     }
 
     fn find<'a>(all: &'a [Intention], title: &str) -> Option<&'a Intention> {
