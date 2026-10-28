@@ -234,6 +234,55 @@ fn remove_loop_indices(root: Node, text: &str, caret: usize) -> Option<Intention
     Some(Intention { title: "Remove indices in 'for' loop".into(), range: start..iterated.end_byte(), replacement: format!("{value}{middle}{call}"), caret: start })
 }
 
+/// Replace 'for each' loop with indexed 'for' loop (Java, IntelliJ's
+/// ReplaceForEachLoopWithIndexedForLoopIntention): over a `List` or an
+/// array named by a variable or field, `for (String s : names) {` →
+/// `for (int i = 0; i < names.size(); i++) {` with `String s = names.get(i);`
+/// (`names.length`, `names[i]` for an array) first in the body.
+pub fn indexed_for_loop(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Java, text)?;
+    let at = innermost(tree.root_node(), caret)?;
+    let n = ancestors(at).find(|n| matches!(n.kind(), "enhanced_for_statement" | "block" | "class_body"))?;
+    if n.kind() != "enhanced_for_statement" {
+        return None;
+    }
+    let ty = n.child_by_field_name("type")?;
+    let name = n.child_by_field_name("name")?;
+    let value = n.child_by_field_name("value")?;
+    let body = n.child_by_field_name("body")?;
+    if caret >= body.start_byte() || !matches!(value.kind(), "identifier" | "field_access") {
+        return None;
+    }
+    let collection = super::surround::expression_type(Lang::Java, value, text).or_else(|| super::types::type_of(Lang::Java, text, value.byte_range(), classes).map(|t| t.ty))?;
+    let head = collection.split('<').next().unwrap_or(&collection);
+    let expression = &text[value.byte_range()];
+    let (bound, element) = if collection.ends_with("[]") {
+        (format!("{expression}.length"), format!("{expression}[{{i}}]"))
+    } else if matches!(head, "List" | "ArrayList" | "LinkedList" | "MutableList" | "java.util.List" | "CopyOnWriteArrayList" | "Vector") {
+        (format!("{expression}.size()"), format!("{expression}.get({{i}})"))
+    } else {
+        return None;
+    };
+    // An index name the loop doesn't use: i, j, k…
+    let loop_text = &text[n.byte_range()];
+    let index = ["i", "j", "k", "m", "n"].into_iter().map(str::to_owned).chain((1..).map(|k| format!("i{k}"))).find(|c| !mentions(loop_text, c))?;
+    let element = element.replace("{i}", &index);
+    let line = text[..n.start_byte()].rfind('\n').map_or(0, |i| i + 1);
+    let indent: String = text[line..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    let unit = if indent.starts_with('\t') { "\t" } else { "    " };
+    let declaration = format!("{} {} = {element};", &text[ty.byte_range()], &text[name.byte_range()]);
+    let header = format!("for (int {index} = 0; {index} < {bound}; {index}++) ");
+    let body_text = &text[body.byte_range()];
+    let new_body = if body.kind() == "block" {
+        // After the `{`, on a line of its own.
+        let inner = &body_text[1..];
+        format!("{{\n{indent}{unit}{declaration}{}", if inner.trim_start().starts_with('}') { format!("\n{indent}}}") } else { format!("\n{indent}{unit}{}", inner.trim_start()) })
+    } else {
+        format!("{{\n{indent}{unit}{declaration}\n{indent}{unit}{body_text}\n{indent}}}")
+    };
+    Some(Intention { title: "Replace 'for each' loop with indexed 'for' loop".into(), range: n.byte_range(), replacement: format!("{header}{new_body}"), caret: n.start_byte() })
+}
+
 type Typing<'a> = dyn Fn(Node) -> Option<(String, Vec<String>)> + 'a;
 
 /// `val x = 1` → `val x: Int = 1`; `fun f() = 1` → `fun f(): Int = 1`;
@@ -554,6 +603,22 @@ mod tests {
         assert_eq!(find(&out, "index,", "Remove indices in 'for' loop").unwrap(), text);
         let used = "fun f(list: List<String>) {\n    for ((i, x) in list.withIndex()) { println(i) }\n}\n";
         assert_eq!(find(used, "i,", "Remove indices in 'for' loop"), None);
+    }
+
+    #[test]
+    fn replaces_for_each_with_an_indexed_loop() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "import java.util.List;\n\nclass A {\n    void f(List<String> names, int[] ns, Iterable<String> it) {\n        for (String s : names) {\n            System.out.println(s);\n        }\n        for (int x : ns) total(x, i);\n        for (String t : it) {}\n    }\n}\n";
+        let at = |s: &str| text.find(s).unwrap();
+        let i = indexed_for_loop(text, at("s : names"), &classes).unwrap();
+        assert_eq!(i.title, "Replace 'for each' loop with indexed 'for' loop");
+        assert!(apply(text, &i).contains("        for (int i = 0; i < names.size(); i++) {\n            String s = names.get(i);\n            System.out.println(s);\n        }\n"), "{}", apply(text, &i));
+        // An array; `i` is taken; a statement body gets braces.
+        let out = apply(text, &indexed_for_loop(text, at("x : ns"), &classes).unwrap());
+        assert!(out.contains("        for (int j = 0; j < ns.length; j++) {\n            int x = ns[j];\n            total(x, i);\n        }\n"), "{out}");
+        // Not an Iterable; not in the body.
+        assert_eq!(indexed_for_loop(text, at("t : it"), &classes), None);
+        assert_eq!(indexed_for_loop(text, at("println"), &classes), None);
     }
 
     #[test]
