@@ -30,7 +30,7 @@ use crate::theme::ActivePalette as _;
 use crate::ui::accounts_dialog::AccountsView;
 use crate::ui::as_icons as icons;
 use crate::domain::code_style::{LangStyle, StyleLang};
-use crate::domain::reformat::KeepBlankLines;
+use crate::domain::reformat::{KeepBlankLines, MinBlankLines};
 use crate::ui::keymap;
 use crate::ui::mappings_dialog::MappingsView;
 
@@ -115,7 +115,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
-            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
+            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "Template Group", "Import", "Export", "sout", "fori", "iter", "main", "psvm"],
             Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template"],
             Page::Commit => &[
@@ -186,6 +186,8 @@ pub struct SettingsView {
     indents: Vec<(StyleLang, Entity<InputState>, Entity<InputState>)>,
     /// Blank Lines: in declarations, in code, before `}` (not XML).
     keep_blank: Vec<(StyleLang, [Entity<InputState>; 3])>,
+    /// Blank Lines › Minimum blank lines: Java's and Kotlin's, by `MinBlankLines::values` index.
+    min_blank: Vec<(StyleLang, Vec<(usize, Entity<InputState>)>)>,
     hard_wrap: Entity<InputState>,
     large_file: Entity<InputState>,
     /// Languages & Frameworks: a server command per language, and what
@@ -261,6 +263,13 @@ impl SettingsView {
             .map(|lang| {
                 let k = initial.code_style.keep_blank(lang);
                 (lang, [k.declarations, k.code, k.before_rbrace].map(|n| input(n.to_string(), window, cx)))
+            })
+            .collect();
+        let min_blank = [(StyleLang::Java, &MinBlankLines::JAVA[..]), (StyleLang::Kotlin, &MinBlankLines::KOTLIN[..])]
+            .into_iter()
+            .map(|(lang, shown)| {
+                let values = initial.code_style.min_blank(lang).values();
+                (lang, shown.iter().map(|&i| (i, input(values[i].to_string(), window, cx))).collect())
             })
             .collect();
         let large_file = input(if initial.large_file_mb > 0 { initial.large_file_mb } else { 50 }.to_string(), window, cx);
@@ -349,6 +358,7 @@ impl SettingsView {
             tab_limit,
             indents,
             keep_blank,
+            min_blank,
             hard_wrap,
             large_file,
             servers,
@@ -427,6 +437,15 @@ impl SettingsView {
             let k = next.code_style.keep_blank(*lang);
             let number = |input: &Entity<InputState>, or: usize| input.read(cx).value().trim().parse::<usize>().unwrap_or(or);
             next.code_style.set_keep_blank(*lang, KeepBlankLines { declarations: number(declarations, k.declarations), code: number(code, k.code), before_rbrace: number(before_rbrace, k.before_rbrace) });
+        }
+        for (lang, inputs) in &self.min_blank {
+            let mut values = next.code_style.min_blank(*lang).values();
+            for (i, input) in inputs {
+                if let Ok(n) = input.read(cx).value().trim().parse::<usize>() {
+                    values[*i] = n;
+                }
+            }
+            next.code_style.set_min_blank(*lang, MinBlankLines::from_values(values));
         }
         if let Ok(size) = self.font_size.read(cx).value().trim().parse::<f32>() {
             next.editor_font_tenths = (size.clamp(8., 32.) * 10.).round() as u32;
@@ -1502,6 +1521,12 @@ impl SettingsView {
                     .child(self.row("In declarations:", query, div().w(px(70.)).child(Input::new(declarations).small()), cx))
                     .child(self.row("In code:", query, div().w(px(70.)).child(Input::new(code).small()), cx))
                     .child(self.row("Before '}':", query, div().w(px(70.)).child(Input::new(before_rbrace).small()), cx));
+            }
+            if let Some((_, inputs)) = self.min_blank.iter().find(|(l, _)| *l == lang) {
+                page = page.child(h_flex().text_sm().child(self.found("Minimum blank lines", query, cx).child("Blank Lines › Minimum blank lines:")));
+                for (i, input) in inputs {
+                    page = page.child(self.row(MinBlankLines::LABELS[*i], query, div().w(px(70.)).child(Input::new(input).small()), cx));
+                }
             }
         }
         page

@@ -29,6 +29,77 @@ impl Default for KeepBlankLines {
     }
 }
 
+/// Settings › Code Style › Blank Lines › "Minimum blank lines": how many
+/// blank lines a reformat puts between members at least. Java shows all
+/// but the last; Kotlin "After class header" (before a first function or
+/// property) and the last, its other minimums being fixed at 1
+/// (`kotlinSpacingRules.kt`). IntelliJ's defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MinBlankLines {
+    pub after_package: usize,
+    pub before_imports: usize,
+    pub after_imports: usize,
+    pub around_class: usize,
+    pub after_class_header: usize,
+    pub around_field_in_interface: usize,
+    pub around_field: usize,
+    pub around_method_in_interface: usize,
+    pub around_method: usize,
+    pub around_initializer: usize,
+    pub before_class_end: usize,
+    /// Kotlin's "Before declaration with comment or annotation".
+    pub before_commented_declaration: usize,
+}
+
+impl Default for MinBlankLines {
+    fn default() -> Self {
+        Self::from_values([1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1])
+    }
+}
+
+impl MinBlankLines {
+    /// The settings' labels, in `values` order.
+    pub const LABELS: [&'static str; 12] = [
+        "After package:",
+        "Before imports:",
+        "After imports:",
+        "Around class:",
+        "After class header:",
+        "Around field in interface:",
+        "Around field:",
+        "Around method in interface:",
+        "Around method:",
+        "Around initializer:",
+        "Before class end:",
+        "Before declaration with comment or annotation:",
+    ];
+    /// Which of `values` each language's page shows.
+    pub const JAVA: [usize; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    pub const KOTLIN: [usize; 2] = [4, 11];
+
+    pub fn values(&self) -> [usize; 12] {
+        [
+            self.after_package,
+            self.before_imports,
+            self.after_imports,
+            self.around_class,
+            self.after_class_header,
+            self.around_field_in_interface,
+            self.around_field,
+            self.around_method_in_interface,
+            self.around_method,
+            self.around_initializer,
+            self.before_class_end,
+            self.before_commented_declaration,
+        ]
+    }
+
+    pub fn from_values(v: [usize; 12]) -> Self {
+        let [after_package, before_imports, after_imports, around_class, after_class_header, around_field_in_interface, around_field, around_method_in_interface, around_method, around_initializer, before_class_end, before_commented_declaration] = v;
+        Self { after_package, before_imports, after_imports, around_class, after_class_header, around_field_in_interface, around_field, around_method_in_interface, around_method, around_initializer, before_class_end, before_commented_declaration }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
     Code,
@@ -271,6 +342,8 @@ pub struct IndentStyle {
     /// Where long lines wrap (`None`: 120).
     pub right_margin: Option<usize>,
     pub keep_blank: KeepBlankLines,
+    /// Java's and Kotlin's (Groovy keeps its blank lines as they are).
+    pub min_blank: MinBlankLines,
 }
 
 /// The reformatted text. `only`: the 0-based lines to change (a
@@ -318,6 +391,9 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     let mut blank_run = 0;
     let bodies = declaration_braces(&raw, &lines);
     let keep = indents.keep_blank;
+    let need = if flavor == Flavor::Groovy { vec![0; raw.len()] } else { minimum_blank_lines(&raw, &lines, &bodies, kotlin, &indents.min_blank) };
+    // Blank lines just put out.
+    let mut kept = 0;
     let pad = |cols: usize| if tabs { "\t".repeat(cols) } else { " ".repeat(cols) };
     for (ix, (text_line, info)) in raw.iter().zip(&lines).enumerate() {
         let selected = only.as_ref().is_none_or(|r| r.contains(&ix));
@@ -330,6 +406,7 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             let lead = text_line.len() - text_line.trim_start().len();
             apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, text_line, &bodies[ix]);
             blank_run = 0;
+            kept = 0;
             continue;
         }
         if trimmed.is_empty() {
@@ -350,9 +427,18 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             }
             out.push(if selected { String::new() } else { (*text_line).to_owned() });
             choppable.push(false);
+            kept += 1;
             continue;
         }
         blank_run = 0;
+        // Blank Lines › Minimum blank lines before a member.
+        if selected && !out.is_empty() {
+            for _ in kept..need[ix] {
+                out.push(String::new());
+                choppable.push(false);
+            }
+        }
+        kept = 0;
         let lead = text_line.len() - text_line.trim_start().len();
         // Closers first on the line close before it's indented.
         let mut leading_closers = 0;
@@ -733,6 +819,267 @@ fn declaration_paren(line: &str) -> Option<usize> {
         return None;
     }
     HEADER.is_match(before).then(|| line[..open + 1].chars().count())
+}
+
+/// A member of a class body or of the file, for its minimum blank lines.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Member {
+    Package,
+    Imports,
+    /// Kotlin's `@file:` annotations.
+    FileAnnotations,
+    Class,
+    /// Kotlin's `object` (and `companion object`).
+    Object,
+    Fun,
+    Property,
+    Init,
+    Constructor,
+    TypeAlias,
+    /// Java's fields and enum constants.
+    Field,
+    /// Java's methods and constructors.
+    Method,
+    /// Java's `{ … }` and `static { … }`.
+    Initializer,
+    /// Anything else (a script's statement, Kotlin's enum entries).
+    Other,
+}
+
+/// Kotlin's and Java's modifiers before a declaration's keyword.
+const MODIFIERS: [&str; 37] = [
+    "public", "private", "protected", "internal", "open", "final", "abstract", "override", "sealed", "data", "inner", "enum", "annotation", "companion", "inline", "value", "const",
+    "lateinit", "suspend", "operator", "infix", "tailrec", "external", "expect", "actual", "static", "synchronized", "native", "transient", "volatile", "strictfp", "default",
+    "non-sealed", "noinline", "crossinline", "reified", "vararg",
+];
+
+/// The words of a line of code after its annotations (`@Foo`, `@Foo(…)`)
+/// and modifiers.
+fn declaration_words(code: &str) -> Vec<&str> {
+    let mut rest = code.trim_start();
+    // Annotations on the line: `@Inject`, `@field:Rule`, `@Suppress("x")`.
+    while let Some(after) = rest.strip_prefix('@') {
+        if after.starts_with("interface") {
+            break;
+        }
+        let name_end = after.find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | ':'))).unwrap_or(after.len());
+        let mut tail = &after[name_end..];
+        if tail.starts_with('(') {
+            let mut depth = 0;
+            let close = tail.char_indices().find(|(_, c)| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                depth == 0
+            });
+            tail = close.map(|(i, _)| &tail[i + 1..]).unwrap_or("");
+        }
+        rest = tail.trim_start();
+    }
+    rest.split(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '-' | '@'))).filter(|w| !w.is_empty()).skip_while(|w| MODIFIERS.contains(w)).take(2).collect()
+}
+
+/// What a line of a class body (or the file) declares; `None`: not a
+/// declaration's first line (Kotlin's `get() = …`, `: Base()`, `where …`).
+fn member_kind(code: &str, kotlin: bool) -> Option<Member> {
+    let code = code.trim();
+    let first = code.chars().next()?;
+    if code.starts_with("@file:") {
+        return Some(Member::FileAnnotations);
+    }
+    if !(first.is_alphanumeric() || matches!(first, '_' | '@' | '`')) && !(first == '{' && !kotlin) {
+        return None;
+    }
+    let words = declaration_words(code);
+    let word = words.first().copied().unwrap_or("");
+    let kind = match word {
+        "package" => Member::Package,
+        "import" => Member::Imports,
+        "class" | "interface" | "@interface" | "record" => Member::Class,
+        "enum" if !kotlin => Member::Class,
+        "fun" if words.get(1) == Some(&"interface") => Member::Class,
+        "object" if kotlin => Member::Object,
+        "fun" if kotlin => Member::Fun,
+        "val" | "var" if kotlin => Member::Property,
+        "init" if kotlin => Member::Init,
+        "constructor" if kotlin => Member::Constructor,
+        "typealias" if kotlin => Member::TypeAlias,
+        "get" | "set" | "where" | "by" | "else" | "catch" | "finally" if kotlin => return None,
+        _ if kotlin => Member::Other,
+        _ if code.trim_start_matches("static").trim_start().starts_with('{') => Member::Initializer,
+        _ => match (code.find('('), code.find('=')) {
+            (Some(paren), eq) if eq.is_none_or(|eq| paren < eq) && !code.trim_end().ends_with(',') => Member::Method,
+            _ => Member::Field,
+        },
+    };
+    Some(kind)
+}
+
+/// The blank lines Java's code style puts between two members at least.
+fn java_blank_lines(prev: Member, next: Member, interface: bool, min: &MinBlankLines) -> usize {
+    let around = |m: Member| match m {
+        Member::Class => min.around_class,
+        Member::Method if interface => min.around_method_in_interface,
+        Member::Method => min.around_method,
+        Member::Field if interface => min.around_field_in_interface,
+        Member::Field => min.around_field,
+        Member::Initializer => min.around_initializer,
+        _ => 0,
+    };
+    match (prev, next) {
+        (Member::Package, _) => min.after_package.max(if next == Member::Imports { min.before_imports } else { 0 }),
+        (_, Member::Imports) => min.before_imports,
+        (Member::Imports, _) => min.after_imports,
+        _ => around(prev).max(around(next)),
+    }
+}
+
+/// Kotlin's (`kotlinSpacingRules.kt`): one after the package, imports and
+/// `@file:` annotations; before a declaration with a comment or annotation
+/// on its own line, the setting; between functions, classes, objects (and
+/// a property and a function) one when the first takes more than a line;
+/// none between properties; one otherwise.
+fn kotlin_blank_lines(prev: Member, prev_multiline: bool, next: Member, commented: bool, min: &MinBlankLines) -> usize {
+    use Member::*;
+    if matches!(prev, Package | Imports | FileAnnotations) {
+        return 1;
+    }
+    let declaration = |m: Member| matches!(m, Class | Object | Fun | Property | Init | Constructor | TypeAlias);
+    if !declaration(prev) || !declaration(next) {
+        return 0;
+    }
+    if commented {
+        return min.before_commented_declaration;
+    }
+    match (prev, next) {
+        (Class | Object, Class | Object) | (Fun, Fun | Property | Class) | (Property, Fun) | (Constructor, Constructor) | (TypeAlias, TypeAlias) => usize::from(prev_multiline),
+        (Property, Property) => 0,
+        _ => 1,
+    }
+}
+
+/// A class body (or the file) for `minimum_blank_lines`.
+struct Members {
+    /// The bracket depth its members are at.
+    depth: usize,
+    class_body: bool,
+    interface: bool,
+    /// The last member: what it is, its declaration's line, whether it's an interface.
+    last: Option<(Member, usize, bool)>,
+    /// The last line of the last member.
+    end: usize,
+    /// Java: the last member's `;` or `}` hasn't come yet.
+    open: bool,
+    /// A comment or annotation on its own line: the next member's start.
+    pending: Option<usize>,
+}
+
+/// Per line: the blank lines the code style wants before it at least,
+/// for a member (from its comments and annotations) of a class body or
+/// the file, and Java's `}` of a class.
+fn minimum_blank_lines(raw: &[&str], lines: &[Line], bodies: &[Vec<bool>], kotlin: bool, min: &MinBlankLines) -> Vec<usize> {
+    let mut need = vec![0; raw.len()];
+    // Open brackets: whether each is a class body.
+    let mut brackets: Vec<bool> = Vec::new();
+    let mut scopes = vec![Members { depth: 0, class_body: false, interface: false, last: None, end: 0, open: false, pending: None }];
+    let mut previous_code = String::new();
+    for (ix, (text, info)) in raw.iter().zip(lines).enumerate() {
+        let in_code = info.starts_in.unwrap_or(State::Code) == State::Code;
+        // Strings as `_`, comments gone.
+        let code: String = text
+            .char_indices()
+            .map(|(i, c)| match (info.code.get(i).copied().unwrap_or(false), info.comment.get(i).copied().unwrap_or(false)) {
+                (true, _) => c,
+                (false, true) => ' ',
+                (false, false) => '_',
+            })
+            .collect();
+        let code = code.trim();
+        let blank = text.trim().is_empty();
+        let depth = brackets.len();
+        let mut pending_line = false;
+        let scope = scopes.last_mut().expect("the file's scope stays");
+        if in_code && depth == scope.depth {
+            if blank {
+                scope.pending = None;
+            } else if code.starts_with('}') {
+                if !kotlin && scope.class_body && scope.last.is_some() {
+                    need[ix] = min.before_class_end;
+                }
+                scope.pending = None;
+            } else if code.is_empty() || (code.starts_with('@') && !code.starts_with("@file:") && !code.starts_with("@interface") && declaration_words(code).is_empty()) {
+                // A comment or an annotation on its own line.
+                if kotlin || !scope.open {
+                    scope.pending.get_or_insert(ix);
+                    pending_line = true;
+                }
+            } else {
+                let kind = member_kind(code, kotlin);
+                let continues = previous_code.ends_with("->") || previous_code.ends_with(|c: char| matches!(c, '=' | ',' | '(' | '.' | ':' | '+' | '-' | '*' | '/' | '%' | '&' | '|' | '?' | '!'));
+                let starts = match kind {
+                    None => false,
+                    Some(_) if kotlin => !continues,
+                    Some(_) => !scope.open,
+                };
+                let kind = kind.unwrap_or(Member::Other);
+                // Imports (and `@file:` annotations) are one list.
+                let merged = scope.last.is_some_and(|(k, _, _)| k == kind && matches!(kind, Member::Imports | Member::FileAnnotations));
+                if starts && !merged {
+                    let start = scope.pending.take().unwrap_or(ix);
+                    let n = match scope.last {
+                        Some((prev, line, _)) if kotlin => kotlin_blank_lines(prev, scope.end > line, kind, start < ix, min),
+                        Some((prev, _, _)) => java_blank_lines(prev, kind, scope.interface, min),
+                        None if scope.class_body && (!kotlin || matches!(kind, Member::Fun | Member::Property)) => min.after_class_header,
+                        None => 0,
+                    };
+                    need[start] = need[start].max(n);
+                    let interface = kind == Member::Class && declaration_words(code).iter().any(|w| *w == "interface" || *w == "@interface");
+                    scope.last = Some((kind, ix, interface));
+                }
+                scope.pending = None;
+                scope.open = true;
+            }
+        }
+        if !blank {
+            let innermost = scopes.len() - 1;
+            for (i, scope) in scopes.iter_mut().enumerate() {
+                if i < innermost || !pending_line {
+                    scope.end = ix;
+                }
+            }
+        }
+        let mut body = bodies[ix].iter();
+        for (_, c) in &info.brackets {
+            match c {
+                '{' => {
+                    let class_body = body.next().copied().unwrap_or(false);
+                    brackets.push(class_body);
+                    if class_body {
+                        let interface = scopes.last().and_then(|s| s.last).is_some_and(|(_, _, interface)| interface);
+                        scopes.push(Members { depth: brackets.len(), class_body: true, interface, last: None, end: ix, open: false, pending: None });
+                    }
+                }
+                '(' | '[' => brackets.push(false),
+                _ => {
+                    if brackets.pop() == Some(true) && scopes.len() > 1 {
+                        scopes.pop();
+                    }
+                }
+            }
+        }
+        if in_code && !code.is_empty() {
+            previous_code = code.to_owned();
+            // Java: a member ends at its `;` or `}`.
+            if let Some(scope) = scopes.last_mut() {
+                if !kotlin && scope.depth == brackets.len() && (code.ends_with(';') || code.ends_with('}')) {
+                    scope.open = false;
+                }
+            }
+        }
+    }
+    need
 }
 
 /// Per line, for each of its `{` in order: whether it opens a class body
@@ -1181,7 +1528,7 @@ mod tests {
         assert_eq!(kt("constructor(p: Project):this(p)"), "constructor(p: Project) : this(p)");
         assert_eq!(kt("abstract class B<E : Any>():"), "abstract class B<E : Any>() :");
         assert_eq!(kt("run(object:Runnable { })"), "run(object : Runnable { })");
-        assert_eq!(kt("class A(\nval x: Int\n): Base() {\n}\nfun f(\na: Int\n) : String {\n}"), "class A(\n    val x: Int\n) : Base() {\n}\nfun f(\n    a: Int\n): String {\n}");
+        assert_eq!(kt("class A(\nval x: Int\n): Base() {\n}\nfun f(\na: Int\n) : String {\n}"), "class A(\n    val x: Int\n) : Base() {\n}\n\nfun f(\n    a: Int\n): String {\n}");
     }
 
     #[test]
@@ -1216,7 +1563,41 @@ mod tests {
             "class A {\n    void f() {\n        run(new Runnable() {\n\n\n            void x() {}\n        });\n        list.forEach(x -> {\n            g(x);\n        });\n    }\n}"
         );
         let object = "val r = object : Runnable {\n\n    override fun run() {}\n}\nfun f() {\n    val c = A::class.java\n\n    g()\n}";
-        assert_eq!(reformat_indented(ImportStyle::Kotlin, object, None, &keep(1, 0, 2)), "val r = object : Runnable {\n\n    override fun run() {}\n}\nfun f() {\n    val c = A::class.java\n    g()\n}");
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, object, None, &keep(1, 0, 2)), "val r = object : Runnable {\n\n    override fun run() {}\n}\n\nfun f() {\n    val c = A::class.java\n    g()\n}");
+    }
+
+    #[test]
+    fn puts_the_minimum_blank_lines_between_members() {
+        // Java: after the package and imports, around classes, methods and
+        // initializers (with their comments and annotations); fields together.
+        let members = "package a;\nimport b.C;\nimport b.D;\nclass A {\n    int x;\n    int y = f(\n        1);\n    /** Doc. */\n    @Override\n    void f() {\n    }\n    void g() {}\n    static {\n    }\n    interface I {\n        int Z = 1;\n        void h();\n        void i();\n    }\n    enum E {\n        A, B;\n        void j() {}\n    }\n}\nclass B {}";
+        assert_eq!(
+            java(members),
+            "package a;\n\nimport b.C;\nimport b.D;\n\nclass A {\n    int x;\n    int y = f(\n            1);\n\n    /** Doc. */\n    @Override\n    void f() {\n    }\n\n    void g() {}\n\n    static {\n    }\n\n    interface I {\n        int Z = 1;\n\n        void h();\n\n        void i();\n    }\n\n    enum E {\n        A, B;\n\n        void j() {}\n    }\n}\n\nclass B {}"
+        );
+        // Statements in a method and a lambda's body keep theirs.
+        let code = "class A {\n    void f() {\n        int a = 1;\n        run(() -> {\n            g();\n        });\n        h();\n    }\n}";
+        assert_eq!(java(code), code);
+        // The settings: around fields 1, methods 0, after the class header 1, before its end 1.
+        let min = MinBlankLines { around_field: 1, around_method: 0, after_class_header: 1, before_class_end: 1, ..Default::default() };
+        let style = IndentStyle { min_blank: min, ..Default::default() };
+        assert_eq!(
+            reformat_indented(ImportStyle::Java, "class A {\n    int x;\n    int y;\n    void f() {}\n    void g() {}\n}", None, &style),
+            "class A {\n\n    int x;\n\n    int y;\n\n    void f() {}\n    void g() {}\n\n}"
+        );
+        // Kotlin: functions and classes taking more than a line get one
+        // after them, one-liners and properties don't; a comment or
+        // annotation on its own line gets one before it.
+        let kotlin = "package a\nimport b.C\nclass A {\n    val x = 1\n    val y: Int\n        get() = 2\n    fun f() = 1\n    fun g() = 2\n    fun h() {\n    }\n    val z = if (a) b\n    else c\n    // Why.\n    val w = 3\n    @Inject\n    lateinit var v: V\n    init {\n    }\n    companion object {\n        const val K = \"=\"\n    }\n}\nfun top() = A()\n    .x\nobject O";
+        assert_eq!(
+            kt(kotlin),
+            "package a\n\nimport b.C\n\nclass A {\n    val x = 1\n    val y: Int\n        get() = 2\n\n    fun f() = 1\n    fun g() = 2\n    fun h() {\n    }\n\n    val z = if (a) b\n    else c\n\n    // Why.\n    val w = 3\n\n    @Inject\n    lateinit var v: V\n\n    init {\n    }\n\n    companion object {\n        const val K = \"=\"\n    }\n}\n\nfun top() = A()\n    .x\n\nobject O"
+        );
+        // A lambda's statements and Gradle scripts' aren't members.
+        let script = "plugins {\n    id(\"a\")\n}\nandroid {\n    namespace = \"b\"\n}";
+        assert_eq!(kt(script), script);
+        // Only the selected lines get them.
+        assert_eq!(reformat(ImportStyle::Java, "class A {\n    void f() {}\n    void g() {}\n}", Some(0..2)), "class A {\n    void f() {}\n    void g() {}\n}");
     }
 
     #[test]
@@ -1267,7 +1648,7 @@ mod tests {
     #[test]
     fn annotation_targets_and_type_parameters_keep_their_text() {
         let text = "class A {\n@get:Rule\nval r = 1\n@field:JvmField val f = 2\n}\nprivate inline fun <reified T : Any> Project.f() = g<T>()\nfun <T> h(a: Int) = a < b";
-        assert_eq!(kt(text), "class A {\n    @get:Rule\n    val r = 1\n    @field:JvmField val f = 2\n}\nprivate inline fun <reified T : Any> Project.f() = g<T>()\nfun <T> h(a: Int) = a < b");
+        assert_eq!(kt(text), "class A {\n    @get:Rule\n    val r = 1\n    @field:JvmField val f = 2\n}\n\nprivate inline fun <reified T : Any> Project.f() = g<T>()\nfun <T> h(a: Int) = a < b");
     }
 
     #[test]
@@ -1322,3 +1703,4 @@ mod corpus {
         }
     }
 }
+
