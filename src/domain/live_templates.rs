@@ -367,6 +367,10 @@ pub struct UserTemplate {
     /// Default values by variable name.
     #[serde(default)]
     pub defaults: Vec<(String, String)>,
+    /// Expressions by variable name (IntelliJ's Edit Template Variables:
+    /// `className()`, `variableOfType("int")`, `escapeString(NAME)`…).
+    #[serde(default)]
+    pub expressions: Vec<(String, String)>,
     #[serde(default)]
     pub kotlin: Vec<Context>,
     #[serde(default)]
@@ -407,11 +411,22 @@ impl UserTemplate {
         if !self.enabled || contexts.is_empty() || self.abbreviation.is_empty() {
             return None;
         }
-        let vars = variables(&self.text)
-            .into_iter()
+        let names = variables(&self.text);
+        let vars = names
+            .iter()
             .map(|name| {
-                let default = self.defaults.iter().find(|(n, _)| *n == name).map(|(_, d)| d.clone()).unwrap_or_default();
-                Var { name: Cow::Owned(name), default: Cow::Owned(default), stop: true, copy_of: None, computed: None }
+                let mut default = self.defaults.iter().find(|(n, _)| n == name).map(|(_, d)| d.clone()).unwrap_or_default();
+                let expression = self.expressions.iter().find(|(n, _)| n == name).and_then(|(_, e)| parse_expression(e));
+                let (mut computed, mut copy_of) = (None, None);
+                match expression {
+                    Some(Expression::Computed(c)) => computed = Some(c),
+                    // Another variable's value: follows it, no stop of its own.
+                    Some(Expression::Copy(of)) if names.contains(&of) && of != *name => copy_of = Some(Cow::Owned(of)),
+                    Some(Expression::Text(text)) if default.is_empty() => default = text,
+                    _ => {}
+                }
+                let stop = copy_of.is_none();
+                Var { name: Cow::Owned(name.clone()), default: Cow::Owned(default), stop, copy_of, computed }
             })
             .collect::<Vec<_>>();
         Some(Template {
@@ -422,6 +437,81 @@ impl UserTemplate {
             contexts: Cow::Owned(contexts.clone()),
         })
     }
+}
+
+/// What a variable's expression in the person's template works out to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Expression {
+    Computed(Computed),
+    /// `NAME` / `escapeString(NAME)`: that variable's value.
+    Copy(String),
+    /// `"text"`: a constant.
+    Text(String),
+}
+
+/// A template expression, as IntelliJ writes them, of those the editor
+/// works out (see [`Computed`]); none for others.
+pub fn parse_expression(expression: &str) -> Option<Expression> {
+    let e = expression.trim();
+    if let Some(text) = e.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+        return Some(Expression::Text(text.to_owned()));
+    }
+    let is_name = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !s.starts_with(|c: char| c.is_ascii_digit());
+    if is_name(e) {
+        return Some(Expression::Copy(e.to_owned()));
+    }
+    let (function, args) = e.split_once('(')?;
+    let args = args.strip_suffix(')')?;
+    let args: Vec<&str> = if args.trim().is_empty() { Vec::new() } else { args.split(',').map(str::trim).collect() };
+    let var = |i: usize| args.get(i).copied().filter(|a| is_name(a)).map(intern);
+    let computed = match (function.trim(), args.as_slice()) {
+        ("className" | "kotlinClassName", []) => Computed::ClassName,
+        ("methodName" | "kotlinFunctionName", []) => Computed::MethodName,
+        ("methodParameters" | "parameterInfo", []) => Computed::ParameterInfo,
+        ("functionParameters", []) => Computed::KotlinParameters,
+        ("suggestIndexName", []) => Computed::IndexName,
+        ("arrayVariable", []) => Computed::VariableOf(Kind::Array),
+        ("kotlinVariable", []) => Computed::VariableOf(Kind::Any),
+        ("variableOfType", [ty]) => {
+            let ty = ty.trim_matches('"');
+            let base = ty.rsplit('.').next().unwrap_or(ty);
+            let kind = match base {
+                "Object" | "Any" => Kind::Object,
+                "Collection" => Kind::Collection,
+                "Iterable" => Kind::Iterable,
+                "List" => Kind::List,
+                "Map" => Kind::Map,
+                "int" | "long" | "double" | "float" | "short" | "byte" | "Number" | "Int" | "Long" | "Double" => Kind::Number,
+                "" => Kind::Any,
+                b if b.ends_with("[]") => Kind::Array,
+                _ => return None,
+            };
+            Computed::VariableOf(kind)
+        }
+        ("componentTypeOf" | "iterableComponentType" | "guessElementType" | "kotlinComponentType", [a]) if *a == "expectedType()" => Computed::ExpectedElement,
+        ("componentTypeOf" | "iterableComponentType" | "guessElementType" | "kotlinComponentType", [_]) => Computed::ElementOf(var(0)?),
+        ("typeParameterOf", [_, n]) => Computed::TypeArgument(var(0)?, n.trim_matches('"').parse().ok()?),
+        ("typeOfVariable", [_]) => Computed::TypeOf(var(0)?),
+        ("subtypes", [inner]) => {
+            let v = inner.strip_prefix("typeOfVariable(")?.strip_suffix(')')?.trim();
+            Computed::TypeOf(is_name(v).then(|| intern(v))?)
+        }
+        ("suggestVariableName" | "kotlinSuggestVariableName", [_]) => Computed::NameFor(var(0)?),
+        ("escapeString", [_]) => return var(0).map(|v| Expression::Copy(v.to_owned())),
+        _ => return None,
+    };
+    Some(Expression::Computed(computed))
+}
+
+/// A variable name the computed values can keep, each one once.
+fn intern(name: &str) -> &'static str {
+    static NAMES: RwLock<Vec<&'static str>> = RwLock::new(Vec::new());
+    if let Some(found) = NAMES.read().unwrap().iter().find(|n| **n == name) {
+        return found;
+    }
+    let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    NAMES.write().unwrap().push(leaked);
+    leaked
 }
 
 /// The person's templates and the built-in ones turned off
@@ -888,6 +978,33 @@ mod tests {
     }
 
     #[test]
+    fn user_template_expressions() {
+        assert_eq!(parse_expression("className()"), Some(Expression::Computed(Computed::ClassName)));
+        assert_eq!(parse_expression(" variableOfType(\"java.util.List\") "), Some(Expression::Computed(Computed::VariableOf(Kind::List))));
+        assert_eq!(parse_expression("subtypes(typeOfVariable(X))"), Some(Expression::Computed(Computed::TypeOf("X"))));
+        assert_eq!(parse_expression("typeParameterOf(M, 1)"), Some(Expression::Computed(Computed::TypeArgument("M", 1))));
+        assert_eq!(parse_expression("componentTypeOf(expectedType())"), Some(Expression::Computed(Computed::ExpectedElement)));
+        assert_eq!(parse_expression("escapeString(V)"), Some(Expression::Copy("V".into())));
+        assert_eq!(parse_expression("\"TAG\""), Some(Expression::Text("TAG".into())));
+        assert_eq!(parse_expression("clipboard()"), None);
+        let user = UserTemplate {
+            abbreviation: "lg".into(),
+            text: "log(\"$M$: $V$\", $VC$);$END$".into(),
+            expressions: vec![("M".into(), "methodName()".into()), ("V".into(), "variableOfType(\"int\")".into()), ("VC".into(), "V".into())],
+            java: vec![Context::Statement],
+            enabled: true,
+            ..Default::default()
+        };
+        let scope = Scope { method_name: "run".into(), variables: vec![("n".into(), "int".into())], ..Default::default() };
+        let t = resolved(&user.template(false).unwrap(), &scope);
+        let e = expand(&t, "", "  ");
+        assert_eq!(e.text, "log(\"run: n\", n);");
+        // VC follows V: one stop with both places.
+        assert_eq!(e.names, vec!["M", "V"]);
+        assert_eq!(e.stops[1].len(), 2);
+    }
+
+    #[test]
     fn the_persons_templates_come_first() {
         let custom = CustomTemplates {
             user: vec![UserTemplate {
@@ -895,6 +1012,7 @@ mod tests {
                 description: "Log.d".into(),
                 text: "Log.d($TAG$, \"$MSG$: ${$MSG$}\")$END$".into(),
                 defaults: vec![("TAG".into(), "TAG".into())],
+                expressions: vec![],
                 kotlin: vec![Context::Statement],
                 java: vec![],
                 enabled: true,
