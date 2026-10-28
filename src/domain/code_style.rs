@@ -172,8 +172,8 @@ impl CodeStyle {
         }
         if let Some(lang) = key.strip_prefix("code_style_").and_then(|k| k.strip_suffix("_spaces")).and_then(|k| StyleLang::ALL.into_iter().find(|l| l.key() == k)) {
             let values: Vec<bool> = value.trim().chars().map(|c| c == '1').collect();
-            if let Ok(values) = <[bool; 14]>::try_from(values) {
-                self.set_spaces(lang, Spaces::from_values(values));
+            if let Some(spaces) = Spaces::from_prefix(&values) {
+                self.set_spaces(lang, spaces);
             }
             return true;
         }
@@ -238,7 +238,7 @@ mod tests {
         assert!(style.lines().contains("code_style_java_min_blank=1,1,1,1,0,0,1,1,1,1,0,1,0,0,0,0\n") && !style.lines().contains("kotlin_min_blank"));
         assert_eq!(style.indents(StyleLang::Java, None, None).min_blank.around_field, 1);
         style.set_spaces(StyleLang::Kotlin, Spaces { after_comma: false, ..Default::default() });
-        assert!(style.lines().contains("code_style_kotlin_spaces=11111111111100\n"));
+        assert!(style.lines().contains("code_style_kotlin_spaces=1111111111110011110111\n"));
         assert!(!style.indents(StyleLang::Kotlin, None, None).spaces.after_comma);
         let mut read = CodeStyle::default();
         for line in style.lines().lines() {
