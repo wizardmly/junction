@@ -624,6 +624,55 @@ pub fn redundant_conversion(text: &str, caret: usize, kotlin: bool, classes: sup
     Some(Intention { title: name, caret: range.start, replacement: text[target].to_owned(), range })
 }
 
+/// Replace with indices (IntelliJ's ReplaceManualRangeWithIndicesCalls):
+/// `0 until xs.size` / `0..xs.size - 1` → `xs.indices` (`length` for a
+/// string), when `xs` is a collection, array or string.
+pub fn range_to_indices(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let range = innermost(tree.root_node(), caret)
+        .into_iter()
+        .flat_map(ancestors)
+        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body"))
+        .find(|n| {
+            n.kind() == "range_expression"
+                || n.kind() == "infix_expression" && n.named_child(1).is_some_and(|m| &text[m.byte_range()] == "until")
+        })?;
+    let start = range.named_child(0)?;
+    let end = *children(range).last()?;
+    if &text[start.byte_range()] != "0" {
+        return None;
+    }
+    // The size: `xs.size` after `until`, `xs.size - 1` after `..`.
+    let size = if range.kind() == "range_expression" {
+        let t = &text[end.byte_range()];
+        let minus = t.strip_suffix('1').map(str::trim_end).and_then(|t| t.strip_suffix('-'))?;
+        if end.kind() != "additive_expression" {
+            return None;
+        }
+        let size = end.named_child(0)?;
+        (minus.trim_end() == &text[size.byte_range()]).then_some(size)?
+    } else {
+        end
+    };
+    if size.kind() != "navigation_expression" {
+        return None;
+    }
+    let target = size.named_child(0)?;
+    let member = text[size.named_child(1)?.byte_range()].trim();
+    let ty = receiver_type(target, text, classes)?;
+    let head = type_head(&ty);
+    let string = matches!(head, "String" | "CharSequence" | "StringBuilder");
+    let fits = match member {
+        ".size" => !string && element_type(&ty).is_some_and(|e| !e.starts_with("Map.Entry")) && !matches!(head, "Sequence" | "Iterable" | "IntRange" | "LongRange" | "CharRange"),
+        ".length" => string,
+        _ => false,
+    };
+    if ty.ends_with('?') || !fits {
+        return None;
+    }
+    Some(Intention { title: "Replace with indices".into(), range: range.byte_range(), caret: range.start_byte(), replacement: format!("{}.indices", &text[target.byte_range()]) })
+}
+
 /// Replace 'get' call with indexing operator / Replace 'set' call with
 /// indexing operator (IntelliJ's ReplaceGetOrSetInspection): `xs.get(i)`
 /// → `xs[i]`, the statement `m.set(k, v)` → `m[k] = v`, when the
@@ -1428,6 +1477,22 @@ mod tests {
         assert_eq!(title, "Remove redundant 'toString()' call");
         assert!(out.contains("        return s.length() + o.toString().length();\n"), "{out}");
         assert_eq!(run("toString().length();"), None);
+    }
+
+    #[test]
+    fn replaces_manual_ranges_with_indices() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "fun f(xs: List<Int>, s: String, a: IntArray, n: Int) {\n    for (i in 0 until xs.size) println(xs[i])\n    for (i in 0..s.length - 1) println(s[i])\n    for (i in 0..a.size - 2) println(a[i])\n    for (i in 1 until a.size) println(a[i])\n    for (i in 0 until n) println(i)\n    for (i in 0 until a.size) println(a[i])\n}\n";
+        let run = |at: &str| range_to_indices(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("until xs").unwrap();
+        assert_eq!(title, "Replace with indices");
+        assert!(out.contains("    for (i in xs.indices) println(xs[i])\n"), "{out}");
+        assert!(run("0..s").unwrap().1.contains("    for (i in s.indices) println(s[i])\n"));
+        assert!(run("until a.size) println(a[i])\n}").unwrap().1.contains("    for (i in a.indices) println(a[i])\n}"));
+        // Not the last index; not from 0; not a size.
+        assert_eq!(run("0..a"), None);
+        assert_eq!(run("1 until"), None);
+        assert_eq!(run("until n"), None);
     }
 
     #[test]
