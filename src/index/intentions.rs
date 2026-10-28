@@ -1489,6 +1489,54 @@ pub fn get_or_default(text: &str, caret: usize, classes: super::catches::Classes
     })
 }
 
+/// Replace with chained 'append()' calls (Java, IntelliJ's
+/// StringConcatenationInsideStringBufferAppendInspection):
+/// `sb.append("a" + x + "b")` → `sb.append("a").append(x).append("b")`, when
+/// `sb` is a StringBuilder or StringBuffer and the concatenation starts with
+/// a string (so every `+` joins strings); the caret on `append`.
+pub fn chained_append(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Java, text)?;
+    let call = ancestors(innermost(tree.root_node(), caret)?)
+        .take_while(|n| !matches!(n.kind(), "block" | "class_body" | "expression_statement" | "lambda_expression"))
+        .find(|n| n.kind() == "method_invocation" && n.child_by_field_name("name").is_some_and(|m| m.start_byte() <= caret && caret <= m.end_byte()))?;
+    let object = call.child_by_field_name("object")?;
+    let arguments = children(call.child_by_field_name("arguments")?);
+    if &text[call.child_by_field_name("name")?.byte_range()] != "append" || arguments.len() != 1 {
+        return None;
+    }
+    // The `+` chain's operands, left to right.
+    let mut operands = Vec::new();
+    let mut node = arguments[0];
+    while node.kind() == "binary_expression" && node.child_by_field_name("operator").is_some_and(|o| o.kind() == "+") {
+        operands.push(node.child_by_field_name("right")?);
+        node = node.child_by_field_name("left")?;
+    }
+    operands.push(node);
+    operands.reverse();
+    let string = |n: Node| n.kind() == "string_literal" || java_type(n, text, classes).is_some_and(|t| t == "String" || t == "java.lang.String");
+    if operands.len() < 2 || !string(operands[0]) {
+        return None;
+    }
+    let ty = java_type(object, text, classes)?;
+    if !matches!(ty.rsplit('.').next(), Some("StringBuilder" | "StringBuffer")) {
+        return None;
+    }
+    // `(a + b)` needs no parentheses of its own as an argument.
+    let appends: String = operands
+        .iter()
+        .map(|&o| {
+            let bare = if o.kind() == "parenthesized_expression" { o.named_child(0).unwrap_or(o) } else { o };
+            format!(".append({})", &text[bare.byte_range()])
+        })
+        .collect();
+    Some(Intention {
+        title: "Replace with chained 'append()' calls".into(),
+        range: call.byte_range(),
+        caret: call.start_byte(),
+        replacement: format!("{}{appends}", &text[object.byte_range()]),
+    })
+}
+
 type Typing<'a> = dyn Fn(Node) -> Option<(String, Vec<String>)> + 'a;
 
 /// `val x = 1` → `val x: Int = 1`; `fun f() = 1` → `fun f(): Int = 1`;
@@ -2150,6 +2198,20 @@ mod tests {
         assert_eq!(run("q.count()"), None);
         assert_eq!(run("xs.count {"), None);
         assert_eq!(run("n?.count"), None);
+    }
+
+    #[test]
+    fn replaces_concatenation_in_append_with_chained_calls() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "class A {\n    void f(StringBuilder sb, String s, int a, int b) {\n        sb.append(\"n=\" + a + \";\");\n        sb.append(s + (a + b));\n        sb.append(a + b + s);\n        sb.append(s);\n    }\n}\n";
+        let run = |at: &str| chained_append(text, text.find(at).unwrap() + 3, &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("sb.append(\"n=").unwrap();
+        assert_eq!(title, "Replace with chained 'append()' calls");
+        assert!(out.contains("        sb.append(\"n=\").append(a).append(\";\");\n"), "{out}");
+        assert!(run("sb.append(s + (a").unwrap().1.contains("        sb.append(s).append(a + b);\n"));
+        // `a + b` adds numbers first; no concatenation.
+        assert_eq!(run("sb.append(a + b"), None);
+        assert_eq!(run("sb.append(s);"), None);
     }
 
     #[test]
