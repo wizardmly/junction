@@ -72,6 +72,18 @@ pub enum Computed {
     ElementOf(&'static str),
     /// `typeParameterOf(V, "n")`: the nth type argument of variable V's type.
     TypeArgument(&'static str, usize),
+    /// `subtypes(typeOfVariable(V))`: the type of variable V (the first of
+    /// IntelliJ's choices).
+    TypeOf(&'static str),
+    /// `suggestVariableName()` for a variable of the type in variable T:
+    /// `s` for a String, `address` for an Address, not a name used here.
+    NameFor(&'static str),
+    /// `componentTypeOf(expectedType())`: the element type of the array
+    /// the place expects (`String[] a = …` → `String`).
+    ExpectedElement,
+    /// `rightSideType()` of `V.iterator()`: `java.util.Iterator<E>` for
+    /// a collection V of E.
+    IteratorOf(&'static str),
 }
 
 /// The kinds of variable `variableOfType` looks for.
@@ -85,6 +97,10 @@ pub enum Kind {
     Map,
     /// `double` and the other numbers.
     Number,
+    /// Not a Java primitive (`variableOfType("java.lang.Object")`).
+    Object,
+    /// `java.util.Collection`s (not arrays).
+    Collection,
 }
 
 impl Kind {
@@ -102,6 +118,8 @@ impl Kind {
             Kind::List => base.ends_with("List"),
             Kind::Map => base.ends_with("Map"),
             Kind::Number => matches!(base, "int" | "long" | "double" | "float" | "short" | "byte" | "Int" | "Long" | "Double" | "Float" | "Short" | "Byte" | "Integer"),
+            Kind::Object => array || !matches!(base, "int" | "long" | "double" | "float" | "short" | "byte" | "char" | "boolean" | ""),
+            Kind::Collection => !array && collection && base != "Iterable" && base != "Sequence",
         }
     }
 }
@@ -117,6 +135,9 @@ pub struct Scope {
     pub variables: Vec<(String, String)>,
     /// The class's fields (Kotlin properties), farthest of all.
     pub fields: Vec<(String, String)>,
+    /// The type the place expects (a declaration's, a return's), as
+    /// written; empty if none.
+    pub expected: String,
 }
 
 /// The element type of a type as written: `int[]` → `int`,
@@ -172,13 +193,20 @@ impl Scope {
 /// The template with its computed variables' defaults worked out for
 /// `scope` (those that find nothing keep theirs).
 pub fn resolved(template: &Template, scope: &Scope) -> Template {
+    // Twice, for those that use a variable after them (itco's ITER is
+    // named for ITER_TYPE).
     let mut values: Vec<(String, String)> = Vec::new();
     let mut vars: Vec<Var> = Vec::new();
-    for v in template.vars.iter() {
-        let value = v.computed.and_then(|c| compute(c, scope, &values));
-        let default = value.map(Cow::Owned).unwrap_or_else(|| v.default.clone());
-        values.push((v.name.to_string(), default.to_string()));
-        vars.push(Var { default, ..v.clone() });
+    for _ in 0..2 {
+        let earlier = std::mem::take(&mut values);
+        vars.clear();
+        for v in template.vars.iter() {
+            let known: Vec<(String, String)> = values.iter().chain(earlier.iter().filter(|(n, _)| *n != v.name)).cloned().collect();
+            let value = v.computed.and_then(|c| compute(c, scope, &known));
+            let default = value.map(Cow::Owned).unwrap_or_else(|| v.default.clone());
+            values.push((v.name.to_string(), default.to_string()));
+            vars.push(Var { default, ..v.clone() });
+        }
     }
     Template { vars: Cow::Owned(vars), ..template.clone() }
 }
@@ -204,7 +232,40 @@ fn compute(c: Computed, scope: &Scope, values: &[(String, String)]) -> Option<St
             element_type(ty)
         }
         Computed::TypeArgument(var, n) => type_arguments(scope.type_of(value_of(var)?)?)?.get(n).cloned(),
+        Computed::TypeOf(var) => non_empty(scope.type_of(value_of(var)?)?),
+        Computed::NameFor(var) => {
+            let base = name_for_type(value_of(var)?)?;
+            let used = |n: &str| scope.nearest().any(|(v, _)| v == n) || values.iter().any(|(_, v)| v == n);
+            (0..).map(|i| if i == 0 { base.clone() } else { format!("{base}{i}") }).find(|n| !used(n))
+        }
+        Computed::ExpectedElement => scope.expected.trim().strip_suffix("[]").map(|t| t.trim().to_owned()),
+        Computed::IteratorOf(var) => element_type(scope.type_of(value_of(var)?)?).map(|e| format!("java.util.Iterator<{e}>")),
     }
+}
+
+/// IntelliJ's first name for a variable of a type: `s` for a String, `o`
+/// for an Object, a primitive's first letter, else the class's name in
+/// lower camel case (`Map.Entry<K, V>` → `entry`, `Item[]` → `items`).
+fn name_for_type(ty: &str) -> Option<String> {
+    let ty = ty.trim().trim_end_matches('?');
+    let array = ty.ends_with("[]");
+    let base = ty.trim_end_matches("[]").split('<').next().unwrap_or(ty).trim();
+    let base = base.rsplit('.').next().unwrap_or(base);
+    let camel = |b: &str| {
+        let mut c = b.chars();
+        c.next().map(|first| first.to_lowercase().chain(c).collect::<String>())
+    };
+    if array {
+        return camel(base).map(|n| format!("{n}s"));
+    }
+    let name = match base {
+        "" => return None,
+        "String" => "s".to_owned(),
+        "Object" | "Any" => "o".to_owned(),
+        "int" | "long" | "short" | "byte" | "char" | "boolean" | "float" | "double" => base[..1].to_owned(),
+        _ => camel(base)?,
+    };
+    Some(name)
 }
 
 
@@ -275,6 +336,10 @@ const JAVA: &[Template] = &[
     Template { name: s("lst"), description: s("Get the last element of an array"), value: s("$ARRAY$[$ARRAY$.length - 1]"), vars: Cow::Borrowed(&[Var { name: s("ARRAY"), default: s("array"), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Array)) }]), contexts: Cow::Borrowed(&[Context::Expression]) },
     Template { name: s("mn"), description: s("Set lesser value to a variable"), value: s("$VAR$ = Math.min($VAR$, $END$);"), vars: Cow::Borrowed(&[Var { name: s("VAR"), default: s(""), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Number)) }]), contexts: Cow::Borrowed(&[Context::Statement]) },
     Template { name: s("mx"), description: s("Set greater value to a variable"), value: s("$VAR$ = Math.max($VAR$, $END$);"), vars: Cow::Borrowed(&[Var { name: s("VAR"), default: s(""), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Number)) }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("inst"), description: s("Checks object type with instanceof and down-casts it"), value: s("if ($EXPR$ instanceof $TYPE$) {\n  $TYPE$ $VAR$ = ($TYPE$)$EXPR$;\n  $END$\n}"), vars: Cow::Borrowed(&[Var { name: s("EXPR"), default: s("expr"), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Object)) }, Var { name: s("TYPE"), default: s(""), stop: true, copy_of: None, computed: Some(Computed::TypeOf("EXPR")) }, Var { name: s("VAR"), default: s(""), stop: true, copy_of: None, computed: Some(Computed::NameFor("TYPE")) }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("lazy"), description: s("Performs lazy initialization"), value: s("if ($VAR$ == null) {\n  $VAR$ = new $TYPE$($END$);\n}"), vars: Cow::Borrowed(&[Var { name: s("VAR"), default: s(""), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Object)) }, Var { name: s("TYPE"), default: s(""), stop: true, copy_of: None, computed: Some(Computed::TypeOf("VAR")) }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("toar"), description: s("Stores elements of java.util.Collection into array"), value: s("$COLLECTION$.toArray(new $COMPONENT_TYPE$[0])$END$"), vars: Cow::Borrowed(&[Var { name: s("COMPONENT_TYPE"), default: s("Object"), stop: true, copy_of: None, computed: Some(Computed::ExpectedElement) }, Var { name: s("COLLECTION"), default: s("collection"), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Collection)) }]), contexts: Cow::Borrowed(&[Context::Expression]) },
+    Template { name: s("itco"), description: s("Iterate elements of java.util.Collection"), value: s("for($ITER_TYPE$ $ITER$ = $COLLECTION$.iterator(); $ITER$.hasNext(); ) {\n  $ELEMENT_TYPE$ $VAR$ =$CAST$ $ITER$.next();\n  $END$\n}"), vars: Cow::Borrowed(&[Var { name: s("ITER"), default: s("iterator"), stop: true, copy_of: None, computed: Some(Computed::NameFor("ITER_TYPE")) }, Var { name: s("COLLECTION"), default: s("collection"), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Collection)) }, Var { name: s("ELEMENT_TYPE"), default: s("Object"), stop: true, copy_of: None, computed: Some(Computed::ElementOf("COLLECTION")) }, Var { name: s("VAR"), default: s("o"), stop: true, copy_of: None, computed: Some(Computed::NameFor("ELEMENT_TYPE")) }, Var { name: s("ITER_TYPE"), default: s("java.util.Iterator"), stop: false, copy_of: None, computed: Some(Computed::IteratorOf("COLLECTION")) }, Var { name: s("CAST"), default: s(""), stop: false, copy_of: None, computed: None }]), contexts: Cow::Borrowed(&[Context::Statement]) },
     Template { name: s("geti"), description: s("Inserts singleton method getInstance"), value: s("public static $CLASS_NAME$ getInstance() {\n  return $VALUE$;\n}"), vars: Cow::Borrowed(&[Var { name: s("CLASS_NAME"), default: s(""), stop: false, copy_of: None, computed: Some(Computed::ClassName) }, Var { name: s("VALUE"), default: s("null"), stop: true, copy_of: None, computed: None }]), contexts: Cow::Borrowed(&[Context::Class]) },
 ];
 
@@ -692,6 +757,7 @@ mod tests {
             parameters: vec![("item".into(), "String".into()), ("i".into(), "int".into())],
             variables: vec![("prices".into(), "double[]".into()), ("stock".into(), "Map<String, List<Integer>>".into()), ("names".into(), "List<String>".into())],
             fields: vec![],
+            expected: "String[]".into(),
         };
         let java = |name: &str| {
             let t = resolved(builtin(false).iter().find(|t| t.name == name).unwrap(), &scope);
@@ -706,6 +772,15 @@ mod tests {
         assert_eq!(java("itm"), "for (Map.Entry<String, List<Integer>> entry: stock.entrySet()) {\n  String key = entry.getKey();\n  List<Integer> value = entry.getValue();\n  \n}");
         assert_eq!(java("mx"), "i = Math.max(i, );");
         assert_eq!(java("ifn"), "if (names == null) {\n  \n}");
+        assert_eq!(java("inst"), "if (names instanceof List<String>) {\n  List<String> list = (List<String>)names;\n  \n}");
+        assert_eq!(java("lazy"), "if (names == null) {\n  names = new List<String>();\n}");
+        assert_eq!(java("toar"), "names.toArray(new String[0])");
+        assert_eq!(java("itco"), "for(Iterator<String> iterator = names.iterator(); iterator.hasNext(); ) {\n  String s = iterator.next();\n  \n}");
+        assert_eq!(name_for_type("String[]").as_deref(), Some("strings"));
+        // A name taken here gets a number.
+        let item = Scope { variables: vec![("o".into(), "Object".into())], ..scope.clone() };
+        let t = resolved(builtin(false).iter().find(|t| t.name == "inst").unwrap(), &item);
+        assert_eq!(expand(&t, "", "  ").text, "if (o instanceof Object) {\n  Object o1 = (Object)o;\n  \n}");
         let kotlin = Scope { parameters: vec![("tax".into(), "Double".into()), ("items".into(), "List<Item>".into())], ..scope.clone() };
         let kt = |name: &str| expand(&resolved(builtin(true).iter().find(|t| t.name == name).unwrap(), &kotlin), "", "    ").text;
         assert_eq!(kt("soutp"), "println(\"tax = [${tax}], items = [${items}]\")");

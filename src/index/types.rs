@@ -129,7 +129,14 @@ fn kotlin_of_java(ty: &str) -> Option<String> {
             "char" | "Character" => "Char",
             "boolean" => "Boolean",
             "Object" => "Any",
-            _ => return Some(ty.to_owned()),
+            _ => {
+                // The Java collections Kotlin maps to its own.
+                let mut ty = ty.to_owned();
+                for name in ["List", "Set", "Map", "Collection", "Iterable", "Iterator"] {
+                    ty = ty.replace(&format!("java.util.{name}"), name).replace(&format!("java.lang.{name}"), name);
+                }
+                return Some(ty.replace("java.lang.String", "String"));
+            }
         }
         .to_owned(),
     )
