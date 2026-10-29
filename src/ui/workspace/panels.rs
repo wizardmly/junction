@@ -32,6 +32,7 @@ impl Workspace {
     /// opened window takes the focus, as IntelliJ activates it.
     pub(super) fn toggle_tool(&mut self, tool: ToolWindow, window: &mut Window, cx: &mut Context<Self>) {
         self.tools.toggle(tool);
+        self.schedule_session_save(cx);
         if tool == ToolWindow::PullRequests && self.tools.is_open(tool) {
             self.prs.update(cx, |prs, cx| prs.refresh(cx));
         }

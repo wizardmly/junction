@@ -127,6 +127,11 @@ impl ToolWindow {
         }
     }
 
+    /// A window showing results that don't outlive the session.
+    fn transient(self) -> bool {
+        matches!(self, ToolWindow::Find | ToolWindow::Changes | ToolWindow::Run | ToolWindow::Debug | ToolWindow::Hierarchy | ToolWindow::Coverage)
+    }
+
     fn default_side(self) -> Side {
         match self {
             ToolWindow::Git | ToolWindow::Find | ToolWindow::Terminal | ToolWindow::Build | ToolWindow::Run | ToolWindow::Debug | ToolWindow::Logcat | ToolWindow::Profiler | ToolWindow::AppInspection | ToolWindow::Problems | ToolWindow::Todo => Side::Bottom,
@@ -249,6 +254,23 @@ impl ToolWindows {
         }
     }
 
+    /// The open windows to reopen with the project (IntelliJ keeps them in
+    /// the workspace), by key; windows that show one search's or one run's
+    /// results aren't among them, as they'd come back empty.
+    pub fn open_keys(&self) -> Vec<String> {
+        let open = self.hidden_all.unwrap_or(self.open);
+        open.into_iter().flatten().filter(|w| !w.transient()).map(|w| w.key().to_owned()).collect()
+    }
+
+    /// Reopens the windows `open_keys` gave; the other sides close.
+    pub fn restore_open(&mut self, keys: &[String]) {
+        self.open = [None; 3];
+        self.hidden_all = None;
+        for window in ToolWindow::ALL.into_iter().filter(|w| !w.transient() && keys.iter().any(|k| k == w.key())) {
+            self.open(window);
+        }
+    }
+
     /// Moves a window to `side`, before `before` (or last), keeping it open
     /// if it was.
     pub fn move_to(&mut self, window: ToolWindow, side: Side, before: Option<ToolWindow>, cx: &mut gpui_kit::App) {
@@ -311,6 +333,23 @@ mod tests {
         assert!(t.is_open(ToolWindow::Terminal) && !t.is_open(ToolWindow::Git));
         t.open(ToolWindow::Find);
         assert!(t.is_open(ToolWindow::Find) && !t.is_open(ToolWindow::Terminal));
+    }
+
+    #[test]
+    fn open_windows_come_back_without_transient_ones() {
+        let mut t = layout();
+        t.open(ToolWindow::Project);
+        t.open(ToolWindow::Find);
+        t.open(ToolWindow::Notifications);
+        let keys = t.open_keys();
+        assert_eq!(keys, ["project", "notifications"]);
+        let mut fresh = layout();
+        fresh.restore_open(&keys);
+        assert!(fresh.is_open(ToolWindow::Project) && fresh.is_open(ToolWindow::Notifications));
+        assert_eq!(fresh.active(Side::Bottom), None);
+        // Hidden by Hide All Tool Windows: what was open still counts.
+        fresh.toggle_all();
+        assert_eq!(fresh.open_keys(), keys);
     }
 
     #[test]
