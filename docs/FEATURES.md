@@ -997,7 +997,8 @@ Linux 实测（Xvfb）：calc 的 `CalcTest.totals()` 选中 `int sum = 0;` 到�
 | 打印成 AS 合并视图的样式：四空格缩进，多个属性时每个属性一行 | ✅ |
 | 双击合并视图的一行打开它的来源文件并跳到对应行（元素和属性各自记住在来源里的行；build 文件注入的行打开 build 文件）。实测：双击 lib 颜色的 ScanActivity 行，打开 `lib/src/main/AndroidManifest.xml` 第 7 行 | ✅ |
 | 按 Build Variants 当前所选变体合并（2026-10-29）：变体自己的、build type 的、各 flavor 的覆盖清单都并入，优先级照 Gradle：`src/freeDebug` > `src/debug` > `src/free` > `src/main`；别的变体的清单不进来；打开的是不属于当前变体的源集清单时仍以它为覆盖；换变体后合并结果跟着变。Linux 实测：app 有 debug / release / free / paid 四个覆盖清单各加一个权限，选 paidRelease 时 Manifest Sources 依次是 release、paid、main、build.gradle.kts，合并结果只有 perm.paid 和 perm.release | ✅ |
-| 远程依赖（AAR）的清单、隐式权限、`tools:overrideLibrary`、`tools:selector`、合并日志（Merging Log）里每个元素的来源说明 | ⬜ |
+| 远程依赖（AAR）的清单（2026-10-29）：External Libraries 里 Gradle 缓存的 `…@aar` 库，从 `.aar` 读出 `AndroidManifest.xml`，排在库模块之后并入（优先级最低），Manifest Sources 以 `group:artifact:version` 标出；取的是整个工程的远程依赖，不按模块分；双击 AAR 来的行不跳转。Linux 实测：app 依赖 `com.example:widget:1.0`（AAR 清单有 INTERNET 权限和 WidgetActivity），合并结果多出这两项，来源列出 com.example:widget:1.0 | ✅ |
+| 隐式权限、`tools:overrideLibrary`、`tools:selector`、合并日志（Merging Log）里每个元素的来源说明 | ⬜ |
 
 Linux 实测（Xvfb，示例工程 app + lib）：app 的 main 清单有 INTERNET 权限、MainActivity、`${mapsKey}` 的 meta-data 和标 `tools:node="remove"` 的 lib provider，debug 覆盖清单改 label（带 `tools:replace`）并加 `usesCleartextTraffic`，lib 有 CAMERA 权限、ScanActivity、provider 和自己的主题。Merged Manifest 依次显示：build.gradle.kts 着色的 `package="com.example.shop"`、versionCode 12 / versionName 2.1 和 `<uses-sdk minSdkVersion="24" targetSdkVersion="35">`，main 的 INTERNET 和 application（其中 `android:label="Shop (debug)"` 和 `usesCleartextTraffic` 两行是 debug 的颜色），`android:value="AIza-demo"`，lib 颜色的 ScanActivity、CAMERA 和 uses-feature，provider 已被移除；Merging Errors 列出 application 的 theme 在 app 和 lib 之间冲突。
 

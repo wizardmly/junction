@@ -56,8 +56,9 @@ pub fn module_dependencies(text: &str) -> Vec<String> {
 /// Merges the module's manifests; `read` reads a file (none when missing).
 /// `variant_sets` are the source sets the picked build variant adds to
 /// main, highest priority first (`freeDebug`, `debug`, `free`); none
-/// takes debug's.
-pub fn merged_manifest(root: &Path, manifest: &Path, variant_sets: &[String], read: &dyn Fn(&Path) -> Option<String>) -> Result<Merged, String> {
+/// takes debug's. `aars` are the remote libraries' manifests (name, text),
+/// merged last, as the Gradle plugin merges the dependencies' AARs.
+pub fn merged_manifest(root: &Path, manifest: &Path, variant_sets: &[String], aars: &[(String, String)], read: &dyn Fn(&Path) -> Option<String>) -> Result<Merged, String> {
     let (module, set) = module_of(manifest).ok_or("Not a module's manifest (src/<source set>/AndroidManifest.xml)")?;
     let label = |p: &Path| p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/");
     let build_file = |dir: &Path| [dir.join("build.gradle.kts"), dir.join("build.gradle")].into_iter().find_map(|p| read(&p).map(|t| (p, t)));
@@ -96,6 +97,11 @@ pub fn merged_manifest(root: &Path, manifest: &Path, variant_sets: &[String], re
         add(dir.join("src/main/AndroidManifest.xml"), &mut sources);
         if let Some((_, text)) = build_file(&dir) {
             queue.extend(module_dependencies(&text));
+        }
+    }
+    for (name, text) in aars {
+        if !sources.iter().any(|s| s.label == *name) {
+            sources.push(ManifestSource { label: name.clone(), text: text.clone() });
         }
     }
     let build_label = if build_text.is_empty() { "build.gradle".into() } else { label(&build_path) };
@@ -145,7 +151,7 @@ dependencies { implementation(project(":core:data")) }"#;
             (PathBuf::from("/p/lib/build.gradle"), "implementation project(':app')".into()),
         ]);
         let read = |p: &Path| files.get(p).cloned();
-        let merged = merged_manifest(Path::new("/p"), Path::new("/p/app/src/main/AndroidManifest.xml"), &[], &read).unwrap();
+        let merged = merged_manifest(Path::new("/p"), Path::new("/p/app/src/main/AndroidManifest.xml"), &[], &[], &read).unwrap();
         assert_eq!(merged.sources, ["app/src/debug/AndroidManifest.xml", "app/src/main/AndroidManifest.xml", "lib/src/main/AndroidManifest.xml", "app/build.gradle.kts"]);
         assert!(merged.lines.iter().any(|l| l.text.contains("minSdkVersion=\"26\"")));
         // The picked variant's: freeRelease has no manifest of its own here.
@@ -154,8 +160,11 @@ dependencies { implementation(project(":core:data")) }"#;
         files.insert(PathBuf::from("/p/app/src/release/AndroidManifest.xml"), format!("<manifest {ns}><uses-permission android:name=\"R\"/></manifest>"));
         let read = |p: &Path| files.get(p).cloned();
         let sets = ["freeRelease", "release", "free"].map(String::from);
-        let merged = merged_manifest(Path::new("/p"), Path::new("/p/app/src/main/AndroidManifest.xml"), &sets, &read).unwrap();
-        assert_eq!(merged.sources, ["app/src/release/AndroidManifest.xml", "app/src/free/AndroidManifest.xml", "app/src/main/AndroidManifest.xml", "lib/src/main/AndroidManifest.xml", "app/build.gradle.kts"]);
+        let aars = [("androidx.core:core:1.13.1".to_owned(), format!("<manifest {ns} package=\"androidx.core\"><uses-permission android:name=\"A\"/></manifest>"))];
+        let merged = merged_manifest(Path::new("/p"), Path::new("/p/app/src/main/AndroidManifest.xml"), &sets, &aars, &read).unwrap();
+        assert_eq!(merged.sources, ["app/src/release/AndroidManifest.xml", "app/src/free/AndroidManifest.xml", "app/src/main/AndroidManifest.xml", "lib/src/main/AndroidManifest.xml", "androidx.core:core:1.13.1", "app/build.gradle.kts"]);
+        assert!(merged.lines.iter().any(|l| l.text.contains("android:name=\"A\"")));
+        assert!(!merged.lines.iter().any(|l| l.text.contains("androidx.core\"")));
         assert!(!merged.lines.iter().any(|l| l.text.contains("\"D\"")));
         assert_eq!(module_of(Path::new("/p/app/src/main/AndroidManifest.xml")), Some((PathBuf::from("/p/app"), "main".into())));
     }

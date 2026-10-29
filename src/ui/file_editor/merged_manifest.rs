@@ -5,7 +5,7 @@
 //! text as it's edited. A double click on a line opens its source there.
 
 use std::hash::{Hash as _, Hasher as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::{AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, hsla, prelude::FluentBuilder as _, px};
@@ -50,13 +50,21 @@ impl FileEditor {
                 Some(modules.variant_source_sets(&rel))
             })
             .unwrap_or_default();
+        // The remote libraries' (AARs') manifests.
+        let external = self.code_index.as_ref().and_then(|i| i.read(cx).index.read().ok().map(|i| i.external.clone()));
+        let aars: Vec<(String, PathBuf)> = external
+            .iter()
+            .flat_map(|e| e.libraries.iter())
+            .filter_map(|l| Some((l.name.trim_start_matches("Gradle: ").trim_end_matches("@aar").to_owned(), l.aar.clone()?)))
+            .collect();
         let mut hasher = std::hash::DefaultHasher::new();
-        (&text, &sets).hash(&mut hasher);
+        (&text, &sets, &aars).hash(&mut hasher);
         let hash = hasher.finish();
         if self.merged.as_ref().map(|m| m.hash) != Some(hash) {
             // This file as edited, the others from disk.
             let read = |p: &Path| if p == path.as_path() { Some(text.clone()) } else { std::fs::read_to_string(p).ok() };
-            let result = crate::usecase::merged_manifest::merged_manifest(&root, &path, &sets, &read);
+            let aars: Vec<(String, String)> = aars.into_iter().filter_map(|(name, aar)| Some((name, crate::index::libraries::aar_manifest(&aar)?))).collect();
+            let result = crate::usecase::merged_manifest::merged_manifest(&root, &path, &sets, &aars, &read);
             self.merged = Some(MergedManifest { hash, result });
         }
         self.merged.as_ref().expect("just set")
@@ -119,7 +127,8 @@ impl FileEditor {
         };
         // A double click opens the line's source there (the build file at its top).
         let lines = v_flex().children(merged.lines.iter().enumerate().map(|(ix, l)| {
-            let target = merged.sources.get(l.source).map(|path| crate::index::nav::Target {
+            // A remote library's ("group:artifact:version") has no file to open.
+            let target = merged.sources.get(l.source).filter(|path| !path.contains(':')).map(|path| crate::index::nav::Target {
                 path: path.clone(),
                 line: l.line.unwrap_or(0),
                 col: 0,
