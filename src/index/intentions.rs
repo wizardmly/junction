@@ -38,6 +38,7 @@ pub fn intentions(text: &str, caret: usize) -> Vec<Intention> {
     out.extend(to_for_each(root, text, caret));
     out.extend(if_to_elvis(text, caret));
     out.extend(lift_out(text, caret));
+    out.extend(template_braces(text, caret));
     out
 }
 
@@ -794,6 +795,39 @@ pub fn lift_out(text: &str, caret: usize) -> Option<Intention> {
         caret: node.start_byte(),
         replacement: format!("{prefix}{replacement}"),
     })
+}
+
+/// Remove curly braces / Insert curly braces around variable (IntelliJ's
+/// RemoveCurlyBracesFromTemplateIntention and its twin): `"${name}"` ↔
+/// `"$name"` in a string template, the caret on the entry; braces stay
+/// where a letter, digit or `_` follows (`"${x}_"`).
+pub fn template_braces(text: &str, caret: usize) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let at = innermost(tree.root_node(), caret)?;
+    // The `${` / `$` token's entry, or the entry around the caret.
+    let entry = match at.kind() {
+        "interpolation_expression_start" | "interpolation_identifier_start" => at.next_named_sibling(),
+        "interpolation_expression_end" => at.prev_named_sibling(),
+        _ => ancestors(at).take_while(|n| n.kind() != "string_literal").find(|n| matches!(n.kind(), "interpolated_expression" | "interpolated_identifier")),
+    }?;
+    if entry.kind() == "interpolated_identifier" {
+        let start = entry.prev_sibling()?;
+        let name = &text[entry.byte_range()];
+        return Some(Intention {
+            title: "Insert curly braces around variable".into(),
+            range: start.start_byte()..entry.end_byte(),
+            caret: start.start_byte(),
+            replacement: format!("${{{name}}}"),
+        });
+    }
+    let [inner] = children(entry)[..] else { return None };
+    let (open, close) = (entry.prev_sibling()?, entry.next_sibling()?);
+    let name = &text[inner.byte_range()];
+    let follows = text[close.end_byte()..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_');
+    if inner.kind() != "simple_identifier" || name.starts_with('`') || follows || close.kind() != "interpolation_expression_end" {
+        return None;
+    }
+    Some(Intention { title: "Remove curly braces".into(), range: open.start_byte()..close.end_byte(), caret: open.start_byte(), replacement: format!("${name}") })
 }
 
 /// Replace 'associate' with 'associateWith' / 'associateBy' (IntelliJ's
@@ -2461,6 +2495,23 @@ mod tests {
         assert_eq!(run("if (c) return 1 else return\n"), None);
         assert_eq!(run("if (x > 0)"), None);
         assert_eq!(lift_out(text, text.find("y = 2").unwrap()), None);
+    }
+
+    #[test]
+    fn removes_and_inserts_template_braces() {
+        let text = "fun f(x: String, y: Int) {\n    val a = \"<${x}>\"\n    val b = \"${x}_\"\n    val c = \"${x.length}\"\n    val d = \"n=$y!\"\n}\n";
+        let run = |at: &str, plus: usize| template_braces(text, text.find(at).unwrap() + plus).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("${x}>", 2).unwrap();
+        assert_eq!(title, "Remove curly braces");
+        assert!(out.contains("    val a = \"<$x>\"\n"), "{out}");
+        assert!(run("${x}>", 0).is_some());
+        let (title, out) = run("$y", 1).unwrap();
+        assert_eq!(title, "Insert curly braces around variable");
+        assert!(out.contains("    val d = \"n=${y}!\"\n"), "{out}");
+        // A letter follows; not a name; outside the entry.
+        assert_eq!(run("${x}_", 2), None);
+        assert_eq!(run("${x.length", 2), None);
+        assert_eq!(run("n=", 0), None);
     }
 
     #[test]
