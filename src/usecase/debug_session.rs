@@ -119,6 +119,9 @@ pub struct ExceptionBreakpoint {
     /// IntelliJ's Class filters, on the class it's thrown in: patterns
     /// with `*`, `-` before one that excludes.
     pub filters: Vec<String>,
+    /// IntelliJ's Catch class filters, the same on the class catching it;
+    /// an uncaught exception passes.
+    pub catch_filters: Vec<String>,
 }
 
 /// Whether a class passes class filters: no include pattern or one that
@@ -569,8 +572,9 @@ impl DebugSession {
         let mut paused: Option<(u64, PauseReason)> = None;
         let mut hit: Option<LineBreakpoint> = None;
         // An exception breakpoint's hit: thread, exception, its class name,
-        // caught, the class it's thrown in, and the breakpoint.
-        let mut thrown: Option<(u64, u64, String, bool, u64, Option<ExceptionBreakpoint>)> = None;
+        // the class catching it, the class it's thrown in, and the
+        // breakpoint.
+        let mut thrown: Option<(u64, u64, String, Option<u64>, u64, Option<ExceptionBreakpoint>)> = None;
         let muted = self.muted.load(Ordering::SeqCst);
         for event in set.events {
             match event {
@@ -623,7 +627,8 @@ impl DebugSession {
                     paused = Some((thread, PauseReason::Breakpoint));
                 }
                 DebugEvent::Step { thread, .. } => paused = Some((thread, PauseReason::Step)),
-                DebugEvent::Exception { thread, location, exception, caught, request } => {
+                DebugEvent::Exception { thread, location, exception, catch, request } => {
+                    let caught = catch.map(|c| c.class);
                     let name = self.vm.class_of(exception).map(|c| c.name).unwrap_or_else(|_| "exception".into());
                     let breakpoint = state.exceptions.iter().find(|e| e.request == Some(request)).map(|e| e.breakpoint.clone());
                     thrown = Some((thread, exception, name, caught, location.class, breakpoint));
@@ -635,9 +640,13 @@ impl DebugSession {
         }
         if let (Some((_, PauseReason::Exception)), Some((thread, exception, name, caught, class, breakpoint))) = (paused, thrown) {
             let value = Value::Object { id: exception, class: name.clone() };
-            if let Some(breakpoint) = breakpoint.filter(|b| b.condition.is_some() || !b.filters.is_empty()) {
+            if let Some(breakpoint) = breakpoint.filter(|b| b.condition.is_some() || !b.filters.is_empty() || !b.catch_filters.is_empty()) {
                 drop(state);
-                if !breakpoint.filters.is_empty() && !passes_filters(&breakpoint.filters, &self.vm.class_name(class)?) {
+                let catching = match caught {
+                    Some(catcher) if !breakpoint.catch_filters.is_empty() => passes_filters(&breakpoint.catch_filters, &self.vm.class_name(catcher)?),
+                    _ => true,
+                };
+                if !catching || !breakpoint.filters.is_empty() && !passes_filters(&breakpoint.filters, &self.vm.class_name(class)?) {
                     self.vm.resume()?;
                     return Ok(out);
                 }
@@ -655,7 +664,7 @@ impl DebugSession {
                 state = self.state.lock().unwrap();
             }
             state.thrown = Some((thread, value));
-            out.push(SessionEvent::Exception(format!("Exception '{name}' {}", if caught { "occurred" } else { "was not caught" })));
+            out.push(SessionEvent::Exception(format!("Exception '{name}' {}", if caught.is_some() { "occurred" } else { "was not caught" })));
         }
         if let (Some((thread, PauseReason::Breakpoint)), Some(breakpoint)) = (paused, hit) {
             // The condition, in the hit frame: false runs on.
@@ -882,8 +891,8 @@ mod tests {
         fn class_of(&self, _: u64) -> Result<ClassRef, String> {
             Ok(ClassRef { id: 10, name: "a.CalcTest".into() })
         }
-        fn class_name(&self, _: u64) -> Result<String, String> {
-            Ok("a.CalcTest".into())
+        fn class_name(&self, class: u64) -> Result<String, String> {
+            Ok(if class == 11 { "b.Handler" } else { "a.CalcTest" }.into())
         }
         fn superclass(&self, _: u64) -> Result<u64, String> {
             Ok(0)
@@ -1213,7 +1222,7 @@ mod tests {
         session.poll(Duration::ZERO).unwrap();
         assert_eq!(vm.take_log(), ["exception Some(30) false true", "resume"]);
         // A hit: which exception, then paused.
-        vm.send(Suspend::All, vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, caught: false, request: 3 }]);
+        vm.send(Suspend::All, vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, catch: None, request: 3 }]);
         let events = session.poll(Duration::ZERO).unwrap();
         assert_eq!(events[0], SessionEvent::Exception("Exception 'a.CalcTest' was not caught".into()));
         assert!(matches!(events[1], SessionEvent::Paused { reason: PauseReason::Exception, .. }));
@@ -1234,7 +1243,7 @@ mod tests {
         session.add_exception_breakpoint(any.clone()).unwrap();
         let request = *vm.next.lock().unwrap();
         vm.take_log();
-        let throw = || vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, caught: true, request }];
+        let throw = || vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, catch: Some(Location { class: 10, method: 1, index: 9 }), request }];
         // Thrown in a.CalcTest, not b.*: runs on.
         vm.send(Suspend::All, throw());
         assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
@@ -1243,16 +1252,41 @@ mod tests {
         session.add_exception_breakpoint(ExceptionBreakpoint { filters: vec!["a.*".into(), "-a.Other".into()], condition: Some("x > 5".into()), ..any.clone() }).unwrap();
         let request = *vm.next.lock().unwrap();
         vm.take_log();
-        let throw = || vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, caught: true, request }];
+        let throw = || vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, catch: Some(Location { class: 10, method: 1, index: 9 }), request }];
         vm.send(Suspend::All, throw());
         assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
         // `this` is the exception.
         session.add_exception_breakpoint(ExceptionBreakpoint { condition: Some("this != null".into()), filters: Vec::new(), ..any }).unwrap();
         let request = *vm.next.lock().unwrap();
-        let throw = vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, caught: true, request }];
+        let throw = vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, catch: Some(Location { class: 10, method: 1, index: 9 }), request }];
         vm.send(Suspend::All, throw);
         let events = session.poll(Duration::ZERO).unwrap();
         assert!(matches!(events[..], [SessionEvent::Exception(_), SessionEvent::Paused { reason: PauseReason::Exception, .. }]), "{events:?}");
+    }
+
+    #[test]
+    fn exception_breakpoints_filter_by_the_catching_class() {
+        let vm = vm();
+        let session = DebugSession::new(vm.clone());
+        // Caught in class 11 (b.Handler), thrown in 10 (a.CalcTest).
+        let caught = |request| vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, catch: Some(Location { class: 11, method: 2, index: 0 }), request }];
+        let uncaught = |request| vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, catch: None, request }];
+        session.add_exception_breakpoint(ExceptionBreakpoint { caught: true, uncaught: true, catch_filters: vec!["a.*".into()], ..Default::default() }).unwrap();
+        let request = *vm.next.lock().unwrap();
+        vm.take_log();
+        // Caught outside a.*: runs on.
+        vm.send(Suspend::All, caught(request));
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume"]);
+        // Uncaught: stops.
+        vm.send(Suspend::All, uncaught(request));
+        assert!(matches!(session.poll(Duration::ZERO).unwrap()[..], [SessionEvent::Exception(_), ..]));
+        session.resume().unwrap();
+        // Caught in b.*: stops.
+        session.add_exception_breakpoint(ExceptionBreakpoint { caught: true, uncaught: true, catch_filters: vec!["b.*".into()], ..Default::default() }).unwrap();
+        let request = *vm.next.lock().unwrap();
+        vm.send(Suspend::All, caught(request));
+        assert!(matches!(session.poll(Duration::ZERO).unwrap()[..], [SessionEvent::Exception(_), ..]));
     }
 
     #[test]

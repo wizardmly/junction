@@ -1244,5 +1244,5 @@ fn free_port() -> Option<u16> {
 
 /// A saved exception breakpoint as the session sets it.
 fn exception_breakpoint(saved: &breakpoint_store::SavedExceptionBreakpoint) -> crate::usecase::debug_session::ExceptionBreakpoint {
-    crate::usecase::debug_session::ExceptionBreakpoint { class: saved.class.clone(), caught: saved.caught, uncaught: saved.uncaught, condition: saved.condition.clone(), filters: saved.filters.clone() }
+    crate::usecase::debug_session::ExceptionBreakpoint { class: saved.class.clone(), caught: saved.caught, uncaught: saved.uncaught, condition: saved.condition.clone(), filters: saved.filters.clone(), catch_filters: saved.catch_filters.clone() }
 }
