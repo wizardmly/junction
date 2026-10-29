@@ -3265,6 +3265,8 @@ impl FileEditor {
             .iter()
             .filter_map(|ext| stub.rsplit_once('.').map(|(base, _)| format!("{}.{ext}", base.replacen("/decompiled/gradle/", "/sources/gradle/", 1))))
             .collect();
+        // The member the caret is in, to open the source at.
+        let (stub_text, caret) = (self.state.read(cx).value().to_string(), self.caret_line(cx) as u32);
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let ok = this
@@ -3293,7 +3295,11 @@ impl FileEditor {
                     this.update(cx, |this, cx| {
                         this.sources_status = None;
                         let name = found.rsplit('/').next().unwrap_or_default().to_owned();
-                        let target = crate::index::nav::Target { path: found, line: 0, col: 0, name, label: String::new(), container: None };
+                        let lang = |p: &str| crate::index::lang::Lang::from_path(p);
+                        let (line, col) = (lang(&stub).zip(lang(&found)))
+                            .and_then(|(from, to)| crate::index::symbols::same_member(from, &stub_text, caret, to, &std::fs::read_to_string(&found).ok()?))
+                            .unwrap_or_default();
+                        let target = crate::index::nav::Target { path: found, line, col, name, label: String::new(), container: None };
                         cx.emit(FileEditorEvent::Navigate { targets: vec![target], at: None });
                         // The source replaces the stub, as IntelliJ's.
                         cx.emit(FileEditorEvent::Deleted);

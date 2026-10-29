@@ -749,6 +749,21 @@ pub fn selector(node: Node, text: &str) -> String {
     out
 }
 
+/// Where the declaration `line` is in, in `from`, is declared in `to`: a
+/// decompiled stub's member in its downloaded source. The innermost
+/// declaration around the line, matched by name and container; among
+/// overloads, the one in the same place in order.
+pub fn same_member(from_lang: Lang, from: &str, line: u32, to_lang: Lang, to: &str) -> Option<(u32, u32)> {
+    let ours = extract(from_lang, from);
+    let at = ours.iter().filter(|s| s.line <= line && line <= s.end_line).min_by_key(|s| s.end_line - s.line)?;
+    let same = |a: &Symbol, b: &Symbol| a.name == b.name && a.container == b.container;
+    let nth = ours.iter().filter(|s| same(s, at)).position(|s| std::ptr::eq(s, at)).unwrap_or(0);
+    let theirs = extract(to_lang, to);
+    let found: Vec<&Symbol> = theirs.iter().filter(|s| same(s, at)).collect();
+    let target = found.get(nth).or(found.first())?;
+    Some((target.line, target.col))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,6 +859,19 @@ mod tests {
 #[cfg(test)]
 mod kotlin_kinds {
     use super::*;
+
+    #[test]
+    fn finds_the_same_member_in_the_source() {
+        let stub = "package a\n\npublic final class Box {\n    public fun size(): Int = COMPILED_CODE\n    public fun put(p0: Int): Unit = COMPILED_CODE\n    public fun put(p0: Int, p1: Int): Unit = COMPILED_CODE\n}\n";
+        let source = "package a\n\n/** A box. */\nclass Box {\n    // How many.\n    fun size(): Int = items.size\n\n    fun put(item: Int) {\n        items += item\n    }\n\n    fun put(item: Int, at: Int) {\n        items.add(at, item)\n    }\n}\n";
+        assert_eq!(same_member(Lang::Kotlin, stub, 3, Lang::Kotlin, source), Some((5, 8)));
+        // The second overload.
+        assert_eq!(same_member(Lang::Kotlin, stub, 5, Lang::Kotlin, source), Some((11, 8)));
+        // On the class line: the class.
+        assert_eq!(same_member(Lang::Kotlin, stub, 2, Lang::Kotlin, source), Some((3, 6)));
+        // Outside any declaration.
+        assert_eq!(same_member(Lang::Kotlin, stub, 0, Lang::Kotlin, source), None);
+    }
 
     #[test]
     fn kinds_and_tags() {
