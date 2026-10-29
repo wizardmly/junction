@@ -1097,7 +1097,8 @@ Linux 实测（Xvfb，calc 示例，故意删掉一个分号）：Ctrl+F9 后 Bu
 | Java 类没有参数名（编译时没加 `-parameters`），参数仍写成 `p0`、`p1`…（IntelliJ 同样如此） | ⬜ |
 | 编辑器顶部的提示条 “Decompiled .class file: no sources were found for group:artifact:version” 和 **Download Sources**：依次从 Google Maven、Maven Central 下载 `-sources.jar`，存进 Gradle 缓存里这个版本的目录，重新扫描库，源码解压出来后打开这个类的源码并关掉存根标签页（同 IntelliJ 用源码替换反编译视图）；下载失败时在提示条上写出原因 | ✅ |
 | Java 泛型（2026-10-29）：类、方法、字段的 `Signature` 属性写进 Java 存根：类型参数和界限（`<T extends Comparable<? super T>>`）、父类和接口的类型实参、通配符（`? extends E`、`?`）、嵌套类（`Map.Entry<K, V>`）、泛型数组和 varargs（`T...`）；参数个数和描述符对不上时（内部类、枚举的构造方法）退回描述符。实测：guava 33.4.6 的 9188 个签名全部解出；Linux 上依赖 guava（只有 jar）时打开 ImmutableList 显示 `public abstract class ImmutableList<E> extends ImmutableCollection<E> implements List<E>, RandomAccess`、`public static <E> ImmutableList<E> of(E p0)` | ✅ |
-| 一次下载所有库的源码（Gradle 的 “Download Sources” 任务）；打开源码后停在存根里光标所在的同一个成员上 | ⬜ |
+| Download Sources 后停在同一个成员上（2026-10-29）：打开的源码定位到存根里光标所在的声明（最内层的类 / 方法 / 字段，按名字和所在类匹配，重载按出现顺序对应），不在声明里时仍在文件开头（`symbols::same_member`）。Linux 实测：guava 的 ImmutableList 存根里光标放在三个参数的 `of(E p0, E p1, E p2)` 上点 Download Sources，从 Maven Central 下载后打开 `ImmutableList.java` 第 116 行 `of(E e1, E e2, E e3)` | ✅ |
+| 一次下载所有库的源码（Gradle 的 “Download Sources” 任务） | ⬜ |
 
 Linux 实测（Xvfb）：Kotlin 工程依赖 `com.google.code.gson:gson:2.11.0`（Gradle 缓存里只有 jar，没有源码包），`import com.google.gson.Gson` 后按住 Ctrl 点 `Gson()`，打开只读的 `Gson.java` 存根（面包屑显示 `Gradle: com.google.code.gson:gson:2.11.0`），光标停在构造方法 `public Gson() { /* compiled code */ }`，下面列出 `toJson(Object p0)` 等方法；顶部提示条点 Download Sources，`gson-2.11.0-sources.jar` 下载到 Gradle 缓存，约 20 秒后标签页换成带版权头和 import 的真正 `Gson.java`。
 
