@@ -18,7 +18,7 @@ use crate::domain::testing::TestMark;
 use crate::infra::breakpoint_store::{self, SavedBreakpoint};
 use crate::infra::jdwp_client::JdwpVm;
 use crate::ui::test_service::TestService;
-use crate::usecase::debug_session::{BreakpointActions, DebugSession, LineBreakpoint, PauseReason, SessionEvent};
+use crate::usecase::debug_session::{BreakpointActions, DebugSession, Implementation, LineBreakpoint, PauseReason, SessionEvent};
 
 /// How long Debug waits for the test JVM to listen (Gradle builds first).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -259,7 +259,12 @@ impl DebugService {
     fn place_in_session(&mut self, session: Arc<DebugSession>, saved: SavedBreakpoint, cx: &mut Context<Self>) {
         let generation = self.generation;
         let (file, line) = (saved.file.clone(), saved.line);
-        let task = cx.background_spawn(async move { session.add_breakpoint(line_breakpoint(&saved)) });
+        let implementations = self.implementations(&saved, cx);
+        let task = cx.background_spawn(async move {
+            let mut breakpoint = line_breakpoint(&saved);
+            breakpoint.implementations = implementations.await;
+            session.add_breakpoint(breakpoint)
+        });
         cx.spawn(async move |this, cx| {
             if let Ok(true) = task.await {
                 this.update(cx, |this, cx| {
@@ -350,6 +355,56 @@ impl DebugService {
         let (Some(lang), Some(text)) = (crate::index::lang::Lang::from_path(file), text) else { return new };
         use crate::index::method_breakpoint::{field_at, method_header};
         SavedBreakpoint { method: method_header(lang, text, line).map(|h| h.name), field: field_at(lang, text, line), ..new }
+    }
+
+    /// An interface's or abstract method's breakpoint: the methods of the
+    /// project implementing it (from its Method Hierarchy), where it stops,
+    /// as IntelliJ's. Nothing for other breakpoints.
+    fn implementations(&self, saved: &SavedBreakpoint, cx: &App) -> Task<Vec<Implementation>> {
+        use crate::index::lang::Lang;
+        use crate::index::method_breakpoint::{abstract_method, method_header};
+        let none = || Task::ready(Vec::new());
+        let Some(index) = self.code_index.as_ref().and_then(|i| i.upgrade()) else { return none() };
+        let (Some(lang), Ok(text)) = (Lang::from_path(&saved.file), std::fs::read_to_string(&saved.file)) else { return none() };
+        if saved.method.is_none() {
+            return none();
+        }
+        let Some((method, offset)) = abstract_method(lang, &text, saved.line) else { return none() };
+        let file_name = Path::new(&saved.file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let Some(caller) = crate::index::call_hierarchy::caller_at(lang, &text, offset, &file_name) else { return none() };
+        let Some((owner, _)) = caller.name.rsplit_once('.') else { return none() };
+        let owner = owner.rsplit('.').next().unwrap_or(owner).to_owned();
+        let Some(root) = index.read(cx).root().map(Path::to_path_buf) else { return none() };
+        let tree = index.read(cx).method_hierarchy(owner.clone(), method, cx);
+        cx.background_spawn(async move {
+            use crate::index::hierarchy::{MethodMark, TypeNode};
+            // The subtree under the owner (the hierarchy starts at the
+            // topmost type declaring the method).
+            fn find<'a>(n: &'a TypeNode, name: &str) -> Option<&'a TypeNode> {
+                if n.name == name { Some(n) } else { n.children.iter().find_map(|c| find(c, name)) }
+            }
+            fn collect(n: &TypeNode, root: &Path, out: &mut Vec<Implementation>) {
+                for c in &n.children {
+                    if let Some((MethodMark::Defined, Some(target))) = &c.method {
+                        let path = root.join(&target.path);
+                        let lang = Lang::from_path(&target.path);
+                        if let (Some(lang), Ok(text)) = (lang, std::fs::read_to_string(&path)) {
+                            if let Some(header) = method_header(lang, &text, target.line).filter(|_| abstract_method(lang, &text, target.line).is_none()) {
+                                let source_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                out.push(Implementation { source_name, package: debugger::package_of(&text), header });
+                            }
+                        }
+                    }
+                    collect(c, root, out);
+                }
+            }
+            let tree = tree.await;
+            let mut out = Vec::new();
+            if let Some(owner) = find(&tree, &owner) {
+                collect(owner, &root, &mut out);
+            }
+            out
+        })
     }
 
     /// Opens a breakpoint's line in the editor.
@@ -1109,17 +1164,20 @@ async fn drive(this: gpui_kit::WeakEntity<DebugService>, cx: &mut gpui_kit::Asyn
             run.target = Some(target.clone());
         }
         cx.notify();
-        (this.breakpoints.clone(), this.exceptions.clone())
+        let implementations: Vec<Task<Vec<Implementation>>> = this.breakpoints.iter().map(|b| this.implementations(b, cx)).collect();
+        (this.breakpoints.clone(), this.exceptions.clone(), implementations)
     }) else {
         return;
     };
-    let (breakpoints, exceptions) = breakpoints;
+    let (breakpoints, exceptions, implementations) = breakpoints;
     let setup = session.clone();
     let (verified, started) = cx
         .background_spawn(async move {
             let mut verified = Vec::new();
-            for b in breakpoints.into_iter().filter(|b| b.enabled) {
-                if let Ok(true) = setup.add_breakpoint(line_breakpoint(&b)) {
+            for (b, implementations) in breakpoints.into_iter().zip(implementations).filter(|(b, _)| b.enabled) {
+                let mut breakpoint = line_breakpoint(&b);
+                breakpoint.implementations = implementations.await;
+                if let Ok(true) = setup.add_breakpoint(breakpoint) {
                     verified.push((b.file, b.line));
                 }
             }

@@ -38,12 +38,35 @@ pub struct LineBreakpoint {
     /// A field watchpoint: it stops where the field declared on `line` is
     /// read or written.
     pub field: Option<FieldWatch>,
+    /// An interface / abstract method breakpoint's implementations: it
+    /// stops entering (or leaving) each of them, as IntelliJ's.
+    pub implementations: Vec<Implementation>,
+}
+
+/// A method implementing an abstract one: its file's name, its package and
+/// the method as declared there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Implementation {
+    pub source_name: String,
+    pub package: String,
+    pub header: MethodHeader,
+}
+
+impl LineBreakpoint {
+    /// The packages whose classes may hold its code.
+    fn packages(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.package.as_str()).chain(self.implementations.iter().map(|i| i.package.as_str()))
+    }
+
+    fn in_packages(&self, class: &str) -> bool {
+        self.packages().any(|p| in_package(class, p))
+    }
 }
 
 impl LineBreakpoint {
     pub fn new(path: &Path, package: String, line: u32) -> Self {
         let source_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Self { path: path.to_path_buf(), source_name, package, line, condition: None, actions: BreakpointActions::default(), method: None, method_entry: true, method_exit: false, field: None }
+        Self { path: path.to_path_buf(), source_name, package, line, condition: None, actions: BreakpointActions::default(), method: None, method_entry: true, method_exit: false, field: None, implementations: Vec::new() }
     }
 }
 
@@ -248,13 +271,15 @@ impl DebugSession {
         if state.breakpoints.iter().any(|p| p.breakpoint.path == breakpoint.path && p.breakpoint.line == breakpoint.line) {
             return Ok(state.breakpoints.iter().any(|p| p.breakpoint == breakpoint && !p.requests.is_empty()));
         }
-        let pattern = package_pattern(&breakpoint.package);
-        if !state.watched.contains_key(&pattern) {
-            let request = self.vm.watch_class_prepare(&pattern)?;
-            state.watched.insert(pattern, request);
+        for package in breakpoint.packages() {
+            let pattern = package_pattern(package);
+            if !state.watched.contains_key(&pattern) {
+                let request = self.vm.watch_class_prepare(&pattern)?;
+                state.watched.insert(pattern, request);
+            }
         }
         let mut requests = Vec::new();
-        for class in self.vm.all_classes()?.into_iter().filter(|c| in_package(&c.name, &breakpoint.package)) {
+        for class in self.vm.all_classes()?.into_iter().filter(|c| breakpoint.in_packages(&c.name)) {
             requests.extend(self.place(class.id, &breakpoint)?);
         }
         let verified = !requests.is_empty();
@@ -323,8 +348,15 @@ impl DebugSession {
     /// Breakpoint requests for a class, when it was compiled from the
     /// breakpoint's file and has code on its line.
     fn place(&self, class: u64, breakpoint: &LineBreakpoint) -> Result<Vec<u32>, String> {
-        if self.vm.source_file(class)?.as_deref() != Some(breakpoint.source_name.as_str()) {
-            return Ok(Vec::new());
+        let source = self.vm.source_file(class)?;
+        // An implementation of the abstract method in this class.
+        let mut requests = Vec::new();
+        for implementation in breakpoint.implementations.iter().filter(|i| source.as_deref() == Some(i.source_name.as_str())) {
+            let methods = self.vm.methods(class)?;
+            requests.extend(self.place_method(class, &methods, &implementation.header, breakpoint)?);
+        }
+        if source.as_deref() != Some(breakpoint.source_name.as_str()) {
+            return Ok(requests);
         }
         if let Some(watch) = &breakpoint.field {
             let Some(field) = self.vm.field_id(class, &watch.name)? else { return Ok(Vec::new()) };
@@ -337,27 +369,34 @@ impl DebugSession {
             return Ok(requests);
         }
         let methods = self.vm.methods(class)?;
-        let locations = match &breakpoint.method {
-            Some(header) => {
-                let entries = method_entries(class, &methods, header);
-                let mut requests = Vec::new();
-                // Exits come as events from the class's methods, kept for
-                // these (IntelliJ's non-emulated method breakpoint).
-                if breakpoint.method_exit && !entries.is_empty() {
-                    let request = self.vm.set_method_exit(class)?;
-                    self.exits.lock().unwrap().insert(request, entries.iter().map(|l| l.method).collect());
-                    requests.push(request);
-                }
-                if breakpoint.method_entry {
-                    for location in entries {
-                        requests.push(self.vm.set_breakpoint(location)?);
-                    }
-                }
-                return Ok(requests);
+        if let Some(header) = &breakpoint.method {
+            requests.extend(self.place_method(class, &methods, header, breakpoint)?);
+            return Ok(requests);
+        }
+        for location in line_locations(class, &methods, breakpoint.line) {
+            requests.push(self.vm.set_breakpoint(location)?);
+        }
+        Ok(requests)
+    }
+
+    /// A method breakpoint's requests for the method `header` declares in
+    /// a class.
+    fn place_method(&self, class: u64, methods: &[crate::domain::debugger::MethodInfo], header: &MethodHeader, breakpoint: &LineBreakpoint) -> Result<Vec<u32>, String> {
+        let entries = method_entries(class, methods, header);
+        let mut requests = Vec::new();
+        // Exits come as events from the class's methods, kept for these
+        // (IntelliJ's non-emulated method breakpoint).
+        if breakpoint.method_exit && !entries.is_empty() {
+            let request = self.vm.set_method_exit(class)?;
+            self.exits.lock().unwrap().insert(request, entries.iter().map(|l| l.method).collect());
+            requests.push(request);
+        }
+        if breakpoint.method_entry {
+            for location in entries {
+                requests.push(self.vm.set_breakpoint(location)?);
             }
-            None => line_locations(class, &methods, breakpoint.line),
-        };
-        locations.into_iter().map(|location| self.vm.set_breakpoint(location)).collect()
+        }
+        Ok(requests)
     }
 
     /// Resume Program (F9).
@@ -475,11 +514,11 @@ impl DebugSession {
         }
         let mut state = self.state.lock().unwrap();
         let classes = self.vm.all_classes()?;
-        for placed in state.breakpoints.iter_mut().filter(|p| p.breakpoint.field.is_none() && sources.contains(&p.breakpoint.source_name)) {
+        for placed in state.breakpoints.iter_mut().filter(|p| p.breakpoint.field.is_none() && (sources.contains(&p.breakpoint.source_name) || p.breakpoint.implementations.iter().any(|i| sources.contains(&i.source_name)))) {
             for request in placed.requests.drain(..) {
                 let _ = self.clear_request(request);
             }
-            for class in classes.iter().filter(|c| in_package(&c.name, &placed.breakpoint.package)) {
+            for class in classes.iter().filter(|c| placed.breakpoint.in_packages(&c.name)) {
                 placed.requests.extend(self.place(class.id, &placed.breakpoint)?);
             }
         }
@@ -544,7 +583,7 @@ impl DebugSession {
                 }
                 DebugEvent::ClassPrepare { class, .. } => {
                     for ix in 0..state.breakpoints.len() {
-                        if !in_package(&class.name, &state.breakpoints[ix].breakpoint.package) {
+                        if !state.breakpoints[ix].breakpoint.in_packages(&class.name) {
                             continue;
                         }
                         let placed = self.place(class.id, &state.breakpoints[ix].breakpoint)?;
@@ -939,6 +978,24 @@ mod tests {
         // Nothing of it loaded: up to date.
         assert_eq!(session.hot_swap(&changed[1..], &Files, None), HotSwapOutcome::UpToDate);
         assert!(vm.take_log().is_empty());
+    }
+
+    #[test]
+    fn abstract_method_breakpoints_stop_in_implementations() {
+        let vm = vm();
+        let session = DebugSession::new(vm.clone());
+        let mut iface = LineBreakpoint::new(Path::new("/p/src/main/java/b/Shape.java"), "b".into(), 3);
+        iface.method = Some(MethodHeader { name: "m1".into(), line: 3, end: 3 });
+        iface.implementations = vec![Implementation { source_name: "CalcTest.java".into(), package: "a".into(), header: MethodHeader { name: "m1".into(), line: 4, end: 5 } }];
+        // Both packages watched.
+        assert_eq!(session.add_breakpoint(iface), Ok(false));
+        assert_eq!(vm.take_log(), ["watch b.*", "watch a.*"]);
+        session.start().unwrap();
+        vm.take_log();
+        let prepare = |id, name: &str| DebugEvent::ClassPrepare { thread: 1, class: ClassRef { id, name: name.into() }, request: 1 };
+        vm.send(Suspend::All, vec![prepare(10, "a.CalcTest")]);
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![SessionEvent::Verified { path: "/p/src/main/java/b/Shape.java".into(), line: 3 }]));
+        assert_eq!(vm.take_log(), ["break 10:1:0", "resume"]);
     }
 
     #[test]

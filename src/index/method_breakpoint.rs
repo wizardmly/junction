@@ -8,8 +8,13 @@ use super::symbols;
 use crate::domain::debugger::MethodHeader;
 
 /// The method declared on a 0-based line: its JVM name (`<init>` for a
-/// constructor) and its 1-based first and last lines.
+/// constructor) and its 1-based first and last lines. An interface's or
+/// abstract method (no body) is one too: its breakpoint stops in the
+/// implementations.
 pub fn method_header(lang: Lang, text: &str, line: u32) -> Option<MethodHeader> {
+    if let Some((name, _)) = abstract_method(lang, text, line) {
+        return Some(MethodHeader { name, line: line + 1, end: line + 1 });
+    }
     if !matches!(lang, Lang::Kotlin | Lang::Java) {
         return None;
     }
@@ -33,6 +38,25 @@ pub fn method_header(lang: Lang, text: &str, line: u32) -> Option<MethodHeader> 
         }
         let name = if function.kind() == "constructor_declaration" { "<init>".to_owned() } else { text[name.byte_range()].to_owned() };
         Some(MethodHeader { name, line: line + 1, end: function.end_position().row as u32 + 1 })
+    })
+}
+
+/// A method without a body (an interface's, or abstract) whose name is on
+/// a 0-based line: its name and the name's offset.
+pub fn abstract_method(lang: Lang, text: &str, line: u32) -> Option<(String, usize)> {
+    if !matches!(lang, Lang::Kotlin | Lang::Java) {
+        return None;
+    }
+    let tree = symbols::parse(lang, text)?;
+    descendants(tree.root_node()).into_iter().filter(|n| is_function(lang, *n) && n.kind() != "constructor_declaration").find_map(|function| {
+        let (name, body) = match lang {
+            Lang::Kotlin => (children(function).into_iter().find(|c| c.kind() == "simple_identifier")?, children(function).into_iter().find(|c| c.kind() == "function_body")),
+            _ => (function.child_by_field_name("name")?, function.child_by_field_name("body")),
+        };
+        // Kotlin's `external fun` has no body either, and no implementations.
+        let external = lang == Lang::Kotlin && text[function.byte_range()].split(" fun ").next().is_some_and(|m| m.split_whitespace().any(|w| w == "external"));
+        let native = lang == Lang::Java && text[function.byte_range()].split('(').next().is_some_and(|m| m.split_whitespace().any(|w| w == "native"));
+        (body.is_none() && !external && !native && name.start_position().row as u32 == line).then(|| (text[name.byte_range()].to_owned(), name.start_byte()))
     })
 }
 
@@ -78,6 +102,17 @@ mod tests {
         let java = "class A {\n  A() {\n    super();\n  }\n  int total(int p)\n  {\n    return p;\n  }\n}\n";
         assert_eq!(method_header(Lang::Java, java, 1).map(|h| h.name), Some("<init>".to_owned()));
         assert_eq!(method_header(Lang::Java, java, 4), Some(MethodHeader { name: "total".into(), line: 5, end: 8 }));
+        // Methods without a body.
+        let iface = "interface Shape {\n    double area(double scale);\n    default int sides() {\n        return 0;\n    }\n    native void n();\n}\n";
+        assert_eq!(abstract_method(Lang::Java, iface, 1), Some(("area".to_owned(), iface.find("area").unwrap())));
+        assert_eq!(method_header(Lang::Java, iface, 1), Some(MethodHeader { name: "area".into(), line: 2, end: 2 }));
+        assert_eq!(abstract_method(Lang::Java, iface, 2), None);
+        assert_eq!(abstract_method(Lang::Java, iface, 5), None);
+        let kt = "interface Shape {\n    fun area(scale: Double): Double\n    fun sides(): Int = 0\n}\nabstract class Base {\n    abstract fun name(): String\n    external fun n()\n}\n";
+        assert_eq!(abstract_method(Lang::Kotlin, kt, 1).map(|(n, _)| n).as_deref(), Some("area"));
+        assert_eq!(abstract_method(Lang::Kotlin, kt, 2), None);
+        assert_eq!(abstract_method(Lang::Kotlin, kt, 5).map(|(n, _)| n).as_deref(), Some("name"));
+        assert_eq!(abstract_method(Lang::Kotlin, kt, 6), None);
     }
 
     #[test]
