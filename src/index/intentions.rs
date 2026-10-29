@@ -36,6 +36,7 @@ pub fn intentions(text: &str, caret: usize) -> Vec<Intention> {
     out.extend(to_concatenation(root, text, caret));
     out.extend(remove_loop_indices(root, text, caret));
     out.extend(to_for_each(root, text, caret));
+    out.extend(if_to_elvis(text, caret));
     out
 }
 
@@ -650,6 +651,76 @@ pub fn range_check(text: &str, caret: usize, classes: super::catches::Classes) -
         range: check.byte_range(),
         caret: check.start_byte(),
         replacement: format!("{} in {range}", text[subject.byte_range()].trim()),
+    })
+}
+
+/// Replace 'if' expression with elvis / safe access expression (IntelliJ's
+/// IfThenToElvisInspection and IfThenToSafeAccessInspection):
+/// `if (x != null) x else y` → `x ?: y`, `if (x != null) x.f() else null`
+/// (or no else) → `x?.f()`, and the `x == null` forms with the branches
+/// swapped; the caret on the `if` or its condition, `x` a name.
+pub fn if_to_elvis(text: &str, caret: usize) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let node = innermost(tree.root_node(), caret)
+        .into_iter()
+        .flat_map(ancestors)
+        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body"))
+        .find(|n| n.kind() == "if_expression")?;
+    let condition = node.child_by_field_name("condition")?;
+    let then = node.child_by_field_name("consequence")?;
+    if caret > condition.end_byte() + 1 || condition.kind() != "equality_expression" {
+        return None;
+    }
+    // A branch's one expression, braces or not.
+    fn single<'t>(body: Node<'t>) -> Option<Node<'t>> {
+        let [only] = children(body)[..] else { return None };
+        if only.kind() != "statements" {
+            return Some(only);
+        }
+        let [only] = children(only)[..] else { return None };
+        Some(only)
+    }
+    let [a, b] = children(condition)[..] else { return None };
+    let subject = match (a.kind(), b.kind()) {
+        ("simple_identifier", "null_literal") => a,
+        ("null_literal", "simple_identifier") => b,
+        _ => return None,
+    };
+    let name = &text[subject.byte_range()];
+    let (present, absent) = match (text[a.end_byte()..b.start_byte()].trim(), node.child_by_field_name("alternative")) {
+        ("!=", alternative) => (single(then)?, alternative.map(single)),
+        ("==", Some(alternative)) => (single(alternative)?, Some(single(then))),
+        _ => return None,
+    };
+    let absent = match absent {
+        Some(n) => Some(n?),
+        None => None,
+    };
+    let is_null = |n: Option<Node>| n.is_none_or(|n| n.kind() == "null_literal");
+    if text[present.byte_range()] == *name {
+        let other = absent.filter(|n| n.kind() != "null_literal")?;
+        let value = &text[other.byte_range()];
+        let low = matches!(other.kind(), "comparison_expression" | "equality_expression" | "conjunction_expression" | "disjunction_expression" | "check_expression");
+        let value = if low { format!("({value})") } else { value.to_owned() };
+        return Some(Intention { title: "Replace 'if' expression with elvis expression".into(), range: node.byte_range(), caret: node.start_byte(), replacement: format!("{name} ?: {value}") });
+    }
+    // `x.f` or `x.f(…)`: the one navigation whose receiver is `x`.
+    let navigation = if present.kind() == "call_expression" { present.named_child(0)? } else { present };
+    let [receiver, suffix] = children(navigation)[..] else { return None };
+    if navigation.kind() != "navigation_expression" || receiver.kind() != "simple_identifier" || &text[receiver.byte_range()] != name || !is_null(absent) {
+        return None;
+    }
+    let dot = suffix.start_byte() + text[suffix.byte_range()].find('.')?;
+    if text[dot..].starts_with("?.") {
+        return None;
+    }
+    let call = &text[present.byte_range()];
+    let at = dot - present.start_byte();
+    Some(Intention {
+        title: "Replace 'if' expression with safe access expression".into(),
+        range: node.byte_range(),
+        caret: node.start_byte(),
+        replacement: format!("{}?{}", &call[..at], &call[at..]),
     })
 }
 
@@ -2279,6 +2350,27 @@ mod tests {
         assert!(run("c.toInt").unwrap().1.contains("    val d = c.code\n"));
         // Int's toInt isn't deprecated.
         assert_eq!(run("n.toInt"), None);
+    }
+
+    #[test]
+    fn replaces_if_with_elvis_and_safe_access() {
+        let text = "fun f(x: String?, y: String) {\n    val a = if (x != null) x else y\n    val b = if (null == x) \"-\" else { x }\n    val c = if (x != null) x.length else null\n    if (x != null) x.trim()\n    val d = if (x == null) null else x.get(0)\n    val e = if (x != null) x else a == b\n    val g = if (x != null) x.length else 0\n    val h = if (x != null) y.length else null\n    val i = if (x != null) x else null\n}\n";
+        let run = |at: &str| if_to_elvis(text, text.find(at).unwrap()).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("if (x != null) x else y").unwrap();
+        assert_eq!(title, "Replace 'if' expression with elvis expression");
+        assert!(out.contains("    val a = x ?: y\n"), "{out}");
+        assert!(run("if (null").unwrap().1.contains("    val b = x ?: \"-\"\n"));
+        let (title, out) = run("if (x != null) x.length else null").unwrap();
+        assert_eq!(title, "Replace 'if' expression with safe access expression");
+        assert!(out.contains("    val c = x?.length\n"), "{out}");
+        assert!(run("if (x != null) x.trim").unwrap().1.contains("    x?.trim()\n"));
+        assert!(run("if (x == null) null").unwrap().1.contains("    val d = x?.get(0)\n"));
+        assert!(run("if (x != null) x else a").unwrap().1.contains("    val e = x ?: (a == b)\n"));
+        // A non-null else after a call; another receiver; else null on x; the caret in a branch.
+        assert_eq!(run("if (x != null) x.length else 0"), None);
+        assert_eq!(run("if (x != null) y"), None);
+        assert_eq!(run("if (x != null) x else null"), None);
+        assert_eq!(if_to_elvis(text, text.find("else y").unwrap()), None);
     }
 
     #[test]
