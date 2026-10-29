@@ -1180,7 +1180,7 @@ Linux 实测（Xvfb，`ip` 工程）：光标在 `Cart.total` 上按 Ctrl+Alt+H�
 | Subtypes Hierarchy：继承当前类型的全部类型，逐层向下（工程的在前，库的在后） | ✅ |
 | 类 / 抽象类 / 接口 / 枚举 / object 图标（Kotlin 带角标），名称后显示所在文件；双击打开声明，箭头折叠 / 展开 | ✅ |
 | 类的父类链顶上是 `Any`（Kotlin）/ `Object`（Java），接口和枚举没有；库里索引到时可双击打开，否则灰色 | ✅ |
-| 按包显示位置、作用域过滤 | ⬜ |
+| 按包显示位置、作用域过滤（2026-10-29）：Kotlin / Java 类型名后显示包名 `(com.example.store)`（默认包不显示，其他语言仍是文件名）；工具栏和 Call Hierarchy 同一个作用域下拉框（All / Project Production Files / Project Test Files），工程外的类型和通往当前类型的那条链总是显示。Linux 实测：`Store` 的 Type Hierarchy 下有 `DiskStore (com.example.store)` 和测试目录里的 `FakeStore (com.example)`，Production 下只剩 DiskStore，Test 下只剩 FakeStore | ✅ |
 
 Linux 实测（Xvfb，`ip` 工程里的 Shapes.kt：`Shape` ← `Base` ← `Square` ← `Tile`，`Disc : Base()`）：光标在 `Square` 类里按 Ctrl+H，显示 `Base › Square › Tile` 并选中 Square；Supertypes 显示 `Square › Base › Shape` 和灰色的 `Comparable`；Subtypes 显示 `Square › Tile`，双击 Tile 打开第 15 行。
 
