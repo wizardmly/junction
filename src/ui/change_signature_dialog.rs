@@ -1,13 +1,15 @@
 //! IntelliJ's Change Signature dialog (Ctrl+F6): the name and return type,
 //! the parameters' table (Name, Type, and for an added one the Default value
 //! the calls pass) with Add, Remove, Move Up and Move Down, and the
-//! signature's preview, and the Visibility.
+//! signature's preview, the Visibility, and for Java "Delegate via
+//! overloading method".
 
 use std::rc::Rc;
 
 use gpui_kit::component::{
     Disableable as _, Sizable as _, WindowExt as _,
     button::Button,
+    checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -39,6 +41,8 @@ pub struct ChangeSignatureView {
     selected: Option<usize>,
     /// The Visibility chosen, as [`visibilities`] names it.
     visibility: String,
+    /// "Delegate via overloading method".
+    delegate: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -60,6 +64,7 @@ impl ChangeSignatureView {
             return_type: value(&self.return_type),
             params: self.rows.iter().map(|r| NewParam { old: r.old, name: value(&r.name), ty: value(&r.ty), value: value(&r.value) }).collect(),
             visibility: self.signature.visibility_range.is_some().then(|| self.visibility.clone()),
+            delegate: self.delegate,
         }
     }
 
@@ -179,7 +184,14 @@ impl Render for ChangeSignatureView {
             .child(table)
             .child(div().text_sm().text_color(palette.text_secondary).child("Signature Preview:"))
             .child(div().p_2().border_1().border_color(palette.border).rounded_md().bg(palette.panel).font_family(mono).text_sm().child(self.preview(&request)))
+            .when(self.style == ImportStyle::Java && self.signature.body_start.is_some(), |el| {
+                el.child(Checkbox::new("signature-delegate").label("Delegate via overloading method").checked(self.delegate).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                    this.delegate = *checked;
+                    cx.notify();
+                })))
+            })
             .child(div().text_xs().text_color(palette.text_secondary).child(match self.calls {
+                _ if self.delegate => "The calls keep the old signature".to_owned(),
                 0 => "No calls found".to_owned(),
                 1 => "1 call will be updated".to_owned(),
                 n => format!("{n} calls will be updated"),
@@ -201,6 +213,7 @@ pub fn open(style: ImportStyle, signature: Signature, calls: usize, on_ok: impl 
             rows: Vec::new(),
             selected: None,
             visibility: visibility_name(style, &signature.visibility).to_owned(),
+            delegate: false,
             _subscriptions: Vec::new(),
         };
         view.name = view.input(signature.name.clone(), "Name", window, cx);

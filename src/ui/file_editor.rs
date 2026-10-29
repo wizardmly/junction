@@ -1947,6 +1947,7 @@ impl FileEditor {
             return_type: signature.return_type.clone(),
             params: signature.params.iter().enumerate().filter(|(i, _)| *i != ix).map(|(i, p)| NewParam { old: Some(i), name: p.name.clone(), ty: p.ty.clone(), value: String::new() }).collect(),
             visibility: None,
+            delegate: false,
         };
         self.signature_change(lang, style, text, signature, window, cx, move |change, window, cx| {
             // An override using it can't lose it either.
