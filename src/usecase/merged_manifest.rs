@@ -54,7 +54,10 @@ pub fn module_dependencies(text: &str) -> Vec<String> {
 }
 
 /// Merges the module's manifests; `read` reads a file (none when missing).
-pub fn merged_manifest(root: &Path, manifest: &Path, read: &dyn Fn(&Path) -> Option<String>) -> Result<Merged, String> {
+/// `variant_sets` are the source sets the picked build variant adds to
+/// main, highest priority first (`freeDebug`, `debug`, `free`); none
+/// takes debug's.
+pub fn merged_manifest(root: &Path, manifest: &Path, variant_sets: &[String], read: &dyn Fn(&Path) -> Option<String>) -> Result<Merged, String> {
     let (module, set) = module_of(manifest).ok_or("Not a module's manifest (src/<source set>/AndroidManifest.xml)")?;
     let label = |p: &Path| p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/");
     let build_file = |dir: &Path| [dir.join("build.gradle.kts"), dir.join("build.gradle")].into_iter().find_map(|p| read(&p).map(|t| (p, t)));
@@ -66,9 +69,18 @@ pub fn merged_manifest(root: &Path, manifest: &Path, read: &dyn Fn(&Path) -> Opt
             }
         }
     };
-    // The build type's overlay above the main manifest (the debug variant's).
-    let overlay = if set == "main" { "debug".to_owned() } else { set };
-    add(module.join("src").join(&overlay).join("AndroidManifest.xml"), &mut sources);
+    // The variant's overlays above the main manifest; another set's own
+    // manifest when that's the one open.
+    let overlays: Vec<String> = if variant_sets.is_empty() {
+        vec![if set == "main" { "debug".to_owned() } else { set }]
+    } else if set == "main" || variant_sets.contains(&set) {
+        variant_sets.to_vec()
+    } else {
+        vec![set]
+    };
+    for overlay in overlays {
+        add(module.join("src").join(&overlay).join("AndroidManifest.xml"), &mut sources);
+    }
     add(module.join("src/main/AndroidManifest.xml"), &mut sources);
     // The library modules, breadth first.
     let (build_path, build_text) = build_file(&module).unwrap_or_default();
@@ -133,9 +145,18 @@ dependencies { implementation(project(":core:data")) }"#;
             (PathBuf::from("/p/lib/build.gradle"), "implementation project(':app')".into()),
         ]);
         let read = |p: &Path| files.get(p).cloned();
-        let merged = merged_manifest(Path::new("/p"), Path::new("/p/app/src/main/AndroidManifest.xml"), &read).unwrap();
+        let merged = merged_manifest(Path::new("/p"), Path::new("/p/app/src/main/AndroidManifest.xml"), &[], &read).unwrap();
         assert_eq!(merged.sources, ["app/src/debug/AndroidManifest.xml", "app/src/main/AndroidManifest.xml", "lib/src/main/AndroidManifest.xml", "app/build.gradle.kts"]);
         assert!(merged.lines.iter().any(|l| l.text.contains("minSdkVersion=\"26\"")));
+        // The picked variant's: freeRelease has no manifest of its own here.
+        let mut files = files;
+        files.insert(PathBuf::from("/p/app/src/free/AndroidManifest.xml"), format!("<manifest {ns}><uses-permission android:name=\"F\"/></manifest>"));
+        files.insert(PathBuf::from("/p/app/src/release/AndroidManifest.xml"), format!("<manifest {ns}><uses-permission android:name=\"R\"/></manifest>"));
+        let read = |p: &Path| files.get(p).cloned();
+        let sets = ["freeRelease", "release", "free"].map(String::from);
+        let merged = merged_manifest(Path::new("/p"), Path::new("/p/app/src/main/AndroidManifest.xml"), &sets, &read).unwrap();
+        assert_eq!(merged.sources, ["app/src/release/AndroidManifest.xml", "app/src/free/AndroidManifest.xml", "app/src/main/AndroidManifest.xml", "lib/src/main/AndroidManifest.xml", "app/build.gradle.kts"]);
+        assert!(!merged.lines.iter().any(|l| l.text.contains("\"D\"")));
         assert_eq!(module_of(Path::new("/p/app/src/main/AndroidManifest.xml")), Some((PathBuf::from("/p/app"), "main".into())));
     }
 }
