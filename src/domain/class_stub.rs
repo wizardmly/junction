@@ -31,6 +31,8 @@ pub struct Member {
     pub name: String,
     pub descriptor: String,
     pub access: u16,
+    /// The generic signature (`Signature` attribute), when it has one.
+    pub signature: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +48,8 @@ pub struct ClassInfo {
     pub kotlin: bool,
     /// Its `kotlin.Metadata`.
     pub metadata: Option<Metadata>,
+    /// The generic signature: `<T:Ljava/lang/Object;>Ljava/util/AbstractList<TT;>;`.
+    pub signature: Option<String>,
 }
 
 struct Reader<'a> {
@@ -121,12 +125,16 @@ pub fn parse(data: &[u8]) -> Option<ClassInfo> {
             let access = r.u16()?;
             let name = text(r.u16()?)?;
             let descriptor = text(r.u16()?)?;
+            let mut signature = None;
             for _ in 0..r.u16()? {
-                r.u16()?;
+                let attr = r.u16()?;
                 let len = r.u32()? as usize;
-                r.bytes(len)?;
+                let body = r.bytes(len)?;
+                if len == 2 && text(attr).as_deref() == Some("Signature") {
+                    signature = text(u16::from_be_bytes([body[0], body[1]]));
+                }
             }
-            out.push(Member { name, descriptor, access });
+            out.push(Member { name, descriptor, access, signature });
         }
         Some(out)
     };
@@ -134,15 +142,19 @@ pub fn parse(data: &[u8]) -> Option<ClassInfo> {
     let methods = members(&mut r)?;
     let kotlin = utf8.iter().flatten().any(|s| s == "Lkotlin/Metadata;");
     // The class's annotations: `kotlin.Metadata`.
-    let mut metadata = None;
+    let (mut metadata, mut signature) = (None, None);
     for _ in 0..r.u16().unwrap_or(0) {
         let (Some(attr), Some(len)) = (r.u16(), r.u32()) else { break };
         let Some(body) = r.bytes(len as usize) else { break };
-        if kotlin && text(attr).as_deref() == Some("RuntimeVisibleAnnotations") {
-            metadata = kotlin_annotation(&mut Reader { data: body, at: 0 }, &text, &|ix| ints.get(ix as usize).copied().flatten());
+        match text(attr).as_deref() {
+            Some("RuntimeVisibleAnnotations") if kotlin => {
+                metadata = kotlin_annotation(&mut Reader { data: body, at: 0 }, &text, &|ix| ints.get(ix as usize).copied().flatten());
+            }
+            Some("Signature") if body.len() == 2 => signature = text(u16::from_be_bytes([body[0], body[1]])),
+            _ => {}
         }
     }
-    Some(ClassInfo { name, access, super_name, interfaces, fields, methods, kotlin, metadata })
+    Some(ClassInfo { name, access, super_name, interfaces, fields, methods, kotlin, metadata, signature })
 }
 
 /// The class file's "modified UTF-8": `\0` as two bytes, supplementary
@@ -304,6 +316,138 @@ fn signature(descriptor: &str) -> Option<(Vec<&str>, &str)> {
     Some((out, ret))
 }
 
+// --- Generic signatures (Java) ---------------------------------------------
+
+/// A `Signature` attribute read as Java source: `Ljava/util/List<+TT;>;` →
+/// `List<? extends T>`.
+struct Generic<'a> {
+    s: &'a [u8],
+    at: usize,
+}
+
+impl Generic<'_> {
+    fn peek(&self) -> Option<u8> {
+        self.s.get(self.at).copied()
+    }
+
+    fn eat(&mut self, c: u8) -> bool {
+        let yes = self.peek() == Some(c);
+        if yes {
+            self.at += 1;
+        }
+        yes
+    }
+
+    fn until(&mut self, stops: &[u8]) -> Option<String> {
+        let start = self.at;
+        while !stops.contains(&self.peek()?) {
+            self.at += 1;
+        }
+        Some(String::from_utf8_lossy(&self.s[start..self.at]).into_owned())
+    }
+
+    fn ty(&mut self) -> Option<String> {
+        let c = self.peek()?;
+        self.at += 1;
+        Some(match c {
+            b'L' => {
+                let mut text = simple(&self.until(b"<.;")?);
+                loop {
+                    if self.peek() == Some(b'<') {
+                        text.push_str(&self.args()?);
+                    }
+                    if !self.eat(b'.') {
+                        break;
+                    }
+                    text.push('.');
+                    text.push_str(&self.until(b"<.;")?);
+                }
+                self.eat(b';').then_some(())?;
+                text
+            }
+            b'T' => {
+                let name = self.until(b";")?;
+                self.at += 1;
+                name
+            }
+            b'[' => format!("{}[]", self.ty()?),
+            _ => type_name(&(c as char).to_string(), false),
+        })
+    }
+
+    fn args(&mut self) -> Option<String> {
+        self.eat(b'<').then_some(())?;
+        let mut args = Vec::new();
+        while !self.eat(b'>') {
+            args.push(match self.peek()? {
+                b'*' => {
+                    self.at += 1;
+                    "?".to_owned()
+                }
+                b'+' => {
+                    self.at += 1;
+                    format!("? extends {}", self.ty()?)
+                }
+                b'-' => {
+                    self.at += 1;
+                    format!("? super {}", self.ty()?)
+                }
+                _ => self.ty()?,
+            });
+        }
+        Some(format!("<{}>", args.join(", ")))
+    }
+
+    /// `<T:Ljava/lang/Object;U::Ljava/lang/Comparable<TU;>;>` → `<T, U extends Comparable<U>>`.
+    fn type_params(&mut self) -> Option<String> {
+        if !self.eat(b'<') {
+            return Some(String::new());
+        }
+        let mut params = Vec::new();
+        while !self.eat(b'>') {
+            let name = self.until(b":")?;
+            let mut bounds = Vec::new();
+            while self.eat(b':') {
+                // An interface-only bound leaves the class bound empty (`T::Lx;`).
+                if matches!(self.peek()?, b'L' | b'T' | b'[') {
+                    bounds.push(self.ty()?);
+                }
+            }
+            bounds.retain(|b| b != "Object");
+            params.push(if bounds.is_empty() { name } else { format!("{name} extends {}", bounds.join(" & ")) });
+        }
+        Some(format!("<{}>", params.join(", ")))
+    }
+}
+
+/// A class's type parameters, superclass and interfaces.
+fn class_generics(sig: &str) -> Option<(String, String, Vec<String>)> {
+    let mut g = Generic { s: sig.as_bytes(), at: 0 };
+    let params = g.type_params()?;
+    let super_class = g.ty()?;
+    let mut interfaces = Vec::new();
+    while g.peek().is_some() {
+        interfaces.push(g.ty()?);
+    }
+    Some((params, super_class, interfaces))
+}
+
+/// A method's type parameters, parameter types and return type.
+fn method_generics(sig: &str) -> Option<(String, Vec<String>, String)> {
+    let mut g = Generic { s: sig.as_bytes(), at: 0 };
+    let params = g.type_params()?;
+    g.eat(b'(').then_some(())?;
+    let mut types = Vec::new();
+    while !g.eat(b')') {
+        types.push(g.ty()?);
+    }
+    Some((params, types, g.ty()?))
+}
+
+fn field_generic(sig: &str) -> Option<String> {
+    Generic { s: sig.as_bytes(), at: 0 }.ty()
+}
+
 // --- Stubs -----------------------------------------------------------------
 
 fn visible(access: u16) -> bool {
@@ -452,10 +596,20 @@ fn render_java(class: &ClassInfo, all: &BTreeMap<String, ClassInfo>, indent: &st
         if class.access & ACC_ABSTRACT != 0 && class.access & ACC_INTERFACE == 0 { "abstract " } else { "" },
         if class.access & ACC_FINAL != 0 && class.access & ACC_ENUM == 0 { "final " } else { "" }
     );
-    let extends = class.super_name.as_deref().filter(|s| !matches!(*s, "java/lang/Object" | "java/lang/Enum" | "java/lang/Record")).map(|s| format!(" extends {}", simple(s))).unwrap_or_default();
-    let ifaces: Vec<String> = class.interfaces.iter().filter(|i| *i != "java/lang/annotation/Annotation").map(|i| simple(i)).collect();
+    let generics = class.signature.as_deref().and_then(class_generics);
+    let plain_super = class.super_name.as_deref().filter(|s| !matches!(*s, "java/lang/Object" | "java/lang/Enum" | "java/lang/Record"));
+    let extends = match (&generics, plain_super) {
+        (Some((_, s, _)), Some(_)) => format!(" extends {s}"),
+        (None, Some(s)) => format!(" extends {}", simple(s)),
+        _ => String::new(),
+    };
+    let ifaces: Vec<String> = match &generics {
+        Some((_, _, ifaces)) => ifaces.iter().filter(|i| *i != "Annotation").cloned().collect(),
+        None => class.interfaces.iter().filter(|i| *i != "java/lang/annotation/Annotation").map(|i| simple(i)).collect(),
+    };
     let implements = if ifaces.is_empty() { String::new() } else { format!(" {} {}", if class.access & ACC_INTERFACE != 0 { "extends" } else { "implements" }, ifaces.join(", ")) };
-    out.push_str(&format!("{indent}{mods}{keyword} {simple_name}{extends}{implements} {{\n"));
+    let type_params = generics.as_ref().map(|g| g.0.as_str()).unwrap_or_default();
+    out.push_str(&format!("{indent}{mods}{keyword} {simple_name}{type_params}{extends}{implements} {{\n"));
     let inner = format!("{indent}    ");
     if class.access & ACC_ENUM != 0 {
         let constants: Vec<&str> = class.fields.iter().filter(|f| f.access & ACC_ENUM != 0).map(|f| f.name.as_str()).collect();
@@ -464,18 +618,38 @@ fn render_java(class: &ClassInfo, all: &BTreeMap<String, ClassInfo>, indent: &st
     for f in class.fields.iter().filter(|f| visible(f.access) && f.access & ACC_ENUM == 0) {
         let stat = if f.access & ACC_STATIC != 0 { "static " } else { "" };
         let fin = if f.access & ACC_FINAL != 0 { "final " } else { "" };
-        out.push_str(&format!("{inner}{}{stat}{fin}{} {};\n", modifier(f.access, false), type_name(&f.descriptor, false), f.name));
+        let ty = f.signature.as_deref().and_then(field_generic).unwrap_or_else(|| type_name(&f.descriptor, false));
+        out.push_str(&format!("{inner}{}{stat}{fin}{ty} {};\n", modifier(f.access, false), f.name));
     }
     for m in class.methods.iter().filter(|m| visible(m.access) && m.name != "<clinit>" && !m.name.contains("lambda$")) {
-        let Some((ps, ret)) = signature(&m.descriptor) else { continue };
-        let ps = params(&ps, false, m.access & ACC_VARARGS != 0);
+        let Some((descriptor_params, ret)) = signature(&m.descriptor) else { continue };
+        let varargs = m.access & ACC_VARARGS != 0;
+        // The generic signature when it lists the same parameters (an inner
+        // class's or enum's constructor has hidden ones).
+        let generic = m.signature.as_deref().and_then(method_generics).filter(|(_, ps, _)| ps.len() == descriptor_params.len());
+        let (type_params, ps, ret) = match generic {
+            Some((type_params, types, ret)) => {
+                let last = types.len().saturating_sub(1);
+                let ps = types
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| match t.strip_suffix("[]").filter(|_| varargs && i == last) {
+                        Some(element) => format!("{element}... p{i}"),
+                        None => format!("{t} p{i}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (if type_params.is_empty() { type_params } else { format!("{type_params} ") }, ps, ret)
+            }
+            None => (String::new(), params(&descriptor_params, false, varargs), type_name(ret, false)),
+        };
         if m.name == "<init>" {
-            out.push_str(&format!("{inner}{}{simple_name}({ps}) {BODY}\n", modifier(m.access, false)));
+            out.push_str(&format!("{inner}{}{type_params}{simple_name}({ps}) {BODY}\n", modifier(m.access, false)));
             continue;
         }
         let stat = if m.access & ACC_STATIC != 0 { "static " } else { "" };
         let body = if m.access & ACC_ABSTRACT != 0 { ";".to_owned() } else { format!(" {BODY}") };
-        out.push_str(&format!("{inner}{}{stat}{} {}({ps}){body}\n", modifier(m.access, false), type_name(ret, false), m.name));
+        out.push_str(&format!("{inner}{}{stat}{type_params}{ret} {}({ps}){body}\n", modifier(m.access, false), m.name));
     }
     for nested in nested_of(class, all) {
         render_java(nested, all, &inner, out);
@@ -608,7 +782,7 @@ mod tests {
         assert!(pair.contains("    fun copy(first: A = COMPILED_CODE, second: B = COMPILED_CODE): Pair<A, B> { /* compiled code */ }"), "{pair}");
         let (_, unit) = one(load("Unit.class"), vec![]);
         assert!(unit.contains("object Unit {"), "{unit}");
-        let regex = ClassInfo { name: "kotlin/text/Regex".into(), access: ACC_PUBLIC | ACC_FINAL, super_name: Some("java/lang/Object".into()), interfaces: vec![], fields: vec![], methods: vec![], kotlin: true, metadata: None };
+        let regex = ClassInfo { name: "kotlin/text/Regex".into(), access: ACC_PUBLIC | ACC_FINAL, super_name: Some("java/lang/Object".into()), interfaces: vec![], fields: vec![], methods: vec![], kotlin: true, metadata: None, signature: None };
         let (_, text) = one(regex, vec![load("Regex$Companion.class")]);
         assert!(text.contains("class Regex {\n    companion object {\n") && text.contains("        fun escape(literal: String): String { /* compiled code */ }"), "{text}");
     }
@@ -631,6 +805,32 @@ mod tests {
         assert!(text.contains("package com.example.calc;"), "{text}");
         assert!(text.contains("public class Calc {"), "{text}");
         assert!(text.contains("    public static int add(int p0, int p1) { /* compiled code */ }"), "{text}");
+    }
+
+    #[test]
+    fn java_generic_signatures() {
+        assert_eq!(
+            class_generics("<E:Ljava/lang/Object;>Lcom/google/common/collect/ImmutableCollection<TE;>;Ljava/util/List<TE;>;Ljava/util/RandomAccess;"),
+            Some(("<E>".into(), "ImmutableCollection<E>".into(), vec!["List<E>".into(), "RandomAccess".into()]))
+        );
+        assert_eq!(
+            method_generics("<T::Ljava/lang/Comparable<-TT;>;K:Ljava/lang/Number;>(Ljava/util/Map$Entry<TK;*>;[TT;Ljava/util/List<+[I>;)Ljava/util/Optional<TT;>;"),
+            Some(("<T extends Comparable<? super T>, K extends Number>".into(), vec!["Map.Entry<K, ?>".into(), "T[]".into(), "List<? extends int[]>".into()], "Optional<T>".into()))
+        );
+        assert_eq!(field_generic("Lcom/a/Outer<TT;>.Inner<Ljava/lang/String;>;"), Some("Outer<T>.Inner<String>".into()));
+        let class = ClassInfo {
+            name: "p/Box".into(),
+            access: ACC_PUBLIC,
+            super_name: Some("java/lang/Object".into()),
+            interfaces: vec![],
+            fields: vec![Member { name: "items".into(), descriptor: "Ljava/util/List;".into(), access: ACC_PUBLIC, signature: Some("Ljava/util/List<TT;>;".into()) }],
+            methods: vec![Member { name: "of".into(), descriptor: "([Ljava/lang/Object;)Lp/Box;".into(), access: ACC_PUBLIC | ACC_STATIC | ACC_VARARGS, signature: Some("<T:Ljava/lang/Object;>([TT;)Lp/Box<TT;>;".into()) }],
+            kotlin: false,
+            metadata: None,
+            signature: Some("<T:Ljava/lang/Object;>Ljava/lang/Object;".into()),
+        };
+        let (_, text) = one(class, vec![]);
+        assert!(text.contains("public class Box<T> {") && text.contains("    public List<T> items;") && text.contains("    public static <T> Box<T> of(T... p0) { /* compiled code */ }"), "{text}");
     }
 
     #[test]
