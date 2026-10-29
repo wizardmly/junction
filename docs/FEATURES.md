@@ -1009,7 +1009,7 @@ Linux 实测（Xvfb，示例工程 app + lib）：app 的 main 清单有 INTERNE
 | 调用处：实参是表达式本身，其中用到的参数换成这次调用传的实参（复杂实参加括号），类成员前加上调用的接收者（`cart.total(10.0, 3)` → `cart.total(10.0, 3, 10.0 * cart.rate)`）；用了命名实参或省略了默认参数的 Kotlin 调用补命名实参 `amount = …` | ✅ |
 | Kotlin 默认值：参数写成 `amount: Double = price * rate`，调用处都不改 | ✅ |
 | 范围：当前文件（编辑器里一步撤销）和项目里其他含 `name(` 的 .kt / .java 文件（直接写盘并刷新） | ✅ |
-| 按名字和实参个数匹配调用（同名的其他函数也可能被改），Java 的 Declare final / 通过重载委托 / 字段改 getter、Kotlin 扩展函数的接收者、Change Signature | ⬜ |
+| 同名函数的调用按解析区分（2026-10-29，同 Change Signature）；Java 的 Declare final / 通过重载委托 / 字段改 getter、Kotlin 扩展函数的接收者、Change Signature | ⬜ |
 
 Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int)` 的 `return price * rate * count + price * rate`，选中第一处 `price * rate` 按 Ctrl+Alt+P，对话框显示 “Replace all 2 occurrences”、“3 calls of total() get the new argument”；名字 amount、类型 Double，Refactor 后签名是 `total(price: Double, count: Int, amount: Double)`，函数体是 `return amount * count + amount`，同文件的 `total(1.0, 2)` 变成 `total(1.0, 2, 1.0 * rate)`，Main.kt 的 `cart.total(10.0, 3)` 和 `cart.total(count = 1, price = 2.0)` 分别变成 `cart.total(10.0, 3, 10.0 * cart.rate)` 和 `cart.total(count = 1, price = 2.0, amount = 2.0 * cart.rate)`。
 
@@ -1101,7 +1101,8 @@ Linux 实测（Xvfb）：Kotlin 工程依赖 `com.google.code.gson:gson:2.11.0`�
 | 对话框：Name、Return type（Kotlin 留空即去掉返回类型）、参数表（Name / Type / 新增参数的 Default value (for calls)），+ − ↑ ↓ 按钮，Signature Preview，将更新的调用数；名字非法、参数重名、缺类型、新参数缺默认值时显示原因（错误行始终占位，对话框不跳动）；新增参数时焦点放到新行 | ✅ |
 | 声明：没改的参数保持原文（修饰符、默认值、注解都在），改了的按语言重写；参数原本每行一个时保持每行一个；返回类型增删改 | ✅ |
 | 调用：按新顺序排列实参，删掉的参数去掉，新参数填默认值；Kotlin 调用里原本用命名实参、或者顺序变了又有命名实参、或者省略了有默认值的参数时，后面的实参写成命名实参；函数改名时调用处一起改；其他 .kt / .java 文件里的调用直接写盘并刷新 | ✅ |
-| 按名字和参数个数匹配调用（同名同参数个数的其他函数也会被改），Java 的 `new A(…)` 构造调用、方法引用 `::name`、Kotlin 的尾随 lambda、可见性、异常列表、覆盖方法一起改、委托旧签名 | ⬜ |
+| 只改这个函数的调用（2026-10-29）：同名同参数个数的调用按 Go to Declaration 的解析判断，解析到别的类的同名方法时不改（同 Rename 的语义匹配；父类 / 子类的同名方法算这个函数，解析不出的照旧算）；Inline Function、Introduce Parameter 同样。Linux 实测：`Cart.total` 和 `Till.total` 签名相同，对 `Cart.total` 改名 `sum`，对话框显示 “1 call will be updated”，`cart.total(10.0, 3)` 变成 `cart.sum(10.0, 3)`，`till.total(1.0, 2)` 不变 | ✅ |
+| Java 的 `new A(…)` 构造调用、方法引用 `::name`、Kotlin 的尾随 lambda、可见性、异常列表、覆盖方法一起改、委托旧签名 | ⬜ |
 
 Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int): Double` 按 Ctrl+F6，改名 `sum`，把 `count` 上移，新增 `tax: Double`（调用处默认值 `0.0`），Refactor 后声明是 `fun sum(count: Int, price: Double, tax: Double): Double`，同文件的 `total(1.0, 2)` 变成 `sum(2, 1.0, 0.0)`，Main.kt 的 `cart.total(10.0, 3)` 和 `cart.total(count = 1, price = 2.0)` 变成 `cart.sum(3, 10.0, 0.0)` 和 `cart.sum(count = 1, price = 2.0, tax = 0.0)`。
 

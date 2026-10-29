@@ -488,7 +488,15 @@ impl CodeIndex {
             }
             let targets = {
                 let index = index.read().unwrap();
-                nav::definitions(&index, &path, lang, &text, offset)
+                // On a declaration's name: that declaration, not others of its name.
+                if symbol_declared_at(&index, &path, &text, offset, true) {
+                    let (word, range) = nav::word_at(&text, offset)?;
+                    let (line, col) = nav::position(&text, range.start);
+                    let s = index.file(&path)?.symbols.iter().find(|s| s.line == line && s.col == col && s.name == word)?;
+                    vec![Target { path: path.clone(), line, col, name: word, label: format!("{} · {}", s.kind.label(), lang.name()), container: s.container.clone() }]
+                } else {
+                    nav::definitions(&index, &path, lang, &text, offset)
+                }
             };
             let target = targets.first()?;
             let source = std::fs::read_to_string(root.join(&target.path)).ok()?;

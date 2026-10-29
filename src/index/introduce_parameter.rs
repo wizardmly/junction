@@ -111,6 +111,25 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<(Paramete
     Ok((plan, super::introduce::name_source(lang, node, text)))
 }
 
+/// Keeps only the calls of the function whose name is on `line` of the
+/// file `declaration`, not of another function of its name (another
+/// class's method), as far as the index tells: what Change Signature,
+/// Inline Function and Introduce Parameter update.
+pub struct OurCalls {
+    pub index: Option<std::sync::Arc<std::sync::RwLock<super::store::ProjectIndex>>>,
+    pub declaration: String,
+    pub line: u32,
+    pub name: String,
+}
+
+impl OurCalls {
+    pub fn keep(&self, path: &str, text: &str, calls: Vec<CallSite>) -> Vec<CallSite> {
+        let Some(index) = self.index.as_ref().and_then(|i| i.read().ok()) else { return calls };
+        let Some(mut same) = super::nav::SameSymbol::new(&index, &self.declaration, self.line, &self.name) else { return calls };
+        calls.into_iter().filter(|c| same.other_at(path, text, c.name_range.start).is_none()).collect()
+    }
+}
+
 /// The calls of `function` in a file, with `params` arguments (Kotlin's
 /// may leave defaults out).
 pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<CallSite> {

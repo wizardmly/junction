@@ -668,70 +668,108 @@ pub fn rename_hits(index: &ProjectIndex, root: &Path, word: &str) -> Vec<crate::
     out
 }
 
-/// Marks the code occurrences that name another symbol of the same name
-/// than the one declared at `declaration`:`line` (another class's `add`, a
-/// parameter or local), as Android Studio leaves them out of a rename. A
-/// use counts as the symbol's unless Go to Declaration resolves it only to
-/// unrelated declarations; members of the declaring type's supertypes and
-/// subtypes (overrides) count as the symbol's.
-pub fn mark_other_symbols(index: &ProjectIndex, root: &Path, declaration: &str, line: u32, word: &str, occurrences: &mut [crate::domain::rename::Occurrence]) {
-    let Some(ours) = index.file(declaration).and_then(|e| e.symbols.iter().find(|s| s.name == word && s.line == line)) else { return };
-    let ours_type = ours.kind.is_type();
-    let owner = |container: &Option<String>| container.as_deref().map(|c| c.rsplit(['.', ':']).next().unwrap_or(c).to_owned());
-    let our_owner = owner(&ours.container);
-    let mut chains: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-    let mut chain = |ty: &str| -> Vec<String> {
-        chains
+/// Tells whether a use of a name refers to the symbol declared at
+/// `declaration`:`line` or to another of the same name (another class's
+/// `add`, a parameter or local), as Android Studio's refactorings find
+/// only the symbol's references. A use counts as the symbol's unless Go
+/// to Declaration resolves it only to unrelated declarations; members of
+/// the declaring type's supertypes and subtypes (overrides) and a class's
+/// constructors count as the symbol's.
+pub struct SameSymbol<'a> {
+    index: &'a ProjectIndex,
+    declaration: String,
+    line: u32,
+    word: String,
+    is_type: bool,
+    owner: Option<String>,
+    chains: std::collections::HashMap<String, Vec<String>>,
+}
+
+fn owner_of(container: &Option<String>) -> Option<String> {
+    container.as_deref().map(|c| c.rsplit(['.', ':']).next().unwrap_or(c).to_owned())
+}
+
+impl<'a> SameSymbol<'a> {
+    /// None when nothing named `word` is declared there.
+    pub fn new(index: &'a ProjectIndex, declaration: &str, line: u32, word: &str) -> Option<Self> {
+        let ours = index.file(declaration)?.symbols.iter().find(|s| s.name == word && s.line == line)?;
+        Some(SameSymbol { index, declaration: declaration.to_owned(), line, word: word.to_owned(), is_type: ours.kind.is_type(), owner: owner_of(&ours.container), chains: Default::default() })
+    }
+
+    fn chain(&mut self, ty: &str) -> Vec<String> {
+        let index = self.index;
+        self.chains
             .entry(ty.to_owned())
             .or_insert_with(|| {
                 let supers: Vec<String> = index.symbols_named(ty).filter(|(_, _, s)| s.kind.is_type()).flat_map(|(_, _, s)| s.supers.clone()).collect();
                 super::special::super_chain(index, &supers)
             })
             .clone()
-    };
-    // A member of `container` stands for ours: the same type, or one above or below it.
-    let mut related = |container: &Option<String>| match (owner(container), &our_owner) {
-        (Some(a), Some(b)) => a == *b || chain(&a).contains(b) || chain(b).contains(&a),
-        _ => false,
-    };
-    // A class's constructors are the class.
-    let constructor_of_ours = |path: &str, kind: SymbolKind, container: &Option<String>| ours_type && kind == SymbolKind::Constructor && path == declaration && owner(container).as_deref() == Some(word);
-    let describe = |container: &Option<String>| owner(container).map_or_else(|| word.to_owned(), |c| format!("{c}.{word}"));
-    let mut texts: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
-    for o in occurrences.iter_mut().filter(|o| o.code) {
-        if o.path == declaration && o.line == line {
-            continue;
+    }
+
+    /// A member of `container` stands for ours: the same type, or one above or below it.
+    fn related(&mut self, container: &Option<String>) -> bool {
+        match (owner_of(container), self.owner.clone()) {
+            (Some(a), Some(b)) => a == b || self.chain(&a).contains(&b) || self.chain(&b).contains(&a),
+            _ => false,
         }
-        let Some(entry) = index.file(&o.path) else { continue };
+    }
+
+    /// A class's constructors are the class.
+    fn constructor_of_ours(&self, path: &str, kind: SymbolKind, container: &Option<String>) -> bool {
+        self.is_type && kind == SymbolKind::Constructor && path == self.declaration && owner_of(container).as_deref() == Some(self.word.as_str())
+    }
+
+    fn describe(&self, container: &Option<String>) -> String {
+        owner_of(container).map_or_else(|| self.word.clone(), |c| format!("{c}.{}", self.word))
+    }
+
+    /// What the name at `offset` in `path` (a Java or Kotlin file of the
+    /// project) refers to when it isn't ours; None when it is ours or
+    /// can't be told.
+    pub fn other_at(&mut self, path: &str, text: &str, offset: usize) -> Option<String> {
+        let index = self.index;
+        let entry = index.file(path)?;
         let lang = entry.lang;
         if !matches!(lang, Lang::Java | Lang::Kotlin) {
-            continue;
+            return None;
         }
+        let (line, col) = position(text, offset);
+        if path == self.declaration && line == self.line {
+            return None;
+        }
+        if super::locals::resolve(lang, text, offset).is_some_and(|l| !l.member) {
+            return Some("a parameter or local variable".into());
+        }
+        // Another declaration of the name: an override, or another symbol.
+        if let Some(s) = entry.symbols.iter().find(|s| s.name == self.word && s.line == line && s.col == col) {
+            let ours = self.constructor_of_ours(path, s.kind, &s.container) || !self.is_type && !s.kind.is_type() && self.related(&s.container);
+            return (!ours).then(|| self.describe(&s.container));
+        }
+        let targets = definitions(index, path, lang, text, offset);
+        let mine = |t: &Target| {
+            let kind = index.file(&t.path).and_then(|e| e.symbols.iter().find(|s| s.line == t.line && s.col == t.col)).map(|s| s.kind);
+            (t.path == self.declaration && t.line == self.line) || kind.is_some_and(|k| self.constructor_of_ours(&t.path, k, &t.container))
+        };
+        if targets.is_empty() || targets.iter().any(mine) {
+            return None;
+        }
+        let related = targets.iter().any(|t| self.related(&t.container));
+        (self.is_type || !related).then(|| self.describe(&targets[0].container))
+    }
+}
+
+/// Marks the code occurrences that name another symbol of the same name
+/// than the one declared at `declaration`:`line` (see [`SameSymbol`]), as
+/// Android Studio leaves them out of a rename.
+pub fn mark_other_symbols(index: &ProjectIndex, root: &Path, declaration: &str, line: u32, word: &str, occurrences: &mut [crate::domain::rename::Occurrence]) {
+    let Some(mut same) = SameSymbol::new(index, declaration, line, word) else { return };
+    let mut texts: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+    for o in occurrences.iter_mut().filter(|o| o.code) {
         let text = texts.entry(o.path.clone()).or_insert_with(|| std::fs::read_to_string(root.join(&o.path)).ok());
         let Some(text) = text.as_deref() else { continue };
         let Some(offset) = crate::domain::rename::offset_of(text, o.line, o.col) else { continue };
-        if super::locals::resolve(lang, text, offset).is_some_and(|l| !l.member) {
-            o.other = Some("a parameter or local variable".into());
-            continue;
-        }
-        // Another declaration of the name: an override, or another symbol.
-        if let Some(s) = entry.symbols.iter().find(|s| s.name == word && s.line == o.line && s.col == o.col) {
-            if !constructor_of_ours(&o.path, s.kind, &s.container) && !(!ours_type && !s.kind.is_type() && related(&s.container)) {
-                o.other = Some(describe(&s.container));
-            }
-            continue;
-        }
-        let targets = definitions(index, &o.path, lang, text, offset);
-        let mine = |t: &Target| {
-            let kind = index.file(&t.path).and_then(|e| e.symbols.iter().find(|s| s.line == t.line && s.col == t.col)).map(|s| s.kind);
-            (t.path == declaration && t.line == line) || kind.is_some_and(|k| constructor_of_ours(&t.path, k, &t.container))
-        };
-        if targets.is_empty() || targets.iter().any(mine) {
-            continue;
-        }
-        if ours_type || !targets.iter().any(|t| related(&t.container)) {
-            o.other = Some(describe(&targets[0].container));
-        }
+        o.other = same.other_at(&o.path, text, offset);
     }
 }
 

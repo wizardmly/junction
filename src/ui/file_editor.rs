@@ -1543,13 +1543,15 @@ impl FileEditor {
         let own = self.path.clone();
         // The calls here (not inside what's replaced) and in the project's other Kotlin / Java files.
         let in_occurrence = |c: &crate::domain::introduce_parameter::CallSite| plan.occurrences.iter().any(|o| o.start <= c.args_close && c.args_close < o.end);
-        let here: Vec<_> = call_sites(lang, &text, &plan.function, plan.params.len()).into_iter().filter(|c| !in_occurrence(c)).collect();
+        let name_at = text[..plan.params_close.min(text.len())].rfind(&format!("{}(", plan.function)).unwrap_or(plan.params_close);
+        let ours = self.our_calls(&text, name_at, &plan.function, cx);
+        let here: Vec<_> = ours.keep(&own, &text, call_sites(lang, &text, &plan.function, plan.params.len())).into_iter().filter(|c| !in_occurrence(c)).collect();
         let (function, params) = (plan.function.clone(), plan.params.len());
         let files = root.clone().map(|root| DiskFiles { root, repository: None });
         let task = cx.background_spawn(async move {
             let Some(root) = root else { return Vec::new() };
             let files = DiskFiles { root, repository: None };
-            update_calls::find(&files, &own, &function, &|path, text| Lang::from_path(path).map(|lang| call_sites(lang, text, &function, params)).unwrap_or_default())
+            update_calls::find(&files, &own, &function, &|path, text| ours.keep(path, text, Lang::from_path(path).map(|lang| call_sites(lang, text, &function, params)).unwrap_or_default()))
         });
         cx.spawn_in(window, async move |this, cx| {
             let elsewhere = task.await;
@@ -1589,6 +1591,16 @@ impl FileEditor {
         .detach();
     }
 
+    /// The calls of the function named at `name_at` here, not of others of its name.
+    fn our_calls(&self, text: &str, name_at: usize, name: &str, cx: &gpui_kit::App) -> crate::index::introduce_parameter::OurCalls {
+        crate::index::introduce_parameter::OurCalls {
+            index: self.code_index.as_ref().map(|i| i.read(cx).index.clone()),
+            declaration: self.path.clone(),
+            line: text[..name_at.min(text.len())].matches('\n').count() as u32,
+            name: name.to_owned(),
+        }
+    }
+
     /// Change Signature (Ctrl+F6): the function at the caret's name, return
     /// type and parameters through the dialog; the declaration, its body's
     /// uses of renamed parameters and the calls in the project follow.
@@ -1611,7 +1623,8 @@ impl FileEditor {
         let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(|r| r.to_path_buf()));
         let own = self.path.clone();
         let name = signature.name.clone();
-        let here = call_sites(lang, &text, &name, signature.params.len());
+        let ours = self.our_calls(&text, signature.name_range.start, &name, cx);
+        let here = ours.keep(&own, &text, call_sites(lang, &text, &name, signature.params.len()));
         let params = signature.params.len();
         let files = root.clone().map(|root| DiskFiles { root, repository: None });
         let task = cx.background_spawn({
@@ -1619,7 +1632,7 @@ impl FileEditor {
             async move {
                 let Some(root) = root else { return Vec::new() };
                 let files = DiskFiles { root, repository: None };
-                update_calls::find(&files, &own, &name, &|path, text| Lang::from_path(path).map(|lang| call_sites(lang, text, &name, params)).unwrap_or_default())
+                update_calls::find(&files, &own, &name, &|path, text| ours.keep(path, text, Lang::from_path(path).map(|lang| call_sites(lang, text, &name, params)).unwrap_or_default()))
             }
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -1672,14 +1685,16 @@ impl FileEditor {
         let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(|r| r.to_path_buf()));
         let own = self.path.clone();
         let (function, params) = (plan.function.clone(), plan.params.len());
-        let here = call_sites(lang, &text, &function, params);
+        let name_at = declaration.start + text[declaration.clone()].find(&format!("{function}(")).unwrap_or(0);
+        let ours = self.our_calls(&text, name_at, &function, cx);
+        let here = ours.keep(&own, &text, call_sites(lang, &text, &function, params));
         // Invoked on a call (not the declaration): that one can go alone.
         let this_call = here.iter().find(|c| c.name_range.start <= offset && offset <= c.name_range.end && !declaration.contains(&offset)).cloned();
         let files = root.clone().map(|root| DiskFiles { root, repository: None });
         let task = cx.background_spawn(async move {
             let Some(root) = root else { return Vec::new() };
             let files = DiskFiles { root, repository: None };
-            update_calls::find(&files, &own, &function, &|path, text| Lang::from_path(path).map(|lang| call_sites(lang, text, &function, params)).unwrap_or_default())
+            update_calls::find(&files, &own, &function, &|path, text| ours.keep(path, text, Lang::from_path(path).map(|lang| call_sites(lang, text, &function, params)).unwrap_or_default()))
         });
         cx.spawn_in(window, async move |this, cx| {
             let elsewhere = task.await;
