@@ -594,7 +594,7 @@ impl CodeIndex {
                 .map(|at| {
                     let (line, col) = nav::position(&text, at);
                     let line_text = text.split('\n').nth(line as usize).unwrap_or_default().trim().to_owned();
-                    Occurrence { path: path.clone(), line, col, text: line_text, code: true }
+                    Occurrence { path: path.clone(), line, col, text: line_text, code: true, other: None }
                 })
                 .collect();
             return Task::ready(Ok(RenameTarget { name: word, kind: "variable".into(), declaration: path, occurrences }));
@@ -626,10 +626,12 @@ impl CodeIndex {
                 // The server's for code; the index's in comments and strings.
                 occurrences.retain(|o| !o.code);
                 occurrences.extend(hits);
+            } else {
+                nav::mark_other_symbols(&index, &root, &declaration, line, &word, &mut occurrences);
             }
             // A `buildSrc` name's uses in Groovy build scripts (not indexed).
             let groovy = super::groovy_scripts::usages(&index, &root, &word, &[(declaration.clone(), line)]);
-            occurrences.extend(groovy.into_iter().map(|u| crate::domain::rename::Occurrence { path: u.path, line: u.line, col: u.col, text: u.text, code: true }));
+            occurrences.extend(groovy.into_iter().map(|u| crate::domain::rename::Occurrence { path: u.path, line: u.line, col: u.col, text: u.text, code: true, other: None }));
             occurrences.sort_by(|a, b| (&a.path, a.line, a.col).cmp(&(&b.path, b.line, b.col)));
             if occurrences.is_empty() {
                 return Err(NOT_A_NAME.into());
@@ -971,7 +973,7 @@ fn server_references(lsp: &LspManager, root: &Path, lang: Lang, path: &str, text
             let rel = l.path.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/");
             let source = if rel == path { text.to_owned() } else { sources.entry(l.path.clone()).or_insert_with(|| std::fs::read_to_string(&l.path).unwrap_or_default()).clone() };
             let line_text = source.split('\n').nth(l.line as usize)?.trim().to_owned();
-            Some(Occurrence { path: rel, line: l.line, col: l.col, text: line_text, code: true })
+            Some(Occurrence { path: rel, line: l.line, col: l.col, text: line_text, code: true, other: None })
         })
         .collect();
     Some(out)

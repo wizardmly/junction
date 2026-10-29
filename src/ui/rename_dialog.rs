@@ -94,7 +94,8 @@ impl Render for RenameView {
                     })))
                     .child(gpui_kit::component::Icon::new(common::file_icon(&o.path)).xsmall().text_color(palette.text_secondary))
                     .child(div().flex_none().text_sm().text_color(palette.text_secondary).child(format!("{}:{}", o.path.rsplit('/').next().unwrap_or(&o.path), o.line + 1)))
-                    .child(div().text_sm().truncate().when(!o.code, |el| el.text_color(palette.text_secondary)).child(o.text.clone())),
+                    .child(div().text_sm().truncate().when(!o.code, |el| el.text_color(palette.text_secondary)).child(o.text.clone()))
+                    .when_some(o.other.as_ref(), |el, other| el.child(div().flex_none().text_xs().text_color(palette.text_secondary).child(format!("(another symbol: {other})")))),
             );
         }
         let local = self.target.kind == "variable";
@@ -131,7 +132,8 @@ pub fn open(target: RenameTarget, on_ok: impl Fn(RenameRequest, &mut Window, &mu
             }
         });
         // Comments and strings count once searched in.
-        let checked = vec![true; target.occurrences.len()];
+        // Other symbols of the same name start unchecked.
+        let checked = target.occurrences.iter().map(|o| o.other.is_none()).collect();
         RenameView { target, name, checked, comments: false, rename_file: true, _subscription }
     });
     let focus = view.read(cx).name.clone();
