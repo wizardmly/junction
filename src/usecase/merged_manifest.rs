@@ -63,10 +63,10 @@ pub fn merged_manifest(root: &Path, manifest: &Path, variant_sets: &[String], aa
     let label = |p: &Path| p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/");
     let build_file = |dir: &Path| [dir.join("build.gradle.kts"), dir.join("build.gradle")].into_iter().find_map(|p| read(&p).map(|t| (p, t)));
     let mut sources = Vec::new();
-    let add = |path: PathBuf, sources: &mut Vec<ManifestSource>| {
+    let add = |path: PathBuf, build: BuildValues, sources: &mut Vec<ManifestSource>| {
         if let Some(text) = read(&path) {
             if !sources.iter().any(|s: &ManifestSource| s.label == label(&path)) {
-                sources.push(ManifestSource { label: label(&path), text });
+                sources.push(ManifestSource { label: label(&path), text, build });
             }
         }
     };
@@ -80,9 +80,9 @@ pub fn merged_manifest(root: &Path, manifest: &Path, variant_sets: &[String], aa
         vec![set]
     };
     for overlay in overlays {
-        add(module.join("src").join(&overlay).join("AndroidManifest.xml"), &mut sources);
+        add(module.join("src").join(&overlay).join("AndroidManifest.xml"), BuildValues::default(), &mut sources);
     }
-    add(module.join("src/main/AndroidManifest.xml"), &mut sources);
+    add(module.join("src/main/AndroidManifest.xml"), BuildValues::default(), &mut sources);
     // The library modules, breadth first.
     let (build_path, build_text) = build_file(&module).unwrap_or_default();
     let mut queue = module_dependencies(&build_text);
@@ -94,14 +94,14 @@ pub fn merged_manifest(root: &Path, manifest: &Path, variant_sets: &[String], aa
         }
         seen.push(dep.clone());
         let dir = root.join(&dep);
-        add(dir.join("src/main/AndroidManifest.xml"), &mut sources);
-        if let Some((_, text)) = build_file(&dir) {
-            queue.extend(module_dependencies(&text));
-        }
+        // Its namespace and SDK levels come from its build file.
+        let text = build_file(&dir).map(|(_, t)| t).unwrap_or_default();
+        add(dir.join("src/main/AndroidManifest.xml"), build_values(&text), &mut sources);
+        queue.extend(module_dependencies(&text));
     }
     for (name, text) in aars {
         if !sources.iter().any(|s| s.label == *name) {
-            sources.push(ManifestSource { label: name.clone(), text: text.clone() });
+            sources.push(ManifestSource { label: name.clone(), text: text.clone(), ..Default::default() });
         }
     }
     let build_label = if build_text.is_empty() { "build.gradle".into() } else { label(&build_path) };

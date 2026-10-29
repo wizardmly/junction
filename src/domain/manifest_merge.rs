@@ -5,7 +5,9 @@
 //! attributes winning (a different value is a conflict unless it says
 //! `tools:replace`), `tools:node="remove" | "removeAll" | "replace"` and
 //! `tools:remove`, `${placeholders}`, and the build file's values injected
-//! (`package`, `versionCode` / `versionName`, `<uses-sdk>`). Each line of
+//! (`package`, `versionCode` / `versionName`, `<uses-sdk>`); a library's
+//! minSdk above the app's is an error unless `tools:overrideLibrary` names
+//! it, and an old library's implied permissions are added. Each line of
 //! the result knows the file it came from, for the view's colors.
 
 use std::fmt::Write as _;
@@ -13,11 +15,14 @@ use std::fmt::Write as _;
 const ANDROID: &str = "http://schemas.android.com/apk/res/android";
 const TOOLS: &str = "http://schemas.android.com/tools";
 
-/// A manifest to merge: what the view calls it, and its text.
-#[derive(Clone, Debug)]
+/// A manifest to merge: what the view calls it, and its text; a library
+/// module's build file values (its namespace, minSdk and targetSdk, which
+/// its own manifest leaves out).
+#[derive(Clone, Debug, Default)]
 pub struct ManifestSource {
     pub label: String,
     pub text: String,
+    pub build: BuildValues,
 }
 
 /// What the build file says.
@@ -290,10 +295,51 @@ pub fn merge(sources: &[ManifestSource], main: usize, build: &BuildValues, build
     for overlay in trees[..main].iter().rev() {
         merge_higher(&mut root, overlay, &labels, &mut errors);
     }
-    for library in &trees[main + 1..] {
-        // A library's own package is its namespace, not the app's.
+    let sdk_of = |root: &Element, name: &str| root.children.iter().find(|c| c.tag == "uses-sdk").and_then(|s| s.attr(name)).map(str::to_owned);
+    let level = |v: &Option<String>| v.as_deref().and_then(|v| v.parse::<u32>().ok());
+    let app_min = level(&build.min_sdk.clone().or_else(|| sdk_of(&root, "android:minSdkVersion"))).unwrap_or(1);
+    let app_target = level(&build.target_sdk.clone().or_else(|| sdk_of(&root, "android:targetSdkVersion"))).unwrap_or(app_min);
+    let overridden: Vec<String> = sdk_of(&root, "tools:overrideLibrary").map(|r| r.split(',').map(|s| s.trim().to_owned()).collect()).unwrap_or_default();
+    for (library, source) in trees[main + 1..].iter().zip(&sources[main + 1..]) {
+        let ix = library.source;
+        let lib_min = level(&source.build.min_sdk.clone().or_else(|| sdk_of(library, "android:minSdkVersion"))).unwrap_or(1);
+        let lib_target = level(&source.build.target_sdk.clone().or_else(|| sdk_of(library, "android:targetSdkVersion"))).unwrap_or(lib_min);
+        let package = source.build.namespace.clone().or_else(|| library.attr("package").map(str::to_owned)).unwrap_or_default();
+        if lib_min > app_min && !overridden.contains(&package) {
+            errors.push(format!(
+                "uses-sdk:minSdkVersion {app_min} cannot be smaller than version {lib_min} declared in library [{}] as the library might be using APIs not available in {app_min}. Suggestion: use a compatible library with a minSdk of at most {app_min}, or increase this project's minSdk version to at least {lib_min}, or use tools:overrideLibrary=\"{package}\" to force usage (may lead to runtime failures)",
+                labels[ix]
+            ));
+        }
+        // A library's own package is its namespace, not the app's; its
+        // <uses-sdk> isn't merged.
         let mut lower = library.clone();
         lower.attrs.retain(|a| a.name != "package");
+        lower.children.retain(|c| c.tag != "uses-sdk");
+        // The permissions an old library has implicitly, which the app
+        // targeting a newer platform must ask for.
+        let has = |lower: &Element, name: &str| lower.children.iter().any(|c| c.tag == "uses-permission" && c.attr("android:name") == Some(name));
+        let mut implied = Vec::new();
+        if lib_target < 4 && app_target >= 4 {
+            implied.extend(["android.permission.WRITE_EXTERNAL_STORAGE", "android.permission.READ_PHONE_STATE"]);
+        }
+        if lib_target < 16 && app_target >= 16 {
+            if has(&lower, "android.permission.READ_CONTACTS") {
+                implied.push("android.permission.READ_CALL_LOG");
+            }
+            if has(&lower, "android.permission.WRITE_CONTACTS") {
+                implied.push("android.permission.WRITE_CALL_LOG");
+            }
+            if has(&lower, "android.permission.WRITE_EXTERNAL_STORAGE") || implied.contains(&"android.permission.WRITE_EXTERNAL_STORAGE") {
+                implied.push("android.permission.READ_EXTERNAL_STORAGE");
+            }
+        }
+        for name in implied {
+            if !has(&lower, name) {
+                let attrs = vec![Attr { name: "android:name".into(), value: name.into(), source: ix, line: None }];
+                lower.children.push(Element { tag: "uses-permission".into(), attrs, children: Vec::new(), source: ix, line: None });
+            }
+        }
         merge_into(&mut root, &lower, &labels, &mut errors);
     }
     // The build file's values.
@@ -343,7 +389,7 @@ mod tests {
     const NS: &str = r#"xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools""#;
 
     fn source(label: &str, body: &str) -> ManifestSource {
-        ManifestSource { label: label.into(), text: format!("<manifest {NS}>{body}</manifest>") }
+        ManifestSource { label: label.into(), text: format!("<manifest {NS}>{body}</manifest>"), ..Default::default() }
     }
 
     #[test]
@@ -402,6 +448,31 @@ mod tests {
         let line_of = |needle: &str| merged.lines.iter().find(|l| l.text.contains(needle)).unwrap().line;
         assert_eq!((line_of("CAMERA"), line_of("minSdkVersion")), (Some(1), None));
         assert!(roxmltree::Document::parse(&joined).is_ok(), "{joined}");
+    }
+
+    #[test]
+    fn checks_the_libraries_sdk_levels() {
+        let build = BuildValues { min_sdk: Some("24".into()), target_sdk: Some("35".into()), ..Default::default() };
+        let main = source("app", "<application/>");
+        let old = ManifestSource {
+            build: BuildValues { namespace: Some("com.old".into()), min_sdk: Some("26".into()), target_sdk: Some("3".into()), ..Default::default() },
+            ..source("old", r#"<uses-permission android:name="android.permission.READ_CONTACTS"/>"#)
+        };
+        let aar = source("g:aar:1", r#"<uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34"/><uses-permission android:name="android.permission.INTERNET"/>"#);
+        let merged = merge(&[main, old.clone(), aar], 0, &build, "b").unwrap();
+        assert_eq!(merged.errors.len(), 1, "{:?}", merged.errors);
+        assert!(merged.errors[0].starts_with("uses-sdk:minSdkVersion 24 cannot be smaller than version 26 declared in library [old]") && merged.errors[0].contains("tools:overrideLibrary=\"com.old\""), "{}", merged.errors[0]);
+        let joined: String = merged.lines.iter().map(|l| format!("{}\n", l.text)).collect();
+        // The old library's implied permissions; the AAR's <uses-sdk> isn't merged.
+        for p in ["WRITE_EXTERNAL_STORAGE", "READ_PHONE_STATE", "READ_CALL_LOG", "READ_EXTERNAL_STORAGE"] {
+            assert!(joined.contains(&format!("android.permission.{p}")), "{p}: {joined}");
+        }
+        assert!(!joined.contains("WRITE_CALL_LOG") && !joined.contains("\"21\""), "{joined}");
+        let source_of = |needle: &str| merged.lines.iter().find(|l| l.text.contains(needle)).map(|l| merged.sources[l.source].clone()).unwrap();
+        assert_eq!(source_of("READ_PHONE_STATE"), "old");
+        // tools:overrideLibrary on the app's <uses-sdk>.
+        let main = source("app", r#"<uses-sdk tools:overrideLibrary="com.other, com.old"/><application/>"#);
+        assert!(merge(&[main, old], 0, &build, "b").unwrap().errors.is_empty());
     }
 
     #[test]
