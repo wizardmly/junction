@@ -214,6 +214,10 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
     if kinds.iter().any(|k| k.0) && (as_type || !call) {
         let mut keep = kinds.iter().map(|k| if as_type { k.0 } else { !k.1 });
         candidates.retain(|_| keep.next().unwrap_or(true));
+    } else if call && lang == Lang::Java && kinds.iter().any(|k| k.1) && text[..range.start].trim_end().strip_suffix("new").is_some_and(|b| !b.ends_with(is_word_char)) {
+        // `new A(…)` calls a constructor: go there, as IntelliJ does.
+        let mut keep = kinds.iter().map(|k| k.1);
+        candidates.retain(|_| keep.next().unwrap_or(true));
     }
     // What the file's module and source set can't see (another module's
     // class of the same name, a test's helper) counts only when nothing
@@ -228,6 +232,18 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
             let in_package = |t: &Target| format!("/{}", t.path.replace('\\', "/")).contains(&dir);
             if candidates.iter().any(|(_, t)| in_package(t)) {
                 candidates.retain(|(_, t)| in_package(t));
+            }
+        } else {
+            // A class name elsewhere, as the compiler resolves it: a
+            // qualified `p.Name`, a single-type import, the file's own
+            // package, then `import p.*`.
+            let type_like = |t: &Target| index.file(&t.path).and_then(|e| e.symbols.iter().find(|s| s.line == t.line && s.col == t.col)).is_some_and(|s| s.kind.is_type() || s.kind == super::symbols::SymbolKind::Constructor);
+            for packages in jvm_type_scopes(text, range.start, &word) {
+                let inside = |t: &Target| packages.iter().any(|p| in_jvm_package(&t.path, p));
+                if candidates.iter().any(|(_, t)| type_like(t) && inside(t)) {
+                    candidates.retain(|(_, t)| !type_like(t) || inside(t));
+                    break;
+                }
             }
         }
     }
@@ -486,6 +502,52 @@ pub fn import_hints(lang: Lang, text: &str) -> Vec<String> {
 
 /// The package of a JVM `import a.b.Name` whose last segment is the word
 /// at `start`, as a path: "a/b".
+/// Where a JVM type named `word` at `start` is looked for, in order (each a
+/// `/`-separated package, or an outer class `a/Outer`).
+fn jvm_type_scopes(text: &str, start: usize, word: &str) -> Vec<Vec<String>> {
+    use std::sync::LazyLock;
+    static IMPORT: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?m)^\s*import\s+([\w.]+?)(\.\*)?\s*(?:;|$)").unwrap());
+    static PACKAGE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?m)^\s*package\s+([\w.]+)").unwrap());
+    let mut out = Vec::new();
+    // `a.b.Name`: a lowercase dotted prefix is a package.
+    let before = &text[..start];
+    if let Some(prefix) = before.strip_suffix('.') {
+        let from = prefix.rfind(|c: char| !(is_word_char(c) || c == '.')).map_or(0, |i| i + 1);
+        let qualified = &prefix[from..];
+        if !qualified.is_empty() && qualified.split('.').all(|s| s.starts_with(|c: char| c.is_ascii_lowercase())) {
+            out.push(vec![qualified.replace('.', "/")]);
+        }
+    }
+    let (mut single, mut star) = (Vec::new(), Vec::new());
+    for c in IMPORT.captures_iter(text) {
+        let path = c[1].replace('.', "/");
+        if c.get(2).is_some() {
+            star.push(path);
+        } else if let Some((parent, name)) = path.rsplit_once('/') {
+            if name == word {
+                single.push(parent.to_owned());
+            }
+        }
+    }
+    out.push(single);
+    if let Some(c) = PACKAGE.captures(text) {
+        out.push(vec![c[1].replace('.', "/")]);
+    }
+    out.push(star);
+    out.retain(|p| !p.is_empty());
+    out
+}
+
+/// Whether the file at `path` declares into `package` (`a/b`), by its
+/// folders; `a/Outer` also takes the classes nested in `a/Outer.java`.
+fn in_jvm_package(path: &str, package: &str) -> bool {
+    let path = format!("/{}", path.replace('\\', "/"));
+    let suffix = format!("/{package}");
+    let (parent, file) = path.rsplit_once('/').unwrap_or(("", &path));
+    let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
+    parent.ends_with(&suffix) || format!("{parent}/{stem}").ends_with(&suffix)
+}
+
 fn imported_package(text: &str, start: usize, word: &str) -> Option<String> {
     let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
     let line = &text[line_start..start];
@@ -681,6 +743,7 @@ pub struct SameSymbol<'a> {
     line: u32,
     word: String,
     is_type: bool,
+    is_constructor: bool,
     owner: Option<String>,
     chains: std::collections::HashMap<String, Vec<String>>,
 }
@@ -693,7 +756,7 @@ impl<'a> SameSymbol<'a> {
     /// None when nothing named `word` is declared there.
     pub fn new(index: &'a ProjectIndex, declaration: &str, line: u32, word: &str) -> Option<Self> {
         let ours = index.file(declaration)?.symbols.iter().find(|s| s.name == word && s.line == line)?;
-        Some(SameSymbol { index, declaration: declaration.to_owned(), line, word: word.to_owned(), is_type: ours.kind.is_type(), owner: owner_of(&ours.container), chains: Default::default() })
+        Some(SameSymbol { index, declaration: declaration.to_owned(), line, word: word.to_owned(), is_type: ours.kind.is_type(), is_constructor: ours.kind == SymbolKind::Constructor, owner: owner_of(&ours.container), chains: Default::default() })
     }
 
     fn chain(&mut self, ty: &str) -> Vec<String> {
@@ -749,13 +812,17 @@ impl<'a> SameSymbol<'a> {
         let targets = definitions(index, path, lang, text, offset);
         let mine = |t: &Target| {
             let kind = index.file(&t.path).and_then(|e| e.symbols.iter().find(|s| s.line == t.line && s.col == t.col)).map(|s| s.kind);
-            (t.path == self.declaration && t.line == self.line) || kind.is_some_and(|k| self.constructor_of_ours(&t.path, k, &t.container))
+            (t.path == self.declaration && t.line == self.line)
+                || kind.is_some_and(|k| self.constructor_of_ours(&t.path, k, &t.container))
+                // `new A(…)` names the class: ours when we're one of its constructors.
+                || self.is_constructor && t.path == self.declaration && kind.is_some_and(|k| k.is_type()) && self.owner.as_deref() == Some(self.word.as_str())
         };
         if targets.is_empty() || targets.iter().any(mine) {
             return None;
         }
         let related = targets.iter().any(|t| self.related(&t.container));
-        (self.is_type || !related).then(|| self.describe(&targets[0].container))
+        // Constructors aren't inherited: another class's of the same name is another symbol.
+        (self.is_type || self.is_constructor || !related).then(|| self.describe(&targets[0].container))
     }
 }
 
@@ -1238,7 +1305,10 @@ mod tests {
     }
 
     fn project(files: &[(&str, &str)]) -> (std::path::PathBuf, ProjectIndex) {
-        let dir = std::env::temp_dir().join(format!("junction-nav-{}-{}", std::process::id(), files.len()));
+        // One folder per call: tests run in parallel.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("junction-nav-{}-{n}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).output().unwrap();
@@ -1278,6 +1348,48 @@ mod tests {
         let mut found = rename_hits(&index, &dir, "Calc");
         mark_other_symbols(&index, &dir, "ex/Calc.kt", 2, "Calc", &mut found);
         assert!(found.iter().all(|o| o.other.is_none()), "{found:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_constructors_calls_are_its_own() {
+        let boxed = "package a;\n\npublic class Box {\n    public Box(int size) {}\n    public Box() { this(1); }\n}\n";
+        let other = "package b;\n\npublic class Box {\n    public Box(int size) {}\n}\n";
+        let uses = "package a;\n\nclass Use extends Box {\n    Use() { super(2); }\n    Box make() { return new Box(3); }\n}\n";
+        let theirs = "package b;\n\nclass Theirs {\n    Box make() { return new Box(4); }\n}\n";
+        let (dir, index) = project(&[("a/Box.java", boxed), ("b/Box.java", other), ("a/Use.java", uses), ("b/Theirs.java", theirs)]);
+        let mut same = SameSymbol::new(&index, "a/Box.java", 3, "Box").unwrap();
+        let mut other_at = |path: &str, text: &str| -> Vec<Option<String>> {
+            let calls = crate::index::introduce_parameter::call_sites(Lang::Java, text, "Box", 1);
+            calls.iter().map(|c| same.other_at(path, text, c.name_range.start)).collect()
+        };
+        assert_eq!(other_at("a/Use.java", uses), [None, None]);
+        assert_eq!(other_at("a/Box.java", boxed), [None]);
+        assert_eq!(other_at("b/Theirs.java", theirs), [Some("Box.Box".to_owned())]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tells_same_named_classes_apart_by_package() {
+        let a = "package a;\n\npublic class Box {\n    public Box() {}\n}\n";
+        let b = "package b;\n\npublic class Box {}\n";
+        let c = "package c;\n\npublic class Outer {\n    public static class Box {}\n}\n";
+        let same = "package a;\n\nclass Use { Box box; }\n";
+        let single = "package a;\n\nimport b.Box;\n\nclass Use { Box box; }\n";
+        let star = "package d;\n\nimport b.*;\n\nclass Use { Box box; }\n";
+        let qualified = "package a;\n\nclass Use { b.Box box; }\n";
+        let nested = "package a\n\nimport c.Outer.Box\n\nval box: Box? = null\n";
+        let (dir, index) = project(&[("a/Box.java", a), ("b/Box.java", b), ("c/Outer.java", c)]);
+        let resolve = |path: &str, lang: Lang, text: &str| definitions(&index, path, lang, text, text.rfind("Box").unwrap()).into_iter().map(|t| t.path).collect::<Vec<_>>();
+        assert_eq!(resolve("a/Use.java", Lang::Java, same), ["a/Box.java"]);
+        assert_eq!(resolve("a/Use.java", Lang::Java, single), ["b/Box.java"]);
+        assert_eq!(resolve("d/Use.java", Lang::Java, star), ["b/Box.java"]);
+        assert_eq!(resolve("a/Use.java", Lang::Java, qualified), ["b/Box.java"]);
+        assert_eq!(resolve("a/Use.kt", Lang::Kotlin, nested), ["c/Outer.java"]);
+        // `new Box(…)` goes to the constructor.
+        let call = "package a;\n\nclass Use { Object box = new Box(); }\n";
+        let targets = definitions(&index, "a/Use.java", Lang::Java, call, call.rfind("Box").unwrap());
+        assert_eq!(targets.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(), ["constructor · Java"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 

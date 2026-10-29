@@ -17,13 +17,12 @@ pub struct CallingFile {
 /// The project's other Kotlin and Java files calling `function`; `sites`
 /// finds the calls in a file's text.
 pub fn find(files: &dyn ProjectFiles, except: &str, function: &str, sites: &dyn Fn(&str, &str) -> Vec<CallSite>) -> Vec<CallingFile> {
-    let needle = format!("{function}(");
     files
         .list()
         .into_iter()
         .filter(|f| f != except && (f.ends_with(".kt") || f.ends_with(".java")))
         .filter_map(|path| {
-            let text = files.read(&path).ok().filter(|t| t.contains(&needle))?;
+            let text = files.read(&path).ok().filter(|t| t.contains(function))?;
             let calls = sites(&path, &text);
             (!calls.is_empty()).then_some(CallingFile { path, text, calls })
         })
