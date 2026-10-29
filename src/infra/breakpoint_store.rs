@@ -158,16 +158,23 @@ pub struct SavedExceptionBreakpoint {
     pub caught: bool,
     #[serde(default = "enabled")]
     pub uncaught: bool,
+    /// Stops only when this holds, with the exception as `this`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    /// Class filters: where it's thrown, `com.a.*` included, `-com.a.B`
+    /// excluded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<String>,
 }
 
 impl SavedExceptionBreakpoint {
     /// IntelliJ's "Any exception": there, off, caught and uncaught.
     pub fn any() -> Self {
-        Self { class: String::new(), enabled: false, caught: true, uncaught: true }
+        Self { class: String::new(), enabled: false, caught: true, uncaught: true, condition: None, filters: Vec::new() }
     }
 
     pub fn new(class: &str) -> Self {
-        Self { class: class.to_owned(), enabled: true, caught: true, uncaught: true }
+        Self { class: class.to_owned(), enabled: true, caught: true, uncaught: true, condition: None, filters: Vec::new() }
     }
 }
 

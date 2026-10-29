@@ -123,6 +123,8 @@ pub struct BreakpointsView {
     selected: Option<(String, u32)>,
     condition: Entity<InputState>,
     log_expression: Entity<InputState>,
+    /// An exception breakpoint's Class filters, space-separated.
+    class_filters: Entity<InputState>,
     /// "Evaluate and log" is on (its expression may still be empty).
     log_on: bool,
     /// The source lines, by file, for the list's second line.
@@ -169,15 +171,28 @@ impl BreakpointsView {
         self.exceptions.iter().find(|e| &e.class == class)
     }
 
-    fn select_exception(&mut self, class: String, cx: &mut Context<Self>) {
-        self.apply(|_| {}, cx);
+    fn select_exception(&mut self, class: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_fields(cx);
         self.selected = None;
         self.exception = Some(class);
+        self.load_fields(window, cx);
         cx.notify();
+    }
+
+    /// The text fields into the selected breakpoint, line or exception.
+    fn commit_fields(&mut self, cx: &mut Context<Self>) {
+        if self.exception.is_some() {
+            self.apply_exception(|_| {}, cx);
+        } else {
+            self.apply(|_| {}, cx);
+        }
     }
 
     fn apply_exception(&mut self, change: impl FnOnce(&mut SavedExceptionBreakpoint), cx: &mut Context<Self>) {
         let Some(mut e) = self.current_exception().cloned() else { return };
+        let condition = self.condition.read(cx).value().trim().to_owned();
+        e.condition = (!condition.is_empty()).then_some(condition);
+        e.filters = self.class_filters.read(cx).value().split([' ', ',', ';']).filter(|f| !f.is_empty()).map(str::to_owned).collect();
         change(&mut e);
         self.service.update(cx, |s, cx| s.set_exception_breakpoint(e, cx));
         self.refresh(cx);
@@ -187,7 +202,7 @@ impl BreakpointsView {
     /// "+": a field for the new exception breakpoint's class.
     fn start_adding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Exception class, e.g. java.lang.IllegalStateException"));
-        self._subscriptions.push(cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
+        self._subscriptions.push(cx.subscribe_in(&input, window, |this, input, event: &InputEvent, window, cx| {
             if !matches!(event, InputEvent::PressEnter { .. }) {
                 return;
             }
@@ -203,7 +218,7 @@ impl BreakpointsView {
             if !class.is_empty() && class.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '$') {
                 this.service.update(cx, |s, cx| s.set_exception_breakpoint(SavedExceptionBreakpoint::new(&class), cx));
                 this.refresh(cx);
-                this.select_exception(class, cx);
+                this.select_exception(class, window, cx);
             }
             cx.notify();
         }));
@@ -219,6 +234,13 @@ impl BreakpointsView {
 
     /// The fields into the selected breakpoint's text properties.
     fn load_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(e) = self.current_exception() {
+            let (condition, filters) = (e.condition.clone().unwrap_or_default(), e.filters.join(" "));
+            self.log_on = false;
+            self.condition.update(cx, |s, cx| s.set_value(condition, window, cx));
+            self.class_filters.update(cx, |s, cx| s.set_value(filters, window, cx));
+            return;
+        }
         let (condition, log) = self.current().map(|b| (b.condition.clone().unwrap_or_default(), b.log_expression.clone().unwrap_or_default())).unwrap_or_default();
         self.log_on = self.current().is_some_and(|b| b.log_expression.is_some());
         self.condition.update(cx, |s, cx| s.set_value(condition, window, cx));
@@ -238,7 +260,7 @@ impl BreakpointsView {
     }
 
     fn select(&mut self, file: String, line: u32, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply(|_| {}, cx);
+        self.commit_fields(cx);
         self.exception = None;
         self.selected = Some((file, line));
         self.load_fields(window, cx);
@@ -250,6 +272,7 @@ impl BreakpointsView {
             self.service.update(cx, |s, cx| s.remove_exception_breakpoint(&class, cx));
             self.exception = Some(String::new());
             self.refresh(cx);
+            self.load_fields(window, cx);
             cx.notify();
             return;
         }
@@ -351,14 +374,14 @@ impl BreakpointsView {
                     .whitespace_nowrap()
                     .when(selected, |el| el.bg(palette.selection))
                     .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
-                    .child(Checkbox::new(("exception-enabled", ix)).checked(enabled).on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                    .child(Checkbox::new(("exception-enabled", ix)).checked(enabled).on_click(cx.listener(move |this, checked: &bool, window, cx| {
                         let checked = *checked;
-                        this.select_exception(class2.clone(), cx);
+                        this.select_exception(class2.clone(), window, cx);
                         this.apply_exception(|e| e.enabled = checked, cx);
                     })))
                     .child(Icon::new(if enabled { icons::BREAKPOINT_EXCEPTION } else { icons::BREAKPOINT_EXCEPTION_DISABLED }).xsmall())
                     .child(div().overflow_hidden().text_ellipsis().child(exception_title(e)))
-                    .on_click(cx.listener(move |this, _, _, cx| this.select_exception(class.clone(), cx))),
+                    .on_click(cx.listener(move |this, _, window, cx| this.select_exception(class.clone(), window, cx))),
             );
         }
         list
@@ -387,6 +410,8 @@ impl BreakpointsView {
                 let checked = *checked;
                 this.apply_exception(|e| e.uncaught = checked, cx);
             })))
+            .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Condition (the exception is this):")).child(Input::new(&self.condition).small()))
+            .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Class filters (where it's thrown; - excludes):")).child(Input::new(&self.class_filters).small()))
             .into_any_element()
     }
 
@@ -516,13 +541,14 @@ pub fn open(at: Option<(String, u32)>, window: &mut Window, cx: &mut App) {
         let condition = cx.new(|cx| InputState::new(window, cx).placeholder("Condition, e.g. i > 10"));
         let log_expression = cx.new(|cx| InputState::new(window, cx).placeholder("Expression, e.g. \"x = \" + x"));
         // Text applies when the field is left or Enter is pressed.
+        let class_filters = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. com.example.* -com.example.Internal"));
         fn commit(this: &mut BreakpointsView, _: Entity<InputState>, event: &InputEvent, cx: &mut Context<BreakpointsView>) {
             if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                this.apply(|_| {}, cx);
+                this.commit_fields(cx);
             }
         }
-        let _subscriptions = vec![cx.subscribe(&condition, commit), cx.subscribe(&log_expression, commit)];
-        let mut view = BreakpointsView { service, entries: Vec::new(), selected: at, condition, log_expression, log_on: false, sources: HashMap::new(), exceptions: Vec::new(), exception: None, adding: None, just_added: false, _subscriptions };
+        let _subscriptions = vec![cx.subscribe(&condition, commit), cx.subscribe(&log_expression, commit), cx.subscribe(&class_filters, commit)];
+        let mut view = BreakpointsView { service, entries: Vec::new(), selected: at, condition, log_expression, class_filters, log_on: false, sources: HashMap::new(), exceptions: Vec::new(), exception: None, adding: None, just_added: false, _subscriptions };
         view.refresh(cx);
         view.load_fields(window, cx);
         view
@@ -538,7 +564,7 @@ pub fn open(at: Option<(String, u32)>, window: &mut Window, cx: &mut App) {
                 if v.adding.is_some() || std::mem::take(&mut v.just_added) {
                     return false;
                 }
-                v.apply(|_| {}, cx);
+                v.commit_fields(cx);
                 true
             })
         })
