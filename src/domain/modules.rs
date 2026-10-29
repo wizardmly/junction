@@ -261,6 +261,24 @@ impl ModuleGraph {
         (!inner.is_empty()).then_some(set)
     }
 
+    /// Whether `path` (project-relative) isn't in another variant's
+    /// source set than the one its module builds (`src/release/` while
+    /// debug is picked): what the Android view shows.
+    pub fn in_active_variant(&self, path: &str) -> bool {
+        let Some(m) = self.module_of(path) else { return true };
+        let Some(set) = self.source_set(m, path) else { return true };
+        // A variant's tests: `testFree`, `androidTestDebug`.
+        let tests = ["androidTest", "test"].iter().find_map(|t| set.strip_prefix(t)).filter(|rest| !rest.is_empty());
+        let set = match tests {
+            Some(rest) => {
+                let mut chars = rest.chars();
+                chars.next().map(|c| c.to_lowercase().chain(chars).collect::<String>()).unwrap_or_default()
+            }
+            None => set.to_owned(),
+        };
+        self.variant_visible(m, "main", m, &set)
+    }
+
     /// Whether code in `from` can name what's declared in `to` (both
     /// project-relative); anything outside a module's source sets (a
     /// library, a build script, a folder that isn't a Gradle module)
@@ -377,6 +395,8 @@ mod tests {
         g.pick("app", "paidStaging");
         assert!(g.visible(main, &at("paid")) && g.visible(main, &at("staging")) && g.visible(main, &at("paidStaging")));
         assert!(!g.visible(main, &at("debug")) && !g.visible(main, &at("free")));
+        assert!(g.in_active_variant(&at("paid")) && g.in_active_variant(main) && g.in_active_variant("app/build.gradle.kts"));
+        assert!(!g.in_active_variant(&at("free")) && !g.in_active_variant(&at("testFree")) && g.in_active_variant(&at("testPaid")));
         assert_eq!(variant_names(script, true), ["freeDebug", "freeRelease", "freeStaging", "paidDebug", "paidRelease", "paidStaging"]);
         assert_eq!(variant_names("android { }\n", true), ["debug", "release"]);
         assert!(variant_names("plugins { kotlin(\"jvm\") }\n", true).is_empty());
