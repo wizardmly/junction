@@ -86,11 +86,37 @@ pub enum PauseReason {
 /// IntelliJ's Java Exception Breakpoint: a class's exceptions (its
 /// subclasses' too), or any exception (`class` empty), caught, uncaught
 /// or both.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExceptionBreakpoint {
     pub class: String,
     pub caught: bool,
     pub uncaught: bool,
+    /// Stops only when this holds, with the exception as `this`.
+    pub condition: Option<String>,
+    /// IntelliJ's Class filters, on the class it's thrown in: patterns
+    /// with `*`, `-` before one that excludes.
+    pub filters: Vec<String>,
+}
+
+/// Whether a class passes class filters: no include pattern or one that
+/// matches, and no exclude pattern that matches.
+pub fn passes_filters(filters: &[String], class: &str) -> bool {
+    let (excludes, includes): (Vec<&str>, Vec<&str>) = filters.iter().map(|f| f.trim()).filter(|f| !f.is_empty()).partition(|f| f.starts_with('-'));
+    (includes.is_empty() || includes.iter().any(|p| glob(p, class))) && !excludes.iter().any(|p| glob(&p[1..], class))
+}
+
+/// A pattern where `*` is any run of characters.
+fn glob(pattern: &str, text: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = text.strip_prefix(first) else { return false };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else { return rest.is_empty() };
+    for part in middle {
+        let Some(at) = rest.find(part) else { return false };
+        rest = &rest[at + part.len()..];
+    }
+    rest.ends_with(last)
 }
 
 struct PlacedException {
@@ -503,6 +529,9 @@ impl DebugSession {
         let mut resume = false;
         let mut paused: Option<(u64, PauseReason)> = None;
         let mut hit: Option<LineBreakpoint> = None;
+        // An exception breakpoint's hit: thread, exception, its class name,
+        // caught, the class it's thrown in, and the breakpoint.
+        let mut thrown: Option<(u64, u64, String, bool, u64, Option<ExceptionBreakpoint>)> = None;
         let muted = self.muted.load(Ordering::SeqCst);
         for event in set.events {
             match event {
@@ -555,15 +584,39 @@ impl DebugSession {
                     paused = Some((thread, PauseReason::Breakpoint));
                 }
                 DebugEvent::Step { thread, .. } => paused = Some((thread, PauseReason::Step)),
-                DebugEvent::Exception { thread, exception, caught, .. } => {
+                DebugEvent::Exception { thread, location, exception, caught, request } => {
                     let name = self.vm.class_of(exception).map(|c| c.name).unwrap_or_else(|_| "exception".into());
-                    state.thrown = Some((thread, Value::Object { id: exception, class: name.clone() }));
-                    out.push(SessionEvent::Exception(format!("Exception '{name}' {}", if caught { "occurred" } else { "was not caught" })));
+                    let breakpoint = state.exceptions.iter().find(|e| e.request == Some(request)).map(|e| e.breakpoint.clone());
+                    thrown = Some((thread, exception, name, caught, location.class, breakpoint));
                     paused = Some((thread, PauseReason::Exception));
                 }
                 // A VM launched to wait starts once the session calls start().
                 DebugEvent::VmStart { .. } | DebugEvent::ThreadStart { .. } | DebugEvent::ThreadDeath { .. } => {}
             }
+        }
+        if let (Some((_, PauseReason::Exception)), Some((thread, exception, name, caught, class, breakpoint))) = (paused, thrown) {
+            let value = Value::Object { id: exception, class: name.clone() };
+            if let Some(breakpoint) = breakpoint.filter(|b| b.condition.is_some() || !b.filters.is_empty()) {
+                drop(state);
+                if !breakpoint.filters.is_empty() && !passes_filters(&breakpoint.filters, &self.vm.class_name(class)?) {
+                    self.vm.resume()?;
+                    return Ok(out);
+                }
+                if let Some(text) = breakpoint.condition.as_deref() {
+                    let frames = self.vm.frames(thread)?;
+                    match self.in_frame_as(thread, frames.first(), Some(value.clone()), |scope| evaluate::condition_holds(scope, text)) {
+                        Some(Ok(false)) => {
+                            self.vm.resume()?;
+                            return Ok(out);
+                        }
+                        Some(Ok(true)) | None => {}
+                        Some(Err(e)) => out.push(SessionEvent::Message(format!("Failed to evaluate breakpoint condition '{text}'. Reason: {e}"))),
+                    }
+                }
+                state = self.state.lock().unwrap();
+            }
+            state.thrown = Some((thread, value));
+            out.push(SessionEvent::Exception(format!("Exception '{name}' {}", if caught { "occurred" } else { "was not caught" })));
         }
         if let (Some((thread, PauseReason::Breakpoint)), Some(breakpoint)) = (paused, hit) {
             // The condition, in the hit frame: false runs on.
@@ -619,11 +672,21 @@ impl DebugSession {
     /// Runs an evaluation in a frame of the thread a hit suspended; none
     /// without frames.
     fn in_frame<T>(&self, thread: u64, frame: Option<&Frame>, f: impl FnOnce(&Scope) -> Result<T, String>) -> Option<Result<T, String>> {
+        self.in_frame_as(thread, frame, None, f)
+    }
+
+    /// [`Self::in_frame`], with `this` standing for another value: the
+    /// exception, for an exception breakpoint's condition.
+    fn in_frame_as<T>(&self, thread: u64, frame: Option<&Frame>, this: Option<Value>, f: impl FnOnce(&Scope) -> Result<T, String>) -> Option<Result<T, String>> {
         let frame = frame?;
-        let locals = match self.vm.locals(thread, frame) {
+        let mut locals = match self.vm.locals(thread, frame) {
             Ok(locals) => locals,
             Err(e) => return Some(Err(e)),
         };
+        if let Some(this) = this {
+            locals.retain(|v| v.name != "this");
+            locals.insert(0, Variable { name: "this".into(), value: this });
+        }
         self.evaluating.fetch_add(1, Ordering::SeqCst);
         let result = f(&Scope { vm: &*self.vm, thread, frame, locals: &locals });
         self.evaluating.fetch_sub(1, Ordering::SeqCst);
@@ -1082,11 +1145,11 @@ mod tests {
     fn exception_breakpoints() {
         let vm = vm();
         let session = DebugSession::new(vm.clone());
-        let any = ExceptionBreakpoint { class: String::new(), caught: true, uncaught: true };
+        let any = ExceptionBreakpoint { class: String::new(), caught: true, uncaught: true, ..Default::default() };
         assert_eq!(session.add_exception_breakpoint(any), Ok(true));
         assert_eq!(vm.take_log(), ["exception None true true"]);
         // A class not loaded yet waits for it.
-        let boom = ExceptionBreakpoint { class: "a.Boom".into(), caught: false, uncaught: true };
+        let boom = ExceptionBreakpoint { class: "a.Boom".into(), caught: false, uncaught: true, ..Default::default() };
         assert_eq!(session.add_exception_breakpoint(boom), Ok(false));
         assert_eq!(vm.take_log(), ["watch a.Boom"]);
         vm.send(Suspend::All, vec![DebugEvent::ClassPrepare { thread: 1, class: ClassRef { id: 30, name: "a.Boom".into() }, request: 2 }]);
@@ -1104,6 +1167,46 @@ mod tests {
         // Removed: its request cleared.
         session.remove_exception_breakpoint("").unwrap();
         assert_eq!(vm.take_log(), ["resume", "clear exception 1"]);
+    }
+
+    #[test]
+    fn exception_breakpoints_filter_by_class_and_condition() {
+        let vm = vm();
+        let session = DebugSession::new(vm.clone());
+        let any = ExceptionBreakpoint { caught: true, uncaught: true, filters: vec!["b.*".into()], ..Default::default() };
+        session.add_exception_breakpoint(any.clone()).unwrap();
+        let request = *vm.next.lock().unwrap();
+        vm.take_log();
+        let throw = || vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, caught: true, request }];
+        // Thrown in a.CalcTest, not b.*: runs on.
+        vm.send(Suspend::All, throw());
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume"]);
+        // Allowed by the filters, but the condition doesn't hold.
+        session.add_exception_breakpoint(ExceptionBreakpoint { filters: vec!["a.*".into(), "-a.Other".into()], condition: Some("x > 5".into()), ..any.clone() }).unwrap();
+        let request = *vm.next.lock().unwrap();
+        vm.take_log();
+        let throw = || vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, caught: true, request }];
+        vm.send(Suspend::All, throw());
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        // `this` is the exception.
+        session.add_exception_breakpoint(ExceptionBreakpoint { condition: Some("this != null".into()), filters: Vec::new(), ..any }).unwrap();
+        let request = *vm.next.lock().unwrap();
+        let throw = vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, caught: true, request }];
+        vm.send(Suspend::All, throw);
+        let events = session.poll(Duration::ZERO).unwrap();
+        assert!(matches!(events[..], [SessionEvent::Exception(_), SessionEvent::Paused { reason: PauseReason::Exception, .. }]), "{events:?}");
+    }
+
+    #[test]
+    fn class_filters() {
+        let f = |list: &[&str], class| passes_filters(&list.iter().map(|s| s.to_string()).collect::<Vec<_>>(), class);
+        assert!(f(&[], "a.B"));
+        assert!(f(&["a.*"], "a.B") && !f(&["a.*"], "b.B"));
+        assert!(f(&["*.B"], "x.y.B") && !f(&["*.B"], "x.y.C"));
+        assert!(f(&["a.B"], "a.B") && !f(&["a.B"], "a.BC"));
+        assert!(!f(&["a.*", "-a.Internal*"], "a.InternalX") && f(&["-a.Internal"], "b.C"));
+        assert!(f(&["com.*.impl.*"], "com.x.impl.Y"));
     }
 
     #[test]
