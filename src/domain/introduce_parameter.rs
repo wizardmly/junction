@@ -33,6 +33,9 @@ pub struct ParameterPlan {
     pub ty: String,
     /// Names the parameter mustn't take.
     pub taken: Vec<String>,
+    /// Inline Function of a function with statements: `expression` is
+    /// its body's statements.
+    pub block: Option<crate::domain::inline_function::Block>,
 }
 
 /// A call of the function.
@@ -56,6 +59,22 @@ pub struct CallSite {
     pub lambda_text: String,
     /// A reference (`::name`, `Type::name`), not a call: no arguments.
     pub reference: bool,
+    /// The statement the call is in, when statements can go before it.
+    pub statement: Option<StatementSite>,
+}
+
+/// The statement a call is in, in a block: where statements inlined
+/// before it go.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatementSite {
+    /// The statement's start (after its line's indent).
+    pub start: usize,
+    pub indent: String,
+    /// The call is the whole statement (`f(x)` / `f(x);`).
+    pub whole: bool,
+    /// The function the call is in, and the names declared there.
+    pub function: Range<usize>,
+    pub taken: Vec<String>,
 }
 
 impl CallSite {
@@ -206,6 +225,7 @@ mod tests {
             members: vec![expr.find("rate").unwrap()..expr.find("rate").unwrap() + 4],
             ty: "Double".into(),
             taken: vec![],
+            block: None,
         }
     }
 
