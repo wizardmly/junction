@@ -119,6 +119,11 @@ impl RecentPlaces {
         }
     }
 
+    /// Recent Locations' Delete: the place at `line` of `path` is forgotten.
+    pub fn remove(&mut self, path: &str, line: u32) {
+        self.places.retain(|p| !(p.path == path && p.line == line));
+    }
+
     pub fn change(&mut self, (path, line, col): Position) {
         self.add(Place { path, line, col, changed: true });
     }
@@ -161,6 +166,15 @@ mod tests {
 
     fn at(path: &str, line: u32) -> Position {
         (path.to_owned(), line, 0)
+    }
+
+    #[test]
+    fn removes_a_place() {
+        let mut places = RecentPlaces::default();
+        places.visit(at("a", 1));
+        places.change(at("b", 9));
+        places.remove("a", 1);
+        assert_eq!(places.iter().map(|p| (p.path.as_str(), p.line, p.changed)).collect::<Vec<_>>(), [("b", 9, true)]);
     }
 
     #[test]
