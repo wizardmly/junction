@@ -136,8 +136,10 @@ pub enum DebugEvent {
     /// An exception was thrown: the exception object, and whether
     /// something catches it.
     Exception { thread: u64, location: Location, exception: u64, catch: Option<Location>, request: u32 },
-    /// A watched field was read (`access`) or is about to be written.
-    Field { thread: u64, location: Location, access: bool, request: u32 },
+    /// A watched field was read (`access`) or is about to be written: its
+    /// class, the object (none for a static field) and, for a write, the
+    /// value to be (an object's class not looked up yet).
+    Field { thread: u64, location: Location, access: bool, class: u64, object: Option<u64>, to_be: Option<Value>, request: u32 },
     /// A method of a watched class is returning (at its return).
     MethodExit { thread: u64, location: Location, request: u32 },
     ThreadStart { thread: u64 },

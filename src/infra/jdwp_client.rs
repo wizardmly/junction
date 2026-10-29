@@ -979,14 +979,12 @@ fn parse_events(data: &[u8], sizes: IdSizes) -> Option<EventSet> {
                 let location = r.location()?;
                 // The field's class and id, the object (tagged), and the value to be.
                 let _tag = r.bytes.u8()?;
-                let _class = r.reference_type()?;
+                let class = r.reference_type()?;
                 let _field = r.field()?;
                 let _tag = r.bytes.u8()?;
-                let _object = r.object()?;
-                if kind == FIELD_MODIFICATION {
-                    r.skip_value()?;
-                }
-                DebugEvent::Field { thread, location, access: kind == FIELD_ACCESS, request }
+                let object = r.object()?;
+                let to_be = if kind == FIELD_MODIFICATION { Some(r.unresolved_value()?) } else { None };
+                DebugEvent::Field { thread, location, access: kind == FIELD_ACCESS, class, object: (object != 0).then_some(object), to_be, request }
             }
             CLASS_PREPARE => {
                 let thread = r.object()?;
@@ -1093,17 +1091,24 @@ impl In<'_> {
         self.bytes.id(self.sizes.frame)
     }
 
-    /// A tagged value, unread.
-    fn skip_value(&mut self) -> Option<()> {
-        let size = match self.bytes.u8()? {
-            b'V' => 0,
-            b'B' | b'Z' => 1,
-            b'C' | b'S' => 2,
-            b'I' | b'F' => 4,
-            b'J' | b'D' => 8,
-            _ => self.sizes.object,
-        };
-        self.bytes.take(size).map(drop)
+    /// A tagged value read without asking the VM: an object is a
+    /// `Value::Object` with no class yet.
+    fn unresolved_value(&mut self) -> Option<Value> {
+        Some(match self.bytes.u8()? {
+            b'V' => Value::Void,
+            b'Z' => Value::Boolean(self.bytes.u8()? != 0),
+            b'B' => Value::Byte(self.bytes.u8()? as i8),
+            b'C' => Value::Char(self.bytes.u16()?),
+            b'S' => Value::Short(self.bytes.u16()? as i16),
+            b'I' => Value::Int(self.bytes.int()?),
+            b'J' => Value::Long(self.bytes.long()?),
+            b'F' => Value::Float(f32::from_bits(self.bytes.int()? as u32)),
+            b'D' => Value::Double(f64::from_bits(self.bytes.long()? as u64)),
+            _ => match self.object()? {
+                0 => Value::Null,
+                id => Value::Object { id, class: String::new() },
+            },
+        })
     }
 
     fn location(&mut self) -> Option<Location> {
