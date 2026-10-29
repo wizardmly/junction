@@ -152,6 +152,7 @@ pub(super) fn main_menu(
             .menu("Make Project", Box::new(MakeProject))
             .separator()
             .menu("Sync Project with Gradle Files", Box::new(SyncProjectWithGradleFiles))
+            .menu("Download Sources", Box::new(DownloadAllSources))
             .menu("Select Build Variant…", Box::new(ToggleBuildVariantsWindow))
             .separator()
             .menu("Generate Signed Bundle / APK…", Box::new(GenerateSignedApk))

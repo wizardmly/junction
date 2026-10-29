@@ -104,6 +104,7 @@ actions!(
         GoToBookmark9,
         GoToBookmark0,
         SyncProjectWithGradleFiles,
+        DownloadAllSources,
         MakeProject,
         GenerateSignedApk,
         AnalyzeApk,
@@ -1064,6 +1065,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleTerminalWindow, window, cx| this.shortcut_tool(ToolWindow::Terminal, window, cx)))
             .on_action(cx.listener(|_, _: &SyncProjectWithGradleFiles, _, cx| crate::ui::sync_service::SyncService::global(cx).update(cx, |s, cx| s.sync_all(cx))))
             .on_action(cx.listener(|this, _: &MakeProject, _, cx| this.run.update(cx, |r, cx| r.make_project(cx))))
+            .on_action(cx.listener(Self::download_all_sources))
             .on_action(cx.listener(|_, _: &ProjectStructure, window, cx| {
                 let sync = crate::ui::sync_service::SyncService::global(cx);
                 let Some((root, modules)) = sync.read(cx).builds().first().cloned() else {

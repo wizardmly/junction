@@ -217,6 +217,34 @@ impl CodeIndex {
     }
 
     /// Re-indexes what changed since the last pass.
+    /// Gradle's "Download Sources" for every library shown decompiled: its
+    /// sources jar into Gradle's cache, one after another, then the
+    /// libraries scanned again. How many were downloaded, and why the
+    /// others weren't.
+    pub fn download_all_sources(&mut self, cx: &mut Context<Self>) -> Task<(usize, Vec<String>)> {
+        let coordinates = super::libraries::decompiled_coordinates(&self.index.read().unwrap().external.libraries);
+        let task = cx.background_spawn(async move {
+            let mut failed = Vec::new();
+            let mut done = 0;
+            for coordinate in coordinates {
+                let mut parts = coordinate.splitn(3, ':');
+                let (Some(group), Some(artifact), Some(version)) = (parts.next(), parts.next(), parts.next()) else { continue };
+                match crate::infra::sources_download::download(group, artifact, version) {
+                    Ok(_) => done += 1,
+                    Err(e) => failed.push(e),
+                }
+            }
+            (done, failed)
+        });
+        cx.spawn(async move |this, cx| {
+            let (done, failed) = task.await;
+            if done > 0 {
+                this.update(cx, |this, cx| this.rescan_libraries(cx)).ok();
+            }
+            (done, failed)
+        })
+    }
+
     /// Scans the libraries again: their sources changed (Download Sources).
     pub fn rescan_libraries(&mut self, cx: &mut Context<Self>) {
         self.rescan_libraries.store(true, std::sync::atomic::Ordering::Relaxed);
