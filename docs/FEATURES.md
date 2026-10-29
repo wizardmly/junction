@@ -1154,7 +1154,8 @@ Linux 实测（Xvfb，`pi2` Kotlin 工程，2026-10-29）：`fun repeatIt(times:
 | Move Element Left / Right：光标所在的参数、实参、列表项和同一个逗号分隔列表里的前 / 后一个交换（Kotlin 参数连默认值一起），光标跟着走；嵌套时取最里层的列表（`src/index/selection.rs::move_element`） | Ctrl+Alt+Shift+←/→ / ⌥⌘⇧←/→ | ✅ |
 | Code › Folding：Collapse（光标处最里层的可折叠区域，再按折外面一层，光标移到折叠的首行）/ Expand（光标处折起的区域）；Collapse All / Expand All（vendor 的编辑器补了 `fold_at_line` / `fold_all`，标 `Junction:`） | Ctrl+- / Ctrl+=，Ctrl+Shift+- / Ctrl+Shift+=（⌘ 同理） | ✅ |
 | Move Statement 移进 / 移出块（2026-10-29）：函数体里的语句往下碰到 if / for / while / try / 带 lambda 的调用时移进它的 `{` 之后，往上碰到时移进它的 `}` 之前；在块的边上移出到所属语句的前 / 后，或者移进相邻的 `} else {` / `} catch (…) {` 块；行按新位置重新缩进，函数体的边上不动。Linux 实测：Calc.java 的 `int sum = a + b;` 下面是 `if (sum > 10) { total = 0; }`，Ctrl+Shift+↓ 后它成了 if 块的第一行（多缩进一级），Ctrl+Shift+↑ 又回到 if 前；`total += sum;` 上按 Ctrl+Shift+↑ 进到 `total = 0;` 后面 | Ctrl+Shift+↑/↓ | ✅ |
-| 多光标下的这些操作、注释时按代码风格设置决定 `//` 是否加在缩进后 | | ⬜ |
+| 注释的位置按代码风格设置（2026-10-29）：Settings › Editor › Code Style 里 Java / Kotlin / Groovy 各有 “Code Generation › Comment Code”：Line comment at first column（默认勾，和以前一样加在第一列）、Add a space at line comment start（默认不勾）；不在第一列时 `//` 加在所选各行最小的缩进处（各行的 `//` 对齐），加空格时取消注释也把那个空格去掉。存为 `code_style_java_comments=false,true`（默认时不写）。Linux 实测：Java 改成不在第一列 + 加空格，Calc.java 的 `total += sum;` 上 Ctrl+/ 变成 `        // total += sum;`，选中两行再按两次回到原样 | Ctrl+/ | ✅ |
+| 多光标下的这些操作（编辑器还不支持多光标） | | ⬜ |
 
 Linux 实测（Xvfb，Kotlin 文件）：光标在 `return price * rate …` 行，Ctrl+D 复制出第 6 行，Ctrl+/ 把它注释成 `//        return …` 并把光标移到 `}`，Alt+Shift+↑ 把 `}` 移到注释行上面；三次 Ctrl+Z 逐个撤销。Shapes.kt 里光标在 `class Tile : Square()` 上按 Ctrl+Shift+↑，它整个跳到四行的 `open class Square … { … }` 前面；再按两次 Ctrl+Shift+↓，依次越过 Square 和 `class Disc`。Main.kt 里光标在 `cart.total(count = 1, price = 2.0)` 的 `count` 上按 Ctrl+Alt+Shift+→，变成 `total(price = 2.0, count = 1)`。Cart.kt 光标在 `return` 行：Ctrl+- 折起 `total`，再按折起整个类，Ctrl+= 展开类（`total` 仍折着）；Ctrl+Shift+- 全部折起，Ctrl+Shift+= 全部展开。光标在 `rate` 上连按三次 Ctrl+W，选区依次是 `rate`、`price * rate`、`price * rate * count`。
 
