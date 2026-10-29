@@ -50,8 +50,7 @@ pub fn build_values(text: &str) -> BuildValues {
 
 /// The library modules a build file depends on: `project(":lib")` → `lib`.
 pub fn module_dependencies(text: &str) -> Vec<String> {
-    static PROJECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"project\(\s*(?:path\s*[:=]\s*)?["'](:[\w:.-]+)["']"#).unwrap());
-    PROJECT.captures_iter(text).map(|c| c[1].trim_start_matches(':').replace(':', "/")).collect()
+    crate::domain::modules::module_dependencies(text)
 }
 
 /// Merges the module's manifests; `read` reads a file (none when missing).

@@ -141,7 +141,8 @@ impl CodeModel for IndexCodeModel<'_> {
         let mut out = Vec::new();
         for (_, name) in names {
             for (path, entry, s) in self.index.symbols_named(name) {
-                if path == self.path || !family.contains(&entry.lang) || matches!(s.kind, SymbolKind::Variable | SymbolKind::Constructor | SymbolKind::Module) {
+                // What the file's module and source set can't see isn't offered.
+                if path == self.path || !family.contains(&entry.lang) || matches!(s.kind, SymbolKind::Variable | SymbolKind::Constructor | SymbolKind::Module) || !self.index.modules.visible(self.path, path) {
                     continue;
                 }
                 let scope = if ProjectIndex::is_external(path) { Scope::Library } else { Scope::Project };

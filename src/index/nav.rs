@@ -215,6 +215,12 @@ pub fn definitions(index: &ProjectIndex, path: &str, lang: Lang, text: &str, off
         let mut keep = kinds.iter().map(|k| if as_type { k.0 } else { !k.1 });
         candidates.retain(|_| keep.next().unwrap_or(true));
     }
+    // What the file's module and source set can't see (another module's
+    // class of the same name, a test's helper) counts only when nothing
+    // visible does.
+    if candidates.iter().any(|(_, t)| index.modules.visible(path, &t.path)) {
+        candidates.retain(|(_, t)| index.modules.visible(path, &t.path));
+    }
     // `import a.b.Name`: the import names the package.
     if jvm {
         if let Some(package) = imported_package(text, range.start, &word) {
@@ -1234,6 +1240,26 @@ mod tests {
         let mut found = rename_hits(&index, &dir, "Calc");
         mark_other_symbols(&index, &dir, "ex/Calc.kt", 2, "Calc", &mut found);
         assert!(found.iter().all(|o| o.other.is_none()), "{found:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolves_within_the_modules_a_file_sees() {
+        let app_build = "dependencies { implementation(project(\":core\")) }\n";
+        let core = "package core\n\nclass Repo\n";
+        let other = "package other\n\nclass Repo\n";
+        let app = "package app\n\nfun make() = Repo()\n";
+        let (dir, index) = project(&[
+            ("app/build.gradle.kts", app_build),
+            ("core/build.gradle.kts", ""),
+            ("other/build.gradle.kts", ""),
+            ("core/src/main/kotlin/core/Repo.kt", core),
+            ("other/src/main/kotlin/other/Repo.kt", other),
+            ("app/src/main/kotlin/app/App.kt", app),
+        ]);
+        let targets = definitions(&index, "app/src/main/kotlin/app/App.kt", Lang::Kotlin, app, at(app, "Repo()"));
+        let paths: Vec<&str> = targets.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(paths, ["core/src/main/kotlin/core/Repo.kt"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
