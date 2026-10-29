@@ -703,6 +703,8 @@ impl Workspace {
                 cx.notify()
             }),
             cx.subscribe_in(&sync, window, |this, _, event, window, cx| this.on_sync_event(event, window, cx)),
+            // A variant picked in Build Variants: names resolve to its source sets.
+            cx.observe_global::<crate::settings::Settings>(|this, cx| this.push_variants(cx)),
             cx.subscribe_in(&run, window, |this, _, event, window, cx| this.on_run_event(event, window, cx)),
             cx.subscribe_in(&debug, window, |this, _, event, window, cx| this.on_debug_event(event, window, cx)),
             cx.subscribe_in(&debug_view, window, |this, _, event, window, cx| this.on_run_view_event(ToolWindow::Debug, event, window, cx)),

@@ -212,7 +212,7 @@ pub fn guess_modules(root: &Path, build_root: &Path, files: &[String]) -> Vec<Mo
             } else {
                 ModuleType::Other
             };
-            let variants = if kind.is_android() { vec!["debug".to_owned(), "release".to_owned()] } else { Vec::new() };
+            let variants = if kind.is_android() { crate::domain::modules::variant_names(&text, f.ends_with(".kts")) } else { Vec::new() };
             Some(ModuleInfo { path: crate::domain::build::project_path(build_root, &dir), dir, kind, variants })
         })
         .collect();

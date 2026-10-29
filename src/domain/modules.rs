@@ -17,12 +17,22 @@ struct Module {
     dir: String,
     /// Indices into the graph's modules.
     deps: Vec<usize>,
+    /// An Android module's build types and product flavors (with their
+    /// dimension): the names its variant source sets are made of.
+    build_types: Vec<String>,
+    flavors: Vec<(String, String)>,
+    /// The variant picked in Build Variants; else the default one.
+    picked: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct ModuleGraph {
     modules: Vec<Module>,
 }
+
+/// The group of a build type among a variant's parts; a flavor's is its
+/// dimension.
+const BUILD_TYPE: &str = "#build-type";
 
 /// What a source set holds, for which other sets see it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +68,52 @@ fn accessor_dependencies(text: &str) -> Vec<String> {
     ACCESSOR.captures_iter(text).map(|c| c[1].trim_start_matches('.').replace('.', "/")).collect()
 }
 
+/// An Android module's build types (debug and release, and the ones its
+/// build file adds) and product flavors with their dimension; None when
+/// the build file isn't an Android module's.
+fn variant_parts_of(script: &str, kotlin: bool) -> Option<(Vec<String>, Vec<(String, String)>)> {
+    let (types, flavors) = super::project_structure::variants(script, &[], kotlin);
+    if types.is_empty() && flavors.is_empty() && !script.contains("com.android.") && !script.contains("android {") {
+        return None;
+    }
+    let mut names = vec!["debug".to_owned(), "release".to_owned()];
+    names.extend(types.into_iter().map(|t| t.name).filter(|n| n != "debug" && n != "release"));
+    let flavors = flavors
+        .into_iter()
+        .map(|f| {
+            let dimension = f.properties.iter().find(|p| p.label == "Dimension").map(|p| p.value.trim_matches(['"', '\'']).to_owned()).unwrap_or_default();
+            (f.name, dimension)
+        })
+        .collect();
+    Some((names, flavors))
+}
+
+/// The build variants an Android module's build file makes, as Gradle
+/// names them (`freeDebug`: a flavor of each dimension, then the build
+/// type), sorted; for Build Variants before the project is synced.
+pub fn variant_names(script: &str, kotlin: bool) -> Vec<String> {
+    let Some((types, flavors)) = variant_parts_of(script, kotlin) else { return Vec::new() };
+    let capitalized = |s: &str| {
+        let mut chars = s.chars();
+        chars.next().map(|c| c.to_uppercase().chain(chars).collect::<String>()).unwrap_or_default()
+    };
+    // Dimensions in the order they first show up.
+    let mut dimensions: Vec<&str> = Vec::new();
+    for (_, d) in &flavors {
+        if !dimensions.contains(&d.as_str()) {
+            dimensions.push(d);
+        }
+    }
+    let mut prefixes = vec![String::new()];
+    for d in dimensions {
+        let names: Vec<&str> = flavors.iter().filter(|(_, fd)| fd == d).map(|(f, _)| f.as_str()).collect();
+        prefixes = prefixes.iter().flat_map(|p| names.iter().map(move |f| if p.is_empty() { f.to_string() } else { format!("{p}{}", capitalized(f)) })).collect();
+    }
+    let mut out: Vec<String> = prefixes.iter().flat_map(|p| types.iter().map(move |t| if p.is_empty() { t.clone() } else { format!("{p}{}", capitalized(t)) })).collect();
+    out.sort();
+    out
+}
+
 /// A folder or accessor name compared loosely: `core-data`, `coreData` and
 /// `core_data` are one.
 fn loose(name: &str) -> String {
@@ -77,9 +133,13 @@ impl ModuleGraph {
             .collect();
         builds.sort();
         builds.dedup_by(|a, b| a.0 == b.0);
-        let mut modules: Vec<Module> = builds.iter().map(|(dir, _)| Module { dir: dir.clone(), deps: Vec::new() }).collect();
+        let mut modules: Vec<Module> = builds.iter().map(|(dir, _)| Module { dir: dir.clone(), ..Default::default() }).collect();
         for (i, (_, file)) in builds.iter().enumerate() {
             let Some(text) = read(file) else { continue };
+            if let Some((types, flavors)) = variant_parts_of(&text, file.ends_with(".kts")) {
+                modules[i].build_types = types;
+                modules[i].flavors = flavors;
+            }
             let named = module_dependencies(&text).into_iter().chain(accessor_dependencies(&text));
             let mut deps = Vec::new();
             for name in named {
@@ -97,6 +157,89 @@ impl ModuleGraph {
             modules[i].deps = deps;
         }
         ModuleGraph { modules }
+    }
+
+    /// Makes `variant` the one module `dir` builds (project-relative), as
+    /// picked in Build Variants.
+    pub fn pick(&mut self, dir: &str, variant: &str) {
+        if let Some(m) = self.modules.iter_mut().find(|m| m.dir == dir) {
+            m.picked = Some(variant.to_owned());
+        }
+    }
+
+    /// The build types and flavors a variant source set's name is made of
+    /// (`freeDebug` → free, debug), each with its group: [`BUILD_TYPE`],
+    /// else the flavor's dimension. None for any other set (`main`,
+    /// `test`, `commonMain`…).
+    fn variant_parts(&self, module: usize, set: &str) -> Option<Vec<(String, String)>> {
+        let m = &self.modules[module];
+        if m.build_types.is_empty() {
+            return None;
+        }
+        let names: Vec<(&str, &str)> = m.build_types.iter().map(|t| (t.as_str(), BUILD_TYPE)).chain(m.flavors.iter().map(|(f, d)| (f.as_str(), d.as_str()))).collect();
+        fn split(rest: &str, first: bool, names: &[(&str, &str)], out: &mut Vec<(String, String)>) -> bool {
+            if rest.is_empty() {
+                return !out.is_empty();
+            }
+            for (name, group) in names {
+                let mut word = name.to_string();
+                if !first {
+                    let mut chars = word.chars();
+                    word = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+                }
+                if let Some(next) = rest.strip_prefix(word.as_str()) {
+                    out.push((name.to_string(), group.to_string()));
+                    if split(next, false, names, out) {
+                        return true;
+                    }
+                    out.pop();
+                }
+            }
+            false
+        }
+        let mut out = Vec::new();
+        split(set, true, &names, &mut out).then_some(out)
+    }
+
+    /// The build type and flavors of the variant a module builds: the
+    /// picked one, else Android Studio's default (debug, and each
+    /// dimension's first flavor by name).
+    fn active_parts(&self, module: usize) -> Vec<(String, String)> {
+        let m = &self.modules[module];
+        // A variant named before the module was synced may leave out
+        // flavors ("debug"): those dimensions take their default.
+        let mut parts = m.picked.as_deref().and_then(|v| self.variant_parts(module, v)).unwrap_or_default();
+        if !parts.iter().any(|(_, g)| g == BUILD_TYPE) {
+            parts.push(("debug".to_owned(), BUILD_TYPE.to_owned()));
+        }
+        let mut flavors = m.flavors.clone();
+        flavors.sort();
+        for (name, dimension) in flavors {
+            if !parts.iter().any(|(_, d)| *d == dimension) {
+                parts.push((name, dimension));
+            }
+        }
+        parts
+    }
+
+    /// Whether code in `from_set` (of module `a`) sees the variant source
+    /// set `to_set` of module `b`: one of the variant it builds, or for
+    /// code in a variant set itself, one of the variants that set is in
+    /// (`release` code sees `release` and the active flavors, not `debug`).
+    fn variant_visible(&self, a: usize, from_set: &str, b: usize, to_set: &str) -> bool {
+        let Some(to) = self.variant_parts(b, to_set) else { return true };
+        let from = if a == b { self.variant_parts(a, from_set).unwrap_or_default() } else { Vec::new() };
+        let active = self.active_parts(b);
+        to.iter().all(|(name, group)| {
+            if from.iter().any(|(n, _)| n == name) {
+                return true;
+            }
+            // Another of the same build type or dimension as `from`'s.
+            if from.iter().any(|(_, g)| g == group) {
+                return false;
+            }
+            active.iter().any(|(n, _)| n == name)
+        })
     }
 
     /// The innermost module holding `path`.
@@ -126,6 +269,9 @@ impl ModuleGraph {
         let (Some(a), Some(b)) = (self.module_of(from), self.module_of(to)) else { return true };
         let (Some(from_set), Some(to_set)) = (self.source_set(a, from), self.source_set(b, to)) else { return true };
         let (from_kind, to_kind) = (set_kind(from_set), set_kind(to_set));
+        if to_kind == SetKind::Production && !self.variant_visible(a, from_set, b, to_set) {
+            return false;
+        }
         if a == b {
             return match from_kind {
                 SetKind::Production => to_kind == SetKind::Production,
@@ -206,5 +352,33 @@ mod tests {
         // Kotlin Multiplatform's sets.
         assert!(g.visible("app/src/commonTest/kotlin/T.kt", "app/src/commonMain/kotlin/M.kt"));
         assert!(!g.visible("app/src/commonMain/kotlin/M.kt", "app/src/commonTest/kotlin/T.kt"));
+    }
+
+    #[test]
+    fn sees_the_active_variants_sets() {
+        let script = "plugins { id(\"com.android.application\") }\nandroid {\n    buildTypes {\n        create(\"staging\") { }\n    }\n    productFlavors {\n        create(\"paid\") {\n            dimension = \"tier\"\n        }\n        create(\"free\") {\n            dimension = \"tier\"\n        }\n    }\n}\ndependencies { implementation(project(\":lib\")) }\n";
+        let mut g = graph(&[("app/build.gradle.kts", script), ("lib/build.gradle.kts", "android { }\n")]);
+        let main = "app/src/main/java/a/A.kt";
+        let at = |set: &str| format!("app/src/{set}/java/a/Config.kt");
+        // freeDebug by default: the first flavor by name.
+        assert!(g.visible(main, &at("debug")) && g.visible(main, &at("free")) && g.visible(main, &at("freeDebug")));
+        assert!(!g.visible(main, &at("release")) && !g.visible(main, &at("paid")) && !g.visible(main, &at("paidDebug")));
+        assert!(!g.visible(main, &at("staging")));
+        // Release code sees release and the active flavor, not debug.
+        assert!(g.visible(&at("release"), &at("free")) && g.visible(&at("release"), &at("freeRelease")));
+        assert!(!g.visible(&at("release"), &at("debug")));
+        // Not variant sets: always there.
+        assert!(g.visible(main, "app/src/androidMain/kotlin/a/P.kt"));
+        // Another module's: its own default variant.
+        assert!(g.visible(main, "lib/src/debug/java/l/L.kt") && !g.visible(main, "lib/src/release/java/l/L.kt"));
+        // A variant without the flavors: the default one's.
+        g.pick("app", "release");
+        assert!(g.visible(main, &at("release")) && g.visible(main, &at("free")) && !g.visible(main, &at("debug")));
+        g.pick("app", "paidStaging");
+        assert!(g.visible(main, &at("paid")) && g.visible(main, &at("staging")) && g.visible(main, &at("paidStaging")));
+        assert!(!g.visible(main, &at("debug")) && !g.visible(main, &at("free")));
+        assert_eq!(variant_names(script, true), ["freeDebug", "freeRelease", "freeStaging", "paidDebug", "paidRelease", "paidStaging"]);
+        assert_eq!(variant_names("android { }\n", true), ["debug", "release"]);
+        assert!(variant_names("plugins { kotlin(\"jvm\") }\n", true).is_empty());
     }
 }

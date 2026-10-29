@@ -302,6 +302,13 @@ impl SyncService {
     }
 }
 
+/// The variant each Android module of the project builds, by its folder.
+pub fn active_variants(cx: &mut App) -> Vec<(PathBuf, String)> {
+    let service = SyncService::global(cx);
+    let service = service.read(cx);
+    service.builds.iter().flat_map(|(build, modules)| modules.iter().filter(|m| m.kind.is_android()).map(|m| (m.dir.clone(), variant_of(build, m, cx)))).collect()
+}
+
 /// The variant a module builds: the one picked in Build Variants, else its
 /// default (the first debug one).
 pub fn variant_of(build: &Path, module: &ModuleInfo, cx: &App) -> String {
