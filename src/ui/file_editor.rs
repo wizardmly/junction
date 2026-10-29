@@ -1877,6 +1877,10 @@ impl FileEditor {
                 .collect();
             this.update_in(cx, |_, window, cx| {
                 let editor = cx.entity().downgrade();
+                // The file's only class goes with its file, as IntelliJ's.
+                let mut rest = text.clone();
+                rest.replace_range(decl.lines.clone(), "");
+                let file_goes = matches!(decl.kind, "Class" | "Object") && crate::index::safe_delete::only_header(&rest);
                 let delete: std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)> = {
                     let (editor, text, lines) = (editor.clone(), text.clone(), decl.lines.clone());
                     std::rc::Rc::new(move |window, cx| {
@@ -1884,6 +1888,14 @@ impl FileEditor {
                             .update(cx, |this, cx| {
                                 if this.text(cx) != text {
                                     return Self::hint(TITLE, "The file changed; try again", window, cx);
+                                }
+                                if file_goes {
+                                    if let Err(e) = std::fs::remove_file(this.repository.root().join(&this.own)) {
+                                        return Self::hint(TITLE, format!("Cannot delete the file: {e}"), window, cx);
+                                    }
+                                    cx.emit(FileEditorEvent::FilesChanged);
+                                    cx.emit(FileEditorEvent::Deleted);
+                                    return;
                                 }
                                 let mut new = text.clone();
                                 new.replace_range(lines.clone(), "");
@@ -1894,7 +1906,9 @@ impl FileEditor {
                 };
                 let what = format!("{} '{}'", decl.kind.to_lowercase(), decl.name);
                 if uses.is_empty() {
-                    crate::ui::dialogs::choose(TITLE, format!("Delete {what}?"), Vec::new(), "Cancel", vec![("Delete", delete)], window, cx);
+                    let file = path.rsplit('/').next().unwrap_or(&path);
+                    let message = if file_goes { format!("Delete {what}? Its file {file} is deleted too.") } else { format!("Delete {what}?") };
+                    crate::ui::dialogs::choose(TITLE, message, Vec::new(), "Cancel", vec![("Delete", delete)], window, cx);
                     return;
                 }
                 let n = uses.len();

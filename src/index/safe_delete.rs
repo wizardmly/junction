@@ -72,6 +72,26 @@ pub fn declaration_at(lang: Lang, text: &str, offset: usize) -> Option<Declarati
     None
 }
 
+/// Whether `text` holds nothing but its package, imports, file
+/// annotations and comments: what's left of a file after deleting its only
+/// class, which IntelliJ's Safe Delete deletes with it.
+pub fn only_header(text: &str) -> bool {
+    // Block comments out first, then line by line.
+    let mut rest = text;
+    let mut code = String::new();
+    while let Some(start) = rest.find("/*") {
+        code.push_str(&rest[..start]);
+        let Some(end) = rest[start..].find("*/") else { return code.lines().map(str::trim).all(header_line) };
+        rest = &rest[start + end + 2..];
+    }
+    code.push_str(rest);
+    code.lines().map(str::trim).all(header_line)
+}
+
+fn header_line(line: &str) -> bool {
+    line.is_empty() || line.starts_with("//") || line.starts_with("package ") || line.starts_with("import ") || line.starts_with("@file:")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +109,13 @@ mod tests {
         let java = "class A {\n  int x;\n  void f() { }\n}\n";
         assert_eq!(declaration_at(Lang::Java, java, java.find("x;").unwrap()).unwrap().kind, "Field");
         assert_eq!(declaration_at(Lang::Java, java, java.find("A").unwrap()).unwrap().kind, "Class");
+    }
+
+    #[test]
+    fn a_file_left_with_its_header_only() {
+        assert!(only_header("package a\n\nimport b.C\n/* x\n * y */\n@file:JvmName(\"A\")\n// z\n"));
+        assert!(only_header("package a;\n\nimport java.util.List;\n\n"));
+        assert!(!only_header("package a\n\nfun other() {}\n"));
+        assert!(!only_header("package a\n/* c */ val x = 1\n"));
     }
 }
