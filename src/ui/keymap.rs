@@ -62,6 +62,7 @@ pub const ENTRIES: &[Entry] = &[
     entry("Tool Windows", "Hide All Tool Windows", "workspace::HideAllToolWindows"),
     entry("Tool Windows", "Hide Active Tool Window", "workspace::HideActiveToolWindow"),
     entry("Build", "Sync Project with Gradle Files", "workspace::SyncProjectWithGradleFiles"),
+    entry("Build", "Download Sources", "workspace::DownloadAllSources"),
     entry("Build", "Make Project", "workspace::MakeProject"),
     entry("Run", "Run 'app'", "workspace::RunApp"),
     entry("Run", "Run with Coverage", "workspace::RunWithCoverage"),

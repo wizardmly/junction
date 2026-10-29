@@ -1218,6 +1218,15 @@ fn decompile_stubs(archive: &Path, name: &str, coordinate: &str) -> Option<PathB
 
 const COORDINATE_FILE: &str = ".junction-coordinate";
 
+/// The libraries shown decompiled, for Download Sources of all of them:
+/// their `group:artifact:version`.
+pub fn decompiled_coordinates(libraries: &[LibraryInfo]) -> Vec<String> {
+    let mut out: Vec<String> = libraries.iter().filter_map(|l| std::fs::read_to_string(l.root.join(COORDINATE_FILE)).ok()).map(|s| s.trim().to_owned()).filter(|c| c.split(':').count() == 3).collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// A decompiled stub's library: `group:artifact:version`, from its folder.
 pub fn decompiled_coordinate(path: &Path) -> Option<String> {
     path.ancestors().skip(1).take(64).find_map(|dir| std::fs::read_to_string(dir.join(COORDINATE_FILE)).ok()).map(|s| s.trim().to_owned())
@@ -1767,6 +1776,18 @@ pub fn aar_manifest(aar: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_decompiled_libraries() {
+        let dir = std::env::temp_dir().join(format!("junction-decompiled-{}", std::process::id()));
+        let (stubs, sources) = (dir.join("guava"), dir.join("gson"));
+        std::fs::create_dir_all(&stubs).unwrap();
+        std::fs::create_dir_all(&sources).unwrap();
+        std::fs::write(stubs.join(COORDINATE_FILE), "com.google.guava:guava:33.4.6-jre\n").unwrap();
+        let info = |root: &Path| LibraryInfo { name: String::new(), group: "Gradle", root: root.to_path_buf(), root_label: None, location: None, files: Vec::new(), aar: None };
+        assert_eq!(decompiled_coordinates(&[info(&stubs), info(&sources), info(&stubs)]), ["com.google.guava:guava:33.4.6-jre"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn parses_manifests() {

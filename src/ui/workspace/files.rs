@@ -720,6 +720,26 @@ impl Workspace {
     }
 
     /// Select In › Project View: shows the current editor's file in the tree.
+    /// Build › Download Sources (Gradle's task): the sources of every
+    /// library shown decompiled, reported in a balloon when done.
+    pub(super) fn download_all_sources(&mut self, _: &DownloadAllSources, window: &mut Window, cx: &mut Context<Self>) {
+        window.push_notification(Notification::info("Downloading sources of the libraries shown decompiled…").title("Download Sources"), cx);
+        let task = self.code_index.update(cx, |index, cx| index.download_all_sources(cx));
+        cx.spawn_in(window, async move |_, cx| {
+            let (done, failed) = task.await;
+            cx.update(|window, cx| {
+                let notification = match (done, failed.len()) {
+                    (0, 0) => Notification::info("Every library already has its sources"),
+                    (_, 0) => Notification::success(format!("Downloaded the sources of {done} {}", if done == 1 { "library" } else { "libraries" })),
+                    _ => Notification::warning(format!("Downloaded {done}; not found for {}:\n{}", failed.len(), failed.join("\n"))),
+                };
+                window.push_notification(notification.title("Download Sources"), cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     pub(super) fn select_in_project(&mut self, _: &SelectInProject, _: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.editor() else { return };
         let path = editor.read(cx).path().to_owned();
