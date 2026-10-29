@@ -112,6 +112,17 @@ pub struct ExtractRequest {
     pub result_type: String,
 }
 
+/// Another place in the file with the same code (IntelliJ's duplicates):
+/// its parameters bound to other expressions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Duplicate {
+    pub range: Range<usize>,
+    /// The arguments, in the plan's parameter order.
+    pub args: Vec<String>,
+    /// The variable an `Output::Assigned` result goes to here.
+    pub assigned: Option<String>,
+}
+
 /// The edit: `range` of the old text becomes `text`; `select` is the new
 /// method's name in the new text, absolute.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,9 +201,9 @@ fn reindent(code: &str, from: &str, to: &str) -> String {
         .join("\n")
 }
 
-/// The extraction: the call in place of the selection, the new method
-/// after the enclosing one.
-pub fn extract(style: ImportStyle, text: &str, plan: &MethodPlan, request: &ExtractRequest, unit: &str) -> Result<Extracted, String> {
+/// The extraction: the call in place of the selection (and of the
+/// duplicates), the new method after the enclosing one.
+pub fn extract(style: ImportStyle, text: &str, plan: &MethodPlan, request: &ExtractRequest, unit: &str, duplicates: &[Duplicate]) -> Result<Extracted, String> {
     check(style, plan, request)?;
     let java = style == ImportStyle::Java;
     // The code, its parameters renamed.
@@ -211,23 +222,8 @@ pub fn extract(style: ImportStyle, text: &str, plan: &MethodPlan, request: &Extr
     let statement_indent: String = text[line_start..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
     let inner = format!("{}{unit}", plan.member_indent);
     let args: Vec<&str> = plan.parameters.iter().map(|p| p.name.as_str()).collect();
-    let call = format!("{}({})", request.name, args.join(", "));
+    let call_text = call(java, plan, request, &args, None);
     let semi = if java { ";" } else { "" };
-    // The call where the code was.
-    let call_text = if plan.expression {
-        call.clone()
-    } else if plan.returns.is_some() {
-        format!("return {call}{semi}")
-    } else {
-        match &plan.output {
-            None => format!("{call}{semi}"),
-            Some(Output::Declared { name, ty, mutable }) => {
-                let ty = if ty.is_empty() { request.result_type.trim() } else { ty.as_str() };
-                if java { format!("{ty} {name} = {call};") } else { format!("{} {name} = {call}", if *mutable { "var" } else { "val" }) }
-            }
-            Some(Output::Assigned { name, .. }) => format!("{name} = {call}{semi}"),
-        }
-    };
     // The new method.
     let sig = signature(style, plan, request);
     let mut method = format!("\n\n{}{sig}", plan.member_indent);
@@ -254,14 +250,53 @@ pub fn extract(style: ImportStyle, text: &str, plan: &MethodPlan, request: &Extr
         }
         method.push_str(&format!("{}}}", plan.member_indent));
     }
-    // One edit from the selection to the new method's place.
-    let between = &text[plan.range.end..plan.insert_at];
-    let mut replacement = call_text;
-    replacement.push_str(between);
-    let name_offset = replacement.len() + method.find(&format!("{}(", request.name)).unwrap_or(0);
-    replacement.push_str(&method);
-    let start = plan.range.start;
-    Ok(Extracted { range: start..plan.insert_at, text: replacement, select: start + name_offset..start + name_offset + request.name.len() })
+    // One edit from the first change to the last: the selection, the
+    // duplicates and the new method's place.
+    let name_in_method = method.find(&format!("{}(", request.name)).unwrap_or(0);
+    let mut edits: Vec<(Range<usize>, String, bool)> = vec![(plan.range.clone(), call_text, false), (plan.insert_at..plan.insert_at, method, true)];
+    for d in duplicates {
+        let args: Vec<&str> = d.args.iter().map(String::as_str).collect();
+        edits.push((d.range.clone(), call(java, plan, request, &args, d.assigned.as_deref()), false));
+    }
+    edits.sort_by_key(|(r, _, _)| (r.start, r.end));
+    let (start, end) = (edits[0].0.start, edits.iter().map(|(r, _, _)| r.end).max().unwrap_or(plan.insert_at));
+    let mut replacement = String::new();
+    let mut at = start;
+    let mut name_offset = 0;
+    for (r, t, is_method) in edits {
+        if r.start < at {
+            return Err("The duplicates overlap".into());
+        }
+        replacement.push_str(&text[at..r.start]);
+        if is_method {
+            name_offset = replacement.len() + name_in_method;
+        }
+        replacement.push_str(&t);
+        at = r.end;
+    }
+    replacement.push_str(&text[at..end]);
+    Ok(Extracted { range: start..end, text: replacement, select: start + name_offset..start + name_offset + request.name.len() })
+}
+
+/// The call that takes the code's place: an expression, a returned call,
+/// the result declared or assigned, or a statement.
+fn call(java: bool, plan: &MethodPlan, request: &ExtractRequest, args: &[&str], assigned: Option<&str>) -> String {
+    let call = format!("{}({})", request.name, args.join(", "));
+    let semi = if java { ";" } else { "" };
+    if plan.expression {
+        call
+    } else if plan.returns.is_some() {
+        format!("return {call}{semi}")
+    } else {
+        match &plan.output {
+            None => format!("{call}{semi}"),
+            Some(Output::Declared { name, ty, mutable }) => {
+                let ty = if ty.is_empty() { request.result_type.trim() } else { ty.as_str() };
+                if java { format!("{ty} {name} = {call};") } else { format!("{} {name} = {call}", if *mutable { "var" } else { "val" }) }
+            }
+            Some(Output::Assigned { name, .. }) => format!("{} = {call}{semi}", assigned.unwrap_or(name)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -300,7 +335,7 @@ mod tests {
             taken: vec!["f".into()],
         };
         assert_eq!(plan.suggested_name(), "extracted");
-        let e = extract(ImportStyle::Kotlin, text, &plan, &request("twice", &[("count", "Int")], ""), "    ").unwrap();
+        let e = extract(ImportStyle::Kotlin, text, &plan, &request("twice", &[("count", "Int")], ""), "    ", &[]).unwrap();
         let out = apply(text, &e);
         assert_eq!(
             out,
@@ -328,7 +363,7 @@ mod tests {
         };
         assert_eq!(plan.suggested_name(), "extracted1");
         assert!(!plan.needs_result_type(ImportStyle::Kotlin) && plan.needs_result_type(ImportStyle::Java));
-        let e = extract(ImportStyle::Kotlin, text, &plan, &request("calc", &[("x", "Int")], ""), "    ").unwrap();
+        let e = extract(ImportStyle::Kotlin, text, &plan, &request("calc", &[("x", "Int")], ""), "    ", &[]).unwrap();
         assert_eq!(apply(text, &e), "fun f(x: Int) = println(calc(x))\n\nprivate fun calc(x: Int) = x * 3 + 1\n");
         // Java: the last statements return; static kept.
         let text = "class A {\n  static int f(int n) {\n    int a = n + 1;\n    return a * 2;\n  }\n}\n";
@@ -348,7 +383,7 @@ mod tests {
         let mut r = request("compute", &[("n", "int")], "");
         r.is_static = true;
         assert_eq!(signature(ImportStyle::Java, &plan, &r), "private static int compute(int n)");
-        let e = extract(ImportStyle::Java, text, &plan, &r, "  ").unwrap();
+        let e = extract(ImportStyle::Java, text, &plan, &r, "  ", &[]).unwrap();
         assert_eq!(apply(text, &e), "class A {\n  static int f(int n) {\n    return compute(n);\n  }\n\n  private static int compute(int n) {\n    int a = n + 1;\n    return a * 2;\n  }\n}\n");
         // Kotlin: an outer `var` assigned and used after; its parameter copied.
         let text = "fun f() {\n    var s = 0\n    s += 2\n    println(s)\n}\n";
@@ -365,7 +400,7 @@ mod tests {
             is_static: false,
             taken: vec![],
         };
-        let e = extract(ImportStyle::Kotlin, text, &plan, &request("add", &[("s", "Int")], ""), "    ").unwrap();
+        let e = extract(ImportStyle::Kotlin, text, &plan, &request("add", &[("s", "Int")], ""), "    ", &[]).unwrap();
         assert_eq!(apply(text, &e), "fun f() {\n    var s = 0\n    s = add(s)\n    println(s)\n}\n\nprivate fun add(s: Int): Int {\n    var s = s\n    s += 2\n    return s\n}\n");
         // Checks.
         assert_eq!(check(ImportStyle::Kotlin, &plan, &request("add", &[("s", "")], "")), Err("Specify the type of 's'".into()));

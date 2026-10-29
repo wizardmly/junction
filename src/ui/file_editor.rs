@@ -1516,20 +1516,57 @@ impl FileEditor {
         let editor = cx.entity().downgrade();
         let dialog_plan = plan.clone();
         crate::ui::extract_method_dialog::open(style, dialog_plan, move |request, window, cx| {
-            editor
-                .update(cx, |this, cx| {
-                    let text = this.text(cx);
-                    let unit = crate::domain::surround::indent_unit(&text);
-                    match crate::domain::extract_method::extract(style, &text, &plan, &request, &unit) {
-                        Err(message) => Self::hint(title, message, window, cx),
-                        Ok(done) => this.state.update(cx, |state, cx| {
-                            state.set_selected_range(done.range.clone(), cx);
-                            state.replace(&done.text, window, cx);
-                            state.set_selected_range(done.select.clone(), cx);
-                        }),
-                    }
+            let Some(this) = editor.upgrade() else { return };
+            let text = this.read(cx).text(cx);
+            // One edit: the selection, the duplicates taken, the new method.
+            let apply = {
+                let (editor, plan, request, text) = (editor.clone(), plan.clone(), request.clone(), text.clone());
+                move |duplicates: &[crate::domain::extract_method::Duplicate], window: &mut Window, cx: &mut gpui_kit::App| {
+                    editor
+                        .update(cx, |this, cx| {
+                            if this.text(cx) != text {
+                                return;
+                            }
+                            let unit = crate::domain::surround::indent_unit(&text);
+                            match crate::domain::extract_method::extract(style, &text, &plan, &request, &unit, duplicates) {
+                                Err(message) => Self::hint(title, message, window, cx),
+                                Ok(done) => this.state.update(cx, |state, cx| {
+                                    state.set_selected_range(done.range.clone(), cx);
+                                    state.replace(&done.text, window, cx);
+                                    state.set_selected_range(done.select.clone(), cx);
+                                }),
+                            }
+                        })
+                        .ok();
+                }
+            };
+            // IntelliJ's duplicates: the same code elsewhere in the file can
+            // become the call too.
+            let duplicates = crate::index::extract_method::duplicates(lang, &text, &plan, request.is_static);
+            if duplicates.is_empty() {
+                return apply(&[], window, cx);
+            }
+            let n = duplicates.len();
+            let message = if n == 1 {
+                "Junction found 1 code fragment in this file that can be replaced with a call to the extracted method. Replace it?".to_owned()
+            } else {
+                format!("Junction found {n} code fragments in this file that can be replaced with a call to the extracted method. Replace them?")
+            };
+            let details = duplicates
+                .iter()
+                .map(|d| {
+                    let line = text[..d.range.start].matches('\n').count() + 1;
+                    format!("line {line}: {}", text[d.range.clone()].lines().next().unwrap_or_default().trim())
                 })
-                .ok();
+                .collect();
+            let apply = std::rc::Rc::new(apply);
+            let skip: std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)> = std::rc::Rc::new({
+                let apply = apply.clone();
+                move |window, cx| apply(&[], window, cx)
+            });
+            let replace: std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)> = std::rc::Rc::new(move |window, cx| apply(&duplicates, window, cx));
+            // After the Extract dialog closes.
+            window.defer(cx, move |window, cx| crate::ui::dialogs::choose(title, message, details, "Cancel", vec![("Skip", skip), ("Replace", replace)], window, cx));
         }, window, cx);
     }
 
