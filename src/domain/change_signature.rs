@@ -238,6 +238,10 @@ pub fn call_edits(style: ImportStyle, signature: &Signature, request: &Signature
     if !signature.constructor && request.name != signature.name && !call.name_range.is_empty() {
         out.push((call.name_range.clone(), request.name.clone()));
     }
+    // A reference has no arguments to change.
+    if call.reference {
+        return out;
+    }
     let Some((mut args, last_kept)) = argument_list(style, signature, request, call) else { return out };
     match &call.lambda {
         None => out.push((call.args_open + 1..call.args_close, args.join(", "))),

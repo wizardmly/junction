@@ -36,6 +36,9 @@ fn fits_anything(text: &str, range: &Range<usize>) -> bool {
 
 /// The edit replacing one call with the body.
 pub fn call_edit(plan: &ParameterPlan, text: &str, call: &CallSite) -> Result<Edit, String> {
+    if call.reference {
+        return Err(format!("Cannot perform refactoring. {} is used as a reference (::{})", plan.function, plan.function));
+    }
     // Every parameter needs an argument (a default value isn't inlined).
     for (ix, name) in plan.params.iter().enumerate() {
         if call.value_for(&plan.params, ix).is_none() {

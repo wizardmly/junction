@@ -54,6 +54,8 @@ pub struct CallSite {
     pub lambda: Option<Range<usize>>,
     /// The trailing lambda's text.
     pub lambda_text: String,
+    /// A reference (`::name`, `Type::name`), not a call: no arguments.
+    pub reference: bool,
 }
 
 impl CallSite {
@@ -168,6 +170,9 @@ pub fn edits(style: ImportStyle, plan: &ParameterPlan, calls_here: &[CallSite], 
 /// The new argument added to a call: named when the call names its
 /// arguments or leaves some to their defaults.
 pub fn call_edit(plan: &ParameterPlan, call: &CallSite, name: &str) -> Option<Edit> {
+    if call.reference {
+        return None;
+    }
     let value = argument_for(plan, call);
     let passed = call.args.len() + usize::from(call.lambda.is_some());
     let named = call.args.iter().any(|(n, _)| n.is_some()) || passed < plan.params.len();
