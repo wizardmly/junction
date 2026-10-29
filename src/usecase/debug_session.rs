@@ -81,11 +81,18 @@ pub struct BreakpointActions {
     pub log_message: bool,
     pub log_stack: bool,
     pub log_expression: Option<String>,
+    /// IntelliJ's "Disable until hitting the following breakpoint": the
+    /// breakpoint (file, 1-based line) whose hit arms this one; until then
+    /// its hits run on.
+    pub master: Option<(PathBuf, u32)>,
+    /// After its own hit: stays armed ("Leave enabled") rather than waiting
+    /// for the master again ("Disable again").
+    pub leave_enabled: bool,
 }
 
 impl Default for BreakpointActions {
     fn default() -> Self {
-        Self { suspend: true, remove_once_hit: false, log_message: false, log_stack: false, log_expression: None }
+        Self { suspend: true, remove_once_hit: false, log_message: false, log_stack: false, log_expression: None, master: None, leave_enabled: false }
     }
 }
 
@@ -189,6 +196,8 @@ struct State {
     paused: Option<u64>,
     /// The exception an exception breakpoint stopped at, and its thread.
     thrown: Option<(u64, Value)>,
+    /// Dependent breakpoints whose master has been hit (file, line).
+    armed: std::collections::HashSet<(PathBuf, u32)>,
     ended: bool,
 }
 
@@ -673,6 +682,13 @@ impl DebugSession {
             out.push(SessionEvent::Exception(format!("Exception '{name}' {}", if caught.is_some() { "occurred" } else { "was not caught" })));
         }
         if let (Some((thread, PauseReason::Breakpoint)), Some(breakpoint)) = (paused, hit) {
+            let key = (breakpoint.path.clone(), breakpoint.line);
+            // A dependent breakpoint before its master's hit: runs on.
+            if breakpoint.actions.master.is_some() && !state.armed.contains(&key) {
+                drop(state);
+                self.vm.resume()?;
+                return Ok(out);
+            }
             // The condition, in the hit frame: false runs on.
             drop(state);
             let frames = self.vm.frames(thread)?;
@@ -690,6 +706,16 @@ impl DebugSession {
                         stop = true;
                     }
                 }
+            }
+            // A hit that counts: arms the breakpoints waiting for it, and
+            // a dependent one waits for its master again.
+            {
+                let mut state = self.state.lock().unwrap();
+                let dependents: Vec<(PathBuf, u32)> = state.breakpoints.iter().filter(|p| p.breakpoint.actions.master.as_ref() == Some(&key)).map(|p| (p.breakpoint.path.clone(), p.breakpoint.line)).collect();
+                if breakpoint.actions.master.is_some() && !breakpoint.actions.leave_enabled {
+                    state.armed.remove(&key);
+                }
+                state.armed.extend(dependents);
             }
             if breakpoint.actions.remove_once_hit {
                 self.remove_breakpoint(&breakpoint.path, breakpoint.line)?;
@@ -1267,6 +1293,45 @@ mod tests {
         assert_eq!(events[0], SessionEvent::Removed { path: breakpoint.path.clone(), line: 5 });
         assert!(matches!(events[1], SessionEvent::Paused { reason: PauseReason::Breakpoint, .. }), "{events:?}");
         assert_eq!(vm.take_log()[0], format!("clear {request}"));
+    }
+
+    #[test]
+    fn dependent_breakpoints_wait_for_their_master() {
+        let vm = vm();
+        vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
+        let session = DebugSession::new(vm.clone());
+        let master = breakpoint(4);
+        session.add_breakpoint(master.clone()).unwrap();
+        let master_request = *vm.next.lock().unwrap();
+        let mut dependent = breakpoint(5);
+        dependent.actions.master = Some((master.path.clone(), 4));
+        session.add_breakpoint(dependent.clone()).unwrap();
+        let dependent_request = *vm.next.lock().unwrap();
+        vm.take_log();
+        let hit = |index, request| vec![DebugEvent::Breakpoint { thread: 1, location: Location { class: 10, method: 1, index }, request }];
+        let paused = |events: Vec<SessionEvent>| events.iter().any(|e| matches!(e, SessionEvent::Paused { .. }));
+        // Before the master: runs on.
+        vm.send(Suspend::All, hit(4, dependent_request));
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume"]);
+        vm.send(Suspend::All, hit(0, master_request));
+        assert!(paused(session.poll(Duration::ZERO).unwrap()));
+        vm.send(Suspend::All, hit(4, dependent_request));
+        assert!(paused(session.poll(Duration::ZERO).unwrap()));
+        // Disable again: waits for the master once more.
+        vm.take_log();
+        vm.send(Suspend::All, hit(4, dependent_request));
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume"]);
+        // Leave enabled: stays armed.
+        dependent.actions.leave_enabled = true;
+        session.set_actions(&dependent.path, 5, dependent.actions.clone());
+        vm.send(Suspend::All, hit(0, master_request));
+        session.poll(Duration::ZERO).unwrap();
+        for _ in 0..2 {
+            vm.send(Suspend::All, hit(4, dependent_request));
+            assert!(paused(session.poll(Duration::ZERO).unwrap()));
+        }
     }
 
     #[test]

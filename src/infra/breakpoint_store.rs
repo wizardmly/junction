@@ -50,11 +50,24 @@ pub struct SavedBreakpoint {
     /// Remove once hit.
     #[serde(default, skip_serializing_if = "is_false")]
     pub remove_once_hit: bool,
+    /// "Disable until hitting the following breakpoint": its file and line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master: Option<BreakpointRef>,
+    /// After hit: Leave enabled (else Disable again).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub leave_enabled: bool,
+}
+
+/// Another breakpoint, by its file and 0-based line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BreakpointRef {
+    pub file: String,
+    pub line: u32,
 }
 
 impl SavedBreakpoint {
     pub fn new(file: &str, line: u32) -> Self {
-        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None, field: None, field_access: false, field_modification: true, method_entry: true, method_exit: false, remove_once_hit: false }
+        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None, field: None, field_access: false, field_modification: true, method_entry: true, method_exit: false, remove_once_hit: false, master: None, leave_enabled: false }
     }
 }
 
