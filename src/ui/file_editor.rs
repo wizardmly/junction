@@ -239,6 +239,15 @@ pub enum FileEditorEvent {
 
 impl EventEmitter<FileEditorEvent> for FileEditor {}
 
+/// A refactoring preview's row: the place at byte `at` of a file's text.
+fn preview_row(path: &str, text: &str, at: usize) -> crate::domain::rename::Occurrence {
+    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let line = text[..at].matches('\n').count() as u32;
+    let col = text[start..at].encode_utf16().count() as u32;
+    let row = text[start..].split('\n').next().unwrap_or_default().trim().to_owned();
+    crate::domain::rename::Occurrence { path: path.to_owned(), line, col, text: row, code: true, other: None }
+}
+
 /// Highlighting the toolkit lacks or Android Studio colors differently:
 /// C, C++, ObjC, Java and Rust built-in types are keywords; C++'s and TSX's
 /// queries are only additions to C's and TypeScript's; Swift has none; Dart,
@@ -1696,6 +1705,7 @@ impl FileEditor {
         // Invoked on a call (not the declaration): that one can go alone.
         let this_call = here.iter().find(|c| c.name_range.start <= offset && offset <= c.name_range.end && !declaration.contains(&offset)).cloned();
         let files = root.clone().map(|root| DiskFiles { root, repository: None });
+        let own_path = own.clone();
         let task = cx.background_spawn(async move {
             let Some(root) = root else { return Vec::new() };
             let files = DiskFiles { root, repository: None };
@@ -1727,7 +1737,53 @@ impl FileEditor {
                             .ok();
                     })));
                 }
-                options.push(("Inline All and Remove", std::rc::Rc::new(move |window, cx| {
+                // Preview: the calls in the Find window; Do Refactor inlines the
+                // ones kept, and only with all of them does the declaration go.
+                let own_calls: Vec<_> = here.iter().filter(|c| !(declaration.start <= c.name_range.start && c.name_range.end <= declaration.end)).cloned().collect();
+                let mut occurrences: Vec<crate::domain::rename::Occurrence> = own_calls.iter().map(|c| preview_row(&own_path, &text, c.name_range.start)).collect();
+                occurrences.extend(elsewhere.iter().flat_map(|f| f.calls.iter().map(|c| preview_row(&f.path, &f.text, c.name_range.start))));
+                let preview = {
+                    let (editor, plan, text, own, own_calls, elsewhere, files) = (editor.clone(), plan.clone(), text.clone(), own_path.clone(), own_calls.clone(), elsewhere.clone(), files.clone());
+                    let total = occurrences.len();
+                    let header = format!("Inline function {}() — {}", plan.function, if total == 1 { "1 usage".to_owned() } else { format!("{total} usages") });
+                    let word = plan.function.clone();
+                    move |all: std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)>| -> (String, String, Vec<crate::domain::rename::Occurrence>, std::rc::Rc<dyn Fn(Vec<crate::domain::rename::Occurrence>, &mut Window, &mut gpui_kit::App)>) {
+                        let run = std::rc::Rc::new(move |kept: Vec<crate::domain::rename::Occurrence>, window: &mut Window, cx: &mut gpui_kit::App| {
+                            if kept.len() == total {
+                                return all(window, cx);
+                            }
+                            let keeps = |path: &str, t: &str, at: usize| kept.iter().any(|o| o.path == path && o.line == t[..at].matches('\n').count() as u32);
+                            editor
+                                .update(cx, |this, cx| {
+                                    if this.text(cx) != text {
+                                        return Self::hint(TITLE, "The file changed; try again", window, cx);
+                                    }
+                                    let mut changes = Vec::new();
+                                    for call in own_calls.iter().filter(|c| keeps(&own, &text, c.name_range.start)) {
+                                        match call_edit(&plan, &text, call) {
+                                            Ok(edit) => changes.push(edit),
+                                            Err(message) => return Self::hint(TITLE, message, window, cx),
+                                        }
+                                    }
+                                    if !changes.is_empty() {
+                                        let at = changes[0].0.start;
+                                        let new = apply(&text, changes);
+                                        this.replace_text(&text, &new, at.min(new.len()), window, cx);
+                                    }
+                                    let written = files.as_ref().map_or_else(Vec::new, |files| {
+                                        update_calls::rewrite(files, &elsewhere, &|f| f.calls.iter().filter(|c| keeps(&f.path, &f.text, c.name_range.start)).filter_map(|c| call_edit(&plan, &f.text, c).ok()).collect())
+                                    });
+                                    if !written.is_empty() {
+                                        cx.emit(FileEditorEvent::FilesWritten(written));
+                                    }
+                                })
+                                .ok();
+                        });
+                        (word, header, occurrences, run)
+                    }
+                };
+                let editor_for_preview = editor.clone();
+                let inline_all: std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)> = std::rc::Rc::new(move |window, cx| {
                     editor
                         .update(cx, |this, cx| {
                             if this.text(cx) != text {
@@ -1751,7 +1807,13 @@ impl FileEditor {
                             }
                         })
                         .ok();
+                });
+                let (word, header, occurrences, run) = preview(inline_all.clone());
+                options.push(("Preview", std::rc::Rc::new(move |_, cx| {
+                    let (word, header, occurrences, run) = (word.clone(), header.clone(), occurrences.clone(), run.clone());
+                    editor_for_preview.update(cx, |_, cx| cx.emit(FileEditorEvent::PreviewRefactoring { word, header, occurrences, run })).ok();
                 })));
+                options.push(("Inline All and Remove", inline_all));
                 crate::ui::dialogs::choose(TITLE, message, Vec::new(), "Cancel", options, window, cx);
             })
             .ok();
@@ -1777,6 +1839,7 @@ impl FileEditor {
         }
         let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(|r| r.to_path_buf()));
         let own = self.path.clone();
+        let own_path = own.clone();
         let files = root.clone().map(|root| DiskFiles { root, repository: None });
         let task = cx.background_spawn({
             let field = field.clone();
@@ -1821,7 +1884,39 @@ impl FileEditor {
                 }
                 let message = format!("{} {} has {usages} usages.", field.kind, field.name);
                 let dialog_title = title.clone();
-                options.push(("Inline All and Remove", std::rc::Rc::new(move |window, cx| {
+                // Preview: the references in the Find window; Do Refactor inlines
+                // the ones kept, and only with all of them does the declaration go.
+                let own_refs: Vec<_> = here.refs.iter().filter(|r| r.range.end <= field.declaration.start || r.range.start >= field.declaration.end).cloned().collect();
+                let mut occurrences: Vec<crate::domain::rename::Occurrence> = own_refs.iter().map(|r| preview_row(&own_path, &text, r.range.start)).collect();
+                occurrences.extend(elsewhere.iter().flat_map(|f| f.found.refs.iter().map(|r| preview_row(&f.path, &f.text, r.range.start))));
+                let partial = {
+                    let (editor, field, text, title, own_path, elsewhere, files) = (editor.clone(), field.clone(), text.clone(), title.clone(), own_path.clone(), elsewhere.clone(), files.clone());
+                    move |kept: &[crate::domain::rename::Occurrence], window: &mut Window, cx: &mut gpui_kit::App| {
+                        let keeps = |path: &str, t: &str, at: usize| kept.iter().any(|o| o.path == path && o.line == t[..at].matches('\n').count() as u32);
+                        editor
+                            .update(cx, |this, cx| {
+                                if this.text(cx) != text {
+                                    return Self::hint(&title, "The file changed; try again", window, cx);
+                                }
+                                let mine = References { refs: own_refs.iter().filter(|r| keeps(&own_path, &text, r.range.start)).cloned().collect(), ..Default::default() };
+                                if let Some(first) = mine.refs.first() {
+                                    let at = first.range.start;
+                                    let new = apply(&text, edits(&field, &mine));
+                                    this.replace_text(&text, &new, at.min(new.len()), window, cx);
+                                }
+                                let written = files.as_ref().map_or_else(Vec::new, |files| {
+                                    project_edits::write(files, &elsewhere, &|f| edits(&field, &References { refs: f.found.refs.iter().filter(|r| keeps(&f.path, &f.text, r.range.start)).cloned().collect(), ..Default::default() }))
+                                });
+                                if !written.is_empty() {
+                                    cx.emit(FileEditorEvent::FilesWritten(written));
+                                }
+                            })
+                            .ok();
+                    }
+                };
+                let preview_header = format!("Inline {} {} — {}", field.kind.to_lowercase(), field.name, if occurrences.len() == 1 { "1 usage".to_owned() } else { format!("{} usages", occurrences.len()) });
+                let (preview_word, preview_editor) = (field.name.clone(), editor.clone());
+                let inline_all: std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)> = std::rc::Rc::new(move |window, cx| {
                     editor
                         .update(cx, |this, cx| {
                             if this.text(cx) != text {
@@ -1838,7 +1933,17 @@ impl FileEditor {
                             }
                         })
                         .ok();
+                });
+                let total = occurrences.len();
+                let run: std::rc::Rc<dyn Fn(Vec<crate::domain::rename::Occurrence>, &mut Window, &mut gpui_kit::App)> = {
+                    let all = inline_all.clone();
+                    std::rc::Rc::new(move |kept, window, cx| if kept.len() == total { all(window, cx) } else { partial(&kept, window, cx) })
+                };
+                options.push(("Preview", std::rc::Rc::new(move |_, cx| {
+                    let (word, header, occurrences, run) = (preview_word.clone(), preview_header.clone(), occurrences.clone(), run.clone());
+                    preview_editor.update(cx, |_, cx| cx.emit(FileEditorEvent::PreviewRefactoring { word, header, occurrences, run })).ok();
                 })));
+                options.push(("Inline All and Remove", inline_all));
                 crate::ui::dialogs::choose(dialog_title, message, Vec::new(), "Cancel", options, window, cx);
             })
             .ok();
