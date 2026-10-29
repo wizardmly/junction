@@ -109,7 +109,7 @@ impl Page {
             Page::Appearance => &["Theme", "Dark", "Light", "Sync with OS", "Compact mode"],
             Page::System => &["System", "Startup", "Reopen projects on startup", "Confirm before exiting", "Exit"],
             Page::Keymap => &["Shortcut", "Keyboard"],
-            Page::EditorGeneral => &["Soft-wrap", "Show line numbers", "Show whitespaces", "Show indent guides", "Appearance", "Diff", "Merge"],
+            Page::EditorGeneral => &["Soft-wrap", "Show line numbers", "Show whitespaces", "Show indent guides", "Appearance", "Diff", "Merge", "Console", "Override console cycle buffer size"],
             Page::CodeEditing => &["Code Editing", "Refactorings", "Specify refactoring options", "In modal dialogs", "In the editor"],
             Page::AutoImport => &["Auto Import", "Java", "Kotlin", "Optimize imports on the fly", "Imports"],
             Page::EditorFont => &["Font", "Size", "Line height"],
@@ -190,6 +190,7 @@ pub struct SettingsView {
     min_blank: Vec<(StyleLang, Vec<(usize, Entity<InputState>)>)>,
     hard_wrap: Entity<InputState>,
     large_file: Entity<InputState>,
+    console_buffer: Entity<InputState>,
     /// Languages & Frameworks: a server command per language, and what
     /// runs when it is left empty.
     servers: Vec<(Lang, Entity<InputState>, Option<String>)>,
@@ -273,6 +274,7 @@ impl SettingsView {
             })
             .collect();
         let large_file = input(if initial.large_file_mb > 0 { initial.large_file_mb } else { 50 }.to_string(), window, cx);
+        let console_buffer = input(if initial.console_buffer_kb > 0 { initial.console_buffer_kb } else { 1024 }.to_string(), window, cx);
         let git_path = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(match crate::git::detected_executable() {
@@ -361,6 +363,7 @@ impl SettingsView {
             min_blank,
             hard_wrap,
             large_file,
+            console_buffer,
             servers,
             git_test: None,
             github,
@@ -421,6 +424,9 @@ impl SettingsView {
         }
         if next.large_file_mb > 0 {
             next.large_file_mb = self.large_file.read(cx).value().trim().parse::<u32>().unwrap_or(50).clamp(1, 100_000);
+        }
+        if next.console_buffer_kb > 0 {
+            next.console_buffer_kb = self.console_buffer.read(cx).value().trim().parse::<u32>().unwrap_or(1024).clamp(1, 1_000_000);
         }
         if let Ok(limit) = self.tab_limit.read(cx).value().trim().parse::<usize>() {
             next.diff.tab_limit = limit.clamp(1, 100);
@@ -492,6 +498,7 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.warn_detached_head = from.warn_detached_head;
     to.non_modal_commit = from.non_modal_commit;
     to.large_file_mb = from.large_file_mb;
+    to.console_buffer_kb = from.console_buffer_kb;
     to.cherry_pick_suffix = from.cherry_pick_suffix;
     to.commit_push_dialog = from.commit_push_dialog;
     to.commit_push_dialog_protected_only = from.commit_push_dialog_protected_only;
@@ -1390,6 +1397,25 @@ impl SettingsView {
             .child(self.check("settings-line-numbers", "Show line numbers", d.show_line_numbers, query, |s, v| s.diff.show_line_numbers = v, cx))
             .child(self.check("settings-whitespaces", "Show whitespaces", d.show_whitespaces, query, |s, v| s.diff.show_whitespaces = v, cx))
             .child(self.check("settings-indent-guides", "Show indent guides", d.show_indent_guides, query, |s, v| s.diff.show_indent_guides = v, cx))
+            .child(self.section("Console", cx))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_sm()
+                    .child(self.found("Override console cycle buffer size", query, cx).child(
+                        Checkbox::new("settings-console-buffer").label("Override console cycle buffer size (1024 KB)").checked(self.draft.console_buffer_kb > 0).on_change({
+                            let entity = cx.entity();
+                            // The size comes from the field on Apply; 1 marks "on".
+                            move |v, _, cx| {
+                                let on = *v as u32;
+                                entity.update(cx, |this, cx| this.set(|s| s.console_buffer_kb = on, cx))
+                            }
+                        }),
+                    ))
+                    .child(div().w(px(80.)).child(Input::new(&self.console_buffer).small().disabled(self.draft.console_buffer_kb == 0)))
+                    .child("KB"),
+            )
+            .child(self.note("How much output the Build, Run and Debug consoles keep; the oldest lines go first", cx))
     }
 
     fn code_editing(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {

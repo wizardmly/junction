@@ -158,8 +158,14 @@ impl InputHighlighter for ConsoleHighlighter {
     }
 }
 
-/// How much text a console keeps, as IntelliJ's default cycle buffer.
-const CYCLE_BUFFER: usize = 1024 * 1024;
+/// How much text a console keeps: IntelliJ's cycle buffer, 1024 KB unless
+/// Settings › Editor › General › Console overrides it.
+fn cycle_buffer(cx: &gpui_kit::App) -> usize {
+    match crate::settings::Settings::get(cx).console_buffer_kb {
+        0 => 1024 * 1024,
+        kb => kb as usize * 1024,
+    }
+}
 
 pub struct ConsoleView {
     state: Entity<EditorState>,
@@ -372,7 +378,7 @@ impl ConsoleView {
 
     /// Shows these lines: appends when they extend what's shown, else
     /// starts over. Past IntelliJ's cycle buffer (`idea.cycle.buffer.size`,
-    /// 1024 KB) the oldest lines go.
+    /// 1024 KB, or Settings' override) the oldest lines go.
     pub fn set_lines(&mut self, lines: &[(SharedString, Option<Hsla>)], window: &mut Window, cx: &mut Context<Self>) {
         let extends = lines.len() >= self.texts.len() && self.texts.iter().zip(lines).all(|(a, b)| a.0 == b.0);
         if extends && lines.len() == self.texts.len() {
@@ -392,10 +398,11 @@ impl ConsoleView {
             self.reset(&all, window, cx);
         }
         self.texts = lines.to_vec();
-        if self.end - self.painted.borrow().origin > CYCLE_BUFFER {
+        let limit = cycle_buffer(cx);
+        if self.end - self.painted.borrow().origin > limit {
             let n = {
                 let p = self.painted.borrow();
-                let cut = self.end - CYCLE_BUFFER;
+                let cut = self.end - limit;
                 // The first line starting at or past the cut stays.
                 p.lines.partition_point(|(start, _)| *start < cut).max(1)
             };

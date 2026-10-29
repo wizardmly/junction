@@ -51,6 +51,9 @@ pub struct Settings {
     /// Commit › "Warn about files larger than N MB" (most Git hosts reject
     /// big files); 0 turns the check off.
     pub large_file_mb: u32,
+    /// Editor › General › Console: "Override console cycle buffer size",
+    /// in KB; 0 keeps IntelliJ's default of 1024 KB.
+    pub console_buffer_kb: u32,
     /// Commit › "Use non-modal commit interface": Commit (Ctrl+K) works in
     /// the Commit tool window; off, it opens the modal Commit Changes dialog.
     pub non_modal_commit: bool,
@@ -437,6 +440,7 @@ impl Default for Settings {
             warn_detached_head: true,
             non_modal_commit: true,
             large_file_mb: 50,
+            console_buffer_kb: 0,
             cherry_pick_suffix: true,
             commit_push_dialog: true,
             commit_push_dialog_protected_only: false,
@@ -596,6 +600,11 @@ impl Settings {
                 "warn_crlf" => settings.warn_crlf = flag,
                 "warn_detached_head" => settings.warn_detached_head = flag,
                 "non_modal_commit" => settings.non_modal_commit = flag,
+                "console_buffer_kb" => {
+                    if let Ok(n) = value.parse() {
+                        settings.console_buffer_kb = n;
+                    }
+                }
                 "large_file_mb" => {
                     if let Ok(n) = value.parse() {
                         settings.large_file_mb = n;
@@ -768,7 +777,7 @@ impl Settings {
             self.sync_branches,
             self.update_dialog
         ));
-        text.push_str(&format!("use_language_servers={}\nlarge_file_mb={}\n", self.use_language_servers, self.large_file_mb));
+        text.push_str(&format!("use_language_servers={}\nlarge_file_mb={}\nconsole_buffer_kb={}\n", self.use_language_servers, self.large_file_mb, self.console_buffer_kb));
         text.push_str(&format!("compile_on_save={}\nrun_device={}\n", self.compile_on_save, self.run_device));
         if !self.disabled_intentions.is_empty() {
             text.push_str(&format!("disabled_intentions={}\n", self.disabled_intentions.join("\t")));
@@ -873,6 +882,7 @@ mod tests {
             run_hooks: false,
             non_modal_commit: false,
             large_file_mb: 0,
+            console_buffer_kb: 4096,
             cherry_pick_suffix: false,
             commit_push_dialog_protected_only: true,
             editor_font_tenths: 140,
