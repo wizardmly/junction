@@ -250,7 +250,8 @@ impl CompletionMenu {
             return false;
         }
 
-        cx.propagate();
+        // Junction: an action the menu takes stops here. Propagating it let
+        // the Enter that picks an item also confirm the dialog the editor is in.
         if input::Enter::is_primary(&*action) {
             self.on_action_enter(window, cx);
         } else if action.partial_eq(&input::Escape) {
@@ -430,6 +431,8 @@ impl Render for CompletionMenu {
                     this.dismiss(cx);
                 })),
         )
+        // Junction: above a dialog the editor is in (Evaluate Expression).
+        .with_priority(gpui_base::POPUP_PRIORITY)
         .into_any_element()
     }
 }

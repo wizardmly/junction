@@ -334,6 +334,23 @@ mod tests {
     }
 
     #[test]
+    fn a_fragment_completes_at_the_paused_line() {
+        // Evaluate Expression's field: the fragment as if typed at the start of the paused line.
+        let (_dir, index) = project(&[("Badge.kt", "package com.app\n\nclass BadgeView {\n    fun show() {}\n    val count = 0\n}\n")]);
+        let context = "fun main() {\n    val badge: BadgeView = make()\n    val total = 1\n    println(total)\n    val later = 2\n}\n";
+        let at = crate::domain::expression::line_start(context, 3);
+        let model = IndexCodeModel::new(&index, Lang::Kotlin, "Main.kt");
+        let complete = |fragment: &str| {
+            let text = format!("{}{fragment}\n{}", &context[..at], &context[at..]);
+            names(&complete_code::complete(&model, &text, at + fragment.len(), true, Some(ImportStyle::Kotlin))).into_iter().map(str::to_owned).collect::<Vec<_>>()
+        };
+        assert_eq!(complete("badge."), ["count", "show"]);
+        let locals = complete("t");
+        assert_eq!(locals[0], "total", "{locals:?}");
+        assert!(!complete("lat").contains(&"later".to_owned()));
+    }
+
+    #[test]
     fn nothing_in_a_comment() {
         let (_dir, index) = project(&[]);
         let text = "// Bad";

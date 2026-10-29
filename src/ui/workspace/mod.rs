@@ -462,7 +462,11 @@ impl Workspace {
                 let file = files.all_files.iter().find(|f| f.as_str() == suffix || f.ends_with(&format!("/{suffix}")))?;
                 Some(root.join(file))
             });
-            debug.update(cx, |d, _| d.set_resolver(resolver));
+            let weak = code_index.downgrade();
+            debug.update(cx, |d, _| {
+                d.set_resolver(resolver);
+                d.code_index = Some(weak);
+            });
         }
         let build_view = cx.new(|cx| crate::ui::run_views::BuildView::new(run.clone(), window, cx));
         let run_view = cx.new(|cx| crate::ui::run_views::RunView::new(run.clone(), window, cx));
