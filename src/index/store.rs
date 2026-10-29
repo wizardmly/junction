@@ -53,6 +53,9 @@ pub struct ProjectIndex {
     /// Dependencies and SDKs ("External Libraries"), keyed by absolute path.
     #[serde(skip)]
     pub external: std::sync::Arc<ExternalIndex>,
+    /// The Gradle modules and what each sees, from the build files.
+    #[serde(skip)]
+    pub modules: std::sync::Arc<crate::domain::modules::ModuleGraph>,
 }
 
 /// A hash map with a fast, non-cryptographic hasher: the name maps hold
@@ -379,7 +382,15 @@ impl ProjectIndex {
         index.version = CACHE_VERSION;
         index.root = root.to_path_buf();
         index.rebuild_maps();
+        index.refresh_modules();
         index
+    }
+
+    /// Re-reads the module graph from the build files.
+    fn refresh_modules(&mut self) {
+        let root = self.root.clone();
+        let read = |rel: &str| std::fs::read_to_string(root.join(rel)).ok();
+        self.modules = std::sync::Arc::new(crate::domain::modules::ModuleGraph::build(&self.all_files, &read));
     }
 
     pub fn save(&self) {
@@ -462,6 +473,7 @@ impl ProjectIndex {
         if rebuild {
             self.rebuild_maps();
         }
+        self.refresh_modules();
     }
 
     /// Re-indexes one file now (after a save in the editor).
@@ -472,6 +484,9 @@ impl ProjectIndex {
         if let Some(entry) = index_file(&self.root, rel) {
             self.map(rel, &entry);
             self.files.insert(rel.to_owned(), entry);
+        }
+        if rel.ends_with("build.gradle.kts") || rel.ends_with("build.gradle") {
+            self.refresh_modules();
         }
     }
 

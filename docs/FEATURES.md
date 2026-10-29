@@ -336,7 +336,7 @@ Android Studio 的 Sync Project with Gradle Files，轻量版：只让 Gradle �
 | 状态栏显示 Gradle sync running… | ✅ |
 | Build 工具窗口的 Sync 标签页：Gradle 输出流式显示在右侧控制台，左侧树是「项目: finished at … 用时 — N errors, M warnings」，下面列每个没解析到的依赖（Failed to resolve）和失败原因；同步中显示 syncing… 并可 Stop；同步开始时自动切到 Sync 标签，失败时自动打开 Build 窗口 | ✅（2026-10-20） |
 | Build Variants 选变体 | ✅（见第 16 节） |
-| 模块 / 源集模型 | ❌ 未做 |
+| 模块 / 源集模型（2026-10-29） | 🟡 读每个模块的 build 文件里的模块依赖（`project(":core:data")`、类型安全的 `projects.core.data`，按目录名匹配，依赖传递），和文件所在的源集（`src/<set>/`）：Go to Declaration、Rename 判断同名符号、代码补全和自动导入提示只在能看到的地方找——本模块、依赖模块的 main（和 testFixtures）；同模块里 main 看不到 test / androidTest，test 看得到 main，androidTest 和 test 互相看不到；KMP 的 `commonMain` / `commonTest` 同理。都看不到时退回原来的全项目结果。只认 Gradle 模块，`projectDir` 改过目录的模块按目录名猜；没做：按变体（flavor）区分源集、Project 视图的 Android 模块分组、Find Usages 按模块过滤。Linux 实测：三模块项目（app 依赖 core，core 和 other 各有一个 `Repo`），app 里 `Repo()` 按 Ctrl+B 直接跳到 core 的 `Repo`（以前两个都列出来）；自动导入提示从 “other.Repo?” 变成 “core.Repo?”，Alt+Enter 后加上 `import core.Repo` |
 
 Linux 实测：最小 Kotlin/JVM 项目（okhttp、gson、一个不存在的依赖）：打开时提示、Sync Now 后库从 8 个变 10 个、切到加了 retrofit 的分支后自动同步变 11 个、build 脚本写坏时报错且库不变。热守护进程下同步 1–3 秒。Windows / macOS 和真实 Android 项目需真机验证。
 
