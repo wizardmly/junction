@@ -130,6 +130,16 @@ impl OurCalls {
     }
 }
 
+/// A Java type's simple name: `A` in `A`, `A<B>`, `p.A`.
+fn type_name(ty: Node) -> Option<Node> {
+    match ty.kind() {
+        "type_identifier" => Some(ty),
+        "generic_type" => children(ty).into_iter().next().and_then(type_name),
+        "scoped_type_identifier" => children(ty).into_iter().filter(|c| c.kind() == "type_identifier").last(),
+        _ => None,
+    }
+}
+
 /// The calls of `function` in a file, with `params` arguments (Kotlin's
 /// may leave defaults out).
 pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<CallSite> {
@@ -170,6 +180,25 @@ pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<
                 let receiver = n.child_by_field_name("object").map(|o| text[o.byte_range()].to_owned()).filter(|r| r != "this");
                 let values: Vec<(Option<String>, String)> = children(args).into_iter().filter(|a| !a.kind().ends_with("comment")).map(|a| (None, text[a.byte_range()].to_owned())).collect();
                 (&text[name.byte_range()] == function && values.len() == params).then(|| CallSite { name_range: name.byte_range(), args_open: args.start_byte(), args_close: args.end_byte() - 1, args: values, receiver })
+            }
+            // A constructor's calls: `new A(…)` (`new A<>(…)`, `new p.A(…)`),
+            // and `this(…)` / `super(…)` from the class or a subclass.
+            Lang::Java if matches!(n.kind(), "object_creation_expression" | "explicit_constructor_invocation") => {
+                let Some(args) = n.child_by_field_name("arguments") else { continue };
+                let name = if n.kind() == "object_creation_expression" {
+                    n.child_by_field_name("type").and_then(type_name).filter(|t| &text[t.byte_range()] == function)
+                } else {
+                    let Some(keyword) = n.child_by_field_name("constructor") else { continue };
+                    let class = std::iter::successors(n.parent(), |p| p.parent()).find(|p| matches!(p.kind(), "class_declaration" | "enum_declaration" | "record_declaration"));
+                    let named = class.and_then(|c| match keyword.kind() {
+                        "this" => c.child_by_field_name("name"),
+                        _ => c.child_by_field_name("superclass").and_then(|s| children(s).into_iter().next()).and_then(type_name),
+                    });
+                    named.is_some_and(|c| &text[c.byte_range()] == function).then_some(keyword)
+                };
+                let Some(name) = name else { continue };
+                let values: Vec<(Option<String>, String)> = children(args).into_iter().filter(|a| !a.kind().ends_with("comment")).map(|a| (None, text[a.byte_range()].to_owned())).collect();
+                (values.len() == params).then(|| CallSite { name_range: name.byte_range(), args_open: args.start_byte(), args_close: args.end_byte() - 1, args: values, receiver: None })
             }
             _ => None,
         };
@@ -212,5 +241,15 @@ mod tests {
         assert_eq!((plan.params.clone(), plan.uses.clone()), (vec!["price".to_owned()], vec![(0..5, 0)]));
         let calls = call_sites(Lang::Java, text, "total", 1);
         assert_eq!(calls.iter().map(|c| c.receiver.clone()).collect::<Vec<_>>(), [None, Some("other".to_owned())]);
+    }
+
+    #[test]
+    fn finds_java_constructor_calls() {
+        let text = "class Box<T> extends Base<T> {\n  Box(int a) { super(a); }\n  Box() { this(1); }\n  Object make() { return List.of(new Box<>(2), new p.Box(3), new Box(4, 5), new Other(6)); }\n}\nclass Sub extends Box<String> { Sub() { super(7); } }\n";
+        let args = |function: &str| call_sites(Lang::Java, text, function, 1).iter().map(|c| c.args[0].1.clone()).collect::<Vec<_>>();
+        assert_eq!(args("Box"), ["1", "2", "3", "7"]);
+        assert_eq!(args("Base"), ["a"]);
+        let this = call_sites(Lang::Java, text, "Box", 1).remove(0);
+        assert_eq!(&text[this.name_range], "this");
     }
 }

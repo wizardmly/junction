@@ -681,6 +681,7 @@ pub struct SameSymbol<'a> {
     line: u32,
     word: String,
     is_type: bool,
+    is_constructor: bool,
     owner: Option<String>,
     chains: std::collections::HashMap<String, Vec<String>>,
 }
@@ -693,7 +694,7 @@ impl<'a> SameSymbol<'a> {
     /// None when nothing named `word` is declared there.
     pub fn new(index: &'a ProjectIndex, declaration: &str, line: u32, word: &str) -> Option<Self> {
         let ours = index.file(declaration)?.symbols.iter().find(|s| s.name == word && s.line == line)?;
-        Some(SameSymbol { index, declaration: declaration.to_owned(), line, word: word.to_owned(), is_type: ours.kind.is_type(), owner: owner_of(&ours.container), chains: Default::default() })
+        Some(SameSymbol { index, declaration: declaration.to_owned(), line, word: word.to_owned(), is_type: ours.kind.is_type(), is_constructor: ours.kind == SymbolKind::Constructor, owner: owner_of(&ours.container), chains: Default::default() })
     }
 
     fn chain(&mut self, ty: &str) -> Vec<String> {
@@ -749,7 +750,10 @@ impl<'a> SameSymbol<'a> {
         let targets = definitions(index, path, lang, text, offset);
         let mine = |t: &Target| {
             let kind = index.file(&t.path).and_then(|e| e.symbols.iter().find(|s| s.line == t.line && s.col == t.col)).map(|s| s.kind);
-            (t.path == self.declaration && t.line == self.line) || kind.is_some_and(|k| self.constructor_of_ours(&t.path, k, &t.container))
+            (t.path == self.declaration && t.line == self.line)
+                || kind.is_some_and(|k| self.constructor_of_ours(&t.path, k, &t.container))
+                // `new A(…)` names the class: ours when we're one of its constructors.
+                || self.is_constructor && t.path == self.declaration && kind.is_some_and(|k| k.is_type()) && self.owner.as_deref() == Some(self.word.as_str())
         };
         if targets.is_empty() || targets.iter().any(mine) {
             return None;
@@ -1278,6 +1282,26 @@ mod tests {
         let mut found = rename_hits(&index, &dir, "Calc");
         mark_other_symbols(&index, &dir, "ex/Calc.kt", 2, "Calc", &mut found);
         assert!(found.iter().all(|o| o.other.is_none()), "{found:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_constructors_calls_are_its_own() {
+        let boxed = "package a;\n\npublic class Box {\n    public Box(int size) {}\n    public Box() { this(1); }\n}\n";
+        let other = "package b;\n\npublic class Box {\n    public Box(int size) {}\n}\n";
+        let uses = "package a;\n\nclass Use extends Box {\n    Use() { super(2); }\n    Box make() { return new Box(3); }\n}\n";
+        let theirs = "package b;\n\nclass Theirs {\n    Box make() { return new Box(4); }\n}\n";
+        let (dir, index) = project(&[("a/Box.java", boxed), ("b/Box.java", other), ("a/Use.java", uses), ("b/Theirs.java", theirs)]);
+        let mut same = SameSymbol::new(&index, "a/Box.java", 3, "Box").unwrap();
+        let mut other_at = |path: &str, text: &str| -> Vec<Option<String>> {
+            let calls = crate::index::introduce_parameter::call_sites(Lang::Java, text, "Box", 1);
+            calls.iter().map(|c| same.other_at(path, text, c.name_range.start)).collect()
+        };
+        assert_eq!(other_at("a/Use.java", uses), [None, None]);
+        assert_eq!(other_at("a/Box.java", boxed), [None]);
+        // Java classes aren't told apart by package yet: both `Box`es are
+        // candidates, so it's kept, as a call that can't be resolved.
+        assert_eq!(other_at("b/Theirs.java", theirs), [None]);
         std::fs::remove_dir_all(&dir).ok();
     }
 

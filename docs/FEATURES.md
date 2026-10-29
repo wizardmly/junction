@@ -1102,9 +1102,12 @@ Linux 实测（Xvfb）：Kotlin 工程依赖 `com.google.code.gson:gson:2.11.0`�
 | 声明：没改的参数保持原文（修饰符、默认值、注解都在），改了的按语言重写；参数原本每行一个时保持每行一个；返回类型增删改 | ✅ |
 | 调用：按新顺序排列实参，删掉的参数去掉，新参数填默认值；Kotlin 调用里原本用命名实参、或者顺序变了又有命名实参、或者省略了有默认值的参数时，后面的实参写成命名实参；函数改名时调用处一起改；其他 .kt / .java 文件里的调用直接写盘并刷新 | ✅ |
 | 只改这个函数的调用（2026-10-29）：同名同参数个数的调用按 Go to Declaration 的解析判断，解析到别的类的同名方法时不改（同 Rename 的语义匹配；父类 / 子类的同名方法算这个函数，解析不出的照旧算）；Inline Function、Introduce Parameter 同样。Linux 实测：`Cart.total` 和 `Till.total` 签名相同，对 `Cart.total` 改名 `sum`，对话框显示 “1 call will be updated”，`cart.total(10.0, 3)` 变成 `cart.sum(10.0, 3)`，`till.total(1.0, 2)` 不变 | ✅ |
-| Java 的 `new A(…)` 构造调用、方法引用 `::name`、Kotlin 的尾随 lambda、可见性、异常列表、覆盖方法一起改、委托旧签名 | ⬜ |
+| Java 构造方法的调用（2026-10-29）：`new A(…)`、`new A<>(…)`、`new p.A(…)`，本类的 `this(…)` 和子类的 `super(…)`（Introduce Parameter 同样适用） | ✅ |
+| 方法引用 `::name`、Kotlin 的尾随 lambda、Kotlin 的 `constructor`、可见性、异常列表、覆盖方法一起改、委托旧签名；Java 的同名类还不按包区分 | ⬜ |
 
 Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int): Double` 按 Ctrl+F6，改名 `sum`，把 `count` 上移，新增 `tax: Double`（调用处默认值 `0.0`），Refactor 后声明是 `fun sum(count: Int, price: Double, tax: Double): Double`，同文件的 `total(1.0, 2)` 变成 `sum(2, 1.0, 0.0)`，Main.kt 的 `cart.total(10.0, 3)` 和 `cart.total(count = 1, price = 2.0)` 变成 `cart.sum(3, 10.0, 0.0)` 和 `cart.sum(count = 1, price = 2.0, tax = 0.0)`。
+
+Linux 实测（Xvfb，`si` Java 工程，2026-10-29）：`Box` 有 `Box(int size)` 和 `Box() { this(1); }`，另一个包里 `Crate extends Box` 的构造方法写 `super(2)`、方法里 `new Box(3)`；在 `Box(int size)` 上按 Ctrl+F6，对话框显示 "3 calls will be updated"，加参数 `label: String`（调用处 `"box"`），Refactor 后声明是 `Box(int size, String label)`，三处调用变成 `this(1, "box")`、`super(2, "box")`、`new Box(3, "box")`。
 
 ## 49. 基本编辑操作：复制行、注释、移动行、扩大选区…（2026-10-17）
 
