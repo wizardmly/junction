@@ -182,7 +182,15 @@ pub fn signature_at(lang: Lang, text: &str, offset: usize) -> Result<Signature, 
         "secondary_constructor" => Some(children(function).into_iter().find(|c| matches!(c.kind(), "constructor_delegation_call" | "statements" | "block")).map_or(function.end_byte(), |n| n.start_byte())),
         _ => children(function).into_iter().find(|c| c.kind() == "function_body").map(|b| b.start_byte()),
     };
+    // Java's `throws` clause, or where one goes: after the parameters
+    // (and any `[]` dimensions).
+    let (throws, throws_range) = match children(function).into_iter().find(|c| c.kind() == "throws") {
+        Some(clause) => (children(clause).iter().map(|t| text[t.byte_range()].to_owned()).collect(), clause.byte_range()),
+        None => (Vec::new(), params_node.end_byte()..params_node.end_byte()),
+    };
     Ok(Signature {
+        throws,
+        throws_range,
         decl_start: function.start_byte(),
         body_start,
         visibility,
@@ -389,5 +397,23 @@ mod tests {
         (request.delegate, request.visibility) = (true, Some("private".into()));
         let out = apply(text, edits(ImportStyle::Java, text, &s, &[], &request).unwrap());
         assert!(out.contains("    Calc(int x) {\n        this(x, 0);\n    }\n\n    private Calc(int x, int y) {}"), "{out}");
+    }
+
+    #[test]
+    fn changes_java_exceptions() {
+        let change = |text: &str, throws: &[&str]| {
+            let s = signature_at(Lang::Java, text, text.find("go").unwrap()).unwrap();
+            let mut request = SignatureRequest::of(&s);
+            request.throws = Some(throws.iter().map(|t| t.to_string()).collect());
+            apply(text, edits(ImportStyle::Java, text, &s, &[], &request).unwrap())
+        };
+        let none = "class A {\n    void go(int a) {}\n}\n";
+        assert_eq!(signature_at(Lang::Java, none, 15).unwrap().throws, Vec::<String>::new());
+        assert!(change(none, &["java.io.IOException"]).contains("void go(int a) throws java.io.IOException {}"));
+        assert_eq!(change(none, &[]), none);
+        let some = "class A {\n    void go() throws IOException, InterruptedException {}\n    abstract void go2() throws E;\n}\n";
+        assert_eq!(signature_at(Lang::Java, some, 15).unwrap().throws, ["IOException", "InterruptedException"]);
+        assert!(change(some, &["IOException"]).contains("void go() throws IOException {}"));
+        assert!(change(some, &[]).contains("void go() {}"));
     }
 }

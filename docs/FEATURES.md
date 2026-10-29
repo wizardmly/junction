@@ -1121,7 +1121,7 @@ Linux 实测（Xvfb）：Kotlin 工程依赖 `com.google.code.gson:gson:2.11.0`�
 | 方法引用（2026-10-29）：改名时 Kotlin 的 `x::name`、`Type::name` 和 Java 的 `this::name`、`Type::name` 一起改名（`Type::new` 不算）；Inline Function 遇到引用时拒绝（"gross is used as a reference (::gross)"），Introduce Parameter 不给引用加实参 | ✅ |
 | Visibility（2026-10-29）：对话框里的下拉框，Kotlin 是 public / internal / protected / private，Java 是 public / protected / package-private / private；改了就重写声明上的修饰符（public / package-private 写成不写，新加的放在注解之后、其他修饰符之前），预览一起显示；覆盖方法保留自己的可见性；Kotlin 主构造方法的不可改。Linux 实测：Calc.java 的 `add` 选 private 后变成 `private int add(int a, int b)` | ✅ |
 | Delegate via overloading method（2026-10-29，Java）：勾上后旧签名的方法保留下来（注解、修饰符照旧），方法体只是调用新方法（`return add(a, b, 1);`，新参数填对话框里的默认值，void 不写 return，构造方法写 `this(…)`），新方法放在它后面；调用处都不改（对话框里写 “The calls keep the old signature”）。Linux 实测：Calc.java 的 `add(int a, int b)` 加参数 `scale`（默认 1）并勾上，得到委托的 `add(int a, int b)` 和新的 `add(int a, int b, int scale)`，CalcTest 里的 `calc.add(1, 2)` 不变 | ✅ |
-| 异常列表（Java 的 throws） | ⬜ |
+| 异常列表（2026-10-29，Java）：对话框的 Exceptions 输入框（逗号分隔，初值是原来的 `throws`），改了就重写 `throws` 子句（原来没有时加在参数表之后，清空时连同前面的空格去掉），预览一起显示；覆盖方法保留自己的。Linux 实测：Calc.java 的 `add` 填 `java.io.IOException` 后变成 `public int add(int a, int b) throws java.io.IOException {` | ✅ |
 
 Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int): Double` 按 Ctrl+F6，改名 `sum`，把 `count` 上移，新增 `tax: Double`（调用处默认值 `0.0`），Refactor 后声明是 `fun sum(count: Int, price: Double, tax: Double): Double`，同文件的 `total(1.0, 2)` 变成 `sum(2, 1.0, 0.0)`，Main.kt 的 `cart.total(10.0, 3)` 和 `cart.total(count = 1, price = 2.0)` 变成 `cart.sum(3, 10.0, 0.0)` 和 `cart.sum(count = 1, price = 2.0, tax = 0.0)`。
 

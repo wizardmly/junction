@@ -1,7 +1,7 @@
 //! IntelliJ's Change Signature dialog (Ctrl+F6): the name and return type,
 //! the parameters' table (Name, Type, and for an added one the Default value
 //! the calls pass) with Add, Remove, Move Up and Move Down, and the
-//! signature's preview, the Visibility, and for Java "Delegate via
+//! signature's preview, the Visibility, and for Java the Exceptions and "Delegate via
 //! overloading method".
 
 use std::rc::Rc;
@@ -37,6 +37,8 @@ pub struct ChangeSignatureView {
     calls: usize,
     name: Entity<InputState>,
     return_type: Entity<InputState>,
+    /// Java's exceptions, comma-separated.
+    throws: Entity<InputState>,
     rows: Vec<Row>,
     selected: Option<usize>,
     /// The Visibility chosen, as [`visibilities`] names it.
@@ -65,6 +67,7 @@ impl ChangeSignatureView {
             params: self.rows.iter().map(|r| NewParam { old: r.old, name: value(&r.name), ty: value(&r.ty), value: value(&r.value) }).collect(),
             visibility: self.signature.visibility_range.is_some().then(|| self.visibility.clone()),
             delegate: self.delegate,
+            throws: (self.style == ImportStyle::Java).then(|| self.throws.read(cx).value().split(',').map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).collect()),
         }
     }
 
@@ -113,6 +116,10 @@ impl ChangeSignatureView {
             ImportStyle::Kotlin if request.return_type.is_empty() => format!("fun {}({})", request.name, params.join(", ")),
             ImportStyle::Kotlin => format!("fun {}({}): {}", request.name, params.join(", "), request.return_type),
         };
+        let signature = match request.throws.as_deref() {
+            Some(throws) if !throws.is_empty() => format!("{signature} throws {}", throws.join(", ")),
+            _ => signature,
+        };
         match request.visibility.as_deref() {
             Some(v) if v != "package-private" => format!("{v} {signature}"),
             _ => signature,
@@ -155,6 +162,7 @@ impl Render for ChangeSignatureView {
             .gap_2()
             .child(h_flex().gap_2().child(label("Name:")).child(div().flex_1().child(Input::new(&self.name).disabled(self.signature.constructor))))
             .child(h_flex().gap_2().child(label("Return type:")).child(div().flex_1().child(Input::new(&self.return_type).disabled(self.signature.constructor))))
+            .when(self.style == ImportStyle::Java, |el| el.child(h_flex().gap_2().child(label("Exceptions:")).child(div().flex_1().child(Input::new(&self.throws)))))
             .child(h_flex().gap_2().child(label("Visibility:")).child({
                 let (view, style, chosen) = (cx.entity(), self.style, self.visibility.clone());
                 Button::new("signature-visibility").small().outline().label(self.visibility.clone()).icon(icons::CHEVRON_DOWN).disabled(self.signature.visibility_range.is_none()).dropdown_menu(move |mut menu, _, _| {
@@ -210,6 +218,7 @@ pub fn open(style: ImportStyle, signature: Signature, calls: usize, on_ok: impl 
             calls,
             name: cx.new(|cx| InputState::new(window, cx)),
             return_type: cx.new(|cx| InputState::new(window, cx)),
+            throws: cx.new(|cx| InputState::new(window, cx)),
             rows: Vec::new(),
             selected: None,
             visibility: visibility_name(style, &signature.visibility).to_owned(),
@@ -217,6 +226,7 @@ pub fn open(style: ImportStyle, signature: Signature, calls: usize, on_ok: impl 
             _subscriptions: Vec::new(),
         };
         view.name = view.input(signature.name.clone(), "Name", window, cx);
+        view.throws = view.input(signature.throws.join(", "), "e.g. java.io.IOException, IllegalStateException", window, cx);
         view.return_type = view.input(signature.return_type.clone(), if style == ImportStyle::Java { "e.g. void" } else { "Unit when empty" }, window, cx);
         for (i, p) in signature.params.iter().enumerate() {
             let name = view.input(p.name.clone(), "Name", window, cx);
