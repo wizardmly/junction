@@ -10,7 +10,13 @@
 
 use std::collections::HashSet;
 
-use gpui_kit::component::{Icon, Selectable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{
+    Icon, Selectable as _, Sizable as _,
+    button::Button,
+    h_flex,
+    menu::{DropdownMenu as _, PopupMenuItem},
+    v_flex,
+};
 use gpui_kit::{
     ClickEvent, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
     Task, Window, div, prelude::FluentBuilder as _, px,
@@ -50,6 +56,56 @@ struct Node {
     recursive: bool,
 }
 
+/// The Call Hierarchy's scope, as IntelliJ's combo box: which callers (or
+/// callees) are shown, at every level.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CallScope {
+    All,
+    Production,
+    Test,
+    ThisClass,
+}
+
+impl CallScope {
+    const ALL: [CallScope; 4] = [CallScope::All, CallScope::Production, CallScope::Test, CallScope::ThisClass];
+
+    fn label(self) -> &'static str {
+        match self {
+            CallScope::All => "All",
+            CallScope::Production => "Project Production Files",
+            CallScope::Test => "Project Test Files",
+            CallScope::ThisClass => "This Class",
+        }
+    }
+
+    /// The toolbar button's text, short enough for a narrow window.
+    fn short(self) -> &'static str {
+        match self {
+            CallScope::All => "All",
+            CallScope::Production => "Production",
+            CallScope::Test => "Test",
+            CallScope::ThisClass => "This Class",
+        }
+    }
+
+    /// Whether `n` is shown in a tree whose root is `root`.
+    fn contains(self, root: &Node, n: &Node) -> bool {
+        // `Cart` of `Cart.total`; a class itself (a field's initializer)
+        // is its own; a top-level function belongs to its file.
+        let class_of = |n: &Node| match n.name.rsplit_once('.') {
+            Some((class, _)) => class.to_owned(),
+            None if n.name.starts_with(char::is_uppercase) => n.name.clone(),
+            None => n.path.clone(),
+        };
+        match self {
+            CallScope::All => true,
+            CallScope::Production => !crate::index::text_search::is_test_path(&n.path),
+            CallScope::Test => crate::index::text_search::is_test_path(&n.path),
+            CallScope::ThisClass => class_of(n) == class_of(root),
+        }
+    }
+}
+
 /// A Type Hierarchy: the type, the view, the tree once looked up, and the
 /// nodes folded.
 struct Types {
@@ -67,6 +123,7 @@ pub struct HierarchyView {
     /// A Call Hierarchy's direction: what the function calls instead of
     /// what calls it (IntelliJ's Callee Hierarchy).
     callees: bool,
+    scope: CallScope,
     types: Option<Types>,
     selected: Vec<usize>,
     _tasks: Vec<Task<()>>,
@@ -89,7 +146,7 @@ fn node_at<'a>(node: &'a mut Node, path: &[usize]) -> Option<&'a mut Node> {
 
 impl HierarchyView {
     pub fn new(index: Entity<CodeIndex>) -> Self {
-        Self { index, root: None, callees: false, types: None, selected: Vec::new(), _tasks: Vec::new() }
+        Self { index, root: None, callees: false, scope: CallScope::All, types: None, selected: Vec::new(), _tasks: Vec::new() }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -262,6 +319,18 @@ impl HierarchyView {
         }
     }
 
+    fn set_scope(&mut self, scope: CallScope, cx: &mut Context<Self>) {
+        self.scope = scope;
+        self.selected = Vec::new();
+        cx.notify();
+    }
+
+    /// A node's children in the scope, with their indexes.
+    fn visible<'a>(&self, node: &'a Node) -> Vec<(usize, &'a Node)> {
+        let root = self.root.as_ref();
+        node.children.iter().flatten().enumerate().filter(|(_, c)| root.is_none_or(|r| self.scope.contains(r, c))).collect()
+    }
+
     fn toggle(&mut self, at: Vec<usize>, cx: &mut Context<Self>) {
         let expanded = self.root.as_mut().and_then(|r| node_at(r, &at)).map(|n| n.expanded).unwrap_or(false);
         if expanded {
@@ -285,7 +354,7 @@ impl HierarchyView {
     fn rows(&self, node: &Node, at: Vec<usize>, depth: usize, out: &mut Vec<(Vec<usize>, usize, Node)>) {
         out.push((at.clone(), depth, Node { children: None, ..node.clone() }));
         if node.expanded {
-            for (i, c) in node.children.iter().flatten().enumerate() {
+            for (i, c) in self.visible(node) {
                 let mut path = at.clone();
                 path.push(i);
                 self.rows(c, path, depth + 1, out);
@@ -398,7 +467,7 @@ impl Render for HierarchyView {
                     }
                     Some(cur)
                 });
-                !n.recursive && full.is_none_or(|f| f.children.as_ref().is_none_or(|c| !c.is_empty()))
+                !n.recursive && full.is_none_or(|f| f.children.is_none() || !self.visible(f).is_empty())
             })
             .collect();
         let mut list = v_flex().id("hierarchy-rows").flex_1().min_h_0().overflow_y_scroll().py_1().text_sm();
@@ -456,6 +525,16 @@ impl Render for HierarchyView {
                     .child(div().text_sm().text_color(palette.text_secondary).child(title))
                     .child(div().flex_1())
                     .when(self.root.is_some(), |el| {
+                        let (view, scope) = (cx.entity(), self.scope);
+                        el.child(Button::new("hierarchy-scope").small().outline().label(scope.short()).tooltip(format!("Scope: {}", scope.label())).icon(icons::CHEVRON_DOWN).dropdown_menu(move |mut menu, _, _| {
+                            for s in CallScope::ALL {
+                                let view = view.clone();
+                                menu = menu.item(PopupMenuItem::new(s.label()).checked(scope == s).on_click(move |_, _, cx| view.update(cx, |this, cx| this.set_scope(s, cx))));
+                            }
+                            menu
+                        }))
+                    })
+                    .when(self.root.is_some(), |el| {
                         let callees = self.callees;
                         el.child(tool_button("hierarchy-callers", icons::SUPERTYPES, "Caller Hierarchy").selected(!callees).on_click(cx.listener(|this, _, _, cx| this.set_callees(false, cx))))
                             .child(tool_button("hierarchy-callees", icons::SUBTYPES, "Callee Hierarchy").selected(callees).on_click(cx.listener(|this, _, _, cx| this.set_callees(true, cx))))
@@ -471,5 +550,28 @@ impl Render for HierarchyView {
                     .child(tool_button("hierarchy-hide", icons::HIDE, "Hide").on_click(cx.listener(|_, _, _, cx| cx.emit(HierarchyEvent::Hide)))),
             )
             .child(if type_view.is_some() { self.type_list(&palette, cx) } else { list })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(name: &str, path: &str) -> Node {
+        Node { name: name.into(), path: path.into(), offset: 0, line: 0, col: 0, calls: Vec::new(), children: None, expanded: false, loading: false, recursive: false }
+    }
+
+    #[test]
+    fn scopes_filter_callers() {
+        let root = node("Cart.total", "app/src/main/java/Cart.java");
+        let use_ = node("Cart.use", "app/src/main/java/Cart.java");
+        let main = node("main", "app/src/main/kotlin/Main.kt");
+        let test = node("CartTest.totals", "app/src/test/java/CartTest.java");
+        let field = node("Cart", "app/src/main/java/Cart.java");
+        let shown = |scope: CallScope| [&use_, &main, &test, &field].into_iter().filter(|n| scope.contains(&root, n)).map(|n| n.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(shown(CallScope::All), ["Cart.use", "main", "CartTest.totals", "Cart"]);
+        assert_eq!(shown(CallScope::Production), ["Cart.use", "main", "Cart"]);
+        assert_eq!(shown(CallScope::Test), ["CartTest.totals"]);
+        assert_eq!(shown(CallScope::ThisClass), ["Cart.use", "Cart"]);
     }
 }
