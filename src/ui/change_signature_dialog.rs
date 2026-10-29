@@ -96,7 +96,9 @@ impl ChangeSignatureView {
             })
             .collect();
         match self.style {
+            ImportStyle::Java if self.signature.constructor => format!("{}({})", request.name, params.join(", ")),
             ImportStyle::Java => format!("{} {}({})", request.return_type, request.name, params.join(", ")),
+            ImportStyle::Kotlin if self.signature.constructor => format!("constructor {}({})", request.name, params.join(", ")),
             ImportStyle::Kotlin if request.return_type.is_empty() => format!("fun {}({})", request.name, params.join(", ")),
             ImportStyle::Kotlin => format!("fun {}({}): {}", request.name, params.join(", "), request.return_type),
         }

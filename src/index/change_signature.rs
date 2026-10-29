@@ -11,6 +11,10 @@ use crate::domain::change_signature::{Param, Signature};
 
 const NO_FUNCTION: &str = "Cannot perform refactoring.\nThe caret should be positioned at the name of the method to be refactored";
 
+fn class_name(class: Node) -> Option<Node> {
+    children(class).into_iter().find(|c| c.kind() == "type_identifier")
+}
+
 fn trimmed(text: &str, start: usize, end: usize) -> std::ops::Range<usize> {
     let s = &text[start..end];
     let lead = s.len() - s.trim_start().len();
@@ -23,38 +27,95 @@ pub fn signature_at(lang: Lang, text: &str, offset: usize) -> Result<Signature, 
         return Err("Change Signature works in Kotlin and Java files".into());
     }
     let tree = symbols::parse(lang, text).ok_or(NO_FUNCTION)?;
+    // The innermost function there; Kotlin's constructors too: a secondary
+    // one, or the primary one with the caret in the class's header.
+    let span = |n: &Node| -> std::ops::Range<usize> {
+        if n.kind() == "class_declaration" {
+            let body = children(*n).into_iter().find(|c| matches!(c.kind(), "class_body" | "enum_class_body"));
+            n.start_byte()..body.map_or(n.end_byte(), |b| b.start_byte())
+        } else {
+            n.byte_range()
+        }
+    };
+    let candidate = |n: &Node| match n.kind() {
+        "secondary_constructor" => lang == Lang::Kotlin,
+        "class_declaration" => lang == Lang::Kotlin && children(*n).iter().any(|c| c.kind() == "primary_constructor"),
+        _ => is_function(lang, *n),
+    };
     let function = descendants(tree.root_node())
         .into_iter()
-        .filter(|n| is_function(lang, *n) && n.start_byte() <= offset && offset <= n.end_byte())
-        .min_by_key(|n| n.end_byte() - n.start_byte())
+        .filter(|n| candidate(n) && span(n).start <= offset && offset <= span(n).end)
+        .min_by_key(|n| span(n).len())
         .ok_or(NO_FUNCTION)?;
-    let constructor = function.kind() == "constructor_declaration";
-    let (name, params_node) = match lang {
-        Lang::Kotlin => (
-            children(function).into_iter().find(|c| c.kind() == "simple_identifier").ok_or(NO_FUNCTION)?,
-            children(function).into_iter().find(|c| c.kind() == "function_value_parameters").ok_or(NO_FUNCTION)?,
-        ),
-        _ => (function.child_by_field_name("name").ok_or(NO_FUNCTION)?, function.child_by_field_name("parameters").ok_or(NO_FUNCTION)?),
+    let constructor = matches!(function.kind(), "constructor_declaration" | "secondary_constructor" | "class_declaration");
+    // The name's node, its text (a constructor's is its class's) and the parameters' node.
+    let (name, name_text, params_node) = match function.kind() {
+        "class_declaration" => {
+            let name = class_name(function).ok_or(NO_FUNCTION)?;
+            (name, text[name.byte_range()].to_owned(), children(function).into_iter().find(|c| c.kind() == "primary_constructor").ok_or(NO_FUNCTION)?)
+        }
+        "secondary_constructor" => {
+            let class = std::iter::successors(function.parent(), |p| p.parent()).find(|p| p.kind() == "class_declaration").and_then(class_name).ok_or(NO_FUNCTION)?;
+            let mut cursor = function.walk();
+            let keyword = function.children(&mut cursor).find(|c| c.kind() == "constructor").ok_or(NO_FUNCTION)?;
+            (keyword, text[class.byte_range()].to_owned(), children(function).into_iter().find(|c| c.kind() == "function_value_parameters").ok_or(NO_FUNCTION)?)
+        }
+        _ => {
+            let (name, params) = match lang {
+                Lang::Kotlin => (
+                    children(function).into_iter().find(|c| c.kind() == "simple_identifier").ok_or(NO_FUNCTION)?,
+                    children(function).into_iter().find(|c| c.kind() == "function_value_parameters").ok_or(NO_FUNCTION)?,
+                ),
+                _ => (function.child_by_field_name("name").ok_or(NO_FUNCTION)?, function.child_by_field_name("parameters").ok_or(NO_FUNCTION)?),
+            };
+            (name, text[name.byte_range()].to_owned(), params)
+        }
     };
-    // The parameters: the list's nodes between commas.
+    // The parameters: the list's nodes between commas, inside the parentheses.
     let mut segments: Vec<Vec<Node>> = vec![Vec::new()];
+    let (mut open, mut close) = (None, None);
     let mut cursor = params_node.walk();
     for child in params_node.children(&mut cursor) {
         match child.kind() {
-            "(" | ")" => {}
+            "(" if open.is_none() => open = Some(child.end_byte()),
+            ")" => close = Some(child.start_byte()),
+            _ if open.is_none() || close.is_some() => {}
             "," => segments.push(Vec::new()),
             k if k.ends_with("comment") => {}
             _ => segments.last_mut().unwrap().push(child),
         }
     }
+    let (Some(open), Some(close)) = (open, close) else { return Err(NO_FUNCTION.into()) };
+    let primary = function.kind() == "class_declaration";
     let decls = match lang {
+        _ if primary => Vec::new(),
         Lang::Kotlin => kotlin_decls(function, text),
         _ => java_decls(function, text),
+    };
+    // Where a primary constructor's parameters are seen: the supertypes'
+    // arguments, property initializers and `init` blocks.
+    let initializers: Vec<Node> = if primary {
+        let body = children(function).into_iter().find(|c| c.kind() == "class_body").map(children).unwrap_or_default();
+        children(function).into_iter().filter(|c| c.kind() == "delegation_specifier").chain(body.into_iter().filter(|c| matches!(c.kind(), "property_declaration" | "anonymous_initializer"))).collect()
+    } else {
+        Vec::new()
     };
     let mut params = Vec::new();
     for seg in segments.into_iter().filter(|s| !s.is_empty()) {
         let (start, end) = (seg[0].start_byte(), seg.last().unwrap().end_byte());
+        let mut property = false;
         let (name_node, ty, prefix_end, default) = match lang {
+            Lang::Kotlin if seg[0].kind() == "class_parameter" => {
+                let p = seg[0];
+                let Some(id) = children(p).into_iter().find(|c| c.kind() == "simple_identifier") else { continue };
+                property = children(p).iter().any(|c| c.kind() == "binding_pattern_kind");
+                let mut cursor = p.walk();
+                let equals = p.children(&mut cursor).find(|c| c.kind() == "=");
+                let ty_end = equals.map_or(p.end_byte(), |e| e.start_byte());
+                let ty = text[id.end_byte()..ty_end].trim().trim_start_matches(':').trim().to_owned();
+                let default = equals.map(|e| text[e.end_byte()..p.end_byte()].trim().to_owned());
+                (id, ty, id.start_byte(), default)
+            }
             Lang::Kotlin => {
                 let Some(p) = seg.iter().find(|n| n.kind() == "parameter") else { continue };
                 let Some(id) = children(*p).into_iter().find(|c| c.kind() == "simple_identifier") else { continue };
@@ -78,8 +139,10 @@ pub fn signature_at(lang: Lang, text: &str, offset: usize) -> Result<Signature, 
         let prefix = if prefix.is_empty() { prefix } else { format!("{prefix} ") };
         // Its uses: references in the function resolving to it.
         let decl = decls.iter().find(|d| d.name == pname && inside(&(d.at..d.at), &params_node.byte_range()));
-        let uses = descendants(function)
-            .into_iter()
+        let scopes = if primary { if property { Vec::new() } else { initializers.clone() } } else { vec![function] };
+        let uses = scopes
+            .iter()
+            .flat_map(|n| descendants(*n))
             .filter(|n| !inside(&n.byte_range(), &params_node.byte_range()) && is_reference(lang, *n, text) && text[n.byte_range()].trim_start_matches('$') == pname)
             .filter(|n| {
                 // The innermost declaration of the name before it is the parameter.
@@ -92,10 +155,11 @@ pub fn signature_at(lang: Lang, text: &str, offset: usize) -> Result<Signature, 
                 if text[r.clone()].starts_with('$') { r.start + 1..r.end } else { r }
             })
             .collect();
-        params.push(Param { name: pname, ty, prefix, default, text: text[trimmed(text, start, end)].to_owned(), uses });
+        params.push(Param { name: pname, ty, prefix, default, text: text[trimmed(text, start, end)].to_owned(), uses, property });
     }
     // The return type.
     let (return_type, return_range) = match lang {
+        Lang::Kotlin if constructor => (String::new(), close..close),
         Lang::Kotlin => {
             let named = children(function);
             let after = named.iter().position(|c| c.id() == params_node.id()).map(|i| &named[i + 1..]).unwrap_or(&[]);
@@ -110,10 +174,10 @@ pub fn signature_at(lang: Lang, text: &str, offset: usize) -> Result<Signature, 
         },
     };
     Ok(Signature {
-        name: text[name.byte_range()].to_owned(),
+        name: name_text,
         name_range: name.byte_range(),
         params,
-        params_range: params_node.start_byte() + 1..params_node.end_byte() - 1,
+        params_range: open..close,
         return_type,
         return_range,
         constructor,
@@ -151,6 +215,36 @@ mod tests {
         assert_eq!((s.return_type.as_str(), s.params[0].prefix.as_str(), s.params[0].ty.as_str(), s.params[1].ty.as_str()), ("int", "final ", "int", "String..."));
         assert_eq!(&text[s.params_range.clone()], "final int price, String... names");
         assert!(signature_at(Lang::Java, text, 2).is_err());
+    }
+
+    #[test]
+    fn changes_kotlin_constructors() {
+        use crate::domain::change_signature::{call_edits, check};
+        use crate::index::introduce_parameter::call_sites;
+        let text = "open class Cart(private val rate: Double, count: Int = 2) {\n    constructor(label: String) : this(1.0, label.length)\n    val n = count * 2\n}\nclass Sub : Cart(2.0, 1)\nval c = Cart(3.0)\n";
+        let s = signature_at(Lang::Kotlin, text, text.find("Cart(").unwrap() + 1).unwrap();
+        assert_eq!((s.name.as_str(), s.constructor, s.params.len()), ("Cart", true, 2));
+        assert_eq!((s.params[0].property, s.params[0].prefix.as_str(), s.params[1].default.as_deref()), (true, "private val ", Some("2")));
+        assert_eq!(s.params[1].uses.len(), 1);
+        let calls = call_sites(Lang::Kotlin, text, "Cart", 2);
+        assert_eq!(calls.iter().map(|c| &text[c.name_range.clone()]).collect::<Vec<_>>(), ["this", "Cart", "Cart"]);
+        // Rename `count`, add `tax` at the end.
+        let mut request = SignatureRequest::of(&s);
+        request.params[1].name = "items".into();
+        request.params.push(NewParam { old: None, name: "tax".into(), ty: "Double".into(), value: "0.0".into() });
+        let mut changes = edits(ImportStyle::Kotlin, text, &s, &[], &request).unwrap();
+        changes.extend(calls.iter().flat_map(|c| call_edits(ImportStyle::Kotlin, &s, &request, c)));
+        assert_eq!(
+            apply(text, changes),
+            "open class Cart(private val rate: Double, items: Int = 2, tax: Double) {\n    constructor(label: String) : this(1.0, label.length, 0.0)\n    val n = items * 2\n}\nclass Sub : Cart(2.0, 1, 0.0)\nval c = Cart(3.0, tax = 0.0)\n"
+        );
+        // The property is the class's: not renamed or removed here.
+        let mut rename = SignatureRequest::of(&s);
+        rename.params[0].name = "ratio".into();
+        assert!(check(ImportStyle::Kotlin, &s, &rename).unwrap_err().contains("Rename"));
+        // A secondary constructor.
+        let second = signature_at(Lang::Kotlin, text, text.find("label: String").unwrap()).unwrap();
+        assert_eq!((second.name.as_str(), second.params.len(), &text[second.name_range.clone()]), ("Cart", 1, "constructor"));
     }
 
     #[test]

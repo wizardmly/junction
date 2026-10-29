@@ -140,6 +140,19 @@ fn type_name(ty: Node) -> Option<Node> {
     }
 }
 
+/// A Kotlin call's `(…)` arguments: the name when named, and the value.
+fn kotlin_arguments(args: Node, text: &str) -> Vec<(Option<String>, String)> {
+    children(args)
+        .into_iter()
+        .filter(|a| a.kind() == "value_argument")
+        .map(|a| {
+            let parts = children(a);
+            let named = parts.first().filter(|p| p.kind() == "simple_identifier" && p.next_sibling().is_some_and(|s| s.kind() == "=")).map(|p| text[p.byte_range()].to_owned());
+            (named, parts.last().map(|p| text[p.byte_range()].to_owned()).unwrap_or_default())
+        })
+        .collect()
+}
+
 /// The calls of `function` in a file, with `params` arguments (Kotlin's
 /// may leave defaults out).
 pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<CallSite> {
@@ -174,21 +187,36 @@ pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<
                     }
                     (None, None) => continue,
                 };
-                let values: Vec<(Option<String>, String)> = args
-                    .map(|a| children(*a))
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|a| a.kind() == "value_argument")
-                    .map(|a| {
-                        let parts = children(a);
-                        let named = parts.first().filter(|p| p.kind() == "simple_identifier" && p.next_sibling().is_some_and(|s| s.kind() == "=")).map(|p| text[p.byte_range()].to_owned());
-                        let value = parts.last().map(|p| text[p.byte_range()].to_owned()).unwrap_or_default();
-                        (named, value)
-                    })
-                    .collect();
+                let values = args.map(|a| kotlin_arguments(*a, text)).unwrap_or_default();
                 let passed = values.len() + usize::from(lambda.is_some());
                 let lambda_text = lambda.clone().map(|l| text[l].to_owned()).unwrap_or_default();
                 (name == function && passed <= params && (lambda.is_none() || params > 0)).then(|| CallSite { name_range: name_node.byte_range(), args_open, args_close, args: values, receiver, lambda, lambda_text })
+            }
+            // A Kotlin constructor's calls besides `A(…)`: a supertype's
+            // `: A(…)`, and `: this(…)` / `: super(…)` from a secondary constructor.
+            Lang::Kotlin if matches!(n.kind(), "constructor_invocation" | "constructor_delegation_call") => {
+                let Some(args) = children(n).into_iter().find(|c| c.kind() == "value_arguments") else { continue };
+                let name = if n.kind() == "constructor_invocation" {
+                    children(n).into_iter().find(|c| c.kind() == "user_type").and_then(|t| children(t).into_iter().filter(|c| c.kind() == "type_identifier").last())
+                } else {
+                    let mut cursor = n.walk();
+                    let keyword = n.children(&mut cursor).find(|c| matches!(c.kind(), "this" | "super"));
+                    let class = std::iter::successors(n.parent(), |p| p.parent()).find(|p| p.kind() == "class_declaration");
+                    let named = class.and_then(|c| match keyword.map(|k| k.kind()) {
+                        Some("this") => children(c).into_iter().find(|t| t.kind() == "type_identifier"),
+                        _ => children(c)
+                            .into_iter()
+                            .filter(|d| d.kind() == "delegation_specifier")
+                            .flat_map(children)
+                            .find(|i| i.kind() == "constructor_invocation")
+                            .and_then(|i| children(i).into_iter().find(|t| t.kind() == "user_type"))
+                            .and_then(|t| children(t).into_iter().filter(|c| c.kind() == "type_identifier").last()),
+                    });
+                    named.filter(|c| &text[c.byte_range()] == function).and(keyword)
+                };
+                let Some(name) = name.filter(|c| matches!(c.kind(), "this" | "super") || &text[c.byte_range()] == function) else { continue };
+                let values = kotlin_arguments(args, text);
+                (values.len() <= params).then(|| CallSite { name_range: name.byte_range(), args_open: args.start_byte(), args_close: args.end_byte() - 1, args: values, ..Default::default() })
             }
             Lang::Java if n.kind() == "method_invocation" => {
                 let (Some(name), Some(args)) = (n.child_by_field_name("name"), n.child_by_field_name("arguments")) else { continue };
