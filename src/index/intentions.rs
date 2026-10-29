@@ -1709,6 +1709,64 @@ pub fn get_or_default(text: &str, caret: usize, classes: super::catches::Classes
     })
 }
 
+/// Replace with 'putIfAbsent' / 'computeIfAbsent' method call (Java,
+/// IntelliJ's Java8MapApiInspection): `if (!m.containsKey(k)) m.put(k, v);`
+/// → `m.putIfAbsent(k, v);`, or `m.computeIfAbsent(k, k -> v);` when `v`
+/// creates or computes something (`new ArrayList<>()`, a call), when `m` is a
+/// map; the caret on the `if` or its condition.
+pub fn put_if_absent(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Java, text)?;
+    let statement = ancestors(innermost(tree.root_node(), caret)?)
+        .take_while(|n| !matches!(n.kind(), "class_body" | "lambda_expression"))
+        .find(|n| n.kind() == "if_statement")?;
+    let mut condition = statement.child_by_field_name("condition")?;
+    if caret > condition.end_byte() || statement.child_by_field_name("alternative").is_some() {
+        return None;
+    }
+    while condition.kind() == "parenthesized_expression" {
+        condition = condition.named_child(0)?;
+    }
+    if condition.kind() != "unary_expression" || !text[condition.byte_range()].starts_with('!') {
+        return None;
+    }
+    let mut body = statement.child_by_field_name("consequence")?;
+    if body.kind() == "block" {
+        let [only] = children(body)[..] else { return None };
+        body = only;
+    }
+    let put = body.named_child(0).filter(|_| body.kind() == "expression_statement")?;
+    // `m.name(…)`: the map and the arguments.
+    let call = |n: Node<'_>, name: &str| -> Option<(String, Vec<String>)> {
+        if n.kind() != "method_invocation" || &text[n.child_by_field_name("name")?.byte_range()] != name {
+            return None;
+        }
+        let arguments = children(n.child_by_field_name("arguments")?).iter().map(|a| text[a.byte_range()].to_owned()).collect();
+        Some((text[n.child_by_field_name("object")?.byte_range()].to_owned(), arguments))
+    };
+    let (map, key) = call(condition.named_child(0)?, "containsKey")?;
+    let (target, arguments) = call(put, "put")?;
+    let ([key], [put_key, value]) = (&key[..], &arguments[..]) else { return None };
+    if target != map || put_key != key {
+        return None;
+    }
+    let ty = java_type(condition.named_child(0)?.child_by_field_name("object")?, text, classes)?;
+    let head = ty.split('<').next().unwrap_or(&ty).rsplit('.').next().unwrap_or(&ty).to_owned();
+    if !matches!(head.as_str(), "Map" | "HashMap" | "LinkedHashMap" | "TreeMap" | "SortedMap" | "NavigableMap" | "ConcurrentMap" | "ConcurrentHashMap") {
+        return None;
+    }
+    let value_node = children(put.child_by_field_name("arguments")?)[1];
+    let computed = matches!(value_node.kind(), "object_creation_expression" | "array_creation_expression" | "method_invocation");
+    let (title, replacement) = if computed {
+        // A lambda parameter may not shadow a local, so none the method mentions.
+        let scope = ancestors(statement).find(|n| matches!(n.kind(), "method_declaration" | "constructor_declaration")).unwrap_or(statement);
+        let parameter = ["k", "key", "mapKey"].into_iter().find(|p| !mentions(&text[scope.byte_range()], p))?;
+        ("computeIfAbsent", format!("{map}.computeIfAbsent({key}, {parameter} -> {value});"))
+    } else {
+        ("putIfAbsent", format!("{map}.putIfAbsent({key}, {value});"))
+    };
+    Some(Intention { title: format!("Replace with '{title}' method call"), range: statement.byte_range(), caret: statement.start_byte(), replacement })
+}
+
 /// Replace with chained 'append()' calls (Java, IntelliJ's
 /// StringConcatenationInsideStringBufferAppendInspection):
 /// `sb.append("a" + x + "b")` → `sb.append("a").append(x).append("b")`, when
@@ -2512,6 +2570,23 @@ mod tests {
         assert_eq!(run("${x}_", 2), None);
         assert_eq!(run("${x.length", 2), None);
         assert_eq!(run("n=", 0), None);
+    }
+
+    #[test]
+    fn replaces_contains_key_check_with_put_if_absent() {
+        let classes = |_: &str| -> Vec<String> { Vec::new() };
+        let text = "class A {\n    void f(Map<String, List<Integer>> m, Map<String, Integer> n, String k, List<String> l) {\n        if (!m.containsKey(k)) {\n            m.put(k, new ArrayList<>());\n        }\n        if (!n.containsKey(k)) n.put(k, 0);\n        if (!n.containsKey(k)) n.put(\"x\", 0);\n        if (n.containsKey(k)) n.put(k, 0);\n        if (!l.contains(k)) l.add(k);\n    }\n}\n";
+        let run = |at: &str| put_if_absent(text, text.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("if (!m").unwrap();
+        assert_eq!(title, "Replace with 'computeIfAbsent' method call");
+        assert!(out.contains("        m.computeIfAbsent(k, key -> new ArrayList<>());\n        if"), "{out}");
+        let (title, out) = run("if (!n.containsKey(k)) n.put(k").unwrap();
+        assert_eq!(title, "Replace with 'putIfAbsent' method call");
+        assert!(out.contains("        n.putIfAbsent(k, 0);\n"), "{out}");
+        // Another key; no negation; not a map.
+        assert_eq!(run("if (!n.containsKey(k)) n.put(\"x\""), None);
+        assert_eq!(run("if (n.containsKey"), None);
+        assert_eq!(run("if (!l"), None);
     }
 
     #[test]
