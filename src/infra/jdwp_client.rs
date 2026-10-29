@@ -972,7 +972,7 @@ fn parse_events(data: &[u8], sizes: IdSizes) -> Option<EventSet> {
                 let _tag = r.bytes.u8()?;
                 let exception = r.object()?;
                 let catch = r.location()?;
-                DebugEvent::Exception { thread, location, exception, caught: catch.class != 0, request }
+                DebugEvent::Exception { thread, location, exception, catch: (catch.class != 0).then_some(catch), request }
             }
             FIELD_ACCESS | FIELD_MODIFICATION => {
                 let thread = r.object()?;
@@ -1263,8 +1263,8 @@ mod tests {
         assert_eq!(
             set.events,
             vec![
-                DebugEvent::Exception { thread: 7, location: at, exception: 40, caught: true, request: 5 },
-                DebugEvent::Exception { thread: 7, location: at, exception: 41, caught: false, request: 5 }
+                DebugEvent::Exception { thread: 7, location: at, exception: 40, catch: Some(Location { class: 11, method: 13, index: 9 }), request: 5 },
+                DebugEvent::Exception { thread: 7, location: at, exception: 41, catch: None, request: 5 }
             ]
         );
     }

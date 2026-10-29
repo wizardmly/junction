@@ -125,6 +125,8 @@ pub struct BreakpointsView {
     log_expression: Entity<InputState>,
     /// An exception breakpoint's Class filters, space-separated.
     class_filters: Entity<InputState>,
+    /// Its Catch class filters, the same way.
+    catch_filters: Entity<InputState>,
     /// "Evaluate and log" is on (its expression may still be empty).
     log_on: bool,
     /// The source lines, by file, for the list's second line.
@@ -192,7 +194,9 @@ impl BreakpointsView {
         let Some(mut e) = self.current_exception().cloned() else { return };
         let condition = self.condition.read(cx).value().trim().to_owned();
         e.condition = (!condition.is_empty()).then_some(condition);
-        e.filters = self.class_filters.read(cx).value().split([' ', ',', ';']).filter(|f| !f.is_empty()).map(str::to_owned).collect();
+        let patterns = |input: &Entity<InputState>| input.read(cx).value().split([' ', ',', ';']).filter(|f| !f.is_empty()).map(str::to_owned).collect();
+        e.filters = patterns(&self.class_filters);
+        e.catch_filters = patterns(&self.catch_filters);
         change(&mut e);
         self.service.update(cx, |s, cx| s.set_exception_breakpoint(e, cx));
         self.refresh(cx);
@@ -235,10 +239,11 @@ impl BreakpointsView {
     /// The fields into the selected breakpoint's text properties.
     fn load_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(e) = self.current_exception() {
-            let (condition, filters) = (e.condition.clone().unwrap_or_default(), e.filters.join(" "));
+            let (condition, filters, catch_filters) = (e.condition.clone().unwrap_or_default(), e.filters.join(" "), e.catch_filters.join(" "));
             self.log_on = false;
             self.condition.update(cx, |s, cx| s.set_value(condition, window, cx));
             self.class_filters.update(cx, |s, cx| s.set_value(filters, window, cx));
+            self.catch_filters.update(cx, |s, cx| s.set_value(catch_filters, window, cx));
             return;
         }
         let (condition, log) = self.current().map(|b| (b.condition.clone().unwrap_or_default(), b.log_expression.clone().unwrap_or_default())).unwrap_or_default();
@@ -412,6 +417,7 @@ impl BreakpointsView {
             })))
             .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Condition (the exception is this):")).child(Input::new(&self.condition).small()))
             .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Class filters (where it's thrown; - excludes):")).child(Input::new(&self.class_filters).small()))
+            .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Catch class filters (where it's caught; - excludes):")).child(Input::new(&self.catch_filters).small()))
             .into_any_element()
     }
 
@@ -547,8 +553,9 @@ pub fn open(at: Option<(String, u32)>, window: &mut Window, cx: &mut App) {
                 this.commit_fields(cx);
             }
         }
-        let _subscriptions = vec![cx.subscribe(&condition, commit), cx.subscribe(&log_expression, commit), cx.subscribe(&class_filters, commit)];
-        let mut view = BreakpointsView { service, entries: Vec::new(), selected: at, condition, log_expression, class_filters, log_on: false, sources: HashMap::new(), exceptions: Vec::new(), exception: None, adding: None, just_added: false, _subscriptions };
+        let catch_filters = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. com.example.* -com.example.Retry"));
+        let _subscriptions = vec![cx.subscribe(&condition, commit), cx.subscribe(&log_expression, commit), cx.subscribe(&class_filters, commit), cx.subscribe(&catch_filters, commit)];
+        let mut view = BreakpointsView { service, entries: Vec::new(), selected: at, condition, log_expression, class_filters, catch_filters, log_on: false, sources: HashMap::new(), exceptions: Vec::new(), exception: None, adding: None, just_added: false, _subscriptions };
         view.refresh(cx);
         view.load_fields(window, cx);
         view
