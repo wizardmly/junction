@@ -178,6 +178,27 @@ pub fn call_arguments(style: ImportStyle, signature: &Signature, request: &Signa
     argument_list(style, signature, request, call).map(|(args, _)| args.join(", "))
 }
 
+/// The request for an override of the function (`other`): the same
+/// changes, but what the request leaves as it was (a parameter's name or
+/// type, the return type) stays as the override has it.
+pub fn override_request(signature: &Signature, other: &Signature, request: &SignatureRequest) -> SignatureRequest {
+    let params = request
+        .params
+        .iter()
+        .map(|p| match p.old.and_then(|i| Some((signature.params.get(i)?, other.params.get(i)?))) {
+            Some((base, theirs)) => NewParam {
+                old: p.old,
+                name: if p.name == base.name { theirs.name.clone() } else { p.name.clone() },
+                ty: if p.ty.trim() == base.ty { theirs.ty.clone() } else { p.ty.clone() },
+                value: p.value.clone(),
+            },
+            None => p.clone(),
+        })
+        .collect();
+    let return_type = if request.return_type.trim() == signature.return_type { other.return_type.clone() } else { request.return_type.clone() };
+    SignatureRequest { name: request.name.clone(), return_type, params }
+}
+
 /// The edits in the function's file: the declaration, the parameters'
 /// uses, and its calls there.
 pub fn edits(style: ImportStyle, text: &str, signature: &Signature, calls: &[CallSite], request: &SignatureRequest) -> Result<Vec<Edit>, String> {
@@ -257,6 +278,21 @@ mod tests {
             constructor: false,
         };
         (text, signature)
+    }
+
+    #[test]
+    fn overrides_keep_their_own_names() {
+        let (_, base) = kotlin();
+        let mut other = base.clone();
+        other.params[0].name = "p".into();
+        other.return_type = "Double".into();
+        let mut request = SignatureRequest::of(&base);
+        request.name = "sum".into();
+        request.params[1].name = "n".into();
+        request.params.push(NewParam { old: None, name: "tax".into(), ty: "Double".into(), value: "0.0".into() });
+        let theirs = override_request(&base, &other, &request);
+        assert_eq!(theirs.name, "sum");
+        assert_eq!(theirs.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["p", "n", "tax"]);
     }
 
     #[test]

@@ -787,6 +787,27 @@ impl<'a> SameSymbol<'a> {
         owner_of(container).map_or_else(|| self.word.clone(), |c| format!("{c}.{}", self.word))
     }
 
+    /// The other declarations that override ours or that ours overrides:
+    /// same-named functions of the types above and below its own (path,
+    /// line, column).
+    pub fn overrides(&mut self) -> Vec<(String, u32, u32)> {
+        if self.is_type || self.is_constructor {
+            return Vec::new();
+        }
+        let index = self.index;
+        let mut out = Vec::new();
+        for (p, _, s) in index.symbols_named(&self.word) {
+            let function = matches!(s.kind, SymbolKind::Function | SymbolKind::Method);
+            if !function || (p == self.declaration && s.line == self.line) || owner_of(&s.container) == self.owner || ProjectIndex::is_external(p) {
+                continue;
+            }
+            if self.related(&s.container) {
+                out.push((p.to_owned(), s.line, s.col));
+            }
+        }
+        out
+    }
+
     /// What the name at `offset` in `path` (a Java or Kotlin file of the
     /// project) refers to when it isn't ours; None when it is ours or
     /// can't be told.
@@ -1366,6 +1387,19 @@ mod tests {
         assert_eq!(other_at("a/Use.java", uses), [None, None]);
         assert_eq!(other_at("a/Box.java", boxed), [None]);
         assert_eq!(other_at("b/Theirs.java", theirs), [Some("Box.Box".to_owned())]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn finds_overrides_above_and_below() {
+        let shape = "package ex\n\ninterface Shape {\n    fun area(scale: Double): Double\n}\n";
+        let square = "package ex\n\nopen class Square : Shape {\n    override fun area(scale: Double) = scale\n    fun area() = 1.0\n}\n";
+        let tile = "package ex\n\nclass Tile : Square() {\n    override fun area(s: Double) = s * 2\n}\n";
+        let other = "package ex\n\nclass Room {\n    fun area(scale: Double) = scale\n}\n";
+        let (dir, index) = project(&[("ex/Shape.kt", shape), ("ex/Square.kt", square), ("ex/Tile.kt", tile), ("ex/Room.kt", other)]);
+        let mut found = SameSymbol::new(&index, "ex/Square.kt", 3, "area").unwrap().overrides();
+        found.sort();
+        assert_eq!(found.iter().map(|(p, l, _)| (p.as_str(), *l)).collect::<Vec<_>>(), [("ex/Shape.kt", 3), ("ex/Tile.kt", 3)]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
