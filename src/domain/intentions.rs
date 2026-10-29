@@ -74,6 +74,8 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Replace 'if' expression with elvis expression", "Writes if (x != null) x else y as x ?: y"),
     ("Kotlin", "Replace 'if' expression with safe access expression", "Writes if (x != null) x.f() else null, or with no else, as x?.f()"),
     ("Kotlin", "Lift return or assignment out of 'if' / 'when'", "Writes if (c) return a else return b as return if (c) a else b, and x = a / x = b in the branches as x = if (c) a else b"),
+    ("Kotlin", "Remove curly braces", "Writes \"${name}\" in a string template as \"$name\""),
+    ("Kotlin", "Insert curly braces around variable", "Writes \"$name\" in a string template as \"${name}\""),
     ("Kotlin", "Replace with 'isNullOrEmpty()'", "Writes s == null || s.isEmpty() as s.isNullOrEmpty(), s != null && s.isNotEmpty() as !s.isNullOrEmpty(), and isBlank likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
