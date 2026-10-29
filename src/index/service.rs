@@ -879,13 +879,19 @@ impl CodeIndex {
             let lang = Lang::from_path(&path);
             let calls: Vec<usize> = lang.map(|lang| super::call_hierarchy::calls_in(lang, &text, offset)).unwrap_or_default();
             let tasks: Vec<_> = this.read_with(cx, |index, cx| calls.iter().map(|&o| index.definitions(path.clone(), text.clone(), o, cx)).collect());
-            let mut places = Vec::new();
+            let (mut places, mut unresolved) = (Vec::new(), Vec::new());
             for (task, &call) in tasks.into_iter().zip(&calls) {
-                if let Some(t) = task.await.into_iter().next() {
-                    places.push((t.path, t.line, t.col, super::call_hierarchy::position_of(&text, call)));
+                match task.await.into_iter().next() {
+                    Some(t) => places.push((t.path, t.line, t.col, super::call_hierarchy::position_of(&text, call))),
+                    None => unresolved.push(call),
                 }
             }
-            cx.background_spawn(async move { super::call_hierarchy::group_by_function(places, &ancestors, &|p| Self::read_file(root.as_deref(), p)) }).await
+            cx.background_spawn(async move {
+                let mut nodes = super::call_hierarchy::group_by_function(places, &ancestors, &|p| Self::read_file(root.as_deref(), p));
+                nodes.extend(super::call_hierarchy::unresolved_callees(&path, &text, &unresolved));
+                nodes
+            })
+            .await
         })
     }
 

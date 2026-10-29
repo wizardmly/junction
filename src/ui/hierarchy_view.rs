@@ -54,6 +54,8 @@ struct Node {
     loading: bool,
     /// Already an ancestor: recursion, not expanded again.
     recursive: bool,
+    /// A callee without a declaration found: not expanded.
+    unresolved: bool,
 }
 
 /// The Hierarchy's scope, as IntelliJ's combo box: which callers (or
@@ -148,7 +150,7 @@ impl EventEmitter<HierarchyEvent> for HierarchyView {}
 
 impl From<CallNode> for Node {
     fn from(n: CallNode) -> Self {
-        Self { name: n.name, path: n.path, offset: n.offset, line: n.line, col: n.col, calls: n.calls, children: None, expanded: false, loading: false, recursive: n.recursive }
+        Self { name: n.name, path: n.path, offset: n.offset, line: n.line, col: n.col, calls: n.calls, children: None, expanded: false, loading: false, recursive: n.recursive, unresolved: n.unresolved }
     }
 }
 
@@ -283,6 +285,7 @@ impl HierarchyView {
             expanded: true,
             loading: false,
             recursive: false,
+            unresolved: false,
         });
         self.selected = Vec::new();
         self.expand(Vec::new(), cx);
@@ -302,7 +305,7 @@ impl HierarchyView {
         }
         let Some(node) = node_at(root, &at) else { return };
         node.expanded = true;
-        if node.children.is_some() || node.loading || node.recursive {
+        if node.children.is_some() || node.loading || node.recursive || node.unresolved {
             cx.notify();
             return;
         }
@@ -494,7 +497,7 @@ impl Render for HierarchyView {
                     }
                     Some(cur)
                 });
-                !n.recursive && full.is_none_or(|f| f.children.is_none() || !self.visible(f).is_empty())
+                !n.recursive && !n.unresolved && full.is_none_or(|f| f.children.is_none() || !self.visible(f).is_empty())
             })
             .collect();
         let mut list = v_flex().id("hierarchy-rows").flex_1().min_h_0().overflow_y_scroll().py_1().text_sm();
@@ -526,7 +529,7 @@ impl Render for HierarchyView {
                     .child(Icon::new(icons::METHOD).xsmall())
                     .child(div().child(format!("{}()", n.name)))
                     .when(n.calls.len() > 1, |el| el.child(div().text_color(palette.text_secondary).child(format!("({} usages)", n.calls.len()))))
-                    .child(div().text_color(palette.text_secondary).child(format!("({file})")))
+                    .child(div().text_color(palette.text_secondary).child(if n.unresolved { "(declaration not found)".to_owned() } else { format!("({file})") }))
                     .when(n.recursive, |el| el.child(div().text_color(palette.text_secondary).child("recursive call")))
                     .when(n.loading, |el| el.child(div().text_color(palette.text_secondary).child("…")))
                     .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
@@ -585,7 +588,7 @@ mod tests {
     use super::*;
 
     fn node(name: &str, path: &str) -> Node {
-        Node { name: name.into(), path: path.into(), offset: 0, line: 0, col: 0, calls: Vec::new(), children: None, expanded: false, loading: false, recursive: false }
+        Node { name: name.into(), path: path.into(), offset: 0, line: 0, col: 0, calls: Vec::new(), children: None, expanded: false, loading: false, recursive: false, unresolved: false }
     }
 
     #[test]
