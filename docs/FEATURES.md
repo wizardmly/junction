@@ -1083,7 +1083,8 @@ Linux 实测（Xvfb，calc 示例）：在 `totals()` 循环体第 34 行设断�
 | ANSI 转义码（照 `AnsiEscapeDecoder`）：SGR 的 16 色（Darcula / Light 两套配色）、256 色、24 位真彩色，粗体、暗淡、斜体、下划线、反色，样式跨行延续；其他控制序列（光标移动、清行、OSC 标题）去掉；`\r` 回车覆盖本行（进度条只留最后一次）。代码：`src/domain/ansi.rs` | ✅ |
 | 输出上限（照 IntelliJ 的 cycle buffer，`idea.cycle.buffer.size` 默认 1024 KB）：Build / Run / Debug 控制台超过 1 MB 时从开头丢弃最旧的行（Logcat 有自己的缓冲区） | ✅ |
 | 可设置的缓冲区大小（2026-10-29）：照 IntelliJ 的 Settings › Editor › General › Console › “Override console cycle buffer size (1024 KB)”，勾上后填 KB 数，Build / Run / Debug 控制台超过它时从开头丢弃旧行；不勾时仍是 1024 KB。存为 settings.conf 的 `console_buffer_kb`（0 为不覆盖）。Linux 实测：设置里搜 “cycle buffer” 定位到这一项，勾上填 1，OK 后 settings.conf 写入 `console_buffer_kb=1`；丢弃旧行沿用原来按 1 MB 截断的代码，只是上限换成设置值（dbg 工程的构建输出不到 1 KB，没能在界面上看到截断） | ✅ |
-| Print、OSC 8 超链接 | ⬜ |
+| OSC 8 超链接（2026-10-29）：程序输出里的 `ESC ] 8 ; ; URI ST 文字 ESC ] 8 ; ; ST`（`ls --hyperlink`、新版 gcc / cargo 等会输出）在 Build / Run / Debug 控制台里显示成带下划线的链接文字，网址点击用浏览器打开，`file://` 打开文件（主机名去掉、`%20` 等解码）；和文本里认出的网址重叠时以 OSC 8 的为准。代码：`ansi::decode_links`、`console_links::hyperlink`。Linux 实测：dbg 的 build.gradle.kts 里让 help 任务打印一个网址链接和一个 `file://host…/Calc.java` 链接，Ctrl+F9 后 Build Output 显示 “Docs: the guide and Calc source end”，两段带下划线，点 “Calc source” 打开 Calc.java | ✅ |
+| Print | ⬜ |
 
 同时修复：未同步过的 Gradle 工程，根目录 `build.gradle(.kts)` 里写了 `alias(libs.plugins.android.application) apply false`（只声明插件、不应用），会被误判成 Application 模块。运行配置因此变成以根工程命名（如 “mytv-android”），构建任务成了 `:assembleDebug`，Gradle 报 “Cannot locate tasks that match ':assembleDebug'”。现在判断模块类型时会忽略带 `apply false` / `apply(false)` 的行，运行配置是 `app`，任务是 `:app:assembleDebug`。
 
