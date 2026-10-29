@@ -11,7 +11,7 @@ use tree_sitter::Node;
 
 use super::lang::Lang;
 use super::symbols;
-use crate::domain::extract_method::{MethodPlan, Output, Parameter};
+use crate::domain::extract_method::{Duplicate, MethodPlan, Output, Parameter};
 
 const NOT_STATEMENTS: &str = "Selected block should represent a set of statements or an expression";
 const NO_FUNCTION: &str = "Cannot extract a method from here: the selection is not in a method";
@@ -441,6 +441,157 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<MethodPla
     })
 }
 
+/// The other places in the file with the same code as the plan's (as
+/// IntelliJ's `DuplicatesFinder` finds them): the same syntax, the
+/// parameters standing for any expression (the same one each time),
+/// in a method of the same class that can call the new one, and not
+/// leaving a variable the code after them reads undeclared.
+pub fn duplicates(lang: Lang, text: &str, plan: &MethodPlan, is_static: bool) -> Vec<Duplicate> {
+    // A returned call can't stand anywhere else; a written parameter other
+    // than the result would go unwritten.
+    if plan.returns.is_some() || plan.parameters.iter().any(|p| p.assigned && plan.output.as_ref().is_none_or(|o| !matches!(o, Output::Assigned { name, .. } if *name == p.name))) {
+        return Vec::new();
+    }
+    let Some(tree) = symbols::parse(lang, text) else { return Vec::new() };
+    let root = tree.root_node();
+    let Some(mut function) = root.descendant_for_byte_range(plan.range.start, plan.range.end) else { return Vec::new() };
+    while !is_function(lang, function) {
+        let Some(p) = function.parent() else { return Vec::new() };
+        function = p;
+    }
+    let pattern: Vec<Node> = if plan.expression {
+        match super::introduce::expression_node(lang, root, text, plan.range.clone()) {
+            Some(n) => vec![n],
+            None => return Vec::new(),
+        }
+    } else {
+        match statements(lang, function, &plan.range) {
+            Some(nodes) => nodes,
+            None => return Vec::new(),
+        }
+    };
+    // A lone parameter isn't worth a call.
+    if plan.expression && plan.parameters.iter().any(|p| p.uses.iter().any(|u| u.len() == plan.range.len())) {
+        return Vec::new();
+    }
+    let class = |n: Node| {
+        let mut p = n.parent();
+        while let Some(x) = p {
+            if matches!(x.kind(), "class_body" | "enum_class_body" | "enum_body" | "interface_body") {
+                return Some(x.id());
+            }
+            p = x.parent();
+        }
+        None
+    };
+    let home = class(function);
+    // Candidates: an expression of the same kind, or as many statements
+    // in a row of one block.
+    let mut candidates: Vec<Vec<Node>> = Vec::new();
+    for n in descendants(root) {
+        if plan.expression {
+            if n.kind() == pattern[0].kind() {
+                candidates.push(vec![n]);
+            }
+        } else if n.kind() == pattern[0].parent().map_or("", |p| p.kind()) {
+            let kids = children(n);
+            for w in kids.windows(pattern.len()) {
+                candidates.push(w.to_vec());
+            }
+        }
+    }
+    let mut out: Vec<Duplicate> = Vec::new();
+    for c in candidates {
+        let range = c[0].start_byte()..c[c.len() - 1].end_byte();
+        if range.start < plan.range.end && plan.range.start < range.end || out.iter().any(|d| range.start < d.range.end && d.range.start < range.end) {
+            continue;
+        }
+        let Some(f) = enclosing(lang, c[0]) else { continue };
+        if class(f) != home {
+            continue;
+        }
+        if lang == Lang::Java && !is_static && children(f).iter().any(|m| m.kind() == "modifiers" && text[m.byte_range()].split_whitespace().any(|w| w == "static")) {
+            continue;
+        }
+        let mut bound: Vec<Option<String>> = vec![None; plan.parameters.len()];
+        if !pattern.iter().zip(&c).all(|(p, n)| same(lang, text, plan, *p, *n, &mut bound)) {
+            continue;
+        }
+        let args: Vec<String> = bound.into_iter().map(Option::unwrap_or_default).collect();
+        let assigned = match &plan.output {
+            Some(Output::Assigned { name, .. }) => plan.parameters.iter().position(|p| &p.name == name).map(|i| args[i].clone()),
+            _ => None,
+        };
+        // The variables declared in it that the code after it reads: only
+        // the result can be.
+        if !plan.expression {
+            let decls = match lang {
+                Lang::Kotlin => kotlin_decls(f, text),
+                _ => java_decls(f, text),
+            };
+            let result = match &plan.output {
+                Some(Output::Declared { name, .. }) => Some(name.as_str()),
+                _ => None,
+            };
+            let read_after = |d: &Decl| {
+                descendants(f).into_iter().any(|n| n.start_byte() >= range.end && n.end_byte() <= d.scope.end && is_reference(lang, n, text) && text[n.byte_range()].trim_start_matches('$') == d.name)
+            };
+            if decls.iter().any(|d| inside(&(d.at..d.at), &range) && Some(d.name.as_str()) != result && read_after(d)) {
+                continue;
+            }
+        }
+        out.push(Duplicate { range, args, assigned });
+    }
+    out
+}
+
+/// The method a node is in.
+fn enclosing(lang: Lang, node: Node) -> Option<Node> {
+    let mut f = node;
+    while !is_function(lang, f) {
+        f = f.parent()?;
+    }
+    Some(f)
+}
+
+/// Whether the candidate has the pattern's syntax, binding each parameter
+/// use to the candidate's expression there (the same one each time).
+fn same(lang: Lang, text: &str, plan: &MethodPlan, p: Node, c: Node, bound: &mut [Option<String>]) -> bool {
+    if is_reference(lang, p, text) {
+        let start = p.start_byte() + usize::from(text[p.byte_range()].starts_with('$')) - plan.range.start;
+        let rel = start..p.end_byte() - plan.range.start;
+        if let Some(i) = plan.parameters.iter().position(|q| q.uses.contains(&rel)) {
+            // In a string template or written: only a variable.
+            let variable = p.kind() == "interpolated_identifier" || plan.parameters[i].assigned;
+            if variable && c.kind() != p.kind() {
+                return false;
+            }
+            if !c.is_named() || c.kind().ends_with("comment") {
+                return false;
+            }
+            let arg = text[c.byte_range()].trim_start_matches(|ch| variable && ch == '$');
+            let arg: String = arg.split_whitespace().collect::<Vec<_>>().join(" ");
+            return match &bound[i] {
+                Some(b) => *b == arg,
+                None => {
+                    bound[i] = Some(arg);
+                    true
+                }
+            };
+        }
+    }
+    if p.kind() != c.kind() || p.child_count() != c.child_count() {
+        return false;
+    }
+    if p.child_count() == 0 {
+        return text[p.byte_range()] == text[c.byte_range()];
+    }
+    let mut pc = p.walk();
+    let mut cc = c.walk();
+    let (ps, cs): (Vec<Node>, Vec<Node>) = (p.children(&mut pc).collect(), c.children(&mut cc).collect());
+    ps.into_iter().zip(cs).all(|(a, b)| same(lang, text, plan, a, b, bound))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +645,39 @@ mod tests {
         let e = plan(Lang::Java, text, span(text, "n + 1", "n + 1")).unwrap();
         assert!(e.expression && e.parameters.len() == 1);
         assert_eq!(plan(Lang::Java, text, 0..5).unwrap_err(), NO_FUNCTION);
+    }
+
+    #[test]
+    fn finds_duplicates() {
+        use crate::domain::extract_method::{extract, ExtractRequest};
+        use crate::domain::imports::ImportStyle;
+        // Kotlin statements with a result: the other copy's parameter is
+        // another expression; a copy whose local is read after isn't one.
+        let text = "class A {\n    fun f(n: Int) {\n        val a = n + 1\n        val b = a * 2\n        println(b)\n    }\n\n    fun g(m: Int) {\n        val a = (m - 1) + 1\n        val b = a * 2\n        println(b + a)\n    }\n\n    fun h(k: Int) {\n        val a = k + 1\n        val b = a * 2\n        println(b)\n    }\n}\n";
+        let p = plan(Lang::Kotlin, text, span(text, "val a = n", "a * 2")).unwrap();
+        let d = duplicates(Lang::Kotlin, text, &p, false);
+        assert_eq!(d.iter().map(|d| d.args.clone()).collect::<Vec<_>>(), [vec!["k".to_owned()]]);
+        let request = ExtractRequest { name: "twice".into(), visibility: "private".into(), is_static: false, parameters: vec![("n".into(), "Int".into())], result_type: String::new() };
+        let e = extract(ImportStyle::Kotlin, text, &p, &request, "    ", &d).unwrap();
+        let out = format!("{}{}{}", &text[..e.range.start], e.text, &text[e.range.end..]);
+        assert!(out.contains("    fun h(k: Int) {\n        val b = twice(k)\n        println(b)"), "{out}");
+        assert!(out.contains("val a = (m - 1) + 1"));
+        assert_eq!(&out[e.select.clone()], "twice");
+        // An expression: the same parameter must stand for the same thing.
+        let text = "class A {\n  int f(int x, int y) {\n    return x * x + 1;\n  }\n  int g(int z) {\n    int q = (z + 2) * (z + 2) + 1;\n    return z * y() + 1 + q;\n  }\n  static int s(int w) { return w * w + 1; }\n  int y() { return 0; }\n}\n";
+        let p = plan(Lang::Java, text, span(text, "x * x + 1", "x * x + 1")).unwrap();
+        let d = duplicates(Lang::Java, text, &p, false);
+        assert_eq!(d.iter().map(|d| (&text[d.range.clone()], d.args.clone())).collect::<Vec<_>>(), [("(z + 2) * (z + 2) + 1", vec!["(z + 2)".to_owned()])]);
+        // A static method can call a static one.
+        assert_eq!(duplicates(Lang::Java, text, &p, true).len(), 2);
+        // An assigned result goes to the copy's variable.
+        let text = "fun f() {\n    var s = 0\n    s += 2\n    println(s)\n    var t = 1\n    t += 2\n    println(t)\n}\n";
+        let p = plan(Lang::Kotlin, text, span(text, "s += 2", "s += 2")).unwrap();
+        let d = duplicates(Lang::Kotlin, text, &p, false);
+        assert_eq!(d.iter().map(|d| d.assigned.clone()).collect::<Vec<_>>(), [Some("t".to_owned())]);
+        let request = ExtractRequest { name: "add".into(), visibility: "private".into(), is_static: false, parameters: vec![("s".into(), "Int".into())], result_type: String::new() };
+        let e = extract(ImportStyle::Kotlin, text, &p, &request, "    ", &d).unwrap();
+        let out = format!("{}{}{}", &text[..e.range.start], e.text, &text[e.range.end..]);
+        assert!(out.starts_with("fun f() {\n    var s = 0\n    s = add(s)\n    println(s)\n    var t = 1\n    t = add(t)\n    println(t)\n}\n\nprivate fun add(s: Int): Int {"), "{out}");
     }
 }
