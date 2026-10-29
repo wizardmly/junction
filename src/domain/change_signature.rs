@@ -55,6 +55,10 @@ pub struct Signature {
     /// primary constructor: no delegate then.
     pub decl_start: usize,
     pub body_start: Option<usize>,
+    /// Java's `throws` list, and the clause's range (or, without one, the
+    /// end of the parameter list, where one goes).
+    pub throws: Vec<String>,
+    pub throws_range: Range<usize>,
 }
 
 /// The visibilities the dialog offers, IntelliJ's order; the first of
@@ -104,6 +108,8 @@ pub struct SignatureRequest {
     /// IntelliJ's "Delegate via overloading method": the old signature
     /// stays, calling the new one, and the calls are left alone.
     pub delegate: bool,
+    /// Java's new `throws` list; none keeps it.
+    pub throws: Option<Vec<String>>,
 }
 
 impl SignatureRequest {
@@ -116,6 +122,7 @@ impl SignatureRequest {
             params: signature.params.iter().enumerate().map(|(i, p)| NewParam { old: Some(i), name: p.name.clone(), ty: p.ty.clone(), value: String::new() }).collect(),
             visibility: None,
             delegate: false,
+            throws: None,
         }
     }
 }
@@ -243,7 +250,7 @@ pub fn override_request(signature: &Signature, other: &Signature, request: &Sign
         .collect();
     let return_type = if request.return_type.trim() == signature.return_type { other.return_type.clone() } else { request.return_type.clone() };
     // An override keeps its own visibility.
-    SignatureRequest { name: request.name.clone(), return_type, params, visibility: None, delegate: false }
+    SignatureRequest { name: request.name.clone(), return_type, params, visibility: None, delegate: false, throws: None }
 }
 
 /// The edits in the function's file: the declaration, the parameters'
@@ -285,6 +292,17 @@ pub fn edits(style: ImportStyle, text: &str, signature: &Signature, calls: &[Cal
         }
     }
     out.extend(calls.iter().flat_map(|c| call_edits(style, signature, request, c)));
+    // Java's `throws`.
+    if let Some(throws) = request.throws.as_ref().filter(|t| style == ImportStyle::Java && **t != signature.throws) {
+        let range = signature.throws_range.clone();
+        let clause = format!("throws {}", throws.join(", "));
+        match (signature.throws.is_empty(), throws.is_empty()) {
+            (true, _) => out.push((range.end..range.end, format!(" {clause}"))),
+            // Removed with the space before it.
+            (false, true) => out.push((text[..range.start].trim_end().len()..range.end, String::new())),
+            (false, false) => out.push((range, clause)),
+        }
+    }
     // Last: inserted where a new visibility may also go, it must come first.
     if let Some(delegate) = delegate(style, text, signature, request) {
         out.push((signature.decl_start..signature.decl_start, delegate));
