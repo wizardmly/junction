@@ -37,6 +37,7 @@ pub fn intentions(text: &str, caret: usize) -> Vec<Intention> {
     out.extend(remove_loop_indices(root, text, caret));
     out.extend(to_for_each(root, text, caret));
     out.extend(if_to_elvis(text, caret));
+    out.extend(lift_out(text, caret));
     out
 }
 
@@ -721,6 +722,77 @@ pub fn if_to_elvis(text: &str, caret: usize) -> Option<Intention> {
         range: node.byte_range(),
         caret: node.start_byte(),
         replacement: format!("{}?{}", &call[..at], &call[at..]),
+    })
+}
+
+/// Lift return / assignment out of 'if' / 'when' (IntelliJ's
+/// LiftReturnOrAssignmentOutOfInspection): `if (c) return a else return b`
+/// → `return if (c) a else b`, and `if (c) x = a else x = b` → `x = if (c)
+/// a else b` (`+=` and the like too), when every branch ends in a return
+/// with a value or an assignment to the same target, or a throw; the
+/// caret on the `if` / `when` or its condition. A `when` needs an else.
+pub fn lift_out(text: &str, caret: usize) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let node = innermost(tree.root_node(), caret)
+        .into_iter()
+        .flat_map(ancestors)
+        .take_while(|n| !matches!(n.kind(), "statements" | "lambda_literal" | "class_body" | "control_structure_body"))
+        .find(|n| matches!(n.kind(), "if_expression" | "when_expression"))?;
+    if node.parent()?.kind() != "statements" {
+        return None;
+    }
+    let (keyword, bodies) = if node.kind() == "if_expression" {
+        let condition = node.child_by_field_name("condition")?;
+        if caret > condition.end_byte() + 1 {
+            return None;
+        }
+        ("if", vec![node.child_by_field_name("consequence")?, node.child_by_field_name("alternative")?])
+    } else {
+        let entries: Vec<Node> = children(node).into_iter().filter(|n| n.kind() == "when_entry").collect();
+        if caret > entries.first()?.start_byte() || !entries.iter().any(|e| children(*e).iter().all(|c| c.kind() != "when_condition")) {
+            return None;
+        }
+        ("when", entries.iter().map(|e| children(*e).into_iter().find(|c| c.kind() == "control_structure_body")).collect::<Option<_>>()?)
+    };
+    // Each branch's last statement, and the value it lifts (None for a throw).
+    let mut tails = Vec::new();
+    for body in bodies {
+        let last = children(body).into_iter().last()?;
+        let last = if last.kind() == "statements" { children(last).into_iter().last()? } else { last };
+        let words = &text[last.byte_range()];
+        let (lifted, value) = match last.kind() {
+            "jump_expression" if words.starts_with("throw") => (None, None),
+            "jump_expression" if words.starts_with("return") && !words.starts_with("return@") => (Some("return ".to_owned()), Some(last.named_child(0)?)),
+            "assignment" => {
+                let [target, value] = children(last)[..] else { return None };
+                let operator = text[target.end_byte()..value.start_byte()].trim();
+                (Some(format!("{} {operator} ", &text[target.byte_range()])), Some(value))
+            }
+            _ => return None,
+        };
+        tails.push((last, lifted, value));
+    }
+    let mut lifted = tails.iter().filter_map(|(_, l, _)| l.clone());
+    let prefix = lifted.next()?;
+    if lifted.any(|l| l != prefix) {
+        return None;
+    }
+    let mut replacement = String::new();
+    let mut at = node.start_byte();
+    for (last, _, value) in &tails {
+        if let Some(value) = value {
+            replacement.push_str(&text[at..last.start_byte()]);
+            replacement.push_str(&text[value.byte_range()]);
+            at = last.end_byte();
+        }
+    }
+    replacement.push_str(&text[at..node.end_byte()]);
+    let what = if prefix.starts_with("return") { "return" } else { "assignment" };
+    Some(Intention {
+        title: format!("Lift {what} out of '{keyword}'"),
+        range: node.byte_range(),
+        caret: node.start_byte(),
+        replacement: format!("{prefix}{replacement}"),
     })
 }
 
@@ -2371,6 +2443,24 @@ mod tests {
         assert_eq!(run("if (x != null) y"), None);
         assert_eq!(run("if (x != null) x else null"), None);
         assert_eq!(if_to_elvis(text, text.find("else y").unwrap()), None);
+    }
+
+    #[test]
+    fn lifts_return_and_assignment_out_of_if_and_when() {
+        let text = "fun f(c: Boolean, x: Int): Int {\n    var y = 0\n    if (c) { y = 1 } else y = 2\n    if (c) y += 1 else y -= 1\n    when (x) {\n        1 -> return 1\n        2 -> throw Error()\n        else -> {\n            log()\n            return 2\n        }\n    }\n    when (x) {\n        1 -> return 1\n    }\n    if (c) return 1 else return\n    if (x > 0) return 1 else y = 3\n    return y\n}\n";
+        let run = |at: &str| lift_out(text, text.find(at).unwrap()).map(|i| (i.title.clone(), apply(text, &i)));
+        let (title, out) = run("if (c) { y").unwrap();
+        assert_eq!(title, "Lift assignment out of 'if'");
+        assert!(out.contains("    y = if (c) { 1 } else 2\n"), "{out}");
+        let (title, out) = run("when (x) {\n        1 -> return 1\n        2").unwrap();
+        assert_eq!(title, "Lift return out of 'when'");
+        assert!(out.contains("    return when (x) {\n        1 -> 1\n        2 -> throw Error()\n        else -> {\n            log()\n            2\n        }\n    }\n"), "{out}");
+        // Different operators; no else; a bare return; mixed; the caret in a branch.
+        assert_eq!(run("if (c) y +="), None);
+        assert_eq!(run("when (x) {\n        1 -> return 1\n    }"), None);
+        assert_eq!(run("if (c) return 1 else return\n"), None);
+        assert_eq!(run("if (x > 0)"), None);
+        assert_eq!(lift_out(text, text.find("y = 2").unwrap()), None);
     }
 
     #[test]

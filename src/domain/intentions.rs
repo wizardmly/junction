@@ -73,6 +73,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Replace deprecated call", "Writes toLowerCase() / toUpperCase() as lowercase() / uppercase() on a String and lowercaseChar() / uppercaseChar() on a Char, and Char.toInt() as code"),
     ("Kotlin", "Replace 'if' expression with elvis expression", "Writes if (x != null) x else y as x ?: y"),
     ("Kotlin", "Replace 'if' expression with safe access expression", "Writes if (x != null) x.f() else null, or with no else, as x?.f()"),
+    ("Kotlin", "Lift return or assignment out of 'if' / 'when'", "Writes if (c) return a else return b as return if (c) a else b, and x = a / x = b in the branches as x = if (c) a else b"),
     ("Kotlin", "Replace with 'isNullOrEmpty()'", "Writes s == null || s.isEmpty() as s.isNullOrEmpty(), s != null && s.isNotEmpty() as !s.isNullOrEmpty(), and isBlank likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
@@ -92,6 +93,8 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
 pub fn family(title: &str) -> &str {
     if title.starts_with("Add braces to ") {
         "Add braces to statement"
+    } else if title.starts_with("Lift return out of '") || title.starts_with("Lift assignment out of '") {
+        "Lift return or assignment out of 'if' / 'when'"
     } else if title.starts_with("Remove braces from ") {
         "Remove braces from statement"
     } else if title == "Replace with 'isEmpty()'" || title == "Replace with '!isEmpty()'" {
