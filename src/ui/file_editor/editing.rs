@@ -82,7 +82,8 @@ impl FileEditor {
 
     pub(super) fn comment_line(&mut self, _: &CommentLine, window: &mut Window, cx: &mut Context<Self>) {
         let (line, block) = line_edit::comment_tokens(&self.extension());
-        self.edit_with(|t, s| Some(line_edit::toggle_line_comment(t, s, line, block)), window, cx);
+        let style = crate::domain::code_style::StyleLang::of_path(&self.path).map(|l| crate::settings::Settings::get(cx).code_style.comments(l)).unwrap_or_default();
+        self.edit_with(|t, s| Some(line_edit::toggle_line_comment(t, s, line, block, style)), window, cx);
     }
 
     pub(super) fn comment_block(&mut self, _: &CommentBlock, window: &mut Window, cx: &mut Context<Self>) {

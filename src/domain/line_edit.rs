@@ -75,12 +75,28 @@ pub fn comment_tokens(extension: &str) -> (Option<&'static str>, Option<(&'stati
     }
 }
 
-/// Ctrl+/: the selected lines (or the caret's) commented at the first
-/// column, as IntelliJ's default for Java and Kotlin; uncommented when all
-/// of them are. With no selection the caret moves to the next line. A
+/// Code Style › Code Generation › Comment Code: where Ctrl+/ puts `//`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LineComments {
+    /// "Line comment at first column" (else at the lines' indent).
+    pub first_column: bool,
+    /// "Add a space at line comment start".
+    pub add_space: bool,
+}
+
+impl Default for LineComments {
+    /// IntelliJ's defaults for Java and Kotlin.
+    fn default() -> Self {
+        Self { first_column: true, add_space: false }
+    }
+}
+
+/// Ctrl+/: the selected lines (or the caret's) commented, at the first
+/// column or at their indent as `style` says; uncommented when all of
+/// them are. With no selection the caret moves to the next line. A
 /// language without line comments (XML) wraps each line in its block
 /// comment.
-pub fn toggle_line_comment(text: &str, sel: Range<usize>, line: Option<&str>, block: Option<(&str, &str)>) -> Edited {
+pub fn toggle_line_comment(text: &str, sel: Range<usize>, line: Option<&str>, block: Option<(&str, &str)>, style: LineComments) -> Edited {
     let lines = lines_of(text, &sel);
     let body = &text[lines.clone()];
     let rows: Vec<&str> = body.split('\n').collect();
@@ -88,16 +104,22 @@ pub fn toggle_line_comment(text: &str, sel: Range<usize>, line: Option<&str>, bl
     let new_rows: Vec<String> = match (line, block) {
         (Some(prefix), _) => {
             let commented = rows.iter().filter(|r| content(r)).all(|r| r.trim_start().starts_with(prefix));
+            // Not at the first column: at the least indent, so the `//`s line up.
+            let at = if style.first_column { 0 } else { rows.iter().filter(|r| content(r)).map(|r| r.len() - r.trim_start().len()).min().unwrap_or(0) };
+            let space = if style.add_space { " " } else { "" };
             rows.iter()
                 .map(|r| {
                     if !content(r) {
                         r.to_string()
                     } else if commented {
-                        // `// x` loses the space IntelliJ added only when it added one: keep it simple, drop the prefix.
                         let i = r.find(prefix).unwrap_or(0);
-                        format!("{}{}", &r[..i], &r[i + prefix.len()..])
+                        let rest = &r[i + prefix.len()..];
+                        // The space the setting adds goes with the `//`.
+                        let rest = if style.add_space { rest.strip_prefix(' ').unwrap_or(rest) } else { rest };
+                        format!("{}{rest}", &r[..i])
                     } else {
-                        format!("{prefix}{r}")
+                        let at = at.min(r.len());
+                        format!("{}{prefix}{space}{}", &r[..at], &r[at..])
                     }
                 })
                 .collect()
@@ -264,17 +286,26 @@ mod tests {
     #[test]
     fn line_comments() {
         let text = "fun a() {\n    b()\n}\n";
-        let one = toggle_line_comment(text, 14..14, Some("//"), None);
+        let one = toggle_line_comment(text, 14..14, Some("//"), None, LineComments::default());
         assert_eq!(one.text, "fun a() {\n//    b()\n}\n");
         // The caret on the next line (its column clamped to the line).
         assert!(one.text[line_start(&one.text, one.selection.start)..].starts_with('}'));
-        let back = toggle_line_comment(&one.text, 10..10, Some("//"), None);
+        let back = toggle_line_comment(&one.text, 10..10, Some("//"), None, LineComments::default());
         assert_eq!(back.text, text);
-        let all = toggle_line_comment(text, 0..text.len() - 1, Some("//"), None);
+        let all = toggle_line_comment(text, 0..text.len() - 1, Some("//"), None, LineComments::default());
         assert_eq!(all.text, "//fun a() {\n//    b()\n//}\n");
-        let xml = toggle_line_comment("  <a/>\n", 3..3, None, Some(("<!--", "-->")));
+        let xml = toggle_line_comment("  <a/>\n", 3..3, None, Some(("<!--", "-->")), LineComments::default());
         assert_eq!(xml.text, "  <!-- <a/> -->\n");
-        assert_eq!(toggle_line_comment(&xml.text, 3..3, None, Some(("<!--", "-->"))).text, "  <a/>\n");
+        assert_eq!(toggle_line_comment(&xml.text, 3..3, None, Some(("<!--", "-->")), LineComments::default()).text, "  <a/>\n");
+    }
+
+    #[test]
+    fn line_comments_at_the_indent_with_a_space() {
+        let style = LineComments { first_column: false, add_space: true };
+        let text = "fun a() {\n    b()\n        c()\n}\n";
+        let both = toggle_line_comment(text, 14..26, Some("//"), None, style);
+        assert_eq!(both.text, "fun a() {\n    // b()\n    //     c()\n}\n");
+        assert_eq!(toggle_line_comment(&both.text, both.selection.clone(), Some("//"), None, style).text, text);
     }
 
     #[test]

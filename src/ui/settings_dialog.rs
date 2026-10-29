@@ -115,7 +115,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
-            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
+            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Comment Code", "Line comment at first column", "Add a space at line comment start", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "Template Group", "Import", "Export", "sout", "fori", "iter", "main", "psvm"],
             Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template", "Iterate over collection", "Add indices to 'for' loop", "indexed 'for' loop", "enhanced 'for'", "forEach", "indexing operator", "binary operator", "equals()", "orEmpty()", "isNullOrEmpty()", "elvis", "safe access", "Lift return", "Lift assignment", "curly braces", "lastIndex", "String.valueOf()", "Kotlin analog", "substring", "range check", "associateWith", "indexOf()", "contains()", "getOrDefault", "putIfAbsent", "computeIfAbsent", "count", "append()", "deprecated", "lowercase()", "call chain", "redundant call", "indices", "isEmpty()", "isNotEmpty()"],
             Page::Commit => &[
@@ -1552,6 +1552,27 @@ impl SettingsView {
                 page = page.child(h_flex().text_sm().child(self.found("Minimum blank lines", query, cx).child("Blank Lines › Minimum blank lines:")));
                 for (i, input) in inputs {
                     page = page.child(self.row(MinBlankLines::LABELS[*i], query, div().w(px(70.)).child(Input::new(input).small()), cx));
+                }
+            }
+            if lang != StyleLang::Xml {
+                page = page.child(h_flex().text_sm().child(self.found("Comment Code", query, cx).child("Code Generation › Comment Code:")));
+                let comments = d.comments(lang);
+                for (i, label) in ["Line comment at first column", "Add a space at line comment start"].into_iter().enumerate() {
+                    let entity = cx.entity();
+                    let checked = if i == 0 { comments.first_column } else { comments.add_space };
+                    page = page.child(self.found(label, query, cx).child(Checkbox::new(SharedString::from(format!("settings-comments-{}-{i}", lang.name()))).label(label).checked(checked).on_change(move |v, _, cx| {
+                        let v = *v;
+                        entity.update(cx, |this, cx| {
+                            this.set(
+                                |s| {
+                                    let mut c = s.code_style.comments(lang);
+                                    if i == 0 { c.first_column = v } else { c.add_space = v }
+                                    s.code_style.set_comments(lang, c)
+                                },
+                                cx,
+                            )
+                        })
+                    })));
                 }
             }
             let shown: &[usize] = match lang {

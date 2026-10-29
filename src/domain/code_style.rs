@@ -3,6 +3,7 @@
 //! use existing file indents", as IntelliJ keeps them; what Reformat Code
 //! indents with, under `.editorconfig`.
 
+use crate::domain::line_edit::LineComments;
 use crate::domain::reformat::{IndentStyle, KeepBlankLines, MinBlankLines, Spaces};
 
 /// The languages with a code style page.
@@ -73,6 +74,8 @@ pub struct CodeStyle {
     min_blank: [MinBlankLines; 4],
     /// Spaces (Java's and Kotlin's).
     spaces: [Spaces; 4],
+    /// Code Generation › Comment Code (not XML's).
+    comments: [LineComments; 4],
 }
 
 impl Default for CodeStyle {
@@ -80,7 +83,7 @@ impl Default for CodeStyle {
     /// official style by 4, Android's XML style by 4.
     fn default() -> Self {
         let style = |continuation| LangStyle { use_tab: false, indent: 4, continuation };
-        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)], blank: Default::default(), min_blank: Default::default(), spaces: Default::default() }
+        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)], blank: Default::default(), min_blank: Default::default(), spaces: Default::default(), comments: Default::default() }
     }
 }
 
@@ -118,6 +121,14 @@ impl CodeStyle {
         self.spaces[lang.index()] = spaces;
     }
 
+    pub fn comments(&self, lang: StyleLang) -> LineComments {
+        self.comments[lang.index()]
+    }
+
+    pub fn set_comments(&mut self, lang: StyleLang, comments: LineComments) {
+        self.comments[lang.index()] = comments;
+    }
+
     /// What a file of `lang` is indented with: `.editorconfig`'s unit
     /// first, then the file's own when detecting (XML never does), else
     /// the language's; the continuation in proportion to the indent. Long
@@ -149,6 +160,10 @@ impl CodeStyle {
                 let values: Vec<String> = m.values().iter().map(usize::to_string).collect();
                 out.push_str(&format!("code_style_{}_min_blank={}\n", lang.key(), values.join(",")));
             }
+            let c = self.comments(lang);
+            if c != LineComments::default() {
+                out.push_str(&format!("code_style_{}_comments={},{}\n", lang.key(), c.first_column, c.add_space));
+            }
             let spaces = self.spaces(lang);
             if spaces != Spaces::default() {
                 let values: String = spaces.values().iter().map(|v| if *v { '1' } else { '0' }).collect();
@@ -167,6 +182,12 @@ impl CodeStyle {
         if key == "code_style_hard_wrap" {
             if let Ok(n) = value.trim().parse::<usize>() {
                 self.hard_wrap = n.clamp(10, 1000);
+            }
+            return true;
+        }
+        if let Some(lang) = key.strip_prefix("code_style_").and_then(|k| k.strip_suffix("_comments")).and_then(|k| StyleLang::ALL.into_iter().find(|l| l.key() == k)) {
+            if let Some((first, space)) = value.trim().split_once(',') {
+                self.set_comments(lang, LineComments { first_column: first == "true", add_space: space == "true" });
             }
             return true;
         }
@@ -237,6 +258,8 @@ mod tests {
         style.set_min_blank(StyleLang::Java, MinBlankLines { around_field: 1, ..Default::default() });
         assert!(style.lines().contains("code_style_java_min_blank=1,1,1,1,0,0,1,1,1,1,0,1,0,0,0,0\n") && !style.lines().contains("kotlin_min_blank"));
         assert_eq!(style.indents(StyleLang::Java, None, None).min_blank.around_field, 1);
+        style.set_comments(StyleLang::Java, LineComments { first_column: false, add_space: true });
+        assert!(style.lines().contains("code_style_java_comments=false,true\n") && !style.lines().contains("kotlin_comments"));
         style.set_spaces(StyleLang::Kotlin, Spaces { after_comma: false, ..Default::default() });
         assert!(style.lines().contains("code_style_kotlin_spaces=1111111111110011110111\n"));
         assert!(!style.indents(StyleLang::Kotlin, None, None).spaces.after_comma);
