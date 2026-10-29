@@ -4,22 +4,40 @@
 //! window closes; restored when the project opens.
 
 use super::*;
-use crate::domain::editor_session::{EditorSession, SessionTab};
+use super::tabs;
+use crate::domain::editor_session::{EditorSession, SessionTab, SplitSession};
 
 impl Workspace {
     fn session(&self, cx: &gpui_kit::App) -> EditorSession {
-        let tabs = self
-            .editors
-            .iter()
-            .filter(|t| t.view.read(cx).revision().is_none())
-            .map(|t| {
-                let e = t.view.read(cx);
-                let (line, col) = e.cursor(cx);
-                SessionTab { path: e.path().to_owned(), line, col, pinned: t.pinned }
-            })
-            .collect();
-        let active = self.editor().map(|e| e.read(cx)).filter(|e| e.revision().is_none()).map(|e| e.path().to_owned());
-        EditorSession { tabs, active, places: self.recent_places.to_vec(), logcat: Some(self.logcat_view.read(cx).layout(cx)), tool_windows: Some(self.tools.open_keys()) }
+        // A tab group's working-tree tabs and the one in front.
+        let group = |editors: &[tabs::EditorTab], front: tabs::Front| {
+            let tabs = editors
+                .iter()
+                .filter(|t| t.view.read(cx).revision().is_none())
+                .map(|t| {
+                    let e = t.view.read(cx);
+                    let (line, col) = e.cursor(cx);
+                    SessionTab { path: e.path().to_owned(), line, col, pinned: t.pinned }
+                })
+                .collect::<Vec<_>>();
+            let active = match front {
+                tabs::Front::Editor(ix) => editors.get(ix).map(|t| t.view.read(cx)).filter(|e| e.revision().is_none()).map(|e| e.path().to_owned()),
+                _ => None,
+            };
+            (tabs, active)
+        };
+        let focused = group(&self.editors, self.front);
+        let other = self.split.as_ref().map(|s| (group(&s.editors, s.front), s.vertical));
+        // Group 0 (left / top) first, whichever has the focus.
+        let ((tabs, active), split) = match other {
+            Some((other, vertical)) if !other.0.is_empty() && !focused.0.is_empty() => {
+                let (first, second) = if self.active_group == 0 { (focused, other) } else { (other, focused) };
+                (first, Some(SplitSession { tabs: second.0, active: second.1, vertical, focused: self.active_group == 1 }))
+            }
+            Some((other, _)) if focused.0.is_empty() => (other, None),
+            _ => (focused, None),
+        };
+        EditorSession { tabs, active, places: self.recent_places.to_vec(), logcat: Some(self.logcat_view.read(cx).layout(cx)), split, tool_windows: Some(self.tools.open_keys()) }
     }
 
     /// Saves the session of the project whose session is showing.
@@ -96,6 +114,25 @@ impl Workspace {
             }
             if let Some(active) = active {
                 self.open_at(active.path, active.line, active.col, window, cx);
+            }
+            // The second tab group, as it was split.
+            if let Some(split) = session.split.as_ref().filter(|_| !self.editors.is_empty()) {
+                let (tabs, active) = split.reopenable(|path| root.join(path).is_file());
+                if !tabs.is_empty() {
+                    self.split = Some(tabs::SplitGroup { editors: Vec::new(), front: tabs::Front::Diff, vertical: split.vertical });
+                    self.swap_split();
+                    for tab in tabs.iter().chain(&active) {
+                        self.open_at(tab.path.clone(), tab.line, tab.col, window, cx);
+                        if tab.pinned {
+                            if let Some(open) = self.editors.iter_mut().find(|t| t.view.read(cx).path() == tab.path) {
+                                open.pinned = true;
+                            }
+                        }
+                    }
+                    if !split.focused {
+                        self.focus_group(0, cx);
+                    }
+                }
             }
         }
         if let Some(layout) = session.logcat.clone() {
