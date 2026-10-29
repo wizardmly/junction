@@ -32,6 +32,9 @@ pub struct EditorSession {
     /// Logcat's tabs and panels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logcat: Option<super::logcat_layout::LogcatLayout>,
+    /// The open tool windows, by key (none saved: the defaults).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_windows: Option<Vec<String>>,
 }
 
 impl EditorSession {
