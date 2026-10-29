@@ -1105,13 +1105,14 @@ Linux 实测（Xvfb）：Kotlin 工程依赖 `com.google.code.gson:gson:2.11.0`�
 | Java 构造方法的调用（2026-10-29）：`new A(…)`、`new A<>(…)`、`new p.A(…)`，本类的 `this(…)` 和子类的 `super(…)`（Introduce Parameter 同样适用） | ✅ |
 | 同名类按包区分（2026-10-29，Go to Declaration、Rename、Find Usages 同样适用）：照编译器的顺序看 `p.A` 限定名、单类型 import、本文件的包、`import p.*`；Java 的 `new A(…)` 上 Ctrl+B 直接到构造方法 | ✅ |
 | Kotlin 的尾随 lambda（2026-10-29）：`f(2) { … }` 和不带括号的 `f { … }` 算作最后一个参数的实参；lambda 参数仍是最后一个时留在括号外（需要时补上括号，`each { }` → `each(0) { }`），移到前面或后面再加参数时放进括号（`f({ … }, 2)`，原来有命名实参时写成 `block = { … }`）；Introduce Parameter 加在 lambda 后面时同样放进括号，Inline Function 把 lambda 当作实参 | ✅ |
-| 方法引用 `::name`、Kotlin 的 `constructor`、可见性、异常列表、覆盖方法一起改、委托旧签名 | ⬜ |
+| Kotlin 构造方法（2026-10-29）：光标在类头（主构造方法）或 `constructor(…)` 里按 Ctrl+F6；调用处包括 `A(…)`、子类的 `: A(…)`、次构造方法的 `: this(…)` / `: super(…)`；`val` / `var` 参数也是属性，在这里改名或删除时提示改用 Rename / Safe Delete；普通参数在属性初始值和 `init` 块里的用法跟着改名；预览写成 `constructor A(…)` | ✅ |
+| 方法引用 `::name`、可见性、异常列表、覆盖方法一起改、委托旧签名 | ⬜ |
 
 Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int): Double` 按 Ctrl+F6，改名 `sum`，把 `count` 上移，新增 `tax: Double`（调用处默认值 `0.0`），Refactor 后声明是 `fun sum(count: Int, price: Double, tax: Double): Double`，同文件的 `total(1.0, 2)` 变成 `sum(2, 1.0, 0.0)`，Main.kt 的 `cart.total(10.0, 3)` 和 `cart.total(count = 1, price = 2.0)` 变成 `cart.sum(3, 10.0, 0.0)` 和 `cart.sum(count = 1, price = 2.0, tax = 0.0)`。
 
 Linux 实测（Xvfb，`si` Java 工程，2026-10-29）：`Box` 有 `Box(int size)` 和 `Box() { this(1); }`，另一个包里 `Crate extends Box` 的构造方法写 `super(2)`、方法里 `new Box(3)`；在 `Box(int size)` 上按 Ctrl+F6，对话框显示 "3 calls will be updated"，加参数 `label: String`（调用处 `"box"`），Refactor 后声明是 `Box(int size, String label)`，三处调用变成 `this(1, "box")`、`super(2, "box")`、`new Box(3, "box")`。再在 `com.example.model` 和 `com.example.util` 各放一个 `Box`，`Crate` 里 `import com.example.util.Box` 后写 `new Box(3)`：Ctrl+B 直接打开 util 的构造方法；在 model 的 `Box(int size)` 上按 Ctrl+F6 显示 "No calls found"。
 
-Linux 实测（Xvfb，`pi2` Kotlin 工程，2026-10-29）：`fun repeatIt(times: Int, block: () -> Unit)`，调用 `repeatIt(2) { println("a") }` 和多行的 `repeatIt(times = 1) { … }`；Ctrl+F6 把 `block` 上移，Refactor 后是 `repeatIt({ println("a") }, 2)` 和 `repeatIt(block = { … }, times = 1)`。
+Linux 实测（Xvfb，`pi2` Kotlin 工程，2026-10-29）：`fun repeatIt(times: Int, block: () -> Unit)`，调用 `repeatIt(2) { println("a") }` 和多行的 `repeatIt(times = 1) { … }`；Ctrl+F6 把 `block` 上移，Refactor 后是 `repeatIt({ println("a") }, 2)` 和 `repeatIt(block = { … }, times = 1)`。另一个文件 `open class Cart(private val rate: Double, count: Int)`，有 `constructor(label: String) : this(1.0, label.length)`、`val doubled = count * 2`、`class BigCart : Cart(2.0, 10)`、`Cart(3.0, 1)`：光标在类名上按 Ctrl+F6，显示 "3 calls will be updated"，`count` 改名 `items`、加 `tax: Double`（调用处 `0.0`）后，类头、`this(…)`、`: Cart(…)`、`Cart(…)` 和 `val doubled = items * 2` 都跟着改；把 `rate` 改名时对话框提示 "Property 'rate' can't be renamed here; use Rename (Shift+F6)"。
 
 ## 49. 基本编辑操作：复制行、注释、移动行、扩大选区…（2026-10-17）
 

@@ -22,6 +22,8 @@ pub struct Param {
     pub text: String,
     /// Its uses in the body.
     pub uses: Vec<Range<usize>>,
+    /// A Kotlin constructor's `val` / `var` parameter: also a property.
+    pub property: bool,
 }
 
 /// The function as the analysis found it.
@@ -79,6 +81,14 @@ fn lang_of(style: ImportStyle) -> &'static str {
 pub fn check(style: ImportStyle, signature: &Signature, request: &SignatureRequest) -> Result<(), String> {
     if !signature.constructor {
         crate::domain::rename::check_name(lang_of(style), &request.name)?;
+    }
+    // A property is used beyond the constructor: Rename / Safe Delete handle it.
+    for (i, old) in signature.params.iter().enumerate().filter(|(_, p)| p.property) {
+        match request.params.iter().find(|p| p.old == Some(i)) {
+            None => return Err(format!("Property '{}' can't be removed here; use Safe Delete", old.name)),
+            Some(p) if p.name != old.name => return Err(format!("Property '{}' can't be renamed here; use Rename (Shift+F6)", old.name)),
+            _ => {}
+        }
     }
     for (i, p) in request.params.iter().enumerate() {
         crate::domain::rename::check_name(lang_of(style), &p.name).map_err(|e| format!("Parameter {}: {e}", i + 1))?;
@@ -163,6 +173,7 @@ fn argument_list(style: ImportStyle, signature: &Signature, request: &SignatureR
 
 /// A call's new argument list (between the parentheses); none when the
 /// call can't be rewritten.
+#[cfg(test)]
 pub fn call_arguments(style: ImportStyle, signature: &Signature, request: &SignatureRequest, call: &CallSite) -> Option<String> {
     argument_list(style, signature, request, call).map(|(args, _)| args.join(", "))
 }
@@ -230,7 +241,7 @@ mod tests {
 
     fn kotlin() -> (String, Signature) {
         let text = "fun total(price: Double, count: Int = 1): Double {\n    return price * count\n}\n".to_owned();
-        let p = |name: &str, ty: &str, default: Option<&str>, text: &str, uses: Vec<Range<usize>>| Param { name: name.into(), ty: ty.into(), prefix: String::new(), default: default.map(Into::into), text: text.into(), uses };
+        let p = |name: &str, ty: &str, default: Option<&str>, text: &str, uses: Vec<Range<usize>>| Param { name: name.into(), ty: ty.into(), prefix: String::new(), default: default.map(Into::into), text: text.into(), uses, property: false };
         let price = text.find("price *").unwrap();
         let count = text.find("count\n").unwrap();
         let open = text.find('(').unwrap();
