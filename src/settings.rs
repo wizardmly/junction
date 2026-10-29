@@ -108,6 +108,9 @@ pub struct Settings {
     pub gradle_offline: bool,
     /// The device the last run used (its Device Manager id).
     pub run_device: String,
+    /// The Project window's view last picked between Android and Project
+    /// (its label); empty lets an Android project open in Android.
+    pub project_view: String,
     /// Select Multiple Devices…: the devices a run targets together (their
     /// Device Manager ids); empty runs on `run_device`.
     pub run_devices: Vec<String>,
@@ -424,6 +427,7 @@ impl Default for Settings {
             gradle_user_home: String::new(),
             gradle_offline: false,
             run_device: String::new(),
+            project_view: String::new(),
             run_devices: Vec::new(),
             disabled_intentions: Vec::new(),
             language_servers: Default::default(),
@@ -645,6 +649,7 @@ impl Settings {
                         *field = flag;
                     }
                 }
+                "project_view" => settings.project_view = value.to_owned(),
                 "project_sort" => {
                     settings.project.sort = match value {
                         "type" => ProjectSort::Type,
@@ -768,6 +773,9 @@ impl Settings {
         if !self.disabled_intentions.is_empty() {
             text.push_str(&format!("disabled_intentions={}\n", self.disabled_intentions.join("\t")));
         }
+        if !self.project_view.is_empty() {
+            text.push_str(&format!("project_view={}\n", self.project_view));
+        }
         if !self.run_devices.is_empty() {
             text.push_str(&format!("run_devices={}\n", self.run_devices.join("\t")));
         }
@@ -857,6 +865,7 @@ mod tests {
         diff.diff.breadcrumbs = Breadcrumbs::Top;
         diff.project.single_click = true;
         diff.project.sort = ProjectSort::Modified;
+        diff.project_view = "Project".into();
         assert_eq!(Settings::parse(&diff.serialize()), diff);
         let custom = Settings {
             protected_branches: "release/*, main".into(),

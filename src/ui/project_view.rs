@@ -410,6 +410,17 @@ impl ProjectView {
             }
             return;
         }
+        // A project opening: Android projects show the Android view, as
+        // Android Studio, unless Project was picked last.
+        let opening = self.files.is_empty() || self.root(cx) != self.root_dir;
+        if opening && matches!(self.mode, ProjectMode::Project | ProjectMode::Android) {
+            let android = files.iter().any(|f| f.ends_with("src/main/AndroidManifest.xml"));
+            self.mode = match Settings::get(cx).project_view.as_str() {
+                "Project" => ProjectMode::Project,
+                _ if android => ProjectMode::Android,
+                _ => ProjectMode::Project,
+            };
+        }
         self.files = Rc::new(files);
         self.root_dir = self.root(cx);
         self.rebuild_tree(cx);
@@ -1633,7 +1644,12 @@ impl Render for ProjectView {
                                 for m in ProjectMode::ALL {
                                     let entity = mode_entity.clone();
                                     menu = menu.item(PopupMenuItem::new(m.label()).checked(m == mode).on_click(move |_, _, cx| {
-                                        entity.update(cx, |this, cx| this.set_mode(m, cx))
+                                        entity.update(cx, |this, cx| {
+                                            if matches!(m, ProjectMode::Android | ProjectMode::Project) {
+                                                Settings::update(cx, |s| s.project_view = m.label().to_owned());
+                                            }
+                                            this.set_mode(m, cx)
+                                        })
                                     }));
                                 }
                                 menu
