@@ -495,6 +495,14 @@ pub fn assigns(text: &str) -> bool {
     parse(text).is_ok_and(|e| walk(&e))
 }
 
+/// Where 0-based `line` starts in `text` (its end when there are fewer).
+pub fn line_start(text: &str, line: usize) -> usize {
+    if line == 0 {
+        return 0;
+    }
+    text.match_indices('\n').nth(line - 1).map_or(text.len(), |(i, _)| i + 1)
+}
+
 /// What Evaluate Expression (Alt+F8) starts with when nothing is
 /// selected, as IntelliJ's `getExpressionRangeAtOffset`: the reference at
 /// the caret with its qualifiers (`point.x` on `x`, `a.b` on `b`), a call

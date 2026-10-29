@@ -21,11 +21,57 @@ pub struct IndexCompletion {
     pub index: Entity<CodeIndex>,
     /// The edited file, as the index keys it.
     pub path: String,
+    /// The index alone, not the file's language server (which would take
+    /// the text it's given as the file's).
+    pub index_only: bool,
 }
 
 impl IndexCompletion {
     pub fn new(index: Entity<CodeIndex>, path: String) -> Rc<Self> {
-        Rc::new(Self { index, path })
+        Rc::new(Self { index, path, index_only: false })
+    }
+}
+
+/// Completion in a code fragment typed outside its file (Evaluate
+/// Expression's field): the fragment is completed as if written at the
+/// start of a line of `context` (the paused frame's line), so the locals
+/// and members in scope there are offered; the edits come back in the
+/// fragment's own positions.
+pub struct FragmentCompletion {
+    pub inner: IndexCompletion,
+    pub context: String,
+    /// Where the fragment goes in `context`.
+    pub at: usize,
+}
+
+impl CompletionProvider for FragmentCompletion {
+    fn completions(&self, rope: &Rope, offset: usize, trigger: CompletionContext, window: &mut Window, cx: &mut App) -> Task<anyhow::Result<CompletionResponse>> {
+        let fragment = rope.to_string();
+        let at = self.at.min(self.context.len());
+        let combined = Rope::from_str(&format!("{}{fragment}\n{}", &self.context[..at], &self.context[at..]));
+        let task = self.inner.completions(&combined, at + offset, trigger, window, cx);
+        let rope = rope.clone();
+        let len = fragment.len();
+        cx.background_spawn(async move {
+            let CompletionResponse::Array(items) = task.await? else { return Ok(CompletionResponse::Array(Vec::new())) };
+            let back = |p: lsp_types::Position| combined.position_to_offset(&p).checked_sub(at).filter(|o| *o <= len).map(|o| rope.offset_to_position(o));
+            let items = items
+                .into_iter()
+                .filter_map(|mut item| {
+                    if let Some(CompletionTextEdit::Edit(edit)) = &mut item.text_edit {
+                        edit.range = lsp_types::Range { start: back(edit.range.start)?, end: back(edit.range.end)? };
+                    }
+                    // An import would go into the file, not the fragment.
+                    item.additional_text_edits = None;
+                    Some(item)
+                })
+                .collect();
+            Ok(CompletionResponse::Array(items))
+        })
+    }
+
+    fn is_completion_trigger(&self, offset: usize, new_text: &str, cx: &mut App) -> bool {
+        self.inner.is_completion_trigger(offset, new_text, cx)
     }
 }
 
@@ -42,7 +88,7 @@ impl CompletionProvider for IndexCompletion {
         let explicit = trigger.trigger_kind == CompletionTriggerKind::INVOKED;
         // A language server for the file answers first; without one, or
         // when it doesn't answer in time, the index does.
-        let server = self.index.read(cx).server_completions(self.path.clone(), text.clone(), offset, cx);
+        let server = if self.index_only { Task::ready(None) } else { self.index.read(cx).server_completions(self.path.clone(), text.clone(), offset, cx) };
         let index = self.index.read(cx).index.clone();
         let path = self.path.clone();
         let rope = rope.clone();

@@ -153,6 +153,8 @@ pub struct DebugService {
     pub run: Option<DebugRun>,
     session: Option<Arc<DebugSession>>,
     resolver: Option<SourceResolver>,
+    /// The project's code index, for Evaluate's completion.
+    pub code_index: Option<gpui_kit::WeakEntity<crate::index::service::CodeIndex>>,
     /// The session's generation: a new run makes the old one's tasks moot.
     generation: u64,
     /// Mute Breakpoints, kept for the next sessions too.
