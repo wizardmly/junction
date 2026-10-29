@@ -22,7 +22,6 @@ use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::debug_service::{self, DebugService, NodeKind, VarNode};
 use crate::ui::debug_view::{VarRow, flatten, var_row};
-use crate::ui::dialogs;
 
 pub struct EvaluateView {
     service: Entity<DebugService>,

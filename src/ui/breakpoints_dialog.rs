@@ -416,6 +416,10 @@ impl BreakpointsView {
                 let checked = *checked;
                 this.apply(|b| b.suspend = checked, cx);
             })))
+            .child(Checkbox::new("breakpoints-remove-once-hit").label("Remove once hit").checked(b.remove_once_hit).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                let checked = *checked;
+                this.apply(|b| b.remove_once_hit = checked, cx);
+            })))
             // IntelliJ's watchpoint options: what stops it.
             .when(b.field.is_some(), |el| {
                 el.child(label("Watch:"))

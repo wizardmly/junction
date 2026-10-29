@@ -53,6 +53,8 @@ impl LineBreakpoint {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BreakpointActions {
     pub suspend: bool,
+    /// Remove once hit: the first hit whose condition holds removes it.
+    pub remove_once_hit: bool,
     pub log_message: bool,
     pub log_stack: bool,
     pub log_expression: Option<String>,
@@ -60,7 +62,7 @@ pub struct BreakpointActions {
 
 impl Default for BreakpointActions {
     fn default() -> Self {
-        Self { suspend: true, log_message: false, log_stack: false, log_expression: None }
+        Self { suspend: true, remove_once_hit: false, log_message: false, log_stack: false, log_expression: None }
     }
 }
 
@@ -112,6 +114,8 @@ pub enum SessionEvent {
     Log(String),
     /// An exception breakpoint stopped: which exception.
     Exception(String),
+    /// A Remove once hit breakpoint was hit, and is gone from the session.
+    Removed { path: PathBuf, line: u32 },
     /// The program ended, or was stopped or detached.
     Ended,
 }
@@ -580,6 +584,10 @@ impl DebugSession {
                     }
                 }
             }
+            if breakpoint.actions.remove_once_hit {
+                self.remove_breakpoint(&breakpoint.path, breakpoint.line)?;
+                out.push(SessionEvent::Removed { path: breakpoint.path.clone(), line: breakpoint.line });
+            }
             if breakpoint.actions.logs() {
                 out.push(SessionEvent::Log(self.hit_log(thread, &frames, &breakpoint)));
             }
@@ -1016,7 +1024,7 @@ mod tests {
         vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
         let session = DebugSession::new(vm.clone());
         let mut breakpoint = breakpoint(5);
-        breakpoint.actions = BreakpointActions { suspend: false, log_message: true, log_stack: true, log_expression: Some("x + 1".into()) };
+        breakpoint.actions = BreakpointActions { suspend: false, log_message: true, log_stack: true, log_expression: Some("x + 1".into()), ..BreakpointActions::default() };
         session.add_breakpoint(breakpoint.clone()).unwrap();
         let request = *vm.next.lock().unwrap();
         vm.take_log();
@@ -1043,6 +1051,31 @@ mod tests {
         session.detach();
         assert!(session.is_ended());
         assert_eq!(vm.take_log(), ["resume", "dispose"]);
+    }
+
+    #[test]
+    fn remove_once_hit_goes_at_the_first_hit_that_counts() {
+        let vm = vm();
+        vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
+        let session = DebugSession::new(vm.clone());
+        let mut breakpoint = breakpoint(5);
+        breakpoint.condition = Some("x > 5".into());
+        breakpoint.actions.remove_once_hit = true;
+        session.add_breakpoint(breakpoint.clone()).unwrap();
+        let request = *vm.next.lock().unwrap();
+        vm.take_log();
+        let hit = || vec![DebugEvent::Breakpoint { thread: 1, location: Location { class: 10, method: 1, index: 4 }, request }];
+        // A false condition isn't a hit: it stays.
+        vm.send(Suspend::All, hit());
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume"]);
+        // Holding, it stops once and is cleared.
+        session.set_condition(&breakpoint.path, 5, None);
+        vm.send(Suspend::All, hit());
+        let events = session.poll(Duration::ZERO).unwrap();
+        assert_eq!(events[0], SessionEvent::Removed { path: breakpoint.path.clone(), line: 5 });
+        assert!(matches!(events[1], SessionEvent::Paused { reason: PauseReason::Breakpoint, .. }), "{events:?}");
+        assert_eq!(vm.take_log()[0], format!("clear {request}"));
     }
 
     #[test]

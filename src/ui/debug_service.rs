@@ -708,6 +708,7 @@ impl DebugService {
                     run.console.extend(text.lines().map(|l| SharedString::from(l.to_owned())));
                 }
             }
+            SessionEvent::Removed { path, line } => self.remove_breakpoint(&path.to_string_lossy(), line - 1, cx),
             SessionEvent::Ended => {}
         }
         cx.notify();
@@ -1176,7 +1177,7 @@ fn line_breakpoint(saved: &SavedBreakpoint) -> LineBreakpoint {
 }
 
 fn actions(saved: &SavedBreakpoint) -> BreakpointActions {
-    BreakpointActions { suspend: saved.suspend, log_message: saved.log_message, log_stack: saved.log_stack, log_expression: saved.log_expression.clone() }
+    BreakpointActions { suspend: saved.suspend, remove_once_hit: saved.remove_once_hit, log_message: saved.log_message, log_stack: saved.log_stack, log_expression: saved.log_expression.clone() }
 }
 
 fn free_port() -> Option<u16> {
