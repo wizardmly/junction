@@ -248,6 +248,26 @@ mod tests {
     }
 
     #[test]
+    fn renames_references_too() {
+        use crate::domain::change_signature::call_edits;
+        use crate::index::introduce_parameter::call_sites;
+        let kotlin = "class Cart {\n    fun total(n: Int) = n\n}\nfun use(c: Cart) = listOf(1).map(c::total) + listOf(Cart()).map(Cart::total) + c.total(3)\n";
+        let java = "class Cart {\n  int total(int n) { return n; }\n  void use(java.util.List<Integer> l) { l.forEach(this::total); total(1); java.util.function.Supplier<Cart> s = Cart::new; }\n}\n";
+        for (lang, style, text, expected) in [
+            (Lang::Kotlin, ImportStyle::Kotlin, kotlin, "fun use(c: Cart) = listOf(1).map(c::sum) + listOf(Cart()).map(Cart::sum) + c.sum(3, 0)"),
+            (Lang::Java, ImportStyle::Java, java, "  void use(java.util.List<Integer> l) { l.forEach(this::sum); sum(1, 0); java.util.function.Supplier<Cart> s = Cart::new; }"),
+        ] {
+            let s = signature_at(lang, text, text.find("total(").unwrap() + 1).unwrap();
+            let mut request = SignatureRequest::of(&s);
+            request.name = "sum".into();
+            request.params.push(NewParam { old: None, name: "m".into(), ty: "int".into(), value: "0".into() });
+            let calls = call_sites(lang, text, "total", 1);
+            let out = apply(text, calls.iter().flat_map(|c| call_edits(style, &s, &request, c)).collect());
+            assert!(out.contains(expected), "{out}");
+        }
+    }
+
+    #[test]
     fn keeps_kotlin_trailing_lambdas_last() {
         use crate::domain::change_signature::call_edits;
         use crate::index::introduce_parameter::call_sites;

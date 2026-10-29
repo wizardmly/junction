@@ -196,7 +196,7 @@ pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<
                 let values = args.map(|a| kotlin_arguments(*a, text)).unwrap_or_default();
                 let passed = values.len() + usize::from(lambda.is_some());
                 let lambda_text = lambda.clone().map(|l| text[l].to_owned()).unwrap_or_default();
-                (name == function && passed <= params && (lambda.is_none() || params > 0)).then(|| CallSite { name_range: name_node.byte_range(), args_open, args_close, args: values, receiver, lambda, lambda_text })
+                (name == function && passed <= params && (lambda.is_none() || params > 0)).then(|| CallSite { name_range: name_node.byte_range(), args_open, args_close, args: values, receiver, lambda, lambda_text, reference: false })
             }
             // A Kotlin constructor's calls besides `A(…)`: a supertype's
             // `: A(…)`, and `: this(…)` / `: super(…)` from a secondary constructor.
@@ -223,6 +223,15 @@ pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<
                 let Some(name) = name.filter(|c| matches!(c.kind(), "this" | "super") || &text[c.byte_range()] == function) else { continue };
                 let values = kotlin_arguments(args, text);
                 (values.len() <= params).then(|| CallSite { name_range: name.byte_range(), args_open: args.start_byte(), args_close: args.end_byte() - 1, args: values, ..Default::default() })
+            }
+            // References: Kotlin's `::name` / `Type::name`, Java's `Type::name`.
+            Lang::Kotlin if n.kind() == "callable_reference" => {
+                let Some(id) = children(n).into_iter().filter(|c| c.kind() == "simple_identifier").last() else { continue };
+                (&text[id.byte_range()] == function).then(|| CallSite { name_range: id.byte_range(), reference: true, ..Default::default() })
+            }
+            Lang::Java if n.kind() == "method_reference" => {
+                let Some(id) = children(n).into_iter().filter(|c| c.kind() == "identifier").last().filter(|id| id.start_byte() > n.start_byte()) else { continue };
+                (&text[id.byte_range()] == function).then(|| CallSite { name_range: id.byte_range(), reference: true, ..Default::default() })
             }
             Lang::Java if n.kind() == "method_invocation" => {
                 let (Some(name), Some(args)) = (n.child_by_field_name("name"), n.child_by_field_name("arguments")) else { continue };
