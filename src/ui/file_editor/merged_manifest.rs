@@ -39,15 +39,24 @@ impl FileEditor {
     /// The merge for the current text, redone when it changed.
     fn merged_manifest(&mut self, cx: &mut Context<Self>) -> &MergedManifest {
         let text = self.text(cx);
+        let path = self.absolute_path();
+        let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(Path::to_path_buf)).unwrap_or_else(|| self.repository.root().to_path_buf());
+        // The picked build variant's source sets.
+        let sets = crate::usecase::merged_manifest::module_of(&path)
+            .and_then(|(module, _)| {
+                let rel = module.strip_prefix(&root).ok()?.to_string_lossy().replace('\\', "/");
+                let index = self.code_index.as_ref()?.read(cx).index.clone();
+                let modules = index.read().ok()?.modules.clone();
+                Some(modules.variant_source_sets(&rel))
+            })
+            .unwrap_or_default();
         let mut hasher = std::hash::DefaultHasher::new();
-        text.hash(&mut hasher);
+        (&text, &sets).hash(&mut hasher);
         let hash = hasher.finish();
         if self.merged.as_ref().map(|m| m.hash) != Some(hash) {
-            let path = self.absolute_path();
-            let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(Path::to_path_buf)).unwrap_or_else(|| self.repository.root().to_path_buf());
             // This file as edited, the others from disk.
             let read = |p: &Path| if p == path.as_path() { Some(text.clone()) } else { std::fs::read_to_string(p).ok() };
-            let result = crate::usecase::merged_manifest::merged_manifest(&root, &path, &read);
+            let result = crate::usecase::merged_manifest::merged_manifest(&root, &path, &sets, &read);
             self.merged = Some(MergedManifest { hash, result });
         }
         self.merged.as_ref().expect("just set")

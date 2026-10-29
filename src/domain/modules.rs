@@ -261,6 +261,44 @@ impl ModuleGraph {
         (!inner.is_empty()).then_some(set)
     }
 
+    /// The source sets the variant module `dir` (project-relative) builds
+    /// adds to main, highest priority first, as the Gradle plugin orders
+    /// them: the variant (`freeDebug`), its build type, its flavors. Empty
+    /// for a module that isn't Android's.
+    pub fn variant_source_sets(&self, dir: &str) -> Vec<String> {
+        let Some(m) = self.modules.iter().position(|m| m.dir == dir) else { return Vec::new() };
+        if self.modules[m].build_types.is_empty() {
+            return Vec::new();
+        }
+        let parts = self.active_parts(m);
+        let build_type = parts.iter().find(|(_, g)| g == BUILD_TYPE).map(|(n, _)| n.clone()).unwrap_or_else(|| "debug".into());
+        let flavors: Vec<&String> = parts.iter().filter(|(_, g)| g != BUILD_TYPE).map(|(n, _)| n).collect();
+        let capitalized = |s: &str| {
+            let mut chars = s.chars();
+            chars.next().map(|c| c.to_uppercase().chain(chars).collect::<String>()).unwrap_or_default()
+        };
+        let mut out = Vec::new();
+        if !flavors.is_empty() {
+            let mut name = flavors[0].clone();
+            for f in &flavors[1..] {
+                name.push_str(&capitalized(f));
+            }
+            if flavors.len() > 1 {
+                out.push(format!("{name}{}", capitalized(&build_type)));
+                out.push(build_type.clone());
+                out.push(name);
+            } else {
+                out.push(format!("{name}{}", capitalized(&build_type)));
+                out.push(build_type.clone());
+            }
+            out.extend(flavors.iter().map(|f| f.to_string()));
+            out.dedup();
+        } else {
+            out.push(build_type);
+        }
+        out
+    }
+
     /// Whether `path` (project-relative) isn't in another variant's
     /// source set than the one its module builds (`src/release/` while
     /// debug is picked): what the Android view shows.
@@ -395,6 +433,9 @@ mod tests {
         g.pick("app", "paidStaging");
         assert!(g.visible(main, &at("paid")) && g.visible(main, &at("staging")) && g.visible(main, &at("paidStaging")));
         assert!(!g.visible(main, &at("debug")) && !g.visible(main, &at("free")));
+        assert_eq!(g.variant_source_sets("app"), ["paidStaging", "staging", "paid"]);
+        assert_eq!(g.variant_source_sets("lib"), ["debug"]);
+        assert!(g.variant_source_sets("nope").is_empty());
         assert!(g.in_active_variant(&at("paid")) && g.in_active_variant(main) && g.in_active_variant("app/build.gradle.kts"));
         assert!(!g.in_active_variant(&at("free")) && !g.in_active_variant(&at("testFree")) && g.in_active_variant(&at("testPaid")));
         assert_eq!(variant_names(script, true), ["freeDebug", "freeRelease", "freeStaging", "paidDebug", "paidRelease", "paidStaging"]);
