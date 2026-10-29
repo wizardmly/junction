@@ -50,6 +50,11 @@ pub struct Signature {
     /// The modifier's range, or where one goes; none when it can't change
     /// here (Kotlin's primary constructor).
     pub visibility_range: Option<Range<usize>>,
+    /// Where the declaration starts (its annotations included) and its body
+    /// (`{` or Kotlin's `=`) starts; none without a body, or for Kotlin's
+    /// primary constructor: no delegate then.
+    pub decl_start: usize,
+    pub body_start: Option<usize>,
 }
 
 /// The visibilities the dialog offers, IntelliJ's order; the first of
@@ -96,6 +101,9 @@ pub struct SignatureRequest {
     pub params: Vec<NewParam>,
     /// The new visibility, as [`visibilities`] names it; none keeps it.
     pub visibility: Option<String>,
+    /// IntelliJ's "Delegate via overloading method": the old signature
+    /// stays, calling the new one, and the calls are left alone.
+    pub delegate: bool,
 }
 
 impl SignatureRequest {
@@ -107,6 +115,7 @@ impl SignatureRequest {
             return_type: signature.return_type.clone(),
             params: signature.params.iter().enumerate().map(|(i, p)| NewParam { old: Some(i), name: p.name.clone(), ty: p.ty.clone(), value: String::new() }).collect(),
             visibility: None,
+            delegate: false,
         }
     }
 }
@@ -234,7 +243,7 @@ pub fn override_request(signature: &Signature, other: &Signature, request: &Sign
         .collect();
     let return_type = if request.return_type.trim() == signature.return_type { other.return_type.clone() } else { request.return_type.clone() };
     // An override keeps its own visibility.
-    SignatureRequest { name: request.name.clone(), return_type, params, visibility: None }
+    SignatureRequest { name: request.name.clone(), return_type, params, visibility: None, delegate: false }
 }
 
 /// The edits in the function's file: the declaration, the parameters'
@@ -276,12 +285,45 @@ pub fn edits(style: ImportStyle, text: &str, signature: &Signature, calls: &[Cal
         }
     }
     out.extend(calls.iter().flat_map(|c| call_edits(style, signature, request, c)));
+    // Last: inserted where a new visibility may also go, it must come first.
+    if let Some(delegate) = delegate(style, text, signature, request) {
+        out.push((signature.decl_start..signature.decl_start, delegate));
+    }
     Ok(out)
+}
+
+/// The old declaration calling the new one, and the line break and
+/// indent before the new one; none unless asked for and possible.
+fn delegate(style: ImportStyle, text: &str, signature: &Signature, request: &SignatureRequest) -> Option<String> {
+    let body = signature.body_start.filter(|_| request.delegate)?;
+    let header = text[signature.decl_start..body].trim_end();
+    let line = text[..signature.decl_start].rfind('\n').map_or(0, |i| i + 1);
+    let indent = &text[line..signature.decl_start];
+    let args: Vec<String> = request
+        .params
+        .iter()
+        .map(|p| match p.old.and_then(|i| signature.params.get(i)) {
+            Some(old) => old.name.clone(),
+            None => p.value.trim().to_owned(),
+        })
+        .collect();
+    let call = format!("{}({})", if signature.constructor { "this" } else { request.name.as_str() }, args.join(", "));
+    let declaration = match style {
+        ImportStyle::Kotlin if signature.constructor => format!("{header} : {call}"),
+        ImportStyle::Kotlin => format!("{header} = {call}"),
+        ImportStyle::Java if signature.constructor || signature.return_type == "void" => format!("{header} {{\n{indent}    {call};\n{indent}}}"),
+        ImportStyle::Java => format!("{header} {{\n{indent}    return {call};\n{indent}}}"),
+    };
+    Some(format!("{declaration}\n\n{indent}"))
 }
 
 /// A call's edits: its name and arguments.
 pub fn call_edits(style: ImportStyle, signature: &Signature, request: &SignatureRequest, call: &CallSite) -> Vec<Edit> {
     let mut out = Vec::new();
+    // The calls keep calling the old signature, now the delegate.
+    if request.delegate && signature.body_start.is_some() {
+        return out;
+    }
     if !signature.constructor && request.name != signature.name && !call.name_range.is_empty() {
         out.push((call.name_range.clone(), request.name.clone()));
     }

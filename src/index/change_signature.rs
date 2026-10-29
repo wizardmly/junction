@@ -174,7 +174,17 @@ pub fn signature_at(lang: Lang, text: &str, offset: usize) -> Result<Signature, 
         },
     };
     let (visibility, visibility_range) = visibility_of(function, text);
+    // Where a delegate's header ends: the body (Java's `{`, Kotlin's `{` or
+    // `=`), or a secondary constructor's `: this(…)`.
+    let body_start = match function.kind() {
+        "class_declaration" => None,
+        _ if lang == Lang::Java => function.child_by_field_name("body").map(|b| b.start_byte()),
+        "secondary_constructor" => Some(children(function).into_iter().find(|c| matches!(c.kind(), "constructor_delegation_call" | "statements" | "block")).map_or(function.end_byte(), |n| n.start_byte())),
+        _ => children(function).into_iter().find(|c| c.kind() == "function_body").map(|b| b.start_byte()),
+    };
     Ok(Signature {
+        decl_start: function.start_byte(),
+        body_start,
         visibility,
         visibility_range,
         name: name_text,
@@ -355,5 +365,29 @@ mod tests {
         // A primary constructor's stays.
         let primary = "class P(val x: Int)\n";
         assert_eq!(signature_at(Lang::Kotlin, primary, 8).unwrap().visibility_range, None);
+    }
+
+    #[test]
+    fn delegates_via_an_overloading_method() {
+        use crate::domain::change_signature::call_edits;
+        use crate::index::introduce_parameter::call_sites;
+        let text = "class Calc {\n    @Deprecated\n    public int add(int a, int b) {\n        return a + b;\n    }\n    void use() { add(1, 2); }\n    Calc(int x) {}\n}\n";
+        let s = signature_at(Lang::Java, text, text.find("add").unwrap()).unwrap();
+        let mut request = SignatureRequest::of(&s);
+        request.params.insert(1, NewParam { old: None, name: "scale".into(), ty: "int".into(), value: "1".into() });
+        request.params.swap(0, 2);
+        request.delegate = true;
+        let calls = call_sites(Lang::Java, text, "add", 2);
+        assert!(calls.iter().all(|c| call_edits(ImportStyle::Java, &s, &request, c).is_empty()));
+        let out = apply(text, edits(ImportStyle::Java, text, &s, &calls, &request).unwrap());
+        assert!(out.contains("    @Deprecated\n    public int add(int a, int b) {\n        return add(b, 1, a);\n    }\n\n    @Deprecated\n    public int add(int b, int scale, int a) {"), "{out}");
+        assert!(out.contains("void use() { add(1, 2); }"));
+        // A constructor calls this(…); with a visibility change too.
+        let s = signature_at(Lang::Java, text, text.find("Calc(int").unwrap()).unwrap();
+        let mut request = SignatureRequest::of(&s);
+        request.params.push(NewParam { old: None, name: "y".into(), ty: "int".into(), value: "0".into() });
+        (request.delegate, request.visibility) = (true, Some("private".into()));
+        let out = apply(text, edits(ImportStyle::Java, text, &s, &[], &request).unwrap());
+        assert!(out.contains("    Calc(int x) {\n        this(x, 0);\n    }\n\n    private Calc(int x, int y) {}"), "{out}");
     }
 }
