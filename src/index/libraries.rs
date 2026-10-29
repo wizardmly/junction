@@ -1164,7 +1164,8 @@ fn decompile_stubs(archive: &Path, name: &str, coordinate: &str) -> Option<PathB
     use std::io::Read as _;
     let dest = cache_dir()?.join("decompiled").join(name);
     let marker = dest.join(".junction-complete");
-    let stamp = store::stat(archive).map(|(size, mtime)| format!("{size}:{mtime}"))?;
+    // The stubs' format version: a change redoes them.
+    let stamp = store::stat(archive).map(|(size, mtime)| format!("2:{size}:{mtime}"))?;
     if read(&marker) == stamp {
         if read(&dest.join(COORDINATE_FILE)) != coordinate {
             std::fs::write(dest.join(COORDINATE_FILE), coordinate).ok();

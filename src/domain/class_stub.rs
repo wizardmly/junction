@@ -5,9 +5,13 @@
 //! source. A class compiled from Kotlin (it carries `kotlin.Metadata`)
 //! becomes Kotlin: a file facade (`BoxKt`) its top-level functions, `getX()`
 //! a property, an `INSTANCE` an object, `$Companion` a companion object;
-//! any other Java. Parameter names aren't kept in class files: `p0`, `p1`…
+//! any other Java. Parameter names aren't kept in class files: `p0`, `p1`…,
+//! except in Kotlin's metadata, which writes the declarations as declared
+//! when it can be read (`kotlin_metadata`).
 
 use std::collections::BTreeMap;
+
+use super::kotlin_metadata::{self, Metadata};
 
 const ACC_PUBLIC: u16 = 0x0001;
 const ACC_PRIVATE: u16 = 0x0002;
@@ -40,6 +44,8 @@ pub struct ClassInfo {
     pub methods: Vec<Member>,
     /// Compiled from Kotlin.
     pub kotlin: bool,
+    /// Its `kotlin.Metadata`.
+    pub metadata: Option<Metadata>,
 }
 
 struct Reader<'a> {
@@ -74,13 +80,14 @@ pub fn parse(data: &[u8]) -> Option<ClassInfo> {
     // The constant pool: its UTF-8 entries and class references.
     let count = r.u16()? as usize;
     let mut utf8: Vec<Option<String>> = vec![None; count];
+    let mut ints: Vec<Option<i32>> = vec![None; count];
     let mut class_name: Vec<Option<u16>> = vec![None; count];
     let mut i = 1;
     while i < count {
         match r.u8()? {
             1 => {
                 let len = r.u16()? as usize;
-                utf8[i] = Some(String::from_utf8_lossy(r.bytes(len)?).into_owned());
+                utf8[i] = Some(modified_utf8(r.bytes(len)?));
             }
             7 => class_name[i] = Some(r.u16()?),
             8 | 16 | 19 | 20 => {
@@ -89,7 +96,8 @@ pub fn parse(data: &[u8]) -> Option<ClassInfo> {
             15 => {
                 r.bytes(3)?;
             }
-            3 | 4 | 9 | 10 | 11 | 12 | 17 | 18 => {
+            3 => ints[i] = Some(r.u32()? as i32),
+            4 | 9 | 10 | 11 | 12 | 17 | 18 => {
                 r.bytes(4)?;
             }
             5 | 6 => {
@@ -125,7 +133,88 @@ pub fn parse(data: &[u8]) -> Option<ClassInfo> {
     let fields = members(&mut r)?;
     let methods = members(&mut r)?;
     let kotlin = utf8.iter().flatten().any(|s| s == "Lkotlin/Metadata;");
-    Some(ClassInfo { name, access, super_name, interfaces, fields, methods, kotlin })
+    // The class's annotations: `kotlin.Metadata`.
+    let mut metadata = None;
+    for _ in 0..r.u16().unwrap_or(0) {
+        let (Some(attr), Some(len)) = (r.u16(), r.u32()) else { break };
+        let Some(body) = r.bytes(len as usize) else { break };
+        if kotlin && text(attr).as_deref() == Some("RuntimeVisibleAnnotations") {
+            metadata = kotlin_annotation(&mut Reader { data: body, at: 0 }, &text, &|ix| ints.get(ix as usize).copied().flatten());
+        }
+    }
+    Some(ClassInfo { name, access, super_name, interfaces, fields, methods, kotlin, metadata })
+}
+
+/// The class file's "modified UTF-8": `\0` as two bytes, supplementary
+/// characters as surrogate pairs.
+fn modified_utf8(bytes: &[u8]) -> String {
+    let mut units: Vec<u16> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        let (unit, n) = if b & 0x80 == 0 {
+            (u16::from(b), 1)
+        } else if b & 0xE0 == 0xC0 && i + 1 < bytes.len() {
+            ((u16::from(b & 0x1F) << 6) | u16::from(bytes[i + 1] & 0x3F), 2)
+        } else if b & 0xF0 == 0xE0 && i + 2 < bytes.len() {
+            ((u16::from(b & 0x0F) << 12) | (u16::from(bytes[i + 1] & 0x3F) << 6) | u16::from(bytes[i + 2] & 0x3F), 3)
+        } else {
+            (0xFFFD, 1)
+        };
+        units.push(unit);
+        i += n;
+    }
+    String::from_utf16_lossy(&units)
+}
+
+/// `@kotlin.Metadata(k = …, d1 = […], d2 = […])` among the annotations.
+fn kotlin_annotation(r: &mut Reader, text: &dyn Fn(u16) -> Option<String>, int: &dyn Fn(u16) -> Option<i32>) -> Option<Metadata> {
+    // Skips an element value, or reads the strings / int it holds.
+    fn value(r: &mut Reader, text: &dyn Fn(u16) -> Option<String>, int: &dyn Fn(u16) -> Option<i32>, strings: &mut Vec<String>, number: &mut Option<i32>) -> Option<()> {
+        match r.u8()? {
+            b's' => strings.extend(text(r.u16()?)),
+            b'I' => *number = int(r.u16()?),
+            b'B' | b'C' | b'D' | b'F' | b'J' | b'S' | b'Z' | b'c' => {
+                r.u16()?;
+            }
+            b'e' => {
+                r.bytes(4)?;
+            }
+            b'@' => {
+                r.u16()?;
+                for _ in 0..r.u16()? {
+                    r.u16()?;
+                    value(r, text, int, &mut Vec::new(), &mut None)?;
+                }
+            }
+            b'[' => {
+                for _ in 0..r.u16()? {
+                    value(r, text, int, strings, number)?;
+                }
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+    for _ in 0..r.u16()? {
+        let ty = text(r.u16()?)?;
+        let mut meta = Metadata::default();
+        for _ in 0..r.u16()? {
+            let name = text(r.u16()?)?;
+            let (mut strings, mut number) = (Vec::new(), None);
+            value(r, text, int, &mut strings, &mut number)?;
+            match name.as_str() {
+                "k" => meta.kind = number.unwrap_or(0),
+                "d1" => meta.d1 = strings,
+                "d2" => meta.d2 = strings,
+                _ => {}
+            }
+        }
+        if ty == "Lkotlin/Metadata;" {
+            return Some(meta);
+        }
+    }
+    None
 }
 
 // --- Types -----------------------------------------------------------------
@@ -338,7 +427,9 @@ fn render_kotlin(class: &ClassInfo, all: &BTreeMap<String, ClassInfo>, indent: &
         out.push_str(&format!("{body_indent}{}{kind} {}: {}\n", modifier(f.access, true), f.name, type_name(&f.descriptor, true)));
     }
     for nested in nested_of(class, all) {
-        render_kotlin(nested, all, &body_indent, out);
+        if !render_metadata(nested, all, &body_indent, out) {
+            render_kotlin(nested, all, &body_indent, out);
+        }
     }
     if !facade {
         out.push_str(&format!("{indent}}}\n"));
@@ -392,6 +483,54 @@ fn render_java(class: &ClassInfo, all: &BTreeMap<String, ClassInfo>, indent: &st
     out.push_str(&format!("{indent}}}\n"));
 }
 
+/// A Kotlin class or file from its `kotlin.Metadata`, as declared: real
+/// parameter names, nullable and generic types, `@InlineOnly` functions.
+/// False (nothing written) when it has none or it can't be read.
+fn render_metadata(class: &ClassInfo, all: &BTreeMap<String, ClassInfo>, indent: &str, out: &mut String) -> bool {
+    let Some(meta) = &class.metadata else { return false };
+    let package = class.name.rsplit_once('/').map_or("", |(p, _)| p);
+    let lines = |meta: &Metadata, indent: &str, out: &mut String| -> bool {
+        let bytes = kotlin_metadata::bytes(meta);
+        let Some(decoded) = kotlin_metadata::decode(meta, &bytes) else { return false };
+        for line in decoded.members() {
+            out.push_str(&format!("{indent}{line}\n"));
+        }
+        true
+    };
+    match meta.kind {
+        // A multi-file facade (`CollectionsKt`): its parts' declarations.
+        4 => {
+            let mut any = false;
+            for part in kotlin_metadata::parts(meta, package) {
+                if let Some(meta) = all.get(&part).and_then(|c| c.metadata.as_ref()) {
+                    any |= lines(meta, indent, out);
+                }
+            }
+            any
+        }
+        2 | 5 => lines(meta, indent, out),
+        1 => {
+            let bytes = kotlin_metadata::bytes(meta);
+            let Some(decoded) = kotlin_metadata::decode(meta, &bytes) else { return false };
+            let simple_name = class.name.rsplit(['/', '$']).next().unwrap_or(&class.name);
+            out.push_str(&format!("{indent}{} {{\n", decoded.header(simple_name, class.super_name.as_deref())));
+            let inner = format!("{indent}    ");
+            for line in decoded.members() {
+                out.push_str(&format!("{inner}{line}\n"));
+            }
+            // Compiler-made nested classes (`DefaultImpls`, `WhenMappings`) aren't shown.
+            for nested in nested_of(class, all).into_iter().filter(|n| n.metadata.as_ref().is_none_or(|m| m.kind == 1)) {
+                if !render_metadata(nested, all, &inner, out) {
+                    render_kotlin(nested, all, &inner, out);
+                }
+            }
+            out.push_str(&format!("{indent}}}\n"));
+            true
+        }
+        _ => false,
+    }
+}
+
 /// A class's named nested classes (`Outer$Inner`, not `Outer$1`).
 fn nested_of<'a>(class: &ClassInfo, all: &'a BTreeMap<String, ClassInfo>) -> Vec<&'a ClassInfo> {
     let prefix = format!("{}$", class.name);
@@ -409,6 +548,10 @@ fn nested_of<'a>(class: &ClassInfo, all: &'a BTreeMap<String, ClassInfo>) -> Vec
 /// and text; `all` holds its nested classes. None for a nested, anonymous
 /// or non-public class.
 pub fn stub(class: &ClassInfo, all: &BTreeMap<String, ClassInfo>) -> Option<(String, String)> {
+    // A multi-file class's part is shown in its facade.
+    if class.metadata.as_ref().is_some_and(|m| m.kind == 5) {
+        return None;
+    }
     if class.name.contains('$') || class.access & ACC_PUBLIC == 0 || class.access & ACC_SYNTHETIC != 0 || class.name.ends_with("package-info") || class.name == "module-info" {
         return None;
     }
@@ -418,7 +561,9 @@ pub fn stub(class: &ClassInfo, all: &BTreeMap<String, ClassInfo>) -> Option<(Str
         text.push_str(&format!("package {package}{}\n\n", if class.kotlin { "" } else { ";" }));
     }
     let ext = if class.kotlin {
-        render_kotlin(class, all, "", &mut text);
+        if !render_metadata(class, all, "", &mut text) {
+            render_kotlin(class, all, "", &mut text);
+        }
         "kt"
     } else {
         render_java(class, all, "", &mut text);
@@ -447,23 +592,36 @@ mod tests {
         let (path, text) = one(load("ConsoleKt.class"), vec![]);
         assert_eq!(path, "kotlin/io/ConsoleKt.kt");
         assert!(text.contains("package kotlin.io\n"), "{text}");
-        // `println` is `@InlineOnly`: private in the class file, as IntelliJ's stub without metadata.
+        // From the metadata: `println` (`@InlineOnly`, private in the class file), names, nullability.
+        assert!(text.contains("\ninline fun println(message: Any?) { /* compiled code */ }"), "{text}");
         assert!(text.contains("\nfun readln(): String { /* compiled code */ }"), "{text}");
-        assert!(text.contains("fun readLine(): String { /* compiled code */ }"), "{text}");
+        assert!(text.contains("fun readLine(): String? { /* compiled code */ }"), "{text}");
         assert!(!text.contains("class ConsoleKt"), "{text}");
     }
 
     #[test]
     fn kotlin_classes_objects_and_properties() {
         let (_, pair) = one(load("Pair.class"), vec![]);
-        assert!(pair.contains("class Pair : Serializable {"), "{pair}");
-        assert!(pair.contains("    val first: Any"), "{pair}");
-        assert!(pair.contains("    constructor(p0: Any, p1: Any) { /* compiled code */ }"), "{pair}");
+        assert!(pair.contains("data class Pair<out A, out B> : Serializable {"), "{pair}");
+        assert!(pair.contains("    val first: A\n"), "{pair}");
+        assert!(pair.contains("    constructor(first: A, second: B) { /* compiled code */ }"), "{pair}");
+        assert!(pair.contains("    fun copy(first: A = COMPILED_CODE, second: B = COMPILED_CODE): Pair<A, B> { /* compiled code */ }"), "{pair}");
         let (_, unit) = one(load("Unit.class"), vec![]);
         assert!(unit.contains("object Unit {"), "{unit}");
-        let regex = ClassInfo { name: "kotlin/text/Regex".into(), access: ACC_PUBLIC | ACC_FINAL, super_name: Some("java/lang/Object".into()), interfaces: vec![], fields: vec![], methods: vec![], kotlin: true };
+        let regex = ClassInfo { name: "kotlin/text/Regex".into(), access: ACC_PUBLIC | ACC_FINAL, super_name: Some("java/lang/Object".into()), interfaces: vec![], fields: vec![], methods: vec![], kotlin: true, metadata: None };
         let (_, text) = one(regex, vec![load("Regex$Companion.class")]);
-        assert!(text.contains("class Regex {\n    companion object {\n") && text.contains("        fun escape(p0: String): String { /* compiled code */ }"), "{text}");
+        assert!(text.contains("class Regex {\n    companion object {\n") && text.contains("        fun escape(literal: String): String { /* compiled code */ }"), "{text}");
+    }
+
+    #[test]
+    fn kotlin_multi_file_facades_and_function_types() {
+        let parts = vec![load("BuildersKt__BuildersKt.class"), load("BuildersKt__Builders_commonKt.class")];
+        assert!(parts.iter().all(|p| stub(p, &BTreeMap::new()).is_none()));
+        let (path, text) = one(load("BuildersKt.class"), parts);
+        assert_eq!(path, "kotlinx/coroutines/BuildersKt.kt");
+        assert!(text.contains("\nfun CoroutineScope.launch(context: CoroutineContext = COMPILED_CODE, start: CoroutineStart = COMPILED_CODE, block: suspend CoroutineScope.() -> Unit): Job { /* compiled code */ }"), "{text}");
+        assert!(text.contains("\nsuspend fun <T> withContext(context: CoroutineContext, block: suspend CoroutineScope.() -> T): T { /* compiled code */ }"), "{text}");
+        assert!(text.contains("fun <T> runBlocking("), "{text}");
     }
 
     #[test]
@@ -483,3 +641,4 @@ mod tests {
         assert_eq!(type_name("Lkotlin/jvm/functions/Function1;", true), "Function1<*>");
     }
 }
+

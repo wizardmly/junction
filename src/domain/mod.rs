@@ -80,6 +80,7 @@ pub mod vector_drawable;
 pub mod drawable;
 pub mod change_signature;
 pub mod class_stub;
+pub mod kotlin_metadata;
 pub mod console_links;
 pub mod extract_method;
 pub mod manifest_merge;
