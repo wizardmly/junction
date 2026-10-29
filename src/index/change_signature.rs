@@ -152,4 +152,28 @@ mod tests {
         assert_eq!(&text[s.params_range.clone()], "final int price, String... names");
         assert!(signature_at(Lang::Java, text, 2).is_err());
     }
+
+    #[test]
+    fn keeps_kotlin_trailing_lambdas_last() {
+        use crate::domain::change_signature::call_edits;
+        use crate::index::introduce_parameter::call_sites;
+        let text = "fun repeat(times: Int, block: () -> Unit) {}\nfun each(block: (Int) -> Unit) {}\nfun use() {\n    repeat(2) { println() }\n    repeat(times = 1) { }\n    repeat(3, { })\n    each { println(it) }\n}\n";
+        let change = |function: &str, f: &dyn Fn(&mut SignatureRequest)| {
+            let s = signature_at(Lang::Kotlin, text, text.find(&format!("fun {function}")).unwrap() + 5).unwrap();
+            let mut request = SignatureRequest::of(&s);
+            f(&mut request);
+            let calls = call_sites(Lang::Kotlin, text, function, s.params.len());
+            let out = apply(text, calls.iter().flat_map(|c| call_edits(ImportStyle::Kotlin, &s, &request, c)).collect());
+            out.lines().skip(3).take(4).map(str::to_owned).collect::<Vec<_>>().join("\n")
+        };
+        // A new parameter before the lambda: it stays trailing.
+        let added = change("repeat", &|r| r.params.insert(1, NewParam { old: None, name: "gap".into(), ty: "Long".into(), value: "0L".into() }));
+        assert_eq!(added, "    repeat(2, 0L) { println() }\n    repeat(times = 1, gap = 0L) { }\n    repeat(3, 0L, { })\n    each { println(it) }");
+        // The lambda moved first: it goes inside the parentheses.
+        let swapped = change("repeat", &|r| r.params.swap(0, 1));
+        assert_eq!(swapped, "    repeat({ println() }, 2)\n    repeat(block = { }, times = 1)\n    repeat({ }, 3)\n    each { println(it) }");
+        // No parentheses: they're added when needed.
+        let each = change("each", &|r| r.params.insert(0, NewParam { old: None, name: "from".into(), ty: "Int".into(), value: "0".into() }));
+        assert_eq!(each, "    repeat(2) { println() }\n    repeat(times = 1) { }\n    repeat(3, { })\n    each(0) { println(it) }");
+    }
 }
