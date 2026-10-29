@@ -487,6 +487,9 @@ pub struct TypeNode {
     /// In a Method Hierarchy: whether the type defines the method, and
     /// where.
     pub method: Option<(MethodMark, Option<Target>)>,
+    /// A Kotlin / Java type's package (empty: the default package),
+    /// IntelliJ's "(com.example)" after the name.
+    pub package: Option<String>,
 }
 
 /// Method Hierarchy's (Ctrl+Shift+H) marks, IntelliJ's legend.
@@ -514,6 +517,7 @@ fn type_node(index: &ProjectIndex, name: &str) -> TypeNode {
         kotlin: decl.is_some_and(|(_, e, _)| e.lang == super::lang::Lang::Kotlin),
         children: Vec::new(),
         method: None,
+        package: None,
     }
 }
 
@@ -531,7 +535,7 @@ fn subtype_tree(index: &ProjectIndex, name: &str, seen: &mut HashSet<String>, bu
             break;
         }
         *budget -= 1;
-        let mut node = TypeNode { name: s.name.clone(), target: Some(target(p, e, s)), symbol: Some(s.clone()), kotlin: e.lang == super::lang::Lang::Kotlin, children: Vec::new(), method: None };
+        let mut node = TypeNode { name: s.name.clone(), target: Some(target(p, e, s)), symbol: Some(s.clone()), kotlin: e.lang == super::lang::Lang::Kotlin, children: Vec::new(), method: None, package: None };
         if seen.insert(s.name.clone()) {
             node.children = subtype_tree(index, &s.name, seen, budget);
         }
@@ -568,6 +572,16 @@ fn superclass(index: &ProjectIndex, name: &str) -> Option<String> {
 }
 
 /// The hierarchy of the type named `name`, in one of the three views.
+/// Reads each Kotlin / Java type's package from its file, once a file.
+fn fill_packages(index: &ProjectIndex, node: &mut TypeNode, read: &mut HashMap<String, Option<String>>) {
+    if let Some(path) = node.target.as_ref().map(|t| t.path.clone()).filter(|p| is_jvm(p)) {
+        node.package = read.entry(path.clone()).or_insert_with(|| read_text(index, &path).map(|t| crate::domain::debugger::package_of(&t))).clone();
+    }
+    for c in &mut node.children {
+        fill_packages(index, c, read);
+    }
+}
+
 pub fn type_hierarchy(index: &ProjectIndex, name: &str, view: TypeView) -> TypeNode {
     let mut seen = HashSet::from([name.to_owned()]);
     let mut budget = LIMIT;
@@ -598,6 +612,7 @@ pub fn type_hierarchy(index: &ProjectIndex, name: &str, view: TypeView) -> TypeN
             }
         }
     }
+    fill_packages(index, &mut node, &mut HashMap::new());
     node
 }
 
@@ -648,6 +663,7 @@ pub fn method_hierarchy(index: &ProjectIndex, owner: &str, method: &str) -> Type
     let mut budget = LIMIT;
     node.children = subtype_tree(index, &top, &mut seen, &mut budget);
     mark_method(index, &mut node, method, false);
+    fill_packages(index, &mut node, &mut HashMap::new());
     node
 }
 

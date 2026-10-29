@@ -56,8 +56,9 @@ struct Node {
     recursive: bool,
 }
 
-/// The Call Hierarchy's scope, as IntelliJ's combo box: which callers (or
-/// callees) are shown, at every level.
+/// The Hierarchy's scope, as IntelliJ's combo box: which callers (or
+/// callees, or types) are shown, at every level. This Class is only for
+/// calls.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CallScope {
     All,
@@ -102,6 +103,20 @@ impl CallScope {
             CallScope::Production => !crate::index::text_search::is_test_path(&n.path),
             CallScope::Test => crate::index::text_search::is_test_path(&n.path),
             CallScope::ThisClass => class_of(n) == class_of(root),
+        }
+    }
+
+    /// Whether a Type Hierarchy shows `n`: types outside the project and
+    /// the chain down to the type itself (`name`) always are.
+    fn contains_type(self, n: &TypeNode, name: &str) -> bool {
+        fn leads_to(n: &TypeNode, name: &str) -> bool {
+            n.name == name || n.children.iter().any(|c| leads_to(c, name))
+        }
+        let Some(t) = &n.target else { return true };
+        match self {
+            CallScope::All | CallScope::ThisClass => true,
+            CallScope::Production => !crate::index::text_search::is_test_path(&t.path) || leads_to(n, name),
+            CallScope::Test => crate::index::text_search::is_test_path(&t.path) || leads_to(n, name),
         }
     }
 }
@@ -156,6 +171,7 @@ impl HierarchyView {
     /// Type Hierarchy of the type named `name`.
     pub fn type_hierarchy(&mut self, name: String, cx: &mut Context<Self>) {
         self.root = None;
+        self.types_scope();
         self.types = Some(Types { name, view: TypeView::Type, method: None, tree: None, collapsed: HashSet::new() });
         self.load_types(cx);
     }
@@ -167,9 +183,17 @@ impl HierarchyView {
         let caller = caller_at(lang, text, offset, file_name).ok_or("No method at the caret")?;
         let (owner, method) = caller.name.rsplit_once('.').ok_or("No method of a class at the caret")?;
         self.root = None;
+        self.types_scope();
         self.types = Some(Types { name: owner.to_owned(), view: TypeView::Type, method: Some(method.to_owned()), tree: None, collapsed: HashSet::new() });
         self.load_types(cx);
         Ok(())
+    }
+
+    /// This Class is only for calls.
+    fn types_scope(&mut self) {
+        if self.scope == CallScope::ThisClass {
+            self.scope = CallScope::All;
+        }
     }
 
     fn set_type_view(&mut self, view: TypeView, cx: &mut Context<Self>) {
@@ -221,22 +245,21 @@ impl HierarchyView {
         Some(cur)
     }
 
-    fn type_rows(&self) -> Vec<(Vec<usize>, usize, &TypeNode)> {
-        fn walk<'a>(n: &'a TypeNode, at: Vec<usize>, depth: usize, collapsed: &HashSet<Vec<usize>>, out: &mut Vec<(Vec<usize>, usize, &'a TypeNode)>) {
-            let open = !collapsed.contains(&at);
-            out.push((at.clone(), depth, n));
-            if open {
-                for (i, c) in n.children.iter().enumerate() {
+    /// The rows shown, each with whether it has children in the scope.
+    fn type_rows(&self) -> Vec<(Vec<usize>, usize, &TypeNode, bool)> {
+        let Some(types) = &self.types else { return Vec::new() };
+        let shown = |c: &TypeNode| self.scope.contains_type(c, &types.name);
+        let mut out = Vec::new();
+        let mut stack = types.tree.iter().map(|t| (Vec::new(), 0, t)).collect::<Vec<_>>();
+        while let Some((at, depth, n)) = stack.pop() {
+            let children: Vec<(usize, &TypeNode)> = n.children.iter().enumerate().filter(|(_, c)| shown(c)).collect();
+            out.push((at.clone(), depth, n, !children.is_empty()));
+            if !types.collapsed.contains(&at) {
+                for (i, c) in children.into_iter().rev() {
                     let mut path = at.clone();
                     path.push(i);
-                    walk(c, path, depth + 1, collapsed, out);
+                    stack.push((path, depth + 1, c));
                 }
-            }
-        }
-        let mut out = Vec::new();
-        if let Some(types) = &self.types {
-            if let Some(tree) = &types.tree {
-                walk(tree, Vec::new(), 0, &types.collapsed, &mut out);
             }
         }
         out
@@ -370,10 +393,10 @@ impl HierarchyView {
         if self.types.as_ref().is_some_and(|t| t.tree.is_none()) {
             return list.child(div().px_3().py_1().text_color(palette.text_secondary).child("Building hierarchy…"));
         }
-        for (at, depth, n) in self.type_rows() {
+        for (at, depth, n, has_children) in self.type_rows() {
             let selected = self.selected == at;
             let id = at.iter().fold(depth, |h, i| h * 31 + i + 1);
-            let chevron = if n.children.is_empty() {
+            let chevron = if !has_children {
                 div().w(px(16.)).into_any_element()
             } else {
                 let at = at.clone();
@@ -395,8 +418,12 @@ impl HierarchyView {
                 Some(sym) => crate::ui::project_view::type_icon(sym, n.kotlin).into(),
                 None => icons::CLASS.into(),
             };
-            // IntelliJ's "(package)" after the name: here the file.
-            let place = n.target.as_ref().map(|t| t.path.rsplit(['/', '\\']).next().unwrap_or(&t.path).to_owned());
+            // IntelliJ's "(package)" after the name; the file outside
+            // Kotlin / Java, nothing in the default package.
+            let place = match &n.package {
+                Some(p) => Some(p.clone()).filter(|p| !p.is_empty()),
+                None => n.target.as_ref().map(|t| t.path.rsplit(['/', '\\']).next().unwrap_or(&t.path).to_owned()),
+            };
             let at_click = at.clone();
             list = list.child(
                 h_flex()
@@ -524,10 +551,10 @@ impl Render for HierarchyView {
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Hierarchy"))
                     .child(div().text_sm().text_color(palette.text_secondary).child(title))
                     .child(div().flex_1())
-                    .when(self.root.is_some(), |el| {
-                        let (view, scope) = (cx.entity(), self.scope);
+                    .when(self.root.is_some() || type_view.is_some(), |el| {
+                        let (view, scope, types) = (cx.entity(), self.scope, self.root.is_none());
                         el.child(Button::new("hierarchy-scope").small().outline().label(scope.short()).tooltip(format!("Scope: {}", scope.label())).icon(icons::CHEVRON_DOWN).dropdown_menu(move |mut menu, _, _| {
-                            for s in CallScope::ALL {
+                            for s in CallScope::ALL.into_iter().filter(|s| !(types && *s == CallScope::ThisClass)) {
                                 let view = view.clone();
                                 menu = menu.item(PopupMenuItem::new(s.label()).checked(scope == s).on_click(move |_, _, cx| view.update(cx, |this, cx| this.set_scope(s, cx))));
                             }
@@ -573,5 +600,27 @@ mod tests {
         assert_eq!(shown(CallScope::Production), ["Cart.use", "main", "Cart"]);
         assert_eq!(shown(CallScope::Test), ["CartTest.totals"]);
         assert_eq!(shown(CallScope::ThisClass), ["Cart.use", "Cart"]);
+    }
+
+    #[test]
+    fn scopes_filter_types() {
+        let ty = |name: &str, path: Option<&str>, children: Vec<TypeNode>| TypeNode {
+            name: name.into(),
+            target: path.map(|p| crate::index::nav::Target { path: p.into(), line: 0, col: 0, name: name.into(), label: String::new(), container: None }),
+            symbol: None,
+            kotlin: false,
+            children,
+            method: None,
+            package: None,
+        };
+        // A test class between the library root and the type itself stays.
+        let fake = ty("FakeStore", Some("app/src/test/java/FakeStore.java"), vec![ty("Store", Some("app/src/test/java/Store.java"), vec![])]);
+        let disk = ty("DiskStore", Some("app/src/main/java/DiskStore.java"), vec![]);
+        let mock = ty("MockStore", Some("app/src/test/java/MockStore.java"), vec![]);
+        let object = ty("Object", None, vec![]);
+        let shown = |scope: CallScope| [&fake, &disk, &mock, &object].into_iter().filter(|n| scope.contains_type(n, "Store")).map(|n| n.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(shown(CallScope::Production), ["FakeStore", "DiskStore", "Object"]);
+        assert_eq!(shown(CallScope::Test), ["FakeStore", "MockStore", "Object"]);
+        assert_eq!(shown(CallScope::All).len(), 4);
     }
 }
