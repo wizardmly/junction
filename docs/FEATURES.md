@@ -1163,7 +1163,8 @@ Linux 实测（Xvfb，Kotlin 文件）：光标在 `return price * rate …` 行
 | 逐层展开（按需查找），递归调用标 "recursive call" 不再展开；查不到调用者时去掉展开箭头 | ✅ |
 | 双击打开调用位置（根节点打开声明） | ✅ |
 | Callee Hierarchy：工具栏切换调用者 / 被调用者方向（图标同 IntelliJ，用 Supertypes / Subtypes）；被调用者是函数体里的调用（Kotlin 调用和构造、Java 方法调用和 `new`），解析到声明后按函数分组，同样逐层展开；双击打开被调用的声明；Ctrl+Alt+H 总是从调用者方向开始 | ✅ |
-| 作用域过滤、找不到声明的调用（如没有索引的标准库）显示出来 | ⬜ |
+| 作用域过滤（2026-10-29）：工具栏的下拉框，All / Project Production Files / Project Test Files / This Class（按钮上显示短名），每一层的调用者 / 被调用者都按它过滤，切换时不重新查找；This Class 按 `类.函数` 的类名（顶层函数按文件）。Linux 实测：Calc.add 的调用者 `CalcTest.adds()` 在 Production 下消失、箭头也去掉，Test 下又出现 | ✅ |
+| 找不到声明的调用（如没有索引的标准库）显示出来 | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程）：光标在 `Cart.total` 上按 Ctrl+Alt+H，右侧显示 `Cart.total()` 下的 `Cart.use()` 和 `main() (2 usages) (Main.kt)`；展开 `Cart.use()` 没有调用者，箭头消失；双击 `main()` 打开 Main.kt 第 5 行 18 列的 `total`。在 Main.kt 的 `main` 上 Ctrl+Alt+H 再点 Callee Hierarchy，显示 `Cart() (Cart.kt)` 和 `Cart.total() (2 usages)`（第一次要等 kotlin-lsp 热身约 10 秒，之后不到 1 秒）；双击 Cart.total 打开 Cart.kt 第 4 行 9 列。
 
