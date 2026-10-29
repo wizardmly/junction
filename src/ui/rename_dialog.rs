@@ -6,7 +6,9 @@ use std::rc::Rc;
 
 use gpui_kit::component::{
     Sizable as _, WindowExt as _, h_flex,
+    button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
+    dialog::{DialogAction, DialogClose, DialogFooter},
     input::{Input, InputEvent, InputState},
     v_flex,
 };
@@ -121,8 +123,15 @@ impl Render for RenameView {
     }
 }
 
-/// Opens the Rename dialog; Refactor hands the request to `on_ok`.
-pub fn open(target: RenameTarget, on_ok: impl Fn(RenameRequest, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
+/// Opens the Rename dialog; Refactor hands the request to `on_ok`, Preview
+/// to `on_preview` (which shows it before it's done).
+pub fn open(
+    target: RenameTarget,
+    on_ok: impl Fn(RenameRequest, &mut Window, &mut App) + 'static,
+    on_preview: impl Fn(RenameRequest, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let title = format!("Rename {}", capitalized(&target.kind));
     let view = cx.new(|cx| {
         let name = cx.new(|cx| InputState::new(window, cx).default_value(target.name.clone()));
@@ -137,10 +146,22 @@ pub fn open(target: RenameTarget, on_ok: impl Fn(RenameRequest, &mut Window, &mu
         RenameView { target, name, checked, comments: false, rename_file: true, _subscription }
     });
     let focus = view.read(cx).name.clone();
-    let on_ok = Rc::new(on_ok);
+    let (on_ok, on_preview) = (Rc::new(on_ok), Rc::new(on_preview));
     window.open_dialog(cx, move |dialog, _, _| {
         let (view_ok, on_ok) = (view.clone(), on_ok.clone());
-        dialog.title(title.clone()).w(px(560.)).child(view.clone()).footer(dialogs::footer("Refactor")).on_ok(move |_, window, cx| {
+        let (view_preview, on_preview) = (view.clone(), on_preview.clone());
+        let preview = Button::new("rename-preview").label("Preview").outline().on_click(move |_, window, cx| {
+            let Ok(request) = view_preview.read(cx).request(cx) else { return };
+            window.close_dialog(cx);
+            on_preview(request, window, cx);
+        });
+        let footer = DialogFooter::new()
+            .gap_2()
+            .child(preview)
+            .child(div().flex_1())
+            .child(DialogClose::new().child(Button::new("cancel").label("Cancel").outline()))
+            .child(DialogAction::new().child(Button::new("ok").label("Refactor").primary()));
+        dialog.title(title.clone()).w(px(560.)).child(view.clone()).footer(footer).on_ok(move |_, window, cx| {
             let Ok(request) = view_ok.read(cx).request(cx) else { return false };
             on_ok(request, window, cx);
             true
