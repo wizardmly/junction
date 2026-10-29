@@ -162,8 +162,21 @@ pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<
                     _ => continue,
                 };
                 let name = &text[name_node.byte_range()];
-                let Some(args) = children(*suffix).into_iter().find(|c| c.kind() == "value_arguments") else { continue };
-                let values: Vec<(Option<String>, String)> = children(args)
+                let parts = children(*suffix);
+                let args = parts.iter().find(|c| c.kind() == "value_arguments");
+                let lambda = parts.iter().find(|c| c.kind() == "annotated_lambda").map(|l| l.byte_range());
+                // `run { … }`: no parentheses, the lambda alone.
+                let (args_open, args_close) = match (args, &lambda) {
+                    (Some(a), _) => (a.start_byte(), a.end_byte() - 1),
+                    (None, Some(_)) => {
+                        let end = parts.iter().find(|c| c.kind() == "type_arguments").map_or(callee.end_byte(), |t| t.end_byte());
+                        (end, end)
+                    }
+                    (None, None) => continue,
+                };
+                let values: Vec<(Option<String>, String)> = args
+                    .map(|a| children(*a))
+                    .unwrap_or_default()
                     .into_iter()
                     .filter(|a| a.kind() == "value_argument")
                     .map(|a| {
@@ -173,13 +186,15 @@ pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<
                         (named, value)
                     })
                     .collect();
-                (name == function && values.len() <= params).then(|| CallSite { name_range: name_node.byte_range(), args_open: args.start_byte(), args_close: args.end_byte() - 1, args: values, receiver })
+                let passed = values.len() + usize::from(lambda.is_some());
+                let lambda_text = lambda.clone().map(|l| text[l].to_owned()).unwrap_or_default();
+                (name == function && passed <= params && (lambda.is_none() || params > 0)).then(|| CallSite { name_range: name_node.byte_range(), args_open, args_close, args: values, receiver, lambda, lambda_text })
             }
             Lang::Java if n.kind() == "method_invocation" => {
                 let (Some(name), Some(args)) = (n.child_by_field_name("name"), n.child_by_field_name("arguments")) else { continue };
                 let receiver = n.child_by_field_name("object").map(|o| text[o.byte_range()].to_owned()).filter(|r| r != "this");
                 let values: Vec<(Option<String>, String)> = children(args).into_iter().filter(|a| !a.kind().ends_with("comment")).map(|a| (None, text[a.byte_range()].to_owned())).collect();
-                (&text[name.byte_range()] == function && values.len() == params).then(|| CallSite { name_range: name.byte_range(), args_open: args.start_byte(), args_close: args.end_byte() - 1, args: values, receiver })
+                (&text[name.byte_range()] == function && values.len() == params).then(|| CallSite { name_range: name.byte_range(), args_open: args.start_byte(), args_close: args.end_byte() - 1, args: values, receiver, ..Default::default() })
             }
             // A constructor's calls: `new A(…)` (`new A<>(…)`, `new p.A(…)`),
             // and `this(…)` / `super(…)` from the class or a subclass.
@@ -198,7 +213,7 @@ pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<
                 };
                 let Some(name) = name else { continue };
                 let values: Vec<(Option<String>, String)> = children(args).into_iter().filter(|a| !a.kind().ends_with("comment")).map(|a| (None, text[a.byte_range()].to_owned())).collect();
-                (values.len() == params).then(|| CallSite { name_range: name.byte_range(), args_open: args.start_byte(), args_close: args.end_byte() - 1, args: values, receiver: None })
+                (values.len() == params).then(|| CallSite { name_range: name.byte_range(), args_open: args.start_byte(), args_close: args.end_byte() - 1, args: values, receiver: None, ..Default::default() })
             }
             _ => None,
         };

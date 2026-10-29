@@ -128,21 +128,17 @@ pub fn parameter_list(style: ImportStyle, signature: &Signature, request: &Signa
     rendered.join(", ")
 }
 
-/// A call's new argument list (between the parentheses); none when the
-/// call can't be rewritten.
-pub fn call_arguments(style: ImportStyle, signature: &Signature, request: &SignatureRequest, call: &CallSite) -> Option<String> {
+/// A call's new arguments, each rendered (named when it must be), and
+/// whether the last one is the old last parameter (a trailing lambda can
+/// stay); none when the call can't be rewritten.
+fn argument_list(style: ImportStyle, signature: &Signature, request: &SignatureRequest, call: &CallSite) -> Option<(Vec<String>, bool)> {
     let kotlin = style == ImportStyle::Kotlin;
-    // The call's value for each old parameter: named, else by position.
-    let positional = call.args.iter().take_while(|(n, _)| n.is_none()).count();
-    let value_of = |i: usize| -> Option<&str> {
-        let name = &signature.params.get(i)?.name;
-        call.args.iter().find(|(n, _)| n.as_deref() == Some(name.as_str())).or_else(|| (i < positional).then(|| &call.args[i])).map(|(_, v)| v.as_str())
-    };
+    let names: Vec<String> = signature.params.iter().map(|p| p.name.clone()).collect();
     let mut named = false;
     let mut out = Vec::new();
     for (ix, p) in request.params.iter().enumerate() {
         let value = match p.old {
-            Some(i) => match value_of(i) {
+            Some(i) => match call.value_for(&names, i) {
                 Some(v) => v.to_owned(),
                 // Left to its default: the ones after are named.
                 None if kotlin => {
@@ -161,7 +157,14 @@ pub fn call_arguments(style: ImportStyle, signature: &Signature, request: &Signa
         }
         out.push(if named { format!("{} = {value}", p.name) } else { value });
     }
-    Some(out.join(", "))
+    let last_kept = signature.params.len().checked_sub(1).is_some_and(|last| request.params.last().is_some_and(|p| p.old == Some(last)));
+    Some((out, last_kept))
+}
+
+/// A call's new argument list (between the parentheses); none when the
+/// call can't be rewritten.
+pub fn call_arguments(style: ImportStyle, signature: &Signature, request: &SignatureRequest, call: &CallSite) -> Option<String> {
+    argument_list(style, signature, request, call).map(|(args, _)| args.join(", "))
 }
 
 /// The edits in the function's file: the declaration, the parameters'
@@ -201,8 +204,21 @@ pub fn call_edits(style: ImportStyle, signature: &Signature, request: &Signature
     if !signature.constructor && request.name != signature.name && !call.name_range.is_empty() {
         out.push((call.name_range.clone(), request.name.clone()));
     }
-    if let Some(args) = call_arguments(style, signature, request, call) {
-        out.push((call.args_open + 1..call.args_close, args));
+    let Some((mut args, last_kept)) = argument_list(style, signature, request, call) else { return out };
+    match &call.lambda {
+        None => out.push((call.args_open + 1..call.args_close, args.join(", "))),
+        // Still the last parameter: the lambda stays outside the parentheses.
+        Some(lambda) if last_kept => {
+            args.pop();
+            let inside = args.join(", ");
+            if call.has_parens() {
+                out.push((call.args_open + 1..call.args_close, inside));
+            } else if !inside.is_empty() {
+                out.push((call.args_open..call.args_open, format!("({inside})")));
+            }
+        }
+        // Moved or removed: it goes inside the parentheses, as an argument.
+        Some(lambda) => out.push((call.args_open..lambda.end, format!("({})", args.join(", ")))),
     }
     out
 }
@@ -241,8 +257,8 @@ mod tests {
         request.params[1].name = "amount".into();
         request.params.push(NewParam { old: None, name: "tax".into(), ty: "Double".into(), value: "0.2".into() });
         let calls = [
-            CallSite { name_range: 0..5, args_open: 5, args_close: 14, args: vec![(None, "2.0".into()), (None, "3".into())], receiver: None },
-            CallSite { name_range: 0..5, args_open: 5, args_close: 10, args: vec![(None, "4.0".into())], receiver: None },
+            CallSite { name_range: 0..5, args_open: 5, args_close: 14, args: vec![(None, "2.0".into()), (None, "3".into())], receiver: None, ..Default::default() },
+            CallSite { name_range: 0..5, args_open: 5, args_close: 10, args: vec![(None, "4.0".into())], receiver: None, ..Default::default() },
         ];
         let out = apply(&text, edits(ImportStyle::Kotlin, &text, &s, &[], &request).unwrap());
         assert_eq!(out, "fun sum(count: Int = 1, amount: Double, tax: Double): Double {\n    return amount * count\n}\n");
@@ -278,7 +294,7 @@ mod tests {
         request.return_type = "long".into();
         let out = apply(text, edits(ImportStyle::Java, text, &s, &[], &request).unwrap());
         assert_eq!(out, "long total(long price) { return price * count; }");
-        let call = CallSite { name_range: 0..5, args_open: 5, args_close: 11, args: vec![(None, "1".into()), (None, "2".into())], receiver: None };
+        let call = CallSite { name_range: 0..5, args_open: 5, args_close: 11, args: vec![(None, "1".into()), (None, "2".into())], receiver: None, ..Default::default() };
         assert_eq!(call_arguments(ImportStyle::Java, &s, &request, &call).as_deref(), Some("1"));
     }
 

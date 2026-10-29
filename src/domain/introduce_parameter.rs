@@ -48,6 +48,39 @@ pub struct CallSite {
     pub args: Vec<(Option<String>, String)>,
     /// `repo` of `repo.load(…)`; none for `load(…)` and `this.load(…)`.
     pub receiver: Option<String>,
+    /// Kotlin's trailing lambda `{ … }`, the last parameter's value. With
+    /// no parentheses (`run { … }`) `args_open` and `args_close` are both
+    /// right after the name.
+    pub lambda: Option<Range<usize>>,
+    /// The trailing lambda's text.
+    pub lambda_text: String,
+}
+
+impl CallSite {
+    /// The value passed for parameter `ix` of `params`: by name, by
+    /// position, or the trailing lambda for the last one.
+    pub fn value_for<'a>(&'a self, params: &[String], ix: usize) -> Option<&'a str> {
+        let name = params.get(ix)?;
+        let positional = self.args.iter().take_while(|(n, _)| n.is_none()).count();
+        if let Some((_, v)) = self.args.iter().find(|(n, _)| n.as_deref() == Some(name.as_str())) {
+            return Some(v);
+        }
+        if ix < positional {
+            return Some(&self.args[ix].1);
+        }
+        (self.lambda.is_some() && ix + 1 == params.len()).then_some(self.lambda_text.as_str())
+    }
+
+    /// Whether the call has parentheses (`run { … }` has none).
+    pub fn has_parens(&self) -> bool {
+        self.lambda.is_none() || self.args_open != self.args_close
+    }
+
+    /// Where the call's arguments end: the trailing lambda's end, else
+    /// past the `)`.
+    pub fn end(&self) -> usize {
+        self.lambda.as_ref().map_or(self.args_close + 1, |l| l.end)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,12 +100,10 @@ pub type Edit = (Range<usize>, String);
 pub fn argument_for(plan: &ParameterPlan, call: &CallSite) -> String {
     let mut edits: Vec<Edit> = Vec::new();
     for (range, param) in &plan.uses {
-        let name = &plan.params[*param];
-        // A named argument by name, else by position.
-        let arg = call.args.iter().find(|(n, _)| n.as_deref() == Some(name.as_str())).or_else(|| call.args.get(*param).filter(|(n, _)| n.is_none()));
-        if let Some((_, value)) = arg {
+        // A named argument by name, else by position (or the trailing lambda).
+        if let Some(value) = call.value_for(&plan.params, *param) {
             let simple = value.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.');
-            edits.push((range.clone(), if simple { value.clone() } else { format!("({value})") }));
+            edits.push((range.clone(), if simple { value.to_owned() } else { format!("({value})") }));
         }
     }
     if let Some(receiver) = &call.receiver {
@@ -138,7 +169,16 @@ pub fn edits(style: ImportStyle, plan: &ParameterPlan, calls_here: &[CallSite], 
 /// arguments or leaves some to their defaults.
 pub fn call_edit(plan: &ParameterPlan, call: &CallSite, name: &str) -> Option<Edit> {
     let value = argument_for(plan, call);
-    let named = call.args.iter().any(|(n, _)| n.is_some()) || call.args.len() < plan.params.len();
+    let passed = call.args.len() + usize::from(call.lambda.is_some());
+    let named = call.args.iter().any(|(n, _)| n.is_some()) || passed < plan.params.len();
+    // The new last parameter takes the trailing lambda's place: the lambda
+    // goes inside the parentheses.
+    if let (Some(lambda), Some(last)) = (&call.lambda, plan.params.last()) {
+        let mut args: Vec<String> = call.args.iter().map(|(n, v)| n.as_ref().map_or_else(|| v.clone(), |n| format!("{n} = {v}"))).collect();
+        args.push(if named { format!("{last} = {}", call.lambda_text) } else { call.lambda_text.clone() });
+        args.push(if named { format!("{name} = {value}") } else { value });
+        return Some((call.args_open..lambda.end, format!("({})", args.join(", "))));
+    }
     let sep = if call.args.is_empty() { "" } else { ", " };
     let arg = if named { format!("{sep}{name} = {value}") } else { format!("{sep}{value}") };
     Some((call.args_close..call.args_close, arg))
@@ -183,6 +223,12 @@ mod tests {
         assert!(check(ImportStyle::Kotlin, &p, &ParameterRequest { name: "price".into(), ty: "Double".into(), replace_all: true, default_value: false }).is_err());
         let named = CallSite { args_close: 10, args: vec![(Some("price".into()), "4.0".into())], receiver: None, ..Default::default() };
         assert_eq!(call_edit(&p, &named, "amount"), Some((10..10, ", amount = 4.0 * rate".into())));
+        // A trailing lambda isn't last any more: it goes inside.
+        let mut p = p.clone();
+        p.params.push("block".into());
+        let call = "total(2.0) { }";
+        let lambda = CallSite { args_open: 5, args_close: 9, args: vec![(None, "2.0".into())], lambda: Some(11..14), lambda_text: "{ }".into(), ..Default::default() };
+        assert_eq!(apply(call, call_edit(&p, &lambda, "amount").into_iter().collect()), "total(2.0, { }, 2.0 * rate)");
     }
 
     #[test]

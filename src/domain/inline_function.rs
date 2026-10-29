@@ -38,8 +38,7 @@ fn fits_anything(text: &str, range: &Range<usize>) -> bool {
 pub fn call_edit(plan: &ParameterPlan, text: &str, call: &CallSite) -> Result<Edit, String> {
     // Every parameter needs an argument (a default value isn't inlined).
     for (ix, name) in plan.params.iter().enumerate() {
-        let passed = call.args.iter().any(|(n, _)| n.as_deref() == Some(name.as_str())) || call.args.get(ix).is_some_and(|(n, _)| n.is_none());
-        if !passed {
+        if call.value_for(&plan.params, ix).is_none() {
             return Err(format!("Cannot perform refactoring. A call of {} leaves out '{name}'", plan.function));
         }
     }
@@ -51,7 +50,7 @@ pub fn call_edit(plan: &ParameterPlan, text: &str, call: &CallSite) -> Result<Ed
         }
         None => call.name_range.start,
     };
-    let range = start..call.args_close + 1;
+    let range = start..call.end();
     let body = argument_for(plan, call);
     let body = if is_simple(&body) || fits_anything(text, &range) { body } else { format!("({body})") };
     Ok((range, body))
@@ -103,6 +102,7 @@ mod tests {
             args_close: text.rfind(')').unwrap(),
             args: args.iter().map(|(n, v)| (n.map(str::to_owned), (*v).to_owned())).collect(),
             receiver: receiver.map(str::to_owned),
+            ..Default::default()
         }
     }
 
