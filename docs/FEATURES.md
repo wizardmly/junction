@@ -1251,7 +1251,7 @@ Linux 实测（Xvfb，`ip` 工程 Main.kt）：光标在 `val cart = Cart(0.2)` 
 | Unwrap 'run {...}'（Kotlin 语句位置上只带一个 lambda 的调用：`run`、`apply`、`with` 外的 `x.let` 等）：lambda 体的语句替换调用 | lambda 的参数（`it`）不改写 | ✅ |
 | Remove 'catch...' / Remove 'finally...'：光标在 catch / finally 里，只删掉这一段 | | ✅ |
 | Unwrap 'when...' / 'switch...'：光标所在分支的语句替换整个 `when` / `switch`（Java 的 `case:` 分组去掉结尾的 `break`，`case ->` 取箭头后的语句或块） | | ✅ |
-| 单独的花括号块、Remove 某个 when / case 分支 | | ⬜ |
+| Unwrap braces（Java 方法体里单独的 `{ … }` 块，块里的语句提出一层）；Remove 'when' branch / Remove 'case...'（光标所在的 when / switch 分支整段删掉；作为值的 `when` 只提供 Remove）（2026-10-29） | Linux 实测：Calc.java 里光标在 `case 1:` 下的 `total += 1;` 上按 Ctrl+Shift+Delete，列出 Unwrap 'switch...' 和 Remove 'case...'，选 Remove 后 `case 1:`、语句和 `break;` 三行删掉，只剩 `default:`；光标在单独块里的 `total += sum;` 上只有 Unwrap braces，选中后花括号去掉、两条语句少一级缩进 | ✅ |
 
 Linux 实测（Xvfb，`ip` 工程 Flow.kt：`for` 里套 `if / else`）：光标在 else 分支的 `println("small $i")` 上按 Ctrl+Shift+Delete，弹出 Unwrap 'else...'、Remove 'else...'、Unwrap 'for...'；选 Remove 'else...' 后只剩 `if (i > 2) { println("big $i") }`；光标在 `for` 体末尾时只有 Unwrap 'for...'，选中后 `if / else` 提到函数体一层、缩进少一级。
 
