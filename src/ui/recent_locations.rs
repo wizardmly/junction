@@ -70,11 +70,14 @@ pub struct RecentLocations {
     scroll: ScrollHandle,
     focus: FocusHandle,
     on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>,
+    on_remove: Rc<dyn Fn(String, u32, &mut App)>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl RecentLocations {
-    pub fn open(locations: Vec<Location>, on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>, window: &mut Window, cx: &mut App) {
+    /// `on_remove` forgets a place deleted from the list (Delete, as
+    /// IntelliJ's).
+    pub fn open(locations: Vec<Location>, on_pick: Rc<dyn Fn(Target, &mut Window, &mut App)>, on_remove: Rc<dyn Fn(String, u32, &mut App)>, window: &mut Window, cx: &mut App) {
         let view = cx.new(|cx| {
             let input = cx.new(|cx| InputState::new(window, cx).placeholder("Type to filter by file name or code"));
             let sub = cx.subscribe_in(&input, window, |this: &mut Self, _, event: &InputEvent, _, cx| {
@@ -91,6 +94,7 @@ impl RecentLocations {
                 scroll: ScrollHandle::new(),
                 focus: cx.focus_handle(),
                 on_pick,
+                on_remove,
                 _subscriptions: vec![sub],
             };
             this.filter(cx);
@@ -136,6 +140,17 @@ impl RecentLocations {
         let n = self.shown.len().max(1) as isize;
         self.selected = (self.selected as isize + delta).rem_euclid(n) as usize;
         self.scroll.scroll_to_item(self.selected);
+        cx.notify();
+    }
+
+    /// Delete: the selected place leaves the list and the history.
+    fn remove_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(&i) = self.shown.get(self.selected) else { return };
+        let l = self.locations.remove(i);
+        (self.on_remove)(l.path, l.line, cx);
+        let selected = self.selected;
+        self.filter(cx);
+        self.selected = selected.min(self.shown.len().saturating_sub(1));
         cx.notify();
     }
 
@@ -198,6 +213,14 @@ impl Render for RecentLocations {
             .key_context("RecentLocations")
             .track_focus(&self.focus)
             .gap_2()
+            // Delete removes the selected place; the filter keeps it while
+            // it has text. Before the input sees it.
+            .capture_action(cx.listener(|this, _: &gpui_kit::component::input::Delete, _, cx| {
+                if this.input.read(cx).value().is_empty() {
+                    this.remove_selected(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
                 let k = &event.keystroke;
                 match k.key.as_str() {

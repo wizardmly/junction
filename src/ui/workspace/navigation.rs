@@ -291,6 +291,10 @@ impl Workspace {
                 .collect::<Vec<_>>()
         });
         let on_pick = self.picker_callback(cx);
+        let workspace = cx.entity().downgrade();
+        let on_remove: std::rc::Rc<dyn Fn(String, u32, &mut App)> = std::rc::Rc::new(move |path, line, cx| {
+            workspace.update(cx, |this, _| this.recent_places.remove(&path, line)).ok();
+        });
         cx.spawn_in(window, async move |_, cx| {
             texts.extend(read.await);
             cx.update(|window, cx| {
@@ -306,7 +310,7 @@ impl Workspace {
                 if locations.is_empty() {
                     window.push_notification(Notification::info("No recent locations").title("Recent Locations"), cx);
                 } else {
-                    crate::ui::recent_locations::RecentLocations::open(locations, on_pick, window, cx);
+                    crate::ui::recent_locations::RecentLocations::open(locations, on_pick, on_remove, window, cx);
                 }
             })
             .ok();
