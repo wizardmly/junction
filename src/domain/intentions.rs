@@ -84,6 +84,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Java", "Replace size check with 'isEmpty()'", "Replaces size() == 0 (or length() of a string) and a string's equals(\"\") with isEmpty(), != 0 and > 0 with !isEmpty()"),
     ("Java", "Replace 'indexOf()' with 'contains()'", "Writes s.indexOf(x) != -1 as s.contains(x) and s.indexOf(x) == -1 as !s.contains(x), on a string or a list"),
     ("Java", "Replace with 'getOrDefault' method call", "Writes m.containsKey(k) ? m.get(k) : d as m.getOrDefault(k, d)"),
+    ("Java", "Replace with 'putIfAbsent' or 'computeIfAbsent' method call", "Writes if (!m.containsKey(k)) m.put(k, v); as m.putIfAbsent(k, v); or, when v creates something, m.computeIfAbsent(k, key -> v);"),
     ("Java", "Replace with chained 'append()' calls", "Writes sb.append(\"a\" + x) on a StringBuilder or StringBuffer as sb.append(\"a\").append(x)"),
     ("Java", "Replace '==' with 'equals()'", "Compares strings with equals() instead of == or !="),
     ("Java", "Remove redundant 'String.valueOf()' call", "Drops String.valueOf() around a String, or around a value added to a string"),
@@ -95,6 +96,8 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
 pub fn family(title: &str) -> &str {
     if title.starts_with("Add braces to ") {
         "Add braces to statement"
+    } else if title == "Replace with 'putIfAbsent' method call" || title == "Replace with 'computeIfAbsent' method call" {
+        "Replace with 'putIfAbsent' or 'computeIfAbsent' method call"
     } else if title.starts_with("Lift return out of '") || title.starts_with("Lift assignment out of '") {
         "Lift return or assignment out of 'if' / 'when'"
     } else if title.starts_with("Remove braces from ") {
