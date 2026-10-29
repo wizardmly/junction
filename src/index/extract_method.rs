@@ -107,6 +107,69 @@ pub(super) fn kotlin_type(node: Node, text: &str, known: &dyn Fn(&str) -> String
     .to_owned()
 }
 
+/// A Java expression's type when it shows it: literals, `new`, casts,
+/// comparisons, variables, and arithmetic on them with Java's numeric
+/// promotion (`a + b` of two ints is int, with a long is long; with a
+/// String, String).
+pub(super) fn java_type(node: Node, text: &str, known: &dyn Fn(&str) -> String) -> String {
+    if let Some(t) = super::introduce::java_type(node, text) {
+        return t;
+    }
+    const NUMBERS: [&str; 4] = ["int", "long", "float", "double"];
+    let promoted = |t: String| -> String {
+        match t.as_str() {
+            "byte" | "short" | "char" | "Byte" | "Short" | "Character" | "Integer" => "int".into(),
+            "Long" => "long".into(),
+            "Float" => "float".into(),
+            "Double" => "double".into(),
+            _ => t,
+        }
+    };
+    match node.kind() {
+        "identifier" => known(&text[node.byte_range()]),
+        "parenthesized_expression" => node.named_child(0).map(|n| java_type(n, text, known)).unwrap_or_default(),
+        "unary_expression" => {
+            let op = node.child_by_field_name("operator").map(|o| &text[o.byte_range()]).unwrap_or_default();
+            match (op, node.child_by_field_name("operand")) {
+                ("-" | "+" | "~", Some(operand)) => {
+                    let t = promoted(java_type(operand, text, known));
+                    if NUMBERS.contains(&t.as_str()) { t } else { String::new() }
+                }
+                _ => String::new(),
+            }
+        }
+        "binary_expression" => {
+            let op = node.child_by_field_name("operator").map(|o| &text[o.byte_range()]).unwrap_or_default();
+            let (Some(left), Some(right)) = (node.child_by_field_name("left"), node.child_by_field_name("right")) else { return String::new() };
+            let (l, r) = (java_type(left, text, known), java_type(right, text, known));
+            match op {
+                "+" if l == "String" || r == "String" => "String".into(),
+                "+" | "-" | "*" | "/" | "%" => {
+                    let rank = |t: String| {
+                        let t = promoted(t);
+                        NUMBERS.iter().position(|n| *n == t)
+                    };
+                    match (rank(l), rank(r)) {
+                        (Some(a), Some(b)) => NUMBERS[a.max(b)].into(),
+                        _ => String::new(),
+                    }
+                }
+                "<<" | ">>" | ">>>" => {
+                    let t = promoted(l);
+                    if t == "int" || t == "long" { t } else { String::new() }
+                }
+                _ => String::new(),
+            }
+        }
+        "ternary_expression" => {
+            let (Some(a), Some(b)) = (node.child_by_field_name("consequence"), node.child_by_field_name("alternative")) else { return String::new() };
+            let (a, b) = (java_type(a, text, known), java_type(b, text, known));
+            if a == b { a } else { String::new() }
+        }
+        _ => String::new(),
+    }
+}
+
 /// The declarations in the method, Kotlin.
 pub(super) fn kotlin_decls(function: Node, text: &str) -> Vec<Decl> {
     let mut out = Vec::new();
@@ -412,7 +475,7 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<MethodPla
         return Err(MULTIPLE_OUTPUTS.into());
     }
     let expression_type = match (lang, expression_node) {
-        (Lang::Java, Some(n)) => super::introduce::java_type(n, text).unwrap_or_default(),
+        (Lang::Java, Some(n)) => java_type(n, text, &|name| resolve(name, n.start_byte()).map(|i| decls[i].ty.clone()).unwrap_or_default()),
         (Lang::Kotlin, Some(n)) => kotlin_type(n, text, &|name| resolve(name, n.start_byte()).map(|i| decls[i].ty.clone()).unwrap_or_default()),
         _ => String::new(),
     };
@@ -644,6 +707,14 @@ mod tests {
         assert_eq!(plan(Lang::Java, text, span(text, "if (i > 3) break;", "break;")).unwrap_err(), JUMP_OUTSIDE);
         let e = plan(Lang::Java, text, span(text, "n + 1", "n + 1")).unwrap();
         assert!(e.expression && e.parameters.len() == 1);
+        assert_eq!(e.expression_type, "int");
+        // Numeric promotion, strings, casts.
+        let text = "class A {\n  void f(int i, long l, short s, String t, double d) {\n    use(i + l, s * 2, t + i, -s, (i > 0 ? d : d) / i, i << 2, (int) d + i, i == 1);\n  }\n}\n";
+        let ty = |e: &str| plan(Lang::Java, text, span(text, e, e)).unwrap().expression_type;
+        assert_eq!(
+            ["i + l", "s * 2", "t + i", "-s", "(i > 0 ? d : d) / i", "i << 2", "(int) d + i", "i == 1"].map(ty),
+            ["long", "int", "String", "int", "double", "int", "int", "boolean"]
+        );
         assert_eq!(plan(Lang::Java, text, 0..5).unwrap_err(), NO_FUNCTION);
     }
 
