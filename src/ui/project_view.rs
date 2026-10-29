@@ -24,6 +24,7 @@ use gpui_kit::{
     Subscription, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 
+use crate::domain::android_view::{ViewKind, ViewNode, android_tree};
 use crate::git::status::StatusKind;
 use crate::index::libraries::ExternalIndex;
 use crate::index::nav::Target;
@@ -41,6 +42,9 @@ use crate::ui::navigate::OpenTarget;
 /// The view selector's choices ("Project ▾").
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProjectMode {
+    /// Android Studio's Android view: modules, their manifests, sources
+    /// and resources, and Gradle Scripts.
+    Android,
     Project,
     ProjectFiles,
     Production,
@@ -50,10 +54,11 @@ pub enum ProjectMode {
 }
 
 impl ProjectMode {
-    const ALL: [ProjectMode; 6] = [Self::Project, Self::ProjectFiles, Self::Production, Self::Tests, Self::OpenFiles, Self::Changed];
+    const ALL: [ProjectMode; 7] = [Self::Android, Self::Project, Self::ProjectFiles, Self::Production, Self::Tests, Self::OpenFiles, Self::Changed];
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Android => "Android",
             Self::Project => "Project",
             Self::ProjectFiles => "Project Files",
             Self::Production => "Production",
@@ -116,12 +121,14 @@ struct Row {
     class: Option<(ClassIcon, bool)>,
     /// A class row's source: (absolute file, line, column).
     source: Option<(String, u32, u32)>,
+    /// A node of the Android view: its icon.
+    view: Option<ViewKind>,
 }
 
 impl Row {
     fn new(depth: usize, name: String, path: String, kind: RowKind, excluded: bool) -> Self {
         let leaf = kind == RowKind::File;
-        Row { depth, name, path, kind, excluded, leaf, module: false, android: false, note: None, library: false, group: "", class: None, source: None }
+        Row { depth, name, path, kind, excluded, leaf, module: false, android: false, note: None, library: false, group: "", class: None, source: None, view: None }
     }
 }
 
@@ -170,6 +177,8 @@ pub struct ProjectView {
     mode: ProjectMode,
     settings: ProjectSettings,
     tree: Dir,
+    /// The Android view's tree.
+    android: Rc<Vec<ViewNode>>,
     expanded: HashSet<String>,
     /// The lead row: the one the keyboard moves from, the context menu's.
     selected: Option<String>,
@@ -266,8 +275,15 @@ impl ProjectView {
     pub fn new(index: Entity<CodeIndex>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![
             cx.subscribe(&index, |this, _, event: &IndexEvent, cx| {
-                if matches!(event, IndexEvent::Changed) {
-                    this.reload(cx)
+                match event {
+                    IndexEvent::Changed => this.reload(cx),
+                    // The Android view shows the variant's source sets.
+                    IndexEvent::Variants if this.mode == ProjectMode::Android => {
+                        this.rebuild_tree(cx);
+                        this.flatten();
+                        cx.notify();
+                    }
+                    _ => {}
                 }
             }),
             cx.observe_global::<Settings>(|this, cx| {
@@ -293,6 +309,7 @@ impl ProjectView {
             mode: ProjectMode::Project,
             settings: Settings::get(cx).project.clone(),
             tree: Dir::default(),
+            android: Rc::default(),
             expanded,
             selected: None,
             selection: HashSet::new(),
@@ -489,10 +506,17 @@ impl ProjectView {
     }
 
     /// The files the current view shows, before folders are built.
-    fn rebuild_tree(&mut self, _: &mut Context<Self>) {
+    fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
         let mut tree = Dir { loaded: true, ..Default::default() };
+        if self.mode == ProjectMode::Android {
+            let name = self.root_dir.as_ref().and_then(|r| r.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            // The picked build variant's source sets only, as Android Studio.
+            let modules = self.index.read(cx).index.read().map(|i| i.modules.clone()).unwrap_or_default();
+            let files: Vec<String> = self.files.iter().filter(|f| modules.in_active_variant(f)).cloned().collect();
+            self.android = Rc::new(android_tree(&name, &files));
+        }
         let files: Vec<String> = match self.mode {
-            ProjectMode::Project | ProjectMode::ProjectFiles => self.files.to_vec(),
+            ProjectMode::Project | ProjectMode::ProjectFiles | ProjectMode::Android => self.files.to_vec(),
             ProjectMode::Production => self.files.iter().filter(|f| !crate::index::text_search::is_test_path(f)).cloned().collect(),
             ProjectMode::Tests => self.files.iter().filter(|f| crate::index::text_search::is_test_path(f)).cloned().collect(),
             ProjectMode::OpenFiles => self.open_files.clone(),
@@ -562,6 +586,25 @@ impl ProjectView {
 
     fn flatten(&mut self) {
         let mut rows = Vec::new();
+        if self.mode == ProjectMode::Android {
+            fn add(nodes: &[ViewNode], depth: usize, expanded: &HashSet<String>, rows: &mut Vec<Row>) {
+                for n in nodes {
+                    let kind = if n.kind == ViewKind::File { RowKind::File } else { RowKind::Dir };
+                    let module = n.kind == ViewKind::Module;
+                    let path = n.path.clone().filter(|_| matches!(n.kind, ViewKind::File | ViewKind::Module)).unwrap_or_else(|| n.key.clone());
+                    rows.push(Row { note: n.note.clone(), module, android: module, view: Some(n.kind), ..Row::new(depth, n.label.clone(), path.clone(), kind, false) });
+                    if kind == RowKind::Dir && expanded.contains(&path) {
+                        add(&n.children, depth + 1, expanded, rows);
+                    }
+                }
+            }
+            add(&self.android, 0, &self.expanded, &mut rows);
+            if !self.external.libraries.is_empty() {
+                self.library_rows(&mut rows);
+            }
+            self.rows = Rc::new(rows);
+            return;
+        }
         let root_dir = self.root_dir.clone();
         let base = if self.mode == ProjectMode::Project {
             let name = root_dir.as_ref().and_then(|r| r.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -867,6 +910,24 @@ impl ProjectView {
             self.reveal_library_file(path, cx);
             return;
         }
+        if self.mode == ProjectMode::Android {
+            match ViewNode::ancestors_of(&self.android, path) {
+                Some(keys) => {
+                    self.expanded.extend(keys);
+                    self.select_only(path.to_owned());
+                    self.flatten();
+                    if let Some(ix) = self.selected_ix() {
+                        self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
+                    }
+                    return cx.notify();
+                }
+                // Not in the Android view (a README): the Project view shows it.
+                None => {
+                    self.mode = ProjectMode::Project;
+                    self.rebuild_tree(cx);
+                }
+            }
+        }
         if !self.tree_has(path) && self.mode != ProjectMode::Project {
             self.mode = ProjectMode::Project;
             self.rebuild_tree(cx);
@@ -946,6 +1007,15 @@ impl ProjectView {
         }
         let mut all = HashSet::new();
         collect(&self.tree, "", &mut all);
+        if self.mode == ProjectMode::Android {
+            fn keys(nodes: &[ViewNode], out: &mut HashSet<String>) {
+                for n in nodes.iter().filter(|n| n.kind != ViewKind::File) {
+                    out.insert(if n.kind == ViewKind::Module { n.path.clone().unwrap_or_default() } else { n.key.clone() });
+                    keys(&n.children, out);
+                }
+            }
+            keys(&self.android, &mut all);
+        }
         // Compacted chains are keyed by their full path, which is in `all` too.
         self.expanded.extend(all);
         self.expanded.insert(String::new());
@@ -1317,6 +1387,13 @@ fn as_icon(icon: AsIcon) -> gpui_kit::AnyElement {
 /// file types, and the libraries, archives and classes of External Libraries.
 fn row_icon(row: &Row, palette: &crate::theme::Palette) -> gpui_kit::AnyElement {
     let k = icon_colors(palette);
+    match row.view {
+        Some(ViewKind::Sources) => return as_icon(icons::SOURCE_ROOT),
+        Some(ViewKind::Res) => return as_icon(icons::RESOURCES_ROOT),
+        Some(ViewKind::Package) => return as_icon(icons::PACKAGE),
+        Some(ViewKind::Scripts) => return as_icon(icons::GRADLE),
+        _ => {}
+    }
     match row.kind {
         RowKind::Root => as_icon(icons::MODULE),
         RowKind::Dir if row.excluded => as_icon(icons::EXCLUDE_ROOT),

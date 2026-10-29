@@ -25,6 +25,8 @@ pub enum IndexEvent {
     Progress,
     /// The language servers published other problems (`server_problems`).
     ServerProblems,
+    /// Another build variant was picked: other source sets count.
+    Variants,
 }
 
 pub struct CodeIndex {
@@ -187,13 +189,16 @@ impl CodeIndex {
     /// The variants picked in Build Variants, by module folder: names
     /// resolve to their source sets (`src/free/`, `src/debug/`) and not the
     /// other variants'.
-    pub fn set_variants(&mut self, variants: Vec<(PathBuf, String)>) {
+    pub fn set_variants(&mut self, variants: Vec<(PathBuf, String)>, cx: &mut Context<Self>) {
         self.variants = variants;
-        self.apply_variants();
+        if self.apply_variants() {
+            cx.emit(IndexEvent::Variants);
+        }
     }
 
-    fn apply_variants(&self) {
-        let Some(root) = self.root.as_deref() else { return };
+    /// Whether the index's variants changed.
+    fn apply_variants(&self) -> bool {
+        let Some(root) = self.root.as_deref() else { return false };
         let picked: Vec<(String, String)> = self
             .variants
             .iter()
@@ -203,10 +208,12 @@ impl CodeIndex {
             })
             .collect();
         let mut index = self.index.write().unwrap();
-        if index.picked != picked {
-            index.picked = picked;
-            index.refresh_modules();
+        if index.picked == picked {
+            return false;
         }
+        index.picked = picked;
+        index.refresh_modules();
+        true
     }
 
     /// Re-indexes what changed since the last pass.

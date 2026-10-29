@@ -520,7 +520,7 @@ impl Workspace {
     /// Hands the index the variant each Android module builds.
     pub(super) fn push_variants(&mut self, cx: &mut Context<Self>) {
         let variants = crate::ui::sync_service::active_variants(cx);
-        self.code_index.update(cx, |index, _| index.set_variants(variants));
+        self.code_index.update(cx, |index, cx| index.set_variants(variants, cx));
     }
 
     pub(super) fn on_sync_event(&mut self, event: &crate::ui::sync_service::SyncEvent, window: &mut Window, cx: &mut Context<Self>) {
