@@ -571,6 +571,7 @@ impl DebugSession {
         let mut resume = false;
         let mut paused: Option<(u64, PauseReason)> = None;
         let mut hit: Option<LineBreakpoint> = None;
+        let mut field_hit: Option<FieldHit> = None;
         // An exception breakpoint's hit: thread, exception, its class name,
         // the class catching it, the class it's thrown in, and the
         // breakpoint.
@@ -622,7 +623,12 @@ impl DebugSession {
                     }
                     paused = Some((thread, reason));
                 }
-                DebugEvent::Field { thread, request, .. } | DebugEvent::MethodExit { thread, request, .. } => {
+                DebugEvent::Field { thread, request, access, class, object, to_be, .. } => {
+                    hit = state.breakpoints.iter().find(|p| p.requests.contains(&request)).map(|p| p.breakpoint.clone());
+                    field_hit = Some(FieldHit { access, class, object, to_be });
+                    paused = Some((thread, PauseReason::Breakpoint));
+                }
+                DebugEvent::MethodExit { thread, request, .. } => {
                     hit = state.breakpoints.iter().find(|p| p.requests.contains(&request)).map(|p| p.breakpoint.clone());
                     paused = Some((thread, PauseReason::Breakpoint));
                 }
@@ -690,7 +696,7 @@ impl DebugSession {
                 out.push(SessionEvent::Removed { path: breakpoint.path.clone(), line: breakpoint.line });
             }
             if breakpoint.actions.logs() {
-                out.push(SessionEvent::Log(self.hit_log(thread, &frames, &breakpoint)));
+                out.push(SessionEvent::Log(self.hit_log(thread, &frames, &breakpoint, field_hit.as_ref())));
             }
             if !stop {
                 self.vm.resume()?;
@@ -744,7 +750,10 @@ impl DebugSession {
     /// What a logging breakpoint prints, in IntelliJ's words: "Breakpoint
     /// reached at a.CalcTest.adds(CalcTest.java:12)", the stack, the
     /// expression's value.
-    fn hit_log(&self, thread: u64, frames: &[Frame], breakpoint: &LineBreakpoint) -> String {
+    /// A field watchpoint's message says what the field is and, for a write, what
+    /// it will be: "Field watchpoint reached at …: 'calls' changes from 0
+    /// to 1".
+    fn hit_log(&self, thread: u64, frames: &[Frame], breakpoint: &LineBreakpoint, field: Option<&FieldHit>) -> String {
         let location = |frame: &Frame| {
             let source = frame.source.clone().unwrap_or_else(|| "Unknown Source".into());
             match frame.line {
@@ -756,7 +765,21 @@ impl DebugSession {
         let mut lines = Vec::new();
         if actions.log_message {
             let at = frames.first().map_or_else(|| format!("{}:{}", breakpoint.source_name, breakpoint.line), location);
-            lines.push(format!("Breakpoint reached at {at}"));
+            match (field, &breakpoint.field) {
+                (Some(hit), Some(watch)) => {
+                    let now = match self.vm.field(hit.class, hit.object, &watch.name) {
+                        Ok(Some(v)) => self.shown(thread, &v),
+                        Ok(None) => "?".into(),
+                        Err(e) => e,
+                    };
+                    let name = &watch.name;
+                    lines.push(match &hit.to_be {
+                        Some(to_be) if !hit.access => format!("Field watchpoint reached at {at}: '{name}' changes from {now} to {}", self.shown(thread, to_be)),
+                        _ => format!("Field watchpoint reached at {at}: '{name}' is read ({now})"),
+                    });
+                }
+                _ => lines.push(format!("Breakpoint reached at {at}")),
+            }
         }
         if actions.log_stack {
             let mut trace = String::from("Breakpoint reached");
@@ -775,6 +798,30 @@ impl DebugSession {
         }
         lines.join("\n")
     }
+
+    /// A value as a log shows it: a string quoted, an object's
+    /// `toString()`.
+    fn shown(&self, thread: u64, value: &Value) -> String {
+        let string = match value {
+            Value::String { .. } => true,
+            Value::Object { id, class } if class.is_empty() => self.vm.class_of(*id).is_ok_and(|c| c.name == "java.lang.String"),
+            _ => false,
+        };
+        match evaluate::as_string(&*self.vm, thread, value) {
+            Ok(text) if string => format!("\"{text}\""),
+            Ok(text) => text,
+            Err(e) => e,
+        }
+    }
+}
+
+/// A field watchpoint's event: read or written, the field's class and
+/// object (none: static), the value to be.
+struct FieldHit {
+    access: bool,
+    class: u64,
+    object: Option<u64>,
+    to_be: Option<Value>,
 }
 
 #[cfg(test)]
@@ -897,8 +944,8 @@ mod tests {
         fn superclass(&self, _: u64) -> Result<u64, String> {
             Ok(0)
         }
-        fn field(&self, _: u64, _: Option<u64>, _: &str) -> Result<Option<Value>, String> {
-            Ok(None)
+        fn field(&self, _: u64, _: Option<u64>, name: &str) -> Result<Option<Value>, String> {
+            Ok((name == "total").then_some(Value::Int(4)))
         }
         fn invoke(&self, _: u64, _: u64, _: Option<u64>, _: u64, _: &[Value]) -> Result<Value, String> {
             Err("not here".into())
@@ -1078,9 +1125,24 @@ mod tests {
         assert_eq!(&log[1..], ["watch 10 77 false", "watch 10 77 true"]);
         let request = vm.log("probe".into()) - 1;
         vm.take_log();
-        vm.send(Suspend::All, vec![DebugEvent::Field { thread: 1, location: Location { class: 10, method: 1, index: 4 }, access: false, request }]);
+        let field = |access, to_be| vec![DebugEvent::Field { thread: 1, location: Location { class: 10, method: 1, index: 4 }, access, class: 10, object: Some(5), to_be, request }];
+        vm.send(Suspend::All, field(false, Some(Value::Int(9))));
         let events = session.poll(Duration::ZERO).unwrap();
         assert!(matches!(events.last(), Some(SessionEvent::Paused { reason: PauseReason::Breakpoint, .. })), "{events:?}");
+        // Logging: the value now and the value to be.
+        let mut logging = breakpoint(3);
+        logging.field = Some(FieldWatch { name: "total".into(), access: true, modification: true });
+        logging.actions = BreakpointActions { suspend: false, log_message: true, ..BreakpointActions::default() };
+        session.remove_breakpoint(Path::new("/p/src/test/java/a/CalcTest.java"), 3).unwrap();
+        session.add_breakpoint(logging).unwrap();
+        let request = vm.log("probe".into()) - 1;
+        vm.take_log();
+        let logged = |events: Vec<SessionEvent>| events.into_iter().find_map(|e| if let SessionEvent::Log(l) = e { Some(l) } else { None }).unwrap_or_default();
+        let field = |access, to_be| vec![DebugEvent::Field { thread: 1, location: Location { class: 10, method: 1, index: 4 }, access, class: 10, object: None, to_be, request }];
+        vm.send(Suspend::All, field(false, Some(Value::Int(9))));
+        assert!(logged(session.poll(Duration::ZERO).unwrap()).ends_with(": 'total' changes from 4 to 9"));
+        vm.send(Suspend::All, field(true, None));
+        assert!(logged(session.poll(Duration::ZERO).unwrap()).ends_with(": 'total' is read (4)"));
         session.remove_breakpoint(Path::new("/p/src/test/java/a/CalcTest.java"), 3).unwrap();
         assert_eq!(vm.take_log().iter().filter(|l| l.starts_with("unwatch")).count(), 4);
     }

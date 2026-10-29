@@ -1049,7 +1049,8 @@ Linux 实测（Xvfb，calc 示例）：在 `CalcTest.java` 第 30 行 `public vo
 | 类加载后按名字找到这个类自己的字段，设修改监视和 / 或读取监视；静态初始化里的赋值也会停（`<clinit>`），和 IntelliJ 一样 | ✅ |
 | Breakpoints 对话框：“Java Field Watchpoints” / “Kotlin Field Watchpoints” 分组，标题如 “Calc.java:4 calls”，属性里多出 Watch: Field access / Field modification（会话中改动会重新设置）；条件、Suspend、日志选项照常；持久化在 breakpoints.json 的 `field`、`field_access`、`field_modification` | ✅ |
 | 图标：IntelliJ 的 breakpointField 系列（已验证带勾、禁用、不挂起为黄色） | ✅ |
-| 命中时在控制台写出旧值 → 新值、实例过滤（Instance filters）、只监视某个对象、没有 backing field 的 Kotlin 属性（自定义 getter） | ⬜ |
+| 命中时在控制台写出当前值 → 新值（2026-10-29）：勾选 Log “Breakpoint hit” message 时，写字段打印 “Field watchpoint reached at com.example.Calc.add(Calc.java:8): 'total' changes from 0 to 3”，读字段打印 “… 'total' is read (0)”；字符串加引号，对象用 `toString()`。Linux 实测：Calc.total 上设不挂起、勾 Field access 和日志的监视点，调试 CalcTest.adds，控制台依次打印读和 0 → 3 两行，测试跑完 | ✅ |
+| 实例过滤（Instance filters）、只监视某个对象、没有 backing field 的 Kotlin 属性（自定义 getter） | ⬜ |
 
 Linux 实测（Xvfb，calc 示例临时加 `static int calls = 0;` 和 `add` 里的 `calls++`）：在 `Calc.java` 第 4 行按 Ctrl+F8 出现眼睛图标；调试 `CalcTest.adds` 后图标带勾，先停在 `<clinit>:4`（静态初始化赋值），F9 后停在 `add:5`，Variables 显示 `a = 2`、`b = 2`；Breakpoints 对话框列在 “Java Field Watchpoints” 下，Field modification 默认勾选。
 
