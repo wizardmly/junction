@@ -267,7 +267,8 @@ impl FileEditor {
                     log_message: popup.log_message,
                     log_stack: popup.log_stack,
                     log_expression: popup.log_expression_on.then_some(expression),
-                    ..SavedBreakpoint::new(&file, popup.line)
+                    // What the popup doesn't show stays as it was.
+                    ..DebugService::global(cx).read(cx).breakpoint(&file, popup.line).unwrap_or_else(|| SavedBreakpoint::new(&file, popup.line))
                 };
                 DebugService::global(cx).update(cx, |s, cx| s.set_breakpoint_properties(updated, cx));
             }

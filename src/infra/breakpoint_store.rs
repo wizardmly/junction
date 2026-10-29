@@ -47,11 +47,14 @@ pub struct SavedBreakpoint {
     pub method_entry: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub method_exit: bool,
+    /// Remove once hit.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub remove_once_hit: bool,
 }
 
 impl SavedBreakpoint {
     pub fn new(file: &str, line: u32) -> Self {
-        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None, field: None, field_access: false, field_modification: true, method_entry: true, method_exit: false }
+        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None, field: None, field_access: false, field_modification: true, method_entry: true, method_exit: false, remove_once_hit: false }
     }
 }
 
