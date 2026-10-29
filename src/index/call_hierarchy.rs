@@ -79,6 +79,27 @@ pub struct CallNode {
     pub col: u32,
     pub calls: Vec<(u32, u32)>,
     pub recursive: bool,
+    /// A callee whose declaration wasn't found (a library without
+    /// sources): `path` and the position are its first call's.
+    pub unresolved: bool,
+}
+
+/// Callee Hierarchy's nodes for the calls (callee name offsets in `text`
+/// of `path`) whose declarations weren't found: one per name, in order,
+/// at its first call.
+pub fn unresolved_callees(path: &str, text: &str, calls: &[usize]) -> Vec<CallNode> {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let mut out: Vec<CallNode> = Vec::new();
+    for &call in calls {
+        let end = text[call..].find(|c: char| !is_word(c)).map_or(text.len(), |i| call + i);
+        let name = &text[call..end];
+        let (line, col) = position_of(text, call);
+        match out.iter_mut().find(|n| n.name == name) {
+            Some(n) => n.calls.push((line, col)),
+            None => out.push(CallNode { name: name.to_owned(), path: path.to_owned(), offset: call, line, col, calls: vec![(line, col)], recursive: false, unresolved: true }),
+        }
+    }
+    out
 }
 
 /// The 0-based line and UTF-16 column of a byte offset.
@@ -102,6 +123,7 @@ pub fn group_by_function(places: Vec<(String, u32, u32, (u32, u32))>, ancestors:
             Some(n) => n.calls.push(call),
             None => out.push(CallNode {
                 recursive: ancestors.contains(&function.name),
+                unresolved: false,
                 name: function.name,
                 path,
                 offset: function.offset,
@@ -202,6 +224,16 @@ mod tests {
         let at = java.find("g()").unwrap();
         let names: Vec<&str> = calls_in(Lang::Java, java, at).into_iter().map(|o| &java[o..o + 1]).collect();
         assert_eq!(names, ["f", "B", "h"]);
+    }
+
+    #[test]
+    fn lists_unresolved_callees_by_name() {
+        let text = "fun f() {\n    println(1)\n    a.println(2)\n    check(x)\n}\n";
+        let calls: Vec<usize> = ["println(1", "println(2", "check"].iter().map(|s| text.find(s).unwrap()).collect();
+        let nodes = unresolved_callees("F.kt", text, &calls);
+        assert_eq!(nodes.iter().map(|n| (n.name.as_str(), n.calls.len(), n.line)).collect::<Vec<_>>(), [("println", 2, 1), ("check", 1, 3)]);
+        assert!(nodes.iter().all(|n| n.unresolved && n.path == "F.kt"));
+        assert_eq!((nodes[0].col, nodes[0].calls[1]), (4, (2, 6)));
     }
 
     #[test]
