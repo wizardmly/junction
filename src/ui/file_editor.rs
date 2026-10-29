@@ -1605,13 +1605,6 @@ impl FileEditor {
     /// type and parameters through the dialog; the declaration, its body's
     /// uses of renamed parameters and the calls in the project follow.
     fn change_signature_action(&mut self, _: &ChangeSignature, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::domain::change_signature::{call_edits, edits, override_request};
-        use crate::domain::imports::ImportStyle;
-        use crate::domain::introduce_parameter::apply;
-        use crate::index::introduce_parameter::call_sites;
-        use crate::index::lang::Lang;
-        use crate::infra::project_files::DiskFiles;
-        use crate::usecase::update_calls;
         const TITLE: &str = "Change Signature";
         let Some((lang, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
         let text = self.text(cx);
@@ -1620,6 +1613,31 @@ impl FileEditor {
             Ok(s) => s,
             Err(message) => return Self::hint(TITLE, message, window, cx),
         };
+        self.signature_change(lang, style, text, signature, window, cx, |change, window, cx| {
+            let editor = cx.entity().downgrade();
+            let calls = change.calls();
+            crate::ui::change_signature_dialog::open(change.style, change.signature.clone(), calls, move |request, window, cx| {
+                editor.update(cx, |this, cx| change.apply(this, TITLE, &request, window, cx)).ok();
+            }, window, cx);
+        });
+    }
+
+    /// Finds what a change of `signature` touches besides its declaration
+    /// (its calls here and elsewhere, the overrides), then hands it to `then`.
+    fn signature_change(
+        &mut self,
+        lang: crate::index::lang::Lang,
+        style: crate::domain::imports::ImportStyle,
+        text: String,
+        signature: crate::domain::change_signature::Signature,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(SignatureChange, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        use crate::index::introduce_parameter::call_sites;
+        use crate::index::lang::Lang;
+        use crate::infra::project_files::DiskFiles;
+        use crate::usecase::update_calls;
         let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(|r| r.to_path_buf()));
         let own = self.path.clone();
         let name = signature.name.clone();
@@ -1650,65 +1668,7 @@ impl FileEditor {
         });
         cx.spawn_in(window, async move |this, cx| {
             let (elsewhere, overrides) = task.await;
-            this.update_in(cx, |_, window, cx| {
-                let editor = cx.entity().downgrade();
-                let calls = here.len() + elsewhere.iter().map(|f| f.calls.len()).sum::<usize>();
-                crate::ui::change_signature_dialog::open(style, signature.clone(), calls, move |request, window, cx| {
-                    editor
-                        .update(cx, |this, cx| {
-                            if this.text(cx) != text {
-                                return Self::hint(TITLE, "The file changed; try again", window, cx);
-                            }
-                            let mut changes = match edits(style, &text, &signature, &here, &request) {
-                                Ok(changes) => changes,
-                                Err(message) => return Self::hint(TITLE, message, window, cx),
-                            };
-                            // An override's declaration and its parameters' uses (no calls: they're ours).
-                            let override_edits = |path: &str, text: &str, other: &crate::domain::change_signature::Signature| {
-                                let file_style = if path.ends_with(".java") { ImportStyle::Java } else { ImportStyle::Kotlin };
-                                edits(file_style, text, other, &[], &override_request(&signature, other, &request)).unwrap_or_default()
-                            };
-                            for (path, other_text, other) in &overrides {
-                                // This file's: from the text as it is now, at the same offsets.
-                                if *path == own && *other_text == text {
-                                    changes.extend(override_edits(path, &text, other));
-                                }
-                            }
-                            let caret = signature.name_range.start;
-                            let new = apply(&text, changes);
-                            this.replace_text(&text, &new, caret.min(new.len()), window, cx);
-                            let declarations = |path: &str| -> Vec<crate::domain::introduce_parameter::Edit> {
-                                overrides.iter().filter(|(p, _, _)| p == path && p != &own).flat_map(|(p, t, o)| override_edits(p, t, o)).collect()
-                            };
-                            let mut written = files.as_ref().map_or_else(Vec::new, |files| {
-                                update_calls::rewrite(files, &elsewhere, &|f| {
-                                    let file_style = if f.path.ends_with(".java") { ImportStyle::Java } else { ImportStyle::Kotlin };
-                                    let mut out: Vec<_> = f.calls.iter().flat_map(|c| call_edits(file_style, &signature, &request, c)).collect();
-                                    // The file as read for its calls: the override's offsets hold if it's unchanged.
-                                    if overrides.iter().any(|(p, t, _)| *p == f.path && *t == f.text) {
-                                        out.extend(declarations(&f.path));
-                                    }
-                                    out
-                                })
-                            });
-                            // Overrides in files without calls.
-                            if let Some(files) = files.as_ref() {
-                                use crate::domain::project_files::ProjectFiles;
-                                let mut seen = std::collections::HashSet::new();
-                                for (path, other_text, _) in overrides.iter().filter(|(p, _, _)| p != &own && !elsewhere.iter().any(|f| &f.path == p)) {
-                                    if seen.insert(path.clone()) && files.write(path, &apply(other_text, declarations(path))).is_ok() {
-                                        written.push(path.clone());
-                                    }
-                                }
-                            }
-                            if !written.is_empty() {
-                                cx.emit(FileEditorEvent::FilesWritten(written));
-                            }
-                        })
-                        .ok();
-                }, window, cx);
-            })
-            .ok();
+            this.update_in(cx, |_, window, cx| then(SignatureChange { style, text, signature, own, here, elsewhere, overrides, files }, window, cx)).ok();
         })
         .detach();
     }
@@ -1891,6 +1851,14 @@ impl FileEditor {
         let Some(lang) = crate::index::lang::Lang::from_path(&self.path).filter(|_| !self.read_only()) else { return };
         let text = self.text(cx);
         let offset = self.state.read(cx).cursor();
+        // A parameter: out of the declaration and every call, as Change Signature would.
+        if let Some((_, style)) = self.jvm_style() {
+            if let Ok(signature) = crate::index::change_signature::signature_at(lang, &text, offset) {
+                if let Some(ix) = signature.params.iter().position(|p| p.name_range.start <= offset && offset <= p.name_range.end) {
+                    return self.safe_delete_parameter(lang, style, text, signature, ix, window, cx);
+                }
+            }
+        }
         let Some(decl) = crate::index::safe_delete::declaration_at(lang, &text, offset) else {
             return Self::hint(TITLE, "Cannot perform refactoring. Caret should be positioned at the name of element to be deleted.", window, cx);
         };
@@ -1942,6 +1910,52 @@ impl FileEditor {
             .ok();
         })
         .detach();
+    }
+
+    /// Safe Delete of a parameter, as IntelliJ: refused while the body uses
+    /// it (or it's a constructor's property); otherwise it goes from the
+    /// declaration, the overrides and every call.
+    fn safe_delete_parameter(&mut self, lang: crate::index::lang::Lang, style: crate::domain::imports::ImportStyle, text: String, signature: crate::domain::change_signature::Signature, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::change_signature::{NewParam, SignatureRequest};
+        const TITLE: &str = "Safe Delete";
+        let param = signature.params[ix].clone();
+        if param.property {
+            return Self::hint(TITLE, format!("Property '{}' is used beyond the constructor; delete its uses first", param.name), window, cx);
+        }
+        if !param.uses.is_empty() {
+            let lines: Vec<String> = param.uses.iter().map(|r| format!("{}:{}", self.path, text[..r.start].matches('\n').count() + 1)).collect();
+            let n = lines.len();
+            let message = format!("Parameter '{}' has {n} usage{} that {} not safe to delete.", param.name, if n == 1 { "" } else { "s" }, if n == 1 { "is" } else { "are" });
+            return crate::ui::dialogs::choose("Usages Detected", message, lines, "Cancel", Vec::new(), window, cx);
+        }
+        let request = SignatureRequest {
+            name: signature.name.clone(),
+            return_type: signature.return_type.clone(),
+            params: signature.params.iter().enumerate().filter(|(i, _)| *i != ix).map(|(i, p)| NewParam { old: Some(i), name: p.name.clone(), ty: p.ty.clone(), value: String::new() }).collect(),
+        };
+        self.signature_change(lang, style, text, signature, window, cx, move |change, window, cx| {
+            // An override using it can't lose it either.
+            let used: Vec<String> = change
+                .overrides
+                .iter()
+                .flat_map(|(path, text, other)| other.params.get(ix).into_iter().flat_map(|p| p.uses.iter()).map(move |r| format!("{path}:{}", text[..r.start].matches('\n').count() + 1)))
+                .collect();
+            if !used.is_empty() {
+                let n = used.len();
+                let message = format!("Parameter '{}' has {n} usage{} in overriding methods that {} not safe to delete.", param.name, if n == 1 { "" } else { "s" }, if n == 1 { "is" } else { "are" });
+                return crate::ui::dialogs::choose("Usages Detected", message, used, "Cancel", Vec::new(), window, cx);
+            }
+            let editor = cx.entity().downgrade();
+            let calls = change.calls();
+            let delete: std::rc::Rc<dyn Fn(&mut Window, &mut gpui_kit::App)> = std::rc::Rc::new(move |window, cx| {
+                editor.update(cx, |this, cx| change.apply(this, TITLE, &request, window, cx)).ok();
+            });
+            let message = match calls {
+                0 => format!("Delete parameter '{}'?", param.name),
+                n => format!("Delete parameter '{}'? Its argument goes from {n} call{}.", param.name, if n == 1 { "" } else { "s" }),
+            };
+            crate::ui::dialogs::choose(TITLE, message, Vec::new(), "Cancel", vec![("Delete", delete)], window, cx);
+        });
     }
 
     fn introduce_constant_action(&mut self, _: &IntroduceConstant, window: &mut Window, cx: &mut Context<Self>) {
@@ -3821,3 +3835,77 @@ fn slotted(mut marks: Vec<crate::index::hierarchy::GutterMark>) -> Vec<(u32, usi
     out
 }
 
+
+/// A change of a function's signature and what it touches: its calls in
+/// its own file and elsewhere, and its overrides.
+pub(super) struct SignatureChange {
+    style: crate::domain::imports::ImportStyle,
+    text: String,
+    signature: crate::domain::change_signature::Signature,
+    own: String,
+    here: Vec<crate::domain::introduce_parameter::CallSite>,
+    elsewhere: Vec<crate::usecase::update_calls::CallingFile>,
+    overrides: Vec<(String, String, crate::domain::change_signature::Signature)>,
+    files: Option<crate::infra::project_files::DiskFiles>,
+}
+
+impl SignatureChange {
+    fn calls(&self) -> usize {
+        self.here.len() + self.elsewhere.iter().map(|f| f.calls.len()).sum::<usize>()
+    }
+
+    /// Applies `request`: this file in the editor (one undo), the others on disk.
+    fn apply(&self, editor: &mut FileEditor, title: &str, request: &crate::domain::change_signature::SignatureRequest, window: &mut Window, cx: &mut Context<FileEditor>) {
+        use crate::domain::change_signature::{call_edits, edits, override_request, Signature};
+        use crate::domain::imports::ImportStyle;
+        use crate::domain::introduce_parameter::{apply, Edit};
+        use crate::usecase::update_calls;
+        let (text, signature, own) = (&self.text, &self.signature, &self.own);
+        if editor.text(cx) != *text {
+            return FileEditor::hint(title, "The file changed; try again", window, cx);
+        }
+        let mut changes = match edits(self.style, text, signature, &self.here, request) {
+            Ok(changes) => changes,
+            Err(message) => return FileEditor::hint(title, message, window, cx),
+        };
+        // An override's declaration and its parameters' uses (no calls: they're ours).
+        let override_edits = |path: &str, text: &str, other: &Signature| {
+            let file_style = if path.ends_with(".java") { ImportStyle::Java } else { ImportStyle::Kotlin };
+            edits(file_style, text, other, &[], &override_request(signature, other, request)).unwrap_or_default()
+        };
+        for (path, other_text, other) in &self.overrides {
+            // This file's: from the text as it is now, at the same offsets.
+            if path == own && other_text == text {
+                changes.extend(override_edits(path, text, other));
+            }
+        }
+        let caret = signature.name_range.start;
+        let new = apply(text, changes);
+        editor.replace_text(text, &new, caret.min(new.len()), window, cx);
+        let declarations = |path: &str| -> Vec<Edit> { self.overrides.iter().filter(|(p, _, _)| p == path && p != own).flat_map(|(p, t, o)| override_edits(p, t, o)).collect() };
+        let mut written = self.files.as_ref().map_or_else(Vec::new, |files| {
+            update_calls::rewrite(files, &self.elsewhere, &|f| {
+                let file_style = if f.path.ends_with(".java") { ImportStyle::Java } else { ImportStyle::Kotlin };
+                let mut out: Vec<_> = f.calls.iter().flat_map(|c| call_edits(file_style, signature, request, c)).collect();
+                // The file as read for its calls: the override's offsets hold if it's unchanged.
+                if self.overrides.iter().any(|(p, t, _)| *p == f.path && *t == f.text) {
+                    out.extend(declarations(&f.path));
+                }
+                out
+            })
+        });
+        // Overrides in files without calls.
+        if let Some(files) = self.files.as_ref() {
+            use crate::domain::project_files::ProjectFiles;
+            let mut seen = std::collections::HashSet::new();
+            for (path, other_text, _) in self.overrides.iter().filter(|(p, _, _)| p != own && !self.elsewhere.iter().any(|f| &f.path == p)) {
+                if seen.insert(path.clone()) && files.write(path, &apply(other_text, declarations(path))).is_ok() {
+                    written.push(path.clone());
+                }
+            }
+        }
+        if !written.is_empty() {
+            cx.emit(FileEditorEvent::FilesWritten(written));
+        }
+    }
+}

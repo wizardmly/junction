@@ -1263,11 +1263,14 @@ Linux 实测（Xvfb，`ip` 工程）：打开 Cart.kt 并把光标放在第 8 �
 |---|---|---|
 | 没有用处 | "Delete function 'use'?" → Delete：删掉声明的整行（连同紧挨在上面的文档注释），并处理空行：不留两个空行，也不在 `}` 前留空行；一次可撤销 | ✅ |
 | 有用处 | "Usages Detected：Function 'total' has 3 usages that are not safe to delete."，列出 `文件:行`，View Usages（默认，打开 Find 工具窗口）或 Delete Anyway | ✅ |
+| 参数（2026-10-29，Kotlin / Java）| 光标在函数（或构造方法）的参数名上：函数体或覆盖方法里用到它时弹出 Usages Detected 列出位置；没用到时 "Delete parameter 'unit'? Its argument goes from 2 calls."，Delete 后从声明、覆盖方法和工程里所有调用中去掉（走 Change Signature 的同一套，命名实参也对）；构造方法的 `val` / `var` 参数提示先删它的用处 | ✅ |
 | 同时删掉调用 / 引用处、搜索注释和字符串、删文件 | | ⬜ |
 
 代码：`src/index/safe_delete.rs`（声明和要删的行）、`domain::line_edit::declaration_lines`（删声明时的空行规则，Inline Function 也用它）。
 
 Linux 实测（Xvfb，`ip` 工程 Cart.kt）：在 `total` 上按 Alt+Delete 弹出 Usages Detected，列出 Cart.kt:8、Main.kt:5、Main.kt:6；在 `use` 上按 Alt+Delete 弹出 "Delete function 'use'?"，Delete 后 `fun use()` 和它上面的空行一起删掉，类的 `}` 紧接在 `total` 后面。
+
+Linux 实测（Xvfb，`pi2` 工程，2026-10-29）：`interface Shape { fun area(scale: Double, unit: String) }`、`Square` 的 `override fun area(scale: Double, unit: String) = scale * scale`、调用 `s.area(2.0, "m")` 和 `Square().area(scale = 1.0, unit = "cm")`；在 `unit` 上按 Alt+Delete 显示 "Delete parameter 'unit'? Its argument goes from 2 calls."，Delete 后两个声明和两处调用都去掉了它（`area(scale = 1.0)`）；再在 `scale` 上按 Alt+Delete 弹出 "Parameter 'scale' has 2 usages in overriding methods that are not safe to delete." 并列出 Shapes.kt:8。
 
 ## 58. 构建环境和缺 DLL 诊断（2026-10-17）
 
