@@ -71,6 +71,8 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Replace 'associate' with 'associateWith' or 'associateBy'", "Writes xs.associate { it to f(it) } as xs.associateWith { f(it) } and xs.associate { f(it) to it } as xs.associateBy { f(it) }"),
     ("Kotlin", "Replace 'count' with 'size'", "Writes xs.count() on a collection, map or array as xs.size, and s.count() on a string as s.length"),
     ("Kotlin", "Replace deprecated call", "Writes toLowerCase() / toUpperCase() as lowercase() / uppercase() on a String and lowercaseChar() / uppercaseChar() on a Char, and Char.toInt() as code"),
+    ("Kotlin", "Replace 'if' expression with elvis expression", "Writes if (x != null) x else y as x ?: y"),
+    ("Kotlin", "Replace 'if' expression with safe access expression", "Writes if (x != null) x.f() else null, or with no else, as x?.f()"),
     ("Kotlin", "Replace with 'isNullOrEmpty()'", "Writes s == null || s.isEmpty() as s.isNullOrEmpty(), s != null && s.isNotEmpty() as !s.isNullOrEmpty(), and isBlank likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
