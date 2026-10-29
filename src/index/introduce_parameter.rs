@@ -10,20 +10,20 @@ use tree_sitter::Node;
 use super::extract_method::{children, descendants, inside, is_function, is_reference, java_decls, kotlin_decls, kotlin_type};
 use super::lang::Lang;
 use super::symbols;
-use crate::domain::introduce_parameter::{CallSite, ParameterPlan};
+use crate::domain::introduce_parameter::{CallSite, ParameterPlan, StatementSite};
 use crate::domain::introduce_variable::NameSource;
 
 const NOT_AN_EXPRESSION: &str = "Selected block should represent an expression";
 const NO_FUNCTION: &str = "Cannot introduce parameter: the expression is not in a function";
 
-fn params_node<'t>(lang: Lang, function: Node<'t>) -> Option<Node<'t>> {
+pub(super) fn params_node<'t>(lang: Lang, function: Node<'t>) -> Option<Node<'t>> {
     match lang {
         Lang::Kotlin => children(function).into_iter().find(|c| c.kind() == "function_value_parameters"),
         _ => function.child_by_field_name("parameters"),
     }
 }
 
-fn function_name(lang: Lang, function: Node, text: &str) -> String {
+pub(super) fn function_name(lang: Lang, function: Node, text: &str) -> String {
     match lang {
         Lang::Kotlin => children(function).into_iter().find(|c| c.kind() == "simple_identifier").map(|c| text[c.byte_range()].to_owned()).unwrap_or_default(),
         _ => function.child_by_field_name("name").map(|c| text[c.byte_range()].to_owned()).unwrap_or_default(),
@@ -107,6 +107,7 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<(Paramete
         members,
         ty,
         taken: decls.iter().map(|d| d.name.clone()).collect(),
+        block: None,
     };
     Ok((plan, super::introduce::name_source(lang, node, text)))
 }
@@ -196,7 +197,7 @@ pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<
                 let values = args.map(|a| kotlin_arguments(*a, text)).unwrap_or_default();
                 let passed = values.len() + usize::from(lambda.is_some());
                 let lambda_text = lambda.clone().map(|l| text[l].to_owned()).unwrap_or_default();
-                (name == function && passed <= params && (lambda.is_none() || params > 0)).then(|| CallSite { name_range: name_node.byte_range(), args_open, args_close, args: values, receiver, lambda, lambda_text, reference: false })
+                (name == function && passed <= params && (lambda.is_none() || params > 0)).then(|| CallSite { name_range: name_node.byte_range(), args_open, args_close, args: values, receiver, lambda, lambda_text, reference: false, statement: None })
             }
             // A Kotlin constructor's calls besides `A(…)`: a supertype's
             // `: A(…)`, and `: this(…)` / `: super(…)` from a secondary constructor.
@@ -260,9 +261,69 @@ pub fn call_sites(lang: Lang, text: &str, function: &str, params: usize) -> Vec<
             }
             _ => None,
         };
-        out.extend(site);
+        out.extend(site.map(|mut s| {
+            if matches!(n.kind(), "call_expression" | "method_invocation") {
+                s.statement = statement_site(lang, n, text);
+            }
+            s
+        }));
     }
     out
+}
+
+/// The statement of a block a call is in, when statements can go right
+/// before it: not in a loop's condition, a branch, or after `&&` / `?:`,
+/// which may not run it, and not in a lambda's expression.
+fn statement_site(lang: Lang, call: Node, text: &str) -> Option<StatementSite> {
+    let mut child = call;
+    let statement = loop {
+        let parent = child.parent()?;
+        let container = match lang {
+            Lang::Kotlin => parent.kind() == "statements",
+            _ => matches!(parent.kind(), "block" | "constructor_body"),
+        };
+        if container {
+            break child;
+        }
+        let conditional = match lang {
+            Lang::Kotlin => matches!(
+                parent.kind(),
+                "conjunction_expression" | "disjunction_expression" | "elvis_expression" | "if_expression" | "when_expression" | "when_entry" | "while_statement" | "do_while_statement" | "for_statement" | "lambda_literal" | "anonymous_function" | "try_expression" | "function_body" | "class_body"
+            ) || (parent.kind() == "navigation_expression" && text[parent.byte_range()].contains("?.")),
+            _ => {
+                matches!(
+                    parent.kind(),
+                    "ternary_expression" | "if_statement" | "while_statement" | "do_statement" | "for_statement" | "enhanced_for_statement" | "switch_expression" | "switch_block" | "lambda_expression" | "try_statement" | "class_body" | "field_declaration"
+                ) || (parent.kind() == "binary_expression" && parent.child_by_field_name("operator").is_some_and(|o| matches!(&text[o.byte_range()], "&&" | "||")))
+            }
+        };
+        if conditional {
+            return None;
+        }
+        child = parent;
+    };
+    let whole = match lang {
+        Lang::Kotlin => statement.id() == call.id(),
+        _ => statement.kind() == "expression_statement" && statement.named_child(0).is_some_and(|c| c.id() == call.id()),
+    };
+    let line_start = text[..statement.start_byte()].rfind('\n').map_or(0, |i| i + 1);
+    let indent: String = text[line_start..statement.start_byte()].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    if line_start + indent.len() != statement.start_byte() {
+        // Not the line's first statement.
+        return None;
+    }
+    let function = std::iter::successors(statement.parent(), |p| p.parent()).find(|p| is_function(lang, *p) || matches!(p.kind(), "lambda_literal" | "lambda_expression" | "anonymous_initializer" | "static_initializer" | "constructor_declaration"));
+    let (function, taken) = match function {
+        Some(f) => {
+            let decls = match lang {
+                Lang::Kotlin => kotlin_decls(f, text),
+                _ => java_decls(f, text),
+            };
+            (f.byte_range(), decls.into_iter().map(|d| d.name).collect())
+        }
+        None => (statement.byte_range(), Vec::new()),
+    };
+    Some(StatementSite { start: statement.start_byte(), indent, whole, function, taken })
 }
 
 #[cfg(test)]
