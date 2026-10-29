@@ -51,9 +51,10 @@ impl ConsoleLine {
         if !ansi::has_escapes(text) && state.is_plain() {
             return Self::plain(text.clone(), color);
         }
-        let (plain, styled) = ansi::decode(text, state);
+        let (plain, styled, hyperlinks) = ansi::decode_links(text, state);
         let spans = styled.into_iter().map(|(range, style)| (range, ansi_highlight(&style, dark))).collect();
-        Self { text: plain.into(), color, spans, links: Vec::new() }
+        let links = hyperlinks.into_iter().map(|(range, uri)| (range, console_links::hyperlink(&uri))).collect();
+        Self { text: plain.into(), color, spans, links }
     }
 }
 
@@ -245,7 +246,9 @@ impl ConsoleView {
             }
             p.lines.push_back((at, line.color));
             p.spans.extend(line.spans.iter().map(|(r, s)| (r.start + at..r.end + at, *s)));
-            let mut found: Vec<(Range<usize>, ConsoleLink)> = console_links::links(&line.text).into_iter().chain(line.links.iter().cloned()).collect();
+            // Links found in the text give way to the line's own (OSC 8).
+            let found_in_text = console_links::links(&line.text).into_iter().filter(|(r, _)| !line.links.iter().any(|(own, _)| own.start < r.end && r.start < own.end));
+            let mut found: Vec<(Range<usize>, ConsoleLink)> = found_in_text.chain(line.links.iter().cloned()).collect();
             found.sort_by_key(|(r, _)| r.start);
             p.links.extend(found.into_iter().map(|(r, l)| (r.start + at..r.end + at, l)));
             self.tail = at;

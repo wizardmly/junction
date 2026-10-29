@@ -1,8 +1,9 @@
 //! ANSI escape codes in console output, as IntelliJ's `AnsiEscapeDecoder`
 //! reads them: SGR (`ESC [ … m`) colors (the 16 named ones, 256-color
 //! and 24-bit), bold, dim, italic, underline and inverse, kept from one
-//! line to the next; every other control sequence (cursor moves, erasing,
-//! OSC titles and links) is dropped. A carriage return starts the line
+//! line to the next; OSC 8 hyperlinks become links (`decode_links`);
+//! every other control sequence (cursor moves, erasing, OSC titles) is
+//! dropped. A carriage return starts the line
 //! over, as a progress bar redraws itself.
 
 use std::ops::Range;
@@ -94,6 +95,16 @@ pub fn has_escapes(text: &str) -> bool {
 /// A line's text without its escape codes, and its styled stretches;
 /// `state` is the style the line starts with and is left as it ends.
 pub fn decode(line: &str, state: &mut AnsiStyle) -> (String, Vec<(Range<usize>, AnsiStyle)>) {
+    let (text, spans, _) = decode_links(line, state);
+    (text, spans)
+}
+
+/// `decode`, with the line's OSC 8 hyperlinks (`ESC ] 8 ; params ; URI ST`
+/// … `ESC ] 8 ; ; ST`): the text each covers and its URI. One left open
+/// ends with the line.
+pub fn decode_links(line: &str, state: &mut AnsiStyle) -> (String, Vec<(Range<usize>, AnsiStyle)>, Vec<(Range<usize>, String)>) {
+    let mut links: Vec<(Range<usize>, String)> = Vec::new();
+    let mut open: Option<(usize, String)> = None;
     let mut text = String::new();
     let mut spans: Vec<(Range<usize>, AnsiStyle)> = Vec::new();
     let mut chars = line.char_indices().peekable();
@@ -127,6 +138,7 @@ pub fn decode(line: &str, state: &mut AnsiStyle) -> (String, Vec<(Range<usize>, 
                 Some(']') => {
                     // OSC: up to BEL or ESC \.
                     chars.next();
+                    let mut body = String::new();
                     while let Some((_, c)) = chars.next() {
                         if c == '\x07' {
                             break;
@@ -134,6 +146,16 @@ pub fn decode(line: &str, state: &mut AnsiStyle) -> (String, Vec<(Range<usize>, 
                         if c == '\x1b' && chars.peek().is_some_and(|(_, c)| *c == '\\') {
                             chars.next();
                             break;
+                        }
+                        body.push(c);
+                    }
+                    // A hyperlink starts (with a URI) or ends (without).
+                    if let Some((_, uri)) = body.strip_prefix("8;").and_then(|rest| rest.split_once(';')) {
+                        if let Some((start, uri)) = open.take() {
+                            links.push((start..text.len(), uri));
+                        }
+                        if !uri.is_empty() {
+                            open = Some((text.len(), uri.to_owned()));
                         }
                     }
                 }
@@ -147,6 +169,8 @@ pub fn decode(line: &str, state: &mut AnsiStyle) -> (String, Vec<(Range<usize>, 
                 if chars.peek().is_some() {
                     text.clear();
                     spans.clear();
+                    links.clear();
+                    open = open.map(|(_, uri)| (0, uri));
                     run_start = 0;
                 }
             }
@@ -154,7 +178,11 @@ pub fn decode(line: &str, state: &mut AnsiStyle) -> (String, Vec<(Range<usize>, 
         }
     }
     close(&text, &mut spans, run_start, *state);
-    (text, spans)
+    if let Some((start, uri)) = open {
+        links.push((start..text.len(), uri));
+    }
+    links.retain(|(r, _)| !r.is_empty());
+    (text, spans, links)
 }
 
 /// The 256-color palette's color for 16–255: the 6×6×6 cube, then the
@@ -195,6 +223,15 @@ mod tests {
         assert_eq!(spans, vec![(0..12, AnsiStyle { fg: Some(AnsiColor::Named(3)), ..Default::default() })]);
         let (text, spans) = decode("two\x1b[m three", &mut state);
         assert_eq!((text.as_str(), spans.len(), spans[0].0.clone()), ("two three", 1, 0..3));
+    }
+
+    #[test]
+    fn osc8_hyperlinks() {
+        let mut state = AnsiStyle::default();
+        let line = "see \x1b]8;;https://example.com/a\x1b\\the docs\x1b]8;;\x1b\\ or \x1b]8;id=1;file:///tmp/x.txt\x07x.txt";
+        let (text, _, links) = decode_links(line, &mut state);
+        assert_eq!(text, "see the docs or x.txt");
+        assert_eq!(links, [(4..12, "https://example.com/a".to_owned()), (16..21, "file:///tmp/x.txt".to_owned())]);
     }
 
     #[test]
