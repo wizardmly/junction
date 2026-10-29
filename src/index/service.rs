@@ -555,6 +555,28 @@ impl CodeIndex {
                 }
                 found
             };
+            // Only the symbol's: uses resolving to another of its name go
+            // (another class's `add`, a parameter), as IntelliJ finds references.
+            if let Some(lang) = lang {
+                let index = index.read().unwrap();
+                let declaration = if symbol_declared_at(&index, &path, &text, offset, true) {
+                    Some((path.clone(), nav::position(&text, nav::word_at(&text, offset).map_or(offset, |(_, r)| r.start)).0))
+                } else {
+                    let targets = nav::definitions(&index, &path, lang, &text, offset);
+                    match &targets[..] {
+                        [only] if !ProjectIndex::is_external(&only.path) => Some((only.path.clone(), only.line)),
+                        _ => None,
+                    }
+                };
+                if let Some(mut same) = declaration.and_then(|(p, l)| nav::SameSymbol::new(&index, &p, l, &word)) {
+                    let mut texts: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+                    found.retain(|u| {
+                        let file = texts.entry(u.path.clone()).or_insert_with(|| if u.path == path { Some(text.clone()) } else { std::fs::read_to_string(root.join(&u.path)).ok() });
+                        let at = file.as_deref().and_then(|t| crate::domain::rename::offset_of(t, u.line, u.col).map(|o| (t, o)));
+                        at.is_none_or(|(t, o)| same.other_at(&u.path, t, o).is_none())
+                    });
+                }
+            }
             // `buildSrc` names used in Groovy build scripts (not indexed).
             let declared: Vec<(String, u32)> = found.iter().filter(|u| u.group == "Declarations" && !super::groovy_scripts::is_groovy_script(&u.path)).map(|u| (u.path.clone(), u.line)).collect();
             if !declared.is_empty() {
