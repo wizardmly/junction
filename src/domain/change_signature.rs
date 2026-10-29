@@ -24,6 +24,8 @@ pub struct Param {
     pub uses: Vec<Range<usize>>,
     /// A Kotlin constructor's `val` / `var` parameter: also a property.
     pub property: bool,
+    /// Its name in the declaration.
+    pub name_range: Range<usize>,
 }
 
 /// The function as the analysis found it.
@@ -262,7 +264,7 @@ mod tests {
 
     fn kotlin() -> (String, Signature) {
         let text = "fun total(price: Double, count: Int = 1): Double {\n    return price * count\n}\n".to_owned();
-        let p = |name: &str, ty: &str, default: Option<&str>, text: &str, uses: Vec<Range<usize>>| Param { name: name.into(), ty: ty.into(), prefix: String::new(), default: default.map(Into::into), text: text.into(), uses, property: false };
+        let p = |name: &str, ty: &str, default: Option<&str>, text: &str, uses: Vec<Range<usize>>| Param { name: name.into(), ty: ty.into(), prefix: String::new(), default: default.map(Into::into), text: text.into(), uses, property: false, name_range: 0..0 };
         let price = text.find("price *").unwrap();
         let count = text.find("count\n").unwrap();
         let open = text.find('(').unwrap();

@@ -155,7 +155,7 @@ pub fn signature_at(lang: Lang, text: &str, offset: usize) -> Result<Signature, 
                 if text[r.clone()].starts_with('$') { r.start + 1..r.end } else { r }
             })
             .collect();
-        params.push(Param { name: pname, ty, prefix, default, text: text[trimmed(text, start, end)].to_owned(), uses, property });
+        params.push(Param { name: pname, ty, prefix, default, text: text[trimmed(text, start, end)].to_owned(), uses, property, name_range: name_node.byte_range() });
     }
     // The return type.
     let (return_type, return_range) = match lang {
