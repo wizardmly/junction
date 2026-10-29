@@ -920,13 +920,16 @@ pub fn range_to_indices(text: &str, caret: usize, classes: super::catches::Class
 /// `maxOf(a, b)` (`min` → `minOf`), `Integer.parseInt(s)` → `s.toInt()`
 /// (and `Long` / `Short` / `Byte` / `Double` / `Float`), `String.valueOf(x)`
 /// / `Integer.toString(x)` → `x.toString()` (not for a `CharArray`), and
-/// `System.out.println(x)` → `println(x)`; the caret on the method's
+/// `System.out.println(x)` → `println(x)`, `Arrays.sort(a)` → `a.sort()`
+/// (and `fill`, `toString` → `contentToString`, `hashCode`, `equals`,
+/// `copyOf`, `Collections.sort` / `reverse` / `shuffle`); the caret on the method's
 /// name, when the file doesn't import a `Math` (…) of its own.
 pub fn kotlin_analog(text: &str, caret: usize, classes: super::catches::Classes) -> Option<Intention> {
     let tree = symbols::parse(Lang::Kotlin, text)?;
     let (call, target, name, values) = method_call(tree.root_node(), text, caret)?;
     let class = &text[target.byte_range()];
-    let own = text.lines().any(|l| l.trim_start().starts_with("import ") && (l.trim_end().ends_with(&format!(".{class}")) || l.contains(&format!(" as {class}"))));
+    // `import java.util.Arrays` is the JDK's own; `import a.b.Math` isn't.
+    let own = text.lines().any(|l| l.trim_start().starts_with("import ") && !l.trim_start().starts_with("import java.") && (l.trim_end().ends_with(&format!(".{class}")) || l.contains(&format!(" as {class}"))));
     if own {
         return None;
     }
@@ -962,6 +965,22 @@ pub fn kotlin_analog(text: &str, caret: usize, classes: super::catches::Classes)
             ("toString", format!("{}.toString()", operand(v)))
         }
         ("System.out", "println" | "print", 0 | 1) => (name, format!("{name}({})", value(0).unwrap_or(""))),
+        // `Arrays.sort(a)` → `a.sort()`; the array (or list) becomes the receiver.
+        ("Arrays" | "Collections", _, 1 | 2) => {
+            let function = match (class, name, values.len()) {
+                ("Arrays", "sort", 1) | ("Collections", "sort", 1) => "sort",
+                ("Arrays", "fill", 2) => "fill",
+                ("Arrays", "toString", 1) => "contentToString",
+                ("Arrays", "hashCode", 1) => "contentHashCode",
+                ("Arrays", "equals", 2) => "contentEquals",
+                ("Arrays", "copyOf", 2) => "copyOf",
+                ("Collections", "reverse", 1) => "reverse",
+                ("Collections", "shuffle", 1) => "shuffle",
+                _ => return None,
+            };
+            let rest = values[1..].iter().map(|v| &text[v.byte_range()]).collect::<Vec<_>>().join(", ");
+            (function, format!("{}.{function}({rest})", operand(values[0])))
+        }
         _ => return None,
     };
     Some(Intention { title: format!("Replace with '{function}' function"), range: call.byte_range(), caret: call.start_byte(), replacement })
@@ -2112,6 +2131,16 @@ mod tests {
         // A CharArray's chars; a function without an analog here.
         assert_eq!(run("valueOf(cs"), None);
         assert_eq!(run("abs"), None);
+        let arrays = "import java.util.Arrays\nimport java.util.Collections\n\nfun g(a: IntArray, b: IntArray, xs: MutableList<Int>) {\n    Arrays.sort(a)\n    Arrays.fill(a, 0)\n    val s = Arrays.toString(a)\n    val e = Arrays.equals(a, b)\n    Collections.reverse(xs)\n    Arrays.asList(a)\n}\n";
+        let run = |at: &str| kotlin_analog(arrays, arrays.find(at).unwrap(), &classes).map(|i| (i.title.clone(), apply(arrays, &i)));
+        let (title, out) = run("sort(").unwrap();
+        assert_eq!(title, "Replace with 'sort' function");
+        assert!(out.contains("    a.sort()\n"), "{out}");
+        assert!(run("fill(").unwrap().1.contains("    a.fill(0)\n"));
+        assert!(run("toString(").unwrap().1.contains("    val s = a.contentToString()\n"));
+        assert!(run("equals(").unwrap().1.contains("    val e = a.contentEquals(b)\n"));
+        assert!(run("reverse(").unwrap().1.contains("    xs.reverse()\n"));
+        assert_eq!(run("asList"), None);
         // The file's own Math.
         let own = "import com.example.Math\nval m = Math.max(1, 2)\n";
         assert_eq!(kotlin_analog(own, own.find("max").unwrap(), &classes), None);

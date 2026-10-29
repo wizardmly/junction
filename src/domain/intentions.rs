@@ -64,7 +64,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Replace with indices", "Writes 0 until xs.size and 0..xs.size - 1 as xs.indices"),
     ("Kotlin", "Replace with 'orEmpty()'", "Writes s ?: \"\" and xs ?: emptyList() as orEmpty()"),
     ("Kotlin", "Replace negated 'isEmpty' with 'isNotEmpty'", "Writes !xs.isEmpty() as xs.isNotEmpty(), and !isNotEmpty() / !isBlank() / !isNotBlank() likewise"),
-    ("Kotlin", "Replace Java static method with Kotlin analog", "Writes Math.max(a, b) as maxOf(a, b), Integer.parseInt(s) as s.toInt(), String.valueOf(x) as x.toString() and System.out.println(x) as println(x)"),
+    ("Kotlin", "Replace Java static method with Kotlin analog", "Writes Math.max(a, b) as maxOf(a, b), Integer.parseInt(s) as s.toInt(), String.valueOf(x) as x.toString(), System.out.println(x) as println(x) and Arrays.sort(a) as a.sort()"),
     ("Kotlin", "Replace with 'lastIndex'", "Writes xs.size - 1 on a list or an array, and s.length - 1 on a string, as lastIndex"),
     ("Kotlin", "Replace 'substring' call with a simpler call", "Writes s.substring(0, n) as s.take(n), s.substring(0, s.length - n) as s.dropLast(n) and s.substring(0, s.indexOf(x)) as s.substringBefore(x)"),
     ("Kotlin", "Convert two comparisons to range check", "Writes x >= a && x <= b as x in a..b, and x >= a && x < b as x in a until b"),
