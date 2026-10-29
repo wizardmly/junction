@@ -431,6 +431,13 @@ impl DebugService {
         if let Some(ix) = self.breakpoints.iter().position(|b| b.file == file && b.line == line) {
             self.breakpoints.remove(ix);
             self.verified.remove(&(file.to_owned(), line));
+            // The breakpoints waiting for it don't any more.
+            for b in self.breakpoints.iter_mut().filter(|b| b.master.as_ref().is_some_and(|m| m.file == file && m.line == line)) {
+                b.master = None;
+                if let Some(session) = &session {
+                    session.set_actions(Path::new(&b.file), b.line + 1, actions(b));
+                }
+            }
             if let Some(session) = session {
                 let path = PathBuf::from(file);
                 cx.background_spawn(async move { session.remove_breakpoint(&path, line + 1) }).detach();
@@ -455,9 +462,17 @@ impl DebugService {
         }
         let moved = debugger::follow_lines(old, new, &lines);
         let mut changed = false;
-        for (b, line) in self.breakpoints.iter_mut().filter(|b| b.file == file).zip(moved) {
+        for (b, &line) in self.breakpoints.iter_mut().filter(|b| b.file == file).zip(&moved) {
             changed |= b.line != line;
             b.line = line;
+        }
+        // Dependent breakpoints follow their master.
+        for b in self.breakpoints.iter_mut() {
+            if let Some(m) = b.master.as_mut().filter(|m| m.file == file) {
+                if let Some(ix) = lines.iter().position(|&l| l == m.line) {
+                    m.line = moved[ix];
+                }
+            }
         }
         // Two on one line: the first stays.
         let mut seen = HashSet::new();
@@ -1235,7 +1250,15 @@ fn line_breakpoint(saved: &SavedBreakpoint) -> LineBreakpoint {
 }
 
 fn actions(saved: &SavedBreakpoint) -> BreakpointActions {
-    BreakpointActions { suspend: saved.suspend, remove_once_hit: saved.remove_once_hit, log_message: saved.log_message, log_stack: saved.log_stack, log_expression: saved.log_expression.clone() }
+    BreakpointActions {
+        suspend: saved.suspend,
+        remove_once_hit: saved.remove_once_hit,
+        log_message: saved.log_message,
+        log_stack: saved.log_stack,
+        log_expression: saved.log_expression.clone(),
+        master: saved.master.as_ref().map(|m| (PathBuf::from(&m.file), m.line + 1)),
+        leave_enabled: saved.leave_enabled,
+    }
 }
 
 fn free_port() -> Option<u16> {

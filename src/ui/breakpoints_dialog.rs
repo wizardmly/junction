@@ -12,6 +12,7 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     dialog::{DialogAction, DialogFooter},
     input::{Input, InputEvent, InputState},
+    menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
 use gpui_kit::{
@@ -19,7 +20,7 @@ use gpui_kit::{
     Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::infra::breakpoint_store::{SavedBreakpoint, SavedExceptionBreakpoint};
+use crate::infra::breakpoint_store::{BreakpointRef, SavedBreakpoint, SavedExceptionBreakpoint};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons::{self as icons, AsIcon};
 use crate::ui::common::tool_button;
@@ -451,6 +452,35 @@ impl BreakpointsView {
                 let checked = *checked;
                 this.apply(|b| b.remove_once_hit = checked, cx);
             })))
+            // IntelliJ's dependent breakpoints.
+            .child(label("Disable until hitting the following breakpoint:"))
+            .child({
+                let others: Vec<SavedBreakpoint> = self.entries.iter().map(|(e, _)| e.clone()).filter(|e| (&e.file, e.line) != (&b.file, b.line)).collect();
+                let master = b.master.as_ref().and_then(|m| others.iter().find(|e| e.file == m.file && e.line == m.line));
+                let current = b.master.clone();
+                let view = cx.entity();
+                Button::new("breakpoints-master").small().outline().label(master.map_or_else(|| "<None>".to_owned(), title)).icon(icons::CHEVRON_DOWN).dropdown_menu(move |mut menu, _, _| {
+                    let pick = |master: Option<BreakpointRef>| {
+                        let view = view.clone();
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| view.update(cx, |this, cx| this.apply(|b| b.master = master.clone(), cx))
+                    };
+                    menu = menu.item(PopupMenuItem::new("<None>").checked(current.is_none()).on_click(pick(None)));
+                    for e in &others {
+                        let r = BreakpointRef { file: e.file.clone(), line: e.line };
+                        menu = menu.item(PopupMenuItem::new(title(e)).checked(current.as_ref() == Some(&r)).on_click(pick(Some(r))));
+                    }
+                    menu
+                })
+            })
+            .when(b.master.is_some(), |el| {
+                el.child(
+                    h_flex()
+                        .gap_3()
+                        .child(label("After hit:"))
+                        .child(Checkbox::new("breakpoints-disable-again").label("Disable again").checked(!b.leave_enabled).on_click(cx.listener(|this, _, _, cx| this.apply(|b| b.leave_enabled = false, cx))))
+                        .child(Checkbox::new("breakpoints-leave-enabled").label("Leave enabled").checked(b.leave_enabled).on_click(cx.listener(|this, _, _, cx| this.apply(|b| b.leave_enabled = true, cx)))),
+                )
+            })
             // IntelliJ's watchpoint options: what stops it.
             .when(b.field.is_some(), |el| {
                 el.child(label("Watch:"))
