@@ -43,6 +43,8 @@ pub struct Library {
     pub only: Option<Vec<PathBuf>>,
     /// Paths under `root` (with `/`) that are left out.
     pub exclude: Vec<&'static str>,
+    /// An Android library's .aar, for its manifest.
+    pub aar: Option<PathBuf>,
 }
 
 /// What the Project view and Go to File show of a library.
@@ -55,6 +57,8 @@ pub struct LibraryInfo {
     pub location: Option<String>,
     /// Absolute paths, sorted.
     pub files: Vec<String>,
+    /// An Android library's .aar, for its manifest.
+    pub aar: Option<PathBuf>,
 }
 
 /// Every library's index, keyed by absolute path.
@@ -167,6 +171,7 @@ impl ExternalIndex {
                     root_label: lib.root_label.clone(),
                     location: lib.location.clone(),
                     files: indexed,
+                    aar: lib.aar.clone(),
                 });
             }
             out.built.push((lib, files));
@@ -551,7 +556,7 @@ fn newest_subdir(dir: &Path, prefix: &str) -> Option<PathBuf> {
 }
 
 fn lib(name: impl Into<String>, group: &'static str, root: PathBuf) -> Library {
-    Library { name: name.into(), group, root, root_label: None, location: None, only: None, exclude: Vec::new() }
+    Library { name: name.into(), group, root, root_label: None, location: None, only: None, exclude: Vec::new(), aar: None }
 }
 
 // --- Rust ---------------------------------------------------------------
@@ -1003,7 +1008,7 @@ fn gradle(ctx: &Project, out: &mut Vec<Library>) {
             decompile_stubs(&binary, &format!("gradle/{group}/{artifact}-{version}"), &format!("{group}:{artifact}:{version}"))
         });
         if let Some(root) = root {
-            out.push(Library { root_label: Some(label), ..lib(format!("Gradle: {group}:{artifact}:{version}{suffix}"), "Gradle", root) });
+            out.push(Library { root_label: Some(label), aar: named(".aar"), ..lib(format!("Gradle: {group}:{artifact}:{version}{suffix}"), "Gradle", root) });
         }
         if !follow {
             continue;
@@ -1739,6 +1744,25 @@ fn vlang(ctx: &Project, out: &mut Vec<Library>) {
     }
 }
 
+/// The AndroidManifest.xml inside an .aar, read once (the Merged Manifest
+/// asks again at every edit).
+pub fn aar_manifest(aar: &Path) -> Option<String> {
+    use std::io::Read as _;
+    static READ: std::sync::Mutex<Option<HashMap<PathBuf, Option<String>>>> = std::sync::Mutex::new(None);
+    let mut cache = READ.lock().unwrap();
+    let cache = cache.get_or_insert_with(HashMap::new);
+    cache
+        .entry(aar.to_path_buf())
+        .or_insert_with(|| {
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(aar).ok()?).ok()?;
+            let mut entry = zip.by_name("AndroidManifest.xml").ok()?;
+            let mut text = String::new();
+            entry.read_to_string(&mut text).ok()?;
+            Some(text)
+        })
+        .clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1833,3 +1857,4 @@ mod probe_nav {
         }
     }
 }
+
