@@ -517,6 +517,12 @@ impl Workspace {
     /// Sync Project with Gradle Files: Android Studio's "Gradle files have
     /// changed" offer, its failure and unresolved dependencies, and the
     /// libraries re-indexed from a finished sync.
+    /// Hands the index the variant each Android module builds.
+    pub(super) fn push_variants(&mut self, cx: &mut Context<Self>) {
+        let variants = crate::ui::sync_service::active_variants(cx);
+        self.code_index.update(cx, |index, _| index.set_variants(variants));
+    }
+
     pub(super) fn on_sync_event(&mut self, event: &crate::ui::sync_service::SyncEvent, window: &mut Window, cx: &mut Context<Self>) {
         use crate::ui::sync_service::{SyncEvent, SyncService};
         match event {
@@ -544,7 +550,11 @@ impl Workspace {
                     });
                 window.push_notification(notification, cx);
             }
-            SyncEvent::Status | SyncEvent::Modules | SyncEvent::Started => cx.notify(),
+            SyncEvent::Modules => {
+                self.push_variants(cx);
+                cx.notify();
+            }
+            SyncEvent::Status | SyncEvent::Started => cx.notify(),
             SyncEvent::Finished { build, seconds, unresolved } => {
                 self.code_index.update(cx, |index, cx| index.refresh(cx));
                 if !unresolved.is_empty() {

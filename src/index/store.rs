@@ -56,6 +56,10 @@ pub struct ProjectIndex {
     /// The Gradle modules and what each sees, from the build files.
     #[serde(skip)]
     pub modules: std::sync::Arc<crate::domain::modules::ModuleGraph>,
+    /// The variants picked in Build Variants: (module folder, project-
+    /// relative, variant).
+    #[serde(skip)]
+    pub picked: Vec<(String, String)>,
 }
 
 /// A hash map with a fast, non-cryptographic hasher: the name maps hold
@@ -387,10 +391,14 @@ impl ProjectIndex {
     }
 
     /// Re-reads the module graph from the build files.
-    fn refresh_modules(&mut self) {
+    pub fn refresh_modules(&mut self) {
         let root = self.root.clone();
         let read = |rel: &str| std::fs::read_to_string(root.join(rel)).ok();
-        self.modules = std::sync::Arc::new(crate::domain::modules::ModuleGraph::build(&self.all_files, &read));
+        let mut modules = crate::domain::modules::ModuleGraph::build(&self.all_files, &read);
+        for (dir, variant) in &self.picked {
+            modules.pick(dir, variant);
+        }
+        self.modules = std::sync::Arc::new(modules);
     }
 
     pub fn save(&self) {

@@ -49,6 +49,8 @@ pub struct CodeIndex {
     again: bool,
     /// The next refresh scans the libraries again (sources were downloaded).
     rescan_libraries: Arc<std::sync::atomic::AtomicBool>,
+    /// The variant each Android module builds, by its folder.
+    variants: Vec<(PathBuf, String)>,
     _task: Option<Task<()>>,
     _poll: Option<Task<()>>,
     /// What the language servers report for the project's files, open or
@@ -92,6 +94,7 @@ impl CodeIndex {
         });
         Self {
             root: None,
+            variants: Vec::new(),
             index: Arc::default(),
             lsp: Arc::default(),
             resources: Arc::default(),
@@ -162,6 +165,7 @@ impl CodeIndex {
         self.lsp.shutdown();
         self.root = root.clone();
         self.index = Arc::default();
+        self.apply_variants();
         self.resources = Arc::default();
         self.catalogs = Arc::default();
         self.framework = Arc::default();
@@ -177,6 +181,31 @@ impl CodeIndex {
         this_changed!(self, cx);
         if root.is_some() {
             self.refresh(cx);
+        }
+    }
+
+    /// The variants picked in Build Variants, by module folder: names
+    /// resolve to their source sets (`src/free/`, `src/debug/`) and not the
+    /// other variants'.
+    pub fn set_variants(&mut self, variants: Vec<(PathBuf, String)>) {
+        self.variants = variants;
+        self.apply_variants();
+    }
+
+    fn apply_variants(&self) {
+        let Some(root) = self.root.as_deref() else { return };
+        let picked: Vec<(String, String)> = self
+            .variants
+            .iter()
+            .filter_map(|(dir, variant)| {
+                let rel = dir.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/");
+                Some((rel, variant.clone()))
+            })
+            .collect();
+        let mut index = self.index.write().unwrap();
+        if index.picked != picked {
+            index.picked = picked;
+            index.refresh_modules();
         }
     }
 
@@ -241,8 +270,13 @@ impl CodeIndex {
                         (changed, changed)
                     }
                 };
-                if let Some(fresh) = fresh {
-                    *index.write().unwrap() = fresh;
+                if let Some(mut fresh) = fresh {
+                    let mut index = index.write().unwrap();
+                    if !index.picked.is_empty() {
+                        fresh.picked = std::mem::take(&mut index.picked);
+                        fresh.refresh_modules();
+                    }
+                    *index = fresh;
                 }
                 if changed {
                     content.store(true, std::sync::atomic::Ordering::Relaxed);
