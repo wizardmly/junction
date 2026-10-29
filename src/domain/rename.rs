@@ -15,6 +15,9 @@ pub struct Occurrence {
     pub text: String,
     /// In code; not in a comment or string literal.
     pub code: bool,
+    /// What the name refers to here when it's another symbol of the same
+    /// name (`Other.add`, a parameter): listed, but unchecked.
+    pub other: Option<String>,
 }
 
 const JAVA_KEYWORDS: &[&str] = &[
@@ -51,7 +54,7 @@ pub fn check_name(extension: &str, name: &str) -> Result<(), String> {
 }
 
 /// The byte offset of a 0-based line and UTF-16 column.
-fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
+pub fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
     let start = if line == 0 { 0 } else { text.match_indices('\n').nth(line as usize - 1)?.0 + 1 };
     let rest = &text[start..];
     let mut units = 0u32;
@@ -162,7 +165,7 @@ mod tests {
 
     #[test]
     fn counts() {
-        let o = |path: &str| Occurrence { path: path.into(), line: 0, col: 0, text: String::new(), code: true };
+        let o = |path: &str| Occurrence { path: path.into(), line: 0, col: 0, text: String::new(), code: true, other: None };
         let (a, b, c) = (o("a"), o("a"), o("b"));
         assert_eq!(summary(&[&a, &b, &c]), "3 occurrences in 2 files");
         assert_eq!(summary(&[&a]), "1 occurrence in 1 file");

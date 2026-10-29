@@ -662,6 +662,73 @@ pub fn rename_hits(index: &ProjectIndex, root: &Path, word: &str) -> Vec<crate::
     out
 }
 
+/// Marks the code occurrences that name another symbol of the same name
+/// than the one declared at `declaration`:`line` (another class's `add`, a
+/// parameter or local), as Android Studio leaves them out of a rename. A
+/// use counts as the symbol's unless Go to Declaration resolves it only to
+/// unrelated declarations; members of the declaring type's supertypes and
+/// subtypes (overrides) count as the symbol's.
+pub fn mark_other_symbols(index: &ProjectIndex, root: &Path, declaration: &str, line: u32, word: &str, occurrences: &mut [crate::domain::rename::Occurrence]) {
+    let Some(ours) = index.file(declaration).and_then(|e| e.symbols.iter().find(|s| s.name == word && s.line == line)) else { return };
+    let ours_type = ours.kind.is_type();
+    let owner = |container: &Option<String>| container.as_deref().map(|c| c.rsplit(['.', ':']).next().unwrap_or(c).to_owned());
+    let our_owner = owner(&ours.container);
+    let mut chains: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut chain = |ty: &str| -> Vec<String> {
+        chains
+            .entry(ty.to_owned())
+            .or_insert_with(|| {
+                let supers: Vec<String> = index.symbols_named(ty).filter(|(_, _, s)| s.kind.is_type()).flat_map(|(_, _, s)| s.supers.clone()).collect();
+                super::special::super_chain(index, &supers)
+            })
+            .clone()
+    };
+    // A member of `container` stands for ours: the same type, or one above or below it.
+    let mut related = |container: &Option<String>| match (owner(container), &our_owner) {
+        (Some(a), Some(b)) => a == *b || chain(&a).contains(b) || chain(b).contains(&a),
+        _ => false,
+    };
+    // A class's constructors are the class.
+    let constructor_of_ours = |path: &str, kind: SymbolKind, container: &Option<String>| ours_type && kind == SymbolKind::Constructor && path == declaration && owner(container).as_deref() == Some(word);
+    let describe = |container: &Option<String>| owner(container).map_or_else(|| word.to_owned(), |c| format!("{c}.{word}"));
+    let mut texts: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+    for o in occurrences.iter_mut().filter(|o| o.code) {
+        if o.path == declaration && o.line == line {
+            continue;
+        }
+        let Some(entry) = index.file(&o.path) else { continue };
+        let lang = entry.lang;
+        if !matches!(lang, Lang::Java | Lang::Kotlin) {
+            continue;
+        }
+        let text = texts.entry(o.path.clone()).or_insert_with(|| std::fs::read_to_string(root.join(&o.path)).ok());
+        let Some(text) = text.as_deref() else { continue };
+        let Some(offset) = crate::domain::rename::offset_of(text, o.line, o.col) else { continue };
+        if super::locals::resolve(lang, text, offset).is_some_and(|l| !l.member) {
+            o.other = Some("a parameter or local variable".into());
+            continue;
+        }
+        // Another declaration of the name: an override, or another symbol.
+        if let Some(s) = entry.symbols.iter().find(|s| s.name == word && s.line == o.line && s.col == o.col) {
+            if !constructor_of_ours(&o.path, s.kind, &s.container) && !(!ours_type && !s.kind.is_type() && related(&s.container)) {
+                o.other = Some(describe(&s.container));
+            }
+            continue;
+        }
+        let targets = definitions(index, &o.path, lang, text, offset);
+        let mine = |t: &Target| {
+            let kind = index.file(&t.path).and_then(|e| e.symbols.iter().find(|s| s.line == t.line && s.col == t.col)).map(|s| s.kind);
+            (t.path == declaration && t.line == line) || kind.is_some_and(|k| constructor_of_ours(&t.path, k, &t.container))
+        };
+        if targets.is_empty() || targets.iter().any(mine) {
+            continue;
+        }
+        if ours_type || !targets.iter().any(|t| related(&t.container)) {
+            o.other = Some(describe(&targets[0].container));
+        }
+    }
+}
+
 /// The whole-word occurrences of `word` in one file's text.
 pub fn occurrences_in(path: &str, text: &str, lang: Lang, word: &str) -> Vec<crate::domain::rename::Occurrence> {
     let skip = comments_and_strings(text, lang);
@@ -679,7 +746,7 @@ pub fn occurrences_in(path: &str, text: &str, lang: Lang, word: &str) -> Vec<cra
             let offset = start + at;
             let code = !skip.iter().any(|r| r.start <= offset && offset < r.end);
             let col = line[..at].encode_utf16().count() as u32;
-            out.push(crate::domain::rename::Occurrence { path: path.to_owned(), line: n as u32, col, text: line.trim().to_owned(), code });
+            out.push(crate::domain::rename::Occurrence { path: path.to_owned(), line: n as u32, col, text: line.trim().to_owned(), code, other: None });
         }
         start += line.len() + 1;
     }
@@ -1139,6 +1206,35 @@ mod tests {
         let mut index = ProjectIndex::load(&dir);
         index.update(&|_, _| {});
         (dir, index)
+    }
+
+    #[test]
+    fn leaves_other_symbols_out_of_a_rename() {
+        let calc = "package ex\n\nopen class Calc {\n    open fun add(a: Int, b: Int) = a + b\n}\n";
+        let other = "package ex\n\nclass Other {\n    fun add(x: Int) = x\n}\n";
+        let sub = "package ex\n\nclass Sub : Calc() {\n    override fun add(a: Int, b: Int) = 0\n}\n";
+        let uses = "package ex\n\nfun use(c: Calc, o: Other) {\n    c.add(1, 2)\n    o.add(3)\n    val add = 4\n    println(add)\n}\n";
+        let make = "package ex\n\nfun make() = Calc()\n";
+        let (dir, index) = project(&[("ex/Calc.kt", calc), ("ex/Other.kt", other), ("ex/Sub.kt", sub), ("ex/Use.kt", uses), ("ex/Make.kt", make)]);
+        let mut found = rename_hits(&index, &dir, "add");
+        mark_other_symbols(&index, &dir, "ex/Calc.kt", 3, "add", &mut found);
+        let marks: Vec<(&str, u32, Option<&str>)> = found.iter().map(|o| (o.path.as_str(), o.line, o.other.as_deref())).collect();
+        for expected in [
+            ("ex/Calc.kt", 3, None),
+            ("ex/Sub.kt", 3, None),
+            ("ex/Use.kt", 3, None),
+            ("ex/Other.kt", 3, Some("Other.add")),
+            ("ex/Use.kt", 4, Some("Other.add")),
+            ("ex/Use.kt", 5, Some("a parameter or local variable")),
+            ("ex/Use.kt", 6, Some("a parameter or local variable")),
+        ] {
+            assert!(marks.contains(&expected), "{expected:?} in {marks:?}");
+        }
+        // A class: its constructor calls are its uses.
+        let mut found = rename_hits(&index, &dir, "Calc");
+        mark_other_symbols(&index, &dir, "ex/Calc.kt", 2, "Calc", &mut found);
+        assert!(found.iter().all(|o| o.other.is_none()), "{found:?}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn at(text: &str, needle: &str) -> usize {

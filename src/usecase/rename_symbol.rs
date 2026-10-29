@@ -108,7 +108,7 @@ mod tests {
     }
 
     fn at(path: &str, line: u32, col: u32) -> Occurrence {
-        Occurrence { path: path.into(), line, col, text: String::new(), code: true }
+        Occurrence { path: path.into(), line, col, text: String::new(), code: true, other: None }
     }
 
     #[test]
