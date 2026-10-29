@@ -110,6 +110,19 @@ pub struct ExtractRequest {
     pub parameters: Vec<(String, String)>,
     /// The result type when the plan's was unknown.
     pub result_type: String,
+    /// The parameters' order in the signature, as indexes into the plan's
+    /// (the dialog's Move Up / Move Down); empty for the plan's order.
+    pub order: Vec<usize>,
+}
+
+impl ExtractRequest {
+    /// The plan's parameter indexes in signature order.
+    pub fn ordered(&self) -> Vec<usize> {
+        let n = self.parameters.len();
+        let mut sorted = self.order.clone();
+        sorted.sort_unstable();
+        if sorted == (0..n).collect::<Vec<_>>() { self.order.clone() } else { (0..n).collect() }
+    }
 }
 
 /// Another place in the file with the same code (IntelliJ's duplicates):
@@ -142,12 +155,12 @@ pub fn signature(style: ImportStyle, plan: &MethodPlan, request: &ExtractRequest
     let visibility = if request.visibility.is_empty() { String::new() } else { format!("{} ", request.visibility) };
     match style {
         ImportStyle::Java => {
-            let params: Vec<String> = request.parameters.iter().map(|(n, t)| format!("{t} {n}")).collect();
+            let params: Vec<String> = request.ordered().into_iter().map(|i| format!("{} {}", request.parameters[i].1, request.parameters[i].0)).collect();
             let result = if result.is_empty() { "void".to_owned() } else { result };
             format!("{visibility}{}{result} {}({})", if request.is_static { "static " } else { "" }, request.name, params.join(", "))
         }
         ImportStyle::Kotlin => {
-            let params: Vec<String> = request.parameters.iter().map(|(n, t)| format!("{n}: {t}")).collect();
+            let params: Vec<String> = request.ordered().into_iter().map(|i| format!("{}: {}", request.parameters[i].0, request.parameters[i].1)).collect();
             let result = if result.is_empty() || result == "Unit" { String::new() } else { format!(": {result}") };
             format!("{visibility}fun {}({}){result}", request.name, params.join(", "))
         }
@@ -221,7 +234,8 @@ pub fn extract(style: ImportStyle, text: &str, plan: &MethodPlan, request: &Extr
     let line_start = text[..plan.range.start].rfind('\n').map_or(0, |i| i + 1);
     let statement_indent: String = text[line_start..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
     let inner = format!("{}{unit}", plan.member_indent);
-    let args: Vec<&str> = plan.parameters.iter().map(|p| p.name.as_str()).collect();
+    let order = request.ordered();
+    let args: Vec<&str> = order.iter().map(|i| plan.parameters[*i].name.as_str()).collect();
     let call_text = call(java, plan, request, &args, None);
     let semi = if java { ";" } else { "" };
     // The new method.
@@ -255,7 +269,7 @@ pub fn extract(style: ImportStyle, text: &str, plan: &MethodPlan, request: &Extr
     let name_in_method = method.find(&format!("{}(", request.name)).unwrap_or(0);
     let mut edits: Vec<(Range<usize>, String, bool)> = vec![(plan.range.clone(), call_text, false), (plan.insert_at..plan.insert_at, method, true)];
     for d in duplicates {
-        let args: Vec<&str> = d.args.iter().map(String::as_str).collect();
+        let args: Vec<&str> = order.iter().filter_map(|i| d.args.get(*i)).map(String::as_str).collect();
         edits.push((d.range.clone(), call(java, plan, request, &args, d.assigned.as_deref()), false));
     }
     edits.sort_by_key(|(r, _, _)| (r.start, r.end));
@@ -314,6 +328,7 @@ mod tests {
             is_static: false,
             parameters: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
             result_type: result.into(),
+            order: Vec::new(),
         }
     }
 
@@ -405,5 +420,35 @@ mod tests {
         // Checks.
         assert_eq!(check(ImportStyle::Kotlin, &plan, &request("add", &[("s", "")], "")), Err("Specify the type of 's'".into()));
         assert_eq!(check(ImportStyle::Kotlin, &plan, &request("1x", &[("s", "Int")], "")), Err("'1x' is not a valid name".into()));
+    }
+
+    #[test]
+    fn parameters_in_the_chosen_order() {
+        let text = "fun f(a: Int, b: Int) = println(a - b)\n";
+        let start = text.find("a - b").unwrap();
+        let plan = MethodPlan {
+            range: start..start + 5,
+            expression: true,
+            parameters: vec![
+                Parameter { name: "a".into(), ty: "Int".into(), uses: vec![0..1], assigned: false },
+                Parameter { name: "b".into(), ty: "Int".into(), uses: vec![4..5], assigned: false },
+            ],
+            output: None,
+            returns: None,
+            expression_type: "Int".into(),
+            insert_at: text.len() - 1,
+            member_indent: String::new(),
+            is_static: false,
+            taken: vec![],
+        };
+        let mut r = request("sub", &[("x", "Int"), ("y", "Long")], "");
+        r.order = vec![1, 0];
+        assert_eq!(signature(ImportStyle::Kotlin, &plan, &r), "private fun sub(y: Long, x: Int): Int");
+        let duplicate = Duplicate { range: 0..0, args: vec!["3".into(), "4".into()], assigned: None };
+        let e = extract(ImportStyle::Kotlin, text, &plan, &r, "    ", &[duplicate]).unwrap();
+        assert_eq!(apply(text, &e), "sub(4, 3)fun f(a: Int, b: Int) = println(sub(b, a))\n\nprivate fun sub(y: Long, x: Int): Int = x - y\n");
+        // Not a permutation: the plan's order.
+        r.order = vec![1, 1];
+        assert_eq!(r.ordered(), [0, 1]);
     }
 }

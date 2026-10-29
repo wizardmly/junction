@@ -1,7 +1,7 @@
 //! IntelliJ's Extract Method (Java) / Extract Function (Kotlin) dialog:
 //! the name, the visibility, "Declare static" in Java, the return type
 //! when the code doesn't show it, the parameters (renamable, their types
-//! editable) and the signature's preview.
+//! editable, reordered with Move Up / Move Down) and the signature's preview.
 
 use std::rc::Rc;
 
@@ -13,12 +13,13 @@ use gpui_kit::component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
-use gpui_kit::{App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px};
+use gpui_kit::{App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px};
 
 use crate::domain::extract_method::{ExtractRequest, MethodPlan, check, signature};
 use crate::domain::imports::ImportStyle;
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
+use crate::ui::common::tool_button;
 use crate::ui::dialogs;
 
 pub struct ExtractMethodView {
@@ -28,8 +29,11 @@ pub struct ExtractMethodView {
     visibility: String,
     is_static: bool,
     result_type: Option<Entity<InputState>>,
-    /// Each parameter's name and type fields.
+    /// Each parameter's name and type fields, in the plan's order.
     parameters: Vec<(Entity<InputState>, Entity<InputState>)>,
+    /// The signature's order (indexes into `parameters`) and the selected row.
+    order: Vec<usize>,
+    selected: Option<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -42,6 +46,18 @@ impl ExtractMethodView {
             is_static: self.is_static,
             parameters: self.parameters.iter().map(|(n, t)| (value(n), value(t))).collect(),
             result_type: self.result_type.as_ref().map(value).unwrap_or_default(),
+            order: self.order.clone(),
+        }
+    }
+
+    /// Move Up / Move Down: the selected parameter one place.
+    fn shift(&mut self, up: bool, cx: &mut Context<Self>) {
+        let Some(ix) = self.selected else { return };
+        let to = if up { ix.checked_sub(1) } else { (ix + 1 < self.order.len()).then_some(ix + 1) };
+        if let Some(to) = to {
+            self.order.swap(ix, to);
+            self.selected = Some(to);
+            cx.notify();
         }
     }
 
@@ -85,9 +101,24 @@ impl Render for ExtractMethodView {
             menu
         });
         let mut params = v_flex().gap_1();
-        for (name, ty) in &self.parameters {
-            params = params.child(h_flex().gap_2().child(div().w(px(180.)).child(Input::new(name).small())).child(div().flex_1().child(Input::new(ty).small())));
+        for (row, i) in self.order.iter().enumerate() {
+            let (name, ty) = &self.parameters[*i];
+            params = params.child(
+                h_flex()
+                    .id(("extract-param", row))
+                    .gap_2()
+                    .p_0p5()
+                    .rounded_md()
+                    .when(self.selected == Some(row), |el| el.bg(palette.selection))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.selected = Some(row);
+                        cx.notify();
+                    }))
+                    .child(div().w(px(180.)).child(Input::new(name).small()))
+                    .child(div().flex_1().child(Input::new(ty).small())),
+            );
         }
+        let has = self.selected.is_some() && self.order.len() > 1;
         v_flex()
             .gap_2()
             .child(h_flex().gap_2().child(label("Name:")).child(div().flex_1().child(Input::new(&self.name))))
@@ -103,7 +134,14 @@ impl Render for ExtractMethodView {
             )
             .when_some(self.result_type.clone(), |el, input| el.child(h_flex().gap_2().child(label("Return type:")).child(div().flex_1().child(Input::new(&input)))))
             .when(!self.parameters.is_empty(), |el| {
-                el.child(div().text_sm().text_color(palette.text_secondary).child("Parameters:"))
+                el.child(
+                    h_flex()
+                        .gap_1()
+                        .child(div().text_sm().text_color(palette.text_secondary).child("Parameters:"))
+                        .child(div().flex_1())
+                        .child(tool_button("extract-up", icons::MOVE_UP, "Move Up").disabled(!has).on_click(cx.listener(|this, _, _, cx| this.shift(true, cx))))
+                        .child(tool_button("extract-down", icons::MOVE_DOWN, "Move Down").disabled(!has).on_click(cx.listener(|this, _, _, cx| this.shift(false, cx)))),
+                )
                     .child(h_flex().gap_2().text_xs().text_color(palette.text_secondary).child(div().w(px(180.)).child("Name")).child(div().child("Type")))
                     .child(params)
             })
@@ -143,7 +181,9 @@ pub fn open(style: ImportStyle, plan: MethodPlan, on_ok: impl Fn(ExtractRequest,
             watch(n, cx);
             watch(t, cx);
         }
-        ExtractMethodView { style, is_static: plan.is_static, plan, name, visibility: "private".into(), result_type, parameters, _subscriptions }
+        let order = (0..parameters.len()).collect();
+        let selected = (!parameters.is_empty()).then_some(0);
+        ExtractMethodView { style, is_static: plan.is_static, plan, name, visibility: "private".into(), result_type, parameters, order, selected, _subscriptions }
     });
     let focus = view.read(cx).name.clone();
     let on_ok = Rc::new(on_ok);

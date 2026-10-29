@@ -987,7 +987,8 @@ Linux 实测（Xvfb，trans 示例）：`bg_button.xml`（pressed 引用渐变 s
 | 对话框：Name（默认 “extracted”，被占用时 extracted1…）、Visibility（Kotlin private / internal / protected / public，Java 另有 package-private）、Java 的 Declare static（所在方法是 static 时固定勾选）、参数的名字和类型可改（改名会同步改新方法体里的用法）、Signature Preview；名字非法、参数重名或缺类型时显示原因且不能确定 | ✅ |
 | 一次编辑完成，Ctrl+Z 一步撤销；完成后选中新方法名 | ✅ |
 | 重复代码片段（2026-10-29，照 IntelliJ 的 DuplicatesFinder）：Refactor 后在同一文件里找语法相同的代码（参数位置可以是任意表达式，同一参数每处要相同；写到的参数和字符串模板里的只能是变量），只找同一个类里能调用新方法的方法（Java 非 static 时跳过 static 方法），代码里声明、后面还读到的变量只能是结果；找到时提示 “Junction found N code fragments in this file that can be replaced with a call to the extracted method”，列出行号，Replace 一并换成调用（`int sum = accumulate(x, 7);`，赋值结果写回那处的变量），Skip 只换选区；整次一步撤销。选区以 return 结束时不找。Linux 实测：Calc.java 里选中 `add` 的 `int sum = a + b; total += sum;` 提取成 `accumulate`，提示列出 `addSeven` 的第 13 行，Replace 后变成 `int sum = accumulate(x, 7);`，Ctrl+Z 一步回到原样 | ✅ |
-| 参数顺序调整 / 去掉参数、Extract Parameter / Change Signature、Kotlin 的 receiver 和泛型参数、按语言服务器取类型；其他文件里的重复片段 | ⬜ |
+| 参数顺序（2026-10-29）：对话框 Parameters 一栏右边的 Move Up / Move Down 调整选中参数的位置，签名预览、新方法和调用（包括重复片段的调用）都按这个顺序。Linux 实测：Calc.java 里提取 `a + b`，把 a 移到 b 后面，Refactor 后是 `int sum = extracted(b, a);` 和 `private int extracted(int b, int a) { return a + b; }` | ✅ |
+| 去掉参数、Extract Parameter / Change Signature、Kotlin 的 receiver 和泛型参数、按语言服务器取类型；其他文件里的重复片段；Java 二元表达式（`a + b`）的类型推断（现在要手填 Return type） | ⬜ |
 
 Linux 实测（Xvfb）：calc 的 `CalcTest.totals()` 选中 `int sum = 0;` 到循环结束，Ctrl+Alt+M 弹出 Extract Method：参数 `items`（`java.util.List<Integer>`），预览 `private int extracted(java.util.List<Integer> items)`；改名 `sumOf` 后原处变成 `int sum = sumOf(items);`，后面是带 `return sum;` 的新方法；Ctrl+Z 一步还原。ktjvm 示例 `Shop.check` 的两条语句提取为 `private fun report(n: Int)`，原处是 `report(n)`。
 
