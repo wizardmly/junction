@@ -173,7 +173,10 @@ pub fn signature_at(lang: Lang, text: &str, offset: usize) -> Result<Signature, 
             None => (String::new(), name.start_byte()..name.start_byte()),
         },
     };
+    let (visibility, visibility_range) = visibility_of(function, text);
     Ok(Signature {
+        visibility,
+        visibility_range,
         name: name_text,
         name_range: name.byte_range(),
         params,
@@ -182,6 +185,43 @@ pub fn signature_at(lang: Lang, text: &str, offset: usize) -> Result<Signature, 
         return_range,
         constructor,
     })
+}
+
+/// The function's visibility modifier and its range, else none and where
+/// one goes: before its other modifiers, after its annotations. A Kotlin
+/// primary constructor's can't change here.
+fn visibility_of(function: Node, text: &str) -> (String, Option<std::ops::Range<usize>>) {
+    if function.kind() == "class_declaration" {
+        return (String::new(), None);
+    }
+    const VISIBILITIES: [&str; 4] = ["public", "protected", "private", "internal"];
+    let modifiers = {
+        let mut cursor = function.walk();
+        let found = function.children(&mut cursor).find(|c| c.kind() == "modifiers");
+        found
+    };
+    let mut first_modifier = None;
+    if let Some(modifiers) = modifiers {
+        let mut cursor = modifiers.walk();
+        for m in modifiers.children(&mut cursor) {
+            if m.kind().contains("annotation") {
+                continue;
+            }
+            let word = &text[m.byte_range()];
+            if VISIBILITIES.contains(&word) {
+                return (word.to_owned(), Some(m.byte_range()));
+            }
+            first_modifier.get_or_insert(m.start_byte());
+        }
+    }
+    // No modifier: before the `fun` / `constructor` keyword, Java's type
+    // parameters, type or name.
+    let at = first_modifier.unwrap_or_else(|| {
+        let mut cursor = function.walk();
+        let after_modifiers: Vec<Node> = function.children(&mut cursor).filter(|c| c.kind() != "modifiers" && !c.kind().contains("comment")).collect();
+        after_modifiers.first().map_or(function.start_byte(), |n| n.start_byte())
+    });
+    (String::new(), Some(at..at))
 }
 
 #[cfg(test)]
@@ -289,5 +329,31 @@ mod tests {
         // No parentheses: they're added when needed.
         let each = change("each", &|r| r.params.insert(0, NewParam { old: None, name: "from".into(), ty: "Int".into(), value: "0".into() }));
         assert_eq!(each, "    repeat(2) { println() }\n    repeat(times = 1) { }\n    repeat(3, { })\n    each(0) { println(it) }");
+    }
+
+    #[test]
+    fn changes_the_visibility() {
+        let change = |lang: Lang, text: &str, at: &str, to: &str| {
+            let s = signature_at(lang, text, text.find(at).unwrap()).unwrap();
+            let mut request = SignatureRequest::of(&s);
+            request.visibility = Some(to.into());
+            let style = if lang == Lang::Java { ImportStyle::Java } else { ImportStyle::Kotlin };
+            apply(text, edits(style, text, &s, &[], &request).unwrap())
+        };
+        let kt = "class A {\n    @Deprecated(\"x\")\n    override suspend fun go() {}\n    private fun stop() {}\n    fun run() {}\n}\n";
+        // Before the other modifiers, after the annotations.
+        assert!(change(Lang::Kotlin, kt, "go", "internal").contains("@Deprecated(\"x\")\n    internal override suspend fun go()"));
+        assert!(change(Lang::Kotlin, kt, "stop", "public").contains("    fun stop()"));
+        assert!(change(Lang::Kotlin, kt, "stop", "protected").contains("    protected fun stop()"));
+        assert!(change(Lang::Kotlin, kt, "run", "private").contains("    private fun run()"));
+        assert_eq!(change(Lang::Kotlin, kt, "run", "public"), kt);
+        let java = "class A {\n    @Override\n    public static int go() { return 1; }\n    void run() {}\n    <T> T pick() { return null; }\n    A() {}\n}\n";
+        assert!(change(Lang::Java, java, "go", "package-private").contains("@Override\n    static int go()"));
+        assert!(change(Lang::Java, java, "run", "private").contains("    private void run()"));
+        assert!(change(Lang::Java, java, "pick", "protected").contains("    protected <T> T pick()"));
+        assert!(change(Lang::Java, java, "A()", "public").contains("    public A() {}"));
+        // A primary constructor's stays.
+        let primary = "class P(val x: Int)\n";
+        assert_eq!(signature_at(Lang::Kotlin, primary, 8).unwrap().visibility_range, None);
     }
 }

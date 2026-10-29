@@ -1,18 +1,21 @@
 //! IntelliJ's Change Signature dialog (Ctrl+F6): the name and return type,
 //! the parameters' table (Name, Type, and for an added one the Default value
 //! the calls pass) with Add, Remove, Move Up and Move Down, and the
-//! signature's preview.
+//! signature's preview, and the Visibility.
 
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    Disableable as _, Sizable as _, WindowExt as _, h_flex,
+    Disableable as _, Sizable as _, WindowExt as _,
+    button::Button,
+    h_flex,
     input::{Input, InputEvent, InputState},
+    menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
 use gpui_kit::{App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px};
 
-use crate::domain::change_signature::{NewParam, Signature, SignatureRequest, check};
+use crate::domain::change_signature::{NewParam, Signature, SignatureRequest, check, visibilities, visibility_name};
 use crate::domain::imports::ImportStyle;
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
@@ -34,6 +37,8 @@ pub struct ChangeSignatureView {
     return_type: Entity<InputState>,
     rows: Vec<Row>,
     selected: Option<usize>,
+    /// The Visibility chosen, as [`visibilities`] names it.
+    visibility: String,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -54,6 +59,7 @@ impl ChangeSignatureView {
             name: value(&self.name),
             return_type: value(&self.return_type),
             params: self.rows.iter().map(|r| NewParam { old: r.old, name: value(&r.name), ty: value(&r.ty), value: value(&r.value) }).collect(),
+            visibility: self.signature.visibility_range.is_some().then(|| self.visibility.clone()),
         }
     }
 
@@ -95,12 +101,16 @@ impl ChangeSignatureView {
                 ImportStyle::Kotlin => format!("{}: {}", p.name, p.ty),
             })
             .collect();
-        match self.style {
+        let signature = match self.style {
             ImportStyle::Java if self.signature.constructor => format!("{}({})", request.name, params.join(", ")),
             ImportStyle::Java => format!("{} {}({})", request.return_type, request.name, params.join(", ")),
             ImportStyle::Kotlin if self.signature.constructor => format!("constructor {}({})", request.name, params.join(", ")),
             ImportStyle::Kotlin if request.return_type.is_empty() => format!("fun {}({})", request.name, params.join(", ")),
             ImportStyle::Kotlin => format!("fun {}({}): {}", request.name, params.join(", "), request.return_type),
+        };
+        match request.visibility.as_deref() {
+            Some(v) if v != "package-private" => format!("{v} {signature}"),
+            _ => signature,
         }
     }
 }
@@ -140,6 +150,21 @@ impl Render for ChangeSignatureView {
             .gap_2()
             .child(h_flex().gap_2().child(label("Name:")).child(div().flex_1().child(Input::new(&self.name).disabled(self.signature.constructor))))
             .child(h_flex().gap_2().child(label("Return type:")).child(div().flex_1().child(Input::new(&self.return_type).disabled(self.signature.constructor))))
+            .child(h_flex().gap_2().child(label("Visibility:")).child({
+                let (view, style, chosen) = (cx.entity(), self.style, self.visibility.clone());
+                Button::new("signature-visibility").small().outline().label(self.visibility.clone()).icon(icons::CHEVRON_DOWN).disabled(self.signature.visibility_range.is_none()).dropdown_menu(move |mut menu, _, _| {
+                    for v in visibilities(style) {
+                        let view = view.clone();
+                        menu = menu.item(PopupMenuItem::new(*v).checked(chosen == *v).on_click(move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                this.visibility = v.to_string();
+                                cx.notify();
+                            });
+                        }));
+                    }
+                    menu
+                })
+            }))
             .child(
                 h_flex()
                     .gap_1()
@@ -175,6 +200,7 @@ pub fn open(style: ImportStyle, signature: Signature, calls: usize, on_ok: impl 
             return_type: cx.new(|cx| InputState::new(window, cx)),
             rows: Vec::new(),
             selected: None,
+            visibility: visibility_name(style, &signature.visibility).to_owned(),
             _subscriptions: Vec::new(),
         };
         view.name = view.input(signature.name.clone(), "Name", window, cx);

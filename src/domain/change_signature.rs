@@ -44,6 +44,38 @@ pub struct Signature {
     pub return_range: Range<usize>,
     /// A constructor: no name or return type to change.
     pub constructor: bool,
+    /// The visibility modifier as written; empty for none (Kotlin's public,
+    /// Java's package-private).
+    pub visibility: String,
+    /// The modifier's range, or where one goes; none when it can't change
+    /// here (Kotlin's primary constructor).
+    pub visibility_range: Option<Range<usize>>,
+}
+
+/// The visibilities the dialog offers, IntelliJ's order; the first of
+/// Kotlin's and the third of Java's are written as nothing.
+pub fn visibilities(style: ImportStyle) -> &'static [&'static str] {
+    match style {
+        ImportStyle::Kotlin => &["public", "internal", "protected", "private"],
+        ImportStyle::Java => &["public", "protected", "package-private", "private"],
+    }
+}
+
+/// The keyword written for a visibility.
+fn visibility_keyword(style: ImportStyle, visibility: &str) -> &str {
+    match (style, visibility) {
+        (ImportStyle::Kotlin, "public") | (ImportStyle::Java, "package-private") => "",
+        (_, v) => v,
+    }
+}
+
+/// A declaration's visibility as the dialog names it.
+pub fn visibility_name(style: ImportStyle, written: &str) -> &str {
+    match (style, written) {
+        (ImportStyle::Kotlin, "") => "public",
+        (ImportStyle::Java, "") => "package-private",
+        (_, v) => v,
+    }
 }
 
 /// A parameter of the new signature.
@@ -62,6 +94,8 @@ pub struct SignatureRequest {
     pub name: String,
     pub return_type: String,
     pub params: Vec<NewParam>,
+    /// The new visibility, as [`visibilities`] names it; none keeps it.
+    pub visibility: Option<String>,
 }
 
 impl SignatureRequest {
@@ -72,6 +106,7 @@ impl SignatureRequest {
             name: signature.name.clone(),
             return_type: signature.return_type.clone(),
             params: signature.params.iter().enumerate().map(|(i, p)| NewParam { old: Some(i), name: p.name.clone(), ty: p.ty.clone(), value: String::new() }).collect(),
+            visibility: None,
         }
     }
 }
@@ -198,7 +233,8 @@ pub fn override_request(signature: &Signature, other: &Signature, request: &Sign
         })
         .collect();
     let return_type = if request.return_type.trim() == signature.return_type { other.return_type.clone() } else { request.return_type.clone() };
-    SignatureRequest { name: request.name.clone(), return_type, params }
+    // An override keeps its own visibility.
+    SignatureRequest { name: request.name.clone(), return_type, params, visibility: None }
 }
 
 /// The edits in the function's file: the declaration, the parameters'
@@ -206,6 +242,17 @@ pub fn override_request(signature: &Signature, other: &Signature, request: &Sign
 pub fn edits(style: ImportStyle, text: &str, signature: &Signature, calls: &[CallSite], request: &SignatureRequest) -> Result<Vec<Edit>, String> {
     check(style, signature, request)?;
     let mut out: Vec<Edit> = Vec::new();
+    if let (Some(visibility), Some(range)) = (&request.visibility, &signature.visibility_range) {
+        let keyword = visibility_keyword(style, visibility);
+        if keyword != signature.visibility {
+            match (signature.visibility.is_empty(), keyword.is_empty()) {
+                (true, _) => out.push((range.start..range.start, format!("{keyword} "))),
+                // Removed with the space after it.
+                (false, true) => out.push((range.start..text[range.end..].find(|c: char| !c.is_whitespace()).map_or(range.end, |n| range.end + n), String::new())),
+                (false, false) => out.push((range.clone(), keyword.to_owned())),
+            }
+        }
+    }
     if !signature.constructor && request.name != signature.name {
         out.push((signature.name_range.clone(), request.name.clone()));
     }
@@ -282,6 +329,7 @@ mod tests {
             return_type: "Double".into(),
             return_range: close + 1..ret + 8,
             constructor: false,
+            ..Default::default()
         };
         (text, signature)
     }
@@ -340,6 +388,7 @@ mod tests {
             return_type: "int".into(),
             return_range: 0..3,
             constructor: false,
+            ..Default::default()
         };
         let mut request = SignatureRequest::of(&s);
         request.params.remove(1);

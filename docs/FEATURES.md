@@ -1119,7 +1119,8 @@ Linux 实测（Xvfb）：Kotlin 工程依赖 `com.google.code.gson:gson:2.11.0`�
 | Kotlin 构造方法（2026-10-29）：光标在类头（主构造方法）或 `constructor(…)` 里按 Ctrl+F6；调用处包括 `A(…)`、子类的 `: A(…)`、次构造方法的 `: this(…)` / `: super(…)`；`val` / `var` 参数也是属性，在这里改名或删除时提示改用 Rename / Safe Delete；普通参数在属性初始值和 `init` 块里的用法跟着改名；预览写成 `constructor A(…)` | ✅ |
 | 覆盖方法一起改（2026-10-29）：父类型 / 子类型里同名、同参数个数的方法（Kotlin `override fun`、Java 覆盖方法、接口里的声明）的声明和参数用法跟着改，它们没改的参数名、类型和返回类型保持自己的；同一个类里的重载和无关类的同名方法不动 | ✅ |
 | 方法引用（2026-10-29）：改名时 Kotlin 的 `x::name`、`Type::name` 和 Java 的 `this::name`、`Type::name` 一起改名（`Type::new` 不算）；Inline Function 遇到引用时拒绝（"gross is used as a reference (::gross)"），Introduce Parameter 不给引用加实参 | ✅ |
-| 可见性、异常列表、委托旧签名 | ⬜ |
+| Visibility（2026-10-29）：对话框里的下拉框，Kotlin 是 public / internal / protected / private，Java 是 public / protected / package-private / private；改了就重写声明上的修饰符（public / package-private 写成不写，新加的放在注解之后、其他修饰符之前），预览一起显示；覆盖方法保留自己的可见性；Kotlin 主构造方法的不可改。Linux 实测：Calc.java 的 `add` 选 private 后变成 `private int add(int a, int b)` | ✅ |
+| 异常列表、委托旧签名 | ⬜ |
 
 Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int): Double` 按 Ctrl+F6，改名 `sum`，把 `count` 上移，新增 `tax: Double`（调用处默认值 `0.0`），Refactor 后声明是 `fun sum(count: Int, price: Double, tax: Double): Double`，同文件的 `total(1.0, 2)` 变成 `sum(2, 1.0, 0.0)`，Main.kt 的 `cart.total(10.0, 3)` 和 `cart.total(count = 1, price = 2.0)` 变成 `cart.sum(3, 10.0, 0.0)` 和 `cart.sum(count = 1, price = 2.0, tax = 0.0)`。
 
