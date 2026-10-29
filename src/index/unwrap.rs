@@ -70,6 +70,14 @@ fn replace_with(text: &str, construct: Node, lines: &[String], title: String) ->
     Some(Unwrapping { edit: Intention { title, range, replacement, caret }, affected: construct.byte_range() })
 }
 
+/// Deletes `range`: its whole lines when nothing else shares them.
+fn remove_lines(text: &str, range: Range<usize>) -> Intention {
+    let line_start = text[..range.start].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[range.end..].find('\n').map_or(text.len(), |i| range.end + i);
+    let range = if text[line_start..range.start].trim().is_empty() && text[range.end..line_end].trim().is_empty() { line_start..(line_end + 1).min(text.len()) } else { range };
+    Intention { title: String::new(), caret: range.start, range, replacement: String::new() }
+}
+
 fn contains(node: Node, at: usize) -> bool {
     node.start_byte() <= at && at <= node.end_byte()
 }
@@ -90,7 +98,13 @@ pub fn unwrap_options(lang: Lang, text: &str, offset: usize) -> Vec<Unwrapping> 
             "when_entry" | "switch_block_statement_group" | "switch_rule" => branch = Some(n),
             "when_expression" | "switch_expression" | "switch_statement" => {
                 let statement = n.parent().is_some_and(|p| matches!(p.kind(), "statements" | "control_structure_body" | "block" | "expression_statement"));
-                let Some(b) = branch.take().filter(|_| statement) else { continue };
+                let Some(b) = branch.take() else { continue };
+                let keyword = if n.kind() == "when_expression" { "when" } else { "switch" };
+                let remove = Unwrapping { edit: Intention { title: if keyword == "when" { "Remove 'when' branch".into() } else { "Remove 'case...'".into() }, ..remove_lines(text, b.byte_range()) }, affected: b.byte_range() };
+                if !statement {
+                    out.push(remove);
+                    continue;
+                }
                 let parts = children(b);
                 let lines = match b.kind() {
                     // `case 1: a(); break;`: the statements after the labels, without the break.
@@ -104,10 +118,10 @@ pub fn unwrap_options(lang: Lang, text: &str, offset: usize) -> Vec<Unwrapping> 
                     }
                     _ => parts.iter().rev().find(|c| c.is_named() && !matches!(c.kind(), "switch_label" | "when_condition")).map(|body| body_lines(text, *body)).unwrap_or_default(),
                 };
-                let keyword = if n.kind() == "when_expression" { "when" } else { "switch" };
                 // The parent may be the expression statement holding the switch.
                 let construct = if n.parent().is_some_and(|p| p.kind() == "expression_statement") { n.parent().unwrap_or(n) } else { n };
                 out.extend(replace_with(text, construct, &lines, format!("Unwrap '{keyword}...'")));
+                out.push(remove);
             }
             "if_expression" | "if_statement" => {
                 // Kotlin's `val x = if …` is a value, not a statement.
@@ -162,6 +176,10 @@ pub fn unwrap_options(lang: Lang, text: &str, offset: usize) -> Vec<Unwrapping> 
                 let name = text[parts[0].byte_range()].rsplit('.').next().unwrap_or_default().trim().to_owned();
                 let lines = children(lambda).into_iter().find(|c| c.kind() == "statements").map(|b| body_lines(text, b)).unwrap_or_default();
                 out.extend(replace_with(text, n, &lines, format!("Unwrap '{name} {{...}}'")));
+            }
+            // Java's standalone `{ … }` inside a block.
+            "block" if lang == Lang::Java && n.parent().is_some_and(|p| matches!(p.kind(), "block" | "switch_block_statement_group")) => {
+                out.extend(replace_with(text, n, &body_lines(text, n), "Unwrap braces".into()));
             }
             "function_declaration" | "method_declaration" | "class_body" => break,
             _ => {}
@@ -229,6 +247,26 @@ mod tests {
         assert_eq!(apply(java, &options[0]), "class A {\n  void f() {\n    a();\n  }\n}\n");
         let rules = "class A {\n  void f() {\n    switch (y) {\n      case 1 -> c();\n      default -> { d(); }\n    }\n  }\n}\n";
         assert_eq!(apply(rules, &unwrap_options(Lang::Java, rules, rules.find("d()").unwrap())[0]), "class A {\n  void f() {\n    d();\n  }\n}\n");
+    }
+
+    #[test]
+    fn removes_branches_and_unwraps_braces() {
+        let text = "fun f() {\n    when (x) {\n        1 -> a()\n        else -> {\n            b()\n        }\n    }\n}\n";
+        let options = unwrap_options(Lang::Kotlin, text, text.find("a()").unwrap());
+        assert_eq!(options.iter().map(|o| o.edit.title.as_str()).collect::<Vec<_>>(), ["Unwrap 'when...'", "Remove 'when' branch"]);
+        assert_eq!(apply(text, &options[1]), "fun f() {\n    when (x) {\n        else -> {\n            b()\n        }\n    }\n}\n");
+        // A `when` used as a value only loses the branch.
+        let value = "fun f() = when (x) {\n    1 -> a()\n    else -> b()\n}\n";
+        let options = unwrap_options(Lang::Kotlin, value, value.find("b()").unwrap());
+        assert_eq!(options.iter().map(|o| o.edit.title.as_str()).collect::<Vec<_>>(), ["Remove 'when' branch"]);
+        assert_eq!(apply(value, &options[0]), "fun f() = when (x) {\n    1 -> a()\n}\n");
+        let java = "class A {\n  void f() {\n    switch (x) {\n      case 1:\n        a();\n        break;\n      default:\n        b();\n    }\n    {\n      int y = 1;\n      c(y);\n    }\n  }\n}\n";
+        let options = unwrap_options(Lang::Java, java, java.find("a()").unwrap());
+        assert_eq!(options[1].edit.title, "Remove 'case...'");
+        assert_eq!(apply(java, &options[1]), java.replace("      case 1:\n        a();\n        break;\n", ""));
+        let options = unwrap_options(Lang::Java, java, java.find("c(y)").unwrap());
+        assert_eq!(options.iter().map(|o| o.edit.title.as_str()).collect::<Vec<_>>(), ["Unwrap braces"]);
+        assert_eq!(apply(java, &options[0]), java.replace("    {\n      int y = 1;\n      c(y);\n    }\n", "    int y = 1;\n    c(y);\n"));
     }
 
     #[test]
