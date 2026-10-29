@@ -562,7 +562,7 @@ Linux 实测：去掉 `JAVA_HOME`、PATH 中不含 `java` 启动（即用户截�
 | 光标不在名字上时提示 AS 的 “Cannot perform refactoring. Caret should be positioned at the name of element to be refactored.” | ✅ |
 | Undo | ✅ 重命名后右下角通知「Renamed 'a' to 'b'」带 Undo 按钮：文件名改回、每个文件恢复原文；之后文件又被改过就拒绝并提示（AS 用 Ctrl+Z，这里放在通知里） |
 | 语义级精确匹配（同名的不同符号，例如别的类的 `add`）（2026-10-29） | ✅ 有语言服务器时用它的 references；没有时（Java / Kotlin）每处出现按 Go to Declaration 的解析判断：解析到别的类的同名成员、同名参数或局部变量（`this.speed = speed` 右边的 `speed`）、别的类里的同名声明时，列表里仍列出但默认不勾，后面标注 “(another symbol: Dog.start)” / “(another symbol: a parameter or local variable)”；父类 / 子类里的同名成员（override）、类的构造函数调用照常勾选；解析不出的保持勾选。Linux 实测：`Car.start` 改成 `launch`，`car.start(10)` 跟着改，`Dog` 里的 `start()` 声明和 `dog.start()` 默认不勾、没被改；字段 `speed` 改成 `velocity`，`this.speed = speed` 变成 `this.velocity = speed`，参数没被改 |
-| Rename 的 Preview 窗口 | ❌ 未做 |
+| Rename 的 Preview 窗口（2026-10-29）：对话框左下角 Preview，关掉对话框，在 Find 窗口开 “Refactoring Preview” 标签：标题 “Rename method 'add' to 'plus' — 2 occurrences in 2 files”，按 Code usages / Usages in comments and strings 分组、再按文件列出每处（名字高亮，右侧预览源码）；选中一行或文件按 Exclude（Delete）去掉；Do Refactor 先保存编辑器再改剩下的（期间改过的位置对不上名字就跳过），Cancel 关掉标签。Linux 实测：Calc.add 改名 plus 时 Preview，排除 CalcTest.java 那一处后 Do Refactor，只有 Calc.java 的声明变成 `plus` | ✅ |
 
 Linux 实测（Xvfb，示例 Gradle 项目）：类 `Calc` 改为 `Calculator`，`Calc.java` 改名为 `Calculator.java`（Git 显示为重命名），测试里的 `Calc.add` 跟着改，勾选注释后 Javadoc 里的 `Calc` 也改了，标签页跟到新文件；局部变量 `sum` 改为 `total`，三处全改；方法 `add` 列出声明和两处调用；输入 `class` 时显示错误且不能提交。
 

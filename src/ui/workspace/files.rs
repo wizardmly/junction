@@ -582,11 +582,15 @@ impl Workspace {
         window.push_notification(notification, cx);
     }
 
-    fn rename_symbol(&mut self, path: String, text: String, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn save_all_editors(&mut self, cx: &mut Context<Self>) {
         let editors: Vec<_> = self.editors.iter().chain(self.split.iter().flat_map(|s| s.editors.iter())).map(|t| t.view.clone()).collect();
         for editor in editors {
             editor.update(cx, |e, cx| e.save_now(cx));
         }
+    }
+
+    fn rename_symbol(&mut self, path: String, text: String, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_all_editors(cx);
         let task = self.code_index.read(cx).rename_target(path, text, offset, cx);
         cx.spawn_in(window, async move |this, cx| {
             let target = task.await;
@@ -595,7 +599,8 @@ impl Workspace {
                 Ok(target) => {
                     let workspace = cx.entity().downgrade();
                     let model = this.model.clone();
-                    crate::ui::rename_dialog::open(target, move |request, window, cx| {
+                    let kind = target.kind.clone();
+                    let apply = Rc::new(move |request: crate::ui::rename_dialog::RenameRequest, window: &mut Window, cx: &mut App| {
                         let model = model.read(cx);
                         let Some(root) = model.project_root().map(|r| r.to_path_buf()) else { return };
                         let files = crate::infra::project_files::DiskFiles { root, repository: model.project_repository().cloned() };
@@ -631,7 +636,29 @@ impl Workspace {
                                 }
                             })
                             .ok();
-                    }, window, cx);
+                    });
+                    let on_ok = apply.clone();
+                    let preview_workspace = cx.entity().downgrade();
+                    let on_preview = move |request: crate::ui::rename_dialog::RenameRequest, _: &mut Window, cx: &mut App| {
+                        let header = format!("Rename {kind} '{}' to '{}' — {}", request.old, request.new, crate::domain::rename::summary(&request.occurrences.iter().collect::<Vec<_>>()));
+                        let apply = apply.clone();
+                        let crate::ui::rename_dialog::RenameRequest { old, new, declaration, occurrences, rename_file } = request;
+                        let word = old.clone();
+                        let workspace = preview_workspace.clone();
+                        let run = Rc::new(move |occurrences: Vec<crate::domain::rename::Occurrence>, window: &mut Window, cx: &mut App| {
+                            // Edits made while previewing reach the disk first (stale
+                            // positions are skipped).
+                            workspace.update(cx, |this, cx| this.save_all_editors(cx)).ok();
+                            apply(crate::ui::rename_dialog::RenameRequest { old: old.clone(), new: new.clone(), declaration: declaration.clone(), occurrences, rename_file }, window, cx);
+                        });
+                        preview_workspace
+                            .update(cx, |this, cx| {
+                                this.find.update(cx, |find, cx| find.show_refactoring(word, header, occurrences, run, cx));
+                                this.show_find_window(cx);
+                            })
+                            .ok();
+                    };
+                    crate::ui::rename_dialog::open(target, move |request, window, cx| on_ok(request, window, cx), on_preview, window, cx);
                 }
             })
             .ok();

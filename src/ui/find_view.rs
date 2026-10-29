@@ -21,6 +21,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Task, Window, div, prelude::FluentBuilder as _, px, relative, uniform_list,
 };
 
+use crate::domain::rename::Occurrence;
 use crate::index::nav::{Target, Usage};
 use crate::index::service::CodeIndex;
 use crate::index::text_search::{SearchResult, TextMatch};
@@ -45,7 +46,16 @@ enum Content {
     Items(Vec<FoundItem>),
 }
 
+/// A refactoring's preview (IntelliJ's Refactoring Preview): the changes,
+/// shown as usages, and what Do Refactor runs with the ones not excluded.
+#[derive(Clone)]
+pub struct Refactoring {
+    pub occurrences: Vec<Occurrence>,
+    pub run: Rc<dyn Fn(Vec<Occurrence>, &mut Window, &mut gpui_kit::App)>,
+}
+
 struct FindTab {
+    refactoring: Option<Refactoring>,
     title: String,
     header: String,
     content: Content,
@@ -108,6 +118,7 @@ impl FindView {
 
     fn empty_tab(title: String, content: Content) -> FindTab {
         FindTab {
+            refactoring: None,
             title,
             header: "Searching…".into(),
             content,
@@ -190,6 +201,32 @@ impl FindView {
         cx.notify();
     }
 
+    /// Rename's Preview: the occurrences of `word` to change, code first,
+    /// in a tab of their own with Do Refactor and Cancel.
+    pub fn show_refactoring(&mut self, word: String, header: String, mut occurrences: Vec<Occurrence>, run: Rc<dyn Fn(Vec<Occurrence>, &mut Window, &mut gpui_kit::App)>, cx: &mut Context<Self>) {
+        occurrences.sort_by_key(|o| !o.code);
+        let usages = occurrences
+            .iter()
+            .map(|o| Usage { path: o.path.clone(), line: o.line, col: o.col, text: o.text.clone(), group: if o.code { "Code usages".into() } else { "Usages in comments and strings".into() } })
+            .collect();
+        let mut tab = Self::empty_tab("Refactoring Preview".into(), Content::Usages(word, usages));
+        tab.searching = false;
+        tab.header = header;
+        tab.refactoring = Some(Refactoring { occurrences, run });
+        self.place(tab, true);
+        cx.notify();
+    }
+
+    /// Do Refactor: the changes not excluded; the preview closes.
+    fn do_refactor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        let Some(refactoring) = tab.refactoring.clone() else { return };
+        let kept = refactoring.occurrences.into_iter().filter(|o| !tab.excluded.contains(&(o.path.clone(), o.line))).collect();
+        let ix = self.active;
+        self.close_tab(ix, cx);
+        (refactoring.run)(kept, window, cx);
+    }
+
     fn close_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix < self.tabs.len() {
             self.tabs.remove(ix);
@@ -208,14 +245,15 @@ impl FindView {
             Content::Usages(_, usages) => {
                 let mut last_group = None;
                 let mut last_file = None;
-                for (i, u) in usages.iter().enumerate() {
+                let kept = |u: &Usage| !tab.excluded.contains(&(u.path.clone(), u.line));
+                for (i, u) in usages.iter().enumerate().filter(|(_, u)| kept(u)) {
                     if last_group.as_ref() != Some(&u.group) {
-                        rows.push(Row::Group(u.group.clone(), usages.iter().filter(|x| x.group == u.group).count()));
+                        rows.push(Row::Group(u.group.clone(), usages.iter().filter(|x| x.group == u.group && kept(x)).count()));
                         last_group = Some(u.group.clone());
                         last_file = None;
                     }
                     if last_file.as_ref() != Some(&u.path) {
-                        let count = usages.iter().filter(|x| x.group == u.group && x.path == u.path).count();
+                        let count = usages.iter().filter(|x| x.group == u.group && x.path == u.path && kept(x)).count();
                         rows.push(Row::File { path: u.path.clone(), count, indent: 1 });
                         last_file = Some(u.path.clone());
                     }
@@ -361,6 +399,16 @@ impl FindView {
         let rows = self.rows();
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         let Some(row) = tab.selected.and_then(|s| rows.get(s)) else { return };
+        if let Content::Usages(_, usages) = &tab.content {
+            let keys: Vec<(String, u32)> = match row {
+                Row::Usage(i, _) => usages.get(*i).map(|u| (u.path.clone(), u.line)).into_iter().collect(),
+                Row::File { path, .. } => usages.iter().filter(|u| &u.path == path).map(|u| (u.path.clone(), u.line)).collect(),
+                _ => return,
+            };
+            tab.excluded.extend(keys);
+            cx.notify();
+            return;
+        }
         let Content::Text { result, .. } = &tab.content else { return };
         match row {
             Row::Text(i, _) => {
@@ -513,6 +561,8 @@ impl FindView {
         let tab = self.tabs.get(self.active);
         let text = tab.is_some_and(|t| matches!(t.content, Content::Text { .. }));
         let replace = tab.is_some_and(|t| matches!(&t.content, Content::Text { request, .. } if request.replacement.is_some()));
+        let refactoring = tab.is_some_and(|t| t.refactoring.is_some());
+        let usages = tab.is_some_and(|t| matches!(t.content, Content::Usages(..)));
         h_flex()
             .h(px(crate::ui::common::header_height()))
             .px_1()
@@ -548,11 +598,18 @@ impl FindView {
                         cx.notify();
                     })),
             )
-            .child(tool_button("find-exclude", icons::FILE_IGNORED, "Exclude (Delete)").disabled(!text).on_click(cx.listener(|this, _, _, cx| this.exclude_selected(cx))))
+            .child(tool_button("find-exclude", icons::FILE_IGNORED, "Exclude (Delete)").disabled(!text && !usages).on_click(cx.listener(|this, _, _, cx| this.exclude_selected(cx))))
             .child(div().flex_1())
             .when(replace, |el| {
                 el.child(Button::new("find-replace-selected").small().outline().label("Replace Selected").on_click(cx.listener(|this, _, window, cx| this.replace(true, window, cx))))
                     .child(Button::new("find-replace-all").small().primary().label("Replace All").on_click(cx.listener(|this, _, window, cx| this.replace(false, window, cx))))
+            })
+            .when(refactoring, |el| {
+                el.child(Button::new("find-refactor-cancel").small().outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                    let ix = this.active;
+                    this.close_tab(ix, cx)
+                })))
+                .child(Button::new("find-do-refactor").small().primary().label("Do Refactor").on_click(cx.listener(|this, _, window, cx| this.do_refactor(window, cx))))
             })
     }
 }
