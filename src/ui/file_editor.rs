@@ -207,6 +207,9 @@ pub enum FileEditorEvent {
     FindUsages { text: String, offset: usize },
     /// Refactor › Rename (Shift+F6) of the identifier at this offset.
     Rename { text: String, offset: usize },
+    /// A refactoring's preview in the Find tool window (Safe Delete's
+    /// usages in comments and strings): Do Refactor runs `run`.
+    PreviewRefactoring { word: String, header: String, occurrences: Vec<crate::domain::rename::Occurrence>, run: std::rc::Rc<dyn Fn(Vec<crate::domain::rename::Occurrence>, &mut Window, &mut gpui_kit::App)> },
     /// Copy Path/Reference…: the Copy popup for this file.
     CopyPathReference,
     /// Saved: re-index this file.
@@ -1864,12 +1867,16 @@ impl FileEditor {
         };
         let Some(index) = self.code_index.clone() else { return };
         let task = index.read(cx).usages(self.path.clone(), text.clone(), decl.name_offset, cx);
+        // IntelliJ's "Search in comments and strings", on by default.
+        let mentions = index.read(cx).text_occurrences(decl.name.clone(), cx);
         let path = self.path.clone();
         cx.spawn_in(window, async move |this, cx| {
             let (_, usages) = task.await;
             // Uses outside the declaration itself (a recursive call isn't one).
             let first = text[..decl.lines.start].matches('\n').count() as u32;
             let last = first + text[decl.lines.clone()].trim_end_matches('\n').matches('\n').count() as u32;
+            let mut mentions = mentions.await;
+            mentions.retain(|o| !(o.path == path && (first..=last).contains(&o.line)));
             let uses: Vec<String> = usages
                 .into_iter()
                 .filter(|u| u.group != "Declarations" && !(u.path == path && (first..=last).contains(&u.line)))
@@ -1905,6 +1912,15 @@ impl FileEditor {
                     })
                 };
                 let what = format!("{} '{}'", decl.kind.to_lowercase(), decl.name);
+                // Only mentions in comments and strings: IntelliJ previews them
+                // and Do Refactor deletes the declaration, leaving them as they are.
+                if uses.is_empty() && !mentions.is_empty() {
+                    let n = mentions.len();
+                    let header = format!("Safe Delete {what} — {n} occurrence{} in comments and strings", if n == 1 { "" } else { "s" });
+                    let run: std::rc::Rc<dyn Fn(Vec<crate::domain::rename::Occurrence>, &mut Window, &mut gpui_kit::App)> = std::rc::Rc::new(move |_, window, cx| delete(window, cx));
+                    cx.emit(FileEditorEvent::PreviewRefactoring { word: decl.name.clone(), header, occurrences: mentions, run });
+                    return;
+                }
                 if uses.is_empty() {
                     let file = path.rsplit('/').next().unwrap_or(&path);
                     let message = if file_goes { format!("Delete {what}? Its file {file} is deleted too.") } else { format!("Delete {what}?") };
