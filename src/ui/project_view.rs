@@ -179,6 +179,9 @@ pub struct ProjectView {
     tree: Dir,
     /// The Android view's tree.
     android: Rc<Vec<ViewNode>>,
+    /// Its source files shown as their class ("MainActivity"), as Android
+    /// Studio: the file's one top-level type, named as the file.
+    android_classes: Rc<HashMap<String, (ClassIcon, bool)>>,
     expanded: HashSet<String>,
     /// The lead row: the one the keyboard moves from, the context menu's.
     selected: Option<String>,
@@ -310,6 +313,7 @@ impl ProjectView {
             settings: Settings::get(cx).project.clone(),
             tree: Dir::default(),
             android: Rc::default(),
+            android_classes: Rc::default(),
             expanded,
             selected: None,
             selection: HashSet::new(),
@@ -525,6 +529,26 @@ impl ProjectView {
             let modules = self.index.read(cx).index.read().map(|i| i.modules.clone()).unwrap_or_default();
             let files: Vec<String> = self.files.iter().filter(|f| modules.in_active_variant(f)).cloned().collect();
             self.android = Rc::new(android_tree(&name, &files));
+            let mut classes = HashMap::new();
+            if let Ok(index) = self.index.read(cx).index.read() {
+                for f in files.iter().filter(|f| is_jvm_source(f)) {
+                    let Some(entry) = index.files.get(f) else { continue };
+                    let kotlin = !f.ends_with(".java");
+                    let stem = Path::new(f).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                    let top: Vec<&Symbol> = entry.symbols.iter().filter(|s| s.container.is_none() && s.kind != SymbolKind::EnumMember).collect();
+                    // Kotlin: the class alone, no top-level functions or properties beside it.
+                    if let [only] = top.as_slice() {
+                        if only.kind.is_type() && only.kind != SymbolKind::TypeAlias && only.name == stem {
+                            classes.insert(f.clone(), (class_kind(only), kotlin));
+                        }
+                    } else if !kotlin {
+                        if let Some(public) = top.iter().find(|s| s.kind.is_type() && s.name == stem) {
+                            classes.insert(f.clone(), (class_kind(public), kotlin));
+                        }
+                    }
+                }
+            }
+            self.android_classes = Rc::new(classes);
         }
         let files: Vec<String> = match self.mode {
             ProjectMode::Project | ProjectMode::ProjectFiles | ProjectMode::Android => self.files.to_vec(),
@@ -598,18 +622,23 @@ impl ProjectView {
     fn flatten(&mut self) {
         let mut rows = Vec::new();
         if self.mode == ProjectMode::Android {
-            fn add(nodes: &[ViewNode], depth: usize, expanded: &HashSet<String>, rows: &mut Vec<Row>) {
+            fn add(nodes: &[ViewNode], depth: usize, expanded: &HashSet<String>, classes: &HashMap<String, (ClassIcon, bool)>, rows: &mut Vec<Row>) {
                 for n in nodes {
                     let kind = if n.kind == ViewKind::File { RowKind::File } else { RowKind::Dir };
                     let module = n.kind == ViewKind::Module;
                     let path = n.path.clone().filter(|_| matches!(n.kind, ViewKind::File | ViewKind::Module)).unwrap_or_else(|| n.key.clone());
-                    rows.push(Row { note: n.note.clone(), module, android: module, view: Some(n.kind), ..Row::new(depth, n.label.clone(), path.clone(), kind, false) });
+                    let class = classes.get(&path).copied().filter(|_| kind == RowKind::File);
+                    let label = match class {
+                        Some(_) => Path::new(&n.label).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+                        None => n.label.clone(),
+                    };
+                    rows.push(Row { note: n.note.clone(), module, android: module, view: Some(n.kind), class, ..Row::new(depth, label, path.clone(), kind, false) });
                     if kind == RowKind::Dir && expanded.contains(&path) {
-                        add(&n.children, depth + 1, expanded, rows);
+                        add(&n.children, depth + 1, expanded, classes, rows);
                     }
                 }
             }
-            add(&self.android, 0, &self.expanded, &mut rows);
+            add(&self.android, 0, &self.expanded, &self.android_classes, &mut rows);
             if !self.external.libraries.is_empty() {
                 self.library_rows(&mut rows);
             }
@@ -1411,6 +1440,11 @@ fn row_icon(row: &Row, palette: &crate::theme::Palette) -> gpui_kit::AnyElement 
         RowKind::Dir if row.module && row.android => as_icon(icons::MODULE_ANDROID),
         RowKind::Dir if row.module => as_icon(icons::MODULE),
         RowKind::Dir => as_icon(icons::FOLDER),
+        // The Android view's source files shown as their class.
+        RowKind::File if row.class.is_some() => {
+            let (kind, kotlin) = row.class.unwrap();
+            as_icon(class_icon(kind, kotlin))
+        }
         RowKind::File => file_type_icon(&row.name, palette),
         RowKind::Libraries => as_icon(icons::LIBRARY),
         RowKind::Library if row.group == "Android SDK" => layered(vec![("junction/android.svg", k.android)]),
