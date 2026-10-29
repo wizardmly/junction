@@ -1275,7 +1275,8 @@ Linux 实测（Xvfb，`ip` 工程 Flow.kt：`for` 里套 `if / else`）：光标
 | System Settings › Confirm before exiting the IDE（默认开）：File › Exit 和关窗口时问 "Are you sure you want to exit Junction?"，勾 Do not ask again 会关掉这个设置；关窗口前先保存编辑器会话 | ✅ |
 | File › Close Project：存好会话、关掉标签，回到欢迎页（标题栏显示 No Project / No branch）；在欢迎页再点这个工程，标签恢复 | ✅ |
 | 打开的工具窗口（2026-10-29）：每边打开的是哪个工具窗口随会话存在 `editor-sessions.json` 的 `tool_windows`，工程再打开时照原样打开（以前总是 Commit + Git）；Find、Run、Debug、Changes、Hierarchy、Coverage 这些只显示一次结果的不恢复；Hide All Tool Windows 隐藏着时存的是隐藏前的。工具窗口的位置、顺序和大小本来就存在全局设置里。Linux 实测：dbg 工程里 Alt+1 开 Project、Alt+F12 开 Terminal，结束进程再启动，左边是 Project、下面是 Terminal（新的 shell） | ✅ |
-| 分屏、不同 revision 的标签 | ⬜ |
+| 分屏（2026-10-29）：Split Right / Down 之后，第二组标签（各自的光标、活动标签、是否固定）、左右还是上下、哪一组有焦点都存在会话的 `split` 里，工程再打开时照原样分好；以前只存有焦点那一组，另一组的标签丢了。Linux 实测：CalcTest.java 标签 Split and Move Down 后结束进程再启动，上面是 Calc.java、下面是 CalcTest.java，焦点在下面 | ✅ |
+| 不同 revision 的标签 | ⬜ |
 
 Linux 实测（Xvfb，`ip` 工程）：打开 Cart.kt 并把光标放在第 8 行，再打开 Main.kt；等 3 秒后直接结束进程再启动，两个标签按原顺序回来、Main.kt 是活动标签，点 Cart.kt 光标在 8:14。从工程菜单换到 calc：ip 的标签关掉，calc 上次打开的 Calc.class 回来；再换回 ip，Cart.kt、Main.kt 回来。
 
