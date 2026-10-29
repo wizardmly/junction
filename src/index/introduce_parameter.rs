@@ -123,6 +123,12 @@ pub struct OurCalls {
 }
 
 impl OurCalls {
+    /// The declarations overriding it, or that it overrides (path, line, column).
+    pub fn overrides(&self) -> Vec<(String, u32, u32)> {
+        let Some(index) = self.index.as_ref().and_then(|i| i.read().ok()) else { return Vec::new() };
+        super::nav::SameSymbol::new(&index, &self.declaration, self.line, &self.name).map(|mut same| same.overrides()).unwrap_or_default()
+    }
+
     pub fn keep(&self, path: &str, text: &str, calls: Vec<CallSite>) -> Vec<CallSite> {
         let Some(index) = self.index.as_ref().and_then(|i| i.read().ok()) else { return calls };
         let Some(mut same) = super::nav::SameSymbol::new(&index, &self.declaration, self.line, &self.name) else { return calls };

@@ -1605,7 +1605,7 @@ impl FileEditor {
     /// type and parameters through the dialog; the declaration, its body's
     /// uses of renamed parameters and the calls in the project follow.
     fn change_signature_action(&mut self, _: &ChangeSignature, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::domain::change_signature::{call_edits, edits};
+        use crate::domain::change_signature::{call_edits, edits, override_request};
         use crate::domain::imports::ImportStyle;
         use crate::domain::introduce_parameter::apply;
         use crate::index::introduce_parameter::call_sites;
@@ -1628,15 +1628,28 @@ impl FileEditor {
         let params = signature.params.len();
         let files = root.clone().map(|root| DiskFiles { root, repository: None });
         let task = cx.background_spawn({
-            let name = name.clone();
+            let (name, own, own_text) = (name.clone(), own.clone(), text.clone());
             async move {
-                let Some(root) = root else { return Vec::new() };
+                let Some(root) = root else { return (Vec::new(), Vec::new()) };
+                // The overriding (and overridden) declarations, with as many parameters.
+                let mut overrides = Vec::new();
+                for (path, line, col) in ours.overrides() {
+                    let Some(lang) = Lang::from_path(&path) else { continue };
+                    // This file as edited; others as on disk.
+                    let read = if path == own { Ok(own_text.clone()) } else { std::fs::read_to_string(root.join(&path)) };
+                    let Ok(text) = read else { continue };
+                    let Some(at) = crate::domain::rename::offset_of(&text, line, col) else { continue };
+                    if let Some(other) = crate::index::change_signature::signature_at(lang, &text, at).ok().filter(|o| o.name == name && o.params.len() == params) {
+                        overrides.push((path, text, other));
+                    }
+                }
                 let files = DiskFiles { root, repository: None };
-                update_calls::find(&files, &own, &name, &|path, text| ours.keep(path, text, Lang::from_path(path).map(|lang| call_sites(lang, text, &name, params)).unwrap_or_default()))
+                let calls = update_calls::find(&files, &own, &name, &|path, text| ours.keep(path, text, Lang::from_path(path).map(|lang| call_sites(lang, text, &name, params)).unwrap_or_default()));
+                (calls, overrides)
             }
         });
         cx.spawn_in(window, async move |this, cx| {
-            let elsewhere = task.await;
+            let (elsewhere, overrides) = task.await;
             this.update_in(cx, |_, window, cx| {
                 let editor = cx.entity().downgrade();
                 let calls = here.len() + elsewhere.iter().map(|f| f.calls.len()).sum::<usize>();
@@ -1646,19 +1659,48 @@ impl FileEditor {
                             if this.text(cx) != text {
                                 return Self::hint(TITLE, "The file changed; try again", window, cx);
                             }
-                            let changes = match edits(style, &text, &signature, &here, &request) {
+                            let mut changes = match edits(style, &text, &signature, &here, &request) {
                                 Ok(changes) => changes,
                                 Err(message) => return Self::hint(TITLE, message, window, cx),
                             };
+                            // An override's declaration and its parameters' uses (no calls: they're ours).
+                            let override_edits = |path: &str, text: &str, other: &crate::domain::change_signature::Signature| {
+                                let file_style = if path.ends_with(".java") { ImportStyle::Java } else { ImportStyle::Kotlin };
+                                edits(file_style, text, other, &[], &override_request(&signature, other, &request)).unwrap_or_default()
+                            };
+                            for (path, other_text, other) in &overrides {
+                                // This file's: from the text as it is now, at the same offsets.
+                                if *path == own && *other_text == text {
+                                    changes.extend(override_edits(path, &text, other));
+                                }
+                            }
                             let caret = signature.name_range.start;
                             let new = apply(&text, changes);
                             this.replace_text(&text, &new, caret.min(new.len()), window, cx);
-                            let written = files.as_ref().map_or_else(Vec::new, |files| {
+                            let declarations = |path: &str| -> Vec<crate::domain::introduce_parameter::Edit> {
+                                overrides.iter().filter(|(p, _, _)| p == path && p != &own).flat_map(|(p, t, o)| override_edits(p, t, o)).collect()
+                            };
+                            let mut written = files.as_ref().map_or_else(Vec::new, |files| {
                                 update_calls::rewrite(files, &elsewhere, &|f| {
                                     let file_style = if f.path.ends_with(".java") { ImportStyle::Java } else { ImportStyle::Kotlin };
-                                    f.calls.iter().flat_map(|c| call_edits(file_style, &signature, &request, c)).collect()
+                                    let mut out: Vec<_> = f.calls.iter().flat_map(|c| call_edits(file_style, &signature, &request, c)).collect();
+                                    // The file as read for its calls: the override's offsets hold if it's unchanged.
+                                    if overrides.iter().any(|(p, t, _)| *p == f.path && *t == f.text) {
+                                        out.extend(declarations(&f.path));
+                                    }
+                                    out
                                 })
                             });
+                            // Overrides in files without calls.
+                            if let Some(files) = files.as_ref() {
+                                use crate::domain::project_files::ProjectFiles;
+                                let mut seen = std::collections::HashSet::new();
+                                for (path, other_text, _) in overrides.iter().filter(|(p, _, _)| p != &own && !elsewhere.iter().any(|f| &f.path == p)) {
+                                    if seen.insert(path.clone()) && files.write(path, &apply(other_text, declarations(path))).is_ok() {
+                                        written.push(path.clone());
+                                    }
+                                }
+                            }
                             if !written.is_empty() {
                                 cx.emit(FileEditorEvent::FilesWritten(written));
                             }
