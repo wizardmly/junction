@@ -1286,7 +1286,8 @@ Linux 实测（Xvfb，`ip` 工程）：打开 Cart.kt 并把光标放在第 8 �
 | 有用处 | "Usages Detected：Function 'total' has 3 usages that are not safe to delete."，列出 `文件:行`，View Usages（默认，打开 Find 工具窗口）或 Delete Anyway | ✅ |
 | 参数（2026-10-29，Kotlin / Java）| 光标在函数（或构造方法）的参数名上：函数体或覆盖方法里用到它时弹出 Usages Detected 列出位置；没用到时 "Delete parameter 'unit'? Its argument goes from 2 calls."，Delete 后从声明、覆盖方法和工程里所有调用中去掉（走 Change Signature 的同一套，命名实参也对）；构造方法的 `val` / `var` 参数提示先删它的用处 | ✅ |
 | 删掉文件里唯一的类（2026-10-29，Kotlin / Java）| 类（或 Kotlin `object`）删掉后文件只剩 package、import、文件注解和注释时，提示 "Delete class 'Unused'? Its file Unused.kt is deleted too."，Delete 后连文件一起删掉、关掉标签页（Git 显示为删除）；文件里还有别的声明时只删这个类。Linux 实测：只有 `class Unused` 的 Unused.kt 上按 Alt+Delete，确认后文件没了，Commit 窗口列出 Unused.kt 被删，索引从 9 个文件变 8 个 | ✅ |
-| 同时删掉调用 / 引用处、搜索注释和字符串 | | ⬜ |
+| 搜索注释和字符串（2026-10-29）| 照 IntelliJ 默认勾选的 Search in comments and strings：代码里没用处、注释或字符串里提到这个名字时，不弹确认框，而是在 Find 工具窗口开 Refactoring Preview，列出 "Usages in comments and strings"，Do Refactor 删掉声明，提到的地方原样留下（Cancel 不删）。Linux 实测：Calc.java 里没人调用的 `reset()`，`"see reset"` 和 `// Call reset() before reuse.` 两处列在预览里，Do Refactor 后方法没了，两处注释和字符串还在 | ✅ |
+| 同时删掉调用 / 引用处 | | ⬜ |
 
 代码：`src/index/safe_delete.rs`（声明和要删的行）、`domain::line_edit::declaration_lines`（删声明时的空行规则，Inline Function 也用它）。
 

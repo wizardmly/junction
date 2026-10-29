@@ -126,6 +126,11 @@ impl Workspace {
                 self.show_find_window(cx);
                 cx.notify();
             }
+            FileEditorEvent::PreviewRefactoring { word, header, occurrences, run } => {
+                let (word, header, occurrences, run) = (word.clone(), header.clone(), occurrences.clone(), run.clone());
+                self.find.update(cx, |find, cx| find.show_refactoring(word, header, occurrences, run, cx));
+                self.show_find_window(cx);
+            }
             FileEditorEvent::Rename { text, offset } => {
                 let Some(path) = self.editor().map(|e| e.read(cx).path().to_owned()) else { return };
                 self.rename_symbol(path, text.clone(), *offset, window, cx);

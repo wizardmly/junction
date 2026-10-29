@@ -676,6 +676,20 @@ impl CodeIndex {
         })
     }
 
+    /// Safe Delete's search in comments and strings: the whole-word
+    /// occurrences of `word` there, across the project (files on disk).
+    pub fn text_occurrences(&self, word: String, cx: &App) -> Task<Vec<Occurrence>> {
+        let Some(root) = self.root.clone() else { return Task::ready(Vec::new()) };
+        let index = self.index.clone();
+        cx.background_spawn(async move {
+            let index = index.read().unwrap();
+            let mut hits = nav::rename_hits(&index, &root, &word);
+            hits.retain(|o| !o.code);
+            hits.sort_by(|a, b| (&a.path, a.line, a.col).cmp(&(&b.path, b.line, b.col)));
+            hits
+        })
+    }
+
     /// What Rename (Shift+F6) at `offset` renames: a parameter or local's
     /// uses in its scope, or the symbol's whole-word occurrences across the
     /// project, as Android Studio's Rename dialog lists them. Files are
