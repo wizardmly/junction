@@ -365,6 +365,13 @@ mod tests {
     }
 
     #[test]
+    fn joins_at_every_caret() {
+        let text = "a\n  b\nc\n  d\n";
+        let (out, _) = super::each(text, &[0..0, 7..7], true, super::join_lines).unwrap();
+        assert_eq!(out, "a b\nc d\n");
+    }
+
+    #[test]
     fn comments_every_caret_line() {
         let text = "a\nb\nc\n";
         let style = super::LineComments::default();
