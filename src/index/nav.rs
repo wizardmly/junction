@@ -811,6 +811,32 @@ impl<'a> SameSymbol<'a> {
     /// What the name at `offset` in `path` (a Java or Kotlin file of the
     /// project) refers to when it isn't ours; None when it is ours or
     /// can't be told.
+    /// Whether Go to Declaration's target is this declaration.
+    fn is_ours(&self, t: &Target) -> bool {
+        let kind = self.index.file(&t.path).and_then(|e| e.symbols.iter().find(|s| s.line == t.line && s.col == t.col)).map(|s| s.kind);
+        (t.path == self.declaration && t.line == self.line)
+            || kind.is_some_and(|k| self.constructor_of_ours(&t.path, k, &t.container))
+            // `new A(…)` names the class: ours when we're one of its constructors.
+            || self.is_constructor && t.path == self.declaration && kind.is_some_and(|k| k.is_type()) && self.owner.as_deref() == Some(self.word.as_str())
+    }
+
+    /// Whether the name at `offset` surely is this declaration (`other.x`
+    /// whose receiver's type has it): true when every declaration it can
+    /// go to is this one, false when none is, none when it can't be told.
+    pub fn names_ours(&mut self, path: &str, text: &str, offset: usize) -> Option<bool> {
+        let lang = self.index.file(path)?.lang;
+        let targets = definitions(self.index, path, lang, text, offset);
+        if targets.is_empty() {
+            return None;
+        }
+        let ours = targets.iter().filter(|t| self.is_ours(t)).count();
+        match ours {
+            0 => Some(false),
+            n if n == targets.len() => Some(true),
+            _ => None,
+        }
+    }
+
     pub fn other_at(&mut self, path: &str, text: &str, offset: usize) -> Option<String> {
         let index = self.index;
         let entry = index.file(path)?;
@@ -831,14 +857,7 @@ impl<'a> SameSymbol<'a> {
             return (!ours).then(|| self.describe(&s.container));
         }
         let targets = definitions(index, path, lang, text, offset);
-        let mine = |t: &Target| {
-            let kind = index.file(&t.path).and_then(|e| e.symbols.iter().find(|s| s.line == t.line && s.col == t.col)).map(|s| s.kind);
-            (t.path == self.declaration && t.line == self.line)
-                || kind.is_some_and(|k| self.constructor_of_ours(&t.path, k, &t.container))
-                // `new A(…)` names the class: ours when we're one of its constructors.
-                || self.is_constructor && t.path == self.declaration && kind.is_some_and(|k| k.is_type()) && self.owner.as_deref() == Some(self.word.as_str())
-        };
-        if targets.is_empty() || targets.iter().any(mine) {
+        if targets.is_empty() || targets.iter().any(|t| self.is_ours(t)) {
             return None;
         }
         let related = targets.iter().any(|t| self.related(&t.container));

@@ -61,6 +61,33 @@ pub struct References {
     /// References that may be to it but can't be told (`other.name`,
     /// `::name`): their offsets.
     pub unresolved: Vec<usize>,
+    /// `other.name`: the name's offset and the reference, until
+    /// [`References::resolve`] tells whether it's this one.
+    pub qualified: Vec<(usize, Reference)>,
+}
+
+impl References {
+    /// Sorts the `other.name` references by what the index says of the
+    /// name at each offset: this field (a reference), another (left
+    /// alone), or can't tell (unresolved).
+    pub fn resolve(&mut self, mut ours: impl FnMut(usize) -> Option<bool>) {
+        for (at, reference) in std::mem::take(&mut self.qualified) {
+            match ours(at) {
+                Some(true) => self.refs.push(reference),
+                Some(false) => {}
+                None => self.unresolved.push(at),
+            }
+        }
+        self.refs.sort_by_key(|r| r.range.start);
+    }
+
+    /// [`References::resolve`] by Go to Declaration in the project's index
+    /// (the field declared on 0-based `line` of `declaration`); `text` is
+    /// `path`'s.
+    pub fn resolve_in(&mut self, index: Option<&super::store::ProjectIndex>, declaration: &str, line: u32, name: &str, path: &str, text: &str) {
+        let mut same = index.and_then(|index| super::nav::SameSymbol::new(index, declaration, line, name));
+        self.resolve(|at| same.as_mut().and_then(|s| s.names_ours(path, text, at)));
+    }
 }
 
 fn name_kinds(lang: Lang) -> &'static [&'static str] {
@@ -244,10 +271,11 @@ pub fn references(lang: Lang, text: &str, field: &Field, own: bool) -> Reference
                     receiver_text == *o || receiver_text.ends_with(&format!(".{o}")) || receiver_text == "Companion" || receiver_text == format!("{o}.Companion")
                 });
                 let by_this = own && matches!(receiver.kind(), "this_expression" | "this");
+                let reference = Reference { range: access.byte_range(), fits: access.parent().is_some_and(|p| takes_any(p.kind())), template: false };
                 if by_owner || by_this {
-                    out.refs.push(Reference { range: access.byte_range(), fits: access.parent().is_some_and(|p| takes_any(p.kind())), template: false });
+                    out.refs.push(reference);
                 } else {
-                    out.unresolved.push(n.start_byte());
+                    out.qualified.push((n.start_byte(), reference));
                 }
             }
             _ => {
@@ -337,11 +365,19 @@ mod tests {
         assert_eq!(field.owner.as_deref(), Some("Api"));
         let other = "package b\n\nimport a.Api.Companion.BASE\nimport a.Api\n\nfun g() = BASE + Api.BASE + other.BASE\n";
         let found = references(Lang::Kotlin, other, &field, false);
-        assert_eq!((found.refs.len(), found.imports.len(), found.unresolved.len()), (2, 1, 1));
+        assert_eq!((found.refs.len(), found.imports.len(), found.qualified.len()), (2, 1, 1));
         let not_imported = "package b\n\nfun h(BASE: String) = BASE\nval z = Api.BASE\n";
         assert_eq!(references(Lang::Kotlin, not_imported, &field, false).refs.len(), 1);
-        let changes = edits(&field, &References { unresolved: Vec::new(), ..found });
-        assert_eq!(apply(other, changes), "package b\n\nimport a.Api\n\nfun g() = \"https://x\" + \"https://x\" + other.BASE\n");
+        // `other.BASE`: the index can't tell, says it's another, or says it's this one.
+        let mut unknown = found.clone();
+        unknown.resolve(|_| None);
+        assert_eq!(unknown.unresolved, [other.rfind("BASE").unwrap()]);
+        let mut theirs = found.clone();
+        theirs.resolve(|_| Some(false));
+        assert_eq!(apply(other, edits(&field, &theirs)), "package b\n\nimport a.Api\n\nfun g() = \"https://x\" + \"https://x\" + other.BASE\n");
+        let mut ours = found;
+        ours.resolve(|_| Some(true));
+        assert_eq!(apply(other, edits(&field, &ours)), "package b\n\nimport a.Api\n\nfun g() = \"https://x\" + \"https://x\" + \"https://x\"\n");
     }
 
     #[test]
