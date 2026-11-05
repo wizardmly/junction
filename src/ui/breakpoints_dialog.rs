@@ -128,6 +128,8 @@ pub struct BreakpointsView {
     class_filters: Entity<InputState>,
     /// Its Catch class filters, the same way.
     catch_filters: Entity<InputState>,
+    /// Instance filters (line or exception breakpoint): `@id`s.
+    instance_filters: Entity<InputState>,
     /// "Evaluate and log" is on (its expression may still be empty).
     log_on: bool,
     /// The source lines, by file, for the list's second line.
@@ -198,6 +200,7 @@ impl BreakpointsView {
         let patterns = |input: &Entity<InputState>| input.read(cx).value().split([' ', ',', ';']).filter(|f| !f.is_empty()).map(str::to_owned).collect();
         e.filters = patterns(&self.class_filters);
         e.catch_filters = patterns(&self.catch_filters);
+        e.instances = crate::domain::debugger::instance_ids(&self.instance_filters.read(cx).value());
         change(&mut e);
         self.service.update(cx, |s, cx| s.set_exception_breakpoint(e, cx));
         self.refresh(cx);
@@ -241,12 +244,16 @@ impl BreakpointsView {
     fn load_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(e) = self.current_exception() {
             let (condition, filters, catch_filters) = (e.condition.clone().unwrap_or_default(), e.filters.join(" "), e.catch_filters.join(" "));
+            let instances = crate::domain::debugger::instance_text(&e.instances);
             self.log_on = false;
             self.condition.update(cx, |s, cx| s.set_value(condition, window, cx));
             self.class_filters.update(cx, |s, cx| s.set_value(filters, window, cx));
             self.catch_filters.update(cx, |s, cx| s.set_value(catch_filters, window, cx));
+            self.instance_filters.update(cx, |s, cx| s.set_value(instances, window, cx));
             return;
         }
+        let instances = self.current().map(|b| crate::domain::debugger::instance_text(&b.instances)).unwrap_or_default();
+        self.instance_filters.update(cx, |s, cx| s.set_value(instances, window, cx));
         let (condition, log) = self.current().map(|b| (b.condition.clone().unwrap_or_default(), b.log_expression.clone().unwrap_or_default())).unwrap_or_default();
         self.log_on = self.current().is_some_and(|b| b.log_expression.is_some());
         self.condition.update(cx, |s, cx| s.set_value(condition, window, cx));
@@ -259,6 +266,7 @@ impl BreakpointsView {
         let text = |input: &Entity<InputState>| Some(input.read(cx).value().to_string());
         b.condition = text(&self.condition);
         b.log_expression = if self.log_on { text(&self.log_expression) } else { None };
+        b.instances = crate::domain::debugger::instance_ids(&self.instance_filters.read(cx).value());
         change(&mut b);
         self.service.update(cx, |s, cx| s.set_breakpoint_properties(b, cx));
         self.refresh(cx);
@@ -419,6 +427,7 @@ impl BreakpointsView {
             .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Condition (the exception is this):")).child(Input::new(&self.condition).small()))
             .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Class filters (where it's thrown; - excludes):")).child(Input::new(&self.class_filters).small()))
             .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Catch class filters (where it's caught; - excludes):")).child(Input::new(&self.catch_filters).small()))
+            .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Instance filters (this where it's thrown):")).child(Input::new(&self.instance_filters).small()))
             .into_any_element()
     }
 
@@ -506,6 +515,7 @@ impl BreakpointsView {
                     })))
             })
             .child(v_flex().gap_1().child(label("Condition:")).child(Input::new(&self.condition).small()))
+            .child(v_flex().gap_1().child(label("Instance filters (this is one of):")).child(Input::new(&self.instance_filters).small()))
             .child(
                 v_flex()
                     .gap_1()
@@ -584,8 +594,9 @@ pub fn open(at: Option<(String, u32)>, window: &mut Window, cx: &mut App) {
             }
         }
         let catch_filters = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. com.example.* -com.example.Retry"));
-        let _subscriptions = vec![cx.subscribe(&condition, commit), cx.subscribe(&log_expression, commit), cx.subscribe(&class_filters, commit), cx.subscribe(&catch_filters, commit)];
-        let mut view = BreakpointsView { service, entries: Vec::new(), selected: at, condition, log_expression, class_filters, catch_filters, log_on: false, sources: HashMap::new(), exceptions: Vec::new(), exception: None, adding: None, just_added: false, _subscriptions };
+        let instance_filters = cx.new(|cx| InputState::new(window, cx).placeholder("Object ids, e.g. @447 @452"));
+        let _subscriptions = vec![cx.subscribe(&condition, commit), cx.subscribe(&log_expression, commit), cx.subscribe(&class_filters, commit), cx.subscribe(&catch_filters, commit), cx.subscribe(&instance_filters, commit)];
+        let mut view = BreakpointsView { service, entries: Vec::new(), selected: at, condition, log_expression, class_filters, catch_filters, instance_filters, log_on: false, sources: HashMap::new(), exceptions: Vec::new(), exception: None, adding: None, just_added: false, _subscriptions };
         view.refresh(cx);
         view.load_fields(window, cx);
         view
