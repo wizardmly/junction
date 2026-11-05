@@ -42,6 +42,7 @@ pub mod imports;
 pub mod import_function;
 pub mod line_edit;
 pub mod navigation_history;
+pub mod occurrences;
 pub mod project_files;
 pub mod editor_session;
 pub mod intentions;

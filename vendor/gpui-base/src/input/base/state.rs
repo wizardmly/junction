@@ -10888,6 +10888,73 @@ impl InputBaseState<crate::input::EditorMode> {
         Some(start_line)
     }
 
+    /// Junction: every selection's byte range (start <= end). The active one
+    /// comes first, then the others from the newest to the oldest added by
+    /// [`Self::add_selection_range`].
+    pub fn selection_ranges(&self) -> Vec<Range<usize>> {
+        self.selections.iter().map(|s| s.start..s.end).collect()
+    }
+
+    /// Junction: IntelliJ's Add Selection for Next Occurrence (Alt+J): the
+    /// selections there stay, `range` is added as the active one and
+    /// scrolled into view.
+    pub fn add_selection_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        if !self.is_multi_line() {
+            return;
+        }
+        let start = self.text.clip_offset(range.start, Bias::Left);
+        let end = self.text.clip_offset(range.end, Bias::Right).max(start);
+        self.undo_manager.break_transaction_coalescing();
+        let id = self.selections.generate_id();
+        let mut all: Vec<CursorSelection> = self.selections.iter().copied().collect();
+        all.retain(|s| !(s.start == start && s.end == end));
+        all.insert(0, CursorSelection::new(id, start, end));
+        self.selections.replace_all(all);
+        self.selected_word_range = None;
+        self.scroll_to(end, None, cx);
+        cx.notify();
+    }
+
+    /// Junction: IntelliJ's Unselect Occurrence (Shift+Alt+J): drops the
+    /// active selection, and the one added before it becomes active. Does
+    /// nothing when there is only one.
+    pub fn remove_active_selection(&mut self, cx: &mut Context<Self>) {
+        if self.selections.is_single() {
+            return;
+        }
+        let rest: Vec<CursorSelection> = self.selections.iter().skip(1).copied().collect();
+        let end = rest[0].end;
+        self.selections.replace_all(rest);
+        self.undo_manager.break_transaction_coalescing();
+        self.scroll_to(end, None, cx);
+        cx.notify();
+    }
+
+    /// Junction: replaces every selection (Select All Occurrences); the
+    /// first range becomes the active one. An empty list does nothing.
+    pub fn set_selection_ranges(&mut self, ranges: Vec<Range<usize>>, cx: &mut Context<Self>) {
+        if ranges.is_empty() {
+            return;
+        }
+        if ranges.len() > 1 && !self.is_multi_line() {
+            return;
+        }
+        self.undo_manager.break_transaction_coalescing();
+        let mut all = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            let start = self.text.clip_offset(range.start, Bias::Left);
+            let end = self.text.clip_offset(range.end, Bias::Right).max(start);
+            let id = self.selections.generate_id();
+            all.push(CursorSelection::new(id, start, end));
+        }
+        let end = all[0].end;
+        self.selections.replace_all(all);
+        self.selections.merge_overlapping();
+        self.selected_word_range = None;
+        self.scroll_to(end, None, cx);
+        cx.notify();
+    }
+
     /// Junction: Collapse All (Ctrl+Shift+-) / Expand All (Ctrl+Shift+=).
     pub fn fold_all(&mut self, folded: bool, cx: &mut Context<Self>) {
         let starts: Vec<usize> = self.display_map.fold_candidates().iter().map(|f| f.start_line).collect();
