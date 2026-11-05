@@ -169,6 +169,10 @@ pub struct Spaces {
     /// default no / yes), before / after a new type's (`class A : B`,
     /// `<T : Any>`, both yes).
     pub colons: [bool; 4],
+    /// Binary `+`, `-`.
+    pub around_additive: bool,
+    /// `*`, `/`, `%`.
+    pub around_multiplicative: bool,
 }
 
 impl Default for Spaces {
@@ -183,6 +187,8 @@ impl Default for Spaces {
             after_comma: true,
             before_keywords: [true; 4],
             colons: [false, true, true, true],
+            around_additive: true,
+            around_multiplicative: true,
         }
     }
 }
@@ -193,7 +199,7 @@ impl Spaces {
     /// The keywords of `before_keywords`, in order.
     const AFTER_BRACE: [&'static str; 4] = ["else", "while", "catch", "finally"];
     /// The settings' labels, in `values` order.
-    pub const LABELS: [&'static str; 22] = [
+    pub const LABELS: [&'static str; 24] = [
         "Before parentheses: 'if'",
         "Before parentheses: 'for'",
         "Before parentheses: 'while'",
@@ -216,21 +222,24 @@ impl Spaces {
         "Other: After colon, before declaration type",
         "Other: Before colon in new type definition",
         "Other: After colon in new type definition",
+        "Around operators: Additive (+, -)",
+        "Around operators: Multiplicative (*, /, %)",
     ];
     /// Which of `values` each language's page shows.
-    pub const JAVA: [usize; 17] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
-    pub const KOTLIN: [usize; 15] = [0, 1, 2, 4, 6, 8, 9, 10, 11, 12, 13, 18, 19, 20, 21];
+    pub const JAVA: [usize; 19] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 22, 23, 12, 13, 14, 15, 16, 17];
+    pub const KOTLIN: [usize; 17] = [0, 1, 2, 4, 6, 8, 9, 10, 11, 22, 23, 12, 13, 18, 19, 20, 21];
 
-    pub fn values(&self) -> [bool; 22] {
+    pub fn values(&self) -> [bool; 24] {
         let (p, k, c) = (self.before_parens, self.before_keywords, self.colons);
         [
             p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
             self.around_assignment, self.around_logical, self.around_equality, self.around_relational, self.before_comma, self.after_comma,
             k[0], k[1], k[2], k[3], c[0], c[1], c[2], c[3],
+            self.around_additive, self.around_multiplicative,
         ]
     }
 
-    pub fn from_values(v: [bool; 22]) -> Self {
+    pub fn from_values(v: [bool; 24]) -> Self {
         Self {
             before_parens: [v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]],
             around_assignment: v[8],
@@ -241,6 +250,8 @@ impl Spaces {
             after_comma: v[13],
             before_keywords: [v[14], v[15], v[16], v[17]],
             colons: [v[18], v[19], v[20], v[21]],
+            around_additive: v[22],
+            around_multiplicative: v[23],
         }
     }
 
@@ -272,6 +283,8 @@ impl Spaces {
             "&&" | "||" => self.around_logical,
             "==" | "!=" | "===" | "!==" => self.around_equality,
             "<" | ">" | "<=" | ">=" => self.around_relational,
+            "+" | "-" => self.around_additive,
+            "*" | "/" | "%" => self.around_multiplicative,
             _ => self.around_assignment,
         }
     }
@@ -1664,6 +1677,27 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
                 }
                 continue;
             }
+            '+' | '-' | '*' | '/' | '%' if flavor != Flavor::Groovy && arithmetic(&chars, k, &is_code, &out) => {
+                // A binary `a + b`: spaced or not as the setting says, but
+                // never so that `a - -b` runs together into `--`.
+                let spaced = spaces.around(&c.to_string());
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                if spaced || out.ends_with(c) {
+                    out.push(' ');
+                }
+                out.push(c);
+                k += 1;
+                while chars.get(k).is_some_and(|(j, ch)| is_code(*j) && *ch == ' ') {
+                    k += 1;
+                }
+                let joins_after = chars.get(k).is_some_and(|(j, ch)| is_code(*j) && (*ch == c || (c == '-' && *ch == '>') || (c == '/' && matches!(*ch, '/' | '*'))));
+                if k < chars.len() && (spaced || joins_after) {
+                    out.push(' ');
+                }
+                continue;
+            }
             '=' | '!' | '+' | '-' | '*' | '/' | '%' | '&' | '|' | '<' | '>' => {
                 let op = operator(&chars, k, &is_code);
                 match op {
@@ -1707,6 +1741,53 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
         k += 1;
     }
     out
+}
+
+/// Whether the `+ - * / %` at `k` is a binary operator on its own (not
+/// `++`, `+=`, `->`, a sign, `1e-5`, `<*>`, `import a.*`): what the code
+/// before it ends with is an operand, not a keyword.
+fn arithmetic(chars: &[(usize, char)], k: usize, is_code: &dyn Fn(usize) -> bool, out: &str) -> bool {
+    let c = chars[k].1;
+    let at = |n: isize| chars.get(k.checked_add_signed(n)?).filter(|(j, _)| is_code(*j)).map(|(_, ch)| *ch);
+    let next = at(1);
+    if next == Some('=') || (matches!(c, '+' | '-') && (next == Some(c) || at(-1) == Some(c))) || (c == '-' && next == Some('>')) {
+        return false;
+    }
+    let before = out.trim_end();
+    let Some(last) = before.chars().last() else { return false };
+    if !(last.is_alphanumeric() || matches!(last, '_' | ')' | ']' | '"' | '\'' | '`')) {
+        return false;
+    }
+    let word = last_word(before);
+    // `1e-5`, `0x1p+3`.
+    let number = word.starts_with(|d: char| d.is_ascii_digit());
+    if matches!(c, '+' | '-') && number && (word.ends_with(['e', 'E']) && !word.starts_with("0x") || word.ends_with(['p', 'P'])) {
+        return false;
+    }
+    const KEYWORDS: &[&str] = &["return", "case", "else", "in", "is", "throw", "yield", "when", "if", "while", "do", "to", "until", "downTo", "step", "and", "or", "assert", "default", "new", "instanceof", "as"];
+    if KEYWORDS.contains(&word) {
+        return false;
+    }
+    // After `if (…)` / `while (…)` (Kotlin's `if (x) -1 else 1`) or a
+    // primitive cast (`(int) -x`), it's a sign.
+    if last == ')' {
+        let mut depth = 0;
+        for (i, ch) in before.char_indices().rev() {
+            match ch {
+                ')' => depth += 1,
+                '(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let inside = before[i + 1..before.len() - 1].trim();
+                        let head = last_word(before[..i].trim_end());
+                        return !(matches!(head, "if" | "while" | "for" | "when") || matches!(inside, "int" | "long" | "short" | "byte" | "char" | "float" | "double"));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    true
 }
 
 /// The word (letters, digits, `_`) `text` ends with.
@@ -2070,7 +2151,7 @@ mod tests {
         assert_eq!(java("class A {\nvoid f() {\nif(a==b&&c<d) x=f(a,b);\nwhen(m.get()).thenReturn(1);\n}\n}"), "class A {\n    void f() {\n        if (a == b && c < d) x = f(a, b);\n        when(m.get()).thenReturn(1);\n    }\n}");
         assert_eq!(kt("fun f() {\nsynchronized(lock) {}\nwhen(x) {}\n}"), "fun f() {\n    synchronized(lock) {}\n    when (x) {}\n}");
         // Each turned the other way.
-        let mut values = [false; 22];
+        let mut values = [false; 24];
         values[12] = true;
         let all_off = Spaces::from_values(values);
         let style = IndentStyle { spaces: all_off, ..Default::default() };
@@ -2080,6 +2161,17 @@ mod tests {
         );
         let style = IndentStyle { spaces: Spaces { before_parens: [true, true, true, true, false, true, true, true], around_relational: false, ..Default::default() }, ..Default::default() };
         assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\n    when (x) {}\n    if (a < b) g()\n}", None, &style), "fun f() {\n    when(x) {}\n    if (a<b) g()\n}");
+    }
+
+    #[test]
+    fn spaces_around_arithmetic() {
+        assert_eq!(
+            java("class A {\nint f(int a,int b) {\nreturn a+b*2-(a%b)/-1+x++ + (int) -d+1e-5;\n}\n}"),
+            "class A {\n    int f(int a, int b) {\n        return a + b * 2 - (a % b) / -1 + x++ + (int) -d + 1e-5;\n    }\n}"
+        );
+        assert_eq!(kt("fun f(n: Int) = if (n>0) -1 else n-1\nval l: List<*> = listOf(*args)\nval s = \"a\"+1"), "fun f(n: Int) = if (n > 0) -1 else n - 1\nval l: List<*> = listOf(*args)\nval s = \"a\" + 1");
+        let style = IndentStyle { spaces: Spaces { around_additive: false, around_multiplicative: false, ..Default::default() }, ..Default::default() };
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, "val x = a + b * c - -d / e", None, &style), "val x = a+b*c- -d/e");
     }
 
     #[test]
