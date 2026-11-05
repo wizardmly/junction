@@ -51,27 +51,52 @@ fn lines_of(text: &str, sel: &Range<usize>) -> Range<usize> {
 /// line). The selections come back in their given order (dropped ones
 /// left out); `None` when nothing changed.
 pub fn each(text: &str, selections: &[Range<usize>], per_line: bool, edit: impl Fn(&str, Range<usize>) -> Option<Edited>) -> Option<(String, Vec<Range<usize>>)> {
+    each_in(text, selections, false, per_line, false, edit)
+}
+
+/// Move Line / Statement Up (`up`) or Down at every caret: carets on
+/// neighbouring lines move together as a block, from the edge they move
+/// towards, and nothing moves when one of them can't (at the top or
+/// bottom), as IntelliJ does.
+pub fn each_move(text: &str, selections: &[Range<usize>], up: bool, edit: impl Fn(&str, Range<usize>) -> Option<Edited>) -> Option<(String, Vec<Range<usize>>)> {
+    each_in(text, selections, up, true, true, edit)
+}
+
+/// `ascending` runs the edits from the first selection on, shifting the
+/// ones still to come; otherwise from the last, shifting the ones done.
+/// `strict` gives up when any edit can't be made.
+fn each_in(text: &str, selections: &[Range<usize>], ascending: bool, per_line: bool, strict: bool, edit: impl Fn(&str, Range<usize>) -> Option<Edited>) -> Option<(String, Vec<Range<usize>>)> {
     let mut order: Vec<usize> = (0..selections.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(selections[i].start));
+    order.sort_by_key(|&i| selections[i].start);
+    if !ascending {
+        order.reverse();
+    }
     let mut out = text.to_owned();
     let mut done: Vec<(usize, Range<usize>)> = Vec::new();
     let mut covered: Vec<Range<usize>> = Vec::new();
+    let mut shift: isize = 0;
+    let moved = |r: &Range<usize>, by: isize| (r.start as isize + by) as usize..(r.end as isize + by) as usize;
     for i in order {
-        let sel = selections[i].clone();
-        let lines = lines_of(text, &sel);
+        let lines = lines_of(text, &selections[i]);
         if per_line && covered.iter().any(|c| c.start <= lines.end && lines.start <= c.end) {
             continue;
         }
         covered.push(lines);
+        let sel = moved(&selections[i], shift);
         match edit(&out, sel.clone()) {
             Some(edited) => {
                 let delta = edited.text.len() as isize - out.len() as isize;
-                for (_, r) in &mut done {
-                    *r = (r.start as isize + delta) as usize..(r.end as isize + delta) as usize;
+                if ascending {
+                    shift += delta;
+                } else {
+                    for (_, r) in &mut done {
+                        *r = moved(r, delta);
+                    }
                 }
                 out = edited.text;
                 done.push((i, edited.selection));
             }
+            None if strict => return None,
             None => done.push((i, sel)),
         }
     }
@@ -322,6 +347,21 @@ mod tests {
         let (out, sels) = super::each(text, &[0..0, 1..1], true, |t, s| Some(super::duplicate(t, s))).unwrap();
         assert_eq!(out, "a\na\nb\nc\n");
         assert_eq!(sels, vec![3..3]);
+    }
+
+    #[test]
+    fn moves_carets_as_a_block() {
+        let text = "a\nb\nc\nd";
+        let up = |t: &str, s| super::move_lines(t, s, true);
+        let (out, sels) = super::each_move(text, &[4..4, 2..2], true, up).unwrap();
+        assert_eq!(out, "b\nc\na\nd");
+        assert_eq!(sels, vec![2..2, 0..0]);
+        let down = |t: &str, s| super::move_lines(t, s, false);
+        let (out, sels) = super::each_move(text, &[2..2, 4..4], false, down).unwrap();
+        assert_eq!(out, "a\nd\nb\nc");
+        assert_eq!(sels, vec![4..4, 6..6]);
+        // One caret at the top: nothing moves.
+        assert_eq!(super::each_move(text, &[0..0, 4..4], true, up), None);
     }
 
     #[test]

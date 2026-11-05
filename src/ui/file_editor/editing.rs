@@ -84,15 +84,30 @@ impl FileEditor {
     /// An edit at every caret (`line_edit::each`) as one change; with a
     /// single caret the same as [`Self::edit_with`].
     fn edit_each(&mut self, per_line: bool, edit: impl Fn(&str, Range<usize>) -> Option<Edited>, window: &mut Window, cx: &mut Context<Self>) {
+        self.edit_carets(|t, r| line_edit::each(t, r, per_line, &edit), &edit, window, cx);
+    }
+
+    /// Move Line / Statement at every caret (`line_edit::each_move`).
+    fn move_each(&mut self, up: bool, edit: impl Fn(&str, Range<usize>) -> Option<Edited>, window: &mut Window, cx: &mut Context<Self>) {
+        self.edit_carets(|t, r| line_edit::each_move(t, r, up, &edit), &edit, window, cx);
+    }
+
+    fn edit_carets(
+        &mut self,
+        all: impl FnOnce(&str, &[Range<usize>]) -> Option<(String, Vec<Range<usize>>)>,
+        one: impl Fn(&str, Range<usize>) -> Option<Edited>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let ranges = self.state.read(cx).selection_ranges();
         if ranges.len() < 2 {
-            return self.edit_with(edit, window, cx);
+            return self.edit_with(one, window, cx);
         }
         if self.read_only() {
             return;
         }
         let old = self.text(cx);
-        let Some((new, selections)) = line_edit::each(&old, &ranges, per_line, edit) else { return };
+        let Some((new, selections)) = all(&old, &ranges) else { return };
         let caret = selections.first().map_or(0, |r| r.start);
         self.replace_text(&old, &new, caret, window, cx);
         self.state.update(cx, |state, cx| state.set_selection_ranges(selections, cx));
@@ -116,21 +131,21 @@ impl FileEditor {
     }
 
     pub(super) fn move_line_up(&mut self, _: &MoveLineUp, window: &mut Window, cx: &mut Context<Self>) {
-        self.edit_with(|t, s| line_edit::move_lines(t, s, true), window, cx);
+        self.move_each(true, |t, s| line_edit::move_lines(t, s, true), window, cx);
     }
 
     pub(super) fn move_line_down(&mut self, _: &MoveLineDown, window: &mut Window, cx: &mut Context<Self>) {
-        self.edit_with(|t, s| line_edit::move_lines(t, s, false), window, cx);
+        self.move_each(false, |t, s| line_edit::move_lines(t, s, false), window, cx);
     }
 
     pub(super) fn move_statement_up(&mut self, _: &MoveStatementUp, window: &mut Window, cx: &mut Context<Self>) {
         let lang = crate::index::lang::Lang::from_path(&self.path);
-        self.edit_with(|t, s| crate::index::selection::move_statement(lang, t, s, true), window, cx);
+        self.move_each(true, |t, s| crate::index::selection::move_statement(lang, t, s, true), window, cx);
     }
 
     pub(super) fn move_statement_down(&mut self, _: &MoveStatementDown, window: &mut Window, cx: &mut Context<Self>) {
         let lang = crate::index::lang::Lang::from_path(&self.path);
-        self.edit_with(|t, s| crate::index::selection::move_statement(lang, t, s, false), window, cx);
+        self.move_each(false, |t, s| crate::index::selection::move_statement(lang, t, s, false), window, cx);
     }
 
     pub(super) fn move_element_left(&mut self, _: &MoveElementLeft, window: &mut Window, cx: &mut Context<Self>) {
@@ -273,6 +288,15 @@ impl FileEditor {
     /// kept for Shrink Selection.
     pub(super) fn extend_selection(&mut self, _: &ExtendSelection, _: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
+        let ranges = self.state.read(cx).selection_ranges();
+        if ranges.len() > 1 {
+            // Every caret's selection grows a step (no Shrink steps kept).
+            let lang = crate::index::lang::Lang::from_path(&self.path);
+            let grown: Vec<Range<usize>> = ranges.iter().map(|r| crate::index::selection::extend(lang, &text, r.clone()).unwrap_or_else(|| r.clone())).collect();
+            self.selection_steps.clear();
+            self.state.update(cx, |state, cx| state.set_selection_ranges(grown, cx));
+            return;
+        }
         let current = self.state.read(cx).selected_range();
         if self.selection_steps.last() != Some(&current) {
             self.selection_steps.clear();
