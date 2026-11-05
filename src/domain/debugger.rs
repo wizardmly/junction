@@ -90,6 +90,19 @@ pub enum Value {
     Object { id: u64, class: String },
 }
 
+/// Instance filters as typed: object ids, each with or without its `@`
+/// (`@447 448`), split by spaces or commas; anything else is dropped.
+pub fn instance_ids(text: &str) -> Vec<u64> {
+    let mut ids: Vec<u64> = text.split([' ', ',', ';']).filter_map(|t| t.trim().trim_start_matches('@').parse().ok()).collect();
+    ids.dedup();
+    ids
+}
+
+/// The ids back as the field shows them: `@447 @448`.
+pub fn instance_text(ids: &[u64]) -> String {
+    ids.iter().map(|id| format!("@{id}")).collect::<Vec<_>>().join(" ")
+}
+
 impl Value {
     /// The object behind a value, when it has fields or elements to expand.
     pub fn object_id(&self) -> Option<u64> {
@@ -590,6 +603,8 @@ mod tests {
         assert_eq!(value_text(&Value::String { id: 1, text: "a \"b\"\n".into() }), "\"a \\\"b\\\"\\n\"");
         assert_eq!(value_text(&Value::Null), "null");
         assert_eq!(value_text(&Value::Object { id: 1234, class: "com.example.CalcTest".into() }), "{CalcTest@1234}");
+        assert_eq!(instance_ids("@447, 448 x @"), vec![447, 448]);
+        assert_eq!(instance_text(&[447, 448]), "@447 @448");
         assert_eq!(value_text(&Value::Array { id: 56, class: "int[]".into(), length: 3 }), "{int[3]@56}");
         assert_eq!(value_text(&Value::Array { id: 57, class: "java.lang.String[][]".into(), length: 2 }), "{String[2][]@57}");
         assert_eq!(Value::Array { id: 1, class: "int[]".into(), length: 0 }.object_id(), None);

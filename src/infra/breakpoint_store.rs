@@ -56,6 +56,9 @@ pub struct SavedBreakpoint {
     /// After hit: Leave enabled (else Disable again).
     #[serde(default, skip_serializing_if = "is_false")]
     pub leave_enabled: bool,
+    /// Instance filters: the objects (their `@id`) that must be `this`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instances: Vec<u64>,
 }
 
 /// Another breakpoint, by its file and 0-based line.
@@ -67,7 +70,7 @@ pub struct BreakpointRef {
 
 impl SavedBreakpoint {
     pub fn new(file: &str, line: u32) -> Self {
-        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None, field: None, field_access: false, field_modification: true, method_entry: true, method_exit: false, remove_once_hit: false, master: None, leave_enabled: false }
+        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None, field: None, field_access: false, field_modification: true, method_entry: true, method_exit: false, remove_once_hit: false, master: None, leave_enabled: false, instances: Vec::new() }
     }
 }
 
@@ -181,16 +184,20 @@ pub struct SavedExceptionBreakpoint {
     /// Catch class filters: where it's caught, the same way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub catch_filters: Vec<String>,
+    /// Instance filters: the objects (their `@id`) that must be `this`
+    /// where it's thrown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instances: Vec<u64>,
 }
 
 impl SavedExceptionBreakpoint {
     /// IntelliJ's "Any exception": there, off, caught and uncaught.
     pub fn any() -> Self {
-        Self { class: String::new(), enabled: false, caught: true, uncaught: true, condition: None, filters: Vec::new(), catch_filters: Vec::new() }
+        Self { class: String::new(), enabled: false, caught: true, uncaught: true, condition: None, filters: Vec::new(), catch_filters: Vec::new(), instances: Vec::new() }
     }
 
     pub fn new(class: &str) -> Self {
-        Self { class: class.to_owned(), enabled: true, caught: true, uncaught: true, condition: None, filters: Vec::new(), catch_filters: Vec::new() }
+        Self { class: class.to_owned(), enabled: true, caught: true, uncaught: true, condition: None, filters: Vec::new(), catch_filters: Vec::new(), instances: Vec::new() }
     }
 }
 

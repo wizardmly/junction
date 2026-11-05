@@ -88,11 +88,14 @@ pub struct BreakpointActions {
     /// After its own hit: stays armed ("Leave enabled") rather than waiting
     /// for the master again ("Disable again").
     pub leave_enabled: bool,
+    /// IntelliJ's Instance filters: hits only where `this` is one of these
+    /// objects (by id); empty for any.
+    pub instances: Vec<u64>,
 }
 
 impl Default for BreakpointActions {
     fn default() -> Self {
-        Self { suspend: true, remove_once_hit: false, log_message: false, log_stack: false, log_expression: None, master: None, leave_enabled: false }
+        Self { suspend: true, remove_once_hit: false, log_message: false, log_stack: false, log_expression: None, master: None, leave_enabled: false, instances: Vec::new() }
     }
 }
 
@@ -129,6 +132,8 @@ pub struct ExceptionBreakpoint {
     /// IntelliJ's Catch class filters, the same on the class catching it;
     /// an uncaught exception passes.
     pub catch_filters: Vec<String>,
+    /// Instance filters: `this` where it's thrown is one of these objects.
+    pub instances: Vec<u64>,
 }
 
 /// Whether a class passes class filters: no include pattern or one that
@@ -655,13 +660,13 @@ impl DebugSession {
         }
         if let (Some((_, PauseReason::Exception)), Some((thread, exception, name, caught, class, breakpoint))) = (paused, thrown) {
             let value = Value::Object { id: exception, class: name.clone() };
-            if let Some(breakpoint) = breakpoint.filter(|b| b.condition.is_some() || !b.filters.is_empty() || !b.catch_filters.is_empty()) {
+            if let Some(breakpoint) = breakpoint.filter(|b| b.condition.is_some() || !b.filters.is_empty() || !b.catch_filters.is_empty() || !b.instances.is_empty()) {
                 drop(state);
                 let catching = match caught {
                     Some(catcher) if !breakpoint.catch_filters.is_empty() => passes_filters(&breakpoint.catch_filters, &self.vm.class_name(catcher)?),
                     _ => true,
                 };
-                if !catching || !breakpoint.filters.is_empty() && !passes_filters(&breakpoint.filters, &self.vm.class_name(class)?) {
+                if !catching || !breakpoint.filters.is_empty() && !passes_filters(&breakpoint.filters, &self.vm.class_name(class)?) || !self.this_passes(thread, &breakpoint.instances)? {
                     self.vm.resume()?;
                     return Ok(out);
                 }
@@ -691,6 +696,10 @@ impl DebugSession {
             }
             // The condition, in the hit frame: false runs on.
             drop(state);
+            if !self.this_passes(thread, &breakpoint.actions.instances)? {
+                self.vm.resume()?;
+                return Ok(out);
+            }
             let frames = self.vm.frames(thread)?;
             let mut stop = breakpoint.actions.suspend;
             if let Some(text) = breakpoint.condition.as_deref() {
@@ -747,6 +756,18 @@ impl DebugSession {
             self.vm.resume()?;
         }
         Ok(out)
+    }
+
+    /// Instance filters: whether `this` in the thread's top frame is one of
+    /// `instances` (any frame passes an empty list; a static one, none).
+    fn this_passes(&self, thread: u64, instances: &[u64]) -> Result<bool, String> {
+        if instances.is_empty() {
+            return Ok(true);
+        }
+        let frames = self.vm.frames(thread)?;
+        let Some(frame) = frames.first() else { return Ok(false) };
+        let this = self.vm.locals(thread, frame)?.into_iter().find(|v| v.name == "this");
+        Ok(matches!(this.map(|v| v.value), Some(Value::Object { id, .. }) if instances.contains(&id)))
     }
 
     /// Runs an evaluation in a frame of the thread a hit suspended; none
@@ -953,7 +974,7 @@ mod tests {
             Ok(vec![Frame { id: 9, location: Location { class: 10, method: 1, index: 4 }, class: "a.CalcTest".into(), method: format!("on{thread}"), line: Some(5), source: Some("CalcTest.java".into()) }])
         }
         fn locals(&self, _: u64, _: &Frame) -> Result<Vec<Variable>, String> {
-            Ok(vec![Variable { name: "x".into(), value: Value::Int(4) }])
+            Ok(vec![Variable { name: "x".into(), value: Value::Int(4) }, Variable { name: "this".into(), value: Value::Object { id: 77, class: "a.CalcTest".into() } }])
         }
         fn children(&self, _: u64, _: usize) -> Result<Vec<Variable>, String> {
             Ok(Vec::new())
@@ -1233,6 +1254,26 @@ mod tests {
         vm.send(Suspend::All, hit());
         assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
         assert_eq!(vm.take_log(), ["resume"]);
+    }
+
+    #[test]
+    fn instance_filters_stop_only_on_their_objects() {
+        let vm = vm();
+        vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
+        let session = DebugSession::new(vm.clone());
+        let mut breakpoint = breakpoint(5);
+        breakpoint.actions.instances = vec![12];
+        session.add_breakpoint(breakpoint.clone()).unwrap();
+        let request = *vm.next.lock().unwrap();
+        vm.take_log();
+        let hit = || vec![DebugEvent::Breakpoint { thread: 1, location: Location { class: 10, method: 1, index: 4 }, request }];
+        // `this` is @77: runs on.
+        vm.send(Suspend::All, hit());
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume"]);
+        session.set_actions(&breakpoint.path, 5, BreakpointActions { instances: vec![12, 77], ..BreakpointActions::default() });
+        vm.send(Suspend::All, hit());
+        assert!(matches!(session.poll(Duration::ZERO).unwrap()[..], [SessionEvent::Paused { reason: PauseReason::Breakpoint, .. }]));
     }
 
     #[test]
