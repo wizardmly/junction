@@ -1869,7 +1869,11 @@ impl FileEditor {
         use crate::infra::project_files::DiskFiles;
         use crate::usecase::project_edits;
         let title = format!("Inline {}", field.kind);
-        let here = references(lang, &text, &field, true);
+        // `other.name`: the index's Go to Declaration tells whether it's this one.
+        let index = self.code_index.as_ref().map(|i| i.read(cx).index.clone());
+        let line = text[..field.name_range.start].matches('\n').count() as u32;
+        let mut here = references(lang, &text, &field, true);
+        here.resolve_in(index.as_ref().and_then(|i| i.read().ok()).as_deref(), &self.path, line, &field.name, &self.path, &text);
         if let Some(&at) = here.unresolved.first() {
             let line = text[..at].matches('\n').count() + 1;
             return Self::hint(&title, format!("Cannot inline {} {}: the reference on line {line} can't be followed.", field.kind.to_lowercase(), field.name), window, cx);
@@ -1883,8 +1887,10 @@ impl FileEditor {
             async move {
                 let Some(root) = root else { return Vec::new() };
                 let files = DiskFiles { root, repository: None };
+                let declaration = own.clone();
                 project_edits::scan(&files, &own, &field.name, &|path, text| {
-                    let found = references(Lang::from_path(path)?, text, &field, false);
+                    let mut found = references(Lang::from_path(path)?, text, &field, false);
+                    found.resolve_in(index.as_ref().and_then(|i| i.read().ok()).as_deref(), &declaration, line, &field.name, path, text);
                     (!found.refs.is_empty() || !found.imports.is_empty() || !found.unresolved.is_empty()).then_some(found)
                 })
             }
