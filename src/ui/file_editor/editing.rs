@@ -81,20 +81,38 @@ impl FileEditor {
         }
     }
 
+    /// An edit at every caret (`line_edit::each`) as one change; with a
+    /// single caret the same as [`Self::edit_with`].
+    fn edit_each(&mut self, per_line: bool, edit: impl Fn(&str, Range<usize>) -> Option<Edited>, window: &mut Window, cx: &mut Context<Self>) {
+        let ranges = self.state.read(cx).selection_ranges();
+        if ranges.len() < 2 {
+            return self.edit_with(edit, window, cx);
+        }
+        if self.read_only() {
+            return;
+        }
+        let old = self.text(cx);
+        let Some((new, selections)) = line_edit::each(&old, &ranges, per_line, edit) else { return };
+        let caret = selections.first().map_or(0, |r| r.start);
+        self.replace_text(&old, &new, caret, window, cx);
+        self.state.update(cx, |state, cx| state.set_selection_ranges(selections, cx));
+        cx.notify();
+    }
+
     pub(super) fn duplicate_line(&mut self, _: &DuplicateLine, window: &mut Window, cx: &mut Context<Self>) {
-        self.edit_with(|t, s| Some(line_edit::duplicate(t, s)), window, cx);
+        self.edit_each(true, |t, s| Some(line_edit::duplicate(t, s)), window, cx);
     }
 
     pub(super) fn comment_line(&mut self, _: &CommentLine, window: &mut Window, cx: &mut Context<Self>) {
         let (line, block) = line_edit::comment_tokens(&self.extension());
         let style = crate::domain::code_style::StyleLang::of_path(&self.path).map(|l| crate::settings::Settings::get(cx).code_style.comments(l)).unwrap_or_default();
-        self.edit_with(|t, s| Some(line_edit::toggle_line_comment(t, s, line, block, style)), window, cx);
+        self.edit_each(true, |t, s| Some(line_edit::toggle_line_comment(t, s, line, block, style)), window, cx);
     }
 
     pub(super) fn comment_block(&mut self, _: &CommentBlock, window: &mut Window, cx: &mut Context<Self>) {
         let (_, block) = line_edit::comment_tokens(&self.extension());
         let Some(block) = block else { return };
-        self.edit_with(|t, s| Some(line_edit::toggle_block_comment(t, s, block)), window, cx);
+        self.edit_each(false, |t, s| Some(line_edit::toggle_block_comment(t, s, block)), window, cx);
     }
 
     pub(super) fn move_line_up(&mut self, _: &MoveLineUp, window: &mut Window, cx: &mut Context<Self>) {
@@ -244,11 +262,11 @@ impl FileEditor {
     }
 
     pub(super) fn start_new_line(&mut self, _: &StartNewLine, window: &mut Window, cx: &mut Context<Self>) {
-        self.edit_with(|t, s| Some(line_edit::start_new_line(t, s)), window, cx);
+        self.edit_each(true, |t, s| Some(line_edit::start_new_line(t, s)), window, cx);
     }
 
     pub(super) fn toggle_case(&mut self, _: &ToggleCase, window: &mut Window, cx: &mut Context<Self>) {
-        self.edit_with(|t, s| Some(line_edit::toggle_case(t, s)), window, cx);
+        self.edit_each(false, |t, s| Some(line_edit::toggle_case(t, s)), window, cx);
     }
 
     /// Ctrl+W: the next larger syntax around the selection; the steps are

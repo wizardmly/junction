@@ -44,6 +44,44 @@ fn lines_of(text: &str, sel: &Range<usize>) -> Range<usize> {
     line_start(text, sel.start)..line_end(text, end.max(sel.start))
 }
 
+/// An edit at every caret, as IntelliJ runs a line action once per caret:
+/// from the last selection to the first, so each sees offsets that the
+/// later ones didn't move. With `per_line`, a caret on lines an earlier
+/// processed one already covered is dropped (Ctrl+D or Ctrl+/ act once per
+/// line). The selections come back in their given order (dropped ones
+/// left out); `None` when nothing changed.
+pub fn each(text: &str, selections: &[Range<usize>], per_line: bool, edit: impl Fn(&str, Range<usize>) -> Option<Edited>) -> Option<(String, Vec<Range<usize>>)> {
+    let mut order: Vec<usize> = (0..selections.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(selections[i].start));
+    let mut out = text.to_owned();
+    let mut done: Vec<(usize, Range<usize>)> = Vec::new();
+    let mut covered: Vec<Range<usize>> = Vec::new();
+    for i in order {
+        let sel = selections[i].clone();
+        let lines = lines_of(text, &sel);
+        if per_line && covered.iter().any(|c| c.start <= lines.end && lines.start <= c.end) {
+            continue;
+        }
+        covered.push(lines);
+        match edit(&out, sel.clone()) {
+            Some(edited) => {
+                let delta = edited.text.len() as isize - out.len() as isize;
+                for (_, r) in &mut done {
+                    *r = (r.start as isize + delta) as usize..(r.end as isize + delta) as usize;
+                }
+                out = edited.text;
+                done.push((i, edited.selection));
+            }
+            None => done.push((i, sel)),
+        }
+    }
+    if out == text {
+        return None;
+    }
+    done.sort_by_key(|(i, _)| *i);
+    Some((out, done.into_iter().map(|(_, r)| r).collect()))
+}
+
 /// Ctrl+D: the caret's line copied below it (the caret goes along), or
 /// the selection copied after itself and selected.
 pub fn duplicate(text: &str, sel: Range<usize>) -> Edited {
@@ -274,6 +312,26 @@ pub fn toggle_case(text: &str, sel: Range<usize>) -> Edited {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn duplicates_at_every_caret() {
+        let text = "a\nb\nc\n";
+        let (out, sels) = super::each(text, &[2..2, 0..0], true, |t, s| Some(super::duplicate(t, s))).unwrap();
+        assert_eq!(out, "a\na\nb\nb\nc\n");
+        assert_eq!(sels, vec![6..6, 2..2]);
+        // Two carets on one line copy it once.
+        let (out, sels) = super::each(text, &[0..0, 1..1], true, |t, s| Some(super::duplicate(t, s))).unwrap();
+        assert_eq!(out, "a\na\nb\nc\n");
+        assert_eq!(sels, vec![3..3]);
+    }
+
+    #[test]
+    fn comments_every_caret_line() {
+        let text = "a\nb\nc\n";
+        let style = super::LineComments::default();
+        let (out, _) = super::each(text, &[0..0, 4..4], true, |t, s| Some(super::toggle_line_comment(t, s, Some("//"), None, style))).unwrap();
+        assert_eq!(out, "//a\nb\n//c\n");
+    }
+
     use super::*;
 
     #[test]
