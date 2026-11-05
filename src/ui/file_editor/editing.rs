@@ -4,7 +4,9 @@
 //! Selection (Ctrl+W, Ctrl+Shift+W), Move Statement Up / Down
 //! (Ctrl+Shift+↑/↓), Move Element Left / Right (Ctrl+Alt+Shift+←/→), Join Lines (Ctrl+Shift+J), Start New
 //! Line (Shift+Enter) and Toggle Case (Ctrl+Shift+U). The edits are
-//! `domain::line_edit`'s; each is one undoable change.
+//! `domain::line_edit`'s; each is one undoable change. Also the carets of
+//! Add Selection for Next Occurrence (Alt+J), Unselect Occurrence
+//! (Shift+Alt+J) and Select All Occurrences (Ctrl+Alt+Shift+J).
 
 use std::ops::Range;
 
@@ -14,7 +16,7 @@ use gpui_kit::{Context, KeyBinding, Window, actions};
 use super::FileEditor;
 use crate::domain::line_edit::{self, Edited};
 
-actions!(editing, [DuplicateLine, CommentLine, CommentBlock, MoveLineUp, MoveLineDown, MoveStatementUp, MoveStatementDown, MoveElementLeft, MoveElementRight, Inline, UnwrapRemove, SafeDelete, CollapseRegion, ExpandRegion, CollapseAllRegions, ExpandAllRegions, ExtendSelection, ShrinkSelection, JoinLines, StartNewLine, ToggleCase]);
+actions!(editing, [DuplicateLine, CommentLine, CommentBlock, MoveLineUp, MoveLineDown, MoveStatementUp, MoveStatementDown, MoveElementLeft, MoveElementRight, Inline, UnwrapRemove, SafeDelete, CollapseRegion, ExpandRegion, CollapseAllRegions, ExpandAllRegions, ExtendSelection, ShrinkSelection, JoinLines, StartNewLine, ToggleCase, SelectNextOccurrence, UnselectOccurrence, SelectAllOccurrences]);
 
 /// In the editor's input, over the input's own bindings for these keys.
 const INPUT: &str = "FileEditor > Input";
@@ -48,6 +50,9 @@ pub fn init(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-shift-j", JoinLines, Some(INPUT)),
         KeyBinding::new("shift-enter", StartNewLine, Some(INPUT)),
         KeyBinding::new(if mac { "cmd-shift-u" } else { "ctrl-shift-u" }, ToggleCase, Some(INPUT)),
+        KeyBinding::new(if mac { "ctrl-g" } else { "alt-j" }, SelectNextOccurrence, Some(INPUT)),
+        KeyBinding::new(if mac { "ctrl-shift-g" } else { "alt-shift-j" }, UnselectOccurrence, Some(INPUT)),
+        KeyBinding::new(if mac { "ctrl-cmd-g" } else { "ctrl-alt-shift-j" }, SelectAllOccurrences, Some(INPUT)),
     ]);
 }
 
@@ -118,6 +123,61 @@ impl FileEditor {
     pub(super) fn move_element_right(&mut self, _: &MoveElementRight, window: &mut Window, cx: &mut Context<Self>) {
         let lang = crate::index::lang::Lang::from_path(&self.path);
         self.edit_with(|t, s| crate::index::selection::move_element(lang, t, s, false), window, cx);
+    }
+
+    /// Add Selection for Next Occurrence (Alt+J): bare carets first select
+    /// the word at each; then the next match of the newest selection's text
+    /// after it (wrapping round) gets a caret of its own.
+    pub(super) fn select_next_occurrence(&mut self, _: &SelectNextOccurrence, _: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::occurrences;
+        let text = self.text(cx);
+        self.state.update(cx, |state, cx| {
+            let ranges = state.selection_ranges();
+            if ranges.iter().any(|r| r.is_empty()) {
+                let words: Vec<Range<usize>> = ranges
+                    .iter()
+                    .filter_map(|r| if r.is_empty() { occurrences::word_at(&text, r.start) } else { Some(r.clone()) })
+                    .collect();
+                state.set_selection_ranges(words, cx);
+                return;
+            }
+            let active = ranges[0].clone();
+            let whole = occurrences::is_word_selection(&text, &active);
+            if let Some(next) = occurrences::next(&text, &text[active.clone()], whole, active.end, &ranges) {
+                state.add_selection_range(next, cx);
+            }
+        });
+    }
+
+    /// Unselect Occurrence (Shift+Alt+J): drops the newest caret.
+    pub(super) fn unselect_occurrence(&mut self, _: &UnselectOccurrence, _: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.remove_active_selection(cx));
+    }
+
+    /// Select All Occurrences (Ctrl+Alt+Shift+J): a caret on every match of
+    /// the selection (or of the word at the caret), the caret's own match
+    /// staying the active one.
+    pub(super) fn select_all_occurrences(&mut self, _: &SelectAllOccurrences, _: &mut Window, cx: &mut Context<Self>) {
+        use crate::domain::occurrences;
+        let text = self.text(cx);
+        self.state.update(cx, |state, cx| {
+            let active = state.selection_ranges()[0].clone();
+            let (needle, whole) = if active.is_empty() {
+                match occurrences::word_at(&text, active.start) {
+                    Some(word) => (word, true),
+                    None => return,
+                }
+            } else {
+                let whole = occurrences::is_word_selection(&text, &active);
+                (active.clone(), whole)
+            };
+            let mut all = occurrences::all(&text, &text[needle.clone()], whole);
+            if let Some(i) = all.iter().position(|r| r.start <= needle.start && needle.start < r.end.max(r.start + 1)) {
+                let own = all.remove(i);
+                all.insert(0, own);
+            }
+            state.set_selection_ranges(all, cx);
+        });
     }
 
     /// Code › Folding › Collapse (Ctrl+-): the innermost open region at the
