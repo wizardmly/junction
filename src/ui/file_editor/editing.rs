@@ -150,12 +150,12 @@ impl FileEditor {
 
     pub(super) fn move_element_left(&mut self, _: &MoveElementLeft, window: &mut Window, cx: &mut Context<Self>) {
         let lang = crate::index::lang::Lang::from_path(&self.path);
-        self.edit_with(|t, s| crate::index::selection::move_element(lang, t, s, true), window, cx);
+        self.edit_each(false, |t, s| crate::index::selection::move_element(lang, t, s, true), window, cx);
     }
 
     pub(super) fn move_element_right(&mut self, _: &MoveElementRight, window: &mut Window, cx: &mut Context<Self>) {
         let lang = crate::index::lang::Lang::from_path(&self.path);
-        self.edit_with(|t, s| crate::index::selection::move_element(lang, t, s, false), window, cx);
+        self.edit_each(false, |t, s| crate::index::selection::move_element(lang, t, s, false), window, cx);
     }
 
     /// Add Selection for Next Occurrence (Alt+J): bare carets first select
@@ -273,7 +273,7 @@ impl FileEditor {
     }
 
     pub(super) fn join_lines(&mut self, _: &JoinLines, window: &mut Window, cx: &mut Context<Self>) {
-        self.edit_with(line_edit::join_lines, window, cx);
+        self.edit_each(true, line_edit::join_lines, window, cx);
     }
 
     pub(super) fn start_new_line(&mut self, _: &StartNewLine, window: &mut Window, cx: &mut Context<Self>) {
