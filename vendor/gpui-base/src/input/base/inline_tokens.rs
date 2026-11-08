@@ -206,6 +206,10 @@ fn validate_range(text: &str, range: &Range<usize>) -> Result<(), InlineTokenErr
 #[derive(Default)]
 pub(super) struct InlineTokenStore {
     spans: Vec<InlineTokenSpan>,
+    /// Junction: display-only folds ([`InputBaseState::set_display_folds`]):
+    /// they are not part of the document, so edits never widen to them,
+    /// history never records them and an edit that touches one drops it.
+    pub(super) display: bool,
 }
 
 /// Only affected records are retained in history. Ranges are relative to the edit start.
@@ -268,8 +272,12 @@ impl<M: InputModeKind> InputBaseState<M> {
             offset
         }
     }
+    /// Junction: whether the tokens are display-only folds.
+    pub(super) fn display_folds(&self) -> bool {
+        self.inline_tokens.as_ref().is_some_and(|store| store.display)
+    }
     pub(super) fn normalize_token_range(&self, range: Range<usize>) -> Range<usize> {
-        if self.replaying_history {
+        if self.replaying_history || self.display_folds() {
             return range;
         }
         if range.is_empty() {
@@ -286,6 +294,10 @@ impl<M: InputModeKind> InputBaseState<M> {
         new_len: usize,
     ) -> Option<Box<TokenDelta>> {
         if self.replaying_history {
+            return None;
+        }
+        if self.display_folds() {
+            self.inline_tokens.as_mut()?.replace(range, new_len, &[]);
             return None;
         }
         let inserted = self.pending_token.take().map(|token| InlineTokenSpan {
@@ -306,6 +318,10 @@ impl<M: InputModeKind> InputBaseState<M> {
         delta: Option<&TokenDelta>,
         undo: bool,
     ) {
+        // Junction: the replayed edit already moved display folds.
+        if self.display_folds() {
+            return;
+        }
         let inserted = delta
             .map(|d| {
                 if undo {
@@ -382,8 +398,60 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.inline_tokens = (supported && text_kept && !content.tokens.is_empty()).then(|| {
             Box::new(InlineTokenStore {
                 spans: content.tokens,
+                display: false,
             })
         });
+    }
+
+    /// Junction: shows each byte range as its label (IntelliJ's collapsed
+    /// fold regions inside a line, e.g. Android string references) without
+    /// changing the document. Ranges must be single-line, nonempty, sorted
+    /// and disjoint; invalid ones are skipped. An empty list removes them.
+    /// Replaces atomic tokens only when the input holds display folds or none.
+    pub fn set_display_folds(
+        &mut self,
+        folds: Vec<(Range<usize>, SharedString)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.inline_tokens.as_ref().is_some_and(|store| !store.display) {
+            return;
+        }
+        let text = self.text.to_string();
+        let mut spans: Vec<InlineTokenSpan> = Vec::with_capacity(folds.len());
+        for (range, label) in folds {
+            if range.is_empty()
+                || range.end > text.len()
+                || !text.is_char_boundary(range.start)
+                || !text.is_char_boundary(range.end)
+                || spans.last().is_some_and(|last| last.range.end > range.start)
+            {
+                continue;
+            }
+            let token = InlineToken::new(label.clone(), text[range.clone()].to_string()).with_label(label);
+            if token.validate().is_err() {
+                continue;
+            }
+            spans.push(InlineTokenSpan { range, token });
+        }
+        if spans == self.token_spans() {
+            return;
+        }
+        self.inline_tokens = (!spans.is_empty()).then(|| {
+            Box::new(InlineTokenStore {
+                spans,
+                display: true,
+            })
+        });
+        self.token_layout_cache = None;
+        self.display_map.set_inline_metrics(std::rc::Rc::from([]), cx);
+        cx.notify();
+    }
+    /// Junction: the display folds set by [`Self::set_display_folds`].
+    pub fn display_fold_ranges(&self) -> Vec<Range<usize>> {
+        if !self.display_folds() {
+            return vec![];
+        }
+        self.token_spans().iter().map(|span| span.range()).collect()
     }
 }
 

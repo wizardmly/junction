@@ -42,6 +42,7 @@ enum Page {
     EditorGeneral,
     CodeEditing,
     AutoImport,
+    CodeFolding,
     EditorFont,
     GutterIcons,
     EditorTabs,
@@ -63,7 +64,7 @@ enum Page {
 const TREE: &[(&str, Option<Page>, &[Page])] = &[
     ("Appearance & Behavior", None, &[Page::Appearance, Page::System]),
     ("Keymap", Some(Page::Keymap), &[]),
-    ("Editor", None, &[Page::EditorGeneral, Page::CodeEditing, Page::AutoImport, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::CodeStyle, Page::LiveTemplates, Page::Intentions]),
+    ("Editor", None, &[Page::EditorGeneral, Page::CodeEditing, Page::AutoImport, Page::CodeFolding, Page::EditorFont, Page::GutterIcons, Page::EditorTabs, Page::CodeStyle, Page::LiveTemplates, Page::Intentions]),
     ("Version Control", None, &[Page::Commit, Page::Mappings, Page::Git, Page::GitHub, Page::GitLab]),
     ("Build, Execution, Deployment", None, &[Page::Gradle, Page::Compiler]),
     ("Languages & Frameworks", Some(Page::Languages), &[Page::AndroidSdk]),
@@ -78,6 +79,7 @@ impl Page {
             Page::EditorGeneral => "General",
             Page::CodeEditing => "Code Editing",
             Page::AutoImport => "Auto Import",
+            Page::CodeFolding => "Code Folding",
             Page::EditorFont => "Font",
             Page::GutterIcons => "Gutter Icons",
             Page::EditorTabs => "Editor Tabs",
@@ -112,6 +114,7 @@ impl Page {
             Page::EditorGeneral => &["Soft-wrap", "Show line numbers", "Show whitespaces", "Show indent guides", "Appearance", "Diff", "Merge", "Console", "Override console cycle buffer size"],
             Page::CodeEditing => &["Code Editing", "Refactorings", "Specify refactoring options", "In modal dialogs", "In the editor"],
             Page::AutoImport => &["Auto Import", "Java", "Kotlin", "Optimize imports on the fly", "Imports"],
+            Page::CodeFolding => &["Code Folding", "Fold", "Collapse", "Android", "String References", "Strings"],
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
@@ -530,6 +533,7 @@ fn copy_options(from: &Settings, to: &mut Settings) {
     to.diff.optimize_imports_java = from.diff.optimize_imports_java;
     to.diff.optimize_imports_kotlin = from.diff.optimize_imports_kotlin;
     to.diff.refactor_in_editor = from.diff.refactor_in_editor;
+    to.diff.fold_android_strings = from.diff.fold_android_strings;
     to.disabled_intentions = from.disabled_intentions.clone();
     to.project.preview_tab = from.project.preview_tab;
 }
@@ -642,6 +646,7 @@ impl Render for SettingsView {
                 Page::EditorGeneral => self.editor_general(&query, cx).into_any_element(),
                 Page::CodeEditing => self.code_editing(&query, cx).into_any_element(),
                 Page::AutoImport => self.auto_import(&query, cx).into_any_element(),
+                Page::CodeFolding => self.code_folding(&query, cx).into_any_element(),
                 Page::EditorFont => self.editor_font(&query, cx).into_any_element(),
                 Page::GutterIcons => self.gutter_icons(&query, cx).into_any_element(),
                 Page::EditorTabs => self.editor_tabs(&query, cx).into_any_element(),
@@ -1483,6 +1488,16 @@ impl SettingsView {
             .child(self.section("Kotlin", cx))
             .child(self.check("settings-optimize-kotlin", "Optimize imports on the fly", d.optimize_imports_kotlin, query, |s, v| s.diff.optimize_imports_kotlin = v, cx))
             .child(self.note("Unused imports are removed and the rest sorted when the file is saved, unless the caret is in the import list", cx))
+    }
+
+    /// Editor › General › Code Folding: AS's Android section.
+    fn code_folding(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let d = &self.draft.diff;
+        v_flex()
+            .gap_2()
+            .child(self.section("Android", cx))
+            .child(self.check("settings-fold-android-strings", "String References", d.fold_android_strings, query, |s, v| s.diff.fold_android_strings = v, cx))
+            .child(self.note("R.string.x, getString(R.string.x, …) and @string/x are shown as their values; the caret's line shows the code", cx))
     }
 
     fn gutter_icons(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {

@@ -30,13 +30,16 @@ impl FileEditor {
         let table = index.read(cx).resources.clone();
         let framework = index.read(cx).framework_table();
         let root = index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
+        let fold = crate::settings::Settings::get(cx).diff.fold_android_strings;
+        let revision = self.server_edits;
         self.previews_task = Some(cx.spawn(async move |this, cx| {
             if debounce {
                 cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
             }
-            let (marks, vectors) = cx
+            let (marks, vectors, folds, text) = cx
                 .background_spawn(async move {
                     let table = table.read().unwrap();
+                    let folds = if fold { crate::usecase::resource_folding::folds(&table, &path, &text) } else { Vec::new() };
                     let marks: Vec<(u32, Preview)> = android_resources::previews(&table, framework.as_deref(), &path, &text)
                         .into_iter()
                         .map(|(line, p)| match p {
@@ -73,10 +76,11 @@ impl FileEditor {
                         });
                         vectors.insert(file.clone(), image);
                     }
-                    (marks.into_iter().filter(|(_, p)| !matches!(p, Preview::Vector(f) if vectors.get(f).is_none_or(Option::is_none))).collect::<Vec<_>>(), vectors)
+                    (marks.into_iter().filter(|(_, p)| !matches!(p, Preview::Vector(f) if vectors.get(f).is_none_or(Option::is_none))).collect::<Vec<_>>(), vectors, folds, text)
                 })
                 .await;
             this.update(cx, |this, cx| {
+                this.set_resource_folds(folds, &text, revision, cx);
                 this.vector_icons = std::rc::Rc::new(vectors.into_iter().filter_map(|(k, v)| Some((k, v?))).collect());
                 if this.previews != marks {
                     this.previews = marks;

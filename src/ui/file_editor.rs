@@ -13,6 +13,7 @@ mod generate;
 mod templates;
 pub use breakpoints::RunToCursor;
 mod previews;
+mod resource_folds;
 mod vector_preview;
 mod merged_manifest;
 mod parameter_info;
@@ -468,6 +469,8 @@ pub struct FileEditor {
     /// The gutter's vector drawable icons, by file.
     vector_icons: Rc<std::collections::HashMap<String, std::sync::Arc<gpui_kit::Image>>>,
     previews_task: Option<gpui_kit::Task<()>>,
+    /// Android string references folded to their values.
+    resource_folds: resource_folds::ResourceFolds,
     /// Parameter Info (Ctrl+P) shown, and its lookup or autopopup.
     parameter_info: Option<parameter_info::ParameterInfo>,
     parameter_task: Option<gpui_kit::Task<()>>,
@@ -738,6 +741,9 @@ impl FileEditor {
             if view.show_gutter_icons != shown.show_gutter_icons {
                 this.apply_gutter_extra(cx);
             }
+            if view.fold_android_strings != shown.fold_android_strings {
+                this.update_previews(false, cx);
+            }
             settings_state.update(cx, |state, cx| {
                 state.set_line_number(view.show_line_numbers, window, cx);
                 state.set_show_whitespaces(view.show_whitespaces, window, cx);
@@ -750,7 +756,10 @@ impl FileEditor {
             this.apply_gutter_extra(cx);
             cx.notify();
         });
-        let subscriptions = vec![settings, bookmarks, cx.observe(&state, |this, _, cx| this.follow_import_hint(cx)), cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
+        let subscriptions = vec![settings, bookmarks, cx.observe(&state, |this, _, cx| {
+            this.follow_import_hint(cx);
+            this.follow_resource_folds(cx);
+        }), cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 // IntelliJ closes the change popup on typing.
                 this.popup = None;
@@ -828,6 +837,7 @@ impl FileEditor {
             merged: None,
             vector_icons: Rc::default(),
             previews_task: None,
+            resource_folds: Default::default(),
             parameter_info: None,
             parameter_task: None,
             import_hint: None,
