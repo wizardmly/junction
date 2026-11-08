@@ -261,7 +261,7 @@ mod tests {
         style.set_comments(StyleLang::Java, LineComments { first_column: false, add_space: true });
         assert!(style.lines().contains("code_style_java_comments=false,true\n") && !style.lines().contains("kotlin_comments"));
         style.set_spaces(StyleLang::Kotlin, Spaces { after_comma: false, ..Default::default() });
-        assert!(style.lines().contains("code_style_kotlin_spaces=11111111111100111101111111111111111111111111001\n"));
+        assert!(style.lines().contains("code_style_kotlin_spaces=1111111111110011110111111111111111111111111100100000000000000000\n"));
         assert!(!style.indents(StyleLang::Kotlin, None, None).spaces.after_comma);
         let mut read = CodeStyle::default();
         for line in style.lines().lines() {
