@@ -183,10 +183,17 @@ pub struct Spaces {
     /// arrow in function types, Around arrow in "when" clause and Before
     /// lambda arrow (after it there's always a space). All on by default.
     pub arrows: [bool; 4],
+    /// Kotlin's Unary operator: `! a`, `- 1`, `i ++` (default off).
+    pub around_unary: bool,
+    /// Kotlin's Range operator: `a .. b`, `a ..< b` (default off).
+    pub around_range: bool,
+    /// Kotlin's In simple one line methods: `{ x }` for a lambda or a
+    /// function body on one line (default on; other blocks always `{ x }`).
+    pub simple_braces: bool,
 }
 
 /// How many values `Spaces::values` has.
-pub const SPACES_LEN: usize = 44;
+pub const SPACES_LEN: usize = 47;
 
 impl Default for Spaces {
     fn default() -> Self {
@@ -205,6 +212,9 @@ impl Default for Spaces {
             before_left_brace: [true; 12],
             ternary: [true; 4],
             arrows: [true; 4],
+            around_unary: false,
+            around_range: false,
+            simple_braces: true,
         }
     }
 }
@@ -262,10 +272,13 @@ impl Spaces {
         "Around operators: Around arrow in function types",
         "Around operators: Around arrow in 'when' clause",
         "Other: Before lambda arrow",
+        "Around operators: Unary operator (!, -, +, ++, --)",
+        "Around operators: Range operator (.., ..<)",
+        "Other: In simple one line methods",
     ];
     /// Which of `values` each language's page shows, in IntelliJ's order.
     pub const JAVA: [usize; 36] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 22, 23, 40, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 14, 15, 16, 17, 36, 37, 38, 39, 12, 13];
-    pub const KOTLIN: [usize; 20] = [0, 1, 2, 4, 6, 8, 9, 10, 11, 22, 23, 41, 42, 12, 13, 18, 19, 20, 21, 43];
+    pub const KOTLIN: [usize; 23] = [0, 1, 2, 4, 6, 8, 9, 10, 11, 22, 23, 44, 45, 41, 42, 12, 13, 18, 19, 20, 21, 46, 43];
 
     pub fn values(&self) -> [bool; SPACES_LEN] {
         let (p, k, c, b, t, a) = (self.before_parens, self.before_keywords, self.colons, self.before_left_brace, self.ternary, self.arrows);
@@ -277,6 +290,7 @@ impl Spaces {
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11],
             t[0], t[1], t[2], t[3],
             a[0], a[1], a[2], a[3],
+            self.around_unary, self.around_range, self.simple_braces,
         ]
     }
 
@@ -296,6 +310,9 @@ impl Spaces {
             before_left_brace: [v[24], v[25], v[26], v[27], v[28], v[29], v[30], v[31], v[32], v[33], v[34], v[35]],
             ternary: [v[36], v[37], v[38], v[39]],
             arrows: [v[40], v[41], v[42], v[43]],
+            around_unary: v[44],
+            around_range: v[45],
+            simple_braces: v[46],
         }
     }
 
@@ -1636,6 +1653,9 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
     let mut k = 0;
     // Java ternaries whose `:` is still to come on this line.
     let mut ternaries = 0;
+    // Kotlin `{`s closed later on this line: whether In simple one line
+    // methods governs their spaces.
+    let mut braces: Vec<bool> = Vec::new();
     let push_space = |out: &mut String| {
         if !out.is_empty() && !out.ends_with(' ') {
             out.push(' ');
@@ -1695,6 +1715,45 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
                     }
                 }
                 out.push('{');
+                if kotlin {
+                    // `{x}` → `{ x }`, `{x ->` → `{ x ->`.
+                    let mut depth = 0;
+                    let mut closes = false;
+                    let mut params = false;
+                    for (n, (j, ch)) in chars.iter().enumerate().skip(k + 1) {
+                        if !is_code(*j) {
+                            continue;
+                        }
+                        match ch {
+                            '{' => depth += 1,
+                            '}' if depth == 0 => {
+                                closes = true;
+                                break;
+                            }
+                            '}' => depth -= 1,
+                            '-' if depth == 0 && chars.get(n + 1).is_some_and(|(_, c)| *c == '>') => params = true,
+                            _ => {}
+                        }
+                    }
+                    let mut m = k + 1;
+                    while chars.get(m).is_some_and(|(j, ch)| is_code(*j) && matches!(ch, ' ' | '\t')) {
+                        m += 1;
+                    }
+                    let empty = chars.get(m).is_none_or(|(j, ch)| is_code(*j) && *ch == '}');
+                    if (closes || params) && !empty {
+                        let governed = simple_brace(&out[..out.len() - 1]);
+                        if closes {
+                            braces.push(governed);
+                        }
+                        if spaces.simple_braces || !governed {
+                            out.push(' ');
+                        }
+                        k = m;
+                        continue;
+                    } else if closes {
+                        braces.push(true);
+                    }
+                }
             }
             // Java's ternary `a ? b : c` (not a wildcard `<?`, `? extends`).
             '?' if flavor == Flavor::Java && ternary_question(&chars, k, &is_code, &out) => {
@@ -1710,6 +1769,14 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
                 continue;
             }
             '}' => {
+                if let Some(governed) = braces.pop().filter(|_| kotlin && !out.trim_end().ends_with('{')) {
+                    while out.ends_with(' ') {
+                        out.pop();
+                    }
+                    if spaces.simple_braces || !governed {
+                        out.push(' ');
+                    }
+                }
                 out.push('}');
                 // `}else`, `}catch`, `}finally`, `}while`.
                 let word: String = chars[k + 1..].iter().take_while(|(j, ch)| is_code(*j) && ch.is_alphanumeric()).map(|(_, ch)| *ch).collect();
@@ -1798,6 +1865,37 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
                 }
                 if k < chars.len() && after {
                     out.push(' ');
+                }
+                continue;
+            }
+            // Kotlin's `..` / `..<`.
+            '.' if kotlin && next_code(1) == Some('.') && !out.ends_with('.') => {
+                let op = if next_code(2) == Some('<') { "..<" } else { ".." };
+                spaced_operator(&mut out, &chars, &mut k, &is_code, op, spaces.around_range, spaces.around_range);
+                continue;
+            }
+            // Kotlin's prefix `!`, signs, `++` / `--`.
+            '!' | '+' | '-' if kotlin && let Some((op, prefix)) = unary(&chars, k, &is_code, &out) => {
+                if prefix {
+                    out.push_str(op);
+                    k += op.len();
+                    while chars.get(k).is_some_and(|(j, ch)| is_code(*j) && *ch == ' ') {
+                        k += 1;
+                    }
+                    // Never `- -x` into `--x`.
+                    let joins = chars.get(k).is_some_and(|(j, ch)| is_code(*j) && op.ends_with(*ch));
+                    if (spaces.around_unary || joins) && k < chars.len() {
+                        out.push(' ');
+                    }
+                } else {
+                    while out.ends_with(' ') {
+                        out.pop();
+                    }
+                    if spaces.around_unary {
+                        out.push(' ');
+                    }
+                    out.push_str(op);
+                    k += op.len();
                 }
                 continue;
             }
@@ -1903,6 +2001,61 @@ fn arrow_spaces(out: &str, kotlin: bool, spaces: &Spaces) -> (bool, bool) {
         (spaces.arrows[3], true)
     } else {
         (spaces.arrows[2], spaces.arrows[2])
+    }
+}
+
+/// Whether a Kotlin `{` after `before` (the line so far) opens a lambda
+/// or a function's body, whose spaces inside In simple one line methods
+/// sets; not a class body or a control statement's block.
+fn simple_brace(before: &str) -> bool {
+    let segment = before.rsplit(['{', '}', ';']).next().unwrap_or("").trim_end();
+    if matches!(last_word(segment), "else" | "try" | "finally" | "do" | "init" | "when") {
+        return false;
+    }
+    if segment.ends_with(')') {
+        let mut depth = 0;
+        for (i, ch) in segment.char_indices().rev() {
+            match ch {
+                ')' => depth += 1,
+                '(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if matches!(last_word(segment[..i].trim_end()), "if" | "for" | "while" | "when" | "catch") {
+                            return false;
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    mentions_word(segment, "fun") || !["class", "object", "interface", "enum"].iter().any(|k| mentions_word(segment, k))
+}
+
+/// A Kotlin unary operator at `k` (prefix `!`, a sign, `++` / `--`) and
+/// whether it's a prefix one; not `!in`, `!is`, `!!`, `!=`, `->`, `-=`.
+fn unary(chars: &[(usize, char)], k: usize, is_code: &dyn Fn(usize) -> bool, out: &str) -> Option<(&'static str, bool)> {
+    let c = chars[k].1;
+    let next = chars.get(k + 1).filter(|(j, _)| is_code(*j)).map(|(_, ch)| *ch);
+    let before = out.trim_end();
+    let last = before.chars().last();
+    let word = last_word(before);
+    let keyword = matches!(word, "return" | "in" | "is" | "else" | "when" | "if" | "while" | "throw" | "to" | "until" | "downTo" | "step" | "and" | "or" | "as");
+    let operand = last.is_some_and(|l| l.is_alphanumeric() || matches!(l, '_' | ')' | ']' | '}' | '"' | '\'' | '`' | '!')) && !keyword || before.ends_with("++") || before.ends_with("--");
+    match c {
+        '!' if out.ends_with('!') || operand || matches!(next, Some('=') | None) => None,
+        '!' => Some(("!", true)),
+        _ if next == Some(c) => {
+            // `++i` / `i++`; not a third `-` (`a---b`).
+            if out.ends_with(c) {
+                return None;
+            }
+            let op = if c == '+' { "++" } else { "--" };
+            Some((op, !operand))
+        }
+        _ if operand || matches!(next, Some('=' | '>') | None) || out.ends_with(c) => None,
+        _ => Some((if c == '+' { "+" } else { "-" }, true)),
     }
 }
 
@@ -2153,6 +2306,16 @@ fn operator(chars: &[(usize, char)], k: usize, is_code: &dyn Fn(usize) -> bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn braces_range_and_unary_spaces() {
+        let text = "fun f() {return 1}\nval a = xs.map {it * 2}.filter {x->x > 0}\nval b = xs.map {x ->\n    x\n}\nclass A {val x = 1}\nval s = \"${x}\"\nval e = {}\nval r = 0 .. 9 + (1 ..< n).count()\nval n = ! done && - 1 < x\nval c = i ++ + -- j + k++ - 1\nval d = - -x\nval m = a !in b && c!! == d\n";
+        assert_eq!(kt(text), "fun f() { return 1 }\nval a = xs.map { it * 2 }.filter { x -> x > 0 }\nval b = xs.map { x ->\n    x\n}\n\nclass A { val x = 1 }\n\nval s = \"${x}\"\nval e = {}\nval r = 0..9 + (1..<n).count()\nval n = !done && -1 < x\nval c = i++ + --j + k++ - 1\nval d = - -x\nval m = a !in b && c!! == d\n");
+        let with = |text: &str, spaces: Spaces| reformat_indented(ImportStyle::Kotlin, text, None, &IndentStyle { spaces, ..Default::default() });
+        let off = Spaces { simple_braces: false, around_range: true, around_unary: true, ..Default::default() };
+        assert_eq!(with("fun f() { return 1 }\nval a = xs.map { it }\nif (a) { b() } else { c() }\nclass A { val x = 1 }\n", off), "fun f() {return 1}\nval a = xs.map {it}\nif (a) { b() } else { c() }\nclass A { val x = 1 }\n");
+        assert_eq!(with("val r = 0..9\nval n = !done && -1 < x\nval c = i++\n", off), "val r = 0 .. 9\nval n = ! done && - 1 < x\nval c = i ++\n");
+    }
 
     #[test]
     fn spaces_around_arrows() {
