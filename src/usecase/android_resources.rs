@@ -70,6 +70,14 @@ impl ResourceTable {
         self.value(r).and_then(|v| res::parse_color(&v))
     }
 
+    /// Every color resource with a color value, by name, for the color
+    /// picker's Resources tab (AS's `CompactResourcePicker`).
+    pub fn colors(&self) -> Vec<(String, u32)> {
+        let mut out: Vec<(String, u32)> = self.by_ref.keys().filter(|r| &*r.kind == "color").filter_map(|r| Some((r.name.to_string(), self.color(r)?))).collect();
+        out.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     /// A drawable or mipmap declared as XML (a vector, a shape…), the
     /// unqualified folder's first.
     pub fn drawable_xml(&self, r: &ResourceRef) -> Option<&Declaration> {
@@ -146,6 +154,39 @@ mod tests {
         assert_eq!(preview_reference("a.xml", " android:tint=\"@color/purple\"/>"), Some(22));
         assert_eq!(preview_reference("a.kt", "val c = R.color.primary"), Some(16));
     }
+
+    #[test]
+    fn color_popup_targets() {
+        let t = ResourceTable::build(&Fake(vec![
+            decl("color", "purple", "values", Some("#6200EE")),
+            decl("color", "accent", "values", Some("@color/purple")),
+            decl("color", "broken", "values", Some("@color/none")),
+            decl("string", "app_name", "values", Some("App")),
+        ]));
+        assert_eq!(t.colors(), vec![("accent".to_owned(), 0x6200EEFF), ("purple".to_owned(), 0x6200EEFF)]);
+        // XML: a literal or a reference, both tabs.
+        let line = "<View android:background=\"#F00\"";
+        assert_eq!(color_target("a.xml", line), Some(ColorTarget { range: 26..30, custom: true, resources: true, reference: false }));
+        let line = " android:tint=\"@android:color/white\"/>";
+        let target = color_target("a.xml", line).unwrap();
+        assert_eq!((&line[target.range.clone()], target.custom, target.reference), ("@android:color/white", true, true));
+        assert_eq!(color_target("a.xml", " android:src=\"@drawable/ic\"/>"), None);
+        // Code: R.color.x takes resources only, Compose literals custom only.
+        let line = "setColor(android.R.color.white)";
+        let target = color_target("a/Main.java", line).unwrap();
+        assert_eq!((&line[target.range.clone()], target.custom, target.resources), ("android.R.color.white", false, true));
+        let line = "val c = R.color.primary";
+        assert_eq!(&line[color_target("a/Main.kt", line).unwrap().range], "R.color.primary");
+        let target = color_target("ui/Theme.kt", "val Purple = Color(0xFF6200EE)").unwrap();
+        assert_eq!((target.custom, target.resources), (true, false));
+        assert_eq!(color_reference("a.xml", "colorPrimary", false), "@color/colorPrimary");
+        assert_eq!(color_reference("a.xml", "white", true), "@android:color/white");
+        assert_eq!(color_reference("a/Main.kt", "brand.dark", false), "R.color.brand_dark");
+        assert_eq!(color_reference("a/Main.java", "white", true), "android.R.color.white");
+        // A custom color over a reference: #RRGGBB, #AARRGGBB when not opaque.
+        assert_eq!(format_color_literal(0x112233FF, "@color/purple"), "#112233");
+        assert_eq!(format_color_literal(0x11223380, "@color/purple"), "#80112233");
+    }
 }
 
 /// What the editor gutter previews on a line, as Android Studio does: a
@@ -183,9 +224,67 @@ pub fn color_literal(path: &str, line: &str) -> Option<std::ops::Range<usize>> {
     res::parse_color(hex.as_str()).map(|_| hex.range())
 }
 
+/// What a color swatch's picker rewrites on its line, as Android Studio's
+/// `ColorRenderer`: the color literal, or the `@color/x` / `R.color.x`
+/// reference.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColorTarget {
+    /// The bytes of the line it rewrites.
+    pub range: std::ops::Range<usize>,
+    /// The Custom tab: a color literal can be written there (not in code
+    /// over `R.color.x`).
+    pub custom: bool,
+    /// The Resources tab: a resource can be written there (not over a
+    /// Compose `Color(…)`).
+    pub resources: bool,
+    /// It is a resource reference now: the picker opens on Resources.
+    pub reference: bool,
+}
+
+/// The color swatch's target on a Kotlin, Java or XML line.
+pub fn color_target(path: &str, line: &str) -> Option<ColorTarget> {
+    let code = path.ends_with(".kt") || path.ends_with(".java");
+    if code {
+        if let Some(c) = CODE.captures(line)
+            && c.get(1).is_some_and(|k| k.as_str() == "color")
+        {
+            let whole = c.get(0)?;
+            // The match may start with the character before `R.`.
+            let start = whole.as_str().find("android.R.").or_else(|| whole.as_str().find("R.")).map_or(whole.start(), |i| whole.start() + i);
+            return Some(ColorTarget { range: start..whole.end(), custom: false, resources: true, reference: true });
+        }
+        return color_literal(path, line).map(|range| ColorTarget { range, custom: true, resources: false, reference: false });
+    }
+    if !path.ends_with(".xml") {
+        return None;
+    }
+    let c = XML.captures(line)?;
+    if let Some(hex) = c.get(3) {
+        res::parse_color(hex.as_str())?;
+        return Some(ColorTarget { range: hex.range(), custom: true, resources: true, reference: false });
+    }
+    (c.get(1)?.as_str() == "color").then(|| ColorTarget { range: c.get(0).unwrap().range(), custom: true, resources: true, reference: true })
+}
+
+/// A picked color resource as the file refers to it: `@color/x` /
+/// `@android:color/x` in XML, `R.color.x` / `android.R.color.x` in code.
+pub fn color_reference(path: &str, name: &str, framework: bool) -> String {
+    let field = res::field_name(name);
+    match (path.ends_with(".xml"), framework) {
+        (true, false) => format!("@color/{name}"),
+        (true, true) => format!("@android:color/{name}"),
+        (false, false) => format!("R.color.{field}"),
+        (false, true) => format!("android.R.color.{field}"),
+    }
+}
+
 /// A picked RGBA color as the literal at `like` takes it.
 pub fn format_color_literal(rgba: u32, like: &str) -> String {
-    if like.starts_with('#') {
+    if like.starts_with('@') {
+        // Over a reference: Android Studio's `colorToString`, `#AARRGGBB`
+        // unless opaque.
+        res::format_color(rgba, "#000000")
+    } else if like.starts_with('#') {
         res::format_color(rgba, like)
     } else if like.contains(',') {
         res::format_compose_components(rgba, like)

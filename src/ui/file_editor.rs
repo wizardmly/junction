@@ -3876,7 +3876,7 @@ impl Render for FileEditor {
                 .children(self.render_import_hint(cx))
                 .children(self.render_context_actions(cx))
                 .children(self.render_test_menu(cx))
-                .children(self.render_color_edit(cx))
+                .children(self.render_color_edit(window, cx))
                 .children(self.render_breakpoint_popup(cx))
                 .children(self.render_hot_swap(cx)),
             ))
