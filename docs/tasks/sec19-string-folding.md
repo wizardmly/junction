@@ -2,11 +2,11 @@
 id: sec19-string-folding
 title: Android 资源：编辑器里把字符串引用折叠显示成值
 features: 第 19 节
-status: open
-owner:
-branch:
+status: claimed
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec19-string-folding
 pr:
-claimed:
+claimed: 2026-11-08
 files: src/ui/file_editor.rs, vendor/gpui-component（编辑器折叠）
 ---
 
