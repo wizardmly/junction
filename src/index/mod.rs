@@ -18,6 +18,7 @@ pub mod inline;
 pub mod inline_field;
 pub mod intentions;
 pub mod lambdas;
+pub mod scope_functions;
 pub mod import_function;
 pub mod inline_function;
 pub mod safe_delete;

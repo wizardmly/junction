@@ -190,6 +190,8 @@ impl FileEditor {
                     crate::index::intentions::deprecated_call(&text, cursor, &classes),
                     crate::index::lambdas::lambda_to_reference(&text, cursor, &classes),
                     crate::index::lambdas::reference_to_lambda(&text, cursor, &classes),
+                    crate::index::scope_functions::to_receiver(&text, cursor),
+                    crate::index::scope_functions::to_parameter(&text, cursor, &classes),
                 ];
                 for intention in typed.into_iter().flatten().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));
