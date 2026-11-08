@@ -22,6 +22,7 @@ pub mod scope_functions;
 pub mod simplifiable_call;
 pub mod lambda_signature;
 pub mod lambda_to_anonymous;
+pub mod annotated;
 pub mod import_function;
 pub mod inline_function;
 pub mod safe_delete;

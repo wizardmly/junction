@@ -112,6 +112,22 @@ pub enum Computed {
     /// `descendantClassesEnum("Base")`: the classes deriving from Base to
     /// pick from, the first by default.
     Descendants(&'static str),
+    /// `methodParameterTypes()`: the enclosing method's parameter types,
+    /// as IntelliJ's ListResult prints them (`[String, int]`).
+    ParameterTypes,
+    /// `iterableVariable()`: the nearest array or collection here, or a
+    /// map's `m.keySet()`.
+    IterableVariable,
+    /// `castToLeftSideType()`: `(Type)` when the right side's type doesn't
+    /// fit the left side's; the template's own right side isn't typed
+    /// yet, so empty (what IntelliJ gives when it fits).
+    CastToLeftSide,
+    /// `annotated("pkg.Annotation")`: the classes (qualified) and members
+    /// carrying that annotation to pick from, the first by default.
+    Annotated(&'static str),
+    /// Kotlin's `anonymousSuper()`: the type the place expects, for
+    /// `object : Type { }`.
+    AnonymousSuper,
     /// `camelCase(V)`, `snakeCase(V)`…: variable V's value recased.
     Case(Case, &'static str),
     /// An expression that composes others (`concat(…)`,
@@ -288,6 +304,9 @@ pub struct Scope {
     /// For `descendantClassesEnum(…)`: the classes deriving from each
     /// base class the template names, as the editor found them.
     pub descendants: Vec<(String, Vec<String>)>,
+    /// For `annotated(…)`: what carries each annotation the template
+    /// names, as the editor found it.
+    pub annotated: Vec<(String, Vec<String>)>,
 }
 
 /// The element type of a type as written: `int[]` → `int`,
@@ -391,17 +410,32 @@ pub fn descendant_bases(template: &Template) -> Vec<&'static str> {
     out
 }
 
-/// The `descendantClassesEnum(…)` variables and the classes to pick
-/// from, found in `scope`.
+/// The `descendantClassesEnum(…)` and `annotated(…)` variables and what
+/// to pick from, found in `scope`.
 pub fn descendant_choices(template: &Template, scope: &Scope) -> Vec<(String, Vec<String>)> {
     template
         .vars
         .iter()
         .filter_map(|v| match v.computed {
             Some(Computed::Descendants(base)) => scope.descendants.iter().find(|(b, _)| *b == base).map(|(_, l)| (v.name.to_string(), l.clone())),
+            Some(Computed::Annotated(a)) => scope.annotated.iter().find(|(b, _)| *b == a).map(|(_, l)| (v.name.to_string(), l.clone())),
             _ => None,
         })
         .collect()
+}
+
+/// The annotations a template's `annotated("…")` variables name, for the
+/// editor to find what carries them.
+pub fn annotation_names(template: &Template) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for v in template.vars.iter() {
+        if let Some(Computed::Annotated(a)) = v.computed
+            && !out.contains(&a)
+        {
+            out.push(a);
+        }
+    }
+    out
 }
 
 /// Whether each of the template's variables opens code completion when
@@ -458,6 +492,17 @@ fn compute(c: Computed, scope: &Scope, values: &[(String, String)]) -> Option<St
         Computed::FileRelativePath => non_empty(&scope.relative_path),
         Computed::Complete => None,
         Computed::Descendants(base) => scope.descendants.iter().find(|(b, _)| b == base).and_then(|(_, l)| l.first().cloned()),
+        Computed::ParameterTypes => Some(format!("[{}]", scope.parameters.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join(", "))),
+        Computed::IterableVariable => scope.nearest().find_map(|(n, t)| {
+            if Kind::Iterable.matches(t) {
+                Some(n.clone())
+            } else {
+                Kind::Map.matches(t).then(|| format!("{n}.keySet()"))
+            }
+        }),
+        Computed::CastToLeftSide => None,
+        Computed::Annotated(annotation) => scope.annotated.iter().find(|(a, _)| a == annotation).and_then(|(_, l)| l.first().cloned()),
+        Computed::AnonymousSuper => non_empty(scope.expected.trim().trim_end_matches('?')),
         Computed::Case(case, var) => non_empty(&recase(case, value_of(var)?)),
         Computed::Script(text) => non_empty(&evaluate(&parse_node(text)?, scope, values)?),
     }
@@ -707,7 +752,7 @@ const KOTLIN: &[Template] = &[
     Template { name: s("interface"), description: s("Interface"), value: s("interface $NAME$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("NAME"), default: s(""), stop: true, copy_of: None, computed: None, skip: false }]), contexts: Cow::Borrowed(&[Context::Class, Context::Statement, Context::TopLevel]) },
     Template { name: s("singleton"), description: s("Singleton"), value: s("object $NAME$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("NAME"), default: s(""), stop: true, copy_of: None, computed: None, skip: false }]), contexts: Cow::Borrowed(&[Context::Class, Context::Statement, Context::TopLevel]) },
     Template { name: s("closure"), description: s("Closure (function without name)"), value: s("{$PARAM$ -> $PARAM_COPY$}"), vars: Cow::Borrowed(&[Var { name: s("PARAM"), default: s("x"), stop: true, copy_of: None, computed: None, skip: false }, Var { name: s("PARAM_COPY"), default: s(""), stop: false, copy_of: Some(s("PARAM")), computed: None, skip: false }]), contexts: Cow::Borrowed(&[Context::Expression, Context::Statement]) },
-    Template { name: s("anonymous"), description: s("Anonymous class"), value: s("object : $SUPERTYPE$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("SUPERTYPE"), default: s("Object"), stop: true, copy_of: None, computed: None, skip: false }]), contexts: Cow::Borrowed(&[Context::Expression, Context::Statement]) },
+    Template { name: s("anonymous"), description: s("Anonymous class"), value: s("object : $SUPERTYPE$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("SUPERTYPE"), default: s("Object"), stop: true, copy_of: None, computed: Some(Computed::AnonymousSuper), skip: false }]), contexts: Cow::Borrowed(&[Context::Expression, Context::Statement]) },
     Template { name: s("exfun"), description: s("Extension function"), value: s("fun $RECEIVER$.$NAME$($PARAMS$) : $RETURN$ {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("RECEIVER"), default: s("Any"), stop: true, copy_of: None, computed: None, skip: false }, Var { name: s("NAME"), default: s("f"), stop: true, copy_of: None, computed: None, skip: false }, Var { name: s("PARAMS"), default: s(""), stop: true, copy_of: None, computed: None, skip: false }, Var { name: s("RETURN"), default: s("Unit"), stop: true, copy_of: None, computed: None, skip: false }]), contexts: Cow::Borrowed(&[Context::Class, Context::TopLevel]) },
     Template { name: s("exval"), description: s("Extension read-only property"), value: s("val $RECEIVER$.$NAME$ : $TYPE$\nget() {\n$END$\n}"), vars: Cow::Borrowed(&[Var { name: s("RECEIVER"), default: s("Any"), stop: true, copy_of: None, computed: None, skip: false }, Var { name: s("NAME"), default: s("v"), stop: true, copy_of: None, computed: None, skip: false }, Var { name: s("TYPE"), default: s("Any"), stop: true, copy_of: None, computed: None, skip: false }]), contexts: Cow::Borrowed(&[Context::Class, Context::TopLevel]) },
     Template { name: s("exvar"), description: s("Extension read-write property"), value: s("var $RECEIVER$.$NAME$ : $TYPE$\nget() {\n$END$\n}\nset(value) {\n \n}"), vars: Cow::Borrowed(&[Var { name: s("RECEIVER"), default: s("Any"), stop: true, copy_of: None, computed: None, skip: false }, Var { name: s("NAME"), default: s("v"), stop: true, copy_of: None, computed: None, skip: false }, Var { name: s("TYPE"), default: s("Any"), stop: true, copy_of: None, computed: None, skip: false }]), contexts: Cow::Borrowed(&[Context::Class, Context::TopLevel]) },
@@ -751,7 +796,7 @@ const JAVA: &[Template] = &[
     Template { name: s("inst"), description: s("Checks object type with instanceof and down-casts it"), value: s("if ($EXPR$ instanceof $TYPE$) {\n  $TYPE$ $VAR$ = ($TYPE$)$EXPR$;\n  $END$\n}"), vars: Cow::Borrowed(&[Var { name: s("EXPR"), default: s("expr"), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Object)), skip: false }, Var { name: s("TYPE"), default: s(""), stop: true, copy_of: None, computed: Some(Computed::TypeOf("EXPR")), skip: false }, Var { name: s("VAR"), default: s(""), stop: true, copy_of: None, computed: Some(Computed::NameFor("TYPE")), skip: false }]), contexts: Cow::Borrowed(&[Context::Statement]) },
     Template { name: s("lazy"), description: s("Performs lazy initialization"), value: s("if ($VAR$ == null) {\n  $VAR$ = new $TYPE$($END$);\n}"), vars: Cow::Borrowed(&[Var { name: s("VAR"), default: s(""), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Object)), skip: false }, Var { name: s("TYPE"), default: s(""), stop: true, copy_of: None, computed: Some(Computed::TypeOf("VAR")), skip: false }]), contexts: Cow::Borrowed(&[Context::Statement]) },
     Template { name: s("toar"), description: s("Stores elements of java.util.Collection into array"), value: s("$COLLECTION$.toArray(new $COMPONENT_TYPE$[0])$END$"), vars: Cow::Borrowed(&[Var { name: s("COMPONENT_TYPE"), default: s("Object"), stop: true, copy_of: None, computed: Some(Computed::ExpectedElement), skip: false }, Var { name: s("COLLECTION"), default: s("collection"), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Collection)), skip: false }]), contexts: Cow::Borrowed(&[Context::Expression]) },
-    Template { name: s("itco"), description: s("Iterate elements of java.util.Collection"), value: s("for($ITER_TYPE$ $ITER$ = $COLLECTION$.iterator(); $ITER$.hasNext(); ) {\n  $ELEMENT_TYPE$ $VAR$ =$CAST$ $ITER$.next();\n  $END$\n}"), vars: Cow::Borrowed(&[Var { name: s("ITER"), default: s("iterator"), stop: true, copy_of: None, computed: Some(Computed::NameFor("ITER_TYPE")), skip: false }, Var { name: s("COLLECTION"), default: s("collection"), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Collection)), skip: false }, Var { name: s("ELEMENT_TYPE"), default: s("Object"), stop: true, copy_of: None, computed: Some(Computed::ElementOf("COLLECTION")), skip: false }, Var { name: s("VAR"), default: s("o"), stop: true, copy_of: None, computed: Some(Computed::NameFor("ELEMENT_TYPE")), skip: false }, Var { name: s("ITER_TYPE"), default: s("java.util.Iterator"), stop: false, copy_of: None, computed: Some(Computed::IteratorOf("COLLECTION")), skip: false }, Var { name: s("CAST"), default: s(""), stop: false, copy_of: None, computed: None, skip: false }]), contexts: Cow::Borrowed(&[Context::Statement]) },
+    Template { name: s("itco"), description: s("Iterate elements of java.util.Collection"), value: s("for($ITER_TYPE$ $ITER$ = $COLLECTION$.iterator(); $ITER$.hasNext(); ) {\n  $ELEMENT_TYPE$ $VAR$ =$CAST$ $ITER$.next();\n  $END$\n}"), vars: Cow::Borrowed(&[Var { name: s("ITER"), default: s("iterator"), stop: true, copy_of: None, computed: Some(Computed::NameFor("ITER_TYPE")), skip: false }, Var { name: s("COLLECTION"), default: s("collection"), stop: true, copy_of: None, computed: Some(Computed::VariableOf(Kind::Collection)), skip: false }, Var { name: s("ELEMENT_TYPE"), default: s("Object"), stop: true, copy_of: None, computed: Some(Computed::ElementOf("COLLECTION")), skip: false }, Var { name: s("VAR"), default: s("o"), stop: true, copy_of: None, computed: Some(Computed::NameFor("ELEMENT_TYPE")), skip: false }, Var { name: s("ITER_TYPE"), default: s("java.util.Iterator"), stop: false, copy_of: None, computed: Some(Computed::IteratorOf("COLLECTION")), skip: false }, Var { name: s("CAST"), default: s(""), stop: false, copy_of: None, computed: Some(Computed::CastToLeftSide), skip: false }]), contexts: Cow::Borrowed(&[Context::Statement]) },
     Template { name: s("geti"), description: s("Inserts singleton method getInstance"), value: s("public static $CLASS_NAME$ getInstance() {\n  return $VALUE$;\n}"), vars: Cow::Borrowed(&[Var { name: s("CLASS_NAME"), default: s(""), stop: false, copy_of: None, computed: Some(Computed::ClassName), skip: false }, Var { name: s("VALUE"), default: s("null"), stop: true, copy_of: None, computed: None, skip: false }]), contexts: Cow::Borrowed(&[Context::Class]) },
 ];
 
@@ -912,7 +957,7 @@ fn parse_simple(expression: &str) -> Option<Expression> {
         ("suggestIndexName", []) => Computed::IndexName,
         ("arrayVariable", []) => Computed::VariableOf(Kind::Array),
         ("kotlinVariable", []) => Computed::VariableOf(Kind::Any),
-        ("variableOfType", [ty]) => {
+        ("variableOfType" | "suggestFirstVariableName", [ty]) => {
             let ty = ty.trim_matches('"');
             let base = ty.rsplit('.').next().unwrap_or(ty);
             let kind = match base {
@@ -955,6 +1000,13 @@ fn parse_simple(expression: &str) -> Option<Expression> {
         ("complete" | "completeSmart" | "classNameComplete", []) => Computed::Complete,
         // The second argument (allow abstract classes, `"true"` by default) isn't checked.
         ("descendantClassesEnum", [base, ..]) => Computed::Descendants(intern(&quoted(base)?)),
+        ("methodParameterTypes", []) => Computed::ParameterTypes,
+        ("iterableVariable", []) => Computed::IterableVariable,
+        ("castToLeftSideType", []) => Computed::CastToLeftSide,
+        // The second argument (whether to print short names, or the class
+        // whose members to list) only narrows the list; not supported.
+        ("annotated", [a]) => Computed::Annotated(intern(&quoted(a)?)),
+        ("anonymousSuper", []) => Computed::AnonymousSuper,
         _ => return None,
     };
     Some(Expression::Computed(computed))
@@ -1536,6 +1588,36 @@ mod tests {
         };
         let here = Scope { file_name: "MainView.java".into(), package: "com.x".into(), line: 7, clipboard: "copied".into(), ..Default::default() };
         assert_eq!(expand(&resolved(&files.template(false).unwrap(), &here), "", "  ").text, "// MainView in com.x (7), MAIN_VIEW: copied a");
+    }
+
+    #[test]
+    fn more_user_template_functions() {
+        let user = |text: &str, expressions: Vec<(&str, &str)>| UserTemplate {
+            abbreviation: "t".into(),
+            text: text.into(),
+            expressions: expressions.into_iter().map(|(a, b)| (a.into(), b.into())).collect(),
+            java: vec![Context::Statement],
+            enabled: true,
+            ..Default::default()
+        };
+        let run = |u: &UserTemplate, scope: &Scope| expand(&resolved(&u.template(false).unwrap(), scope), "", "  ").text;
+        let scope = Scope {
+            parameters: vec![("id".into(), "int".into()), ("names".into(), "List<String>".into())],
+            variables: vec![("flag".into(), "boolean".into()), ("counts".into(), "Map<String, Integer>".into())],
+            expected: "Runnable?".into(),
+            annotated: vec![("org.junit.Test".into(), vec!["com.x.FooTest".into(), "testBar".into()])],
+            ..Default::default()
+        };
+        assert_eq!(run(&user("$P$", vec![("P", "methodParameterTypes()")]), &scope), "[int, List<String>]");
+        // The nearest iterable: the map's key set, before the parameter.
+        assert_eq!(run(&user("for ($I$)", vec![("I", "iterableVariable()")]), &scope), "for (counts.keySet())");
+        let lists = Scope { variables: vec![], ..scope.clone() };
+        assert_eq!(run(&user("$I$", vec![("I", "iterableVariable()")]), &lists), "names");
+        assert_eq!(run(&user("$B$", vec![("B", "suggestFirstVariableName(\"java.util.Map\")")]), &scope), "counts");
+        assert_eq!(run(&user("new $S$()", vec![("S", "anonymousSuper()")]), &scope), "new Runnable()");
+        assert_eq!(run(&user("$A$", vec![("A", "annotated(\"org.junit.Test\")")]), &scope), "com.x.FooTest");
+        assert_eq!(run(&user("x = $C$y", vec![("C", "castToLeftSideType()")]), &scope), "x = y");
+        assert_eq!(annotation_names(&user("$A$", vec![("A", "annotated(\"org.junit.Test\")")]).template(false).unwrap()), vec!["org.junit.Test"]);
     }
 
     #[test]
