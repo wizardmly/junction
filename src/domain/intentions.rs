@@ -78,6 +78,8 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Insert curly braces around variable", "Writes \"$name\" in a string template as \"${name}\""),
     ("Kotlin", "Convert lambda to reference", "Writes xs.map { it.name } as xs.map(User::name) when the element type is known, and { x -> show(x) } as ::show"),
     ("Kotlin", "Convert reference to lambda", "Writes xs.map(User::name) as xs.map { it.name }, and ::show as { show(it) }"),
+    ("Kotlin", "Convert scope function to receiver", "Convert to 'run' / 'apply': writes u.let { it.greet(it.name) } as u.run { greet(name) } and u.also { it.age = 3 } as u.apply { age = 3 }"),
+    ("Kotlin", "Convert scope function to parameter", "Convert to 'let' / 'also': writes u.run { greet(name) } as u.let { it.greet(it.name) } when the receiver's class is known"),
     ("Kotlin", "Replace with 'isNullOrEmpty()'", "Writes s == null || s.isEmpty() as s.isNullOrEmpty(), s != null && s.isNotEmpty() as !s.isNullOrEmpty(), and isBlank likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
@@ -105,6 +107,10 @@ pub fn family(title: &str) -> &str {
         "Replace with 'putIfAbsent' or 'computeIfAbsent' method call"
     } else if title.starts_with("Lift return out of '") || title.starts_with("Lift assignment out of '") {
         "Lift return or assignment out of 'if' / 'when'"
+    } else if title == "Convert to 'run'" || title == "Convert to 'apply'" {
+        "Convert scope function to receiver"
+    } else if title == "Convert to 'let'" || title == "Convert to 'also'" {
+        "Convert scope function to parameter"
     } else if title.starts_with("Remove braces from ") {
         "Remove braces from statement"
     } else if title == "Replace with 'isEmpty()'" || title == "Replace with '!isEmpty()'" {
