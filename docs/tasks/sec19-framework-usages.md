@@ -2,11 +2,11 @@
 id: sec19-framework-usages
 title: Android 资源：框架资源（android.R / @android:）的 Find Usages 和翻译
 features: 第 19 节
-status: open
-owner:
-branch:
+status: claimed
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec19-framework-usages
 pr:
-claimed:
+claimed: 2026-11-08
 files: src/index/, src/usecase/android_resources.rs
 ---
 
