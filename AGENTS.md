@@ -28,4 +28,10 @@
 - 新功能按 HANDOFF.md 第 4 节的 Clean 架构分层（domain / usecase / infra / ui），`src/arch_tests.rs` 会检查依赖方向。
 - 从 master 拉分支开发，PR 合入 master；合入会触发自动发版，所以合入前 `cargo build` 无新增警告、`cargo test` 全过、CI（linux + windows）是绿的。
 - 文档用中文；代码注释和提交信息用英文，风格照 `git log`。
-- 多个 agent 并行时各挑 FEATURES.md 里不同的节，避免同时改同一批文件。
+
+## 多个 agent 并行
+
+1. **先认领再动手**：开工前在 HANDOFF.md 第 6.4 节的“正在进行”表里加一行（谁 / 分支 / FEATURES.md 第几节 / 开始日期），单独提交并合入 master（或推到自己的分支后马上开 PR），别人开工前先看这张表，挑没人认领的节。做完或放弃时在同一个 PR 里删掉这一行。
+2. **一个 agent 一个分支**：分支名带上主题（如 `agent/sec35-intentions`），不要两个 agent 推同一个分支。
+3. **不碰同一批文件**：认领按 FEATURES.md 的节划分；要改别人认领范围里的文件，先在 PR 描述里说明，尽量只做小改动。
+4. **PR 小而快**：做完一小项就开 PR、CI 绿就合入，开 PR 前先合入最新 master；进度文档冲突时保留双方的行（都是追加的内容）。
