@@ -2,10 +2,10 @@
 id: sec35-more-type-intentions
 title: Alt+Enter 更多需要类型的意图（lambda 反向转换、作用域函数等）
 features: 第 35 节
-status: claimed
+status: done
 owner: Claude（项目线程）/ 替 Jake 干活
 branch: task/sec35-more-type-intentions
-pr:
+pr: 239
 claimed: 2026-11-08
 files: src/index/lambdas.rs, src/index/intentions.rs, src/domain/intentions.rs
 ---
@@ -20,4 +20,5 @@ files: src/index/lambdas.rs, src/index/intentions.rs, src/domain/intentions.rs
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-08：这次做了两个反向转换：Kotlin Convert reference to lambda（`index::lambdas::reference_to_lambda`，声明来自 `kotlin_member` / `kotlin_class_member` / `kotlin_constructor`，`place_lambda` 把最后一个实参移到括号外）和 Java Replace method reference with lambda（`method_reference_to_lambda`，`java_method` 取参数名，`JAVA_KNOWN` 内置 JDK 常用方法，`unused_name` 避开重名）。坑：tree-sitter-kotlin 把顶层的 `User::name` 和 `this::show` 解析成带 `::name` 后缀的 navigation_expression，不是 callable_reference，两种都要认。已接到 `ui/file_editor/fixes.rs` 和 `domain::intentions::FAMILIES`。
+- 剩下的候选挪到 sec35-more-type-intentions-2。
