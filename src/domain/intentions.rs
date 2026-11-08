@@ -76,6 +76,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Lift return or assignment out of 'if' / 'when'", "Writes if (c) return a else return b as return if (c) a else b, and x = a / x = b in the branches as x = if (c) a else b"),
     ("Kotlin", "Remove curly braces", "Writes \"${name}\" in a string template as \"$name\""),
     ("Kotlin", "Insert curly braces around variable", "Writes \"$name\" in a string template as \"${name}\""),
+    ("Kotlin", "Convert lambda to reference", "Writes xs.map { it.name } as xs.map(User::name) when the element type is known, and { x -> show(x) } as ::show"),
     ("Kotlin", "Replace with 'isNullOrEmpty()'", "Writes s == null || s.isEmpty() as s.isNullOrEmpty(), s != null && s.isNotEmpty() as !s.isNullOrEmpty(), and isBlank likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
@@ -88,6 +89,8 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Java", "Replace with chained 'append()' calls", "Writes sb.append(\"a\" + x) on a StringBuilder or StringBuffer as sb.append(\"a\").append(x)"),
     ("Java", "Replace '==' with 'equals()'", "Compares strings with equals() instead of == or !="),
     ("Java", "Remove redundant 'String.valueOf()' call", "Drops String.valueOf() around a String, or around a value added to a string"),
+    ("Java", "Replace with lambda", "Writes an anonymous class of a functional interface as a lambda"),
+    ("Java", "Replace lambda with method reference", "Writes s -> System.out.println(s) as System.out::println, x -> foo(x) as this::foo and x -> new Item(x) as Item::new"),
     ("Java", "Remove redundant 'toString()' call", "Drops toString() called on a String"),
 ];
 
