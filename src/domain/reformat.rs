@@ -173,7 +173,16 @@ pub struct Spaces {
     pub around_additive: bool,
     /// `*`, `/`, `%`.
     pub around_multiplicative: bool,
+    /// Java's Before Left Brace, in `BEFORE_BRACE` order: class, method,
+    /// `if`, `else`, `for`, `while`, `do`, `switch`, `try`, `catch`,
+    /// `finally`, `synchronized`.
+    pub before_left_brace: [bool; 12],
+    /// Java's In Ternary Operator (?:): before / after `?`, before / after `:`.
+    pub ternary: [bool; 4],
 }
+
+/// How many values `Spaces::values` has.
+pub const SPACES_LEN: usize = 40;
 
 impl Default for Spaces {
     fn default() -> Self {
@@ -189,6 +198,8 @@ impl Default for Spaces {
             colons: [false, true, true, true],
             around_additive: true,
             around_multiplicative: true,
+            before_left_brace: [true; 12],
+            ternary: [true; 4],
         }
     }
 }
@@ -198,8 +209,10 @@ impl Spaces {
     const KEYWORDS: [&'static str; 8] = ["if", "for", "while", "switch", "when", "try", "catch", "synchronized"];
     /// The keywords of `before_keywords`, in order.
     const AFTER_BRACE: [&'static str; 4] = ["else", "while", "catch", "finally"];
+    /// The constructs of `before_left_brace`, in order.
+    const BEFORE_BRACE: [&'static str; 12] = ["class", "method", "if", "else", "for", "while", "do", "switch", "try", "catch", "finally", "synchronized"];
     /// The settings' labels, in `values` order.
-    pub const LABELS: [&'static str; 24] = [
+    pub const LABELS: [&'static str; SPACES_LEN] = [
         "Before parentheses: 'if'",
         "Before parentheses: 'for'",
         "Before parentheses: 'while'",
@@ -224,22 +237,40 @@ impl Spaces {
         "Other: After colon in new type definition",
         "Around operators: Additive (+, -)",
         "Around operators: Multiplicative (*, /, %)",
+        "Before left brace: Class left brace",
+        "Before left brace: Method left brace",
+        "Before left brace: 'if' left brace",
+        "Before left brace: 'else' left brace",
+        "Before left brace: 'for' left brace",
+        "Before left brace: 'while' left brace",
+        "Before left brace: 'do' left brace",
+        "Before left brace: 'switch' left brace",
+        "Before left brace: 'try' left brace",
+        "Before left brace: 'catch' left brace",
+        "Before left brace: 'finally' left brace",
+        "Before left brace: 'synchronized' left brace",
+        "In ternary operator (?:): Before '?'",
+        "In ternary operator (?:): After '?'",
+        "In ternary operator (?:): Before ':'",
+        "In ternary operator (?:): After ':'",
     ];
-    /// Which of `values` each language's page shows.
-    pub const JAVA: [usize; 19] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 22, 23, 12, 13, 14, 15, 16, 17];
+    /// Which of `values` each language's page shows, in IntelliJ's order.
+    pub const JAVA: [usize; 35] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 14, 15, 16, 17, 36, 37, 38, 39, 12, 13];
     pub const KOTLIN: [usize; 17] = [0, 1, 2, 4, 6, 8, 9, 10, 11, 22, 23, 12, 13, 18, 19, 20, 21];
 
-    pub fn values(&self) -> [bool; 24] {
-        let (p, k, c) = (self.before_parens, self.before_keywords, self.colons);
+    pub fn values(&self) -> [bool; SPACES_LEN] {
+        let (p, k, c, b, t) = (self.before_parens, self.before_keywords, self.colons, self.before_left_brace, self.ternary);
         [
             p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
             self.around_assignment, self.around_logical, self.around_equality, self.around_relational, self.before_comma, self.after_comma,
             k[0], k[1], k[2], k[3], c[0], c[1], c[2], c[3],
             self.around_additive, self.around_multiplicative,
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11],
+            t[0], t[1], t[2], t[3],
         ]
     }
 
-    pub fn from_values(v: [bool; 24]) -> Self {
+    pub fn from_values(v: [bool; SPACES_LEN]) -> Self {
         Self {
             before_parens: [v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]],
             around_assignment: v[8],
@@ -252,6 +283,8 @@ impl Spaces {
             colons: [v[18], v[19], v[20], v[21]],
             around_additive: v[22],
             around_multiplicative: v[23],
+            before_left_brace: [v[24], v[25], v[26], v[27], v[28], v[29], v[30], v[31], v[32], v[33], v[34], v[35]],
+            ternary: [v[36], v[37], v[38], v[39]],
         }
     }
 
@@ -275,6 +308,45 @@ impl Spaces {
     fn before_paren(&self, word: &str, kotlin: bool) -> Option<bool> {
         let shown: &[usize] = if kotlin { &Self::KOTLIN } else { &Self::JAVA };
         Self::KEYWORDS.iter().position(|k| *k == word).filter(|i| shown.contains(i)).map(|i| self.before_parens[i])
+    }
+
+    /// Whether a Java `{` after `before` (the line so far) takes a space:
+    /// Before Left Brace for the construct it opens.
+    fn before_brace(&self, before: &str) -> bool {
+        let before = before.trim_end();
+        let construct = if before.ends_with(')') {
+            // The word before the matching `(`: a keyword's, else a method's.
+            let mut depth = 0;
+            let mut open = None;
+            for (i, ch) in before.char_indices().rev() {
+                match ch {
+                    ')' => depth += 1,
+                    '(' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            open = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            match open.map(|o| last_word(before[..o].trim_end())) {
+                Some(w @ ("if" | "for" | "while" | "switch" | "try" | "catch" | "synchronized")) => w,
+                // `new Runnable() {`: an anonymous class.
+                Some(_) if before[..open.unwrap_or(0)].contains("new ") && !before.contains("->") => "class",
+                _ => "method",
+            }
+        } else {
+            match last_word(before) {
+                w @ ("else" | "do" | "try" | "finally") => w,
+                // `throws IOException {`: a method.
+                _ if mentions_word(before, "throws") => "method",
+                _ if ["class", "interface", "enum", "record", "@interface"].iter().any(|k| mentions_word(before, k)) => "class",
+                _ => return true,
+            }
+        };
+        Self::BEFORE_BRACE.iter().position(|k| *k == construct).is_none_or(|i| self.before_left_brace[i])
     }
 
     /// Whether an operator of `normalize`'s takes spaces around it.
@@ -1551,6 +1623,8 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
     let is_code = |i: usize| info.code.get(i).copied().unwrap_or(false);
     let mut out = String::with_capacity(line.len() + 8);
     let mut k = 0;
+    // Java ternaries whose `:` is still to come on this line.
+    let mut ternaries = 0;
     let push_space = |out: &mut String| {
         if !out.is_empty() && !out.ends_with(' ') {
             out.push(' ');
@@ -1598,11 +1672,31 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
                 }
             }
             '{' => {
-                let prev = out.chars().last();
-                if prev.is_some_and(|p| p.is_alphanumeric() || p == ')' || p == '_' || (p == '>' && !out.ends_with("->"))) {
-                    out.push(' ');
+                // Java's Before Left Brace off for this construct: `if (a){`.
+                if flavor == Flavor::Java && !spaces.before_brace(&out) {
+                    while out.ends_with(' ') {
+                        out.pop();
+                    }
+                } else {
+                    let prev = out.chars().last();
+                    if prev.is_some_and(|p| p.is_alphanumeric() || p == ')' || p == '_' || (p == '>' && !out.ends_with("->"))) {
+                        out.push(' ');
+                    }
                 }
                 out.push('{');
+            }
+            // Java's ternary `a ? b : c` (not a wildcard `<?`, `? extends`).
+            '?' if flavor == Flavor::Java && ternary_question(&chars, k, &is_code, &out) => {
+                ternaries += 1;
+                let [before, after, _, _] = spaces.ternary;
+                spaced_operator(&mut out, &chars, &mut k, &is_code, "?", before, after);
+                continue;
+            }
+            ':' if flavor == Flavor::Java && ternaries > 0 && !out.ends_with(':') && next.is_none_or(|(_, ch)| ch != ':') => {
+                ternaries -= 1;
+                let [_, _, before, after] = spaces.ternary;
+                spaced_operator(&mut out, &chars, &mut k, &is_code, ":", before, after);
+                continue;
             }
             '}' => {
                 out.push('}');
@@ -1788,6 +1882,46 @@ fn arithmetic(chars: &[(usize, char)], k: usize, is_code: &dyn Fn(usize) -> bool
         }
     }
     true
+}
+
+/// Whether Java's `?` at `k` is a ternary's, not a wildcard's (`<?>`,
+/// `<? extends T>`, `Map<?, ?>`).
+fn ternary_question(chars: &[(usize, char)], k: usize, is_code: &dyn Fn(usize) -> bool, out: &str) -> bool {
+    let before = out.trim_end();
+    if before.ends_with('<') || before.ends_with(',') && before.rfind('<') > before.rfind('>') {
+        return false;
+    }
+    let after: String = chars[k + 1..].iter().take_while(|(j, _)| is_code(*j)).map(|(_, ch)| *ch).collect();
+    let after = after.trim_start();
+    !(after.starts_with('>') || after.starts_with(',') || after.starts_with("extends") || after.starts_with("super"))
+}
+
+/// `op` at `k`, the spaces around it as `before` / `after` say; `k`
+/// moves past it and the spaces after it.
+fn spaced_operator(out: &mut String, chars: &[(usize, char)], k: &mut usize, is_code: &dyn Fn(usize) -> bool, op: &str, before: bool, after: bool) {
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    if before && !out.is_empty() {
+        out.push(' ');
+    }
+    out.push_str(op);
+    *k += op.chars().count();
+    while chars.get(*k).is_some_and(|(j, ch)| is_code(*j) && *ch == ' ') {
+        *k += 1;
+    }
+    if after && *k < chars.len() {
+        out.push(' ');
+    }
+}
+
+/// Whether `text` has the whole word `word`.
+fn mentions_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + word.len()..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric() || c == '_') && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
 }
 
 /// The word (letters, digits, `_`) `text` ends with.
@@ -2145,19 +2279,40 @@ mod tests {
     }
 
     #[test]
+    fn left_brace_and_ternary_spaces() {
+        // IntelliJ's defaults: a space before every `{`, `a ? b : c`.
+        let text = "class A{\nint f(boolean c) throws E{\nif(c){\nreturn c?1:2;\n}else{\ntry{\n}finally{\n}\n}\nList<? extends T> xs = m.get(c ? a : b);\nMap<?, ?> m;\nRunnable r = String::valueOf;\nreturn x;\n}\n}";
+        assert_eq!(
+            java(text),
+            "class A {\n    int f(boolean c) throws E {\n        if (c) {\n            return c ? 1 : 2;\n        } else {\n            try {\n            } finally {\n            }\n        }\n        List<? extends T> xs = m.get(c ? a : b);\n        Map<?, ?> m;\n        Runnable r = String::valueOf;\n        return x;\n    }\n}"
+        );
+        // Turned off: only that construct's brace; ternary sides each.
+        let mut b = [true; 12];
+        b[2] = false; // if
+        b[0] = false; // class
+        let style = IndentStyle { spaces: Spaces { before_left_brace: b, ternary: [false, true, true, false], ..Default::default() }, ..Default::default() };
+        assert_eq!(
+            reformat_indented(ImportStyle::Java, "class A {\n    void f() {\n        if (c) {\n            x = c ? 1 : 2;\n        } else {\n        }\n        new Runnable() {\n        };\n    }\n}", None, &style),
+            "class A{\n    void f() {\n        if (c){\n            x = c? 1 :2;\n        } else {\n        }\n        new Runnable(){\n        };\n    }\n}"
+        );
+        // Kotlin is untouched by them.
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, "class A {\n    fun f() = if (c) 1 else 2\n}", None, &style), "class A {\n    fun f() = if (c) 1 else 2\n}");
+    }
+
+    #[test]
     fn spaces_settings() {
         // IntelliJ's defaults: `if (`, `a == b`, `f(a, b)`; Mockito's `when(` in
         // Java and Kotlin's `synchronized(` aren't keywords.
         assert_eq!(java("class A {\nvoid f() {\nif(a==b&&c<d) x=f(a,b);\nwhen(m.get()).thenReturn(1);\n}\n}"), "class A {\n    void f() {\n        if (a == b && c < d) x = f(a, b);\n        when(m.get()).thenReturn(1);\n    }\n}");
         assert_eq!(kt("fun f() {\nsynchronized(lock) {}\nwhen(x) {}\n}"), "fun f() {\n    synchronized(lock) {}\n    when (x) {}\n}");
         // Each turned the other way.
-        let mut values = [false; 24];
+        let mut values = [false; SPACES_LEN];
         values[12] = true;
         let all_off = Spaces::from_values(values);
         let style = IndentStyle { spaces: all_off, ..Default::default() };
         assert_eq!(
             reformat_indented(ImportStyle::Java, "class A {\n    void f() {\n        if (a == b && c < d) x += f(a, b);\n        while (i >= 0) i -= 1;\n    }\n}", None, &style),
-            "class A {\n    void f() {\n        if(a==b&&c<d) x+=f(a ,b);\n        while(i>=0) i-=1;\n    }\n}"
+            "class A{\n    void f(){\n        if(a==b&&c<d) x+=f(a ,b);\n        while(i>=0) i-=1;\n    }\n}"
         );
         let style = IndentStyle { spaces: Spaces { before_parens: [true, true, true, true, false, true, true, true], around_relational: false, ..Default::default() }, ..Default::default() };
         assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\n    when (x) {}\n    if (a < b) g()\n}", None, &style), "fun f() {\n    when(x) {}\n    if (a<b) g()\n}");
