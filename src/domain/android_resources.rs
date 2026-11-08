@@ -244,6 +244,22 @@ pub fn declaration_at(path: &str, text: &str, offset: usize) -> Option<ResourceR
     }).map(|(r, _, _)| r)
 }
 
+/// The patterns that find a framework resource's uses: `android.R.type.name`
+/// in code, `@android:type/name` in XML (`?android:attr/x`, `?android:x`
+/// and `<item name="android:x">` for an attribute, `parent="android:X"`
+/// for a style). A regex.
+pub fn framework_usage_pattern(r: &ResourceRef) -> String {
+    let xml_name = regex::escape(&r.name).replace('_', "[._]");
+    let code = format!(r"\bandroid\.R\.{}\.{}\b", regex::escape(&r.kind), regex::escape(&r.name));
+    let xml = match &*r.kind {
+        "id" => format!(r"@\+?android:id/{xml_name}\b"),
+        "attr" => format!(r#"\?android:(?:attr/)?{xml_name}\b|name="android:{xml_name}""#),
+        "style" => format!(r#"@android:style/{xml_name}\b|parent="android:{xml_name}""#),
+        kind => format!(r"@android:{kind}/{xml_name}\b"),
+    };
+    format!("{code}|{xml}")
+}
+
 /// The patterns that find a resource's uses: `R.type.name` in code,
 /// `@type/name` (and `@+id/`, `?attr/`) in XML. A regex.
 pub fn usage_pattern(r: &ResourceRef) -> String {
@@ -472,6 +488,14 @@ mod tests {
         assert_eq!(values_folder("app/src/main/res/values-zh-rCN/strings.xml").as_deref(), Some("values-zh-rCN"));
         let re = Regex::new(&usage_pattern(&ResourceRef::new("style", "Theme.App"))).unwrap();
         assert!(re.is_match("R.style.Theme_App") && re.is_match("@style/Theme.App") && re.is_match(r#"parent="Theme.App""#));
+        let framework = |kind: &str, name: &str| Regex::new(&framework_usage_pattern(&ResourceRef::new(kind, name))).unwrap();
+        let white = framework("color", "white");
+        assert!(white.is_match("getColor(android.R.color.white)") && white.is_match(r#"android:textColor="@android:color/white""#));
+        assert!(!white.is_match("R.color.white") && !white.is_match("@color/white") && !white.is_match("@android:color/white_smoke"));
+        let attr = framework("attr", "textColor");
+        assert!(attr.is_match("?android:attr/textColor") && attr.is_match("?android:textColor") && attr.is_match(r#"<item name="android:textColor">"#));
+        let theme = framework("style", "Theme.Material");
+        assert!(theme.is_match("android.R.style.Theme_Material") && theme.is_match("@android:style/Theme.Material") && theme.is_match(r#"parent="android:Theme.Material""#));
         assert_eq!(parse_color("#F00"), Some(0xFF0000FF));
         assert_eq!(parse_color("#806200EE"), Some(0x6200EE80));
         let xml = r#"<string name="app_name">x</string>"#;

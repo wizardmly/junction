@@ -425,6 +425,17 @@ impl CodeIndex {
         })
     }
 
+    /// The framework resource referenced at `offset`, or declared there in
+    /// the SDK's res folder, and its declarations.
+    fn framework_resource_at(&self, path: &str, text: &str, offset: usize) -> Option<(crate::domain::android_resources::ResourceRef, Vec<crate::domain::android_resources::Declaration>)> {
+        use crate::domain::android_resources as res;
+        let res_dir = self.framework.read().ok()?.as_ref().map(|(d, _)| d.clone())?;
+        let table = self.framework_table()?;
+        let r = res::framework_reference_at(path, text, offset).or_else(|| Path::new(path).starts_with(&res_dir).then(|| res::declaration_at(path, text, offset)).flatten())?;
+        let declarations = table.declarations(&r).to_vec();
+        (!declarations.is_empty()).then_some((r, declarations))
+    }
+
     /// The framework's resource table, once read.
     pub fn framework_table(&self) -> Option<Arc<crate::usecase::android_resources::ResourceTable>> {
         self.framework.read().ok()?.as_ref().map(|(_, t)| t.clone())
@@ -438,6 +449,10 @@ impl CodeIndex {
         // A version catalog entry: its line in the catalog.
         if let Some(nav) = catalog_nav(&self.catalogs.read().unwrap(), &path, &text, offset) {
             return Task::ready(nav);
+        }
+        // A framework resource's declaration in the SDK: its usages.
+        if self.framework.read().unwrap().as_ref().is_some_and(|(dir, _)| Path::new(&path).starts_with(dir)) && crate::domain::android_resources::declaration_at(&path, &text, offset).is_some() {
+            return Task::ready(Nav::Declaration);
         }
         // An Android resource: its declarations in the res folders.
         if let Some(nav) = resource_nav(&self.resources.read().unwrap(), &path, &text, offset) {
@@ -590,10 +605,17 @@ impl CodeIndex {
             let catalogs = self.catalogs.read().unwrap().clone();
             return cx.background_spawn(async move { catalog_usages(&root, &catalogs, &catalog, &entry) });
         }
+        // A framework resource (`android.R.color.white`, `@android:color/white`,
+        // or its declaration in the SDK): its uses in the project.
+        if let Some((r, declarations)) = self.framework_resource_at(&path, &text, offset) {
+            let pattern = crate::domain::android_resources::framework_usage_pattern(&r);
+            return cx.background_spawn(async move { resource_usages(&root, &r, declarations, pattern) });
+        }
         if let Some((r, _)) = resource_at(&path, &text, offset) {
             let declarations = self.resources.read().unwrap().declarations(&r).to_vec();
             if !declarations.is_empty() {
-                return cx.background_spawn(async move { resource_usages(&root, &r, declarations) });
+                let pattern = crate::domain::android_resources::usage_pattern(&r);
+                return cx.background_spawn(async move { resource_usages(&root, &r, declarations, pattern) });
             }
         }
         let lang = Self::lang_of(&path, &text);
@@ -1212,11 +1234,11 @@ fn load_framework(root: &Path, files: &[String], framework: &RwLock<Option<(Path
 
 /// Find Usages of a resource: `R.type.name` in code and `@type/name` in
 /// XML across the project, after its declarations.
-fn resource_usages(root: &Path, r: &crate::domain::android_resources::ResourceRef, declarations: Vec<crate::domain::android_resources::Declaration>) -> (String, Vec<Usage>) {
+fn resource_usages(root: &Path, r: &crate::domain::android_resources::ResourceRef, declarations: Vec<crate::domain::android_resources::Declaration>, pattern: String) -> (String, Vec<Usage>) {
     use super::text_search::{SearchContext, TextQuery};
     let line_of = |path: &str, line: u32| std::fs::read_to_string(root.join(path)).ok().and_then(|t| t.lines().nth(line as usize).map(|l| l.trim().to_owned())).unwrap_or_default();
     let mut found: Vec<Usage> = declarations.iter().map(|d| Usage { path: d.path.to_string(), line: d.line, col: d.col, text: line_of(&d.path, d.line), group: "Declarations".into() }).collect();
-    let query = TextQuery { text: crate::domain::android_resources::usage_pattern(r), case_sensitive: true, whole_words: false, regex: true, mask: None, context: SearchContext::Anywhere };
+    let query = TextQuery { text: pattern, case_sensitive: true, whole_words: false, regex: true, mask: None, context: SearchContext::Anywhere };
     if let Ok(re) = super::text_search::compile(&query) {
         let files = super::store::list_files(root);
         let result = super::text_search::search(root, &files, &query, &re, 5000, &std::sync::atomic::AtomicBool::new(false));
