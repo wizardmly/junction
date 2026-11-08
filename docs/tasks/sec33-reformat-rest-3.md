@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-3
 title: Reformat：剩下的换行和代码风格页签（第三批）
 features: 第 33 节
-status: open
-owner:
-branch:
+status: claimed
+owner: Claude（项目线程）/ 替 Megan 干活
+branch: task/sec33-reformat-rest-3
 pr:
-claimed:
+claimed: 2026-11-08
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ docs/FEATURES.md 第 33 节的 ❌ 行：
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-08 认领。这次只做 Kotlin Spaces 页剩下的几项（lambda / 单行方法花括号内的空格、Range、Unary），其余部分做完后另建任务文件。
