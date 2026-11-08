@@ -77,7 +77,13 @@ impl FileEditor {
         let choices = choice_variables(&template);
         let mut scope = self.template_scope(lang, &text, start, cx);
         // `descendantClassesEnum("Base")`: Base's subclasses, from the index.
-        scope.descendants = descendant_bases(&template).into_iter().map(|base| (base.to_owned(), self.subclass_names(base, cx))).collect();
+        scope.descendants = descendant_bases(&template)
+            .into_iter()
+            .map(|(base, concrete)| {
+                let names = if concrete { self.concrete_subclass_names(base, cx) } else { self.subclass_names(base, cx) };
+                (base.to_owned(), concrete, names)
+            })
+            .collect();
         // `annotated("pkg.Annotation")`: what carries it in the project.
         scope.annotated = annotation_names(&template).into_iter().map(|a| (a.to_owned(), self.annotated_names(a, cx))).collect();
         let choices: Vec<(String, Vec<String>)> = choices.into_iter().chain(descendant_choices(&template, &scope)).collect();
@@ -100,6 +106,39 @@ impl FileEditor {
         }
         self.complete_if_asked(window, cx);
         true
+    }
+
+    /// Base's subclasses at any depth without the abstract classes and
+    /// interfaces (DescendantClassesEnumMacro's `isAbstractOrInterface`),
+    /// at most 50.
+    fn concrete_subclass_names(&self, base: &str, cx: &mut Context<Self>) -> Vec<String> {
+        const LIMIT: usize = 50;
+        let Some(index) = self.code_index.as_ref() else { return Vec::new() };
+        let root = index.read(cx).root().map(|r| r.to_path_buf()).unwrap_or_default();
+        let store = index.read(cx).index.clone();
+        let Ok(store) = store.read() else { return Vec::new() };
+        let base = base.split('<').next().unwrap_or_default().rsplit('.').next().unwrap_or_default().trim().to_owned();
+        let (mut seen, mut out) = (vec![base.clone()], Vec::new());
+        let mut queue = std::collections::VecDeque::from([base]);
+        let mut texts: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+        while let Some(parent) = queue.pop_front() {
+            for (path, _, symbol) in store.subtypes_of(&parent) {
+                if seen.contains(&symbol.name) {
+                    continue;
+                }
+                seen.push(symbol.name.clone());
+                queue.push_back(symbol.name.clone());
+                let text = texts.entry(path.to_owned()).or_insert_with(|| std::fs::read_to_string(root.join(path)).ok());
+                let line = text.as_deref().and_then(|t| t.lines().nth(symbol.line as usize)).unwrap_or_default();
+                if !is_abstract_or_interface(symbol.kind, line, &symbol.name) {
+                    out.push(symbol.name.clone());
+                    if out.len() == LIMIT {
+                        return out;
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// The project's classes (qualified) and members carrying an
@@ -378,5 +417,32 @@ impl FileEditor {
             })))
             .with_priority(1),
         )
+    }
+}
+
+/// An interface, or a class declared `abstract` (Kotlin's `sealed` too)
+/// on `line` before its name.
+fn is_abstract_or_interface(kind: crate::index::symbols::SymbolKind, line: &str, name: &str) -> bool {
+    if kind == crate::index::symbols::SymbolKind::Interface {
+        return true;
+    }
+    let head = line.find(&format!("class {name}")).or_else(|| line.find(name)).map_or(line, |i| &line[..i]);
+    head.split(|c: char| !c.is_alphanumeric()).any(|w| w == "abstract" || w == "sealed" || w == "interface")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_abstract_or_interface;
+    use crate::index::symbols::SymbolKind;
+
+    #[test]
+    fn abstract_classes_and_interfaces() {
+        assert!(is_abstract_or_interface(SymbolKind::Interface, "interface Pet extends Animal {", "Pet"));
+        assert!(is_abstract_or_interface(SymbolKind::Class, "public abstract class Bird extends Animal {", "Bird"));
+        assert!(is_abstract_or_interface(SymbolKind::Class, "sealed class Shape : Animal()", "Shape"));
+        assert!(is_abstract_or_interface(SymbolKind::Class, "fun interface Walker : Animal", "Walker"));
+        assert!(!is_abstract_or_interface(SymbolKind::Class, "public final class Dog extends Animal {", "Dog"));
+        assert!(!is_abstract_or_interface(SymbolKind::Class, "class AbstractDog : Animal()", "AbstractDog"));
+        assert!(!is_abstract_or_interface(SymbolKind::Class, "", "Cat"));
     }
 }
