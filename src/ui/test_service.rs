@@ -73,6 +73,8 @@ enum Message {
 pub struct TestService {
     pub run: Option<TestRun>,
     last: Option<Launch>,
+    /// Debugging instrumented tests: the device the next run is on.
+    debug_device: Option<String>,
     /// Each test's (and class's) last outcome, for the gutter.
     history: HashMap<(String, Option<String>), Outcome>,
     /// Temporary run configurations, as IntelliJ makes one for each test
@@ -255,6 +257,17 @@ impl TestService {
         self.start(launch, cx);
     }
 
+    /// Debugging instrumented tests: the next run's device.
+    pub fn set_debug_device(&mut self, serial: String) {
+        self.debug_device = Some(serial);
+    }
+
+    /// The last run's build root, module and variant.
+    pub fn last_module(&self, cx: &App) -> Option<(PathBuf, crate::domain::run::ModuleInfo, String)> {
+        let last = self.last.as_ref()?;
+        Some((last.build_root.clone(), last.module.clone(), sync_service::variant_of(&last.build_root, &last.module, cx)))
+    }
+
     /// The temporary configurations' names, oldest first.
     pub fn temporary_names(&self) -> Vec<String> {
         self.temporary.iter().map(|l| l.request.name.clone()).collect()
@@ -331,7 +344,11 @@ impl TestService {
             self.stop(cx);
         }
         let variant = sync_service::variant_of(&launch.build_root, &launch.module, cx);
-        let plan = testing::plan(&launch.build_root, &launch.module, &variant, &launch.request);
+        let mut request = launch.request.clone();
+        if request.kind == testing::TestKind::Instrumented && request.debug_port.is_some() {
+            request.device = self.debug_device.take();
+        }
+        let plan = testing::plan(&launch.build_root, &launch.module, &variant, &request);
         self.cancel = Arc::new(AtomicBool::new(false));
         let first = format!("Executing tasks: [{}]", plan.args.iter().filter(|a| a.starts_with(':')).cloned().collect::<Vec<_>>().join(", "));
         self.run = Some(TestRun {

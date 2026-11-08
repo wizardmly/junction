@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, SharedString, Task};
 
 use crate::domain::debugger::{self, Frame, StepDepth, ThreadInfo, Value, Variable};
-use crate::domain::testing::TestMark;
+use crate::domain::testing::{TestKind, TestMark};
 use crate::infra::breakpoint_store::{self, SavedBreakpoint};
 use crate::infra::jdwp_client::JdwpVm;
 use crate::ui::test_service::TestService;
@@ -139,6 +139,10 @@ pub struct DebugRun {
 /// (`com/example/CalcTest.java`) to a file.
 pub type SourceResolver = Rc<dyn Fn(&str, &App) -> Option<PathBuf>>;
 
+/// The running device Debug runs instrumented tests on (the toolbar's):
+/// adb and its serial.
+pub type DeviceProvider = Rc<dyn Fn(&App) -> Option<(crate::android::adb::Adb, String)>>;
+
 #[derive(Default)]
 pub struct DebugService {
     breakpoints: Vec<SavedBreakpoint>,
@@ -166,6 +170,7 @@ pub struct DebugService {
     swapped_at: Option<SystemTime>,
     android: bool,
     pub hot_swap: HotSwapStatus,
+    pub device: Option<DeviceProvider>,
     _poll: Option<Task<()>>,
 }
 
@@ -598,13 +603,15 @@ impl DebugService {
     /// its JVM waiting for the debugger, and attaches.
     pub fn debug_test(&mut self, path: PathBuf, marks: Vec<TestMark>, mark: &TestMark, cx: &mut Context<Self>) {
         let mark = mark.clone();
-        self.debug_tests(mark.name(), move |port, cx| TestService::global(cx).update(cx, |s, cx| s.run_mark(path, marks, &mark, Some(port), cx)), cx);
+        let instrumented = crate::domain::testing::test_kind(&path.to_string_lossy()) == Some(TestKind::Instrumented);
+        self.debug_tests(mark.name(), instrumented, move |port, cx| TestService::global(cx).update(cx, |s, cx| s.run_mark(path, marks, &mark, Some(port), cx)), cx);
     }
 
     /// Debug 'Tests in …' on a Project window folder.
     pub fn debug_folder(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, request: crate::domain::testing::TestRequest, cx: &mut Context<Self>) {
         let name = request.name.clone();
-        self.debug_tests(name, move |port, cx| {
+        let instrumented = request.kind == TestKind::Instrumented;
+        self.debug_tests(name, instrumented, move |port, cx| {
             TestService::global(cx).update(cx, |s, cx| s.run_folder(build_root, module, request, Some(port), cx));
             true
         }, cx);
@@ -613,7 +620,8 @@ impl DebugService {
     /// Debug with a saved JUnit configuration selected in the toolbar.
     pub fn debug_configured(&mut self, build_root: PathBuf, module: crate::domain::run::ModuleInfo, mut request: crate::domain::testing::TestRequest, cx: &mut Context<Self>) {
         let name = request.name.clone();
-        self.debug_tests(name, move |port, cx| {
+        let instrumented = request.kind == TestKind::Instrumented;
+        self.debug_tests(name, instrumented, move |port, cx| {
             request.debug_port = Some(port);
             TestService::global(cx).update(cx, |s, cx| s.run_configured(build_root, module, request, cx));
             true
@@ -623,13 +631,19 @@ impl DebugService {
     /// Debug with a temporary test configuration selected in the toolbar.
     pub fn debug_temporary(&mut self, name: String, cx: &mut Context<Self>) {
         let n = name.clone();
-        self.debug_tests(name, move |port, cx| TestService::global(cx).update(cx, |s, cx| s.run_temporary(&n, Some(port), false, cx)), cx);
+        let instrumented = TestService::global(cx).read(cx).temporary(&name).is_some_and(|(_, _, r)| r.kind == TestKind::Instrumented);
+        self.debug_tests(name, instrumented, move |port, cx| TestService::global(cx).update(cx, |s, cx| s.run_temporary(&n, Some(port), false, cx)), cx);
     }
 
     /// Starts tests with their JVM waiting for the debugger on a free
-    /// port (`start` says whether it did), and attaches.
-    fn debug_tests(&mut self, name: String, start: impl FnOnce(u16, &mut Context<Self>) -> bool, cx: &mut Context<Self>) {
+    /// port (`start` says whether it did), and attaches; instrumented
+    /// ones on the device.
+    fn debug_tests(&mut self, name: String, instrumented: bool, start: impl FnOnce(u16, &mut Context<Self>) -> bool, cx: &mut Context<Self>) {
         self.end_session(cx);
+        if instrumented {
+            self.debug_on_device(name, start, cx);
+            return;
+        }
         let Some(port) = free_port() else {
             cx.emit(DebugServiceEvent::Error { title: format!("Error running '{name}'"), message: "No free port for the debugger.".into() });
             return;
@@ -659,6 +673,57 @@ impl DebugService {
             match vm {
                 Some(vm) => drive(this, cx, generation, vm, format!("address: '{address}', transport: 'socket'")).await,
                 None => drop(this.update(cx, |this, cx| this.ended(generation, Some("The test JVM did not start."), cx))),
+            }
+        }));
+    }
+
+    /// Debug of instrumented tests, as Android Studio does it: they run
+    /// on the toolbar's device only, with AndroidJUnitRunner's `debug`
+    /// argument so the app's process waits for the debugger; once the
+    /// process is there (a new pid of the app's), the debugger attaches
+    /// to it through adb.
+    fn debug_on_device(&mut self, name: String, start: impl FnOnce(u16, &mut Context<Self>) -> bool, cx: &mut Context<Self>) {
+        let Some((adb, serial)) = self.device.clone().and_then(|device| device(cx)) else {
+            cx.emit(DebugServiceEvent::Error { title: format!("Error running '{name}'"), message: "No running target device found.".into() });
+            return;
+        };
+        let tests = TestService::global(cx);
+        tests.update(cx, |t, _| t.set_debug_device(serial.clone()));
+        if !start(0, cx) {
+            return;
+        }
+        let generation = self.begin(name, format!("Waiting for the test process on {serial}…"), cx);
+        self.android = true;
+        let module = tests.read(cx).last_module(cx);
+        self._poll = Some(cx.spawn(async move |this, cx| {
+            // The app's pid, when its build says what its id is.
+            let pid_of = |adb: crate::android::adb::Adb, serial: String, module: Option<(PathBuf, crate::domain::run::ModuleInfo, String)>| async move {
+                let (_, module, variant) = module?;
+                let id = crate::infra::gradle::apk_output(&module.dir.join("build/outputs/apk"), &variant)?.application_id;
+                Some(adb.shell(&serial, &format!("pidof {id}")).ok().and_then(|out| out.split_whitespace().next()?.parse::<u32>().ok()))
+            };
+            // An app already running isn't the tests' (installing ends it).
+            let before = cx.background_spawn(pid_of(adb.clone(), serial.clone(), module.clone())).await.flatten();
+            let started = Instant::now();
+            let vm = loop {
+                let gone = this.update(cx, |this, _| this.generation != generation).unwrap_or(true);
+                let finished = cx.update(|cx| !tests.read(cx).is_running());
+                if gone || finished || started.elapsed() > CONNECT_TIMEOUT {
+                    break None;
+                }
+                let pid = cx.background_spawn(pid_of(adb.clone(), serial.clone(), module.clone())).await.flatten();
+                if let Some(pid) = pid.filter(|p| Some(*p) != before) {
+                    let (a, s) = (adb.clone(), serial.clone());
+                    // Until the process's JDWP is up.
+                    if let Ok(vm) = cx.background_spawn(async move { crate::android::jdwp::connect(&a, &s, pid).and_then(JdwpVm::over) }).await {
+                        break Some((pid, vm));
+                    }
+                }
+                cx.background_executor().timer(Duration::from_millis(500)).await;
+            };
+            match vm {
+                Some((pid, vm)) => drive(this, cx, generation, vm, format!("pid {pid}, device '{serial}'")).await,
+                None => drop(this.update(cx, |this, cx| this.ended(generation, Some("The test process did not start."), cx))),
             }
         }));
     }

@@ -404,7 +404,7 @@ impl RunService {
         let config = self.configuration(cx)?;
         let target = config.junit.as_ref()?;
         let kind = if target.instrumented { TestKind::Instrumented } else { TestKind::Unit };
-        let request = crate::domain::testing::TestRequest { kind, filters: target.filters(), name: config.name.clone(), debug_port: None, coverage: false, arguments: if target.instrumented { target.arguments.clone() } else { Vec::new() } };
+        let request = crate::domain::testing::TestRequest { kind, filters: target.filters(), name: config.name.clone(), debug_port: None, coverage: false, arguments: if target.instrumented { target.arguments.clone() } else { Vec::new() }, device: None };
         Some((config, request))
     }
 
@@ -429,10 +429,6 @@ impl RunService {
             return;
         }
         if let Some((config, request)) = self.junit_request(cx) {
-            if debug && request.kind == crate::domain::testing::TestKind::Instrumented {
-                cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: "Debugging instrumented tests is not supported: the debugger attaches to a JVM, not to the device.".into() });
-                return;
-            }
             if debug {
                 crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.debug_configured(config.build_root, config.module, request, cx));
             } else {
