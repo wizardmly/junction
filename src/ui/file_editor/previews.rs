@@ -4,15 +4,18 @@
 //! XML (vector, shape, selector, layer list) drawn from its XML.
 
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
-use gpui_kit::component::input::RopeExt as _;
+use gpui_kit::component::input::{Input, InputState, RopeExt as _};
+use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AppContext as _, Bounds, Context, DispatchPhase, Entity, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, Styled as _, Subscription, Window,
-    anchored, canvas, deferred, div, point, px, size,
+    AppContext as _, Bounds, Context, DispatchPhase, Entity, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, anchored, canvas, deferred, div, point, prelude::FluentBuilder as _, px, size,
 };
 
 use super::{FileEditor, GUTTER_ICON, GUTTER_ICON_GAP, GUTTER_ICON_SLOT};
 use crate::domain::drawable;
-use crate::usecase::android_resources::{self, Preview};
+use crate::theme::ActivePalette as _;
+use crate::usecase::android_resources::{self, ColorTarget, Preview};
 
 impl FileEditor {
     /// Recomputes the previews from the text (a moment after typing) and
@@ -154,27 +157,17 @@ impl FileEditor {
         )
     }
 
-    /// A gutter preview clicked, as in Android Studio: a color literal's
-    /// swatch opens a color picker that rewrites it, any other preview goes
-    /// to the resource's declaration.
+    /// A gutter preview clicked, as in Android Studio: a color's swatch
+    /// opens its color popup (Resources and Custom tabs), any other
+    /// preview goes to the resource's declaration.
     fn preview_clicked(&mut self, line: u32, preview: Preview, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.line_text(line as usize, cx);
         let start = self.state.read(cx).text().line_start_offset(line as usize);
         if let Preview::Color(rgba) = preview
             && !self.read_only()
-            && android_resources::color_literal(&self.path, &text).is_some()
+            && let Some(target) = android_resources::color_target(&self.path, &text)
         {
-            let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(gpui_kit::rgba(rgba)));
-            picker.update(cx, |p, cx| p.set_open(true, cx));
-            let changed = cx.subscribe_in(&picker, window, move |this, _, event: &ColorPickerEvent, window, cx| {
-                let ColorPickerEvent::Change(Some(color)) = event else { return };
-                this.set_color_literal(line, *color, window, cx);
-            });
-            // Kept after it closes: committing closes it before the change
-            // is delivered.
-            let closed = cx.observe(&picker, |_, _, cx| cx.notify());
-            self.color_edit = Some(ColorEdit { picker, at, _subscriptions: [changed, closed] });
-            cx.notify();
+            self.open_color_edit(line, rgba, target, at, window, cx);
             return;
         }
         let Some(column) = android_resources::preview_reference(&self.path, &text) else { return };
@@ -183,14 +176,92 @@ impl FileEditor {
         self.goto_declaration(&super::GotoDeclaration, window, cx);
     }
 
-    /// Writes a picked color over the line's literal, in its format.
+    /// Android Studio's color popup (`createAndShowColorPickerPopup`): a
+    /// Resources tab listing the project's and the framework's colors
+    /// (`CompactResourcePicker`) and a Custom tab with the color picker,
+    /// opening on Resources when the line refers to a resource now.
+    fn open_color_edit(&mut self, line: u32, rgba: u32, target: ColorTarget, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(gpui_kit::rgba(rgba)));
+        picker.update(cx, |p, cx| p.set_open(true, cx));
+        let changed = cx.subscribe_in(&picker, window, move |this, _, event: &ColorPickerEvent, window, cx| {
+            let ColorPickerEvent::Change(Some(color)) = event else { return };
+            this.set_color_literal(line, *color, window, cx);
+        });
+        // Committing a color (a palette swatch, Enter in the hex field)
+        // closes the picker, and the popup with it.
+        let closed = cx.observe(&picker, |this, picker, cx| {
+            if !picker.read(cx).is_open() {
+                this.color_edit = None;
+            }
+            cx.notify();
+        });
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        let typed = cx.observe(&search, |_, _, cx| cx.notify());
+        let (project, framework) = match &self.code_index {
+            Some(index) => {
+                let index = index.read(cx);
+                let project = index.resources.read().map(|t| t.colors()).unwrap_or_default();
+                (project, index.framework_table().map(|t| t.colors()).unwrap_or_default())
+            }
+            None => Default::default(),
+        };
+        let resources = target.resources && !(project.is_empty() && framework.is_empty());
+        if !resources && !target.custom {
+            return;
+        }
+        let tab = if !target.custom || (resources && target.reference) { 0 } else { 1 };
+        if tab == 0 {
+            search.update(cx, |s, cx| s.focus(window, cx));
+        }
+        // The current reference's name, highlighted in the list.
+        let text = self.line_text(line as usize, cx);
+        let current = text[target.range.clone()].rsplit(['/', '.']).next().unwrap_or_default().to_owned();
+        let framework_now = text[target.range.clone()].contains("android");
+        self.color_edit = Some(ColorEdit {
+            picker,
+            at,
+            line,
+            custom: target.custom,
+            resources,
+            tab,
+            source: usize::from(framework_now && !framework.is_empty()),
+            project,
+            framework,
+            current,
+            search,
+            _subscriptions: [changed, closed, typed],
+        });
+        cx.notify();
+    }
+
+    /// Writes a picked color over the line's literal or reference, the
+    /// literal in its format.
     fn set_color_literal(&mut self, line: u32, color: gpui_kit::Hsla, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.line_text(line as usize, cx);
-        let Some(range) = android_resources::color_literal(&self.path, &text) else { return };
+        let Some(target) = android_resources::color_target(&self.path, &text).filter(|t| t.custom) else { return };
         let rgb = color.to_rgb();
         let channel = |v: f32| (v.clamp(0., 1.) * 255.).round() as u32;
         let rgba = (channel(rgb.r) << 24) | (channel(rgb.g) << 16) | (channel(rgb.b) << 8) | channel(rgb.a);
-        let new = android_resources::format_color_literal(rgba, &text[range.clone()]);
+        let new = android_resources::format_color_literal(rgba, &text[target.range.clone()]);
+        self.replace_on_line(line, target.range, new, window, cx);
+    }
+
+    /// A color resource picked in the Resources tab: written over the
+    /// line's color as `@color/x` (XML) or `R.color.x` (code); the popup
+    /// closes, as Android Studio's does.
+    fn set_color_resource(&mut self, name: String, framework: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(edit) = self.color_edit.take() else { return };
+        let text = self.line_text(edit.line as usize, cx);
+        if let Some(target) = android_resources::color_target(&self.path, &text).filter(|t| t.resources) {
+            let new = android_resources::color_reference(&self.path, &name, framework);
+            self.replace_on_line(edit.line, target.range, new, window, cx);
+        }
+        self.focus(window, cx);
+        cx.notify();
+    }
+
+    fn replace_on_line(&mut self, line: u32, range: std::ops::Range<usize>, new: String, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.line_text(line as usize, cx);
         if new == text[range.clone()] {
             return;
         }
@@ -203,14 +274,138 @@ impl FileEditor {
         });
     }
 
-    pub(super) fn render_color_edit(&self, cx: &gpui_kit::App) -> Option<impl IntoElement + use<>> {
-        let edit = self.color_edit.as_ref().filter(|e| e.picker.read(cx).is_open())?;
-        Some(deferred(anchored().position(edit.at).child(div().size(px(1.)).child(ColorPicker::new(&edit.picker)))).with_priority(1))
+    fn close_color_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.color_edit.take().is_some() {
+            self.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn render_color_edit(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let edit = self.color_edit.as_ref()?;
+        let palette = cx.palette().clone();
+        let theme = gpui_kit::component::ActiveTheme::theme(&**cx).clone();
+        let body = if edit.tab == 0 && edit.resources {
+            let query = edit.search.read(cx).value().to_lowercase();
+            let framework = edit.source == 1;
+            let colors = if framework { &edit.framework } else { &edit.project };
+            let rows = colors.iter().filter(|(name, _)| query.is_empty() || name.to_lowercase().contains(&query)).map(|(name, rgba)| {
+                let pick = name.clone();
+                let selected = *name == edit.current;
+                let swatch: gpui_kit::Hsla = gpui_kit::rgba(*rgba).into();
+                h_flex()
+                    .id(gpui_kit::SharedString::from(format!("color-res-{name}")))
+                    .gap_2()
+                    .px_2()
+                    .py_0p5()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .when(selected, |el| el.bg(palette.selection))
+                    .hover(|el| el.bg(palette.hover))
+                    .child(div().size(px(14.)).flex_shrink_0().rounded_sm().bg(swatch).border_1().border_color(gpui_kit::rgba(0x8080_80aa)))
+                    .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name.clone()))
+                    .child(div().text_xs().text_color(palette.text_secondary).child(crate::domain::android_resources::format_color(*rgba, "#000000")))
+                    .on_click(cx.listener(move |this, _, window, cx| this.set_color_resource(pick.clone(), framework, window, cx)))
+            });
+            let rows: Vec<_> = rows.collect();
+            let empty = rows.is_empty();
+            v_flex()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(div().flex_1().child(Input::new(&edit.search).small()))
+                        .child(
+                            TabBar::new("color-res-source")
+                                .segmented()
+                                .xsmall()
+                                .selected_index(edit.source)
+                                .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                                    if let Some(edit) = this.color_edit.as_mut() {
+                                        edit.source = *ix;
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(Tab::new().label("Project").disabled(edit.project.is_empty()))
+                                .child(Tab::new().label("Android").disabled(edit.framework.is_empty())),
+                        ),
+                )
+                .child(
+                    v_flex()
+                        .id("color-res-list")
+                        .h(px(260.))
+                        .overflow_y_scroll()
+                        .text_sm()
+                        .children(rows)
+                        .when(empty, |el| el.child(div().p_2().text_color(palette.text_secondary).child("Nothing to show"))),
+                )
+                .into_any_element()
+        } else {
+            ColorPicker::new(&edit.picker).render_panel(window, cx).into_any_element()
+        };
+        let tabs = (edit.custom && edit.resources).then(|| {
+            TabBar::new("color-edit-tabs")
+                .underline()
+                .small()
+                .selected_index(edit.tab)
+                .on_click(cx.listener(|this, ix: &usize, window, cx| {
+                    if let Some(edit) = this.color_edit.as_mut() {
+                        edit.tab = *ix;
+                        if *ix == 0 {
+                            edit.search.update(cx, |s, cx| s.focus(window, cx));
+                        }
+                    }
+                    cx.notify();
+                }))
+                .child(Tab::new().label("Resources"))
+                .child(Tab::new().label("Custom"))
+        });
+        Some(
+            deferred(
+                anchored().position(edit.at).snap_to_window_with_margin(px(8.)).child(
+                    v_flex()
+                        .id("color-edit-popup")
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close_color_edit(window, cx)))
+                        .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                            if e.keystroke.key == "escape" {
+                                cx.stop_propagation();
+                                this.close_color_edit(window, cx);
+                            }
+                        }))
+                        .w(px(300.))
+                        .p_2()
+                        .gap_2()
+                        .bg(theme.popover)
+                        .border_1()
+                        .border_color(palette.border)
+                        .rounded_md()
+                        .shadow_lg()
+                        .children(tabs)
+                        .child(body),
+                ),
+            )
+            .with_priority(1),
+        )
     }
 }
 
 pub(super) struct ColorEdit {
     picker: Entity<ColorPickerState>,
     at: Point<Pixels>,
-    _subscriptions: [Subscription; 2],
+    line: u32,
+    /// The Custom tab is offered (a literal can go there).
+    custom: bool,
+    /// The Resources tab is offered.
+    resources: bool,
+    /// 0: Resources, 1: Custom.
+    tab: usize,
+    /// The Resources tab's source: 0 the project's, 1 the framework's.
+    source: usize,
+    project: Vec<(String, u32)>,
+    framework: Vec<(String, u32)>,
+    /// The resource the line refers to now, highlighted.
+    current: String,
+    search: Entity<InputState>,
+    _subscriptions: [Subscription; 3],
 }

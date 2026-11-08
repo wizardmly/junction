@@ -466,6 +466,15 @@ impl Styled for ColorPicker {
     }
 }
 
+impl ColorPicker {
+    /// Junction: the picker's panel alone (the Palette / HSLA tabs and the
+    /// hex field), for a popup of the app's own (the editor's Resources /
+    /// Custom color popup).
+    pub fn render_panel(self, window: &mut Window, cx: &mut App) -> AnyElement {
+        self.render_colors(window, cx).into_any_element()
+    }
+}
+
 impl RenderOnce for ColorPicker {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = self.state.read(cx);
