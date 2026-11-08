@@ -154,6 +154,7 @@ impl FileEditor {
                     crate::index::intentions::redundant_conversion(&text, cursor, false, &classes),
                     crate::index::lambdas::anonymous_to_lambda(&text, cursor, &classes),
                     crate::index::lambdas::lambda_to_method_reference(&text, cursor),
+                    crate::index::lambdas::method_reference_to_lambda(&text, cursor, &classes),
                 ];
                 for intention in typed.into_iter().flatten().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));
@@ -188,6 +189,7 @@ impl FileEditor {
                     crate::index::intentions::count_to_size(&text, cursor, &classes),
                     crate::index::intentions::deprecated_call(&text, cursor, &classes),
                     crate::index::lambdas::lambda_to_reference(&text, cursor, &classes),
+                    crate::index::lambdas::reference_to_lambda(&text, cursor, &classes),
                 ];
                 for intention in typed.into_iter().flatten().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));

@@ -77,6 +77,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Remove curly braces", "Writes \"${name}\" in a string template as \"$name\""),
     ("Kotlin", "Insert curly braces around variable", "Writes \"$name\" in a string template as \"${name}\""),
     ("Kotlin", "Convert lambda to reference", "Writes xs.map { it.name } as xs.map(User::name) when the element type is known, and { x -> show(x) } as ::show"),
+    ("Kotlin", "Convert reference to lambda", "Writes xs.map(User::name) as xs.map { it.name }, and ::show as { show(it) }"),
     ("Kotlin", "Replace with 'isNullOrEmpty()'", "Writes s == null || s.isEmpty() as s.isNullOrEmpty(), s != null && s.isNotEmpty() as !s.isNullOrEmpty(), and isBlank likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
@@ -91,6 +92,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Java", "Remove redundant 'String.valueOf()' call", "Drops String.valueOf() around a String, or around a value added to a string"),
     ("Java", "Replace with lambda", "Writes an anonymous class of a functional interface as a lambda"),
     ("Java", "Replace lambda with method reference", "Writes s -> System.out.println(s) as System.out::println, x -> foo(x) as this::foo and x -> new Item(x) as Item::new"),
+    ("Java", "Replace method reference with lambda", "Writes System.out::println as x -> System.out.println(x), Item::new as name -> new Item(name) and String::trim as s -> s.trim()"),
     ("Java", "Remove redundant 'toString()' call", "Drops toString() called on a String"),
 ];
 

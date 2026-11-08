@@ -435,6 +435,351 @@ fn collection_element(ty: &str) -> Option<String> {
     Some(ty[open + 1..ty.len().checked_sub(1)?].trim().trim_start_matches("out ").to_owned())
 }
 
+/// What a Kotlin class or file declares under a name: a function and its
+/// parameters' names, or a property.
+#[derive(Debug, PartialEq)]
+enum KotlinMember {
+    Function(Vec<String>),
+    Property,
+}
+
+/// The parameters' names of a Kotlin `function_value_parameters` or
+/// `class_parameters` node.
+fn kotlin_parameter_names(parameters: Node, text: &str) -> Vec<String> {
+    named(parameters)
+        .into_iter()
+        .filter(|p| matches!(p.kind(), "parameter" | "class_parameter"))
+        .filter_map(|p| named(p).into_iter().find(|c| c.kind() == "simple_identifier").map(|n| text[n.byte_range()].to_owned()))
+        .collect()
+}
+
+/// `name` among the declarations directly in `scope` (a file, a class
+/// body); a function overloaded with different parameter counts is none.
+fn kotlin_member(scope: Node, text: &str, name: &str) -> Option<KotlinMember> {
+    let mut found: Option<KotlinMember> = None;
+    for d in named(scope) {
+        let named_here = |d: Node| named(d).iter().any(|c| c.kind() == "simple_identifier" && &text[c.byte_range()] == name);
+        let member = match d.kind() {
+            "function_declaration" if named_here(d) => {
+                let params = named(d).into_iter().find(|c| c.kind() == "function_value_parameters").map(|p| kotlin_parameter_names(p, text)).unwrap_or_default();
+                KotlinMember::Function(params)
+            }
+            "property_declaration" if named(d).iter().any(|v| v.kind() == "variable_declaration" && named_here(*v)) => KotlinMember::Property,
+            _ => continue,
+        };
+        match (&found, &member) {
+            (Some(KotlinMember::Function(a)), KotlinMember::Function(b)) if a.len() != b.len() => return None,
+            (Some(_), _) => {}
+            (None, _) => found = Some(member),
+        }
+    }
+    found
+}
+
+/// The Kotlin class `class_name` in `source`: its body's member `name`, or
+/// a `val` / `var` of its primary constructor.
+fn kotlin_class_member(source: &str, class_name: &str, name: &str) -> Option<KotlinMember> {
+    let tree = symbols::parse(Lang::Kotlin, source)?;
+    let class = descendants(tree.root_node())
+        .into_iter()
+        .find(|n| matches!(n.kind(), "class_declaration" | "object_declaration") && named(*n).iter().any(|c| c.kind() == "type_identifier" && &source[c.byte_range()] == class_name))?;
+    let primary = named(class).into_iter().find(|c| c.kind() == "primary_constructor");
+    let property = primary.is_some_and(|p| {
+        named(p).into_iter().flat_map(|c| if c.kind() == "class_parameters" { named(c) } else { vec![c] }).any(|c| {
+            c.kind() == "class_parameter"
+                && named(c).iter().any(|n| n.kind() == "simple_identifier" && &source[n.byte_range()] == name)
+                && named(c).iter().any(|n| n.kind() == "binding_pattern_kind")
+        })
+    });
+    if property {
+        return Some(KotlinMember::Property);
+    }
+    let body = named(class).into_iter().find(|c| matches!(c.kind(), "class_body" | "enum_class_body"))?;
+    kotlin_member(body, source, name)
+}
+
+/// The Kotlin class `class_name`'s primary constructor parameters, from
+/// `source`.
+fn kotlin_constructor(source: &str, class_name: &str) -> Option<Vec<String>> {
+    let tree = symbols::parse(Lang::Kotlin, source)?;
+    let class = descendants(tree.root_node())
+        .into_iter()
+        .find(|n| n.kind() == "class_declaration" && named(*n).iter().any(|c| c.kind() == "type_identifier" && &source[c.byte_range()] == class_name))?;
+    // Secondary constructors could take other arguments.
+    let body = named(class).into_iter().find(|c| c.kind() == "class_body");
+    if body.is_some_and(|b| named(b).iter().any(|c| c.kind() == "secondary_constructor")) {
+        return None;
+    }
+    Some(match named(class).into_iter().find(|c| c.kind() == "primary_constructor") {
+        Some(p) => named(p).into_iter().find(|c| c.kind() == "class_parameters").map_or_else(|| kotlin_parameter_names(p, source), |c| kotlin_parameter_names(c, source)),
+        None => Vec::new(),
+    })
+}
+
+/// Kotlin standard functions (not properties) a `Type::name` reference
+/// often names, for when the type's source isn't there.
+const KOTLIN_FUNCTIONS: &[&str] = &[
+    "trim", "lowercase", "uppercase", "toInt", "toLong", "toDouble", "toFloat", "toIntOrNull", "toLongOrNull", "toDoubleOrNull", "toString", "toList", "toSet",
+    "toMutableList", "isEmpty", "isNotEmpty", "isBlank", "isNotBlank", "isNullOrEmpty", "isNullOrBlank", "hashCode", "reversed", "sorted", "first", "last", "capitalize",
+];
+
+/// A lambda's body as an argument goes outside the parentheses when it is
+/// the last one (IntelliJ moves it out after converting): the edit over
+/// `node` in `call(…, node)`, else over `node` alone.
+fn place_lambda(node: Node, text: &str, lambda: String, title: &str) -> Intention {
+    let argument = node.parent().filter(|p| p.kind() == "value_argument" && named(*p).len() == 1);
+    let arguments = argument.and_then(|a| a.parent()).filter(|p| p.kind() == "value_arguments");
+    let trailing = arguments.zip(argument).filter(|(args, arg)| named(*args).last().is_some_and(|l| l.id() == arg.id())).filter(|(args, _)| {
+        // Not `f(…)(…)` or a named argument.
+        !text[args.byte_range()].contains('=') && args.parent().is_some_and(|s| s.kind() == "call_suffix" && named(s).len() == 1)
+    });
+    match trailing {
+        Some((arguments, _)) => {
+            let others: Vec<&str> = named(arguments).iter().rev().skip(1).rev().map(|a| text[a.byte_range()].trim()).collect();
+            let replacement = if others.is_empty() { format!(" {lambda}") } else { format!("({}) {lambda}", others.join(", ")) };
+            Intention { title: title.into(), range: arguments.byte_range(), replacement, caret: arguments.start_byte() }
+        }
+        None => Intention { title: title.into(), range: node.byte_range(), replacement: lambda, caret: node.start_byte() },
+    }
+}
+
+/// A Kotlin lambda calling `call` with these parameters: `{ show(it) }`,
+/// `{ a, b -> show(a, b) }`, `{ show() }`.
+fn kotlin_call_lambda(call: &str, params: &[String]) -> String {
+    match params {
+        [] => format!("{{ {call}() }}"),
+        [_] => format!("{{ {call}(it) }}"),
+        _ => format!("{{ {} -> {call}({}) }}", params.join(", "), params.join(", ")),
+    }
+}
+
+/// Convert reference to lambda (Kotlin, IntelliJ's
+/// ConvertReferenceToLambdaIntention): `User::name` → `{ it.name }`
+/// (`{ it.name() }` for a function), `::show` / `this::show` →
+/// `{ show(it) }`, `::User` → `{ User(it) }`, the parameters from the
+/// declaration the index finds; as the last argument the lambda moves
+/// out of the parentheses (`xs.map { it.name }`).
+pub fn reference_to_lambda(text: &str, caret: usize, classes: Classes) -> Option<Intention> {
+    const TITLE: &str = "Convert reference to lambda";
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    // `User::name` and `this::show` also parse as a navigation with a
+    // `::name` suffix.
+    let node = ancestors(innermost(tree.root_node(), caret)?).find(|n| {
+        n.kind() == "callable_reference"
+            || n.kind() == "navigation_expression"
+                && n.named_child(0).is_some_and(|t| matches!(t.kind(), "this_expression" | "simple_identifier"))
+                && n.named_child(1).is_some_and(|s| text[s.byte_range()].trim_start().starts_with("::"))
+    })?;
+    let parts = named(node);
+    let name_node = parts.iter().rev().find(|c| c.kind() == "simple_identifier").copied().filter(|_| node.kind() == "callable_reference").or_else(|| parts.last().and_then(|s| named(*s).into_iter().find(|c| c.kind() == "simple_identifier")))?;
+    let name = &text[name_node.byte_range()];
+    let receiver = match node.kind() {
+        "callable_reference" => parts.iter().find(|c| c.kind() == "type_identifier" || c.kind() == "user_type").map(|t| text[t.byte_range()].trim().to_owned()),
+        _ => match parts.first() {
+            Some(t) if t.kind() == "simple_identifier" => {
+                let ty = text[t.byte_range()].to_owned();
+                // `obj::run`, a bound reference: its receiver's type isn't known.
+                if !ty.starts_with(char::is_uppercase) {
+                    return None;
+                }
+                Some(ty)
+            }
+            _ => None,
+        },
+    };
+    let sources = |class: &str| std::iter::once(text.to_owned()).chain(classes(class)).collect::<Vec<_>>();
+    let lambda = match receiver {
+        // `User::name`: a member of the type.
+        Some(ty) => {
+            if ty.contains(['<', '?', '.']) {
+                return None;
+            }
+            let member = sources(&ty).iter().find_map(|s| kotlin_class_member(s, &ty, name));
+            match member {
+                Some(KotlinMember::Function(params)) if params.is_empty() => format!("{{ it.{name}() }}"),
+                Some(KotlinMember::Function(params)) => {
+                    let receiver = type_variable_name(&ty);
+                    if params.contains(&receiver) {
+                        return None;
+                    }
+                    format!("{{ {receiver}, {} -> {receiver}.{name}({}) }}", params.join(", "), params.join(", "))
+                }
+                Some(KotlinMember::Property) => format!("{{ it.{name} }}"),
+                None if KOTLIN_FUNCTIONS.contains(&name) => format!("{{ it.{name}() }}"),
+                None => format!("{{ it.{name} }}"),
+            }
+        }
+        // `::show`, `::User`, `this::show`.
+        None => {
+            let class_body = ancestors(node).find(|n| matches!(n.kind(), "class_body" | "enum_class_body"));
+            let declared = class_body.and_then(|b| kotlin_member(b, text, name)).or_else(|| kotlin_member(tree.root_node(), text, name));
+            match declared {
+                Some(KotlinMember::Function(params)) => kotlin_call_lambda(name, &params),
+                Some(KotlinMember::Property) => return None,
+                None if name.starts_with(char::is_uppercase) => {
+                    let params = sources(name).iter().find_map(|s| kotlin_constructor(s, name))?;
+                    kotlin_call_lambda(name, &params)
+                }
+                None => return None,
+            }
+        }
+    };
+    Some(place_lambda(node, text, lambda, TITLE))
+}
+
+/// A Java method's or constructor's parameter names and whether it is
+/// static, from the class `class_name` in `source`; overloads with
+/// different parameter counts give none. `name` is `new` for a
+/// constructor (none declared: no parameters).
+fn java_method(source: &str, class_name: &str, name: &str) -> Option<(Vec<String>, bool)> {
+    let tree = symbols::parse(Lang::Java, source)?;
+    let class = descendants(tree.root_node()).into_iter().find(|n| {
+        matches!(n.kind(), "class_declaration" | "interface_declaration" | "enum_declaration" | "record_declaration") && n.child_by_field_name("name").is_some_and(|c| &source[c.byte_range()] == class_name)
+    })?;
+    let body = class.child_by_field_name("body")?;
+    let kind = if name == "new" { "constructor_declaration" } else { "method_declaration" };
+    let mut found: Option<(Vec<String>, bool)> = None;
+    for m in children(body).into_iter().filter(|m| m.kind() == kind) {
+        if name != "new" && m.child_by_field_name("name").is_none_or(|n| &source[n.byte_range()] != name) {
+            continue;
+        }
+        let params: Vec<String> = children(m.child_by_field_name("parameters")?)
+            .into_iter()
+            .filter(|p| matches!(p.kind(), "formal_parameter" | "spread_parameter"))
+            .filter_map(|p| {
+                let n = p.child_by_field_name("name").or_else(|| children(p).into_iter().rev().find(|c| matches!(c.kind(), "identifier" | "variable_declarator")))?;
+                let n = n.child_by_field_name("name").unwrap_or(n);
+                Some(source[n.byte_range()].to_owned())
+            })
+            .collect();
+        let modifiers = children(m).into_iter().find(|c| c.kind() == "modifiers").map_or("", |c| &source[c.byte_range()]);
+        let entry = (params, mentions(modifiers, "static"));
+        match &found {
+            Some((a, _)) if a.len() != entry.0.len() => return None,
+            Some(_) => {}
+            None => found = Some(entry),
+        }
+    }
+    if found.is_none() && name == "new" {
+        return Some((Vec::new(), false));
+    }
+    found
+}
+
+/// JDK methods a method reference often names, for when their sources
+/// aren't there: (type, method, parameters, static).
+const JAVA_KNOWN: &[(&str, &str, &[&str], bool)] = &[
+    ("String", "trim", &[], false),
+    ("String", "length", &[], false),
+    ("String", "isEmpty", &[], false),
+    ("String", "isBlank", &[], false),
+    ("String", "toUpperCase", &[], false),
+    ("String", "toLowerCase", &[], false),
+    ("String", "strip", &[], false),
+    ("String", "valueOf", &["obj"], true),
+    ("Object", "toString", &[], false),
+    ("Object", "hashCode", &[], false),
+    ("Integer", "parseInt", &["s"], true),
+    ("Integer", "valueOf", &["i"], true),
+    ("Long", "parseLong", &["s"], true),
+    ("Double", "parseDouble", &["s"], true),
+    ("Objects", "nonNull", &["obj"], true),
+    ("Objects", "isNull", &["obj"], true),
+    ("Objects", "toString", &["o"], true),
+];
+
+/// IntelliJ's first name for a variable of a type: `s` for a String,
+/// `o` for an Object, else the type's name decapitalized.
+fn type_variable_name(ty: &str) -> String {
+    match ty {
+        "String" => "s".into(),
+        "Object" | "Any" => "o".into(),
+        _ => {
+            let mut c = ty.chars();
+            c.next().map(|f| f.to_lowercase().chain(c).collect()).unwrap_or_default()
+        }
+    }
+}
+
+/// A name not used in `scope`, from `base` (`s`, `s1`, …).
+fn unused_name(base: &str, scope: &str) -> String {
+    (0..).map(|i| if i == 0 { base.to_owned() } else { format!("{base}{i}") }).find(|n| !mentions(scope, n)).unwrap_or_default()
+}
+
+/// Replace method reference with lambda (Java, IntelliJ's
+/// MethodRefCanBeReplacedWithLambdaInspection): `this::show` →
+/// `s -> show(s)`, `Item::new` → `name -> new Item(name)`, `String::trim`
+/// → `s -> s.trim()`, `Integer::parseInt` → `s -> Integer.parseInt(s)`,
+/// `System.out::println` → `x -> System.out.println(x)`; the parameters
+/// are the declaration's (the index's), renamed where the enclosing
+/// method already uses the name.
+pub fn method_reference_to_lambda(text: &str, caret: usize, classes: Classes) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Java, text)?;
+    let reference = ancestors(innermost(tree.root_node(), caret)?).find(|n| n.kind() == "method_reference")?;
+    let parts = children(reference);
+    let qualifier = *parts.first()?;
+    let qualifier_text = &text[qualifier.byte_range()];
+    let name = if text[reference.byte_range()].trim_end().ends_with("::new") { "new" } else { &text[parts.get(1)?.byte_range()] };
+    if text[reference.byte_range()].contains('<') {
+        return None;
+    }
+    let enclosing = ancestors(reference).find(|n| matches!(n.kind(), "class_declaration" | "enum_declaration" | "record_declaration"));
+    let enclosing_name = enclosing.and_then(|c| c.child_by_field_name("name")).map(|n| &text[n.byte_range()]);
+    let lookup = |class: &str| -> Option<(Vec<String>, bool)> {
+        std::iter::once(text.to_owned())
+            .chain(classes(class))
+            .find_map(|s| java_method(&s, class, name))
+            .or_else(|| JAVA_KNOWN.iter().find(|(t, m, _, _)| *t == class && *m == name).map(|(_, _, p, st)| (p.iter().map(|s| (*s).to_owned()).collect(), *st)))
+    };
+    let scope = ancestors(reference).find(|n| matches!(n.kind(), "method_declaration" | "constructor_declaration" | "lambda_expression" | "field_declaration"));
+    let scope_text = scope.map_or("", |s| &text[s.byte_range()]);
+    let rename = |params: Vec<String>| params.iter().map(|p| unused_name(p, scope_text)).collect::<Vec<_>>();
+    let lambda = |params: &[String], body: String| match params {
+        [one] => format!("{one} -> {body}"),
+        _ => format!("({}) -> {body}", params.join(", ")),
+    };
+    let replacement = match qualifier.kind() {
+        // `this::show`: a method of this class.
+        "this" => {
+            let (params, _) = java_method(text, enclosing_name?, name)?;
+            let params = rename(params);
+            lambda(&params, format!("{name}({})", params.join(", ")))
+        }
+        // `System.out::println`: a bound receiver.
+        "field_access" if qualifier_text == "System.out" || qualifier_text == "System.err" => {
+            if !matches!(name, "println" | "print") {
+                return None;
+            }
+            let x = unused_name("x", scope_text);
+            format!("{x} -> {qualifier_text}.{name}({x})")
+        }
+        "identifier" | "scoped_type_identifier" | "type_identifier" | "field_access" if qualifier_text.starts_with(char::is_uppercase) || qualifier_text.contains('.') => {
+            let class = qualifier_text.rsplit('.').next()?.trim();
+            if !class.starts_with(char::is_uppercase) {
+                return None;
+            }
+            let (params, is_static) = lookup(class)?;
+            let params = rename(params);
+            let args = params.join(", ");
+            if name == "new" {
+                lambda(&params, format!("new {qualifier_text}({args})"))
+            } else if is_static {
+                // A static method of this class needs no qualifier.
+                let call = if Some(class) == enclosing_name { format!("{name}({args})") } else { format!("{qualifier_text}.{name}({args})") };
+                lambda(&params, call)
+            } else {
+                // `String::trim`: the first parameter receives the call.
+                let receiver = unused_name(&type_variable_name(class), scope_text);
+                let mut all = vec![receiver.clone()];
+                all.extend(params.iter().cloned());
+                lambda(&all, format!("{receiver}.{name}({args})"))
+            }
+        }
+        _ => return None,
+    };
+    Some(Intention { title: "Replace method reference with lambda".into(), range: reference.byte_range(), replacement, caret: reference.start_byte() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,5 +868,50 @@ mod tests {
         assert_eq!(convert("fun f(xs: List<List<Int>>) = xs.map { it.size }", &users), None);
         assert_eq!(convert("fun f(xs: List<Int>) = xs.forEach { show(it) }", &users), None);
         assert_eq!(convert("fun f(xs: List<User>) = xs.map { it.name + it.name }", &users), None);
+    }
+
+    #[test]
+    fn kotlin_reference_to_lambda() {
+        let user = |n: &str| if n == "User" { vec!["class User(val name: String, age: Int) {\n    fun age(): Int = 0\n    fun greet(other: User): String = \"\"\n}\n".to_owned()] } else { Vec::new() };
+        let convert = |text: &str, at: &str, classes: Classes| reference_to_lambda(text, text.find(at).unwrap() + 2, classes).map(|i| apply(text, &i));
+        assert_eq!(convert("val a = xs.map(User::name)", "User::", &user).unwrap(), "val a = xs.map { it.name }");
+        assert_eq!(convert("val a = xs.sortedBy(User::age)", "User::", &user).unwrap(), "val a = xs.sortedBy { it.age() }");
+        assert_eq!(convert("val a = xs.map(String::trim)", "String::", &user).unwrap(), "val a = xs.map { it.trim() }");
+        assert_eq!(convert("val g = User::greet", "User::", &user).unwrap(), "val g = { user, other -> user.greet(other) }");
+        let text = "fun show(x: Int) {}\nfun f(xs: List<Int>) = run(1, ::show)";
+        assert!(convert(text, "::show", &user).unwrap().contains("run(1) { show(it) }"));
+        let text = "class A {\n    fun show(a: Int, b: Int) {}\n    fun f() = g(this::show)\n}";
+        assert!(convert(text, "this::", &user).unwrap().contains("g { a, b -> show(a, b) }"));
+        assert_eq!(convert("val a = pairs.map(::User)", "::User", &user).unwrap(), "val a = pairs.map { name, age -> User(name, age) }");
+        let one = |n: &str| if n == "Item" { vec!["class Item(val id: Int)".to_owned()] } else { Vec::new() };
+        assert_eq!(convert("val a = ids.map(::Item)", "::Item", &one).unwrap(), "val a = ids.map { Item(it) }");
+        // Not the last argument: in place.
+        let text = "fun show(x: Int) {}\nval a = f(::show, 1)";
+        assert!(convert(text, "::show", &user).unwrap().contains("f({ show(it) }, 1)"));
+        // Unknown function: none.
+        assert_eq!(convert("val a = xs.forEach(::nope)", "::nope", &user), None);
+    }
+
+    #[test]
+    fn java_method_reference_to_lambda() {
+        let item = |n: &str| if n == "Item" { vec!["class Item { Item(String name) {} static Item of(String name, int n) { return null; } }".to_owned()] } else { Vec::new() };
+        let convert = |text: &str, at: &str| method_reference_to_lambda(text, text.find(at).unwrap() + 1, &item).map(|i| apply(text, &i));
+        let text = "class A { void f(List<String> xs) { xs.forEach(System.out::println); } }";
+        assert!(convert(text, "System").unwrap().contains("xs.forEach(x -> System.out.println(x));"));
+        let text = "class A { void f(List<String> xs) { xs.forEach(this::show); } void show(String line) {} }";
+        assert!(convert(text, "this").unwrap().contains("xs.forEach(line -> show(line));"));
+        let text = "class A { Object f() { return Item::new; } }";
+        assert!(convert(text, "Item").unwrap().contains("return name -> new Item(name);"));
+        let text = "class A { Object f() { return Item::of; } }";
+        assert!(convert(text, "Item").unwrap().contains("return (name, n) -> Item.of(name, n);"));
+        let text = "class A { Object f() { return String::trim; } }";
+        assert!(convert(text, "String").unwrap().contains("return s -> s.trim();"));
+        let text = "class A { Object f(String s) { return Integer::parseInt; } }";
+        assert!(convert(text, "Integer").unwrap().contains("return s1 -> Integer.parseInt(s1);"));
+        let text = "class A { static Object f() { return A::g; } static int g(int v) { return v; } }";
+        assert!(convert(text, "A::").unwrap().contains("return v -> g(v);"));
+        // Unknown method or receiver: none.
+        assert_eq!(convert("class A { Object f() { return Foo::bar; } }", "Foo"), None);
+        assert_eq!(convert("class A { Object f(B b) { return b::run; } }", "b::"), None);
     }
 }
