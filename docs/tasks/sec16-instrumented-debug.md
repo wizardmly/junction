@@ -2,11 +2,11 @@
 id: sec16-instrumented-debug
 title: 仪器测试配置的 Debug 和 Deployment Target Options
 features: 第 16 节
-status: open
-owner:
-branch:
+status: claimed
+owner: Claude（项目线程）/ 替 Megan 干活
+branch: task/sec16-instrumented-debug
 pr:
-claimed:
+claimed: 2026-11-08
 files: src/ui/run_service.rs, src/ui/run_config_dialog.rs, src/domain/run.rs
 ---
 
@@ -16,4 +16,4 @@ docs/FEATURES.md 第 16 节：Android Instrumented Tests 运行配置的 Debug�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-08 认领。先做 Debug（照 AS：装好 app 和测试 APK 后 `am instrument -e debug true`，连上被测进程），Deployment Target Options 视情况放到后面。
