@@ -2920,7 +2920,8 @@ impl<M: InputModeKind> InputBaseState<M> {
         let Some(replay) = replay else {
             return;
         };
-        let token_aware = self.inline_tokens.is_some()
+        // Junction: display folds are not document state.
+        let token_aware = self.inline_tokens.as_ref().is_some_and(|store| !store.display)
             || replay
                 .changes
                 .iter()
@@ -3739,7 +3740,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             .map(|(range, text)| (self.normalize_token_range(range.clone()), text.as_str()))
             .collect();
         sorted.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
-        if !self.token_spans().is_empty() {
+        if !self.token_spans().is_empty() && !self.display_folds() {
             let mut merged: Vec<(Range<usize>, &str)> = Vec::with_capacity(sorted.len());
             for (range, text) in sorted {
                 if let Some(last) = merged

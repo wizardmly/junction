@@ -13,6 +13,7 @@ pub mod inspect_database;
 pub mod inspect_background_tasks;
 pub mod inspect_network;
 pub mod android_resources;
+pub mod resource_folding;
 pub mod import_class;
 pub mod clean_up_files;
 pub mod translations;

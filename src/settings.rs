@@ -275,6 +275,9 @@ pub struct DiffSettings {
     /// Editor › Code Editing › Refactorings: "Specify refactoring options"
     /// in the editor (true, IntelliJ's default) or in modal dialogs.
     pub refactor_in_editor: bool,
+    /// Editor › General › Code Folding › Android: String References
+    /// (shown as their values, on by default like AS).
+    pub fold_android_strings: bool,
 }
 
 impl Default for DiffSettings {
@@ -296,6 +299,7 @@ impl Default for DiffSettings {
             optimize_imports_java: false,
             optimize_imports_kotlin: false,
             refactor_in_editor: true,
+            fold_android_strings: true,
         }
     }
 }
@@ -360,8 +364,9 @@ impl Breadcrumbs {
 }
 
 impl DiffSettings {
-    fn fields(&mut self) -> [(&'static str, &mut bool); 12] {
+    fn fields(&mut self) -> [(&'static str, &mut bool); 13] {
         [
+            ("diff_fold_android_strings", &mut self.fold_android_strings),
             ("diff_refactor_in_editor", &mut self.refactor_in_editor),
             ("diff_optimize_imports_java", &mut self.optimize_imports_java),
             ("diff_optimize_imports_kotlin", &mut self.optimize_imports_kotlin),

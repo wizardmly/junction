@@ -1470,6 +1470,14 @@ impl<M: InputModeKind> TextElement<M> {
         };
         let presentation = self.state.read(cx).token_presentation.clone();
         let child = presentation.render(token, window, cx);
+        // Junction: a display fold is drawn like IntelliJ's collapsed fold
+        // region, a shaded box around its placeholder.
+        let child = if self.state.read(cx).display_folds() {
+            use gpui::Styled as _;
+            gpui::div().px(px(2.)).rounded(px(3.)).bg(gpui::hsla(0., 0., 0.5, 0.2)).child(child).into_any_element()
+        } else {
+            child
+        };
         // Preserve interaction state only for the same token occurrence and
         // hover eligibility. Replacements and re-enabling start fresh.
         let start = token.range().start;
@@ -1594,6 +1602,12 @@ impl<M: InputModeKind> TextElement<M> {
                         .iter()
                         .find(|s| s.range().start == start)?
                         .clone();
+                    // Junction: a click on a display fold puts the caret
+                    // at its start, which expands it (IntelliJ).
+                    if state.display_folds() {
+                        state.set_selected_range(span.range().start..span.range().start, cx);
+                        return None;
+                    }
                     // A click selects the whole token; opening it is the
                     // listener's decision.
                     state.set_selected_range(span.range(), cx);
@@ -1820,7 +1834,6 @@ impl<M: InputModeKind> TextElement<M> {
         runs: &[TextRun],
         window: &mut Window,
     ) -> Vec<LineLayout> {
-        use crate::input::display_map::{InlineFragment, InputLine};
         let spans = state.token_spans();
         let cache = state
             .token_layout_cache
@@ -1831,91 +1844,112 @@ impl<M: InputModeKind> TextElement<M> {
             .visible_buffer_lines
             .iter()
             .map(|&row| {
-                let line_start = state.text.line_start_offset(row);
-                let text: String = state.text.slice_line(row).into();
-                let ranges = if state.is_single_line() {
-                    smallvec::smallvec![0..text.len()]
-                } else {
-                    state
-                        .display_map
-                        .line(row)
-                        .expect("prepared line")
-                        .wrapped_lines
-                        .clone()
-                };
-                let mut lines: SmallVec<[InputLine; 1]> = SmallVec::new();
-                for range in ranges {
-                    let mut fragments = Vec::new();
-                    let mut offset = range.start;
-                    let mut x = px(0.);
-                    let first =
-                        spans.partition_point(|s| s.range().end <= line_start + range.start);
-                    for span in spans[first..]
-                        .iter()
-                        .take_while(|s| s.range().start < line_start + range.end)
-                    {
-                        let local = span.range().start - line_start..span.range().end - line_start;
-                        if offset < local.start {
-                            let part = offset..local.start;
-                            let shaped = window.text_system().shape_line(
-                                text[part.clone()].to_owned().into(),
-                                font_size,
-                                &runs_for_range(runs, run_offset, &part),
-                                None,
-                            );
-                            let width = shaped.width;
-                            fragments.push(InlineFragment {
-                                range: part.start - range.start..part.end - range.start,
-                                x,
-                                width,
-                                text: Some(shaped),
-                            });
-                            x += width;
-                        }
-                        let width = cache.widths.get(span.token()).copied().unwrap_or_default();
-                        fragments.push(InlineFragment {
-                            range: local.start - range.start..local.end - range.start,
-                            x,
-                            width,
-                            text: None,
-                        });
-                        x += width;
-                        offset = local.end;
-                    }
-                    if offset < range.end {
-                        let part = offset..range.end;
-                        let shaped = window.text_system().shape_line(
-                            text[part.clone()].to_owned().into(),
-                            font_size,
-                            &runs_for_range(runs, run_offset, &part),
-                            None,
-                        );
-                        let width = shaped.width;
-                        fragments.push(InlineFragment {
-                            range: part.start - range.start..part.end - range.start,
-                            x,
-                            width,
-                            text: Some(shaped),
-                        });
-                    }
-                    lines.push(InputLine::inline(text[range].to_owned().into(), fragments));
-                }
-                let indent = state.display_map.line(row).map_or(0, |line| line.indent);
-                let wrap_indent = if indent > 0 && lines.len() > 1 {
-                    let bytes = text
-                        .char_indices()
-                        .nth(indent as usize)
-                        .map_or(text.len(), |(ix, _)| ix);
-                    lines[0].x_for_index(bytes)
-                } else {
-                    px(0.)
-                };
-                run_offset += text.len() + 1;
-                LineLayout::new()
-                    .inline_lines(lines)
-                    .wrap_indent(wrap_indent)
+                let layout =
+                    Self::layout_token_row(state, cache, spans, row, run_offset, font_size, runs, window);
+                run_offset += state.text.slice_line(row).len() + 1;
+                layout
             })
             .collect()
+    }
+
+    /// One buffer row of [`Self::layout_token_lines`]; `run_offset` is where
+    /// the row starts in `runs`.
+    #[allow(clippy::too_many_arguments)]
+    fn layout_token_row(
+        state: &InputBaseState<M>,
+        cache: &super::token_presentation::TokenLayoutCache,
+        spans: &[super::inline_tokens::InlineTokenSpan],
+        row: usize,
+        run_offset: usize,
+        font_size: Pixels,
+        runs: &[TextRun],
+        window: &mut Window,
+    ) -> LineLayout {
+        use crate::input::display_map::{InlineFragment, InputLine};
+        let line_start = state.text.line_start_offset(row);
+        let text: String = state.text.slice_line(row).into();
+        let ranges = if state.is_single_line() {
+            smallvec::smallvec![0..text.len()]
+        } else {
+            state
+                .display_map
+                .line(row)
+                .expect("prepared line")
+                .wrapped_lines
+                .clone()
+        };
+        let mut lines: SmallVec<[InputLine; 1]> = SmallVec::new();
+        for range in ranges {
+            let mut fragments = Vec::new();
+            let mut offset = range.start;
+            let mut x = px(0.);
+            let first =
+                spans.partition_point(|s| s.range().end <= line_start + range.start);
+            for span in spans[first..]
+                .iter()
+                .take_while(|s| s.range().start < line_start + range.end)
+                // Junction: a token never spans rows; skip one that would.
+                .filter(|s| s.range().start >= line_start + range.start && s.range().end <= line_start + range.end)
+            {
+                let local = span.range().start - line_start..span.range().end - line_start;
+                if offset < local.start {
+                    let part = offset..local.start;
+                    let shaped = window.text_system().shape_line(
+                        text[part.clone()].to_owned().into(),
+                        font_size,
+                        &runs_for_range(runs, run_offset, &part),
+                        None,
+                    );
+                    let width = shaped.width;
+                    fragments.push(InlineFragment {
+                        range: part.start - range.start..part.end - range.start,
+                        x,
+                        width,
+                        text: Some(shaped),
+                    });
+                    x += width;
+                }
+                let width = cache.widths.get(span.token()).copied().unwrap_or_default();
+                fragments.push(InlineFragment {
+                    range: local.start - range.start..local.end - range.start,
+                    x,
+                    width,
+                    text: None,
+                });
+                x += width;
+                offset = local.end;
+            }
+            if offset < range.end {
+                let part = offset..range.end;
+                let shaped = window.text_system().shape_line(
+                    text[part.clone()].to_owned().into(),
+                    font_size,
+                    &runs_for_range(runs, run_offset, &part),
+                    None,
+                );
+                let width = shaped.width;
+                fragments.push(InlineFragment {
+                    range: part.start - range.start..part.end - range.start,
+                    x,
+                    width,
+                    text: Some(shaped),
+                });
+            }
+            lines.push(InputLine::inline(text[range].to_owned().into(), fragments));
+        }
+        let indent = state.display_map.line(row).map_or(0, |line| line.indent);
+        let wrap_indent = if indent > 0 && lines.len() > 1 {
+            let bytes = text
+                .char_indices()
+                .nth(indent as usize)
+                .map_or(text.len(), |(ix, _)| ix);
+            lines[0].x_for_index(bytes)
+        } else {
+            px(0.)
+        };
+        LineLayout::new()
+            .inline_lines(lines)
+            .wrap_indent(wrap_indent)
     }
 
     fn prepaint_tokens(
@@ -2011,7 +2045,9 @@ impl<M: InputModeKind> TextElement<M> {
         window: &mut Window,
     ) -> Vec<LineLayout> {
         let is_single_line = state.is_single_line();
-        if state.tokens_visible() {
+        // Junction: display folds lay out only the rows that hold one.
+        let display_folds = state.display_folds() && state.tokens_visible();
+        if state.tokens_visible() && !display_folds {
             return Self::layout_token_lines(state, last_layout, font_size, runs, window);
         }
 
@@ -2063,6 +2099,24 @@ impl<M: InputModeKind> TextElement<M> {
 
         for (vi, &buffer_line) in last_layout.visible_buffer_lines.iter().enumerate() {
             let line_text: String = display_text.slice_line(buffer_line).into();
+            if display_folds {
+                let spans = state.token_spans();
+                let start = state.text.line_start_offset(buffer_line);
+                let end = start + line_text.len();
+                let first = spans.partition_point(|s| s.range().end <= start);
+                if spans.get(first).is_some_and(|s| s.range().start < end) {
+                    if let Some(cache) = state.token_layout_cache.as_ref() {
+                        lines.push(
+                            Self::layout_token_row(
+                                state, cache, spans, buffer_line, run_offset, font_size, runs, window,
+                            )
+                            .with_whitespaces(whitespace_indicators.clone()),
+                        );
+                        run_offset += line_text.len() + 1;
+                        continue;
+                    }
+                }
+            }
             let line_item = state
                 .display_map
                 .line(buffer_line)
