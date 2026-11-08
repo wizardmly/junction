@@ -179,10 +179,14 @@ pub struct Spaces {
     pub before_left_brace: [bool; 12],
     /// Java's In Ternary Operator (?:): before / after `?`, before / after `:`.
     pub ternary: [bool; 4],
+    /// Arrows: Java's Around operators › Lambda arrow; Kotlin's Around
+    /// arrow in function types, Around arrow in "when" clause and Before
+    /// lambda arrow (after it there's always a space). All on by default.
+    pub arrows: [bool; 4],
 }
 
 /// How many values `Spaces::values` has.
-pub const SPACES_LEN: usize = 40;
+pub const SPACES_LEN: usize = 44;
 
 impl Default for Spaces {
     fn default() -> Self {
@@ -200,6 +204,7 @@ impl Default for Spaces {
             around_multiplicative: true,
             before_left_brace: [true; 12],
             ternary: [true; 4],
+            arrows: [true; 4],
         }
     }
 }
@@ -253,13 +258,17 @@ impl Spaces {
         "In ternary operator (?:): After '?'",
         "In ternary operator (?:): Before ':'",
         "In ternary operator (?:): After ':'",
+        "Around operators: Lambda arrow",
+        "Around operators: Around arrow in function types",
+        "Around operators: Around arrow in 'when' clause",
+        "Other: Before lambda arrow",
     ];
     /// Which of `values` each language's page shows, in IntelliJ's order.
-    pub const JAVA: [usize; 35] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 14, 15, 16, 17, 36, 37, 38, 39, 12, 13];
-    pub const KOTLIN: [usize; 17] = [0, 1, 2, 4, 6, 8, 9, 10, 11, 22, 23, 12, 13, 18, 19, 20, 21];
+    pub const JAVA: [usize; 36] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 22, 23, 40, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 14, 15, 16, 17, 36, 37, 38, 39, 12, 13];
+    pub const KOTLIN: [usize; 20] = [0, 1, 2, 4, 6, 8, 9, 10, 11, 22, 23, 41, 42, 12, 13, 18, 19, 20, 21, 43];
 
     pub fn values(&self) -> [bool; SPACES_LEN] {
-        let (p, k, c, b, t) = (self.before_parens, self.before_keywords, self.colons, self.before_left_brace, self.ternary);
+        let (p, k, c, b, t, a) = (self.before_parens, self.before_keywords, self.colons, self.before_left_brace, self.ternary, self.arrows);
         [
             p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
             self.around_assignment, self.around_logical, self.around_equality, self.around_relational, self.before_comma, self.after_comma,
@@ -267,6 +276,7 @@ impl Spaces {
             self.around_additive, self.around_multiplicative,
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11],
             t[0], t[1], t[2], t[3],
+            a[0], a[1], a[2], a[3],
         ]
     }
 
@@ -285,6 +295,7 @@ impl Spaces {
             around_multiplicative: v[23],
             before_left_brace: [v[24], v[25], v[26], v[27], v[28], v[29], v[30], v[31], v[32], v[33], v[34], v[35]],
             ternary: [v[36], v[37], v[38], v[39]],
+            arrows: [v[40], v[41], v[42], v[43]],
         }
     }
 
@@ -1771,6 +1782,25 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
                 }
                 continue;
             }
+            // `->`: a lambda's, a `when` branch's, a function type's.
+            '-' if flavor != Flavor::Groovy && next_code(1) == Some('>') && !out.ends_with('-') => {
+                let (before, after) = arrow_spaces(&out, kotlin, spaces);
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                if before && !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str("->");
+                k += 2;
+                while chars.get(k).is_some_and(|(j, ch)| is_code(*j) && *ch == ' ') {
+                    k += 1;
+                }
+                if k < chars.len() && after {
+                    out.push(' ');
+                }
+                continue;
+            }
             '+' | '-' | '*' | '/' | '%' if flavor != Flavor::Groovy && arithmetic(&chars, k, &is_code, &out) => {
                 // A binary `a + b`: spaced or not as the setting says, but
                 // never so that `a - -b` runs together into `--`.
@@ -1835,6 +1865,59 @@ fn normalize(line: &str, info: &Line, lead: usize, flavor: Flavor, closes_header
         k += 1;
     }
     out
+}
+
+/// The spaces before and after a `->` that follows `out`. Kotlin: a
+/// function type's (`(Int) -> Unit`) when what comes before is a `(…)`
+/// that isn't a lambda's destructuring, a lambda's when an unclosed `{`
+/// on the line opens it, else a `when` branch's. Java: the lambda arrow's
+/// (switch rules' too).
+fn arrow_spaces(out: &str, kotlin: bool, spaces: &Spaces) -> (bool, bool) {
+    if !kotlin {
+        return (spaces.arrows[0], spaces.arrows[0]);
+    }
+    let before = out.trim_end();
+    if before.ends_with(')') {
+        let mut depth = 0;
+        let mut open = None;
+        for (i, ch) in before.char_indices().rev() {
+            match ch {
+                ')' => depth += 1,
+                '(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        open = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let head = open.map_or("", |o| before[..o].trim_end());
+        // `{ (a, b) -> …`, `{ x, (a, b) -> …`: destructuring.
+        if !(head.ends_with('{') || head.ends_with(',') && unclosed_brace(head)) {
+            return (spaces.arrows[1], spaces.arrows[1]);
+        }
+    }
+    if unclosed_brace(before) {
+        (spaces.arrows[3], true)
+    } else {
+        (spaces.arrows[2], spaces.arrows[2])
+    }
+}
+
+/// Whether `text` has a `{` that isn't closed after it.
+fn unclosed_brace(text: &str) -> bool {
+    let mut depth = 0i32;
+    for ch in text.chars().rev() {
+        match ch {
+            '}' => depth += 1,
+            '{' if depth == 0 => return true,
+            '{' => depth -= 1,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Whether the `+ - * / %` at `k` is a binary operator on its own (not
@@ -2071,6 +2154,32 @@ fn operator(chars: &[(usize, char)], k: usize, is_code: &dyn Fn(usize) -> bool) 
 mod tests {
     use super::*;
 
+    #[test]
+    fn spaces_around_arrows() {
+        let text = "val g: (Int)->Int = { x->x }\nval h = xs.map { (a, b)->a }\nwhen (x) {\n    1->a()\n    else  ->   b()\n}\nval f = { a, b ->\n    a\n}\n";
+        assert_eq!(kt(text), "val g: (Int) -> Int = { x -> x }\nval h = xs.map { (a, b) -> a }\nwhen (x) {\n    1 -> a()\n    else -> b()\n}\nval f = { a, b ->\n    a\n}\n");
+        let style = |i: usize| {
+            let mut s = Spaces::default();
+            s.arrows[i] = false;
+            s
+        };
+        let with = |text: &str, spaces: Spaces| {
+            let mut indents = IndentStyle::default();
+            indents.spaces = spaces;
+            reformat_indented(ImportStyle::Kotlin, text, None, &indents)
+        };
+        assert_eq!(with("val g: (Int) -> Int = { x -> x }\n", style(1)), "val g: (Int)->Int = { x -> x }\n");
+        assert_eq!(with("val g: (Int) -> Int = { x -> x }\n", style(3)), "val g: (Int) -> Int = { x-> x }\n");
+        assert_eq!(with("when (x) {\n    1 -> a()\n}\n", style(2)), "when (x) {\n    1->a()\n}\n");
+        let java = |text: &str, spaces: Spaces| {
+            let mut indents = IndentStyle::default();
+            indents.spaces = spaces;
+            reformat_indented(ImportStyle::Java, text, None, &indents)
+        };
+        assert_eq!(java("class A {\n    Runnable r = ()->go();\n}\n", Spaces::default()), "class A {\n    Runnable r = () -> go();\n}\n");
+        assert_eq!(java("class A {\n    Runnable r = () -> go();\n}\n", style(0)), "class A {\n    Runnable r = ()->go();\n}\n");
+    }
+
     fn kt(text: &str) -> String {
         reformat(ImportStyle::Kotlin, text, None)
     }
@@ -2125,7 +2234,7 @@ mod tests {
         assert_eq!(java("int[] a = new int[]{1,2};"), "int[] a = new int[]{1, 2};");
         assert_eq!(kt("if (i>0&&i<=n||a.size>=b) x"), "if (i > 0 && i <= n || a.size >= b) x");
         assert_eq!(kt("val l: List<Int> = listOf<String>(); val m = Map<String, List<Int>>()"), "val l: List<Int> = listOf<String>(); val m = Map<String, List<Int>>()");
-        assert_eq!(kt("x shl 1; a->b; 1..<n; c>'a'"), "x shl 1; a->b; 1..<n; c > 'a'");
+        assert_eq!(kt("x shl 1; a->b; 1..<n; c>'a'"), "x shl 1; a -> b; 1..<n; c > 'a'");
         assert_eq!(kt("class A(val x:Int):B(), C {"), "class A(val x: Int) : B(), C {");
         assert_eq!(kt("fun f(a:Int):String? = a?:b ?: c; val r = String::class"), "fun f(a: Int): String? = a?:b ?: c; val r = String::class");
         assert_eq!(kt("object O:Runnable { val m = mapOf(\"a:b\" to 1) }"), "object O : Runnable { val m = mapOf(\"a:b\" to 1) }");
@@ -2397,7 +2506,8 @@ mod tests {
 
 #[cfg(test)]
 mod corpus {
-    /// Formatted sources reformat to themselves (set JUNCTION_FMT_DIR).
+    /// Formatted sources reformat to themselves (set JUNCTION_FMT_DIR;
+    /// JUNCTION_FMT_OUT writes the results to a directory to diff).
     #[test]
     #[ignore]
     fn formatted_sources_are_stable() {
@@ -2407,6 +2517,10 @@ mod corpus {
             let text = std::fs::read_to_string(&path).unwrap();
             let style = if path.extension().is_some_and(|e| e == "kt") { super::ImportStyle::Kotlin } else { super::ImportStyle::Java };
             let out = super::reformat(style, &text, None);
+            // JUNCTION_FMT_OUT: also write each result there, to diff.
+            if let Ok(out_dir) = std::env::var("JUNCTION_FMT_OUT") {
+                std::fs::write(std::path::Path::new(&out_dir).join(path.file_name().unwrap()), &out).unwrap();
+            }
             let changed: Vec<(usize, &str, &str)> = text.lines().zip(out.lines()).enumerate().filter(|(_, (a, b))| a != b).map(|(i, (a, b))| (i + 1, a, b)).collect();
             println!("{} {} changed", path.file_name().unwrap().to_string_lossy(), changed.len());
             for (line, a, b) in changed.iter().take(6) {
