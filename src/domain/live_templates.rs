@@ -110,8 +110,9 @@ pub enum Computed {
     /// value; code completion opens when the variable is reached.
     Complete,
     /// `descendantClassesEnum("Base")`: the classes deriving from Base to
-    /// pick from, the first by default.
-    Descendants(&'static str),
+    /// pick from, the first by default; with `true` the abstract classes
+    /// and interfaces are left out (its third argument is `"false"`).
+    Descendants(&'static str, bool),
     /// `methodParameterTypes()`: the enclosing method's parameter types,
     /// as IntelliJ's ListResult prints them (`[String, int]`).
     ParameterTypes,
@@ -302,8 +303,9 @@ pub struct Scope {
     pub file_path: String,
     pub relative_path: String,
     /// For `descendantClassesEnum(…)`: the classes deriving from each
-    /// base class the template names, as the editor found them.
-    pub descendants: Vec<(String, Vec<String>)>,
+    /// base class the template names (whether only the concrete ones),
+    /// as the editor found them.
+    pub descendants: Vec<(String, bool, Vec<String>)>,
     /// For `annotated(…)`: what carries each annotation the template
     /// names, as the editor found it.
     pub annotated: Vec<(String, Vec<String>)>,
@@ -398,13 +400,13 @@ pub fn choice_variables(template: &Template) -> Vec<(String, Vec<String>)> {
 
 /// The base classes a template's `descendantClassesEnum("Base")`
 /// variables derive from, for the editor to find their subclasses.
-pub fn descendant_bases(template: &Template) -> Vec<&'static str> {
+pub fn descendant_bases(template: &Template) -> Vec<(&'static str, bool)> {
     let mut out = Vec::new();
     for v in template.vars.iter() {
-        if let Some(Computed::Descendants(base)) = v.computed
-            && !out.contains(&base)
+        if let Some(Computed::Descendants(base, concrete)) = v.computed
+            && !out.contains(&(base, concrete))
         {
-            out.push(base);
+            out.push((base, concrete));
         }
     }
     out
@@ -417,7 +419,7 @@ pub fn descendant_choices(template: &Template, scope: &Scope) -> Vec<(String, Ve
         .vars
         .iter()
         .filter_map(|v| match v.computed {
-            Some(Computed::Descendants(base)) => scope.descendants.iter().find(|(b, _)| *b == base).map(|(_, l)| (v.name.to_string(), l.clone())),
+            Some(Computed::Descendants(base, concrete)) => scope.descendants.iter().find(|(b, c, _)| *b == base && *c == concrete).map(|(_, _, l)| (v.name.to_string(), l.clone())),
             Some(Computed::Annotated(a)) => scope.annotated.iter().find(|(b, _)| *b == a).map(|(_, l)| (v.name.to_string(), l.clone())),
             _ => None,
         })
@@ -491,7 +493,7 @@ fn compute(c: Computed, scope: &Scope, values: &[(String, String)]) -> Option<St
         Computed::FilePath => non_empty(&scope.file_path),
         Computed::FileRelativePath => non_empty(&scope.relative_path),
         Computed::Complete => None,
-        Computed::Descendants(base) => scope.descendants.iter().find(|(b, _)| b == base).and_then(|(_, l)| l.first().cloned()),
+        Computed::Descendants(base, concrete) => scope.descendants.iter().find(|(b, c, _)| b == base && *c == concrete).and_then(|(_, _, l)| l.first().cloned()),
         Computed::ParameterTypes => Some(format!("[{}]", scope.parameters.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join(", "))),
         Computed::IterableVariable => scope.nearest().find_map(|(n, t)| {
             if Kind::Iterable.matches(t) {
@@ -998,8 +1000,14 @@ fn parse_simple(expression: &str) -> Option<Expression> {
         ("filePath", []) => Computed::FilePath,
         ("fileRelativePath", []) => Computed::FileRelativePath,
         ("complete" | "completeSmart" | "classNameComplete", []) => Computed::Complete,
-        // The second argument (allow abstract classes, `"true"` by default) isn't checked.
-        ("descendantClassesEnum", [base, ..]) => Computed::Descendants(intern(&quoted(base)?)),
+        // DescendantClassesEnumMacro: the second argument picks qualified
+        // (`"true"`, the default) or short names in the list, both shortened
+        // when inserted here; the third allows abstract classes and
+        // interfaces (`"true"` by default).
+        ("descendantClassesEnum", [base, rest @ ..]) => {
+            let concrete = rest.get(1).is_some_and(|a| !a.trim().trim_matches('"').trim().eq_ignore_ascii_case("true"));
+            Computed::Descendants(intern(&quoted(base)?), concrete)
+        }
         ("methodParameterTypes", []) => Computed::ParameterTypes,
         ("iterableVariable", []) => Computed::IterableVariable,
         ("castToLeftSideType", []) => Computed::CastToLeftSide,
@@ -1520,16 +1528,21 @@ mod tests {
             return_type: "List<String>".into(),
             file_path: "/p/src/A.java".into(),
             relative_path: "src/A.java".into(),
-            descendants: vec![("Animal".into(), vec!["Dog".into(), "Cat".into()])],
+            descendants: vec![("Animal".into(), false, vec!["Dog".into(), "Cat".into()])],
             ..Default::default()
         };
         let template = user.template(false).unwrap();
-        assert_eq!(descendant_bases(&template), vec!["Animal"]);
+        assert_eq!(descendant_bases(&template), vec![("Animal", false)]);
         let t = resolved(&template, &scope);
         assert_eq!(expand(&t, "", "  ").text, "List<String> /p/src/A.java src/A.java Dog x");
         assert_eq!(completion_variables(&t), vec!["C"]);
         assert_eq!(descendant_choices(&t, &scope), vec![("D".to_owned(), vec!["Dog".to_owned(), "Cat".to_owned()])]);
         assert_eq!(parse_expression("complete()"), Some(Expression::Computed(Computed::Complete)));
+        assert_eq!(parse_expression("descendantClassesEnum(\"Animal\", \"false\", \"false\")"), Some(Expression::Computed(Computed::Descendants("Animal", true))));
+        assert_eq!(parse_expression("descendantClassesEnum(\"Animal\", \"true\", \"TRUE\")"), Some(Expression::Computed(Computed::Descendants("Animal", false))));
+        let concrete = Scope { descendants: vec![("Animal".into(), true, vec!["Cat".into()])], ..scope.clone() };
+        let only = UserTemplate { expressions: vec![("D".into(), "descendantClassesEnum(\"Animal\", \"true\", \"false\")".into())], text: "$D$".into(), ..user.clone() };
+        assert_eq!(expand(&resolved(&only.template(false).unwrap(), &concrete), "", "  ").text, "Cat");
         assert_eq!(parse_expression("classNameComplete()"), Some(Expression::Computed(Computed::Complete)));
         // Nothing found: the defaults.
         assert_eq!(expand(&resolved(&template, &Scope::default()), "", "  ").text, "    x");
