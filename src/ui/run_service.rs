@@ -178,7 +178,8 @@ impl RunService {
         let selected = self.configuration(cx).map(|c| c.name);
         let this = cx.entity().downgrade();
         let roots: Vec<std::path::PathBuf> = builds.iter().map(|(root, _)| root.clone()).collect();
-        crate::ui::run_config_dialog::open(roots, modules, current, selected, move |_, cx| {
+        let devices = self.devices(cx).into_iter().map(|d| (d.id, d.name)).collect();
+        crate::ui::run_config_dialog::open(roots, modules, devices, current, selected, move |_, cx| {
             this.update(cx, |_, cx| cx.notify()).ok();
         }, window, cx);
     }
@@ -276,6 +277,27 @@ impl RunService {
         }
         let saved = Settings::get(cx).run_device.clone();
         all.iter().find(|d| d.id == saved).cloned().or_else(|| all.into_iter().find(|d| d.online)).into_iter().collect()
+    }
+
+    /// The devices a configuration runs on: its Deployment Target's
+    /// Specific devices that are still there, else the toolbar's.
+    pub fn targets_of(&self, config: Option<&RunConfiguration>, cx: &App) -> Vec<Device> {
+        match config.map(|c| &c.options.target) {
+            Some(run::DeployTarget::Specific(ids)) => {
+                let all = self.devices(cx);
+                ids.iter().filter_map(|id| all.iter().find(|d| d.id == *id).cloned()).collect()
+            }
+            _ => self.targets(cx),
+        }
+    }
+
+    /// The device Debug runs instrumented tests on: the picked saved
+    /// configuration's first target, else the toolbar's.
+    pub fn debug_device(&self, cx: &App) -> Option<Device> {
+        if self.selected_test(cx).is_some() {
+            return self.device(cx);
+        }
+        self.targets_of(self.configuration(cx).as_ref(), cx).into_iter().next()
     }
 
     /// Several devices picked: how many (the toolbar's "Multiple Devices (2)").
@@ -428,7 +450,19 @@ impl RunService {
             cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: problem.into() });
             return;
         }
-        if let Some((config, request)) = self.junit_request(cx) {
+        if let Some((config, mut request)) = self.junit_request(cx) {
+            // Specific devices: Gradle runs on the one (`ANDROID_SERIAL`);
+            // with several it runs on every connected device.
+            if request.kind == crate::domain::testing::TestKind::Instrumented && !config.options.target.is_toolbar() {
+                let online: Vec<String> = self.targets_of(Some(&config), cx).into_iter().filter(|d| d.online).filter_map(|d| d.serial).collect();
+                if online.is_empty() {
+                    cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: "No target device found.".into() });
+                    return;
+                }
+                if online.len() == 1 {
+                    request.device = online.into_iter().next();
+                }
+            }
             if debug {
                 crate::ui::debug_service::DebugService::global(cx).update(cx, |d, cx| d.debug_configured(config.build_root, config.module, request, cx));
             } else {
@@ -444,7 +478,7 @@ impl RunService {
             }
             return;
         }
-        let mut targets = self.targets(cx);
+        let mut targets = self.targets_of(Some(&config), cx);
         if targets.is_empty() {
             cx.emit(RunEvent::Error { title: format!("Error running '{}'", config.name), message: "No target device found.".into() });
             return;

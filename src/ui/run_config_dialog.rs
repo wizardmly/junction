@@ -26,7 +26,7 @@ use gpui_kit::{
     Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::domain::run::{self as run, BeforeLaunch, JUnitKind, JUnitTarget, LaunchOptions, LaunchTarget, ModuleInfo, ModuleType, SavedRunConfiguration};
+use crate::domain::run::{self as run, BeforeLaunch, DeployTarget, JUnitKind, JUnitTarget, LaunchOptions, LaunchTarget, ModuleInfo, ModuleType, SavedRunConfiguration};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::common::tool_button;
@@ -85,6 +85,8 @@ pub struct RunConfigView {
     roots: Vec<PathBuf>,
     /// The modules, by build.
     modules: Vec<(PathBuf, ModuleInfo)>,
+    /// The devices Specific devices offers: (id, name).
+    devices: Vec<(String, String)>,
     name: Entity<InputState>,
     activity: Entity<InputState>,
     flags: Entity<InputState>,
@@ -323,6 +325,65 @@ impl RunConfigView {
         self.before_selected = at;
     }
 
+    /// Deployment Target Options: Target, and with Specific devices a
+    /// checkbox for each device (ones saved but gone too).
+    fn render_target(&self, d: &Draft, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let palette = cx.palette().clone();
+        let this = cx.entity().downgrade();
+        let target = d.saved.options.target.clone();
+        let current = if target.is_toolbar() { "Use the device/snapshot drop down" } else { "Specific devices" };
+        let picker = Button::new("rc-target").outline().small().label(current).child(Icon::new(icons::CHEVRON_DOWN).xsmall()).dropdown_menu({
+            let this = this.clone();
+            move |menu, _, _| {
+                let (toolbar, specific) = (this.clone(), this.clone());
+                menu.item(PopupMenuItem::new("Use the device/snapshot drop down").on_click(move |_, _, cx| {
+                    toolbar.update(cx, |v, cx| v.change(|d| d.saved.options.target = DeployTarget::Toolbar, cx)).ok();
+                }))
+                .item(PopupMenuItem::new("Specific devices").on_click(move |_, _, cx| {
+                    specific
+                        .update(cx, |v, cx| {
+                            v.change(|d| {
+                                if d.saved.options.target.is_toolbar() {
+                                    d.saved.options.target = DeployTarget::Specific(Vec::new());
+                                }
+                            }, cx)
+                        })
+                        .ok();
+                }))
+            }
+        });
+        let mut out = v_flex().gap_1().child(h_flex().gap_2().child(div().w(px(110.)).flex_none().text_sm().text_color(palette.text_secondary).child("Target:")).child(picker));
+        if let DeployTarget::Specific(ids) = &target {
+            let mut rows: Vec<(String, String)> = self.devices.clone();
+            for id in ids {
+                if !rows.iter().any(|(r, _)| r == id) {
+                    rows.push((id.clone(), format!("{id} (not connected)")));
+                }
+            }
+            if rows.is_empty() {
+                out = out.child(div().pl(px(118.)).text_xs().text_color(palette.text_secondary).child("No devices. Connect a device or create a virtual device in Device Manager."));
+            }
+            for (i, (id, name)) in rows.into_iter().enumerate() {
+                let this = this.clone();
+                out = out.child(div().pl(px(118.)).child(Checkbox::new(("rc-target-device", i)).label(name).checked(ids.contains(&id)).on_change(move |value: &bool, _, cx| {
+                    let (value, id) = (*value, id.clone());
+                    this.update(cx, |v, cx| {
+                        v.change(|d| {
+                            if let DeployTarget::Specific(ids) = &mut d.saved.options.target {
+                                ids.retain(|x| *x != id);
+                                if value {
+                                    ids.push(id);
+                                }
+                            }
+                        }, cx)
+                    })
+                    .ok();
+                })));
+            }
+        }
+        out.into_any_element()
+    }
+
     fn render_before_launch(&self, d: &Draft, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let palette = cx.palette().clone();
         let tasks = d.saved.options.before_launch.clone();
@@ -419,6 +480,9 @@ impl RunConfigView {
             }
         }
         let selected = self.selected.and_then(|i| self.drafts.get(i));
+        if let Some(problem) = self.drafts.iter().find_map(|d| d.saved.options.target.problem()) {
+            return Some(problem.into());
+        }
         if selected.is_some_and(|d| d.saved.gradle.is_some()) && self.gradle_run.read(cx).value().trim().is_empty() {
             return Some("No tasks specified".into());
         }
@@ -572,10 +636,11 @@ impl RunConfigView {
                         .child(div().text_xs().text_color(palette.text_secondary).child("Passed to the test runner as am instrument's -e key value (Gradle's android.testInstrumentationRunnerArguments)"))
                 })
                 .child(div().text_xs().text_color(palette.text_secondary).child(if instrumented {
-                    "Runs the module's androidTest tests through Gradle on every connected device."
+                    "Runs the module's androidTest tests through Gradle: on the one target device, or with several on every connected device."
                 } else {
                     "Runs the module's unit tests through Gradle; an empty package runs them all."
                 }))
+                .when(instrumented, |el| el.child(heading("Deployment Target Options")).child(self.render_target(&d, cx)))
                 .child(heading("Before launch"))
                 .child(self.render_before_launch(&d, cx))
                 .into_any_element();
@@ -621,6 +686,8 @@ impl RunConfigView {
                 el.child(h_flex().gap_2().child(label("Activity:")).child(div().flex_1().child(Input::new(&self.activity).small())))
             })
             .child(h_flex().gap_2().child(label("Launch Flags:")).child(div().flex_1().child(Input::new(&self.flags).small())))
+            .child(heading("Deployment Target Options"))
+            .child(self.render_target(&d, cx))
             .child(heading("Logcat"))
             .child(Checkbox::new("rc-show-logcat").label("Show logcat automatically").checked(d.saved.options.show_logcat).on_change({
                 let this = this.clone();
@@ -740,7 +807,7 @@ impl Render for RunConfigView {
 
 /// Opens Edit Configurations: the saved configurations, else the default
 /// one per application module; `on_saved` after OK (to pick one again).
-pub fn open(roots: Vec<PathBuf>, modules: Vec<(PathBuf, ModuleInfo)>, current: Vec<(PathBuf, SavedRunConfiguration)>, selected: Option<String>, on_saved: impl Fn(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
+pub fn open(roots: Vec<PathBuf>, modules: Vec<(PathBuf, ModuleInfo)>, devices: Vec<(String, String)>, current: Vec<(PathBuf, SavedRunConfiguration)>, selected: Option<String>, on_saved: impl Fn(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
     let view = cx.new(|cx| {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let activity = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. .SettingsActivity"));
@@ -758,7 +825,7 @@ pub fn open(roots: Vec<PathBuf>, modules: Vec<(PathBuf, ModuleInfo)>, current: V
         let _subscriptions = vec![cx.subscribe(&name, notify), cx.subscribe(&activity, notify), cx.subscribe(&flags, notify), cx.subscribe(&gradle_run, notify), cx.subscribe(&junit_class, notify), cx.subscribe(&junit_method, notify), cx.subscribe(&junit_args, notify)];
         let drafts: Vec<Draft> = current.into_iter().map(|(root, saved)| Draft { root, saved }).collect();
         let selected_ix = selected.and_then(|n| drafts.iter().position(|d| d.saved.name == n)).or((!drafts.is_empty()).then_some(0));
-        let mut view = RunConfigView { drafts, selected: selected_ix, roots, modules, name, activity, flags, gradle_run, junit_package, junit_args, junit_class, junit_method, before_selected: None, _subscriptions };
+        let mut view = RunConfigView { drafts, selected: selected_ix, roots, modules, devices, name, activity, flags, gradle_run, junit_package, junit_args, junit_class, junit_method, before_selected: None, _subscriptions };
         view.load_fields(window, cx);
         view
     });
