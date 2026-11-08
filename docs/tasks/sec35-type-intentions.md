@@ -2,11 +2,11 @@
 id: sec35-type-intentions
 title: Alt+Enter 其他需要类型的意图
 features: 第 35 节
-status: open
-owner:
-branch:
+status: claimed
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec35-type-intentions
 pr:
-claimed:
+claimed: 2026-11-08
 files: src/domain/intentions.rs, src/index/intentions.rs
 ---
 
