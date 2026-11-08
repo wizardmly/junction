@@ -2,11 +2,11 @@
 id: sec29-template-functions
 title: Live Templates：剩下的表达式函数
 features: 第 29 节
-status: open
-owner:
-branch:
+status: claimed
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec29-template-functions
 pr:
-claimed:
+claimed: 2026-11-08
 files: src/domain/live_templates.rs, src/domain/template_xml.rs, src/ui/file_editor/templates.rs
 ---
 
