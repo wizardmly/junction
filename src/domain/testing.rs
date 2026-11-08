@@ -406,17 +406,23 @@ pub struct TestRequest {
     pub filters: Vec<(String, Option<String>)>,
     /// The run configuration's name.
     pub name: String,
-    /// Debug: the port the test JVM waits for the debugger on.
+    /// Debug: the port the test JVM waits for the debugger on. An
+    /// instrumented run only checks that it's set: the runner's `debug`
+    /// argument makes the app's process wait, and the debugger attaches
+    /// to it through adb.
     pub debug_port: Option<u16>,
     /// Run with Coverage: JaCoCo records which code the tests ran.
     pub coverage: bool,
     /// An instrumented run's extra runner arguments (`-e key value`).
     pub arguments: Vec<(String, String)>,
+    /// An instrumented run on this device only (Gradle's `ANDROID_SERIAL`);
+    /// none: on every connected one.
+    pub device: Option<String>,
 }
 
 impl TestRequest {
     pub fn of(kind: TestKind, mark: &TestMark) -> Self {
-        Self { kind, filters: vec![(mark.class.clone(), mark.method.clone())], name: mark.name(), debug_port: None, coverage: false, arguments: Vec::new() }
+        Self { kind, filters: vec![(mark.class.clone(), mark.method.clone())], name: mark.name(), debug_port: None, coverage: false, arguments: Vec::new(), device: None }
     }
 }
 
@@ -428,7 +434,7 @@ impl TestRequest {
 /// relative to the module's; none outside test sources.
 pub fn folder_request(rel: &str, module: &ModuleInfo) -> Option<TestRequest> {
     let parts: Vec<&str> = rel.split(['/', '\\']).filter(|p| !p.is_empty() && *p != ".").collect();
-    let whole = |kind| Some(TestRequest { kind, filters: Vec::new(), name: format!("Tests in '{}'", module.name()), debug_port: None, coverage: false, arguments: Vec::new() });
+    let whole = |kind| Some(TestRequest { kind, filters: Vec::new(), name: format!("Tests in '{}'", module.name()), debug_port: None, coverage: false, arguments: Vec::new(), device: None });
     match parts.as_slice() {
         [] | ["src"] => whole(TestKind::Unit),
         ["src", set, rest @ ..] => {
@@ -437,7 +443,7 @@ pub fn folder_request(rel: &str, module: &ModuleInfo) -> Option<TestRequest> {
                 [] | [_] => whole(kind),
                 [_, package @ ..] => {
                     let package = package.join(".");
-                    Some(TestRequest { kind, filters: vec![(format!("{package}.*"), None)], name: format!("Tests in '{package}'"), debug_port: None, coverage: false, arguments: Vec::new() })
+                    Some(TestRequest { kind, filters: vec![(format!("{package}.*"), None)], name: format!("Tests in '{package}'"), debug_port: None, coverage: false, arguments: Vec::new(), device: None })
                 }
             }
         }
@@ -455,6 +461,8 @@ pub struct TestPlan {
     pub report_dir: PathBuf,
     /// Run with Coverage: where the JaCoCo XML report goes.
     pub coverage_report: Option<PathBuf>,
+    /// Environment variables for Gradle.
+    pub env: Vec<(String, String)>,
 }
 
 /// `:app:testDebugUnitTest --tests com.example.ExampleUnitTest.addition`
@@ -466,6 +474,7 @@ pub fn plan(build_root: &Path, module: &ModuleInfo, variant: &str, request: &Tes
     let mut args = Vec::new();
     let report_dir;
     let mut coverage_report = None;
+    let mut env = Vec::new();
     match request.kind {
         TestKind::Unit => {
             let task = if module.kind.is_android() { format!("test{}UnitTest", capitalize(variant)) } else { "test".into() };
@@ -510,6 +519,13 @@ pub fn plan(build_root: &Path, module: &ModuleInfo, variant: &str, request: &Tes
             for (key, value) in &request.arguments {
                 args.push(format!("-Pandroid.testInstrumentationRunnerArguments.{key}={value}"));
             }
+            // AndroidJUnitRunner's `debug`: the process waits for a debugger.
+            if request.debug_port.is_some() {
+                args.push("-Pandroid.testInstrumentationRunnerArguments.debug=true".into());
+            }
+            if let Some(serial) = &request.device {
+                env.push(("ANDROID_SERIAL".to_owned(), serial.clone()));
+            }
             report_dir = module.dir.join("build/outputs/androidTest-results/connected");
             // The init script turns on the build types' androidTest coverage
             // and reports the device's `.ec` files after the run; `--continue`
@@ -523,7 +539,7 @@ pub fn plan(build_root: &Path, module: &ModuleInfo, variant: &str, request: &Tes
             }
         }
     }
-    TestPlan { build_root: build_root.to_path_buf(), args, report_dir, coverage_report }
+    TestPlan { build_root: build_root.to_path_buf(), args, report_dir, coverage_report, env }
 }
 
 // --- Results ------------------------------------------------------------
@@ -992,7 +1008,7 @@ abstract class BaseTest {
         let p = plan(Path::new("/p"), &app, "demoDebug", &TestRequest::of(TestKind::Unit, &mark));
         assert_eq!(p.args, [":app:testDemoDebugUnitTest", "--tests", "a.ExampleTest.adds"]);
         assert_eq!(p.report_dir, PathBuf::from("/p/app/build/test-results/testDemoDebugUnitTest"));
-        let request = TestRequest { kind: TestKind::Instrumented, filters: vec![("a.ATest".into(), None), ("a.BTest".into(), Some("b".into()))], name: "x".into(), debug_port: None, coverage: false, arguments: Vec::new() };
+        let request = TestRequest { kind: TestKind::Instrumented, filters: vec![("a.ATest".into(), None), ("a.BTest".into(), Some("b".into()))], name: "x".into(), debug_port: None, coverage: false, arguments: Vec::new(), device: None };
         let p = plan(Path::new("/p"), &app, "demoDebug", &request);
         assert_eq!(p.args, [":app:connectedDemoDebugAndroidTest", "-Pandroid.testInstrumentationRunnerArguments.class=a.ATest,a.BTest#b"]);
         let covered = plan(Path::new("/p"), &app, "demoDebug", &TestRequest { coverage: true, ..request.clone() });
@@ -1000,8 +1016,12 @@ abstract class BaseTest {
         assert_eq!(covered.coverage_report, Some(PathBuf::from("/p/app/build/junction-coverage/connectedDemoDebugAndroidTest.xml")));
         let with_args = plan(Path::new("/p"), &app, "demoDebug", &TestRequest { arguments: vec![("size".into(), "small".into()), ("note".into(), "a b".into())], ..request.clone() });
         assert_eq!(with_args.args[2..], ["-Pandroid.testInstrumentationRunnerArguments.size=small", "-Pandroid.testInstrumentationRunnerArguments.note=a b"]);
+        let debugged = plan(Path::new("/p"), &app, "demoDebug", &TestRequest { debug_port: Some(0), device: Some("emulator-5554".into()), ..request.clone() });
+        assert_eq!(debugged.args[2..], ["-Pandroid.testInstrumentationRunnerArguments.debug=true"]);
+        assert_eq!(debugged.env, [("ANDROID_SERIAL".to_owned(), "emulator-5554".to_owned())]);
+        assert!(p.env.is_empty());
         let core = ModuleInfo { path: ":".into(), dir: "/p".into(), kind: ModuleType::Jvm, variants: vec![] };
-        let mut all = TestRequest { kind: TestKind::Unit, filters: vec![], name: "All".into(), debug_port: None, coverage: false, arguments: Vec::new() };
+        let mut all = TestRequest { kind: TestKind::Unit, filters: vec![], name: "All".into(), debug_port: None, coverage: false, arguments: Vec::new(), device: None };
         assert_eq!(plan(Path::new("/p"), &core, "debug", &all).args, [":test"]);
         all.debug_port = Some(5005);
         assert_eq!(plan(Path::new("/p"), &core, "debug", &all).args, [":test", "-Pjunction.debugPort=5005"]);
