@@ -143,7 +143,8 @@ impl TestRunner for GradleTests {
             .arg(&script)
             // The init script's listeners can't be cached.
             .arg("-Dorg.gradle.configuration-cache=false")
-            .args(&plan.args);
+            .args(&plan.args)
+            .envs(plan.env.iter().map(|(k, v)| (k, v)));
         let mut dispatch = |l: &str| match parse_line(l) {
             Parsed::Events(events) => events.into_iter().for_each(&mut *event),
             Parsed::Lines(lines) => lines.iter().for_each(|l| line(l.as_str())),

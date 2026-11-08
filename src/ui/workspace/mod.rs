@@ -464,8 +464,16 @@ impl Workspace {
                 Some(root.join(file))
             });
             let weak = code_index.downgrade();
+            let toolbar = run.downgrade();
+            let devices = device_manager.clone();
+            let device: crate::ui::debug_service::DeviceProvider = Rc::new(move |cx| {
+                let device = toolbar.upgrade()?.read(cx).device(cx)?;
+                let serial = device.serial.filter(|_| device.online)?;
+                Some((devices.read(cx).adb()?, serial))
+            });
             debug.update(cx, |d, _| {
                 d.set_resolver(resolver);
+                d.device = Some(device);
                 d.code_index = Some(weak);
             });
         }

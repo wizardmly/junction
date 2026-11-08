@@ -54,7 +54,7 @@ mod tests {
     }
 
     fn plan() -> TestPlan {
-        TestPlan { build_root: PathBuf::from("/p"), args: vec![":app:testDebugUnitTest".into()], report_dir: PathBuf::from("/p/app/build/test-results/testDebugUnitTest"), coverage_report: None }
+        TestPlan { build_root: PathBuf::from("/p"), args: vec![":app:testDebugUnitTest".into()], report_dir: PathBuf::from("/p/app/build/test-results/testDebugUnitTest"), coverage_report: None, env: Vec::new() }
     }
 
     fn started(name: &str) -> TestEvent {
