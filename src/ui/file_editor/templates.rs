@@ -8,7 +8,7 @@
 use gpui_kit::{Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div, prelude::FluentBuilder as _, px};
 
 use super::FileEditor;
-use crate::domain::live_templates::{choice_variables, completion_variables, descendant_bases, descendant_choices, expand, expand_around, find, resolved, shortened, subtype_variables, Expansion, Session, Template};
+use crate::domain::live_templates::{annotation_names, choice_variables, completion_variables, descendant_bases, descendant_choices, expand, expand_around, find, resolved, shortened, subtype_variables, Expansion, Session, Template};
 use crate::theme::ActivePalette as _;
 
 pub(super) struct TemplateState {
@@ -78,6 +78,8 @@ impl FileEditor {
         let mut scope = self.template_scope(lang, &text, start, cx);
         // `descendantClassesEnum("Base")`: Base's subclasses, from the index.
         scope.descendants = descendant_bases(&template).into_iter().map(|base| (base.to_owned(), self.subclass_names(base, cx))).collect();
+        // `annotated("pkg.Annotation")`: what carries it in the project.
+        scope.annotated = annotation_names(&template).into_iter().map(|a| (a.to_owned(), self.annotated_names(a, cx))).collect();
         let choices: Vec<(String, Vec<String>)> = choices.into_iter().chain(descendant_choices(&template, &scope)).collect();
         let template = resolved(&template, &scope);
         let complete: Vec<String> = completion_variables(&template).into_iter().map(str::to_owned).collect();
@@ -98,6 +100,37 @@ impl FileEditor {
         }
         self.complete_if_asked(window, cx);
         true
+    }
+
+    /// The project's classes (qualified) and members carrying an
+    /// annotation, from its Java and Kotlin sources (at most 50).
+    fn annotated_names(&self, annotation: &str, cx: &mut Context<Self>) -> Vec<String> {
+        const LIMIT: usize = 50;
+        let Some(index) = self.code_index.as_ref() else { return Vec::new() };
+        let Some(root) = index.read(cx).root().map(|r| r.to_path_buf()) else { return Vec::new() };
+        let store = index.read(cx).index.clone();
+        let Ok(store) = store.read() else { return Vec::new() };
+        let mut out = Vec::new();
+        for path in store.files.keys().filter(|p| !crate::index::store::ProjectIndex::is_external(p)) {
+            let lang = if path.ends_with(".java") {
+                crate::index::lang::Lang::Java
+            } else if path.ends_with(".kt") {
+                crate::index::lang::Lang::Kotlin
+            } else {
+                continue;
+            };
+            let Ok(text) = std::fs::read_to_string(root.join(path)) else { continue };
+            for name in crate::index::annotated::annotated_declarations(lang, &text, annotation) {
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+            if out.len() >= LIMIT {
+                out.truncate(LIMIT);
+                break;
+            }
+        }
+        out
     }
 
     /// What the code at `offset` declares, with the file's name, package,
