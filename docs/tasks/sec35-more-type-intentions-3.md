@@ -2,11 +2,11 @@
 id: sec35-more-type-intentions-3
 title: Alt+Enter 更多需要类型的意图（第三批：lambda 转匿名类、filterIsInstance 等）
 features: 第 35 节
-status: open
-owner:
-branch:
+status: claimed
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec35-more-type-intentions-3
 pr:
-claimed:
+claimed: 2026-11-08
 files: src/index/lambdas.rs, src/index/intentions.rs, src/domain/intentions.rs
 ---
 
