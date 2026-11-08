@@ -8,7 +8,7 @@
 use gpui_kit::{Context, InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div, prelude::FluentBuilder as _, px};
 
 use super::FileEditor;
-use crate::domain::live_templates::{choice_variables, expand, expand_around, find, resolved, shortened, subtype_variables, Expansion, Session, Template};
+use crate::domain::live_templates::{choice_variables, completion_variables, descendant_bases, descendant_choices, expand, expand_around, find, resolved, shortened, subtype_variables, Expansion, Session, Template};
 use crate::theme::ActivePalette as _;
 
 pub(super) struct TemplateState {
@@ -19,6 +19,8 @@ pub(super) struct TemplateState {
     syncing: bool,
     /// Each variable's lookup: the values to pick from (none for most).
     lookups: Vec<Vec<String>>,
+    /// Each variable opens code completion when reached (`complete()`).
+    complete: Vec<bool>,
 }
 
 impl FileEditor {
@@ -38,6 +40,9 @@ impl FileEditor {
                     self.template = None;
                 }
                 self.state.update(cx, |state, cx| state.set_selected_range(range, cx));
+                if !done {
+                    self.complete_if_asked(window, cx);
+                }
                 cx.notify();
                 return true;
             }
@@ -70,7 +75,12 @@ impl FileEditor {
         // Its computed variables from the code here, its qualified names
         // shortened (imported).
         let choices = choice_variables(&template);
-        let template = resolved(&template, &self.template_scope(lang, &text, start, cx));
+        let mut scope = self.template_scope(lang, &text, start, cx);
+        // `descendantClassesEnum("Base")`: Base's subclasses, from the index.
+        scope.descendants = descendant_bases(&template).into_iter().map(|base| (base.to_owned(), self.subclass_names(base, cx))).collect();
+        let choices: Vec<(String, Vec<String>)> = choices.into_iter().chain(descendant_choices(&template, &scope)).collect();
+        let template = resolved(&template, &scope);
+        let complete: Vec<String> = completion_variables(&template).into_iter().map(str::to_owned).collect();
         let (template, imports) = shortened(&template);
         // `subtypes(…)`: the type and its subclasses to pick from; `enum(…)`: its values.
         let subtypes: Vec<(String, Vec<String>)> = subtype_variables(&template)
@@ -83,6 +93,10 @@ impl FileEditor {
         let expansion = expand(&template, &indent, &crate::domain::surround::indent_unit(&text));
         let lookups = expansion.names.iter().map(|n| subtypes.iter().find(|(v, _)| v == n).map(|(_, l)| l.clone()).unwrap_or_default()).collect();
         self.insert_template(start..cursor, expansion.text.clone(), 0, &expansion, imports, lookups, window, cx);
+        if let Some(t) = &mut self.template {
+            t.complete = expansion.names.iter().map(|n| complete.contains(n)).collect();
+        }
+        self.complete_if_asked(window, cx);
         true
     }
 
@@ -94,6 +108,10 @@ impl FileEditor {
         scope.package = crate::domain::imports::header(text).package;
         scope.line = text[..offset.min(text.len())].matches('\n').count() + 1;
         scope.clipboard = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+        let absolute = self.absolute_path();
+        let root = self.code_index.as_ref().and_then(|i| i.read(cx).root().map(std::path::Path::to_path_buf)).unwrap_or_else(|| self.repository.root().to_path_buf());
+        scope.file_path = absolute.to_string_lossy().into_owned();
+        scope.relative_path = absolute.strip_prefix(&root).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
         scope
     }
 
@@ -144,9 +162,18 @@ impl FileEditor {
     /// (Up / Down, or a click), as IntelliJ's template lookups.
     pub(super) fn start_template_with_lookup(&mut self, session: Session, lookups: Vec<Vec<String>>, cx: &mut Context<Self>) {
         let text = self.state.read(cx).value().to_string();
-        self.template = (!session.stops.is_empty()).then_some(TemplateState { session, text, syncing: false, lookups });
+        self.template = (!session.stops.is_empty()).then_some(TemplateState { session, text, syncing: false, lookups, complete: Vec::new() });
         self.in_place = None;
         cx.notify();
+    }
+
+    /// The current variable is a `complete()` one: opens code completion
+    /// there, as IntelliJ's CompleteMacro does.
+    fn complete_if_asked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let asked = self.template.as_ref().is_some_and(|t| t.complete.get(t.session.current).copied().unwrap_or(false));
+        if asked {
+            self.state.update(cx, |state, cx| state.trigger_completion(window, cx));
+        }
     }
 
     /// The current variable's lookup, if it has one to pick from.

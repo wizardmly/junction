@@ -922,6 +922,14 @@ pub fn template_scope(lang: Lang, text: &str, offset: usize, classes: super::cat
         Lang::Java => f.child_by_field_name("parameters"),
         _ => named(f).into_iter().find(|k| k.kind() == "function_value_parameters"),
     };
+    // The return type: Java's `type`, Kotlin's type after the parameters.
+    scope.return_type = match lang {
+        Lang::Java => f.child_by_field_name("type").map(t).unwrap_or_default(),
+        _ => {
+            let after = params.map_or(usize::MAX, |p| p.end_byte());
+            named(f).into_iter().find(|k| k.start_byte() >= after && k.kind().ends_with("type")).map(t).unwrap_or_default()
+        }
+    };
     for p in params.map(named).unwrap_or_default() {
         match (lang, p.kind()) {
             (Lang::Java, "formal_parameter" | "spread_parameter") => {
@@ -1071,12 +1079,14 @@ mod tests {
         assert_eq!(s.parameters, [("item".to_owned(), "String".to_owned()), ("count".to_owned(), "int".to_owned())]);
         assert_eq!(s.variables, [("names".to_owned(), "List<String>".to_owned()), ("i".to_owned(), "int".to_owned())]);
         assert_eq!(s.fields.len(), 2);
+        assert_eq!(s.return_type, "void");
         let kt = "class Cart(val items: List<Item>) {\n    fun total(tax: Double): Double {\n        val names = listOf(\"a\")\n        if (tax > 0) {\n            val hidden = 1\n        }\n        soutp\n    }\n}\n";
         let s = template_scope(Lang::Kotlin, kt, kt.find("soutp").unwrap(), &none);
         assert_eq!((s.class_name.as_str(), s.method_name.as_str()), ("Cart", "total"));
         assert_eq!(s.parameters, [("tax".to_owned(), "Double".to_owned())]);
         assert_eq!(s.variables, [("names".to_owned(), "List".to_owned())]);
         assert_eq!(s.fields, [("items".to_owned(), "List<Item>".to_owned())]);
+        assert_eq!(s.return_type, "Double");
         // Typed from the declarations of what they're initialized from;
         // what the place expects.
         let repo = "package app;\n\npublic class Repo {\n    public java.util.List<String> names() { return null; }\n}\n";
