@@ -290,6 +290,32 @@ pub struct LaunchOptions {
     /// Before launch: what runs, in order, before the APK is installed.
     #[serde(default = "make_only", skip_serializing_if = "is_make_only")]
     pub before_launch: Vec<BeforeLaunch>,
+    /// Deployment Target Options › Target.
+    #[serde(default, skip_serializing_if = "DeployTarget::is_toolbar")]
+    pub target: DeployTarget,
+}
+
+/// Deployment Target Options › Target, as Android Studio has it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DeployTarget {
+    /// "Use the device/snapshot drop down": the toolbar's device (or the
+    /// ones Select Multiple Devices… picked).
+    #[default]
+    Toolbar,
+    /// "Specific devices": these, by Device Manager id (a serial, or a
+    /// virtual device's name), whatever the toolbar picks.
+    Specific(Vec<String>),
+}
+
+impl DeployTarget {
+    pub fn is_toolbar(&self) -> bool {
+        *self == DeployTarget::Toolbar
+    }
+
+    /// Why OK can't save it: Specific devices with none checked.
+    pub fn problem(&self) -> Option<&'static str> {
+        matches!(self, DeployTarget::Specific(ids) if ids.is_empty()).then_some("No devices selected for the deployment target")
+    }
 }
 
 /// A Before launch task of a run configuration.
@@ -374,7 +400,7 @@ fn yes() -> bool {
 
 impl Default for LaunchOptions {
     fn default() -> Self {
-        Self { deploy: true, launch: LaunchTarget::DefaultActivity, flags: String::new(), show_logcat: false, clear_logcat: false, before_launch: make_only() }
+        Self { deploy: true, launch: LaunchTarget::DefaultActivity, flags: String::new(), show_logcat: false, clear_logcat: false, before_launch: make_only(), target: DeployTarget::Toolbar }
     }
 }
 
@@ -600,5 +626,17 @@ mod tests {
         let json = saved(config.options.clone());
         let read: SavedRunConfiguration = serde_json::from_str(&json).unwrap();
         assert_eq!(read.options.before_launch, config.options.before_launch);
+    }
+
+    #[test]
+    fn deployment_targets() {
+        let saved = |options: LaunchOptions| serde_json::to_string(&SavedRunConfiguration { name: "a".into(), module: ":app".into(), gradle: None, junit: None, options }).unwrap();
+        assert!(!saved(LaunchOptions::default()).contains("target"));
+        let specific = LaunchOptions { target: DeployTarget::Specific(vec!["emulator-5554".into(), "Pixel_7_API_34".into()]), ..Default::default() };
+        let read: SavedRunConfiguration = serde_json::from_str(&saved(specific.clone())).unwrap();
+        assert_eq!(read.options.target, specific.target);
+        assert_eq!(DeployTarget::Specific(Vec::new()).problem(), Some("No devices selected for the deployment target"));
+        assert_eq!(specific.target.problem(), None);
+        assert_eq!(DeployTarget::Toolbar.problem(), None);
     }
 }

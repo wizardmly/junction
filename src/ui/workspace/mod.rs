@@ -467,7 +467,7 @@ impl Workspace {
             let toolbar = run.downgrade();
             let devices = device_manager.clone();
             let device: crate::ui::debug_service::DeviceProvider = Rc::new(move |cx| {
-                let device = toolbar.upgrade()?.read(cx).device(cx)?;
+                let device = toolbar.upgrade()?.read(cx).debug_device(cx)?;
                 let serial = device.serial.filter(|_| device.online)?;
                 Some((devices.read(cx).adb()?, serial))
             });
