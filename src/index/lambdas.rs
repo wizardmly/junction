@@ -91,14 +91,14 @@ fn functional_in(source: &str, simple: &str) -> Option<bool> {
 }
 
 /// The indent of the line `at` is on.
-fn line_indent(text: &str, at: usize) -> &str {
+pub(super) fn line_indent(text: &str, at: usize) -> &str {
     let line = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let rest = &text[line..];
     &rest[..rest.len() - rest.trim_start_matches([' ', '\t']).len()]
 }
 
 /// A block's text moved from a line indented `from` to one indented `to`.
-fn reindent(block: &str, from: &str, to: &str) -> String {
+pub(super) fn reindent(block: &str, from: &str, to: &str) -> String {
     block
         .split('\n')
         .enumerate()
@@ -422,7 +422,7 @@ fn member_access(node: Node, text: &str) -> Option<(String, String)> {
 }
 
 /// What a collection, array or sequence of this type holds.
-fn collection_element(ty: &str) -> Option<String> {
+pub(super) fn collection_element(ty: &str) -> Option<String> {
     let ty = ty.trim_end_matches('?');
     let open = ty.find('<')?;
     let head = ty[..open].rsplit('.').next()?;

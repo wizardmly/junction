@@ -155,6 +155,7 @@ impl FileEditor {
                     crate::index::lambdas::anonymous_to_lambda(&text, cursor, &classes),
                     crate::index::lambdas::lambda_to_method_reference(&text, cursor),
                     crate::index::lambdas::method_reference_to_lambda(&text, cursor, &classes),
+                    crate::index::lambda_to_anonymous::lambda_to_anonymous(&text, cursor, &classes),
                 ];
                 for intention in typed.into_iter().flatten().filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));
@@ -190,10 +191,14 @@ impl FileEditor {
                     crate::index::intentions::deprecated_call(&text, cursor, &classes),
                     crate::index::lambdas::lambda_to_reference(&text, cursor, &classes),
                     crate::index::lambdas::reference_to_lambda(&text, cursor, &classes),
-                    crate::index::scope_functions::to_receiver(&text, cursor),
                     crate::index::scope_functions::to_parameter(&text, cursor, &classes),
+                    crate::index::scope_functions::with_and_run(&text, cursor),
+                    crate::index::simplifiable_call::simplify_call(&text, cursor, &classes),
+                    crate::index::lambda_signature::specify_signature(&text, cursor, &classes),
+                    crate::index::lambda_signature::remove_parameter_types(&text, cursor),
                 ];
-                for intention in typed.into_iter().flatten().filter(on) {
+                let receivers = crate::index::scope_functions::to_receiver(&text, cursor);
+                for intention in typed.into_iter().flatten().chain(receivers).filter(on) {
                     items.push((intention.range.clone(), Choice::Intention(intention)));
                 }
                 if settings.intention_on(true, "Add names to call arguments") {

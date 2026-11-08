@@ -78,8 +78,11 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Kotlin", "Insert curly braces around variable", "Writes \"$name\" in a string template as \"${name}\""),
     ("Kotlin", "Convert lambda to reference", "Writes xs.map { it.name } as xs.map(User::name) when the element type is known, and { x -> show(x) } as ::show"),
     ("Kotlin", "Convert reference to lambda", "Writes xs.map(User::name) as xs.map { it.name }, and ::show as { show(it) }"),
-    ("Kotlin", "Convert scope function to receiver", "Convert to 'run' / 'apply': writes u.let { it.greet(it.name) } as u.run { greet(name) } and u.also { it.age = 3 } as u.apply { age = 3 }"),
-    ("Kotlin", "Convert scope function to parameter", "Convert to 'let' / 'also': writes u.run { greet(name) } as u.let { it.greet(it.name) } when the receiver's class is known"),
+    ("Kotlin", "Convert scope function to receiver", "Convert to 'run' / 'apply' / 'with': writes u.let { it.greet(it.name) } as u.run { greet(name) } or with(u) { greet(name) }, u.also { it.age = 3 } as u.apply { age = 3 }, and u.run { … } and with(u) { … } as each other"),
+    ("Kotlin", "Convert scope function to parameter", "Convert to 'let' / 'also': writes u.run { greet(name) } or with(u) { greet(name) } as u.let { it.greet(it.name) } when the receiver's class is known"),
+    ("Kotlin", "Simplify library function call", "Writes xs.filter { it is T } and xs.mapNotNull { it as? T } as xs.filterIsInstance<T>(), xs.filter { it != null } as xs.filterNotNull() and xs.flatMap { it } as xs.flatten()"),
+    ("Kotlin", "Specify explicit lambda signature", "Writes xs.map { it.name } as xs.map { it: User -> it.name } when the collection's element type is known"),
+    ("Kotlin", "Remove explicit lambda parameter types (may break code)", "Writes { a: Int, b: String -> … } as { a, b -> … }"),
     ("Kotlin", "Replace with 'isNullOrEmpty()'", "Writes s == null || s.isEmpty() as s.isNullOrEmpty(), s != null && s.isNotEmpty() as !s.isNullOrEmpty(), and isBlank likewise"),
     ("Java", "Add braces to statement", "Adds braces to an if, else, for or while statement without them"),
     ("Java", "Remove braces from statement", "Removes the braces around a single-statement body"),
@@ -93,6 +96,7 @@ pub const FAMILIES: &[(&str, &str, &str)] = &[
     ("Java", "Replace '==' with 'equals()'", "Compares strings with equals() instead of == or !="),
     ("Java", "Remove redundant 'String.valueOf()' call", "Drops String.valueOf() around a String, or around a value added to a string"),
     ("Java", "Replace with lambda", "Writes an anonymous class of a functional interface as a lambda"),
+    ("Java", "Replace lambda with anonymous class", "Writes Function<String, Integer> f = s -> s.length() with new Function<String, Integer>() { … } when the declared type's interface is known"),
     ("Java", "Replace lambda with method reference", "Writes s -> System.out.println(s) as System.out::println, x -> foo(x) as this::foo and x -> new Item(x) as Item::new"),
     ("Java", "Replace method reference with lambda", "Writes System.out::println as x -> System.out.println(x), Item::new as name -> new Item(name) and String::trim as s -> s.trim()"),
     ("Java", "Remove redundant 'toString()' call", "Drops toString() called on a String"),
@@ -107,7 +111,7 @@ pub fn family(title: &str) -> &str {
         "Replace with 'putIfAbsent' or 'computeIfAbsent' method call"
     } else if title.starts_with("Lift return out of '") || title.starts_with("Lift assignment out of '") {
         "Lift return or assignment out of 'if' / 'when'"
-    } else if title == "Convert to 'run'" || title == "Convert to 'apply'" {
+    } else if title == "Convert to 'run'" || title == "Convert to 'apply'" || title == "Convert to 'with'" {
         "Convert scope function to receiver"
     } else if title == "Convert to 'let'" || title == "Convert to 'also'" {
         "Convert scope function to parameter"
@@ -135,6 +139,8 @@ pub fn family(title: &str) -> &str {
         "Replace 'count' with 'size'"
     } else if ["lowercase()", "uppercase()", "lowercaseChar()", "uppercaseChar()", "code"].iter().any(|r| title == format!("Replace with '{r}'")) {
         "Replace deprecated call"
+    } else if title.starts_with("Convert '") && title.contains("' call to '") {
+        "Simplify library function call"
     } else if title.starts_with("Merge call chain to '") {
         "Merge call chain"
     } else if title.starts_with("Iterate over '") {
@@ -473,6 +479,9 @@ mod tests {
         assert_eq!(family("Remove braces from 'for' statement"), "Remove braces from statement");
         assert_eq!(family("Put parameters on one line"), "Put parameters on one line");
         for title in ["Convert to block body", "Put arguments on separate lines", "Specify type explicitly", "Add names to call arguments"] {
+            assert!(FAMILIES.iter().any(|(l, f, _)| *l == "Kotlin" && *f == family(title)), "{title}");
+        }
+        for title in ["Convert 'filter' call to 'filterIsInstance<String>()'", "Convert to 'with'", "Specify explicit lambda signature", "Remove explicit lambda parameter types (may break code)"] {
             assert!(FAMILIES.iter().any(|(l, f, _)| *l == "Kotlin" && *f == family(title)), "{title}");
         }
         assert_eq!(family_key(false, "Add braces to statement"), "Java/Add braces to statement");

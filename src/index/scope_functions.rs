@@ -13,31 +13,69 @@ use super::lang::Lang;
 use super::symbols;
 use crate::domain::intentions::Intention;
 
-/// The scope function call around the caret, on its name: the call, the
-/// function's name node, the receiver expression and the lambda.
-fn scope_call<'t>(root: Node<'t>, text: &str, caret: usize, names: &[&str]) -> Option<(Node<'t>, Node<'t>, Node<'t>, Node<'t>)> {
+/// A scope function call: `x.let { … }` (or `x?.let`) or `with(x) { … }`.
+struct ScopeCall<'t> {
+    call: Node<'t>,
+    /// The function's name.
+    name: Node<'t>,
+    receiver: Node<'t>,
+    lambda: Node<'t>,
+    /// `with(x) { … }`; its value arguments end at `head_end`.
+    with: bool,
+    head_end: usize,
+    /// `x?.let`.
+    safe: bool,
+}
+
+/// The scope function call around the caret, on its name.
+fn scope_call<'t>(root: Node<'t>, text: &str, caret: usize, names: &[&str]) -> Option<ScopeCall<'t>> {
     let mut node = root.descendant_for_byte_range(caret, caret)?;
     loop {
         if node.kind() == "call_expression" {
             let parts = named(node);
-            if let [callee, suffix] = parts[..]
-                && callee.kind() == "navigation_expression"
-            {
-                let name = callee.named_child(1).and_then(|s| named(s).into_iter().find(|c| c.kind() == "simple_identifier"));
-                if let Some(name) = name
-                    && names.contains(&&text[name.byte_range()])
-                    // On the function's name.
-                    && name.start_byte() <= caret
-                    && caret <= name.end_byte()
-                {
-                    let suffix_parts = named(suffix);
-                    let [annotated] = suffix_parts[..] else { return None };
-                    let lambda = named(annotated).into_iter().find(|c| c.kind() == "lambda_literal")?;
-                    return Some((node, name, callee.named_child(0)?, lambda));
+            if let [callee, suffix] = parts[..] {
+                let lambda_of = |suffix: Node<'t>| named(suffix).into_iter().find(|c| c.kind() == "annotated_lambda").and_then(|a| named(a).into_iter().find(|c| c.kind() == "lambda_literal"));
+                let on = |name: Node| name.start_byte() <= caret && caret <= name.end_byte() && names.contains(&&text[name.byte_range()]);
+                if callee.kind() == "navigation_expression" {
+                    let navigation = callee.named_child(1);
+                    let name = navigation.and_then(|s| named(s).into_iter().find(|c| c.kind() == "simple_identifier"));
+                    if let Some(name) = name
+                        && on(name)
+                    {
+                        // Only a trailing lambda: `x.let { … }`.
+                        let suffix_parts = named(suffix);
+                        let [annotated] = suffix_parts[..] else { return None };
+                        let lambda = named(annotated).into_iter().find(|c| c.kind() == "lambda_literal")?;
+                        let safe = navigation.is_some_and(|n| text[n.byte_range()].trim_start().starts_with("?."));
+                        return Some(ScopeCall { call: node, name, receiver: callee.named_child(0)?, lambda, with: false, head_end: name.end_byte(), safe });
+                    }
+                } else if callee.kind() == "simple_identifier" && on(callee) && &text[callee.byte_range()] == "with" {
+                    // `with(x) { … }`: one argument, then the lambda.
+                    let arguments = named(suffix).into_iter().find(|c| c.kind() == "value_arguments")?;
+                    let [argument] = named(arguments)[..] else { return None };
+                    let [receiver] = named(argument)[..] else { return None };
+                    let lambda = lambda_of(suffix)?;
+                    return Some(ScopeCall { call: node, name: callee, receiver, lambda, with: true, head_end: arguments.end_byte(), safe: false });
                 }
             }
         }
         node = node.parent()?;
+    }
+}
+
+/// The edit that renames the call to `target`, switching between
+/// `x.f { … }` and `with(x) { … }` as needed. `None` for `x?.let` → `with`.
+fn head(text: &str, c: &ScopeCall, target: &str) -> Option<(std::ops::Range<usize>, String)> {
+    let receiver = &text[c.receiver.byte_range()];
+    match (c.with, target == "with") {
+        (false, false) => Some((c.name.byte_range(), target.to_owned())),
+        (false, true) => (!c.safe).then(|| (c.call.start_byte()..c.head_end, format!("with({receiver})"))),
+        (true, _) => {
+            // `with(a + b)` → `(a + b).run`.
+            let simple = matches!(c.receiver.kind(), "simple_identifier" | "navigation_expression" | "call_expression" | "this_expression" | "parenthesized_expression" | "string_literal" | "indexing_expression");
+            let receiver = if simple { receiver.to_owned() } else { format!("({receiver})") };
+            Some((c.call.start_byte()..c.head_end, format!("{receiver}.{target}")))
+        }
     }
 }
 
@@ -76,11 +114,25 @@ fn names_around(node: Node, text: &str) -> Vec<String> {
 /// `x.apply { a = 1 }`; `it` alone becomes `this`, and a member whose name
 /// a local around also has keeps `this.`. Not when the lambda already uses
 /// `this` (it would change meaning) or a nested lambda uses the parameter.
-pub fn to_receiver(text: &str, caret: usize) -> Option<Intention> {
-    let tree = symbols::parse(Lang::Kotlin, text)?;
-    let (_, name, _, lambda) = scope_call(tree.root_node(), text, caret, &["let", "also"])?;
-    let function = &text[name.byte_range()];
-    let target = if function == "let" { "run" } else { "apply" };
+/// `let` also converts to `with(x) { … }` (Convert to 'with').
+pub fn to_receiver(text: &str, caret: usize) -> Vec<Intention> {
+    let Some(tree) = symbols::parse(Lang::Kotlin, text) else { return Vec::new() };
+    let Some(call) = scope_call(tree.root_node(), text, caret, &["let", "also"]) else { return Vec::new() };
+    let Some(edits) = receiver_body(text, call.lambda) else { return Vec::new() };
+    let targets: &[&str] = if &text[call.name.byte_range()] == "let" { &["run", "with"] } else { &["apply"] };
+    targets
+        .iter()
+        .filter_map(|target| {
+            let mut edits = edits.clone();
+            edits.push(head(text, &call, target)?);
+            Some(combined(text, edits, &format!("Convert to '{target}'"), call.name.start_byte()))
+        })
+        .collect()
+}
+
+/// The lambda's edits for [`to_receiver`]: its parameter becomes the
+/// implicit receiver.
+fn receiver_body(text: &str, lambda: Node) -> Option<Vec<(std::ops::Range<usize>, String)>> {
     let parts = named(lambda);
     let parameters = parts.iter().find(|c| c.kind() == "lambda_parameters");
     let param = match parameters {
@@ -135,8 +187,16 @@ pub fn to_receiver(text: &str, caret: usize) -> Option<Intention> {
         let end = arrow + text[arrow..].len() - text[arrow..].trim_start_matches([' ', '\t']).len();
         edits.push((p.start_byte()..end, String::new()));
     }
-    edits.push((name.byte_range(), target.to_owned()));
-    Some(combined(text, edits, &format!("Convert to '{target}'"), name.start_byte()))
+    Some(edits)
+}
+
+/// Convert to 'with' / Convert to 'run' (IntelliJ's ConvertScopeFunctionToReceiver
+/// between the two receiver forms): `x.run { … }` ↔ `with(x) { … }`.
+pub fn with_and_run(text: &str, caret: usize) -> Option<Intention> {
+    let tree = symbols::parse(Lang::Kotlin, text)?;
+    let call = scope_call(tree.root_node(), text, caret, &["run", "with"])?;
+    let target = if call.with { "run" } else { "with" };
+    Some(combined(text, vec![head(text, &call, target)?], &format!("Convert to '{target}'"), call.name.start_byte()))
 }
 
 /// The members a Kotlin class declares (properties, functions, the
@@ -178,9 +238,9 @@ fn class_members(source: &str, class_name: &str) -> Option<Vec<String>> {
 /// receiver.
 pub fn to_parameter(text: &str, caret: usize, classes: Classes) -> Option<Intention> {
     let tree = symbols::parse(Lang::Kotlin, text)?;
-    let (_, name, receiver, lambda) = scope_call(tree.root_node(), text, caret, &["run", "apply"])?;
-    let function = &text[name.byte_range()];
-    let target = if function == "run" { "let" } else { "also" };
+    let call = scope_call(tree.root_node(), text, caret, &["run", "apply", "with"])?;
+    let (name, receiver, lambda) = (call.name, call.receiver, call.lambda);
+    let target = if &text[name.byte_range()] == "apply" { "also" } else { "let" };
     let parts = named(lambda);
     if parts.iter().any(|c| c.kind() == "lambda_parameters") {
         return None;
@@ -227,7 +287,7 @@ pub fn to_parameter(text: &str, caret: usize, classes: Classes) -> Option<Intent
             _ => {}
         }
     }
-    edits.push((name.byte_range(), target.to_owned()));
+    edits.push(head(text, &call, target)?);
     Some(combined(text, edits, &format!("Convert to '{target}'"), name.start_byte()))
 }
 
@@ -275,7 +335,7 @@ mod tests {
 
     #[test]
     fn let_and_also_to_receiver() {
-        let convert = |text: &str, at: &str| to_receiver(text, text.find(at).unwrap() + 1).map(|i| (i.title.clone(), apply(text, &i)));
+        let convert = |text: &str, at: &str| to_receiver(text, text.find(at).unwrap() + 1).first().map(|i| (i.title.clone(), apply(text, i)));
         let text = "fun f(u: User) = u.let { it.greet(it.name) }";
         assert_eq!(convert(text, "let").unwrap(), ("Convert to 'run'".to_owned(), "fun f(u: User) = u.run { greet(name) }".to_owned()));
         let text = "fun f(u: User) = u.also { it.age = 3; log(it) }";
@@ -291,6 +351,30 @@ mod tests {
         assert_eq!(convert("fun f(u: User) = u.let { it.x() }", "{ it"), None);
         let text = "fun f(u: User) = u.let { log(\"$it\") }";
         assert_eq!(convert(text, "let").unwrap().1, "fun f(u: User) = u.run { log(\"$this\") }");
+    }
+
+    #[test]
+    fn with_forms() {
+        // `let` also offers `with`; `?.let` doesn't.
+        let text = "fun f(u: User) = u.let { \"User ${it.name}\" }";
+        let all: Vec<(String, String)> = to_receiver(text, text.find("let").unwrap() + 1).iter().map(|i| (i.title.clone(), apply(text, i))).collect();
+        assert_eq!(all[1], ("Convert to 'with'".to_owned(), "fun f(u: User) = with(u) { \"User ${name}\" }".to_owned()));
+        let text = "fun f(u: User?) = u?.let { it.name }";
+        assert_eq!(to_receiver(text, text.find("let").unwrap() + 1).len(), 1);
+        // `run` ↔ `with`.
+        let swap = |text: &str, at: &str| with_and_run(text, text.find(at).unwrap() + 1).map(|i| (i.title.clone(), apply(text, &i)));
+        let text = "fun f(u: User) = u.run { greet(name) }";
+        assert_eq!(swap(text, "run").unwrap(), ("Convert to 'with'".to_owned(), "fun f(u: User) = with(u) { greet(name) }".to_owned()));
+        let text = "fun f(u: User) = with(u) { greet(name) }";
+        assert_eq!(swap(text, "with").unwrap(), ("Convert to 'run'".to_owned(), "fun f(u: User) = u.run { greet(name) }".to_owned()));
+        let text = "fun f(a: Int, b: Int) = with(a + b) { toString() }";
+        assert_eq!(swap(text, "with").unwrap().1, "fun f(a: Int, b: Int) = (a + b).run { toString() }");
+        assert_eq!(swap("fun f(u: User?) = u?.run { name }", "run"), None);
+        // `with` → `let`.
+        let classes = |n: &str| if n == "User" { vec!["class User(val name: String)".to_owned()] } else { Vec::new() };
+        let text = "fun f(u: User) = with(u) { name.length }";
+        let i = to_parameter(text, text.find("with").unwrap() + 1, &classes).unwrap();
+        assert_eq!((i.title.as_str(), apply(text, &i).as_str()), ("Convert to 'let'", "fun f(u: User) = u.let { it.name.length }"));
     }
 
     #[test]
