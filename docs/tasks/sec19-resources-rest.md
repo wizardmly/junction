@@ -2,11 +2,11 @@
 id: sec19-resources-rest
 title: Android 资源：字符串折叠、框架资源 Find Usages、取色器选资源
 features: 第 19 节
-status: open
-owner:
-branch:
+status: claimed
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec19-resources-rest
 pr:
-claimed:
+claimed: 2026-11-08
 files: src/domain/android_resources.rs, src/ui/file_editor/previews.rs, src/ui/file_editor.rs
 ---
 
