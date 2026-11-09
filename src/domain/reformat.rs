@@ -695,6 +695,74 @@ pub struct IndentStyle {
     pub min_blank: MinBlankLines,
     /// Java's and Kotlin's (Groovy's are IntelliJ's defaults).
     pub spaces: Spaces,
+    /// Wrapping and Braces (`None`: the language's defaults).
+    pub wrapping: Option<Wrapping>,
+}
+
+/// Code Style › Wrapping and Braces: how a long construct wraps.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Wrap {
+    DoNotWrap,
+    /// As many items on a line as fit.
+    WrapIfLong,
+    /// One item a line when the construct is long.
+    ChopIfLong,
+}
+
+impl Wrap {
+    pub const LABELS: [&'static str; 3] = ["Do not wrap", "Wrap if long", "Chop down if long"];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn from_index(i: usize) -> Option<Self> {
+        [Wrap::DoNotWrap, Wrap::WrapIfLong, Wrap::ChopIfLong].get(i).copied()
+    }
+}
+
+/// The Wrapping and Braces options Reformat Code applies past the right
+/// margin (IntelliJ's CALL_PARAMETERS_WRAP, METHOD_PARAMETERS_WRAP,
+/// METHOD_CALL_CHAIN_WRAP, EXTENDS_LIST_WRAP, ASSIGNMENT_WRAP).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Wrapping {
+    pub call_args: Wrap,
+    pub params: Wrap,
+    pub chain: Wrap,
+    /// Kotlin's supertype list (Java's isn't wrapped).
+    pub extends: Wrap,
+    /// Assignments, initializers and Kotlin's expression bodies.
+    pub assignment: Wrap,
+}
+
+impl Wrapping {
+    /// IntelliJ's Java defaults: nothing wraps.
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap };
+    /// Kotlin's official style.
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong };
+
+    pub fn values(&self) -> [Wrap; 5] {
+        [self.call_args, self.params, self.chain, self.extends, self.assignment]
+    }
+
+    pub fn from_values(v: [Wrap; 5]) -> Self {
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4] }
+    }
+
+    fn any(&self) -> bool {
+        self.values().iter().any(|w| *w != Wrap::DoNotWrap)
+    }
+}
+
+/// What long lines are wrapped with.
+struct Wrapper<'a> {
+    kotlin: bool,
+    /// One indent, and Java's continuation (Kotlin's is the indent).
+    unit: &'a str,
+    cont: String,
+    margin: usize,
+    w: Wrapping,
+    tabs: bool,
 }
 
 /// The reformatted text. `only`: the 0-based lines to change (a
@@ -933,8 +1001,14 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             }
         }
     }
-    if kotlin {
-        out = chop_long_lines(out, choppable, &unit, indents.right_margin.unwrap_or(RIGHT_MARGIN));
+    let wrapping = match flavor {
+        Flavor::Groovy => None,
+        Flavor::Kotlin => Some(indents.wrapping.unwrap_or(Wrapping::KOTLIN)),
+        Flavor::Java => Some(indents.wrapping.unwrap_or(Wrapping::JAVA)),
+    };
+    if let Some(w) = wrapping.filter(Wrapping::any) {
+        let wrapper = Wrapper { kotlin, unit: &unit, cont: pad(cont), margin: indents.right_margin.unwrap_or(RIGHT_MARGIN), w, tabs };
+        out = chop_long_lines(out, choppable, &wrapper);
     }
     out.join("\n")
 }
@@ -947,11 +1021,11 @@ pub const RIGHT_MARGIN: usize = 120;
 /// METHOD_PARAMETERS_WRAP "chop down if long", `(` and `)` on their own
 /// lines, no trailing comma): the outermost such list first, then each
 /// line it makes that is still long.
-fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, unit: &str, margin: usize) -> Vec<String> {
+fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, wrapper: &Wrapper) -> Vec<String> {
     let mut out = Vec::with_capacity(lines.len());
     let mut todo: Vec<(String, bool)> = lines.into_iter().zip(choppable).rev().collect();
     while let Some((line, choppable)) = todo.pop() {
-        match choppable.then(|| chop(&line, unit, margin)).flatten() {
+        match choppable.then(|| chop(&line, wrapper)).flatten() {
             Some(parts) => todo.extend(parts.into_iter().rev().map(|p| (p, true))),
             None => out.push(line),
         }
@@ -965,13 +1039,29 @@ fn width(text: &str) -> usize {
 }
 
 /// A code line split at its outermost argument or parameter list whose
-/// last item ends past the margin; `None` when there is none.
-fn chop(line: &str, unit: &str, margin: usize) -> Option<Vec<String>> {
+/// last item ends past the margin (as the list's Wrapping option says);
+/// else at its supertypes, chained calls or assignment; `None` when
+/// nothing wraps.
+fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
+    let margin = wr.margin;
     if width(line) <= margin {
         return None;
     }
-    let info = scan(line, true).into_iter().next()?;
+    let info = scan(line, wr.kotlin).into_iter().next()?;
     let is_code = |i: usize| info.code.get(i).copied().unwrap_or(false);
+    let first_paren = info.brackets.iter().find(|(_, c)| *c == '(').map(|(at, _)| *at);
+    let java_declaration = !wr.kotlin && declaration_paren(line).is_some();
+    // Whether the list opened at `open` (`depth` brackets in) is a
+    // declaration's parameters.
+    let declares = |open: usize, depth: usize| {
+        if wr.kotlin {
+            let head = &line[..open];
+            depth == 0 && head.split_whitespace().any(|w| matches!(w, "fun" | "class" | "constructor" | "interface") || w.starts_with("fun<"))
+        } else {
+            java_declaration && Some(open) == first_paren
+        }
+    };
+    let mode = |open: usize, depth: usize| if declares(open, depth) { wr.w.params } else { wr.w.call_args };
     // (depth, open, close) of the list to chop.
     let mut best: Option<(usize, usize, usize)> = None;
     let mut stack: Vec<(usize, char)> = Vec::new();
@@ -984,8 +1074,10 @@ fn chop(line: &str, unit: &str, margin: usize) -> Option<Vec<String>> {
         let inner = &line[open + 1..at];
         let past = width(&line[..at]) > margin;
         let commented = info.comment[open..at].iter().any(|c| *c);
-        if opener == '(' && c == ')' && past && !inner.trim().is_empty() && !commented && is_call_or_declaration(&line[..open]) {
-            let depth = stack.len();
+        let depth = stack.len();
+        // Java keeps the first item after `(`: one item can't wrap.
+        let wraps = mode(open, depth) != Wrap::DoNotWrap && (wr.kotlin || list_items(line, open, at, &is_code).len() > 1);
+        if opener == '(' && c == ')' && past && wraps && !inner.trim().is_empty() && !commented && is_call_or_declaration(&line[..open]) {
             if best.is_none_or(|(d, o, _)| depth < d || depth == d && open < o) {
                 best = Some((depth, open, at));
             }
@@ -996,18 +1088,67 @@ fn chop(line: &str, unit: &str, margin: usize) -> Option<Vec<String>> {
     let declaration = || {
         let (open, close) = paren_pair(&info.brackets)?;
         let head = &line[..open];
-        let declares = head.split_whitespace().any(|w| matches!(w, "fun" | "class" | "constructor" | "interface") || w.starts_with("fun<"));
-        (declares && !line[open + 1..close].trim().is_empty() && width(head) < margin).then_some((0, open, close))
+        (wr.kotlin && wr.w.params != Wrap::DoNotWrap && declares(open, 0) && !line[open + 1..close].trim().is_empty() && width(head) < margin).then_some((0, open, close))
     };
-    if best.is_none() {
-        if let Some(parts) = supertype_break(line, &info, unit, margin) {
+    if best.is_none() && wr.kotlin && wr.w.extends != Wrap::DoNotWrap {
+        if let Some(parts) = supertype_break(line, &info, wr.unit, margin) {
             return Some(parts);
         }
     }
-    let Some((_, open, close)) = best.or_else(declaration) else {
-        return chain_break(line, &info, unit, margin);
+    let continuation = if wr.kotlin { wr.unit } else { wr.cont.as_str() };
+    let Some((depth, open, close)) = best.or_else(declaration) else {
+        let chain = (wr.w.chain != Wrap::DoNotWrap).then(|| chain_break(line, &info, continuation, margin)).flatten();
+        return chain.or_else(|| (wr.w.assignment != Wrap::DoNotWrap).then(|| assignment_break(line, &info, continuation, margin)).flatten());
     };
-    // The items: commas outside nested brackets, strings and `<…>`.
+    let items = list_items(line, open, close, &is_code);
+    let indent = &line[..line.len() - line.trim_start().len()];
+    let last = items.len() - 1;
+    let comma = |n: usize| if n < last { "," } else { "" };
+    let fill = |parts: &mut Vec<String>, mut current: String, rest: Vec<String>, prefix: &str| {
+        for item in rest {
+            let joined = format!("{current} {item}");
+            if current.trim().is_empty() {
+                current = format!("{current}{item}");
+            } else if width(&joined) > margin {
+                parts.push(current);
+                current = format!("{prefix}{item}");
+            } else {
+                current = joined;
+            }
+        }
+        parts.push(current);
+    };
+    if wr.kotlin {
+        // Kotlin's official style: `(` and `)` on their own lines.
+        let mut parts = vec![line[..=open].trim_end().to_owned()];
+        let prefix = format!("{indent}{}", wr.unit);
+        let texts: Vec<String> = items.iter().enumerate().map(|(n, item)| format!("{item}{}", comma(n))).collect();
+        match mode(open, depth) {
+            Wrap::WrapIfLong => fill(&mut parts, prefix.clone(), texts, &prefix),
+            _ => parts.extend(texts.into_iter().map(|t| format!("{prefix}{t}"))),
+        }
+        parts.push(format!("{indent}{}", &line[close..]));
+        return Some(parts);
+    }
+    // Java: the first item stays after `(`, the rest continue (a
+    // declaration's aligned under the first), `)` after the last.
+    let prefix = if declares(open, depth) && !wr.tabs { " ".repeat(line[..=open].chars().count()) } else { format!("{indent}{}", wr.cont) };
+    let texts: Vec<String> = items.iter().enumerate().map(|(n, item)| if n < last { format!("{item},") } else { format!("{item}{}", &line[close..]) }).collect();
+    let first = format!("{}{}", &line[..=open], texts[0]);
+    let mut parts = Vec::new();
+    match mode(open, depth) {
+        Wrap::WrapIfLong => fill(&mut parts, first, texts[1..].to_vec(), &prefix),
+        _ => {
+            parts.push(first);
+            parts.extend(texts[1..].iter().map(|t| format!("{prefix}{t}")));
+        }
+    }
+    Some(parts)
+}
+
+/// A list's items between `open` and `close`: commas outside nested
+/// brackets, strings and `<…>`.
+fn list_items<'a>(line: &'a str, open: usize, close: usize, is_code: &dyn Fn(usize) -> bool) -> Vec<&'a str> {
     let mut items = Vec::new();
     let mut depth = 0usize;
     let mut angle = 0usize;
@@ -1029,14 +1170,7 @@ fn chop(line: &str, unit: &str, margin: usize) -> Option<Vec<String>> {
         }
     }
     items.push(line[start..close].trim());
-    let indent = &line[..line.len() - line.trim_start().len()];
-    let mut parts = vec![line[..=open].trim_end().to_owned()];
-    let last = items.len() - 1;
-    for (n, item) in items.into_iter().enumerate() {
-        parts.push(format!("{indent}{unit}{item}{}", if n < last { "," } else { "" }));
-    }
-    parts.push(format!("{indent}{}", &line[close..]));
-    Some(parts)
+    items
 }
 
 /// EXTENDS_LIST_WRAP "wrap if long": a class, interface or object
@@ -1127,26 +1261,35 @@ fn chain_break(line: &str, info: &Line, unit: &str, margin: usize) -> Option<Vec
     let lead = line.len() - line.trim_start().len();
     let mut depth = 0usize;
     let mut cut = None;
+    // Calls so far in the chain at hand: the first isn't wrapped
+    // (WRAP_FIRST_METHOD_IN_CALL_CHAIN is off).
+    let mut calls_before = 0;
     for (i, c) in line.char_indices().skip_while(|(i, _)| *i < lead) {
         if !info.code.get(i).copied().unwrap_or(false) {
             continue;
         }
         match c {
+            '(' | '{' if depth == 0 && line[..i].trim_end().ends_with(|p: char| p.is_alphanumeric() || p == '_') => {
+                calls_before += 1;
+                depth += 1;
+            }
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            '.' if depth == 0 && i > lead && width(&line[..i]) < margin => {
+            '.' if depth == 0 && i > lead => {
                 let at = if line[..i].ends_with('?') { i - 1 } else { i };
                 let after_receiver = line[..at].ends_with(|p: char| p.is_alphanumeric() || p == '_' || p == ')' || p == '}');
                 let name: String = line[i + 1..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
                 let calls = !name.is_empty() && line[i + 1 + name.len()..].trim_start().starts_with(['(', '{']);
-                if after_receiver && calls && at > lead {
+                if after_receiver && calls && at > lead && calls_before > 0 && width(&line[..i]) < margin {
                     cut = Some(at);
                 }
             }
+            // Another expression starts: a new chain.
+            c if depth == 0 && !(c.is_alphanumeric() || matches!(c, '_' | '?' | '!')) => calls_before = 0,
             _ => {}
         }
     }
-    let Some(cut) = cut else { return assignment_break(line, info, unit, margin) };
+    let cut = cut?;
     let indent = &line[..lead];
     Some(vec![line[..cut].trim_end().to_owned(), format!("{indent}{unit}{}", &line[cut..])])
 }
@@ -2960,6 +3103,37 @@ mod tests {
         assert_eq!(reformat_indented(ImportStyle::Kotlin, text, None, &style), "class A<T:Any>(val name :String):B() {\n    fun f() :Int = 1\n}");
         // Older settings had 14 values.
         assert_eq!(Spaces::from_prefix(&[true; 14]).map(|s| s.colons), Some([false, true, true, true]));
+    }
+
+    #[test]
+    fn wrapping_options() {
+        let w = |kotlin: bool, wrapping: Wrapping, text: &str| {
+            let style = IndentStyle { right_margin: Some(60), wrapping: Some(wrapping), ..Default::default() };
+            let once = reformat_indented(if kotlin { ImportStyle::Kotlin } else { ImportStyle::Java }, text, None, &style);
+            assert_eq!(reformat_indented(if kotlin { ImportStyle::Kotlin } else { ImportStyle::Java }, &once, None, &style), once, "stable");
+            once
+        };
+        let java = "class A {\nvoid run(String firstArgument, String secondArgument, int third) {\nresult = repository.load(firstArgument, secondArgument, third);\n}\n}";
+        // IntelliJ's Java defaults: nothing wraps.
+        assert_eq!(w(false, Wrapping::JAVA, java), "class A {\n    void run(String firstArgument, String secondArgument, int third) {\n        result = repository.load(firstArgument, secondArgument, third);\n    }\n}");
+        let chop = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, ..Wrapping::JAVA };
+        assert_eq!(
+            w(false, chop, java),
+            "class A {\n    void run(String firstArgument,\n             String secondArgument,\n             int third) {\n        result = repository.load(firstArgument,\n                secondArgument,\n                third);\n    }\n}"
+        );
+        let fill = Wrapping { call_args: Wrap::WrapIfLong, params: Wrap::WrapIfLong, ..Wrapping::JAVA };
+        assert_eq!(
+            w(false, fill, java),
+            "class A {\n    void run(String firstArgument, String secondArgument,\n             int third) {\n        result = repository.load(firstArgument,\n                secondArgument, third);\n    }\n}"
+        );
+        let chain = "class A {\nvoid f() {\nString s = builder.append(firstPart).append(secondPart).build();\n}\n}";
+        assert_eq!(w(false, Wrapping { chain: Wrap::WrapIfLong, ..Wrapping::JAVA }, chain), "class A {\n    void f() {\n        String s = builder.append(firstPart)\n                .append(secondPart).build();\n    }\n}");
+        let assign = "class A {\nvoid f() {\nString descriptionOfTheThing = formatter.format(firstValue, locale);\n}\n}";
+        assert_eq!(w(false, Wrapping { assignment: Wrap::WrapIfLong, ..Wrapping::JAVA }, assign), "class A {\n    void f() {\n        String descriptionOfTheThing =\n                formatter.format(firstValue, locale);\n    }\n}");
+        // Kotlin: wrap if long fills the lines; do not wrap leaves it.
+        let kt = "fun f() {\nval result = repository.load(firstArgument, secondArgument, third)\n}";
+        assert_eq!(w(true, Wrapping { call_args: Wrap::WrapIfLong, ..Wrapping::KOTLIN }, kt), "fun f() {\n    val result = repository.load(\n        firstArgument, secondArgument, third\n    )\n}");
+        assert_eq!(w(true, Wrapping::JAVA, kt), "fun f() {\n    val result = repository.load(firstArgument, secondArgument, third)\n}");
     }
 
     #[test]
