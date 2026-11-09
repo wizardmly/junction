@@ -63,11 +63,21 @@ pub fn abstract_method(lang: Lang, text: &str, line: u32) -> Option<(String, usi
 /// The field declared on a 0-based line: a Java field, or a Kotlin
 /// property of a class or file (its backing field has its name).
 pub fn field_at(lang: Lang, text: &str, line: u32) -> Option<String> {
+    fields(lang, text).into_iter().find(|(_, l)| *l == line).map(|(name, _)| name)
+}
+
+/// The 0-based line declaring a field (as [`field_at`] finds them) by name.
+pub fn field_line(lang: Lang, text: &str, name: &str) -> Option<u32> {
+    fields(lang, text).into_iter().find(|(n, _)| n == name).map(|(_, line)| line)
+}
+
+/// The fields a file declares and their 0-based lines.
+fn fields(lang: Lang, text: &str) -> Vec<(String, u32)> {
     if !matches!(lang, Lang::Kotlin | Lang::Java) {
-        return None;
+        return Vec::new();
     }
-    let tree = symbols::parse(lang, text)?;
-    descendants(tree.root_node()).into_iter().find_map(|n| {
+    let Some(tree) = symbols::parse(lang, text) else { return Vec::new() };
+    descendants(tree.root_node()).into_iter().filter_map(|n| {
         let name = match (lang, n.kind()) {
             (Lang::Java, "field_declaration") => n.child_by_field_name("declarator")?.child_by_field_name("name")?,
             (Lang::Kotlin, "property_declaration") => {
@@ -84,8 +94,9 @@ pub fn field_at(lang: Lang, text: &str, line: u32) -> Option<String> {
             }
             _ => return None,
         };
-        (name.start_position().row as u32 == line).then(|| text[name.byte_range()].to_owned())
+        Some((text[name.byte_range()].to_owned(), name.start_position().row as u32))
     })
+    .collect()
 }
 
 #[cfg(test)]
@@ -124,5 +135,7 @@ mod tests {
         let java = "class A {\n  private int count = 0;\n  void f() { int x = 1; }\n}\n";
         assert_eq!(field_at(Lang::Java, java, 1).as_deref(), Some("count"));
         assert_eq!(field_at(Lang::Java, java, 2), None);
+        assert_eq!((field_line(Lang::Java, java, "count"), field_line(Lang::Java, java, "x")), (Some(1), None));
+        assert_eq!(field_line(Lang::Kotlin, kt, "total"), Some(2));
     }
 }

@@ -1246,6 +1246,61 @@ impl DebugService {
     }
 
     /// Where the selected frame is: a project file and 0-based line.
+    /// A Variables row that is an object's field: the object's id and
+    /// class, and the field's name (Add Field Watchpoint's target).
+    pub fn field_of_object(&self, path: &[usize]) -> Option<(u64, String, String)> {
+        let (_, parent) = path.split_last()?;
+        if parent.is_empty() {
+            return None;
+        }
+        let variables = &self.run.as_ref()?.variables;
+        let Value::Object { id, class } = &node_ref(variables, parent)?.var.value else { return None };
+        let field = &node_ref(variables, path)?.var.name;
+        Some((*id, class.clone(), field.clone()))
+    }
+
+    /// Variables › Add Field Watchpoint, as IntelliJ's: a watchpoint on
+    /// the field's declaration for this object only (an instance filter),
+    /// or the object added to the one there. The error says why not.
+    pub fn add_field_watchpoint(&mut self, path: &[usize], cx: &mut Context<Self>) {
+        if let Err(e) = self.try_add_field_watchpoint(path, cx) {
+            if let Some(run) = self.run.as_mut() {
+                run.console.push(e.into());
+            }
+            cx.notify();
+        }
+    }
+
+    fn try_add_field_watchpoint(&mut self, path: &[usize], cx: &mut Context<Self>) -> Result<(), String> {
+        use crate::index::lang::Lang;
+        let (id, class, field) = self.field_of_object(path).ok_or("Not a field of an object")?;
+        // The class's file: its top-level class's `.java` or `.kt`.
+        let top = class.split('$').next().unwrap_or(&class).to_owned();
+        let simple = top.rsplit('.').next().unwrap_or(&top).to_owned();
+        let resolver = self.resolver.clone();
+        let found = ["java", "kt"].iter().find_map(|ext| {
+            let path = resolver.as_ref()?(&debugger::source_path(&top, &format!("{simple}.{ext}")), cx)?;
+            let text = std::fs::read_to_string(&path).ok()?;
+            let line = crate::index::method_breakpoint::field_line(Lang::from_path(&path.to_string_lossy())?, &text, &field)?;
+            Some((path.to_string_lossy().into_owned(), line, text))
+        });
+        let (file, line, text) = found.ok_or_else(|| format!("Cannot find the declaration of {class}.{field} in the project"))?;
+        match self.breakpoint(&file, line) {
+            Some(mut existing) => {
+                if !existing.instances.contains(&id) {
+                    existing.instances.push(id);
+                }
+                existing.enabled = true;
+                self.set_breakpoint_properties(existing, cx);
+            }
+            None => {
+                let new = SavedBreakpoint { instances: vec![id], ..Self::kind_on(&file, line, Some(&text)) };
+                self.toggle(new, cx);
+            }
+        }
+        Ok(())
+    }
+
     pub fn execution_point(&self, cx: &App) -> Option<(PathBuf, u32)> {
         let run = self.run.as_ref().filter(|r| r.status == DebugStatus::Paused)?;
         let frame = run.frames.get(run.frame)?;
@@ -1318,6 +1373,16 @@ async fn drive(this: gpui_kit::WeakEntity<DebugService>, cx: &mut gpui_kit::Asyn
             break;
         }
     }
+}
+
+/// The variable at a path of indexes in the tree, to read.
+fn node_ref<'a>(nodes: &'a [VarNode], path: &[usize]) -> Option<&'a VarNode> {
+    let (first, rest) = path.split_first()?;
+    let node = nodes.get(*first)?;
+    if rest.is_empty() {
+        return Some(node);
+    }
+    node_ref(node.children.as_deref()?, rest)
 }
 
 /// The variable at a path of indexes in the tree.
