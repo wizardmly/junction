@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-27
 title: Reformat：Wrapping and Braces 页剩下的选项（第二十七批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude（项目线程）/ 替 Jake 干活
 branch: task/sec33-reformat-rest-27
-pr:
+pr: 284
 claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,5 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：`Wrapping::align_ternary` / `align_throws` / `align_extends`（settings.conf wrapping 第 60–62 位）。三元复用 `binary_start`；`throws` / `extends` / `implements` 后的列表用新的 `header_list_start` 找关键字后第一个类型的列，后面的行跟着前一行（`header_aligned`）。对齐后的头部行用 `header_unaligned`（对齐前的缩进）算类体 / 方法体的基准，不然体会跟着缩进到对齐列。
+- 没做：Deconstruction list，Array initializer / Chained method calls / Assignment 的 Align when multiline，Kotlin 的 Use continuation indent、'when' 分支对齐，留给 sec33-reformat-rest-28。
