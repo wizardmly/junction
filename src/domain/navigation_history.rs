@@ -110,12 +110,18 @@ impl RecentPlaces {
         }
     }
 
-    /// Lines were added (`delta` > 0) or removed in `path` from `from` on:
-    /// the places below follow, as IntelliJ's markers move with the text;
+    /// `path`'s text changed from `old` to `new`: its places move with
+    /// their lines, as IntelliJ's markers move with the text (a line diff,
+    /// so edits at several carets or of the whole text keep them right);
     /// places in removed lines go to where the removal was.
-    pub fn shift(&mut self, path: &str, from: u32, delta: i64) {
-        for p in self.places.iter_mut().filter(|p| p.path == path && p.line > from) {
-            p.line = (p.line as i64 + delta).max(from as i64) as u32;
+    pub fn follow(&mut self, path: &str, old: &str, new: &str) {
+        if old == new || !self.places.iter().any(|p| p.path == path) {
+            return;
+        }
+        let lines: Vec<u32> = self.places.iter().filter(|p| p.path == path).map(|p| p.line).collect();
+        let moved = crate::domain::debugger::follow_lines(old, new, &lines);
+        for (p, line) in self.places.iter_mut().filter(|p| p.path == path).zip(moved) {
+            p.line = line;
         }
     }
 
@@ -245,11 +251,30 @@ mod tests {
         places.visit(at("a", 10));
         places.visit(at("a", 2));
         places.visit(at("b", 10));
-        places.shift("a", 5, 3);
+        let old: String = (0..20).map(|i| format!("line {i}\n")).collect();
         let lines = |p: &RecentPlaces| p.iter().map(|p| (p.path.clone(), p.line)).collect::<Vec<_>>();
+        // Three lines added after line 5.
+        let mut v: Vec<String> = old.lines().map(str::to_owned).collect();
+        v.splice(6..6, ["x".to_owned(), "y".into(), "z".into()]);
+        let added = v.join("\n") + "\n";
+        places.follow("a", &old, &added);
         assert_eq!(lines(&places), [("b".into(), 10), ("a".into(), 2), ("a".into(), 13)]);
-        // Removing lines 6..=14 from line 5: the place inside goes to 5.
-        places.shift("a", 5, -9);
-        assert_eq!(lines(&places), [("b".into(), 10), ("a".into(), 2), ("a".into(), 5)]);
+        // Removing lines 6..=14: the place inside goes to where they were.
+        let mut w = v.clone();
+        w.drain(6..15);
+        let removed = w.join("\n") + "\n";
+        places.follow("a", &added, &removed);
+        assert_eq!(lines(&places), [("b".into(), 10), ("a".into(), 2), ("a".into(), 6)]);
+        // Lines added at two places at once (two carets): above both, between
+        // and below them each move by what is above them.
+        let mut places = RecentPlaces::default();
+        for line in [1, 5, 9] {
+            places.visit(at("a", line));
+        }
+        let mut v: Vec<String> = old.lines().map(str::to_owned).collect();
+        v.insert(7, "dup 6".into());
+        v.insert(3, "dup 2".into());
+        places.follow("a", &old, &(v.join("\n") + "\n"));
+        assert_eq!(lines(&places), [("a".into(), 11), ("a".into(), 6), ("a".into(), 1)]);
     }
 }

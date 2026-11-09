@@ -53,14 +53,11 @@ impl Workspace {
                 if editor.revision().is_none() {
                     let (line, col) = editor.cursor(cx);
                     let path = editor.path().to_owned();
-                    // Lines added or removed: the places below move with them.
-                    let count = editor.line_count(cx) as i64;
-                    if let Some(before) = self.line_counts.insert(path.clone(), count) {
-                        let delta = count - before;
-                        if delta != 0 {
-                            let from = if delta > 0 { line as i64 - delta } else { line as i64 };
-                            self.recent_places.shift(&path, from.max(0) as u32, delta);
-                        }
+                    // The places in the file move with its lines (a line diff
+                    // against the text before, as breakpoints follow).
+                    let text = editor.text(cx);
+                    if let Some(before) = self.line_texts.insert(path.clone(), text.clone()) {
+                        self.recent_places.follow(&path, &before, &text);
                     }
                     self.recent_places.change((path, line, col));
                 }
