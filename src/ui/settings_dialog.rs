@@ -1829,7 +1829,8 @@ impl SettingsView {
                     page = self.wrap_option(page, query, "'assert' statement:", lang, d.wrapping(lang).assert_wrap, |w, v| w.assert_wrap = v, cx);
                     page = self.wrap_option(page, query, "Record components:", lang, d.wrapping(lang).record_wrap, |w, v| w.record_wrap = v, cx);
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 19] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 20] = [
+                        ("Binary expressions: Align when multiline", w.align_binary, |w, v| w.align_binary = v),
                         ("Method declaration parameters: Align when multiline", w.align_params, |w, v| w.align_params = v),
                         ("Method call arguments: Align when multiline", w.align_args, |w, v| w.align_args = v),
                         ("Record components: Align when multiline", w.align_records, |w, v| w.align_records = v),

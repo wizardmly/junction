@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-26
 title: Reformat：Wrapping and Braces 页剩下的选项（第二十六批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-26
+pr: 283
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,5 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：`Wrapping::align_binary`（settings.conf wrapping 第 59 位）。缩进器里续行原因是 `Reason::Binary` / `Reason::Operator`（三元的 `?` / `:` 除外）时，用新的 `binary_start` 在上一行排好的文本（`Previous::line`）里找第一个操作数的列：括号里的续行看最后一个没闭合的 `(`，否则看顶层的 `=` 或 `return`；同一表达式后面的行跟着前一行对齐。
+- 没做：Kotlin 的 Use continuation indent（官方风格续行缩进和缩进都是 4，看不出差别，要先让 Kotlin 的括号内容区分缩进和续行缩进），其余 Align when multiline，留给 sec33-reformat-rest-27。
