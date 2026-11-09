@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-31
 title: Reformat：Wrapping and Braces 页剩下的选项（第三十一批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-31
+pr: 288
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,6 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：Kotlin 的 `Wrapping::kotlin_cont: [bool; 7]`（settings.conf wrapping 第 72–78 位，缺省全关，照 IntelliJ 的 KotlinOfficialStyleGuide）。顺序：参数、实参、表达式体、链式调用、父类型列表、`if` 条件、Elvis。缩进器里 `kc(i)` 在开着时给续行缩进、关着时给普通缩进：`Reason::Chain` / `Elvis`（`?:` 开头的行）/ `Assign` / `Header` 的 size，`apply_brackets` 新参数 `kotlin_sizes`（`(` 前是 `if` 用条件的，`kotlin_declares` 认出 `fun name` / `class Name` / `constructor` 用参数的，别的用实参的）；`chop` 里 Kotlin 的实参 / 参数前缀、`elvis_break` / `supertype_break` / `chain_break` / `assignment_break` 的续行也按同样的开关。
+- 复排：`reformat_pass` 的 `nested` 改成次数，切开长行后的复排如果又切开了行就再跑一遍，最多两遍。之前 Kotlin 续行缩进设成 8 时 Signal 语料第二遍有 60 行还会变（复排里新切开的行后面的内容没重新缩进）。
+- 没做：CONTINUATION_INDENT_IN_CONTEXT_PARAMETER_LISTS（context 参数），留给 sec33-reformat-rest-32。
