@@ -749,6 +749,10 @@ pub struct Wrapping {
     pub enum_constants: AnnotationWrap,
     /// Kotlin's Elvis expressions (`?:` starts the next line).
     pub elvis: Wrap,
+    /// Java's local variable annotations (IntelliJ's VARIABLE_ANNOTATION_WRAP).
+    pub local_annotations: AnnotationWrap,
+    /// Java's array initializers (IntelliJ's ARRAY_INITIALIZER_WRAP).
+    pub array_init: Wrap,
 }
 
 /// Wrapping and Braces › Class / Method / Field annotations (IntelliJ's
@@ -854,25 +858,25 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
-        self.values().iter().any(|w| *w != Wrap::DoNotWrap) || self.ops.binary != Wrap::DoNotWrap || self.ops.ternary != Wrap::DoNotWrap || self.elvis != Wrap::DoNotWrap
+        self.values().iter().any(|w| *w != Wrap::DoNotWrap) || self.ops.binary != Wrap::DoNotWrap || self.ops.ternary != Wrap::DoNotWrap || self.elvis != Wrap::DoNotWrap || self.array_init != Wrap::DoNotWrap
     }
 }
 
@@ -930,7 +934,8 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 (forced, only)
             } else {
                 let margin = indents.right_margin.unwrap_or(RIGHT_MARGIN);
-                let (a, only) = wrap_annotations(&forced, &w.annotations, only, margin);
+                let [class, method, field] = w.annotations;
+                let (a, only) = wrap_annotations(&forced, &[class, method, field, w.local_annotations], only, margin);
                 let (a, only) = wrap_enum_constants(&a, w.enum_constants, only, margin);
                 wrapped_annotations = a;
                 (wrapped_annotations, only)
@@ -991,7 +996,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             out.push((*text_line).to_owned());
             choppable.push(false);
             let lead = text_line.len() - text_line.trim_start().len();
-            apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, text_line, &bodies[ix]);
+            apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, text_line, &bodies[ix], flavor == Flavor::Java);
             blank_run = 0;
             kept = 0;
             continue;
@@ -1181,9 +1186,9 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             let at = if selected { indent } else { lead_out };
             let base = if header { at.saturating_sub(cont) } else { at };
             let align = (flavor == Flavor::Java && !tabs).then(|| declaration_paren(&line_out)).flatten();
-            apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, &line_out, &bodies[ix]);
+            apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, &line_out, &bodies[ix], flavor == Flavor::Java);
         } else {
-            apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, text_line, &bodies[ix]);
+            apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, text_line, &bodies[ix], flavor == Flavor::Java);
         }
         out.push(line_out);
         choppable.push(selected && is_code_line);
@@ -1229,7 +1234,9 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         // second Reformat Code would. The selection grows by the new lines.
         if added > 0 && !nested {
             let only = only.map(|r| r.start..r.end + added);
-            return reformat_pass(flavor, &text, only, indents, true);
+            // With this pass's indent unit: the new lines mustn't change what's detected.
+            let same = IndentStyle { unit: Some(unit.clone()), ..indents.clone() };
+            return reformat_pass(flavor, &text, only, &same, true);
         }
         return text;
     }
@@ -1309,12 +1316,13 @@ fn head_at_start(code: &str) -> bool {
     }
 }
 
-/// Java's Class / Method / Field annotations: the annotations before a
-/// declaration in a class body (or a class at the top) on lines of their
-/// own (Wrap always; Chop down if long when the line is too long) or
-/// where the line would pass the margin (Wrap if long). Lines with
-/// comments, enum constants and local declarations stay.
-fn wrap_annotations(text: &str, wraps: &[AnnotationWrap; 3], only: Option<Range<usize>>, margin: usize) -> (String, Option<Range<usize>>) {
+/// Java's Class / Method / Field / Local variable annotations (`wraps` in
+/// that order): the annotations before a declaration in a class body (or
+/// a class at the top), or before a local variable in a code block, on
+/// lines of their own (Wrap always; Chop down if long when the line is
+/// too long) or where the line would pass the margin (Wrap if long).
+/// Lines with comments, enum constants and local classes stay.
+fn wrap_annotations(text: &str, wraps: &[AnnotationWrap; 4], only: Option<Range<usize>>, margin: usize) -> (String, Option<Range<usize>>) {
     if wraps.iter().all(|w| *w == AnnotationWrap::DoNotWrap) {
         return (text.to_owned(), only);
     }
@@ -1323,21 +1331,31 @@ fn wrap_annotations(text: &str, wraps: &[AnnotationWrap; 3], only: Option<Range<
     let bodies = declaration_braces(&raw, &lines);
     let mut out: Vec<String> = Vec::with_capacity(raw.len());
     let mut delta: isize = 0;
-    // Per open bracket: whether it's a class body (`(` and `[` aren't).
-    let mut stack: Vec<bool> = Vec::new();
+    // Per open bracket: a class body, a code block, or `(` / `[`.
+    #[derive(PartialEq)]
+    enum Open {
+        Class,
+        Block,
+        Paren,
+    }
+    let mut stack: Vec<Open> = Vec::new();
     for (ix, line) in raw.iter().enumerate() {
         let info = &lines[ix];
         let selected = only.as_ref().is_none_or(|r| r.contains(&ix));
         let plain = info.starts_in.unwrap_or(State::Code) == State::Code && !info.comment.iter().any(|c| *c);
-        let in_class = stack.last().is_none_or(|b| *b);
+        let in_class = stack.last().is_none_or(|o| *o == Open::Class);
+        let in_block = stack.last() == Some(&Open::Block);
         let mut parts = None;
-        if selected && plain && in_class {
+        if selected && plain && (in_class || in_block) {
             let trimmed = line.trim_start();
             let lead = &line[..line.len() - trimmed.len()];
             let (annotations, rest) = leading_annotations(trimmed);
             // A method header over lines ends with `,`: its `(` tells.
             let kind = member_kind(rest, false).map(|k| if k == Member::Field && declaration_paren(rest).is_some() { Member::Method } else { k });
             let wrap = match kind {
+                // A local variable: `@SuppressWarnings("x") List<T> l = …;`.
+                Some(Member::Field) if in_block => wraps[3],
+                _ if in_block => AnnotationWrap::DoNotWrap,
                 Some(Member::Class) => wraps[0],
                 Some(Member::Method) => wraps[1],
                 Some(Member::Field) if !rest.trim_end().ends_with(',') => wraps[2],
@@ -1372,8 +1390,8 @@ fn wrap_annotations(text: &str, wraps: &[AnnotationWrap; 3], only: Option<Range<
         let mut braces = bodies[ix].iter();
         for (_, c) in &info.brackets {
             match c {
-                '{' => stack.push(braces.next().copied().unwrap_or(false)),
-                '(' | '[' => stack.push(false),
+                '{' => stack.push(if braces.next().copied().unwrap_or(false) { Open::Class } else { Open::Block }),
+                '(' | '[' => stack.push(Open::Paren),
                 _ => {
                     stack.pop();
                 }
@@ -1974,7 +1992,15 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
             java_declaration && Some(open) == first_paren
         }
     };
-    let mode = |open: usize, depth: usize| if declares(open, depth) { wr.w.params } else { wr.w.call_args };
+    let mode = |open: usize, depth: usize| {
+        if line.as_bytes()[open] == b'{' {
+            wr.w.array_init
+        } else if declares(open, depth) {
+            wr.w.params
+        } else {
+            wr.w.call_args
+        }
+    };
     // (depth, open, close) of the list to chop.
     let mut best: Option<(usize, usize, usize)> = None;
     let mut stack: Vec<(usize, char)> = Vec::new();
@@ -1990,7 +2016,9 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
         let depth = stack.len();
         // Java keeps the first item after `(`: one item can't wrap.
         let wraps = mode(open, depth) != Wrap::DoNotWrap && (wr.kotlin || list_items(line, open, at, &is_code).len() > 1);
-        if opener == '(' && c == ')' && past && wraps && !inner.trim().is_empty() && !commented && is_call_or_declaration(&line[..open]) {
+        // Java's Array initializer: `new int[]{…}`, `= {…}`.
+        let array = !wr.kotlin && opener == '{' && c == '}' && is_array_initializer(&line[..open]);
+        if (opener == '(' && c == ')' && is_call_or_declaration(&line[..open]) || array) && past && wraps && !inner.trim().is_empty() && !commented {
             if best.is_none_or(|(d, o, _)| depth < d || depth == d && open < o) {
                 best = Some((depth, open, at));
             }
@@ -2429,6 +2457,13 @@ fn paren_pair(brackets: &[(usize, char)]) -> Option<(usize, usize)> {
 /// Whether a `(` after this text opens a call's arguments or a
 /// declaration's parameters: after a name, `>` or `)`, not a keyword's
 /// condition.
+/// Whether a `{` after `before` opens a Java array initializer:
+/// `new int[] {`, `String[] a = {`.
+fn is_array_initializer(before: &str) -> bool {
+    let head = before.trim_end();
+    head.ends_with(']') && head.contains("new ") || head.ends_with('=') && !head.ends_with("==") && head.contains('[')
+}
+
 fn is_call_or_declaration(before: &str) -> bool {
     let word = before.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
     let ends_name = before.ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ')') || before.ends_with('>') && !before.ends_with("->");
@@ -2895,13 +2930,18 @@ fn declaration_braces(raw: &[&str], lines: &[Line]) -> Vec<Vec<bool>> {
 /// line closed a bracket opened earlier); `(` / `[` a continuation past the
 /// line, or under the first parameter (`align`).
 #[allow(clippy::too_many_arguments)]
-fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize, line: usize, line_indent: usize, base: usize, cont: usize, step: usize, align: Option<usize>, text: &str, bodies: &[bool]) {
+fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize, line: usize, line_indent: usize, base: usize, cont: usize, step: usize, align: Option<usize>, text: &str, bodies: &[bool], java: bool) {
     let mut base = base;
     let mut first_paren = true;
     let mut bodies = bodies.iter();
     for (at, c) in brackets.iter().skip(skip) {
         match c {
-            '{' => stack.push(Open { line_indent: base, content: base + step, line, case_body: false, header: false, brace: true, declarations: bodies.next().copied().unwrap_or(false) }),
+            '{' => {
+                // Java's array initializer continues its line (`new int[] {`).
+                let array = java && is_array_initializer(text.get(..*at).unwrap_or(""));
+                let content = base + if array { cont } else { step };
+                stack.push(Open { line_indent: base, content, line, case_body: false, header: false, brace: true, declarations: bodies.next().copied().unwrap_or(false) })
+            }
             '(' | '[' => {
                 let content = match align.filter(|_| *c == '(' && first_paren) {
                     Some(col) => col,
@@ -4331,6 +4371,46 @@ mod tests {
             w([AnnotationWrap::DoNotWrap, AnnotationWrap::ChopIfLong, AnnotationWrap::DoNotWrap], long),
             "class A {\n    @Override\n    @SuppressWarnings(\"unchecked\")\n    @VisibleForTesting\n    public void aMethodWithAVeryLongNameThatPassesTheMargin(int a) {\n    }\n\n    @Override public void f() {\n    }\n}"
         );
+    }
+
+    #[test]
+    fn wraps_local_variable_annotations() {
+        let w = |wrap: AnnotationWrap, text: &str| {
+            let style = IndentStyle { wrapping: Some(Wrapping { local_annotations: wrap, ..Wrapping::JAVA }), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let text = "class A {\n    @Nullable String name;\n\n    void f(@NonNull String s) {\n        @SuppressWarnings(\"unchecked\") List<String> l = (List<String>) o;\n        for (@NonNull String x : l) {\n            @Deprecated final int n = 1;\n        }\n        @Deprecated class Local {\n        }\n        run(() -> {\n            @Nullable Object v = null; // why\n        });\n    }\n}";
+        assert_eq!(w(AnnotationWrap::DoNotWrap, text), text);
+        assert_eq!(
+            w(AnnotationWrap::WrapAlways, text),
+            "class A {\n    @Nullable String name;\n\n    void f(@NonNull String s) {\n        @SuppressWarnings(\"unchecked\")\n        List<String> l = (List<String>) o;\n        for (@NonNull String x : l) {\n            @Deprecated\n            final int n = 1;\n        }\n        @Deprecated class Local {\n        }\n        run(() -> {\n            @Nullable Object v = null; // why\n        });\n    }\n}"
+        );
+        assert_eq!(w(AnnotationWrap::ChopIfLong, text), text);
+    }
+
+    #[test]
+    fn wraps_array_initializers() {
+        let w = |wrap: Wrap, text: &str| {
+            let style = IndentStyle { wrapping: Some(Wrapping { array_init: wrap, ..Wrapping::JAVA }), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let text = "class A {\n    private static final String[] PROJECTION = new String[]{ID, ADDRESS, DATE_SENT, DATE_RECEIVED, BODY, TYPE, THREAD_ID, STATUS, READ};\n    int[] small = {1, 2, 3};\n\n    void f() {\n        String[] columns = {\"recipient_id\", \"group_id\", \"profile_key\", \"profile_given_name\", \"system_display_name\", \"extra\"};\n        g(new int[] {1, 2}, h(a, b));\n    }\n}";
+        assert_eq!(w(Wrap::DoNotWrap, text), text);
+        assert_eq!(
+            w(Wrap::WrapIfLong, text),
+            "class A {\n    private static final String[] PROJECTION = new String[]{ID, ADDRESS, DATE_SENT, DATE_RECEIVED, BODY, TYPE,\n            THREAD_ID, STATUS, READ};\n    int[] small = {1, 2, 3};\n\n    void f() {\n        String[] columns = {\"recipient_id\", \"group_id\", \"profile_key\", \"profile_given_name\", \"system_display_name\",\n                \"extra\"};\n        g(new int[] {1, 2}, h(a, b));\n    }\n}"
+        );
+        assert_eq!(
+            w(Wrap::ChopIfLong, "class A {\n    private static final String[] PROJECTION = new String[]{ID, ADDRESS, DATE_SENT, DATE_RECEIVED, BODY, TYPE, THREAD_ID, STATUS};\n}"),
+            "class A {\n    private static final String[] PROJECTION = new String[]{ID,\n            ADDRESS,\n            DATE_SENT,\n            DATE_RECEIVED,\n            BODY,\n            TYPE,\n            THREAD_ID,\n            STATUS};\n}"
+        );
+        // Elements on lines of their own continue the line that opens them.
+        let laid = "class A {\n    static final String[] COLUMNS = {\n        A,\n        B\n    };\n}";
+        assert_eq!(w(Wrap::DoNotWrap, laid), "class A {\n    static final String[] COLUMNS = {\n            A,\n            B\n    };\n}");
     }
 
     #[test]
