@@ -1183,7 +1183,7 @@ Linux 实测（Xvfb，`pi2` Kotlin 工程，2026-10-29）：`fun repeatIt(times:
 | 多光标下的行操作（2026-11-05）：Duplicate Line（Ctrl+D）、Comment with Line / Block Comment、Toggle Case、Start New Line 在每个光标处各做一次（从后往前，同一行上的几个光标只做一次），光标跟着各自的结果，一次可撤销（`line_edit::each`）。Linux 实测：第 9、13 行各一个光标，Ctrl+D 两行都复制、光标到副本上，Ctrl+/ 两个副本都注释掉，Ctrl+Z 一次撤销 | | ✅ |
 | 多光标下的 Move Line / Move Statement 和 Extend Selection（2026-11-05）：每个光标的行（语句）各移一行，相邻行上的光标作为一整块一起移，有一个光标已在顶 / 底时都不动，一次可撤销（`line_edit::each_move`）；Ctrl+W 让每个选区各扩大一步（多光标时没有 Shrink 的步骤）。Linux 实测：第 7、8 行各一个光标按 Alt+Shift+↑，两行一起移到 `public int add` 上面，Ctrl+Z 一次恢复；第 7、9 行的 `sum` 上各一个光标按 Ctrl+W 再输入 `W`，两处都换成 `W` | | ✅ |
 | 多光标下的 Join Lines 和 Move Element Left / Right（2026-11-05）：每个光标各做一次（Join Lines 同一行上的光标只做一次），一次可撤销。Linux 实测：第 4、10 行（下面各是空行）各一个光标按 Ctrl+Shift+J，两处空行都并掉 | | ✅ |
-| 多光标下的 Shrink Selection（仍只作用于当前选区） | | ⬜ |
+| 多光标下的 Shrink Selection（2026-11-09）：多光标时 Extend Selection 记下每一步所有光标的选区，Shrink Selection 一起退回一步；扩大时合并成一个的选区退回时恢复成原来的几个。Linux 实测：第 2、3 行各一个光标在 `this` 上，Ctrl+W 三次扩大到整条声明和 `best = this[i]`，Ctrl+Shift+W 两次依次退回 `this[0]` / `this[i]` 和 `this` / `this` | | ✅ |
 
 Linux 实测（Xvfb，Kotlin 文件）：光标在 `return price * rate …` 行，Ctrl+D 复制出第 6 行，Ctrl+/ 把它注释成 `//        return …` 并把光标移到 `}`，Alt+Shift+↑ 把 `}` 移到注释行上面；三次 Ctrl+Z 逐个撤销。Shapes.kt 里光标在 `class Tile : Square()` 上按 Ctrl+Shift+↑，它整个跳到四行的 `open class Square … { … }` 前面；再按两次 Ctrl+Shift+↓，依次越过 Square 和 `class Disc`。Main.kt 里光标在 `cart.total(count = 1, price = 2.0)` 的 `count` 上按 Ctrl+Alt+Shift+→，变成 `total(price = 2.0, count = 1)`。Cart.kt 光标在 `return` 行：Ctrl+- 折起 `total`，再按折起整个类，Ctrl+= 展开类（`total` 仍折着）；Ctrl+Shift+- 全部折起，Ctrl+Shift+= 全部展开。光标在 `rate` 上连按三次 Ctrl+W，选区依次是 `rate`、`price * rate`、`price * rate * count`。
 
