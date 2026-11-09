@@ -450,8 +450,9 @@ pub struct FileEditor {
     strings_banner_hidden: bool,
     /// Download Sources on a decompiled class: in progress, or why it failed.
     sources_status: Option<(bool, String)>,
-    /// Extend Selection's steps, for Shrink Selection.
-    selection_steps: Vec<std::ops::Range<usize>>,
+    /// Extend Selection's steps (every caret's selection, sorted), for
+    /// Shrink Selection.
+    selection_steps: Vec<Vec<std::ops::Range<usize>>>,
     /// The language server's code actions being asked for (Alt+Enter).
     server_actions_task: Option<gpui_kit::Task<()>>,
     /// Add names to call arguments, waiting on the callee's declaration.

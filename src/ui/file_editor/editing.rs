@@ -284,43 +284,57 @@ impl FileEditor {
         self.edit_each(false, |t, s| Some(line_edit::toggle_case(t, s)), window, cx);
     }
 
-    /// Ctrl+W: the next larger syntax around the selection; the steps are
-    /// kept for Shrink Selection.
+    /// Every caret's selection, sorted: what Extend Selection's steps
+    /// keep.
+    fn selection_snapshot(&self, cx: &Context<Self>) -> Vec<Range<usize>> {
+        let state = self.state.read(cx);
+        let mut ranges = state.selection_ranges();
+        if ranges.len() <= 1 {
+            return vec![state.selected_range()];
+        }
+        ranges.sort_by_key(|r| (r.start, r.end));
+        ranges
+    }
+
+    fn restore_selection(&mut self, ranges: Vec<Range<usize>>, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| match ranges.as_slice() {
+            [one] => state.set_selected_range(one.clone(), cx),
+            _ => state.set_selection_ranges(ranges, cx),
+        });
+        cx.notify();
+    }
+
+    /// Ctrl+W: the next larger syntax around the selection (around every
+    /// caret's); the steps are kept for Shrink Selection.
     pub(super) fn extend_selection(&mut self, _: &ExtendSelection, _: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
-        let ranges = self.state.read(cx).selection_ranges();
-        if ranges.len() > 1 {
-            // Every caret's selection grows a step (no Shrink steps kept).
-            let lang = crate::index::lang::Lang::from_path(&self.path);
-            let grown: Vec<Range<usize>> = ranges.iter().map(|r| crate::index::selection::extend(lang, &text, r.clone()).unwrap_or_else(|| r.clone())).collect();
-            self.selection_steps.clear();
-            self.state.update(cx, |state, cx| state.set_selection_ranges(grown, cx));
-            return;
-        }
-        let current = self.state.read(cx).selected_range();
+        let current = self.selection_snapshot(cx);
         if self.selection_steps.last() != Some(&current) {
             self.selection_steps.clear();
         }
         let lang = crate::index::lang::Lang::from_path(&self.path);
-        let Some(next) = crate::index::selection::extend(lang, &text, current.clone()) else { return };
+        let grown: Vec<Range<usize>> = current.iter().map(|r| crate::index::selection::extend(lang, &text, r.clone()).unwrap_or_else(|| r.clone())).collect();
+        if grown == current {
+            return;
+        }
         if self.selection_steps.is_empty() {
             self.selection_steps.push(current);
         }
-        self.selection_steps.push(next.clone());
-        self.state.update(cx, |state, cx| state.set_selected_range(next, cx));
-        cx.notify();
+        self.restore_selection(grown, cx);
+        // Carets that grew into one are one selection now.
+        let next = self.selection_snapshot(cx);
+        self.selection_steps.push(next);
     }
 
-    /// Ctrl+Shift+W: back one Extend Selection step.
+    /// Ctrl+Shift+W: back one Extend Selection step (for every caret).
     pub(super) fn shrink_selection(&mut self, _: &ShrinkSelection, _: &mut Window, cx: &mut Context<Self>) {
-        let current = self.state.read(cx).selected_range();
+        let current = self.selection_snapshot(cx);
         if self.selection_steps.last() != Some(&current) || self.selection_steps.len() < 2 {
             self.selection_steps.clear();
             return;
         }
         self.selection_steps.pop();
         let previous = self.selection_steps.last().cloned().unwrap_or(current);
-        self.state.update(cx, |state, cx| state.set_selected_range(previous, cx));
-        cx.notify();
+        self.restore_selection(previous, cx);
     }
 }
