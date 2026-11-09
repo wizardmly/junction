@@ -756,6 +756,10 @@ pub struct Wrapping {
     pub array_init: Wrap,
     /// Java's Throws list (THROWS_LIST_WRAP).
     pub throws_list: Wrap,
+    /// Java's Throws keyword (THROWS_KEYWORD_WRAP): `throws` starts the next line.
+    pub throws_keyword: Wrap,
+    /// Java's Annotation parameters (ANNOTATION_PARAMETER_WRAP).
+    pub annotation_params: Wrap,
 }
 
 /// Wrapping and Braces › Class / Method / Field annotations (IntelliJ's
@@ -861,25 +865,25 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
-        self.values().iter().any(|w| *w != Wrap::DoNotWrap) || self.ops.binary != Wrap::DoNotWrap || self.ops.ternary != Wrap::DoNotWrap || self.elvis != Wrap::DoNotWrap || self.array_init != Wrap::DoNotWrap || self.throws_list != Wrap::DoNotWrap
+        self.values().iter().any(|w| *w != Wrap::DoNotWrap) || self.ops.binary != Wrap::DoNotWrap || self.ops.ternary != Wrap::DoNotWrap || self.elvis != Wrap::DoNotWrap || self.array_init != Wrap::DoNotWrap || self.throws_list != Wrap::DoNotWrap || self.throws_keyword != Wrap::DoNotWrap || self.annotation_params != Wrap::DoNotWrap
     }
 }
 
@@ -1091,6 +1095,9 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             } else if flavor == Flavor::Java && ["+ ", "- ", "* ", "/ ", "% "].iter().any(|op| code_start.starts_with(op)) {
                 // Operation sign on next line: `+ b`.
                 Reason::Operator
+            } else if flavor == Flavor::Java && ["throws ", "implements ", "extends "].iter().any(|k| code_start.starts_with(k)) {
+                // Throws keyword / Extends keyword on next line: the header goes on.
+                Reason::Header
             } else if kotlin && (["get(", "get() ", "set(", "private set", "protected set", "internal set"].iter().any(|a| code_start.starts_with(a)) || code_start == "get()") {
                 // A Kotlin property's accessors sit under it.
                 Reason::Accessor
@@ -1998,6 +2005,8 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
     let mode = |open: usize, depth: usize| {
         if line.as_bytes()[open] == b'{' {
             wr.w.array_init
+        } else if !wr.kotlin && annotation_paren(&line[..open]) {
+            wr.w.annotation_params
         } else if declares(open, depth) {
             wr.w.params
         } else {
@@ -2037,6 +2046,16 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
     if best.is_none() && wr.kotlin && wr.w.extends != Wrap::DoNotWrap {
         if let Some(parts) = supertype_break(line, &info, wr.unit, margin) {
             return Some(parts);
+        }
+    }
+    if best.is_none() && !wr.kotlin && wr.w.throws_keyword != Wrap::DoNotWrap {
+        if let Some(at) = throws_at(line, &info) {
+            let head = line[..at].trim_end();
+            // Only when the header before it then fits.
+            if width(head) <= margin {
+                let lead = &line[..line.len() - line.trim_start().len()];
+                return Some(vec![head.to_owned(), format!("{lead}{}{}", wr.cont, &line[at..])]);
+            }
         }
     }
     if best.is_none() && !wr.kotlin && wr.w.throws_list != Wrap::DoNotWrap {
@@ -2138,6 +2157,24 @@ fn list_items<'a>(line: &'a str, open: usize, close: usize, is_code: &dyn Fn(usi
 /// header's supertypes (after its `:`) put on as few lines as fit, each
 /// next line an indent deeper; `None` when the header has none or no
 /// break helps.
+/// Where a Java method header's `throws` starts (after its `) `).
+fn throws_at(line: &str, info: &Line) -> Option<usize> {
+    let lead = line.len() - line.trim_start().len();
+    let mut depth = 0usize;
+    for (i, c) in line.char_indices().skip_while(|(i, _)| *i < lead) {
+        if !info.code.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            't' if depth == 0 && line[..i].ends_with(") ") && line[i..].starts_with("throws ") => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Java's Throws list (THROWS_LIST_WRAP): a method header's `throws A,
 /// B, C` past the margin, broken after its commas; the first type stays
 /// after `throws`, the others continue (Chop down if long: one a line;
@@ -2533,6 +2570,12 @@ fn paren_pair(brackets: &[(usize, char)]) -> Option<(usize, usize)> {
 /// Whether a `(` after this text opens a call's arguments or a
 /// declaration's parameters: after a name, `>` or `)`, not a keyword's
 /// condition.
+/// Whether a `(` after `before` opens a Java annotation's parameters: `@Name(`.
+fn annotation_paren(before: &str) -> bool {
+    let name = before.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '.');
+    name.ends_with('@') && name.len() < before.len()
+}
+
 /// Whether a `{` after `before` opens a Java array initializer:
 /// `new int[] {`, `String[] a = {`, an annotation's `@A({` / `@A(x = {`.
 fn is_array_initializer(before: &str) -> bool {
@@ -2543,11 +2586,6 @@ fn is_array_initializer(before: &str) -> bool {
     if head.ends_with('=') && !head.ends_with("==") && head.contains('[') {
         return true;
     }
-    // In an annotation's parentheses: the `(` follows `@Name`.
-    let annotation_paren = |text: &str| {
-        let name = text.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '.');
-        name.ends_with('@') && name.len() < text.len()
-    };
     if let Some(open) = head.strip_suffix('(') {
         return annotation_paren(open);
     }
@@ -2583,7 +2621,27 @@ fn indent_unit(text: &str, lines: &[Line], fallback: Option<&str>) -> String {
     // columns; a messy file has those too, and gets IntelliJ's 4.
     let odd_twos = indents.iter().filter(|n| *n % 4 == 2).count();
     let odd = indents.iter().filter(|n| *n % 2 == 1).count();
-    if !indents.is_empty() && odd_twos * 5 >= indents.len() && odd * 20 <= indents.len() { "  ".into() } else { fallback.unwrap_or("    ").into() }
+    let messy = indents.is_empty() || odd * 20 > indents.len();
+    // What a `{` at a line's end adds to the next line: a block's indent,
+    // which continuation lines (wrapped arguments at 8) don't blur.
+    let (mut blocks_of_two, mut blocks_of_four) = (0, 0);
+    let width_of = |l: &str| l.len() - l.trim_start_matches(' ').len();
+    let mut lines_iter = code.iter().filter(|l| !l.trim().is_empty()).peekable();
+    while let Some(line) = lines_iter.next() {
+        if line.trim_end().ends_with('{') {
+            if let Some(next) = lines_iter.peek() {
+                match width_of(next).checked_sub(width_of(line)) {
+                    Some(2) => blocks_of_two += 1,
+                    Some(4) => blocks_of_four += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+    // Blocks decide when there are enough of them: aligned parameters at odd
+    // columns make a 2-space file look messy otherwise.
+    let two = if blocks_of_two + blocks_of_four >= 3 { blocks_of_two > blocks_of_four } else { !messy && odd_twos * 5 >= indents.len() };
+    if two { "  ".into() } else { fallback.unwrap_or("    ").into() }
 }
 
 /// Java aligns a declaration's parameters under the first one: the column
@@ -4534,6 +4592,40 @@ mod tests {
         assert_eq!(
             w(Wrapping { array_init: Wrap::ChopIfLong, ..Wrapping::JAVA }, annotated),
             "class A {\n    @SuppressWarnings({\"unchecked\",\n            \"rawtypes\",\n            \"deprecation\",\n            \"unused\",\n            \"ConstantConditions\",\n            \"FieldCanBeLocal\",\n            \"SpellCheckingInspection\"})\n    @Config(sdk = {Build.VERSION_CODES.P,\n            Build.VERSION_CODES.Q,\n            Build.VERSION_CODES.R,\n            Build.VERSION_CODES.S,\n            Build.VERSION_CODES.TIRAMISU})\n    void f() {\n    }\n}"
+        );
+    }
+
+    #[test]
+    fn keeps_two_spaces_with_aligned_parameters() {
+        // Parameters aligned at odd columns don't make a 2-space file 4.
+        let text = "class A {\n  void draw(int a,\n            int b) {\n    go();\n  }\n\n  void x(int c,\n         int d) {\n    go();\n  }\n\n  void y() {\n    if (a) {\n      go();\n    }\n  }\n}\n";
+        assert_eq!(reformat(ImportStyle::Java, text, None), text);
+    }
+
+    #[test]
+    fn wraps_throws_keyword_and_annotation_parameters() {
+        let w = |wrapping: Wrapping, text: &str| {
+            let style = IndentStyle { wrapping: Some(wrapping), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let text = "class A {\n    public static Bitmap decodeSampledBitmapFromStream(InputStream stream, int width, int height, int sample) throws IOException {\n        g();\n    }\n}";
+        assert_eq!(w(Wrapping::JAVA, text), text);
+        assert_eq!(
+            w(Wrapping { throws_keyword: Wrap::WrapIfLong, ..Wrapping::JAVA }, text),
+            "class A {\n    public static Bitmap decodeSampledBitmapFromStream(InputStream stream, int width, int height, int sample)\n            throws IOException {\n        g();\n    }\n}"
+        );
+        // Written that way: kept, the body the method's.
+        let laid = "class A {\n    void f()\n    throws IOException {\n        g();\n    }\n}";
+        assert_eq!(w(Wrapping::JAVA, laid), "class A {\n    void f()\n            throws IOException {\n        g();\n    }\n}");
+        let annotated = "class A {\n    @Query(value = \"SELECT * FROM messages WHERE thread_id = :threadId\", nativeQuery = false, countQuery = \"SELECT COUNT(*)\")\n    void f() {\n    }\n}";
+        assert_eq!(w(Wrapping::JAVA, annotated), annotated);
+        // Method call arguments don't reach annotations; their own option does.
+        assert_eq!(w(Wrapping { call_args: Wrap::ChopIfLong, ..Wrapping::JAVA }, annotated), annotated);
+        assert_eq!(
+            w(Wrapping { annotation_params: Wrap::ChopIfLong, ..Wrapping::JAVA }, annotated),
+            "class A {\n    @Query(value = \"SELECT * FROM messages WHERE thread_id = :threadId\",\n            nativeQuery = false,\n            countQuery = \"SELECT COUNT(*)\")\n    void f() {\n    }\n}"
         );
     }
 

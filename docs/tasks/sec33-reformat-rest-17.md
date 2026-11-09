@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-17
 title: Reformat：Wrapping and Braces 页剩下的选项（第十七批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-17
+pr: 274
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,6 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：Java 的 Throws keyword（`Wrapping::throws_keyword`，settings.conf 第 28 位）和 Annotation parameters（`Wrapping::annotation_params`，第 29 位），设置页用 `wrap_option`。`chop` 里注解的括号（`annotation_paren`）改走 annotation_params，不再跟着 call_args；Throws keyword 用 `throws_at` 在 `throws` 前断行。缩进器：行首是 `throws ` / `implements ` / `extends ` 的 Java 行按 `Reason::Header` 续行缩进。
+- 同一 PR 修了 `indent_unit`：先数行尾 `{` 的下一行多缩进 2 还是 4，样本 ≥ 3 时按多数定，不再管奇数列多不多（对齐的参数在奇数列，以前会把 2 空格文件当成乱的，给 4）。强制打开各种拆行时，第一遍拆完第二遍单位来回翻转的 4 个文件因此稳定了。Signal 语料：Java 改动行数 15768 → 5140，Kotlin 24934 → 24702，默认和强制选项第二遍都是 0 行。测试 `wraps_throws_keyword_and_annotation_parameters`、`keeps_two_spaces_with_aligned_parameters`。
+- 没做的（if / for / while 语句体换行、参数注解、Kotlin 注解）挪到 sec33-reformat-rest-18。
