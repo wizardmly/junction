@@ -428,6 +428,71 @@ impl BreakpointsView {
             .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Class filters (where it's thrown; - excludes):")).child(Input::new(&self.class_filters).small()))
             .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Catch class filters (where it's caught; - excludes):")).child(Input::new(&self.catch_filters).small()))
             .child(v_flex().gap_1().child(div().text_color(palette.text_secondary).child("Instance filters (this where it's thrown):")).child(Input::new(&self.instance_filters).small()))
+            .child(self.render_master(BreakpointRef::exception(&e.class), e.master.clone(), e.leave_enabled, cx))
+            .into_any_element()
+    }
+
+    /// Sets the selected breakpoint's master or After hit, line or
+    /// exception one.
+    fn set_master(&mut self, exception: bool, master: Option<Option<BreakpointRef>>, leave_enabled: Option<bool>, cx: &mut Context<Self>) {
+        if exception {
+            self.apply_exception(
+                |e| {
+                    if let Some(m) = master {
+                        e.master = m;
+                    }
+                    e.leave_enabled = leave_enabled.unwrap_or(e.leave_enabled);
+                },
+                cx,
+            );
+        } else {
+            self.apply(
+                |b| {
+                    if let Some(m) = master {
+                        b.master = m;
+                    }
+                    b.leave_enabled = leave_enabled.unwrap_or(b.leave_enabled);
+                },
+                cx,
+            );
+        }
+    }
+
+    /// "Disable until hitting the following breakpoint:" (any other line
+    /// or exception breakpoint) and, with one, After hit.
+    fn render_master(&self, own: BreakpointRef, current: Option<BreakpointRef>, leave_enabled: bool, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let palette = cx.palette().clone();
+        let exception = own.exception.is_some();
+        let lines = self.entries.iter().map(|(e, _)| (title(e), BreakpointRef::line(&e.file, e.line)));
+        let exceptions = self.exceptions.iter().map(|e| (exception_title(e), BreakpointRef::exception(&e.class)));
+        let others: Vec<(String, BreakpointRef)> = lines.chain(exceptions).filter(|(_, r)| *r != own).collect();
+        let shown = current.as_ref().and_then(|m| others.iter().find(|(_, r)| r == m)).map_or_else(|| "<None>".to_owned(), |(t, _)| t.clone());
+        let view = cx.entity();
+        let label = |text: &'static str| div().text_sm().text_color(palette.text_secondary).child(text);
+        let has_master = current.is_some();
+        v_flex()
+            .gap_2()
+            .child(label("Disable until hitting the following breakpoint:"))
+            .child(Button::new("breakpoints-master").small().outline().label(shown).icon(icons::CHEVRON_DOWN).dropdown_menu(move |mut menu, _, _| {
+                let pick = |master: Option<BreakpointRef>| {
+                    let view = view.clone();
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| view.update(cx, |this, cx| this.set_master(exception, Some(master.clone()), None, cx))
+                };
+                menu = menu.item(PopupMenuItem::new("<None>").checked(current.is_none()).on_click(pick(None)));
+                for (t, r) in &others {
+                    menu = menu.item(PopupMenuItem::new(t.clone()).checked(current.as_ref() == Some(r)).on_click(pick(Some(r.clone()))));
+                }
+                menu
+            }))
+            .when(has_master, |el| {
+                el.child(
+                    h_flex()
+                        .gap_3()
+                        .child(label("After hit:"))
+                        .child(Checkbox::new("breakpoints-disable-again").label("Disable again").checked(!leave_enabled).on_click(cx.listener(move |this, _, _, cx| this.set_master(exception, None, Some(false), cx))))
+                        .child(Checkbox::new("breakpoints-leave-enabled").label("Leave enabled").checked(leave_enabled).on_click(cx.listener(move |this, _, _, cx| this.set_master(exception, None, Some(true), cx)))),
+                )
+            })
             .into_any_element()
     }
 
@@ -462,34 +527,7 @@ impl BreakpointsView {
                 this.apply(|b| b.remove_once_hit = checked, cx);
             })))
             // IntelliJ's dependent breakpoints.
-            .child(label("Disable until hitting the following breakpoint:"))
-            .child({
-                let others: Vec<SavedBreakpoint> = self.entries.iter().map(|(e, _)| e.clone()).filter(|e| (&e.file, e.line) != (&b.file, b.line)).collect();
-                let master = b.master.as_ref().and_then(|m| others.iter().find(|e| e.file == m.file && e.line == m.line));
-                let current = b.master.clone();
-                let view = cx.entity();
-                Button::new("breakpoints-master").small().outline().label(master.map_or_else(|| "<None>".to_owned(), title)).icon(icons::CHEVRON_DOWN).dropdown_menu(move |mut menu, _, _| {
-                    let pick = |master: Option<BreakpointRef>| {
-                        let view = view.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| view.update(cx, |this, cx| this.apply(|b| b.master = master.clone(), cx))
-                    };
-                    menu = menu.item(PopupMenuItem::new("<None>").checked(current.is_none()).on_click(pick(None)));
-                    for e in &others {
-                        let r = BreakpointRef { file: e.file.clone(), line: e.line };
-                        menu = menu.item(PopupMenuItem::new(title(e)).checked(current.as_ref() == Some(&r)).on_click(pick(Some(r))));
-                    }
-                    menu
-                })
-            })
-            .when(b.master.is_some(), |el| {
-                el.child(
-                    h_flex()
-                        .gap_3()
-                        .child(label("After hit:"))
-                        .child(Checkbox::new("breakpoints-disable-again").label("Disable again").checked(!b.leave_enabled).on_click(cx.listener(|this, _, _, cx| this.apply(|b| b.leave_enabled = false, cx))))
-                        .child(Checkbox::new("breakpoints-leave-enabled").label("Leave enabled").checked(b.leave_enabled).on_click(cx.listener(|this, _, _, cx| this.apply(|b| b.leave_enabled = true, cx)))),
-                )
-            })
+            .child(self.render_master(BreakpointRef::line(&b.file, b.line), b.master.clone(), b.leave_enabled, cx))
             // IntelliJ's watchpoint options: what stops it.
             .when(b.field.is_some(), |el| {
                 el.child(label("Watch:"))
