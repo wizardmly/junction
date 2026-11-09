@@ -13,15 +13,14 @@ impl Workspace {
         let group = |editors: &[tabs::EditorTab], front: tabs::Front| {
             let tabs = editors
                 .iter()
-                .filter(|t| t.view.read(cx).revision().is_none())
                 .map(|t| {
                     let e = t.view.read(cx);
                     let (line, col) = e.cursor(cx);
-                    SessionTab { path: e.path().to_owned(), line, col, pinned: t.pinned }
+                    SessionTab { path: e.path().to_owned(), line, col, pinned: t.pinned, revision: e.revision().map(str::to_owned) }
                 })
                 .collect::<Vec<_>>();
             let active = match front {
-                tabs::Front::Editor(ix) => editors.get(ix).map(|t| t.view.read(cx)).filter(|e| e.revision().is_none()).map(|e| e.path().to_owned()),
+                tabs::Front::Editor(ix) => editors.get(ix).map(|t| t.view.read(cx)).map(|e| (e.path().to_owned(), e.revision().map(str::to_owned))),
                 _ => None,
             };
             (tabs, active)
@@ -32,12 +31,14 @@ impl Workspace {
         let ((tabs, active), split) = match other {
             Some((other, vertical)) if !other.0.is_empty() && !focused.0.is_empty() => {
                 let (first, second) = if self.active_group == 0 { (focused, other) } else { (other, focused) };
-                (first, Some(SplitSession { tabs: second.0, active: second.1, vertical, focused: self.active_group == 1 }))
+                let (active, active_revision) = second.1.unzip();
+                (first, Some(SplitSession { tabs: second.0, active, active_revision: active_revision.flatten(), vertical, focused: self.active_group == 1 }))
             }
             Some((other, _)) if focused.0.is_empty() => (other, None),
             _ => (focused, None),
         };
-        EditorSession { tabs, active, places: self.recent_places.to_vec(), logcat: Some(self.logcat_view.read(cx).layout(cx)), split, tool_windows: Some(self.tools.open_keys()) }
+        let (active, active_revision) = active.unzip();
+        EditorSession { tabs, active, active_revision: active_revision.flatten(), places: self.recent_places.to_vec(), logcat: Some(self.logcat_view.read(cx).layout(cx)), split, tool_windows: Some(self.tools.open_keys()) }
     }
 
     /// Saves the session of the project whose session is showing.
@@ -87,6 +88,26 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Reopens a session's tab (a working-tree file, or a file at a
+    /// revision) at its caret, pinned as it was.
+    fn reopen_tab(&mut self, tab: &SessionTab, window: &mut Window, cx: &mut Context<Self>) {
+        match &tab.revision {
+            None => self.open_at(tab.path.clone(), tab.line, tab.col, window, cx),
+            Some(revision) => {
+                self.open_file(tab.path.clone(), Some(revision.clone()), window, cx);
+                let shown = self.editor().cloned().filter(|e| e.read(cx).path() == tab.path && e.read(cx).revision() == Some(revision.as_str()));
+                if let Some(editor) = shown {
+                    editor.update(cx, |editor, cx| editor.go_to(tab.line, tab.col, window, cx));
+                }
+            }
+        }
+        if tab.pinned {
+            if let Some(open) = self.editors.iter_mut().find(|t| t.view.read(cx).path() == tab.path && t.view.read(cx).revision() == tab.revision.as_deref()) {
+                open.pinned = true;
+            }
+        }
+    }
+
     /// Reopens a project's tabs and carets and its Recent Locations, once
     /// per opening.
     pub(super) fn restore_session(&mut self, root: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -105,15 +126,10 @@ impl Workspace {
         if self.editors.is_empty() {
             let (tabs, active) = session.reopenable(|path| root.join(path).is_file());
             for tab in &tabs {
-                self.open_at(tab.path.clone(), tab.line, tab.col, window, cx);
-                if tab.pinned {
-                    if let Some(open) = self.editors.iter_mut().find(|t| t.view.read(cx).path() == tab.path) {
-                        open.pinned = true;
-                    }
-                }
+                self.reopen_tab(tab, window, cx);
             }
             if let Some(active) = active {
-                self.open_at(active.path, active.line, active.col, window, cx);
+                self.reopen_tab(&active, window, cx);
             }
             // The second tab group, as it was split.
             if let Some(split) = session.split.as_ref().filter(|_| !self.editors.is_empty()) {
@@ -122,12 +138,7 @@ impl Workspace {
                     self.split = Some(tabs::SplitGroup { editors: Vec::new(), front: tabs::Front::Diff, vertical: split.vertical });
                     self.swap_split();
                     for tab in tabs.iter().chain(&active) {
-                        self.open_at(tab.path.clone(), tab.line, tab.col, window, cx);
-                        if tab.pinned {
-                            if let Some(open) = self.editors.iter_mut().find(|t| t.view.read(cx).path() == tab.path) {
-                                open.pinned = true;
-                            }
-                        }
+                        self.reopen_tab(tab, window, cx);
                     }
                     if !split.focused {
                         self.focus_group(0, cx);
