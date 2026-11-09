@@ -202,7 +202,8 @@ impl CodeStyle {
         for lang in [StyleLang::Java, StyleLang::Kotlin] {
             let w = self.wrapping(lang);
             if w != Self::default_wrapping(lang) {
-                let values: Vec<String> = w.values().iter().map(|v| v.index().to_string()).collect();
+                let mut values: Vec<String> = w.values().iter().map(|v| v.index().to_string()).collect();
+                values.push(u8::from(w.keep_line_breaks).to_string());
                 out.push_str(&format!("code_style_{}_wrapping={}\n", lang.key(), values.join(",")));
             }
         }
@@ -228,9 +229,11 @@ impl CodeStyle {
             return true;
         }
         if let Some(lang) = key.strip_prefix("code_style_").and_then(|k| k.strip_suffix("_wrapping")).and_then(|k| StyleLang::ALL.into_iter().find(|l| l.key() == k)) {
-            let v: Option<Vec<Wrap>> = value.split(',').map(|n| n.trim().parse().ok().and_then(Wrap::from_index)).collect();
+            // Five wraps, then Keep line breaks (older files have none).
+            let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+            let v: Option<Vec<Wrap>> = parts.iter().take(5).map(|n| n.parse().ok().and_then(Wrap::from_index)).collect();
             if let Some(v) = v.and_then(|v| <[Wrap; 5]>::try_from(v).ok()) {
-                self.set_wrapping(lang, Wrapping::from_values(v));
+                self.set_wrapping(lang, Wrapping { keep_line_breaks: parts.get(5).is_none_or(|k| *k != "0"), ..Wrapping::from_values(v) });
             }
             return true;
         }
@@ -325,7 +328,9 @@ mod tests {
         assert!(style.lines().contains("code_style_kotlin_spaces=111111111111001111011111111111111111111111110010000000000000000000000\n"));
         assert!(!style.indents(StyleLang::Kotlin, None, None).spaces.after_comma);
         style.set_wrapping(StyleLang::Java, Wrapping { call_args: Wrap::ChopIfLong, ..Wrapping::JAVA });
-        assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0\n") && !style.lines().contains("kotlin_wrapping"));
+        style.set_wrapping(StyleLang::Kotlin, Wrapping { keep_line_breaks: false, ..Wrapping::KOTLIN });
+        assert!(style.lines().contains("code_style_kotlin_wrapping=2,2,1,1,1,0\n"));
+        assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0,1\n"));
         style.set_star_imports(ImportStyle::Java, StarImports { names: 99, members: 0, packages: vec!["a.b.*".into(), " ".into(), "c.**".into()] });
         assert!(style.lines().contains("code_style_java_imports=99,1,a.b.*;c.**\n") && !style.lines().contains("kotlin_imports"));
         let mut read = CodeStyle::default();
@@ -337,6 +342,8 @@ mod tests {
         assert!(!read.read("code_subject", "1"));
         // An older file's twelve values: the rest the defaults.
         assert!(read.read("code_style_kotlin_min_blank", "1,1,1,1,2,0,0,1,1,1,0,1"));
+        assert!(read.read("code_style_kotlin_wrapping", "2,2,1,1,1"));
+        assert_eq!(read.wrapping(StyleLang::Kotlin), Wrapping::KOTLIN);
         assert_eq!(read.min_blank(StyleLang::Kotlin), MinBlankLines { after_class_header: 2, ..Default::default() });
         assert_eq!(StyleLang::of_path("app/build.gradle.kts"), Some(StyleLang::Kotlin));
         assert_eq!(StyleLang::of_path("build.gradle"), Some(StyleLang::Groovy));

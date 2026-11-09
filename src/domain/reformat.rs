@@ -733,20 +733,23 @@ pub struct Wrapping {
     pub extends: Wrap,
     /// Assignments, initializers and Kotlin's expression bodies.
     pub assignment: Wrap,
+    /// Keep when reformatting › Line breaks: off joins the lines of a
+    /// wrapped list or expression (the options above wrap it again).
+    pub keep_line_breaks: bool,
 }
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4] }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true }
     }
 
     fn any(&self) -> bool {
@@ -787,6 +790,20 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     let kotlin = flavor == Flavor::Kotlin;
     // Kotlin's and Groovy's strings and colons.
     let templates = flavor != Flavor::Java;
+    let wrapping = match flavor {
+        Flavor::Groovy => None,
+        Flavor::Kotlin => Some(indents.wrapping.unwrap_or(Wrapping::KOTLIN)),
+        Flavor::Java => Some(indents.wrapping.unwrap_or(Wrapping::JAVA)),
+    };
+    let joined;
+    let (text, only) = match wrapping {
+        Some(w) if !w.keep_line_breaks => {
+            let (j, only) = join_line_breaks(text, kotlin, only, indents.right_margin.unwrap_or(RIGHT_MARGIN));
+            joined = j;
+            (joined.as_str(), only)
+        }
+        _ => (text, only),
+    };
     // The project's code style is the file's: its indent unit (4 spaces
     // when it has none yet). Columns count units when it's a tab.
     let lines = scan(text, templates);
@@ -1001,16 +1018,116 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             }
         }
     }
-    let wrapping = match flavor {
-        Flavor::Groovy => None,
-        Flavor::Kotlin => Some(indents.wrapping.unwrap_or(Wrapping::KOTLIN)),
-        Flavor::Java => Some(indents.wrapping.unwrap_or(Wrapping::JAVA)),
-    };
     if let Some(w) = wrapping.filter(Wrapping::any) {
         let wrapper = Wrapper { kotlin, unit: &unit, cont: pad(cont), margin: indents.right_margin.unwrap_or(RIGHT_MARGIN), w, tabs };
         out = chop_long_lines(out, choppable, &wrapper);
     }
     out.join("\n")
+}
+
+/// Keep when reformatting › Line breaks off: a line that continues a
+/// list (inside `(` or `[`) or an expression (after a binary operator or
+/// `=`, or starting with `.`, `?.`, `?:`, `&&`, `||`) joins the line
+/// before it. Not across comments, blank lines or strings; not a list
+/// with a trailing comma (Kotlin keeps it chopped). The lines join only
+/// when the result fits within `margin`. `only`: the lines that may
+/// join, returned shrunk by the lines joined.
+fn join_line_breaks(text: &str, kotlin: bool, only: Option<Range<usize>>, margin: usize) -> (String, Option<Range<usize>>) {
+    let lines = scan(text, kotlin);
+    let raw: Vec<&str> = text.split('\n').collect();
+    let is_code = |ix: usize, i: usize| lines[ix].code.get(i).copied().unwrap_or(false);
+    // The lists whose last item has a trailing comma: (line, byte) of `(`/`[`.
+    let mut trailing = std::collections::HashSet::new();
+    {
+        let mut stack: Vec<(usize, usize)> = Vec::new();
+        let mut last = ' ';
+        for (ix, line) in raw.iter().enumerate() {
+            for (i, c) in line.char_indices() {
+                if !is_code(ix, i) || c.is_whitespace() {
+                    continue;
+                }
+                match c {
+                    '(' | '[' | '{' => stack.push((ix, i)),
+                    ')' | ']' | '}' => {
+                        if let Some(open) = stack.pop() {
+                            if last == ',' && c != '}' {
+                                trailing.insert(open);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                last = c;
+            }
+        }
+    }
+    // The code of a line: strings as `_`, comments left out, trimmed.
+    let code_of = |ix: usize| -> String {
+        let info = &lines[ix];
+        raw[ix]
+            .char_indices()
+            .filter(|(i, _)| !info.comment.get(*i).copied().unwrap_or(false))
+            .map(|(i, c)| if is_code(ix, i) { c } else { '_' })
+            .collect::<String>()
+            .trim()
+            .to_owned()
+    };
+    // Whether each line may join the one before it.
+    let mut joins = vec![false; raw.len()];
+    // Open brackets at the start of the line: (char, its list has a trailing comma).
+    let mut stack: Vec<(char, bool)> = Vec::new();
+    for (ix, info) in lines.iter().enumerate() {
+        let may = ix > 0 && only.as_ref().is_none_or(|r| r.contains(&ix) && r.contains(&(ix - 1)));
+        if may {
+            let prev_code = code_of(ix - 1);
+            let code = code_of(ix);
+            let commented = |ix: usize| lines[ix].comment.iter().any(|c| *c);
+            let in_code = info.starts_in.unwrap_or(State::Code) == State::Code;
+            let in_list = matches!(stack.last(), Some(('(' | '[', false)));
+            let operator = ["&&", "||", "+", "-", "*", "/", "%", "="].iter().any(|op| prev_code.ends_with(op))
+                && !["++", "--", "->"].iter().any(|op| prev_code.ends_with(op))
+                && !["@", "import ", "package "].iter().any(|w| prev_code.starts_with(w));
+            let leading = (code.starts_with('.') && !code.starts_with("..")) || ["?.", "?:", "&&", "||"].iter().any(|op| code.starts_with(op));
+            joins[ix] = in_code
+                && !code.is_empty()
+                && !prev_code.is_empty()
+                && !commented(ix)
+                && !commented(ix - 1)
+                && !prev_code.ends_with([';', '{', '}'])
+                && !prev_code.ends_with("->")
+                && (in_list && !code.starts_with('}') || operator || leading);
+        }
+        for &(at, c) in &info.brackets {
+            match c {
+                '(' | '[' | '{' => stack.push((c, trailing.contains(&(ix, at)))),
+                _ => drop(stack.pop()),
+            }
+        }
+    }
+    // Each run of lines that join becomes one line, when it fits.
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut joins_in = 0;
+    let mut ix = 0;
+    while ix < raw.len() {
+        let mut end = ix + 1;
+        while end < raw.len() && joins[end] {
+            end += 1;
+        }
+        let mut line = raw[ix].trim_end().to_owned();
+        for next in &raw[ix + 1..end] {
+            let next = next.trim();
+            let tight = next.starts_with([')', ']', '.']) || next.starts_with("?.") || line.ends_with(['(', '[']);
+            line = format!("{line}{}{next}", if tight { "" } else { " " });
+        }
+        if end > ix + 1 && width(&line) <= margin {
+            out.push(line);
+            joins_in += only.as_ref().map_or(0, |r| (ix + 1..end).filter(|i| r.contains(i)).count());
+        } else {
+            out.extend(raw[ix..end].iter().map(|l| (*l).to_owned()));
+        }
+        ix = end;
+    }
+    (out.join("\n"), only.map(|r| r.start..r.end.saturating_sub(joins_in)))
 }
 
 /// IntelliJ's default right margin (Code Style › General › Hard wrap at).
@@ -3134,6 +3251,29 @@ mod tests {
         let kt = "fun f() {\nval result = repository.load(firstArgument, secondArgument, third)\n}";
         assert_eq!(w(true, Wrapping { call_args: Wrap::WrapIfLong, ..Wrapping::KOTLIN }, kt), "fun f() {\n    val result = repository.load(\n        firstArgument, secondArgument, third\n    )\n}");
         assert_eq!(w(true, Wrapping::JAVA, kt), "fun f() {\n    val result = repository.load(firstArgument, secondArgument, third)\n}");
+    }
+
+    #[test]
+    fn joins_line_breaks_when_not_kept() {
+        let f = |kotlin: bool, w: Wrapping, text: &str, only: Option<Range<usize>>| {
+            let style = IndentStyle { wrapping: Some(Wrapping { keep_line_breaks: false, ..w }), ..Default::default() };
+            let st = if kotlin { ImportStyle::Kotlin } else { ImportStyle::Java };
+            let once = reformat_indented(st, text, only.clone(), &style);
+            if only.is_none() {
+                assert_eq!(reformat_indented(st, &once, None, &style), once, "stable");
+            }
+            once
+        };
+        let java = "class A {\n    void f(int a,\n           int b) {\n        int x = a +\n                b;\n        g(a, // why\n          b);\n        s.append(a)\n                .append(b);\n        if (a > 0 &&\n                b > 0) {\n            h();\n        }\n    }\n}";
+        assert_eq!(
+            f(false, Wrapping::JAVA, java, None),
+            "class A {\n    void f(int a, int b) {\n        int x = a + b;\n        g(a, // why\n                b);\n        s.append(a).append(b);\n        if (a > 0 && b > 0) {\n            h();\n        }\n    }\n}"
+        );
+        // Only the selected lines.
+        assert_eq!(f(false, Wrapping::JAVA, java, Some(1..3)), "class A {\n    void f(int a, int b) {\n        int x = a +\n                b;\n        g(a, // why\n          b);\n        s.append(a)\n                .append(b);\n        if (a > 0 &&\n                b > 0) {\n            h();\n        }\n    }\n}");
+        // Kotlin: joined, then chopped again when long; a trailing comma keeps the list as it is.
+        let kt = "fun f() {\n    val x =\n        listOf(\n            1,\n            2\n        )\n    val y = listOf(\n        1,\n        2,\n    )\n    val z = s\n        ?.trim()\n        ?: \"\"\n    val t: String?\n    import()\n}";
+        assert_eq!(f(true, Wrapping::KOTLIN, kt, None), "fun f() {\n    val x = listOf(1, 2)\n    val y = listOf(\n        1,\n        2,\n    )\n    val z = s?.trim() ?: \"\"\n    val t: String?\n    import()\n}");
     }
 
     #[test]
