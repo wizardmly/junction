@@ -761,6 +761,9 @@ pub struct Wrapping {
     /// Java's parameter annotations (PARAMETER_ANNOTATION_WRAP): a
     /// declaration parameter's annotations each end a line.
     pub param_annotations: AnnotationWrap,
+    /// Java's Keep when reformatting: simple blocks, methods, lambdas and
+    /// classes, and control statements, in one line.
+    pub keep_one_line: KeepOneLine,
     /// Java's Annotation parameters (ANNOTATION_PARAMETER_WRAP).
     pub annotation_params: Wrap,
 }
@@ -825,6 +828,44 @@ pub struct Braces {
     pub force: [Force; 3],
 }
 
+/// Wrapping and Braces › Keep when reformatting (IntelliJ's
+/// KEEP_SIMPLE_BLOCKS_IN_ONE_LINE, KEEP_SIMPLE_METHODS_IN_ONE_LINE,
+/// KEEP_SIMPLE_LAMBDAS_IN_ONE_LINE, KEEP_SIMPLE_CLASSES_IN_ONE_LINE and
+/// KEEP_CONTROL_STATEMENT_IN_ONE_LINE): what may stay on one line. IntelliJ
+/// keeps only control statements; Junction keeps all, as the file has them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct KeepOneLine {
+    /// `if (a) { b(); }`, `{}` of a statement.
+    pub blocks: bool,
+    /// `void f() { g(); }`, `void f() {}`.
+    pub methods: bool,
+    /// `() -> { g(); }`.
+    pub lambdas: bool,
+    /// `class A {}`.
+    pub classes: bool,
+    /// `if (a) return;`.
+    pub control: bool,
+}
+
+impl KeepOneLine {
+    pub const ALL: KeepOneLine = KeepOneLine { blocks: true, methods: true, lambdas: true, classes: true, control: true };
+    pub const LABELS: [&'static str; 5] = ["Simple blocks in one line", "Simple methods in one line", "Simple lambdas in one line", "Simple classes in one line", "Control statement in one line"];
+
+    pub fn values(&self) -> [bool; 5] {
+        [self.blocks, self.methods, self.lambdas, self.classes, self.control]
+    }
+
+    pub fn from_values(v: [bool; 5]) -> Self {
+        KeepOneLine { blocks: v[0], methods: v[1], lambdas: v[2], classes: v[3], control: v[4] }
+    }
+}
+
+impl Default for KeepOneLine {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
 /// Wrapping and Braces › Force braces (IntelliJ's IF_BRACE_FORCE and the like).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Force {
@@ -868,21 +909,21 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
@@ -952,6 +993,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let (a, only) = wrap_annotations(&forced, false, &[class, method, field, w.local_annotations], only, margin);
                 let (a, only) = wrap_enum_constants(&a, w.enum_constants, only, margin);
                 let (a, only) = wrap_parameter_annotations(&a, w.param_annotations, only, margin);
+                let (a, only) = split_one_line_bodies(&a, w.keep_one_line, only);
                 wrapped_annotations = a;
                 (wrapped_annotations, only)
             };
@@ -1671,6 +1713,239 @@ fn wrap_parameter_annotations(text: &str, wrap: AnnotationWrap, only: Option<Ran
     }
     let only = only.map(|r| r.start..(r.end as isize + delta).max(r.start as isize) as usize);
     (out.join("\n"), only)
+}
+
+/// Java's Keep when reformatting turned off: a body opened and closed on
+/// one line (`void f() { g(); }`, `() -> {}`, `if (a) { b(); }`, `class
+/// A {}`) gets its own lines, a statement a line; a control statement's
+/// body (`if (a) return;`) the next line. The indenter indents them after.
+fn split_one_line_bodies(text: &str, keep: KeepOneLine, only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+    if keep == KeepOneLine::ALL {
+        return (text.to_owned(), only);
+    }
+    let mut text = text.to_owned();
+    let mut only = only;
+    // A split line can hold another body: split until nothing changes.
+    for _ in 0..64 {
+        let (next, next_only, changed) = split_bodies_once(&text, keep, only.clone());
+        text = next;
+        only = next_only;
+        if !changed {
+            break;
+        }
+    }
+    (text, only)
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum BodyOpen {
+    Class,
+    Block,
+    Paren,
+}
+
+fn split_bodies_once(text: &str, keep: KeepOneLine, only: Option<Range<usize>>) -> (String, Option<Range<usize>>, bool) {
+    let lines = scan(text, false);
+    let raw: Vec<&str> = text.split('\n').collect();
+    let bodies = declaration_braces(&raw, &lines);
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut delta: isize = 0;
+    let mut changed = false;
+    let mut stack: Vec<BodyOpen> = Vec::new();
+    for (ix, line) in raw.iter().enumerate() {
+        let info = &lines[ix];
+        let selected = only.as_ref().is_none_or(|r| r.contains(&ix));
+        let plain = info.starts_in.unwrap_or(State::Code) == State::Code && !info.comment.iter().any(|c| *c);
+        let mut parts = None;
+        if selected && plain {
+            parts = split_one_line_body(line, info, &bodies[ix], &stack, keep);
+            if parts.is_none() && !keep.control && stack.last() == Some(&BodyOpen::Block) {
+                parts = split_control_statement(line, info);
+            }
+        }
+        let mut braces = bodies[ix].iter();
+        for (_, c) in &info.brackets {
+            match c {
+                '{' => stack.push(if braces.next().copied().unwrap_or(false) { BodyOpen::Class } else { BodyOpen::Block }),
+                '(' | '[' => stack.push(BodyOpen::Paren),
+                _ => {
+                    stack.pop();
+                }
+            }
+        }
+        match parts {
+            Some(p) => {
+                delta += p.len() as isize - 1;
+                changed = true;
+                out.extend(p);
+            }
+            None => out.push((*line).to_owned()),
+        }
+    }
+    let only = only.map(|r| r.start..(r.end as isize + delta).max(r.start as isize) as usize);
+    (out.join("\n"), only, changed)
+}
+
+/// The first body on the line that opens and closes there and isn't kept.
+fn split_one_line_body(line: &str, info: &Line, bodies: &[bool], stack: &[BodyOpen], keep: KeepOneLine) -> Option<Vec<String>> {
+    let mut open: Vec<BodyOpen> = stack.to_vec();
+    let mut flags = bodies.iter();
+    let brackets = &info.brackets;
+    let mut i = 0;
+    while i < brackets.len() {
+        let (pos, c) = brackets[i];
+        match c {
+            '{' => {
+                let class = flags.next().copied().unwrap_or(false);
+                let mut depth = 0;
+                let mut close = None;
+                for (j, &(at, b)) in brackets.iter().enumerate().skip(i) {
+                    match b {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                close = Some((j, at));
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let Some((j, end)) = close else {
+                    open.push(if class { BodyOpen::Class } else { BodyOpen::Block });
+                    i += 1;
+                    continue;
+                };
+                let before = line[..pos].trim_end();
+                let enclosing = open.last().copied();
+                let kept = if before.is_empty() || is_array_initializer(before) {
+                    None
+                } else if class {
+                    Some(keep.classes)
+                } else if before.ends_with("->") {
+                    Some(keep.lambdas)
+                } else if before.contains("switch (") || before.contains("switch(") {
+                    None
+                } else if enclosing.is_none_or(|o| o == BodyOpen::Class) {
+                    Some(if member_kind(before, false) == Some(Member::Method) { keep.methods } else { keep.blocks })
+                } else if enclosing == Some(BodyOpen::Block) {
+                    Some(keep.blocks)
+                } else {
+                    None
+                };
+                if kept == Some(false) {
+                    return Some(split_body_at(line, info, pos, end));
+                }
+                // Kept: past its `}`, its own bodies with it.
+                for b in &brackets[i + 1..=j] {
+                    if b.1 == '{' {
+                        flags.next();
+                    }
+                }
+                i = j + 1;
+                continue;
+            }
+            '(' | '[' => open.push(BodyOpen::Paren),
+            _ => {
+                open.pop();
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `head {` / a statement a line / `}` and what follows it.
+fn split_body_at(line: &str, info: &Line, open: usize, close: usize) -> Vec<String> {
+    let lead = &line[..line.len() - line.trim_start().len()];
+    let mut out = vec![line[..=open].trim_end().to_owned()];
+    let code = |i: usize| info.code.get(i).copied().unwrap_or(false);
+    let mut depth = 0i32;
+    let mut start = open + 1;
+    let bytes = line.as_bytes();
+    let mut i = open + 1;
+    while i < close {
+        if code(i) {
+            match bytes[i] {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' => depth -= 1,
+                b'}' => {
+                    depth -= 1;
+                    // A nested block ends a statement unless `else` and the like go on.
+                    let next = line[i + 1..close].trim_start();
+                    let goes_on = ["else", "catch", "finally", "while"].iter().any(|k| next.starts_with(k)) || next.starts_with(|c: char| !(c.is_alphabetic() || c == '_' || c == '@'));
+                    if depth == 0 && !next.is_empty() && !goes_on {
+                        out.push(format!("{lead}    {}", line[start..=i].trim()));
+                        start = i + 1;
+                    }
+                }
+                b';' if depth == 0 => {
+                    out.push(format!("{lead}    {}", line[start..=i].trim()));
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    let last = line[start..close].trim();
+    if !last.is_empty() {
+        out.push(format!("{lead}    {last}"));
+    }
+    out.push(format!("{lead}{}", line[close..].trim_end()));
+    out
+}
+
+/// `if (a) return;` → `if (a)` / `return;`; `for`, `while`, `else` too.
+fn split_control_statement(line: &str, info: &Line) -> Option<Vec<String>> {
+    let lead_len = line.len() - line.trim_start().len();
+    let mut at = lead_len;
+    let mut rest = &line[at..];
+    if let Some(r) = rest.strip_prefix('}') {
+        at += 1 + (r.len() - r.trim_start().len());
+        rest = r.trim_start();
+    }
+    let keyword_at = |s: &str, k: &str| s.strip_prefix(k).is_some_and(|r| r.starts_with([' ', '(']));
+    let split = if keyword_at(rest, "else") && !keyword_at(rest[4..].trim_start(), "if") {
+        let body = rest[4..].trim_start();
+        (!body.is_empty() && !body.starts_with('{')).then(|| at + 4)
+    } else {
+        let mut r = rest;
+        let mut a = at;
+        if keyword_at(r, "else") {
+            let skip = 4 + (r[4..].len() - r[4..].trim_start().len());
+            a += skip;
+            r = &r[skip..];
+        }
+        if !["if", "for", "while"].iter().any(|k| keyword_at(r, k)) {
+            return None;
+        }
+        let paren = a + r.find('(')?;
+        let mut depth = 0;
+        let mut close = None;
+        for (p, c) in &info.brackets {
+            if *p < paren {
+                continue;
+            }
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(*p);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close?;
+        let body = line[close + 1..].trim();
+        (!body.is_empty() && !body.starts_with('{') && body != ";").then_some(close + 1)
+    }?;
+    let lead = &line[..lead_len];
+    Some(vec![line[..split].trim_end().to_owned(), format!("{lead}    {}", line[split..].trim())])
 }
 
 /// A line's leading annotations (`@A`, `@a.B(x = "(")`) and the rest; not
@@ -4738,6 +5013,31 @@ mod tests {
             w(Wrapping { array_init: Wrap::ChopIfLong, ..Wrapping::JAVA }, annotated),
             "class A {\n    @SuppressWarnings({\"unchecked\",\n            \"rawtypes\",\n            \"deprecation\",\n            \"unused\",\n            \"ConstantConditions\",\n            \"FieldCanBeLocal\",\n            \"SpellCheckingInspection\"})\n    @Config(sdk = {Build.VERSION_CODES.P,\n            Build.VERSION_CODES.Q,\n            Build.VERSION_CODES.R,\n            Build.VERSION_CODES.S,\n            Build.VERSION_CODES.TIRAMISU})\n    void f() {\n    }\n}"
         );
+    }
+
+    #[test]
+    fn splits_simple_bodies_when_not_kept() {
+        let java = |keep: [bool; 5], text: &str| {
+            let style = IndentStyle { wrapping: Some(Wrapping { keep_one_line: KeepOneLine::from_values(keep), ..Wrapping::JAVA }), ..Default::default() };
+            reformat_indented(ImportStyle::Java, text, None, &style)
+        };
+        let text = "class A {\n    void f() { g(); h(); }\n\n    void e() {}\n\n    void k() {\n        x(new String[] {a}, new int[]{1});\n        if (a) { b(); } else { c(); }\n        run(() -> { go(); });\n        if (a) return;\n        for (int i = 0; i < n; i++) go(i);\n        int[] x = {1, 2};\n        class B {}\n    }\n}\n";
+        assert_eq!(java([true; 5], text), text);
+        // IntelliJ's defaults: only control statements stay.
+        let all = java([false, false, false, false, true], text);
+        assert_eq!(
+            all,
+            "class A {\n    void f() {\n        g();\n        h();\n    }\n\n    void e() {\n    }\n\n    void k() {\n        x(new String[] {a}, new int[]{1});\n        if (a) {\n            b();\n        } else {\n            c();\n        }\n        run(() -> {\n            go();\n        });\n        if (a) return;\n        for (int i = 0; i < n; i++) go(i);\n        int[] x = {1, 2};\n        class B {\n        }\n    }\n}\n"
+        );
+        assert_eq!(java([false, false, false, false, true], &all), all);
+        // One kind at a time.
+        assert_eq!(java([true, false, true, true, true], text), text.replace("void f() { g(); h(); }", "void f() {\n        g();\n        h();\n    }").replace("void e() {}", "void e() {\n    }"));
+        assert_eq!(java([true, true, false, true, true], text), text.replace("run(() -> { go(); });", "run(() -> {\n            go();\n        });"));
+        let control = java([true, true, true, true, false], text);
+        assert!(control.contains("        if (a)\n            return;\n        for (int i = 0; i < n; i++)\n            go(i);\n"), "{control}");
+        assert_eq!(java([true, true, true, true, false], &control), control);
+        let chain = "class A {\n    void k() {\n        if (a) b();\n        else if (c) d();\n        else e();\n    }\n}\n";
+        assert_eq!(java([true, true, true, true, false], chain), "class A {\n    void k() {\n        if (a)\n            b();\n        else if (c)\n            d();\n        else\n            e();\n    }\n}\n");
     }
 
     #[test]
