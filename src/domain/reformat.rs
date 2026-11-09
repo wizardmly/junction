@@ -190,12 +190,12 @@ pub struct Spaces {
     /// Kotlin's In simple one line methods: `{ x }` for a lambda or a
     /// function body on one line (default on; other blocks always `{ x }`).
     pub simple_braces: bool,
-    /// Java's Within, in `WITHIN` order (all off by default).
-    pub within: [bool; 17],
+    /// Java's Within, in `Within` order (all off by default).
+    pub within: [bool; 22],
 }
 
 /// How many values `Spaces::values` has.
-pub const SPACES_LEN: usize = 64;
+pub const SPACES_LEN: usize = 69;
 
 /// Java's Within options, in `Spaces::within` order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,6 +217,13 @@ enum Within {
     Synchronized,
     Cast,
     Annotation,
+    /// Code braces: a one-line block's `{ x }` (`{ }` when empty).
+    CodeBraces,
+    AngleBrackets,
+    RecordHeader,
+    Deconstruction,
+    /// Spaces inside block braces when body is present.
+    BlockBody,
 }
 
 impl Default for Spaces {
@@ -239,7 +246,7 @@ impl Default for Spaces {
             around_unary: false,
             around_range: false,
             simple_braces: true,
-            within: [false; 17],
+            within: [false; 22],
         }
     }
 }
@@ -317,10 +324,15 @@ impl Spaces {
         "Within: 'synchronized' parentheses",
         "Within: Type cast parentheses",
         "Within: Annotation parentheses",
+        "Within: Code braces",
+        "Within: Angle brackets",
+        "Within: Record header",
+        "Within: Deconstruction list",
+        "Within: Spaces inside block braces when body is present",
     ];
     /// Which of `values` each language's page shows, in IntelliJ's order.
-    pub const JAVA: [usize; 54] = [
-        0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 22, 23, 44, 40, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 14, 15, 16, 17, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 36, 37, 38, 39, 12, 13,
+    pub const JAVA: [usize; 59] = [
+        0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 22, 23, 44, 40, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 14, 15, 16, 17, 64, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 65, 66, 67, 68, 36, 37, 38, 39, 12, 13,
     ];
     pub const KOTLIN: [usize; 23] = [0, 1, 2, 4, 6, 8, 9, 10, 11, 22, 23, 44, 45, 41, 42, 12, 13, 18, 19, 20, 21, 46, 43];
 
@@ -336,6 +348,7 @@ impl Spaces {
             a[0], a[1], a[2], a[3],
             self.around_unary, self.around_range, self.simple_braces,
             w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15], w[16],
+            w[17], w[18], w[19], w[20], w[21],
         ]
     }
 
@@ -358,7 +371,7 @@ impl Spaces {
             around_unary: v[44],
             around_range: v[45],
             simple_braces: v[46],
-            within: [v[47], v[48], v[49], v[50], v[51], v[52], v[53], v[54], v[55], v[56], v[57], v[58], v[59], v[60], v[61], v[62], v[63]],
+            within: [v[47], v[48], v[49], v[50], v[51], v[52], v[53], v[54], v[55], v[56], v[57], v[58], v[59], v[60], v[61], v[62], v[63], v[64], v[65], v[66], v[67], v[68]],
         }
     }
 
@@ -2058,6 +2071,53 @@ fn java_within(line: &str, spaces: &Spaces) -> String {
     let mut open: Vec<(usize, Option<Within>)> = Vec::new();
     let mut after_open: Vec<Option<bool>> = vec![None; chars.len()];
     let mut before_close: Vec<Option<bool>> = vec![None; chars.len()];
+    let mut last_closed: Option<Within> = None;
+    // Type arguments and parameters: `List< String >`, not `a < b`.
+    for (i, &c) in chars.iter().enumerate() {
+        if c != '<' || !code[i] || i == 0 || !(chars[i - 1].is_alphanumeric() || matches!(chars[i - 1], '_' | '.' | ' ')) {
+            continue;
+        }
+        if chars[i - 1] == ' ' {
+            // `public <T> T f(`: after a modifier or at the start.
+            let before: String = chars[..i].iter().collect();
+            if !matches!(last_word(before.trim_end()), "public" | "private" | "protected" | "static" | "final" | "abstract" | "synchronized" | "default" | "native") {
+                continue;
+            }
+        }
+        let mut depth = 0;
+        let mut close = None;
+        for (j, &d) in chars.iter().enumerate().skip(i) {
+            match d {
+                '<' => depth += 1,
+                '>' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(j);
+                        break;
+                    }
+                }
+                _ if d.is_alphanumeric() || matches!(d, '_' | ' ' | ',' | '.' | '?' | '&' | '[' | ']' | '@' | '$') => {}
+                _ => break,
+            }
+        }
+        let Some(close) = close else { continue };
+        if chars[i + 1..close].windows(2).any(|w| w == ['&', '&']) {
+            continue;
+        }
+        if chars[i + 1..close].iter().all(|c| *c == ' ') {
+            // A diamond stays `<>`.
+            after_open[i] = Some(false);
+            before_close[close] = Some(false);
+            continue;
+        }
+        // `a < b > c` isn't one: a type starts with a letter or `?`.
+        let first = chars[i + 1..close].iter().find(|c| **c != ' ');
+        if first.is_some_and(|f| f.is_alphabetic() || *f == '?' || *f == '@') {
+            let on = spaces.within[Within::AngleBrackets as usize];
+            after_open[i] = Some(on);
+            before_close[close] = Some(on);
+        }
+    }
     for (i, &c) in chars.iter().enumerate() {
         if !code[i] || !matches!(c, '(' | '[' | '{' | ')' | ']' | '}') {
             continue;
@@ -2065,17 +2125,44 @@ fn java_within(line: &str, spaces: &Spaces) -> String {
         let before: String = chars[..i].iter().collect();
         let before = before.trim_end();
         match c {
-            '(' => open.push((i, Some(paren_kind(before)))),
+            '(' => {
+                let word = last_word(before);
+                let previous = last_word(before[..before.len() - word.len()].trim_end());
+                let enclosing = open.last().and_then(|(_, k)| *k);
+                let pattern = word.starts_with(|c: char| c.is_uppercase()) && (matches!(previous, "instanceof" | "case") || enclosing == Some(Within::Deconstruction));
+                let kind = if previous == "record" {
+                    Within::RecordHeader
+                } else if pattern {
+                    Within::Deconstruction
+                } else {
+                    paren_kind(before)
+                };
+                open.push((i, Some(kind)));
+            }
             '[' => open.push((i, before.ends_with(|p: char| p.is_alphanumeric() || matches!(p, '_' | ')' | ']')).then_some(Within::Brackets))),
             '{' => {
                 let enclosing = open.last().and_then(|(_, k)| *k);
                 let initializer = before.ends_with('=') || before.ends_with(']') || (before.ends_with([',', '{', '(']) && matches!(enclosing, Some(Within::ArrayInitializer | Within::Annotation)));
-                open.push((i, initializer.then_some(Within::ArrayInitializer)));
+                // A code block: after a statement's or method's `)` (not a
+                // record's header), a lambda's `->`, `else`, `try`, ….
+                let block = before.ends_with(')') && !matches!(last_closed, Some(Within::RecordHeader | Within::Annotation)) || before.ends_with("->") || matches!(last_word(before), "else" | "try" | "finally" | "do" | "static");
+                open.push((i, if initializer { Some(Within::ArrayInitializer) } else if block { Some(Within::CodeBraces) } else { None }));
             }
             ')' | ']' | '}' => {
                 let Some((at, kind)) = open.pop() else { continue };
+                last_closed = kind;
                 let Some(mut kind) = kind else { continue };
                 let empty = chars[at + 1..i].iter().all(|c| *c == ' ');
+                if kind == Within::CodeBraces {
+                    // Off (with Spaces inside block braces off too): kept as
+                    // written, as with array initializers.
+                    let on = spaces.within[Within::CodeBraces as usize] || !empty && spaces.within[Within::BlockBody as usize];
+                    if on {
+                        after_open[at] = Some(true);
+                        before_close[i] = Some(true);
+                    }
+                    continue;
+                }
                 if kind == Within::Cast {
                     // `(Type) x`: a cast only when an operand follows.
                     let next = chars[i + 1..].iter().find(|c| **c != ' ');
@@ -2540,7 +2627,7 @@ mod tests {
         let text = "class A {\n    @Ann(x = 1)\n    int f(int a, int[] b) {\n        if (a > 0 && (b[a] + 1) > 2) {\n            g((String) o, foo(), new int[] {1}, new int[] {});\n        }\n        for (int i : b) {\n            synchronized (this) {\n                i = - i + ~ a - ++ a + a ++;\n            }\n        }\n        return ! done ? -1 : (int) - a;\n    }\n}\n";
         // The defaults: none inside, unary operators joined.
         assert_eq!(java(text, Spaces::default()), text.replace("- i", "-i").replace("~ a", "~a").replace("++ a", "++a").replace("a ++", "a++").replace("! done", "!done").replace("(int) - a", "(int) -a"));
-        let on = Spaces { within: [true; 17], around_unary: true, ..Default::default() };
+        let on = Spaces { within: [true; 22], around_unary: true, ..Default::default() };
         assert_eq!(
             java(text, on),
             "class A {\n    @Ann( x = 1 )\n    int f( int a, int[] b ) {\n        if ( a > 0 && ( b[ a ] + 1 ) > 2 ) {\n            g( ( String ) o, foo( ), new int[] { 1 }, new int[] { } );\n        }\n        for ( int i : b ) {\n            synchronized ( this ) {\n                i = - i + ~ a - ++ a + a ++;\n            }\n        }\n        return ! done ? - 1 : ( int ) - a;\n    }\n}\n"
@@ -2551,6 +2638,27 @@ mod tests {
         assert!(plain.contains("\n+ b;") || plain.contains(" + b;"));
         assert_eq!(java(continued, on), plain.replace("void f()", "void f( )"));
         assert_eq!(java("f( /* c */ a);\n", Spaces::default()), "f( /* c */ a);\n");
+    }
+
+    #[test]
+    fn java_within_braces_angles_records() {
+        let java = |text: &str, spaces: Spaces| reformat_indented(ImportStyle::Java, text, None, &IndentStyle { spaces, ..Default::default() });
+        let text = "class A {\n    void f() {return;}\n\n    void e() {}\n\n    List< byte[] > a = new ArrayList< >();\n\n    record P(int x, int y) {}\n\n    void g() {\n        if (o instanceof P(int x, int y) && a < b && c > d) {}\n        Runnable r = () -> { go(); };\n    }\n}\n";
+        // The defaults: no spaces in type arguments; braces as written.
+        assert_eq!(java(text, Spaces::default()), text.replace("List< byte[] > a = new ArrayList< >()", "List<byte[]> a = new ArrayList<>()"));
+        let mut within = [false; 22];
+        within[Within::CodeBraces as usize] = true;
+        within[Within::AngleBrackets as usize] = true;
+        within[Within::RecordHeader as usize] = true;
+        within[Within::Deconstruction as usize] = true;
+        assert_eq!(
+            java(text, Spaces { within, ..Default::default() }),
+            "class A {\n    void f() { return; }\n\n    void e() { }\n\n    List< byte[] > a = new ArrayList<>();\n\n    record P( int x, int y ) {}\n\n    void g() {\n        if (o instanceof P( int x, int y ) && a < b && c > d) { }\n        Runnable r = () -> { go(); };\n    }\n}\n"
+        );
+        // Spaces inside block braces when body is present: not the empty ones.
+        let mut body = [false; 22];
+        body[Within::BlockBody as usize] = true;
+        assert_eq!(java("class A {\n    void f() {return;}\n\n    void e() {}\n}\n", Spaces { within: body, ..Default::default() }), "class A {\n    void f() { return; }\n\n    void e() {}\n}\n");
     }
 
     #[test]
