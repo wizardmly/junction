@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-29
 title: Reformat：Wrapping and Braces 页剩下的选项（第二十九批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-29
+pr: 286
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,6 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：Kotlin 的 `Wrapping::when_align` / `when_break`（settings.conf wrapping 第 66–67 位，`when_break` 缺省为开）。新的 `when_entries` 在缩进之后、`chop_long_lines` 之前处理排好的行：按括号栈找 `when (…) {` / `when {` 的块，块内第一层的行按“上一行以 `,` / `->` / `&&` / `||` / `=` 结尾或本行以 `->` / `.` / `?:` 开头就是续行”划分分支；对齐时把选区内分支第一个同层 `->` 补空格到最靠右的列；换行时多行分支后紧跟下一个分支就插空行（中间是注释行不插，照 IntelliJ 只管相邻的两个 WHEN_ENTRY）。注意代码串要按字节保持偏移（非 ASCII 字符串会让字符替换错位，语料里撞到过 `\u202e`）。
+- Signal Kotlin 语料默认多了 743 行空行，都是多行分支之后的，和 IntelliJ 默认（LINE_BREAK_AFTER_MULTILINE_WHEN_ENTRY = true）一致。
+- 没做：Java 的 Deconstruction list，Kotlin 的 Use continuation indent，留给 sec33-reformat-rest-30。

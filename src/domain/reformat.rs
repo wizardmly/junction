@@ -836,6 +836,13 @@ pub struct Wrapping {
     pub align_arrays: bool,
     /// Java's Annotation parameters (ANNOTATION_PARAMETER_WRAP).
     pub annotation_params: Wrap,
+    /// Kotlin's 'when' statements › Align 'when' branches in columns
+    /// (ALIGN_IN_COLUMNS_CASE_BRANCH, off): the branches' `->` in a column.
+    pub when_align: bool,
+    /// Kotlin's 'when' statements › Line break after multiline 'when' entry
+    /// (LINE_BREAK_AFTER_MULTILINE_WHEN_ENTRY, on): a blank line after a
+    /// branch over lines.
+    pub when_break: bool,
 }
 
 /// Wrapping and Braces › Class / Method / Field annotations (IntelliJ's
@@ -979,21 +986,21 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, align_ternary: self.align_ternary, align_throws: self.align_throws, align_extends: self.align_extends, align_assignment: self.align_assignment, align_chains: self.align_chains, align_arrays: self.align_arrays, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, align_ternary: self.align_ternary, align_throws: self.align_throws, align_extends: self.align_extends, align_assignment: self.align_assignment, align_chains: self.align_chains, align_arrays: self.align_arrays, when_align: self.when_align, when_break: self.when_break, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
@@ -1423,6 +1430,9 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             }
         }
     }
+    if let Some(w) = wrapping.filter(|w| kotlin && (w.when_align || w.when_break)) {
+        when_entries(&mut out, &mut choppable, w.when_align, w.when_break);
+    }
     if let Some(w) = wrapping.filter(Wrapping::any) {
         let wrapper = Wrapper { kotlin, unit: &unit, cont: pad(cont), margin: indents.right_margin.unwrap_or(RIGHT_MARGIN), w, tabs };
         let before = out.len();
@@ -1442,6 +1452,148 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         return text;
     }
     out.join("\n")
+}
+
+/// Kotlin's 'when' statements options over laid-out lines: Align 'when'
+/// branches in columns pads the selected branches' `->` to the furthest;
+/// Line break after multiline 'when' entry puts a blank line between a
+/// branch over lines and the next (none when a comment is between).
+fn when_entries(out: &mut Vec<String>, choppable: &mut Vec<bool>, align: bool, line_break: bool) {
+    struct When {
+        depth: usize,
+        // Per branch: its first and last line, and whether a comment line came before it.
+        entries: Vec<(usize, usize, bool)>,
+        comment: bool,
+        // The last line at the branches' level ends the branch's head (`a,`, `->`).
+        open: bool,
+        arrows: Vec<(usize, usize, usize)>,
+    }
+    let joined = out.join("\n");
+    let lines = scan(&joined, true);
+    let mut stack: Vec<Option<usize>> = Vec::new();
+    let mut whens: Vec<When> = Vec::new();
+    let mut done: Vec<When> = Vec::new();
+    for (i, (text, info)) in out.iter().zip(&lines).enumerate() {
+        let depth = stack.len();
+        // Byte for byte: strings and comments blanked.
+        let code: String = text.char_indices().map(|(k, c)| if info.comment.get(k).copied().unwrap_or(false) { " ".repeat(c.len_utf8()) } else if info.code.get(k).copied().unwrap_or(false) { c.to_string() } else { "_".repeat(c.len_utf8()) }).collect();
+        let trimmed = code.trim();
+        let comment_only = trimmed.is_empty() && !text.trim().is_empty();
+        if matches!(info.starts_in, Some(State::Code) | None) && (!trimmed.is_empty() || comment_only) {
+            if let Some(w) = whens.last_mut().filter(|w| depth >= w.depth) {
+                let lead_closer = trimmed.starts_with('}') || trimmed.starts_with(')');
+                if depth == w.depth && comment_only {
+                    w.comment = true;
+                } else if depth == w.depth && !lead_closer {
+                    let continues = w.open || ["->", ".", "?.", "?:", "&&", "||"].iter().any(|p| trimmed.starts_with(p));
+                    if continues {
+                        if let Some(e) = w.entries.last_mut() {
+                            e.1 = i;
+                        }
+                    } else {
+                        w.entries.push((i, i, w.comment));
+                        w.comment = false;
+                    }
+                    // The first `->` at the line's own level.
+                    if !trimmed.starts_with("->") {
+                        let bytes = code.as_bytes();
+                        let mut level = 0i32;
+                        let mut k = 0;
+                        while k + 1 < bytes.len() {
+                            match bytes[k] {
+                                b'(' | b'[' | b'{' => level += 1,
+                                b')' | b']' | b'}' => level -= 1,
+                                b'-' if level == 0 && bytes[k + 1] == b'>' => {
+                                    if choppable.get(i).copied().unwrap_or(false) {
+                                        w.arrows.push((i, k, text[..k].chars().count()));
+                                    }
+                                    break;
+                                }
+                                _ => {}
+                            }
+                            k += 1;
+                        }
+                    }
+                    w.open = [",", "->", "&&", "||", "="].iter().any(|p| trimmed.ends_with(p));
+                } else if !comment_only {
+                    if let Some(e) = w.entries.last_mut() {
+                        e.1 = i;
+                    }
+                }
+            }
+        }
+        for (at, c) in &info.brackets {
+            match c {
+                '{' => {
+                    let before = code.get(..*at).unwrap_or("").trim_end();
+                    let head = match before.strip_suffix(')') {
+                        Some(_) => {
+                            let mut level = 0;
+                            let mut open = None;
+                            for (k, ch) in before.char_indices().rev() {
+                                match ch {
+                                    ')' => level += 1,
+                                    '(' => {
+                                        level -= 1;
+                                        if level == 0 {
+                                            open = Some(k);
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            open.map_or("", |k| before[..k].trim_end())
+                        }
+                        None => before,
+                    };
+                    let is_when = head.ends_with("when") && !head[..head.len() - 4].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.');
+                    if is_when {
+                        whens.push(When { depth: stack.len() + 1, entries: Vec::new(), comment: false, open: false, arrows: Vec::new() });
+                        stack.push(Some(whens.len() - 1));
+                    } else {
+                        stack.push(None);
+                    }
+                }
+                '(' | '[' => stack.push(None),
+                _ => {
+                    if let Some(Some(_)) = stack.pop() {
+                        if let Some(w) = whens.pop() {
+                            done.push(w);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    done.extend(whens);
+    if align {
+        for w in &done {
+            let Some(max) = w.arrows.iter().map(|a| a.2).max() else { continue };
+            for &(line, at, col) in &w.arrows {
+                if col < max {
+                    out[line].insert_str(at, &" ".repeat(max - col));
+                }
+            }
+        }
+    }
+    if line_break {
+        let mut blank_before: Vec<usize> = Vec::new();
+        for w in &done {
+            for pair in w.entries.windows(2) {
+                let ((start, end, _), (next, _, comment)) = (pair[0], pair[1]);
+                if end > start && next == end + 1 && !comment && choppable.get(next).copied().unwrap_or(false) {
+                    blank_before.push(next);
+                }
+            }
+        }
+        blank_before.sort_unstable();
+        blank_before.dedup();
+        for &line in blank_before.iter().rev() {
+            out.insert(line, String::new());
+            choppable.insert(line, false);
+        }
+    }
 }
 
 /// Whether a line's code (strings blanked, comments gone) is a statement's
@@ -5405,7 +5557,7 @@ mod tests {
     #[test]
     fn when_branches_and_elvis() {
         let text = "val s = when (x) {\n1 ->\n\"one\"\nelse -> \"many\"\n}\nval n = a\n?: b";
-        assert_eq!(kt(text), "val s = when (x) {\n    1 ->\n        \"one\"\n    else -> \"many\"\n}\nval n = a\n    ?: b");
+        assert_eq!(kt(text), "val s = when (x) {\n    1 ->\n        \"one\"\n\n    else -> \"many\"\n}\nval n = a\n    ?: b");
     }
 
     #[test]
@@ -5534,7 +5686,8 @@ mod tests {
             reformat_indented(ImportStyle::Kotlin, text, None, &style),
             "fun f(x: Int) {\n    when (x) {\n        1 -> a()\n        2 -> b()\n\n        // Three.\n        3 -> {\n            c()\n        }\n\n        else -> d()\n    }\n    when {\n        x > 0 -> e()\n        else -> g()\n    }\n}"
         );
-        assert_eq!(kt(text), text);
+        // Line break after multiline 'when' entry: a blank line after the block.
+        assert_eq!(kt(text), text.replace("        }\n        else", "        }\n\n        else"));
     }
 
     #[test]
@@ -6017,6 +6170,26 @@ mod tests {
         let o = java(w, t);
         assert_eq!(o, "class A {\n    void k() {\n        String s = this.builder.append(a)\n                               .append(b)\n                               .toString();\n        x =\n        y = 5;\n        int[] v = {1, 2,\n                   3};\n        list.stream()\n            .map(f);\n        stream\n                .map(f);\n        x = new A.B()\n                .c();\n        y = new A().b()\n                   .c();\n    }\n}\n");
         assert_eq!(java(w, &o), o);
+    }
+
+    #[test]
+    fn lays_out_when_branches() {
+        let kotlin = |w: Wrapping, text: &str| reformat_indented(ImportStyle::Kotlin, text, None, &IndentStyle { wrapping: Some(w), ..Default::default() });
+        let t = "fun f(x: Int) = when (x) {\n    1 -> \"one\"\n    10, 11 -> {\n        g { a -> a }\n    }\n    // comment\n    100 -> \"x\"\n    else -> \"y\"\n}\n";
+        // Line break after multiline 'when' entry (on): a blank line after the block.
+        let broken = "fun f(x: Int) = when (x) {\n    1 -> \"one\"\n    10, 11 -> {\n        g { a -> a }\n    }\n    // comment\n    100 -> \"x\"\n    else -> \"y\"\n}\n";
+        assert_eq!(kotlin(Wrapping::KOTLIN, t), broken);
+        let u = "val y = when {\n    a -> b(\n        c,\n    )\n    else -> d\n}\n";
+        let o = kotlin(Wrapping::KOTLIN, u);
+        assert_eq!(o, "val y = when {\n    a -> b(\n        c,\n    )\n\n    else -> d\n}\n");
+        assert_eq!(kotlin(Wrapping::KOTLIN, &o), o);
+        let off = Wrapping { when_break: false, ..Wrapping::KOTLIN };
+        assert_eq!(kotlin(off, u), u);
+        // Align 'when' branches in columns: the arrows in a column.
+        let w = Wrapping { when_align: true, ..off };
+        let a = kotlin(w, t);
+        assert_eq!(a, "fun f(x: Int) = when (x) {\n    1      -> \"one\"\n    10, 11 -> {\n        g { a -> a }\n    }\n    // comment\n    100    -> \"x\"\n    else   -> \"y\"\n}\n");
+        assert_eq!(kotlin(w, &a), a);
     }
 
     #[test]
