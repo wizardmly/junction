@@ -843,6 +843,14 @@ pub struct Wrapping {
     /// (LINE_BREAK_AFTER_MULTILINE_WHEN_ENTRY, on): a blank line after a
     /// branch over lines.
     pub when_break: bool,
+    /// Java's Deconstruction list (DECONSTRUCTION_LIST_WRAP): a record
+    /// pattern's components (`instanceof P(int x, int y)`, `case P(…)`).
+    pub decon_wrap: Wrap,
+    /// Its Align when multiline (ALIGN_MULTILINE_DECONSTRUCTION_LIST_COMPONENTS, on).
+    pub align_decon: bool,
+    /// Its New line after '(' and Place ')' on new line
+    /// (NEW_LINE_AFTER_LPAREN_IN_DECONSTRUCTION_PATTERN / RPAREN_ON_NEW_LINE_IN_DECONSTRUCTION_PATTERN, both on).
+    pub decon_parens: [bool; 2],
 }
 
 /// Wrapping and Braces › Class / Method / Field annotations (IntelliJ's
@@ -986,25 +994,25 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2] };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2] };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2] }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, align_ternary: self.align_ternary, align_throws: self.align_throws, align_extends: self.align_extends, align_assignment: self.align_assignment, align_chains: self.align_chains, align_arrays: self.align_arrays, when_align: self.when_align, when_break: self.when_break, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, align_ternary: self.align_ternary, align_throws: self.align_throws, align_extends: self.align_extends, align_assignment: self.align_assignment, align_chains: self.align_chains, align_arrays: self.align_arrays, when_align: self.when_align, when_break: self.when_break, decon_wrap: self.decon_wrap, align_decon: self.align_decon, decon_parens: self.decon_parens, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
-        self.values().iter().any(|w| *w != Wrap::DoNotWrap) || self.ops.binary != Wrap::DoNotWrap || self.ops.ternary != Wrap::DoNotWrap || self.elvis != Wrap::DoNotWrap || self.array_init != Wrap::DoNotWrap || self.throws_list != Wrap::DoNotWrap || self.throws_keyword != Wrap::DoNotWrap || self.annotation_params != Wrap::DoNotWrap || self.assert_wrap != Wrap::DoNotWrap || self.record_wrap != Wrap::DoNotWrap
+        self.values().iter().any(|w| *w != Wrap::DoNotWrap) || self.ops.binary != Wrap::DoNotWrap || self.ops.ternary != Wrap::DoNotWrap || self.elvis != Wrap::DoNotWrap || self.array_init != Wrap::DoNotWrap || self.throws_list != Wrap::DoNotWrap || self.throws_keyword != Wrap::DoNotWrap || self.annotation_params != Wrap::DoNotWrap || self.assert_wrap != Wrap::DoNotWrap || self.record_wrap != Wrap::DoNotWrap || self.decon_wrap != Wrap::DoNotWrap
     }
 }
 
@@ -1063,7 +1071,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let [class, method, field] = w.annotations;
                 let (a, only) = wrap_annotations(&forced, true, &[class, method, field, w.local_annotations], only, margin);
                 let (a, only) = wrap_parameter_annotations(&a, true, w.param_annotations, only, margin);
-                let (a, only) = list_parens(&a, true, w.call_parens, w.param_parens, [true; 2], [false; 2], only);
+                let (a, only) = list_parens(&a, true, w.call_parens, w.param_parens, [true; 2], [false; 2], [false; 2], only);
                 wrapped_annotations = a;
                 (wrapped_annotations, only)
             } else {
@@ -1078,7 +1086,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let (a, only) = wrap_for_statements(&a, "try", w.resource_wrap, w.align_resources, only, margin);
                 let (a, only) = header_parens(&a, "for", w.for_parens, only);
                 let (a, only) = header_parens(&a, "try", w.resource_parens, only);
-                let (a, only) = list_parens(&a, false, w.call_parens, w.param_parens, w.record_parens, w.expr_parens, only);
+                let (a, only) = list_parens(&a, false, w.call_parens, w.param_parens, w.record_parens, w.expr_parens, w.decon_parens, only);
                 wrapped_annotations = a;
                 (wrapped_annotations, only)
             };
@@ -1116,6 +1124,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     let align_assignment = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_assignment);
     let align_chains = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_chains);
     let align_arrays = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_arrays);
+    let align_decon = wrapping.is_none_or(|w| w.align_decon);
     // The header list's lines so far are aligned.
     let mut header_aligned = false;
     // A header line's indent before that alignment: its body goes by it.
@@ -1155,7 +1164,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             out.push((*text_line).to_owned());
             choppable.push(false);
             let lead = text_line.len() - text_line.trim_start().len();
-            apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, [false; 2], text_line, &bodies[ix], flavor == Flavor::Java);
+            apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, [false; 3], text_line, &bodies[ix], flavor == Flavor::Java);
             blank_run = 0;
             kept = 0;
             continue;
@@ -1394,9 +1403,9 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             let base = if header { if selected { header_unaligned } else { at }.saturating_sub(cont) } else { at };
             let declared = || declaration_paren(&line_out).filter(|_| if record_header(&line_out) { align_records } else { align_params });
             let align = (flavor == Flavor::Java && !tabs).then(|| declared().or_else(|| for_paren(&line_out).filter(|_| align_for)).or_else(|| keyword_paren(&line_out, "try").filter(|_| align_resources))).flatten();
-            apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, [align_args && !tabs, align_arrays && !tabs], &line_out, &bodies[ix], flavor == Flavor::Java);
+            apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, [align_args && !tabs, align_arrays && !tabs, align_decon && !tabs], &line_out, &bodies[ix], flavor == Flavor::Java);
         } else {
-            apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, [false; 2], text_line, &bodies[ix], flavor == Flavor::Java);
+            apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, [false; 3], text_line, &bodies[ix], flavor == Flavor::Java);
         }
         out.push(line_out);
         choppable.push(selected && is_code_line);
@@ -2442,8 +2451,9 @@ fn header_parens(text: &str, keyword: &str, parens: [bool; 2], only: Option<Rang
 /// line and its `)` on a line of its own. Kotlin's calls the same, when the
 /// arguments span lines outside their lambdas and objects; Kotlin's
 /// declarations keep their line breaks when on and lose them when off.
-fn list_parens(text: &str, kotlin: bool, call: [bool; 2], decl: [bool; 2], record: [bool; 2], expr: [bool; 2], only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
-    if !kotlin && call == [false; 2] && decl == [false; 2] && record == [false; 2] && expr == [false; 2] {
+fn list_parens(text: &str, kotlin: bool, call: [bool; 2], decl: [bool; 2], record: [bool; 2], expr: [bool; 2], decon: [bool; 2], only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+    let decon = if text.contains("instanceof") || text.contains("case ") { decon } else { [false; 2] };
+    if !kotlin && call == [false; 2] && decl == [false; 2] && record == [false; 2] && expr == [false; 2] && decon == [false; 2] {
         return (text.to_owned(), only);
     }
     if kotlin && call == [false; 2] && decl == [true; 2] {
@@ -2482,7 +2492,7 @@ fn list_parens(text: &str, kotlin: bool, call: [bool; 2], decl: [bool; 2], recor
         let callee = is_call_or_declaration(before) && !annotation_paren(before) && !keyword;
         let (declares, [lparen, rparen]) = if callee {
             let declares = if kotlin { kotlin_declaration_open(raw[ol], &lines[ol]) == Some(op) } else { raw[ol].find('(') == Some(op) && declaration_head(before) };
-            (declares, if declares && !kotlin && record_header(raw[ol]) { record } else if declares { decl } else { call })
+            (declares, if declares && !kotlin && record_header(raw[ol]) { record } else if declares { decl } else if !kotlin && deconstruction(before) { decon } else { call })
         } else if !kotlin && !keyword && !before.trim_end().ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ')' || c == ']' || c == '>') && !after_close.starts_with("->") {
             (false, expr)
         } else {
@@ -3174,6 +3184,8 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
             wr.w.record_wrap
         } else if declares(open, depth) {
             wr.w.params
+        } else if !wr.kotlin && deconstruction(&line[..open]) {
+            wr.w.decon_wrap
         } else {
             wr.w.call_args
         }
@@ -3295,7 +3307,7 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
     }
     // Java: the first item stays after `(`, the rest continue (a
     // declaration's aligned under the first), `)` after the last.
-    let aligned = if declares(open, depth) { if record { wr.w.align_records } else { wr.w.align_params } } else { wr.w.align_args };
+    let aligned = if declares(open, depth) { if record { wr.w.align_records } else { wr.w.align_params } } else if deconstruction(&line[..open]) { wr.w.align_decon } else { wr.w.align_args };
     let prefix = if aligned && !wr.tabs { " ".repeat(line[..=open].chars().count()) } else { format!("{indent}{}", wr.cont) };
     let texts: Vec<String> = items.iter().enumerate().map(|(n, item)| if n < last { format!("{item},") } else { format!("{item}{}", &line[close..]) }).collect();
     let first = format!("{}{}", &line[..=open], texts[0]);
@@ -4051,6 +4063,55 @@ fn assignment_target(code: &str) -> Option<&str> {
     None
 }
 
+/// Whether the text before a Java `(` ends with a record pattern's type:
+/// `o instanceof Point`, `case Point`, or a component of an outer one
+/// (`case Line(Point`).
+fn deconstruction(before: &str) -> bool {
+    let head = before.trim_end();
+    let name = head.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '.' || c == '$');
+    let type_name = &head[name.len()..];
+    // Generic arguments: `Box<String>(`.
+    let name = if type_name.is_empty() && head.ends_with('>') {
+        let Some(open) = head.rfind('<') else { return false };
+        let before_args = &head[..open];
+        let n = before_args.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '.' || c == '$');
+        if n.len() == before_args.len() {
+            return false;
+        }
+        if !before_args[n.len()..].starts_with(|c: char| c.is_ascii_uppercase()) {
+            return false;
+        }
+        n
+    } else {
+        if !type_name.rsplit('.').next().is_some_and(|t| t.starts_with(|c: char| c.is_ascii_uppercase())) {
+            return false;
+        }
+        name
+    };
+    let rest = name.trim_end();
+    let word_end = |w: &str| rest.strip_suffix(w).is_some_and(|b| !b.ends_with(|c: char| c.is_alphanumeric() || c == '_')) && rest.len() < name.len();
+    if word_end("instanceof") || word_end("case") {
+        return true;
+    }
+    // A component: the outer list's `(` or a `,` in it.
+    let mut depth = 0usize;
+    for (i, c) in rest.char_indices().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' if depth == 0 => return deconstruction(&rest[..i]),
+            '(' => depth -= 1,
+            ',' if depth == 0 && i + 1 == rest.len() => continue,
+            ',' | ' ' | '_' | '<' | '>' | '.' | '[' | ']' => {}
+            _ if c.is_alphanumeric() || c == '$' => {}
+            _ => return false,
+        }
+        if depth == 0 && i + 1 == rest.len() && c != ',' && c != '(' {
+            return false;
+        }
+    }
+    false
+}
+
 /// Whether a Java line is a record's header: `record Name(` (modifiers and
 /// annotations before it).
 fn record_header(line: &str) -> bool {
@@ -4073,7 +4134,7 @@ fn declaration_head(before: &str) -> bool {
         ))
         .unwrap()
     });
-    if before.contains('=') || ["return ", "new ", "throw ", "if ", "for ", "while ", "switch ", "catch ", "synchronized "].iter().any(|k| before.trim_start().starts_with(k) || before.contains(&format!(" {k}"))) {
+    if before.contains('=') || ["return ", "new ", "throw ", "if ", "for ", "while ", "switch ", "catch ", "synchronized ", "case ", "yield "].iter().any(|k| before.trim_start().starts_with(k) || before.contains(&format!(" {k}"))) {
         return false;
     }
     HEADER.is_match(before)
@@ -4493,7 +4554,7 @@ fn declaration_braces(raw: &[&str], lines: &[Line]) -> Vec<Vec<bool>> {
 /// line closed a bracket opened earlier); `(` / `[` a continuation past the
 /// line, or under the first parameter (`align`).
 #[allow(clippy::too_many_arguments)]
-fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize, line: usize, line_indent: usize, base: usize, cont: usize, step: usize, align: Option<usize>, [align_calls, align_arrays]: [bool; 2], text: &str, bodies: &[bool], java: bool) {
+fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize, line: usize, line_indent: usize, base: usize, cont: usize, step: usize, align: Option<usize>, [align_calls, align_arrays, align_decon]: [bool; 3], text: &str, bodies: &[bool], java: bool) {
     let mut base = base;
     let mut first_paren = true;
     let mut bodies = bodies.iter();
@@ -4515,7 +4576,8 @@ fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize
                 // Java's Align when multiline for a call: under its first argument.
                 let call = || {
                     let before = text.get(..*at).unwrap_or("");
-                    (align_calls && *c == '(' && is_call_or_declaration(before) && !annotation_paren(before) && !(text.find('(') == Some(*at) && declaration_head(before)) && !text.get(at + 1..).unwrap_or("").trim().is_empty()).then(|| text[..=*at].chars().count())
+                    let aligned = if java && deconstruction(before) { align_decon } else { align_calls };
+                    (aligned && *c == '(' && is_call_or_declaration(before) && !annotation_paren(before) && !(text.find('(') == Some(*at) && declaration_head(before)) && !text.get(at + 1..).unwrap_or("").trim().is_empty()).then(|| text[..=*at].chars().count())
                 };
                 let content = match align.filter(|_| *c == '(' && first_paren).or_else(call) {
                     Some(col) => col,
@@ -6190,6 +6252,27 @@ mod tests {
         let a = kotlin(w, t);
         assert_eq!(a, "fun f(x: Int) = when (x) {\n    1      -> \"one\"\n    10, 11 -> {\n        g { a -> a }\n    }\n    // comment\n    100    -> \"x\"\n    else   -> \"y\"\n}\n");
         assert_eq!(kotlin(w, &a), a);
+    }
+
+    #[test]
+    fn lays_out_deconstruction_lists() {
+        assert!(deconstruction("if (o instanceof Point") && deconstruction("case Point") && deconstruction("case Line(Point(int x, int y), Point"));
+        assert!(deconstruction("case Box<String>") && !deconstruction("foo(Bar") && !deconstruction("new Point") && !deconstruction("x instanceof point"));
+        let java = |w: Wrapping, text: &str| reformat_indented(ImportStyle::Java, text, None, &IndentStyle { wrapping: Some(w), ..Default::default() });
+        // Align when multiline (on): components under the first; a call's arguments keep their continuation.
+        let t = "class A {\n    void k(Object o) {\n        if (o instanceof Point(int x,\n                int y)) {\n            go(x,\n                    y);\n        }\n    }\n}\n";
+        let off = Wrapping { decon_parens: [false; 2], ..Wrapping::JAVA };
+        let aligned = "class A {\n    void k(Object o) {\n        if (o instanceof Point(int x,\n                               int y)) {\n            go(x,\n                    y);\n        }\n    }\n}\n";
+        assert_eq!(java(off, t), aligned);
+        assert_eq!(java(Wrapping { align_decon: false, ..off }, t), t);
+        // New line after '(' and Place ')' on new line (on by default).
+        let o = java(Wrapping::JAVA, t);
+        assert_eq!(o, "class A {\n    void k(Object o) {\n        if (o instanceof Point(\n                int x,\n                int y\n        )) {\n            go(x,\n                    y);\n        }\n    }\n}\n");
+        assert_eq!(java(Wrapping::JAVA, &o), o);
+        // Deconstruction list: chop a long one.
+        let long = format!("class A {{\n    void k(Object o) {{\n        switch (o) {{\n            case Point(int horizontal{}, int vertical, int depth) -> go();\n            default -> {{}}\n        }}\n    }}\n}}\n", "X".repeat(70));
+        let c = java(Wrapping { decon_wrap: Wrap::ChopIfLong, ..off }, &long);
+        assert!(c.contains(&format!("            case Point(int horizontal{},\n                       int vertical,\n                       int depth) -> go();\n", "X".repeat(70))), "{c}");
     }
 
     #[test]

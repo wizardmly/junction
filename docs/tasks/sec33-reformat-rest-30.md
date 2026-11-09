@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-30
 title: Reformat：Wrapping and Braces 页剩下的选项（第三十批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-30
+pr: 287
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,5 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：Java 的 `Wrapping::decon_wrap` / `align_decon` / `decon_parens`（settings.conf wrapping 第 68–71 位；对齐和两个括号选项缺省为开，照 IntelliJ）。新的 `deconstruction(before)` 判断 `(` 前是不是记录模式的类型：`instanceof` / `case` 后的大写类型名（可带泛型），或外层记录模式里的组件（往回找没配对的 `(` 再递归）。`list_parens`（括号换行）、`apply_brackets`（对齐，参数改成 `[align_calls, align_arrays, align_decon]`）和 `chop` 的 `mode` / `aligned` 都先认它，不再按方法调用的选项。`declaration_head` 排除 `case ` / `yield ` 开头，不然 `case Point(` 会被当成方法声明。
+- 没做：Kotlin 的 Use continuation indent，留给 sec33-reformat-rest-31。
