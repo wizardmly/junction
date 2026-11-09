@@ -758,6 +758,9 @@ pub struct Wrapping {
     pub throws_list: Wrap,
     /// Java's Throws keyword (THROWS_KEYWORD_WRAP): `throws` starts the next line.
     pub throws_keyword: Wrap,
+    /// Java's parameter annotations (PARAMETER_ANNOTATION_WRAP): a
+    /// declaration parameter's annotations each end a line.
+    pub param_annotations: AnnotationWrap,
     /// Java's Annotation parameters (ANNOTATION_PARAMETER_WRAP).
     pub annotation_params: Wrap,
 }
@@ -865,21 +868,21 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
@@ -944,6 +947,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let [class, method, field] = w.annotations;
                 let (a, only) = wrap_annotations(&forced, &[class, method, field, w.local_annotations], only, margin);
                 let (a, only) = wrap_enum_constants(&a, w.enum_constants, only, margin);
+                let (a, only) = wrap_parameter_annotations(&a, w.param_annotations, only, margin);
                 wrapped_annotations = a;
                 (wrapped_annotations, only)
             };
@@ -1520,6 +1524,124 @@ fn wrap_enum_constants(text: &str, wrap: AnnotationWrap, only: Option<Range<usiz
                 *top = false;
             }
         }
+        match parts {
+            Some(p) => {
+                delta += p.len() as isize - 1;
+                out.extend(p);
+            }
+            None => out.push((*line).to_owned()),
+        }
+    }
+    let only = only.map(|r| r.start..(r.end as isize + delta).max(r.start as isize) as usize);
+    (out.join("\n"), only)
+}
+
+/// Java's parameter annotations (PARAMETER_ANNOTATION_WRAP): in a method's
+/// or constructor's parameters, a line break after each annotation of a
+/// parameter (`@NonNull String a` → `@NonNull` / `String a`); the indenter
+/// aligns the parts under the parameters.
+fn wrap_parameter_annotations(text: &str, wrap: AnnotationWrap, only: Option<Range<usize>>, margin: usize) -> (String, Option<Range<usize>>) {
+    if wrap == AnnotationWrap::DoNotWrap {
+        return (text.to_owned(), only);
+    }
+    let lines = scan(text, false);
+    let raw: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut delta: isize = 0;
+    // Inside a declaration's parameters: the `(` depth, and whether the next
+    // token starts a parameter.
+    let mut params: Option<(usize, bool)> = None;
+    for (ix, line) in raw.iter().enumerate() {
+        // Where the parts go: under the first parameter, as the indenter
+        // aligns them; a line inside the parameters keeps its indent.
+        let mut align = line.len() - line.trim_start().len();
+        let info = &lines[ix];
+        let selected = only.as_ref().is_none_or(|r| r.contains(&ix));
+        let code = |i: usize| info.code.get(i).copied().unwrap_or(false);
+        let mut start = 0;
+        if params.is_none() && info.starts_in.unwrap_or(State::Code) == State::Code {
+            if let (Some(_), Some(open)) = (declaration_paren(line), line.find('(')) {
+                params = Some((1, true));
+                start = open + 1;
+                align = line[..start].chars().count();
+            }
+        }
+        let mut points: Vec<usize> = Vec::new();
+        if let Some((mut depth, mut fresh)) = params {
+            let bytes = line.as_bytes();
+            let mut i = start;
+            while i < bytes.len() {
+                let c = bytes[i];
+                if !code(i) {
+                    i += 1;
+                    continue;
+                }
+                if fresh && c.is_ascii_whitespace() {
+                    i += 1;
+                    continue;
+                }
+                if fresh && c == b'@' && depth == 1 {
+                    fresh = false;
+                    let (annotations, rest) = leading_annotations(&line[i..]);
+                    if annotations.is_empty() {
+                        i += 1;
+                        continue;
+                    }
+                    let base = line.as_ptr() as usize;
+                    let starts: Vec<usize> = annotations.iter().map(|a| a.as_ptr() as usize - base).chain((!rest.is_empty()).then(|| rest.as_ptr() as usize - base)).collect();
+                    points.extend(starts.iter().skip(1));
+                    i = if rest.is_empty() { line.len() } else { rest.as_ptr() as usize - base };
+                    continue;
+                }
+                fresh = false;
+                match c {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    b',' if depth == 1 => fresh = true,
+                    _ => {}
+                }
+                i += 1;
+            }
+            params = (depth > 0).then_some((depth, fresh));
+        }
+        let parts = if selected && !points.is_empty() {
+            let cont = " ".repeat(align);
+            let mut pieces: Vec<&str> = Vec::new();
+            let mut from = 0;
+            for p in &points {
+                pieces.push(line[from..*p].trim_end());
+                from = *p;
+            }
+            pieces.push(&line[from..]);
+            let long = width(line) > margin;
+            match wrap {
+                AnnotationWrap::WrapAlways => Some(pieces.iter().enumerate().map(|(n, t)| if n == 0 { t.to_string() } else { format!("{cont}{t}") }).collect::<Vec<_>>()),
+                AnnotationWrap::ChopIfLong if long => Some(pieces.iter().enumerate().map(|(n, t)| if n == 0 { t.to_string() } else { format!("{cont}{t}") }).collect()),
+                AnnotationWrap::WrapIfLong if long => {
+                    let mut v: Vec<String> = Vec::new();
+                    let mut current = pieces[0].to_string();
+                    for t in &pieces[1..] {
+                        let joined = format!("{current} {t}");
+                        if width(&joined) > margin {
+                            v.push(current);
+                            current = format!("{cont}{t}");
+                        } else {
+                            current = joined;
+                        }
+                    }
+                    v.push(current);
+                    (v.len() > 1).then_some(v)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         match parts {
             Some(p) => {
                 delta += p.len() as isize - 1;
@@ -2640,7 +2762,7 @@ fn indent_unit(text: &str, lines: &[Line], fallback: Option<&str>) -> String {
     }
     // Blocks decide when there are enough of them: aligned parameters at odd
     // columns make a 2-space file look messy otherwise.
-    let two = if blocks_of_two + blocks_of_four >= 3 { blocks_of_two > blocks_of_four } else { !messy && odd_twos * 5 >= indents.len() };
+    let two = if blocks_of_two != blocks_of_four { blocks_of_two > blocks_of_four } else { !messy && odd_twos * 5 >= indents.len() };
     if two { "  ".into() } else { fallback.unwrap_or("    ").into() }
 }
 
@@ -4593,6 +4715,33 @@ mod tests {
             w(Wrapping { array_init: Wrap::ChopIfLong, ..Wrapping::JAVA }, annotated),
             "class A {\n    @SuppressWarnings({\"unchecked\",\n            \"rawtypes\",\n            \"deprecation\",\n            \"unused\",\n            \"ConstantConditions\",\n            \"FieldCanBeLocal\",\n            \"SpellCheckingInspection\"})\n    @Config(sdk = {Build.VERSION_CODES.P,\n            Build.VERSION_CODES.Q,\n            Build.VERSION_CODES.R,\n            Build.VERSION_CODES.S,\n            Build.VERSION_CODES.TIRAMISU})\n    void f() {\n    }\n}"
         );
+    }
+
+    #[test]
+    fn wraps_parameter_annotations() {
+        let java = |wrap: AnnotationWrap, text: &str| {
+            let style = IndentStyle { wrapping: Some(Wrapping { param_annotations: wrap, ..Wrapping::JAVA }), ..Default::default() };
+            reformat_indented(ImportStyle::Java, text, None, &style)
+        };
+        let text = "class A {\n    void f(@NonNull String a, @Nullable @Size(max = 3) String b, int c) {\n        go();\n    }\n}\n";
+        assert_eq!(java(AnnotationWrap::DoNotWrap, text), text);
+        // Short: only Wrap always breaks; a single parameter's annotations each end a line.
+        assert_eq!(java(AnnotationWrap::ChopIfLong, text), text);
+        assert_eq!(
+            java(AnnotationWrap::WrapAlways, text),
+            "class A {\n    void f(@NonNull\n           String a, @Nullable\n           @Size(max = 3)\n           String b, int c) {\n        go();\n    }\n}\n"
+        );
+        // Chopped parameters: each one's annotation on its own line.
+        let chopped = "class A {\n    public A(@NonNull String a,\n             @Named(\"b, c\") int b) {\n    }\n}\n";
+        assert_eq!(java(AnnotationWrap::WrapAlways, chopped), "class A {\n    public A(@NonNull\n             String a,\n             @Named(\"b, c\")\n             int b) {\n    }\n}\n");
+        // Long: Wrap if long breaks where the line passes the margin.
+        let long = format!("class A {{\n    void loadEverything(@NonNull String firstArgument, @Nullable String secondArgument, @Named(\"{}\") int c) {{\n    }}\n}}\n", "x".repeat(20));
+        let out = java(AnnotationWrap::WrapIfLong, &long);
+        assert!(out.lines().all(|l| l.len() <= 120), "{out}");
+        assert_eq!(java(AnnotationWrap::WrapIfLong, &out), out);
+        // Calls and annotations elsewhere don't change.
+        let call = "class A {\n    void f() {\n        g(@A x, y);\n    }\n}\n";
+        assert_eq!(java(AnnotationWrap::WrapAlways, call), call);
     }
 
     #[test]
