@@ -751,8 +751,11 @@ pub struct Wrapping {
     pub elvis: Wrap,
     /// Java's local variable annotations (IntelliJ's VARIABLE_ANNOTATION_WRAP).
     pub local_annotations: AnnotationWrap,
-    /// Java's array initializers (IntelliJ's ARRAY_INITIALIZER_WRAP).
+    /// Java's array initializers (IntelliJ's ARRAY_INITIALIZER_WRAP),
+    /// annotations' `{…}` too.
     pub array_init: Wrap,
+    /// Java's Throws list (THROWS_LIST_WRAP).
+    pub throws_list: Wrap,
 }
 
 /// Wrapping and Braces › Class / Method / Field annotations (IntelliJ's
@@ -858,25 +861,25 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
-        self.values().iter().any(|w| *w != Wrap::DoNotWrap) || self.ops.binary != Wrap::DoNotWrap || self.ops.ternary != Wrap::DoNotWrap || self.elvis != Wrap::DoNotWrap || self.array_init != Wrap::DoNotWrap
+        self.values().iter().any(|w| *w != Wrap::DoNotWrap) || self.ops.binary != Wrap::DoNotWrap || self.ops.ternary != Wrap::DoNotWrap || self.elvis != Wrap::DoNotWrap || self.array_init != Wrap::DoNotWrap || self.throws_list != Wrap::DoNotWrap
     }
 }
 
@@ -1101,7 +1104,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                             Reason::Assign
                         } else if ends_with_operator(prev) {
                             Reason::Operator
-                        } else if kotlin && prev.ends_with(':') && !prev.ends_with("::") || (p.reason == Reason::Header || kotlin && supertypes_wrapped(prev)) && prev.ends_with(',') {
+                        } else if kotlin && prev.ends_with(':') && !prev.ends_with("::") || (p.reason == Reason::Header || kotlin && supertypes_wrapped(prev) || flavor == Flavor::Java && java_header_list(prev)) && prev.ends_with(',') {
                             Reason::Header
                         } else if flavor == Flavor::Groovy && prev.ends_with(',') && stack.last().is_none_or(|o| o.brace) {
                             // A command's arguments without parentheses:
@@ -2036,6 +2039,11 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
             return Some(parts);
         }
     }
+    if best.is_none() && !wr.kotlin && wr.w.throws_list != Wrap::DoNotWrap {
+        if let Some(parts) = throws_break(line, &info, &wr.cont, margin, wr.w.throws_list) {
+            return Some(parts);
+        }
+    }
     // An assignment that would chop an argument list: its Elvis instead,
     // when that leaves every line within the margin.
     if assigned && best.is_some() && wr.kotlin && wr.w.elvis != Wrap::DoNotWrap {
@@ -2130,6 +2138,68 @@ fn list_items<'a>(line: &'a str, open: usize, close: usize, is_code: &dyn Fn(usi
 /// header's supertypes (after its `:`) put on as few lines as fit, each
 /// next line an indent deeper; `None` when the header has none or no
 /// break helps.
+/// Java's Throws list (THROWS_LIST_WRAP): a method header's `throws A,
+/// B, C` past the margin, broken after its commas; the first type stays
+/// after `throws`, the others continue (Chop down if long: one a line;
+/// Wrap if long: as many as fit).
+fn throws_break(line: &str, info: &Line, cont: &str, margin: usize, mode: Wrap) -> Option<Vec<String>> {
+    let lead = line.len() - line.trim_start().len();
+    let is_code = |i: usize| info.code.get(i).copied().unwrap_or(false);
+    let mut depth = 0usize;
+    let mut angle = 0usize;
+    let mut throws = None;
+    let mut end = line.trim_end().len();
+    let mut commas = Vec::new();
+    for (i, c) in line.char_indices().skip_while(|(i, _)| *i < lead) {
+        if !is_code(i) {
+            continue;
+        }
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            '<' if line[..i].ends_with(|p: char| p.is_alphanumeric() || p == '_') => angle += 1,
+            '>' if angle > 0 => angle -= 1,
+            '{' | ';' if depth == 0 && angle == 0 => {
+                end = i;
+                break;
+            }
+            't' if depth == 0 && throws.is_none() && line[..i].ends_with(") ") && line[i..].starts_with("throws ") => throws = Some(i + "throws".len()),
+            ',' if depth == 0 && angle == 0 && throws.is_some() => commas.push(i),
+            _ => {}
+        }
+    }
+    let throws = throws?;
+    if commas.is_empty() {
+        return None;
+    }
+    let mut items = Vec::new();
+    let mut start = throws;
+    for comma in &commas {
+        items.push(format!("{},", line[start..*comma].trim()));
+        start = comma + 1;
+    }
+    let tail = line[end..].trim();
+    let last = line[start..end].trim();
+    items.push(if tail.is_empty() { last.to_owned() } else { format!("{last} {tail}") });
+    if items.iter().any(|i| i.is_empty() || i.starts_with(',')) {
+        return None;
+    }
+    let prefix = format!("{}{cont}", &line[..lead]);
+    let mut parts = Vec::new();
+    let mut current = format!("{} {}", line[..throws].trim_end(), items[0]);
+    for item in &items[1..] {
+        let joined = format!("{current} {item}");
+        if mode == Wrap::ChopIfLong || width(&joined) > margin {
+            parts.push(current);
+            current = format!("{prefix}{item}");
+        } else {
+            current = joined;
+        }
+    }
+    parts.push(current);
+    (parts.len() > 1).then_some(parts)
+}
+
 fn supertype_break(line: &str, info: &Line, unit: &str, margin: usize) -> Option<Vec<String>> {
     let lead = line.len() - line.trim_start().len();
     let words = declaration_words(&line[lead..]);
@@ -2203,6 +2273,12 @@ fn supertype_break(line: &str, info: &Line, unit: &str, margin: usize) -> Option
 
 /// Whether a line is a class header whose supertypes go on past it
 /// (`class A : B(),`).
+/// A Java method header's `throws A,` or a class header's `implements A,`
+/// going on to the next line.
+fn java_header_list(code: &str) -> bool {
+    code.ends_with(',') && (code.contains(") throws ") || matches!(declaration_words(code).as_slice(), ["class" | "interface" | "enum" | "record", ..]) && (code.contains(" implements ") || code.contains(" extends ")))
+}
+
 fn supertypes_wrapped(code: &str) -> bool {
     matches!(declaration_words(code).as_slice(), ["class" | "interface" | "object", ..] | ["fun", "interface"]) && code.contains(':') && code.ends_with(',')
 }
@@ -2458,10 +2534,28 @@ fn paren_pair(brackets: &[(usize, char)]) -> Option<(usize, usize)> {
 /// declaration's parameters: after a name, `>` or `)`, not a keyword's
 /// condition.
 /// Whether a `{` after `before` opens a Java array initializer:
-/// `new int[] {`, `String[] a = {`.
+/// `new int[] {`, `String[] a = {`, an annotation's `@A({` / `@A(x = {`.
 fn is_array_initializer(before: &str) -> bool {
     let head = before.trim_end();
-    head.ends_with(']') && head.contains("new ") || head.ends_with('=') && !head.ends_with("==") && head.contains('[')
+    if head.ends_with(']') && head.contains("new ") {
+        return true;
+    }
+    if head.ends_with('=') && !head.ends_with("==") && head.contains('[') {
+        return true;
+    }
+    // In an annotation's parentheses: the `(` follows `@Name`.
+    let annotation_paren = |text: &str| {
+        let name = text.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '.');
+        name.ends_with('@') && name.len() < text.len()
+    };
+    if let Some(open) = head.strip_suffix('(') {
+        return annotation_paren(open);
+    }
+    if let Some(eq) = head.strip_suffix('=').filter(|h| !h.ends_with(|c: char| matches!(c, '=' | '!' | '<' | '>'))) {
+        let key = eq.trim_end().trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
+        return key.trim_end().strip_suffix('(').is_some_and(annotation_paren);
+    }
+    false
 }
 
 fn is_call_or_declaration(before: &str) -> bool {
@@ -4411,6 +4505,36 @@ mod tests {
         // Elements on lines of their own continue the line that opens them.
         let laid = "class A {\n    static final String[] COLUMNS = {\n        A,\n        B\n    };\n}";
         assert_eq!(w(Wrap::DoNotWrap, laid), "class A {\n    static final String[] COLUMNS = {\n            A,\n            B\n    };\n}");
+    }
+
+    #[test]
+    fn wraps_throws_lists_and_annotation_arrays() {
+        let w = |wrapping: Wrapping, text: &str| {
+            let style = IndentStyle { wrapping: Some(wrapping), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let text = "interface A {\n    void download(String url, File destination) throws IOException, InterruptedException, TimeoutException, GeneralSecurityException;\n\n    void read() throws IOException, InterruptedException {\n    }\n}";
+        assert_eq!(w(Wrapping::JAVA, text), text);
+        assert_eq!(
+            w(Wrapping { throws_list: Wrap::WrapIfLong, ..Wrapping::JAVA }, text),
+            "interface A {\n    void download(String url, File destination) throws IOException, InterruptedException, TimeoutException,\n            GeneralSecurityException;\n\n    void read() throws IOException, InterruptedException {\n    }\n}"
+        );
+        assert_eq!(
+            w(Wrapping { throws_list: Wrap::ChopIfLong, ..Wrapping::JAVA }, text),
+            "interface A {\n    void download(String url, File destination) throws IOException,\n            InterruptedException,\n            TimeoutException,\n            GeneralSecurityException;\n\n    void read() throws IOException, InterruptedException {\n    }\n}"
+        );
+        // Written over lines: the types continue, the body is the method's.
+        let laid = "class A implements Runnable,\nCloseable {\n    void f() throws IOException,\n    TimeoutException {\n        g();\n    }\n}";
+        assert_eq!(w(Wrapping::JAVA, laid), "class A implements Runnable,\n        Closeable {\n    void f() throws IOException,\n            TimeoutException {\n        g();\n    }\n}");
+        // An annotation's array follows Array initializer.
+        let annotated = "class A {\n    @SuppressWarnings({\"unchecked\", \"rawtypes\", \"deprecation\", \"unused\", \"ConstantConditions\", \"FieldCanBeLocal\", \"SpellCheckingInspection\"})\n    @Config(sdk = {Build.VERSION_CODES.P, Build.VERSION_CODES.Q, Build.VERSION_CODES.R, Build.VERSION_CODES.S, Build.VERSION_CODES.TIRAMISU})\n    void f() {\n    }\n}";
+        assert_eq!(w(Wrapping::JAVA, annotated), annotated);
+        assert_eq!(
+            w(Wrapping { array_init: Wrap::ChopIfLong, ..Wrapping::JAVA }, annotated),
+            "class A {\n    @SuppressWarnings({\"unchecked\",\n            \"rawtypes\",\n            \"deprecation\",\n            \"unused\",\n            \"ConstantConditions\",\n            \"FieldCanBeLocal\",\n            \"SpellCheckingInspection\"})\n    @Config(sdk = {Build.VERSION_CODES.P,\n            Build.VERSION_CODES.Q,\n            Build.VERSION_CODES.R,\n            Build.VERSION_CODES.S,\n            Build.VERSION_CODES.TIRAMISU})\n    void f() {\n    }\n}"
+        );
     }
 
     #[test]
