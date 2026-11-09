@@ -740,6 +740,25 @@ pub struct Wrapping {
     /// wrapped list or expression (the options above wrap it again).
     pub keep_line_breaks: bool,
     pub braces: Braces,
+    /// Java's binary expressions and ternaries.
+    pub ops: Operations,
+}
+
+/// Wrapping and Braces › Binary expressions and Ternary operation, with
+/// their Operation sign on next line options (IntelliJ's
+/// BINARY_OPERATION_WRAP, BINARY_OPERATION_SIGN_ON_NEXT_LINE,
+/// TERNARY_OPERATION_WRAP, TERNARY_OPERATION_SIGNS_ON_NEXT_LINE). Java's;
+/// none wrap by default.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Operations {
+    pub binary: Wrap,
+    pub binary_sign_next: bool,
+    pub ternary: Wrap,
+    pub ternary_signs_next: bool,
+}
+
+impl Operations {
+    pub const NONE: Operations = Operations { binary: Wrap::DoNotWrap, binary_sign_next: false, ternary: Wrap::DoNotWrap, ternary_signs_next: false };
 }
 
 /// Wrapping and Braces › Braces placement and the 'else' / 'while' /
@@ -804,20 +823,20 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default() }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE }
     }
 
     fn any(&self) -> bool {
-        self.values().iter().any(|w| *w != Wrap::DoNotWrap)
+        self.values().iter().any(|w| *w != Wrap::DoNotWrap) || self.ops.binary != Wrap::DoNotWrap || self.ops.ternary != Wrap::DoNotWrap
     }
 }
 
@@ -982,6 +1001,7 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         let mut continued = Reason::None;
         let mut header = false;
         let mut body_line = false;
+        let mut in_opened = false;
         if is_code_line && closed_to.is_none() {
             // A Java `case` label sits at the switch's level; its body below.
             let label = !kotlin && (code_start.starts_with("case ") || code_start.starts_with("default:") || code_start.starts_with("default ->"));
@@ -1006,6 +1026,9 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 Reason::Elvis
             } else if code_start.starts_with("&&") || code_start.starts_with("||") || !kotlin && (code_start.starts_with("? ") || code_start.starts_with(": ")) {
                 Reason::Binary
+            } else if flavor == Flavor::Java && ["+ ", "- ", "* ", "/ ", "% "].iter().any(|op| code_start.starts_with(op)) {
+                // Operation sign on next line: `+ b`.
+                Reason::Operator
             } else if kotlin && (["get(", "get() ", "set(", "private set", "protected set", "internal set"].iter().any(|a| code_start.starts_with(a)) || code_start == "get()") {
                 // A Kotlin property's accessors sit under it.
                 Reason::Accessor
@@ -1025,6 +1048,24 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                             // A command's arguments without parentheses:
                             // `proguardFiles a,` then `b`.
                             Reason::Binary
+                        } else if flavor == Flavor::Java && java_ternary_end(prev) {
+                            // `cond ?` / `one :`.
+                            Reason::Binary
+                        } else {
+                            Reason::None
+                        }
+                    }
+                    // Java: an expression that goes on in the bracket its
+                    // line opened (`if (a &&`): the bracket's indent is the
+                    // continuation; the operands after line up with it.
+                    Some(p) if p.opened && p.depth == stack.len() && flavor == Flavor::Java => {
+                        let prev = p.code.as_str();
+                        if prev.ends_with("&&") || prev.ends_with("||") || java_ternary_end(prev) {
+                            in_opened = true;
+                            Reason::Binary
+                        } else if ends_with_operator(prev) {
+                            in_opened = true;
+                            Reason::Operator
                         } else {
                             Reason::None
                         }
@@ -1032,7 +1073,11 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                     _ => Reason::None,
                 }
             };
-            if reason != Reason::None {
+            // `&& b` first in a bracket the line before opened: likewise.
+            if flavor == Flavor::Java && matches!(reason, Reason::Binary | Reason::Operator) && previous.as_ref().is_some_and(|p| p.opened && p.depth == stack.len()) {
+                in_opened = true;
+            }
+            if reason != Reason::None && !in_opened {
                 let size = match reason {
                     _ if !kotlin => cont,
                     Reason::Binary => 2 * cont,
@@ -1607,6 +1652,11 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
     }
     let continuation = if wr.kotlin { wr.unit } else { wr.cont.as_str() };
     let Some((depth, open, close)) = best.or_else(declaration) else {
+        if !wr.kotlin {
+            if let Some(parts) = operation_break(line, &info, continuation, margin, &wr.w.ops) {
+                return Some(parts);
+            }
+        }
         let chain = (wr.w.chain != Wrap::DoNotWrap).then(|| chain_break(line, &info, continuation, margin)).flatten();
         return chain.or_else(|| (wr.w.assignment != Wrap::DoNotWrap).then(|| assignment_break(line, &info, continuation, margin)).flatten());
     };
@@ -1837,6 +1887,106 @@ fn assignment_break(line: &str, info: &Line, unit: &str, margin: usize) -> Optio
         }
     }
     None
+}
+
+/// Java's Binary expressions and Ternary operation: a long line broken
+/// at the operators of its outermost expression (the first bracket level
+/// with any, the loosest operators there: `||`, then `&&`, `+ -`,
+/// `* / %`, with `? :` looser than all). Chop down breaks at each; Wrap
+/// if long only where the next part would pass the margin. The sign ends
+/// the line, or starts the next with Operation sign on next line.
+fn operation_break(line: &str, info: &Line, unit: &str, margin: usize, ops: &Operations) -> Option<Vec<String>> {
+    if ops.binary == Wrap::DoNotWrap && ops.ternary == Wrap::DoNotWrap {
+        return None;
+    }
+    let lead = line.len() - line.trim_start().len();
+    let bytes = line.as_bytes();
+    let code = |i: usize| info.code.get(i).copied().unwrap_or(false);
+    // (at, len, depth, region: the open bracket's position, rank: 0 `?:`, 1 `||` … 4 `* / %`)
+    let mut found: Vec<(usize, usize, usize, usize, u8)> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    // `?` waiting for its `:` per bracket level.
+    let mut pending: Vec<usize> = vec![0];
+    let mut i = lead;
+    while i < line.len() {
+        let c = bytes[i];
+        if !code(i) {
+            i += 1;
+            continue;
+        }
+        match c {
+            b'(' | b'[' | b'{' => {
+                stack.push(i);
+                pending.push(0);
+            }
+            b')' | b']' | b'}' => {
+                stack.pop();
+                if pending.len() > 1 {
+                    pending.pop();
+                }
+            }
+            _ => {}
+        }
+        let spaced = |len: usize| i > lead && bytes[i - 1] == b' ' && bytes.get(i + len) == Some(&b' ');
+        let region = stack.last().copied().unwrap_or(0);
+        let rank = match c {
+            b'|' if bytes.get(i + 1) == Some(&b'|') && spaced(2) => Some((2, 1)),
+            b'&' if bytes.get(i + 1) == Some(&b'&') && spaced(2) => Some((2, 2)),
+            b'+' | b'-' if spaced(1) => Some((1, 3)),
+            b'*' | b'/' | b'%' if spaced(1) => Some((1, 4)),
+            b'?' if spaced(1) => {
+                *pending.last_mut().unwrap() += 1;
+                Some((1, 0))
+            }
+            // A ternary's `:`, not a label's, a `for (x : xs)`'s or an `assert`'s.
+            b':' if spaced(1) && *pending.last().unwrap() > 0 => {
+                *pending.last_mut().unwrap() -= 1;
+                Some((1, 0))
+            }
+            _ => None,
+        };
+        if let Some((len, rank)) = rank {
+            // Operators whose option is off don't count.
+            if (if rank == 0 { ops.ternary } else { ops.binary }) != Wrap::DoNotWrap {
+                found.push((i, len, stack.len(), region, rank));
+            }
+            i += len;
+            continue;
+        }
+        i += 1;
+    }
+    // Outermost first: the lowest level, its first bracket, its loosest operators.
+    let depth = found.iter().map(|f| f.2).min()?;
+    let region = found.iter().find(|f| f.2 == depth)?.3;
+    let in_region: Vec<_> = found.iter().filter(|f| f.2 == depth && f.3 == region).collect();
+    let rank = in_region.iter().map(|f| f.4).min()?;
+    let mode = if rank == 0 { ops.ternary } else { ops.binary };
+    let sign_next = if rank == 0 { ops.ternary_signs_next } else { ops.binary_sign_next };
+    let cuts: Vec<(usize, usize)> = in_region.iter().filter(|f| f.4 == rank).map(|f| (f.0, f.1)).collect();
+    // The pieces between the cuts, each with its sign where it goes.
+    let mut pieces: Vec<String> = Vec::new();
+    let mut start = 0;
+    for (n, (at, len)) in cuts.iter().enumerate() {
+        let end = if sign_next { *at } else { at + len };
+        let piece = if n == 0 { line[..end].trim_end().to_owned() } else { line[start..end].trim().to_owned() };
+        pieces.push(piece);
+        start = end;
+    }
+    pieces.push(line[start..].trim().to_owned());
+    let prefix = format!("{}{unit}", &line[..lead]);
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = pieces[0].clone();
+    for piece in &pieces[1..] {
+        let joined = format!("{current} {piece}");
+        if mode == Wrap::ChopIfLong || width(&joined) > margin {
+            parts.push(current);
+            current = format!("{prefix}{piece}");
+        } else {
+            current = joined;
+        }
+    }
+    parts.push(current);
+    (parts.len() > 1).then_some(parts)
 }
 
 /// The line's first `(` and its `)`, when they pair on the line.
@@ -3174,6 +3324,13 @@ fn header_paren(before: &str) -> bool {
 /// `List<Int>` or `listOf<String>`.
 /// A line ending with a binary `+ - * / %`, not `++`, `--`, `->`, an
 /// `import a.*` or a comment's end.
+/// A Java line ending with a ternary's sign: `cond ?`, `one :` (not a
+/// `case A:` label or a `for (x :`).
+fn java_ternary_end(line: &str) -> bool {
+    let start = line.trim_start();
+    (line.ends_with(" ?") || line.ends_with(" :")) && !start.starts_with("case ") && !start.starts_with("default") && !start.starts_with("for ")
+}
+
 fn ends_with_operator(line: &str) -> bool {
     let Some(last) = line.chars().last() else { return false };
     let before = line[..line.len() - 1].chars().last();
@@ -3710,6 +3867,25 @@ mod tests {
             "class A {\n    void f(int a) {\n        if (a > 0)\n            return;\n        else if (a < 0)\n            // negative\n            a++;\n        else\n            for (int i = 0; i < a; i++)\n                if (i > 1)\n                    g(i,\n                            1);\n        while (a > 9)\n            a /= 2;\n        do\n            a--;\n        while (a > 0);\n        if (a == 1) {\n            a = 2;\n        }\n        h(\")\");\n    }\n}"
         );
         assert_eq!(kt("fun f(x: Int) {\nif (x > 0)\nprintln(x)\nelse\nreturn\nfor (i in 0..x)\ng(i)\nval y = if (x > 1) 2 else 3\ndo {\ng(x)\n} while (x > 9)\nh()\nreturn if (x > 2)\nx\nelse\n0\n}"), "fun f(x: Int) {\n    if (x > 0)\n        println(x)\n    else\n        return\n    for (i in 0..x)\n        g(i)\n    val y = if (x > 1) 2 else 3\n    do {\n        g(x)\n    } while (x > 9)\n    h()\n    return if (x > 2)\n        x\n    else\n        0\n}");
+    }
+
+    #[test]
+    fn wraps_binary_and_ternary_expressions() {
+        let w = |ops: Operations, text: &str| {
+            let style = IndentStyle { wrapping: Some(Wrapping { ops, ..Wrapping::JAVA }), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let text = "class A {\n    boolean f() {\n        if (firstConditionHoldsFor(alpha) && secondConditionHoldsFor(beta) || thirdConditionHoldsFor(gamma, delta, epsilon)) {\n            return true;\n        }\n        int total = firstValueOfTheLongName + secondValueOfTheLongName * factor + thirdValueOfTheLongName - fourthValueOfIt;\n        String label = isTheSelectedItemVisible(position) ? resources.getString(R.string.visible_item) : fallbackLabelText;\n        return a + b;\n    }\n}";
+        assert_eq!(w(Operations { binary: Wrap::ChopIfLong, ..Operations::NONE }, text), "class A {\n    boolean f() {\n        if (firstConditionHoldsFor(alpha) && secondConditionHoldsFor(beta) ||\n                thirdConditionHoldsFor(gamma, delta, epsilon)) {\n            return true;\n        }\n        int total = firstValueOfTheLongName +\n                secondValueOfTheLongName * factor +\n                thirdValueOfTheLongName -\n                fourthValueOfIt;\n        String label = isTheSelectedItemVisible(position) ? resources.getString(R.string.visible_item) : fallbackLabelText;\n        return a + b;\n    }\n}");
+        // Wrap if long: only where the line would pass the margin; the sign starts the next line.
+        assert_eq!(w(Operations { binary: Wrap::WrapIfLong, binary_sign_next: true, ternary: Wrap::ChopIfLong, ..Operations::NONE }, text), "class A {\n    boolean f() {\n        if (firstConditionHoldsFor(alpha) && secondConditionHoldsFor(beta)\n                || thirdConditionHoldsFor(gamma, delta, epsilon)) {\n            return true;\n        }\n        int total = firstValueOfTheLongName + secondValueOfTheLongName * factor + thirdValueOfTheLongName\n                - fourthValueOfIt;\n        String label = isTheSelectedItemVisible(position) ?\n                resources.getString(R.string.visible_item) :\n                fallbackLabelText;\n        return a + b;\n    }\n}");
+        assert_eq!(w(Operations { ternary: Wrap::WrapIfLong, ternary_signs_next: true, ..Operations::NONE }, text), "class A {\n    boolean f() {\n        if (firstConditionHoldsFor(alpha) && secondConditionHoldsFor(beta) || thirdConditionHoldsFor(gamma, delta, epsilon)) {\n            return true;\n        }\n        int total = firstValueOfTheLongName + secondValueOfTheLongName * factor + thirdValueOfTheLongName - fourthValueOfIt;\n        String label = isTheSelectedItemVisible(position) ? resources.getString(R.string.visible_item)\n                : fallbackLabelText;\n        return a + b;\n    }\n}");
+        assert_eq!(w(Operations::NONE, text), text);
+        // Only binary expressions wrap: a ternary's branches are cut at their operators.
+        let ternary = "class A {\n    int f() {\n        return total > 0 ? alphaValueOfTheThing + betaValueOfTheThing + gammaValueOfTheThing : deltaValue - total - extra;\n    }\n}";
+        assert_eq!(w(Operations { binary: Wrap::WrapIfLong, ..Operations::NONE }, ternary), "class A {\n    int f() {\n        return total > 0 ? alphaValueOfTheThing + betaValueOfTheThing + gammaValueOfTheThing : deltaValue - total -\n                extra;\n    }\n}");
     }
 
     #[test]
