@@ -119,7 +119,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
-            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Additive", "Multiplicative", "Lambda arrow", "Around arrow in function types", "Around arrow in 'when' clause", "Before lambda arrow", "Unary operator", "Range operator", "In simple one line methods", "Within", "Brackets", "Array initializer braces", "Grouping parentheses", "Method declaration parentheses", "Method call parentheses", "Type cast parentheses", "Annotation parentheses", "Code braces", "Angle brackets", "Record header", "Deconstruction list", "Spaces inside block braces when body is present", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Comment Code", "Line comment at first column", "Add a space at line comment start", "Wrapping and Braces", "Method call arguments", "Method declaration parameters", "Chained method calls", "Extends / implements list", "Assignment statement", "Assignment and expression body", "Do not wrap", "Wrap if long", "Chop down if long", "Keep when reformatting: Line breaks", "Simple blocks in one line", "Simple methods in one line", "Simple lambdas in one line", "Simple classes in one line", "Control statement in one line", "'for()' statement", "Align when multiline", "'try-with-resources'", "New line after '('", "Place ')' on new line", "Special 'else if' treatment", "'assert' statement", "Place ':' on new line", "Do not keep line breaks", "'else' on new line", "'while' on new line", "'catch' on new line", "'finally' on new line", "Braces placement", "In class declaration", "In method declaration", "Next line", "End of line", "Force braces", "When multiline", "Always", "Do not force", "Put left brace on new line", "Binary expressions", "Operation sign on next line", "Ternary operation", "'?' and ':' signs on next line", "Class annotations", "Method annotations", "Field annotations", "Enum constants", "Wrap always", "Elvis expressions", "Local variable annotations", "Parameter annotations", "Array initializer", "Throws list", "Throws keyword", "Annotation parameters", "Imports", "Class count to use import with '*'", "Names count to use static import with '*'", "Packages to use import with '*'", "Top-level symbols, use import with '*' when at least", "Java statics and enum members, use import with '*' when at least", "Optimize Imports", "star import", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
+            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Additive", "Multiplicative", "Lambda arrow", "Around arrow in function types", "Around arrow in 'when' clause", "Before lambda arrow", "Unary operator", "Range operator", "In simple one line methods", "Within", "Brackets", "Array initializer braces", "Grouping parentheses", "Method declaration parentheses", "Method call parentheses", "Type cast parentheses", "Annotation parentheses", "Code braces", "Angle brackets", "Record header", "Deconstruction list", "Spaces inside block braces when body is present", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Comment Code", "Line comment at first column", "Add a space at line comment start", "Wrapping and Braces", "Method call arguments", "Method declaration parameters", "Chained method calls", "Extends / implements list", "Assignment statement", "Assignment and expression body", "Do not wrap", "Wrap if long", "Chop down if long", "Keep when reformatting: Line breaks", "Simple blocks in one line", "Simple methods in one line", "Simple lambdas in one line", "Simple classes in one line", "Control statement in one line", "'for()' statement", "Align when multiline", "'try-with-resources'", "New line after '('", "Place ')' on new line", "Special 'else if' treatment", "'assert' statement", "Place ':' on new line", "Parenthesized expression", "Function declaration parameters", "Function call arguments", "Do not keep line breaks", "'else' on new line", "'while' on new line", "'catch' on new line", "'finally' on new line", "Braces placement", "In class declaration", "In method declaration", "Next line", "End of line", "Force braces", "When multiline", "Always", "Do not force", "Put left brace on new line", "Binary expressions", "Operation sign on next line", "Ternary operation", "'?' and ':' signs on next line", "Class annotations", "Method annotations", "Field annotations", "Enum constants", "Wrap always", "Elvis expressions", "Local variable annotations", "Parameter annotations", "Array initializer", "Throws list", "Throws keyword", "Annotation parameters", "Imports", "Class count to use import with '*'", "Names count to use static import with '*'", "Packages to use import with '*'", "Top-level symbols, use import with '*' when at least", "Java statics and enum members, use import with '*' when at least", "Optimize Imports", "star import", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "Template Group", "Import", "Export", "sout", "fori", "iter", "main", "psvm"],
             Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template", "Iterate over collection", "Add indices to 'for' loop", "indexed 'for' loop", "enhanced 'for'", "forEach", "indexing operator", "binary operator", "equals()", "orEmpty()", "isNullOrEmpty()", "elvis", "safe access", "Lift return", "Lift assignment", "curly braces", "lastIndex", "String.valueOf()", "Kotlin analog", "substring", "range check", "associateWith", "indexOf()", "contains()", "getOrDefault", "putIfAbsent", "computeIfAbsent", "count", "append()", "deprecated", "lowercase()", "call chain", "redundant call", "indices", "isEmpty()", "isNotEmpty()", "lambda", "method reference", "reference", "scope function", "with", "filterIsInstance", "filterNotNull", "flatten", "lambda signature", "lambda parameter types", "anonymous class", "apply", "also", "let", "run"],
             Page::Commit => &[
@@ -1828,7 +1828,7 @@ impl SettingsView {
                     page = self.wrap_option(page, query, "'try-with-resources':", lang, d.wrapping(lang).resource_wrap, |w, v| w.resource_wrap = v, cx);
                     page = self.wrap_option(page, query, "'assert' statement:", lang, d.wrapping(lang).assert_wrap, |w, v| w.assert_wrap = v, cx);
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 12] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 14] = [
                         ("Method declaration parameters: New line after '('", w.param_parens[0], |w, v| w.param_parens[0] = v),
                         ("Method declaration parameters: Place ')' on new line", w.param_parens[1], |w, v| w.param_parens[1] = v),
                         ("Method call arguments: New line after '('", w.call_parens[0], |w, v| w.call_parens[0] = v),
@@ -1841,6 +1841,8 @@ impl SettingsView {
                         ("'try-with-resources': Place ')' on new line", w.resource_parens[1], |w, v| w.resource_parens[1] = v),
                         ("'if()' statement: Special 'else if' treatment", w.special_else_if, |w, v| w.special_else_if = v),
                         ("'assert' statement: Place ':' on new line", w.assert_colon_next, |w, v| w.assert_colon_next = v),
+                        ("Parenthesized expression: New line after '('", w.expr_parens[0], |w, v| w.expr_parens[0] = v),
+                        ("Parenthesized expression: Place ')' on new line", w.expr_parens[1], |w, v| w.expr_parens[1] = v),
                     ];
                     for (i, (label, value, apply)) in flags.into_iter().enumerate() {
                         let entity = cx.entity();
@@ -1861,6 +1863,29 @@ impl SettingsView {
                 } else {
                     page = self.wrap_option(page, query, "Elvis expressions:", lang, d.wrapping(lang).elvis, |w, v| w.elvis = v, cx);
                     page = self.annotation_options(page, query, lang, d.wrapping(lang), cx);
+                    let w = d.wrapping(lang);
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 4] = [
+                        ("Function declaration parameters: New line after '('", w.param_parens[0], |w, v| w.param_parens[0] = v),
+                        ("Function declaration parameters: Place ')' on new line", w.param_parens[1], |w, v| w.param_parens[1] = v),
+                        ("Function call arguments: New line after '('", w.call_parens[0], |w, v| w.call_parens[0] = v),
+                        ("Function call arguments: Place ')' on new line", w.call_parens[1], |w, v| w.call_parens[1] = v),
+                    ];
+                    for (i, (label, value, apply)) in flags.into_iter().enumerate() {
+                        let entity = cx.entity();
+                        page = page.child(self.found(label, query, cx).child(Checkbox::new(SharedString::from(format!("settings-kotlin-parens-{i}"))).label(label).checked(value).on_change(move |v, _, cx| {
+                            let v = *v;
+                            entity.update(cx, |this, cx| {
+                                this.set(
+                                    |s| {
+                                        let mut w = s.code_style.wrapping(lang);
+                                        apply(&mut w, v);
+                                        s.code_style.set_wrapping(lang, w)
+                                    },
+                                    cx,
+                                )
+                            })
+                        })));
+                    }
                 }
                 let entity = cx.entity();
                 let label = "Keep when reformatting: Line breaks";

@@ -790,13 +790,16 @@ pub struct Wrapping {
     /// Its Place ':' on new line (ASSERT_STATEMENT_COLON_ON_NEXT_LINE): the
     /// break before `:` instead of after it.
     pub assert_colon_next: bool,
-    /// Java's Method call arguments › New line after '(' and Place ')' on
-    /// new line (CALL_PARAMETERS_LPAREN_ON_NEXT_LINE / RPAREN_ON_NEXT_LINE),
-    /// for arguments over lines.
+    /// Method call arguments › New line after '(' and Place ')' on new line
+    /// (CALL_PARAMETERS_LPAREN_ON_NEXT_LINE / RPAREN_ON_NEXT_LINE), for
+    /// arguments over lines; Kotlin's chopped lists too.
     pub call_parens: [bool; 2],
-    /// Java's Method declaration parameters › the same
+    /// Method declaration parameters › the same
     /// (METHOD_PARAMETERS_LPAREN_ON_NEXT_LINE / RPAREN_ON_NEXT_LINE).
     pub param_parens: [bool; 2],
+    /// Java's Parenthesized expression › New line after '(' and Place ')' on
+    /// new line (PARENTHESES_EXPRESSION_LPAREN_WRAP / RPAREN_WRAP).
+    pub expr_parens: [bool; 2],
     /// Java's Annotation parameters (ANNOTATION_PARAMETER_WRAP).
     pub annotation_params: Wrap,
 }
@@ -942,21 +945,21 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2] };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2] };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2] };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2] };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2] }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2] }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
@@ -1019,6 +1022,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let [class, method, field] = w.annotations;
                 let (a, only) = wrap_annotations(&forced, true, &[class, method, field, w.local_annotations], only, margin);
                 let (a, only) = wrap_parameter_annotations(&a, true, w.param_annotations, only, margin);
+                let (a, only) = list_parens(&a, true, w.call_parens, w.param_parens, [false; 2], only);
                 wrapped_annotations = a;
                 (wrapped_annotations, only)
             } else {
@@ -1033,7 +1037,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let (a, only) = wrap_for_statements(&a, "try", w.resource_wrap, w.align_resources, only, margin);
                 let (a, only) = header_parens(&a, "for", w.for_parens, only);
                 let (a, only) = header_parens(&a, "try", w.resource_parens, only);
-                let (a, only) = list_parens(&a, w.call_parens, w.param_parens, only);
+                let (a, only) = list_parens(&a, false, w.call_parens, w.param_parens, w.expr_parens, only);
                 wrapped_annotations = a;
                 (wrapped_annotations, only)
             };
@@ -2183,51 +2187,82 @@ fn header_parens(text: &str, keyword: &str, parens: [bool; 2], only: Option<Rang
     (out.join("\n"), only)
 }
 
-/// Java's New line after '(' and Place ')' on new line for method call
-/// arguments (`call`) and declaration parameters (`decl`): a list whose
-/// items span lines (a declaration's single parameter: whose parentheses
-/// do) gets its first item off the `(` line and its `)` on a line of its
-/// own, as IntelliJ's dependent line feeds do.
-fn list_parens(text: &str, call: [bool; 2], decl: [bool; 2], only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
-    if call == [false; 2] && decl == [false; 2] {
+/// New line after '(' and Place ')' on new line for method call arguments
+/// (`call`), declaration parameters (`decl`) and Java's parenthesized
+/// expressions (`expr`), as IntelliJ's dependent line feeds do.
+///
+/// Java: a list whose items span lines (a declaration's single parameter,
+/// or an expression: whose parentheses do) gets its first item off the `(`
+/// line and its `)` on a line of its own. Kotlin's calls the same, when the
+/// arguments span lines outside their lambdas and objects; Kotlin's
+/// declarations keep their line breaks when on and lose them when off.
+fn list_parens(text: &str, kotlin: bool, call: [bool; 2], decl: [bool; 2], expr: [bool; 2], only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+    if !kotlin && call == [false; 2] && decl == [false; 2] && expr == [false; 2] {
         return (text.to_owned(), only);
     }
-    let lines = scan(text, false);
+    if kotlin && call == [false; 2] && decl == [true; 2] {
+        return (text.to_owned(), only);
+    }
+    let lines = scan(text, kotlin);
     let raw: Vec<&str> = text.split('\n').collect();
     let selected = |ix: usize| only.as_ref().is_none_or(|r| r.contains(&ix));
     let plain = |ix: usize| lines[ix].starts_in.unwrap_or(State::Code) == State::Code;
     let code = |j: usize, i: usize| lines[j].code.get(i).copied().unwrap_or(false) && !lines[j].comment.get(i).copied().unwrap_or(false);
     // Every bracket pair `(…)`: (line, byte) of each.
     let flat: Vec<(usize, usize, char)> = lines.iter().enumerate().flat_map(|(j, l)| l.brackets.iter().map(move |(p, c)| (j, *p, *c))).collect();
-    let mut pairs: Vec<((usize, usize), (usize, usize))> = Vec::new();
-    let mut stack: Vec<(usize, usize, char)> = Vec::new();
-    for &(j, p, c) in &flat {
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    for (n, &(_, _, c)) in flat.iter().enumerate() {
         if matches!(c, '(' | '[' | '{') {
-            stack.push((j, p, c));
-        } else if let Some((oj, op, oc)) = stack.pop() {
-            if oc == '(' && c == ')' {
-                pairs.push(((oj, op), (j, p)));
+            stack.push(n);
+        } else if let Some(o) = stack.pop() {
+            if flat[o].2 == '(' && c == ')' {
+                pairs.push((o, n));
             }
         }
     }
     let mut cuts: Vec<Vec<usize>> = vec![Vec::new(); raw.len()];
-    for ((ol, op), (cl, cp)) in pairs {
+    // Lines that join the line before them (Kotlin's declarations, off).
+    let mut join: Vec<bool> = vec![false; raw.len()];
+    for (o, n) in pairs {
+        let ((ol, op, _), (cl, cp, _)) = (flat[o], flat[n]);
         if ol == cl || !plain(ol) || !plain(cl) {
             continue;
         }
         let before = &raw[ol][..op];
         let word = before.trim_end().rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
-        if !is_call_or_declaration(before) || annotation_paren(before) || matches!(word, "switch" | "synchronized" | "try" | "assert") {
+        let keyword = matches!(word, "if" | "for" | "while" | "switch" | "synchronized" | "try" | "catch" | "when" | "assert");
+        let after_close = raw[cl][cp + 1..].trim_start();
+        let callee = is_call_or_declaration(before) && !annotation_paren(before) && !keyword;
+        let (declares, [lparen, rparen]) = if callee {
+            let declares = if kotlin { kotlin_declaration_open(raw[ol], &lines[ol]) == Some(op) } else { raw[ol].find('(') == Some(op) && declaration_head(before) };
+            (declares, if declares { decl } else { call })
+        } else if !kotlin && !keyword && !before.trim_end().ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ')' || c == ']' || c == '>') && !after_close.starts_with("->") {
+            (false, expr)
+        } else {
+            continue;
+        };
+        // Kotlin's declarations: their line breaks kept (on) or joined (off).
+        if kotlin && declares {
+            let after = raw[ol][op + 1..].trim();
+            if !lparen && after.is_empty() && selected(ol + 1) && plain(ol + 1) && ol + 1 < cl {
+                join[ol + 1] = true;
+            }
+            let prev_comment = lines[cl - 1].comment.iter().any(|c| *c);
+            if !rparen && raw[cl][..cp].trim().is_empty() && selected(cl) && !prev_comment && !(cl == ol + 1 && after.is_empty()) {
+                join[cl] = true;
+            }
             continue;
         }
-        let declares = raw[ol].find('(') == Some(op) && declaration_head(before);
-        let [lparen, rparen] = if declares { decl } else { call };
         if !lparen && !rparen {
             continue;
         }
-        // The items: top-level commas, and where the first starts and the last ends.
-        let (mut depth, mut angle, mut commas) = (0usize, 0usize, 0usize);
+        // The items: top-level commas, where the first starts and the last
+        // ends, and (Kotlin) whether a line ends outside lambdas and objects.
+        let (mut depth, mut angle, mut commas, mut braces) = (0usize, 0usize, 0usize, 0usize);
         let (mut first, mut last): (Option<usize>, Option<usize>) = (None, None);
+        let mut bare_break = false;
+        let mut object = false;
         for j in ol..=cl {
             let line = raw[j];
             let from = if j == ol { op + 1 } else { 0 };
@@ -2236,28 +2271,50 @@ fn list_parens(text: &str, call: [bool; 2], decl: [bool; 2], only: Option<Range<
                 if lines[j].comment.get(i).copied().unwrap_or(false) || ch.is_whitespace() {
                     continue;
                 }
+                if first.is_none() && kotlin && line[i..].starts_with("object") {
+                    object = true;
+                }
                 first.get_or_insert(j);
                 last = Some(j);
                 if !code(j, i) {
                     continue;
                 }
                 match ch {
-                    '(' | '[' | '{' => depth += 1,
-                    ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                    '{' => {
+                        depth += 1;
+                        braces += 1;
+                    }
+                    '}' => {
+                        depth = depth.saturating_sub(1);
+                        braces = braces.saturating_sub(1);
+                    }
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => depth = depth.saturating_sub(1),
                     '<' if line[..i].ends_with(|p: char| p.is_alphanumeric() || p == '_') => angle += 1,
                     '>' if angle > 0 && !line[..i].ends_with('-') => angle -= 1,
                     ',' if depth == 0 && angle == 0 => commas += 1,
                     _ => {}
                 }
             }
+            if j < cl && braces == 0 {
+                bare_break = true;
+            }
         }
         let (Some(first), Some(last)) = (first, last) else { continue };
-        let spans = if commas > 0 { first != last } else { declares };
+        // Java: a call's (two or more) arguments or a declaration's parameters
+        // from the first to the last; one parameter or an expression: the parentheses.
+        let spans = if kotlin {
+            bare_break
+        } else if callee {
+            if commas > 0 { first != last } else { declares }
+        } else {
+            true
+        };
         if !spans {
             continue;
         }
         let after = raw[ol][op + 1..].trim();
-        if lparen && selected(ol) && !after.is_empty() && !after.starts_with("//") && !after.starts_with("/*") {
+        if lparen && !(kotlin && object && commas == 0) && selected(ol) && !after.is_empty() && !after.starts_with("//") && !after.starts_with("/*") {
             cuts[ol].push(op + 1);
         }
         if rparen && selected(cl) && !raw[cl][..cp].trim().is_empty() {
@@ -2268,16 +2325,15 @@ fn list_parens(text: &str, call: [bool; 2], decl: [bool; 2], only: Option<Range<
     let mut delta: isize = 0;
     for (ix, line) in raw.iter().enumerate() {
         let mut points = std::mem::take(&mut cuts[ix]);
-        if points.is_empty() {
-            out.push((*line).to_owned());
-            continue;
-        }
         points.sort_unstable();
         points.dedup();
         let lead = &line[..line.len() - line.trim_start().len()];
         let mut pieces: Vec<String> = Vec::new();
         let mut from = 0;
-        for c in points.into_iter().chain([line.len()]) {
+        if points.is_empty() {
+            pieces.push((*line).to_owned());
+        }
+        for c in points.iter().copied().chain([line.len()]).filter(|_| !points.is_empty()) {
             let piece = line[from..c].trim();
             if from == 0 {
                 pieces.push(line[..c].trim_end().to_owned());
@@ -2285,6 +2341,12 @@ fn list_parens(text: &str, call: [bool; 2], decl: [bool; 2], only: Option<Range<
                 pieces.push(format!("{lead}        {piece}"));
             }
             from = c;
+        }
+        if join[ix] && !out.is_empty() {
+            let previous = out.pop().unwrap_or_default();
+            let glue = if previous.trim_end().ends_with('(') || pieces[0].trim_start().starts_with(')') { "" } else { " " };
+            pieces[0] = format!("{}{glue}{}", previous.trim_end(), pieces[0].trim_start());
+            delta -= 1;
         }
         delta += pieces.len() as isize - 1;
         out.extend(pieces);
@@ -2805,7 +2867,8 @@ fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, wrapper: &Wrapper) 
     let mut out = Vec::with_capacity(lines.len());
     let mut todo: Vec<(String, bool)> = lines.into_iter().zip(choppable).rev().collect();
     while let Some((line, choppable)) = todo.pop() {
-        match choppable.then(|| chop(&line, wrapper)).flatten() {
+        // A chop that changes nothing would come back forever.
+        match choppable.then(|| chop(&line, wrapper)).flatten().filter(|parts| parts.len() > 1) {
             Some(parts) => todo.extend(parts.into_iter().rev().map(|p| (p, true))),
             None => out.push(line),
         }
@@ -2952,15 +3015,33 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
         parts.push(current);
     };
     if wr.kotlin {
-        // Kotlin's official style: `(` and `)` on their own lines.
-        let mut parts = vec![line[..=open].trim_end().to_owned()];
+        // Kotlin's official style: `(` and `)` on their own lines (New line
+        // after '(' and Place ')' on new line; off, the first item stays
+        // after `(` and `)` after the last).
+        let [lparen, rparen] = if declares(open, depth) { wr.w.param_parens } else { wr.w.call_parens };
         let prefix = format!("{indent}{}", wr.unit);
-        let texts: Vec<String> = items.iter().enumerate().map(|(n, item)| format!("{item}{}", comma(n))).collect();
-        match mode(open, depth) {
-            Wrap::WrapIfLong => fill(&mut parts, prefix.clone(), texts, &prefix),
-            _ => parts.extend(texts.into_iter().map(|t| format!("{prefix}{t}"))),
+        let mut texts: Vec<String> = items.iter().enumerate().map(|(n, item)| format!("{item}{}", comma(n))).collect();
+        if !rparen {
+            if let Some(t) = texts.last_mut() {
+                t.push_str(&line[close..]);
+            }
         }
-        parts.push(format!("{indent}{}", &line[close..]));
+        let mut parts = Vec::new();
+        let (start, rest) = if lparen { (prefix.clone(), texts) } else { (format!("{}{}", &line[..=open], texts[0]), texts[1..].to_vec()) };
+        if lparen {
+            parts.push(line[..=open].trim_end().to_owned());
+        }
+        match mode(open, depth) {
+            Wrap::WrapIfLong => fill(&mut parts, start, rest, &prefix),
+            _ if lparen => parts.extend(rest.into_iter().map(|t| format!("{prefix}{t}"))),
+            _ => {
+                parts.push(start);
+                parts.extend(rest.into_iter().map(|t| format!("{prefix}{t}")));
+            }
+        }
+        if rparen {
+            parts.push(format!("{indent}{}", &line[close..]));
+        }
         return Some(parts);
     }
     // Java: the first item stays after `(`, the rest continue (a
@@ -5559,6 +5640,35 @@ mod tests {
         // Calls keep their annotations.
         let call = "fun f() {\n    g(@A x, y)\n}\n";
         assert_eq!(kotlin(kw, call), call);
+    }
+
+    #[test]
+    fn kotlin_list_parentheses_and_java_expressions() {
+        let java = |w: Wrapping, text: &str| reformat_indented(ImportStyle::Java, text, None, &IndentStyle { wrapping: Some(w), ..Default::default() });
+        let kotlin = |w: Wrapping, text: &str| reformat_indented(ImportStyle::Kotlin, text, None, &IndentStyle { wrapping: Some(w), ..Default::default() });
+        let k = "fun f() {\n    go(a,\n        b)\n    run(a) {\n        x()\n    }\n    send(object : Runnable {\n        override fun run() {}\n    })\n    call(a, {\n        b()\n    })\n}\n\nfun g(\n    a: Int,\n    b: Int\n) = 1\n";
+        // Kotlin's official style (on): arguments over lines get `(` and `)`
+        // lines; lambdas and objects don't count; declarations keep theirs.
+        let out = kotlin(Wrapping::KOTLIN, k);
+        assert_eq!(out, "fun f() {\n    go(\n        a,\n        b\n    )\n    run(a) {\n        x()\n    }\n    send(object : Runnable {\n        override fun run() {}\n    })\n    call(a, {\n        b()\n    })\n}\n\nfun g(\n    a: Int,\n    b: Int\n) = 1\n");
+        assert_eq!(kotlin(Wrapping::KOTLIN, &out), out);
+        // Off: a declaration's breaks after `(` and before `)` go; chopped
+        // lists keep the first item after `(` and `)` after the last.
+        let off = Wrapping { call_parens: [false; 2], param_parens: [false; 2], ..Wrapping::KOTLIN };
+        let o2 = kotlin(off, k);
+        assert!(o2.contains("    go(a,\n        b)\n") && o2.ends_with("fun g(a: Int,\n    b: Int) = 1\n"), "{o2}");
+        assert_eq!(kotlin(off, &o2), o2);
+        let long = format!("fun f() {{\n    val result = computeSomething(firstArgument{}, secondArgument, thirdArgument, fourth)\n}}\n", "X".repeat(50));
+        let lo = kotlin(off, &long);
+        assert_eq!(lo, format!("fun f() {{\n    val result = computeSomething(firstArgument{},\n        secondArgument,\n        thirdArgument,\n        fourth)\n}}\n", "X".repeat(50)));
+        assert_eq!(kotlin(off, &lo), lo);
+        // Java's Parenthesized expression over lines; a condition's parentheses aren't one.
+        let e = "class A {\n    int k() {\n        int x = (a +\n                b) * 2;\n        if (a &&\n                b) {\n        }\n        return x;\n    }\n}\n";
+        assert_eq!(java(Wrapping::JAVA, e), e);
+        let ew = Wrapping { expr_parens: [true; 2], ..Wrapping::JAVA };
+        let eo = java(ew, e);
+        assert!(eo.contains("        int x = (\n") && eo.contains("        ) * 2;\n") && eo.contains("        if (a &&\n                b) {\n"), "{eo}");
+        assert_eq!(java(ew, &eo), eo);
     }
 
     #[test]
