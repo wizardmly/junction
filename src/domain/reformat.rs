@@ -819,6 +819,12 @@ pub struct Wrapping {
     /// Java's Binary expressions › Align when multiline
     /// (ALIGN_MULTILINE_BINARY_OPERATION, off by default): operands under the first.
     pub align_binary: bool,
+    /// Java's Ternary operation › Align when multiline (ALIGN_MULTILINE_TERNARY_OPERATION, off).
+    pub align_ternary: bool,
+    /// Java's Throws list › Align when multiline (ALIGN_MULTILINE_THROWS_LIST, off).
+    pub align_throws: bool,
+    /// Java's Extends / implements list › Align when multiline (ALIGN_MULTILINE_EXTENDS_LIST, off).
+    pub align_extends: bool,
     /// Java's Annotation parameters (ANNOTATION_PARAMETER_WRAP).
     pub annotation_params: Wrap,
 }
@@ -964,21 +970,21 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, align_ternary: self.align_ternary, align_throws: self.align_throws, align_extends: self.align_extends, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
@@ -1088,6 +1094,13 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     let align_records = wrapping.is_none_or(|w| w.align_records);
     let align_args = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_args);
     let align_binary = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_binary);
+    let align_ternary = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_ternary);
+    let align_throws = wrapping.is_some_and(|w| w.align_throws);
+    let align_extends = wrapping.is_some_and(|w| w.align_extends);
+    // The header list's lines so far are aligned.
+    let mut header_aligned = false;
+    // A header line's indent before that alignment: its body goes by it.
+    let mut header_unaligned = 0;
     let tabs = unit == "\t";
     let step = if tabs { 1 } else { unit.len() };
     // Kotlin's official style continues by one indent; Java by 8 (two);
@@ -1285,12 +1298,33 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             // Java's Binary expressions › Align when multiline: an operand
             // under the expression's first one (not a ternary's).
             let ternary = code_start.starts_with("? ") || code_start.starts_with(": ") || previous.as_ref().is_some_and(|p| java_ternary_end(&p.code));
-            if align_binary && matches!(reason, Reason::Binary | Reason::Operator) && !ternary {
+            // Ternary operation › Align when multiline: `? a` / `: b` under the condition.
+            let aligned = if ternary { align_ternary } else { align_binary };
+            if aligned && matches!(reason, Reason::Binary | Reason::Operator) {
                 if let Some(p) = previous.as_ref().filter(|p| p.depth == stack.len() && (p.reason != reason || p.opened)) {
                     if let Some(col) = binary_start(&p.line, in_opened && p.opened) {
                         indent = col;
                     }
                 }
+            }
+            // Throws list / Extends list › Align when multiline: a type after
+            // `,` under the first after the keyword.
+            header_unaligned = indent;
+            if reason == Reason::Header && flavor == Flavor::Java && (align_throws || align_extends) && !tabs {
+                if let Some(p) = previous.as_ref().filter(|p| p.depth == stack.len() && p.code.ends_with(',')) {
+                    match header_list_start(&p.line) {
+                        Some((col, throws)) if if throws { align_throws } else { align_extends } => {
+                            indent = col;
+                            header_aligned = true;
+                        }
+                        // A later type: under the one before.
+                        None if p.reason == Reason::Header && header_aligned => indent = p.indent,
+                        _ => {}
+                    }
+                }
+            }
+            if reason != Reason::Header {
+                header_aligned = false;
             }
             continued = reason;
             // A class header's supertypes: its body belongs to the class.
@@ -1324,7 +1358,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             let lead_out = line_out.len() - line_out.trim_start().len();
             // An unselected line keeps its indent: its brackets go by it.
             let at = if selected { indent } else { lead_out };
-            let base = if header { at.saturating_sub(cont) } else { at };
+            let base = if header { if selected { header_unaligned } else { at }.saturating_sub(cont) } else { at };
             let declared = || declaration_paren(&line_out).filter(|_| if record_header(&line_out) { align_records } else { align_params });
             let align = (flavor == Flavor::Java && !tabs).then(|| declared().or_else(|| for_paren(&line_out).filter(|_| align_for)).or_else(|| keyword_paren(&line_out, "try").filter(|_| align_resources))).flatten();
             apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, align_args && !tabs, &line_out, &bodies[ix], flavor == Flavor::Java);
@@ -3665,6 +3699,29 @@ fn declaration_paren(line: &str) -> Option<usize> {
     Some(line[..open + 1].chars().count())
 }
 
+/// Where a Java header's last `throws` / `extends` / `implements` list
+/// starts on a laid-out line, in columns, and whether it's `throws`'.
+fn header_list_start(line: &str) -> Option<(usize, bool)> {
+    let info = scan(line, false).into_iter().next()?;
+    let mut best: Option<(usize, bool)> = None;
+    for keyword in ["throws", "extends", "implements"] {
+        let mut from = 0;
+        while let Some(found) = line[from..].find(keyword) {
+            let at = from + found;
+            let end = at + keyword.len();
+            let word = (at == 0 || !line[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_')) && line[end..].starts_with(' ');
+            if word && info.code.get(at).copied().unwrap_or(false) && best.is_none_or(|(b, _)| at > b) {
+                best = Some((at, keyword == "throws"));
+            }
+            from = end;
+        }
+    }
+    let (at, throws) = best?;
+    let keyword_end = at + line[at..].find(' ')?;
+    let start = line.len() - line[keyword_end..].trim_start().len();
+    (start < line.len()).then(|| (line[..start].chars().count(), throws))
+}
+
 /// Where a binary expression's first operand starts on a laid-out line, in
 /// columns: after the last `(` left open (`in_paren`), else after a
 /// top-level `=` or `return`.
@@ -5798,6 +5855,20 @@ mod tests {
         // Operands under the first after `=`, `(` and `return`; a ternary keeps its continuation.
         assert_eq!(o, "class A {\n    boolean k() {\n        boolean x = first &&\n                    second &&\n                    third;\n        if (a ||\n            b) {\n        }\n        int y = c ? d\n                : e;\n        return one +\n               two;\n    }\n}\n");
         assert_eq!(java(w, &o), o);
+    }
+
+    #[test]
+    fn aligns_ternaries_and_header_lists() {
+        let java = |w: Wrapping, text: &str| reformat_indented(ImportStyle::Java, text, None, &IndentStyle { wrapping: Some(w), ..Default::default() });
+        let t = "class A extends B implements C,\n        D,\n        E {\n    void k() throws IOException,\n            InterruptedException {\n        String value = c\n                ? d\n                : e;\n    }\n}\n";
+        assert_eq!(java(Wrapping::JAVA, t), t);
+        let w = Wrapping { align_ternary: true, align_throws: true, align_extends: true, ..Wrapping::JAVA };
+        let o = java(w, t);
+        assert_eq!(o, "class A extends B implements C,\n                             D,\n                             E {\n    void k() throws IOException,\n                    InterruptedException {\n        String value = c\n                       ? d\n                       : e;\n    }\n}\n");
+        assert_eq!(java(w, &o), o);
+        // Only Throws list: the class header keeps its continuation.
+        let only = java(Wrapping { align_throws: true, ..Wrapping::JAVA }, t);
+        assert!(only.starts_with("class A extends B implements C,\n        D,\n        E {\n    void k() throws IOException,\n                    InterruptedException {\n"), "{only}");
     }
 
     #[test]
