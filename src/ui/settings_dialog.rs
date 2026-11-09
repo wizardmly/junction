@@ -1360,13 +1360,17 @@ impl SettingsView {
         }))
     }
 
-    /// Java's Class / Method / Field / Local variable annotations and Enum constants.
-    fn annotation_options(&self, mut page: gpui_kit::Div, query: &str, w: Wrapping, cx: &mut Context<Self>) -> gpui_kit::Div {
+    /// Class / Method / Field / Local variable annotations; Java's Enum
+    /// constants and Parameter annotations too.
+    fn annotation_options(&self, mut page: gpui_kit::Div, query: &str, lang: StyleLang, w: Wrapping, cx: &mut Context<Self>) -> gpui_kit::Div {
         // Three annotations, Enum constants (index 3), Local variable (4) and Parameter (5) annotations.
         let wraps = [w.annotations[0], w.annotations[1], w.annotations[2], w.enum_constants, w.local_annotations, w.param_annotations];
         for (i, label) in ["Class annotations:", "Method annotations:", "Field annotations:", "Enum constants:", "Local variable annotations:", "Parameter annotations:"].into_iter().enumerate() {
+            if lang != StyleLang::Java && matches!(i, 3 | 5) {
+                continue;
+            }
             let view = cx.entity();
-            let picker = Button::new(SharedString::from(format!("settings-annotations-{i}")))
+            let picker = Button::new(SharedString::from(format!("settings-annotations-{}-{i}", lang.name())))
                 .outline()
                 .small()
                 .label(AnnotationWrap::LABELS[wraps[i].index()])
@@ -1378,7 +1382,7 @@ impl SettingsView {
                             view.update(cx, |this, cx| {
                                 this.set(
                                     |s| {
-                                        let mut w = s.code_style.wrapping(StyleLang::Java);
+                                        let mut w = s.code_style.wrapping(lang);
                                         let wrap = AnnotationWrap::from_index(n).unwrap_or_default();
                                         match i {
                                             3 => w.enum_constants = wrap,
@@ -1386,7 +1390,7 @@ impl SettingsView {
                                             5 => w.param_annotations = wrap,
                                             _ => w.annotations[i] = wrap,
                                         }
-                                        s.code_style.set_wrapping(StyleLang::Java, w)
+                                        s.code_style.set_wrapping(lang, w)
                                     },
                                     cx,
                                 )
@@ -1815,13 +1819,14 @@ impl SettingsView {
                         page = page.child(self.row(label, query, picker, cx));
                     }
                     page = self.operation_options(page, query, d.wrapping(lang).ops, cx);
-                    page = self.annotation_options(page, query, d.wrapping(lang), cx);
+                    page = self.annotation_options(page, query, lang, d.wrapping(lang), cx);
                     page = self.wrap_option(page, query, "Array initializer:", lang, d.wrapping(lang).array_init, |w, v| w.array_init = v, cx);
                     page = self.wrap_option(page, query, "Throws list:", lang, d.wrapping(lang).throws_list, |w, v| w.throws_list = v, cx);
                     page = self.wrap_option(page, query, "Throws keyword:", lang, d.wrapping(lang).throws_keyword, |w, v| w.throws_keyword = v, cx);
                     page = self.wrap_option(page, query, "Annotation parameters:", lang, d.wrapping(lang).annotation_params, |w, v| w.annotation_params = v, cx);
                 } else {
                     page = self.wrap_option(page, query, "Elvis expressions:", lang, d.wrapping(lang).elvis, |w, v| w.elvis = v, cx);
+                    page = self.annotation_options(page, query, lang, d.wrapping(lang), cx);
                 }
                 let entity = cx.entity();
                 let label = "Keep when reformatting: Line breaks";
