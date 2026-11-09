@@ -752,7 +752,32 @@ pub struct Braces {
     pub finally_new_line: bool,
     pub class_next_line: bool,
     pub method_next_line: bool,
+    /// Kotlin's Put left brace on new line, for all its braces.
     pub other_next_line: bool,
+    /// Force braces for Java's 'if', 'for' and 'while'.
+    pub force: [Force; 3],
+}
+
+/// Wrapping and Braces › Force braces (IntelliJ's IF_BRACE_FORCE and the like).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Force {
+    #[default]
+    DoNotForce,
+    /// When the statement is on its own line.
+    WhenMultiline,
+    Always,
+}
+
+impl Force {
+    pub const LABELS: [&'static str; 3] = ["Do not force", "When multiline", "Always"];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn from_index(i: usize) -> Option<Self> {
+        [Force::DoNotForce, Force::WhenMultiline, Force::Always].get(i).copied()
+    }
 }
 
 impl Braces {
@@ -762,16 +787,23 @@ impl Braces {
         [self.else_new_line, self.while_new_line, self.catch_new_line, self.finally_new_line, self.class_next_line, self.method_next_line, self.other_next_line]
     }
 
+    pub const NONE: Braces = Braces { else_new_line: false, while_new_line: false, catch_new_line: false, finally_new_line: false, class_next_line: false, method_next_line: false, other_next_line: false, force: [Force::DoNotForce; 3] };
+
+    /// The seven switches; `force` stays.
+    pub fn with_values(self, v: [bool; 7]) -> Self {
+        Braces { else_new_line: v[0], while_new_line: v[1], catch_new_line: v[2], finally_new_line: v[3], class_next_line: v[4], method_next_line: v[5], other_next_line: v[6], ..self }
+    }
+
     pub fn from_values(v: [bool; 7]) -> Self {
-        Braces { else_new_line: v[0], while_new_line: v[1], catch_new_line: v[2], finally_new_line: v[3], class_next_line: v[4], method_next_line: v[5], other_next_line: v[6] }
+        Braces::NONE.with_values(v)
     }
 }
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces { else_new_line: false, while_new_line: false, catch_new_line: false, finally_new_line: false, class_next_line: false, method_next_line: false, other_next_line: false } };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces { else_new_line: false, while_new_line: false, catch_new_line: false, finally_new_line: false, class_next_line: false, method_next_line: false, other_next_line: false } };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
@@ -827,8 +859,10 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     let laid;
     let (text, only) = match wrapping {
         Some(w) => {
+            // Force braces first: the braces it adds are laid out too.
+            let (forced, only) = if kotlin { (text.to_owned(), only) } else { force_braces(text, &w.braces.force, only) };
             // Twice: a `} else {` split puts `else {` on a line whose `{` may move too.
-            let (once, only) = brace_layout(text, kotlin, &w.braces, only);
+            let (once, only) = brace_layout(&forced, kotlin, &w.braces, only);
             let (l, only) = brace_layout(&once, kotlin, &w.braces, only);
             laid = l;
             (laid.as_str(), only)
@@ -1065,6 +1099,110 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     out.join("\n")
 }
 
+/// Java's Force braces: `if (c) x();` (Always) and `if (c)` with `x();`
+/// on the next line (When multiline, Always) get `{ }`; likewise `else`,
+/// `for` and `while` (`force`: if, for, while; `else` goes with if). Only
+/// a one-line body that is a plain statement (not another `if`, `for`…);
+/// lines with comments stay.
+fn force_braces(text: &str, force: &[Force; 3], only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+    if force.iter().all(|f| *f == Force::DoNotForce) {
+        return (text.to_owned(), only);
+    }
+    let lines = scan(text, false);
+    let raw: Vec<&str> = text.split('\n').collect();
+    let selected = |ix: usize| only.as_ref().is_none_or(|r| r.contains(&ix));
+    let plain = |ix: usize| lines[ix].starts_in.unwrap_or(State::Code) == State::Code && !lines[ix].comment.iter().any(|c| *c) && lines[ix].code.first().copied().unwrap_or(true);
+    // Where a statement's head ends: after `if (…)`, `for (…)`, `while (…)`, or `else`; with its option.
+    let head_end = |line: &str, code: &[bool]| -> Option<(usize, Force)> {
+        let trimmed = line.trim_start();
+        let body = trimmed.strip_prefix("} ").unwrap_or(trimmed);
+        let at = line.len() - body.len();
+        let word = body.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+        let chosen = match word {
+            "if" | "else" => force[0],
+            "for" => force[1],
+            // `} while (…);` ends a do-while.
+            "while" if !trimmed.starts_with('}') => force[2],
+            _ => return None,
+        };
+        if word == "else" {
+            let rest = body[4..].trim_start();
+            if rest.starts_with("if") && !rest[2..].starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+                // `else if (…)`: the `if`'s head.
+                let open = at + body.find('(')?;
+                return close_paren(line, open, code).map(|c| (c + 1, force[0]));
+            }
+            return Some((at + 4, chosen));
+        }
+        let open = at + word.len() + body[word.len()..].find('(')?;
+        if !line[at + word.len()..open].trim().is_empty() {
+            return None;
+        }
+        close_paren(line, open, code).map(|c| (c + 1, chosen))
+    };
+    // A body that may get braces: one statement, not a block or another statement with a body.
+    let simple = |stmt: &str| {
+        let stmt = stmt.trim();
+        let word = stmt.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+        stmt.ends_with(';') && !stmt.starts_with('{') && !matches!(word, "if" | "else" | "for" | "while" | "do" | "try" | "switch" | "synchronized")
+    };
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut delta: isize = 0;
+    let mut ix = 0;
+    while ix < raw.len() {
+        let line = raw[ix];
+        let lead = &line[..line.len() - line.trim_start().len()];
+        if selected(ix) && plain(ix) {
+            if let Some((end, f)) = head_end(line, &lines[ix].code) {
+                let rest = line[end..].trim();
+                if !rest.is_empty() && f == Force::Always && simple(rest) {
+                    // `if (c) x();` → three lines.
+                    out.push(format!("{} {{", line[..end].trim_end()));
+                    out.push(format!("{lead}    {rest}"));
+                    out.push(format!("{lead}}}"));
+                    delta += 2;
+                    ix += 1;
+                    continue;
+                }
+                if rest.is_empty() && f != Force::DoNotForce && ix + 1 < raw.len() && selected(ix + 1) && plain(ix + 1) && simple(raw[ix + 1]) {
+                    // `if (c)` + `x();` → the body in braces.
+                    out.push(format!("{} {{", line.trim_end()));
+                    out.push(raw[ix + 1].to_owned());
+                    out.push(format!("{lead}}}"));
+                    delta += 1;
+                    ix += 2;
+                    continue;
+                }
+            }
+        }
+        out.push(line.to_owned());
+        ix += 1;
+    }
+    let only = only.map(|r| r.start..(r.end as isize + delta).max(r.start as isize) as usize);
+    (out.join("\n"), only)
+}
+
+/// The `)` matching the `(` at `open`, strings skipped (`code`: the line's code bytes).
+fn close_paren(line: &str, open: usize, code: &[bool]) -> Option<usize> {
+    let mut depth = 0;
+    for (i, c) in line[open..].char_indices() {
+        if !code.get(open + i).copied().unwrap_or(false) {
+            continue;
+        }
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Braces placement and 'else' / 'while' / 'catch' / 'finally' on new
 /// line: a `}` and the keyword after it split or joined, a declaration's
 /// or statement's `{` moved to the next line or back. Lines in comments
@@ -1101,10 +1239,29 @@ fn brace_layout(text: &str, kotlin: bool, braces: &Braces, only: Option<Range<us
     };
     // Java: a line's `{` kind: Some(next line) for a class, a method or a statement.
     let brace_next_line = |head: &str| -> Option<bool> {
-        if kotlin {
-            return None;
-        }
         let head = head.trim();
+        if kotlin {
+            // Put left brace on new line: a declaration's or a statement's
+            // `{`, not a lambda's (`run {`, `= foo {`).
+            let bare = head.trim_start_matches('}').trim_start();
+            let first = bare.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+            let control = matches!(first, "if" | "else" | "for" | "while" | "do" | "try" | "catch" | "finally" | "when");
+            if control {
+                return (head.ends_with(')') || matches!(bare, "else" | "try" | "finally" | "do" | "when")).then_some(braces.other_next_line);
+            }
+            let declares = matches!(declaration_words(bare).first().copied(), Some("class" | "interface" | "object" | "fun" | "constructor" | "init"));
+            // `=` outside parentheses: an expression body or initializer.
+            let mut depth = 0i32;
+            let assigns = head.chars().any(|c| {
+                match c {
+                    '(' | '[' | '<' => depth += 1,
+                    ')' | ']' | '>' => depth -= 1,
+                    _ => {}
+                }
+                c == '=' && depth <= 0
+            });
+            return (declares && !assigns && !head.contains("->")).then_some(braces.other_next_line);
+        }
         let first = head.trim_start_matches('}').trim_start().split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
         if matches!(first, "if" | "else" | "for" | "while" | "do" | "try" | "catch" | "finally" | "switch" | "synchronized") {
             return Some(braces.other_next_line);
@@ -3451,6 +3608,37 @@ mod tests {
         let kt = "fun f(a: Int) {\n    if (a > 0) {\n        g()\n    }\n    else {\n        h()\n    }\n    try {\n    } catch (e: Exception) {\n    }\n}";
         assert_eq!(f(true, Braces::default(), kt), "fun f(a: Int) {\n    if (a > 0) {\n        g()\n    } else {\n        h()\n    }\n    try {\n    } catch (e: Exception) {\n    }\n}");
         assert_eq!(f(true, Braces { catch_new_line: true, ..Default::default() }, kt), "fun f(a: Int) {\n    if (a > 0) {\n        g()\n    } else {\n        h()\n    }\n    try {\n    }\n    catch (e: Exception) {\n    }\n}");
+    }
+
+    #[test]
+    fn force_braces_and_kotlin_left_brace() {
+        let f = |kotlin: bool, braces: Braces, text: &str| {
+            let w = if kotlin { Wrapping::KOTLIN } else { Wrapping::JAVA };
+            let style = IndentStyle { wrapping: Some(Wrapping { braces, ..w }), ..Default::default() };
+            let st = if kotlin { ImportStyle::Kotlin } else { ImportStyle::Java };
+            let once = reformat_indented(st, text, None, &style);
+            assert_eq!(reformat_indented(st, &once, None, &style), once, "stable");
+            once
+        };
+        let java = "class A {\n    int f(int a) {\n        if (a > 0) return log(\")\");\n        if (a < 0)\n            a++;\n        else\n            a--;\n        for (int i = 0; i < a; i++) g(i);\n        while (a > 9)\n            a /= 2;\n        if (a == 1) // one\n        a = 2;\n        if (a == 2)\n        if (a > 1) a = 3;\n        return a;\n    }\n}";
+        // Off: nothing added (a body without braces keeps the indent the formatter gives it).
+        let none = f(false, Braces::NONE, java);
+        assert!(!none.contains("{\n            a++;"));
+        let multiline = Braces { force: [Force::WhenMultiline; 3], ..Braces::NONE };
+        assert_eq!(
+            f(false, multiline, java),
+            "class A {\n    int f(int a) {\n        if (a > 0) return log(\")\");\n        if (a < 0) {\n            a++;\n        } else {\n            a--;\n        }\n        for (int i = 0; i < a; i++) g(i);\n        while (a > 9) {\n            a /= 2;\n        }\n        if (a == 1) // one\n        a = 2;\n        if (a == 2)\n        if (a > 1) a = 3;\n        return a;\n    }\n}"
+        );
+        let always = Braces { force: [Force::Always, Force::Always, Force::DoNotForce], ..Braces::NONE };
+        assert_eq!(
+            f(false, always, java),
+            "class A {\n    int f(int a) {\n        if (a > 0) {\n            return log(\")\");\n        }\n        if (a < 0) {\n            a++;\n        } else {\n            a--;\n        }\n        for (int i = 0; i < a; i++) {\n            g(i);\n        }\n        while (a > 9)\n        a /= 2;\n        if (a == 1) // one\n        a = 2;\n        if (a == 2)\n        if (a > 1) {\n            a = 3;\n        }\n        return a;\n    }\n}"
+        );
+        // Kotlin: Put left brace on new line, not a lambda's; off joins it back.
+        let kt = "class A {\n    fun f(x: Int): Int {\n        if (x > 0) {\n            run {\n                g()\n            }\n        } else {\n        }\n        return x\n    }\n    fun g() = run {\n    }\n}";
+        let next = f(true, Braces { other_next_line: true, ..Braces::NONE }, kt);
+        assert_eq!(next, "class A\n{\n    fun f(x: Int): Int\n    {\n        if (x > 0)\n        {\n            run {\n                g()\n            }\n        } else\n        {\n        }\n        return x\n    }\n\n    fun g() = run {\n    }\n}");
+        assert_eq!(f(true, Braces::NONE, &next), "class A {\n    fun f(x: Int): Int {\n        if (x > 0) {\n            run {\n                g()\n            }\n        } else {\n        }\n        return x\n    }\n\n    fun g() = run {\n    }\n}");
     }
 
     #[test]

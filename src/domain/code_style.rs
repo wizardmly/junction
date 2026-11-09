@@ -5,7 +5,7 @@
 
 use crate::domain::imports::{ImportStyle, StarImports};
 use crate::domain::line_edit::LineComments;
-use crate::domain::reformat::{Braces, IndentStyle, KeepBlankLines, MinBlankLines, Spaces, Wrap, Wrapping};
+use crate::domain::reformat::{Braces, Force, IndentStyle, KeepBlankLines, MinBlankLines, Spaces, Wrap, Wrapping};
 
 /// The languages with a code style page.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -205,6 +205,7 @@ impl CodeStyle {
                 let mut values: Vec<String> = w.values().iter().map(|v| v.index().to_string()).collect();
                 values.push(u8::from(w.keep_line_breaks).to_string());
                 values.extend(w.braces.values().iter().map(|b| u8::from(*b).to_string()));
+                values.extend(w.braces.force.iter().map(|f| f.index().to_string()));
                 out.push_str(&format!("code_style_{}_wrapping={}\n", lang.key(), values.join(",")));
             }
         }
@@ -230,7 +231,7 @@ impl CodeStyle {
             return true;
         }
         if let Some(lang) = key.strip_prefix("code_style_").and_then(|k| k.strip_suffix("_wrapping")).and_then(|k| StyleLang::ALL.into_iter().find(|l| l.key() == k)) {
-            // Five wraps, Keep line breaks, then the seven `Braces` (older files stop sooner).
+            // Five wraps, Keep line breaks, the seven `Braces`, then Force braces (older files stop sooner).
             let parts: Vec<&str> = value.split(',').map(str::trim).collect();
             let v: Option<Vec<Wrap>> = parts.iter().take(5).map(|n| n.parse().ok().and_then(Wrap::from_index)).collect();
             if let Some(v) = v.and_then(|v| <[Wrap; 5]>::try_from(v).ok()) {
@@ -238,7 +239,11 @@ impl CodeStyle {
                 for (i, b) in braces.iter_mut().enumerate() {
                     *b = parts.get(6 + i).is_some_and(|v| *v == "1");
                 }
-                self.set_wrapping(lang, Wrapping { keep_line_breaks: parts.get(5).is_none_or(|k| *k != "0"), braces: Braces::from_values(braces), ..Wrapping::from_values(v) });
+                let mut force = [Force::DoNotForce; 3];
+                for (i, f) in force.iter_mut().enumerate() {
+                    *f = parts.get(13 + i).and_then(|v| v.parse().ok()).and_then(Force::from_index).unwrap_or_default();
+                }
+                self.set_wrapping(lang, Wrapping { keep_line_breaks: parts.get(5).is_none_or(|k| *k != "0"), braces: Braces { force, ..Braces::from_values(braces) }, ..Wrapping::from_values(v) });
             }
             return true;
         }
@@ -332,10 +337,10 @@ mod tests {
         style.set_spaces(StyleLang::Kotlin, Spaces { after_comma: false, ..Default::default() });
         assert!(style.lines().contains("code_style_kotlin_spaces=111111111111001111011111111111111111111111110010000000000000000000000\n"));
         assert!(!style.indents(StyleLang::Kotlin, None, None).spaces.after_comma);
-        style.set_wrapping(StyleLang::Java, Wrapping { call_args: Wrap::ChopIfLong, braces: Braces { else_new_line: true, ..Default::default() }, ..Wrapping::JAVA });
+        style.set_wrapping(StyleLang::Java, Wrapping { call_args: Wrap::ChopIfLong, braces: Braces { else_new_line: true, force: [Force::Always, Force::DoNotForce, Force::WhenMultiline], ..Default::default() }, ..Wrapping::JAVA });
         style.set_wrapping(StyleLang::Kotlin, Wrapping { keep_line_breaks: false, ..Wrapping::KOTLIN });
-        assert!(style.lines().contains("code_style_kotlin_wrapping=2,2,1,1,1,0,0,0,0,0,0,0,0\n"));
-        assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0,1,1,0,0,0,0,0,0\n"));
+        assert!(style.lines().contains("code_style_kotlin_wrapping=2,2,1,1,1,0,0,0,0,0,0,0,0,0,0,0\n"));
+        assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0,1,1,0,0,0,0,0,0,2,0,1\n"));
         style.set_star_imports(ImportStyle::Java, StarImports { names: 99, members: 0, packages: vec!["a.b.*".into(), " ".into(), "c.**".into()] });
         assert!(style.lines().contains("code_style_java_imports=99,1,a.b.*;c.**\n") && !style.lines().contains("kotlin_imports"));
         let mut read = CodeStyle::default();
