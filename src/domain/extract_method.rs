@@ -65,6 +65,14 @@ pub struct MethodPlan {
     pub is_static: bool,
     /// Function names in the file, for a name that isn't taken.
     pub taken: Vec<String>,
+    /// The enclosing function's type parameters the code uses, as
+    /// declared (`T : Comparable<T>`, `T extends Number`).
+    pub type_parameters: Vec<String>,
+    /// Kotlin `where` constraints on those type parameters.
+    pub type_constraints: Vec<String>,
+    /// Kotlin: the enclosing extension function's receiver type, which
+    /// the new function keeps (the call's implicit `this` is the same).
+    pub receiver: String,
 }
 
 impl MethodPlan {
@@ -157,12 +165,18 @@ pub fn signature(style: ImportStyle, plan: &MethodPlan, request: &ExtractRequest
         ImportStyle::Java => {
             let params: Vec<String> = request.ordered().into_iter().map(|i| format!("{} {}", request.parameters[i].1, request.parameters[i].0)).collect();
             let result = if result.is_empty() { "void".to_owned() } else { result };
-            format!("{visibility}{}{result} {}({})", if request.is_static { "static " } else { "" }, request.name, params.join(", "))
+            let generics = if plan.type_parameters.is_empty() { String::new() } else { format!("<{}> ", plan.type_parameters.join(", ")) };
+            format!("{visibility}{}{generics}{result} {}({})", if request.is_static { "static " } else { "" }, request.name, params.join(", "))
         }
         ImportStyle::Kotlin => {
             let params: Vec<String> = request.ordered().into_iter().map(|i| format!("{}: {}", request.parameters[i].0, request.parameters[i].1)).collect();
             let result = if result.is_empty() || result == "Unit" { String::new() } else { format!(": {result}") };
-            format!("{visibility}fun {}({}){result}", request.name, params.join(", "))
+            let generics = if plan.type_parameters.is_empty() { String::new() } else { format!("<{}> ", plan.type_parameters.join(", ")) };
+            let receiver = if plan.receiver.is_empty() { String::new() } else { format!("{}.", plan.receiver) };
+            // A reified type parameter needs an inline function.
+            let inline = if plan.type_parameters.iter().any(|t| t.split_whitespace().any(|w| w == "reified")) { "inline " } else { "" };
+            let constraints = if plan.type_constraints.is_empty() { String::new() } else { format!(" where {}", plan.type_constraints.join(", ")) };
+            format!("{visibility}{inline}fun {generics}{receiver}{}({}){result}{constraints}", request.name, params.join(", "))
         }
     }
 }
@@ -348,6 +362,9 @@ mod tests {
             member_indent: "    ".into(),
             is_static: false,
             taken: vec!["f".into()],
+            type_parameters: vec![],
+            type_constraints: vec![],
+            receiver: String::new(),
         };
         assert_eq!(plan.suggested_name(), "extracted");
         let e = extract(ImportStyle::Kotlin, text, &plan, &request("twice", &[("count", "Int")], ""), "    ", &[]).unwrap();
@@ -375,6 +392,9 @@ mod tests {
             member_indent: String::new(),
             is_static: false,
             taken: vec!["f".into(), "extracted".into()],
+            type_parameters: vec![],
+            type_constraints: vec![],
+            receiver: String::new(),
         };
         assert_eq!(plan.suggested_name(), "extracted1");
         assert!(!plan.needs_result_type(ImportStyle::Kotlin) && plan.needs_result_type(ImportStyle::Java));
@@ -394,6 +414,9 @@ mod tests {
             member_indent: "  ".into(),
             is_static: true,
             taken: vec![],
+            type_parameters: vec![],
+            type_constraints: vec![],
+            receiver: String::new(),
         };
         let mut r = request("compute", &[("n", "int")], "");
         r.is_static = true;
@@ -414,6 +437,9 @@ mod tests {
             member_indent: String::new(),
             is_static: false,
             taken: vec![],
+            type_parameters: vec![],
+            type_constraints: vec![],
+            receiver: String::new(),
         };
         let e = extract(ImportStyle::Kotlin, text, &plan, &request("add", &[("s", "Int")], ""), "    ", &[]).unwrap();
         assert_eq!(apply(text, &e), "fun f() {\n    var s = 0\n    s = add(s)\n    println(s)\n}\n\nprivate fun add(s: Int): Int {\n    var s = s\n    s += 2\n    return s\n}\n");
@@ -440,6 +466,9 @@ mod tests {
             member_indent: String::new(),
             is_static: false,
             taken: vec![],
+            type_parameters: vec![],
+            type_constraints: vec![],
+            receiver: String::new(),
         };
         let mut r = request("sub", &[("x", "Int"), ("y", "Long")], "");
         r.order = vec![1, 0];
