@@ -649,8 +649,9 @@ struct Previous {
     reason: Reason,
     indent: usize,
     /// Ends with a statement's head without its body: `if (…)`, `else`,
-    /// `for (…)`, `while (…)`, `do`. The next line is the body.
-    head: bool,
+    /// `for (…)`, `while (…)`, `do`. The next line is the body, one
+    /// indent in from this (the head's first line's indent).
+    head: Option<usize>,
 }
 
 /// An open bracket: the indent of its line and of its content, in
@@ -742,6 +743,32 @@ pub struct Wrapping {
     pub braces: Braces,
     /// Java's binary expressions and ternaries.
     pub ops: Operations,
+    /// Java's class, method and field annotations.
+    pub annotations: [AnnotationWrap; 3],
+}
+
+/// Wrapping and Braces › Class / Method / Field annotations (IntelliJ's
+/// CLASS_ANNOTATION_WRAP and the like). IntelliJ's default is Wrap always;
+/// ours is Do not wrap, so `@Test public void f()` stays as written.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AnnotationWrap {
+    #[default]
+    DoNotWrap,
+    WrapIfLong,
+    ChopIfLong,
+    WrapAlways,
+}
+
+impl AnnotationWrap {
+    pub const LABELS: [&'static str; 4] = ["Do not wrap", "Wrap if long", "Chop down if long", "Wrap always"];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn from_index(i: usize) -> Option<Self> {
+        [AnnotationWrap::DoNotWrap, AnnotationWrap::WrapIfLong, AnnotationWrap::ChopIfLong, AnnotationWrap::WrapAlways].get(i).copied()
+    }
 }
 
 /// Wrapping and Braces › Binary expressions and Ternary operation, with
@@ -823,16 +850,21 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3] };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3] };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3] }
+    }
+
+    /// The five wraps changed; the other options stay.
+    pub fn with_values(self, v: [Wrap; 5]) -> Self {
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
@@ -883,6 +915,14 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         Some(w) => {
             // Force braces first: the braces it adds are laid out too.
             let (forced, only) = if kotlin { (text.to_owned(), only) } else { force_braces(text, &w.braces.force, only) };
+            let wrapped_annotations;
+            let (forced, only) = if kotlin {
+                (forced, only)
+            } else {
+                let (a, only) = wrap_annotations(&forced, &w.annotations, only, indents.right_margin.unwrap_or(RIGHT_MARGIN));
+                wrapped_annotations = a;
+                (wrapped_annotations, only)
+            };
             // Twice: a `} else {` split puts `else {` on a line whose `{` may move too.
             let (once, only) = brace_layout(&forced, kotlin, &w.braces, only);
             let (l, only) = brace_layout(&once, kotlin, &w.braces, only);
@@ -921,6 +961,8 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     // The last code line.
     let mut previous: Option<Previous> = None;
     let mut blank_run = 0;
+    // A statement head left open on its line: the depth before it and its indent.
+    let mut split_head: Option<(usize, usize)> = None;
     let bodies = declaration_braces(&raw, &lines);
     let keep = indents.keep_blank;
     let spaces = if flavor == Flavor::Groovy { Spaces::default() } else { indents.spaces };
@@ -1098,8 +1140,8 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             header = reason == Reason::Header;
             // A body without braces under its `if (…)`, `else`, `for (…)`…: one indent deeper.
             if reason == Reason::None && !code_start.starts_with('{') {
-                if let Some(p) = previous.as_ref().filter(|p| p.head && !p.opened && p.depth == stack.len()) {
-                    indent = p.indent + step;
+                if let Some(head) = previous.as_ref().filter(|p| !p.opened && p.depth == stack.len()).and_then(|p| p.head) {
+                    indent = head + step;
                     body_line = true;
                 }
             }
@@ -1141,7 +1183,18 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 .collect();
             // A comment between a head and its body: the body is still to come.
             if !(body_line && code_text.trim().is_empty()) {
-                let head = statement_head(code_text.trim());
+                let code = code_text.trim();
+                let mut head = statement_head(code).then_some(indent);
+                // A head over lines: `if (a &&` … `b)`.
+                if let Some((at_depth, at_indent)) = split_head.filter(|(d, _)| stack.len() <= *d) {
+                    split_head = None;
+                    if stack.len() == at_depth && code.ends_with(')') {
+                        head = Some(at_indent);
+                    }
+                }
+                if head.is_none() && stack.len() > depth && opens_head(code) {
+                    split_head = Some((depth, indent));
+                }
                 previous = Some(Previous { code: code_text.trim_end().to_owned(), opened: stack.len() > depth, depth: stack.len(), reason: continued, indent, head });
             }
             // A `case …:` label: what follows is its body.
@@ -1171,6 +1224,32 @@ fn statement_head(code: &str) -> bool {
         let before = code[..i].chars().next_back();
         i > 0 && before.is_some_and(|c| c == ' ' || c == '(' || c == '=') && head_at_start(&code[i..])
     })
+}
+
+/// Whether a line starts a statement head its line doesn't close: `if (a &&`.
+fn opens_head(code: &str) -> bool {
+    let closes = code.starts_with('}');
+    let body = code.strip_prefix('}').map(str::trim_start).unwrap_or(code);
+    let body = body.strip_prefix("else ").map(str::trim_start).unwrap_or(body);
+    let word = body.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+    if !matches!(word, "if" | "for" | "while") || closes && word == "while" {
+        return false;
+    }
+    let rest = body[word.len()..].trim_start();
+    let mut depth = 0i32;
+    for c in rest.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    rest.starts_with('(') && depth > 0
 }
 
 fn head_at_start(code: &str) -> bool {
@@ -1204,6 +1283,139 @@ fn head_at_start(code: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// Java's Class / Method / Field annotations: the annotations before a
+/// declaration in a class body (or a class at the top) on lines of their
+/// own (Wrap always; Chop down if long when the line is too long) or
+/// where the line would pass the margin (Wrap if long). Lines with
+/// comments, enum constants and local declarations stay.
+fn wrap_annotations(text: &str, wraps: &[AnnotationWrap; 3], only: Option<Range<usize>>, margin: usize) -> (String, Option<Range<usize>>) {
+    if wraps.iter().all(|w| *w == AnnotationWrap::DoNotWrap) {
+        return (text.to_owned(), only);
+    }
+    let lines = scan(text, false);
+    let raw: Vec<&str> = text.split('\n').collect();
+    let bodies = declaration_braces(&raw, &lines);
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut delta: isize = 0;
+    // Per open bracket: whether it's a class body (`(` and `[` aren't).
+    let mut stack: Vec<bool> = Vec::new();
+    for (ix, line) in raw.iter().enumerate() {
+        let info = &lines[ix];
+        let selected = only.as_ref().is_none_or(|r| r.contains(&ix));
+        let plain = info.starts_in.unwrap_or(State::Code) == State::Code && !info.comment.iter().any(|c| *c);
+        let in_class = stack.last().is_none_or(|b| *b);
+        let mut parts = None;
+        if selected && plain && in_class {
+            let trimmed = line.trim_start();
+            let lead = &line[..line.len() - trimmed.len()];
+            let (annotations, rest) = leading_annotations(trimmed);
+            // A method header over lines ends with `,`: its `(` tells.
+            let kind = member_kind(rest, false).map(|k| if k == Member::Field && declaration_paren(rest).is_some() { Member::Method } else { k });
+            let wrap = match kind {
+                Some(Member::Class) => wraps[0],
+                Some(Member::Method) => wraps[1],
+                Some(Member::Field) if !rest.trim_end().ends_with(',') => wraps[2],
+                _ => AnnotationWrap::DoNotWrap,
+            };
+            let long = width(line) > margin;
+            if !annotations.is_empty() && !rest.is_empty() {
+                let mut tokens: Vec<&str> = annotations.clone();
+                tokens.push(rest);
+                parts = match wrap {
+                    AnnotationWrap::WrapAlways => Some(tokens.iter().map(|t| format!("{lead}{t}")).collect::<Vec<_>>()),
+                    AnnotationWrap::ChopIfLong if long => Some(tokens.iter().map(|t| format!("{lead}{t}")).collect()),
+                    AnnotationWrap::WrapIfLong if long => {
+                        let mut v: Vec<String> = Vec::new();
+                        let mut current = format!("{lead}{}", tokens[0]);
+                        for t in &tokens[1..] {
+                            let joined = format!("{current} {t}");
+                            if width(&joined) > margin {
+                                v.push(current);
+                                current = format!("{lead}{t}");
+                            } else {
+                                current = joined;
+                            }
+                        }
+                        v.push(current);
+                        (v.len() > 1).then_some(v)
+                    }
+                    _ => None,
+                };
+            }
+        }
+        let mut braces = bodies[ix].iter();
+        for (_, c) in &info.brackets {
+            match c {
+                '{' => stack.push(braces.next().copied().unwrap_or(false)),
+                '(' | '[' => stack.push(false),
+                _ => {
+                    stack.pop();
+                }
+            }
+        }
+        match parts {
+            Some(p) => {
+                delta += p.len() as isize - 1;
+                out.extend(p);
+            }
+            None => out.push((*line).to_owned()),
+        }
+    }
+    let only = only.map(|r| r.start..(r.end as isize + delta).max(r.start as isize) as usize);
+    (out.join("\n"), only)
+}
+
+/// A line's leading annotations (`@A`, `@a.B(x = "(")`) and the rest; not
+/// `@interface`.
+fn leading_annotations(line: &str) -> (Vec<&str>, &str) {
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(after) = rest.strip_prefix('@') {
+        let name_len = after.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).unwrap_or(after.len());
+        if name_len == 0 || &after[..name_len] == "interface" {
+            break;
+        }
+        let mut end = 1 + name_len;
+        if rest[end..].starts_with('(') {
+            let mut depth = 0;
+            let mut quote: Option<char> = None;
+            let mut close = None;
+            let mut escaped = false;
+            for (i, c) in rest[end..].char_indices() {
+                if let Some(q) = quote {
+                    if escaped {
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == q {
+                        quote = None;
+                    }
+                    continue;
+                }
+                match c {
+                    '"' | '\'' => quote = Some(c),
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(end + i + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            match close {
+                Some(c) => end = c,
+                None => break,
+            }
+        }
+        out.push(&rest[..end]);
+        rest = rest[end..].trim_start();
+    }
+    (out, rest)
 }
 
 /// Java's Force braces: `if (c) x();` (Always) and `if (c)` with `x();`
@@ -3863,8 +4075,8 @@ mod tests {
     #[test]
     fn indents_bodies_without_braces() {
         assert_eq!(
-            java("class A {\nvoid f(int a) {\nif (a > 0)\nreturn;\nelse if (a < 0)\n// negative\na++;\nelse\nfor (int i = 0; i < a; i++)\nif (i > 1)\ng(i,\n1);\nwhile (a > 9)\na /= 2;\ndo\na--;\nwhile (a > 0);\nif (a == 1)\n{\na = 2;\n}\nh(\")\");\n}\n}"),
-            "class A {\n    void f(int a) {\n        if (a > 0)\n            return;\n        else if (a < 0)\n            // negative\n            a++;\n        else\n            for (int i = 0; i < a; i++)\n                if (i > 1)\n                    g(i,\n                            1);\n        while (a > 9)\n            a /= 2;\n        do\n            a--;\n        while (a > 0);\n        if (a == 1) {\n            a = 2;\n        }\n        h(\")\");\n    }\n}"
+            java("class A {\nvoid f(int a) {\nif (a > 0)\nreturn;\nelse if (a < 0)\n// negative\na++;\nelse\nfor (int i = 0; i < a; i++)\nif (i > 1)\ng(i,\n1);\nwhile (a > 9)\na /= 2;\ndo\na--;\nwhile (a > 0);\nif (a == 1)\n{\na = 2;\n}\nh(\")\");\nif (a > 1 &&\na < 9)\na = 0;\nwhile (f(a,\nb) > 0) {\na--;\n}\ng();\n}\n}"),
+            "class A {\n    void f(int a) {\n        if (a > 0)\n            return;\n        else if (a < 0)\n            // negative\n            a++;\n        else\n            for (int i = 0; i < a; i++)\n                if (i > 1)\n                    g(i,\n                            1);\n        while (a > 9)\n            a /= 2;\n        do\n            a--;\n        while (a > 0);\n        if (a == 1) {\n            a = 2;\n        }\n        h(\")\");\n        if (a > 1 &&\n                a < 9)\n            a = 0;\n        while (f(a,\n                b) > 0) {\n            a--;\n        }\n        g();\n    }\n}"
         );
         assert_eq!(kt("fun f(x: Int) {\nif (x > 0)\nprintln(x)\nelse\nreturn\nfor (i in 0..x)\ng(i)\nval y = if (x > 1) 2 else 3\ndo {\ng(x)\n} while (x > 9)\nh()\nreturn if (x > 2)\nx\nelse\n0\n}"), "fun f(x: Int) {\n    if (x > 0)\n        println(x)\n    else\n        return\n    for (i in 0..x)\n        g(i)\n    val y = if (x > 1) 2 else 3\n    do {\n        g(x)\n    } while (x > 9)\n    h()\n    return if (x > 2)\n        x\n    else\n        0\n}");
     }
@@ -3886,6 +4098,32 @@ mod tests {
         // Only binary expressions wrap: a ternary's branches are cut at their operators.
         let ternary = "class A {\n    int f() {\n        return total > 0 ? alphaValueOfTheThing + betaValueOfTheThing + gammaValueOfTheThing : deltaValue - total - extra;\n    }\n}";
         assert_eq!(w(Operations { binary: Wrap::WrapIfLong, ..Operations::NONE }, ternary), "class A {\n    int f() {\n        return total > 0 ? alphaValueOfTheThing + betaValueOfTheThing + gammaValueOfTheThing : deltaValue - total -\n                extra;\n    }\n}");
+    }
+
+    #[test]
+    fn wraps_annotations() {
+        let w = |annotations: [AnnotationWrap; 3], text: &str| {
+            let style = IndentStyle { wrapping: Some(Wrapping { annotations, ..Wrapping::JAVA }), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let text = "@Deprecated @SuppressWarnings(\"a)\") public class A {\n    @Inject Foo foo;\n\n    @Inject @Named(\"b\") Bar bar, baz;\n\n    @Override public void f(@NonNull String s,\n                            @NonNull Locale locale) {\n        @SuppressWarnings(\"x\") int n = 1;\n    }\n\n    // @Test public void g() {}\n    @interface Ann {\n    }\n}\n\nenum E {\n    @Deprecated ONE,\n    TWO\n}";
+        assert_eq!(w([AnnotationWrap::DoNotWrap; 3], text), text);
+        assert_eq!(
+            w([AnnotationWrap::WrapAlways; 3], text),
+            "@Deprecated\n@SuppressWarnings(\"a)\")\npublic class A {\n    @Inject\n    Foo foo;\n\n    @Inject\n    @Named(\"b\")\n    Bar bar, baz;\n\n    @Override\n    public void f(@NonNull String s,\n                  @NonNull Locale locale) {\n        @SuppressWarnings(\"x\") int n = 1;\n    }\n\n    // @Test public void g() {}\n    @interface Ann {\n    }\n}\n\nenum E {\n    @Deprecated ONE,\n    TWO\n}"
+        );
+        // If long: only a line past the margin, as many on a line as fit.
+        let long = "class A {\n    @Override @SuppressWarnings(\"unchecked\") @VisibleForTesting public void aMethodWithAVeryLongNameThatPassesTheMargin(int a) {\n    }\n    @Override public void f() {\n    }\n}";
+        assert_eq!(
+            w([AnnotationWrap::DoNotWrap, AnnotationWrap::WrapIfLong, AnnotationWrap::DoNotWrap], long),
+            "class A {\n    @Override @SuppressWarnings(\"unchecked\") @VisibleForTesting\n    public void aMethodWithAVeryLongNameThatPassesTheMargin(int a) {\n    }\n\n    @Override public void f() {\n    }\n}"
+        );
+        assert_eq!(
+            w([AnnotationWrap::DoNotWrap, AnnotationWrap::ChopIfLong, AnnotationWrap::DoNotWrap], long),
+            "class A {\n    @Override\n    @SuppressWarnings(\"unchecked\")\n    @VisibleForTesting\n    public void aMethodWithAVeryLongNameThatPassesTheMargin(int a) {\n    }\n\n    @Override public void f() {\n    }\n}"
+        );
     }
 
     #[test]

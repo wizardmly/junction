@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-12
 title: Reformat：Wrapping and Braces 页剩下的选项（第十二批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude（项目线程）/ 替 Jake 干活
 branch: task/sec33-reformat-rest-12
-pr:
+pr: 268
 claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -18,4 +18,9 @@ docs/FEATURES.md 第 33 节的 ❌ 行：IntelliJ Code Style › Wrapping and Br
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：这批做了 Java 的 Class / Method / Field annotations 和条件跨多行时的语句体缩进，其余拆到 sec33-reformat-rest-13。
+  - 注解：`domain::reformat::AnnotationWrap`（DoNotWrap / WrapIfLong / ChopIfLong / WrapAlways），`Wrapping.annotations: [AnnotationWrap; 3]`。`wrap_annotations` 是 Java 的预处理（在 `force_braces` 后、`brace_layout` 前）：用 `declaration_braces` 跟踪括号栈，只处理栈顶是类体（或顶层）的行；`leading_annotations` 拆出行首注解（括号里的字符串跳过，`@interface` 不算）；剩下部分用 `member_kind` 分类，以 `,` 结尾但 `declaration_paren` 认得出的是多行方法头。坑：第一次没把 `(` / `[` 压栈，多行形参列表里的 `@NonNull Locale locale)` 被当成字段拆开了。
+  - 默认 Do not wrap：IntelliJ 默认 Wrap always，Signal Java 里有 82 处同一行的注解声明，照默认会全拆。
+  - 新加 `Wrapping::with_values`（只换五个 Wrap，其他保留），设置页 Wrap 下拉框改用它。settings.conf 第 21–23 位。
+  - 语句体缩进：`opens_head` 认出没在本行闭合的 `if (` / `for (` / `while (`，记下深度和缩进（`split_head`），闭合的那行以 `)` 结尾时把 `Previous.head`（现在是 `Option<usize>`，存语句体相对的缩进）设成 head 首行的缩进。
+  - 回归：Signal Java 15746、Kotlin 23750 不变；三项注解都设 Wrap always 时 Java 15900，多出的全是拆开的注解，稳定。
