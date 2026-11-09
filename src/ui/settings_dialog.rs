@@ -1828,8 +1828,12 @@ impl SettingsView {
                     page = self.wrap_option(page, query, "'try-with-resources':", lang, d.wrapping(lang).resource_wrap, |w, v| w.resource_wrap = v, cx);
                     page = self.wrap_option(page, query, "'assert' statement:", lang, d.wrapping(lang).assert_wrap, |w, v| w.assert_wrap = v, cx);
                     page = self.wrap_option(page, query, "Record components:", lang, d.wrapping(lang).record_wrap, |w, v| w.record_wrap = v, cx);
+                    page = self.wrap_option(page, query, "Deconstruction list:", lang, d.wrapping(lang).decon_wrap, |w, v| w.decon_wrap = v, cx);
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 26] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 29] = [
+                        ("Deconstruction list: Align when multiline", w.align_decon, |w, v| w.align_decon = v),
+                        ("Deconstruction list: New line after '('", w.decon_parens[0], |w, v| w.decon_parens[0] = v),
+                        ("Deconstruction list: Place ')' on new line", w.decon_parens[1], |w, v| w.decon_parens[1] = v),
                         ("Assignment statement: Align when multiline", w.align_assignment, |w, v| w.align_assignment = v),
                         ("Chained method calls: Align when multiline", w.align_chains, |w, v| w.align_chains = v),
                         ("Array initializer: Align when multiline", w.align_arrays, |w, v| w.align_arrays = v),
