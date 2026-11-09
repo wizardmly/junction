@@ -31,7 +31,7 @@ use crate::ui::accounts_dialog::AccountsView;
 use crate::ui::as_icons as icons;
 use crate::domain::code_style::{LangStyle, StyleLang};
 use crate::domain::imports::{ImportStyle, StarImports};
-use crate::domain::reformat::{Braces, KeepBlankLines, MinBlankLines, Spaces, Wrap, Wrapping};
+use crate::domain::reformat::{Braces, Force, KeepBlankLines, MinBlankLines, Spaces, Wrap, Wrapping};
 use crate::ui::keymap;
 use crate::ui::mappings_dialog::MappingsView;
 
@@ -119,7 +119,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
-            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Additive", "Multiplicative", "Lambda arrow", "Around arrow in function types", "Around arrow in 'when' clause", "Before lambda arrow", "Unary operator", "Range operator", "In simple one line methods", "Within", "Brackets", "Array initializer braces", "Grouping parentheses", "Method declaration parentheses", "Method call parentheses", "Type cast parentheses", "Annotation parentheses", "Code braces", "Angle brackets", "Record header", "Deconstruction list", "Spaces inside block braces when body is present", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Comment Code", "Line comment at first column", "Add a space at line comment start", "Wrapping and Braces", "Method call arguments", "Method declaration parameters", "Chained method calls", "Extends / implements list", "Assignment statement", "Assignment and expression body", "Do not wrap", "Wrap if long", "Chop down if long", "Keep when reformatting: Line breaks", "Do not keep line breaks", "'else' on new line", "'while' on new line", "'catch' on new line", "'finally' on new line", "Braces placement", "In class declaration", "In method declaration", "Next line", "End of line", "Imports", "Class count to use import with '*'", "Names count to use static import with '*'", "Packages to use import with '*'", "Top-level symbols, use import with '*' when at least", "Java statics and enum members, use import with '*' when at least", "Optimize Imports", "star import", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
+            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Additive", "Multiplicative", "Lambda arrow", "Around arrow in function types", "Around arrow in 'when' clause", "Before lambda arrow", "Unary operator", "Range operator", "In simple one line methods", "Within", "Brackets", "Array initializer braces", "Grouping parentheses", "Method declaration parentheses", "Method call parentheses", "Type cast parentheses", "Annotation parentheses", "Code braces", "Angle brackets", "Record header", "Deconstruction list", "Spaces inside block braces when body is present", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Comment Code", "Line comment at first column", "Add a space at line comment start", "Wrapping and Braces", "Method call arguments", "Method declaration parameters", "Chained method calls", "Extends / implements list", "Assignment statement", "Assignment and expression body", "Do not wrap", "Wrap if long", "Chop down if long", "Keep when reformatting: Line breaks", "Do not keep line breaks", "'else' on new line", "'while' on new line", "'catch' on new line", "'finally' on new line", "Braces placement", "In class declaration", "In method declaration", "Next line", "End of line", "Force braces", "When multiline", "Always", "Do not force", "Put left brace on new line", "Imports", "Class count to use import with '*'", "Names count to use static import with '*'", "Packages to use import with '*'", "Top-level symbols, use import with '*' when at least", "Java statics and enum members, use import with '*' when at least", "Optimize Imports", "star import", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "Template Group", "Import", "Export", "sout", "fori", "iter", "main", "psvm"],
             Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template", "Iterate over collection", "Add indices to 'for' loop", "indexed 'for' loop", "enhanced 'for'", "forEach", "indexing operator", "binary operator", "equals()", "orEmpty()", "isNullOrEmpty()", "elvis", "safe access", "Lift return", "Lift assignment", "curly braces", "lastIndex", "String.valueOf()", "Kotlin analog", "substring", "range check", "associateWith", "indexOf()", "contains()", "getOrDefault", "putIfAbsent", "computeIfAbsent", "count", "append()", "deprecated", "lowercase()", "call chain", "redundant call", "indices", "isEmpty()", "isNotEmpty()", "lambda", "method reference", "reference", "scope function", "with", "filterIsInstance", "filterNotNull", "flatten", "lambda signature", "lambda parameter types", "anonymous class", "apply", "also", "let", "run"],
             Page::Commit => &[
@@ -1642,11 +1642,11 @@ impl SettingsView {
                         });
                     page = page.child(self.row(label, query, picker, cx));
                 }
-                let shown: &[usize] = if lang == StyleLang::Java { &[0, 1, 2, 3, 4, 5, 6] } else { &[0, 2, 3] };
+                let shown: &[usize] = if lang == StyleLang::Java { &[0, 1, 2, 3, 4, 5, 6] } else { &[0, 2, 3, 6] };
                 let values = d.wrapping(lang).braces.values();
                 for &i in shown {
                     let entity = cx.entity();
-                    let label = Braces::LABELS[i];
+                    let label = if lang == StyleLang::Kotlin && i == 6 { "Put left brace on new line" } else { Braces::LABELS[i] };
                     page = page.child(self.found(label, query, cx).child(Checkbox::new(SharedString::from(format!("settings-braces-{}-{i}", lang.name()))).label(label).checked(values[i]).on_change(move |v, _, cx| {
                         let v = *v;
                         entity.update(cx, |this, cx| {
@@ -1655,12 +1655,42 @@ impl SettingsView {
                                     let w = s.code_style.wrapping(lang);
                                     let mut b = w.braces.values();
                                     b[i] = v;
-                                    s.code_style.set_wrapping(lang, Wrapping { braces: Braces::from_values(b), ..w })
+                                    s.code_style.set_wrapping(lang, Wrapping { braces: w.braces.with_values(b), ..w })
                                 },
                                 cx,
                             )
                         })
                     })));
+                }
+                if lang == StyleLang::Java {
+                    let force = d.wrapping(lang).braces.force;
+                    for (i, label) in ["Force braces: 'if' ('else'):", "Force braces: 'for':", "Force braces: 'while':"].into_iter().enumerate() {
+                        let view = cx.entity();
+                        let picker = Button::new(SharedString::from(format!("settings-force-{i}")))
+                            .outline()
+                            .small()
+                            .label(Force::LABELS[force[i].index()])
+                            .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
+                            .dropdown_menu(move |mut menu, _, _| {
+                                for (n, name) in Force::LABELS.into_iter().enumerate() {
+                                    let view = view.clone();
+                                    menu = menu.item(PopupMenuItem::new(name).checked(force[i].index() == n).on_click(move |_, _, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.set(
+                                                |s| {
+                                                    let mut w = s.code_style.wrapping(lang);
+                                                    w.braces.force[i] = Force::from_index(n).unwrap_or_default();
+                                                    s.code_style.set_wrapping(lang, w)
+                                                },
+                                                cx,
+                                            )
+                                        })
+                                    }));
+                                }
+                                menu
+                            });
+                        page = page.child(self.row(label, query, picker, cx));
+                    }
                 }
                 let entity = cx.entity();
                 let label = "Keep when reformatting: Line breaks";
