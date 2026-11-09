@@ -482,7 +482,7 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<MethodPla
     let line_start = text[..function.start_byte()].rfind('\n').map_or(0, |i| i + 1);
     let member_indent: String = text[line_start..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
     let is_static = lang == Lang::Java && children(function).iter().any(|c| c.kind() == "modifiers" && text[c.byte_range()].split_whitespace().any(|w| w == "static"));
-    let taken = descendants(root)
+    let taken: Vec<String> = descendants(root)
         .into_iter()
         .filter(|n| is_function(lang, *n))
         .filter_map(|f| match lang {
@@ -490,17 +490,156 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<MethodPla
             _ => f.child_by_field_name("name").map(|c| text[c.byte_range()].to_owned()),
         })
         .collect();
+    let parameters: Vec<Parameter> = parameters.into_iter().map(|(_, p)| p).collect();
+    let output = outputs.pop();
+    // The enclosing function's type parameters the code or its types use.
+    let mut types: Vec<String> = parameters.iter().map(|p| p.ty.clone()).collect();
+    types.extend(output.as_ref().map(|o| o.ty().to_owned()));
+    types.extend(returns.clone());
+    types.push(expression_type.clone());
+    let in_code = |name: &str| {
+        descendants(function).into_iter().any(|n| inside(&n.byte_range(), &range) && matches!(n.kind(), "type_identifier" | "simple_identifier" | "identifier") && &text[n.byte_range()] == name && (n.kind() == "type_identifier" || resolve(name, n.start_byte()).is_none()))
+    };
+    let (type_parameters, type_constraints) = generics(lang, function, text, &types, &in_code);
+    let receiver = match lang {
+        Lang::Kotlin if uses_receiver(function, text, &range, &|name, at| resolve(name, at).is_some(), &taken) => {
+            children(function).into_iter().find(|c| c.kind() == "receiver_type").map(|r| text[r.byte_range()].to_owned()).unwrap_or_default()
+        }
+        _ => String::new(),
+    };
     Ok(MethodPlan {
         range,
         expression,
-        parameters: parameters.into_iter().map(|(_, p)| p).collect(),
-        output: outputs.pop(),
+        parameters,
+        output,
         returns,
         expression_type,
         insert_at: function.end_byte(),
         member_indent,
         is_static,
         taken,
+        type_parameters,
+        type_constraints,
+        receiver,
+    })
+}
+
+/// Whether a type mentions a name as a whole word.
+fn mentions(ty: &str, name: &str) -> bool {
+    ty.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == name)
+}
+
+/// The function's type parameters (as declared) and Kotlin `where`
+/// constraints the code needs: those it or its types name, and those
+/// their bounds name in turn.
+fn generics(lang: Lang, function: Node, text: &str, types: &[String], in_code: &dyn Fn(&str) -> bool) -> (Vec<String>, Vec<String>) {
+    let Some(list) = children(function).into_iter().find(|c| c.kind() == "type_parameters") else { return (Vec::new(), Vec::new()) };
+    let params: Vec<(String, String)> = children(list)
+        .into_iter()
+        .filter(|c| c.kind() == "type_parameter")
+        .filter_map(|p| {
+            let name = children(p).into_iter().find(|c| c.kind() == "type_identifier")?;
+            Some((text[name.byte_range()].to_owned(), text[p.byte_range()].split_whitespace().collect::<Vec<_>>().join(" ")))
+        })
+        .collect();
+    let constraints: Vec<(String, String)> = match lang {
+        Lang::Kotlin => children(function)
+            .into_iter()
+            .filter(|c| c.kind() == "type_constraints")
+            .flat_map(children)
+            .filter(|c| c.kind() == "type_constraint")
+            .filter_map(|c| {
+                let name = children(c).into_iter().find(|n| n.kind() == "type_identifier")?;
+                Some((text[name.byte_range()].to_owned(), text[c.byte_range()].split_whitespace().collect::<Vec<_>>().join(" ")))
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut used: Vec<bool> = params.iter().map(|(name, _)| types.iter().any(|t| mentions(t, name)) || in_code(name)).collect();
+    // A used parameter's bounds bring theirs.
+    loop {
+        let mut changed = false;
+        for i in 0..params.len() {
+            if used[i] {
+                continue;
+            }
+            let name = &params[i].0;
+            let bound_by_used = params.iter().zip(&used).any(|((n, decl), u)| *u && n != name && mentions(decl, name))
+                || constraints.iter().any(|(n, c)| params.iter().zip(&used).any(|((p, _), u)| *u && p == n) && n != name && mentions(c, name));
+            if bound_by_used {
+                used[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let is_used = |name: &str| params.iter().zip(&used).any(|((n, _), u)| *u && n == name);
+    (
+        params.iter().zip(&used).filter(|(_, u)| **u).map(|((_, decl), _)| decl.clone()).collect(),
+        constraints.into_iter().filter(|(n, _)| is_used(n)).map(|(_, c)| c).collect(),
+    )
+}
+
+/// Kotlin: whether the code uses the enclosing extension function's
+/// receiver: a plain `this` (not in a nested lambda, function or class),
+/// `this@<function>`, or a name that is neither a local nor declared in
+/// the file (a member of the receiver, called without `this`).
+fn uses_receiver(function: Node, text: &str, range: &Range<usize>, local: &dyn Fn(&str, usize) -> bool, taken: &[String]) -> bool {
+    if !children(function).iter().any(|c| c.kind() == "receiver_type") {
+        return false;
+    }
+    let name = children(function).into_iter().find(|c| c.kind() == "simple_identifier").map(|c| &text[c.byte_range()]).unwrap_or("");
+    let declared: Vec<&str> = {
+        let root = {
+            let mut r = function;
+            while let Some(p) = r.parent() {
+                r = p;
+            }
+            r
+        };
+        descendants(root)
+            .into_iter()
+            .filter(|n| matches!(n.kind(), "property_declaration" | "class_parameter" | "class_declaration" | "object_declaration"))
+            .filter_map(|n| {
+                let id = match n.kind() {
+                    "property_declaration" => children(n).into_iter().find(|c| c.kind() == "variable_declaration").and_then(|v| children(v).into_iter().find(|c| c.kind() == "simple_identifier")),
+                    "class_parameter" => children(n).into_iter().find(|c| c.kind() == "simple_identifier"),
+                    _ => children(n).into_iter().find(|c| c.kind() == "type_identifier"),
+                };
+                id.map(|i| &text[i.byte_range()])
+            })
+            .collect()
+    };
+    let in_nested = |n: Node| {
+        let mut p = n.parent();
+        while let Some(x) = p {
+            if !inside(&x.byte_range(), range) {
+                return false;
+            }
+            if matches!(x.kind(), "lambda_literal" | "anonymous_function" | "function_declaration" | "class_declaration" | "object_literal") {
+                return true;
+            }
+            p = x.parent();
+        }
+        false
+    };
+    descendants(function).into_iter().filter(|n| inside(&n.byte_range(), range)).any(|n| {
+        let t = &text[n.byte_range()];
+        if n.kind() == "this_expression" {
+            return if t == "this" { !in_nested(n) } else { t == format!("this@{name}") };
+        }
+        if n.kind() != "simple_identifier" || !is_reference(Lang::Kotlin, n, text) || local(t, n.start_byte()) {
+            return false;
+        }
+        // The standard library's top-level functions.
+        const TOP_LEVEL: [&str; 20] = ["println", "print", "listOf", "setOf", "mapOf", "mutableListOf", "mutableSetOf", "mutableMapOf", "arrayOf", "require", "check", "error", "repeat", "run", "with", "maxOf", "minOf", "lazy", "requireNotNull", "emptyList"];
+        if TOP_LEVEL.contains(&t) && n.parent().is_some_and(|p| p.kind() == "call_expression") {
+            return false;
+        }
+        // A name the file declares, or a type's name (`Math.max`), isn't the receiver's.
+        !taken.iter().any(|f| f == t) && !declared.contains(&t) && t != "it" && !t.starts_with(|c: char| c.is_uppercase())
     })
 }
 
@@ -571,6 +710,11 @@ pub fn duplicates(lang: Lang, text: &str, plan: &MethodPlan, is_static: bool) ->
         }
         let Some(f) = enclosing(lang, c[0]) else { continue };
         if class(f) != home {
+            continue;
+        }
+        // An extension's code: only where the same receiver is `this`.
+        let receiver = children(f).into_iter().find(|c| c.kind() == "receiver_type").map(|r| &text[r.byte_range()]);
+        if !plan.receiver.is_empty() && receiver != Some(plan.receiver.as_str()) {
             continue;
         }
         if lang == Lang::Java && !is_static && children(f).iter().any(|m| m.kind() == "modifiers" && text[m.byte_range()].split_whitespace().any(|w| w == "static")) {
@@ -716,6 +860,50 @@ mod tests {
             ["long", "int", "String", "int", "double", "int", "int", "boolean"]
         );
         assert_eq!(plan(Lang::Java, text, 0..5).unwrap_err(), NO_FUNCTION);
+    }
+
+    #[test]
+    fn keeps_type_parameters_and_receiver() {
+        use crate::domain::extract_method::{extract, signature, ExtractRequest};
+        use crate::domain::imports::ImportStyle;
+        let run = |lang: Lang, text: &str, from: &str, to: &str| {
+            let plan = plan(lang, text, span(text, from, to)).unwrap();
+            let style = if lang == Lang::Java { ImportStyle::Java } else { ImportStyle::Kotlin };
+            let request = ExtractRequest {
+                name: "g".into(),
+                visibility: "private".into(),
+                is_static: plan.is_static,
+                parameters: plan.parameters.iter().map(|p| (p.name.clone(), p.ty.clone())).collect(),
+                result_type: String::new(),
+                order: Vec::new(),
+            };
+            let e = extract(style, text, &plan, &request, "    ", &[]).unwrap();
+            (signature(style, &plan, &request), format!("{}{}{}", &text[..e.range.start], e.text, &text[e.range.end..]))
+        };
+        // Only the type parameters the code uses, with the bounds they need.
+        let text = "fun <K, V : List<K>, U> pick(m: Map<K, V>, k: K, u: U): Int {\n    val v: V = m.getValue(k)\n    return v.size\n}\n";
+        let (sig, out) = run(Lang::Kotlin, text, "val v", "getValue(k)");
+        assert_eq!(sig, "private fun <K, V : List<K>> g(m: Map<K, V>, k: K): V");
+        assert!(out.contains("    val v = g(m, k)\n"), "{out}");
+        // `where` constraints and reified parameters.
+        let text = "inline fun <reified T, R> f(x: Any, r: R) where R : Comparable<R>, R : Any {\n    println(x is T)\n    println(r)\n}\n";
+        assert_eq!(run(Lang::Kotlin, text, "println(x", "T)").0, "private inline fun <reified T> g(x: Any)");
+        assert_eq!(run(Lang::Kotlin, text, "println(r", "(r)").0, "private fun <R> g(r: R) where R : Comparable<R>, R : Any");
+        // An extension's receiver, used through `this` or a member call.
+        let text = "fun <T> List<T>.second(n: Int): T {\n    val i = n + 1\n    val x: T = this[i]\n    return x\n}\n";
+        let (sig, out) = run(Lang::Kotlin, text, "val x", "[i]");
+        assert_eq!(sig, "private fun <T> List<T>.g(i: Int): T");
+        assert!(out.contains("    val x = g(i)\n") && out.contains("private fun <T> List<T>.g(i: Int): T {\n    val x: T = this[i]\n    return x\n}"), "{out}");
+        let text = "fun String.shout(n: Int) {\n    val t = uppercase()\n    println(t + n)\n}\n";
+        assert_eq!(run(Lang::Kotlin, text, "val t", "+ n)").0, "private fun String.g(n: Int)");
+        // Code not using it stays a plain function.
+        let text = "fun String.shout(n: Int) {\n    val m: Int = n * 2\n    println(m)\n    println(this + m)\n}\n";
+        assert_eq!(run(Lang::Kotlin, text, "val m", "println(m)").0, "private fun g(n: Int): Int");
+        // Java: the method's type parameters, after `static`.
+        let text = "class A {\n  static <T extends Comparable<T>, U> T max(T a, T b, U u) {\n    T m = a.compareTo(b) > 0 ? a : b;\n    return m;\n  }\n}\n";
+        let (sig, out) = run(Lang::Java, text, "T m =", "a : b;");
+        assert_eq!(sig, "private static <T extends Comparable<T>> T g(T a, T b)");
+        assert!(out.contains("    T m = g(a, b);\n"), "{out}");
     }
 
     #[test]
