@@ -137,10 +137,17 @@ fn element(doc: &roxmltree::Document, node: roxmltree::Node, source: usize) -> E
     }
 }
 
-/// Merges `lower` (a lower priority manifest's element) into `higher`.
-fn merge_into(higher: &mut Element, lower: &Element, labels: &[String], errors: &mut Vec<String>) {
+/// The element's `tools:node` rule, if it acts on what comes from the
+/// library with `package`: a `tools:selector` limits it to that library's.
+fn node_rule<'e>(element: &'e Element, package: &str) -> Option<&'e str> {
+    element.attr("tools:node").filter(|_| element.attr("tools:selector").is_none_or(|s| s.trim() == package))
+}
+
+/// Merges `lower` (a lower priority manifest's element, from the library
+/// with `package`) into `higher`.
+fn merge_into(higher: &mut Element, lower: &Element, package: &str, labels: &[String], errors: &mut Vec<String>) {
     // `tools:node="replace"`: the higher one alone.
-    if higher.attr("tools:node") == Some("replace") {
+    if node_rule(higher, package) == Some("replace") {
         return;
     }
     let replaced: Vec<String> = higher.attr("tools:replace").map(|r| r.split(',').map(|s| s.trim().to_owned()).collect()).unwrap_or_default();
@@ -169,12 +176,18 @@ fn merge_into(higher: &mut Element, lower: &Element, labels: &[String], errors: 
     for child in &lower.children {
         let key = child.key();
         // `tools:node="removeAll"` takes every lower element of its tag.
-        if higher.children.iter().any(|c| c.tag == child.tag && c.attr("tools:node") == Some("removeAll")) {
+        if higher.children.iter().any(|c| c.tag == child.tag && node_rule(c, package) == Some("removeAll")) {
             continue;
         }
-        match higher.children.iter_mut().find(|c| c.key() == key) {
-            Some(mine) if mine.attr("tools:node") == Some("remove") => {}
-            Some(mine) => merge_into(mine, child, labels, errors),
+        // A `tools:node="remove"` marker for this library takes it; one
+        // for another library (`tools:selector`) isn't an element to merge
+        // into, the library's own stays.
+        let marker = |c: &Element| c.key() == key && matches!(c.attr("tools:node"), Some("remove" | "removeAll"));
+        if higher.children.iter().any(|c| marker(c) && node_rule(c, package).is_some()) {
+            continue;
+        }
+        match higher.children.iter_mut().find(|c| c.key() == key && !marker(c)) {
+            Some(mine) => merge_into(mine, child, package, labels, errors),
             None => higher.children.push(child.clone()),
         }
     }
@@ -340,7 +353,7 @@ pub fn merge(sources: &[ManifestSource], main: usize, build: &BuildValues, build
                 lower.children.push(Element { tag: "uses-permission".into(), attrs, children: Vec::new(), source: ix, line: None });
             }
         }
-        merge_into(&mut root, &lower, &labels, &mut errors);
+        merge_into(&mut root, &lower, &package, &labels, &mut errors);
     }
     // The build file's values.
     let mut injected = false;
@@ -448,6 +461,31 @@ mod tests {
         let line_of = |needle: &str| merged.lines.iter().find(|l| l.text.contains(needle)).unwrap().line;
         assert_eq!((line_of("CAMERA"), line_of("minSdkVersion")), (Some(1), None));
         assert!(roxmltree::Document::parse(&joined).is_ok(), "{joined}");
+    }
+
+    #[test]
+    fn selector_limits_a_rule_to_one_library() {
+        let main = source(
+            "app",
+            r#"<application>
+                 <provider android:name="shared.Init" tools:node="remove" tools:selector="com.one"/>
+                 <activity android:name="shared.Main" tools:node="replace" tools:selector="com.one" android:label="App"/>
+               </application>"#,
+        );
+        let lib = |label: &str, namespace: &str, label_attr: &str| ManifestSource {
+            build: BuildValues { namespace: Some(namespace.into()), ..Default::default() },
+            ..source(label, &format!(r#"<application><provider android:name="shared.Init" android:exported="false"/><activity android:name="shared.Main" android:theme="{label_attr}"/></application>"#))
+        };
+        // From com.one only: its provider removed, its activity attributes replaced.
+        let merged = merge(&[main.clone(), lib("one", "com.one", "@style/One")], 0, &BuildValues::default(), "b").unwrap();
+        let joined = merged.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(!joined.contains("shared.Init") && !joined.contains("@style/One"), "{joined}");
+        // Another library's provider and activity merge as usual.
+        let merged = merge(&[main, lib("one", "com.one", "@style/One"), lib("two", "com.two", "@style/Two")], 0, &BuildValues::default(), "b").unwrap();
+        let joined = merged.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+        assert_eq!(joined.matches("shared.Init").count(), 1, "{joined}");
+        assert!(joined.contains("@style/Two") && !joined.contains("@style/One") && !joined.contains("tools:"), "{joined}");
+        assert!(merged.lines.iter().any(|l| l.text.contains("shared.Init") && merged.sources[l.source] == "two"), "{joined}");
     }
 
     #[test]
