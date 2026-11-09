@@ -1248,7 +1248,7 @@ Linux 实测（Xvfb，Shapes.kt：`interface Shape { fun area() }`、`abstract c
 | 重启后保留（随编辑器会话一起存，见 §56） | ✅ |
 | 编辑时已记录位置的行号跟着移动：在它上面加了 / 删了几行，它就跟着下移 / 上移（按编辑前后的行数和光标所在行推算；IntelliJ 用 RangeMarker）；被删掉的行里的位置落到删除处 | ✅ |
 | 删除某一项（2026-10-29）：弹窗里选中一项按 Delete（过滤框为空时；有字时 Delete 照常删字），这一项从列表和记录里去掉，重开弹窗、重启后也不再出现。Linux 实测：列表里 CalcTest.adds、Calc.add 两项，选中 Calc.add 按 Delete 只剩 CalcTest.adds，Esc 后再按 Ctrl+Shift+E 仍只有一项 | ✅ |
-| 多光标或替换整段文本时精确跟踪 | ⬜ |
+| 多光标或替换整段文本时精确跟踪（2026-11-09）：和断点一样按编辑前后文本的逐行 diff（`debugger::follow_lines`）移动，几个光标同时加删行、Reformat / 重构替换整段文本时位置都跟着它所在的行；被删掉的行里的位置落到删除处。Linux 实测：Big.kt 第 10 行记下位置，在第 3、18 行各放一个光标 Ctrl+D，Recent Locations 里这一项仍是 `line 10` 那一行（第 11 行） | ✅ |
 
 Linux 实测（Xvfb，`ip` 工程）：在 Cart.kt 的 `use` 上 Ctrl+B 跳到 `total`，打开 Main.kt 在第 6 行末尾输入 ` // hi`，再打开 Shapes.kt；Ctrl+Shift+E 列出 Shapes.kt（Tile）、Main.kt（main，changed，三行代码含 `// hi`）、Cart.kt（Cart.total）、Cart.kt（Cart.use）；再按 Ctrl+Shift+E 只剩 Main.kt；输入 `cart` 过滤出含 cart 的三项；↓ Enter 打开 Cart.kt 第 4 行第 9 列。Last Edit Location：在 Cart.kt 第 8 行、Main.kt 第 6 行各改一处后切到 Shapes.kt，连按 Ctrl+Shift+Backspace 依次到 Main.kt 6:53、Cart.kt 8:35，第三次提示没有更多。
 
