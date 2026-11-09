@@ -2,11 +2,11 @@
 id: reformat-braceless-body-indent
 title: Reformat：不带花括号的 if / for / while 语句体缩进
 features: 第 33 节
-status: open
-owner:
-branch:
+status: claimed
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/reformat-braceless-body-indent
 pr:
-claimed:
+claimed: 2026-11-09
 files: src/domain/reformat.rs
 ---
 
