@@ -24,3 +24,4 @@ docs/FEATURES.md 第 33 节的 ❌ 行：IntelliJ Code Style › Wrapping and Br
   - 先修了缩进（不然换出来的行第二遍会变）：`reformat_with` 里上一行开了括号且以运算符结尾（`if (a &&`）时这行记 Binary / Operator 但不再加续行缩进（`in_opened`），之后同类的行对齐；`java_ternary_end` 认行尾 ` ?` / ` :`；行首 `+ ` `- ` `* ` `/ ` `% ` 记 Operator。Signal Java 改动行数 15762 → 15746，全是和原文一致的对齐。
   - 设置页：`operation_options` 两个下拉框两个勾选框；修好 Wrap 下拉框用 `Wrapping::from_values` 重建、丢掉 keep_line_breaks / braces / force 的问题。settings.conf 第 17–20 位。
   - 回归：默认 Java 15746、Kotlin 23750；Chop / 行尾符号和 Wrap if long / 下一行符号两种全开都稳定。
+  - 更正（2026-11-09，sec33-reformat-rest-14 时）：上面的“稳定”没真比过第二遍（corpus 测试只写结果）。真比后两种全开时 Signal Java 各有 35 行第二遍还会变（链式调用和二元运算续行的缩进），记在任务 reformat-second-pass-stability。

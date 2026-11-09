@@ -210,6 +210,7 @@ impl CodeStyle {
                 values.extend([o.binary.index().to_string(), u8::from(o.binary_sign_next).to_string(), o.ternary.index().to_string(), u8::from(o.ternary_signs_next).to_string()]);
                 values.extend(w.annotations.iter().map(|a| a.index().to_string()));
                 values.push(w.enum_constants.index().to_string());
+                values.push(w.elvis.index().to_string());
                 out.push_str(&format!("code_style_{}_wrapping={}\n", lang.key(), values.join(",")));
             }
         }
@@ -237,7 +238,7 @@ impl CodeStyle {
         if let Some(lang) = key.strip_prefix("code_style_").and_then(|k| k.strip_suffix("_wrapping")).and_then(|k| StyleLang::ALL.into_iter().find(|l| l.key() == k)) {
             // Five wraps, Keep line breaks, the seven `Braces`, Force braces,
             // binary and ternary wrap and sign, then class / method / field
-            // annotations, enum constants (older files stop sooner).
+            // annotations, enum constants, Elvis (older files stop sooner).
             let parts: Vec<&str> = value.split(',').map(str::trim).collect();
             let v: Option<Vec<Wrap>> = parts.iter().take(5).map(|n| n.parse().ok().and_then(Wrap::from_index)).collect();
             if let Some(v) = v.and_then(|v| <[Wrap; 5]>::try_from(v).ok()) {
@@ -255,7 +256,7 @@ impl CodeStyle {
                 for (i, a) in annotations.iter_mut().enumerate() {
                     *a = parts.get(20 + i).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default();
                 }
-                self.set_wrapping(lang, Wrapping { keep_line_breaks: parts.get(5).is_none_or(|k| *k != "0"), braces: Braces { force, ..Braces::from_values(braces) }, ops, annotations, enum_constants: parts.get(23).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default(), ..Wrapping::from_values(v) });
+                self.set_wrapping(lang, Wrapping { keep_line_breaks: parts.get(5).is_none_or(|k| *k != "0"), braces: Braces { force, ..Braces::from_values(braces) }, ops, annotations, enum_constants: parts.get(23).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default(), elvis: parts.get(24).and_then(|v| v.parse().ok()).and_then(Wrap::from_index).unwrap_or(Self::default_wrapping(lang).elvis), ..Wrapping::from_values(v) });
             }
             return true;
         }
@@ -351,8 +352,8 @@ mod tests {
         assert!(!style.indents(StyleLang::Kotlin, None, None).spaces.after_comma);
         style.set_wrapping(StyleLang::Java, Wrapping { call_args: Wrap::ChopIfLong, braces: Braces { else_new_line: true, force: [Force::Always, Force::DoNotForce, Force::WhenMultiline], ..Default::default() }, ops: Operations { binary: Wrap::WrapIfLong, binary_sign_next: true, ternary: Wrap::ChopIfLong, ternary_signs_next: false }, annotations: [AnnotationWrap::WrapAlways, AnnotationWrap::DoNotWrap, AnnotationWrap::WrapIfLong], enum_constants: AnnotationWrap::ChopIfLong, ..Wrapping::JAVA });
         style.set_wrapping(StyleLang::Kotlin, Wrapping { keep_line_breaks: false, ..Wrapping::KOTLIN });
-        assert!(style.lines().contains("code_style_kotlin_wrapping=2,2,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n"));
-        assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0,1,1,0,0,0,0,0,0,2,0,1,1,1,2,0,3,0,1,2\n"));
+        assert!(style.lines().contains("code_style_kotlin_wrapping=2,2,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1\n"));
+        assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0,1,1,0,0,0,0,0,0,2,0,1,1,1,2,0,3,0,1,2,0\n"));
         style.set_star_imports(ImportStyle::Java, StarImports { names: 99, members: 0, packages: vec!["a.b.*".into(), " ".into(), "c.**".into()] });
         assert!(style.lines().contains("code_style_java_imports=99,1,a.b.*;c.**\n") && !style.lines().contains("kotlin_imports"));
         let mut read = CodeStyle::default();
@@ -361,6 +362,8 @@ mod tests {
             assert!(read.read(k, v));
         }
         assert_eq!(read, style);
+        assert!(read.read("code_style_kotlin_wrapping", "0,0,0,0,0"));
+        assert_eq!(read.wrapping(StyleLang::Kotlin).elvis, Wrap::WrapIfLong);
         assert!(!read.read("code_subject", "1"));
         // An older file's twelve values: the rest the defaults.
         assert!(read.read("code_style_kotlin_min_blank", "1,1,1,1,2,0,0,1,1,1,0,1"));

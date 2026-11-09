@@ -747,6 +747,8 @@ pub struct Wrapping {
     pub annotations: [AnnotationWrap; 3],
     /// Java's enum constants (Enum constants; IntelliJ's default Do not wrap).
     pub enum_constants: AnnotationWrap,
+    /// Kotlin's Elvis expressions (`?:` starts the next line).
+    pub elvis: Wrap,
 }
 
 /// Wrapping and Braces › Class / Method / Field annotations (IntelliJ's
@@ -852,25 +854,25 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
-        self.values().iter().any(|w| *w != Wrap::DoNotWrap) || self.ops.binary != Wrap::DoNotWrap || self.ops.ternary != Wrap::DoNotWrap
+        self.values().iter().any(|w| *w != Wrap::DoNotWrap) || self.ops.binary != Wrap::DoNotWrap || self.ops.ternary != Wrap::DoNotWrap || self.elvis != Wrap::DoNotWrap
     }
 }
 
@@ -1932,6 +1934,15 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
         return None;
     }
     let info = scan(line, wr.kotlin).into_iter().next()?;
+    // Kotlin's Elvis expressions: the outermost expression first, unless
+    // that's an assignment whose value fits on a line of its own (then
+    // only instead of chopping an argument list, below).
+    let assigned = wr.w.assignment != Wrap::DoNotWrap && assignment_break(line, &info, wr.unit, margin).is_some();
+    if wr.kotlin && wr.w.elvis != Wrap::DoNotWrap && !assigned {
+        if let Some(parts) = elvis_break(line, &info, wr.unit, margin, wr.w.elvis) {
+            return Some(parts);
+        }
+    }
     let is_code = |i: usize| info.code.get(i).copied().unwrap_or(false);
     let first_paren = info.brackets.iter().find(|(_, c)| *c == '(').map(|(at, _)| *at);
     let java_declaration = !wr.kotlin && declaration_paren(line).is_some();
@@ -1976,6 +1987,13 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
     };
     if best.is_none() && wr.kotlin && wr.w.extends != Wrap::DoNotWrap {
         if let Some(parts) = supertype_break(line, &info, wr.unit, margin) {
+            return Some(parts);
+        }
+    }
+    // An assignment that would chop an argument list: its Elvis instead,
+    // when that leaves every line within the margin.
+    if assigned && best.is_some() && wr.kotlin && wr.w.elvis != Wrap::DoNotWrap {
+        if let Some(parts) = elvis_break(line, &info, wr.unit, margin, wr.w.elvis).filter(|parts| parts.iter().all(|p| width(p) <= margin)) {
             return Some(parts);
         }
     }
@@ -2216,6 +2234,60 @@ fn assignment_break(line: &str, info: &Line, unit: &str, margin: usize) -> Optio
         }
     }
     None
+}
+
+/// Kotlin's Elvis expressions: a long line broken before its `?:`s
+/// outside brackets (and strings), each starting a line one indent in.
+/// Chop down breaks before each; Wrap if long where the line would pass
+/// the margin.
+fn elvis_break(line: &str, info: &Line, unit: &str, margin: usize, mode: Wrap) -> Option<Vec<String>> {
+    let lead = line.len() - line.trim_start().len();
+    let bytes = line.as_bytes();
+    let mut depth = 0i32;
+    // Open `${…}` templates: their braces aren't code, their insides are.
+    let mut templates = 0;
+    let mut cuts = Vec::new();
+    for (i, c) in line.char_indices().skip_while(|(i, _)| *i < lead) {
+        if !info.code.get(i).copied().unwrap_or(false) {
+            if c == '{' && i > 0 && bytes[i - 1] == b'$' {
+                templates += 1;
+            } else if c == '}' && templates > 0 {
+                templates -= 1;
+            }
+            continue;
+        }
+        if templates > 0 {
+            continue;
+        }
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '?' if depth == 0 && i > lead && bytes[i - 1] == b' ' && line[i..].starts_with("?: ") && info.code.get(i + 1).copied().unwrap_or(false) => cuts.push(i),
+            _ => {}
+        }
+    }
+    if cuts.is_empty() || depth != 0 {
+        return None;
+    }
+    let mut pieces = vec![line[..cuts[0]].trim_end().to_owned()];
+    for (n, at) in cuts.iter().enumerate() {
+        let end = cuts.get(n + 1).copied().unwrap_or(line.len());
+        pieces.push(line[*at..end].trim().to_owned());
+    }
+    let prefix = format!("{}{unit}", &line[..lead]);
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = pieces[0].clone();
+    for piece in &pieces[1..] {
+        let joined = format!("{current} {piece}");
+        if mode == Wrap::ChopIfLong || width(&joined) > margin {
+            parts.push(current);
+            current = format!("{prefix}{piece}");
+        } else {
+            current = joined;
+        }
+    }
+    parts.push(current);
+    (parts.len() > 1).then_some(parts)
 }
 
 /// Java's Binary expressions and Ternary operation: a long line broken
@@ -4264,6 +4336,30 @@ mod tests {
             w(AnnotationWrap::WrapIfLong, long),
             "enum Permission {\n    READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION, CAMERA, RECORD_AUDIO,\n    READ_CONTACTS\n}"
         );
+    }
+
+    #[test]
+    fn wraps_elvis_expressions() {
+        let w = |wrap: Wrap, text: &str| {
+            let style = IndentStyle { wrapping: Some(Wrapping { elvis: wrap, ..Wrapping::KOTLIN }), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Kotlin, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Kotlin, &once, None, &style), once, "stable");
+            once
+        };
+        let long = "fun f() {\n    val name = intent.getStringExtra(EXTRA_DISPLAY_NAME) ?: savedInstanceState?.getString(KEY_NAME) ?: defaultName(context)\n}";
+        // Off: the argument list chops as before.
+        assert_eq!(w(Wrap::DoNotWrap, long), "fun f() {\n    val name = intent.getStringExtra(EXTRA_DISPLAY_NAME) ?: savedInstanceState?.getString(KEY_NAME) ?: defaultName(\n        context\n    )\n}");
+        assert_eq!(
+            w(Wrap::WrapIfLong, long),
+            "fun f() {\n    val name = intent.getStringExtra(EXTRA_DISPLAY_NAME) ?: savedInstanceState?.getString(KEY_NAME)\n        ?: defaultName(context)\n}"
+        );
+        assert_eq!(
+            w(Wrap::ChopIfLong, long),
+            "fun f() {\n    val name = intent.getStringExtra(EXTRA_DISPLAY_NAME)\n        ?: savedInstanceState?.getString(KEY_NAME)\n        ?: defaultName(context)\n}"
+        );
+        // Short lines, and `?:` inside brackets or a string template, stay.
+        let short = "fun f() {\n    val a = b ?: c\n    log(\"${x ?: \"none\"} ${aVeryLongTemplateExpressionName.withSomeMoreCalls().andEvenMore()} padding padding padding\")\n}";
+        assert_eq!(w(Wrap::ChopIfLong, short), short);
     }
 
     #[test]

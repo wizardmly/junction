@@ -119,7 +119,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
-            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Additive", "Multiplicative", "Lambda arrow", "Around arrow in function types", "Around arrow in 'when' clause", "Before lambda arrow", "Unary operator", "Range operator", "In simple one line methods", "Within", "Brackets", "Array initializer braces", "Grouping parentheses", "Method declaration parentheses", "Method call parentheses", "Type cast parentheses", "Annotation parentheses", "Code braces", "Angle brackets", "Record header", "Deconstruction list", "Spaces inside block braces when body is present", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Comment Code", "Line comment at first column", "Add a space at line comment start", "Wrapping and Braces", "Method call arguments", "Method declaration parameters", "Chained method calls", "Extends / implements list", "Assignment statement", "Assignment and expression body", "Do not wrap", "Wrap if long", "Chop down if long", "Keep when reformatting: Line breaks", "Do not keep line breaks", "'else' on new line", "'while' on new line", "'catch' on new line", "'finally' on new line", "Braces placement", "In class declaration", "In method declaration", "Next line", "End of line", "Force braces", "When multiline", "Always", "Do not force", "Put left brace on new line", "Binary expressions", "Operation sign on next line", "Ternary operation", "'?' and ':' signs on next line", "Class annotations", "Method annotations", "Field annotations", "Enum constants", "Wrap always", "Imports", "Class count to use import with '*'", "Names count to use static import with '*'", "Packages to use import with '*'", "Top-level symbols, use import with '*' when at least", "Java statics and enum members, use import with '*' when at least", "Optimize Imports", "star import", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
+            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Additive", "Multiplicative", "Lambda arrow", "Around arrow in function types", "Around arrow in 'when' clause", "Before lambda arrow", "Unary operator", "Range operator", "In simple one line methods", "Within", "Brackets", "Array initializer braces", "Grouping parentheses", "Method declaration parentheses", "Method call parentheses", "Type cast parentheses", "Annotation parentheses", "Code braces", "Angle brackets", "Record header", "Deconstruction list", "Spaces inside block braces when body is present", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Comment Code", "Line comment at first column", "Add a space at line comment start", "Wrapping and Braces", "Method call arguments", "Method declaration parameters", "Chained method calls", "Extends / implements list", "Assignment statement", "Assignment and expression body", "Do not wrap", "Wrap if long", "Chop down if long", "Keep when reformatting: Line breaks", "Do not keep line breaks", "'else' on new line", "'while' on new line", "'catch' on new line", "'finally' on new line", "Braces placement", "In class declaration", "In method declaration", "Next line", "End of line", "Force braces", "When multiline", "Always", "Do not force", "Put left brace on new line", "Binary expressions", "Operation sign on next line", "Ternary operation", "'?' and ':' signs on next line", "Class annotations", "Method annotations", "Field annotations", "Enum constants", "Wrap always", "Elvis expressions", "Imports", "Class count to use import with '*'", "Names count to use static import with '*'", "Packages to use import with '*'", "Top-level symbols, use import with '*' when at least", "Java statics and enum members, use import with '*' when at least", "Optimize Imports", "star import", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "Template Group", "Import", "Export", "sout", "fori", "iter", "main", "psvm"],
             Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template", "Iterate over collection", "Add indices to 'for' loop", "indexed 'for' loop", "enhanced 'for'", "forEach", "indexing operator", "binary operator", "equals()", "orEmpty()", "isNullOrEmpty()", "elvis", "safe access", "Lift return", "Lift assignment", "curly braces", "lastIndex", "String.valueOf()", "Kotlin analog", "substring", "range check", "associateWith", "indexOf()", "contains()", "getOrDefault", "putIfAbsent", "computeIfAbsent", "count", "append()", "deprecated", "lowercase()", "call chain", "redundant call", "indices", "isEmpty()", "isNotEmpty()", "lambda", "method reference", "reference", "scope function", "with", "filterIsInstance", "filterNotNull", "flatten", "lambda signature", "lambda parameter types", "anonymous class", "apply", "also", "let", "run"],
             Page::Commit => &[
@@ -1395,6 +1395,28 @@ impl SettingsView {
         page
     }
 
+    /// Kotlin's Elvis expressions wrap.
+    fn elvis_option(&self, page: gpui_kit::Div, query: &str, value: Wrap, cx: &mut Context<Self>) -> gpui_kit::Div {
+        let view = cx.entity();
+        let picker = Button::new("settings-elvis-wrap")
+            .outline()
+            .small()
+            .label(Wrap::LABELS[value.index()])
+            .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
+            .dropdown_menu(move |mut menu, _, _| {
+                for (n, name) in Wrap::LABELS.into_iter().enumerate() {
+                    let view = view.clone();
+                    menu = menu.item(PopupMenuItem::new(name).checked(value.index() == n).on_click(move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.set(|s| s.code_style.set_wrapping(StyleLang::Kotlin, Wrapping { elvis: Wrap::from_index(n).unwrap_or(Wrap::DoNotWrap), ..s.code_style.wrapping(StyleLang::Kotlin) }), cx)
+                        })
+                    }));
+                }
+                menu
+            });
+        page.child(self.row("Elvis expressions:", query, picker, cx))
+    }
+
     /// Java's Binary expressions and Ternary operation: a wrap each, and where the sign goes.
     fn operation_options(&self, mut page: gpui_kit::Div, query: &str, ops: Operations, cx: &mut Context<Self>) -> gpui_kit::Div {
         let lang = StyleLang::Java;
@@ -1781,6 +1803,8 @@ impl SettingsView {
                     }
                     page = self.operation_options(page, query, d.wrapping(lang).ops, cx);
                     page = self.annotation_options(page, query, d.wrapping(lang), cx);
+                } else {
+                    page = self.elvis_option(page, query, d.wrapping(lang).elvis, cx);
                 }
                 let entity = cx.entity();
                 let label = "Keep when reformatting: Line breaks";
