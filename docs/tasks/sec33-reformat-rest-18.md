@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-18
 title: Reformat：Wrapping and Braces 页剩下的选项（第十八批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude（项目线程）/ 替 Jake 干活
 branch: task/sec33-reformat-rest-18
-pr:
+pr: 275
 claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,7 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：Java 的 Parameter annotations（`Wrapping::param_annotations: AnnotationWrap`，settings.conf 第 30 位），设置页放在 `annotation_options` 第 6 项。实现是 `wrap_parameter_annotations`：从 `declaration_paren` 认出的方法头的 `(` 起跨行跟踪参数，参数开头的 `leading_annotations` 每个后面是断点；Wrap always 全断，Chop down if long 行超长时全断，Wrap if long 按右边界贪心断；断出的行先对齐到第一个参数（宽度按对齐后的列算，否则第二遍会再断），之后缩进器照常对齐。
+- `indent_unit` 再改：`{` 后多缩进 2 和 4 的次数只要不相等就按多数定（以前要 ≥ 3 个样本），只有一个类的小接口文件里对齐到奇数列的参数不再把单位翻成 4。
+- 回归：Signal 语料 Java 改动行数 5140 → 5107，Kotlin 24702 不变；默认、和实参 / 形参 Chop + 链式 Wrap if long 一起把 Parameter annotations 设成三种模式，第二遍都是 0 行。测试 `wraps_parameter_annotations`。
+- 没做：`catch (@A E e)`、lambda 参数、无修饰符的包内构造函数 `A(…)`（`declaration_paren` 认不出）；if / for / while 语句体换行、Kotlin 注解挪到 sec33-reformat-rest-19。

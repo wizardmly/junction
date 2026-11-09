@@ -216,6 +216,7 @@ impl CodeStyle {
                 values.push(w.throws_list.index().to_string());
                 values.push(w.throws_keyword.index().to_string());
                 values.push(w.annotation_params.index().to_string());
+                values.push(w.param_annotations.index().to_string());
                 out.push_str(&format!("code_style_{}_wrapping={}\n", lang.key(), values.join(",")));
             }
         }
@@ -263,7 +264,7 @@ impl CodeStyle {
                 for (i, a) in annotations.iter_mut().enumerate() {
                     *a = parts.get(20 + i).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default();
                 }
-                self.set_wrapping(lang, Wrapping { keep_line_breaks: parts.get(5).is_none_or(|k| *k != "0"), braces: Braces { force, ..Braces::from_values(braces) }, ops, annotations, enum_constants: parts.get(23).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default(), elvis: parts.get(24).and_then(|v| v.parse().ok()).and_then(Wrap::from_index).unwrap_or(Self::default_wrapping(lang).elvis), local_annotations: parts.get(25).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default(), array_init: wrap_at(26), throws_list: wrap_at(27), throws_keyword: wrap_at(28), annotation_params: wrap_at(29), ..Wrapping::from_values(v) });
+                self.set_wrapping(lang, Wrapping { keep_line_breaks: parts.get(5).is_none_or(|k| *k != "0"), braces: Braces { force, ..Braces::from_values(braces) }, ops, annotations, enum_constants: parts.get(23).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default(), elvis: parts.get(24).and_then(|v| v.parse().ok()).and_then(Wrap::from_index).unwrap_or(Self::default_wrapping(lang).elvis), local_annotations: parts.get(25).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default(), array_init: wrap_at(26), throws_list: wrap_at(27), throws_keyword: wrap_at(28), annotation_params: wrap_at(29), param_annotations: parts.get(30).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default(), ..Wrapping::from_values(v) });
             }
             return true;
         }
@@ -357,10 +358,10 @@ mod tests {
         style.set_spaces(StyleLang::Kotlin, Spaces { after_comma: false, ..Default::default() });
         assert!(style.lines().contains("code_style_kotlin_spaces=111111111111001111011111111111111111111111110010000000000000000000000\n"));
         assert!(!style.indents(StyleLang::Kotlin, None, None).spaces.after_comma);
-        style.set_wrapping(StyleLang::Java, Wrapping { call_args: Wrap::ChopIfLong, braces: Braces { else_new_line: true, force: [Force::Always, Force::DoNotForce, Force::WhenMultiline], ..Default::default() }, ops: Operations { binary: Wrap::WrapIfLong, binary_sign_next: true, ternary: Wrap::ChopIfLong, ternary_signs_next: false }, annotations: [AnnotationWrap::WrapAlways, AnnotationWrap::DoNotWrap, AnnotationWrap::WrapIfLong], enum_constants: AnnotationWrap::ChopIfLong, local_annotations: AnnotationWrap::WrapAlways, array_init: Wrap::ChopIfLong, throws_list: Wrap::WrapIfLong, throws_keyword: Wrap::WrapIfLong, annotation_params: Wrap::ChopIfLong, ..Wrapping::JAVA });
+        style.set_wrapping(StyleLang::Java, Wrapping { call_args: Wrap::ChopIfLong, braces: Braces { else_new_line: true, force: [Force::Always, Force::DoNotForce, Force::WhenMultiline], ..Default::default() }, ops: Operations { binary: Wrap::WrapIfLong, binary_sign_next: true, ternary: Wrap::ChopIfLong, ternary_signs_next: false }, annotations: [AnnotationWrap::WrapAlways, AnnotationWrap::DoNotWrap, AnnotationWrap::WrapIfLong], enum_constants: AnnotationWrap::ChopIfLong, local_annotations: AnnotationWrap::WrapAlways, array_init: Wrap::ChopIfLong, throws_list: Wrap::WrapIfLong, throws_keyword: Wrap::WrapIfLong, annotation_params: Wrap::ChopIfLong, param_annotations: AnnotationWrap::WrapIfLong, ..Wrapping::JAVA });
         style.set_wrapping(StyleLang::Kotlin, Wrapping { keep_line_breaks: false, ..Wrapping::KOTLIN });
-        assert!(style.lines().contains("code_style_kotlin_wrapping=2,2,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0\n"));
-        assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0,1,1,0,0,0,0,0,0,2,0,1,1,1,2,0,3,0,1,2,0,3,2,1,1,2\n"));
+        assert!(style.lines().contains("code_style_kotlin_wrapping=2,2,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0\n"));
+        assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0,1,1,0,0,0,0,0,0,2,0,1,1,1,2,0,3,0,1,2,0,3,2,1,1,2,1\n"));
         style.set_star_imports(ImportStyle::Java, StarImports { names: 99, members: 0, packages: vec!["a.b.*".into(), " ".into(), "c.**".into()] });
         assert!(style.lines().contains("code_style_java_imports=99,1,a.b.*;c.**\n") && !style.lines().contains("kotlin_imports"));
         let mut read = CodeStyle::default();
