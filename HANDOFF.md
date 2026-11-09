@@ -266,7 +266,7 @@ docs/               FEATURES.md、DIFF_MERGE.md、截图
 
 **2026-11-08 起，待办和进度改用任务板**：一个任务一个文件，放在 [docs/tasks/](docs/tasks/)，用 `python3 tools/tasks.py --prs` 看哪些任务空着、谁在做。认领和写进度的规则见 [AGENTS.md](AGENTS.md)。上面这段是之前的进度，以后不再往里追加，免得多人同时改这一段时冲突。原来的“下一步”列表已经拆成 docs/tasks/ 里的任务文件。
 
-测试习惯：容器里用 Xvfb 跑 release 版本，造一个最小 Android 项目（manifest、res、Kotlin / Java 源码）手动点；格式化类的改动用 Signal 仓库里最大的 60 个 .kt 文件做回归（`src/domain/reformat.rs` 里 `#[ignore]` 的 `corpus` 测试，`JUNCTION_FMT_DIR` 指向目录），对比改动行数不变。
+测试习惯：容器里用 Xvfb 跑 release 版本，造一个最小 Android 项目（manifest、res、Kotlin / Java 源码）手动点；格式化类的改动用 Signal 仓库里最大的 60 个 .kt 文件做回归（`src/domain/reformat.rs` 里 `#[ignore]` 的 `corpus` 测试，`JUNCTION_FMT_DIR` 指向目录，`JUNCTION_FMT_OUT` 把结果写到另一个目录方便 diff），对比改动行数不变；这个测试也把结果再格式化一遍，第二遍有变化就失败（打印 `UNSTABLE` 行）。
 
 ## 7. 时间线（关键节点）
 
