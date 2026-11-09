@@ -82,6 +82,29 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<(Paramete
             None => {}
         }
     }
+    // The function's `this`, not a nested lambda's, object's or class's.
+    let nested = |n: Node| {
+        let mut p = n.parent();
+        while let Some(x) = p {
+            if x.id() == node.id() || x.id() == function.id() {
+                return false;
+            }
+            if matches!(x.kind(), "lambda_literal" | "anonymous_function" | "object_literal" | "class_declaration" | "class_body") {
+                return true;
+            }
+            p = x.parent();
+        }
+        false
+    };
+    let this_refs: Vec<Range<usize>> = descendants(node)
+        .into_iter()
+        .filter(|n| match lang {
+            Lang::Kotlin => n.kind() == "this_expression" && &text[n.byte_range()] == "this",
+            _ => n.kind() == "this",
+        })
+        .filter(|n| n.id() == node.id() || !nested(*n))
+        .map(|n| n.start_byte() - base..n.end_byte() - base)
+        .collect();
     // Its occurrences in the function body.
     let wanted = (node.kind(), normalized(&text[node.byte_range()]));
     let mut occurrences: Vec<Range<usize>> = descendants(function)
@@ -105,6 +128,7 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<(Paramete
         params: params.iter().map(|p| p.name.clone()).collect(),
         uses,
         members,
+        this_refs,
         ty,
         taken: decls.iter().map(|d| d.name.clone()).collect(),
         block: None,
@@ -329,6 +353,31 @@ fn statement_site(lang: Lang, call: Node, text: &str) -> Option<StatementSite> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn this_becomes_the_receiver() {
+        use crate::domain::introduce_parameter::{argument_for, CallSite};
+        let call = |receiver: Option<&str>| CallSite { args: vec![(None, "3".into())], receiver: receiver.map(str::to_owned), ..Default::default() };
+        // A Kotlin extension function's receiver; a lambda's `this` stays.
+        let text = "fun String.shout(n: Int) = println(this.length + n + 1.run { this } + length)\n";
+        let expr = "this.length + n + 1.run { this } + length";
+        let at = text.find(expr).unwrap();
+        let (p, _) = plan(Lang::Kotlin, text, at..at + expr.len()).unwrap();
+        assert_eq!(p.this_refs, [0..4]);
+        assert_eq!(argument_for(&p, &call(Some("s"))), "s.length + 3 + 1.run { this } + s.length");
+        assert_eq!(argument_for(&p, &call(Some("a + b"))), "(a + b).length + 3 + 1.run { this } + (a + b).length");
+        assert_eq!(argument_for(&p, &call(None)), "this.length + 3 + 1.run { this } + length");
+        // `this` itself.
+        let at = text.find("this.length").unwrap();
+        let (p, _) = plan(Lang::Kotlin, text, at..at + 4).unwrap();
+        assert_eq!(argument_for(&p, &call(Some("s"))), "s");
+        // Java's `this.rate`; an anonymous class's `this` stays.
+        let text = "class Cart {\n  double rate;\n  double total(int n) { return n * this.rate + new Object() { int h = this.hashCode(); }.h; }\n}\n";
+        let expr = "n * this.rate + new Object() { int h = this.hashCode(); }.h";
+        let at = text.find(expr).unwrap();
+        let (p, _) = plan(Lang::Java, text, at..at + expr.len()).unwrap();
+        assert_eq!(argument_for(&p, &call(Some("cart"))), "3 * cart.rate + new Object() { int h = this.hashCode(); }.h");
+    }
 
     #[test]
     fn plans_kotlin() {
