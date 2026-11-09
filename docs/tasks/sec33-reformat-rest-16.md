@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-16
 title: Reformat：Wrapping and Braces 页剩下的选项（第十六批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude（项目线程）/ 替 Jake 干活
 branch: task/sec33-reformat-rest-16
-pr:
+pr: 273
 claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,9 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：这批做了 Java 的 Throws list 和注解里的数组，其余拆到 sec33-reformat-rest-17。
+  - `Wrapping.throws_list: Wrap`（IntelliJ 的 THROWS_LIST_WRAP，默认 Do not wrap），settings.conf 第 28 位，设置页 `wrap_option` 一个下拉框。`throws_break`：方法头 `) throws A, B, C` 超过右边界时在逗号后断开，第一个类型留在 `throws` 后，其余续行缩进；在 `chop` 里实参 / 形参列表都不用拆时才用，`{` / `;` 跟在最后一个后面。
+  - 缩进器：上一行是 `… ) throws A,` 或 Java 类头 `… implements A,` / `extends A,` 时，这行算 `Reason::Header`（`java_header_list`），按续行缩进，后面的方法体 / 类体仍按声明缩进。原来手写成多行的 throws / implements 会被缩成和声明同级。
+  - 注解里的数组（`@SuppressWarnings({…})`、`@Config(sdk = {…})`）：`is_array_initializer` 认出注解括号里的 `{`，和数组一样走 Array initializer（IntelliJ 的 ANNOTATION_ARRAY_INITIALIZER 也用 ARRAY_INITIALIZER_WRAP），换行的元素按续行缩进。只认 `@A({` 和 `@A(x = {`；`@A(a = 1, b = {` 这种第二个参数还不认。
+  - 回归：Signal Java 15768、Kotlin 24934 不变；Throws list、Array initializer 都设 Chop down if long 时第二遍 0 行。
+  - Xvfb：settings.conf 写入两项后 Reformat Code 拆开 throws 和注解数组，再按一次提示没有改动。
