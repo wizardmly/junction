@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-32
 title: Reformat：Wrapping and Braces 页剩下的选项（第三十二批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude（项目线程）/ 替 Jake 干活
 branch: task/sec33-reformat-rest-32
-pr:
+pr: 289
 claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,6 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：`Wrapping::keep_first_column`（KEEP_FIRST_COLUMN_COMMENT，默认开）和 `indent_case`（INDENT_CASE_FROM_SWITCH，默认开），settings.conf wrapping 第 80–81 位；`kotlin_cont` 加到 8 项（第 79 位是 context 参数）。缩进器里选区内第 0 列开头的 `//`（Java 还有整行的 `/* */`，`kept_block` 让它的后续行也原样留着）原样输出；`apply_brackets` 的 `{` 遇到 `switch (…) {`（新的 `switch_brace`）且 Indent 'case' branches 关时内容不缩进，`case` 体照旧比标签深一级；Kotlin `context(` 的括号用 context 参数的续行开关。
+- Signal 语料：默认时只是第 0 列的注释不再被缩进（Java 5107 → 5103、Kotlin 25445 → 25404 行与原文不同），和 IntelliJ 一样。
+- 没做：Java 的 Group declarations（字段 / 变量对齐成列）、Multiple expressions in one line、Modifier list、Wrap first call / Builder methods、Text blocks，Kotlin 的 Wrap first call，留给 sec33-reformat-rest-33。
