@@ -2,10 +2,10 @@
 id: reformat-second-pass-stability
 title: Reformat Code 第二遍不变（Kotlin 默认、Java Binary / Ternary）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude（项目线程）/ 替 Jake 干活
 branch: task/reformat-second-pass-stability
-pr:
+pr: 271
 claimed: 2026-11-09
 files: src/domain/reformat.rs
 ---
@@ -23,4 +23,9 @@ files: src/domain/reformat.rs
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：做完。
+  - 原因：`chop_long_lines` 在缩进和空行都排完之后才拆长行，拆出的续行（`val x =` + `registerForActivityResult(…) { result ->`、`fun f() =` + `runTest {`）后面的体还是按原来那行缩进的；拆成多行的声明（Kotlin 里多行成员前后要空行）也没补空行。第二遍才按新续行排。
+  - 修法：`reformat_with` 拆成 `reformat_pass(…, nested)`；拆行加了行时，把结果再走一遍（只多走一遍，`nested` 防止循环），选区按加的行数往后延。只在真拆了行时多花一遍的时间。
+  - 语料测试 `formatted_sources_are_stable` 现在对每个文件再格式化一遍，有变化就打印 `UNSTABLE <文件> <行数>` 和前几行，最后断言 0。
+  - 回归：Signal Kotlin 第二遍 71 个文件 → 0；Java 默认、Binary / Ternary 全开（Chop / 行尾符号和 Wrap if long / 下一行符号）都是 0。Kotlin 改动行数 23686 → 24934：多出的正好就是原来第二遍才出的那些（新的第一遍结果和原来第二遍的结果逐字节相同），都是 lambda / 块体跟着拆出的续行多缩进一级，和 IntelliJ 一样。Java 15746 不变。
+  - 单元测试 `lays_out_again_after_chopping`（去掉修法时失败）。

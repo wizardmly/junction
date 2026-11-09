@@ -906,6 +906,12 @@ pub fn reformat_groovy(text: &str, only: Option<Range<usize>>, indents: &IndentS
 }
 
 fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents: &IndentStyle) -> String {
+    reformat_pass(flavor, text, only, indents, false)
+}
+
+/// One pass of `reformat_with`; `nested`: the pass after chopping, which
+/// doesn't go again.
+fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents: &IndentStyle, nested: bool) -> String {
     let kotlin = flavor == Flavor::Kotlin;
     // Kotlin's and Groovy's strings and colons.
     let templates = flavor != Flavor::Java;
@@ -1213,7 +1219,19 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     }
     if let Some(w) = wrapping.filter(Wrapping::any) {
         let wrapper = Wrapper { kotlin, unit: &unit, cont: pad(cont), margin: indents.right_margin.unwrap_or(RIGHT_MARGIN), w, tabs };
-        out = chop_long_lines(out, choppable, &wrapper);
+        let before = out.len();
+        let chopped = chop_long_lines(out, choppable, &wrapper);
+        let added = chopped.len() - before;
+        let text = chopped.join("\n");
+        // Lines it split: lay the result out once more, so what follows a
+        // new continuation line (a lambda's body, the blank lines around a
+        // now multi-line declaration) is indented and spaced for it, as a
+        // second Reformat Code would. The selection grows by the new lines.
+        if added > 0 && !nested {
+            let only = only.map(|r| r.start..r.end + added);
+            return reformat_pass(flavor, &text, only, indents, true);
+        }
+        return text;
     }
     out.join("\n")
 }
@@ -4339,6 +4357,22 @@ mod tests {
     }
 
     #[test]
+    fn lays_out_again_after_chopping() {
+        // Wrapped after `=`: the lambda's body follows the new continuation
+        // line, and a second pass changes nothing.
+        let text = "class A {\n  private val mediaProjectionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->\n    if (result.resultCode == RESULT_OK) {\n      start(result.data!!)\n    }\n  }\n}";
+        let style = IndentStyle { unit: Some("  ".into()), ..Default::default() };
+        let once = reformat_indented(ImportStyle::Kotlin, text, None, &style);
+        assert_eq!(
+            once,
+            "class A {\n  private val mediaProjectionLauncher =\n    registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->\n      if (result.resultCode == RESULT_OK) {\n        start(result.data!!)\n      }\n    }\n}"
+        );
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, &once, None, &style), once);
+        // A selection grows by the lines chopping adds.
+        assert_eq!(reformat_indented(ImportStyle::Kotlin, text, Some(0..7), &style), once);
+    }
+
+    #[test]
     fn wraps_elvis_expressions() {
         let w = |wrap: Wrap, text: &str| {
             let style = IndentStyle { wrapping: Some(Wrapping { elvis: wrap, ..Wrapping::KOTLIN }), ..Default::default() };
@@ -4442,6 +4476,7 @@ mod corpus {
     #[ignore]
     fn formatted_sources_are_stable() {
         let Ok(dir) = std::env::var("JUNCTION_FMT_DIR") else { return };
+        let mut unstable: Vec<(String, usize)> = Vec::new();
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let path = entry.path();
             let text = std::fs::read_to_string(&path).unwrap();
@@ -4456,7 +4491,21 @@ mod corpus {
             for (line, a, b) in changed.iter().take(6) {
                 println!("  {line}: {a:?}\n   → {b:?}");
             }
+            // The second pass must change nothing.
+            let again = super::reformat(style, &out, None);
+            if again != out {
+                let moved: Vec<(usize, &str, &str)> = out.lines().zip(again.lines()).enumerate().filter(|(_, (a, b))| a != b).map(|(i, (a, b))| (i + 1, a, b)).collect();
+                let moved_count = moved.len().max(1);
+                println!("UNSTABLE {} {moved_count} lines", path.file_name().unwrap().to_string_lossy());
+                for (line, a, b) in moved.iter().take(6) {
+                    println!("  {line}: {a:?}\n   → {b:?}");
+                }
+                unstable.push((path.file_name().unwrap().to_string_lossy().into_owned(), moved_count));
+            }
         }
+        let total: usize = unstable.iter().map(|(_, n)| n).sum();
+        println!("unstable: {} files, {total} lines", unstable.len());
+        assert!(unstable.is_empty(), "a second Reformat Code pass changed {total} lines in {} files", unstable.len());
     }
 }
 
