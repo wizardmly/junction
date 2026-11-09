@@ -20,7 +20,7 @@ impl Workspace {
             for tab in &this.editors {
                 let editor = tab.view.read(cx);
                 if editor.revision().is_none() {
-                    this.line_counts.insert(editor.path().to_owned(), editor.line_count(cx) as i64);
+                    this.line_texts.insert(editor.path().to_owned(), editor.text(cx));
                 }
             }
             // Index the opened project; re-index what changed on disk.
