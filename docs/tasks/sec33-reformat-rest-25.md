@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-25
 title: Reformat：Wrapping and Braces 页剩下的选项（第二十五批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-25
+pr: 282
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,5 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：`Wrapping` 加了 `align_params` / `align_args` / `record_wrap` / `align_records` / `record_parens`（settings.conf 的 wrapping 第 53–58 位）。缩进器 `apply_brackets` 多了 `align_calls` 参数：调用的 `(` 后面还有东西时续行对齐到它后面（声明的 `(` 不算）；声明的对齐按 `record_header` 选 `align_records` 或 `align_params`。`chop` 里 record 用 `record_wrap`，实参按 `align_args` 对齐；`list_parens` 里 record 用 `record_parens`。
+- 没做：Deconstruction list、Binary expressions 等的 Align when multiline，Kotlin 的 Use continuation indent，留给 sec33-reformat-rest-26。
