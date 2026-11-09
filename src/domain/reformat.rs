@@ -941,11 +941,15 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             let (forced, only) = if kotlin { (text.to_owned(), only) } else { force_braces(text, &w.braces.force, only) };
             let wrapped_annotations;
             let (forced, only) = if kotlin {
-                (forced, only)
+                let margin = indents.right_margin.unwrap_or(RIGHT_MARGIN);
+                let [class, method, field] = w.annotations;
+                let (a, only) = wrap_annotations(&forced, true, &[class, method, field, w.local_annotations], only, margin);
+                wrapped_annotations = a;
+                (wrapped_annotations, only)
             } else {
                 let margin = indents.right_margin.unwrap_or(RIGHT_MARGIN);
                 let [class, method, field] = w.annotations;
-                let (a, only) = wrap_annotations(&forced, &[class, method, field, w.local_annotations], only, margin);
+                let (a, only) = wrap_annotations(&forced, false, &[class, method, field, w.local_annotations], only, margin);
                 let (a, only) = wrap_enum_constants(&a, w.enum_constants, only, margin);
                 let (a, only) = wrap_parameter_annotations(&a, w.param_annotations, only, margin);
                 wrapped_annotations = a;
@@ -1335,12 +1339,14 @@ fn head_at_start(code: &str) -> bool {
 /// a class at the top), or before a local variable in a code block, on
 /// lines of their own (Wrap always; Chop down if long when the line is
 /// too long) or where the line would pass the margin (Wrap if long).
-/// Lines with comments, enum constants and local classes stay.
-fn wrap_annotations(text: &str, wraps: &[AnnotationWrap; 4], only: Option<Range<usize>>, margin: usize) -> (String, Option<Range<usize>>) {
+/// Lines with comments, enum constants and local classes stay. Kotlin:
+/// classes and objects, functions and constructors, properties (local
+/// ones in code blocks).
+fn wrap_annotations(text: &str, kotlin: bool, wraps: &[AnnotationWrap; 4], only: Option<Range<usize>>, margin: usize) -> (String, Option<Range<usize>>) {
     if wraps.iter().all(|w| *w == AnnotationWrap::DoNotWrap) {
         return (text.to_owned(), only);
     }
-    let lines = scan(text, false);
+    let lines = scan(text, kotlin);
     let raw: Vec<&str> = text.split('\n').collect();
     let bodies = declaration_braces(&raw, &lines);
     let mut out: Vec<String> = Vec::with_capacity(raw.len());
@@ -1365,8 +1371,20 @@ fn wrap_annotations(text: &str, wraps: &[AnnotationWrap; 4], only: Option<Range<
             let lead = &line[..line.len() - trimmed.len()];
             let (annotations, rest) = leading_annotations(trimmed);
             // A method header over lines ends with `,`: its `(` tells.
-            let kind = member_kind(rest, false).map(|k| if k == Member::Field && declaration_paren(rest).is_some() { Member::Method } else { k });
-            let wrap = match kind {
+            let kind = member_kind(rest, kotlin).map(|k| if k == Member::Field && declaration_paren(rest).is_some() { Member::Method } else { k });
+            let wrap = if kotlin {
+                // Kotlin's: a class or object, a function or constructor, a
+                // property (a local one in a code block).
+                match kind {
+                    Some(Member::Property) if in_block => wraps[3],
+                    _ if in_block => AnnotationWrap::DoNotWrap,
+                    Some(Member::Class | Member::Object) => wraps[0],
+                    Some(Member::Fun | Member::Constructor) => wraps[1],
+                    Some(Member::Property) => wraps[2],
+                    _ => AnnotationWrap::DoNotWrap,
+                }
+            } else {
+                match kind {
                 // A local variable: `@SuppressWarnings("x") List<T> l = …;`.
                 Some(Member::Field) if in_block => wraps[3],
                 _ if in_block => AnnotationWrap::DoNotWrap,
@@ -1374,6 +1392,7 @@ fn wrap_annotations(text: &str, wraps: &[AnnotationWrap; 4], only: Option<Range<
                 Some(Member::Method) => wraps[1],
                 Some(Member::Field) if !rest.trim_end().ends_with(',') => wraps[2],
                 _ => AnnotationWrap::DoNotWrap,
+                }
             };
             let long = width(line) > margin;
             if !annotations.is_empty() && !rest.is_empty() {
@@ -1660,7 +1679,11 @@ fn leading_annotations(line: &str) -> (Vec<&str>, &str) {
     let mut out = Vec::new();
     let mut rest = line;
     while let Some(after) = rest.strip_prefix('@') {
-        let name_len = after.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).unwrap_or(after.len());
+        let mut name_len = after.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).unwrap_or(after.len());
+        // Kotlin's use-site target: `@get:Rule`, `@field:JvmField`.
+        if after[name_len..].starts_with(':') && after[name_len + 1..].starts_with(|c: char| c.is_alphabetic()) {
+            name_len += 1 + after[name_len + 1..].find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).unwrap_or(after.len() - name_len - 1);
+        }
         if name_len == 0 || &after[..name_len] == "interface" {
             break;
         }
@@ -4715,6 +4738,28 @@ mod tests {
             w(Wrapping { array_init: Wrap::ChopIfLong, ..Wrapping::JAVA }, annotated),
             "class A {\n    @SuppressWarnings({\"unchecked\",\n            \"rawtypes\",\n            \"deprecation\",\n            \"unused\",\n            \"ConstantConditions\",\n            \"FieldCanBeLocal\",\n            \"SpellCheckingInspection\"})\n    @Config(sdk = {Build.VERSION_CODES.P,\n            Build.VERSION_CODES.Q,\n            Build.VERSION_CODES.R,\n            Build.VERSION_CODES.S,\n            Build.VERSION_CODES.TIRAMISU})\n    void f() {\n    }\n}"
         );
+    }
+
+    #[test]
+    fn wraps_kotlin_annotations() {
+        let kotlin = |wraps: [AnnotationWrap; 4], text: &str| {
+            let w = Wrapping { annotations: [wraps[0], wraps[1], wraps[2]], local_annotations: wraps[3], ..Wrapping::KOTLIN };
+            reformat_indented(ImportStyle::Kotlin, text, None, &IndentStyle { wrapping: Some(w), ..Default::default() })
+        };
+        let text = "@Parcelize data class A(@Inject val b: Int) {\n    @get:Rule @JvmField val rule = Rule()\n\n    @Composable override fun f() {\n        @Suppress(\"x\") val y = 1\n        @OptIn(X::class) go()\n    }\n}\n\n@Test fun top() {\n}\n";
+        use AnnotationWrap::*;
+        assert_eq!(kotlin([DoNotWrap; 4], text), text);
+        assert_eq!(
+            kotlin([WrapAlways; 4], text),
+            "@Parcelize\ndata class A(@Inject val b: Int) {\n    @get:Rule\n    @JvmField\n    val rule = Rule()\n\n    @Composable\n    override fun f() {\n        @Suppress(\"x\")\n        val y = 1\n        @OptIn(X::class) go()\n    }\n}\n\n@Test\nfun top() {\n}\n"
+        );
+        // Each kind its own option: only properties here.
+        assert_eq!(
+            kotlin([DoNotWrap, DoNotWrap, WrapAlways, DoNotWrap], text),
+            text.replace("@get:Rule @JvmField val", "@get:Rule\n    @JvmField\n    val")
+        );
+        let out = kotlin([WrapAlways; 4], text);
+        assert_eq!(kotlin([WrapAlways; 4], &out), out);
     }
 
     #[test]

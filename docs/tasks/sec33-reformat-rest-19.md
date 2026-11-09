@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-19
 title: Reformat：Wrapping and Braces 页剩下的选项（第十九批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-19
+pr: 276
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,6 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：Kotlin 的 Class / Method / Field / Local variable annotations。没加新字段，用 `Wrapping::annotations` 和 `local_annotations`（Kotlin 那行 settings.conf 原来就存，第 21–23、26 位）。`wrap_annotations` 加了 `kotlin` 参数：`member_kind(rest, true)` 的 Class / Object → 类，Fun / Constructor → 方法，Property → 字段（代码块里 → 局部变量）。`leading_annotations` 认 Kotlin 的使用处目标（`@get:Rule`）。设置页 `annotation_options` 加 `lang` 参数，Kotlin 页只显示四项（没有 Enum constants 和 Parameter annotations）。
+- 回归：Signal 语料 Java 5107、Kotlin 24702 不变；Kotlin 四项都设成 Wrap always / Wrap if long / Chop down if long 时第二遍都是 0 行（Signal 的 Kotlin 注解基本已单独成行，Wrap always 只多拆 1 处）。测试 `wraps_kotlin_annotations`。
+- 没做：Kotlin 的 Parameter annotations（Kotlin 参数不对齐、续行一级，断开后怎么缩进要先查 IntelliJ 的 Kotlin 格式化器）、if / for / while 语句体换行，挪到 sec33-reformat-rest-20。
