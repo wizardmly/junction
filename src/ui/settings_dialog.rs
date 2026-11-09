@@ -1829,7 +1829,10 @@ impl SettingsView {
                     page = self.wrap_option(page, query, "'assert' statement:", lang, d.wrapping(lang).assert_wrap, |w, v| w.assert_wrap = v, cx);
                     page = self.wrap_option(page, query, "Record components:", lang, d.wrapping(lang).record_wrap, |w, v| w.record_wrap = v, cx);
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 23] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 26] = [
+                        ("Assignment statement: Align when multiline", w.align_assignment, |w, v| w.align_assignment = v),
+                        ("Chained method calls: Align when multiline", w.align_chains, |w, v| w.align_chains = v),
+                        ("Array initializer: Align when multiline", w.align_arrays, |w, v| w.align_arrays = v),
                         ("Binary expressions: Align when multiline", w.align_binary, |w, v| w.align_binary = v),
                         ("Ternary operation: Align when multiline", w.align_ternary, |w, v| w.align_ternary = v),
                         ("Throws list: Align when multiline", w.align_throws, |w, v| w.align_throws = v),

@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-28
 title: Reformat：Wrapping and Braces 页剩下的选项（第二十八批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-28
+pr: 285
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,5 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：`Wrapping::align_assignment` / `align_chains` / `align_arrays`（settings.conf wrapping 第 63–65 位，只对 Java 生效）。链式调用用新的 `chain_start`：从上一行末尾往回走同一层的 `.`，取末尾连续调用里第一个点的列（字段 `.builder` 不算调用；`new A.B()` 前面有 `new` 时构造器整个算限定符），只在链的第一行续行时生效，后面的行跟着它。赋值用新的 `assignment_target` 判断行首是不是赋值目标（`a.b[i] =`、`x +=`，声明 `int x =` 不算），两行都是赋值时对齐到上一行行首。数组初始化器在 `apply_brackets` 的 `{` 分支里把内容列设成 `{` 后第一个元素的列（`apply_brackets` 的 `align_calls` 参数改成 `[align_calls, align_arrays]`）。
+- 没做：Deconstruction list，Kotlin 的 Use continuation indent、'when' 分支对齐，留给 sec33-reformat-rest-29。

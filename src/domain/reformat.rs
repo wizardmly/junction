@@ -825,6 +825,15 @@ pub struct Wrapping {
     pub align_throws: bool,
     /// Java's Extends / implements list › Align when multiline (ALIGN_MULTILINE_EXTENDS_LIST, off).
     pub align_extends: bool,
+    /// Java's Assignment statement › Align when multiline
+    /// (ALIGN_MULTILINE_ASSIGNMENT, off): `a =` / `b = c` with `b` under `a`.
+    pub align_assignment: bool,
+    /// Java's Chained method calls › Align when multiline
+    /// (ALIGN_MULTILINE_CHAINED_METHODS, off): `.call()` under the first call's dot.
+    pub align_chains: bool,
+    /// Java's Array initializer › Align when multiline
+    /// (ALIGN_MULTILINE_ARRAY_INITIALIZER_EXPRESSION, off): elements under the first.
+    pub align_arrays: bool,
     /// Java's Annotation parameters (ANNOTATION_PARAMETER_WRAP).
     pub annotation_params: Wrap,
 }
@@ -970,21 +979,21 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, align_ternary: self.align_ternary, align_throws: self.align_throws, align_extends: self.align_extends, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, align_ternary: self.align_ternary, align_throws: self.align_throws, align_extends: self.align_extends, align_assignment: self.align_assignment, align_chains: self.align_chains, align_arrays: self.align_arrays, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
@@ -1097,6 +1106,9 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     let align_ternary = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_ternary);
     let align_throws = wrapping.is_some_and(|w| w.align_throws);
     let align_extends = wrapping.is_some_and(|w| w.align_extends);
+    let align_assignment = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_assignment);
+    let align_chains = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_chains);
+    let align_arrays = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_arrays);
     // The header list's lines so far are aligned.
     let mut header_aligned = false;
     // A header line's indent before that alignment: its body goes by it.
@@ -1136,7 +1148,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             out.push((*text_line).to_owned());
             choppable.push(false);
             let lead = text_line.len() - text_line.trim_start().len();
-            apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, false, text_line, &bodies[ix], flavor == Flavor::Java);
+            apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, [false; 2], text_line, &bodies[ix], flavor == Flavor::Java);
             blank_run = 0;
             kept = 0;
             continue;
@@ -1307,6 +1319,20 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                     }
                 }
             }
+            // Chained method calls › Align when multiline: the first `.call`
+            // continuing a line under the dot of that line's trailing calls.
+            if align_chains && reason == Reason::Chain && !tabs {
+                if let Some(col) = previous.as_ref().filter(|p| p.depth == stack.len() && !p.opened && p.reason != Reason::Chain).and_then(|p| chain_start(&p.line)) {
+                    indent = col;
+                }
+            }
+            // Assignment statement › Align when multiline: `b = c` after
+            // `a =`, `b` under `a`.
+            if align_assignment && reason == Reason::Assign && !tabs && assignment_target(code_start).is_some() {
+                if let Some(p) = previous.as_ref().filter(|p| p.depth == stack.len() && !p.opened && assignment_target(p.line.trim_start()).is_some()) {
+                    indent = p.line.len() - p.line.trim_start().len();
+                }
+            }
             // Throws list / Extends list › Align when multiline: a type after
             // `,` under the first after the keyword.
             header_unaligned = indent;
@@ -1361,9 +1387,9 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             let base = if header { if selected { header_unaligned } else { at }.saturating_sub(cont) } else { at };
             let declared = || declaration_paren(&line_out).filter(|_| if record_header(&line_out) { align_records } else { align_params });
             let align = (flavor == Flavor::Java && !tabs).then(|| declared().or_else(|| for_paren(&line_out).filter(|_| align_for)).or_else(|| keyword_paren(&line_out, "try").filter(|_| align_resources))).flatten();
-            apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, align_args && !tabs, &line_out, &bodies[ix], flavor == Flavor::Java);
+            apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, [align_args && !tabs, align_arrays && !tabs], &line_out, &bodies[ix], flavor == Flavor::Java);
         } else {
-            apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, false, text_line, &bodies[ix], flavor == Flavor::Java);
+            apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, [false; 2], text_line, &bodies[ix], flavor == Flavor::Java);
         }
         out.push(line_out);
         choppable.push(selected && is_code_line);
@@ -3768,6 +3794,111 @@ fn binary_start(line: &str, in_paren: bool) -> Option<usize> {
     (s < bytes.len()).then(|| line[..s].chars().count())
 }
 
+/// The column of a Java line's trailing method calls' first dot: `b.c().d()`
+/// → the dot before `c` (IntelliJ aligns the chain's calls after the
+/// qualifier); None when the line doesn't end in a call.
+fn chain_start(line: &str) -> Option<usize> {
+    let info = scan(line, false).into_iter().next()?;
+    let code = |i: usize| info.code.get(i).copied().unwrap_or(false) && !info.comment.get(i).copied().unwrap_or(false);
+    let bytes = line.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 && (!code(end - 1) || bytes[end - 1] == b' ' || bytes[end - 1] == b';') {
+        end -= 1;
+    }
+    if line.trim_start().starts_with('.') {
+        return None;
+    }
+    // Dots at the end's level, back to the expression's start.
+    let mut dots = Vec::new();
+    let mut i = end;
+    let mut start = end;
+    while i > 0 {
+        let c = bytes[i - 1];
+        if !code(i - 1) {
+            break;
+        }
+        match c {
+            b')' | b']' | b'>' if !(c == b'>' && i >= 2 && bytes[i - 2] == b'-') => {
+                let open = match c { b')' => b'(', b']' => b'[', _ => b'<' };
+                let mut depth = 0;
+                let mut j = i;
+                loop {
+                    if j == 0 {
+                        return None;
+                    }
+                    j -= 1;
+                    if !code(j) {
+                        continue;
+                    }
+                    if bytes[j] == c {
+                        depth += 1;
+                    } else if bytes[j] == open {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                }
+                i = j;
+            }
+            b'.' if !(i >= 2 && bytes[i - 2] == b'.') => {
+                dots.push(i - 1);
+                i -= 1;
+            }
+            _ if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' => i -= 1,
+            _ => break,
+        }
+        start = i;
+    }
+    dots.reverse();
+    // `new A.B()`: the constructor's type is the qualifier's.
+    if line[..start].trim_end().ends_with("new") {
+        let paren = line[start..end].find('(').map_or(end, |p| start + p);
+        dots.retain(|d| *d > paren);
+        return dots.first().filter(|_| dots.iter().enumerate().all(|(k, d)| line[*d..dots.get(k + 1).copied().unwrap_or(end)].ends_with(')'))).map(|d| line[..*d].chars().count());
+    }
+    // The qualifier comes first; then the calls.
+    if dots.first().is_none_or(|d| *d == start) {
+        return None;
+    }
+    let call = |k: usize| line[dots[k]..dots.get(k + 1).copied().unwrap_or(end)].ends_with(')');
+    let mut first = None;
+    for k in (0..dots.len()).rev() {
+        if !call(k) {
+            break;
+        }
+        first = Some(dots[k]);
+    }
+    first.map(|d| line[..d].chars().count())
+}
+
+/// A Java assignment's target when the line starts with one: `a.b[i] =`,
+/// `x +=` (not a declaration's `int x =`).
+fn assignment_target(code: &str) -> Option<&str> {
+    let bytes = code.as_bytes();
+    if !bytes.first().is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_' || *c == b'$') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, c) in bytes.iter().enumerate() {
+        match c {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth = depth.checked_sub(1)?,
+            b'=' if depth == 0 => {
+                if bytes.get(i + 1) == Some(&b'=') {
+                    return None;
+                }
+                let target = code[..i].trim_end().trim_end_matches(['+', '-', '*', '/', '%', '&', '|', '^']).trim_end_matches("<<").trim_end_matches(">>>").trim_end_matches(">>").trim_end();
+                return (!target.is_empty() && !target.ends_with(['!', '<', '>']) && !target.contains(' ') && !["return", "throw", "yield"].contains(&target)).then_some(target);
+            }
+            b' ' if depth == 0 && !code[i..].trim_start().starts_with(|c: char| "=+-*/%&|^<>".contains(c)) => return None,
+            _ if depth == 0 && !(c.is_ascii_alphanumeric() || matches!(c, b'_' | b'$' | b'.' | b' ' | b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^' | b'<' | b'>')) => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Whether a Java line is a record's header: `record Name(` (modifiers and
 /// annotations before it).
 fn record_header(line: &str) -> bool {
@@ -4210,7 +4341,7 @@ fn declaration_braces(raw: &[&str], lines: &[Line]) -> Vec<Vec<bool>> {
 /// line closed a bracket opened earlier); `(` / `[` a continuation past the
 /// line, or under the first parameter (`align`).
 #[allow(clippy::too_many_arguments)]
-fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize, line: usize, line_indent: usize, base: usize, cont: usize, step: usize, align: Option<usize>, align_calls: bool, text: &str, bodies: &[bool], java: bool) {
+fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize, line: usize, line_indent: usize, base: usize, cont: usize, step: usize, align: Option<usize>, [align_calls, align_arrays]: [bool; 2], text: &str, bodies: &[bool], java: bool) {
     let mut base = base;
     let mut first_paren = true;
     let mut bodies = bodies.iter();
@@ -4219,7 +4350,13 @@ fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize
             '{' => {
                 // Java's array initializer continues its line (`new int[] {`).
                 let array = java && is_array_initializer(text.get(..*at).unwrap_or(""));
-                let content = base + if array { cont } else { step };
+                let rest = text.get(at + 1..).unwrap_or("");
+                // Array initializer › Align when multiline: under the first element.
+                let content = if array && align_arrays && !rest.trim().is_empty() && !rest.trim_start().starts_with("//") {
+                    text[..=*at].chars().count() + (rest.len() - rest.trim_start().len())
+                } else {
+                    base + if array { cont } else { step }
+                };
                 stack.push(Open { line_indent: base, content, line, case_body: false, header: false, brace: true, declarations: bodies.next().copied().unwrap_or(false) })
             }
             '(' | '[' => {
@@ -5869,6 +6006,17 @@ mod tests {
         // Only Throws list: the class header keeps its continuation.
         let only = java(Wrapping { align_throws: true, ..Wrapping::JAVA }, t);
         assert!(only.starts_with("class A extends B implements C,\n        D,\n        E {\n    void k() throws IOException,\n                    InterruptedException {\n"), "{only}");
+    }
+
+    #[test]
+    fn aligns_chains_assignments_and_array_initializers() {
+        let java = |w: Wrapping, text: &str| reformat_indented(ImportStyle::Java, text, None, &IndentStyle { wrapping: Some(w), ..Default::default() });
+        let t = "class A {\n    void k() {\n        String s = this.builder.append(a)\n                .append(b)\n                .toString();\n        x =\n                y = 5;\n        int[] v = {1, 2,\n                3};\n        list.stream()\n                .map(f);\n        stream\n                .map(f);\n        x = new A.B()\n                .c();\n        y = new A().b()\n                .c();\n    }\n}\n";
+        assert_eq!(java(Wrapping::JAVA, t), t);
+        let w = Wrapping { align_assignment: true, align_chains: true, align_arrays: true, ..Wrapping::JAVA };
+        let o = java(w, t);
+        assert_eq!(o, "class A {\n    void k() {\n        String s = this.builder.append(a)\n                               .append(b)\n                               .toString();\n        x =\n        y = 5;\n        int[] v = {1, 2,\n                   3};\n        list.stream()\n            .map(f);\n        stream\n                .map(f);\n        x = new A.B()\n                .c();\n        y = new A().b()\n                   .c();\n    }\n}\n");
+        assert_eq!(java(w, &o), o);
     }
 
     #[test]
