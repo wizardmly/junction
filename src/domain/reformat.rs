@@ -736,20 +736,49 @@ pub struct Wrapping {
     /// Keep when reformatting › Line breaks: off joins the lines of a
     /// wrapped list or expression (the options above wrap it again).
     pub keep_line_breaks: bool,
+    pub braces: Braces,
+}
+
+/// Wrapping and Braces › Braces placement and the 'else' / 'while' /
+/// 'catch' / 'finally' on new line options (IntelliJ's CLASS_BRACE_STYLE,
+/// METHOD_BRACE_STYLE, BRACE_STYLE: off is End of line, on Next line;
+/// ELSE_ON_NEW_LINE and the like). All off by default; Kotlin has only
+/// the keyword ones but 'while'.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Braces {
+    pub else_new_line: bool,
+    pub while_new_line: bool,
+    pub catch_new_line: bool,
+    pub finally_new_line: bool,
+    pub class_next_line: bool,
+    pub method_next_line: bool,
+    pub other_next_line: bool,
+}
+
+impl Braces {
+    pub const LABELS: [&'static str; 7] = ["'else' on new line", "'while' on new line", "'catch' on new line", "'finally' on new line", "Braces placement: In class declaration: Next line", "Braces placement: In method declaration: Next line", "Braces placement: Other: Next line"];
+
+    pub fn values(&self) -> [bool; 7] {
+        [self.else_new_line, self.while_new_line, self.catch_new_line, self.finally_new_line, self.class_next_line, self.method_next_line, self.other_next_line]
+    }
+
+    pub fn from_values(v: [bool; 7]) -> Self {
+        Braces { else_new_line: v[0], while_new_line: v[1], catch_new_line: v[2], finally_new_line: v[3], class_next_line: v[4], method_next_line: v[5], other_next_line: v[6] }
+    }
 }
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces { else_new_line: false, while_new_line: false, catch_new_line: false, finally_new_line: false, class_next_line: false, method_next_line: false, other_next_line: false } };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces { else_new_line: false, while_new_line: false, catch_new_line: false, finally_new_line: false, class_next_line: false, method_next_line: false, other_next_line: false } };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default() }
     }
 
     fn any(&self) -> bool {
@@ -794,6 +823,17 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         Flavor::Groovy => None,
         Flavor::Kotlin => Some(indents.wrapping.unwrap_or(Wrapping::KOTLIN)),
         Flavor::Java => Some(indents.wrapping.unwrap_or(Wrapping::JAVA)),
+    };
+    let laid;
+    let (text, only) = match wrapping {
+        Some(w) => {
+            // Twice: a `} else {` split puts `else {` on a line whose `{` may move too.
+            let (once, only) = brace_layout(text, kotlin, &w.braces, only);
+            let (l, only) = brace_layout(&once, kotlin, &w.braces, only);
+            laid = l;
+            (laid.as_str(), only)
+        }
+        None => (text, only),
     };
     let joined;
     let (text, only) = match wrapping {
@@ -1023,6 +1063,140 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         out = chop_long_lines(out, choppable, &wrapper);
     }
     out.join("\n")
+}
+
+/// Braces placement and 'else' / 'while' / 'catch' / 'finally' on new
+/// line: a `}` and the keyword after it split or joined, a declaration's
+/// or statement's `{` moved to the next line or back. Lines in comments
+/// or strings, and lines with a comment where they would join, stay.
+/// `only`: the lines that may change, returned with its end moved by the
+/// lines added or removed.
+fn brace_layout(text: &str, kotlin: bool, braces: &Braces, only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+    let lines = scan(text, kotlin);
+    let raw: Vec<&str> = text.split('\n').collect();
+    let code_of = |ix: usize| -> String {
+        let info = &lines[ix];
+        raw[ix]
+            .char_indices()
+            .filter(|(i, _)| !info.comment.get(*i).copied().unwrap_or(false))
+            .map(|(i, c)| if info.code.get(i).copied().unwrap_or(false) { c } else { '_' })
+            .collect::<String>()
+            .trim()
+            .to_owned()
+    };
+    let commented = |ix: usize| lines[ix].comment.iter().any(|c| *c);
+    let selected = |ix: usize| only.as_ref().is_none_or(|r| r.contains(&ix));
+    let in_code = |ix: usize| lines[ix].starts_in.unwrap_or(State::Code) == State::Code;
+    // Whether a keyword after `}` goes on its own line; `None`: not one.
+    let keyword_new_line = |rest: &str, closes_do: bool| -> Option<bool> {
+        let word = rest.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+        match word {
+            // A `when` branch's `else ->` isn't one.
+            "else" if !rest[4..].trim_start().starts_with("->") => Some(braces.else_new_line),
+            "catch" => Some(braces.catch_new_line),
+            "finally" => Some(braces.finally_new_line),
+            "while" if !kotlin && closes_do => Some(braces.while_new_line),
+            _ => None,
+        }
+    };
+    // Java: a line's `{` kind: Some(next line) for a class, a method or a statement.
+    let brace_next_line = |head: &str| -> Option<bool> {
+        if kotlin {
+            return None;
+        }
+        let head = head.trim();
+        let first = head.trim_start_matches('}').trim_start().split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+        if matches!(first, "if" | "else" | "for" | "while" | "do" | "try" | "catch" | "finally" | "switch" | "synchronized") {
+            return Some(braces.other_next_line);
+        }
+        if head.contains("->") || head.ends_with('=') || head.ends_with(']') || head.contains("new ") {
+            return None;
+        }
+        match declaration_words(head).first().copied() {
+            Some("class" | "interface" | "@interface" | "record" | "enum") => Some(braces.class_next_line),
+            _ if (head.ends_with(')') || head.contains(") throws ")) && declaration_paren(head).is_some() => Some(braces.method_next_line),
+            _ => None,
+        }
+    };
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut delta: isize = 0;
+    // Whether each open `{` opened a `do` block.
+    let mut stack: Vec<bool> = Vec::new();
+    let mut ix = 0;
+    while ix < raw.len() {
+        let line = raw[ix];
+        let code = code_of(ix);
+        let lead = &line[..line.len() - line.trim_start().len()];
+        let closes_do = code.starts_with('}') && stack.last().copied().unwrap_or(false);
+        let mut done = false;
+        if selected(ix) && in_code(ix) {
+            // `} else {` on one line: split when the option says so.
+            if let Some(rest) = code.strip_prefix('}').map(str::trim_start) {
+                if keyword_new_line(rest, closes_do) == Some(true) && !rest.is_empty() {
+                    let at = line.find('}').unwrap() + 1;
+                    out.push(line[..at].trim_end().to_owned());
+                    out.push(format!("{lead}{}", line[at..].trim_start()));
+                    delta += 1;
+                    done = true;
+                }
+            }
+            // `}` then a line with the keyword: join when it doesn't.
+            if !done && code == "}" && !commented(ix) && ix + 1 < raw.len() && selected(ix + 1) && in_code(ix + 1) {
+                let next = code_of(ix + 1);
+                if keyword_new_line(&next, closes_do) == Some(false) {
+                    out.push(format!("{} {}", line.trim_end(), raw[ix + 1].trim()));
+                    delta -= 1;
+                    // The `}` line's brackets, then the next line's.
+                    stack.pop();
+                    ix += 1;
+                    for &(_, c) in &lines[ix].brackets {
+                        match c {
+                            '{' => stack.push(code_of(ix).trim_start_matches('}').trim_start().starts_with("do")),
+                            '}' => drop(stack.pop()),
+                            _ => {}
+                        }
+                    }
+                    ix += 1;
+                    continue;
+                }
+            }
+            // `head {`: the `{` to the next line.
+            if !done && code.ends_with('{') && code.len() > 1 && !commented(ix) {
+                let head = code[..code.len() - 1].trim_end();
+                if brace_next_line(head) == Some(true) {
+                    let at = line.rfind('{').unwrap();
+                    out.push(line[..at].trim_end().to_owned());
+                    out.push(format!("{lead}{{"));
+                    delta += 1;
+                    done = true;
+                }
+            }
+            // A lone `{` after its head: back up when End of line.
+            if !done && code == "{" && !commented(ix) && ix > 0 && selected(ix - 1) && out.last().is_some_and(|l| !l.trim().is_empty()) && !commented(ix - 1) && in_code(ix - 1) {
+                let head = code_of(ix - 1);
+                if !head.ends_with([';', '{', '}', ',']) && brace_next_line(&head) == Some(false) {
+                    let last = out.last_mut().unwrap();
+                    *last = format!("{} {{", last.trim_end());
+                    delta -= 1;
+                    done = true;
+                }
+            }
+        }
+        if !done {
+            out.push(line.to_owned());
+        }
+        let opens_do = code.trim_start_matches('}').trim_start().starts_with("do") || code == "{" && ix > 0 && code_of(ix - 1).trim_start_matches('}').trim() == "do";
+        for &(_, c) in &lines[ix].brackets {
+            match c {
+                '{' => stack.push(opens_do),
+                '}' => drop(stack.pop()),
+                _ => {}
+            }
+        }
+        ix += 1;
+    }
+    let only = only.map(|r| r.start..(r.end as isize + delta).max(r.start as isize) as usize);
+    (out.join("\n"), only)
 }
 
 /// Keep when reformatting › Line breaks off: a line that continues a
@@ -3251,6 +3425,32 @@ mod tests {
         let kt = "fun f() {\nval result = repository.load(firstArgument, secondArgument, third)\n}";
         assert_eq!(w(true, Wrapping { call_args: Wrap::WrapIfLong, ..Wrapping::KOTLIN }, kt), "fun f() {\n    val result = repository.load(\n        firstArgument, secondArgument, third\n    )\n}");
         assert_eq!(w(true, Wrapping::JAVA, kt), "fun f() {\n    val result = repository.load(firstArgument, secondArgument, third)\n}");
+    }
+
+    #[test]
+    fn brace_placement_and_keywords_on_new_lines() {
+        let f = |kotlin: bool, braces: Braces, text: &str| {
+            let w = if kotlin { Wrapping::KOTLIN } else { Wrapping::JAVA };
+            let style = IndentStyle { wrapping: Some(Wrapping { braces, ..w }), ..Default::default() };
+            let st = if kotlin { ImportStyle::Kotlin } else { ImportStyle::Java };
+            let once = reformat_indented(st, text, None, &style);
+            assert_eq!(reformat_indented(st, &once, None, &style), once, "stable");
+            once
+        };
+        let java = "class A\n{\n    void f(int a)\n    {\n        if (a > 0)\n        {\n            g();\n        }\n        else {\n            h();\n        }\n        do {\n            a--;\n        }\n        while (a > 0);\n        if (a > 1) {\n        }\n        while (a < 0) {\n        }\n        try {\n        } catch (Exception e) {\n        } finally {\n        }\n        Runnable r = () ->\n        {\n        };\n    }\n}";
+        // IntelliJ's defaults: End of line, keywords after `}`.
+        assert_eq!(
+            f(false, Braces::default(), java),
+            "class A {\n    void f(int a) {\n        if (a > 0) {\n            g();\n        } else {\n            h();\n        }\n        do {\n            a--;\n        } while (a > 0);\n        if (a > 1) {\n        }\n        while (a < 0) {\n        }\n        try {\n        } catch (Exception e) {\n        } finally {\n        }\n        Runnable r = () ->\n        {\n        };\n    }\n}"
+        );
+        let all = Braces::from_values([true; 7]);
+        assert_eq!(
+            f(false, all, "class A {\n    void f(int a) {\n        if (a > 0) {\n            g();\n        } else {\n            h();\n        }\n        try {\n        } catch (Exception e) {\n        } finally {\n        }\n    }\n}"),
+            "class A\n{\n    void f(int a)\n    {\n        if (a > 0)\n        {\n            g();\n        }\n        else\n        {\n            h();\n        }\n        try\n        {\n        }\n        catch (Exception e)\n        {\n        }\n        finally\n        {\n        }\n    }\n}"
+        );
+        let kt = "fun f(a: Int) {\n    if (a > 0) {\n        g()\n    }\n    else {\n        h()\n    }\n    try {\n    } catch (e: Exception) {\n    }\n}";
+        assert_eq!(f(true, Braces::default(), kt), "fun f(a: Int) {\n    if (a > 0) {\n        g()\n    } else {\n        h()\n    }\n    try {\n    } catch (e: Exception) {\n    }\n}");
+        assert_eq!(f(true, Braces { catch_new_line: true, ..Default::default() }, kt), "fun f(a: Int) {\n    if (a > 0) {\n        g()\n    } else {\n        h()\n    }\n    try {\n    }\n    catch (e: Exception) {\n    }\n}");
     }
 
     #[test]
