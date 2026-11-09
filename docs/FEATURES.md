@@ -1044,7 +1044,8 @@ Linux 实测（Xvfb，示例工程 app + lib）：app 的 main 清单有 INTERNE
 | 调用处：实参是表达式本身，其中用到的参数换成这次调用传的实参（复杂实参加括号），类成员前加上调用的接收者（`cart.total(10.0, 3)` → `cart.total(10.0, 3, 10.0 * cart.rate)`）；用了命名实参或省略了默认参数的 Kotlin 调用补命名实参 `amount = …` | ✅ |
 | Kotlin 默认值：参数写成 `amount: Double = price * rate`，调用处都不改 | ✅ |
 | 范围：当前文件（编辑器里一步撤销）和项目里其他含 `name(` 的 .kt / .java 文件（直接写盘并刷新） | ✅ |
-| 同名函数的调用按解析区分（2026-10-29，同 Change Signature）；Java 的 Declare final / 通过重载委托 / 字段改 getter、Kotlin 扩展函数的接收者、Change Signature | ⬜ |
+| 表达式里的 `this`（2026-11-09）：所在函数自己的 `this`（Java / Kotlin 类成员里的 `this.rate`，Kotlin 扩展函数的 receiver `this.length`、`this`）在带接收者的调用处换成接收者（`name.shout(2, name.uppercase())`），没有接收者的调用原样；Kotlin lambda、匿名函数、object、匿名类 / 局部类里的 `this` 不换；接收者不是简单名字时加括号（成员前缀同样加）。Linux 实测：`fun String.shout(n: Int)` 里对 `this.uppercase()` 做 Introduce Parameter，`main` 里的 `name.shout(2)` 变成 `name.shout(2, name.uppercase())` | ✅ |
+| 同名函数的调用按解析区分（2026-10-29，同 Change Signature）；Java 的 Declare final / 通过重载委托 / 字段改 getter、Change Signature | ⬜ |
 
 Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int)` 的 `return price * rate * count + price * rate`，选中第一处 `price * rate` 按 Ctrl+Alt+P，对话框显示 “Replace all 2 occurrences”、“3 calls of total() get the new argument”；名字 amount、类型 Double，Refactor 后签名是 `total(price: Double, count: Int, amount: Double)`，函数体是 `return amount * count + amount`，同文件的 `total(1.0, 2)` 变成 `total(1.0, 2, 1.0 * rate)`，Main.kt 的 `cart.total(10.0, 3)` 和 `cart.total(count = 1, price = 2.0)` 分别变成 `cart.total(10.0, 3, 10.0 * cart.rate)` 和 `cart.total(count = 1, price = 2.0, amount = 2.0 * cart.rate)`。
 

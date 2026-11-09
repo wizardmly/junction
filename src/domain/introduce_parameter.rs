@@ -29,6 +29,9 @@ pub struct ParameterPlan {
     /// Names in it that aren't parameters (fields, methods of the class):
     /// a call on another object qualifies them.
     pub members: Vec<Range<usize>>,
+    /// The function's own `this` in it (its object, or a Kotlin extension
+    /// function's receiver): a call on another object passes that object.
+    pub this_refs: Vec<Range<usize>>,
     /// Its type when it shows it; empty when unknown.
     pub ty: String,
     /// Names the parameter mustn't take.
@@ -128,8 +131,13 @@ pub fn argument_for(plan: &ParameterPlan, call: &CallSite) -> String {
         }
     }
     if let Some(receiver) = &call.receiver {
+        let simple = receiver.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.');
+        let receiver = if simple { receiver.clone() } else { format!("({receiver})") };
         for range in &plan.members {
             edits.push((range.start..range.start, format!("{receiver}.")));
+        }
+        for range in &plan.this_refs {
+            edits.push((range.clone(), receiver.clone()));
         }
     }
     apply(&plan.expression, edits)
@@ -223,6 +231,7 @@ mod tests {
             params: vec!["price".into()],
             uses: vec![(0..5, 0)],
             members: vec![expr.find("rate").unwrap()..expr.find("rate").unwrap() + 4],
+            this_refs: vec![],
             ty: "Double".into(),
             taken: vec![],
             block: None,

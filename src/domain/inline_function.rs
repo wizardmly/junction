@@ -216,6 +216,7 @@ mod tests {
             params: vec!["price".into(), "count".into()],
             uses: vec![(0..5, 0), (15..20, 1)],
             members: vec![8..12],
+            this_refs: Vec::new(),
             ty: String::new(),
             taken: Vec::new(),
             block: None,
