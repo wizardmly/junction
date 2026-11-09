@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-13
 title: Reformat：Wrapping and Braces 页剩下的选项（第十三批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-13
+pr: 269
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -18,4 +18,7 @@ docs/FEATURES.md 第 33 节的 ❌ 行：IntelliJ Code Style › Wrapping and Br
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：这批做了 Java 的 Enum constants，其余拆到 sec33-reformat-rest-14。
+  - `Wrapping.enum_constants: AnnotationWrap`（和注解共用四个选项），settings.conf 第 24 位；设置页 `annotation_options` 里第四个下拉框。
+  - `wrap_enum_constants`：Java 预处理，在 `wrap_annotations` 之后。括号栈里标出 enum 的类体（`declaration_braces` 认出的类体，且之前最后一个声明关键字是 `enum`），直到体里第一个 `;`；栈顶是这种类体、行里只有圆括号的行按括号外的逗号拆。
+  - 回归：Signal Java 15746、Kotlin 23750 不变；设 Wrap always 时 Java 15762，多出的全是拆开的常量，稳定。

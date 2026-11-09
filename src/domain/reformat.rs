@@ -745,6 +745,8 @@ pub struct Wrapping {
     pub ops: Operations,
     /// Java's class, method and field annotations.
     pub annotations: [AnnotationWrap; 3],
+    /// Java's enum constants (Enum constants; IntelliJ's default Do not wrap).
+    pub enum_constants: AnnotationWrap,
 }
 
 /// Wrapping and Braces › Class / Method / Field annotations (IntelliJ's
@@ -850,21 +852,21 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3] };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3] };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3] }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
@@ -919,7 +921,9 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             let (forced, only) = if kotlin {
                 (forced, only)
             } else {
-                let (a, only) = wrap_annotations(&forced, &w.annotations, only, indents.right_margin.unwrap_or(RIGHT_MARGIN));
+                let margin = indents.right_margin.unwrap_or(RIGHT_MARGIN);
+                let (a, only) = wrap_annotations(&forced, &w.annotations, only, margin);
+                let (a, only) = wrap_enum_constants(&a, w.enum_constants, only, margin);
                 wrapped_annotations = a;
                 (wrapped_annotations, only)
             };
@@ -1353,6 +1357,119 @@ fn wrap_annotations(text: &str, wraps: &[AnnotationWrap; 3], only: Option<Range<
                 _ => {
                     stack.pop();
                 }
+            }
+        }
+        match parts {
+            Some(p) => {
+                delta += p.len() as isize - 1;
+                out.extend(p);
+            }
+            None => out.push((*line).to_owned()),
+        }
+    }
+    let only = only.map(|r| r.start..(r.end as isize + delta).max(r.start as isize) as usize);
+    (out.join("\n"), only)
+}
+
+/// Java's Enum constants: a line of constants first in an enum's body
+/// (`A, B(1), C;`) one constant a line (Wrap always; Chop down if long
+/// when the line is too long) or as many as fit (Wrap if long). A
+/// constant with a body (`A {`) or a comment keeps its line.
+fn wrap_enum_constants(text: &str, wrap: AnnotationWrap, only: Option<Range<usize>>, margin: usize) -> (String, Option<Range<usize>>) {
+    if wrap == AnnotationWrap::DoNotWrap {
+        return (text.to_owned(), only);
+    }
+    let lines = scan(text, false);
+    let raw: Vec<&str> = text.split('\n').collect();
+    let bodies = declaration_braces(&raw, &lines);
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut delta: isize = 0;
+    // Per open bracket: an enum body whose constants are still to come.
+    let mut stack: Vec<bool> = Vec::new();
+    // The last declaration keyword seen was `enum`.
+    let mut enum_next = false;
+    for (ix, line) in raw.iter().enumerate() {
+        let info = &lines[ix];
+        let selected = only.as_ref().is_none_or(|r| r.contains(&ix));
+        let plain = info.starts_in.unwrap_or(State::Code) == State::Code && !info.comment.iter().any(|c| *c);
+        let mut parts = None;
+        let trimmed = line.trim();
+        if selected && plain && stack.last() == Some(&true) && info.brackets.iter().all(|(_, c)| matches!(c, '(' | ')')) && !trimmed.is_empty() {
+            let lead = &line[..line.len() - line.trim_start().len()];
+            let code = |i: usize| info.code.get(i).copied().unwrap_or(false);
+            // The constants: commas outside brackets.
+            let mut items: Vec<String> = Vec::new();
+            let mut depth = 0;
+            let mut start = lead.len();
+            for (i, c) in line.char_indices().skip(lead.len()) {
+                if !code(i) {
+                    continue;
+                }
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    ',' if depth == 0 => {
+                        items.push(line[start..=i].trim().to_owned());
+                        start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+            let last = line[start..].trim();
+            if !last.is_empty() {
+                items.push(last.to_owned());
+            }
+            let long = width(line) > margin;
+            if items.len() > 1 {
+                parts = match wrap {
+                    AnnotationWrap::WrapAlways => Some(items.iter().map(|t| format!("{lead}{t}")).collect::<Vec<_>>()),
+                    AnnotationWrap::ChopIfLong if long => Some(items.iter().map(|t| format!("{lead}{t}")).collect()),
+                    AnnotationWrap::WrapIfLong if long => {
+                        let mut v: Vec<String> = Vec::new();
+                        let mut current = format!("{lead}{}", items[0]);
+                        for t in &items[1..] {
+                            let joined = format!("{current} {t}");
+                            if width(&joined) > margin {
+                                v.push(current);
+                                current = format!("{lead}{t}");
+                            } else {
+                                current = joined;
+                            }
+                        }
+                        v.push(current);
+                        (v.len() > 1).then_some(v)
+                    }
+                    _ => None,
+                };
+            }
+        }
+        // `enum` before a body; the constants end at the body's first `;`.
+        for word in trimmed.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            match word {
+                "enum" => enum_next = true,
+                "class" | "interface" | "record" => enum_next = false,
+                _ => {}
+            }
+        }
+        let mut braces = bodies[ix].iter();
+        for (_, c) in &info.brackets {
+            match c {
+                '{' => {
+                    let body = braces.next().copied().unwrap_or(false);
+                    stack.push(body && enum_next);
+                    if body {
+                        enum_next = false;
+                    }
+                }
+                '(' | '[' => stack.push(false),
+                _ => {
+                    stack.pop();
+                }
+            }
+        }
+        if stack.last() == Some(&true) && line.char_indices().any(|(i, ch)| ch == ';' && info.code.get(i).copied().unwrap_or(false)) {
+            if let Some(top) = stack.last_mut() {
+                *top = false;
             }
         }
         match parts {
@@ -4123,6 +4240,29 @@ mod tests {
         assert_eq!(
             w([AnnotationWrap::DoNotWrap, AnnotationWrap::ChopIfLong, AnnotationWrap::DoNotWrap], long),
             "class A {\n    @Override\n    @SuppressWarnings(\"unchecked\")\n    @VisibleForTesting\n    public void aMethodWithAVeryLongNameThatPassesTheMargin(int a) {\n    }\n\n    @Override public void f() {\n    }\n}"
+        );
+    }
+
+    #[test]
+    fn wraps_enum_constants() {
+        let w = |wrap: AnnotationWrap, text: &str| {
+            let style = IndentStyle { wrapping: Some(Wrapping { enum_constants: wrap, ..Wrapping::JAVA }), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let text = "enum Color {\n    RED(\"r, g\"), GREEN(1, 2), BLUE;\n\n    void f() {\n        g(a, b);\n    }\n}\n\nclass A {\n    enum Size { S, M }\n\n    enum Mode {\n        ON, OFF, // two\n        AUTO { }, MANUAL\n    }\n}";
+        assert_eq!(w(AnnotationWrap::DoNotWrap, text), text);
+        assert_eq!(
+            w(AnnotationWrap::WrapAlways, text),
+            "enum Color {\n    RED(\"r, g\"),\n    GREEN(1, 2),\n    BLUE;\n\n    void f() {\n        g(a, b);\n    }\n}\n\nclass A {\n    enum Size { S, M }\n\n    enum Mode {\n        ON, OFF, // two\n        AUTO { }, MANUAL\n    }\n}"
+        );
+        let long = "enum Permission {\n    READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION, CAMERA, RECORD_AUDIO, READ_CONTACTS\n}";
+        assert_eq!(w(AnnotationWrap::WrapAlways, "enum E {\n    A, B\n}"), "enum E {\n    A,\n    B\n}");
+        assert_eq!(w(AnnotationWrap::ChopIfLong, "enum E {\n    A, B\n}"), "enum E {\n    A, B\n}");
+        assert_eq!(
+            w(AnnotationWrap::WrapIfLong, long),
+            "enum Permission {\n    READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION, CAMERA, RECORD_AUDIO,\n    READ_CONTACTS\n}"
         );
     }
 
