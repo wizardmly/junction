@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-21
 title: Reformat：Wrapping and Braces 页剩下的选项（第二十一批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-21
+pr: 278
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,7 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：Java 的 Special 'else if' treatment（`Wrapping::special_else_if`，settings.conf 第 36 位，默认开）、'for()' statement（`for_wrap: Wrap`，第 37 位）和 Align when multiline（`align_for`，第 38 位，默认开）。实现：`else_if_layout`（开：`else` / `} else` 单独一行加下一行 `if` 合并；关：拆开 `else if`，阶梯缩进交给缩进器，原来就支持不带花括号的语句体）；`wrap_for_statements`（for 头括号里顶层 `;` 后断，Chop 全断、Wrap if long 贪心，宽度按对齐后的列算）；缩进器的 `align` 除了 `declaration_paren` 还认 `for_paren`（`align_for` 开时）。设置页 Java 加一个下拉框、两个勾选框。
+- 顺手修了旧 bug：`unary` 把 `step`、`to`、`in`、`as` 等 Kotlin 关键字也用在 Java 上，`i += step + step` 被格式化成 `step +step`；现在这些词只在 Kotlin 里算关键字。测试 `java_names_like_kotlin_keywords_take_binary_operators`。
+- 回归：Signal 语料 Java 5107、Kotlin 24702 不变；Special else if 关 + for Chop / Wrap if long（对齐开 / 关）加实参 / 形参 Chop，第二遍都是 0 行。测试 `lays_out_else_if_and_for_statements`。
+- 没做的（for 的 New line after '(' / Place ')' on new line、while / do-while / try-with-resources / assert 的换行、Kotlin 参数注解）挪到 sec33-reformat-rest-22。
