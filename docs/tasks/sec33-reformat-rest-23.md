@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-23
 title: Reformat：Wrapping and Braces 页剩下的选项（第二十三批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude（项目线程）/ 替 Jake 干活
 branch: task/sec33-reformat-rest-23
-pr:
+pr: 280
 claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,5 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：做了 Java 的 'assert' statement（`Wrapping::assert_wrap` / `assert_colon_next`，`chop` 里的 `assert_break`：在顶层的 `:` 前后断行，跳过三元的 `?:` 和 `::`）；Java 方法调用 / 声明的 New line after '(' / Place ')' on new line（`call_parens` / `param_parens`，预处理 `list_parens`：照 IntelliJ 的 dependent line feed，实参从第一个到最后一个跨行才拆，调用要两个以上实参，声明只有一个参数时看括号是否跨行；声明用新拆出来的 `declaration_head` 判断）；Kotlin 的 Parameter annotations（`wrap_parameter_annotations` 加 `kotlin` 参数：后面参数的注解前也断行，Wrap always 时一行里的声明按官方风格拆成 `(` / 参数 / `)`，照 IntelliJ 的测试数据 ParameterAnnotationWrap.kt）。settings.conf 的 `code_style_<lang>_wrapping` 现在 51 位（45–50 是新加的）。顺手修了缩进里以 `.5f` 开头的行被当成链式调用。
+- 没做：Kotlin 的方法调用 / 声明括号换行（Kotlin 声明的括号换行跟着 METHOD_PARAMETERS_WRAP 走，调用的要排除 lambda 和 object，官方风格默认开，打开会改 Kotlin 文件，留给 sec33-reformat-rest-24）。
