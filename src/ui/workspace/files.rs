@@ -328,11 +328,11 @@ impl Workspace {
             let indent = &crate::domain::code_style::StyleLang::of_path(&path).map(|l| crate::settings::Settings::get(cx).code_style.indents(l, editorconfig, max_line)).unwrap_or_default();
             if let Some(editor) = open.iter().find(|v| v.read(cx).path() == path) {
                 let (text, saved) = editor.read(cx).buffer(cx);
-                if let Some(new) = usecase::cleaned(&path, &text, clean_up, indent) {
+                if let Some(new) = usecase::cleaned(&path, &text, clean_up, indent, &crate::settings::Settings::get(cx).code_style) {
                     editor.update(cx, |e, cx| e.mirror(&new, &saved, window, cx));
                     changed += 1;
                 }
-            } else if let Some(new) = files.read(&path).ok().and_then(|text| usecase::cleaned(&path, &text, clean_up, indent)) {
+            } else if let Some(new) = files.read(&path).ok().and_then(|text| usecase::cleaned(&path, &text, clean_up, indent, &crate::settings::Settings::get(cx).code_style)) {
                 if files.write(&path, &new).is_ok() {
                     changed += 1;
                 }

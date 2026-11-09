@@ -30,6 +30,7 @@ use crate::theme::ActivePalette as _;
 use crate::ui::accounts_dialog::AccountsView;
 use crate::ui::as_icons as icons;
 use crate::domain::code_style::{LangStyle, StyleLang};
+use crate::domain::imports::{ImportStyle, StarImports};
 use crate::domain::reformat::{KeepBlankLines, MinBlankLines, Spaces};
 use crate::ui::keymap;
 use crate::ui::mappings_dialog::MappingsView;
@@ -118,7 +119,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
-            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Additive", "Multiplicative", "Lambda arrow", "Around arrow in function types", "Around arrow in 'when' clause", "Before lambda arrow", "Unary operator", "Range operator", "In simple one line methods", "Within", "Brackets", "Array initializer braces", "Grouping parentheses", "Method declaration parentheses", "Method call parentheses", "Type cast parentheses", "Annotation parentheses", "Code braces", "Angle brackets", "Record header", "Deconstruction list", "Spaces inside block braces when body is present", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Comment Code", "Line comment at first column", "Add a space at line comment start", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
+            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Additive", "Multiplicative", "Lambda arrow", "Around arrow in function types", "Around arrow in 'when' clause", "Before lambda arrow", "Unary operator", "Range operator", "In simple one line methods", "Within", "Brackets", "Array initializer braces", "Grouping parentheses", "Method declaration parentheses", "Method call parentheses", "Type cast parentheses", "Annotation parentheses", "Code braces", "Angle brackets", "Record header", "Deconstruction list", "Spaces inside block braces when body is present", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Comment Code", "Line comment at first column", "Add a space at line comment start", "Imports", "Class count to use import with '*'", "Names count to use static import with '*'", "Packages to use import with '*'", "Top-level symbols, use import with '*' when at least", "Java statics and enum members, use import with '*' when at least", "Optimize Imports", "star import", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "Template Group", "Import", "Export", "sout", "fori", "iter", "main", "psvm"],
             Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template", "Iterate over collection", "Add indices to 'for' loop", "indexed 'for' loop", "enhanced 'for'", "forEach", "indexing operator", "binary operator", "equals()", "orEmpty()", "isNullOrEmpty()", "elvis", "safe access", "Lift return", "Lift assignment", "curly braces", "lastIndex", "String.valueOf()", "Kotlin analog", "substring", "range check", "associateWith", "indexOf()", "contains()", "getOrDefault", "putIfAbsent", "computeIfAbsent", "count", "append()", "deprecated", "lowercase()", "call chain", "redundant call", "indices", "isEmpty()", "isNotEmpty()", "lambda", "method reference", "reference", "scope function", "with", "filterIsInstance", "filterNotNull", "flatten", "lambda signature", "lambda parameter types", "anonymous class", "apply", "also", "let", "run"],
             Page::Commit => &[
@@ -191,6 +192,8 @@ pub struct SettingsView {
     keep_blank: Vec<(StyleLang, [Entity<InputState>; 3])>,
     /// Blank Lines › Minimum blank lines: Java's and Kotlin's, by `MinBlankLines::values` index.
     min_blank: Vec<(StyleLang, Vec<(usize, Entity<InputState>)>)>,
+    /// Imports: names and members counts for `*`, and the packages always so (Java's, Kotlin's).
+    star_imports: Vec<(ImportStyle, [Entity<InputState>; 3])>,
     hard_wrap: Entity<InputState>,
     large_file: Entity<InputState>,
     console_buffer: Entity<InputState>,
@@ -274,6 +277,13 @@ impl SettingsView {
             .map(|(lang, shown)| {
                 let values = initial.code_style.min_blank(lang).values();
                 (lang, shown.iter().map(|&i| (i, input(values[i].to_string(), window, cx))).collect())
+            })
+            .collect();
+        let star_imports = [ImportStyle::Java, ImportStyle::Kotlin]
+            .into_iter()
+            .map(|style| {
+                let stars = initial.code_style.star_imports(style);
+                (style, [stars.names.to_string(), stars.members.to_string(), stars.packages.join("; ")].map(|v| input(v, window, cx)))
             })
             .collect();
         let large_file = input(if initial.large_file_mb > 0 { initial.large_file_mb } else { 50 }.to_string(), window, cx);
@@ -364,6 +374,7 @@ impl SettingsView {
             indents,
             keep_blank,
             min_blank,
+            star_imports,
             hard_wrap,
             large_file,
             console_buffer,
@@ -455,6 +466,12 @@ impl SettingsView {
                 }
             }
             next.code_style.set_min_blank(*lang, MinBlankLines::from_values(values));
+        }
+        for (style, [names, members, packages]) in &self.star_imports {
+            let stars = next.code_style.star_imports(*style);
+            let number = |input: &Entity<InputState>, or: usize| input.read(cx).value().trim().parse::<usize>().unwrap_or(or);
+            let packages = packages.read(cx).value().split([';', ',', ' ']).map(str::to_owned).collect();
+            next.code_style.set_star_imports(*style, StarImports { names: number(names, stars.names), members: number(members, stars.members), packages });
         }
         if let Ok(size) = self.font_size.read(cx).value().trim().parse::<f32>() {
             next.editor_font_tenths = (size.clamp(8., 32.) * 10.).round() as u32;
@@ -1589,6 +1606,24 @@ impl SettingsView {
                         })
                     })));
                 }
+            }
+            let import_style = match lang {
+                StyleLang::Java => Some(ImportStyle::Java),
+                StyleLang::Kotlin => Some(ImportStyle::Kotlin),
+                _ => None,
+            };
+            if let Some((style, [names, members, packages])) = import_style.and_then(|st| self.star_imports.iter().find(|(s, _)| *s == st)) {
+                let labels = match style {
+                    ImportStyle::Java => ["Class count to use import with '*':", "Names count to use static import with '*':"],
+                    ImportStyle::Kotlin => ["Top-level symbols, use import with '*' when at least:", "Java statics and enum members, use import with '*' when at least:"],
+                };
+                let count = |input: &Entity<InputState>| h_flex().gap_2().items_center().child(div().w(px(70.)).child(Input::new(input).small())).child(div().text_xs().text_color(cx.palette().text_secondary).child(if *style == ImportStyle::Kotlin { "names used" } else { "" }));
+                page = page
+                    .child(h_flex().text_sm().child(self.found("Imports", query, cx).child("Imports:")))
+                    .child(self.row(labels[0], query, count(names), cx))
+                    .child(self.row(labels[1], query, count(members), cx))
+                    .child(self.row("Packages to use import with '*':", query, div().w(px(320.)).child(Input::new(packages).small()), cx))
+                    .child(self.note("Separated by ';'; 'pkg.**' takes its subpackages too. Optimize Imports applies these", cx));
             }
             let shown: &[usize] = match lang {
                 StyleLang::Java => &Spaces::JAVA,
