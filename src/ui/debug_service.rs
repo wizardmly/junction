@@ -316,12 +316,41 @@ impl DebugService {
         cx.notify();
     }
 
+    /// The breakpoints waiting for a removed one don't any more (saved by
+    /// the caller), in the running session too.
+    fn forget_master(&mut self, removed: impl Fn(&breakpoint_store::BreakpointRef) -> bool, cx: &mut Context<Self>) {
+        let session = self.session.clone().filter(|s| !s.is_ended());
+        for b in self.breakpoints.iter_mut().filter(|b| b.master.as_ref().is_some_and(&removed)) {
+            b.master = None;
+            if let Some(session) = &session {
+                session.set_actions(Path::new(&b.file), b.line + 1, actions(b));
+            }
+        }
+        let mut changed = Vec::new();
+        for e in self.exceptions.iter_mut().filter(|e| e.master.as_ref().is_some_and(&removed)) {
+            e.master = None;
+            changed.extend(e.enabled.then(|| exception_breakpoint(e)));
+        }
+        if !changed.is_empty() {
+            breakpoint_store::save_exceptions(&self.exceptions);
+            if let Some(session) = session {
+                cx.background_spawn(async move {
+                    for e in changed {
+                        let _ = session.add_exception_breakpoint(e);
+                    }
+                })
+                .detach();
+            }
+        }
+    }
+
     /// Removes an exception breakpoint ("Any exception" stays).
     pub fn remove_exception_breakpoint(&mut self, class: &str, cx: &mut Context<Self>) {
         if class.is_empty() {
             return;
         }
         self.exceptions.retain(|e| e.class != class);
+        self.forget_master(|m| m.is_exception(class), cx);
         breakpoint_store::save_exceptions(&self.exceptions);
         if let Some(session) = self.session.clone().filter(|s| !s.is_ended()) {
             let class = class.to_owned();
@@ -437,12 +466,7 @@ impl DebugService {
             self.breakpoints.remove(ix);
             self.verified.remove(&(file.to_owned(), line));
             // The breakpoints waiting for it don't any more.
-            for b in self.breakpoints.iter_mut().filter(|b| b.master.as_ref().is_some_and(|m| m.file == file && m.line == line)) {
-                b.master = None;
-                if let Some(session) = &session {
-                    session.set_actions(Path::new(&b.file), b.line + 1, actions(b));
-                }
-            }
+            self.forget_master(|m| m.is_line(file, line), cx);
             if let Some(session) = session {
                 let path = PathBuf::from(file);
                 cx.background_spawn(async move { session.remove_breakpoint(&path, line + 1) }).detach();
@@ -472,12 +496,22 @@ impl DebugService {
             b.line = line;
         }
         // Dependent breakpoints follow their master.
-        for b in self.breakpoints.iter_mut() {
-            if let Some(m) = b.master.as_mut().filter(|m| m.file == file) {
-                if let Some(ix) = lines.iter().position(|&l| l == m.line) {
-                    m.line = moved[ix];
-                }
+        let follow = |m: &mut breakpoint_store::BreakpointRef| match lines.iter().position(|&l| m.exception.is_none() && m.file == file && l == m.line) {
+            Some(ix) if moved[ix] != m.line => {
+                m.line = moved[ix];
+                true
             }
+            _ => false,
+        };
+        for m in self.breakpoints.iter_mut().filter_map(|b| b.master.as_mut()) {
+            follow(m);
+        }
+        let mut exceptions_moved = false;
+        for m in self.exceptions.iter_mut().filter_map(|e| e.master.as_mut()) {
+            exceptions_moved |= follow(m);
+        }
+        if exceptions_moved {
+            breakpoint_store::save_exceptions(&self.exceptions);
         }
         // Two on one line: the first stays.
         let mut seen = HashSet::new();
@@ -1321,7 +1355,7 @@ fn actions(saved: &SavedBreakpoint) -> BreakpointActions {
         log_message: saved.log_message,
         log_stack: saved.log_stack,
         log_expression: saved.log_expression.clone(),
-        master: saved.master.as_ref().map(|m| (PathBuf::from(&m.file), m.line + 1)),
+        master: saved.master.as_ref().map(master_key),
         leave_enabled: saved.leave_enabled,
         instances: saved.instances.clone(),
     }
@@ -1333,5 +1367,24 @@ fn free_port() -> Option<u16> {
 
 /// A saved exception breakpoint as the session sets it.
 fn exception_breakpoint(saved: &breakpoint_store::SavedExceptionBreakpoint) -> crate::usecase::debug_session::ExceptionBreakpoint {
-    crate::usecase::debug_session::ExceptionBreakpoint { class: saved.class.clone(), caught: saved.caught, uncaught: saved.uncaught, condition: saved.condition.clone(), filters: saved.filters.clone(), catch_filters: saved.catch_filters.clone(), instances: saved.instances.clone() }
+    crate::usecase::debug_session::ExceptionBreakpoint {
+        class: saved.class.clone(),
+        caught: saved.caught,
+        uncaught: saved.uncaught,
+        condition: saved.condition.clone(),
+        filters: saved.filters.clone(),
+        catch_filters: saved.catch_filters.clone(),
+        instances: saved.instances.clone(),
+        master: saved.master.as_ref().map(master_key),
+        leave_enabled: saved.leave_enabled,
+    }
+}
+
+/// A saved reference to a breakpoint as the session knows it (1-based lines).
+fn master_key(saved: &breakpoint_store::BreakpointRef) -> crate::usecase::debug_session::BreakpointKey {
+    use crate::usecase::debug_session::BreakpointKey;
+    match &saved.exception {
+        Some(class) => BreakpointKey::Exception(class.clone()),
+        None => BreakpointKey::Line(PathBuf::from(&saved.file), saved.line + 1),
+    }
 }
