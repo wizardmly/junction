@@ -10,7 +10,7 @@ use gpui_kit::component::{
     Disableable as _, Icon, Selectable as _, Sizable as _, h_flex,
     input::{Input, InputEvent, InputState},
     button::{Button, ButtonVariants as _},
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
 use gpui_kit::{
@@ -349,8 +349,24 @@ impl DebugView {
                             this.service.update(cx, |s, cx| s.clear_evaluation(cx));
                         })))
                     })
-                    .when(row.expandable, |el| el.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.service.update(cx, |s, cx| s.toggle_variable(&path, cx)))))
-                    .into_any_element()
+                    .when(row.expandable, |el| {
+                        let path = path.clone();
+                        el.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.service.update(cx, |s, cx| s.toggle_variable(&path, cx))))
+                    })
+                    .map(|el| {
+                        // IntelliJ's Add Field Watchpoint, on an object's field.
+                        if self.service.read(cx).field_of_object(&path).is_none() {
+                            return el.into_any_element();
+                        }
+                        let service = self.service.clone();
+                        el.context_menu(move |menu, _, _| {
+                            let (service, path) = (service.clone(), path.clone());
+                            menu.item(PopupMenuItem::new("Add Field Watchpoint").icon(Icon::new(icons::BREAKPOINT_FIELD)).on_click(move |_, _, cx| {
+                                service.update(cx, |s, cx| s.add_field_watchpoint(&path, cx));
+                            }))
+                        })
+                        .into_any_element()
+                    })
             })
             .collect()
     }
