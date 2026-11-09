@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-20
 title: Reformat：Wrapping and Braces 页剩下的选项（第二十批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-20
+pr: 277
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,7 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：Java 的 Keep when reformatting：Simple blocks / methods / lambdas / classes in one line、Control statement in one line。类型 `domain::reformat::KeepOneLine`（`Wrapping::keep_one_line`，settings.conf 第 31–35 位，缺的位当勾选）。实现是 `split_one_line_bodies`：反复调 `split_bodies_once` 直到不再变化，每行找第一个在同一行开合、按设置不保留的 `{…}`（`split_one_line_body` 用 `declaration_braces` 判类体，`->` 判 lambda，类体里 `member_kind` 是 Method 判方法，其余代码块；数组初始化、`switch` 跳过），`split_body_at` 按顶层 `;` 和结束的 `}`（后面不是 else / catch / finally / while）拆语句；`split_control_statement` 拆 `if` / `for` / `while` / `else` 的语句体。缩进交给后面的缩进器。设置页在 Line breaks 下加五个勾选框（只 Java）。
+- 默认全部保留（和 IntelliJ 不同：IntelliJ 只保留控制语句），理由同注解换行：Signal 里有 42 个空方法 `{}`、175 处 `if (…) return;`，按 IntelliJ 默认会大面积改动。
+- 回归：Signal 语料 Java 5107、Kotlin 24702 不变；五项全关多改 638 行，加上实参 / 形参 Chop 时第二遍也是 0 行。测试 `splits_simple_bodies_when_not_kept`。
+- 剩下的（for 语句的换行和对齐、Special else if treatment、Kotlin 参数注解）挪到 sec33-reformat-rest-21。
