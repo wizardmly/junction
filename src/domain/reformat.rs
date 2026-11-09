@@ -773,6 +773,17 @@ pub struct Wrapping {
     /// Java's 'for()' statement › Align when multiline (ALIGN_MULTILINE_FOR,
     /// on by default): the parts under the first.
     pub align_for: bool,
+    /// Java's 'for()' statement › New line after '(' and Place ')' on new
+    /// line (FOR_STATEMENT_LPAREN_ON_NEXT_LINE / RPAREN_ON_NEXT_LINE), for a
+    /// header over lines.
+    pub for_parens: [bool; 2],
+    /// Java's 'try-with-resources' (RESOURCE_LIST_WRAP): the resources after `;`.
+    pub resource_wrap: Wrap,
+    /// Its Align when multiline (ALIGN_MULTILINE_RESOURCES, on by default).
+    pub align_resources: bool,
+    /// Its New line after '(' and Place ')' on new line
+    /// (RESOURCE_LIST_LPAREN_ON_NEXT_LINE / RPAREN_ON_NEXT_LINE).
+    pub resource_parens: [bool; 2],
     /// Java's Annotation parameters (ANNOTATION_PARAMETER_WRAP).
     pub annotation_params: Wrap,
 }
@@ -918,21 +929,21 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2] };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2] };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2] }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
@@ -1004,7 +1015,10 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let (a, only) = wrap_parameter_annotations(&a, w.param_annotations, only, margin);
                 let (a, only) = split_one_line_bodies(&a, w.keep_one_line, only);
                 let (a, only) = else_if_layout(&a, w.special_else_if, only);
-                let (a, only) = wrap_for_statements(&a, w.for_wrap, w.align_for, only, margin);
+                let (a, only) = wrap_for_statements(&a, "for", w.for_wrap, w.align_for, only, margin);
+                let (a, only) = wrap_for_statements(&a, "try", w.resource_wrap, w.align_resources, only, margin);
+                let (a, only) = header_parens(&a, "for", w.for_parens, only);
+                let (a, only) = header_parens(&a, "try", w.resource_parens, only);
                 wrapped_annotations = a;
                 (wrapped_annotations, only)
             };
@@ -1031,6 +1045,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     let unit = indents.unit.clone().unwrap_or_else(|| indent_unit(text, &lines, indents.fallback.as_deref()));
     // Java aligns a multi-line `for (` header under its first part unless Align when multiline is off.
     let align_for = wrapping.is_none_or(|w| w.align_for);
+    let align_resources = wrapping.is_none_or(|w| w.align_resources);
     let tabs = unit == "\t";
     let step = if tabs { 1 } else { unit.len() };
     // Kotlin's official style continues by one indent; Java by 8 (two);
@@ -1258,7 +1273,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             // An unselected line keeps its indent: its brackets go by it.
             let at = if selected { indent } else { lead_out };
             let base = if header { at.saturating_sub(cont) } else { at };
-            let align = (flavor == Flavor::Java && !tabs).then(|| declaration_paren(&line_out).or_else(|| for_paren(&line_out).filter(|_| align_for))).flatten();
+            let align = (flavor == Flavor::Java && !tabs).then(|| declaration_paren(&line_out).or_else(|| for_paren(&line_out).filter(|_| align_for)).or_else(|| keyword_paren(&line_out, "try").filter(|_| align_resources))).flatten();
             apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, &line_out, &bodies[ix], flavor == Flavor::Java);
         } else {
             apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, text_line, &bodies[ix], flavor == Flavor::Java);
@@ -2008,16 +2023,105 @@ fn else_if_layout(text: &str, special: bool, only: Option<Range<usize>>) -> (Str
 
 /// The column after a `for (`'s parenthesis, when the line is one.
 fn for_paren(line: &str) -> Option<usize> {
+    keyword_paren(line, "for")
+}
+
+/// The column after the parenthesis of a statement starting the line with
+/// `keyword (` (`for`, `try`), when something follows it.
+fn keyword_paren(line: &str, keyword: &str) -> Option<usize> {
+    let open = keyword_open(line, keyword)?;
+    (!line[open + 1..].trim().is_empty()).then(|| line[..open + 1].chars().count())
+}
+
+/// The byte of that `(`.
+fn keyword_open(line: &str, keyword: &str) -> Option<usize> {
     let trimmed = line.trim_start();
-    let rest = trimmed.strip_prefix("for")?;
+    let rest = trimmed.strip_prefix(keyword)?;
     let gap = rest.len() - rest.trim_start().len();
-    rest.trim_start().starts_with('(').then(|| line[..line.len() - trimmed.len() + 3 + gap + 1].chars().count())
+    rest.trim_start().starts_with('(').then(|| line.len() - trimmed.len() + keyword.len() + gap)
+}
+
+/// New line after '(' and Place ')' on new line for a `for (` / `try (`
+/// header over lines: its first part leaves the `(` line, its `)` starts
+/// one.
+fn header_parens(text: &str, keyword: &str, parens: [bool; 2], only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+    if parens == [false; 2] {
+        return (text.to_owned(), only);
+    }
+    let lines = scan(text, false);
+    let raw: Vec<&str> = text.split('\n').collect();
+    // Per line: a split after this byte (`(`) and one before this byte (`)`).
+    let mut after: Vec<Option<usize>> = vec![None; raw.len()];
+    let mut before: Vec<Option<usize>> = vec![None; raw.len()];
+    let selected = |ix: usize| only.as_ref().is_none_or(|r| r.contains(&ix));
+    let plain = |ix: usize| lines[ix].starts_in.unwrap_or(State::Code) == State::Code && !lines[ix].comment.iter().any(|c| *c);
+    for ix in 0..raw.len() {
+        if !selected(ix) || !plain(ix) {
+            continue;
+        }
+        let Some(open) = keyword_open(raw[ix], keyword) else { continue };
+        // Its `)`: on a later line, or the header is on one line.
+        let mut depth = 0;
+        let mut close = None;
+        'lines: for (j, info) in lines.iter().enumerate().skip(ix) {
+            for (p, c) in &info.brackets {
+                if j == ix && *p < open {
+                    continue;
+                }
+                match c {
+                    '(' | '[' | '{' => depth += 1,
+                    _ => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some((j, *p));
+                            break 'lines;
+                        }
+                    }
+                }
+            }
+            if j > ix + 50 {
+                break;
+            }
+        }
+        let Some((cl, cp)) = close else { continue };
+        if cl == ix {
+            continue;
+        }
+        if parens[0] && !raw[ix][open + 1..].trim().is_empty() {
+            after[ix] = Some(open + 1);
+        }
+        if parens[1] && selected(cl) && plain(cl) && !raw[cl][..cp].trim().is_empty() {
+            before[cl] = Some(cp);
+        }
+    }
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut delta: isize = 0;
+    for (ix, line) in raw.iter().enumerate() {
+        let lead = &line[..line.len() - line.trim_start().len()];
+        match (after[ix], before[ix]) {
+            (None, None) => out.push((*line).to_owned()),
+            (a, b) => {
+                let mut cuts: Vec<usize> = a.into_iter().chain(b).collect();
+                cuts.sort_unstable();
+                let mut from = 0;
+                for c in cuts {
+                    let piece = &line[from..c];
+                    out.push(if from == 0 { piece.trim_end().to_owned() } else { format!("{lead}        {}", piece.trim()) });
+                    from = c;
+                    delta += 1;
+                }
+                out.push(if from == 0 { (*line).to_owned() } else { format!("{lead}{}", line[from..].trim()) });
+            }
+        }
+    }
+    let only = only.map(|r| r.start..(r.end as isize + delta).max(r.start as isize) as usize);
+    (out.join("\n"), only)
 }
 
 /// Java's 'for()' statement wrap: a header past the margin breaks after its
 /// `;`s (Chop down if long: after each; Wrap if long: where it must), the
 /// parts under the first with Align when multiline.
-fn wrap_for_statements(text: &str, wrap: Wrap, align: bool, only: Option<Range<usize>>, margin: usize) -> (String, Option<Range<usize>>) {
+fn wrap_for_statements(text: &str, keyword: &str, wrap: Wrap, align: bool, only: Option<Range<usize>>, margin: usize) -> (String, Option<Range<usize>>) {
     if wrap == Wrap::DoNotWrap {
         return (text.to_owned(), only);
     }
@@ -2030,7 +2134,7 @@ fn wrap_for_statements(text: &str, wrap: Wrap, align: bool, only: Option<Range<u
         let selected = only.as_ref().is_none_or(|r| r.contains(&ix));
         let plain = info.starts_in.unwrap_or(State::Code) == State::Code && !info.comment.iter().any(|c| *c);
         let mut parts = None;
-        if let (true, true, Some(col)) = (selected, plain, for_paren(line)) {
+        if let (true, true, Some(col)) = (selected, plain, keyword_paren(line, keyword)) {
             if width(line) > margin {
                 // The `;`s in the header's own parentheses.
                 let open = line.len() - line.trim_start().len() + line.trim_start().find('(').unwrap_or(0);
@@ -5171,6 +5275,26 @@ mod tests {
         assert_eq!(reformat(ImportStyle::Java, text, None), text);
         let kt = "fun f() {\n    for (i in 0 until -1 step -2) {\n    }\n}\n";
         assert_eq!(reformat(ImportStyle::Kotlin, kt, None), kt);
+    }
+
+    #[test]
+    fn wraps_resources_and_header_parentheses() {
+        let java = |w: Wrapping, text: &str| reformat_indented(ImportStyle::Java, text, None, &IndentStyle { wrapping: Some(w), ..Default::default() });
+        let res = format!("try (InputStream input = openTheInputStream{}(); OutputStream output = openTheOutputStream(target)) {{", "X".repeat(25));
+        let text = format!("class A {{\n    void k() {{\n        {res}\n            copy(input, output);\n        }}\n    }}\n}}\n");
+        assert_eq!(java(Wrapping::JAVA, &text), text);
+        // try-with-resources: Chop down if long, aligned.
+        let chop = java(Wrapping { resource_wrap: Wrap::ChopIfLong, ..Wrapping::JAVA }, &text);
+        assert_eq!(chop, format!("class A {{\n    void k() {{\n        try (InputStream input = openTheInputStream{}();\n             OutputStream output = openTheOutputStream(target)) {{\n            copy(input, output);\n        }}\n    }}\n}}\n", "X".repeat(25)));
+        // New line after '(' and ')' on its own line: continuation indent.
+        let parens = Wrapping { resource_wrap: Wrap::ChopIfLong, resource_parens: [true; 2], ..Wrapping::JAVA };
+        let out = java(parens, &text);
+        assert_eq!(out, format!("class A {{\n    void k() {{\n        try (\n                InputStream input = openTheInputStream{}();\n                OutputStream output = openTheOutputStream(target)\n        ) {{\n            copy(input, output);\n        }}\n    }}\n}}\n", "X".repeat(25)));
+        assert_eq!(java(parens, &out), out);
+        // The same for a `for` over lines; one on a line stays.
+        let for_text = "class A {\n    void k() {\n        for (int i = 0;\n             i < n;\n             i++) {\n            go(i);\n        }\n        for (int j = 0; j < n; j++) {\n        }\n    }\n}\n";
+        let for_out = java(Wrapping { for_parens: [true; 2], ..Wrapping::JAVA }, for_text);
+        assert_eq!(for_out, "class A {\n    void k() {\n        for (\n                int i = 0;\n                i < n;\n                i++\n        ) {\n            go(i);\n        }\n        for (int j = 0; j < n; j++) {\n        }\n    }\n}\n");
     }
 
     #[test]

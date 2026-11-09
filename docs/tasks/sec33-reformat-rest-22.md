@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-22
 title: Reformat：Wrapping and Braces 页剩下的选项（第二十二批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude（项目线程）/ 替 Jake 干活
 branch: task/sec33-reformat-rest-22
-pr:
+pr: 279
 claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,7 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：Java 的 'try-with-resources'（`Wrapping::resource_wrap`，settings.conf 第 41 位）、Align when multiline（`align_resources`，第 42 位，默认开）、New line after '(' / Place ')' on new line（`resource_parens`，第 43–44 位）和 'for()' 的同名两项（`for_parens`，第 39–40 位）。`wrap_for_statements` 加了 keyword 参数，`try` 复用 `for` 的拆法；新函数 `header_parens` 对跨行的 `for (` / `try (` 头部在 `(` 后、`)` 前断行；`keyword_paren` / `keyword_open` 取代原来只认 for 的写法，`(` 后没有内容时不对齐（续行缩进）。缩进器的 `align` 多认 `try (`（`align_resources` 开时）。设置页 Java 加一个下拉框、五个勾选框。
+- 回归：Signal 语料 Java 5107、Kotlin 24702 不变；for / try 都 Chop、括号两项全开或各开一项，加实参 / 形参 Chop，第二遍都是 0 行。测试 `wraps_resources_and_header_parentheses`。
+- 没做的（assert 换行、Kotlin 参数注解、方法调用 / 声明括号换行）挪到 sec33-reformat-rest-23。
+- 注意：容器磁盘配额满时 `rm -rf target/debug/incremental` 能腾出约 7 GB。
