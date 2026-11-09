@@ -2,11 +2,11 @@
 id: reformat-second-pass-stability
 title: Reformat Code 第二遍不变（Kotlin 默认、Java Binary / Ternary）
 features: 第 33 节
-status: open
-owner:
-branch:
+status: claimed
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/reformat-second-pass-stability
 pr:
-claimed:
+claimed: 2026-11-09
 files: src/domain/reformat.rs
 ---
 
