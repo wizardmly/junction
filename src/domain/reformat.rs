@@ -648,6 +648,9 @@ struct Previous {
     depth: usize,
     reason: Reason,
     indent: usize,
+    /// Ends with a statement's head without its body: `if (…)`, `else`,
+    /// `for (…)`, `while (…)`, `do`. The next line is the body.
+    head: bool,
 }
 
 /// An open bracket: the indent of its line and of its content, in
@@ -978,6 +981,7 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         let is_code_line = matches!(starts, State::Code);
         let mut continued = Reason::None;
         let mut header = false;
+        let mut body_line = false;
         if is_code_line && closed_to.is_none() {
             // A Java `case` label sits at the switch's level; its body below.
             let label = !kotlin && (code_start.starts_with("case ") || code_start.starts_with("default:") || code_start.starts_with("default ->"));
@@ -1047,6 +1051,13 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             continued = reason;
             // A class header's supertypes: its body belongs to the class.
             header = reason == Reason::Header;
+            // A body without braces under its `if (…)`, `else`, `for (…)`…: one indent deeper.
+            if reason == Reason::None && !code_start.starts_with('{') {
+                if let Some(p) = previous.as_ref().filter(|p| p.head && !p.opened && p.depth == stack.len()) {
+                    indent = p.indent + step;
+                    body_line = true;
+                }
+            }
         }
         let body: String = if is_code_line && selected { normalize(text_line, info, lead, flavor, closes_header, &spaces) } else { text_line.trim_start().to_owned() };
         let new_line = match starts {
@@ -1083,7 +1094,11 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 .filter(|(i, _)| !info.comment.get(*i).copied().unwrap_or(false))
                 .map(|(i, c)| if info.code.get(i).copied().unwrap_or(false) { c } else { '_' })
                 .collect();
-            previous = Some(Previous { code: code_text.trim_end().to_owned(), opened: stack.len() > depth, depth: stack.len(), reason: continued, indent });
+            // A comment between a head and its body: the body is still to come.
+            if !(body_line && code_text.trim().is_empty()) {
+                let head = statement_head(code_text.trim());
+                previous = Some(Previous { code: code_text.trim_end().to_owned(), opened: stack.len() > depth, depth: stack.len(), reason: continued, indent, head });
+            }
             // A `case …:` label: what follows is its body.
             if !kotlin && (code_start.starts_with("case ") || code_start.starts_with("default")) && code_text.trim_end().ends_with(':') {
                 if let Some(open) = stack.last_mut() {
@@ -1097,6 +1112,53 @@ fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         out = chop_long_lines(out, choppable, &wrapper);
     }
     out.join("\n")
+}
+
+/// Whether a line's code (strings blanked, comments gone) is a statement's
+/// head with its body on the next line: `if (…)`, `} else`, `else if (…)`,
+/// `for (…)`, `while (…)`, `do`; or ends with Kotlin's `if (…)`
+/// expression: `return if (…)`, `val x = if (…)`.
+fn statement_head(code: &str) -> bool {
+    if head_at_start(code) {
+        return true;
+    }
+    code.match_indices("if").any(|(i, _)| {
+        let before = code[..i].chars().next_back();
+        i > 0 && before.is_some_and(|c| c == ' ' || c == '(' || c == '=') && head_at_start(&code[i..])
+    })
+}
+
+fn head_at_start(code: &str) -> bool {
+    let closes = code.starts_with('}');
+    let body = code.strip_prefix('}').map(str::trim_start).unwrap_or(code);
+    let word = body.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+    let rest = body[word.len()..].trim_start();
+    match word {
+        "do" => rest.is_empty(),
+        "else" => rest.is_empty() || rest.starts_with("if") && head_at_start(rest),
+        // `} while (…)` ends a do-while.
+        "while" if closes => false,
+        "if" | "for" | "while" => {
+            if !rest.starts_with('(') {
+                return false;
+            }
+            let mut depth = 0;
+            for (i, c) in rest.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return i + 1 == rest.len();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        _ => false,
+    }
 }
 
 /// Java's Force braces: `if (c) x();` (Always) and `if (c)` with `x();`
@@ -3620,25 +3682,34 @@ mod tests {
             assert_eq!(reformat_indented(st, &once, None, &style), once, "stable");
             once
         };
-        let java = "class A {\n    int f(int a) {\n        if (a > 0) return log(\")\");\n        if (a < 0)\n            a++;\n        else\n            a--;\n        for (int i = 0; i < a; i++) g(i);\n        while (a > 9)\n            a /= 2;\n        if (a == 1) // one\n        a = 2;\n        if (a == 2)\n        if (a > 1) a = 3;\n        return a;\n    }\n}";
-        // Off: nothing added (a body without braces keeps the indent the formatter gives it).
+        let java = "class A {\n    int f(int a) {\n        if (a > 0) return log(\")\");\n        if (a < 0)\n            a++;\n        else\n            a--;\n        for (int i = 0; i < a; i++) g(i);\n        while (a > 9)\n            a /= 2;\n        if (a == 1) // one\n            a = 2;\n        if (a == 2)\n            if (a > 1) a = 3;\n        return a;\n    }\n}";
+        // Off: nothing added.
         let none = f(false, Braces::NONE, java);
         assert!(!none.contains("{\n            a++;"));
         let multiline = Braces { force: [Force::WhenMultiline; 3], ..Braces::NONE };
         assert_eq!(
             f(false, multiline, java),
-            "class A {\n    int f(int a) {\n        if (a > 0) return log(\")\");\n        if (a < 0) {\n            a++;\n        } else {\n            a--;\n        }\n        for (int i = 0; i < a; i++) g(i);\n        while (a > 9) {\n            a /= 2;\n        }\n        if (a == 1) // one\n        a = 2;\n        if (a == 2)\n        if (a > 1) a = 3;\n        return a;\n    }\n}"
+            "class A {\n    int f(int a) {\n        if (a > 0) return log(\")\");\n        if (a < 0) {\n            a++;\n        } else {\n            a--;\n        }\n        for (int i = 0; i < a; i++) g(i);\n        while (a > 9) {\n            a /= 2;\n        }\n        if (a == 1) // one\n            a = 2;\n        if (a == 2)\n            if (a > 1) a = 3;\n        return a;\n    }\n}"
         );
         let always = Braces { force: [Force::Always, Force::Always, Force::DoNotForce], ..Braces::NONE };
         assert_eq!(
             f(false, always, java),
-            "class A {\n    int f(int a) {\n        if (a > 0) {\n            return log(\")\");\n        }\n        if (a < 0) {\n            a++;\n        } else {\n            a--;\n        }\n        for (int i = 0; i < a; i++) {\n            g(i);\n        }\n        while (a > 9)\n        a /= 2;\n        if (a == 1) // one\n        a = 2;\n        if (a == 2)\n        if (a > 1) {\n            a = 3;\n        }\n        return a;\n    }\n}"
+            "class A {\n    int f(int a) {\n        if (a > 0) {\n            return log(\")\");\n        }\n        if (a < 0) {\n            a++;\n        } else {\n            a--;\n        }\n        for (int i = 0; i < a; i++) {\n            g(i);\n        }\n        while (a > 9)\n            a /= 2;\n        if (a == 1) // one\n            a = 2;\n        if (a == 2)\n            if (a > 1) {\n                a = 3;\n            }\n        return a;\n    }\n}"
         );
         // Kotlin: Put left brace on new line, not a lambda's; off joins it back.
         let kt = "class A {\n    fun f(x: Int): Int {\n        if (x > 0) {\n            run {\n                g()\n            }\n        } else {\n        }\n        return x\n    }\n    fun g() = run {\n    }\n}";
         let next = f(true, Braces { other_next_line: true, ..Braces::NONE }, kt);
         assert_eq!(next, "class A\n{\n    fun f(x: Int): Int\n    {\n        if (x > 0)\n        {\n            run {\n                g()\n            }\n        } else\n        {\n        }\n        return x\n    }\n\n    fun g() = run {\n    }\n}");
         assert_eq!(f(true, Braces::NONE, &next), "class A {\n    fun f(x: Int): Int {\n        if (x > 0) {\n            run {\n                g()\n            }\n        } else {\n        }\n        return x\n    }\n\n    fun g() = run {\n    }\n}");
+    }
+
+    #[test]
+    fn indents_bodies_without_braces() {
+        assert_eq!(
+            java("class A {\nvoid f(int a) {\nif (a > 0)\nreturn;\nelse if (a < 0)\n// negative\na++;\nelse\nfor (int i = 0; i < a; i++)\nif (i > 1)\ng(i,\n1);\nwhile (a > 9)\na /= 2;\ndo\na--;\nwhile (a > 0);\nif (a == 1)\n{\na = 2;\n}\nh(\")\");\n}\n}"),
+            "class A {\n    void f(int a) {\n        if (a > 0)\n            return;\n        else if (a < 0)\n            // negative\n            a++;\n        else\n            for (int i = 0; i < a; i++)\n                if (i > 1)\n                    g(i,\n                            1);\n        while (a > 9)\n            a /= 2;\n        do\n            a--;\n        while (a > 0);\n        if (a == 1) {\n            a = 2;\n        }\n        h(\")\");\n    }\n}"
+        );
+        assert_eq!(kt("fun f(x: Int) {\nif (x > 0)\nprintln(x)\nelse\nreturn\nfor (i in 0..x)\ng(i)\nval y = if (x > 1) 2 else 3\ndo {\ng(x)\n} while (x > 9)\nh()\nreturn if (x > 2)\nx\nelse\n0\n}"), "fun f(x: Int) {\n    if (x > 0)\n        println(x)\n    else\n        return\n    for (i in 0..x)\n        g(i)\n    val y = if (x > 1) 2 else 3\n    do {\n        g(x)\n    } while (x > 9)\n    h()\n    return if (x > 2)\n        x\n    else\n        0\n}");
     }
 
     #[test]
