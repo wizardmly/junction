@@ -5,7 +5,7 @@
 
 use crate::domain::imports::{ImportStyle, StarImports};
 use crate::domain::line_edit::LineComments;
-use crate::domain::reformat::{IndentStyle, KeepBlankLines, MinBlankLines, Spaces};
+use crate::domain::reformat::{IndentStyle, KeepBlankLines, MinBlankLines, Spaces, Wrap, Wrapping};
 
 /// The languages with a code style page.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -77,6 +77,8 @@ pub struct CodeStyle {
     spaces: [Spaces; 4],
     /// Code Generation › Comment Code (not XML's).
     comments: [LineComments; 4],
+    /// Wrapping and Braces (Java's and Kotlin's).
+    wrapping: [Wrapping; 4],
     /// Imports › when Optimize Imports uses `*` (Java's, Kotlin's).
     stars: [StarImports; 2],
 }
@@ -86,7 +88,7 @@ impl Default for CodeStyle {
     /// official style by 4, Android's XML style by 4.
     fn default() -> Self {
         let style = |continuation| LangStyle { use_tab: false, indent: 4, continuation };
-        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)], blank: Default::default(), min_blank: Default::default(), spaces: Default::default(), comments: Default::default(), stars: [StarImports::default_for(ImportStyle::Java), StarImports::default_for(ImportStyle::Kotlin)] }
+        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)], blank: Default::default(), min_blank: Default::default(), spaces: Default::default(), comments: Default::default(), wrapping: [Wrapping::JAVA, Wrapping::KOTLIN, Wrapping::JAVA, Wrapping::JAVA], stars: [StarImports::default_for(ImportStyle::Java), StarImports::default_for(ImportStyle::Kotlin)] }
     }
 }
 
@@ -132,6 +134,19 @@ impl CodeStyle {
         self.comments[lang.index()] = comments;
     }
 
+    /// Wrapping and Braces: how long lists, chains and assignments wrap.
+    pub fn wrapping(&self, lang: StyleLang) -> Wrapping {
+        self.wrapping[lang.index()]
+    }
+
+    pub fn set_wrapping(&mut self, lang: StyleLang, wrapping: Wrapping) {
+        self.wrapping[lang.index()] = wrapping;
+    }
+
+    fn default_wrapping(lang: StyleLang) -> Wrapping {
+        if lang == StyleLang::Kotlin { Wrapping::KOTLIN } else { Wrapping::JAVA }
+    }
+
     /// Imports › "Class count to use import with '*'" and the rest, for
     /// Optimize Imports in a file of `style`.
     pub fn star_imports(&self, style: ImportStyle) -> StarImports {
@@ -151,7 +166,7 @@ impl CodeStyle {
         let style = self.get(lang);
         let own = if style.use_tab { "\t".to_owned() } else { " ".repeat(style.indent) };
         let detect = self.detect_indents && lang != StyleLang::Xml;
-        IndentStyle { unit: editorconfig.or_else(|| (!detect).then(|| own.clone())), fallback: Some(own), continuation: Some((style.continuation, style.indent)), right_margin: Some(max_line.unwrap_or(self.hard_wrap)), keep_blank: self.keep_blank(lang), min_blank: self.min_blank(lang), spaces: self.spaces(lang) }
+        IndentStyle { unit: editorconfig.or_else(|| (!detect).then(|| own.clone())), fallback: Some(own), continuation: Some((style.continuation, style.indent)), right_margin: Some(max_line.unwrap_or(self.hard_wrap)), keep_blank: self.keep_blank(lang), min_blank: self.min_blank(lang), spaces: self.spaces(lang), wrapping: matches!(lang, StyleLang::Java | StyleLang::Kotlin).then(|| self.wrapping(lang)) }
     }
 
     /// The settings file's lines: `code_style_java=false,4,8` (tab,
@@ -184,6 +199,13 @@ impl CodeStyle {
                 out.push_str(&format!("code_style_{}_spaces={values}\n", lang.key()));
             }
         }
+        for lang in [StyleLang::Java, StyleLang::Kotlin] {
+            let w = self.wrapping(lang);
+            if w != Self::default_wrapping(lang) {
+                let values: Vec<String> = w.values().iter().map(|v| v.index().to_string()).collect();
+                out.push_str(&format!("code_style_{}_wrapping={}\n", lang.key(), values.join(",")));
+            }
+        }
         for (style, key) in [(ImportStyle::Java, "java"), (ImportStyle::Kotlin, "kotlin")] {
             let stars = self.star_imports(style);
             if stars != StarImports::default_for(style) {
@@ -202,6 +224,13 @@ impl CodeStyle {
         if key == "code_style_hard_wrap" {
             if let Ok(n) = value.trim().parse::<usize>() {
                 self.hard_wrap = n.clamp(10, 1000);
+            }
+            return true;
+        }
+        if let Some(lang) = key.strip_prefix("code_style_").and_then(|k| k.strip_suffix("_wrapping")).and_then(|k| StyleLang::ALL.into_iter().find(|l| l.key() == k)) {
+            let v: Option<Vec<Wrap>> = value.split(',').map(|n| n.trim().parse().ok().and_then(Wrap::from_index)).collect();
+            if let Some(v) = v.and_then(|v| <[Wrap; 5]>::try_from(v).ok()) {
+                self.set_wrapping(lang, Wrapping::from_values(v));
             }
             return true;
         }
@@ -295,6 +324,8 @@ mod tests {
         style.set_spaces(StyleLang::Kotlin, Spaces { after_comma: false, ..Default::default() });
         assert!(style.lines().contains("code_style_kotlin_spaces=111111111111001111011111111111111111111111110010000000000000000000000\n"));
         assert!(!style.indents(StyleLang::Kotlin, None, None).spaces.after_comma);
+        style.set_wrapping(StyleLang::Java, Wrapping { call_args: Wrap::ChopIfLong, ..Wrapping::JAVA });
+        assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0\n") && !style.lines().contains("kotlin_wrapping"));
         style.set_star_imports(ImportStyle::Java, StarImports { names: 99, members: 0, packages: vec!["a.b.*".into(), " ".into(), "c.**".into()] });
         assert!(style.lines().contains("code_style_java_imports=99,1,a.b.*;c.**\n") && !style.lines().contains("kotlin_imports"));
         let mut read = CodeStyle::default();

@@ -31,7 +31,7 @@ use crate::ui::accounts_dialog::AccountsView;
 use crate::ui::as_icons as icons;
 use crate::domain::code_style::{LangStyle, StyleLang};
 use crate::domain::imports::{ImportStyle, StarImports};
-use crate::domain::reformat::{KeepBlankLines, MinBlankLines, Spaces};
+use crate::domain::reformat::{KeepBlankLines, MinBlankLines, Spaces, Wrap, Wrapping};
 use crate::ui::keymap;
 use crate::ui::mappings_dialog::MappingsView;
 
@@ -119,7 +119,7 @@ impl Page {
             Page::EditorFont => &["Font", "Size", "Line height"],
             Page::GutterIcons => &["Gutter", "Icons", "Bookmarks", "Implemented", "Overridden"],
             Page::EditorTabs => &["Tabs", "Close button", "Mark modified", "Tab limit", "Preview tab"],
-            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Additive", "Multiplicative", "Lambda arrow", "Around arrow in function types", "Around arrow in 'when' clause", "Before lambda arrow", "Unary operator", "Range operator", "In simple one line methods", "Within", "Brackets", "Array initializer braces", "Grouping parentheses", "Method declaration parentheses", "Method call parentheses", "Type cast parentheses", "Annotation parentheses", "Code braces", "Angle brackets", "Record header", "Deconstruction list", "Spaces inside block braces when body is present", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Comment Code", "Line comment at first column", "Add a space at line comment start", "Imports", "Class count to use import with '*'", "Names count to use static import with '*'", "Packages to use import with '*'", "Top-level symbols, use import with '*' when at least", "Java statics and enum members, use import with '*' when at least", "Optimize Imports", "star import", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
+            Page::CodeStyle => &["Code Style", "Tabs and Indents", "Use tab character", "Tab size", "Indent", "Continuation indent", "Detect and use existing file indents", "Hard wrap at", "Right margin", "Blank Lines", "Keep maximum blank lines", "In declarations", "In code", "Before '}'", "Minimum blank lines", "Around method", "Around field", "Around class", "After class header", "Before declaration with comment or annotation", "Before package", "Before method body", "Spaces", "Before parentheses", "Around operators", "Additive", "Multiplicative", "Lambda arrow", "Around arrow in function types", "Around arrow in 'when' clause", "Before lambda arrow", "Unary operator", "Range operator", "In simple one line methods", "Within", "Brackets", "Array initializer braces", "Grouping parentheses", "Method declaration parentheses", "Method call parentheses", "Type cast parentheses", "Annotation parentheses", "Code braces", "Angle brackets", "Record header", "Deconstruction list", "Spaces inside block braces when body is present", "Before comma", "After comma", "Before keywords", "Before colon", "After colon", "new type definition", "Comment Code", "Line comment at first column", "Add a space at line comment start", "Wrapping and Braces", "Method call arguments", "Method declaration parameters", "Chained method calls", "Extends / implements list", "Assignment statement", "Assignment and expression body", "Do not wrap", "Wrap if long", "Chop down if long", "Imports", "Class count to use import with '*'", "Names count to use static import with '*'", "Packages to use import with '*'", "Top-level symbols, use import with '*' when at least", "Java statics and enum members, use import with '*' when at least", "Optimize Imports", "star import", "Java", "Kotlin", "Groovy", "XML", "Reformat"],
             Page::LiveTemplates => &["Live Templates", "Templates", "Abbreviation", "Template text", "User", "Template Group", "Import", "Export", "sout", "fori", "iter", "main", "psvm"],
             Page::Intentions => &["Intentions", "Alt+Enter", "Convert to block body", "Add braces", "Specify type explicitly", "Put arguments on separate lines", "string template", "Iterate over collection", "Add indices to 'for' loop", "indexed 'for' loop", "enhanced 'for'", "forEach", "indexing operator", "binary operator", "equals()", "orEmpty()", "isNullOrEmpty()", "elvis", "safe access", "Lift return", "Lift assignment", "curly braces", "lastIndex", "String.valueOf()", "Kotlin analog", "substring", "range check", "associateWith", "indexOf()", "contains()", "getOrDefault", "putIfAbsent", "computeIfAbsent", "count", "append()", "deprecated", "lowercase()", "call chain", "redundant call", "indices", "isEmpty()", "isNotEmpty()", "lambda", "method reference", "reference", "scope function", "with", "filterIsInstance", "filterNotNull", "flatten", "lambda signature", "lambda parameter types", "anonymous class", "apply", "also", "let", "run"],
             Page::Commit => &[
@@ -1551,7 +1551,7 @@ impl SettingsView {
             .child(self.check("settings-detect-indents", "Detect and use existing file indents for editing", d.detect_indents, query, |s, v| s.code_style.detect_indents = v, cx))
             .child(self.note("Reformat keeps a file's own indent unit; .editorconfig's indent wins over both", cx))
             .child(self.row("Hard wrap at:", query, h_flex().gap_2().items_center().child(div().w(px(70.)).child(Input::new(&self.hard_wrap).small())).child(div().text_xs().text_color(cx.palette().text_secondary).child("columns")), cx))
-            .child(self.note("Where Reformat Code chops long Kotlin calls; .editorconfig's max_line_length wins", cx));
+            .child(self.note("Where Reformat Code wraps long lines (Wrapping and Braces); .editorconfig's max_line_length wins", cx));
         for (lang, indent, continuation) in &self.indents {
             let lang = *lang;
             let entity = cx.entity();
@@ -1605,6 +1605,42 @@ impl SettingsView {
                             )
                         })
                     })));
+                }
+            }
+            if matches!(lang, StyleLang::Java | StyleLang::Kotlin) {
+                page = page.child(h_flex().text_sm().child(self.found("Wrapping and Braces", query, cx).child("Wrapping and Braces:")));
+                let values = d.wrapping(lang).values();
+                let labels = ["Method call arguments:", "Method declaration parameters:", "Chained method calls:", "Extends / implements list:", if lang == StyleLang::Kotlin { "Assignment and expression body:" } else { "Assignment statement:" }];
+                for (i, label) in labels.into_iter().enumerate() {
+                    // Java's extends list isn't wrapped.
+                    if lang == StyleLang::Java && i == 3 {
+                        continue;
+                    }
+                    let view = cx.entity();
+                    let picker = Button::new(SharedString::from(format!("settings-wrap-{}-{i}", lang.name())))
+                        .outline()
+                        .small()
+                        .label(Wrap::LABELS[values[i].index()])
+                        .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
+                        .dropdown_menu(move |mut menu, _, _| {
+                            for (n, name) in Wrap::LABELS.into_iter().enumerate() {
+                                let view = view.clone();
+                                menu = menu.item(PopupMenuItem::new(name).checked(values[i].index() == n).on_click(move |_, _, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.set(
+                                            |s| {
+                                                let mut v = s.code_style.wrapping(lang).values();
+                                                v[i] = Wrap::from_index(n).unwrap_or(Wrap::DoNotWrap);
+                                                s.code_style.set_wrapping(lang, Wrapping::from_values(v))
+                                            },
+                                            cx,
+                                        )
+                                    })
+                                }));
+                            }
+                            menu
+                        });
+                    page = page.child(self.row(label, query, picker, cx));
                 }
             }
             let import_style = match lang {
