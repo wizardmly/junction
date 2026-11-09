@@ -3,6 +3,7 @@
 //! use existing file indents", as IntelliJ keeps them; what Reformat Code
 //! indents with, under `.editorconfig`.
 
+use crate::domain::imports::{ImportStyle, StarImports};
 use crate::domain::line_edit::LineComments;
 use crate::domain::reformat::{IndentStyle, KeepBlankLines, MinBlankLines, Spaces};
 
@@ -76,6 +77,8 @@ pub struct CodeStyle {
     spaces: [Spaces; 4],
     /// Code Generation › Comment Code (not XML's).
     comments: [LineComments; 4],
+    /// Imports › when Optimize Imports uses `*` (Java's, Kotlin's).
+    stars: [StarImports; 2],
 }
 
 impl Default for CodeStyle {
@@ -83,7 +86,7 @@ impl Default for CodeStyle {
     /// official style by 4, Android's XML style by 4.
     fn default() -> Self {
         let style = |continuation| LangStyle { use_tab: false, indent: 4, continuation };
-        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)], blank: Default::default(), min_blank: Default::default(), spaces: Default::default(), comments: Default::default() }
+        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)], blank: Default::default(), min_blank: Default::default(), spaces: Default::default(), comments: Default::default(), stars: [StarImports::default_for(ImportStyle::Java), StarImports::default_for(ImportStyle::Kotlin)] }
     }
 }
 
@@ -129,6 +132,17 @@ impl CodeStyle {
         self.comments[lang.index()] = comments;
     }
 
+    /// Imports › "Class count to use import with '*'" and the rest, for
+    /// Optimize Imports in a file of `style`.
+    pub fn star_imports(&self, style: ImportStyle) -> StarImports {
+        self.stars[style as usize].clone()
+    }
+
+    pub fn set_star_imports(&mut self, style: ImportStyle, stars: StarImports) {
+        let packages = stars.packages.into_iter().map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()).collect();
+        self.stars[style as usize] = StarImports { names: stars.names.clamp(1, 999), members: stars.members.clamp(1, 999), packages };
+    }
+
     /// What a file of `lang` is indented with: `.editorconfig`'s unit
     /// first, then the file's own when detecting (XML never does), else
     /// the language's; the continuation in proportion to the indent. Long
@@ -170,6 +184,12 @@ impl CodeStyle {
                 out.push_str(&format!("code_style_{}_spaces={values}\n", lang.key()));
             }
         }
+        for (style, key) in [(ImportStyle::Java, "java"), (ImportStyle::Kotlin, "kotlin")] {
+            let stars = self.star_imports(style);
+            if stars != StarImports::default_for(style) {
+                out.push_str(&format!("code_style_{key}_imports={},{},{}\n", stars.names, stars.members, stars.packages.join(";")));
+            }
+        }
         out
     }
 
@@ -182,6 +202,18 @@ impl CodeStyle {
         if key == "code_style_hard_wrap" {
             if let Ok(n) = value.trim().parse::<usize>() {
                 self.hard_wrap = n.clamp(10, 1000);
+            }
+            return true;
+        }
+        if let Some(style) = match key {
+            "code_style_java_imports" => Some(ImportStyle::Java),
+            "code_style_kotlin_imports" => Some(ImportStyle::Kotlin),
+            _ => None,
+        } {
+            let mut parts = value.trim().splitn(3, ',');
+            if let (Some(Ok(names)), Some(Ok(members))) = (parts.next().map(|n| n.trim().parse()), parts.next().map(|n| n.trim().parse())) {
+                let packages = parts.next().unwrap_or("").split(';').map(str::to_owned).collect();
+                self.set_star_imports(style, StarImports { names, members, packages });
             }
             return true;
         }
@@ -263,6 +295,8 @@ mod tests {
         style.set_spaces(StyleLang::Kotlin, Spaces { after_comma: false, ..Default::default() });
         assert!(style.lines().contains("code_style_kotlin_spaces=111111111111001111011111111111111111111111110010000000000000000000000\n"));
         assert!(!style.indents(StyleLang::Kotlin, None, None).spaces.after_comma);
+        style.set_star_imports(ImportStyle::Java, StarImports { names: 99, members: 0, packages: vec!["a.b.*".into(), " ".into(), "c.**".into()] });
+        assert!(style.lines().contains("code_style_java_imports=99,1,a.b.*;c.**\n") && !style.lines().contains("kotlin_imports"));
         let mut read = CodeStyle::default();
         for line in style.lines().lines() {
             let (k, v) = line.split_once('=').unwrap();
