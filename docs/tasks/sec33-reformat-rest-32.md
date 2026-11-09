@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-32
 title: Reformat：Wrapping and Braces 页剩下的选项（第三十二批）
 features: 第 33 节
-status: open
-owner:
-branch:
+status: claimed
+owner: Claude（项目线程）/ 替 Jake 干活
+branch: task/sec33-reformat-rest-32
 pr:
-claimed:
+claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
