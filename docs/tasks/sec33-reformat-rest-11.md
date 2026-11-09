@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-11
 title: Reformat：Wrapping and Braces 页剩下的选项（第十一批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude（项目线程）/ 替 Jake 干活
 branch: task/sec33-reformat-rest-11
-pr:
+pr: 266
 claimed: 2026-11-09
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -18,4 +18,9 @@ docs/FEATURES.md 第 33 节的 ❌ 行：IntelliJ Code Style › Wrapping and Br
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-09：这批做了 Java 的 Binary expressions 和 Ternary operation（各一个 Wrap 和“符号在下一行”），其余拆到 sec33-reformat-rest-12。
+  - `domain::reformat::Operations`（`binary` / `binary_sign_next` / `ternary` / `ternary_signs_next`，`NONE`），放在 `Wrapping.ops`；`Wrapping::any` 也看它。
+  - `operation_break`（`chop` 里列表都不用换时、在 chain / assignment 之前，只 Java）：扫出两边有空格的 `|| && + - * / % ? :`（`:` 要有未配对的 `?`，排除 label 和 for-each），选层数最少、第一个括号里、优先级最低的那组切开。选项关着的运算符不算。
+  - 先修了缩进（不然换出来的行第二遍会变）：`reformat_with` 里上一行开了括号且以运算符结尾（`if (a &&`）时这行记 Binary / Operator 但不再加续行缩进（`in_opened`），之后同类的行对齐；`java_ternary_end` 认行尾 ` ?` / ` :`；行首 `+ ` `- ` `* ` `/ ` `% ` 记 Operator。Signal Java 改动行数 15762 → 15746，全是和原文一致的对齐。
+  - 设置页：`operation_options` 两个下拉框两个勾选框；修好 Wrap 下拉框用 `Wrapping::from_values` 重建、丢掉 keep_line_breaks / braces / force 的问题。settings.conf 第 17–20 位。
+  - 回归：默认 Java 15746、Kotlin 23750；Chop / 行尾符号和 Wrap if long / 下一行符号两种全开都稳定。

@@ -5,7 +5,7 @@
 
 use crate::domain::imports::{ImportStyle, StarImports};
 use crate::domain::line_edit::LineComments;
-use crate::domain::reformat::{Braces, Force, IndentStyle, KeepBlankLines, MinBlankLines, Spaces, Wrap, Wrapping};
+use crate::domain::reformat::{Braces, Force, IndentStyle, KeepBlankLines, MinBlankLines, Operations, Spaces, Wrap, Wrapping};
 
 /// The languages with a code style page.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -206,6 +206,8 @@ impl CodeStyle {
                 values.push(u8::from(w.keep_line_breaks).to_string());
                 values.extend(w.braces.values().iter().map(|b| u8::from(*b).to_string()));
                 values.extend(w.braces.force.iter().map(|f| f.index().to_string()));
+                let o = w.ops;
+                values.extend([o.binary.index().to_string(), u8::from(o.binary_sign_next).to_string(), o.ternary.index().to_string(), u8::from(o.ternary_signs_next).to_string()]);
                 out.push_str(&format!("code_style_{}_wrapping={}\n", lang.key(), values.join(",")));
             }
         }
@@ -231,7 +233,8 @@ impl CodeStyle {
             return true;
         }
         if let Some(lang) = key.strip_prefix("code_style_").and_then(|k| k.strip_suffix("_wrapping")).and_then(|k| StyleLang::ALL.into_iter().find(|l| l.key() == k)) {
-            // Five wraps, Keep line breaks, the seven `Braces`, then Force braces (older files stop sooner).
+            // Five wraps, Keep line breaks, the seven `Braces`, Force braces,
+            // then binary and ternary wrap and sign (older files stop sooner).
             let parts: Vec<&str> = value.split(',').map(str::trim).collect();
             let v: Option<Vec<Wrap>> = parts.iter().take(5).map(|n| n.parse().ok().and_then(Wrap::from_index)).collect();
             if let Some(v) = v.and_then(|v| <[Wrap; 5]>::try_from(v).ok()) {
@@ -243,7 +246,9 @@ impl CodeStyle {
                 for (i, f) in force.iter_mut().enumerate() {
                     *f = parts.get(13 + i).and_then(|v| v.parse().ok()).and_then(Force::from_index).unwrap_or_default();
                 }
-                self.set_wrapping(lang, Wrapping { keep_line_breaks: parts.get(5).is_none_or(|k| *k != "0"), braces: Braces { force, ..Braces::from_values(braces) }, ..Wrapping::from_values(v) });
+                let wrap_at = |i: usize| parts.get(i).and_then(|v| v.parse().ok()).and_then(Wrap::from_index).unwrap_or(Wrap::DoNotWrap);
+                let ops = Operations { binary: wrap_at(16), binary_sign_next: parts.get(17).is_some_and(|v| *v == "1"), ternary: wrap_at(18), ternary_signs_next: parts.get(19).is_some_and(|v| *v == "1") };
+                self.set_wrapping(lang, Wrapping { keep_line_breaks: parts.get(5).is_none_or(|k| *k != "0"), braces: Braces { force, ..Braces::from_values(braces) }, ops, ..Wrapping::from_values(v) });
             }
             return true;
         }
@@ -337,10 +342,10 @@ mod tests {
         style.set_spaces(StyleLang::Kotlin, Spaces { after_comma: false, ..Default::default() });
         assert!(style.lines().contains("code_style_kotlin_spaces=111111111111001111011111111111111111111111110010000000000000000000000\n"));
         assert!(!style.indents(StyleLang::Kotlin, None, None).spaces.after_comma);
-        style.set_wrapping(StyleLang::Java, Wrapping { call_args: Wrap::ChopIfLong, braces: Braces { else_new_line: true, force: [Force::Always, Force::DoNotForce, Force::WhenMultiline], ..Default::default() }, ..Wrapping::JAVA });
+        style.set_wrapping(StyleLang::Java, Wrapping { call_args: Wrap::ChopIfLong, braces: Braces { else_new_line: true, force: [Force::Always, Force::DoNotForce, Force::WhenMultiline], ..Default::default() }, ops: Operations { binary: Wrap::WrapIfLong, binary_sign_next: true, ternary: Wrap::ChopIfLong, ternary_signs_next: false }, ..Wrapping::JAVA });
         style.set_wrapping(StyleLang::Kotlin, Wrapping { keep_line_breaks: false, ..Wrapping::KOTLIN });
-        assert!(style.lines().contains("code_style_kotlin_wrapping=2,2,1,1,1,0,0,0,0,0,0,0,0,0,0,0\n"));
-        assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0,1,1,0,0,0,0,0,0,2,0,1\n"));
+        assert!(style.lines().contains("code_style_kotlin_wrapping=2,2,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n"));
+        assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0,1,1,0,0,0,0,0,0,2,0,1,1,1,2,0\n"));
         style.set_star_imports(ImportStyle::Java, StarImports { names: 99, members: 0, packages: vec!["a.b.*".into(), " ".into(), "c.**".into()] });
         assert!(style.lines().contains("code_style_java_imports=99,1,a.b.*;c.**\n") && !style.lines().contains("kotlin_imports"));
         let mut read = CodeStyle::default();
