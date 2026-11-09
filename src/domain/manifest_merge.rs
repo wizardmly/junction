@@ -47,6 +47,45 @@ pub struct MergedLine {
     /// The 0-based line in the source it came from (none for what the
     /// build file injected).
     pub line: Option<u32>,
+    /// How it got there (Android Studio's Merging Log): the source that
+    /// added it first, then each that merged into it or injected it.
+    pub log: Vec<LogEntry>,
+}
+
+/// What a source did to an element or attribute of the merged manifest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergeAction {
+    Added,
+    Merged,
+    Injected,
+    Implied,
+}
+
+impl MergeAction {
+    /// As the merger's blame log writes it.
+    pub fn label(self) -> &'static str {
+        match self {
+            MergeAction::Added => "ADDED",
+            MergeAction::Merged => "MERGED",
+            MergeAction::Injected => "INJECTED",
+            MergeAction::Implied => "IMPLIED",
+        }
+    }
+}
+
+/// One line of the Merging Log: the action, the source (an index into
+/// `Merged::sources`) and the 0-based line in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogEntry {
+    pub action: MergeAction,
+    pub source: usize,
+    pub line: Option<u32>,
+}
+
+impl LogEntry {
+    fn new(action: MergeAction, source: usize, line: Option<u32>) -> Self {
+        LogEntry { action, source, line }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +104,7 @@ struct Attr {
     value: String,
     source: usize,
     line: Option<u32>,
+    log: Vec<LogEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +114,7 @@ struct Element {
     children: Vec<Element>,
     source: usize,
     line: Option<u32>,
+    log: Vec<LogEntry>,
 }
 
 impl Element {
@@ -81,14 +122,16 @@ impl Element {
         self.attrs.iter().find(|a| a.name == name).map(|a| a.value.as_str())
     }
 
-    fn set(&mut self, name: &str, value: &str, source: usize) {
+    /// Sets an attribute to what `entry`'s source says.
+    fn set(&mut self, name: &str, value: &str, entry: LogEntry) {
         match self.attrs.iter_mut().find(|a| a.name == name) {
             Some(a) => {
                 a.value = value.to_owned();
-                a.source = source;
-                a.line = None;
+                a.source = entry.source;
+                a.line = entry.line;
+                a.log.push(entry);
             }
-            None => self.attrs.push(Attr { name: name.to_owned(), value: value.to_owned(), source, line: None }),
+            None => self.attrs.push(Attr { name: name.to_owned(), value: value.to_owned(), source: entry.source, line: entry.line, log: vec![entry] }),
         }
     }
 
@@ -128,12 +171,17 @@ fn qualified(node: roxmltree::Node, namespace: Option<&str>, local: &str) -> Str
 
 fn element(doc: &roxmltree::Document, node: roxmltree::Node, source: usize) -> Element {
     let line = |pos: usize| Some(doc.text_pos_at(pos).row.saturating_sub(1));
+    let added = |line| vec![LogEntry::new(MergeAction::Added, source, line)];
     Element {
         tag: node.tag_name().name().to_owned(),
-        attrs: node.attributes().map(|a| Attr { name: qualified(node, a.namespace(), a.name()), value: a.value().to_owned(), source, line: line(a.range().start) }).collect(),
+        attrs: node
+            .attributes()
+            .map(|a| Attr { name: qualified(node, a.namespace(), a.name()), value: a.value().to_owned(), source, line: line(a.range().start), log: added(line(a.range().start)) })
+            .collect(),
         children: node.children().filter(|c| c.is_element()).map(|c| element(doc, c, source)).collect(),
         source,
         line: line(node.range().start),
+        log: added(line(node.range().start)),
     }
 }
 
@@ -156,6 +204,7 @@ fn merge_into(higher: &mut Element, lower: &Element, package: &str, labels: &[St
         if attr.name.starts_with("tools:") || attr.name.starts_with("xmlns") || removed.contains(&attr.name) {
             continue;
         }
+        let had = higher.attrs.iter().any(|a| a.name == attr.name);
         match higher.attrs.iter().find(|a| a.name == attr.name) {
             None => higher.attrs.push(attr.clone()),
             Some(mine) if mine.value != attr.value && !replaced.contains(&attr.name) => errors.push(format!(
@@ -172,6 +221,9 @@ fn merge_into(higher: &mut Element, lower: &Element, package: &str, labels: &[St
             )),
             Some(_) => {}
         }
+        if let Some(mine) = higher.attrs.iter_mut().find(|a| had && a.name == attr.name && a.value == attr.value) {
+            mine.log.push(LogEntry::new(MergeAction::Merged, attr.source, attr.line));
+        }
     }
     for child in &lower.children {
         let key = child.key();
@@ -187,7 +239,10 @@ fn merge_into(higher: &mut Element, lower: &Element, package: &str, labels: &[St
             continue;
         }
         match higher.children.iter_mut().find(|c| c.key() == key && !marker(c)) {
-            Some(mine) => merge_into(mine, child, package, labels, errors),
+            Some(mine) => {
+                mine.log.push(LogEntry::new(MergeAction::Merged, child.source, child.line));
+                merge_into(mine, child, package, labels, errors);
+            }
             None => higher.children.push(child.clone()),
         }
     }
@@ -218,7 +273,9 @@ fn merge_higher(base: &mut Element, higher: &Element, labels: &[String], errors:
                 ));
             }
         }
-        base.set(&attr.name, &attr.value, attr.source);
+        let same = base.attr(&attr.name) == Some(attr.value.as_str());
+        let action = if same { MergeAction::Merged } else { MergeAction::Added };
+        base.set(&attr.name, &attr.value, LogEntry::new(action, attr.source, attr.line));
     }
     if let Some(r) = higher.attr("tools:remove") {
         let removed: Vec<&str> = r.split(',').map(str::trim).collect();
@@ -228,7 +285,10 @@ fn merge_higher(base: &mut Element, higher: &Element, labels: &[String], errors:
         let key = child.key();
         match base.children.iter().position(|c| c.key() == key) {
             Some(ix) if matches!(child.attr("tools:node"), Some("replace" | "remove")) => base.children[ix] = child.clone(),
-            Some(ix) => merge_higher(&mut base.children[ix], child, labels, errors),
+            Some(ix) => {
+                base.children[ix].log.push(LogEntry::new(MergeAction::Merged, child.source, child.line));
+                merge_higher(&mut base.children[ix], child, labels, errors);
+            }
             None => base.children.push(child.clone()),
         }
     }
@@ -266,20 +326,20 @@ fn print(element: &Element, depth: usize, out: &mut Vec<MergedLine>) {
     let attr_indent = format!("{indent}    ");
     let close = if element.children.is_empty() { " />" } else { " >" };
     if element.attrs.is_empty() {
-        out.push(MergedLine { text: format!("{indent}<{}{}", element.tag, close.trim_start()), source: element.source, line: element.line });
+        out.push(MergedLine { text: format!("{indent}<{}{}", element.tag, close.trim_start()), source: element.source, line: element.line, log: element.log.clone() });
     } else {
-        out.push(MergedLine { text: format!("{indent}<{}", element.tag), source: element.source, line: element.line });
+        out.push(MergedLine { text: format!("{indent}<{}", element.tag), source: element.source, line: element.line, log: element.log.clone() });
         let last = element.attrs.len() - 1;
         for (i, a) in element.attrs.iter().enumerate() {
             let end = if i == last { close } else { "" };
-            out.push(MergedLine { text: format!("{attr_indent}{}=\"{}\"{end}", a.name, escape(&a.value)), source: a.source, line: a.line });
+            out.push(MergedLine { text: format!("{attr_indent}{}=\"{}\"{end}", a.name, escape(&a.value)), source: a.source, line: a.line, log: a.log.clone() });
         }
     }
     if !element.children.is_empty() {
         for c in &element.children {
             print(c, depth + 1, out);
         }
-        out.push(MergedLine { text: format!("{indent}</{}>", element.tag), source: element.source, line: element.line });
+        out.push(MergedLine { text: format!("{indent}</{}>", element.tag), source: element.source, line: element.line, log: element.log.clone() });
     }
 }
 
@@ -349,8 +409,9 @@ pub fn merge(sources: &[ManifestSource], main: usize, build: &BuildValues, build
         }
         for name in implied {
             if !has(&lower, name) {
-                let attrs = vec![Attr { name: "android:name".into(), value: name.into(), source: ix, line: None }];
-                lower.children.push(Element { tag: "uses-permission".into(), attrs, children: Vec::new(), source: ix, line: None });
+                let log = vec![LogEntry::new(MergeAction::Implied, ix, None)];
+                let attrs = vec![Attr { name: "android:name".into(), value: name.into(), source: ix, line: None, log: log.clone() }];
+                lower.children.push(Element { tag: "uses-permission".into(), attrs, children: Vec::new(), source: ix, line: None, log });
             }
         }
         merge_into(&mut root, &lower, &package, &labels, &mut errors);
@@ -359,7 +420,7 @@ pub fn merge(sources: &[ManifestSource], main: usize, build: &BuildValues, build
     let mut injected = false;
     let mut inject = |root: &mut Element, name: &str, value: &Option<String>| {
         if let Some(v) = value {
-            root.set(name, v, build_source);
+            root.set(name, v, LogEntry::new(MergeAction::Injected, build_source, None));
             injected = true;
         }
     };
@@ -371,7 +432,8 @@ pub fn merge(sources: &[ManifestSource], main: usize, build: &BuildValues, build
             Some(ix) => ix,
             None => {
                 // The merger puts it first.
-                root.children.insert(0, Element { tag: "uses-sdk".into(), attrs: Vec::new(), children: Vec::new(), source: build_source, line: None });
+                let log = vec![LogEntry::new(MergeAction::Injected, build_source, None)];
+                root.children.insert(0, Element { tag: "uses-sdk".into(), attrs: Vec::new(), children: Vec::new(), source: build_source, line: None, log });
                 0
             }
         };
@@ -385,9 +447,9 @@ pub fn merge(sources: &[ManifestSource], main: usize, build: &BuildValues, build
     }
     substitute(&mut root, &placeholders);
     strip(&mut root);
-    root.attrs.insert(0, Attr { name: "xmlns:android".into(), value: ANDROID.into(), source: main, line: root.line });
+    root.attrs.insert(0, Attr { name: "xmlns:android".into(), value: ANDROID.into(), source: main, line: root.line, log: root.log.clone() });
     let mut lines = Vec::new();
-    lines.push(MergedLine { text: "<?xml version=\"1.0\" encoding=\"utf-8\"?>".into(), source: main, line: Some(0) });
+    lines.push(MergedLine { text: "<?xml version=\"1.0\" encoding=\"utf-8\"?>".into(), source: main, line: Some(0), log: Vec::new() });
     print(&root, 0, &mut lines);
     if !injected {
         labels.pop();
@@ -511,6 +573,29 @@ mod tests {
         // tools:overrideLibrary on the app's <uses-sdk>.
         let main = source("app", r#"<uses-sdk tools:overrideLibrary="com.other, com.old"/><application/>"#);
         assert!(merge(&[main, old], 0, &build, "b").unwrap().errors.is_empty());
+    }
+
+    #[test]
+    fn logs_where_each_line_came_from() {
+        let main = source("app", r#"<uses-permission android:name="android.permission.INTERNET"/>
+<application android:label="A"/>"#);
+        let lib = ManifestSource {
+            build: BuildValues { target_sdk: Some("3".into()), ..Default::default() },
+            ..source("lib", r#"<uses-permission android:name="android.permission.INTERNET"/>
+<application android:label="A" android:allowBackup="true"/>"#)
+        };
+        let build = BuildValues { min_sdk: Some("24".into()), ..Default::default() };
+        let merged = merge(&[main, lib], 0, &build, "b").unwrap();
+        let log_of = |needle: &str| {
+            let line = merged.lines.iter().find(|l| l.text.contains(needle)).unwrap();
+            line.log.iter().map(|e| format!("{} {}:{}", e.action.label(), merged.sources[e.source], e.line.map_or(0, |l| l + 1))).collect::<Vec<_>>()
+        };
+        assert_eq!(log_of("android.permission.INTERNET"), ["ADDED app:1", "MERGED lib:1"]);
+        assert_eq!(log_of("android:label"), ["ADDED app:2", "MERGED lib:2"]);
+        assert_eq!(log_of("allowBackup"), ["ADDED lib:2"]);
+        assert_eq!(log_of("<application"), ["ADDED app:2", "MERGED lib:2"]);
+        assert_eq!(log_of("READ_PHONE_STATE"), ["IMPLIED lib:0"]);
+        assert_eq!(log_of("minSdkVersion"), ["INJECTED b:0"]);
     }
 
     #[test]
