@@ -61,11 +61,36 @@ pub struct SavedBreakpoint {
     pub instances: Vec<u64>,
 }
 
-/// Another breakpoint, by its file and 0-based line.
+/// Another breakpoint: a line breakpoint by its file and 0-based line,
+/// or an exception breakpoint by its class (empty for any exception).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BreakpointRef {
+    #[serde(default)]
     pub file: String,
+    #[serde(default)]
     pub line: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exception: Option<String>,
+}
+
+impl BreakpointRef {
+    pub fn line(file: &str, line: u32) -> Self {
+        Self { file: file.to_owned(), line, exception: None }
+    }
+
+    pub fn exception(class: &str) -> Self {
+        Self { file: String::new(), line: 0, exception: Some(class.to_owned()) }
+    }
+
+    /// Whether it's the line breakpoint at `file` and `line`.
+    pub fn is_line(&self, file: &str, line: u32) -> bool {
+        self.exception.is_none() && self.file == file && self.line == line
+    }
+
+    /// Whether it's the exception breakpoint for `class`.
+    pub fn is_exception(&self, class: &str) -> bool {
+        self.exception.as_deref() == Some(class)
+    }
 }
 
 impl SavedBreakpoint {
@@ -150,6 +175,18 @@ mod tests {
     }
 
     #[test]
+    fn masters_are_lines_or_exceptions() {
+        // Saved before exception masters: a file and a line.
+        let read: SavedBreakpoint = serde_json::from_str(r#"{"file":"A.java","line":3,"master":{"file":"B.java","line":7}}"#).unwrap();
+        assert!(read.master.as_ref().is_some_and(|m| m.is_line("B.java", 7)));
+        let mut e = SavedExceptionBreakpoint::new("a.Boom");
+        e.master = Some(BreakpointRef::exception(""));
+        let json = serde_json::to_string(&e).unwrap();
+        let back: SavedExceptionBreakpoint = serde_json::from_str(&json).unwrap();
+        assert!(back.master.as_ref().is_some_and(|m| m.is_exception("") && !m.is_line("", 0)), "{json}");
+    }
+
+    #[test]
     fn any_exception_comes_first() {
         let mut list = vec![SavedExceptionBreakpoint::new("java.io.IOException")];
         with_any(&mut list);
@@ -188,16 +225,22 @@ pub struct SavedExceptionBreakpoint {
     /// where it's thrown.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instances: Vec<u64>,
+    /// "Disable until hitting the following breakpoint".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master: Option<BreakpointRef>,
+    /// After hit: Leave enabled (else Disable again).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub leave_enabled: bool,
 }
 
 impl SavedExceptionBreakpoint {
     /// IntelliJ's "Any exception": there, off, caught and uncaught.
     pub fn any() -> Self {
-        Self { class: String::new(), enabled: false, caught: true, uncaught: true, condition: None, filters: Vec::new(), catch_filters: Vec::new(), instances: Vec::new() }
+        Self { class: String::new(), enabled: false, caught: true, uncaught: true, condition: None, filters: Vec::new(), catch_filters: Vec::new(), instances: Vec::new(), master: None, leave_enabled: false }
     }
 
     pub fn new(class: &str) -> Self {
-        Self { class: class.to_owned(), enabled: true, caught: true, uncaught: true, condition: None, filters: Vec::new(), catch_filters: Vec::new(), instances: Vec::new() }
+        Self { class: class.to_owned(), enabled: true, caught: true, uncaught: true, condition: None, filters: Vec::new(), catch_filters: Vec::new(), instances: Vec::new(), master: None, leave_enabled: false }
     }
 }
 

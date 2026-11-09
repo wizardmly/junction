@@ -82,9 +82,8 @@ pub struct BreakpointActions {
     pub log_stack: bool,
     pub log_expression: Option<String>,
     /// IntelliJ's "Disable until hitting the following breakpoint": the
-    /// breakpoint (file, 1-based line) whose hit arms this one; until then
-    /// its hits run on.
-    pub master: Option<(PathBuf, u32)>,
+    /// breakpoint whose hit arms this one; until then its hits run on.
+    pub master: Option<BreakpointKey>,
     /// After its own hit: stays armed ("Leave enabled") rather than waiting
     /// for the master again ("Disable again").
     pub leave_enabled: bool,
@@ -103,6 +102,15 @@ impl BreakpointActions {
     pub fn logs(&self) -> bool {
         self.log_message || self.log_stack || self.log_expression.is_some()
     }
+}
+
+/// A breakpoint another one can wait for: a line breakpoint (file,
+/// 1-based line) or an exception breakpoint (its class, empty for any
+/// exception).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BreakpointKey {
+    Line(PathBuf, u32),
+    Exception(String),
 }
 
 /// Why the session paused.
@@ -134,6 +142,10 @@ pub struct ExceptionBreakpoint {
     pub catch_filters: Vec<String>,
     /// Instance filters: `this` where it's thrown is one of these objects.
     pub instances: Vec<u64>,
+    /// Disable until hitting this breakpoint, as a line breakpoint's.
+    pub master: Option<BreakpointKey>,
+    /// After its own hit: stays armed rather than waiting again.
+    pub leave_enabled: bool,
 }
 
 /// Whether a class passes class filters: no include pattern or one that
@@ -201,9 +213,28 @@ struct State {
     paused: Option<u64>,
     /// The exception an exception breakpoint stopped at, and its thread.
     thrown: Option<(u64, Value)>,
-    /// Dependent breakpoints whose master has been hit (file, line).
-    armed: std::collections::HashSet<(PathBuf, u32)>,
+    /// Dependent breakpoints whose master has been hit.
+    armed: std::collections::HashSet<BreakpointKey>,
     ended: bool,
+}
+
+impl State {
+    /// Whether a dependent breakpoint still waits for its master.
+    fn waiting(&self, key: &BreakpointKey, master: &Option<BreakpointKey>) -> bool {
+        master.is_some() && !self.armed.contains(key)
+    }
+
+    /// A hit of `key` that counts: arms the breakpoints waiting for it,
+    /// and a dependent one waits for its master again (Disable again).
+    fn hit(&mut self, key: &BreakpointKey, master: &Option<BreakpointKey>, leave_enabled: bool) {
+        let lines = self.breakpoints.iter().filter(|p| p.breakpoint.actions.master.as_ref() == Some(key)).map(|p| BreakpointKey::Line(p.breakpoint.path.clone(), p.breakpoint.line));
+        let exceptions = self.exceptions.iter().filter(|e| e.breakpoint.master.as_ref() == Some(key)).map(|e| BreakpointKey::Exception(e.breakpoint.class.clone()));
+        let dependents: Vec<BreakpointKey> = lines.chain(exceptions).collect();
+        if master.is_some() && !leave_enabled {
+            self.armed.remove(key);
+        }
+        self.armed.extend(dependents);
+    }
 }
 
 pub struct DebugSession {
@@ -660,7 +691,16 @@ impl DebugSession {
         }
         if let (Some((_, PauseReason::Exception)), Some((thread, exception, name, caught, class, breakpoint))) = (paused, thrown) {
             let value = Value::Object { id: exception, class: name.clone() };
-            if let Some(breakpoint) = breakpoint.filter(|b| b.condition.is_some() || !b.filters.is_empty() || !b.catch_filters.is_empty() || !b.instances.is_empty()) {
+            let key = breakpoint.as_ref().map(|b| BreakpointKey::Exception(b.class.clone()));
+            // A dependent one before its master's hit: runs on.
+            if let (Some(b), Some(key)) = (&breakpoint, &key) {
+                if state.waiting(key, &b.master) {
+                    drop(state);
+                    self.vm.resume()?;
+                    return Ok(out);
+                }
+            }
+            if let Some(breakpoint) = breakpoint.clone().filter(|b| b.condition.is_some() || !b.filters.is_empty() || !b.catch_filters.is_empty() || !b.instances.is_empty()) {
                 drop(state);
                 let catching = match caught {
                     Some(catcher) if !breakpoint.catch_filters.is_empty() => passes_filters(&breakpoint.catch_filters, &self.vm.class_name(catcher)?),
@@ -683,13 +723,16 @@ impl DebugSession {
                 }
                 state = self.state.lock().unwrap();
             }
+            if let (Some(b), Some(key)) = (&breakpoint, &key) {
+                state.hit(key, &b.master, b.leave_enabled);
+            }
             state.thrown = Some((thread, value));
             out.push(SessionEvent::Exception(format!("Exception '{name}' {}", if caught.is_some() { "occurred" } else { "was not caught" })));
         }
         if let (Some((thread, PauseReason::Breakpoint)), Some(breakpoint)) = (paused, hit) {
-            let key = (breakpoint.path.clone(), breakpoint.line);
+            let key = BreakpointKey::Line(breakpoint.path.clone(), breakpoint.line);
             // A dependent breakpoint before its master's hit: runs on.
-            if breakpoint.actions.master.is_some() && !state.armed.contains(&key) {
+            if state.waiting(&key, &breakpoint.actions.master) {
                 drop(state);
                 self.vm.resume()?;
                 return Ok(out);
@@ -718,14 +761,7 @@ impl DebugSession {
             }
             // A hit that counts: arms the breakpoints waiting for it, and
             // a dependent one waits for its master again.
-            {
-                let mut state = self.state.lock().unwrap();
-                let dependents: Vec<(PathBuf, u32)> = state.breakpoints.iter().filter(|p| p.breakpoint.actions.master.as_ref() == Some(&key)).map(|p| (p.breakpoint.path.clone(), p.breakpoint.line)).collect();
-                if breakpoint.actions.master.is_some() && !breakpoint.actions.leave_enabled {
-                    state.armed.remove(&key);
-                }
-                state.armed.extend(dependents);
-            }
+            self.state.lock().unwrap().hit(&key, &breakpoint.actions.master, breakpoint.actions.leave_enabled);
             if breakpoint.actions.remove_once_hit {
                 self.remove_breakpoint(&breakpoint.path, breakpoint.line)?;
                 out.push(SessionEvent::Removed { path: breakpoint.path.clone(), line: breakpoint.line });
@@ -1345,7 +1381,7 @@ mod tests {
         session.add_breakpoint(master.clone()).unwrap();
         let master_request = *vm.next.lock().unwrap();
         let mut dependent = breakpoint(5);
-        dependent.actions.master = Some((master.path.clone(), 4));
+        dependent.actions.master = Some(BreakpointKey::Line(master.path.clone(), 4));
         session.add_breakpoint(dependent.clone()).unwrap();
         let dependent_request = *vm.next.lock().unwrap();
         vm.take_log();
@@ -1373,6 +1409,48 @@ mod tests {
             vm.send(Suspend::All, hit(4, dependent_request));
             assert!(paused(session.poll(Duration::ZERO).unwrap()));
         }
+    }
+
+    #[test]
+    fn exception_breakpoints_take_part_in_dependencies() {
+        let vm = vm();
+        vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
+        let session = DebugSession::new(vm.clone());
+        let line = breakpoint(4);
+        session.add_breakpoint(line.clone()).unwrap();
+        let line_request = *vm.next.lock().unwrap();
+        // Any exception, waiting for the line breakpoint.
+        let any = ExceptionBreakpoint { caught: true, uncaught: true, master: Some(BreakpointKey::Line(line.path.clone(), 4)), ..Default::default() };
+        session.add_exception_breakpoint(any).unwrap();
+        let exception_request = *vm.next.lock().unwrap();
+        // A line breakpoint waiting for the exception breakpoint.
+        let mut after = breakpoint(5);
+        after.actions.master = Some(BreakpointKey::Exception(String::new()));
+        session.add_breakpoint(after.clone()).unwrap();
+        let after_request = *vm.next.lock().unwrap();
+        vm.take_log();
+        let throw = || vec![DebugEvent::Exception { thread: 1, location: Location { class: 10, method: 1, index: 4 }, exception: 50, catch: None, request: exception_request }];
+        let hit = |index, request| vec![DebugEvent::Breakpoint { thread: 1, location: Location { class: 10, method: 1, index }, request }];
+        let paused = |events: Vec<SessionEvent>| events.iter().any(|e| matches!(e, SessionEvent::Paused { .. }));
+        // Neither stops before its master.
+        vm.send(Suspend::All, throw());
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        vm.send(Suspend::All, hit(4, after_request));
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume", "resume"]);
+        // The line breakpoint arms the exception breakpoint, whose hit arms the other line.
+        vm.send(Suspend::All, hit(0, line_request));
+        assert!(paused(session.poll(Duration::ZERO).unwrap()));
+        vm.send(Suspend::All, throw());
+        let events = session.poll(Duration::ZERO).unwrap();
+        assert!(events.contains(&SessionEvent::Exception("Exception 'a.CalcTest' was not caught".into())), "{events:?}");
+        vm.send(Suspend::All, hit(4, after_request));
+        assert!(paused(session.poll(Duration::ZERO).unwrap()));
+        // Disable again: the exception waits for the line once more.
+        vm.take_log();
+        vm.send(Suspend::All, throw());
+        assert_eq!(session.poll(Duration::ZERO), Ok(vec![]));
+        assert_eq!(vm.take_log(), ["resume"]);
     }
 
     #[test]
