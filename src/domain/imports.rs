@@ -101,7 +101,10 @@ pub struct ImportsEdit {
     /// Byte range of the old block.
     pub range: Range<usize>,
     pub text: String,
+    /// Imports gone, those folded into a `*` one included.
     pub removed: usize,
+    /// `*` imports added for them.
+    pub added: usize,
 }
 
 /// Kotlin operators and delegates are called without their names
@@ -181,7 +184,48 @@ fn parse_import(line: &str) -> Option<Import<'_>> {
 /// when the block is already optimized. As IntelliJ's, a comment after an
 /// import stays on its line; comment lines among the imports move after
 /// them.
+#[cfg(test)]
 pub fn optimize(style: ImportStyle, text: &str) -> Option<ImportsEdit> {
+    optimize_with(style, text, &StarImports::default_for(style))
+}
+
+/// Code Style › Imports: when Optimize Imports turns a package's imports
+/// into one `*` import (IntelliJ's `CLASS_COUNT_TO_USE_IMPORT_ON_DEMAND`,
+/// `NAMES_COUNT_TO_USE_IMPORT_ON_DEMAND`, `PACKAGES_TO_USE_IMPORT_ON_DEMAND`;
+/// Kotlin's `NAME_COUNT_TO_USE_STAR_IMPORT(_FOR_MEMBERS)`,
+/// `PACKAGES_TO_USE_STAR_IMPORTS`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct StarImports {
+    /// Imports from one package that become `*` (a huge number: never).
+    pub names: usize,
+    /// Java's static imports from one class, Kotlin's members of one
+    /// class (an enum's entries, a Java class's statics).
+    pub members: usize,
+    /// Packages always imported with `*`: `java.util.*`, or with their
+    /// subpackages `io.ktor.**`.
+    pub packages: Vec<String>,
+}
+
+impl StarImports {
+    /// IntelliJ's defaults.
+    pub fn default_for(style: ImportStyle) -> Self {
+        match style {
+            ImportStyle::Java => Self { names: 5, members: 3, packages: vec!["java.awt.*".into(), "javax.swing.*".into()] },
+            ImportStyle::Kotlin => Self { names: 5, members: 3, packages: vec!["java.util.*".into(), "kotlinx.android.synthetic.**".into(), "io.ktor.**".into()] },
+        }
+    }
+
+    /// Whether `owner`'s imports always use `*`.
+    fn always(&self, owner: &str) -> bool {
+        self.packages.iter().any(|p| match p.strip_suffix(".**") {
+            Some(base) => owner == base || owner.strip_prefix(base).is_some_and(|rest| rest.starts_with('.')),
+            None => p.strip_suffix(".*").unwrap_or(p) == owner,
+        })
+    }
+}
+
+/// Optimize Imports with the code style's star import settings.
+pub fn optimize_with(style: ImportStyle, text: &str, stars: &StarImports) -> Option<ImportsEdit> {
     let mut package = None;
     let mut block: Option<Range<usize>> = None;
     let mut imports = Vec::new();
@@ -235,6 +279,38 @@ pub fn optimize(style: ImportStyle, text: &str) -> Option<ImportsEdit> {
             kept.push(import);
         }
     }
+    // Enough names from one package (or one class's members), or a
+    // package always imported so: one `*` import instead.
+    let member = |i: &Import| match style {
+        ImportStyle::Java => i.is_static,
+        ImportStyle::Kotlin => i.path.rsplit_once('.').and_then(|(o, _)| o.rsplit('.').next()).is_some_and(|c| c.starts_with(|ch: char| ch.is_uppercase())),
+    };
+    let collapsible = |i: &Import| i.alias.is_none() && i.comment.is_none() && !i.path.ends_with(".*") && i.path.contains('.');
+    let mut counts: std::collections::HashMap<(bool, &str), usize> = std::collections::HashMap::new();
+    for i in kept.iter().filter(|i| collapsible(i)) {
+        *counts.entry((i.is_static, i.path.rsplit_once('.').map_or("", |(o, _)| o))).or_default() += 1;
+    }
+    let starred: Vec<(bool, &str)> = counts
+        .iter()
+        .filter(|((is_static, owner), n)| {
+            let sample = kept.iter().find(|i| i.is_static == *is_static && collapsible(i) && i.path.rsplit_once('.').is_some_and(|(o, _)| o == *owner));
+            let limit = if sample.is_some_and(|i| member(i)) { stars.members } else { stars.names };
+            **n >= limit.max(1) || !*is_static && stars.always(owner)
+        })
+        .map(|(k, _)| *k)
+        .collect();
+    let star_paths: Vec<String> = starred.iter().map(|(_, owner)| format!("{owner}.*")).collect();
+    let star_imports: Vec<Import> = starred.iter().zip(&star_paths).map(|((is_static, _), path)| Import { is_static: *is_static, path, alias: None, comment: None }).collect();
+    let mut added = 0;
+    if !star_imports.is_empty() {
+        kept.retain(|i| !(collapsible(i) && starred.iter().any(|(st, o)| *st == i.is_static && i.path.rsplit_once('.').is_some_and(|(owner, _)| owner == *o))));
+        for star in &star_imports {
+            if !kept.iter().any(|i| i.is_static == star.is_static && i.path == star.path) {
+                kept.push(star);
+                added += 1;
+            }
+        }
+    }
     // Within a group by their text, backticks ignored (IntelliJ's KotlinImportPathComparator).
     kept.sort_by_cached_key(|i| (i.group(style), format!("{}{}", i.path, i.alias.map(|a| format!(" as {a}")).unwrap_or_default()).replace('`', "")));
     let mut out = String::new();
@@ -266,7 +342,8 @@ pub fn optimize(style: ImportStyle, text: &str) -> Option<ImportsEdit> {
     if text[range.clone()] == out {
         return None;
     }
-    Some(ImportsEdit { range, text: out, removed: imports.len() - kept.len() })
+    let removed = imports.len().saturating_sub(kept.len() - added);
+    Some(ImportsEdit { range, text: out, removed, added })
 }
 
 /// Inspect Code's unused imports: the imports Optimize Imports drops
@@ -508,6 +585,21 @@ mod tests {
         assert_eq!(edit.text, "import a.B;\n\nimport java.util.List; /* lists */\n/* block\n * comment */\n");
         // No imports: nothing in the body is taken for one.
         assert_eq!(optimize(ImportStyle::Kotlin, "package a\n\nval s = \"\"\"\nimport b.C\n\"\"\"\n"), None);
+    }
+
+    #[test]
+    fn star_imports_collapse() {
+        let java = "package a;\n\nimport x.A;\nimport x.B;\nimport x.C;\nimport x.D;\nimport x.E;\nimport y.F;\nimport java.awt.Color;\nimport static z.M.f;\nimport static z.M.g;\nimport static z.M.h;\n\nclass K { A a; B b; C c; D d; E e; F f; Color k; { f(); g(); h(); } }\n";
+        let edit = optimize(ImportStyle::Java, java).unwrap();
+        assert_eq!((edit.removed, edit.added), (9, 3));
+        assert_eq!(edit.text, "import x.*;\nimport y.F;\n\nimport java.awt.*;\n\nimport static z.M.*;\n");
+        // Fewer than the limits: kept one by one.
+        let stars = StarImports { names: 6, members: 4, packages: Vec::new() };
+        assert_eq!(optimize_with(ImportStyle::Java, java, &stars).unwrap().text, "import x.A;\nimport x.B;\nimport x.C;\nimport x.D;\nimport x.E;\nimport y.F;\n\nimport java.awt.Color;\n\nimport static z.M.f;\nimport static z.M.g;\nimport static z.M.h;\n");
+        let kt = "package a\n\nimport io.ktor.server.routing.get\nimport com.e.Color.RED\nimport com.e.Color.GREEN\nimport com.e.Color.BLUE\nimport java.util.UUID\nimport b.One as Two\n\nval x = listOf(get, RED, GREEN, BLUE, UUID(), Two)\n";
+        let edit = optimize(ImportStyle::Kotlin, kt).unwrap();
+        assert_eq!(edit.text, "import com.e.Color.*\nimport io.ktor.server.routing.*\nimport java.util.*\nimport b.One as Two\n");
+        assert_eq!(optimize(ImportStyle::Kotlin, &format!("package a\n\n{}\nval x = listOf(get, RED, UUID(), Two)\n", edit.text)), None);
     }
 
     #[test]

@@ -1242,7 +1242,7 @@ impl FileEditor {
         };
         let text = self.text(cx);
         let hint = |message: String, window: &mut Window, cx: &mut Context<Self>| Self::hint("Optimize Imports", message, window, cx);
-        let Some(edit) = crate::domain::imports::optimize(style, &text) else {
+        let Some(edit) = crate::domain::imports::optimize_with(style, &text, &crate::settings::Settings::get(cx).code_style.star_imports(style)) else {
             hint("Unused imports not found".into(), window, cx);
             return;
         };
@@ -1258,10 +1258,11 @@ impl FileEditor {
             state.replace(&edit.text, window, cx);
             state.set_selected_range(cursor..cursor, cx);
         });
-        let notice = match edit.removed {
-            0 => "Rearranged imports".to_owned(),
-            1 => "Removed 1 unused import".to_owned(),
-            n => format!("Removed {n} unused imports"),
+        let notice = match (edit.removed, edit.added) {
+            (0, 0) => "Rearranged imports".to_owned(),
+            (1, 0) => "Removed 1 unused import".to_owned(),
+            (n, 0) => format!("Removed {n} unused imports"),
+            (n, m) => format!("Removed {}, added {}", imports_count(n), imports_count(m)),
         };
         hint(notice, window, cx);
     }
@@ -1420,9 +1421,11 @@ impl FileEditor {
         let formatted = new.clone();
         // Optimize imports / Code cleanup (Junction's clean-up removes unused imports).
         let mut removed = 0;
+        let mut added = 0;
         if let Some(style) = style.filter(|_| options.optimize_imports || options.code_cleanup) {
-            if let Some(edit) = crate::domain::imports::optimize(style, &new) {
+            if let Some(edit) = crate::domain::imports::optimize_with(style, &new, &crate::settings::Settings::get(cx).code_style.star_imports(style)) {
                 removed = edit.removed;
+                added = edit.added;
                 new = format!("{}{}{}", &new[..edit.range.start], edit.text, &new[edit.range.end..]);
             }
         }
@@ -1439,7 +1442,7 @@ impl FileEditor {
         let into_text = (cursor - line_start).saturating_sub(old_line.len() - old_line.trim_start().len());
         // Removed imports above the caret are lines fewer before it.
         let below_imports = old_lines[..caret_line].iter().any(|l| l.trim_start().starts_with("import "));
-        let rank = old_lines[..caret_line].iter().filter(|l| !l.trim().is_empty()).count().saturating_sub(if below_imports { removed } else { 0 });
+        let rank = old_lines[..caret_line].iter().filter(|l| !l.trim().is_empty()).count().saturating_sub(if below_imports { removed.saturating_sub(added) } else { 0 });
         let target = new_lines.iter().enumerate().filter(|(_, l)| !l.trim().is_empty()).nth(rank).map(|(i, _)| i).unwrap_or(new_lines.len().saturating_sub(1));
         let new_start: usize = new_lines[..target].iter().map(|l| l.len() + 1).sum();
         let target_line = new_lines.get(target).copied().unwrap_or("");
@@ -1476,13 +1479,16 @@ impl FileEditor {
             state.set_selected_range(caret..caret, cx);
         });
         cx.notify();
-        let imports = match removed {
-            0 => String::new(),
-            1 => ", removed 1 import".to_owned(),
-            n => format!(", removed {n} imports"),
+        let imports = match (removed, added) {
+            (0, _) => String::new(),
+            (n, 0) => format!(", removed {}", imports_count(n)),
+            (n, m) => format!(", removed {}, added {}", imports_count(n), imports_count(m)),
         };
         let rearranged = if rearranged.is_some() { ", rearranged code" } else { "" };
         if changed == 0 && removed > 0 && rearranged.is_empty() {
+            if added > 0 {
+                return hint(format!("Removed {}, added {}", imports_count(removed), imports_count(added)), window, cx);
+            }
             return hint(format!("Removed {removed} unused {}", if removed == 1 { "import" } else { "imports" }), window, cx);
         }
         if changed == 0 && removed == 0 {
@@ -2947,7 +2953,7 @@ impl FileEditor {
         let style = lang.filter(|_| on && !self.read_only()).and_then(crate::infra::index_code_model::IndexCodeModel::import_style);
         let Some(style) = style else { return };
         let text = self.text(cx);
-        let Some(edit) = crate::domain::imports::optimize(style, &text) else { return };
+        let Some(edit) = crate::domain::imports::optimize_with(style, &text, &crate::settings::Settings::get(cx).code_style.star_imports(style)) else { return };
         let cursor = self.state.read(cx).cursor();
         if edit.range.contains(&cursor) {
             return;
@@ -3893,6 +3899,11 @@ impl Render for FileEditor {
             ))
             .children(manifest_tabs)
     }
+}
+
+/// "6 imports", "1 import".
+fn imports_count(n: usize) -> String {
+    format!("{n} {}", if n == 1 { "import" } else { "imports" })
 }
 
 #[cfg(test)]
