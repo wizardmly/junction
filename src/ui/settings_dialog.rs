@@ -1368,10 +1368,10 @@ impl SettingsView {
     /// Class / Method / Field / Local variable annotations; Java's Enum
     /// constants and Parameter annotations too.
     fn annotation_options(&self, mut page: gpui_kit::Div, query: &str, lang: StyleLang, w: Wrapping, cx: &mut Context<Self>) -> gpui_kit::Div {
-        // Three annotations, Enum constants (index 3, Java's), Local variable (4) and Parameter (5) annotations.
-        let wraps = [w.annotations[0], w.annotations[1], w.annotations[2], w.enum_constants, w.local_annotations, w.param_annotations];
-        for (i, label) in ["Class annotations:", "Method annotations:", "Field annotations:", "Enum constants:", "Local variable annotations:", "Parameter annotations:"].into_iter().enumerate() {
-            if lang != StyleLang::Java && i == 3 {
+        // Three annotations, Enum constants (index 3, Java's), Local variable (4), Parameter (5) and Enum field (6, Java's) annotations.
+        let wraps = [w.annotations[0], w.annotations[1], w.annotations[2], w.enum_constants, w.local_annotations, w.param_annotations, w.enum_annotations];
+        for (i, label) in ["Class annotations:", "Method annotations:", "Field annotations:", "Enum constants:", "Local variable annotations:", "Parameter annotations:", "Enum field annotations:"].into_iter().enumerate() {
+            if lang != StyleLang::Java && (i == 3 || i == 6) {
                 continue;
             }
             let view = cx.entity();
@@ -1393,6 +1393,7 @@ impl SettingsView {
                                             3 => w.enum_constants = wrap,
                                             4 => w.local_annotations = wrap,
                                             5 => w.param_annotations = wrap,
+                                            6 => w.enum_annotations = wrap,
                                             _ => w.annotations[i] = wrap,
                                         }
                                         s.code_style.set_wrapping(lang, w)

@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-52
 title: Reformat：Wrapping and Braces 页剩下的选项（第五十二批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-52
+pr: 312
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Java 的 Enum field annotations（ENUM_FIELD_ANNOTATION_WRAP，IntelliJ `JavaFormatterUtil` 里给 ENUM_CONSTANT 用的注解 Wrap；`Wrapping::enum_annotations`，settings.conf 第 115 位，AnnotationWrap 的下标，默认 Do not wrap）。`wrap_annotations` 的 `wraps` 改成 5 项（Kotlin 第 5 项是 Do not wrap），另用 `enums` 栈记每层括号是不是还没过第一个 `;` 的枚举体，行在里面且注解后是 `enum_constant`（名字后接 `,` `;` `(` `{` 或行尾）时用第 5 项。设置页 `annotation_options` 多 “Enum field annotations:”（只 Java）。测试 `wraps_enum_field_annotations`。Signal 语料没有带注解的枚举常量：默认和打开都是 5201 行、第二遍 0 行。剩下的放到 sec33-reformat-rest-53。
