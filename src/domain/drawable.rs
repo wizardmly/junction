@@ -683,20 +683,7 @@ impl Writer<'_, '_> {
                 // from 3 o'clock. SVG has no conic gradient, so a pattern
                 // of thin wedges, each in its interpolated color.
                 let (cx, cy) = (x + w * fraction("centerX").unwrap_or(0.5), y + h * fraction("centerY").unwrap_or(0.5));
-                let r = (w.max(1.).powi(2) + h.max(1.).powi(2)).sqrt() * 2.;
-                let _ = write!(out, "<defs><pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\"><g transform=\"translate({} {})\">", -x, -y);
-                const WEDGES: usize = 180;
-                let point = |t: f32| {
-                    let a = t * std::f32::consts::TAU;
-                    (cx + r * a.cos(), cy + r * a.sin())
-                };
-                for i in 0..WEDGES {
-                    let (t0, t1) = (i as f32 / WEDGES as f32, (i as f32 + 1.5).min(WEDGES as f32) / WEDGES as f32);
-                    let (c, a) = rgb(interpolate(&colors, (i as f32 + 0.5) / WEDGES as f32));
-                    let ((x0, y0), (x1, y1)) = (point(t0), point(t1));
-                    let _ = write!(out, "<path d=\"M{cx:.2},{cy:.2}L{x0:.2},{y0:.2}L{x1:.2},{y1:.2}z\" fill=\"{c}\" fill-opacity=\"{a}\"/>");
-                }
-                out.push_str("</g></pattern></defs>");
+                let _ = write!(out, "<defs>{}</defs>", vector_drawable::sweep_pattern(&id, (cx, cy), (x, y, w, h), &colors));
             }
             "radial" => {
                 let (cx, cy) = (x + w * fraction("centerX").unwrap_or(0.5), y + h * fraction("centerY").unwrap_or(0.5));
@@ -773,22 +760,6 @@ fn fill_rect((x, y, w, h): Rect, rgba: u32, out: &mut String) {
     let _ = write!(out, "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" fill=\"{c}\" fill-opacity=\"{a}\"/>");
 }
 
-/// The color at `t` (0–1) between the `(offset, rgba)` stops, each
-/// channel linear between its two neighbours.
-fn interpolate(stops: &[(f32, u32)], t: f32) -> u32 {
-    let Some(i) = stops.iter().position(|(o, _)| *o >= t) else { return stops.last().map_or(0, |s| s.1) };
-    if i == 0 {
-        return stops[0].1;
-    }
-    let ((o0, c0), (o1, c1)) = (stops[i - 1], stops[i]);
-    let f = if o1 > o0 { (t - o0) / (o1 - o0) } else { 1. };
-    (0..4).fold(0, |acc, k| {
-        let shift = 24 - 8 * k;
-        let (a, b) = (((c0 >> shift) & 0xff) as f32, ((c1 >> shift) & 0xff) as f32);
-        acc | (((a + (b - a) * f).round() as u32) << shift)
-    })
-}
-
 fn rgb(rgba: u32) -> (String, f32) {
     (format!("#{:06x}", rgba >> 8), (rgba & 0xff) as f32 / 255.)
 }
@@ -830,7 +801,7 @@ mod tests {
         assert!(svg.contains("<path d=\"M20.00,20.00L133.14,20.00L"), "{svg}");
         assert!(svg.contains("fill=\"#fe0100\""), "{svg}");
         assert!(svg.contains("fill=\"url(#shape1)\""));
-        assert_eq!(interpolate(&[(0., 0xff0000ff), (0.5, 0x00ff00ff), (1., 0x0000ffff)], 0.75), 0x0080_80ff);
+        assert_eq!(vector_drawable::interpolate(&[(0., 0xff0000ff), (0.5, 0x00ff00ff), (1., 0x0000ffff)], 0.75), 0x0080_80ff);
         assert!(image.svg.contains("<ellipse cx=\"50\" cy=\"50\" rx=\"50\" ry=\"50\" fill=\"url(#shape1)\"/>"), "{}", image.svg);
         // Corners that differ: a path.
         let tab = format!("<shape {NS}><solid android:color=\"#fff\"/><corners android:topLeftRadius=\"8dp\" android:topRightRadius=\"8dp\"/><size android:width=\"40dp\" android:height=\"20dp\"/></shape>");

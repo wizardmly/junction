@@ -38,7 +38,7 @@ pub fn to_svg(text: &str, scale: f32, color: &dyn Fn(&str) -> Option<u32>) -> Re
     let (Some(width), Some(height)) = (dp(attr("width")), dp(attr("height"))) else { return Err("The vector has no android:width / android:height".into()) };
     let vw = attr("viewportWidth").and_then(|v| v.parse::<f32>().ok()).unwrap_or(width);
     let vh = attr("viewportHeight").and_then(|v| v.parse::<f32>().ok()).unwrap_or(height);
-    let mut cx = Writer { out: String::new(), defs: String::new(), ids: 0, color, tint: attr("tint").and_then(|t| resolve(t, color)) };
+    let mut cx = Writer { out: String::new(), defs: String::new(), ids: 0, color, tint: attr("tint").and_then(|t| resolve(t, color)), viewport: (vw, vh) };
     for child in root.children().filter(|n| n.is_element()) {
         cx.node(child);
     }
@@ -64,6 +64,7 @@ struct Writer<'a> {
     ids: usize,
     color: &'a dyn Fn(&str) -> Option<u32>,
     tint: Option<u32>,
+    viewport: (f32, f32),
 }
 
 impl Writer<'_> {
@@ -213,7 +214,12 @@ impl Writer<'_> {
                     num("gradientRadius")
                 );
             }
-            "sweep" => return Some(rgb(stops[0].1)),
+            "sweep" => {
+                // Over the viewport, as the path's coordinates are in it.
+                let (vw, vh) = self.viewport;
+                let center = (num("centerX"), num("centerY"));
+                self.defs.push_str(&sweep_pattern(&id, center, (0., 0., vw, vh), &stops));
+            }
             _ => {
                 let _ = write!(
                     self.defs,
@@ -254,6 +260,46 @@ pub(crate) fn resolve(value: &str, color: &dyn Fn(&str) -> Option<u32>) -> Optio
 }
 
 /// RGBA as an SVG color and opacity.
+/// A conic (sweep) gradient as an SVG pattern over `rect`, Android's
+/// `SweepGradient`: the `(offset, rgba)` stops around `center`,
+/// clockwise from 3 o'clock. SVG has no conic gradient, so thin wedges,
+/// each in its interpolated color and a little wider than its step so
+/// no seams show.
+pub(crate) fn sweep_pattern(id: &str, (cx, cy): (f32, f32), (x, y, w, h): (f32, f32, f32, f32), stops: &[(f32, u32)]) -> String {
+    const WEDGES: usize = 180;
+    // Far enough out to cover the rect from anywhere inside it.
+    let r = ((w.max(1.) + (cx - x - w / 2.).abs()).powi(2) + (h.max(1.) + (cy - y - h / 2.).abs()).powi(2)).sqrt() * 2.;
+    let point = |t: f32| {
+        let a = t * std::f32::consts::TAU;
+        (cx + r * a.cos(), cy + r * a.sin())
+    };
+    let mut out = format!("<pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\"><g transform=\"translate({} {})\">", -x, -y);
+    for i in 0..WEDGES {
+        let (t0, t1) = (i as f32 / WEDGES as f32, (i as f32 + 1.5).min(WEDGES as f32) / WEDGES as f32);
+        let (c, a) = rgb(interpolate(stops, (i as f32 + 0.5) / WEDGES as f32));
+        let ((x0, y0), (x1, y1)) = (point(t0), point(t1));
+        let _ = write!(out, "<path d=\"M{cx:.2},{cy:.2}L{x0:.2},{y0:.2}L{x1:.2},{y1:.2}z\" fill=\"{c}\" fill-opacity=\"{a}\"/>");
+    }
+    out.push_str("</g></pattern>");
+    out
+}
+
+/// The color at `t` (0–1) between the `(offset, rgba)` stops, each
+/// channel linear between its two neighbours.
+pub(crate) fn interpolate(stops: &[(f32, u32)], t: f32) -> u32 {
+    let Some(i) = stops.iter().position(|(o, _)| *o >= t) else { return stops.last().map_or(0, |s| s.1) };
+    if i == 0 {
+        return stops[0].1;
+    }
+    let ((o0, c0), (o1, c1)) = (stops[i - 1], stops[i]);
+    let f = if o1 > o0 { (t - o0) / (o1 - o0) } else { 1. };
+    (0..4).fold(0, |acc, k| {
+        let shift = 24 - 8 * k;
+        let (a, b) = (((c0 >> shift) & 0xff) as f32, ((c1 >> shift) & 0xff) as f32);
+        acc | (((a + (b - a) * f).round() as u32) << shift)
+    })
+}
+
 fn rgb(rgba: u32) -> (String, f32) {
     (format!("#{:06x}", rgba >> 8), (rgba & 0xff) as f32 / 255.)
 }
@@ -299,6 +345,12 @@ mod tests {
         // It parses as SVG.
         assert!(roxmltree::Document::parse(svg).is_ok());
         assert!(is_vector(ICON) && !is_vector("<selector/>"));
+        // A sweep gradient: wedges around its center over the viewport.
+        let swept = ICON.replace("android:type=\"linear\"", "android:type=\"sweep\" android:centerX=\"12\" android:centerY=\"6\"");
+        let svg = to_svg(&swept, 1., &colors).unwrap().svg;
+        assert!(svg.contains("<pattern id=\"gradient1\" patternUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"24\" height=\"24\">"), "{svg}");
+        assert_eq!(svg.matches("<path d=\"M12.00,6.00L").count(), 180, "{svg}");
+        assert!(svg.contains("fill=\"url(#gradient1)\"") && roxmltree::Document::parse(&svg).is_ok());
     }
 
     #[test]
