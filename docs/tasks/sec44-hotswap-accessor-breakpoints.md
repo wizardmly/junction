@@ -5,7 +5,7 @@ features: 第 44 节
 status: done
 owner: Claude（项目线程）/ 替 Megan 干活
 branch: task/sec44-hotswap-accessor-breakpoints
-pr: https://github.com/wizardmly/junction/pull/PRNUM
+pr: https://github.com/wizardmly/junction/pull/331
 claimed: 2026-11-10
 files: src/usecase/debug_session.rs
 ---
