@@ -5,7 +5,7 @@ features: 第 32 节
 status: done
 owner: Claude（项目线程）/ 替 Megan 干活
 branch: task/sec32-vector-sweep-gradient
-pr: https://github.com/wizardmly/junction/pull/PRNUM
+pr: https://github.com/wizardmly/junction/pull/329
 claimed: 2026-11-10
 files: src/domain/vector_drawable.rs, src/domain/drawable.rs
 ---
