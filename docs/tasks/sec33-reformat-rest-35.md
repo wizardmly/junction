@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-35
 title: Reformat：Wrapping and Braces 页剩下的选项（第三十五批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-35
+pr: 292
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,6 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：`Wrapping::align_simple_methods`（ALIGN_SUBSEQUENT_SIMPLE_METHODS，默认关）、`assign_sign_next`（PLACE_ASSIGNMENT_SIGN_ON_NEXT_LINE，默认关）、`indent_break`（INDENT_BREAK_FROM_CASE，默认开），settings.conf wrapping 第 88–90 位（现在 91 位）。Align simple methods 是 `group_declarations` 的第四种组（`simple_method_brace` 认出单行方法，对齐方法体的 `{`；照 SubsequentOneLineMethodsAligner，空行不断开、别的成员和注释断开，Simple methods in one line 关着时不对齐）。Assignment sign on next line：`assignment_break` 多了 `sign_next` 参数，缩进器里 Java 以 `= ` 开头的行算赋值续行。Indent 'break' from 'case'：缩进器里 case 体中不是语句体的 `break` 行少缩一级。
+- Signal 语料：默认 0 行变化（Java 5103、Kotlin 25404）；三项全开（Assignment 设成 Wrap if long）时第二遍 0 行。
+- 没做：Builder methods / Keep builder methods indents（名字列表，settings.conf 要另加一个键）、Text blocks、Array initializer 的 New line after '{' / Place '}' on new line、Do not wrap after single annotation，留给 sec33-reformat-rest-36。
