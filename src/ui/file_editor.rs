@@ -1591,7 +1591,7 @@ impl FileEditor {
     /// the function's new last parameter; its calls in the project pass
     /// the expression (or, in Kotlin, it's the parameter's default value).
     fn introduce_parameter_action(&mut self, _: &IntroduceParameter, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::domain::introduce_parameter::{apply, call_edit, edits};
+        use crate::domain::introduce_parameter::{apply, call_edit_at, edits};
         use crate::index::introduce_parameter::{call_sites, plan};
         use crate::index::lang::Lang;
         use crate::infra::project_files::DiskFiles;
@@ -1642,7 +1642,10 @@ impl FileEditor {
                             this.replace_text(&text, &new, caret, window, cx);
                             // The other files' calls, unless the value is a default or an overload delegates.
                             let written = match (&files, request.keeps_calls()) {
-                                (Some(files), false) => update_calls::rewrite(files, &elsewhere, &|f| f.calls.iter().filter_map(|c| call_edit(&plan, c, &request.name)).collect()),
+                                (Some(files), false) => update_calls::rewrite(files, &elsewhere, &|f| {
+                                    let place = crate::domain::introduce_parameter::CallPlace::elsewhere(&f.text);
+                                    f.calls.iter().filter_map(|c| call_edit_at(&plan, c, &request.name, request.getters, &place)).collect()
+                                }),
                                 _ => Vec::new(),
                             };
                             if !written.is_empty() {

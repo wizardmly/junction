@@ -221,6 +221,9 @@ mod tests {
             taken: Vec::new(),
             block: None,
             delegate: None,
+            fields: Vec::new(),
+            class_range: 0..0,
+            package: String::new(),
             expression,
         }
     }

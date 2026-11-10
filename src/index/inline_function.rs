@@ -211,6 +211,9 @@ fn block_plan(lang: Lang, function: Node, text: &str, word: &str) -> Result<Para
         ty: String::new(),
         taken: Vec::new(),
         delegate: None,
+        fields: Vec::new(),
+        class_range: 0..0,
+        package: String::new(),
         block: Some(Block { return_start, result, indent, locals, assigned, types: params.iter().map(|p| p.ty.clone()).collect(), java: lang == Lang::Java, private_members: uses_private }),
     })
 }
