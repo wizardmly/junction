@@ -5,7 +5,7 @@ features: 第 39 节
 status: done
 owner: Claude（项目线程）/ 替 Megan 干活
 branch: task/sec39-bitmap-tint
-pr: https://github.com/wizardmly/junction/pull/PRNUM
+pr: https://github.com/wizardmly/junction/pull/326
 claimed: 2026-11-10
 files: src/domain/drawable.rs
 ---
