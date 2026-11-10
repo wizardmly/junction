@@ -39,6 +39,28 @@ pub struct ParameterPlan {
     /// Inline Function of a function with statements: `expression` is
     /// its body's statements.
     pub block: Option<crate::domain::inline_function::Block>,
+    /// A Java method or constructor with a body: where an overload
+    /// delegating to it can go.
+    pub delegate: Option<DelegateSite>,
+}
+
+/// What "Delegate via overloading method" needs of a Java method: IntelliJ
+/// copies it before itself with a body calling the new signature.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DelegateSite {
+    /// Where the declaration (its modifiers) starts.
+    pub start: usize,
+    /// The declaration up to its body's `{`.
+    pub header: String,
+    /// Its line's indent, and one indent step.
+    pub indent: String,
+    pub unit: String,
+    /// It returns a value (not `void`, not a constructor).
+    pub returns: bool,
+    pub constructor: bool,
+    /// Its `@Override` annotations, with the space after them: the
+    /// original no longer overrides anything.
+    pub overrides: Vec<Range<usize>>,
 }
 
 /// A call of the function.
@@ -114,6 +136,18 @@ pub struct ParameterRequest {
     pub replace_all: bool,
     /// Kotlin: `name: Type = expression`, the calls unchanged.
     pub default_value: bool,
+    /// Java: `final Type name`.
+    pub declare_final: bool,
+    /// Java: an overload with the old signature passes the expression;
+    /// the calls unchanged.
+    pub delegate: bool,
+}
+
+impl ParameterRequest {
+    /// The calls are left as they are.
+    pub fn keeps_calls(&self) -> bool {
+        self.default_value || self.delegate
+    }
 }
 
 /// A text edit.
@@ -173,7 +207,8 @@ pub fn edits(style: ImportStyle, plan: &ParameterPlan, calls_here: &[CallSite], 
     // The declaration.
     let sep = if plan.params.is_empty() { "" } else { ", " };
     let declared = if java {
-        format!("{sep}{} {}", request.ty.trim(), request.name)
+        let fin = if request.declare_final { "final " } else { "" };
+        format!("{sep}{fin}{} {}", request.ty.trim(), request.name)
     } else if request.default_value {
         format!("{sep}{}: {} = {}", request.name, request.ty.trim(), plan.expression)
     } else {
@@ -186,7 +221,17 @@ pub fn edits(style: ImportStyle, plan: &ParameterPlan, calls_here: &[CallSite], 
             out.push((r.clone(), request.name.clone()));
         }
     }
-    if !(request.default_value && !java) {
+    if request.delegate {
+        let site = plan.delegate.as_ref().ok_or("The method has no body to delegate from")?;
+        let args: Vec<&str> = plan.params.iter().map(String::as_str).chain([plan.expression.as_str()]).collect();
+        let call = format!("{}({})", if site.constructor { "this" } else { plan.function.as_str() }, args.join(", "));
+        let call = if site.returns { format!("return {call}") } else { call };
+        let (indent, unit) = (&site.indent, &site.unit);
+        out.push((site.start..site.start, format!("{} {{\n{indent}{unit}{call};\n{indent}}}\n\n{indent}", site.header)));
+        for r in &site.overrides {
+            out.push((r.clone(), String::new()));
+        }
+    } else if !(request.default_value && !java) {
         for call in calls_here {
             out.extend(call_edit(plan, call, &request.name));
         }
@@ -235,6 +280,7 @@ mod tests {
             ty: "Double".into(),
             taken: vec![],
             block: None,
+            delegate: None,
         }
     }
 
@@ -246,7 +292,7 @@ mod tests {
             CallSite { args_close: text.find("2.0)").unwrap() + 3, args: vec![(None, "2.0".into())], receiver: None, ..Default::default() },
             CallSite { args_close: text.find("1)").unwrap() + 1, args: vec![(None, "base + 1".into())], receiver: Some("cart".into()), ..Default::default() },
         ];
-        let request = ParameterRequest { name: "amount".into(), ty: "Double".into(), replace_all: true, default_value: false };
+        let request = ParameterRequest { name: "amount".into(), ty: "Double".into(), replace_all: true, default_value: false, declare_final: false, delegate: false };
         let out = apply(text, edits(ImportStyle::Kotlin, &p, &calls, &request).unwrap());
         assert_eq!(out, "fun total(price: Double, amount: Double): Double {\n    return amount\n}\nfun use() = total(2.0, 2.0 * rate) + cart.total(base + 1, (base + 1) * cart.rate)\n");
         // A default value: the calls stay.
@@ -254,7 +300,7 @@ mod tests {
         let out = apply(text, edits(ImportStyle::Kotlin, &p, &calls, &request).unwrap());
         assert!(out.starts_with("fun total(price: Double, amount: Double = price * rate): Double {") && out.contains("total(2.0) + cart.total(base + 1)"), "{out}");
         // A taken name; a call with named arguments gets a named one.
-        assert!(check(ImportStyle::Kotlin, &p, &ParameterRequest { name: "price".into(), ty: "Double".into(), replace_all: true, default_value: false }).is_err());
+        assert!(check(ImportStyle::Kotlin, &p, &ParameterRequest { name: "price".into(), ty: "Double".into(), replace_all: true, default_value: false, declare_final: false, delegate: false }).is_err());
         let named = CallSite { args_close: 10, args: vec![(Some("price".into()), "4.0".into())], receiver: None, ..Default::default() };
         assert_eq!(call_edit(&p, &named, "amount"), Some((10..10, ", amount = 4.0 * rate".into())));
         // A trailing lambda isn't last any more: it goes inside.
@@ -271,8 +317,39 @@ mod tests {
         let mut p = plan(text, "price * rate");
         p.ty = "int".into();
         let calls = [CallSite { args_close: text.find("3)").unwrap() + 1, args: vec![(None, "3".into())], receiver: None, ..Default::default() }];
-        let request = ParameterRequest { name: "amount".into(), ty: "int".into(), replace_all: false, default_value: true };
+        let request = ParameterRequest { name: "amount".into(), ty: "int".into(), replace_all: false, default_value: true, declare_final: false, delegate: false };
         let out = apply(text, edits(ImportStyle::Java, &p, &calls, &request).unwrap());
         assert_eq!(out, "int total(int price, int amount) { return amount; }\nint use() { return total(3, 3 * rate); }\n");
+    }
+
+    #[test]
+    fn java_final_and_delegate() {
+        let text = "class C {\n    @Override\n    public int total(int price) {\n        return price * rate;\n    }\n    int use() { return total(3); }\n}\n";
+        let mut p = plan(text, "price * rate");
+        p.params_close = text.find("price)").unwrap() + 5;
+        p.ty = "int".into();
+        let start = text.find("@Override").unwrap();
+        p.delegate = Some(DelegateSite {
+            start,
+            header: "@Override\n    public int total(int price)".into(),
+            indent: "    ".into(),
+            unit: "    ".into(),
+            returns: true,
+            constructor: false,
+            overrides: vec![start..start + 14],
+        });
+        let calls = [CallSite { args_close: text.find("3)").unwrap() + 1, args: vec![(None, "3".into())], receiver: None, ..Default::default() }];
+        let request = ParameterRequest { name: "amount".into(), ty: "int".into(), replace_all: true, default_value: false, declare_final: true, delegate: true };
+        let out = apply(text, edits(ImportStyle::Java, &p, &calls, &request).unwrap());
+        assert_eq!(
+            out,
+            "class C {\n    @Override\n    public int total(int price) {\n        return total(price, price * rate);\n    }\n\n    public int total(int price, final int amount) {\n        return amount;\n    }\n    int use() { return total(3); }\n}\n"
+        );
+        // A constructor calls this(…); a void method has no return.
+        let site = p.delegate.as_mut().unwrap();
+        site.constructor = true;
+        site.returns = false;
+        let out = apply(text, edits(ImportStyle::Java, &p, &calls, &ParameterRequest { declare_final: false, ..request }).unwrap());
+        assert!(out.contains("{\n        this(price, price * rate);\n    }") && out.contains("total(int price, int amount)"), "{out}");
     }
 }
