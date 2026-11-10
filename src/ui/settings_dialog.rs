@@ -1835,6 +1835,8 @@ impl SettingsView {
                     page = self.wrap_option(page, query, "Record components:", lang, d.wrapping(lang).record_wrap, |w, v| w.record_wrap = v, cx);
                     page = self.wrap_option(page, query, "Deconstruction list:", lang, d.wrapping(lang).decon_wrap, |w, v| w.decon_wrap = v, cx);
                     page = self.wrap_option(page, query, "Multi-catch types:", lang, d.wrapping(lang).catch_wrap, |w, v| w.catch_wrap = v, cx);
+                    page = self.wrap_option(page, query, "Switch expressions:", lang, d.wrapping(lang).switch_wrap, |w, v| w.switch_wrap = v, cx);
+                    page = self.wrap_option(page, query, "Extends keyword:", lang, d.wrapping(lang).extends_keyword, |w, v| w.extends_keyword = v, cx);
                     page = page
                         .child(self.row("Chained method calls: Builder methods:", query, div().w(px(320.)).child(Input::new(&self.builders).small()), cx))
                         .child(self.note("Method names separated by ','; these calls always start a line in a chain", cx));
