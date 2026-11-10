@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-68
 title: Reformat：Wrapping and Braces 页剩下的选项（第六十八批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-68
-pr:
+pr: 336
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：`Wrapping::javadoc_layout` 扩到 `[bool; 11]`，加 Generate "<p>" on empty lines（JD_P_AT_EMPTY_LINES）和 Keep empty lines（JD_KEEP_EMPTY_LINES），Java 默认都开，settings.conf 第 127–128 位。`javadoc_layout` 在删空标签之后处理描述（第一个标签之前）里段落之间的空行（前后都有文字的才算）：Keep empty lines 关掉就删；否则改成 `<p>`，除非下一段文字以 HTML 标签开头（新函数 `starts_with_html_tag`，照 IntelliJ `BasicHtmlUtil.startsWithTag` 的正则）、在 `<pre>` 里、在 `{@code` / `{@snippet` 的大括号里。标签描述里的空行没处理（我们把空行当标签块的结尾）。测试 `lays_out_javadoc_tags` 加了这几种情况。Signal 语料：默认 5274 → 5331 行（+57 行全是段落空行改 `<p>`，例如版权头和 LeakyBucketLimiter 的类注释，跟 IntelliJ 一样），第二遍 0 行；强制全开 + Keep empty 全关时第二遍 0 行。剩下的放到 sec33-reformat-rest-69。
