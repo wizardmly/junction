@@ -982,6 +982,10 @@ pub struct Wrapping {
     /// Java's JavaDoc › Enable leading asterisks (JD_LEADING_ASTERISKS_ARE_ENABLED,
     /// on): a Javadoc line without its `*` gets one, under the `/**`'s.
     pub javadoc_asterisks: bool,
+    /// Java's JavaDoc › Blank lines: After description, Align thrown
+    /// exception descriptions… : [JD_ADD_BLANK_AFTER_DESCRIPTION,
+    /// JD_ALIGN_PARAM_COMMENTS, JD_ALIGN_EXCEPTION_COMMENTS], all on.
+    pub javadoc_layout: [bool; 3],
 }
 
 
@@ -1129,21 +1133,21 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 8], keep_first_column: true, indent_case: true, wrap_first_call: false, group_align: [false; 3], keep_multiple: false, modifier_wrap: false, align_simple_methods: false, assign_sign_next: false, indent_break: true, array_parens: [false; 2], single_annotation: [false; 2], keep_builder_indents: false, flat_top_level: false, semicolon_after_chain: false, catch_wrap: Wrap::WrapIfLong, align_catch: true, align_text_blocks: false, case_new_line: true, switch_wrap: Wrap::WrapIfLong, extends_keyword: Wrap::DoNotWrap, align_brackets: false, align_throws_keyword: false, ensure_margin: false, align_parens: false, prefer_params: false, align_annotation_params: false, annotation_parens: [false; 2], body_new_line: false, enum_annotations: AnnotationWrap::DoNotWrap, record_annotations: false, javadoc_asterisks: true };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 8], keep_first_column: true, indent_case: true, wrap_first_call: false, group_align: [false; 3], keep_multiple: false, modifier_wrap: false, align_simple_methods: false, assign_sign_next: false, indent_break: true, array_parens: [false; 2], single_annotation: [false; 2], keep_builder_indents: false, flat_top_level: false, semicolon_after_chain: false, catch_wrap: Wrap::WrapIfLong, align_catch: true, align_text_blocks: false, case_new_line: true, switch_wrap: Wrap::WrapIfLong, extends_keyword: Wrap::DoNotWrap, align_brackets: false, align_throws_keyword: false, ensure_margin: false, align_parens: false, prefer_params: false, align_annotation_params: false, annotation_parens: [false; 2], body_new_line: false, enum_annotations: AnnotationWrap::DoNotWrap, record_annotations: false, javadoc_asterisks: true, javadoc_layout: [true; 3] };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 8], keep_first_column: true, indent_case: true, wrap_first_call: false, group_align: [false; 3], keep_multiple: false, modifier_wrap: false, align_simple_methods: false, assign_sign_next: false, indent_break: true, array_parens: [false; 2], single_annotation: [false; 2], keep_builder_indents: false, flat_top_level: false, semicolon_after_chain: false, catch_wrap: Wrap::WrapIfLong, align_catch: true, align_text_blocks: false, case_new_line: true, switch_wrap: Wrap::WrapIfLong, extends_keyword: Wrap::DoNotWrap, align_brackets: false, align_throws_keyword: false, ensure_margin: false, align_parens: false, prefer_params: false, align_annotation_params: false, annotation_parens: [false; 2], body_new_line: false, enum_annotations: AnnotationWrap::DoNotWrap, record_annotations: false, javadoc_asterisks: false };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 8], keep_first_column: true, indent_case: true, wrap_first_call: false, group_align: [false; 3], keep_multiple: false, modifier_wrap: false, align_simple_methods: false, assign_sign_next: false, indent_break: true, array_parens: [false; 2], single_annotation: [false; 2], keep_builder_indents: false, flat_top_level: false, semicolon_after_chain: false, catch_wrap: Wrap::WrapIfLong, align_catch: true, align_text_blocks: false, case_new_line: true, switch_wrap: Wrap::WrapIfLong, extends_keyword: Wrap::DoNotWrap, align_brackets: false, align_throws_keyword: false, ensure_margin: false, align_parens: false, prefer_params: false, align_annotation_params: false, annotation_parens: [false; 2], body_new_line: false, enum_annotations: AnnotationWrap::DoNotWrap, record_annotations: false, javadoc_asterisks: false, javadoc_layout: [false; 3] };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 8], keep_first_column: true, indent_case: true, wrap_first_call: false, group_align: [false; 3], keep_multiple: false, modifier_wrap: false, align_simple_methods: false, assign_sign_next: false, indent_break: true, array_parens: [false; 2], single_annotation: [false; 2], keep_builder_indents: false, flat_top_level: false, semicolon_after_chain: false, catch_wrap: Wrap::WrapIfLong, align_catch: true, align_text_blocks: false, case_new_line: true, switch_wrap: Wrap::WrapIfLong, extends_keyword: Wrap::DoNotWrap, align_brackets: false, align_throws_keyword: false, ensure_margin: false, align_parens: false, prefer_params: false, align_annotation_params: false, annotation_parens: [false; 2], body_new_line: false, enum_annotations: AnnotationWrap::DoNotWrap, record_annotations: false, javadoc_asterisks: true }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 8], keep_first_column: true, indent_case: true, wrap_first_call: false, group_align: [false; 3], keep_multiple: false, modifier_wrap: false, align_simple_methods: false, assign_sign_next: false, indent_break: true, array_parens: [false; 2], single_annotation: [false; 2], keep_builder_indents: false, flat_top_level: false, semicolon_after_chain: false, catch_wrap: Wrap::WrapIfLong, align_catch: true, align_text_blocks: false, case_new_line: true, switch_wrap: Wrap::WrapIfLong, extends_keyword: Wrap::DoNotWrap, align_brackets: false, align_throws_keyword: false, ensure_margin: false, align_parens: false, prefer_params: false, align_annotation_params: false, annotation_parens: [false; 2], body_new_line: false, enum_annotations: AnnotationWrap::DoNotWrap, record_annotations: false, javadoc_asterisks: true, javadoc_layout: [true; 3] }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, align_ternary: self.align_ternary, align_throws: self.align_throws, align_extends: self.align_extends, align_assignment: self.align_assignment, align_chains: self.align_chains, align_arrays: self.align_arrays, when_align: self.when_align, when_break: self.when_break, decon_wrap: self.decon_wrap, align_decon: self.align_decon, decon_parens: self.decon_parens, kotlin_cont: self.kotlin_cont, keep_first_column: self.keep_first_column, indent_case: self.indent_case, wrap_first_call: self.wrap_first_call, group_align: self.group_align, keep_multiple: self.keep_multiple, modifier_wrap: self.modifier_wrap, align_simple_methods: self.align_simple_methods, assign_sign_next: self.assign_sign_next, indent_break: self.indent_break, array_parens: self.array_parens, single_annotation: self.single_annotation, keep_builder_indents: self.keep_builder_indents, flat_top_level: self.flat_top_level, semicolon_after_chain: self.semicolon_after_chain, catch_wrap: self.catch_wrap, align_catch: self.align_catch, align_text_blocks: self.align_text_blocks, case_new_line: self.case_new_line, switch_wrap: self.switch_wrap, extends_keyword: self.extends_keyword, align_brackets: self.align_brackets, align_throws_keyword: self.align_throws_keyword, ensure_margin: self.ensure_margin, align_parens: self.align_parens, prefer_params: self.prefer_params, align_annotation_params: self.align_annotation_params, annotation_parens: self.annotation_parens, body_new_line: self.body_new_line, enum_annotations: self.enum_annotations, record_annotations: self.record_annotations, javadoc_asterisks: self.javadoc_asterisks, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, align_ternary: self.align_ternary, align_throws: self.align_throws, align_extends: self.align_extends, align_assignment: self.align_assignment, align_chains: self.align_chains, align_arrays: self.align_arrays, when_align: self.when_align, when_break: self.when_break, decon_wrap: self.decon_wrap, align_decon: self.align_decon, decon_parens: self.decon_parens, kotlin_cont: self.kotlin_cont, keep_first_column: self.keep_first_column, indent_case: self.indent_case, wrap_first_call: self.wrap_first_call, group_align: self.group_align, keep_multiple: self.keep_multiple, modifier_wrap: self.modifier_wrap, align_simple_methods: self.align_simple_methods, assign_sign_next: self.assign_sign_next, indent_break: self.indent_break, array_parens: self.array_parens, single_annotation: self.single_annotation, keep_builder_indents: self.keep_builder_indents, flat_top_level: self.flat_top_level, semicolon_after_chain: self.semicolon_after_chain, catch_wrap: self.catch_wrap, align_catch: self.align_catch, align_text_blocks: self.align_text_blocks, case_new_line: self.case_new_line, switch_wrap: self.switch_wrap, extends_keyword: self.extends_keyword, align_brackets: self.align_brackets, align_throws_keyword: self.align_throws_keyword, ensure_margin: self.ensure_margin, align_parens: self.align_parens, prefer_params: self.prefer_params, align_annotation_params: self.align_annotation_params, annotation_parens: self.annotation_parens, body_new_line: self.body_new_line, enum_annotations: self.enum_annotations, record_annotations: self.record_annotations, javadoc_asterisks: self.javadoc_asterisks, javadoc_layout: self.javadoc_layout, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
@@ -1181,7 +1185,125 @@ pub fn reformat_groovy(text: &str, only: Option<Range<usize>>, indents: &IndentS
 }
 
 fn reformat_with(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents: &IndentStyle) -> String {
-    reformat_pass(flavor, text, only, indents, 0)
+    let out = reformat_pass(flavor, text, only.clone(), indents, 0);
+    match indents.wrapping.unwrap_or(Wrapping::JAVA).javadoc_layout {
+        layout if flavor == Flavor::Java && layout.iter().any(|on| *on) && only.is_none() => javadoc_layout(&out, layout),
+        _ => out,
+    }
+}
+
+/// Java's JavaDoc formatting, in part (IntelliJ's JDComment /
+/// JDParamListOwnerComment `generate`): with After description, one
+/// blank ` *` line between a Javadoc's description and its first tag;
+/// with Align parameter / thrown exception descriptions, the `@param`'s
+/// (`@throws`' / `@exception`'s) descriptions in one column after the
+/// longest name, their later lines under it. Line breaks stay; the tags
+/// aren't reordered; `@` lines in a `<pre>` aren't tags.
+fn javadoc_layout(text: &str, [blank_after, align_params, align_throws]: [bool; 3]) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut ix = 0;
+    while ix < lines.len() {
+        let line = lines[ix];
+        let trimmed = line.trim_start();
+        // A Javadoc of its own lines: `/**` alone up to a `*/` line.
+        let end = (trimmed == "/**").then(|| (ix + 1..lines.len()).find(|&j| lines[j].contains("*/"))).flatten();
+        let Some(end) = end.filter(|&end| lines[end].trim() == "*/" && lines[ix + 1..end].iter().all(|l| l.trim_start().starts_with('*') && !l.contains("*/"))) else {
+            out.push(line.to_owned());
+            ix += 1;
+            continue;
+        };
+        out.push(line.to_owned());
+        let star = &lines[end][..lines[end].len() - lines[end].trim_start().len()];
+        // Each inner line's text after `* ` (`None`: a bare `*`).
+        let body: Vec<&str> = lines[ix + 1..end].iter().map(|l| l.trim_start()[1..].strip_prefix(' ').unwrap_or(&l.trim_start()[1..])).collect();
+        // Which lines start a tag (not in a `<pre>`).
+        let mut pre = false;
+        let tags: Vec<bool> = body
+            .iter()
+            .map(|t| {
+                let tag = !pre && t.starts_with('@');
+                if t.contains("<pre>") { pre = true; }
+                if t.contains("</pre>") { pre = false; }
+                tag
+            })
+            .collect();
+        let first_tag = tags.iter().position(|t| *t);
+        let mut texts: Vec<String> = body.iter().map(|t| (*t).to_owned()).collect();
+        // The lines as written, while unchanged.
+        let mut written: Vec<Option<&str>> = lines[ix + 1..end].iter().map(|l| Some(*l)).collect();
+        let mut extra_blank = None;
+        if let Some(first) = first_tag.filter(|_| blank_after) {
+            // The description's trailing blank lines become one.
+            let mut last = first;
+            while last > 0 && texts[last - 1].trim().is_empty() {
+                last -= 1;
+            }
+            if last > 0 && !(first == last + 1 && texts[last].trim().is_empty()) {
+                texts.drain(last..first);
+                written.drain(last..first);
+                extra_blank = Some(last);
+            }
+        }
+        if let Some(at) = extra_blank {
+            texts.insert(at, String::new());
+            written.insert(at, None);
+        }
+        let tags: Vec<bool> = {
+            let mut pre = false;
+            texts.iter().map(|t| { let tag = !pre && t.starts_with('@'); if t.contains("<pre>") { pre = true; } if t.contains("</pre>") { pre = false; } tag }).collect()
+        };
+        for (names, on) in [(&["@param"][..], align_params), (&["@throws", "@exception"][..], align_throws)] {
+            if !on {
+                continue;
+            }
+            // (line, tag, name, description) of each such tag.
+            let found: Vec<(usize, String, String, String)> = texts
+                .iter()
+                .enumerate()
+                .filter(|(n, _)| tags[*n])
+                .filter_map(|(n, t)| {
+                    let mut words = t.splitn(2, char::is_whitespace);
+                    let tag = words.next()?;
+                    if !names.contains(&tag) {
+                        return None;
+                    }
+                    let rest = words.next()?.trim_start();
+                    let (name, desc) = rest.split_once(char::is_whitespace).map_or((rest, ""), |(a, b)| (a, b.trim_start()));
+                    (!name.is_empty()).then(|| (n, tag.to_owned(), name.to_owned(), desc.to_owned()))
+                })
+                .collect();
+            let Some(longest) = found.iter().map(|f| f.2.chars().count()).max() else { continue };
+            for (n, tag, name, desc) in found {
+                let column = tag.chars().count() + 1 + longest + 1;
+                let aligned = if desc.is_empty() { format!("{tag} {name}") } else { format!("{tag} {name}{}{}", " ".repeat(longest + 1 - name.chars().count()), desc.trim_end()) };
+                if aligned != texts[n].trim_end() {
+                    texts[n] = aligned;
+                    written[n] = None;
+                }
+                // Its later lines, up to the next tag or blank line, under the description.
+                let mut k = n + 1;
+                while k < texts.len() && !tags[k] && !texts[k].trim().is_empty() {
+                    let under = format!("{}{}", " ".repeat(column), texts[k].trim());
+                    if under != texts[k].trim_end() {
+                        texts[k] = under;
+                        written[k] = None;
+                    }
+                    k += 1;
+                }
+            }
+        }
+        for (t, was) in texts.into_iter().zip(written) {
+            out.push(match was {
+                Some(line) => line.to_owned(),
+                None if t.is_empty() => format!("{star}*"),
+                None => format!("{star}* {t}"),
+            });
+        }
+        out.push(lines[end].to_owned());
+        ix = end + 1;
+    }
+    out.join("\n")
 }
 
 /// One pass of `reformat_with`; `nested`: how many passes after chopping
@@ -7924,11 +8046,21 @@ mod tests {
     }
 
     #[test]
+    fn lays_out_javadoc_tags() {
+        let style = |layout: [bool; 3]| IndentStyle { wrapping: Some(Wrapping { javadoc_layout: layout, ..Wrapping::JAVA }), ..Default::default() };
+        let text = "class A {\n    /**\n     * Runs it.\n     * @param count how many\n     *   times\n     * @param id the id\n     * @return the result\n     * @throws IOException when it fails\n     * @throws IllegalStateException never\n     */\n    int f(int count, int id) throws IOException {\n        return 1;\n    }\n}";
+        let once = reformat_indented(ImportStyle::Java, text, None, &style([true; 3]));
+        assert_eq!(once, "class A {\n    /**\n     * Runs it.\n     *\n     * @param count how many\n     *              times\n     * @param id    the id\n     * @return the result\n     * @throws IOException           when it fails\n     * @throws IllegalStateException never\n     */\n    int f(int count, int id) throws IOException {\n        return 1;\n    }\n}");
+        assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style([true; 3])), once, "stable");
+        assert_eq!(reformat_indented(ImportStyle::Java, text, None, &style([false; 3])), text);
+    }
+
+    #[test]
     fn adds_javadoc_leading_asterisks() {
         let style = |on: bool| IndentStyle { wrapping: Some(Wrapping { javadoc_asterisks: on, ..Wrapping::JAVA }), ..Default::default() };
         let text = "class A {\n    /**\n      Runs it.\n\n      <pre>\n          run();\n      </pre>\n     * @return the count\n     */\n    int f() {\n        /* plain\n           comment */\n        return 1;\n    }\n}";
         let once = reformat_indented(ImportStyle::Java, text, None, &style(true));
-        assert_eq!(once, "class A {\n    /**\n     * Runs it.\n     *\n     * <pre>\n     *     run();\n     * </pre>\n     * @return the count\n     */\n    int f() {\n        /* plain\n           comment */\n        return 1;\n    }\n}");
+        assert_eq!(once, "class A {\n    /**\n     * Runs it.\n     *\n     * <pre>\n     *     run();\n     * </pre>\n     *\n     * @return the count\n     */\n    int f() {\n        /* plain\n           comment */\n        return 1;\n    }\n}");
         assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style(true)), once);
         // Off: the lines stay as written.
         assert_eq!(reformat_indented(ImportStyle::Java, text, None, &style(false)), text);

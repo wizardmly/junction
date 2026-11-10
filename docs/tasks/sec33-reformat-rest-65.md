@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-65
 title: Reformat：Wrapping and Braces 页剩下的选项（第六十五批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-65
+pr: 332
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：JavaDoc 格式化第一步：`Wrapping::javadoc_layout: [bool; 3]`（Blank lines: After description / Align parameter descriptions / Align thrown exception descriptions，Java 默认全开，settings.conf 第 118–120 位）。`reformat_with` 在整文件重排（`only` 为 None）的最后跑 `javadoc_layout`：只认 `/**`、`*/` 各占一行且中间每行以 `*` 开头的 Javadoc；第一个标签前的空行并成一个 ` *`；同一种标签（@param，或 @throws + @exception）按最长名字对齐，后续行（到下一个标签或空行）对齐到描述列。没改的行原样输出（保住行尾空格，`ensures_right_margin_is_not_exceeded` 依赖它）。IntelliJ 源码 java/java-impl/src/com/intellij/psi/impl/source/codeStyle/javadoc/（JDComment.generate、JDParamListOwnerComment.generateList）。设置页加三个勾选项（flags 65 项）。测试 `lays_out_javadoc_tags`；`adds_javadoc_leading_asterisks` 期望里 @return 前多了空行。语料：默认 5274 行（多 73 行，都是 @param 对齐和描述后空行），第二遍 0 行。没做：标签重排、按右边距重排文字（JDParser）、`@exception` 改 `@throws`、选区重排时的 Javadoc。剩下的在 sec33-reformat-rest-66。
