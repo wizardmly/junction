@@ -851,10 +851,16 @@ pub struct Wrapping {
     /// Its New line after '(' and Place ')' on new line
     /// (NEW_LINE_AFTER_LPAREN_IN_DECONSTRUCTION_PATTERN / RPAREN_ON_NEW_LINE_IN_DECONSTRUCTION_PATTERN, both on).
     pub decon_parens: [bool; 2],
-    /// Kotlin's Use continuation indent, in order: parameters, arguments, expression bodies, chained calls, supertypes, `if` conditions, Elvis
+    /// Kotlin's Use continuation indent, in order: parameters, arguments, expression bodies, chained calls, supertypes, `if` conditions, Elvis, context parameters
     /// (CONTINUATION_INDENT_IN_PARAMETER_LISTS and the like; the official
     /// style's are all off: a normal indent).
-    pub kotlin_cont: [bool; 7],
+    pub kotlin_cont: [bool; 8],
+    /// Keep when reformatting › Comment at first column (KEEP_FIRST_COLUMN_COMMENT,
+    /// on): a comment starting a line at column 0 stays there (Kotlin's line comments).
+    pub keep_first_column: bool,
+    /// Java's 'switch' statement › Indent 'case' branches (INDENT_CASE_FROM_SWITCH,
+    /// on): off, `case` labels at the `switch`'s level.
+    pub indent_case: bool,
 }
 
 
@@ -999,21 +1005,21 @@ impl Braces {
 
 impl Wrapping {
     /// IntelliJ's Java defaults: nothing wraps.
-    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 7] };
+    pub const JAVA: Wrapping = Wrapping { call_args: Wrap::DoNotWrap, params: Wrap::DoNotWrap, chain: Wrap::DoNotWrap, extends: Wrap::DoNotWrap, assignment: Wrap::DoNotWrap, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 8], keep_first_column: true, indent_case: true };
     /// Kotlin's official style.
-    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 7] };
+    pub const KOTLIN: Wrapping = Wrapping { call_args: Wrap::ChopIfLong, params: Wrap::ChopIfLong, chain: Wrap::WrapIfLong, extends: Wrap::WrapIfLong, assignment: Wrap::WrapIfLong, keep_line_breaks: true, braces: Braces::NONE, ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::WrapIfLong, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [true; 2], param_parens: [true; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 8], keep_first_column: true, indent_case: true };
 
     pub fn values(&self) -> [Wrap; 5] {
         [self.call_args, self.params, self.chain, self.extends, self.assignment]
     }
 
     pub fn from_values(v: [Wrap; 5]) -> Self {
-        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 7] }
+        Wrapping { call_args: v[0], params: v[1], chain: v[2], extends: v[3], assignment: v[4], keep_line_breaks: true, braces: Braces::default(), ops: Operations::NONE, annotations: [AnnotationWrap::DoNotWrap; 3], enum_constants: AnnotationWrap::DoNotWrap, elvis: Wrap::DoNotWrap, local_annotations: AnnotationWrap::DoNotWrap, array_init: Wrap::DoNotWrap, throws_list: Wrap::DoNotWrap, throws_keyword: Wrap::DoNotWrap, annotation_params: Wrap::DoNotWrap, param_annotations: AnnotationWrap::DoNotWrap, keep_one_line: KeepOneLine::ALL, special_else_if: true, for_wrap: Wrap::DoNotWrap, align_for: true, for_parens: [false; 2], resource_wrap: Wrap::DoNotWrap, align_resources: true, resource_parens: [false; 2], assert_wrap: Wrap::DoNotWrap, assert_colon_next: false, call_parens: [false; 2], param_parens: [false; 2], expr_parens: [false; 2], align_params: true, align_args: false, record_wrap: Wrap::DoNotWrap, align_records: true, record_parens: [false; 2], align_binary: false, align_ternary: false, align_throws: false, align_extends: false, align_assignment: false, align_chains: false, align_arrays: false, when_align: false, when_break: true, decon_wrap: Wrap::DoNotWrap, align_decon: true, decon_parens: [true; 2], kotlin_cont: [false; 8], keep_first_column: true, indent_case: true }
     }
 
     /// The five wraps changed; the other options stay.
     pub fn with_values(self, v: [Wrap; 5]) -> Self {
-        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, align_ternary: self.align_ternary, align_throws: self.align_throws, align_extends: self.align_extends, align_assignment: self.align_assignment, align_chains: self.align_chains, align_arrays: self.align_arrays, when_align: self.when_align, when_break: self.when_break, decon_wrap: self.decon_wrap, align_decon: self.align_decon, decon_parens: self.decon_parens, kotlin_cont: self.kotlin_cont, ..Wrapping::from_values(v) }
+        Wrapping { keep_line_breaks: self.keep_line_breaks, braces: self.braces, ops: self.ops, annotations: self.annotations, enum_constants: self.enum_constants, elvis: self.elvis, local_annotations: self.local_annotations, array_init: self.array_init, throws_list: self.throws_list, throws_keyword: self.throws_keyword, annotation_params: self.annotation_params, param_annotations: self.param_annotations, keep_one_line: self.keep_one_line, special_else_if: self.special_else_if, for_wrap: self.for_wrap, align_for: self.align_for, for_parens: self.for_parens, resource_wrap: self.resource_wrap, align_resources: self.align_resources, resource_parens: self.resource_parens, assert_wrap: self.assert_wrap, assert_colon_next: self.assert_colon_next, call_parens: self.call_parens, param_parens: self.param_parens, expr_parens: self.expr_parens, align_params: self.align_params, align_args: self.align_args, record_wrap: self.record_wrap, align_records: self.align_records, record_parens: self.record_parens, align_binary: self.align_binary, align_ternary: self.align_ternary, align_throws: self.align_throws, align_extends: self.align_extends, align_assignment: self.align_assignment, align_chains: self.align_chains, align_arrays: self.align_arrays, when_align: self.when_align, when_break: self.when_break, decon_wrap: self.decon_wrap, align_decon: self.align_decon, decon_parens: self.decon_parens, kotlin_cont: self.kotlin_cont, keep_first_column: self.keep_first_column, indent_case: self.indent_case, ..Wrapping::from_values(v) }
     }
 
     fn any(&self) -> bool {
@@ -1130,7 +1136,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     let align_chains = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_chains);
     let align_arrays = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_arrays);
     let align_decon = wrapping.is_none_or(|w| w.align_decon);
-    let kotlin_cont = wrapping.filter(|_| kotlin).map_or([false; 7], |w| w.kotlin_cont);
+    let kotlin_cont = wrapping.filter(|_| kotlin).map_or([false; 8], |w| w.kotlin_cont);
     // The header list's lines so far are aligned.
     let mut header_aligned = false;
     // A header line's indent before that alignment: its body goes by it.
@@ -1147,7 +1153,11 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     // Kotlin's Use continuation indent: the continuation where it's on, a
     // normal indent where it's off (the official style's).
     let kc = |i: usize| if !kotlin || kotlin_cont[i] { cont } else { step };
-    let bracket_sizes = kotlin.then(|| [kc(0), kc(1), kc(5)]);
+    let bracket_sizes = kotlin.then(|| [kc(0), kc(1), kc(5), kc(7)]);
+    let keep_first_column = wrapping.is_none_or(|w| w.keep_first_column);
+    let flat_switch = flavor == Flavor::Java && wrapping.is_some_and(|w| !w.indent_case);
+    // A block comment kept at column 0: its later lines stay too.
+    let mut kept_block = false;
     let header_size = kc(4);
     let raw: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(raw.len());
@@ -1175,7 +1185,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             out.push((*text_line).to_owned());
             choppable.push(false);
             let lead = text_line.len() - text_line.trim_start().len();
-            apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, [false; 3], text_line, &bodies[ix], flavor == Flavor::Java, bracket_sizes);
+            apply_brackets(&mut stack, &info.brackets, 0, ix, lead, lead, cont, step, None, [false; 4], text_line, &bodies[ix], flavor == Flavor::Java, bracket_sizes);
             blank_run = 0;
             kept = 0;
             continue;
@@ -1395,7 +1405,21 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             }
         }
         let body: String = if is_code_line && selected { normalize(text_line, info, lead, flavor, closes_header, &spaces) } else { text_line.trim_start().to_owned() };
+        // Keep when reformatting › Comment at first column: as written
+        // (Java's block comments too, with their later lines).
+        let block_start = !kotlin && text_line.starts_with("/*") && text_line.find("*/").is_none_or(|end| text_line[end + 2..].trim().is_empty());
+        let first_column = keep_first_column && selected && match starts {
+            State::Code => text_line.starts_with("//") || block_start,
+            State::Block(_) => kept_block,
+            _ => false,
+        };
+        kept_block = match starts {
+            State::Code => first_column && block_start && !text_line.contains("*/"),
+            State::Block(_) => kept_block && !text_line.contains("*/"),
+            _ => false,
+        };
         let new_line = match starts {
+            _ if first_column => (*text_line).to_owned(),
             // A block comment's later lines: ` * …` under its `/*`.
             State::Block(_) if body.starts_with('*') => format!("{} {body}", pad(indent)),
             State::Block(_) => (*text_line).trim_end().to_owned(),
@@ -1418,9 +1442,9 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
             let base = if header { if selected { header_unaligned } else { at }.saturating_sub(header_size) } else { at };
             let declared = || declaration_paren(&line_out).filter(|_| if record_header(&line_out) { align_records } else { align_params });
             let align = (flavor == Flavor::Java && !tabs).then(|| declared().or_else(|| for_paren(&line_out).filter(|_| align_for)).or_else(|| keyword_paren(&line_out, "try").filter(|_| align_resources))).flatten();
-            apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, [align_args && !tabs, align_arrays && !tabs, align_decon && !tabs], &line_out, &bodies[ix], flavor == Flavor::Java, bracket_sizes);
+            apply_brackets(&mut stack, &placed, leading_closers, ix, at, base, cont, step, align, [align_args && !tabs, align_arrays && !tabs, align_decon && !tabs, flat_switch], &line_out, &bodies[ix], flavor == Flavor::Java, bracket_sizes);
         } else {
-            apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, [false; 3], text_line, &bodies[ix], flavor == Flavor::Java, bracket_sizes);
+            apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, [false; 4], text_line, &bodies[ix], flavor == Flavor::Java, bracket_sizes);
         }
         out.push(line_out);
         choppable.push(selected && is_code_line);
@@ -4082,6 +4106,27 @@ fn assignment_target(code: &str) -> Option<&str> {
 
 /// Whether the text before a Kotlin `(` names a declaration's parameters:
 /// `fun name`, `class Name`, `constructor`.
+/// Whether a Java `{` opens a `switch`'s body: `switch (x) {`.
+fn switch_brace(before: &str) -> bool {
+    let head = before.trim_end();
+    let Some(head) = head.strip_suffix(')') else { return false };
+    let mut depth = 1;
+    for (i, c) in head.char_indices().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    let word = head[..i].trim_end();
+                    return word.strip_suffix("switch").is_some_and(|b| !b.ends_with(|ch: char| ch.is_alphanumeric() || ch == '_'));
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn kotlin_declares(before: &str) -> bool {
     let word_at = |w: &str| {
         before.match_indices(w).filter(|(i, _)| *i == 0 || before[..*i].ends_with(|c: char| c == ' ' || c == '\t' || c == '(' || c == '{')).map(|(i, _)| i).last()
@@ -4583,7 +4628,7 @@ fn declaration_braces(raw: &[&str], lines: &[Line]) -> Vec<Vec<bool>> {
 /// line closed a bracket opened earlier); `(` / `[` a continuation past the
 /// line, or under the first parameter (`align`).
 #[allow(clippy::too_many_arguments)]
-fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize, line: usize, line_indent: usize, base: usize, cont: usize, step: usize, align: Option<usize>, [align_calls, align_arrays, align_decon]: [bool; 3], text: &str, bodies: &[bool], java: bool, kotlin_sizes: Option<[usize; 3]>) {
+fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize, line: usize, line_indent: usize, base: usize, cont: usize, step: usize, align: Option<usize>, [align_calls, align_arrays, align_decon, flat_switch]: [bool; 4], text: &str, bodies: &[bool], java: bool, kotlin_sizes: Option<[usize; 4]>) {
     let mut base = base;
     let mut first_paren = true;
     let mut bodies = bodies.iter();
@@ -4596,6 +4641,9 @@ fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize
                 // Array initializer › Align when multiline: under the first element.
                 let content = if array && align_arrays && !rest.trim().is_empty() && !rest.trim_start().starts_with("//") {
                     text[..=*at].chars().count() + (rest.len() - rest.trim_start().len())
+                } else if flat_switch && switch_brace(text.get(..*at).unwrap_or("")) {
+                    // Indent 'case' branches off: the labels at the switch's level.
+                    base
                 } else {
                     base + if array { cont } else { step }
                 };
@@ -4611,9 +4659,11 @@ fn apply_brackets(stack: &mut Vec<Open>, brackets: &[(usize, char)], skip: usize
                 let content = match align.filter(|_| *c == '(' && first_paren).or_else(call) {
                     Some(col) => col,
                     // Kotlin's Use continuation indent: parameters, arguments, `if` conditions.
-                    None => line_indent + kotlin_sizes.map_or(cont, |[params, args, conditions]| {
+                    None => line_indent + kotlin_sizes.map_or(cont, |[params, args, conditions, context]| {
                         let before = text.get(..*at).unwrap_or("").trim_end();
-                        if *c == '(' && before.strip_suffix("if").is_some_and(|b| !b.ends_with(|ch: char| ch.is_alphanumeric() || ch == '_')) {
+                        if *c == '(' && before.strip_suffix("context").is_some_and(|b| !b.ends_with(|ch: char| ch.is_alphanumeric() || ch == '_' || ch == '.')) {
+                            context
+                        } else if *c == '(' && before.strip_suffix("if").is_some_and(|b| !b.ends_with(|ch: char| ch.is_alphanumeric() || ch == '_')) {
                             conditions
                         } else if *c == '(' && kotlin_declares(before) {
                             params
@@ -5999,7 +6049,7 @@ mod tests {
     #[test]
     fn indents_bodies_without_braces() {
         assert_eq!(
-            java("class A {\nvoid f(int a) {\nif (a > 0)\nreturn;\nelse if (a < 0)\n// negative\na++;\nelse\nfor (int i = 0; i < a; i++)\nif (i > 1)\ng(i,\n1);\nwhile (a > 9)\na /= 2;\ndo\na--;\nwhile (a > 0);\nif (a == 1)\n{\na = 2;\n}\nh(\")\");\nif (a > 1 &&\na < 9)\na = 0;\nwhile (f(a,\nb) > 0) {\na--;\n}\ng();\n}\n}"),
+            java("class A {\nvoid f(int a) {\nif (a > 0)\nreturn;\nelse if (a < 0)\n // negative\na++;\nelse\nfor (int i = 0; i < a; i++)\nif (i > 1)\ng(i,\n1);\nwhile (a > 9)\na /= 2;\ndo\na--;\nwhile (a > 0);\nif (a == 1)\n{\na = 2;\n}\nh(\")\");\nif (a > 1 &&\na < 9)\na = 0;\nwhile (f(a,\nb) > 0) {\na--;\n}\ng();\n}\n}"),
             "class A {\n    void f(int a) {\n        if (a > 0)\n            return;\n        else if (a < 0)\n            // negative\n            a++;\n        else\n            for (int i = 0; i < a; i++)\n                if (i > 1)\n                    g(i,\n                            1);\n        while (a > 9)\n            a /= 2;\n        do\n            a--;\n        while (a > 0);\n        if (a == 1) {\n            a = 2;\n        }\n        h(\")\");\n        if (a > 1 &&\n                a < 9)\n            a = 0;\n        while (f(a,\n                b) > 0) {\n            a--;\n        }\n        g();\n    }\n}"
         );
         assert_eq!(kt("fun f(x: Int) {\nif (x > 0)\nprintln(x)\nelse\nreturn\nfor (i in 0..x)\ng(i)\nval y = if (x > 1) 2 else 3\ndo {\ng(x)\n} while (x > 9)\nh()\nreturn if (x > 2)\nx\nelse\n0\n}"), "fun f(x: Int) {\n    if (x > 0)\n        println(x)\n    else\n        return\n    for (i in 0..x)\n        g(i)\n    val y = if (x > 1) 2 else 3\n    do {\n        g(x)\n    } while (x > 9)\n    h()\n    return if (x > 2)\n        x\n    else\n        0\n}");
@@ -6320,7 +6370,7 @@ mod tests {
         let t = "class A(\n    val a: Int,\n) {\n    fun f(\n        x: Int,\n    ) = g(\n        x,\n    )\n\n    fun h() =\n        items\n            .map { it }\n\n    fun e() = a\n        ?: b\n\n    fun k() {\n        if (\n            a\n        ) {\n            go()\n        }\n    }\n}\n";
         // The official style's: all off, a normal indent even with a continuation of 8.
         assert_eq!(kotlin(Wrapping::KOTLIN, t), t);
-        let on = Wrapping { kotlin_cont: [true; 7], ..Wrapping::KOTLIN };
+        let on = Wrapping { kotlin_cont: [true; 8], ..Wrapping::KOTLIN };
         let o = kotlin(on, t);
         assert_eq!(o, "class A(\n        val a: Int,\n) {\n    fun f(\n            x: Int,\n    ) = g(\n            x,\n    )\n\n    fun h() =\n            items\n                    .map { it }\n\n    fun e() = a\n            ?: b\n\n    fun k() {\n        if (\n                a\n        ) {\n            go()\n        }\n    }\n}\n");
         assert_eq!(kotlin(on, &o), o);
@@ -6328,8 +6378,32 @@ mod tests {
         assert_eq!(kotlin(Wrapping::KOTLIN, header), header);
         assert_eq!(kotlin(on, header), "class D : B(),\n        C {\n}\n");
         // Only Function call arguments.
-        let args = kotlin(Wrapping { kotlin_cont: [false, true, false, false, false, false, false], ..Wrapping::KOTLIN }, t);
+        let args = kotlin(Wrapping { kotlin_cont: [false, true, false, false, false, false, false, false], ..Wrapping::KOTLIN }, t);
         assert!(args.contains("    fun f(\n        x: Int,\n    ) = g(\n            x,\n    )\n"), "{args}");
+    }
+
+    #[test]
+    fn keeps_first_column_comments_and_flat_switches() {
+        let java = |w: Wrapping, text: &str| reformat_indented(ImportStyle::Java, text, None, &IndentStyle { wrapping: Some(w), ..Default::default() });
+        let t = "class A {\n    void k(int x) {\n//        go();\n/* a\n   b */\n        // here\n      // moved\n        switch (x) {\n            case 1:\n                go();\n                break;\n            default:\n                stop();\n        }\n    }\n}\n";
+        // Comment at first column (on): those stay; an indented one goes with the code.
+        let o = java(Wrapping::JAVA, t);
+        assert_eq!(o, t.replace("      // moved", "        // moved"));
+        let off = java(Wrapping { keep_first_column: false, ..Wrapping::JAVA }, t);
+        assert!(off.contains("    void k(int x) {\n        //        go();\n        /* a\n   b */\n"), "{off}");
+        // Indent 'case' branches off: the labels at the switch's level.
+        let flat = java(Wrapping { indent_case: false, ..Wrapping::JAVA }, &o);
+        assert!(flat.contains("        switch (x) {\n        case 1:\n            go();\n            break;\n        default:\n            stop();\n        }\n"), "{flat}");
+        assert_eq!(java(Wrapping { indent_case: false, ..Wrapping::JAVA }, &flat), flat);
+        // Kotlin: line comments only; context parameters' continuation.
+        let kotlin = |w: Wrapping, text: &str| reformat_indented(ImportStyle::Kotlin, text, None, &IndentStyle { wrapping: Some(w), continuation: Some((8, 4)), ..Default::default() });
+        let k = "fun f() {\n//    go()\n    go()\n}\n";
+        assert_eq!(kotlin(Wrapping::KOTLIN, k), k);
+        let c = "context(\n    a: A,\n)\nfun g() {}\n";
+        assert_eq!(kotlin(Wrapping::KOTLIN, c), c);
+        let mut cont = [false; 8];
+        cont[7] = true;
+        assert_eq!(kotlin(Wrapping { kotlin_cont: cont, ..Wrapping::KOTLIN }, c), "context(\n        a: A,\n)\nfun g() {}\n");
     }
 
     #[test]
@@ -6589,7 +6663,7 @@ mod tests {
         assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\nval a = 1\n}", None, &IndentStyle { unit: Some("\t".into()), ..Default::default() }), "fun f() {\n\tval a = 1\n}");
         assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\n    val a = 1\n}", None, &IndentStyle { unit: Some("  ".into()), ..Default::default() }), "fun f() {\n  val a = 1\n}");
         // The code style's: Kotlin continuing by 8 (Expression body functions' Use continuation indent on), a new file's unit 2.
-        let wrapping = Some(Wrapping { kotlin_cont: [false, false, true, false, false, false, false], ..Wrapping::KOTLIN });
+        let wrapping = Some(Wrapping { kotlin_cont: [false, false, true, false, false, false, false, false], ..Wrapping::KOTLIN });
         let style = IndentStyle { unit: None, fallback: Some("  ".into()), continuation: Some((8, 4)), wrapping, ..Default::default() };
         assert_eq!(reformat_indented(ImportStyle::Kotlin, "fun f() {\nval a =\n1\n}", None, &style), "fun f() {\n  val a =\n      1\n}");
     }
