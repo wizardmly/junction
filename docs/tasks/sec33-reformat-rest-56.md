@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-56
 title: Reformat：Wrapping and Braces 页剩下的选项（第五十六批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-56
+pr: 316
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,8 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Throws list 和 Throws keyword 的 Wrap always（IntelliJ THROWS_LIST_WRAP / THROWS_KEYWORD_WRAP = WRAP_ALWAYS）。
+  - 两个下拉框多了 Wrap always（`wrap_option` 按标签给 `Wrap::LABELS_ALWAYS`；settings 读的 `wrap_at` 改用 `from_index_always`）。
+  - `wrap_throws_always` / `split_throws_list`：方法头的 `) throws` 前断行（续行缩进，Align throws keyword 时由缩进器对齐到方法头），throws 列表除第一个外各起一行（Align when multiline 时对齐到第一个类型）；以 `throws ` 开头的行也拆列表；类型实参里的逗号不算。`chop` 里这两项是 WrapAlways 时不再走超长断行。
+  - 测试 `wraps_throws_always`；Signal 语料默认 5201 行不变，强制打开时 5519 行（多出的都是 throws 换行），第二遍 0 行。
+  - 剩下的见 sec33-reformat-rest-57。
