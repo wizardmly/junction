@@ -1750,13 +1750,15 @@ impl SettingsView {
                         continue;
                     }
                     let view = cx.entity();
+                    // Java's parameters offer Wrap always too.
+                    let names: &'static [&'static str] = if lang == StyleLang::Java && i == 1 { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
                     let picker = Button::new(SharedString::from(format!("settings-wrap-{}-{i}", lang.name())))
                         .outline()
                         .small()
-                        .label(Wrap::LABELS[values[i].index()])
+                        .label(names[values[i].index().min(names.len() - 1)])
                         .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
                         .dropdown_menu(move |mut menu, _, _| {
-                            for (n, name) in Wrap::LABELS.into_iter().enumerate() {
+                            for (n, name) in names.iter().copied().enumerate() {
                                 let view = view.clone();
                                 menu = menu.item(PopupMenuItem::new(name).checked(values[i].index() == n).on_click(move |_, _, cx| {
                                     view.update(cx, |this, cx| {
@@ -1764,7 +1766,7 @@ impl SettingsView {
                                             |s| {
                                                 let w = s.code_style.wrapping(lang);
                                                 let mut v = w.values();
-                                                v[i] = Wrap::from_index(n).unwrap_or(Wrap::DoNotWrap);
+                                                v[i] = Wrap::from_index_always(n).unwrap_or(Wrap::DoNotWrap);
                                                 // The other options stay.
                                                 s.code_style.set_wrapping(lang, w.with_values(v))
                                             },

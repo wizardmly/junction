@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-54
 title: Reformat：Wrapping and Braces 页剩下的选项（第五十四批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-54
+pr: 314
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,9 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Method declaration parameters 的 Wrap always（IntelliJ METHOD_PARAMETERS_WRAP = WRAP_ALWAYS）。
+  - Java 页 Method declaration parameters 下拉框多了 Wrap always（`Wrap::LABELS_ALWAYS`，settings 第 1 位读的时候用 `from_index_always`）；Kotlin 页没加。
+  - #313 的 `wrap_record_components` 改成 `wrap_always_lists(text, record, params, only)`：方法 / 构造函数声明（`declaration_paren` 认出来的头，开头是 else / do / assert 的不算）的参数除第一个外各起一行，Align when multiline 时对齐到 `(` 后，否则续行缩进；调用、记录不受影响。`chop` 里遇到 WrapAlways 按 Chop down if long。
+  - 没做：`(` 后面直接换行的头（`void f(` / 参数在下面几行）、第一个括号是注解的行（`@A(x) void f(a, b)`）还认不出；Method call arguments 等别的下拉框的 Wrap always。
+  - 测试补在 `wraps_record_component_annotations`；Signal 语料默认 5201 行不变，强制打开时 7511 行（多出的都是拆开的参数），第二遍 0 行。
+  - 剩下的见 sec33-reformat-rest-55。

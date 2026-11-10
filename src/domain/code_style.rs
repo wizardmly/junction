@@ -276,7 +276,7 @@ impl CodeStyle {
             // array initializer, throws list, throws keyword, annotation
             // parameters (older files stop sooner).
             let parts: Vec<&str> = value.split(',').map(str::trim).collect();
-            let v: Option<Vec<Wrap>> = parts.iter().take(5).map(|n| n.parse().ok().and_then(Wrap::from_index)).collect();
+            let v: Option<Vec<Wrap>> = parts.iter().take(5).map(|n| n.parse().ok().and_then(Wrap::from_index_always)).collect();
             if let Some(v) = v.and_then(|v| <[Wrap; 5]>::try_from(v).ok()) {
                 let mut braces = [false; 7];
                 for (i, b) in braces.iter_mut().enumerate() {
