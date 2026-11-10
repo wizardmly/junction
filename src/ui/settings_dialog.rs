@@ -1841,7 +1841,8 @@ impl SettingsView {
                         .child(self.row("Chained method calls: Builder methods:", query, div().w(px(320.)).child(Input::new(&self.builders).small()), cx))
                         .child(self.note("Method names separated by ','; these calls always start a line in a chain", cx));
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 54] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 55] = [
+                        ("Parenthesized expression: Align when multiline", w.align_parens, |w, v| w.align_parens = v),
                         ("Ensure right margin is not exceeded", w.ensure_margin, |w, v| w.ensure_margin = v),
                         ("Method declaration parameters: Align parenthesised when multiline", w.align_brackets, |w, v| w.align_brackets = v),
                         ("Throws keyword: Align when multiline", w.align_throws_keyword, |w, v| w.align_throws_keyword = v),

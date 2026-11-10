@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-47
 title: Reformat：Wrapping and Braces 页剩下的选项（第四十七批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-47
-pr:
+pr: 307
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Java 的 Parenthesized expression › Align when multiline（`Wrapping::align_parens`，settings.conf 第 109 位，默认关，设置页 Java 的复选框）。`apply_brackets` 第 7 个开关：`(` 由 `expression_paren` 判断是括号表达式（前面是运算符、`(`、`,`、行首、`return` / `throw` / `yield` / `case` / `assert` / `else`、`->`、` >`）且同一行后面还有内容时，括号里后续行的缩进是 `(` 后第一个字符的列。测试 `aligns_parenthesized_expressions`。Signal 语料：默认 5201 行不变，打开时多 4 行对齐、第二遍 0 行。Prefer parameters wrap 没做：IntelliJ 里它是让实参的 Wrap 忽略外层 Wrap（`ignoreParentWraps`），Junction 的 chop 本来就先拆最外层的实参列表、再考虑链式调用和赋值，要先弄清和 IntelliJ 不开时的差别再做；剩下的放到 sec33-reformat-rest-48。
