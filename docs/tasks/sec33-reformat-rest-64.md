@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-64
 title: Reformat：Wrapping and Braces 页剩下的选项（第六十四批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-64
+pr: 330
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Kotlin 的 Chained function calls / Extends / implements list / Assignment and expression body / Elvis expressions 加 Wrap always。`chop_long_lines` 的 `always_break` Kotlin 分支依次试 `supertype_break`（新参数 `always`：第一个之后每个父类都断，照 IntelliJ 的 wrapFirstElement=false）、`assignment_break`、`elvis_break`（当 Chop down）、`chain_break`（margin 都取 `usize::MAX`），最后是 #327 的列表；续行缩进用 Kotlin 的 Use continuation indent（`kotlin_cont`）。坑：实参列表拆开后命名实参 `text = "a",` 也像赋值，强制打开时语料里几千行被拆，所以加了 `always_assigns`：Kotlin 只断声明 / 访问器 / 表达式体 / 带 `.` `[` 的目标，Java 跳过不以 `;` 结尾的单名字目标（注解参数）。settings.conf 第 25 位（Elvis）改用 `from_index_always` 读；设置页 Kotlin 主下拉框和 Elvis 用 LABELS_ALWAYS。测试 `wraps_kotlin_chains_supertypes_assignments_and_elvis_always`。语料：Kotlin 默认 25404 行不变，Kotlin 六个 + Java 赋值 / 注解参数都打开时第二遍 0 行。没做：Kotlin 单独 `x = y` 赋值语句的 Wrap always（要上下文才能和命名实参区分）。剩下的在 sec33-reformat-rest-65。
