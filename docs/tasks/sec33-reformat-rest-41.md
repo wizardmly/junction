@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-41
 title: Reformat：Wrapping and Braces 页剩下的选项（第四十一批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-41
-pr:
+pr: 299
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：这批只做 Java 的 In lambda declaration: Next line。`Braces::lambda_next_line`（不在 `Braces::values` 的七个里，settings.conf wrapping 下标 100 单独存）；`brace_layout` 的 `brace_next_line` 对以 `->` 结尾、不是 `case` / `default` 开头的行返回它；缩进器里以 `{` 开头、上一行代码以 `->` 结尾的行取上一行的缩进（不然在实参括号里会拿到续行缩进）。设置页加了复选框。测试 `lambda_braces_on_next_line`（含 IntelliJ 的 testLambdaBraceStyle）。语料：默认 0 行；打开时第二遍 0 行。

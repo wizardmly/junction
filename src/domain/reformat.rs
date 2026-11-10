@@ -966,6 +966,9 @@ pub struct Braces {
     pub method_next_line: bool,
     /// Kotlin's Put left brace on new line, for all its braces.
     pub other_next_line: bool,
+    /// Java's Braces placement › In lambda declaration: Next line
+    /// (LAMBDA_BRACE_STYLE, End of line).
+    pub lambda_next_line: bool,
     /// Force braces for Java's 'if', 'for' and 'while'.
     pub force: [Force; 3],
 }
@@ -1037,7 +1040,7 @@ impl Braces {
         [self.else_new_line, self.while_new_line, self.catch_new_line, self.finally_new_line, self.class_next_line, self.method_next_line, self.other_next_line]
     }
 
-    pub const NONE: Braces = Braces { else_new_line: false, while_new_line: false, catch_new_line: false, finally_new_line: false, class_next_line: false, method_next_line: false, other_next_line: false, force: [Force::DoNotForce; 3] };
+    pub const NONE: Braces = Braces { else_new_line: false, while_new_line: false, catch_new_line: false, finally_new_line: false, class_next_line: false, method_next_line: false, other_next_line: false, lambda_next_line: false, force: [Force::DoNotForce; 3] };
 
     /// The seven switches; `force` stays.
     pub fn with_values(self, v: [bool; 7]) -> Self {
@@ -1455,6 +1458,13 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 if let Some(head) = previous.as_ref().filter(|p| !p.opened && p.depth == stack.len()).and_then(|p| p.head) {
                     indent = head + step;
                     body_line = true;
+                }
+            }
+            // A lambda's `{` on a line of its own (In lambda declaration: Next
+            // line): at the level of the line with its `->`.
+            if flavor == Flavor::Java && code_start.starts_with('{') {
+                if let Some(p) = previous.as_ref().filter(|p| p.code.trim_end().ends_with("->")) {
+                    indent = p.indent;
                 }
             }
             // Indent 'break' from 'case' off: a case body's `break` at its label's level.
@@ -3444,6 +3454,10 @@ fn brace_layout(text: &str, kotlin: bool, braces: &Braces, only: Option<Range<us
         let first = head.trim_start_matches('}').trim_start().split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
         if matches!(first, "if" | "else" | "for" | "while" | "do" | "try" | "catch" | "finally" | "switch" | "synchronized") {
             return Some(braces.other_next_line);
+        }
+        // A lambda's `{` (not a switch rule's).
+        if head.ends_with("->") && !matches!(first, "case" | "default") {
+            return Some(braces.lambda_next_line);
         }
         if head.contains("->") || head.ends_with('=') || head.ends_with(']') || head.contains("new ") {
             return None;
@@ -7369,6 +7383,21 @@ mod tests {
         assert_eq!(java(chop, &c), c);
         let off = Wrapping { catch_wrap: Wrap::DoNotWrap, ..Wrapping::JAVA };
         assert_eq!(java(off, t), t);
+    }
+
+    #[test]
+    fn lambda_braces_on_next_line() {
+        let java = |w: Wrapping, text: &str| reformat_indented(ImportStyle::Java, text, None, &IndentStyle { wrapping: Some(w), ..Default::default() });
+        let t = "class A {\n    void f() {\n        run(() -> {\n            g();\n        });\n        switch (k) {\n            case 1 -> {\n                h();\n            }\n        }\n    }\n}\n";
+        assert_eq!(java(Wrapping::JAVA, t), t);
+        let next = Wrapping { braces: Braces { lambda_next_line: true, ..Braces::NONE }, ..Wrapping::JAVA };
+        let o = java(next, t);
+        assert_eq!(o, "class A {\n    void f() {\n        run(() ->\n        {\n            g();\n        });\n        switch (k) {\n            case 1 -> {\n                h();\n            }\n        }\n    }\n}\n");
+        assert_eq!(java(next, &o), o);
+        assert_eq!(java(Wrapping::JAVA, &o), t);
+        // IntelliJ's testLambdaBraceStyle.
+        let r = java(next, "class A {\n    void f() {\n        Runnable r = () -> {\n        };\n    }\n}\n");
+        assert_eq!(r, "class A {\n    void f() {\n        Runnable r = () ->\n        {\n        };\n    }\n}\n");
     }
 
     #[test]
