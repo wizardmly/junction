@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-49
 title: Reformat：Wrapping and Braces 页剩下的选项（第四十九批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-49
+pr: 309
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Ensure right margin is not exceeded 用在普通代码上。`chop_long_lines` 在 `chop` 拆不了时调用 `forced_chop`：Java 且 ensure_margin 打开、行超过边距时，把 call_args / params / assignment / ops.binary 里的 Do not wrap 换成 Wrap if long 再 `chop` 一次（IntelliJ 的 WRAP_LONG_LINES 在格式化后按 LineWrapPositionStrategy 强制断行再重排，结果等同这些位置 Wrap if long）。另外 `chop` 的 `declaration`（形参列表不超、后面的 `) {` 超）以前只给 Kotlin，现在 Java 也用（testNoWrapOnEllipsis 需要；Java 默认形参 Do not wrap，默认语料不变）。测试在 `ensures_right_margin_is_not_exceeded` 里加了 testNoImportWrap / testNoWrapOnEllipsis / testNoWrapInDouble。Signal 语料：默认 5201 行不变，打开时 6656 行、第二遍 0 行。剩下的放到 sec33-reformat-rest-50。

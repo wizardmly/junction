@@ -3908,12 +3908,29 @@ fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, wrapper: &Wrapper) 
     let mut todo: Vec<(String, bool)> = lines.into_iter().zip(choppable).rev().collect();
     while let Some((line, choppable)) = todo.pop() {
         // A chop that changes nothing would come back forever.
-        match choppable.then(|| chop(&line, wrapper)).flatten().filter(|parts| parts.len() > 1) {
+        match choppable.then(|| chop(&line, wrapper).filter(|parts| parts.len() > 1).or_else(|| forced_chop(&line, wrapper))).flatten().filter(|parts| parts.len() > 1) {
             Some(parts) => todo.extend(parts.into_iter().rev().map(|p| (p, true))),
             None => out.push(line),
         }
     }
     out
+}
+
+/// Java's Ensure right margin is not exceeded for code: a line still past
+/// the margin that no option wraps is wrapped as if its argument and
+/// parameter lists, assignment and binary operations were Wrap if long
+/// (IntelliJ's testNoImportWrap / testNoWrapOnEllipsis: `=` then the value
+/// a continuation deeper, parameters under the first).
+fn forced_chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
+    if wr.kotlin || !wr.w.ensure_margin || width(line) <= wr.margin {
+        return None;
+    }
+    let up = |w: Wrap| if w == Wrap::DoNotWrap { Wrap::WrapIfLong } else { w };
+    let w = Wrapping { call_args: up(wr.w.call_args), params: up(wr.w.params), assignment: up(wr.w.assignment), ops: Operations { binary: up(wr.w.ops.binary), ..wr.w.ops }, ..wr.w };
+    if w == wr.w {
+        return None;
+    }
+    chop(line, &Wrapper { kotlin: false, unit: wr.unit, cont: wr.cont.clone(), margin: wr.margin, w, tabs: wr.tabs })
 }
 
 /// Columns, a tab as 4.
@@ -4015,7 +4032,7 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
     let declaration = || {
         let (open, close) = paren_pair(&info.brackets)?;
         let head = &line[..open];
-        (wr.kotlin && wr.w.params != Wrap::DoNotWrap && declares(open, 0) && !line[open + 1..close].trim().is_empty() && width(head) < margin).then_some((0, open, close))
+        (wr.w.params != Wrap::DoNotWrap && declares(open, 0) && !line[open + 1..close].trim().is_empty() && width(head) < margin).then_some((0, open, close))
     };
     if best.is_none() && wr.kotlin && wr.w.extends != Wrap::DoNotWrap {
         if let Some(parts) = supertype_break(line, &info, kc(4), margin) {
@@ -8079,6 +8096,12 @@ mod tests {
         let o = java(on, 20, t);
         assert!(o.starts_with("class TestClass {\n    //This is a \n    // comment\n"), "{o}");
         assert!(o.contains("            case \"a long label here\":\n"), "{o}");
+        // Code no option wraps (testNoImportWrap, margin 40; testNoWrapOnEllipsis and testNoWrapInDouble, 35).
+        let t = "package com.company;\n\nimport com.company.subpackage.TestClassOne;\n\npublic class Test {\n    void foo() {\n        TestClassOne testClassOne = new TestClassOne();\n    }\n}\n";
+        assert_eq!(java(Wrapping::JAVA, 40, t), t);
+        assert_eq!(java(on, 40, t), "package com.company;\n\nimport com.company.subpackage.TestClassOne;\n\npublic class Test {\n    void foo() {\n        TestClassOne testClassOne =\n                new TestClassOne();\n    }\n}\n");
+        let t = "public class Test {\n    void test(String a, String... b) {\n    }\n\n    void test() {\n        double doubleNumber = 12.456;\n    }\n}\n";
+        assert_eq!(java(on, 35, t), "public class Test {\n    void test(String a,\n              String... b) {\n    }\n\n    void test() {\n        double doubleNumber =\n                12.456;\n    }\n}\n");
         // Block comments and Javadoc (testWrapLongLine's): broken at a space,
         // the rest at the indent or under a ` * `.
         let t = "class TestClass {\n    /* Multi line comment that is long enough to exceed right margin*/\n    /** Javadoc comment that is long enough to exceed right margin */\n    /**\n     * Javadoc comment that is long enough to exceed right margin\n     */\n    int a; /* trailing comment after code that is long */\n}\n";
