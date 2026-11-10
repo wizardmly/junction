@@ -32,6 +32,10 @@ pub struct SavedBreakpoint {
     /// A method breakpoint: the method declared on the line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
+    /// A wildcard method breakpoint: `method` in the classes matching this
+    /// pattern; no source (`file` is "pattern.method", `line` 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_pattern: Option<String>,
     /// A field watchpoint: the field declared on the line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
@@ -95,7 +99,14 @@ impl BreakpointRef {
 
 impl SavedBreakpoint {
     pub fn new(file: &str, line: u32) -> Self {
-        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None, field: None, field_access: false, field_modification: true, method_entry: true, method_exit: false, remove_once_hit: false, master: None, leave_enabled: false, instances: Vec::new() }
+        Self { file: file.to_owned(), line, enabled: true, condition: None, suspend: true, log_message: false, log_stack: false, log_expression: None, method: None, class_pattern: None, field: None, field_access: false, field_modification: true, method_entry: true, method_exit: false, remove_once_hit: false, master: None, leave_enabled: false, instances: Vec::new() }
+    }
+}
+
+impl SavedBreakpoint {
+    /// IntelliJ's wildcard method breakpoint.
+    pub fn wildcard(class_pattern: &str, method: &str) -> Self {
+        Self { method: Some(method.to_owned()), class_pattern: Some(class_pattern.to_owned()), ..Self::new(&format!("{class_pattern}.{method}"), 0) }
     }
 }
 

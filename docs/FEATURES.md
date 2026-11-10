@@ -1097,7 +1097,8 @@ Linux 实测（Xvfb）：Kotlin 工程里 `Cart.total(price: Double, count: Int)
 | 图标：菱形，已验证带勾、禁用为空心、不挂起为黄色（IntelliJ 的 breakpointMethod 系列）；Breakpoints 对话框分为 “Java Method Breakpoints” / “Kotlin Function Breakpoints”，标题如 “CalcTest.java:30 totals()”；持久化在 breakpoints.json 的 `method` 字段 | ✅ |
 | Method exit（2026-10-20）：Breakpoints 对话框里方法断点的 Watch 选项 “Method entry”（默认开）/ “Method exit”（默认关），照 IntelliJ；退出用 JDWP 的 MethodExit 事件（`ClassOnly` 过滤到该类，事件来自别的方法时直接继续），停在方法返回处（`return` 那一行，局部变量还在）；JVM 和 ART 都支持。存为 breakpoints.json 的 `method_entry` / `method_exit`，改动后在运行中的会话里重设 | ✅ |
 | 接口 / 抽象方法上的断点（2026-10-29）：没有方法体的方法（接口方法、`abstract`，不含 `native` / `external`）的声明行也设方法断点；调试时按它的 Method Hierarchy 找到工程里所有实现（子类型里定义了它的方法），在每个实现的第一条代码上停（Method exit 同样），条件、日志、Remove once hit 都算在接口的断点上；实现所在的包一起监视类加载。Linux 实测：`interface Adder { int add(int a, int b); }`，`Calc implements Adder`，在 Adder.java 的 `add` 行设菱形断点，Debug 'CalcTest.adds' 停在 `Calc.add` 第 7 行，Variables 里 `a = 1`、`b = 2` | ✅ |
-| 按类名 + 方法名的通配方法断点、库里和 lambda 的实现 | ⬜ |
+| 按类名 + 方法名的通配方法断点（2026-11-10，照 IntelliJ 的 `WildcardMethodBreakpoint`）：Breakpoints 对话框的 + 现在是菜单（Java Method Breakpoints / Java Exception Breakpoints），选前者后填 “类名模式.方法名”（最后一个点之后是方法名，两边都可以用 `*`，如 `com.example.*Service.save`），不需要源码行；调试时在所有类名匹配的类（按类名，不看源文件）里同名方法的第一条代码上停，以后加载的类也算。列在 “Java Method Breakpoints” 下，标题如 `a.Bo*.set()`；条件、日志、Remove once hit、依赖、Method entry / exit 和普通方法断点一样；存为 breakpoints.json 的 `class_pattern`（`file` 是 “模式.方法名”）。模式里 `*` 只在一端时用 JDWP 的类加载过滤，否则监视所有类的加载。Linux 实测：加 `a.Bo*.set`，调试 BoxTest.boxes 停在 `Box.set:7`（`v = 1`）；库里的类没有单独实测 | ✅ |
+| 接口 / 抽象方法断点在库里和 lambda 的实现 | ⬜ |
 
 Method exit 实测（Xvfb，JUnit 4 示例）：`Calc.add` 上的方法断点只勾 Method exit，Debug 'CalcTest.adds' 后停在 `add:6`（`return sum + 10;`），Variables 显示 `a = 1`、`b = 2`、`sum = 3`；F9 后第二次调用再停一次（帧 `adds:10`），再 F9 测试结束。
 

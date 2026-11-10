@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::domain::debugger::{in_package, line_locations, method_entries, FieldWatch, MethodHeader, package_pattern, DebugEvent, DebugVm, Frame, StepDepth, Suspend, ThreadInfo, Value, Variable};
+use crate::domain::debugger::{in_package, line_locations, method_entries, FieldWatch, Location, MethodHeader, package_pattern, DebugEvent, DebugVm, Frame, StepDepth, Suspend, ThreadInfo, Value, Variable};
 use crate::domain::hotswap::{ClassFiles, Dexer, HotSwapOutcome};
 use crate::usecase::evaluate::{self, Scope};
 
@@ -41,6 +41,27 @@ pub struct LineBreakpoint {
     /// An interface / abstract method breakpoint's implementations: it
     /// stops entering (or leaving) each of them, as IntelliJ's.
     pub implementations: Vec<Implementation>,
+    /// IntelliJ's wildcard method breakpoint: no source line, it stops in
+    /// the methods with a name of the classes matching a pattern.
+    pub wildcard: Option<WildcardMethod>,
+}
+
+/// A class pattern (`com.example.*Service`, `*` any run of characters)
+/// and a method's name (a pattern too).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WildcardMethod {
+    pub class_pattern: String,
+    pub method: String,
+}
+
+impl WildcardMethod {
+    /// What JDWP's class prepare filter takes: a `*` only at an end; any
+    /// class for a pattern with one elsewhere.
+    fn prepare_pattern(&self) -> String {
+        let inner = self.class_pattern.trim_start_matches('*').trim_end_matches('*');
+        let ends = self.class_pattern.starts_with('*') as u8 + self.class_pattern.ends_with('*') as u8;
+        if inner.contains('*') || ends > 1 { "*".into() } else { self.class_pattern.clone() }
+    }
 }
 
 /// A method implementing an abstract one: its file's name, its package and
@@ -58,15 +79,32 @@ impl LineBreakpoint {
         std::iter::once(self.package.as_str()).chain(self.implementations.iter().map(|i| i.package.as_str()))
     }
 
+    /// The class prepare patterns that tell when its classes load.
+    fn prepare_patterns(&self) -> Vec<String> {
+        match &self.wildcard {
+            Some(w) => vec![w.prepare_pattern()],
+            None => self.packages().map(package_pattern).collect(),
+        }
+    }
+
     fn in_packages(&self, class: &str) -> bool {
-        self.packages().any(|p| in_package(class, p))
+        match &self.wildcard {
+            Some(w) => glob(&w.class_pattern, class),
+            None => self.packages().any(|p| in_package(class, p)),
+        }
     }
 }
 
 impl LineBreakpoint {
     pub fn new(path: &Path, package: String, line: u32) -> Self {
         let source_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Self { path: path.to_path_buf(), source_name, package, line, condition: None, actions: BreakpointActions::default(), method: None, method_entry: true, method_exit: false, field: None, implementations: Vec::new() }
+        Self { path: path.to_path_buf(), source_name, package, line, condition: None, actions: BreakpointActions::default(), method: None, method_entry: true, method_exit: false, field: None, implementations: Vec::new(), wildcard: None }
+    }
+
+    /// A wildcard method breakpoint, named by its pattern (no file).
+    pub fn wildcard(class_pattern: &str, method: &str) -> Self {
+        let wildcard = WildcardMethod { class_pattern: class_pattern.to_owned(), method: method.to_owned() };
+        Self { wildcard: Some(wildcard), ..Self::new(Path::new(&format!("{class_pattern}.{method}")), String::new(), 1) }
     }
 }
 
@@ -319,8 +357,7 @@ impl DebugSession {
         if state.breakpoints.iter().any(|p| p.breakpoint.path == breakpoint.path && p.breakpoint.line == breakpoint.line) {
             return Ok(state.breakpoints.iter().any(|p| p.breakpoint == breakpoint && !p.requests.is_empty()));
         }
-        for package in breakpoint.packages() {
-            let pattern = package_pattern(package);
+        for pattern in breakpoint.prepare_patterns() {
             if !state.watched.contains_key(&pattern) {
                 let request = self.vm.watch_class_prepare(&pattern)?;
                 state.watched.insert(pattern, request);
@@ -396,6 +433,16 @@ impl DebugSession {
     /// Breakpoint requests for a class, when it was compiled from the
     /// breakpoint's file and has code on its line.
     fn place(&self, class: u64, breakpoint: &LineBreakpoint) -> Result<Vec<u32>, String> {
+        // A wildcard one: the first code of each method with the name.
+        if let Some(wildcard) = &breakpoint.wildcard {
+            let methods = self.vm.methods(class)?;
+            let entries = methods
+                .iter()
+                .filter(|m| glob(&wildcard.method, &m.name))
+                .filter_map(|m| Some(Location { class, method: m.id, index: m.lines.iter().map(|(ix, _)| *ix).min()? }))
+                .collect();
+            return self.place_entries(class, entries, breakpoint);
+        }
         let source = self.vm.source_file(class)?;
         // An implementation of the abstract method in this class.
         let mut requests = Vec::new();
@@ -430,7 +477,11 @@ impl DebugSession {
     /// A method breakpoint's requests for the method `header` declares in
     /// a class.
     fn place_method(&self, class: u64, methods: &[crate::domain::debugger::MethodInfo], header: &MethodHeader, breakpoint: &LineBreakpoint) -> Result<Vec<u32>, String> {
-        let entries = method_entries(class, methods, header);
+        self.place_entries(class, method_entries(class, methods, header), breakpoint)
+    }
+
+    /// A method breakpoint's requests for the methods starting at `entries`.
+    fn place_entries(&self, class: u64, entries: Vec<Location>, breakpoint: &LineBreakpoint) -> Result<Vec<u32>, String> {
         let mut requests = Vec::new();
         // Exits come as events from the class's methods, kept for these
         // (IntelliJ's non-emulated method breakpoint).
@@ -562,7 +613,7 @@ impl DebugSession {
         }
         let mut state = self.state.lock().unwrap();
         let classes = self.vm.all_classes()?;
-        for placed in state.breakpoints.iter_mut().filter(|p| p.breakpoint.field.is_none() && (sources.contains(&p.breakpoint.source_name) || p.breakpoint.implementations.iter().any(|i| sources.contains(&i.source_name)))) {
+        for placed in state.breakpoints.iter_mut().filter(|p| p.breakpoint.field.is_none() && (sources.contains(&p.breakpoint.source_name) || p.breakpoint.implementations.iter().any(|i| sources.contains(&i.source_name)) || p.breakpoint.wildcard.is_some())) {
             for request in placed.requests.drain(..) {
                 let _ = self.clear_request(request);
             }
@@ -1135,6 +1186,27 @@ mod tests {
         vm.send(Suspend::All, vec![prepare(10, "a.CalcTest")]);
         assert_eq!(session.poll(Duration::ZERO), Ok(vec![SessionEvent::Verified { path: "/p/src/main/java/b/Shape.java".into(), line: 3 }]));
         assert_eq!(vm.take_log(), ["break 10:1:0", "resume"]);
+    }
+
+    #[test]
+    fn wildcard_method_breakpoints_stop_in_matching_classes() {
+        let vm = vm();
+        vm.loaded.lock().unwrap().push(ClassRef { id: 10, name: "a.CalcTest".into() });
+        vm.loaded.lock().unwrap().push(ClassRef { id: 11, name: "b.Handler".into() });
+        let session = DebugSession::new(vm.clone());
+        // No source: the loaded class the pattern matches, its method by name.
+        let wildcard = LineBreakpoint::wildcard("a.*Test", "m1");
+        assert_eq!(session.add_breakpoint(wildcard.clone()), Ok(true));
+        assert_eq!(vm.take_log(), ["watch *", "break 10:1:0"]);
+        // A hit pauses like any breakpoint; removed by its name.
+        let request = *vm.next.lock().unwrap();
+        vm.send(Suspend::All, vec![DebugEvent::Breakpoint { thread: 1, location: Location { class: 10, method: 1, index: 0 }, request }]);
+        assert!(matches!(session.poll(Duration::ZERO).unwrap()[..], [SessionEvent::Paused { reason: PauseReason::Breakpoint, .. }]));
+        session.remove_breakpoint(&wildcard.path, wildcard.line).unwrap();
+        assert_eq!(vm.take_log(), [format!("clear {request}")]);
+        // A `*` at one end only is what the VM's filter takes; none matches no other class.
+        assert_eq!(session.add_breakpoint(LineBreakpoint::wildcard("c.*", "m*")), Ok(false));
+        assert_eq!(vm.take_log(), ["watch c.*"]);
     }
 
     #[test]

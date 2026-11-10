@@ -28,7 +28,7 @@ use crate::ui::debug_service::DebugService;
 
 /// IntelliJ's group for a file's breakpoints.
 fn group(b: &SavedBreakpoint) -> &'static str {
-    let java = b.file.ends_with(".java");
+    let java = b.file.ends_with(".java") || b.class_pattern.is_some();
     match (java, b.method.is_some(), b.field.is_some()) {
         (true, _, true) => "Java Field Watchpoints",
         (false, _, true) => "Kotlin Field Watchpoints",
@@ -62,6 +62,10 @@ impl MarkKind {
 /// "CalcTest.java:34", the line 1-based; a method breakpoint's
 /// "CalcTest.java:34 totals()".
 pub fn title(b: &SavedBreakpoint) -> String {
+    // A wildcard method breakpoint: "com.example.*Service.save()".
+    if b.class_pattern.is_some() {
+        return format!("{}()", b.file);
+    }
     let at = format!("{}:{}", b.file.rsplit(['/', '\\']).next().unwrap_or(&b.file), b.line + 1);
     match (&b.method, &b.field) {
         (_, Some(f)) => format!("{at} {f}"),
@@ -138,7 +142,8 @@ pub struct BreakpointsView {
     exceptions: Vec<SavedExceptionBreakpoint>,
     /// The selected exception breakpoint's class (instead of a line one).
     exception: Option<String>,
-    /// "+": the new exception breakpoint's class field.
+    /// "+": the new exception breakpoint's class field, or the new method
+    /// breakpoint's "class pattern.method" one.
     adding: Option<Entity<InputState>>,
     /// Enter in the class field also reaches the dialog: it stays open.
     just_added: bool,
@@ -207,10 +212,12 @@ impl BreakpointsView {
         cx.notify();
     }
 
-    /// "+": a field for the new exception breakpoint's class.
-    fn start_adding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Exception class, e.g. java.lang.IllegalStateException"));
-        self._subscriptions.push(cx.subscribe_in(&input, window, |this, input, event: &InputEvent, window, cx| {
+    /// "+": a field for the new exception breakpoint's class, or for a
+    /// method breakpoint's class pattern and method name.
+    fn start_adding(&mut self, method: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let hint = if method { "Class pattern.method, e.g. com.example.*Service.save" } else { "Exception class, e.g. java.lang.IllegalStateException" };
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(hint));
+        self._subscriptions.push(cx.subscribe_in(&input, window, move |this, input, event: &InputEvent, window, cx| {
             if !matches!(event, InputEvent::PressEnter { .. }) {
                 return;
             }
@@ -223,7 +230,16 @@ impl BreakpointsView {
                 this.update(cx, |this, _| this.just_added = false).ok();
             })
             .detach();
-            if !class.is_empty() && class.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '$') {
+            if method {
+                // The method's name after the last dot; `*` in either.
+                let name = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '$' | '*' | '<' | '>'));
+                if let Some((pattern, method)) = class.rsplit_once('.').filter(|(p, m)| name(p) && name(m) && !m.contains('.')) {
+                    this.commit_fields(cx);
+                    let (file, line) = this.service.update(cx, |s, cx| s.add_wildcard_method_breakpoint(pattern, method, cx));
+                    this.refresh(cx);
+                    this.select(file, line, window, cx);
+                }
+            } else if !class.is_empty() && class.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '$') {
                 this.service.update(cx, |s, cx| s.set_exception_breakpoint(SavedExceptionBreakpoint::new(&class), cx));
                 this.refresh(cx);
                 this.select_exception(class, window, cx);
@@ -304,6 +320,10 @@ impl BreakpointsView {
     fn show_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.apply(|_| {}, cx);
         let Some((file, line)) = self.selected.clone() else { return };
+        // A wildcard method breakpoint has no source.
+        if self.current().is_some_and(|b| b.class_pattern.is_some()) {
+            return;
+        }
         window.close_dialog(cx);
         self.service.update(cx, |s, cx| s.show_source(&file, line, cx));
     }
@@ -604,7 +624,18 @@ impl Render for BreakpointsView {
                             .flex_none()
                             .border_b_1()
                             .border_color(palette.border)
-                            .child(tool_button("breakpoints-add", icons::ADD, "Add Java Exception Breakpoint").on_click(cx.listener(|this, _, window, cx| this.start_adding(window, cx))))
+                            .child({
+                                // IntelliJ's "+": the kinds that need no source line.
+                                let view = cx.entity();
+                                tool_button("breakpoints-add", icons::ADD, "Add Breakpoint").dropdown_menu(move |menu, _, _| {
+                                    let add = |method: bool| {
+                                        let view = view.clone();
+                                        move |_: &ClickEvent, window: &mut Window, cx: &mut App| view.update(cx, |this, cx| this.start_adding(method, window, cx))
+                                    };
+                                    menu.item(PopupMenuItem::new("Java Method Breakpoints").icon(Icon::new(mark_icon(MarkKind::Method, true, false, true))).on_click(add(true)))
+                                        .item(PopupMenuItem::new("Java Exception Breakpoints").icon(Icon::new(icons::BREAKPOINT_EXCEPTION)).on_click(add(false)))
+                                })
+                            })
                             .child(
                                 tool_button("breakpoints-remove", icons::REMOVE, "Remove")
                                     .disabled(!has_selection)

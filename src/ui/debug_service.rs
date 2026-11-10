@@ -459,6 +459,17 @@ impl DebugService {
         self.toggle(SavedBreakpoint { suspend: false, log_message: true, ..Self::kind_on(file, line, text) }, cx);
     }
 
+    /// IntelliJ's wildcard method breakpoint (Breakpoints › + › Java
+    /// Method Breakpoints): the file and line it's listed under.
+    pub fn add_wildcard_method_breakpoint(&mut self, class_pattern: &str, method: &str, cx: &mut Context<Self>) -> (String, u32) {
+        let new = SavedBreakpoint::wildcard(class_pattern, method);
+        let key = (new.file.clone(), new.line);
+        if self.breakpoint(&key.0, key.1).is_none() {
+            self.toggle(new, cx);
+        }
+        key
+    }
+
     fn toggle(&mut self, new: SavedBreakpoint, cx: &mut Context<Self>) {
         let (file, line) = (new.file.as_str(), new.line);
         let session = self.session.clone().filter(|s| !s.is_ended());
@@ -1397,6 +1408,13 @@ pub(crate) fn node_at<'a>(nodes: &'a mut [VarNode], path: &[usize]) -> Option<&'
 
 /// A saved breakpoint as the session sets it: the package from the file.
 fn line_breakpoint(saved: &SavedBreakpoint) -> LineBreakpoint {
+    if let (Some(pattern), Some(method)) = (&saved.class_pattern, &saved.method) {
+        let mut breakpoint = LineBreakpoint::wildcard(pattern, method);
+        breakpoint.condition = saved.condition.clone();
+        breakpoint.actions = actions(saved);
+        (breakpoint.method_entry, breakpoint.method_exit) = (saved.method_entry, saved.method_exit);
+        return breakpoint;
+    }
     let text = std::fs::read_to_string(&saved.file).unwrap_or_default();
     let mut breakpoint = LineBreakpoint::new(Path::new(&saved.file), debugger::package_of(&text), saved.line + 1);
     breakpoint.condition = saved.condition.clone();
