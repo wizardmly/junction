@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-34
 title: Reformat：Wrapping and Braces 页剩下的选项（第三十四批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-34
+pr: 291
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,6 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：`Wrapping::keep_multiple`（KEEP_MULTIPLE_EXPRESSIONS_IN_ONE_LINE，默认关，和 IntelliJ 一样）和 `modifier_wrap`（MODIFIER_LIST_WRAP，默认关），settings.conf wrapping 第 86–87 位（现在 88 位）。Multiple expressions：`split_one_line_bodies` 多了 `multiple` 参数，代码块里的行交给新的 `split_statements`，在括号外第一个后面还有代码的 `;` 处拆开（照 JavaSpacePropertyProcessor 两条语句之间 minLineFeeds = 1）。Wrap after modifier list：缩进之后的一遍 `wrap_modifier_lists`（在空行处理之后做，放在前面做会被最少空行的逻辑吃掉成员之间的空行），类体或顶层的成员行把开头的修饰符 / 注解拆到单独一行，拆了就再排一遍版（同 chop 之后的做法），让参数等对齐跟着走；缩进器里修饰符单独一行之后的 `Name(` 由 `modifier_list_line` / `constructor_paren` 认成构造函数声明，参数照样对齐到第一个下面。
+- Signal 语料：默认 0 行变化（Java 5103、Kotlin 25404）；两项都打开时第二遍 0 行。
+- 没做：`case 1: a(); break;` 这种 case 标签行、同一行 `{ a(); b(); }` 里的多条语句不拆（IntelliJ 会拆）；单独一行的带参数注解（`@Ann(x)`）后面的构造函数不当声明对齐；Align simple methods in columns、Builder methods、Text blocks 留给 sec33-reformat-rest-35。
