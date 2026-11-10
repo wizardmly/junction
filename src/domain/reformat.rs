@@ -1212,7 +1212,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let (a, only) = wrap_annotations(&forced, false, &[class, method, field, w.local_annotations, w.enum_annotations], w.single_annotation[0], only, margin);
                 let (a, only) = wrap_enum_constants(&a, w.enum_constants, only, margin);
                 let record = if w.record_wrap == Wrap::WrapAlways && w.record_annotations { AnnotationWrap::WrapAlways } else { AnnotationWrap::DoNotWrap };
-                let (a, only) = if w.record_wrap == Wrap::WrapAlways { wrap_record_components(&a, w.align_records, only) } else { (a, only) };
+                let (a, only) = wrap_always_lists(&a, (w.record_wrap == Wrap::WrapAlways).then_some(w.align_records), (w.params == Wrap::WrapAlways).then_some(w.align_params), only);
                 let (a, only) = wrap_parameter_annotations(&a, false, [w.param_annotations, record], w.single_annotation[1], only, margin);
                 let (a, only) = split_one_line_bodies(&a, w.keep_one_line, w.keep_multiple, w.case_new_line, w.body_new_line, only);
                 let (a, only) = else_if_layout(&a, w.special_else_if, only);
@@ -3455,11 +3455,12 @@ fn list_parens(text: &str, kotlin: bool, call: [bool; 2], decl: [bool; 2], recor
     (out.join("\n"), only)
 }
 
-/// Java's Record components set to Wrap always: every component after the
-/// first starts a line of its own, under the first with Align when
-/// multiline (else a continuation indent), also in a header that already
-/// spans lines.
-fn wrap_record_components(text: &str, align: bool, only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+/// Java's Wrap always for Record components and Method declaration
+/// parameters: every item after the first starts a line of its own, under
+/// the first with Align when multiline (else a continuation indent), also
+/// in a header that already spans lines. Each list is `Some(align)` when
+/// it's set to Wrap always.
+fn wrap_always_lists(text: &str, record: Option<bool>, params: Option<bool>, only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
     let lines = scan(text, false);
     let raw: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(raw.len());
@@ -3472,7 +3473,13 @@ fn wrap_record_components(text: &str, align: bool, only: Option<Range<usize>>) -
         let plain = !info.comment.iter().any(|c| *c);
         let lead = &line[..line.len() - line.trim_start().len()];
         let mut start = 0;
-        if header.is_none() && info.starts_in.unwrap_or(State::Code) == State::Code && record_header(line) {
+        let align = if record_header(line) {
+            record
+        } else {
+            let first = line.split_whitespace().next().unwrap_or("");
+            params.filter(|_| !matches!(first, "else" | "do" | "assert") && declaration_paren(line).is_some())
+        };
+        if let (None, Some(align), true) = (&header, align, info.starts_in.unwrap_or(State::Code) == State::Code) {
             let Some(open) = line.find('(') else { out.push((*line).to_owned()); continue };
             let cont = if align { " ".repeat(line[..=open].chars().count()) } else { format!("{lead}        ") };
             header = Some((0, cont));
@@ -4129,7 +4136,7 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
             // Wrap always split it before; still too long, it chops.
             if wr.w.record_wrap == Wrap::WrapAlways { Wrap::ChopIfLong } else { wr.w.record_wrap }
         } else if declares(open, depth) {
-            wr.w.params
+            if wr.w.params == Wrap::WrapAlways { Wrap::ChopIfLong } else { wr.w.params }
         } else if !wr.kotlin && deconstruction(&line[..open]) {
             wr.w.decon_wrap
         } else {
@@ -8240,6 +8247,12 @@ mod tests {
         // Commas in type arguments and annotation values aren't the components'.
         let g = "public record G(Map<String, List<Integer>> m, @Ann(a = {1, 2}) int x) implements Comparable<G> {\n    record E() {\n    }\n}\n";
         assert_eq!(java(always, g), "public record G(Map<String, List<Integer>> m,\n                @Ann(a = {1, 2}) int x) implements Comparable<G> {\n    record E() {\n    }\n}\n");
+        // Method declaration parameters: Wrap always, aligned or not; calls and records stay.
+        let m = "class A {\n    public static <T> void f(int a, Map<String, T> b, @Nullable String c) {\n        go(a, b);\n        else(x, y);\n    }\n\n    abstract int g(int x);\n}\n";
+        let pw = Wrapping { params: Wrap::WrapAlways, ..Wrapping::JAVA };
+        assert_eq!(java(pw, m), "class A {\n    public static <T> void f(int a,\n                             Map<String, T> b,\n                             @Nullable String c) {\n        go(a, b);\n        else(x, y);\n    }\n\n    abstract int g(int x);\n}\n");
+        assert_eq!(java(Wrapping { align_params: false, ..pw }, m), "class A {\n    public static <T> void f(int a,\n            Map<String, T> b,\n            @Nullable String c) {\n        go(a, b);\n        else(x, y);\n    }\n\n    abstract int g(int x);\n}\n");
+        assert_eq!(java(pw, t), t);
         // Do not wrap after single annotation is for parameters only.
         assert_eq!(java(Wrapping { record_annotations: true, single_annotation: [true; 2], ..always }, t), o);
     }
