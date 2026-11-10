@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-36
 title: Reformat：Wrapping and Braces 页剩下的选项（第三十六批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-36
+pr: 293
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,7 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：`Wrapping::array_parens: [bool; 2]`（ARRAY_INITIALIZER_LBRACE_ON_NEXT_LINE / RBRACE_ON_NEXT_LINE，默认关）和 `single_annotation: [bool; 2]`（DO_NOT_WRAP_AFTER_SINGLE_ANNOTATION / _IN_PARAMETER，默认关），settings.conf wrapping 第 91–94 位（现在 95 位）。数组：`list_parens` 多了 `array` 参数，跨行的 `{…}`（`is_array_initializer`）在 `{` 后、`}` 前切开。单个注解：`wrap_annotations` 多了 `single_field`，字段只有一个前导注解时不换行（照 JavaFormatterUtil.isModifierListWithSingleAnnotation，只看注解个数）；`wrap_parameter_annotations` 多了 `single`，参数只有一个注解时不切。
+- Signal 语料：默认 0 行变化（Java 5103、Kotlin 25404）；全打开时第二遍 0 行。
+- 坑：容器磁盘会被 target/debug/incremental 撑满（这次到了 10G），满了就删掉它和旧的语料输出目录。
+- 没做：Builder methods / Keep builder methods indents、Text blocks、Lambda / Switch expressions 等，留给 sec33-reformat-rest-37。
