@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-51
 title: Reformat：Wrapping and Braces 页剩下的选项（第五十一批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-51
-pr:
+pr: 311
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Java 的 Method parentheses › New line when body is presented（NEW_LINE_WHEN_BODY_IS_PRESENTED，`Wrapping::body_new_line`，settings.conf 第 114 位，默认关，设置页 Java 的复选框）。IntelliJ 在 `JavaSpacePropertyProcessor.shouldAddNewLineWhenBodyIsPresent` 里让 Simple blocks / methods / lambdas 只在体为空时算“简单”。Junction 在 `split_one_line_body` 里加参数 `body_line`：保留的块、方法、lambda 体不空就拆（`split_one_line_bodies` / `split_bodies_once` 一路传下去），类体不管，`${…}`（文件模板）不当代码块。测试 `puts_present_bodies_on_new_lines`。Signal 语料：默认 5201 行不变，打开时多 10 行、第二遍 0 行。剩下的放到 sec33-reformat-rest-52。
